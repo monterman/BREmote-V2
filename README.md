@@ -109,6 +109,9 @@ Rx:
 # Changelog:
 
 ## V2.2.x
+### 2026-02-12
+* Add Nano Mech. and SW files (BETA)
+* Add Rx Logger in DEV folder (BETA)
 ### 2026-01-22
 * Fix Serial() pushing voltage to USB magnet pins
 * Fix GPS init sequence

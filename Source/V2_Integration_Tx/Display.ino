@@ -1,4 +1,5 @@
 // V3 - 2026-04-21 - Updated DISPLAY_MODE_SPEED case in renderOperationalDisplay() to show TX GPS speed when speed_src 2/3/5
+// V3 - 2026-04-22 - Added GPS status dot at C7 R0 in updateBargraphs(); fixed digit-clear mask 0xFF00→0xFF80 to preserve C7
 
 static void clearDisplayRaw()
 {
@@ -78,7 +79,7 @@ void displayDigits(uint8_t dig1, uint8_t dig2)
   //Delete whole number field
   for(int i = 1; i < 7; i++)
   {
-    displayBuffer[i] &= 0xFF00;
+    displayBuffer[i] &= 0xFF80;  // preserve bit 7 (C7 = GPS status dot)
   }
 
   uint8_t digitBuffer[7];
@@ -330,7 +331,7 @@ void scroll3Digits(uint8_t dig1, uint8_t dig2, uint8_t dig3, int del)
     //Delete whole number field
     for(int i = 1; i < 7; i++)
     {
-      displayBuffer[i] &= 0xFF00;
+      displayBuffer[i] &= 0xFF80;  // preserve bit 7 (C7 = GPS status dot)
     }
 
     for(int j = 5; j >= 0; j--)
@@ -378,7 +379,7 @@ void scroll4Digits(uint8_t dig1, uint8_t dig2, uint8_t dig3, uint8_t dig4, int d
     //Delete whole number field
     for(int i = 1; i < 7; i++)
     {
-      displayBuffer[i] &= 0xFF00;
+      displayBuffer[i] &= 0xFF80;  // preserve bit 7 (C7 = GPS status dot)
     }
 
     for(int j = 5; j >= 0; j--)
@@ -421,7 +422,7 @@ void advanceArrow()
   //Delete whole number field
   for(int i = 1; i < 7; i++)
   {
-    displayBuffer[i] &= 0xFF00;
+    displayBuffer[i] &= 0xFF80;  // preserve bit 7 (C7 = GPS status dot)
   }
 
   arrowPos ++;
@@ -442,7 +443,7 @@ void advanceChargeAnimation()
   //Delete whole number field
   for(int i = 1; i < 7; i++)
   {
-    displayBuffer[i] &= 0xFF00;
+    displayBuffer[i] &= 0xFF80;  // preserve bit 7 (C7 = GPS status dot)
   }
 
   displayBuffer[1] = 0x1F;
@@ -483,7 +484,7 @@ void displayLock()
   //Delete whole number field
   for(int i = 1; i < 7; i++)
   {
-    displayBuffer[i] &= 0xFF00;
+    displayBuffer[i] &= 0xFF80;  // preserve bit 7 (C7 = GPS status dot)
   }
 
   displayBuffer[5] |= 0x7F;
@@ -499,7 +500,7 @@ void unlockAnimation()
 {
   for(int i = 1; i < 7; i++)
   {
-    displayBuffer[i] &= 0xFF00;
+    displayBuffer[i] &= 0xFF80;  // preserve bit 7 (C7 = GPS status dot)
   }
 
   displayBuffer[0] |= 0x3E;
@@ -543,6 +544,10 @@ void unlockAnimation()
   
   arrowPos = 0;
 }
+
+// GPS rejection flag — set by future TX Phase A anti-spoofing (GPS.ino) via extern.
+// Not static so GPS.ino can write it when that code is added.
+bool gps_rejected = false;
 
 void updateBargraphs(void *parameter)
 {
@@ -604,6 +609,40 @@ void updateBargraphs(void *parameter)
         sq_graph = 1;
       }
     }
+    // ---- GPS status dot  C7 R0 ----------------------------------------
+    // Bit 7 of displayBuffer[1] (row R0, col C7).
+    // Preserved across digit updates by the 0xFF80 clear mask above.
+    static uint32_t gps_dot_ms    = 0;      // millis() of last blink toggle
+    static bool     gps_dot_state = false;  // current dot on/off state
+
+    if (!usrConf.gps_en) {
+      // GPS disabled — dot off
+      displayBuffer[1] &= ~(1u << 7);
+    } else if (gps_rejected) {
+      // GPS rejected (anti-spoofing) — fast blink 250 ms
+      if (millis() - gps_dot_ms >= 250) {
+        gps_dot_state = !gps_dot_state;
+        gps_dot_ms    = millis();
+      }
+      if (gps_dot_state) displayBuffer[1] |=  (1u << 7);
+      else               displayBuffer[1] &= ~(1u << 7);
+    } else if (gps_tx.location.isValid() &&
+               gps_tx.location.age() < usrConf.tx_gps_stale_timeout_ms) {
+      // Valid fresh fix — solid on; reset timer so blink starts cleanly on state change
+      gps_dot_state = true;
+      gps_dot_ms    = millis();
+      displayBuffer[1] |= (1u << 7);
+    } else {
+      // No fix or stale fix — slow blink 1 s (acquiring)
+      if (millis() - gps_dot_ms >= 1000) {
+        gps_dot_state = !gps_dot_state;
+        gps_dot_ms    = millis();
+      }
+      if (gps_dot_state) displayBuffer[1] |=  (1u << 7);
+      else               displayBuffer[1] &= ~(1u << 7);
+    }
+    // ---- End GPS status dot --------------------------------------------
+
     displayVertBargraph(9, sq_graph, 2);
     updateDisplay();
     vTaskDelayUntil(&xLastWakeTime, xFrequency);

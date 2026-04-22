@@ -1,0 +1,300 @@
+// V3 - 2026-04-22 - Added gps_chip_type branch: type 0/1=BN-220/BN-880 (9600→115200, 5Hz), type 2/3=M10 (115200 direct, 10Hz, all constellations)
+
+// ============================================================
+// FIELD SERVICE NOTE
+//
+// V3 - 2026-04-22: sizeof(confStruct) changed from 108 to 112
+// bytes (gps_chip_type added). On the first V3 flash, SPIFFS
+// will detect the size mismatch and reset ALL settings to
+// defaults. After flashing, you must:
+//   1) Re-pair TX and RX
+//   2) Re-configure all settings via the web UI
+//   3) Re-calibrate compass via the 'runcal' serial command
+//
+// Also verify that gps_chip_type in the web config matches
+// the physical GPS module connected to this board.
+// ============================================================
+
+// ============================================================
+// configureGPS - Initialize GPS hardware on Serial1 (UART1)
+// ============================================================
+//
+// What it does:
+//   Sends UBX binary commands to configure the GPS module
+//   attached to Serial1. The specific init sequence depends on
+//   usrConf.gps_chip_type:
+//     0 = BN-220 (no compass): 9600→115200, 5Hz
+//     1 = BN-880 (GPS+compass): same GPS init as BN-220;
+//         compass (QMC5883L) is initialized separately by
+//         initCompass() in Compass.ino.
+//     2 = M10 (no compass): 115200 native, 10Hz, all constellations
+//     3 = M10 (GPS+compass): same GPS init as type 2; compass
+//         initialized separately by initCompass().
+//
+// Inputs:
+//   Reads usrConf.gps_chip_type.
+//
+// Outputs:
+//   None. Side effect: Serial1 is configured and left open.
+//
+// Side effects:
+//   - Calls setUartMux(1) to switch UART mux to GPS path.
+//   - Calls Serial1.begin()/end()/begin() for BN-220/BN-880.
+//   - Blocks ~450 ms for BN-220/BN-880; ~250 ms for M10.
+// ============================================================
+void configureGPS() {
+  // Route UART1 to the GPS connector (MUX position 1).
+  // This must happen before any Serial1 traffic regardless of chip type.
+  setUartMux(1);
+
+  // V3 fix (I-2): Increase RX buffer to 512 bytes before any Serial1.begin().
+  // At 10Hz (M10) the GPS emits multiple NMEA sentences per cycle; the default
+  // 256-byte buffer can overflow between loop ticks, causing sentence fragments
+  // that confuse TinyGPS++. setRxBufferSize() MUST be called before begin().
+  Serial1.setRxBufferSize(512);
+
+  // V3 - 2026-04-22 - Branch on GPS chip type. Each chip type has a
+  // different factory baud rate and supported feature set.
+  switch (usrConf.gps_chip_type)
+  {
+    // --------------------------------------------------------
+    // Types 0 and 1: BN-220 / BN-880 — factory 9600, switch to 115200, 5Hz
+    // Both use the same GPS init sequence. For type 1, initCompass()
+    // in Compass.ino handles the QMC5883L separately.
+    // --------------------------------------------------------
+    case 0:
+    case 1:
+    {
+      // UBX-CFG-PRT: switch GPS UART to 115200 baud, 8N1, UBX+NMEA.
+      // Fletcher-8 checksum (0xC0, 0x7E) pre-calculated over class→payload.
+      byte setBaud[] = {
+        0xB5, 0x62, 0x06, 0x00, 0x14, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0xD0, 0x08, 0x00, 0x00, 0x00, 0xC2, 0x01, 0x00, 0x07, 0x00,
+        0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x7E
+      };
+
+      // UBX-CFG-RATE: measurement rate 200 ms = 5 Hz, GPS time reference.
+      // Fletcher-8 checksum (0xDE, 0x6A) pre-calculated.
+      byte setRate5Hz[] = {
+        0xB5, 0x62, 0x06, 0x08, 0x06, 0x00, 0xC8, 0x00, 0x01, 0x00,
+        0x01, 0x00, 0xDE, 0x6A
+      };
+
+      // Step 1: open at factory default baud so the GPS hears the baud command.
+      Serial.println("GPS [BN-220/880]: Connecting at 9600...");
+      Serial1.begin(9600, SERIAL_8N1, P_U1_RX, P_U1_TX);
+      delay(200);
+
+      // Step 2: send baud-change command; short delay lets UART finish shifting.
+      Serial1.write(setBaud, sizeof(setBaud));
+      Serial1.flush();
+      delay(50);
+
+      // Step 3: reopen our side at 115200 to match the GPS after it switches.
+      Serial1.end();
+      delay(100);
+      Serial1.begin(115200, SERIAL_8N1, P_U1_RX, P_U1_TX);
+      Serial.println("GPS [BN-220/880]: Baud switched to 115200");
+
+      // Step 4: send the 5Hz measurement-rate command.
+      delay(100);
+      Serial1.write(setRate5Hz, sizeof(setRate5Hz));
+      Serial1.flush();
+      Serial.println("GPS [BN-220/880]: Config complete (115200, 5Hz)");
+      break;
+    }
+
+    // --------------------------------------------------------
+    // Types 2 and 3: M10 — 115200 native, 10Hz, all constellations
+    // For type 3, initCompass() in Compass.ino handles QMC5883L separately.
+    // --------------------------------------------------------
+    case 2:
+    case 3:
+    {
+      // M10 boots at 115200 by default — no baud-switch command needed.
+      Serial.println("GPS [M10]: Connecting at 115200...");
+      Serial1.begin(115200, SERIAL_8N1, P_U1_RX, P_U1_TX);
+      delay(200);
+
+      // UBX-CFG-RATE: measurement period 100 ms = 10 Hz, GPS time reference.
+      // Fletcher-8 checksum: CK_A=0x7A, CK_B=0x12 (pre-calculated).
+      byte setRate10Hz[] = {
+        0xB5, 0x62, 0x06, 0x08, 0x06, 0x00, 0x64, 0x00, 0x01, 0x00,
+        0x01, 0x00, 0x7A, 0x12
+      };
+      Serial1.write(setRate10Hz, sizeof(setRate10Hz));
+      Serial1.flush();
+      delay(50);
+
+      // UBX-CFG-GNSS: enable GPS, Galileo, BDS (BeiDou), and GLONASS.
+      // Payload: 4-byte header + 4 blocks of 8 bytes each (one per constellation).
+      // Fletcher-8 checksum: CK_A=0xCE, CK_B=0xC0 (pre-calculated over class→payload).
+      byte setGNSS[] = {
+        0xB5, 0x62, 0x06, 0x3E, 0x24, 0x00,
+        0x00, 0x00, 0xFF, 0x04,
+        0x00, 0x08, 0x10, 0x00, 0x01, 0x00, 0x00, 0x00,  // GPS (id=0)
+        0x02, 0x04, 0x08, 0x00, 0x01, 0x00, 0x00, 0x00,  // Galileo (id=2)
+        0x03, 0x08, 0x10, 0x00, 0x01, 0x00, 0x00, 0x00,  // BDS (id=3)
+        0x06, 0x08, 0x10, 0x00, 0x01, 0x00, 0x00, 0x00,  // GLONASS (id=6)
+        0xCE, 0xC0
+      };
+      Serial1.write(setGNSS, sizeof(setGNSS));
+      Serial1.flush();
+      Serial.println("GPS [M10]: Config complete (115200, 10Hz, GPS+Galileo+BDS+GLONASS)");
+      break;
+    }
+
+    default:
+      // Unknown chip type — fall back to BN-880 sequence so the board
+      // at least attempts to start. Log the unexpected value.
+      // Note (N-2): RX falls back to BN-880 init rather than skipping entirely.
+      // TX GPS.ino skips init on unknown types because getTxGPSLoop() guards on
+      // tx_gps_initialized and the TX can survive without GPS (speed display only).
+      // On RX, GPS feeds safety-critical follow-me and anti-spoofing; a partial
+      // attempt at a known-good sequence is safer than leaving Serial1 unconfigured.
+      Serial.print("GPS: unknown gps_chip_type=");
+      Serial.println(usrConf.gps_chip_type);
+      Serial.println("GPS: falling back to BN-880 init — check web config");
+      {
+        byte setBaud[] = {
+          0xB5, 0x62, 0x06, 0x00, 0x14, 0x00, 0x01, 0x00, 0x00, 0x00,
+          0xD0, 0x08, 0x00, 0x00, 0x00, 0xC2, 0x01, 0x00, 0x07, 0x00,
+          0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x7E
+        };
+        byte setRate5Hz[] = {
+          0xB5, 0x62, 0x06, 0x08, 0x06, 0x00, 0xC8, 0x00, 0x01, 0x00,
+          0x01, 0x00, 0xDE, 0x6A
+        };
+        Serial1.begin(9600, SERIAL_8N1, P_U1_RX, P_U1_TX);
+        delay(200);
+        Serial1.write(setBaud, sizeof(setBaud));
+        Serial1.flush();
+        delay(50);
+        Serial1.end();
+        delay(100);
+        Serial1.begin(115200, SERIAL_8N1, P_U1_RX, P_U1_TX);
+        delay(100);
+        Serial1.write(setRate5Hz, sizeof(setRate5Hz));
+        Serial1.flush();
+      }
+      break;
+  }
+}
+
+// Task for GPS reading
+void getGPSLoop()
+{
+  setUartMux(1);
+  vTaskDelay(pdMS_TO_TICKS(10));  
+  //Serial1.end();
+  //Serial1.begin(115200, SERIAL_8N1, P_U1_RX, P_U1_TX);
+  //while(!Serial1) vTaskDelay(pdMS_TO_TICKS(10));
+  
+  // Flush the serial buffer to get fresh data
+  Serial1.flush();
+  
+  // Reset buffer for new reading
+  bool newData = false;
+  unsigned long startTime = millis();
+  
+  while (millis() - startTime < 300) {
+    if (Serial1.available())
+    {
+      char c = Serial1.read();
+      // Feed each character to TinyGPS++ object
+      if (gps.encode(c)) {
+        newData = true;
+      }
+    }
+    else
+    {
+      // No data available, yield to other tasks
+      vTaskDelay(1 / portTICK_PERIOD_MS);
+    }
+  }
+
+  if (!newData)
+  {
+    telemetry.foil_speed = 0xFF;
+  }
+  else if(!gps.speed.isUpdated())
+  {
+    telemetry.foil_speed = 0xFF;  // V3 fix (N-4): 99 km/h collides with real vehicle speed; 0xFF is the established "no data" sentinel (CLAUDE.md Section 5)
+  }
+  else
+  {
+    telemetry.foil_speed = (uint8_t)gps.speed.kmph();
+  }
+/*
+  // If we received valid GPS data
+  if (newData && gps.speed.isUpdated()) 
+  {
+    telemetry.foil_speed = (uint8_t)gps.speed.kmph();
+  } 
+  else 
+  {
+    //telemetry.foil_speed = 0xFF;
+  }*/
+}
+
+// Function to print satellite information
+void printSatelliteInfo() {
+  Serial.println("----- GPS Satellite Status -----");
+  Serial.print("Satellites in view: ");
+  Serial.println(gps.satellites.value());
+  
+  Serial.print("HDOP (Horizontal Dilution of Precision): ");
+  if (gps.hdop.isValid()) {
+    Serial.print(gps.hdop.value());
+    Serial.println(" (Lower is better, <1 Excellent, 1-2 Good, 2-5 Moderate, 5-10 Fair, >10 Poor)");
+  } else {
+    Serial.println("Invalid");
+  }
+  
+  Serial.print("Location validity: ");
+  Serial.println(gps.location.isValid() ? "Valid" : "Invalid");
+  
+  if (gps.location.isValid()) {
+    Serial.print("Latitude: ");
+    Serial.println(gps.location.lat(), 6);
+    Serial.print("Longitude: ");
+    Serial.println(gps.location.lng(), 6);
+    Serial.print("Altitude: ");
+    if (gps.altitude.isValid()) {
+      Serial.print(gps.altitude.meters());
+      Serial.println(" meters");
+    } else {
+      Serial.println("Invalid");
+    }
+  }
+  
+  Serial.print("Date/Time validity: ");
+  Serial.println(gps.date.isValid() && gps.time.isValid() ? "Valid" : "Invalid");
+  
+  if (gps.date.isValid() && gps.time.isValid()) {
+    char dateTime[30];
+    sprintf(dateTime, "%04d-%02d-%02d %02d:%02d:%02d UTC", 
+            gps.date.year(), gps.date.month(), gps.date.day(),
+            gps.time.hour(), gps.time.minute(), gps.time.second());
+    Serial.print("Date/Time: ");
+    Serial.println(dateTime);
+  }
+  
+  Serial.print("Course validity: ");
+  Serial.println(gps.course.isValid() ? "Valid" : "Invalid");
+  
+  if (gps.course.isValid()) {
+    Serial.print("Course: ");
+    Serial.print(gps.course.deg());
+    Serial.println(" degrees");
+  }
+  
+  Serial.print("Chars processed: ");
+  Serial.println(gps.charsProcessed());
+  Serial.print("Sentences with fix: ");
+  Serial.println(gps.sentencesWithFix());
+  Serial.print("Failed checksum: ");
+  Serial.println(gps.failedChecksum());
+  
+  Serial.println("-------------------------------");
+}

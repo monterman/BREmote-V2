@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BREmote V3 Config Studio</title>
+    <style>
+        :root { --bg: #0b1220; --panel: #101828; --panel2: #1e293b; --txt: #e5e7eb; --muted: #9ca3af; --pri: #60a5fa; --err: #ef4444; --hl: #ca8a04; }
+        * { box-sizing: border-box; }
+        body { margin: 0; background: radial-gradient(1200px 700px at 10% -10%, #1e3a5f66 0, transparent 45%), linear-gradient(180deg, #0a1120 0, #0b1220 40%); color: var(--txt); font-family: "Avenir Next", "Montserrat", "Segoe UI", sans-serif; padding: 20px; }
+        .header { text-align: center; margin-bottom: 20px; }
+        .toggle-btn { background: var(--panel2); color: var(--txt); border: 1px solid #334155; padding: 10px 20px; cursor: pointer; font-size: 16px; font-weight: bold; border-radius: 8px; margin: 0 5px; }
+        .toggle-btn.active { background: var(--pri); color: #08111f; border-color: var(--pri); }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; max-width: 1400px; margin: 0 auto; }
+        .card { background: linear-gradient(180deg, #121b2e, #101828); border: 1px solid #243042; border-radius: 14px; padding: 20px; box-shadow: 0 8px 24px #00000033; }
+        h3 { margin-top: 0; color: var(--pri); }
+        textarea { width: 100%; height: 80px; padding: 10px; border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: var(--txt); font-family: monospace; resize: vertical; margin-bottom: 10px; }
+        button.action-btn { width: 100%; border: 0; border-radius: 8px; padding: 10px; background: #334155; color: #fff; font-weight: 700; cursor: pointer; margin-bottom: 20px; transition: 0.2s; }
+        button.action-btn:hover { background: #475569; }
+        .field-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid #1e293b; }
+        .field-label { flex: 1; font-size: 14px; font-weight: bold; color: #cbd5e1; }
+        .field-desc { font-size: 12px; color: var(--muted); display: block; margin-top: 4px; font-weight: normal; }
+        .field-input { flex: 0 0 160px; margin-left: 15px; }
+        input, select { width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: var(--txt); font-family: monospace; font-size: 14px; }
+        .diff { background-color: #422006 !important; border-color: var(--hl) !important; color: #fde047 !important; }
+        .export-section { margin-top: 20px; padding-top: 20px; border-top: 2px dashed #334155; }
+        .export-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }
+        .export-btn { width: auto; padding: 5px 12px; margin-bottom: 0; font-size: 12px; background: #0f766e; }
+        .addr-group { display: flex; gap: 5px; }
+        .addr-group input { text-align: center; padding: 6px 2px; }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <h1>BREmote V3 Config Studio</h1>
+    <div>
+        <button id="btnTX" class="toggle-btn active" onclick="setMode('TX')">TX (Transmitter)</button>
+        <button id="btnRX" class="toggle-btn" onclick="setMode('RX')">RX (Receiver)</button>
+    </div>
+</div>
+
+<div class="grid">
+    <div class="card" id="col1">
+        <h3>Profile 1</h3>
+        <label style="font-size: 12px; color: var(--muted);">Paste JSON or Base64 String here:</label>
+        <textarea id="in1" placeholder='{"version":3,...} OR AQAAAAI...'></textarea>
+        
+        <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+            <button class="action-btn" onclick="loadInput(1, this)" style="margin-bottom: 0;">Load to Editor</button>
+            <button class="action-btn" onclick="quickConvert(1, this)" style="margin-bottom: 0; background: #0f766e;">⮂ Quick Convert</button>
+        </div>
+        <textarea id="quick-out1" style="display:none; border-color:#0d9488; height: 160px;" readonly></textarea>
+
+        <div id="form1"></div>
+        
+        <div class="export-section">
+            <div class="export-header">
+                <label style="font-size: 12px; color: var(--muted);">Generated JSON (Mobile Web UI):</label>
+                <button class="action-btn export-btn" onclick="downloadJSON(1)">⬇ Download .json</button>
+            </div>
+            <textarea id="out-json1" readonly></textarea>
+            
+            <div class="export-header" style="margin-top: 10px;">
+                <label style="font-size: 12px; color: var(--muted);">Generated Base64 (Serial Console):</label>
+                <button class="action-btn export-btn" style="background: #2563eb;" onclick="copyBase64(1, this)">📋 Copy Code</button>
+            </div>
+            <textarea id="out-b641" readonly></textarea>
+        </div>
+    </div>
+
+    <div class="card" id="col2">
+        <h3>Profile 2 (Compare)</h3>
+        <label style="font-size: 12px; color: var(--muted);">Paste JSON or Base64 String here:</label>
+        <textarea id="in2" placeholder='{"version":3,...} OR AQAAAAI...'></textarea>
+        
+        <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+            <button class="action-btn" onclick="loadInput(2, this)" style="margin-bottom: 0;">Load to Editor</button>
+            <button class="action-btn" onclick="quickConvert(2, this)" style="margin-bottom: 0; background: #0f766e;">⮂ Quick Convert</button>
+        </div>
+        <textarea id="quick-out2" style="display:none; border-color:#0d9488; height: 160px;" readonly></textarea>
+
+        <div id="form2"></div>
+        
+        <div class="export-section">
+            <div class="export-header">
+                <label style="font-size: 12px; color: var(--muted);">Generated JSON (Mobile Web UI):</label>
+                <button class="action-btn export-btn" onclick="downloadJSON(2)">⬇ Download .json</button>
+            </div>
+            <textarea id="out-json2" readonly></textarea>
+            
+            <div class="export-header" style="margin-top: 10px;">
+                <label style="font-size: 12px; color: var(--muted);">Generated Base64 (Serial Console):</label>
+                <button class="action-btn export-btn" style="background: #2563eb;" onclick="copyBase64(2, this)">📋 Copy Code</button>
+            </div>
+            <textarea id="out-b642" readonly></textarea>
+        </div>
+    </div>
+</div>
+
+<script>
+// --- V3 Struct Definitions with Plain English Tooltips ---
+const structs = {
+    TX: [
+        {k:"version", t:"u16", d:"Firmware Version (Must match exactly, e.g., 3)"}, 
+        {k:"radio_preset", t:"u16", d:"Radio Frequency Region (1 = EU 868MHz, 2 = US/AU 915MHz)"}, 
+        {k:"rf_power", t:"i16", d:"Radio Transmit Power in dBm (-9 to 22)"}, 
+        {k:"max_gears", t:"u16", d:"Total number of power gears available on the remote"},
+        {k:"startgear", t:"u16", d:"The gear selected automatically when remote boots up"}, 
+        {k:"no_lock", t:"u16", d:"Throttle Safety Lock (0 = Trigger starts locked, 1 = Trigger always active)"}, 
+        {k:"throttle_mode", t:"u16", d:"Trigger behavior logic (0 = Normal, 1 = Cruise, 2 = Dynamic)"}, 
+        {k:"steer_enabled", t:"u16", d:"Thumbstick Steering (0 = Disabled, 1 = Enabled)"},
+        {k:"wifi_password", t:"str8", d:"Web Console AP Password (Must be exactly 8 characters)"}, 
+        {k:"dynamic_power_start", t:"u16", d:"Starting % for the Dynamic Power Cap (e.g. 100)"}, 
+        {k:"dynamic_power_step", t:"u16", d:"How much the Power Cap jumps per click (e.g. 10%)"}, 
+        {k:"thr_expo", t:"u16", d:"Trigger Expo (Smooths out the center of the trigger pull)"}, 
+        {k:"tog_deadzone", t:"u16", d:"Thumbstick deadzone (Ignores tiny accidental thumb movements)"}, 
+        {k:"tog_diff", t:"u16", d:"Thumbstick margin needed to register a click"}, 
+        {k:"tog_block_time", t:"u16", d:"How long steering pauses when you click to change gears (ms)"}, 
+        {k:"menu_timeout", t:"u16", d:"Seconds of inactivity before the settings menu auto-closes"},
+        {k:"cal_ok", t:"u16", d:"Trigger Calibration Flag (1 = Calibrated, 0 = Needs calibration)"}, 
+        {k:"cal_offset", t:"u16", d:"Base offset for the Hall sensor ADC"},
+        {k:"thr_idle", t:"u16", d:"Raw ADC value when trigger is fully released"}, 
+        {k:"thr_pull", t:"u16", d:"Raw ADC value when trigger is fully pulled"}, 
+        {k:"tog_left", t:"u16", d:"Raw ADC value for thumbstick full Left"}, 
+        {k:"tog_mid", t:"u16", d:"Raw ADC value for thumbstick Center"}, 
+        {k:"tog_right", t:"u16", d:"Raw ADC value for thumbstick full Right"},
+        {k:"trig_unlock_timeout", t:"u16", d:"Ms before trigger auto-locks after letting go"}, 
+        {k:"lock_waittime", t:"u16", d:"Ms holding trigger required to unlock"}, 
+        {k:"gear_change_waittime", t:"u16", d:"Ms delay between gear clicks (Debounce)"}, 
+        {k:"gear_display_time", t:"u16", d:"How long the gear number stays on OLED screen (ms)"}, 
+        {k:"err_delete_time", t:"u16", d:"How long an error stays on OLED screen (ms)"},
+        {k:"thr_expo1", t:"u16", d:"Secondary Trigger Expo curve"}, 
+        {k:"steer_expo", t:"u16", d:"Steering Expo (Smooths out center of thumbstick)"}, 
+        {k:"steer_expo1", t:"u16", d:"Secondary Steering Expo curve"},
+        {k:"ubat_cal", t:"f32", d:"Battery ADC-to-Voltage math multiplier"},
+        {k:"gps_en", t:"u16", d:"TX Internal GPS module (0 = Disabled, 1 = Enabled)"}, 
+        {k:"followme_mode", t:"u16", d:"Follow-Me Target (0 = Off, 1 = Behind, 2 = Near Right, 3 = Near Left)"}, 
+        {k:"kalman_en", t:"u16", d:"GPS smoothing filter (0 = Disabled, 1 = Enabled)"}, 
+        {k:"speed_src", t:"u16", d:"0: RX km/h, 1: RX kts, 2: TX km/h, 3: TX kts, 4: RX mph, 5: TX mph"}, 
+        {k:"tx_gps_stale_timeout_ms", t:"u16", d:"Ms before TX considers its own GPS data outdated"},
+        {k:"paired", t:"u16", d:"Pairing State (0 = Unpaired, 1 = Paired)"}, 
+        {k:"own_address", t:"addr", d:"Your Transmitter's local MAC Address"}, 
+        {k:"dest_address", t:"addr", d:"The MAC Address of the Receiver you are paired to"}
+    ],
+    RX: [
+        {k:"version", t:"u16", d:"Firmware Version (Must match exactly, e.g., 3)"}, 
+        {k:"radio_preset", t:"u16", d:"Radio Frequency Region (1 = EU 868MHz, 2 = US/AU 915MHz)"}, 
+        {k:"rf_power", t:"i16", d:"Radio Transmit Power in dBm (-9 to 22)"},
+        {k:"steering_type", t:"u16", d:"0 = Single Motor, 1 = Diff Motor, 2 = Servo (Tow Boogie)"}, 
+        {k:"steering_influence", t:"u16", d:"How much (%) the steering affects motor speeds (Diff thrust)"}, 
+        {k:"steering_inverted", t:"u16", d:"Flip rudder direction (0 = Normal, 1 = Inverted)"}, 
+        {k:"trim", t:"i16", d:"Servo center alignment offset (-500 to 500)"},
+        {k:"pwm0_min", t:"u16", d:"ESC (Throttle) minimum pulse width in microseconds"}, 
+        {k:"pwm0_max", t:"u16", d:"ESC (Throttle) maximum pulse width in microseconds"}, 
+        {k:"pwm1_min", t:"u16", d:"Servo (Steering) minimum pulse width (Left wall)"}, 
+        {k:"pwm1_max", t:"u16", d:"Servo (Steering) maximum pulse width (Right wall)"}, 
+        {k:"failsafe_time", t:"u16", d:"Ms before motor cuts out when connection to TX is lost"},
+        {k:"foil_num_cells", t:"u16", d:"Battery pack size (e.g., 10 for 10S, 14 for 14S)"}, 
+        {k:"bms_det_active", t:"u16", d:"Enable BMS data detection (0 = Off, 1 = On)"}, 
+        {k:"wet_det_active", t:"u16", d:"Enable Water Leak Detection alarm (0 = Off, 1 = On)"}, 
+        {k:"dummy_delete_me", t:"u16", d:"Reserved system memory space (Ignore)"},
+        {k:"data_src", t:"u16", d:"Telemetry Source (0 = Off, 1 = Analog Wire, 2 = VESC UART Port)"}, 
+        {k:"gps_en", t:"u16", d:"RX Internal GPS module (0 = Disabled, 1 = Enabled)"}, 
+        {k:"followme_mode", t:"u16", d:"Follow-Me Mode (0 = Off, 1 = Behind, 2 = Near Right, 3 = Near Left)"}, 
+        {k:"kalman_en", t:"u16", d:"GPS smoothing filter (0 = Disabled, 1 = Enabled)"},
+        {k:"boogie_vmax_in_followme_kmh", t:"f32", d:"Maximum speed boogie will travel autonomously (km/h)"}, 
+        {k:"min_dist_m", t:"f32", d:"Minimum distance boogie stays away from you (meters)"}, 
+        {k:"followme_smoothing_band_m", t:"f32", d:"Throttle smoothing zone above min distance (meters)"}, 
+        {k:"foiler_low_speed_kmh", t:"f32", d:"Safety stop threshold if foiler goes too slow (km/h)"}, 
+        {k:"zone_angle_enter_deg", t:"f32", d:"Follow-Me: Half-angle to enter active zone (degrees)"}, 
+        {k:"zone_angle_exit_deg", t:"f32", d:"Follow-Me: Half-angle to exit active zone (degrees)"}, 
+        {k:"near_diag_offset_deg", t:"f32", d:"Follow-Me: Offset angle from directly behind (degrees)"},
+        {k:"ubat_cal", t:"f32", d:"Analog battery pin ADC-to-Voltage math multiplier"}, 
+        {k:"ubat_offset", t:"f32", d:"Manual offset adjustment for battery voltage reading"},
+        {k:"tx_gps_stale_timeout_ms", t:"u16", d:"Ms before RX considers the Remote's GPS data outdated"}, 
+        {k:"logger_en", t:"u16", d:"Save VESC/GPS data to internal flash memory (0 = Off, 1 = On)"},
+        {k:"paired", t:"u16", d:"Pairing State (0 = Unpaired, 1 = Paired)"}, 
+        {k:"own_address", t:"addr", d:"Your Receiver's local MAC Address"}, 
+        {k:"dest_address", t:"addr", d:"The MAC Address of the Transmitter you are paired to"},
+        {k:"wifi_password", t:"str8", d:"Web Console AP Password (Must be exactly 8 characters)"}
+    ]
+};
+
+let currentMode = 'TX';
+let dataState = { 1: {}, 2: {} };
+
+// C-Struct Compiler engine
+class StructCompiler {
+    static getLayout(mode) {
+        let offset = 0; let layout = [];
+        structs[mode].forEach(f => {
+            let align = 1, size = 1;
+            if(f.t === 'u16' || f.t === 'i16') { align = 2; size = 2; }
+            else if(f.t === 'f32') { align = 4; size = 4; }
+            else if(f.t === 'str8') { align = 1; size = 8; }
+            else if(f.t === 'addr') { align = 1; size = 3; }
+            
+            if (offset % align !== 0) offset += align - (offset % align); 
+            layout.push({ ...f, offset, size });
+            offset += size;
+        });
+        if (offset % 4 !== 0) offset += 4 - (offset % 4); 
+        return { layout, totalSize: offset };
+    }
+
+    static decode(base64, mode) {
+        let cleanB64 = base64.replace(/[^A-Za-z0-9+/=]/g, "");
+        while(cleanB64.length % 4 !== 0) cleanB64 += "=";
+        
+        const bin = atob(cleanB64);
+        const buf = new Uint8Array(bin.length);
+        for(let i=0; i<bin.length; i++) buf[i] = bin.charCodeAt(i);
+        const dv = new DataView(buf.buffer);
+        const { layout } = this.getLayout(mode);
+        let out = {};
+        layout.forEach(f => {
+            if(f.offset + f.size > dv.byteLength) return; 
+            if(f.t === 'u16') out[f.k] = dv.getUint16(f.offset, true);
+            else if(f.t === 'i16') out[f.k] = dv.getInt16(f.offset, true);
+            else if(f.t === 'f32') out[f.k] = parseFloat(dv.getFloat32(f.offset, true).toFixed(8));
+            else if(f.t === 'str8') {
+                let s = ""; for(let i=0; i<8; i++) { let c = buf[f.offset+i]; if(c>0) s += String.fromCharCode(c); }
+                out[f.k] = s;
+            }
+            else if(f.t === 'addr') {
+                out[f.k] = [buf[f.offset], buf[f.offset+1], buf[f.offset+2]].map(x => x.toString(16).padStart(2,'0').toUpperCase()).join(':');
+            }
+        });
+        return out;
+    }
+
+    static encode(json, mode) {
+        const { layout, totalSize } = this.getLayout(mode);
+        const buf = new Uint8Array(totalSize);
+        const dv = new DataView(buf.buffer);
+        layout.forEach(f => {
+            let val = json[f.k];
+            if(val === undefined) return;
+            if(f.t === 'u16') dv.setUint16(f.offset, parseInt(val) || 0, true);
+            else if(f.t === 'i16') dv.setInt16(f.offset, parseInt(val) || 0, true);
+            else if(f.t === 'f32') dv.setFloat32(f.offset, parseFloat(val) || 0, true);
+            else if(f.t === 'str8') {
+                let s = String(val).padEnd(8, '\0').substring(0,8);
+                for(let i=0; i<8; i++) buf[f.offset+i] = s.charCodeAt(i);
+            }
+            else if(f.t === 'addr') {
+                let parts = String(val).split(':').map(x => parseInt(x, 16) || 0);
+                for(let i=0; i<3; i++) buf[f.offset+i] = parts[i] || 0;
+            }
+        });
+        let bin = ""; for(let i=0; i<buf.length; i++) bin += String.fromCharCode(buf[i]);
+        return btoa(bin);
+    }
+}
+
+function setMode(mode) {
+    currentMode = mode;
+    document.getElementById('btnTX').classList.toggle('active', mode==='TX');
+    document.getElementById('btnRX').classList.toggle('active', mode==='RX');
+    dataState = { 1: {}, 2: {} };
+    renderForm(1); renderForm(2);
+    updateOutputs(1); updateOutputs(2);
+}
+
+function flashSuccess(btn) {
+    const originalText = btn.innerText;
+    btn.innerText = "Success! ✓";
+    btn.style.background = "#059669";
+    setTimeout(() => {
+        btn.innerText = originalText;
+        btn.style.background = ""; 
+    }, 1500);
+}
+
+function loadInput(col, btn) {
+    const input = document.getElementById(`in${col}`).value.trim();
+    if(!input) return;
+    try {
+        if(input.startsWith('{')) { dataState[col] = JSON.parse(input); } 
+        else { dataState[col] = StructCompiler.decode(input, currentMode); }
+        renderForm(col);
+        updateOutputs(col);
+        flashSuccess(btn);
+    } catch(e) { 
+        alert(`Error parsing Profile ${col}:\nMake sure you pasted valid JSON or Base64.\nDetails: ${e.message}`); 
+    }
+}
+
+function quickConvert(col, btn) {
+    const input = document.getElementById(`in${col}`).value.trim();
+    const outBox = document.getElementById(`quick-out${col}`);
+    if(!input) return;
+    
+    try {
+        if(input.startsWith('{')) {
+            const jsonObj = JSON.parse(input);
+            const b64 = StructCompiler.encode(jsonObj, currentMode);
+            outBox.value = "--- CONVERTED TO BASE64 ---\n\n" + b64;
+            outBox.style.display = 'block';
+        } else {
+            const jsonObj = StructCompiler.decode(input, currentMode);
+            outBox.value = "--- CONVERTED TO JSON ---\n\n" + JSON.stringify(jsonObj, null, 2);
+            outBox.style.display = 'block';
+        }
+        flashSuccess(btn);
+    } catch(e) {
+        outBox.value = "Conversion Error: " + e.message;
+        outBox.style.display = 'block';
+    }
+}
+
+function renderForm(col) {
+    const container = document.getElementById(`form${col}`);
+    let html = '';
+    structs[currentMode].forEach(f => {
+        let valStr = dataState[col][f.k] !== undefined ? dataState[col][f.k] : '';
+        html += `<div class="field-row">
+            <div class="field-label">${f.k} <span class="field-desc">${f.d}</span></div>
+            <div class="field-input">`;
+        
+        if(f.t === 'addr') {
+            let p = ['00','00','00'];
+            if(valStr) {
+                let splits = String(valStr).split(':');
+                if(splits.length === 3) p = splits;
+            }
+            html += `<div class="addr-group">
+                <input id="f_${col}_${f.k}_0" value="${p[0]}" maxlength="2" oninput="updateVal(${col}, '${f.k}')">
+                <input id="f_${col}_${f.k}_1" value="${p[1]}" maxlength="2" oninput="updateVal(${col}, '${f.k}')">
+                <input id="f_${col}_${f.k}_2" value="${p[2]}" maxlength="2" oninput="updateVal(${col}, '${f.k}')">
+            </div>`;
+        } else {
+            let step = f.t === 'f32' ? 'step="0.0001"' : '';
+            html += `<input id="f_${col}_${f.k}" value="${String(valStr).replace(/"/g, '&quot;')}" ${step} oninput="updateVal(${col}, '${f.k}')">`;
+        }
+        html += `</div></div>`;
+    });
+    container.innerHTML = html;
+    compareFields();
+}
+
+function updateVal(col, key) {
+    const fType = structs[currentMode].find(x => x.k === key).t;
+    if(fType === 'addr') {
+        let v0 = document.getElementById(`f_${col}_${key}_0`).value || '00';
+        let v1 = document.getElementById(`f_${col}_${key}_1`).value || '00';
+        let v2 = document.getElementById(`f_${col}_${key}_2`).value || '00';
+        dataState[col][key] = `${v0}:${v1}:${v2}`.toUpperCase();
+    } else {
+        let val = document.getElementById(`f_${col}_${key}`).value;
+        if(fType === 'u16' || fType === 'i16') {
+            let num = parseInt(val);
+            dataState[col][key] = isNaN(num) ? 0 : num;
+        } else if(fType === 'f32') {
+            let num = parseFloat(val);
+            dataState[col][key] = isNaN(num) ? 0 : num;
+        } else {
+            dataState[col][key] = val;
+        }
+    }
+    updateOutputs(col);
+    compareFields();
+}
+
+function updateOutputs(col) {
+    if(Object.keys(dataState[col]).length === 0) return;
+    document.getElementById(`out-json${col}`).value = JSON.stringify(dataState[col]);
+    try {
+        document.getElementById(`out-b64${col}`).value = StructCompiler.encode(dataState[col], currentMode);
+    } catch(e) { document.getElementById(`out-b64${col}`).value = "Error generating Base64: " + e.message; }
+}
+
+function compareFields() {
+    structs[currentMode].forEach(f => {
+        let i1 = document.getElementById(`f_1_${f.k}`);
+        let i2 = document.getElementById(`f_2_${f.k}`);
+        if(f.t === 'addr') {
+            ['0','1','2'].forEach(idx => {
+                let p1 = document.getElementById(`f_1_${f.k}_${idx}`);
+                let p2 = document.getElementById(`f_2_${f.k}_${idx}`);
+                if(p1 && p2) {
+                    let diff = (dataState[1][f.k] !== undefined && dataState[2][f.k] !== undefined && p1.value !== p2.value);
+                    p1.classList.toggle('diff', diff); p2.classList.toggle('diff', diff);
+                }
+            });
+        } else {
+            if(i1 && i2) {
+                let diff = (dataState[1][f.k] !== undefined && dataState[2][f.k] !== undefined && String(dataState[1][f.k]) !== String(dataState[2][f.k]));
+                i1.classList.toggle('diff', diff); i2.classList.toggle('diff', diff);
+            }
+        }
+    });
+}
+
+// --- AFM-Gemini: Export Functions ---
+function downloadJSON(col) {
+    const jsonText = document.getElementById(`out-json${col}`).value;
+    if(!jsonText) return alert("Nothing to download! Please load or edit a config first.");
+    
+    const blob = new Blob([jsonText], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `bremote_config_${currentMode}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
+function copyBase64(col, btn) {
+    const b64Text = document.getElementById(`out-b64${col}`).value;
+    if(!b64Text || b64Text.startsWith("Error")) return alert("Nothing valid to copy!");
+    
+    navigator.clipboard.writeText(b64Text).then(() => {
+        flashSuccess(btn);
+    }).catch(err => {
+        alert("Failed to copy text: " + err);
+    });
+}
+
+// Initialize empty forms
+setMode('TX');
+</script>
+</body>
+</html>

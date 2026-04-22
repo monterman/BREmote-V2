@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BREmote Config Converter</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; color: #e0e0e0; min-height: 100vh; }
+.top-bar { display: flex; align-items: center; gap: 12px; padding: 12px 20px; background: #16213e; border-bottom: 1px solid #0f3460; flex-wrap: wrap; }
+.top-bar h1 { font-size: 16px; color: #e94560; margin-right: 12px; white-space: nowrap; }
+.top-bar label { font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+.top-bar select { background: #1a1a2e; color: #e0e0e0; border: 1px solid #0f3460; border-radius: 4px; padding: 6px 10px; font-size: 13px; cursor: pointer; }
+.top-bar select:focus { outline: none; border-color: #e94560; }
+.convert-btn { background: #e94560; color: #fff; border: none; border-radius: 4px; padding: 8px 20px; font-size: 14px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.convert-btn:hover { background: #c73e54; }
+.arrow { color: #e94560; font-size: 20px; font-weight: bold; }
+.panels { display: grid; grid-template-columns: 1fr 1fr; gap: 0; flex: 1; min-height: 0; }
+.panel { display: flex; flex-direction: column; padding: 16px; border-right: 1px solid #0f3460; }
+.panel:last-child { border-right: none; }
+.panel-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.panel-title { font-size: 13px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+.panel textarea { flex: none; height: 120px; background: #0f0f23; color: #e0e0e0; border: 1px solid #333; border-radius: 4px; padding: 10px; font-family: 'Consolas', 'Monaco', monospace; font-size: 12px; resize: vertical; width: 100%; }
+.panel textarea:focus { outline: none; border-color: #e94560; }
+.fields-container { flex: 1; overflow-y: auto; margin-top: 10px; max-height: calc(100vh - 280px); }
+.field-row { display: grid; grid-template-columns: 200px 1fr 60px; gap: 8px; align-items: center; padding: 4px 8px; border-radius: 3px; font-size: 12px; }
+.field-row:nth-child(odd) { background: rgba(255,255,255,0.02); }
+.field-row:hover { background: rgba(255,255,255,0.05); }
+.field-name { font-family: monospace; color: #7ecfff; }
+.field-value { font-family: monospace; color: #e0e0e0; word-break: break-all; }
+.field-type { font-family: monospace; color: #666; font-size: 11px; text-align: right; }
+.field-row.defaulted { background: rgba(233, 69, 96, 0.1); border-left: 3px solid #e94560; }
+.field-row.defaulted .field-name::after { content: ' (default)'; color: #e94560; font-size: 10px; }
+.copy-btn { background: #0f3460; color: #e0e0e0; border: 1px solid #333; border-radius: 4px; padding: 4px 12px; font-size: 12px; cursor: pointer; }
+.copy-btn:hover { background: #1a4a7a; }
+.error { color: #e94560; font-size: 12px; margin-top: 6px; font-family: monospace; }
+.info { color: #888; font-size: 11px; margin-top: 4px; }
+.struct-size { color: #666; font-size: 11px; margin-left: 8px; }
+.group-sel { display: flex; align-items: center; gap: 6px; }
+</style>
+</head>
+<body>
+<div class="top-bar">
+    <h1>BREmote Config Converter</h1>
+    <div class="group-sel">
+        <label>Device</label>
+        <select id="device">
+            <option value="tx">TX</option>
+            <option value="rx">RX</option>
+        </select>
+    </div>
+    <div class="group-sel">
+        <label>Source</label>
+        <select id="srcVersion">
+            <option value="1">V1</option>
+            <option value="2" selected>V2</option>
+            <option value="3">V3</option>
+        </select>
+        <select id="srcFormat">
+            <option value="base64">Base64</option>
+            <option value="json">JSON</option>
+        </select>
+    </div>
+    <span class="arrow">&rarr;</span>
+    <div class="group-sel">
+        <label>Target</label>
+        <select id="tgtVersion">
+            <option value="1">V1</option>
+            <option value="2" selected>V2</option>
+            <option value="3">V3</option>
+        </select>
+        <select id="tgtFormat">
+            <option value="base64">Base64</option>
+            <option value="json">JSON</option>
+        </select>
+    </div>
+    <button class="convert-btn" onclick="convert()">Convert</button>
+</div>
+<div class="panels">
+    <div class="panel">
+        <div class="panel-header">
+            <span class="panel-title">Input</span>
+            <span class="struct-size" id="srcSize"></span>
+        </div>
+        <textarea id="input" placeholder="Paste Base64 or JSON here..."></textarea>
+        <div class="error" id="srcError"></div>
+        <div class="fields-container" id="srcFields"></div>
+    </div>
+    <div class="panel">
+        <div class="panel-header">
+            <span class="panel-title">Output</span>
+            <span class="struct-size" id="tgtSize"></span>
+            <button class="copy-btn" onclick="copyOutput()">Copy</button>
+        </div>
+        <textarea id="output" readonly placeholder="Converted output will appear here..."></textarea>
+        <div class="error" id="tgtError"></div>
+        <div class="fields-container" id="tgtFields"></div>
+    </div>
+</div>
+
+<script>
+'use strict';
+
+// ── Field type definitions ──
+const U16   = 'u16';
+const I16   = 'i16';
+const FLOAT = 'float';
+const ADDR3 = 'u8_3'; // uint8_t[3]
+const STR8  = 'str8'; // char[8] (no null terminator)
+
+function fieldSize(type) {
+    switch (type) {
+        case U16: case I16: return 2;
+        case FLOAT: return 4;
+        case ADDR3: return 3;
+        case STR8: return 8;
+    }
+}
+function fieldAlign(type) {
+    switch (type) {
+        case U16: case I16: return 2;
+        case FLOAT: return 4;
+        case ADDR3: return 1;
+        case STR8: return 1;
+    }
+}
+
+// ── Struct layout calculator (ESP32 GCC natural alignment) ──
+function computeLayout(fields) {
+    let offset = 0;
+    let maxAlign = 1;
+    const layout = [];
+    for (const f of fields) {
+        const align = fieldAlign(f.type);
+        if (align > maxAlign) maxAlign = align;
+        const pad = (align - (offset % align)) % align;
+        offset += pad;
+        layout.push({ ...f, offset, size: fieldSize(f.type) });
+        offset += fieldSize(f.type);
+    }
+    // trailing padding
+    const trailPad = (maxAlign - (offset % maxAlign)) % maxAlign;
+    offset += trailPad;
+    return { fields: layout, totalSize: offset };
+}
+
+// ── Field definition helper ──
+function F(name, type, defaultValue) { return { name, type, default: defaultValue }; }
+
+// ── TX struct definitions ──
+const TX_V1_FIELDS = [
+    F('version',              U16,   1),
+    F('radio_preset',         U16,   1),
+    F('rf_power',             I16,   0),
+    F('cal_ok',               U16,   0),
+    F('cal_offset',           U16,   100),
+    F('thr_idle',             U16,   0),
+    F('thr_pull',             U16,   0),
+    F('tog_left',             U16,   0),
+    F('tog_mid',              U16,   0),
+    F('tog_right',            U16,   0),
+    F('tog_deadzone',         U16,   500),
+    F('tog_diff',             U16,   30),
+    F('tog_block_time',       U16,   500),
+    F('trig_unlock_timeout',  U16,   5000),
+    F('lock_waittime',        U16,   2000),
+    F('gear_change_waittime', U16,   100),
+    F('gear_display_time',    U16,   1000),
+    F('menu_timeout',         U16,   10),
+    F('err_delete_time',      U16,   2000),
+    F('no_lock',              U16,   0),
+    F('no_gear',              U16,   0),
+    F('max_gears',            U16,   10),
+    F('startgear',            U16,   0),
+    F('steer_enabled',        U16,   1),
+    F('thr_expo',             U16,   50),
+    F('thr_expo1',            U16,   50),
+    F('steer_expo',           U16,   50),
+    F('steer_expo1',          U16,   50),
+    F('ubat_cal',             FLOAT, 0.000185662),
+    F('paired',               U16,   0),
+    F('own_address',          ADDR3, [0,0,0]),
+    F('dest_address',         ADDR3, [0,0,0]),
+];
+
+const TX_V2_FIELDS = [
+    F('version',              U16,   2),
+    F('radio_preset',         U16,   1),
+    F('rf_power',             I16,   0),
+    F('cal_ok',               U16,   0),
+    F('cal_offset',           U16,   100),
+    F('thr_idle',             U16,   0),
+    F('thr_pull',             U16,   0),
+    F('tog_left',             U16,   0),
+    F('tog_mid',              U16,   0),
+    F('tog_right',            U16,   0),
+    F('tog_deadzone',         U16,   500),
+    F('tog_diff',             U16,   30),
+    F('tog_block_time',       U16,   500),
+    F('trig_unlock_timeout',  U16,   5000),
+    F('lock_waittime',        U16,   2000),
+    F('gear_change_waittime', U16,   100),
+    F('gear_display_time',    U16,   1000),
+    F('menu_timeout',         U16,   10),
+    F('err_delete_time',      U16,   2000),
+    F('no_lock',              U16,   0),
+    F('no_gear',              U16,   0),
+    F('max_gears',            U16,   10),
+    F('startgear',            U16,   0),
+    F('steer_enabled',        U16,   1),
+    F('thr_expo',             U16,   50),
+    F('thr_expo1',            U16,   0),
+    F('steer_expo',           U16,   50),
+    F('steer_expo1',          U16,   0),
+    F('ubat_cal',             FLOAT, 0.000185662),
+    F('gps_en',               U16,   0),
+    F('followme_mode',        U16,   0),
+    F('kalman_en',            U16,   0),
+    F('speed_src',            U16,   0),
+    F('tx_gps_stale_timeout_ms', U16, 1000),
+    F('paired',               U16,   0),
+    F('own_address',          ADDR3, [0,0,0]),
+    F('dest_address',         ADDR3, [0,0,0]),
+];
+
+const TX_V3_FIELDS = [
+    F('version',              U16,   3),
+    F('radio_preset',         U16,   1),
+    F('rf_power',             I16,   0),
+    F('cal_ok',               U16,   0),
+    F('cal_offset',           U16,   100),
+    F('thr_idle',             U16,   0),
+    F('thr_pull',             U16,   0),
+    F('tog_left',             U16,   0),
+    F('tog_mid',              U16,   0),
+    F('tog_right',            U16,   0),
+    F('tog_deadzone',         U16,   500),
+    F('tog_diff',             U16,   30),
+    F('tog_block_time',       U16,   500),
+    F('trig_unlock_timeout',  U16,   5000),
+    F('lock_waittime',        U16,   2000),
+    F('gear_change_waittime', U16,   100),
+    F('gear_display_time',    U16,   1000),
+    F('menu_timeout',         U16,   10),
+    F('err_delete_time',      U16,   2000),
+    F('no_lock',              U16,   0),
+    F('throttle_mode',        U16,   0),  // renamed from no_gear
+    F('max_gears',            U16,   10),
+    F('startgear',            U16,   0),
+    F('steer_enabled',        U16,   1),
+    F('thr_expo',             U16,   50),
+    F('thr_expo1',            U16,   0),
+    F('steer_expo',           U16,   50),
+    F('steer_expo1',          U16,   0),
+    F('ubat_cal',             FLOAT, 0.000185662),
+    F('gps_en',               U16,   0),
+    F('followme_mode',        U16,   0),
+    F('kalman_en',            U16,   0),
+    F('speed_src',            U16,   0),
+    F('tx_gps_stale_timeout_ms', U16, 1000),
+    F('paired',               U16,   0),
+    F('own_address',          ADDR3, [0,0,0]),
+    F('dest_address',         ADDR3, [0,0,0]),
+    F('wifi_password',        STR8,  '12345678'),  // new in V3
+    F('dynamic_power_start',  U16,   85),           // new in V3
+    F('dynamic_power_step',   U16,   5),            // new in V3
+];
+
+// ── RX struct definitions ──
+const RX_V1_FIELDS = [
+    F('version',              U16,   1),
+    F('radio_preset',         U16,   1),
+    F('rf_power',             I16,   -9),
+    F('steering_type',        U16,   0),
+    F('steering_influence',   U16,   50),
+    F('steering_inverted',    U16,   0),
+    F('trim',                 I16,   0),
+    F('PWM0_min',             U16,   1500),
+    F('PWM0_max',             U16,   2000),
+    F('PWM1_min',             U16,   1500),
+    F('PWM1_max',             U16,   2000),
+    F('failsafe_time',        U16,   1000),
+    F('foil_bat_low',         FLOAT, 10.0),
+    F('foil_bat_high',        FLOAT, 60.0),
+    F('bms_det_active',       U16,   0),
+    F('wet_det_active',       U16,   1),
+    F('data_src',             U16,   0),
+    F('gps_en',               U16,   0),
+    F('ubat_cal',             FLOAT, 0.0095554),
+    F('paired',               U16,   0),
+    F('own_address',          ADDR3, [0,0,0]),
+    F('dest_address',         ADDR3, [0,0,0]),
+];
+
+const RX_V2_FIELDS = [
+    F('version',              U16,   2),
+    F('radio_preset',         U16,   1),
+    F('rf_power',             I16,   0),
+    F('steering_type',        U16,   0),
+    F('steering_influence',   U16,   50),
+    F('steering_inverted',    U16,   0),
+    F('trim',                 I16,   0),
+    F('PWM0_min',             U16,   1500),
+    F('PWM0_max',             U16,   2000),
+    F('PWM1_min',             U16,   1500),
+    F('PWM1_max',             U16,   2000),
+    F('failsafe_time',        U16,   1000),
+    F('foil_num_cells',       U16,   10),
+    F('bms_det_active',       U16,   0),
+    F('wet_det_active',       U16,   1),
+    F('dummy_delete_me',      U16,   0),
+    F('data_src',             U16,   0),
+    F('gps_en',               U16,   0),
+    F('followme_mode',        U16,   0),
+    F('kalman_en',            U16,   0),
+    F('boogie_vmax_in_followme_kmh', FLOAT, 25.0),
+    F('min_dist_m',           FLOAT, 10.0),
+    F('followme_smoothing_band_m', FLOAT, 10.0),
+    F('foiler_low_speed_kmh', FLOAT, 5.0),
+    F('zone_angle_enter_deg', FLOAT, 35.0),
+    F('zone_angle_exit_deg',  FLOAT, 45.0),
+    F('near_diag_offset_deg', FLOAT, 45.0),
+    F('ubat_cal',             FLOAT, 0.0095554),
+    F('ubat_offset',          FLOAT, 0.0),
+    F('tx_gps_stale_timeout_ms', U16, 1000),
+    F('logger_en',            U16,   1),
+    F('paired',               U16,   0),
+    F('own_address',          ADDR3, [0,0,0]),
+    F('dest_address',         ADDR3, [0,0,0]),
+];
+
+const RX_V3_FIELDS = [
+    F('version',              U16,   3),
+    F('radio_preset',         U16,   1),
+    F('rf_power',             I16,   0),
+    F('steering_type',        U16,   0),
+    F('steering_influence',   U16,   50),
+    F('steering_inverted',    U16,   0),
+    F('trim',                 I16,   0),
+    F('PWM0_min',             U16,   1500),
+    F('PWM0_max',             U16,   2000),
+    F('PWM1_min',             U16,   1500),
+    F('PWM1_max',             U16,   2000),
+    F('failsafe_time',        U16,   1000),
+    F('foil_num_cells',       U16,   10),
+    F('bms_det_active',       U16,   0),
+    F('wet_det_active',       U16,   1),
+    F('dummy_delete_me',      U16,   0),
+    F('data_src',             U16,   0),
+    F('gps_en',               U16,   0),
+    F('followme_mode',        U16,   0),
+    F('kalman_en',            U16,   0),
+    F('boogie_vmax_in_followme_kmh', FLOAT, 25.0),
+    F('min_dist_m',           FLOAT, 10.0),
+    F('followme_smoothing_band_m', FLOAT, 10.0),
+    F('foiler_low_speed_kmh', FLOAT, 5.0),
+    F('zone_angle_enter_deg', FLOAT, 35.0),
+    F('zone_angle_exit_deg',  FLOAT, 45.0),
+    F('near_diag_offset_deg', FLOAT, 45.0),
+    F('ubat_cal',             FLOAT, 0.0095554),
+    F('ubat_offset',          FLOAT, 0.0),
+    F('tx_gps_stale_timeout_ms', U16, 1000),
+    F('logger_en',            U16,   1),
+    F('paired',               U16,   0),
+    F('own_address',          ADDR3, [0,0,0]),
+    F('dest_address',         ADDR3, [0,0,0]),
+    F('wifi_password',        STR8,  '12345678'),  // new in V3
+];
+
+// ── Known field renames across versions ──
+const RENAMES = {
+    'no_gear': 'throttle_mode',
+    'throttle_mode': 'no_gear',
+};
+
+// ── Registry ──
+function getFields(device, version) {
+    const key = device + '_' + version;
+    const map = {
+        'tx_1': TX_V1_FIELDS, 'tx_2': TX_V2_FIELDS, 'tx_3': TX_V3_FIELDS,
+        'rx_1': RX_V1_FIELDS, 'rx_2': RX_V2_FIELDS, 'rx_3': RX_V3_FIELDS,
+    };
+    return map[key] || null;
+}
+
+// ── Binary read/write ──
+function readField(dv, offset, type) {
+    switch (type) {
+        case U16:   return dv.getUint16(offset, true);
+        case I16:   return dv.getInt16(offset, true);
+        case FLOAT: return dv.getFloat32(offset, true);
+        case ADDR3: return [dv.getUint8(offset), dv.getUint8(offset+1), dv.getUint8(offset+2)];
+        case STR8: {
+            let s = '';
+            for (let i = 0; i < 8; i++) {
+                const c = dv.getUint8(offset + i);
+                if (c === 0) break;
+                s += String.fromCharCode(c);
+            }
+            return s;
+        }
+    }
+}
+function writeField(dv, offset, type, value) {
+    switch (type) {
+        case U16:   dv.setUint16(offset, value, true); break;
+        case I16:   dv.setInt16(offset, value, true); break;
+        case FLOAT: dv.setFloat32(offset, value, true); break;
+        case ADDR3:
+            const arr = Array.isArray(value) ? value : [0,0,0];
+            dv.setUint8(offset, arr[0]);
+            dv.setUint8(offset+1, arr[1]);
+            dv.setUint8(offset+2, arr[2]);
+            break;
+        case STR8: {
+            const str = typeof value === 'string' ? value : '12345678';
+            for (let i = 0; i < 8; i++) dv.setUint8(offset + i, i < str.length ? str.charCodeAt(i) : 0);
+            break;
+        }
+    }
+}
+
+// ── Base64 encode/decode ──
+function b64Decode(str) {
+    const bin = atob(str.trim());
+    const buf = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+    return buf;
+}
+function b64Encode(buf) {
+    let bin = '';
+    for (let i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i]);
+    return btoa(bin);
+}
+
+// ── Address hex formatting ──
+function addrToHex(arr) {
+    return arr.map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(':');
+}
+function hexToAddr(str) {
+    const parts = str.split(':');
+    if (parts.length !== 3) throw new Error('Address must be 3 hex bytes like AB:CD:EF');
+    return parts.map(p => {
+        const v = parseInt(p, 16);
+        if (isNaN(v) || v < 0 || v > 255) throw new Error('Invalid hex byte: ' + p);
+        return v;
+    });
+}
+
+// ── Decode binary to field values ──
+function decodeStruct(bytes, fields) {
+    const layout = computeLayout(fields);
+    if (bytes.length < layout.totalSize) {
+        throw new Error(`Binary data too short: got ${bytes.length} bytes, expected ${layout.totalSize}`);
+    }
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const values = {};
+    for (const f of layout.fields) {
+        values[f.name] = readField(dv, f.offset, f.type);
+    }
+    return values;
+}
+
+// ── Encode field values to binary ──
+function encodeStruct(values, fields) {
+    const layout = computeLayout(fields);
+    const buf = new Uint8Array(layout.totalSize);
+    const dv = new DataView(buf.buffer);
+    for (const f of layout.fields) {
+        const val = values[f.name] !== undefined ? values[f.name] : f.default;
+        writeField(dv, f.offset, f.type, val);
+    }
+    return buf;
+}
+
+// ── Version conversion ──
+function convertValues(srcValues, srcFields, tgtFields) {
+    const result = {};
+    const defaulted = new Set();
+    const tgtNames = new Set(tgtFields.map(f => f.name));
+
+    for (const tf of tgtFields) {
+        // Direct name match
+        if (srcValues[tf.name] !== undefined) {
+            result[tf.name] = srcValues[tf.name];
+            continue;
+        }
+        // Check renames
+        const renamed = RENAMES[tf.name];
+        if (renamed && srcValues[renamed] !== undefined) {
+            result[tf.name] = srcValues[renamed];
+            continue;
+        }
+        // Use default
+        result[tf.name] = tf.default;
+        defaulted.add(tf.name);
+    }
+    // Always set version to target version
+    const versionField = tgtFields.find(f => f.name === 'version');
+    if (versionField) {
+        result['version'] = versionField.default;
+        if (srcValues['version'] !== versionField.default) {
+            defaulted.add('version');
+        }
+    }
+    return { values: result, defaulted };
+}
+
+// ── Format a value for JSON display ──
+function formatValue(value, type) {
+    if (type === STR8) return '"' + value + '"';
+    if (type === ADDR3) return addrToHex(value);
+    if (type === FLOAT) {
+        // Show enough precision for floats like 0.000185662
+        if (value === 0) return '0.0';
+        const abs = Math.abs(value);
+        if (abs < 0.001) return value.toPrecision(6);
+        if (abs < 1) return value.toPrecision(6);
+        return parseFloat(value.toFixed(6)).toString();
+    }
+    return value.toString();
+}
+
+// ── Parse JSON input ──
+function parseJsonInput(text, fields) {
+    const obj = JSON.parse(text);
+    const values = {};
+    for (const f of fields) {
+        if (obj[f.name] !== undefined) {
+            if (f.type === ADDR3 && typeof obj[f.name] === 'string') {
+                values[f.name] = hexToAddr(obj[f.name]);
+            } else {
+                values[f.name] = obj[f.name];
+            }
+        } else {
+            values[f.name] = f.default;
+        }
+    }
+    return values;
+}
+
+// ── Values to JSON string ──
+function valuesToJson(values, fields) {
+    const obj = {};
+    for (const f of fields) {
+        const v = values[f.name] !== undefined ? values[f.name] : f.default;
+        obj[f.name] = (f.type === ADDR3 && Array.isArray(v)) ? addrToHex(v) : v;
+    }
+    return JSON.stringify(obj, null, 2);
+}
+
+// ── Render field list in a container ──
+function renderFields(containerId, values, fields, defaultedSet) {
+    const container = document.getElementById(containerId);
+    container.innerHTML = '';
+    for (const f of fields) {
+        const row = document.createElement('div');
+        row.className = 'field-row' + (defaultedSet && defaultedSet.has(f.name) ? ' defaulted' : '');
+        const val = values[f.name] !== undefined ? values[f.name] : f.default;
+        row.innerHTML =
+            '<span class="field-name">' + f.name + '</span>' +
+            '<span class="field-value">' + formatValue(val, f.type) + '</span>' +
+            '<span class="field-type">' + f.type + '</span>';
+        container.appendChild(row);
+    }
+}
+
+// ── Update struct size display ──
+function updateSizeLabels() {
+    const device = document.getElementById('device').value;
+    const srcV = document.getElementById('srcVersion').value;
+    const tgtV = document.getElementById('tgtVersion').value;
+
+    const srcF = getFields(device, srcV);
+    const tgtF = getFields(device, tgtV);
+
+    document.getElementById('srcSize').textContent = srcF ? computeLayout(srcF).totalSize + ' bytes' : '';
+    document.getElementById('tgtSize').textContent = tgtF ? computeLayout(tgtF).totalSize + ' bytes' : '';
+}
+
+// ── Update available version options based on device ──
+function updateVersionOptions() {
+    const device = document.getElementById('device').value;
+    const maxV = 3;
+
+    for (const selId of ['srcVersion', 'tgtVersion']) {
+        const sel = document.getElementById(selId);
+        for (const opt of sel.options) {
+            opt.disabled = parseInt(opt.value) > maxV;
+        }
+        if (parseInt(sel.value) > maxV) sel.value = maxV.toString();
+    }
+    updateSizeLabels();
+}
+
+// ── Main convert ──
+function convert() {
+    const device = document.getElementById('device').value;
+    const srcVersion = document.getElementById('srcVersion').value;
+    const tgtVersion = document.getElementById('tgtVersion').value;
+    const srcFormat = document.getElementById('srcFormat').value;
+    const tgtFormat = document.getElementById('tgtFormat').value;
+    const inputText = document.getElementById('input').value.trim();
+
+    document.getElementById('srcError').textContent = '';
+    document.getElementById('tgtError').textContent = '';
+    document.getElementById('output').value = '';
+    document.getElementById('srcFields').innerHTML = '';
+    document.getElementById('tgtFields').innerHTML = '';
+
+    if (!inputText) {
+        document.getElementById('srcError').textContent = 'No input provided';
+        return;
+    }
+
+    const srcFields = getFields(device, srcVersion);
+    const tgtFields = getFields(device, tgtVersion);
+
+    if (!srcFields) {
+        document.getElementById('srcError').textContent = 'No struct definition for ' + device.toUpperCase() + ' V' + srcVersion;
+        return;
+    }
+    if (!tgtFields) {
+        document.getElementById('tgtError').textContent = 'No struct definition for ' + device.toUpperCase() + ' V' + tgtVersion;
+        return;
+    }
+
+    // Parse input
+    let srcValues;
+    try {
+        if (srcFormat === 'base64') {
+            const bytes = b64Decode(inputText);
+            srcValues = decodeStruct(bytes, srcFields);
+        } else {
+            srcValues = parseJsonInput(inputText, srcFields);
+        }
+    } catch (e) {
+        document.getElementById('srcError').textContent = 'Parse error: ' + e.message;
+        return;
+    }
+
+    // Show parsed input fields
+    renderFields('srcFields', srcValues, srcFields, null);
+
+    // Convert between versions
+    const { values: tgtValues, defaulted } = convertValues(srcValues, srcFields, tgtFields);
+
+    // Show output fields
+    renderFields('tgtFields', tgtValues, tgtFields, defaulted);
+
+    // Encode output
+    try {
+        if (tgtFormat === 'base64') {
+            const buf = encodeStruct(tgtValues, tgtFields);
+            document.getElementById('output').value = b64Encode(buf);
+        } else {
+            document.getElementById('output').value = valuesToJson(tgtValues, tgtFields);
+        }
+    } catch (e) {
+        document.getElementById('tgtError').textContent = 'Encode error: ' + e.message;
+    }
+
+    updateSizeLabels();
+}
+
+function copyOutput() {
+    const output = document.getElementById('output');
+    if (output.value) {
+        navigator.clipboard.writeText(output.value);
+        const btn = document.querySelector('.copy-btn');
+        const orig = btn.textContent;
+        btn.textContent = 'Copied!';
+        setTimeout(() => btn.textContent = orig, 1500);
+    }
+}
+
+// Init
+document.getElementById('device').addEventListener('change', updateVersionOptions);
+document.getElementById('srcVersion').addEventListener('change', updateSizeLabels);
+document.getElementById('tgtVersion').addEventListener('change', updateSizeLabels);
+updateVersionOptions();
+</script>
+</body>
+</html>

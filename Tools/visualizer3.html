@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tow Boogie Follow-Me Visualizer</title>
+    <style>
+        body { font-family: "Segoe UI", sans-serif; background: #0b1220; color: white; display: flex; justify-content: center; padding: 20px; }
+        .container { display: flex; gap: 20px; background: #101828; padding: 20px; border-radius: 12px; border: 1px solid #243042; flex-wrap: wrap; justify-content: center; }
+        .controls { display: flex; flex-direction: column; gap: 15px; width: 260px; background: #1e293b; padding: 15px; border-radius: 8px; }
+        label { font-size: 14px; display: flex; flex-direction: column; gap: 5px; font-weight: bold; color: #cbd5e1; }
+        span.val { color: #38bdf8; font-family: monospace; font-size: 16px; }
+        canvas { background: #0f172a; border-radius: 8px; border: 1px solid #334155; max-width: 100%; }
+        h3 { margin-top: 0; color: #38bdf8; text-align: center; border-bottom: 1px solid #334155; padding-bottom: 10px; }
+        select, input[type=range] { width: 100%; cursor: pointer; }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <!-- Control Panel -->
+        <div class="controls">
+            <h3>Tracking Controls</h3>
+            <label>Follow Mode: 
+                <select id="mode" style="padding:5px; background:#0f172a; color:white; border:1px solid #334155; border-radius:4px;">
+                    <option value="Behind">Mode 1: Behind</option>
+                    <option value="Near Right">Mode 2: Near Right</option>
+                    <option value="Near Left">Mode 3: Near Left</option>
+                </select>
+            </label>
+            <label>Min Distance (m): <span class="val" id="v_min">10</span>
+                <input type="range" id="min_dist" min="5" max="25" value="10"> 
+            </label>
+            <label>Smoothing Band (m): <span class="val" id="v_smooth">10</span>
+                <input type="range" id="smooth" min="5" max="25" value="10"> 
+            </label>
+            <label>Enter Angle (°): <span class="val" id="v_enter">35</span>
+                <input type="range" id="enter" min="10" max="90" value="35"> 
+            </label>
+            <label>Exit Angle (°): <span class="val" id="v_exit">45</span>
+                <input type="range" id="exit" min="10" max="90" value="45"> 
+            </label>
+            <label>Near Offset Angle (°): <span class="val" id="v_offset">45</span>
+                <input type="range" id="offset" min="10" max="90" value="45"> 
+            </label>
+        </div>
+
+        <!-- The Visualizer Stage (Widened to 700px to ensure circles fit) -->
+        <canvas id="vizCanvas" width="700" height="600"></canvas>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('vizCanvas');
+        const ctx = canvas.getContext('2d');
+        const inputs =['min_dist', 'smooth', 'enter', 'exit', 'offset', 'mode'];
+
+        function draw() {
+            // Get slider values
+            const min_dist = parseFloat(document.getElementById('min_dist').value);
+            const smooth = parseFloat(document.getElementById('smooth').value);
+            const enter = parseFloat(document.getElementById('enter').value);
+            const exit = parseFloat(document.getElementById('exit').value);
+            const offset = parseFloat(document.getElementById('offset').value);
+            const mode = document.getElementById('mode').value;
+
+            // Update text numbers
+            document.getElementById('v_min').innerText = min_dist + "m";
+            document.getElementById('v_smooth').innerText = smooth + "m";
+            document.getElementById('v_enter').innerText = enter + "°";
+            document.getElementById('v_exit').innerText = exit + "°";
+            document.getElementById('v_offset').innerText = offset + "°";
+
+            const centerX = canvas.width / 2;
+            const centerY = 100; // Foiler is at the Top
+            
+            // AFM: Reduced scale to 4 so max distances easily fit in the canvas
+            const scale = 4; 
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // 1. Draw Active/Exit Cones (Hysteresis Buffer)
+            ctx.globalAlpha = 0.2;
+            ctx.fillStyle = '#ef4444'; // Red Exit Angle (Wide Cone)
+            drawWedge(centerX, centerY, 1000, 90 - exit, 90 + exit); // Radius 1000 to reach edges
+            ctx.fillStyle = '#22c55e'; // Green Enter Angle (Narrow Cone)
+            drawWedge(centerX, centerY, 1000, 90 - enter, 90 + enter);
+
+            // 2. Calculate Target Position for the Boogie
+            let targetAngle = 90; // 90 degrees points straight DOWN on a canvas (Behind)
+            
+            // If foiler is moving UP, screen Right is math angle minus offset.
+            if (mode === 'Near Right') targetAngle -= offset; 
+            if (mode === 'Near Left') targetAngle += offset;
+
+            const targetDist = (min_dist + smooth / 2) * scale;
+            const tx = centerX + Math.cos(targetAngle * Math.PI / 180) * targetDist;
+            const ty = centerY + Math.sin(targetAngle * Math.PI / 180) * targetDist;
+
+            // 3. Draw Safety Zones around the Boogie Target
+            ctx.globalAlpha = 0.3;
+            ctx.fillStyle = '#f87171'; // Red Dead Zone (Stop)
+            ctx.beginPath();
+            ctx.arc(tx, ty, min_dist * scale, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.strokeStyle = '#fbbf24'; // Yellow Smoothing Band (Ramp up)
+            ctx.lineWidth = smooth * scale;
+            ctx.beginPath();
+            ctx.arc(tx, ty, (min_dist + smooth/2) * scale, 0, Math.PI * 2);
+            ctx.stroke();
+
+            // 4. Draw Foiler Icon (Top)
+            ctx.globalAlpha = 1.0;
+            ctx.fillStyle = '#38bdf8'; // Blue Surfboard
+            ctx.beginPath();
+            ctx.roundRect(centerX - 10, centerY - 25, 20, 50, 8); // Scaled down slightly
+            ctx.fill();
+            
+            ctx.fillStyle = 'white';
+            ctx.font = "bold 12px sans-serif";
+            ctx.textAlign = "center";
+            ctx.fillText("🏄‍♂️ FOILER", centerX, centerY - 35);
+            
+            // Wake lines
+            ctx.strokeStyle = "rgba(255,255,255,0.2)";
+            ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.moveTo(centerX, centerY+25); ctx.lineTo(centerX-40, centerY+120); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(centerX, centerY+25); ctx.lineTo(centerX+40, centerY+120); ctx.stroke();
+
+            // 5. Draw Tow Boogie Icon (Dynamic position)
+            ctx.fillStyle = '#f472b6'; // Pink Boogie
+            ctx.beginPath();
+            ctx.roundRect(tx - 12, ty - 8, 24, 16, 4); // Scaled down slightly
+            ctx.fill();
+            
+            ctx.fillStyle = 'white';
+            ctx.fillText("🛥️ BUGGY", tx, ty + 20);
+        }
+
+        // Helper function to draw radar cones
+        function drawWedge(x, y, radius, startAngle, endAngle) {
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+            ctx.arc(x, y, radius, startAngle * Math.PI / 180, endAngle * Math.PI / 180);
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        // Attach listeners so moving a slider instantly redraws the screen
+        inputs.forEach(id => document.getElementById(id).addEventListener('input', draw));
+        document.getElementById('mode').addEventListener('change', draw);
+        
+        draw(); // Run once to draw the initial screen
+    </script>
+</body>
+</html>

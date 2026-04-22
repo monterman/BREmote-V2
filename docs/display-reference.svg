@@ -1,0 +1,255 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 628" width="760" height="628"
+     font-family="'Courier New', 'Lucida Console', monospace">
+<defs>
+  <filter id="gr" x="-60%" y="-60%" width="220%" height="220%">
+    <feGaussianBlur stdDeviation="2.5" result="b"/>
+    <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter>
+  <filter id="gg" x="-60%" y="-60%" width="220%" height="220%">
+    <feGaussianBlur stdDeviation="3" result="b"/>
+    <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter>
+</defs>
+
+<!-- ── background ── -->
+<rect width="760" height="628" fill="#0d0d0d"/>
+
+<!-- ── title ── -->
+<text x="380" y="29" text-anchor="middle" font-size="16" font-weight="bold"
+      fill="#e6e6e6" letter-spacing="0.4">BREmote V3 — display pixel map</text>
+<text x="380" y="48" text-anchor="middle" font-size="11" fill="#888">
+  10 cols × 7 rows — throttle mode 95% shown
+</text>
+
+<!-- ── PCB  x=50 y=63 w=314 h=228 → right=364 bottom=291 ── -->
+<rect x="50" y="63" width="314" height="228" rx="8" fill="#1c1c1c" stroke="#393939" stroke-width="2"/>
+
+<!-- subtle zone dividers on PCB -->
+<line x1="148" y1="65" x2="148" y2="289" stroke="#252525" stroke-width="1"/>
+<line x1="176" y1="65" x2="176" y2="289" stroke="#252525" stroke-width="1"/>
+<line x1="260" y1="65" x2="260" y2="289" stroke="#252525" stroke-width="1"/>
+<line x1="50"  y1="240" x2="364" y2="240" stroke="#222" stroke-width="1"/>
+<line x1="50"  y1="254" x2="364" y2="254" stroke="#222" stroke-width="1"/>
+
+<!--
+  Dot grid:
+    col x: C0=76 C1=104 C2=132 C3=160 C4=188 C5=216 C6=244 C7=272 C8=300 C9=328
+    row y: R0=89  R1=117  R2=145  R3=173  R4=201  R5=229  R6=257
+  Digit "9" in C0-C2 rows 0-4:   ###  / # # / ### /   # / ###
+  Digit "5" in C4-C6 rows 0-4:   ###  / #   / ### /   # / ###
+  C3 gap always dark
+  C7 R0 = GPS green
+  C8 R4 only = temp low (orange)
+  C9 R0-R4 = signal full (green)
+  R5 all dark (unused)
+  R6 C0-C6 = battery 7/10 (orange-red)
+-->
+
+<!-- ═══ ROW 0  y=89 ═══ -->
+<circle cx="76"  cy="89" r="8" fill="#ff3322" filter="url(#gr)"/>  <!-- C0 digit 9 -->
+<circle cx="104" cy="89" r="8" fill="#ff3322" filter="url(#gr)"/>  <!-- C1 -->
+<circle cx="132" cy="89" r="8" fill="#ff3322" filter="url(#gr)"/>  <!-- C2 -->
+<circle cx="160" cy="89" r="8" fill="#261010"/>                     <!-- C3 gap -->
+<circle cx="188" cy="89" r="8" fill="#ff3322" filter="url(#gr)"/>  <!-- C4 digit 5 -->
+<circle cx="216" cy="89" r="8" fill="#ff3322" filter="url(#gr)"/>  <!-- C5 -->
+<circle cx="244" cy="89" r="8" fill="#ff3322" filter="url(#gr)"/>  <!-- C6 -->
+<circle cx="272" cy="89" r="8" fill="#00cc44" filter="url(#gg)"/>  <!-- C7 GPS ● green -->
+<circle cx="300" cy="89" r="8" fill="#261010"/>                     <!-- C8 temp off -->
+<circle cx="328" cy="89" r="8" fill="#00dd66" filter="url(#gg)"/>  <!-- C9 signal -->
+
+<!-- ═══ ROW 1  y=117 ═══ -->
+<circle cx="76"  cy="117" r="8" fill="#ff3322" filter="url(#gr)"/>
+<circle cx="104" cy="117" r="8" fill="#261010"/>                    <!-- C1 off -->
+<circle cx="132" cy="117" r="8" fill="#ff3322" filter="url(#gr)"/>
+<circle cx="160" cy="117" r="8" fill="#261010"/>
+<circle cx="188" cy="117" r="8" fill="#ff3322" filter="url(#gr)"/>
+<circle cx="216" cy="117" r="8" fill="#261010"/>                    <!-- C5 off -->
+<circle cx="244" cy="117" r="8" fill="#261010"/>                    <!-- C6 off -->
+<circle cx="272" cy="117" r="8" fill="#261010"/>
+<circle cx="300" cy="117" r="8" fill="#261010"/>
+<circle cx="328" cy="117" r="8" fill="#00dd66" filter="url(#gg)"/>
+
+<!-- ═══ ROW 2  y=145 ═══ -->
+<circle cx="76"  cy="145" r="8" fill="#ff3322" filter="url(#gr)"/>
+<circle cx="104" cy="145" r="8" fill="#ff3322" filter="url(#gr)"/>
+<circle cx="132" cy="145" r="8" fill="#ff3322" filter="url(#gr)"/>
+<circle cx="160" cy="145" r="8" fill="#261010"/>
+<circle cx="188" cy="145" r="8" fill="#ff3322" filter="url(#gr)"/>
+<circle cx="216" cy="145" r="8" fill="#ff3322" filter="url(#gr)"/>
+<circle cx="244" cy="145" r="8" fill="#ff3322" filter="url(#gr)"/>
+<circle cx="272" cy="145" r="8" fill="#261010"/>
+<circle cx="300" cy="145" r="8" fill="#261010"/>
+<circle cx="328" cy="145" r="8" fill="#00dd66" filter="url(#gg)"/>
+
+<!-- ═══ ROW 3  y=173 ═══ -->
+<circle cx="76"  cy="173" r="8" fill="#261010"/>                    <!-- C0 off -->
+<circle cx="104" cy="173" r="8" fill="#261010"/>                    <!-- C1 off -->
+<circle cx="132" cy="173" r="8" fill="#ff3322" filter="url(#gr)"/>  <!-- C2 on -->
+<circle cx="160" cy="173" r="8" fill="#261010"/>
+<circle cx="188" cy="173" r="8" fill="#261010"/>                    <!-- C4 off -->
+<circle cx="216" cy="173" r="8" fill="#261010"/>                    <!-- C5 off -->
+<circle cx="244" cy="173" r="8" fill="#ff3322" filter="url(#gr)"/>  <!-- C6 on -->
+<circle cx="272" cy="173" r="8" fill="#261010"/>
+<circle cx="300" cy="173" r="8" fill="#261010"/>
+<circle cx="328" cy="173" r="8" fill="#00dd66" filter="url(#gg)"/>
+
+<!-- ═══ ROW 4  y=201 ═══ -->
+<circle cx="76"  cy="201" r="8" fill="#ff3322" filter="url(#gr)"/>
+<circle cx="104" cy="201" r="8" fill="#ff3322" filter="url(#gr)"/>
+<circle cx="132" cy="201" r="8" fill="#ff3322" filter="url(#gr)"/>
+<circle cx="160" cy="201" r="8" fill="#261010"/>
+<circle cx="188" cy="201" r="8" fill="#ff3322" filter="url(#gr)"/>
+<circle cx="216" cy="201" r="8" fill="#ff3322" filter="url(#gr)"/>
+<circle cx="244" cy="201" r="8" fill="#ff3322" filter="url(#gr)"/>
+<circle cx="272" cy="201" r="8" fill="#261010"/>
+<circle cx="300" cy="201" r="8" fill="#ff8800" filter="url(#gg)"/>  <!-- C8 TEMP low — R4 only -->
+<circle cx="328" cy="201" r="8" fill="#00dd66" filter="url(#gg)"/>
+
+<!-- ═══ ROW 5  y=229  — ALL DARK (unused) ═══ -->
+<circle cx="76"  cy="229" r="8" fill="#1c1c1c" stroke="#252525" stroke-width="0.5"/>
+<circle cx="104" cy="229" r="8" fill="#1c1c1c" stroke="#252525" stroke-width="0.5"/>
+<circle cx="132" cy="229" r="8" fill="#1c1c1c" stroke="#252525" stroke-width="0.5"/>
+<circle cx="160" cy="229" r="8" fill="#1c1c1c" stroke="#252525" stroke-width="0.5"/>
+<circle cx="188" cy="229" r="8" fill="#1c1c1c" stroke="#252525" stroke-width="0.5"/>
+<circle cx="216" cy="229" r="8" fill="#1c1c1c" stroke="#252525" stroke-width="0.5"/>
+<circle cx="244" cy="229" r="8" fill="#1c1c1c" stroke="#252525" stroke-width="0.5"/>
+<circle cx="272" cy="229" r="8" fill="#1c1c1c" stroke="#252525" stroke-width="0.5"/>
+<circle cx="300" cy="229" r="8" fill="#1c1c1c" stroke="#252525" stroke-width="0.5"/>
+<circle cx="328" cy="229" r="8" fill="#1c1c1c" stroke="#252525" stroke-width="0.5"/>
+
+<!-- ═══ ROW 6  y=257  — BATTERY 7/10 ═══ -->
+<circle cx="76"  cy="257" r="8" fill="#ff5500" filter="url(#gr)"/>
+<circle cx="104" cy="257" r="8" fill="#ff5500" filter="url(#gr)"/>
+<circle cx="132" cy="257" r="8" fill="#ff5500" filter="url(#gr)"/>
+<circle cx="160" cy="257" r="8" fill="#ff5500" filter="url(#gr)"/>
+<circle cx="188" cy="257" r="8" fill="#ff5500" filter="url(#gr)"/>
+<circle cx="216" cy="257" r="8" fill="#ff5500" filter="url(#gr)"/>
+<circle cx="244" cy="257" r="8" fill="#ff5500" filter="url(#gr)"/>
+<circle cx="272" cy="257" r="8" fill="#261010"/>                     <!-- C7-C9 off -->
+<circle cx="300" cy="257" r="8" fill="#261010"/>
+<circle cx="328" cy="257" r="8" fill="#261010"/>
+
+<!-- ── column labels ── -->
+<text x="76"  y="304" text-anchor="middle" font-size="10" fill="#777">C0</text>
+<text x="104" y="304" text-anchor="middle" font-size="10" fill="#777">C1</text>
+<text x="132" y="304" text-anchor="middle" font-size="10" fill="#777">C2</text>
+<text x="160" y="304" text-anchor="middle" font-size="10" fill="#484848">C3</text>
+<text x="188" y="304" text-anchor="middle" font-size="10" fill="#777">C4</text>
+<text x="216" y="304" text-anchor="middle" font-size="10" fill="#777">C5</text>
+<text x="244" y="304" text-anchor="middle" font-size="10" fill="#777">C6</text>
+<text x="272" y="304" text-anchor="middle" font-size="10" fill="#00a83a">C7</text>
+<text x="300" y="304" text-anchor="middle" font-size="10" fill="#cc6600">C8</text>
+<text x="328" y="304" text-anchor="middle" font-size="10" fill="#00aa55">C9</text>
+
+<!-- ── zone labels ── -->
+<text x="104" y="320" text-anchor="middle" font-size="9" font-weight="bold" fill="#cc4422">DIGIT 1</text>
+<text x="160" y="320" text-anchor="middle" font-size="8"  fill="#424242">GAP</text>
+<text x="216" y="320" text-anchor="middle" font-size="9" font-weight="bold" fill="#cc4422">DIGIT 2</text>
+<text x="272" y="317" text-anchor="middle" font-size="8" font-weight="bold" fill="#00cc44">GPS</text>
+<text x="272" y="328" text-anchor="middle" font-size="7" fill="#009933">★ V3</text>
+<text x="300" y="320" text-anchor="middle" font-size="9" font-weight="bold" fill="#ff8800">TEMP</text>
+<text x="328" y="320" text-anchor="middle" font-size="9" font-weight="bold" fill="#00cc66">SIG</text>
+
+<!-- ── row labels ── -->
+<text x="373" y="93"  font-size="10" fill="#636363">R0</text>
+<text x="373" y="121" font-size="10" fill="#636363">R1</text>
+<text x="373" y="149" font-size="10" fill="#636363">R2</text>
+<text x="373" y="177" font-size="10" fill="#636363">R3</text>
+<text x="373" y="205" font-size="10" fill="#636363">R4</text>
+<text x="373" y="233" font-size="10" fill="#404040">R5</text>
+<text x="373" y="261" font-size="10" fill="#636363">R6</text>
+
+<!-- ── right-side zone annotations ── -->
+<!-- bracket R0–R4 -->
+<line x1="364" y1="89"  x2="396" y2="89"  stroke="#333" stroke-width="1"/>
+<line x1="364" y1="201" x2="396" y2="201" stroke="#333" stroke-width="1"/>
+<line x1="395" y1="89"  x2="395" y2="201" stroke="#404040" stroke-width="1.5"/>
+<line x1="395" y1="145" x2="408" y2="145" stroke="#404040" stroke-width="1.5"/>
+<text x="411" y="106" font-size="10" fill="#cc4422">Digits  R0–R4</text>
+<text x="411" y="120" font-size="10" fill="#00cc44">+ GPS indicator  C7</text>
+<text x="411" y="134" font-size="10" fill="#ff8800">+ Temp bar  C8</text>
+<text x="411" y="148" font-size="10" fill="#00dd66">+ Signal bar  C9</text>
+
+<!-- R5 annotation -->
+<line x1="364" y1="229" x2="408" y2="229" stroke="#333" stroke-width="1"/>
+<text x="411" y="233" font-size="10" fill="#484848">★ Row 5 — unused / reserved</text>
+
+<!-- R6 annotation -->
+<line x1="364" y1="257" x2="408" y2="257" stroke="#333" stroke-width="1"/>
+<text x="411" y="261" font-size="10" fill="#ff5500">Row 6 — battery bar  (7/10)</text>
+
+<!-- ── GPS status legend ── -->
+<rect x="50" y="344" width="660" height="116" rx="5" fill="#131313" stroke="#2b2b2b" stroke-width="1"/>
+<text x="66" y="362" font-size="11" font-weight="bold" fill="#00cc44">GPS STATUS DOT  (C7 R0) — V3 new feature</text>
+<text x="66" y="376" font-size="9" fill="#555">Visible only when gps_en = 1.  Drives haptic alert (5 buzzes) when rejected during autonomous mode.</text>
+
+<!-- State 1: solid on = fix -->
+<circle cx="72"  cy="402" r="7" fill="#00cc44" filter="url(#gg)"/>
+<text x="85"  y="398" font-size="10" font-weight="bold" fill="#ddd">Solid on</text>
+<text x="85"  y="411" font-size="9"  fill="#00cc44">Valid GPS fix</text>
+<text x="85"  y="423" font-size="8"  fill="#555">Ready for RTM / Follow-Me</text>
+
+<!-- State 2: slow blink = acquiring -->
+<circle cx="216" cy="402" r="7" fill="#1a1a1a" stroke="#00cc44" stroke-width="1.5"/>
+<circle cx="234" cy="402" r="7" fill="#00cc44"/>
+<circle cx="252" cy="402" r="7" fill="#1a1a1a" stroke="#00cc44" stroke-width="1.5"/>
+<text x="266" y="398" font-size="10" font-weight="bold" fill="#ddd">Slow blink  (1 s)</text>
+<text x="266" y="411" font-size="9"  fill="#aaa">Acquiring fix</text>
+<text x="266" y="423" font-size="8"  fill="#555">Waiting for satellites</text>
+
+<!-- State 3: fast blink = rejected -->
+<circle cx="436" cy="402" r="7" fill="#00cc44"/>
+<circle cx="452" cy="402" r="7" fill="#1a1a1a" stroke="#00cc44" stroke-width="1"/>
+<circle cx="468" cy="402" r="7" fill="#00cc44"/>
+<circle cx="484" cy="402" r="7" fill="#1a1a1a" stroke="#00cc44" stroke-width="1"/>
+<text x="498" y="398" font-size="10" font-weight="bold" fill="#ddd">Fast blink  (250 ms)</text>
+<text x="498" y="411" font-size="9"  fill="#ff4444">GPS rejected</text>
+<text x="498" y="423" font-size="8"  fill="#555">Spoofing / bad signal alert + haptic buzz</text>
+
+<!-- State 4: off = disabled -->
+<circle cx="72"  cy="443" r="7" fill="#1c1c1c" stroke="#3a3a3a" stroke-width="1"/>
+<text x="85"  y="439" font-size="10" font-weight="bold" fill="#ddd">Off</text>
+<text x="85"  y="452" font-size="9"  fill="#555">GPS disabled  (gps_en = 0)</text>
+
+<!-- ── zone reference table ── -->
+<rect x="50" y="474" width="660" height="142" rx="5" fill="#111" stroke="#282828" stroke-width="1"/>
+<text x="66" y="491" font-size="11" font-weight="bold" fill="#bbb">Zone reference</text>
+<line x1="64" y1="496" x2="702" y2="496" stroke="#252525" stroke-width="1"/>
+
+<!-- table header -->
+<text x="68"  y="509" font-size="9" font-weight="bold" fill="#666">ZONE</text>
+<text x="170" y="509" font-size="9" font-weight="bold" fill="#666">LOCATION</text>
+<text x="330" y="509" font-size="9" font-weight="bold" fill="#666">DESCRIPTION</text>
+<line x1="64" y1="513" x2="702" y2="513" stroke="#222" stroke-width="1"/>
+
+<!-- rows -->
+<text x="68"  y="526" font-size="10" fill="#cc4422">Digits</text>
+<text x="170" y="526" font-size="10" fill="#666">C0-C2, C4-C6  R0-R4</text>
+<text x="330" y="526" font-size="10" fill="#bbb">Two-character display (e.g. "95" = 95% throttle)</text>
+
+<text x="68"  y="540" font-size="10" fill="#444">Gap</text>
+<text x="170" y="540" font-size="10" fill="#666">C3  R0-R4</text>
+<text x="330" y="540" font-size="10" fill="#666">Always dark — separates digits</text>
+
+<text x="68"  y="554" font-size="10" fill="#00cc44">GPS</text>
+<text x="170" y="554" font-size="10" fill="#666">C7 R0 only</text>
+<text x="330" y="554" font-size="10" fill="#bbb">Fix / acquire / reject indicator — NEW in V3</text>
+
+<text x="68"  y="568" font-size="10" fill="#ff8800">Temp</text>
+<text x="170" y="568" font-size="10" fill="#666">C8  R0-R4</text>
+<text x="330" y="568" font-size="10" fill="#bbb">VESC temperature — fills bottom→top</text>
+
+<text x="68"  y="582" font-size="10" fill="#00dd66">Signal</text>
+<text x="170" y="582" font-size="10" fill="#666">C9  R0-R4</text>
+<text x="330" y="582" font-size="10" fill="#bbb">LoRa signal quality — fills bottom→top</text>
+
+<text x="68"  y="596" font-size="10" fill="#484848">Unused</text>
+<text x="170" y="596" font-size="10" fill="#666">R5  all cols</text>
+<text x="330" y="596" font-size="10" fill="#555">Reserved for future indicators</text>
+
+<text x="68"  y="610" font-size="10" fill="#ff5500">Battery</text>
+<text x="170" y="610" font-size="10" fill="#666">R6  C0-C9</text>
+<text x="330" y="610" font-size="10" fill="#bbb">VESC battery level — fills left→right (7/10 shown)</text>
+
+</svg>

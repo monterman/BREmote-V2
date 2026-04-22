@@ -601,7 +601,7 @@ void checkCharger()
     else if(chgstat > 10000 && chgstat < 18000)
     {
       setBrightness(0x01);
-      displayBuffer[1] = 0x1F;
+      displayBuffer[1] = (displayBuffer[1] & 0xFF80) | 0x1F;  // I-1: preserve bit 7 (GPS dot)
       displayBuffer[4] = 0x1F;
       displayBuffer[2] = 0x3F;
       displayBuffer[3] = 0x3F;

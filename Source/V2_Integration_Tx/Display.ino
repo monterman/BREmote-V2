@@ -446,9 +446,9 @@ void advanceChargeAnimation()
     displayBuffer[i] &= 0xFF80;  // preserve bit 7 (C7 = GPS status dot)
   }
 
-  displayBuffer[1] = 0x1F;
+  displayBuffer[1] = (displayBuffer[1] & 0xFF80) | 0x1F;  // I-1: preserve bit 7 (GPS dot)
   displayBuffer[4] = 0x1F;
-  
+
   chargeAnimationPos++;
   if(chargeAnimationPos > 4) chargeAnimationPos = 0;
 
@@ -547,7 +547,7 @@ void unlockAnimation()
 
 // GPS rejection flag — set by future TX Phase A anti-spoofing (GPS.ino) via extern.
 // Not static so GPS.ino can write it when that code is added.
-bool gps_rejected = false;
+volatile bool gps_rejected = false;
 
 void updateBargraphs(void *parameter)
 {

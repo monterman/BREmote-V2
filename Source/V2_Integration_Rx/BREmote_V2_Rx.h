@@ -1,4 +1,5 @@
 // V3 - 2026-04-22 - Added gps_chip_type field to confStruct (GPS module selector); sizeof 108→112; updated defaultConf
+// V3 - 2026-04-22 - Added Phase A GPS anti-spoofing params to confStruct; sizeof 112→128; updated defaultConf
 
 /*
 ** Includes
@@ -124,8 +125,26 @@ struct confStruct {
     // !!!   3) Re-calibrate compass (run 'runcal' command)         !!!
     // ============================================================
     uint16_t gps_chip_type;  // 0=BN-220, 1=BN-880+compass (default), 2=M10 no compass, 3=M10+compass; range 0-3
+
+    // ============================================================
+    // V3 - 2026-04-22 - PHASE A GPS ANTI-SPOOFING PARAMETERS
+    //
+    // These four parameters control the always-on Phase A anti-
+    // spoofing filter in GPS.ino. A reading is rejected if ANY
+    // check fails. After gps_suspect_threshold consecutive
+    // rejections, gps_rejected is set and RTM arming is blocked.
+    //
+    // !!! Adding these fields changes sizeof(confStruct) 112→128. !!!
+    // !!! On first V3.1 boot, SPIFFS resets ALL settings to       !!!
+    // !!! defaults. After flashing: re-pair TX/RX, re-configure   !!!
+    // !!! all settings via web UI, re-run runcal.                 !!!
+    // ============================================================
+    float    gps_max_hdop;            // Max HDOP for a valid fix; range 0.5-5.0; default 2.0; dimensionless
+    float    gps_max_accel_g;         // Max implied acceleration between readings; range 1.0-10.0G; default 3.0G
+    float    gps_max_jump_kmh;        // Max position-implied speed (teleport check); range 50-500 km/h; default 200
+    uint16_t gps_suspect_threshold;   // Consecutive failures before GPS marked rejected; range 1-10; default 3
 };
-static_assert(sizeof(confStruct) == 112, "confStruct size mismatch — expected 112 bytes (V3). Update this assert and SPIFFS migration logic if you change the struct.");  // V3 fix (N-1): pinned to exact size; catches both shrinkage and unexpected growth
+static_assert(sizeof(confStruct) == 128, "confStruct size mismatch — expected 128 bytes (V3.1). Update this assert and SPIFFS migration logic if you change the struct.");  // V3 fix (N-1): pinned to exact size; catches both shrinkage and unexpected growth. 112→128 when Phase A anti-spoofing params added 2026-04-22.
 confStruct usrConf;
   //The orginal confs were:  ##// confStruct defaultConf = {SW_VERSION, 1, 0, 0, 50, 0, 0, 1500, 2000, 1500, 2000, 1000, 10, 0, 1, 0, 0, 0, 0, 0, 25.0f, 10.0f, 10.0f, 5.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0, 1000, 1, 0, {0, 0, 0}, {0, 0, 0}, {'1','2','3','4','5','6','7','8'}};
   // V3 default configuration — tuned for monterman hardware
@@ -136,7 +155,12 @@ confStruct defaultConf = {SW_VERSION, 2, 20, 1, 50, 0, 0, 1000, 2000, 1000, 2000
   0, 0,      // mag_offset_x, mag_offset_y (no compass bias correction by default)
   1.0f, 1.0f, // mag_scale_x, mag_scale_y (unity gain — run 'runcal' to calibrate)
   // V3 - 2026-04-22 - GPS chip type: 1 = BN-880 (GPS+compass). RX default.
-  1           // gps_chip_type (1 = BN-880 + compass; run 'runcal' after first boot)
+  1,          // gps_chip_type (1 = BN-880 + compass; run 'runcal' after first boot)
+  // V3 - 2026-04-22 - Phase A GPS anti-spoofing defaults (see CLAUDE.md Section 11)
+  2.0f,       // gps_max_hdop:           max HDOP for valid reading (range 0.5-5.0)
+  3.0f,       // gps_max_accel_g:        max implied acceleration (range 1.0-10.0 G)
+  200.0f,     // gps_max_jump_kmh:       max teleport-implied speed (range 50-500 km/h)
+  3           // gps_suspect_threshold:  consecutive failures before GPS rejected (range 1-10)
 };
   /// these equal to:  {"version":3,"radio_preset":2,"rf_power":20,"steering_type":1,"steering_influence":50,"steering_inverted":0,"trim":0,"pwm0_min":1000,"pwm0_max":2000,"pwm1_min":1000,"pwm1_max":2000,"failsafe_time":1000,"foil_num_cells":10,"bms_det_active":0,"wet_det_active":1,"dummy_delete_me":0,"data_src":2,"gps_en":1,"followme_mode":2,"kalman_en":1,"boogie_vmax_in_followme_kmh":25,"min_dist_m":10,"followme_smoothing_band_m":10,"foiler_low_speed_kmh":8,"zone_angle_enter_deg":35,"zone_angle_exit_deg":45,"near_diag_offset_deg":45,"ubat_cal":0.0095554,"ubat_offset":0,"tx_gps_stale_timeout_ms":1000,"logger_en":0,"paired":1,"own_address":"46:C9:E0","dest_address":"46:CB:CC","wifi_password":"12345678","mag_offset_x":0,"mag_offset_y":0,"mag_scale_x":1.0,"mag_scale_y":1.0,"gps_chip_type":1}
   ///

@@ -91,28 +91,49 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 7. CURRENT V3 PRIORITIES (in order)
 
-**Priority 1 — COMPLETED 2026-04-21**: TX GPS reading and speed display
+**Priority 1 — COMPLETED 2026-04-21** ✅: TX GPS reading and speed display
 - `speed_src` 2 = km/h, 3 = knots, 5 = mph — all from `usrConf` via SPIFFS
 - Non-blocking BN-220 polling via TinyGPS++ on Serial1; displays "--" when no fix
 - All 6 files compiled clean
 
-**Priority 2**: Fix all 7 critical bugs listed in Section 4
+**Priority 2 — COMPLETED 2026-04-22** ✅: Fix all 7 critical bugs listed in Section 4
+- WDT timeout raised 1000ms → 3000ms (RX Init.ino)
+- VESC mutex: vescMutex created in initLogger(); all vesc.* writes inside 50ms timeout block (RX VESC.ino, Logger.ino)
+- `logging_active` declared volatile (RX Logger.ino)
+- ensureFreeSpace() excludes active log file from deletion candidates (RX Logger.ino)
+- readBCFromSPIFFS() decodedLen < 102 guard added (RX SPIFFS.ino)
+- triggeredReceive + generatePWM stack 2048 → 4096 bytes (RX Init.ino)
+- Wire.begin() removed from scanI2C() (RX System.ino)
 
-**Priority 3**: Phase A GPS Anti-Spoofing (RX standalone, always-on)
-- HDOP < `gps_max_hdop`, acceleration < `gps_max_accel_g` G, teleport < `gps_max_jump_kmh`
-- `gps_suspect_threshold` consecutive failures → GPS rejected
-- ~20 lines added to RX `GPS.ino`, 4 new SPIFFS parameters (see Section 11)
+**Priority 3 — COMPLETED 2026-04-22** ✅: Phase A GPS Anti-Spoofing (RX standalone, always-on)
+- HDOP check, teleport check, acceleration check — `gpsPhaseACheck()` in RX GPS.ino
+- `gps_rejected` flag blocks RTM arming; 4 new SPIFFS params (see Section 11)
+- sizeof(confStruct) 112 → 128 bytes; first flash resets all RX settings to defaults
 
-**Priority 4**: TX→RX 0xF3 meta-packet infrastructure
+**Bonus work — COMPLETED 2026-04-22** ✅:
+- GPS status dot at C7 R0 on TX display: solid=fix, slow blink=acquiring, fast blink=rejected (TX Display.ino)
+- `volatile bool gps_rejected` + charge animation bit-7 fix (TX Display.ino, System.ino)
+- Display reference documentation (docs/display-reference.md, docs/display-reference.svg)
+- Git repository initialized and all V3 work committed to master branch
+
+**Priority 4 — ACTIVE**: Signal drop vibration warning
+- Haptic Pattern A triggered when `sq_graph` drops to 1 (LoRa signal loss warning)
+- TX-side only; uses existing vibration motor infrastructure
+
+**Priority 5**: TX→RX 0xF3 meta-packet infrastructure
 - LoRa protocol extension to carry TX GPS coordinates to RX at 2Hz
 - Required by Phase B anti-spoofing and RTM steering computation
 
-**Priority 5**: Phase B Handshake + RTM (Return-to-Me) + Phase C Anti-Spoofing
-- Phase B: TX↔RX distance plausibility + speed consistency check via 0xF3 (on connect + every 30s)
-- RTM: Full Return-to-Me implementation (see `DESIGN_RETURN_TO_ME.md`)
-- Phase C: RTM-active convergence check + VESC ERPM vs GPS + TX GPS freshness (~15 lines)
+**Priority 6**: Phase B GPS Handshake Anti-Spoofing
+- TX↔RX distance plausibility + speed consistency check via 0xF3 (on connect + every 30s)
+- 2 new RX SPIFFS params: `gps_max_pair_dist_m`, `gps_max_speed_diff_kmh` (see Section 11)
+- Failure → RTM arming blocked until next successful handshake
 
-**Priority 6**: Follow-Me implementation (future)
+**Priority 7**: RTM Return-to-Me implementation
+- Full Return-to-Me state machine (see `DESIGN_RETURN_TO_ME.md`)
+- Phase C anti-spoofing runs during active RTM (convergence + VESC ERPM vs GPS + TX GPS freshness)
+
+**Priority 8**: Follow-Me full implementation (future)
 
 ---
 

@@ -1,3 +1,4 @@
+// V3 - 2026-04-22 - P4: signal-drop haptic warning (Pattern A) when sq_graph drops to 1 while connected
 const char* SYS_DEVICE_LABEL = "TX";
 
 void deepSleep()
@@ -651,6 +652,10 @@ void vibrationTask(void *parameter) {
   uint8_t last_error = 0;
   bool was_connected = true;
   bool bat_warning_sent = false;
+  // Signal-drop warning state (Priority 4)
+  uint8_t last_sq   = 0;     // sq_graph reading from previous loop iteration
+  bool    sq_warned  = false; // true after Pattern A fired; cleared when signal recovers
+  bool    last_con   = true;  // connection state from previous iteration
 
   while (1) {
     // --- 1. MONITOR SYSTEM STATES ---
@@ -661,6 +666,36 @@ void vibrationTask(void *parameter) {
       current_vib_pattern = 2; // Pattern B: 5 Short (Urgent!)
     }
     was_connected = is_connected;
+
+    // Check for Weak LoRa Signal (sq_graph drops to 1 while connected)
+    // sq_graph == 1 means one bar of signal left — warn before full failsafe (sq_graph == 0).
+    // Guard: only while connected; during failsafe, updateBargraphs() toggles sq_graph 0↔1
+    // as a display artifact — that state is already covered by Pattern B above.
+    // Re-arm when signal recovers above 1 so the warning can fire again on the next drop.
+    {
+      uint8_t cur_sq = sq_graph; // snapshot volatile once
+      if (is_connected) {
+        if (!last_con) {
+          // Just reconnected — seed last_sq to suppress a spurious edge on reconnect
+          last_sq   = cur_sq;
+          sq_warned = false;
+        } else if (last_sq > 1 && cur_sq == 1 && !sq_warned) {
+          // Signal just dropped to 1 bar — fire Pattern A if nothing else is playing
+          if (current_vib_pattern == 0) {
+            current_vib_pattern = 1; // Pattern A: 2 Short (weak signal warning)
+          }
+          sq_warned = true;
+        } else if (cur_sq > 1) {
+          // Signal recovered — allow warning to fire again on next drop
+          sq_warned = false;
+        }
+        last_sq = cur_sq;
+      } else {
+        // In failsafe — reset so warning re-arms on reconnect
+        sq_warned = false;
+      }
+      last_con = is_connected;
+    }
 
     // Check for Critical Errors (Like E71 Water Ingress)
     if (remote_error != last_error) {

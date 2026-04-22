@@ -105,7 +105,7 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
   </div>
 
 <script>
-// 35 Parameters for RX
+// 40 Parameters for RX
 const groupOrder=["Radio","Steering","PWM","Motor & Safety","Sensors","Battery","GPS & Follow-Me","Follow-Me Tuning","Logging","System"];
 const fields=[
 {key:"radio_preset",label:"Radio Preset",description:"Select your region",group:"Radio",type:"enum",def:1,min:1,max:3,options:[{v:1,l:"EU868"},{v:2,l:"US/AU915"},{v:3,l:"Reserved"}]},
@@ -134,6 +134,10 @@ const fields=[
 {key:"followme_mode",label:"Follow-Me Mode",description:"Follow-me positioning mode",group:"GPS & Follow-Me",type:"enum",def:0,min:0,max:3,options:[{v:0,l:"Disabled"},{v:1,l:"Behind"},{v:2,l:"Near Right"},{v:3,l:"Near Left"}]},
 {key:"kalman_en",label:"Kalman Filter",description:"Kalman runtime enable",group:"GPS & Follow-Me",type:"bool",def:0,min:0,max:1},
 {key:"tx_gps_stale_timeout_ms",label:"TX GPS Stale Timeout",description:"TX GPS data stale timeout",group:"GPS & Follow-Me",type:"int",def:1000,min:0,max:65535,unit:"ms"},
+{key:"gps_max_hdop",label:"GPS Max HDOP",description:"Maximum HDOP for a valid GPS fix — lower is stricter. Range 0.5-5.0, default 2.0. Readings above this threshold are rejected.",group:"GPS & Follow-Me",type:"float",def:2.0,min:0.5,max:5.0,step:0.1},
+{key:"gps_max_accel_g",label:"GPS Max Acceleration",description:"Maximum implied acceleration between consecutive GPS readings (G-force). Range 1.0-10.0 G, default 3.0 G. Higher-than-max implies a spoofed jump.",group:"GPS & Follow-Me",type:"float",def:3.0,min:1.0,max:10.0,step:0.1,unit:"G"},
+{key:"gps_max_jump_kmh",label:"GPS Max Teleport Speed",description:"Maximum speed implied by position change between readings. Range 50-500 km/h, default 200 km/h. Larger implies GPS teleport.",group:"GPS & Follow-Me",type:"float",def:200.0,min:50.0,max:500.0,step:1.0,unit:"km/h"},
+{key:"gps_suspect_threshold",label:"GPS Suspect Threshold",description:"Consecutive anti-spoofing failures before GPS is marked rejected. Range 1-10, default 3. While rejected, RTM arming is blocked.",group:"GPS & Follow-Me",type:"int",def:3,min:1,max:10},
 {key:"boogie_vmax_in_followme_kmh",label:"Boogie V-Max",description:"Max boogie speed in follow-me mode",group:"Follow-Me Tuning",type:"float",def:25.0,min:0,max:100,step:0.1,unit:"km/h"},
 {key:"min_dist_m",label:"Min Distance",description:"Minimum allowed distance to foiler",group:"Follow-Me Tuning",type:"float",def:10.0,min:0,max:1000,step:0.1,unit:"m"},
 {key:"followme_smoothing_band_m",label:"Smoothing Band",description:"Smoothing band above min distance",group:"Follow-Me Tuning",type:"float",def:10.0,min:0,max:1000,step:0.1,unit:"m"},

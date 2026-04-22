@@ -1,6 +1,6 @@
 // V3 - 2026-04-21 - Added getTxGPSLoop() call in loop() and forward declarations for TX GPS functions
 #include "BREmote_V2_Tx.h"
-// --- AFM-Gemini: Comprehensive Function Prototypes to bypass Arduino IDE bug ---
+// Function prototypes — forward declarations to resolve Arduino IDE ordering issues
 // Init & Setup Functions
 void initHardware();
 void initStorage();
@@ -45,7 +45,7 @@ void sendData(void *parameter);
 void waitForTelemetry(void *parameter);
 void updateBargraphs(void *parameter);
 void measBufCalc(void *parameter);
-void vibrationTask(void *parameter);   // // AFM-Gemini: These new one is vibration motor and patterns
+void vibrationTask(void *parameter);   // haptic feedback task — drives vibration motor patterns
 // -----------------------------------------------------------------------
 
 SX1262 radio = new Module(P_LORA_NSS, P_LORA_DIO, P_LORA_RST, P_LORA_BUSY);
@@ -103,7 +103,6 @@ void setup()
 
 void loop()
 {
-  // esp_task_wdt_reset(); // AFM-Gemini: Removed
   if(config_version_error)
   {
     scroll3Digits(LET_E, 5, LET_V, 200);

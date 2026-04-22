@@ -45,13 +45,13 @@ void initTasks()
   xTaskCreatePinnedToCore(waitForTelemetry, "wait_for_telem_triggered", 2048, NULL, 4, &triggeredWaitForTelemetryHandle, 0);
   xTaskCreatePinnedToCore(measBufCalc, "wait_for_telem_triggered_10ms", 2048, NULL, 6, &measBufCalcHandle, 0);
   xTaskCreatePinnedToCore(updateBargraphs, "wait_for_telem_triggered_200ms", 2048, NULL, 6, &updateBargraphsHandle, 0);
-  xTaskCreatePinnedToCore(vibrationTask, "Vibration_Task_BG", 1024, NULL, 3, NULL, 0);  // // AFM-Gemini: added this new task for vibration motor-patterns
+  xTaskCreatePinnedToCore(vibrationTask, "Vibration_Task_BG", 1024, NULL, 3, NULL, 0);
 }
 
 void initWatchdog()
 {
-  // AFM-Gemini: Watchdog is now handled natively by ESP32 Core.
-  // Custom initialization removed to prevent 1000ms panic reboots during TX unlock WiFi shutdown.
+  // V3: Watchdog handled natively by Arduino ESP32 Core.
+  // Custom WDT init removed to prevent 1000ms panic reboots during TX unlock / WiFi shutdown.
   Serial.println("WDT: Handled by native Arduino Core");
 }
 

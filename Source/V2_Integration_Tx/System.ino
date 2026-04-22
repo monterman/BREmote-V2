@@ -645,7 +645,7 @@ void checkCharger()
   setBrightness(0x0F);
 }
 
-volatile uint8_t current_vib_pattern = 0;    // // AFM-Gemini: Setup all vibration paters 3 of them: A,B,C
+volatile uint8_t current_vib_pattern = 0;  // active haptic pattern: 0=none, 1=connection lost, 2=bat warning, 3=error
 
 void vibrationTask(void *parameter) {
   uint8_t last_error = 0;

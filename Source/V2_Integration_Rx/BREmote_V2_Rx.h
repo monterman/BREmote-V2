@@ -128,7 +128,7 @@ struct confStruct {
 static_assert(sizeof(confStruct) == 112, "confStruct size mismatch — expected 112 bytes (V3). Update this assert and SPIFFS migration logic if you change the struct.");  // V3 fix (N-1): pinned to exact size; catches both shrinkage and unexpected growth
 confStruct usrConf;
   //The orginal confs were:  ##// confStruct defaultConf = {SW_VERSION, 1, 0, 0, 50, 0, 0, 1500, 2000, 1500, 2000, 1000, 10, 0, 1, 0, 0, 0, 0, 0, 25.0f, 10.0f, 10.0f, 5.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0, 1000, 1, 0, {0, 0, 0}, {0, 0, 0}, {'1','2','3','4','5','6','7','8'}};
-  //My AFM confs new default SPIFFS. 
+  // V3 default configuration — tuned for monterman hardware
 confStruct defaultConf = {SW_VERSION, 2, 20, 1, 50, 0, 0, 1000, 2000, 1000, 2000, 1000, 10, 0, 1, 0, 2, 1, 2, 1, 25.0f, 10.0f, 10.0f, 8.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0f, 1000, 0, 1, {0x46, 0xC9, 0xE0}, {0x46, 0xCB, 0xCC}, {'1','2','3','4','5','6','7','8'},
   // V3 - 2026-04-22 - Compass calibration fields (previously implicit zeros).
   // Made explicit here so gps_chip_type can follow. Safe neutral values:
@@ -159,7 +159,7 @@ volatile bool config_version_error = false;
 
 #include "../Common/SPIFFSEngine.h"
 
-// --- AFM: Global VESC Logger Struct ---
+// --- Global VESC Logger Struct ---
 struct vesc_struct {
   int16_t fetTemp = 0;
   int32_t motCur = 0;
@@ -262,7 +262,7 @@ uint8_t percent_last_val = 0xFF;
 uint8_t percent_last_thr = 1;
 unsigned long percent_last_thr_change = 0;
 
-// AFM: Added ERPM to mask, payload length is now 23!
+// V3: ERPM added to VESC selective-get mask; payload length is 23 bytes
 #define VESC_MORE_VALUES
 #ifdef VESC_MORE_VALUES
   #define VESC_PACK_LEN 23

@@ -41,7 +41,6 @@ void measBufCalc(void *parameter)
 
   while (1) 
   {
-    // esp_task_wdt_reset(); // AFM-Gemini: Removed
     if(isHallActivityEnabled())
     {
       measureAndBuffer();

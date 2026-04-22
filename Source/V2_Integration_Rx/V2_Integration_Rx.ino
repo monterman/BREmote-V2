@@ -43,7 +43,7 @@ void loop()
 #endif
   checkSerial();
   
-  // ---> AFM: Process Logger LED and Button safely in the main thread! <---
+  // Process Logger LED and button in main thread (AW9523 I2C is not ISR-safe)
   loggerLoop();
   
   if(millis()-loop_timer > 1000)

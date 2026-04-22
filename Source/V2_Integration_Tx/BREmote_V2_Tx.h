@@ -121,7 +121,7 @@ struct confStruct {
 
 static_assert(sizeof(confStruct) == 96, "confStruct size mismatch — expected 96 bytes (V3). Update this assert and SPIFFS migration logic if you change the struct.");  // V3 fix (N-1): pinned to exact size; catches both shrinkage and unexpected growth
 confStruct usrConf;
-confStruct defaultConf = {    //AFM EDITED to match my own Settings. 
+confStruct defaultConf = {  // V3 default configuration — tuned for monterman hardware
   SW_VERSION,    // version (3)
   2,             // radio_preset (US 915MHz)
   20,            // rf_power (20)
@@ -129,9 +129,9 @@ confStruct defaultConf = {    //AFM EDITED to match my own Settings.
   100,           // cal_offset
   15195,         // thr_idle
   11909,         // thr_pull
-  12310,         // tog_left (AFM-Swapped)
+  12310,         // tog_left (swapped vs factory default — matches monterman hardware)
   13806,         // tog_mid
-  14908,         // tog_right  (AFM-Swapped)
+  14908,         // tog_right (swapped vs factory default — matches monterman hardware)
   500,           // tog_deadzone
   30,            // tog_diff
   200,           // tog_block_time   (wait to finish steering before Dynamic Throttle /was 500 5 secs)

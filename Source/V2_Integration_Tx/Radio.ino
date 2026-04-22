@@ -217,7 +217,6 @@ void sendData(void *parameter)
 
   while(1)
   {
-    // esp_task_wdt_reset(); // AFM-Gemini: Removed
     if(usrConf.paired && isRadioActivityEnabled())
     {
       // Dest1, Dest2, Dest3, THR, Steer, CRC8
@@ -297,9 +296,7 @@ void waitForTelemetry(void *parameter)
             ptr[rcvArray[3]] = rcvArray[4];
           }
 
-          // --- AFM-Gemini: Speed Conversion Logic ---
-          // Intercept the speed value (which arrives from the RX in km/h) and convert it 
-          // based on the user's Web Config selection.
+          // Speed conversion: RX sends speed in km/h; convert to the unit selected in web config.
           if (rcvArray[3] == 2 && telemetry.foil_speed != 0xFF && telemetry.foil_speed != 99) 
           {
               if (usrConf.speed_src == 1) {

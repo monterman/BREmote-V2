@@ -431,7 +431,7 @@ static void webCfgHandleImport()
   webCfgSendJson(200, response);
 }
 
-// --- AFM: Log Management Endpoints ---
+// --- Log Management Endpoints ---
 #ifdef ENABLE_WEB_LOG_DOWNLOAD
 static void webCfgHandleListLogs()
 {

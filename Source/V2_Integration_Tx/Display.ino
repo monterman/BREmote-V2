@@ -396,12 +396,12 @@ void scroll4Digits(uint8_t dig1, uint8_t dig2, uint8_t dig3, uint8_t dig4, int d
 
 void bootAnimation()
 {
-  pinMode(P_MOT, OUTPUT);      // // AFM-Gemini:<-- ADD THIS: Prepare the pin
-  digitalWrite(P_MOT, HIGH);   // Motor ON // AFM-Gemini:<-- ADD THIS: Turn motor ON
-  
+  pinMode(P_MOT, OUTPUT);     // configure haptic motor pin for output
+  digitalWrite(P_MOT, HIGH); // haptic motor ON — boot notification pulse
+
   scroll4Digits(LET_B, 0, 0, LET_T, 100);
-    
-  digitalWrite(P_MOT, LOW);    // Motor OFF // AFM-Gemini:<-- ADD THIS: Turn motor OFF
+
+  digitalWrite(P_MOT, LOW);  // haptic motor OFF
   scroll4Digits(LET_B, 0, 0, LET_T, 100);
 
   displayDigits(LET_V,LET_I);
@@ -550,7 +550,6 @@ void updateBargraphs(void *parameter)
   const TickType_t xFrequency = pdMS_TO_TICKS(200);
   while (1) 
   {
-    // esp_task_wdt_reset(); // AFM-Gemini: Removed
     if(millis()-last_packet < 1000)
     {
       if(telemetry.link_quality)

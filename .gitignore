@@ -1,10 +1,21 @@
-*.s#*
-*.b#*
-*.br*
-*.md
-!README.md
-*.txt
-/Electronics/openfoil
-/Releases
-/Inofficial__pycache__/
-.planning/
+# Arduino build outputs
+**/build/
+*.bin
+*.elf
+*.map
+*.merged.bin
+*.bootloader.bin
+*.partitions.bin
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Binary folders to exclude
+*BIN FILE*
+*latest wi compass working*
+*latest*working*

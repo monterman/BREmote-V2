@@ -1,0 +1,7 @@
+Changelog Rx
+
+V2.1:
+- Initial version
+V2.2:
+- Change supply for CH340K to before USB diode
+- Add SDA and SCL pads

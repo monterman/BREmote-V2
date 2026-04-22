@@ -1,0 +1,11 @@
+Changelog Display Board
+
+V2.3:
+- Initial version after decision to have HT-CT62 on top board
+V2.4:
+- Swapped Rx and Tx Lines on CH340 (bottom board)
+- Moved vias underneath HT-CT62 so they align with pads
+- Added a GND via to bottom board
+- Moved Pin1-whiteprint of 2.4GHz antenna to correct place
+- Add version identifier
+- Change antenna network

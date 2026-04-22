@@ -1,4 +1,5 @@
 // V3 - 2026-04-22 - Added gps_chip_type branch: type 0/1=BN-220/BN-880 (9600→115200, 5Hz), type 2/3=M10 (115200 direct, 10Hz, all constellations)
+// V3 - 2026-04-22 - Added Phase A GPS anti-spoofing: HDOP check, teleport check, acceleration check (gpsPhaseACheck)
 
 // ============================================================
 // FIELD SERVICE NOTE
@@ -11,9 +12,113 @@
 //   2) Re-configure all settings via the web UI
 //   3) Re-calibrate compass via the 'runcal' serial command
 //
+// V3 - 2026-04-22: sizeof(confStruct) changed from 112 to 128
+// bytes (Phase A anti-spoofing params added). On the first
+// flash after this change, SPIFFS will again detect the size
+// mismatch and reset ALL settings to defaults. After flashing:
+//   1) Re-pair TX and RX
+//   2) Re-configure all settings via the web UI
+//   3) Re-calibrate compass via the 'runcal' serial command
+//   4) Verify anti-spoofing defaults in "GPS & Follow-Me"
+//      section of the web UI (HDOP 2.0, Accel 3.0G, Jump 200
+//      km/h, Threshold 3) — adjust if needed.
+//
 // Also verify that gps_chip_type in the web config matches
 // the physical GPS module connected to this board.
 // ============================================================
+
+// ============================================================
+// PHASE A GPS ANTI-SPOOFING STATE
+// File-scope variables that persist between getGPSLoop() calls.
+// These are NOT static so the RTM state machine (GPS.ino future)
+// can read gps_rejected without an accessor function.
+// ============================================================
+uint8_t       gps_suspect_count  = 0;     // consecutive suspicious readings; resets on any clean reading
+bool          gps_rejected       = false; // true = GPS marked rejected; blocks RTM arming
+double        gps_last_lat       = 0.0;   // last accepted latitude (degrees)
+double        gps_last_lng       = 0.0;   // last accepted longitude (degrees)
+float         gps_last_speed_kmh = 0.0;   // last accepted speed (km/h)
+unsigned long gps_last_ms        = 0;     // millis() timestamp of last accepted reading
+
+// ============================================================
+// gpsPhaseACheck - Phase A GPS anti-spoofing validation
+// ============================================================
+//
+// What it does:
+//   Validates one GPS reading against three independent checks:
+//
+//   1) HDOP check: reject if HDOP > usrConf.gps_max_hdop
+//      (poor satellite geometry = untrustworthy position)
+//
+//   2) Teleport check: reject if the position change since the
+//      last accepted reading implies travel faster than
+//      usrConf.gps_max_jump_kmh km/h (physically impossible)
+//
+//   3) Acceleration check: reject if the speed change since the
+//      last accepted reading implies acceleration >
+//      usrConf.gps_max_accel_g G (physically impossible for a
+//      ground vehicle)
+//
+//   Checks 2 and 3 are skipped on the very first accepted
+//   reading (gps_last_ms == 0) because there is no history to
+//   compare against.
+//
+// Inputs:
+//   cur_lat, cur_lng - current GPS position (degrees, from TinyGPS++)
+//   cur_speed_kmh    - current GPS speed (km/h, from gps.speed.kmph())
+//
+// Returns:
+//   true  = all checks passed (safe to accept this reading)
+//   false = at least one check failed (treat as suspicious)
+//
+// Side effects:
+//   Reads module-level state: gps_last_lat, gps_last_lng,
+//   gps_last_ms, gps_last_speed_kmh.
+//   Reads usrConf.gps_max_hdop, gps_max_jump_kmh, gps_max_accel_g.
+//   Prints diagnostics to Serial when a check fails.
+// ============================================================
+static bool gpsPhaseACheck(double cur_lat, double cur_lng, float cur_speed_kmh) {
+  // ---- Check 1: HDOP ----
+  // TinyGPS++ gps.hdop.value() returns HDOP * 100 as an integer.
+  // Divide by 100.0 to get the real HDOP float for comparison.
+  if (gps.hdop.isValid() && (float)gps.hdop.value() / 100.0f > usrConf.gps_max_hdop) {
+    Serial.printf("GPS [PhA] HDOP %.1f exceeds max %.1f — reading rejected\n",
+                  (float)gps.hdop.value() / 100.0f, usrConf.gps_max_hdop);
+    return false;
+  }
+
+  // ---- Checks 2 & 3: require at least one prior accepted reading ----
+  if (gps_last_ms > 0) {
+    float dt_s = (float)(millis() - gps_last_ms) / 1000.0f;
+
+    // Guard against near-zero dt (duplicate call, millis() wrap) to avoid division by zero.
+    if (dt_s > 0.05f) {
+
+      // ---- Check 2: teleport ----
+      // TinyGPSPlus::distanceBetween() returns metres between two lat/lng pairs.
+      float dist_m      = (float)TinyGPSPlus::distanceBetween(
+                                   gps_last_lat, gps_last_lng, cur_lat, cur_lng);
+      float implied_kmh = (dist_m / dt_s) * 3.6f;
+      if (implied_kmh > usrConf.gps_max_jump_kmh) {
+        Serial.printf("GPS [PhA] Teleport %.0f km/h exceeds max %.0f km/h — reading rejected\n",
+                      implied_kmh, usrConf.gps_max_jump_kmh);
+        return false;
+      }
+
+      // ---- Check 3: acceleration ----
+      // Convert speed delta from km/h to m/s, then divide by dt to get m/s², then by 9.81 for G.
+      float delta_v_ms = fabsf(cur_speed_kmh - gps_last_speed_kmh) / 3.6f;
+      float accel_g    = (delta_v_ms / dt_s) / 9.81f;
+      if (accel_g > usrConf.gps_max_accel_g) {
+        Serial.printf("GPS [PhA] Accel %.2f G exceeds max %.2f G — reading rejected\n",
+                      accel_g, usrConf.gps_max_accel_g);
+        return false;
+      }
+    }
+  }
+
+  return true;  // all checks passed
+}
 
 // ============================================================
 // configureGPS - Initialize GPS hardware on Serial1 (UART1)
@@ -213,28 +318,37 @@ void getGPSLoop()
     }
   }
 
-  if (!newData)
-  {
-    telemetry.foil_speed = 0xFF;
+  if (!newData || !gps.location.isValid() || !gps.speed.isUpdated()) {
+    // No valid fix or no updated speed — not a spoof event, just no usable data.
+    telemetry.foil_speed = 0xFF;  // 0xFF = no data (V3 fix N-4: 99 collides with real speed)
+  } else {
+    double cur_lat   = gps.location.lat();
+    double cur_lng   = gps.location.lng();
+    float  cur_speed = (float)gps.speed.kmph();
+
+    if (gpsPhaseACheck(cur_lat, cur_lng, cur_speed)) {
+      // Reading passed all Phase A checks — accept it.
+      // Reset suspicion state and update the "last known good" snapshot.
+      gps_suspect_count  = 0;
+      gps_rejected       = false;
+      gps_last_lat       = cur_lat;
+      gps_last_lng       = cur_lng;
+      gps_last_speed_kmh = cur_speed;
+      gps_last_ms        = millis();
+      // Cap at 254: 0xFF (255) is the reserved "no data" sentinel.
+      telemetry.foil_speed = (cur_speed >= 254.0f) ? 254 : (uint8_t)cur_speed;
+    } else {
+      // Reading failed at least one Phase A check — track consecutive failures.
+      if (gps_suspect_count < 255) gps_suspect_count++;
+      if (gps_suspect_count >= usrConf.gps_suspect_threshold && !gps_rejected) {
+        gps_rejected = true;
+        Serial.printf("GPS [PhA] REJECTED after %u consecutive failures — RTM arming blocked\n",
+                      (unsigned)gps_suspect_count);
+      }
+      // Do not expose spoofed/suspicious data via telemetry.
+      telemetry.foil_speed = 0xFF;
+    }
   }
-  else if(!gps.speed.isUpdated())
-  {
-    telemetry.foil_speed = 0xFF;  // V3 fix (N-4): 99 km/h collides with real vehicle speed; 0xFF is the established "no data" sentinel (CLAUDE.md Section 5)
-  }
-  else
-  {
-    telemetry.foil_speed = (uint8_t)gps.speed.kmph();
-  }
-/*
-  // If we received valid GPS data
-  if (newData && gps.speed.isUpdated()) 
-  {
-    telemetry.foil_speed = (uint8_t)gps.speed.kmph();
-  } 
-  else 
-  {
-    //telemetry.foil_speed = 0xFF;
-  }*/
 }
 
 // Function to print satellite information

@@ -35,7 +35,7 @@ bool getValuesSelective(Stream* interface)
   #define MotCurrent 2
   #define BatCurrent 3
   #define Duty 6
-  #define ERPM 7 // AFM: Added ERPM
+  #define ERPM 7
   
   //Byte 3:
   #define BatVolt 0
@@ -58,25 +58,24 @@ bool getValuesSelective(Stream* interface)
   {
     int32_t cnt = 5;
 
-    // V3 fix (Bug 2): take vescMutex before writing vesc struct fields.
-    // convertToLogData() on Core 0 (loggerTask) reads these same fields.
-    // Hold time is 5–7 integer assignments (<1µs) — negligible latency for Core 1.
+    // V3 fix (Bug 2): guard ALL vesc struct writes inside the mutex block.
+    // convertToLogData() on Core 0 (loggerTask) reads these same fields simultaneously.
+    // If the take times out (50ms), skip this packet's struct update entirely —
+    // one missed update is safer than a torn cross-core write.
     extern SemaphoreHandle_t vescMutex;
-    bool vescMutexTaken = vescMutex && xSemaphoreTake(vescMutex, pdMS_TO_TICKS(10)) == pdTRUE;
+    if (vescMutex && xSemaphoreTake(vescMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+      vesc.fetTemp = buffer_get_int16(message, &cnt);
 
-    // Save to the global vesc struct for the logger!
-    vesc.fetTemp = buffer_get_int16(message, &cnt);
+      #ifdef VESC_MORE_VALUES
+        vesc.motCur = buffer_get_int32(message, &cnt);
+        vesc.batCur = buffer_get_int32(message, &cnt);
+        vesc.duty   = buffer_get_int16(message, &cnt);
+        vesc.erpm   = buffer_get_int32(message, &cnt);
+      #endif
 
-    #ifdef VESC_MORE_VALUES
-      vesc.motCur = buffer_get_int32(message, &cnt);
-      vesc.batCur = buffer_get_int32(message, &cnt);
-      vesc.duty   = buffer_get_int16(message, &cnt);
-      vesc.erpm   = buffer_get_int32(message, &cnt); // AFM: Read ERPM!
-    #endif
-
-    vesc.batVolt = buffer_get_int16(message, &cnt);
-
-    if (vescMutexTaken) xSemaphoreGive(vescMutex);  // release before any derived calculations
+      vesc.batVolt = buffer_get_int16(message, &cnt);
+      xSemaphoreGive(vescMutex);
+    }
 
     #ifdef VESC_MORE_VALUES
       // Power calculation uses vesc.batCur/erpm which were just written on this same core — no race here

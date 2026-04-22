@@ -152,16 +152,15 @@ void blinkBind(int num)
   }
 }
 
-// --- AFM: I2C Scanner Function ---
+// ===== I2C Scanner Function =====
 void scanI2C() {
   byte error, address;
   int nDevices = 0;
 
-  // V3 fix (Bug 7): use the correct RX I2C pin defines from BREmote_V2_Rx.h (SDA=2, SCL=1).
-  // The old hardcoded Wire.begin(20, 19) reinitialised the I2C peripheral to the wrong pins,
-  // breaking every subsequent AW9523 call (LED, buttons, PWM enables) until reboot.
-  Serial.printf("Scanning I2C bus on SDA:%d, SCL:%d...\n", P_I2C_SDA, P_I2C_SCL);
-  Wire.begin(P_I2C_SDA, P_I2C_SCL);
+  // V3 fix (Bug 7): do not call Wire.begin() here. Wire was already initialised to the
+  // correct pins (SDA=%d SCL=%d) in initHardware(). Re-initialising mid-session resets
+  // the I2C peripheral and can glitch an in-progress AW9523 transaction.
+  Serial.printf("Scanning I2C bus (initialized on SDA:%d SCL:%d)...\n", P_I2C_SDA, P_I2C_SCL);
 
   for(address = 1; address < 127; address++ ) {
     Wire.beginTransmission(address);
@@ -226,7 +225,7 @@ void cmdWifiStop(const String& params) {
 #endif
 }
 
-// --- AFM: New Logger Serial Wrappers ---
+// ===== Logger Serial Command Handlers =====
 void cmdStartLog(const String& params) { startLog(); }
 void cmdStopLog(const String& params) { stopLog(); }
 void cmdListLogs(const String& params) { listLogFiles(); }
@@ -256,7 +255,7 @@ void cmdLogRate(const String& params) {
   }
 }
 
-// --- AFM: Compass Serial Wrappers ---
+// ===== Compass Serial Command Handlers =====
 void cmdScanI2C(const String& params) { scanI2C(); }
 void cmdPrintCompass(const String& params) { serPrintCompass(); }
 void cmdCompassCal(const String& params) { runCompassCalibration(); }
@@ -402,6 +401,7 @@ void testPercent()
 {
   while(1)
   {
+    esp_task_wdt_reset(); // V3 fix (I3): prevent WDT panic during blocking debug command
     if (Serial.available()) {
       String input = Serial.readStringUntil('\n'); // read until newline
       input.trim(); // remove spaces and newlines
@@ -427,6 +427,7 @@ void testPercent()
 
 void readTelemetryUntilQuit() {
     while (true) {
+        esp_task_wdt_reset(); // V3 fix (I3): prevent WDT panic during blocking debug command
         if (Serial.available()) {
             String input = Serial.readStringUntil('\n'); // read line
             input.trim(); // remove CR/LF/whitespace
@@ -474,6 +475,7 @@ void serPrintBat()
 {
   while (true)
   {
+    esp_task_wdt_reset(); // V3 fix (I3): prevent WDT panic during blocking debug command
     if(checkSerialQuit()) break;
     if(usrConf.data_src == 1)
     {
@@ -550,6 +552,7 @@ void serPrintTasks()
 {
   while (true)
   {
+    esp_task_wdt_reset(); // V3 fix (I3): prevent WDT panic during blocking debug command
     if(checkSerialQuit()) break;
 
     Serial.println("\n=== Task Stack Usage ===");
@@ -568,6 +571,7 @@ void serPrintRSSI()
 {
   while (true)
   {
+    esp_task_wdt_reset(); // V3 fix (I3): prevent WDT panic during blocking debug command
     if(checkSerialQuit()) break;
     // Print the variable
     if(millis() - last_packet < usrConf.failsafe_time)
@@ -590,6 +594,7 @@ void serPrintPWM()
 {
   while (true)
   {
+    esp_task_wdt_reset(); // V3 fix (I3): prevent WDT panic during blocking debug command
     if(checkSerialQuit()) break;
     // Print the variable
     Serial.print(PWM0_time);
@@ -603,6 +608,7 @@ void serPrintReceived()
 {
   while (true)
   {
+    esp_task_wdt_reset(); // V3 fix (I3): prevent WDT panic during blocking debug command
     if(checkSerialQuit()) break;
     // Print received throttle/steering in JSON format for test correlation
     Serial.print("{\"throttle\":");

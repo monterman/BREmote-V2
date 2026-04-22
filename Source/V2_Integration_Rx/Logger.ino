@@ -104,7 +104,10 @@ VescLogData convertToLogData() {
     xSemaphoreGive(vescMutex);
   }
 
-  // gps.* is read and written on Core 1 only (TinyGPS++ fed by getGPSLoop in loop task) — no cross-core race
+  // gps.* is written by Core 1 (getGPSLoop feeds TinyGPS++ in the main loop task) and read here on Core 0.
+  // This IS a cross-core access. The race is benign: GPS updates at ~1Hz and log writes at 1Hz,
+  // so collisions are rare and the worst case is one torn log record. TinyGPS++ is not thread-safe;
+  // a gpsMutex would be the strict fix if every record must be clean.
   data.speed     = (uint16_t)(gps.speed.kmph() * 10);
   data.latitude  = gps.location.lat();
   data.longitude = gps.location.lng();

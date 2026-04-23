@@ -116,9 +116,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Display reference documentation (docs/display-reference.md, docs/display-reference.svg)
 - Git repository initialized and all V3 work committed to master branch
 
-**Priority 4 — ACTIVE**: Signal drop vibration warning
-- Haptic Pattern A triggered when `sq_graph` drops to 1 (LoRa signal loss warning)
-- TX-side only; uses existing vibration motor infrastructure
+**Priority 4 — COMPLETED 2026-04-22** ✅: Signal drop vibration warning
+- Haptic Pattern A (2 Short) triggered when `sq_graph` drops to 1 while connected (TX System.ino)
+- Edge-detected; re-arms on signal recovery; failsafe blink cycle excluded via `is_connected` gate
 
 **Priority 5**: TX→RX 0xF3 meta-packet infrastructure
 - LoRa protocol extension to carry TX GPS coordinates to RX at 2Hz

@@ -1,3 +1,4 @@
+// V3 - 2026-04-24 - Added 0xF3 GPS meta-packet burst at 2Hz in sendData(); THR capped at 0xF2
 void setRadioActivityEnabled(bool enabled)
 {
   radio_activity_enabled = enabled;
@@ -210,50 +211,129 @@ void checkPairing()
 }
 
 
+// V3 - 2026-04-24 - Added 0xF3 GPS meta-packet burst at 2Hz for Phase B anti-spoofing.
+//                   THR capped at 0xF2: 0xF3 is reserved as the GPS meta-packet marker.
 void sendData(void *parameter)
 {
   TickType_t xLastWakeTime = xTaskGetTickCount();
   const TickType_t xFrequency = pdMS_TO_TICKS(100);
 
+  // GPS meta-packet cycle counter. Counts 0→4, resets to 0.
+  // At cycle 0 (every 5 × 100ms = 500ms = 2Hz): attempt to send GPS meta-packet.
+  static uint8_t gps_cycle = 0;
+
   while(1)
   {
     if(usrConf.paired && isRadioActivityEnabled())
     {
-      // Dest1, Dest2, Dest3, THR, Steer, CRC8
-      uint8_t sendArray[6];
+      gps_cycle++;
+      if (gps_cycle >= 5) gps_cycle = 0;
 
-      memcpy(sendArray, usrConf.dest_address, 3);
+      // Send GPS meta-packet when: counter reached 0, GPS is enabled in config,
+      // and TinyGPS++ reports a valid fix that is not stale.
+      bool send_gps_meta = (gps_cycle == 0)
+                        && usrConf.gps_en
+                        && gps_tx.location.isValid()
+                        && gps_tx.location.age() < usrConf.tx_gps_stale_timeout_ms;
 
-      if(system_locked)
+      if (send_gps_meta)
       {
-        sendArray[3] = 0;
-        sendArray[4] = 127;
+        // ---------------------------------------------------------------
+        // GPS meta-packet burst (replaces one control packet per 500ms)
+        //
+        // Step 1: 6-byte announcement.
+        // Primes RX to switch radio to implicitHeader(14) before the data arrives.
+        // byte3=0xF3 is the meta-packet type marker. byte4=0x01 = GPS upcoming.
+        // ---------------------------------------------------------------
+        uint8_t announcePkt[6];
+        memcpy(announcePkt, usrConf.dest_address, 3);
+        announcePkt[3] = 0xF3;
+        announcePkt[4] = 0x01;
+        announcePkt[5] = esp_crc8(announcePkt, 5);
+
+        rxprint("Sending GPS announcement: ");
+        #ifdef DEBUG_RX
+        printHexArray(announcePkt, 6);
+        #endif
+
+        radio.implicitHeader(6);
+        radio.startTransmit(announcePkt, 6);
+        num_sent_packets++;
+        vTaskDelay(pdMS_TO_TICKS(10));  // wait for 6-byte TX to complete; RX switches mode during this window
+
+        // ---------------------------------------------------------------
+        // Step 2: 14-byte GPS data packet.
+        // lat/lng as int32_t microdegrees (degrees × 1e6), little-endian.
+        // Precision: ±0.111 m — sufficient for Phase B 500 m distance check.
+        // ---------------------------------------------------------------
+        uint8_t gpsPkt[14];
+        memcpy(gpsPkt, usrConf.dest_address, 3);
+        gpsPkt[3] = 0xF3;
+        gpsPkt[4] = 0x02;  // subtype: GPS coordinate data
+
+        int32_t lat_ud = (int32_t)(gps_tx.location.lat() * 1e6);
+        int32_t lng_ud = (int32_t)(gps_tx.location.lng() * 1e6);
+        memcpy(gpsPkt + 5, &lat_ud, 4);    // bytes 5–8: latitude microdegrees
+        memcpy(gpsPkt + 9, &lng_ud, 4);    // bytes 9–12: longitude microdegrees
+        gpsPkt[13] = esp_crc8(gpsPkt, 13); // CRC over bytes 0–12
+
+        rxprint("Sending GPS data: ");
+        #ifdef DEBUG_RX
+        printHexArray(gpsPkt, 14);
+        #endif
+
+        radio.implicitHeader(14);
+        radio.startTransmit(gpsPkt, 14);
+        // 14-byte packet needs slightly more air time than 6-byte at SF6/BW250
+        vTaskDelay(pdMS_TO_TICKS(15));
       }
       else
       {
-        sendArray[3] = calcFinalThrottle();
-        //float steer_mult = ((127.0-(float)steer_scaled) * (float)gear / (float)usrConf.max_gears)+127.0;
-        sendArray[4] = steer_scaled;//(uint8_t)steer_mult;
+        // ---------------------------------------------------------------
+        // Normal 6-byte control packet
+        //
+        // THR capped at 0xF2 (242): 0xF3 is the GPS meta-packet marker and
+        // must never appear in the THR field of a control packet.
+        // 0xF2 = 94.9% max throttle — imperceptible difference from uncapped 95.3%.
+        // ---------------------------------------------------------------
+        uint8_t sendArray[6];
+        memcpy(sendArray, usrConf.dest_address, 3);
+
+        if(system_locked)
+        {
+          sendArray[3] = 0;
+          sendArray[4] = 127;
+        }
+        else
+        {
+          uint8_t thr = calcFinalThrottle();
+          sendArray[3] = (thr >= 0xF3) ? 0xF2 : thr;  // cap: 0xF3 reserved for GPS meta-packet
+          sendArray[4] = steer_scaled;
+        }
+
+        thr_sent   = sendArray[3];
+        steer_sent = sendArray[4];
+
+        sendArray[5] = esp_crc8(sendArray, 5);
+
+        rxprint("Sending: ");
+        #ifdef DEBUG_RX
+        printHexArray(sendArray, 6);
+        #endif
+
+        radio.implicitHeader(6);
+        radio.startTransmit(sendArray, 6);
+        num_sent_packets++;
+        vTaskDelay(pdMS_TO_TICKS(10));
       }
 
-      thr_sent = sendArray[3];
-      steer_sent = sendArray[4];
-
-      sendArray[5] = esp_crc8(sendArray, 5);
-
-      rxprint("Sending: ");
-      #ifdef DEBUG_RX
-      printHexArray(sendArray, 6);
-      #endif
-
-      radio.implicitHeader(6);
-      radio.startTransmit(sendArray, 6);
-      num_sent_packets++;
-      vTaskDelay(pdMS_TO_TICKS(10));
+      // Common exit for both GPS meta and normal paths:
+      // return to 6-byte receive mode and wake waitForTelemetry.
+      // After a GPS meta burst, RX sends a normal telemetry reply after processing
+      // the GPS data packet — waitForTelemetry will receive it as usual.
       radio.implicitHeader(6);
       rfInterrupt = false;
       radio.startReceive();
-      //trigger waitForTelemetry
       xTaskNotifyGive(triggeredWaitForTelemetryHandle);
     }
     vTaskDelayUntil(&xLastWakeTime, xFrequency);

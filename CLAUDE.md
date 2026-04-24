@@ -120,9 +120,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Haptic Pattern A (2 Short) triggered when `sq_graph` drops to 1 while connected (TX System.ino)
 - Edge-detected; re-arms on signal recovery; failsafe blink cycle excluded via `is_connected` gate
 
-**Priority 5**: TX→RX 0xF3 meta-packet infrastructure
-- LoRa protocol extension to carry TX GPS coordinates to RX at 2Hz
-- Required by Phase B anti-spoofing and RTM steering computation
+**Priority 5 — COMPLETED 2026-04-24** ✅: TX→RX 0xF3 meta-packet infrastructure
+- 2-step LoRa protocol: 6-byte announcement (0xF3/0x01) primes RX, then 14-byte GPS data packet (lat+lng as int32_t microdegrees) at 2Hz (TX Radio.ino)
+- RX `triggeredReceive()` 2-path state machine: `gps_meta_pending` flag, `processMetaGpsPacket()` helper, stores `rx_tx_gps_lat/lng/timestamp` in BREmote_V2_Rx.h (RX Radio.ino)
+- THR capped at 0xF2; 0xF3 permanently reserved as meta-packet marker
+- Hardware verified 2026-04-24; DEBUG_RX active on both TX and RX
+- Known hardware note: TX GPS wire swap fixed and resoldered before hardware test
 
 **Priority 6**: Phase B GPS Handshake Anti-Spoofing
 - TX↔RX distance plausibility + speed consistency check via 0xF3 (on connect + every 30s)

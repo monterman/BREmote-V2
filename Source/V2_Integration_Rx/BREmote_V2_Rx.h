@@ -1,5 +1,6 @@
 // V3 - 2026-04-22 - Added gps_chip_type field to confStruct (GPS module selector); sizeof 108→112; updated defaultConf
 // V3 - 2026-04-22 - Added Phase A GPS anti-spoofing params to confStruct; sizeof 112→128; updated defaultConf
+// V3 - 2026-04-24 - Added rx_tx_gps_lat/lng/timestamp globals for 0xF3 meta-packet reception
 
 /*
 ** Includes
@@ -180,6 +181,21 @@ volatile uint32_t web_cfg_ap_startup_timeout_ms = 60000; // 0 disables timeout
 String web_cfg_last_err = "";
 #endif
 volatile bool config_version_error = false;
+
+// ============================================================
+// V3 - 2026-04-24 - TX GPS COORDINATES (received via 0xF3 meta-packet)
+//
+// Written by processMetaGpsPacket() in Radio.ino at 2Hz whenever TX sends
+// a GPS meta-packet and RX successfully validates it.
+// Read by Phase B anti-spoofing (Priority 6) to check TX-RX proximity.
+//
+// rx_tx_gps_timestamp == 0 means no meta-packet has ever been received.
+// Use (millis() - rx_tx_gps_timestamp) > usrConf.tx_gps_stale_timeout_ms
+// to detect a stale TX GPS reading before trusting lat/lng.
+// ============================================================
+double        rx_tx_gps_lat       = 0.0;  // TX latitude (degrees, WGS84)
+double        rx_tx_gps_lng       = 0.0;  // TX longitude (degrees, WGS84)
+unsigned long rx_tx_gps_timestamp = 0;    // millis() when last meta-packet received; 0 = never
 
 #include "../Common/SPIFFSEngine.h"
 

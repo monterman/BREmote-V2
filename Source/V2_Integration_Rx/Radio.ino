@@ -188,8 +188,10 @@ static void processMetaGpsPacket(uint8_t *pkt)
   rx_tx_gps_lng       = (double)lng_ud / 1e6;
   rx_tx_gps_timestamp = millis();
 
+  #ifdef DEBUG_RX
   Serial.printf("META GPS received: lat=%.6f lng=%.6f\n",
                 rx_tx_gps_lat, rx_tx_gps_lng);
+  #endif
 }
 
 void triggeredReceive(void *parameter) {

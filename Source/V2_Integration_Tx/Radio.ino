@@ -218,8 +218,9 @@ void sendData(void *parameter)
   TickType_t xLastWakeTime = xTaskGetTickCount();
   const TickType_t xFrequency = pdMS_TO_TICKS(100);
 
-  // GPS meta-packet cycle counter. Counts 0→4, resets to 0.
-  // At cycle 0 (every 5 × 100ms = 500ms = 2Hz): attempt to send GPS meta-packet.
+  // GPS meta-packet cycle counter. Incremented each control cycle (100ms).
+  // Wraps at 5 → resets to 0. The GPS meta-packet fires on the cycle where
+  // it resets to 0 (i.e., every 5 × 100ms = 500ms = 2Hz).
   static uint8_t gps_cycle = 0;
 
   while(1)

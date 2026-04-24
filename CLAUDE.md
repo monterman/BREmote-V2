@@ -15,10 +15,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 2. FOLDER STRUCTURE
 
-- `V3_Integration_Tx/` — TX firmware (ESP32-C3), DO NOT mix with RX
-- `V3_Integration_Rx/` — RX firmware (ESP32-S3), DO NOT mix with TX
+- `Source/V2_Integration_Tx/` — TX firmware (ESP32-C3), DO NOT mix with RX (folder name is V2 but contains live V3 code)
+- `Source/V2_Integration_Rx/` — RX firmware (ESP32-S3), DO NOT mix with TX (folder name is V2 but contains live V3 code)
 - `Common/` — shared headers used by both
-- Any V2 folders — **SACRED BACKUPS, NEVER MODIFY**
+- Note: the "V3" designation exists only in code comments and version tags — the folder names were never renamed from V2
 
 ---
 

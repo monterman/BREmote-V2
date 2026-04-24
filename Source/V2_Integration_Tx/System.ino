@@ -1,3 +1,4 @@
+// V3 - 2026-04-24 - Added ?printgps, ?gpsraw, ?gpsreinit serial commands for TX GPS diagnostics
 // V3 - 2026-04-22 - P4: signal-drop haptic warning (Pattern A) when sq_graph drops to 1 while connected
 const char* SYS_DEVICE_LABEL = "TX";
 
@@ -256,6 +257,72 @@ void cmdExitChg(const String &args) {
   exitChargeScreen = 1;
 }
 
+// ---- ?printgps : snapshot of all GPS state ----
+void cmdPrintGPS(const String &args) {
+  Serial.println("----- TX GPS Status -----");
+  Serial.print("gps_en:             "); Serial.println(usrConf.gps_en);
+  Serial.print("gps_chip_type:      "); Serial.println(usrConf.gps_chip_type);
+  Serial.print("speed_src:          "); Serial.println(usrConf.speed_src);
+  Serial.print("tx_gps_initialized: "); Serial.println(tx_gps_initialized ? "YES" : "NO");
+  Serial.print("Serial1 available:  "); Serial.println(Serial1.available());
+  Serial.print("Chars processed:    "); Serial.println(gps_tx.charsProcessed());
+  Serial.print("Sentences failed:   "); Serial.println(gps_tx.failedChecksum());
+  Serial.print("Location valid:     "); Serial.println(gps_tx.location.isValid() ? "YES" : "NO");
+  Serial.print("Location age (ms):  "); Serial.println(gps_tx.location.age());
+  Serial.print("Latitude:           "); Serial.println(gps_tx.location.lat(), 6);
+  Serial.print("Longitude:          "); Serial.println(gps_tx.location.lng(), 6);
+  Serial.print("Speed valid:        "); Serial.println(gps_tx.speed.isValid() ? "YES" : "NO");
+  Serial.print("Satellites:         ");
+  Serial.println(gps_tx.satellites.isValid() ? String(gps_tx.satellites.value()) : "invalid");
+  Serial.print("HDOP:               ");
+  Serial.println(gps_tx.hdop.isValid() ? String(gps_tx.hdop.value()) : "invalid");
+  Serial.print("tx_gps_speed:       "); Serial.println(tx_gps_speed);
+  Serial.println("-------------------------");
+}
+
+// ---- ?gpsraw : dump raw NMEA bytes from Serial1 for 5 seconds ----
+// Tells us immediately if GPS module is alive and at what baud rate.
+// See $GPRMC/$GPGGA lines = GPS alive and parsing correctly.
+// See garbage/symbols = wrong baud rate.
+// See nothing = wiring or power problem.
+void cmdGpsRaw(const String &args) {
+  Serial.println("--- Raw GPS bytes from Serial1 (5 seconds, type q to quit) ---");
+  if (!tx_gps_initialized) {
+    Serial.println("WARNING: tx_gps_initialized=false. Serial1 may not be configured.");
+    Serial.println("Try ?gpsreinit first, then ?gpsraw again.");
+  }
+  unsigned long start = millis();
+  unsigned long duration = 5000;
+  // Optional: allow custom duration e.g. ?gpsraw 10 for 10 seconds
+  if (args.length() > 0) {
+    int sec = args.toInt();
+    if (sec > 0 && sec <= 30) duration = sec * 1000UL;
+  }
+  while (millis() - start < duration) {
+    if (checkSerialQuit()) break;
+    while (Serial1.available()) {
+      char c = (char)Serial1.read();
+      Serial.print(c);
+    }
+    delay(10);
+  }
+  Serial.println("\n--- End raw GPS dump ---");
+}
+
+// ---- ?gpsreinit : re-run initTxGPS() without rebooting ----
+// Useful for bench testing different chip types or baud rates.
+// Change gps_chip_type via ?set gps_chip_type 2 then ?gpsreinit to test.
+void cmdGpsReinit(const String &args) {
+  Serial.println("Re-running initTxGPS()...");
+  tx_gps_initialized = false;
+  Serial1.end();
+  delay(100);
+  initTxGPS();
+  Serial.print("tx_gps_initialized after reinit: ");
+  Serial.println(tx_gps_initialized ? "YES" : "NO");
+  Serial.println("Run ?gpsraw to check Serial1 output.");
+}
+
 // ===== Dispatch Table =====
 
 const CmdEntry cmdTable[] = {
@@ -286,6 +353,9 @@ const CmdEntry cmdTable[] = {
   { "wifierr",      cmdWifiErr,      "",                "last wifi config error" },
   { "reboot",       cmdReboot,       "",                "reboot the remote" },
   { "exitchg",      cmdExitChg,      "",                "exit charge screen" },
+  { "printgps",    cmdPrintGPS,     "",                "TX GPS state and fix status" },
+  { "gpsraw",      cmdGpsRaw,       "[sec]",           "dump raw Serial1 NMEA output (default 5s)" },
+  { "gpsreinit",   cmdGpsReinit,    "",                "re-run initTxGPS() without rebooting" },
 };
 const size_t cmdTableSize = sizeof(cmdTable) / sizeof(cmdTable[0]);
 

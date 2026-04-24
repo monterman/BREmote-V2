@@ -354,7 +354,7 @@ String web_cfg_last_err = "";
 #define P_CHGSTAT   2
 
 //Debug options
-//#define DEBUG_RX
+#define DEBUG_RX
 
 #if defined DEBUG_RX
    #define rxprint(x)    Serial.print(x)

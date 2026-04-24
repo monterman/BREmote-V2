@@ -344,7 +344,7 @@ unsigned long percent_last_thr_change = 0;
 #define AP_WET_MEAS 15
 
 //Debug options
-//#define DEBUG_RX
+#define DEBUG_RX
 //#define DEBUG_VESC
 
 #if defined DEBUG_RX

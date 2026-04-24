@@ -137,7 +137,7 @@ The **SP** (Speed) telemetry display mode can now read speed directly from the T
 | 1 | RX GPS | knots | V2 original |
 | 2 | TX GPS | km/h | ✅ V3 new |
 | 3 | TX GPS | knots | ✅ V3 new |
-| 4 | RX GPS | mph | V2 original |
+| 4 | RX GPS | mph | ✅ V3 new |
 | 5 | TX GPS | mph | ✅ V3 new |
 
 Display shows `--` when no fix is available or the fix is older than the configured stale timeout. Set `gps_en = 1` and reboot after changing it.
@@ -145,22 +145,22 @@ Display shows `--` when no fix is available or the fix is older than the configu
 **Telemetry display cycle** (cycle with long right toggle press):
 
 ```
-TH  →  UB  →  TE  →  SP  →  bA
-Throttle  Internal Bat  Temp  Speed  Foil Bat
+TH       → UB           → TE    → SP    → BA
+Throttle → Internal Bat → Temp  → Speed → Foil Bat
 ```
 
 ### TX Toggle Button Reference
 
-| Input | Result |
-|---|---|
-| Boot + hold LEFT toggle | Calibration mode — display shows `CA` |
-| Boot + hold RIGHT toggle | Pairing mode — display shows `PA` |
-| Boot + THR + LEFT toggle | USB charging mode |
-| Boot + THR + RIGHT toggle | Delete SPIFFS config (factory reset) |
-| LEFT toggle held 2 s | Safety lock (display shows lock icon) |
-| RIGHT toggle held 2 s | Cycle telemetry display mode |
-| LEFT toggle held 5 s | 🔜 Return-to-Me `rtn` *(V3.1)* |
-| RIGHT toggle held 5 s | 🔜 Follow-Me override `FM` *(V3.x)* |
+| Input                     | Result                                |
+| ---                       | ---                                   |
+| Boot + hold LEFT toggle   | Calibration mode — display shows `CA` |
+| Boot + hold RIGHT toggle  | Pairing mode — display shows `PA`     |
+| Boot + THR + LEFT toggle  | USB charging mode                     |
+| Boot + THR + RIGHT toggle | Delete SPIFFS config (factory reset)  |
+| LEFT toggle held 2 s      | Safety lock (display shows lock icon) |
+| RIGHT toggle held 2 s     | Cycle telemetry display mode          |
+| LEFT toggle held 5 s      | 🔜 Return-to-Me `rtn` *(V3.1)*        |
+| RIGHT toggle held 5 s     | 🔜 Follow-Me override `FM` *(V3.x)*   |
 
 ---
 

@@ -1,3 +1,4 @@
+// V3 - 2026-04-24 - Call initTxGPS() in setup() after applyConfigSettings() so GPS UART is ready on boot
 // V3 - 2026-04-21 - Added getTxGPSLoop() call in loop() and forward declarations for TX GPS functions
 #include "BREmote_V2_Tx.h"
 // Function prototypes — forward declarations to resolve Arduino IDE ordering issues
@@ -68,6 +69,8 @@ void setup()
   initTasks();
   runBootSequence();
   applyConfigSettings();
+  // V3 - 2026-04-24 - Call initTxGPS() on boot so GPS UART is ready before loop() starts polling
+  initTxGPS();
   initWatchdog();
 
   exitSetup();

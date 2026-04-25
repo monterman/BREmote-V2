@@ -1,4 +1,5 @@
 // V3 - 2026-04-24 - Added GPS meta-packet reception: gps_meta_pending state, processMetaGpsPacket(), triggeredReceive() 2-path state machine
+// V3 - 2026-04-24 - Added Phase B GPS handshake check: gpsPhaseBCheck() called from processMetaGpsPacket()
 
 void radioErrorHalt(int type)
 {
@@ -133,6 +134,146 @@ bool waitForPairing()
   return false;
 }
 
+// ============================================================
+// PHASE B GPS HANDSHAKE STATE
+//
+// gps_phase_b_ok: set true when Phase B distance and speed checks
+// both pass; set false when either fails. Initialized false so
+// RTM arming is blocked until the first successful handshake.
+// NOT static — the RTM state machine (Priority 7) reads this flag.
+//
+// The static variables below are internal to gpsPhaseBCheck() and
+// track timing and the previous TX position snapshot across calls.
+// ============================================================
+bool gps_phase_b_ok = false;  // Phase B handshake result; false = RTM arming blocked
+
+// Last time Phase B check ran (ms). 0 = never run this session.
+static unsigned long gps_phase_b_last_check_ms = 0;
+
+// Previous TX GPS position snapshot used to compute TX implied speed.
+// Updated each time Phase B check runs. 0 = no prior snapshot.
+static double        gps_phase_b_prev_tx_lat = 0.0;
+static double        gps_phase_b_prev_tx_lng = 0.0;
+static unsigned long gps_phase_b_prev_tx_ms  = 0;
+
+// ============================================================
+// gpsPhaseBCheck - Phase B GPS handshake anti-spoofing validation
+// ============================================================
+//
+// What it does:
+//   Called after every successful 0xF3 GPS meta-packet decode.
+//   Validates that TX and RX are physically plausible partners:
+//
+//   1) Distance check: Haversine distance between the last accepted
+//      RX GPS position and the just-received TX GPS position must
+//      be < usrConf.gps_max_pair_dist_m. Catches a spoofed TX GPS
+//      report placing TX far from RX.
+//
+//   2) Speed consistency check: TX implied speed, computed from two
+//      consecutive Phase B check positions, must differ from RX GPS
+//      speed by < usrConf.gps_max_speed_diff_kmh. Catches GPS
+//      replay attacks that report implausible TX movement.
+//      Skipped on the very first check (no prior TX snapshot yet).
+//
+//   Time-gated: runs only on the first call after boot and every
+//   30 seconds thereafter, regardless of how often meta-packets
+//   arrive (they come at 2Hz).
+//
+//   Skipped entirely if:
+//   - GPS disabled (usrConf.gps_en == 0)
+//   - RX has no valid GPS reading (gps_last_ms == 0)
+//
+// Inputs:
+//   Reads globals: rx_tx_gps_lat/lng (just updated by processMetaGpsPacket),
+//   gps_last_lat/lng/speed_kmh/ms (from GPS.ino), usrConf fields.
+//
+// Side effects:
+//   Sets gps_phase_b_ok (true = pass, false = fail).
+//   Updates gps_phase_b_last_check_ms and gps_phase_b_prev_tx_* snapshot.
+//   Prints diagnostics to Serial.
+// ============================================================
+static void gpsPhaseBCheck()
+{
+  // ---- Prerequisite: GPS must be enabled in config ----
+  if (!usrConf.gps_en)
+  {
+    // GPS disabled — Phase B cannot run; do not change gps_phase_b_ok.
+    return;
+  }
+
+  // ---- Prerequisite: RX must have at least one valid accepted GPS reading ----
+  if (gps_last_ms == 0)
+  {
+    rxprintln("GPS [PhB] Skipped — RX has no valid GPS reading yet");
+    return;
+  }
+
+  // ---- Time gate: run on first call, then at most once every 30 seconds ----
+  unsigned long now = millis();
+  if (gps_phase_b_last_check_ms != 0 &&
+      (now - gps_phase_b_last_check_ms) < 30000UL)
+  {
+    return;  // Not due yet; skip silently
+  }
+  gps_phase_b_last_check_ms = now;
+
+  // ---- Check 1: TX-RX Haversine distance ----
+  // TinyGPSPlus::distanceBetween() returns metres between two WGS84 lat/lng pairs.
+  float dist_m = (float)TinyGPSPlus::distanceBetween(
+      gps_last_lat, gps_last_lng,
+      rx_tx_gps_lat, rx_tx_gps_lng);
+
+  if (dist_m > usrConf.gps_max_pair_dist_m)
+  {
+    Serial.printf("GPS [PhB] FAIL distance: %.0f m > max %.0f m — RTM arming blocked\n",
+                  dist_m, (double)usrConf.gps_max_pair_dist_m);
+    gps_phase_b_ok = false;
+    // Update snapshot so the next check has a fresh reference point.
+    gps_phase_b_prev_tx_lat = rx_tx_gps_lat;
+    gps_phase_b_prev_tx_lng = rx_tx_gps_lng;
+    gps_phase_b_prev_tx_ms  = now;
+    return;
+  }
+
+  // ---- Check 2: TX-RX speed consistency ----
+  // Compute TX implied speed from the position change since the last Phase B snapshot.
+  // Skip on the very first run because there is no prior snapshot to measure from.
+  if (gps_phase_b_prev_tx_ms > 0)
+  {
+    float dt_s = (float)(now - gps_phase_b_prev_tx_ms) / 1000.0f;
+
+    // Guard against near-zero dt (shouldn't happen due to 30s gate, but be safe).
+    if (dt_s > 0.1f)
+    {
+      float tx_delta_m   = (float)TinyGPSPlus::distanceBetween(
+          gps_phase_b_prev_tx_lat, gps_phase_b_prev_tx_lng,
+          rx_tx_gps_lat, rx_tx_gps_lng);
+      float tx_speed_kmh = (tx_delta_m / dt_s) * 3.6f;
+      float speed_diff   = fabsf(tx_speed_kmh - gps_last_speed_kmh);
+
+      if (speed_diff > usrConf.gps_max_speed_diff_kmh)
+      {
+        Serial.printf("GPS [PhB] FAIL speed: TX %.1f km/h, RX %.1f km/h, diff %.1f km/h > max %.1f km/h\n",
+                      tx_speed_kmh, gps_last_speed_kmh, speed_diff,
+                      (double)usrConf.gps_max_speed_diff_kmh);
+        gps_phase_b_ok = false;
+        gps_phase_b_prev_tx_lat = rx_tx_gps_lat;
+        gps_phase_b_prev_tx_lng = rx_tx_gps_lng;
+        gps_phase_b_prev_tx_ms  = now;
+        return;
+      }
+    }
+  }
+
+  // ---- All checks passed ----
+  Serial.printf("GPS [PhB] PASS: dist %.0f m (max %.0f m)\n",
+                dist_m, (double)usrConf.gps_max_pair_dist_m);
+  gps_phase_b_ok = true;
+  gps_phase_b_prev_tx_lat = rx_tx_gps_lat;
+  gps_phase_b_prev_tx_lng = rx_tx_gps_lng;
+  gps_phase_b_prev_tx_ms  = now;
+}
+
 // V3 - 2026-04-24 - GPS meta-packet state and handler for 0xF3 protocol
 
 // gps_meta_pending: set true when a 0xF3 announcement (6-byte) is received.
@@ -192,6 +333,10 @@ static void processMetaGpsPacket(uint8_t *pkt)
   Serial.printf("META GPS received: lat=%.6f lng=%.6f\n",
                 rx_tx_gps_lat, rx_tx_gps_lng);
   #endif
+
+  // Run Phase B anti-spoofing check against the freshly received TX GPS position.
+  // gpsPhaseBCheck() is time-gated (first call + every 30s) and self-throttles.
+  gpsPhaseBCheck();
 }
 
 void triggeredReceive(void *parameter) {

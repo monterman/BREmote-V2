@@ -127,10 +127,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Hardware verified 2026-04-24; DEBUG_RX active on both TX and RX
 - Known hardware note: TX GPS wire swap fixed and resoldered before hardware test
 
-**Priority 6**: Phase B GPS Handshake Anti-Spoofing
-- TX↔RX distance plausibility + speed consistency check via 0xF3 (on connect + every 30s)
-- 2 new RX SPIFFS params: `gps_max_pair_dist_m`, `gps_max_speed_diff_kmh` (see Section 11)
-- Failure → RTM arming blocked until next successful handshake
+**Priority 6 — COMPLETED 2026-04-24** ✅: Phase B GPS Handshake Anti-Spoofing
+- TX↔RX distance check + speed consistency check, time-gated at 30s intervals
+- `gpsPhaseBCheck()` in RX Radio.ino; called from processMetaGpsPacket()
+- `gps_phase_b_ok` global flag; false blocks RTM arming, set true on passing check
+- 2 new RX SPIFFS params: `gps_max_pair_dist_m` (50-2000m, default 500m), `gps_max_speed_diff_kmh` (10-200km/h, default 50)
+- sizeof(confStruct) 128→136; first flash resets all RX settings to defaults
 
 **Priority 7**: RTM Return-to-Me implementation
 - Full Return-to-Me state machine (see `DESIGN_RETURN_TO_ME.md`)

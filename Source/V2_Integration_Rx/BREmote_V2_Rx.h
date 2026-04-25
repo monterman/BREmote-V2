@@ -1,6 +1,7 @@
 // V3 - 2026-04-22 - Added gps_chip_type field to confStruct (GPS module selector); sizeof 108→112; updated defaultConf
 // V3 - 2026-04-22 - Added Phase A GPS anti-spoofing params to confStruct; sizeof 112→128; updated defaultConf
 // V3 - 2026-04-24 - Added rx_tx_gps_lat/lng/timestamp globals for 0xF3 meta-packet reception
+// V3 - 2026-04-24 - Added Phase B GPS handshake params to confStruct; sizeof 128→136; updated defaultConf
 
 /*
 ** Includes
@@ -144,8 +145,31 @@ struct confStruct {
     float    gps_max_accel_g;         // Max implied acceleration between readings; range 1.0-10.0G; default 3.0G
     float    gps_max_jump_kmh;        // Max position-implied speed (teleport check); range 50-500 km/h; default 200
     uint16_t gps_suspect_threshold;   // Consecutive failures before GPS marked rejected; range 1-10; default 3
+
+    // ============================================================
+    // V3 - 2026-04-24 - PHASE B GPS HANDSHAKE ANTI-SPOOFING PARAMETERS
+    //
+    // These two parameters control Phase B, which runs every time a
+    // 0xF3 GPS meta-packet is received from TX (at most every 30s).
+    //
+    // Distance check: TX-RX Haversine distance must be <
+    //   gps_max_pair_dist_m or RTM arming is blocked.
+    // Speed consistency check: TX implied speed (from consecutive
+    //   meta-packet positions) must be within gps_max_speed_diff_kmh
+    //   of RX GPS speed or arming is blocked.
+    //
+    // !!! Adding these fields changes sizeof(confStruct) 128→136. !!!
+    // !!! On first flash after this change, SPIFFS resets ALL      !!!
+    // !!! settings to defaults. After flashing:                    !!!
+    // !!!   1) Re-pair TX and RX                                   !!!
+    // !!!   2) Re-configure all settings via web UI                !!!
+    // !!!   3) Re-calibrate compass (runcal)                       !!!
+    // !!!   4) Verify Phase B defaults (500 m, 50 km/h)            !!!
+    // ============================================================
+    float gps_max_pair_dist_m;      // Max plausible TX-RX distance at handshake; range 50-2000 m; default 500 m
+    float gps_max_speed_diff_kmh;   // Max TX-RX speed difference for handshake; range 10-200 km/h; default 50 km/h
 };
-static_assert(sizeof(confStruct) == 128, "confStruct size mismatch — expected 128 bytes (V3.1). Update this assert and SPIFFS migration logic if you change the struct.");  // V3 fix (N-1): pinned to exact size; catches both shrinkage and unexpected growth. 112→128 when Phase A anti-spoofing params added 2026-04-22.
+static_assert(sizeof(confStruct) == 136, "confStruct size mismatch — expected 136 bytes (V3.2). Update this assert and SPIFFS migration logic if you change the struct.");  // V3 fix (N-1): pinned to exact size; catches both shrinkage and unexpected growth. 112→128 when Phase A added 2026-04-22; 128→136 when Phase B added 2026-04-24.
 confStruct usrConf;
   //The orginal confs were:  ##// confStruct defaultConf = {SW_VERSION, 1, 0, 0, 50, 0, 0, 1500, 2000, 1500, 2000, 1000, 10, 0, 1, 0, 0, 0, 0, 0, 25.0f, 10.0f, 10.0f, 5.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0, 1000, 1, 0, {0, 0, 0}, {0, 0, 0}, {'1','2','3','4','5','6','7','8'}};
   // V3 default configuration — tuned for monterman hardware
@@ -161,9 +185,12 @@ confStruct defaultConf = {SW_VERSION, 2, 20, 1, 50, 0, 0, 1000, 2000, 1000, 2000
   2.0f,       // gps_max_hdop:           max HDOP for valid reading (range 0.5-5.0)
   3.0f,       // gps_max_accel_g:        max implied acceleration (range 1.0-10.0 G)
   200.0f,     // gps_max_jump_kmh:       max teleport-implied speed (range 50-500 km/h)
-  3           // gps_suspect_threshold:  consecutive failures before GPS rejected (range 1-10)
+  3,          // gps_suspect_threshold:  consecutive failures before GPS rejected (range 1-10)
+  // V3 - 2026-04-24 - Phase B GPS handshake anti-spoofing defaults (see CLAUDE.md Section 11)
+  500.0f,     // gps_max_pair_dist_m:    max TX-RX pairing distance (range 50-2000 m)
+  50.0f       // gps_max_speed_diff_kmh: max TX-RX speed difference (range 10-200 km/h)
 };
-  /// these equal to:  {"version":3,"radio_preset":2,"rf_power":20,"steering_type":1,"steering_influence":50,"steering_inverted":0,"trim":0,"pwm0_min":1000,"pwm0_max":2000,"pwm1_min":1000,"pwm1_max":2000,"failsafe_time":1000,"foil_num_cells":10,"bms_det_active":0,"wet_det_active":1,"dummy_delete_me":0,"data_src":2,"gps_en":1,"followme_mode":2,"kalman_en":1,"boogie_vmax_in_followme_kmh":25,"min_dist_m":10,"followme_smoothing_band_m":10,"foiler_low_speed_kmh":8,"zone_angle_enter_deg":35,"zone_angle_exit_deg":45,"near_diag_offset_deg":45,"ubat_cal":0.0095554,"ubat_offset":0,"tx_gps_stale_timeout_ms":1000,"logger_en":0,"paired":1,"own_address":"46:C9:E0","dest_address":"46:CB:CC","wifi_password":"12345678","mag_offset_x":0,"mag_offset_y":0,"mag_scale_x":1.0,"mag_scale_y":1.0,"gps_chip_type":1,"gps_max_hdop":2.0,"gps_max_accel_g":3.0,"gps_max_jump_kmh":200.0,"gps_suspect_threshold":3}
+  /// these equal to:  {"version":3,"radio_preset":2,"rf_power":20,"steering_type":1,"steering_influence":50,"steering_inverted":0,"trim":0,"pwm0_min":1000,"pwm0_max":2000,"pwm1_min":1000,"pwm1_max":2000,"failsafe_time":1000,"foil_num_cells":10,"bms_det_active":0,"wet_det_active":1,"dummy_delete_me":0,"data_src":2,"gps_en":1,"followme_mode":2,"kalman_en":1,"boogie_vmax_in_followme_kmh":25,"min_dist_m":10,"followme_smoothing_band_m":10,"foiler_low_speed_kmh":8,"zone_angle_enter_deg":35,"zone_angle_exit_deg":45,"near_diag_offset_deg":45,"ubat_cal":0.0095554,"ubat_offset":0,"tx_gps_stale_timeout_ms":1000,"logger_en":0,"paired":1,"own_address":"46:C9:E0","dest_address":"46:CB:CC","wifi_password":"12345678","mag_offset_x":0,"mag_offset_y":0,"mag_scale_x":1.0,"mag_scale_y":1.0,"gps_chip_type":1,"gps_max_hdop":2.0,"gps_max_accel_g":3.0,"gps_max_jump_kmh":200.0,"gps_suspect_threshold":3,"gps_max_pair_dist_m":500.0,"gps_max_speed_diff_kmh":50.0}
   ///
 
 #include "../Common/ConfigServiceEngine.h"

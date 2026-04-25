@@ -1,3 +1,4 @@
+// V3 - 2026-04-24 - Added Phase B FIELD SERVICE NOTE (sizeof confStruct 128→136)
 // V3 - 2026-04-22 - Added gps_chip_type branch: type 0/1=BN-220/BN-880 (9600→115200, 5Hz), type 2/3=M10 (115200 direct, 10Hz, all constellations)
 // V3 - 2026-04-22 - Added Phase A GPS anti-spoofing: HDOP check, teleport check, acceleration check (gpsPhaseACheck)
 
@@ -25,6 +26,18 @@
 //
 // Also verify that gps_chip_type in the web config matches
 // the physical GPS module connected to this board.
+// ============================================================
+
+// ============================================================
+// V3 - 2026-04-24: sizeof(confStruct) changed from 128 to 136
+// bytes (Phase B GPS handshake params added). On the first
+// flash after this change, SPIFFS will again detect the size
+// mismatch and reset ALL settings to defaults. After flashing:
+//   1) Re-pair TX and RX
+//   2) Re-configure all settings via the web UI
+//   3) Re-calibrate compass via the 'runcal' serial command
+//   4) Verify Phase B defaults in "GPS & Follow-Me" section of
+//      the web UI (Pair Dist 500 m, Speed Diff 50 km/h)
 // ============================================================
 
 // ============================================================

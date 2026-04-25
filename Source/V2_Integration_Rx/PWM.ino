@@ -1,3 +1,4 @@
+// V3 - 2026-04-25 - P7: calcPWM() applies RTM emergency stop and steering override via effective_thr/steer
 void generatePWM(void *parameter) {
   TickType_t xLastWakeTime = xTaskGetTickCount();
   const TickType_t xFrequency = pdMS_TO_TICKS(10);
@@ -33,25 +34,34 @@ void generatePWM(void *parameter) {
 
 void calcPWM()
 {
+  // V3 - 2026-04-25 - P7: Apply RTM overrides before any PWM calculation.
+  // Emergency stop: any safety gate failure forces throttle to neutral regardless of user input.
+  // Steering override: bearing-derived value replaces radio steering when RTM is active.
+  // RTM can only subtract from user throttle (never add). Creator safety philosophy enforced.
+  uint8_t effective_thr   = rtm_rx_emergency_stop ? 0 : thr_received;
+  uint8_t effective_steer = (rtm_rx_active && usrConf.rtm_rx_override_steering)
+                            ? rtm_steer_override
+                            : steering_received;
+
   if(usrConf.steering_type == 0)
   {
     //Efoil mode
-    PWM0_time = constrain(map(thr_received, 0, 255, usrConf.PWM0_min, usrConf.PWM0_max) + usrConf.trim, usrConf.PWM0_min, usrConf.PWM0_max);
-    PWM1_time = constrain(map(thr_received, 0, 255, usrConf.PWM1_min, usrConf.PWM1_max) - usrConf.trim, usrConf.PWM1_min, usrConf.PWM1_max);
+    PWM0_time = constrain(map(effective_thr, 0, 255, usrConf.PWM0_min, usrConf.PWM0_max) + usrConf.trim, usrConf.PWM0_min, usrConf.PWM0_max);
+    PWM1_time = constrain(map(effective_thr, 0, 255, usrConf.PWM1_min, usrConf.PWM1_max) - usrConf.trim, usrConf.PWM1_min, usrConf.PWM1_max);
   }
   else if(usrConf.steering_type == 1)
   {
     //Diff
     // Map throttle input to PWM range for each motor
-    uint16_t throttle_0 = map(thr_received, 0, 255, usrConf.PWM0_min, usrConf.PWM0_max);
-    uint16_t throttle_1 = map(thr_received, 0, 255, usrConf.PWM1_min, usrConf.PWM1_max);
-    
+    uint16_t throttle_0 = map(effective_thr, 0, 255, usrConf.PWM0_min, usrConf.PWM0_max);
+    uint16_t throttle_1 = map(effective_thr, 0, 255, usrConf.PWM1_min, usrConf.PWM1_max);
+
     // Compute differential steering adjustment with influence factor
     int max_steering_offset_0 = map(usrConf.steering_influence, 0, 100, 0, (usrConf.PWM0_max - usrConf.PWM0_min));
     int max_steering_offset_1 = map(usrConf.steering_influence, 0, 100, 0, (usrConf.PWM1_max - usrConf.PWM1_min));
-    
-    int steering_offset_0 = map(steering_received, 0, 255, -max_steering_offset_0, max_steering_offset_0)+1;
-    int steering_offset_1 = map(steering_received, 0, 255, -max_steering_offset_1, max_steering_offset_1)+1;
+
+    int steering_offset_0 = map(effective_steer, 0, 255, -max_steering_offset_0, max_steering_offset_0)+1;
+    int steering_offset_1 = map(effective_steer, 0, 255, -max_steering_offset_1, max_steering_offset_1)+1;
 
     if(usrConf.steering_inverted)
     {
@@ -67,14 +77,14 @@ void calcPWM()
   else if(usrConf.steering_type == 2)
   {
     //Servo
-    PWM0_time = map(thr_received, 0, 255, usrConf.PWM0_min, usrConf.PWM0_max);
+    PWM0_time = map(effective_thr, 0, 255, usrConf.PWM0_min, usrConf.PWM0_max);
     if(usrConf.steering_inverted)
-    {  
-      PWM1_time = constrain(map(steering_received, 0, 255, usrConf.PWM1_min, usrConf.PWM1_max)+usrConf.trim, usrConf.PWM1_min, usrConf.PWM1_max);
+    {
+      PWM1_time = constrain(map(effective_steer, 0, 255, usrConf.PWM1_min, usrConf.PWM1_max)+usrConf.trim, usrConf.PWM1_min, usrConf.PWM1_max);
     }
     else
     {
-      PWM1_time = constrain(map(steering_received, 255, 0, usrConf.PWM1_min, usrConf.PWM1_max)+usrConf.trim, usrConf.PWM1_min, usrConf.PWM1_max);
+      PWM1_time = constrain(map(effective_steer, 255, 0, usrConf.PWM1_min, usrConf.PWM1_max)+usrConf.trim, usrConf.PWM1_min, usrConf.PWM1_max);
     }
   }
   else

@@ -4,6 +4,7 @@
 // V3 - 2026-04-24 - Added Phase B GPS handshake params to confStruct; sizeof 128→136; updated defaultConf
 // V3 - 2026-04-25 - P7: Added RTM Phase C + RX safety params; VESC_MORE_VALUES; sizeof 136→152
 // V3 - 2026-04-25 - P7: Added rtm_rx_active, rtm_rx_emergency_stop, rtm_steer_override, fm_mode_runtime globals
+// V3 - 2026-04-25 - P7 fix: Changed RTM volatile globals to std::atomic for cross-core safety (core 0 PWM task / core 1 loop task)
 
 /*
 ** Includes
@@ -257,10 +258,14 @@ unsigned long rx_tx_gps_timestamp = 0;    // millis() when last meta-packet rece
 // rtm_rx_emergency_stop: true = safety gate failed; calcPWM() forces throttle to 0.
 // rtm_steer_override: bearing-derived steering value (0-255, 127=straight ahead).
 // fm_mode_runtime: TX-side FM mode override (0-3); 0xFF = use SPIFFS default.
-volatile bool    rtm_rx_active         = false;
-volatile bool    rtm_rx_emergency_stop = false;
-volatile uint8_t rtm_steer_override    = 127;
-volatile uint8_t fm_mode_runtime       = 0xFF;
+// V3 - 2026-04-25 - P7 fix: use std::atomic to ensure cross-core visibility.
+// generatePWM runs on core 0; RTMState.ino loop() runs on core 1. volatile alone
+// does not provide a memory barrier on Xtensa dual-core. std::atomic provides
+// seq_cst, matching the established rfInterrupt pattern at line 334.
+std::atomic<bool>    rtm_rx_active         {false};
+std::atomic<bool>    rtm_rx_emergency_stop {false};
+std::atomic<uint8_t> rtm_steer_override    {127};
+std::atomic<uint8_t> fm_mode_runtime       {0xFF};
 
 #include "../Common/SPIFFSEngine.h"
 

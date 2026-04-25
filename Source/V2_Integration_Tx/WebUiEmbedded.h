@@ -86,7 +86,7 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
 
 <script>
 // ALL 40 TX PARAMETERS
-const groupOrder=["Radio","Gears","Throttle","Steering","Toggle","Lock & Timing","Calibration","GPS & Follow-Me","System"];
+const groupOrder=["Radio","Gears","Throttle","Steering","Toggle","Lock & Timing","Calibration","GPS & Follow-Me","RTM & Follow-Me","System"];
 const fields=[
 {key:"radio_preset",label:"Radio Preset",description:"Select your region",group:"Radio",type:"enum",def:1,min:1,max:3,options:[{v:1,l:"EU868"},{v:2,l:"US/AU915"},{v:3,l:"Reserved"}]},
 {key:"rf_power",label:"RF Power",description:"RF transmit power (dBm)",group:"Radio",type:"int",def:0,min:-9,max:22,unit:"dBm"},
@@ -128,6 +128,18 @@ const fields=[
 {key:"tx_gps_stale_timeout_ms",label:"TX GPS Stale Timeout",description:"TX GPS stale timeout",group:"GPS & Follow-Me",type:"int",def:1000,min:0,max:65535,unit:"ms"},
 {key:"gps_max_hdop",label:"TX GPS Max HDOP",description:"Max GPS Signal Noise (HDOP×100): 150=excellent, 200=good (default), 300=lenient. Lower = stricter filter.",group:"GPS & Follow-Me",type:"int",def:200,min:50,max:500},
 {key:"gps_chip_type",label:"GPS Module Type",description:"GPS module type — determines baud/rate/constellation init sequence. TX supports 0 and 2 only (no compass on TX hardware).",group:"GPS & Follow-Me",type:"enum",def:0,min:0,max:3,options:[{v:0,l:"BN-220 (default, 9600→11520​0, 5Hz)"},{v:2,l:"M10 no compass (115200 direct, 10Hz, all constellations)"}]},
+{key:"rtm_enabled",label:"RTM Enabled",description:"Master enable for Return-to-Me feature. 0=off, 1=on.",group:"RTM & Follow-Me",type:"bool",def:1,min:0,max:1},
+{key:"rtm_hold_duration_s",label:"RTM Arm Hold Time",description:"Seconds to hold LEFT toggle to arm RTM. Range 4-10 s, default 5.",group:"RTM & Follow-Me",type:"int",def:5,min:4,max:10,unit:"s"},
+{key:"rtm_arm_window_s",label:"RTM Arm Window",description:"Seconds after arming to complete throttle engagement. Range 5-30 s, default 10.",group:"RTM & Follow-Me",type:"int",def:10,min:5,max:30,unit:"s"},
+{key:"rtm_double_squeeze_en",label:"RTM Double-Squeeze",description:"1=require two squeezes to engage (default), 0=hold throttle >30% for 500ms.",group:"RTM & Follow-Me",type:"bool",def:1,min:0,max:1},
+{key:"rtm_throttle_start_pct",label:"RTM Start Throttle %",description:"Initial throttle cap when RTM engages. Range 10-50%, default 30%.",group:"RTM & Follow-Me",type:"int",def:30,min:10,max:50,unit:"%"},
+{key:"rtm_throttle_max_pct",label:"RTM Max Throttle %",description:"Maximum throttle cap after ramp completes. Range 30-90%, default 70%.",group:"RTM & Follow-Me",type:"int",def:70,min:30,max:90,unit:"%"},
+{key:"rtm_ramp_duration_s",label:"RTM Ramp Duration",description:"Seconds to ramp throttle from start% to max%. Range 2-15 s, default 5.",group:"RTM & Follow-Me",type:"int",def:5,min:2,max:15,unit:"s"},
+{key:"rtm_stop_distance_m",label:"RTM Stop Distance",description:"Hard stop distance from TX. Motor cuts to 0 when closer than this. Range 3-20 m, default 10.",group:"RTM & Follow-Me",type:"int",def:10,min:3,max:20,unit:"m"},
+{key:"rtm_max_runtime_s",label:"RTM Max Runtime",description:"Maximum continuous RTM runtime before auto-disengage. Range 30-300 s, default 120.",group:"RTM & Follow-Me",type:"int",def:120,min:30,max:300,unit:"s"},
+{key:"rtm_gps_timeout_ms",label:"RTM GPS Timeout",description:"TX GPS data loss timeout before safety stop. Range 500-3000 ms, default 2000.",group:"RTM & Follow-Me",type:"int",def:2000,min:500,max:3000,unit:"ms"},
+{key:"fm_hold_duration_s",label:"FM Hold Time",description:"Seconds to hold RIGHT toggle to enter FM mode cycling. Range 4-10 s, default 5.",group:"RTM & Follow-Me",type:"int",def:5,min:4,max:10,unit:"s"},
+{key:"fm_override_enabled",label:"FM Override Enabled",description:"Allow TX to override RX follow-me mode at runtime (no SPIFFS write). 0=off, 1=on.",group:"RTM & Follow-Me",type:"bool",def:1,min:0,max:1},
 {key:"wifi_password",label:"WiFi Password",description:"AP password (exactly 8 characters)",group:"System",type:"text",def:"12345678",minLen:8,maxLen:8},
 {key:"version",label:"Config Version",description:"Must match firmware SW_VERSION",group:"System",type:"int",def:3,min:0,max:65535}
 ];

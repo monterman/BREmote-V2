@@ -117,9 +117,29 @@ struct confStruct {
     // data + 2 bytes new tail padding). Old 92-byte SPIFFS configs fail the decodedLen check
     // and trigger a clean write of defaultConf — safe behavior.
     uint16_t gps_chip_type;      // 0=BN-220 (default, 9600→115200, 5Hz), 2=M10 (115200, 10Hz, all constellations); TX valid: 0 and 2 only
+
+    // ============================================================
+    // V3 - 2026-04-25 - PRIORITY 7: RTM AND FM MODE PARAMETERS
+    //
+    // 12 new uint16_t fields — sizeof grows 96→120.
+    // First flash of P7 firmware resets all TX settings to defaults.
+    // After flashing: re-pair TX/RX, re-enter all settings via web UI.
+    // ============================================================
+    uint16_t rtm_enabled;              // RTM master enable; 0=off, 1=on; default 1
+    uint16_t rtm_hold_duration_s;      // LEFT hold time to arm RTM; 4-10 s; default 5
+    uint16_t rtm_arm_window_s;         // Window to engage throttle after arming; 5-30 s; default 10
+    uint16_t rtm_double_squeeze_en;    // Require double-squeeze (1) or 500ms hold (0); default 1
+    uint16_t rtm_throttle_start_pct;   // Initial throttle cap when RTM engages; 10-50 %; default 30
+    uint16_t rtm_throttle_max_pct;     // Max throttle cap after ramp; 30-90 %; default 70
+    uint16_t rtm_ramp_duration_s;      // Time to ramp throttle start→max; 2-15 s; default 5
+    uint16_t rtm_stop_distance_m;      // Hard stop distance from TX; 3-20 m; default 10
+    uint16_t rtm_max_runtime_s;        // Maximum continuous RTM runtime; 30-300 s; default 120
+    uint16_t rtm_gps_timeout_ms;       // TX GPS loss timeout before safety stop; 500-3000 ms; default 2000
+    uint16_t fm_hold_duration_s;       // RIGHT hold time for FM mode cycle; 4-10 s; default 5
+    uint16_t fm_override_enabled;      // Allow TX to override RX follow-me mode; 0=off, 1=on; default 1
 };
 
-static_assert(sizeof(confStruct) == 96, "confStruct size mismatch — expected 96 bytes (V3). Update this assert and SPIFFS migration logic if you change the struct.");  // V3 fix (N-1): pinned to exact size; catches both shrinkage and unexpected growth
+static_assert(sizeof(confStruct) == 120, "confStruct size mismatch — expected 120 bytes (V3.3/P7). Update this assert if you change the struct.");  // V3 fix (N-1): pinned to exact size; catches both shrinkage and unexpected growth
 confStruct usrConf;
 confStruct defaultConf = {  // V3 default configuration — tuned for monterman hardware
   SW_VERSION,    // version (3)
@@ -165,7 +185,20 @@ confStruct defaultConf = {  // V3 default configuration — tuned for monterman 
   // V3 - 2026-04-22 - default HDOP gate: 200 = HDOP 2.0. Fits in former tail-padding bytes.
   200,           // gps_max_hdop (200 = HDOP 2.0; existing configs read 0 here → validation rejects → defaults written)
   // V3 - 2026-04-22 - GPS chip type: 0 = BN-220 (9600→115200, 5Hz). TX only supports 0 and 2.
-  0              // gps_chip_type (0=BN-220 default; old 92-byte configs → decodedLen check fails → defaults written)
+  0,             // gps_chip_type (0=BN-220 default; old configs → decodedLen check fails → defaults written)
+  // V3 - 2026-04-25 - Priority 7 RTM/FM defaults
+  1,    // rtm_enabled
+  5,    // rtm_hold_duration_s
+  10,   // rtm_arm_window_s
+  1,    // rtm_double_squeeze_en
+  30,   // rtm_throttle_start_pct
+  70,   // rtm_throttle_max_pct
+  5,    // rtm_ramp_duration_s
+  10,   // rtm_stop_distance_m
+  120,  // rtm_max_runtime_s
+  2000, // rtm_gps_timeout_ms
+  5,    // fm_hold_duration_s
+  1     // fm_override_enabled
 };
 
 
@@ -384,9 +417,13 @@ String web_cfg_last_err = "";
 #define LOWER_CELSIUS 27
 #define TGT 28
 #define TLT 29
-    
+#define LET_R 30
+#define LET_N 31
+#define LET_S 32
+#define LET_M 33
+
                     //0                 //1                 //2                 //3                 //4
-uint8_t num0[30][3]{ {0x1F, 0x11, 0x1F}, {0x00, 0x00, 0x1F}, {0x17, 0x15, 0x1D}, {0x11, 0x15, 0x1F}, {0x1C, 0x04, 0x1F},
+uint8_t num0[34][3]{ {0x1F, 0x11, 0x1F}, {0x00, 0x00, 0x1F}, {0x17, 0x15, 0x1D}, {0x11, 0x15, 0x1F}, {0x1C, 0x04, 0x1F},
                     //5                 //6                 //7                 //8                 //9
                     {0x1D, 0x15, 0x17}, {0x1F, 0x15, 0x17}, {0x10, 0x10, 0x1F}, {0x1F, 0x15, 0x1F}, {0x1D, 0x15, 0x1F},
                     //A                 //B                 //C                 //D                 //E                 //F
@@ -396,7 +433,9 @@ uint8_t num0[30][3]{ {0x1F, 0x11, 0x1F}, {0x00, 0x00, 0x1F}, {0x17, 0x15, 0x1D},
                     //U                 //V                 //X                 //Y                 //Blank
                     {0x1F, 0x01, 0x1F}, {0x1E, 0x01, 0x1E}, {0x1B, 0x04, 0x1B}, {0x1C, 0x07, 0x1C}, {0x00, 0x00, 0x00},
                     //Dash              //LOWER_CELSIUS     //TGT (>)           //TLT(<)
-                    {0x04, 0x04, 0x04}, {0x08, 0x07, 0x05}, {0x11, 0x0A, 0x04}, {0x04, 0x0A, 0x11}, 
+                    {0x04, 0x04, 0x04}, {0x08, 0x07, 0x05}, {0x11, 0x0A, 0x04}, {0x04, 0x0A, 0x11},
+                    //R (30)              //N (31)              //S (32)              //M (33)
+                    {0x1F, 0x14, 0x13}, {0x1F, 0x10, 0x1F}, {0x1D, 0x15, 0x17}, {0x1F, 0x18, 0x1F}
                     };
 
 uint8_t row_mapper[] = { 8,9,7,5,6,3,4,2,0,1 };

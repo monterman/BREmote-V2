@@ -43,6 +43,19 @@ const CfgFieldSpec kCfgFields[] = {
   {"gps_max_hdop", CFG_U16, offsetof(confStruct, gps_max_hdop), true, false, true, 50.0f, 500.0f, 0, false},
   // V3 - 2026-04-22 - GPS chip type selector (0=BN-220, 2=M10; types 1/3 rejected by cross-field check since TX has no compass)
   {"gps_chip_type", CFG_U16, offsetof(confStruct, gps_chip_type), true, false, true, 0.0f, 3.0f, 0, false},
+  // V3 - 2026-04-25 - Priority 7 RTM and FM mode parameters
+  {"rtm_enabled",            CFG_U16, offsetof(confStruct, rtm_enabled),            true, false, true,  0.0f,   1.0f,    0, false},
+  {"rtm_hold_duration_s",    CFG_U16, offsetof(confStruct, rtm_hold_duration_s),    true, false, true,  4.0f,  10.0f,    0, false},
+  {"rtm_arm_window_s",       CFG_U16, offsetof(confStruct, rtm_arm_window_s),       true, false, true,  5.0f,  30.0f,    0, false},
+  {"rtm_double_squeeze_en",  CFG_U16, offsetof(confStruct, rtm_double_squeeze_en),  true, false, true,  0.0f,   1.0f,    0, false},
+  {"rtm_throttle_start_pct", CFG_U16, offsetof(confStruct, rtm_throttle_start_pct), true, false, true, 10.0f,  50.0f,    0, false},
+  {"rtm_throttle_max_pct",   CFG_U16, offsetof(confStruct, rtm_throttle_max_pct),   true, false, true, 30.0f,  90.0f,    0, false},
+  {"rtm_ramp_duration_s",    CFG_U16, offsetof(confStruct, rtm_ramp_duration_s),    true, false, true,  2.0f,  15.0f,    0, false},
+  {"rtm_stop_distance_m",    CFG_U16, offsetof(confStruct, rtm_stop_distance_m),    true, false, true,  3.0f,  20.0f,    0, false},
+  {"rtm_max_runtime_s",      CFG_U16, offsetof(confStruct, rtm_max_runtime_s),      true, false, true, 30.0f, 300.0f,    0, false},
+  {"rtm_gps_timeout_ms",     CFG_U16, offsetof(confStruct, rtm_gps_timeout_ms),     true, false, true, 500.0f,3000.0f,   0, false},
+  {"fm_hold_duration_s",     CFG_U16, offsetof(confStruct, fm_hold_duration_s),     true, false, true,  4.0f,  10.0f,    0, false},
+  {"fm_override_enabled",    CFG_U16, offsetof(confStruct, fm_override_enabled),    true, false, true,  0.0f,   1.0f,    0, false},
   {"paired", CFG_U16, offsetof(confStruct, paired), true, false, true, 0.0f, 1.0f, 0, false},
   {"own_address", CFG_ADDR3, offsetof(confStruct, own_address), true, false, false, 0.0f, 0.0f, 0, false},
   {"dest_address", CFG_ADDR3, offsetof(confStruct, dest_address), true, false, false, 0.0f, 0.0f, 0, false}

@@ -1,3 +1,4 @@
+// V3 - 2026-04-25 - P7: Added 12 RTM/FM fields; added RTM & Follow-Me group; sizeof TX confStruct 96→120
 #ifndef WEB_UI_EMBEDDED_H
 #define WEB_UI_EMBEDDED_H
 
@@ -85,7 +86,7 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
   </div>
 
 <script>
-// ALL 40 TX PARAMETERS
+// ALL 54 TX PARAMETERS (updated 2026-04-25 P7: was 40 pre-P7, +12 RTM/FM, +2 address)
 const groupOrder=["Radio","Gears","Throttle","Steering","Toggle","Lock & Timing","Calibration","GPS & Follow-Me","RTM & Follow-Me","System"];
 const fields=[
 {key:"radio_preset",label:"Radio Preset",description:"Select your region",group:"Radio",type:"enum",def:1,min:1,max:3,options:[{v:1,l:"EU868"},{v:2,l:"US/AU915"},{v:3,l:"Reserved"}]},

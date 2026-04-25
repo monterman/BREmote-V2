@@ -1,5 +1,6 @@
 #ifndef WEB_UI_EMBEDDED_H
 #define WEB_UI_EMBEDDED_H
+// V3 - 2026-04-25 - P7: Added 5 RTM/FM RX fields; added RTM & Follow-Me group
 
 #include <Arduino.h>
 
@@ -106,7 +107,7 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
 
 <script>
 // 40 Parameters for RX
-const groupOrder=["Radio","Steering","PWM","Motor & Safety","Sensors","Battery","GPS & Follow-Me","Follow-Me Tuning","Logging","System"];
+const groupOrder=["Radio","Steering","PWM","Motor & Safety","Sensors","Battery","GPS & Follow-Me","Follow-Me Tuning","RTM & Follow-Me","Logging","System"];
 const fields=[
 {key:"radio_preset",label:"Radio Preset",description:"Select your region",group:"Radio",type:"enum",def:1,min:1,max:3,options:[{v:1,l:"EU868"},{v:2,l:"US/AU915"},{v:3,l:"Reserved"}]},
 {key:"rf_power",label:"RF Power",description:"RF transmit power (dBm)",group:"Radio",type:"int",def:0,min:-9,max:22,unit:"dBm"},
@@ -140,6 +141,11 @@ const fields=[
 {key:"gps_suspect_threshold",label:"GPS Suspect Threshold",description:"Consecutive anti-spoofing failures before GPS is marked rejected. Range 1-10, default 3. While rejected, RTM arming is blocked.",group:"GPS & Follow-Me",type:"int",def:3,min:1,max:10},
 {key:"gps_max_pair_dist_m",label:"Phase B: Max Pair Distance",description:"Maximum plausible TX-RX distance during GPS handshake check. Range 50-2000 m, default 500 m. If TX and RX are further apart than this, RTM arming is blocked.",group:"GPS & Follow-Me",type:"float",def:500.0,min:50.0,max:2000.0,step:10.0,unit:"m"},
 {key:"gps_max_speed_diff_kmh",label:"Phase B: Max Speed Difference",description:"Maximum TX-RX GPS speed difference during handshake check. Range 10-200 km/h, default 50 km/h. If speeds differ more than this, RTM arming is blocked.",group:"GPS & Follow-Me",type:"float",def:50.0,min:10.0,max:200.0,step:1.0,unit:"km/h"},
+{key:"rtm_vesc_speed_diff_kmh",label:"Phase C: Max VESC Speed Diff",description:"Phase C: max difference between GPS speed and VESC ERPM-implied speed during active RTM. Range 5-50 km/h, default 20.",group:"GPS & Follow-Me",type:"float",def:20.0,min:5.0,max:50.0,step:1.0,unit:"km/h"},
+{key:"vesc_erpm_per_kmh",label:"VESC ERPM per km/h",description:"Vehicle-specific: how many ERPM equals 1 km/h. Set by driving at known speed and reading ERPM from ?printtasks. 0=disable Phase C VESC check.",group:"GPS & Follow-Me",type:"float",def:0.0,min:0.0,max:9999.0,step:1.0,unit:"ERPM/kmh"},
+{key:"rtm_rx_enabled",label:"RTM RX Enabled",description:"RX-side RTM master enable (safety kill switch). 0=RTM blocked regardless of TX. Default 1.",group:"RTM & Follow-Me",type:"bool",def:1,min:0,max:1},
+{key:"rtm_rx_override_steering",label:"RTM Override Steering",description:"Allow RTM to override steering towards TX GPS position. 0=disable steering override (throttle limiting only). Default 1.",group:"RTM & Follow-Me",type:"bool",def:1,min:0,max:1},
+{key:"rtm_compass_required",label:"RTM Compass Required",description:"Require valid compass reading for RTM arming. 0=allow RTM without compass (steering disabled). Default 1.",group:"RTM & Follow-Me",type:"bool",def:1,min:0,max:1},
 {key:"boogie_vmax_in_followme_kmh",label:"Boogie V-Max",description:"Max boogie speed in follow-me mode",group:"Follow-Me Tuning",type:"float",def:25.0,min:0,max:100,step:0.1,unit:"km/h"},
 {key:"min_dist_m",label:"Min Distance",description:"Minimum allowed distance to foiler",group:"Follow-Me Tuning",type:"float",def:10.0,min:0,max:1000,step:0.1,unit:"m"},
 {key:"followme_smoothing_band_m",label:"Smoothing Band",description:"Smoothing band above min distance",group:"Follow-Me Tuning",type:"float",def:10.0,min:0,max:1000,step:0.1,unit:"m"},

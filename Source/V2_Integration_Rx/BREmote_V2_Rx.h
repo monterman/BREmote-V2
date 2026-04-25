@@ -2,6 +2,7 @@
 // V3 - 2026-04-22 - Added Phase A GPS anti-spoofing params to confStruct; sizeof 112→128; updated defaultConf
 // V3 - 2026-04-24 - Added rx_tx_gps_lat/lng/timestamp globals for 0xF3 meta-packet reception
 // V3 - 2026-04-24 - Added Phase B GPS handshake params to confStruct; sizeof 128→136; updated defaultConf
+// V3 - 2026-04-25 - P7: Added RTM Phase C + RX safety params; VESC_MORE_VALUES; sizeof 136→152
 
 /*
 ** Includes
@@ -32,6 +33,10 @@
 #include <WebServer.h>
 #endif
 
+// V3 - 2026-04-25 - P7: Enable ERPM fetch for Phase C speed consistency check.
+// Without this define, vesc.erpm is always 0. Adds motor current, battery
+// current, duty, and ERPM to the VESC request (~2ms extra UART per call).
+#define VESC_MORE_VALUES
 #include "vesc_datatypes.h"
 #include "vesc_buffer.h"
 #include "vesc_crc.h"
@@ -168,8 +173,28 @@ struct confStruct {
     // ============================================================
     float gps_max_pair_dist_m;      // Max plausible TX-RX distance at handshake; range 50-2000 m; default 500 m
     float gps_max_speed_diff_kmh;   // Max TX-RX speed difference for handshake; range 10-200 km/h; default 50 km/h
+
+    // ============================================================
+    // V3 - 2026-04-25 - PRIORITY 7: RTM PHASE C + RX SAFETY PARAMETERS
+    //
+    // sizeof grows 136->152. Layout:
+    //   float rtm_vesc_speed_diff_kmh  (4)
+    //   float vesc_erpm_per_kmh        (4)
+    //   uint16_t rtm_rx_enabled        (2)
+    //   uint16_t rtm_rx_override_steer (2)
+    //   uint16_t rtm_compass_required  (2)
+    //   [2 bytes implicit tail padding to maintain 4-byte struct alignment]
+    //
+    // First flash of P7 firmware resets all RX settings to defaults.
+    // After flashing: re-pair TX/RX, re-enter all settings, re-run runcal.
+    // ============================================================
+    float    rtm_vesc_speed_diff_kmh;    // Phase C: max GPS vs VESC speed diff; 5-50 km/h; default 20.0
+    float    vesc_erpm_per_kmh;          // ERPM per km/h (vehicle-specific); default 0.0 (0=skip VESC check)
+    uint16_t rtm_rx_enabled;             // RX-side RTM master enable; 0=off, 1=on; default 1
+    uint16_t rtm_rx_override_steering;   // Allow RTM to override steering; 0=off, 1=on; default 1
+    uint16_t rtm_compass_required;       // Require valid compass for RTM arming; 0=no, 1=yes; default 1
 };
-static_assert(sizeof(confStruct) == 136, "confStruct size mismatch — expected 136 bytes (V3.2). Update this assert and SPIFFS migration logic if you change the struct.");  // V3 fix (N-1): pinned to exact size; catches both shrinkage and unexpected growth. 112→128 when Phase A added 2026-04-22; 128→136 when Phase B added 2026-04-24.
+static_assert(sizeof(confStruct) == 152, "confStruct size mismatch — expected 152 bytes (V3.3/P7). Update this assert if you change the struct.");  // 112->128 Phase A; 128->136 Phase B; 136->152 P7 RTM (2026-04-25).
 confStruct usrConf;
   //The orginal confs were:  ##// confStruct defaultConf = {SW_VERSION, 1, 0, 0, 50, 0, 0, 1500, 2000, 1500, 2000, 1000, 10, 0, 1, 0, 0, 0, 0, 0, 25.0f, 10.0f, 10.0f, 5.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0, 1000, 1, 0, {0, 0, 0}, {0, 0, 0}, {'1','2','3','4','5','6','7','8'}};
   // V3 default configuration — tuned for monterman hardware
@@ -188,7 +213,13 @@ confStruct defaultConf = {SW_VERSION, 2, 20, 1, 50, 0, 0, 1000, 2000, 1000, 2000
   3,          // gps_suspect_threshold:  consecutive failures before GPS rejected (range 1-10)
   // V3 - 2026-04-24 - Phase B GPS handshake anti-spoofing defaults (see CLAUDE.md Section 11)
   500.0f,     // gps_max_pair_dist_m:    max TX-RX pairing distance (range 50-2000 m)
-  50.0f       // gps_max_speed_diff_kmh: max TX-RX speed difference (range 10-200 km/h)
+  50.0f,      // gps_max_speed_diff_kmh: max TX-RX speed difference (range 10-200 km/h)
+  // V3 - 2026-04-25 - Priority 7 RTM Phase C + RX safety defaults
+  20.0f,      // rtm_vesc_speed_diff_kmh: max GPS vs VESC speed diff (5-50 km/h)
+  0.0f,       // vesc_erpm_per_kmh: 0 = skip Phase C VESC check until calibrated
+  1,          // rtm_rx_enabled: 1 = RTM enabled on RX side
+  1,          // rtm_rx_override_steering: 1 = RTM may override steering
+  1           // rtm_compass_required: 1 = compass required for RTM arming
 };
   /// these equal to:  {"version":3,"radio_preset":2,"rf_power":20,"steering_type":1,"steering_influence":50,"steering_inverted":0,"trim":0,"pwm0_min":1000,"pwm0_max":2000,"pwm1_min":1000,"pwm1_max":2000,"failsafe_time":1000,"foil_num_cells":10,"bms_det_active":0,"wet_det_active":1,"dummy_delete_me":0,"data_src":2,"gps_en":1,"followme_mode":2,"kalman_en":1,"boogie_vmax_in_followme_kmh":25,"min_dist_m":10,"followme_smoothing_band_m":10,"foiler_low_speed_kmh":8,"zone_angle_enter_deg":35,"zone_angle_exit_deg":45,"near_diag_offset_deg":45,"ubat_cal":0.0095554,"ubat_offset":0,"tx_gps_stale_timeout_ms":1000,"logger_en":0,"paired":1,"own_address":"46:C9:E0","dest_address":"46:CB:CC","wifi_password":"12345678","mag_offset_x":0,"mag_offset_y":0,"mag_scale_x":1.0,"mag_scale_y":1.0,"gps_chip_type":1,"gps_max_hdop":2.0,"gps_max_accel_g":3.0,"gps_max_jump_kmh":200.0,"gps_suspect_threshold":3,"gps_max_pair_dist_m":500.0,"gps_max_speed_diff_kmh":50.0}
   ///

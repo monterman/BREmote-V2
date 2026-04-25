@@ -33,10 +33,6 @@
 #include <WebServer.h>
 #endif
 
-// V3 - 2026-04-25 - P7: Enable ERPM fetch for Phase C speed consistency check.
-// Without this define, vesc.erpm is always 0. Adds motor current, battery
-// current, duty, and ERPM to the VESC request (~2ms extra UART per call).
-#define VESC_MORE_VALUES
 #include "vesc_datatypes.h"
 #include "vesc_buffer.h"
 #include "vesc_crc.h"
@@ -221,7 +217,7 @@ confStruct defaultConf = {SW_VERSION, 2, 20, 1, 50, 0, 0, 1000, 2000, 1000, 2000
   1,          // rtm_rx_override_steering: 1 = RTM may override steering
   1           // rtm_compass_required: 1 = compass required for RTM arming
 };
-  /// these equal to:  {"version":3,"radio_preset":2,"rf_power":20,"steering_type":1,"steering_influence":50,"steering_inverted":0,"trim":0,"pwm0_min":1000,"pwm0_max":2000,"pwm1_min":1000,"pwm1_max":2000,"failsafe_time":1000,"foil_num_cells":10,"bms_det_active":0,"wet_det_active":1,"dummy_delete_me":0,"data_src":2,"gps_en":1,"followme_mode":2,"kalman_en":1,"boogie_vmax_in_followme_kmh":25,"min_dist_m":10,"followme_smoothing_band_m":10,"foiler_low_speed_kmh":8,"zone_angle_enter_deg":35,"zone_angle_exit_deg":45,"near_diag_offset_deg":45,"ubat_cal":0.0095554,"ubat_offset":0,"tx_gps_stale_timeout_ms":1000,"logger_en":0,"paired":1,"own_address":"46:C9:E0","dest_address":"46:CB:CC","wifi_password":"12345678","mag_offset_x":0,"mag_offset_y":0,"mag_scale_x":1.0,"mag_scale_y":1.0,"gps_chip_type":1,"gps_max_hdop":2.0,"gps_max_accel_g":3.0,"gps_max_jump_kmh":200.0,"gps_suspect_threshold":3,"gps_max_pair_dist_m":500.0,"gps_max_speed_diff_kmh":50.0}
+  /// these equal to:  {"version":3,"radio_preset":2,"rf_power":20,"steering_type":1,"steering_influence":50,"steering_inverted":0,"trim":0,"pwm0_min":1000,"pwm0_max":2000,"pwm1_min":1000,"pwm1_max":2000,"failsafe_time":1000,"foil_num_cells":10,"bms_det_active":0,"wet_det_active":1,"dummy_delete_me":0,"data_src":2,"gps_en":1,"followme_mode":2,"kalman_en":1,"boogie_vmax_in_followme_kmh":25,"min_dist_m":10,"followme_smoothing_band_m":10,"foiler_low_speed_kmh":8,"zone_angle_enter_deg":35,"zone_angle_exit_deg":45,"near_diag_offset_deg":45,"ubat_cal":0.0095554,"ubat_offset":0,"tx_gps_stale_timeout_ms":1000,"logger_en":0,"paired":1,"own_address":"46:C9:E0","dest_address":"46:CB:CC","wifi_password":"12345678","mag_offset_x":0,"mag_offset_y":0,"mag_scale_x":1.0,"mag_scale_y":1.0,"gps_chip_type":1,"gps_max_hdop":2.0,"gps_max_accel_g":3.0,"gps_max_jump_kmh":200.0,"gps_suspect_threshold":3,"gps_max_pair_dist_m":500.0,"gps_max_speed_diff_kmh":50.0,"rtm_vesc_speed_diff_kmh":20.0,"vesc_erpm_per_kmh":0.0,"rtm_rx_enabled":1,"rtm_rx_override_steering":1,"rtm_compass_required":1}
   ///
 
 #include "../Common/ConfigServiceEngine.h"
@@ -360,7 +356,9 @@ uint8_t percent_last_val = 0xFF;
 uint8_t percent_last_thr = 1;
 unsigned long percent_last_thr_change = 0;
 
-// V3: ERPM added to VESC selective-get mask; payload length is 23 bytes
+// V3: ERPM added to VESC selective-get mask; payload length is 23 bytes.
+// P7: ERPM is also read by Phase C RTM anti-spoofing (RTMState.ino) to verify
+// VESC speed matches GPS speed during active RTM. gps_en + vesc_erpm_per_kmh>0 required.
 #define VESC_MORE_VALUES
 #ifdef VESC_MORE_VALUES
   #define VESC_PACK_LEN 23

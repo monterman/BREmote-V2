@@ -1,5 +1,6 @@
 // V3 - 2026-04-24 - Added GPS meta-packet reception: gps_meta_pending state, processMetaGpsPacket(), triggeredReceive() 2-path state machine
 // V3 - 2026-04-24 - Added Phase B GPS handshake check: gpsPhaseBCheck() called from processMetaGpsPacket()
+// V3 - 2026-04-25 - P7: Added processRtmStatePacket(), processFmOverridePacket(); dispatch 0xF1/0xF2 in triggeredReceive()
 
 void radioErrorHalt(int type)
 {
@@ -274,6 +275,36 @@ static void gpsPhaseBCheck()
   gps_phase_b_prev_tx_ms  = now;
 }
 
+// V3 - 2026-04-25 - P7: Handle 0xF1 RTM state meta-packet from TX.
+// pkt: 6-byte buffer. byte[3]=0xF1, byte[4]: 0=RTM deactivate, 1=RTM activate.
+// Sets rtm_rx_active. Safety gates in RTMState.ino may override during active RTM.
+static void processRtmStatePacket(const uint8_t *pkt)
+{
+  uint8_t new_state = pkt[4];
+  if (new_state == 0)
+  {
+    rtm_rx_active         = false;
+    rtm_rx_emergency_stop = false;
+    Serial.println("RTM [RX] deactivated by TX");
+  }
+  else if (new_state == 1)
+  {
+    // RTM state machine in RTMState.ino will run safety gates on next iteration.
+    rtm_rx_active = true;
+    Serial.println("RTM [RX] activation requested by TX");
+  }
+}
+
+// V3 - 2026-04-25 - P7: Handle 0xF2 FM override meta-packet from TX.
+// pkt: 6-byte buffer. byte[3]=0xF2, byte[4]: FM mode 0-3.
+// Updates runtime FM mode without writing SPIFFS. Resets to 0xFF (use SPIFFS) on RX reboot.
+static void processFmOverridePacket(const uint8_t *pkt)
+{
+  uint8_t mode = pkt[4] & 0x03;  // clamp to 0-3
+  fm_mode_runtime = mode;
+  Serial.printf("FM [RX] mode override: %d\n", mode);
+}
+
 // V3 - 2026-04-24 - GPS meta-packet state and handler for 0xF3 protocol
 
 // gps_meta_pending: set true when a 0xF3 announcement (6-byte) is received.
@@ -383,7 +414,21 @@ void triggeredReceive(void *parameter) {
             {
               rxprintln("CRC ok");
 
-              if (rcvArray[3] == 0xF3)
+              if (rcvArray[3] == 0xF1)
+              {
+                // ---- RTM state meta-packet ----
+                // TX signals RTM active (1) or inactive (0). No telemetry reply.
+                last_packet = millis();  // meta-packet proves TX is alive
+                processRtmStatePacket(rcvArray);
+              }
+              else if (rcvArray[3] == 0xF2)
+              {
+                // ---- FM override meta-packet ----
+                // TX cycles follow-me mode. No telemetry reply.
+                last_packet = millis();  // meta-packet proves TX is alive
+                processFmOverridePacket(rcvArray);
+              }
+              else if (rcvArray[3] == 0xF3)
               {
                 // ---- GPS announcement ----
                 // TX will send a 14-byte GPS data packet ~10ms from now.
@@ -397,44 +442,46 @@ void triggeredReceive(void *parameter) {
                 // TX does not expect a telemetry reply here; skip the common exit.
                 continue;
               }
-
-              // ---- Normal throttle/steering control packet ----
-              last_packet = millis();
-#ifdef WIFI_ENABLED
-              webCfgNotifyRxConnected();
-#endif
-              rxprint("RSSI: ");
-              rxprint(radio.getRSSI());
-              rxprint(", SNR: ");
-              rxprintln(radio.getSNR());
-
-              thr_received      = rcvArray[3];
-              steering_received = rcvArray[4];
-
-              telemetry.link_quality = getLinkQuality(radio.getRSSI(), radio.getSNR());
-
-              rxprintln("Sending response");
-
-              uint8_t sendArray[6];
-              memcpy(sendArray, usrConf.dest_address, 3);
-              uint8_t* ptr = (uint8_t*)&telemetry;
-              sendArray[3] = telemetry_index;
-              sendArray[4] = ptr[telemetry_index];
-              telemetry_index++;
-              if(telemetry_index >= sizeof(TelemetryPacket))
+              else
               {
-                telemetry_index = 0;
+                // ---- Normal throttle/steering control packet ----
+                last_packet = millis();
+#ifdef WIFI_ENABLED
+                webCfgNotifyRxConnected();
+#endif
+                rxprint("RSSI: ");
+                rxprint(radio.getRSSI());
+                rxprint(", SNR: ");
+                rxprintln(radio.getSNR());
+
+                thr_received      = rcvArray[3];
+                steering_received = rcvArray[4];
+
+                telemetry.link_quality = getLinkQuality(radio.getRSSI(), radio.getSNR());
+
+                rxprintln("Sending response");
+
+                uint8_t sendArray[6];
+                memcpy(sendArray, usrConf.dest_address, 3);
+                uint8_t* ptr = (uint8_t*)&telemetry;
+                sendArray[3] = telemetry_index;
+                sendArray[4] = ptr[telemetry_index];
+                telemetry_index++;
+                if(telemetry_index >= sizeof(TelemetryPacket))
+                {
+                  telemetry_index = 0;
+                }
+                sendArray[5] = esp_crc8(sendArray, 5);
+
+                #ifdef DEBUG_RX
+                printHexArray(sendArray, 6);
+                #endif
+
+                vTaskDelay(pdMS_TO_TICKS(10));
+                radio.implicitHeader(6);
+                radio.startTransmit(sendArray, 6);
+                vTaskDelay(pdMS_TO_TICKS(10));
               }
-              sendArray[5] = esp_crc8(sendArray, 5);
-
-              #ifdef DEBUG_RX
-              printHexArray(sendArray, 6);
-              #endif
-
-              vTaskDelay(pdMS_TO_TICKS(10));
-              radio.implicitHeader(6);
-              radio.startTransmit(sendArray, 6);
-              vTaskDelay(pdMS_TO_TICKS(10));
             }
           }
         }

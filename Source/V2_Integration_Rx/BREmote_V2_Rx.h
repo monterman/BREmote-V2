@@ -3,6 +3,7 @@
 // V3 - 2026-04-24 - Added rx_tx_gps_lat/lng/timestamp globals for 0xF3 meta-packet reception
 // V3 - 2026-04-24 - Added Phase B GPS handshake params to confStruct; sizeof 128→136; updated defaultConf
 // V3 - 2026-04-25 - P7: Added RTM Phase C + RX safety params; VESC_MORE_VALUES; sizeof 136→152
+// V3 - 2026-04-25 - P7: Added rtm_rx_active, rtm_rx_emergency_stop, rtm_steer_override, fm_mode_runtime globals
 
 /*
 ** Includes
@@ -250,6 +251,16 @@ volatile bool config_version_error = false;
 double        rx_tx_gps_lat       = 0.0;  // TX latitude (degrees, WGS84)
 double        rx_tx_gps_lng       = 0.0;  // TX longitude (degrees, WGS84)
 unsigned long rx_tx_gps_timestamp = 0;    // millis() when last meta-packet received; 0 = never
+
+// V3 - 2026-04-25 - P7 RTM/FM runtime state (set by Radio.ino meta-packet handlers)
+// rtm_rx_active: true = TX signalled RTM active; safety gates in RTMState.ino may override.
+// rtm_rx_emergency_stop: true = safety gate failed; calcPWM() forces throttle to 0.
+// rtm_steer_override: bearing-derived steering value (0-255, 127=straight ahead).
+// fm_mode_runtime: TX-side FM mode override (0-3); 0xFF = use SPIFFS default.
+volatile bool    rtm_rx_active         = false;
+volatile bool    rtm_rx_emergency_stop = false;
+volatile uint8_t rtm_steer_override    = 127;
+volatile uint8_t fm_mode_runtime       = 0xFF;
 
 #include "../Common/SPIFFSEngine.h"
 

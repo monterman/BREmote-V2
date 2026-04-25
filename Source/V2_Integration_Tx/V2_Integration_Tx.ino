@@ -1,3 +1,4 @@
+// V3 - 2026-04-25 - P7: Simplified getTxGPSLoop() gate to gps_en only; added runRtmLoop() call in loop()
 // V3 - 2026-04-24 - Call initTxGPS() in setup() after applyConfigSettings() so GPS UART is ready on boot
 // V3 - 2026-04-21 - Added getTxGPSLoop() call in loop() and forward declarations for TX GPS functions
 #include "BREmote_V2_Tx.h"

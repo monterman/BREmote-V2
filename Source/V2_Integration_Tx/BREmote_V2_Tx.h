@@ -306,7 +306,7 @@ volatile uint8_t steer_sent = 0; // Steering value actually sent over radio
 // Writing count LAST (after type/value) is safe: sendData won't act until count > 0.
 volatile uint8_t rtm_meta_type  = 0;    // 0xF1=RTM state, 0xF2=FM override
 volatile uint8_t rtm_meta_value = 0;    // for 0xF1: 0=inactive 1=active; for 0xF2: 0-3 FM mode
-volatile int8_t  rtm_meta_count = 0;    // bursts remaining; 0 = idle
+volatile uint8_t rtm_meta_count = 0;    // bursts remaining; 0 = idle (uint8_t: value is always 0 or 3)
 
 // V3 - 2026-04-25 - P7 RTM throttle cap.
 // 255 = no cap (RTM not active). During RTM ACTIVE, set to the ramped cap value

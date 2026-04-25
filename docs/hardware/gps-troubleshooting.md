@@ -276,3 +276,40 @@ Once `?gpsraw` shows clean sentences, the wiring is correct. Now get a satellite
 ---
 
 *Guide created: 2026-04-24 — based on real diagnosis during TX unit 1 build.*  
+
+---
+
+## Arduino IDE Board Settings
+
+These settings must be configured in Arduino IDE before compiling or flashing either board. Wrong settings will cause compile errors or unexpected behavior.
+
+### Partition Scheme — CRITICAL
+
+The default partition scheme will fill up at 92-94% flash usage and block further development. Always use Huge APP.
+
+| Board | Setting | Value |
+|---|---|---|
+| TX (ESP32-C3) | Tools → Partition Scheme | **Huge APP (3MB No OTA)** |
+| RX (ESP32-S3) | Tools → Partition Scheme | **Huge APP (3MB No OTA)** |
+
+**Why:** The default 4MB partition gives only 1.2MB for the app. Huge APP gives 3MB — more than double. SPIFFS shrinks slightly from 1.5MB to 1.0MB but config data is only a few KB so this has no impact.
+
+**What you lose:** OTA (over the air WiFi flashing) — not used in BREmote. You always flash via USB cable so nothing is lost.
+
+Expected flash usage after switching:
+- TX: ~38% (was 92%)
+- RX: ~39% (was 94%)
+
+### Board Selection
+
+| Board | Tools → Board setting |
+|---|---|
+| TX | ESP32C3 Dev Module |
+| RX | ESP32S3 Dev Module |
+
+### Baud Rate
+
+| Setting | Value |
+|---|---|
+| Upload Speed | 921600 |
+| Serial Monitor | 115200 |

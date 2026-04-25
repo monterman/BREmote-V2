@@ -331,8 +331,9 @@ void getGPSLoop()
     }
   }
 
-  if (!newData || !gps.location.isValid() || !gps.speed.isUpdated()) {
-    // No valid fix or no updated speed — not a spoof event, just no usable data.
+  // V3 - 2026-04-25 - Fix: use isValid() not isUpdated() for speed check — isUpdated() fails when stationary blocking Phase B
+  if (!newData || !gps.location.isValid() || !gps.speed.isValid()) {
+    // No valid fix or no valid speed — not a spoof event, just no usable data.
     telemetry.foil_speed = 0xFF;  // 0xFF = no data (V3 fix N-4: 99 collides with real speed)
   } else {
     double cur_lat   = gps.location.lat();

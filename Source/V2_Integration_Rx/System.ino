@@ -1,3 +1,4 @@
+// V3 - 2026-04-25 - P7: Added ?compassheading serial diagnostic command
 #include <Wire.h>
 
 const char* SYS_DEVICE_LABEL = "RX";
@@ -259,6 +260,17 @@ void cmdLogRate(const String& params) {
 void cmdScanI2C(const String& params) { scanI2C(); }
 void cmdPrintCompass(const String& params) { serPrintCompass(); }
 void cmdCompassCal(const String& params) { runCompassCalibration(); }
+void cmdPrintCompassHeading(const String& params) {
+  Serial.println("Printing compass heading. Type 'quit' to exit.");
+  while (true) {
+    esp_task_wdt_reset();
+    if (checkSerialQuit()) break;
+    float h = getCompassHeading();
+    if (h < 0.0f) Serial.println("Compass not detected or not calibrated");
+    else Serial.printf("Heading: %.1f deg\n", h);
+    vTaskDelay(pdMS_TO_TICKS(500));
+  }
+}
 
 void cmdHelp(const String& params);
 
@@ -303,7 +315,8 @@ static const SerialCommand kCommands[] = {
   {"i2c", "scan I2C bus for compass", cmdScanI2C},
   {"printcompass", "print raw compass X/Y/Z", cmdPrintCompass},
   {"compasscal", "start 45s automated calibration", cmdCompassCal},
-  
+  {"compassheading", "print live compass heading in degrees", cmdPrintCompassHeading},
+
   {"", "show this help", cmdHelp},
 };
 

@@ -1,3 +1,4 @@
+// V3 - 2026-04-25 - P7: Added getCompassHeading() function
 #include <Wire.h>
 #include <esp_task_wdt.h> // <-- Added to feed the Watchdog
 
@@ -139,4 +140,36 @@ void runCompassCalibration() {
   // Automate the save command to SPIFFS
   cmdSave("");
   Serial.println("Success! Calibration permanently saved to hardware.");
+}
+
+// V3 - 2026-04-25 - P7: Compute calibrated compass heading in degrees.
+//
+// What it does:
+//   Reads raw magnetometer via readCompassRaw(), applies hard-iron offset
+//   correction (mag_offset_x/y) and soft-iron scale correction (mag_scale_x/y),
+//   then returns the 2D heading angle via atan2f.
+//
+// Returns:
+//   Heading in degrees, 0=North, 90=East, 180=South, 270=West (clockwise).
+//   Returns -1.0f if compass is not detected or never calibrated (scale=0).
+//
+// Note: if heading is consistently wrong by a fixed offset, adjust physical
+//   mounting or add a calibration offset parameter in a future revision.
+//   If left/right are swapped, negate cal_y below.
+float getCompassHeading()
+{
+  if (!compass_detected) return -1.0f;
+
+  // Reject uncalibrated scale (default 1.0f after runcal is fine; 0.0f = never set)
+  if (usrConf.mag_scale_x == 0.0f || usrConf.mag_scale_y == 0.0f) return -1.0f;
+
+  readCompassRaw();
+
+  float cal_x = ((float)magX - (float)usrConf.mag_offset_x) * usrConf.mag_scale_x;
+  float cal_y = ((float)magY - (float)usrConf.mag_offset_y) * usrConf.mag_scale_y;
+
+  float heading = atan2f(cal_y, cal_x) * (180.0f / M_PI);
+  if (heading < 0.0f) heading += 360.0f;
+
+  return heading;
 }

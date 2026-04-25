@@ -117,12 +117,10 @@ void loop()
   webCfgLoop();
 #endif
 
-  // V3 - 2026-04-21 - Poll TX GPS bytes each loop iteration (non-blocking).
-  // Only runs when gps_en=1 AND a TX-GPS speed unit is selected (speed_src 2/3/5).
-  // getTxGPSLoop() drains Serial1 into TinyGPS++ and updates tx_gps_speed.
-  // It never blocks — safe to call every 110ms loop tick.
-  if (usrConf.gps_en &&
-      (usrConf.speed_src == 2 || usrConf.speed_src == 3 || usrConf.speed_src == 5))
+  // V3 - 2026-04-25 - P7: Run GPS loop whenever gps_en=1, regardless of speed_src.
+  // RTM mode needs TX GPS position for meta-packets even when speed display uses
+  // an RX-side source (speed_src 0/1/4). Non-blocking — safe every 110ms tick.
+  if (usrConf.gps_en)
   {
     getTxGPSLoop();
   }

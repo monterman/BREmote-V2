@@ -1,4 +1,5 @@
 // V3 - 2026-04-24 - Added 0xF3 GPS meta-packet burst at 2Hz in sendData(); THR capped at 0xF2
+// V3 - 2026-04-25 - P7: Added RTM/FM meta-packet queue consumer in sendData(); cap 0xF2→0xF0; queueMetaPacketBurst()
 void setRadioActivityEnabled(bool enabled)
 {
   radio_activity_enabled = enabled;
@@ -227,6 +228,35 @@ void sendData(void *parameter)
   {
     if(usrConf.paired && isRadioActivityEnabled())
     {
+      // ---- Meta-packet burst path (highest priority, preempts GPS and control packets) ----
+      // Sends one 6-byte meta-packet per iteration until count reaches 0.
+      // 3 bursts × 100ms cycle = 300ms total. Type/value written before count by loop task.
+      if (rtm_meta_count > 0)
+      {
+        uint8_t metaPkt[6];
+        memcpy(metaPkt, usrConf.dest_address, 3);
+        metaPkt[3] = rtm_meta_type;
+        metaPkt[4] = rtm_meta_value;
+        metaPkt[5] = esp_crc8(metaPkt, 5);
+
+        rxprint("RTM meta-pkt: ");
+        #ifdef DEBUG_RX
+        printHexArray(metaPkt, 6);
+        #endif
+
+        radio.implicitHeader(6);
+        radio.startTransmit(metaPkt, 6);
+        rtm_meta_count--;
+        num_sent_packets++;
+        vTaskDelay(pdMS_TO_TICKS(10));
+        radio.implicitHeader(6);
+        rfInterrupt = false;
+        radio.startReceive();
+        xTaskNotifyGive(triggeredWaitForTelemetryHandle);
+        vTaskDelayUntil(&xLastWakeTime, xFrequency);
+        continue;
+      }
+
       gps_cycle++;
       if (gps_cycle >= 5) gps_cycle = 0;
 
@@ -308,7 +338,9 @@ void sendData(void *parameter)
         else
         {
           uint8_t thr = calcFinalThrottle();
-          sendArray[3] = (thr >= 0xF3) ? 0xF2 : thr;  // cap: 0xF3 reserved for GPS meta-packet
+          // V3 - 2026-04-25 - P7: cap at 0xF0 (240=94.1%) to reserve 0xF1-0xFF for all meta-packet types.
+          // 0xF1=RTM state, 0xF2=FM override, 0xF3=GPS coord. Was 0xF2 cap before P7.
+          sendArray[3] = (thr > 0xF0) ? 0xF0 : thr;
           sendArray[4] = steer_scaled;
         }
 
@@ -417,3 +449,15 @@ void waitForTelemetry(void *parameter)
 }
 
 // getLinkQuality() is now in ../Common/RadioCommon.h
+
+// V3 - 2026-04-25 - P7: Queue a 3-burst meta-packet transmission.
+// Called from loop task (RTM/FM state machines in RTMState.ino).
+// sendData() FreeRTOS task consumes the queue.
+// type: 0xF1=RTM state, 0xF2=FM override
+// value: for 0xF1: 0=inactive 1=active; for 0xF2: 0-3 FM mode
+void queueMetaPacketBurst(uint8_t type, uint8_t value)
+{
+  rtm_meta_type  = type;
+  rtm_meta_value = value;
+  rtm_meta_count = 3;  // 3 bursts at 100ms intervals = 300ms total send window
+}

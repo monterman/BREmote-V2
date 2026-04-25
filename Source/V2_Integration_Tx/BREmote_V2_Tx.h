@@ -1,6 +1,7 @@
 // V3 - 2026-04-21 - Added TinyGPS++ include, gps_tx + tx_gps_speed globals, and P_U1_RX/P_U1_TX pin defines for TX GPS (BN-220 on Serial1)
 // V3 - 2026-04-22 - Fixed speed_src/volatile comments; defaults gps_en=0,speed_src=0; added gps_max_hdop field (HDOP*100, tail-padding slot, sizeof stays 92)
 // V3 - 2026-04-22 - Added gps_chip_type field (GPS module selector: 0=BN-220, 2=M10); sizeof 92→96
+// V3 - 2026-04-25 - P7: Added RTM meta-packet queue globals (rtm_meta_type/value/count) and RTM throttle cap (rtm_thr_cap_tx, rtm_tx_active)
 
 /*
 ** Includes
@@ -299,6 +300,20 @@ volatile uint8_t steer_scaled = 0;
 
 volatile uint8_t thr_sent = 0;   // Post-expo+gear throttle actually sent over radio
 volatile uint8_t steer_sent = 0; // Steering value actually sent over radio
+
+// V3 - 2026-04-25 - P7 RTM meta-packet burst queue.
+// Loop task writes type/value then sets count; sendData task reads count and consumes.
+// Writing count LAST (after type/value) is safe: sendData won't act until count > 0.
+volatile uint8_t rtm_meta_type  = 0;    // 0xF1=RTM state, 0xF2=FM override
+volatile uint8_t rtm_meta_value = 0;    // for 0xF1: 0=inactive 1=active; for 0xF2: 0-3 FM mode
+volatile int8_t  rtm_meta_count = 0;    // bursts remaining; 0 = idle
+
+// V3 - 2026-04-25 - P7 RTM throttle cap.
+// 255 = no cap (RTM not active). During RTM ACTIVE, set to the ramped cap value
+// (30-70% of 255). Applied in calcFinalThrottle(). RTM can only subtract from
+// user throttle — never add. Creator safety philosophy enforced here.
+volatile uint8_t rtm_thr_cap_tx = 255;
+volatile bool    rtm_tx_active  = false;
 
 //-1 = left, 1 = right input
 volatile int tog_input = 0;

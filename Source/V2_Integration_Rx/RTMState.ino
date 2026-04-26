@@ -9,6 +9,8 @@
 //
 // All outputs are written to volatile globals read by calcPWM() and triggeredReceive().
 
+// REPLACE WITH (add the extern line above it):
+extern bool gps_phase_b_ok;   // V3 - P7 fix: defined in Radio.ino (Phase B section)
 // ---- Phase C convergence tracking ----
 static double        rtm_prev_dist_m = -1.0;   // distance to TX at last Phase C check
 static unsigned long rtm_phase_c_ms  = 0;       // last Phase C check time

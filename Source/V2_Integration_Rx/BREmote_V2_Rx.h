@@ -181,7 +181,7 @@ struct confStruct {
     //   uint16_t rtm_rx_enabled        (2)
     //   uint16_t rtm_rx_override_steer (2)
     //   uint16_t rtm_compass_required  (2)
-    //   [2 bytes implicit tail padding to maintain 4-byte struct alignment]
+    //   uint16_t rtm_stop_distance_m   (2) — fills former 2-byte tail padding; sizeof stays 152
     //
     // First flash of P7 firmware resets all RX settings to defaults.
     // After flashing: re-pair TX/RX, re-enter all settings, re-run runcal.
@@ -191,6 +191,7 @@ struct confStruct {
     uint16_t rtm_rx_enabled;             // RX-side RTM master enable; 0=off, 1=on; default 1
     uint16_t rtm_rx_override_steering;   // Allow RTM to override steering; 0=off, 1=on; default 1
     uint16_t rtm_compass_required;       // Require valid compass for RTM arming; 0=no, 1=yes; default 1
+    uint16_t rtm_stop_distance_m;        // Hard stop radius in metres; RTM stops when within this dist of TX; 1-50; default 3
 };
 static_assert(sizeof(confStruct) == 152, "confStruct size mismatch — expected 152 bytes (V3.3/P7). Update this assert if you change the struct.");  // 112->128 Phase A; 128->136 Phase B; 136->152 P7 RTM (2026-04-25).
 confStruct usrConf;
@@ -217,7 +218,11 @@ confStruct defaultConf = {SW_VERSION, 2, 20, 1, 50, 0, 0, 1000, 2000, 1000, 2000
   0.0f,       // vesc_erpm_per_kmh: 0 = skip Phase C VESC check until calibrated
   1,          // rtm_rx_enabled: 1 = RTM enabled on RX side
   1,          // rtm_rx_override_steering: 1 = RTM may override steering
-  1           // rtm_compass_required: 1 = compass required for RTM arming
+  1,          // rtm_compass_required: 1 = compass required for RTM arming
+  // V3 - 2026-04-26 - CRITICAL FIX: rtm_stop_distance_m was missing from defaultConf; zero-init
+  // would have set it to 0, making Gate 9 check (dist_m < 0.0f) never fire — permanently
+  // disabling the hard stop that prevents the buggy from hitting the user.
+  3           // rtm_stop_distance_m: 3m hard stop radius (range 1-50m; default 3m per CLAUDE.md)
 };
   /// these equal to:  {"version":3,"radio_preset":2,"rf_power":20,"steering_type":1,"steering_influence":50,"steering_inverted":0,"trim":0,"pwm0_min":1000,"pwm0_max":2000,"pwm1_min":1000,"pwm1_max":2000,"failsafe_time":1000,"foil_num_cells":10,"bms_det_active":0,"wet_det_active":1,"dummy_delete_me":0,"data_src":2,"gps_en":1,"followme_mode":2,"kalman_en":1,"boogie_vmax_in_followme_kmh":25,"min_dist_m":10,"followme_smoothing_band_m":10,"foiler_low_speed_kmh":8,"zone_angle_enter_deg":35,"zone_angle_exit_deg":45,"near_diag_offset_deg":45,"ubat_cal":0.0095554,"ubat_offset":0,"tx_gps_stale_timeout_ms":1000,"logger_en":0,"paired":1,"own_address":"46:C9:E0","dest_address":"46:CB:CC","wifi_password":"12345678","mag_offset_x":0,"mag_offset_y":0,"mag_scale_x":1.0,"mag_scale_y":1.0,"gps_chip_type":1,"gps_max_hdop":2.0,"gps_max_accel_g":3.0,"gps_max_jump_kmh":200.0,"gps_suspect_threshold":3,"gps_max_pair_dist_m":500.0,"gps_max_speed_diff_kmh":50.0,"rtm_vesc_speed_diff_kmh":20.0,"vesc_erpm_per_kmh":0.0,"rtm_rx_enabled":1,"rtm_rx_override_steering":1,"rtm_compass_required":1}
   ///

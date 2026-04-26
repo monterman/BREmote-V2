@@ -40,7 +40,7 @@ void calcPWM()
   // RTM can only subtract from user throttle (never add). Creator safety philosophy enforced.
   uint8_t effective_thr   = rtm_rx_emergency_stop ? 0 : thr_received;
   uint8_t effective_steer = (rtm_rx_active && usrConf.rtm_rx_override_steering)
-                            ? rtm_steer_override
+                            ? (uint8_t)rtm_steer_override
                             : steering_received;
 
   if(usrConf.steering_type == 0)

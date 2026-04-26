@@ -35,6 +35,11 @@ uint8_t throttleGetCapPercent();
 // TX GPS Functions (defined in GPS.ino, declared here as GPS.ino is concatenated after this file)
 void initTxGPS();
 void getTxGPSLoop();
+// RTM & FM State Machine Functions (defined in RTMState.ino)
+void runRtmLoop();
+void setRtmArmed();
+void cycleFmMode();
+uint8_t calcRtmThrottleCap();
 // Cross-Tab Subsystem Initializers
 void startupRadio();
 void startupDisplay();
@@ -128,6 +133,9 @@ void loop()
 
   runMenu();
   if(in_menu > 0) in_menu--;
+
+  // V3 - 2026-04-25 - P7: RTM state machine (arming, active, cooldown) and FM mode cycle.
+  runRtmLoop();
 
   checkSerial();
 

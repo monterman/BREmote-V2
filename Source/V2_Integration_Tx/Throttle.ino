@@ -1,19 +1,32 @@
+// V3 - 2026-04-25 - P7: calcFinalThrottle() applies rtm_thr_cap_tx ramp
 // Centralized throttle calculation module.
 // Handles gear mode (0), no-gear mode (1), and dynamic cap mode (2).
 
 uint8_t calcFinalThrottle()
 {
   uint8_t shaped = expoThrCurve(thr_scaled);
+  uint8_t result;
   switch(usrConf.throttle_mode)
   {
     case 1: // No gears — full power, fixed at max gear
-      return shaped;
+      result = shaped;
+      break;
     case 2: // Dynamic cap
-      return (uint16_t)shaped * max_power_cap / 100;
+      result = (uint8_t)((uint16_t)shaped * max_power_cap / 100);
+      break;
     case 0: // Gears
     default:
-      return (uint16_t)shaped * (gear + 1) / usrConf.max_gears;
+      result = (uint8_t)((uint16_t)shaped * (gear + 1) / usrConf.max_gears);
+      break;
   }
+
+  // V3 - 2026-04-25 - P7: Apply RTM throttle ramp cap.
+  // rtm_thr_cap_tx is 255 when RTM is not active (no effect on normal operation).
+  // When RTM is ACTIVE, ramps from rtm_throttle_start_pct to rtm_throttle_max_pct.
+  // This enforces the creator safety rule: RTM can only subtract from user throttle.
+  if (result > rtm_thr_cap_tx) result = rtm_thr_cap_tx;
+
+  return result;
 }
 
 void throttleInit()

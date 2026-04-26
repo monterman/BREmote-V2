@@ -1,3 +1,4 @@
+// V3 - 2026-04-25 - P7: handleGearToggle() left-hold arms RTM; right-hold cycles FM
 // V3 - 2026-04-21 - Updated DISPLAY_MODE_SPEED availability check to support TX GPS speed sources
 
 // Returns true if the given display mode has a valid value
@@ -232,23 +233,44 @@ void handleGearToggle(int direction)
   while(isActive())
   {
     delay(10);
-    if(millis() - pushtime > usrConf.lock_waittime)
+    // V3 - 2026-04-25 - P7: When RTM is enabled, left long-press arms RTM instead of locking.
+    // When FM override is enabled, right long-press cycles FM mode instead of cycling display.
+    // RTM threshold = rtm_hold_duration_s (default 5s) >= lock_waittime (2s).
+    // If RTM disabled: threshold stays at lock_waittime for normal lock behavior.
+    unsigned long long_press_ms = (direction < 0 && usrConf.rtm_enabled && usrConf.gps_en)
+                                  ? (unsigned long)usrConf.rtm_hold_duration_s * 1000UL
+                                  : (unsigned long)usrConf.lock_waittime;
+
+    if(millis() - pushtime > long_press_ms)
     {
       if(thr_scaled < 10)
       {
         if(direction < 0)
         {
-          //Long press minus: lock system
-          if(!usrConf.no_lock)
+          if (usrConf.rtm_enabled && usrConf.gps_en)
           {
+            // Left long-press: arm RTM
+            setRtmArmed();
+          }
+          else if(!usrConf.no_lock)
+          {
+            // RTM disabled: normal lock behavior
             system_locked = 1;
             displayLock();
           }
         }
         else
         {
-          //Long press plus: cycle display mode
-          cycleDisplayMode(1);
+          if (usrConf.fm_override_enabled && usrConf.gps_en)
+          {
+            // Right long-press: FM mode cycling
+            cycleFmMode();
+          }
+          else
+          {
+            //Long press plus: cycle display mode (original behavior)
+            cycleDisplayMode(1);
+          }
         }
         in_menu = usrConf.menu_timeout;
       }

@@ -14,6 +14,9 @@ static unsigned long rtm_active_start_ms = 0; // when ACTIVE state was entered
 static unsigned long rtm_release_ms    = 0;   // when throttle was last released during ACTIVE
 static unsigned long rtm_cooldown_ms   = 0;   // when COOLDOWN state was entered
 static unsigned long rtm_squeeze_ms    = 0;   // when SQUEEZE_WAIT was entered
+// File-scope so setRtmArmed() can reset it. Inside a switch case it can't be reached
+// externally; stale value after arm-window timeout would skip the 500ms hold check.
+static unsigned long rtm_hold_start    = 0;   // single-mode: when thr_scaled first crossed 30%
 
 // ---- Compute the current throttle cap for the ramp ----
 // Returns 0-255. During ACTIVE, ramps from rtm_throttle_start_pct→max over rtm_ramp_duration_s.
@@ -33,10 +36,11 @@ uint8_t calcRtmThrottleCap()
 void setRtmArmed()
 {
   if (!usrConf.rtm_enabled || !usrConf.gps_en) return;
-  rtm_tx_state   = RTM_ARMED;
+  rtm_tx_state     = RTM_ARMED;
   rtm_arm_start_ms = millis();
-  rtm_tx_active  = false;
-  rtm_thr_cap_tx = 255;
+  rtm_hold_start   = 0;    // reset single-mode hold timer each time we arm
+  rtm_tx_active    = false;
+  rtm_thr_cap_tx   = 255;
   queueMetaPacketBurst(0xF1, 0);  // tell RX: RTM not yet active (just armed on TX)
   scroll3Digits(LET_R, LET_T, LET_N, 100);
 }
@@ -95,13 +99,12 @@ void runRtmLoop()
       else
       {
         // Single mode: throttle > 30% for 500ms continuous
-        static unsigned long hold_start = 0;
         if (thr_scaled > 76)
         {
-          if (hold_start == 0) hold_start = now;
-          if (now - hold_start >= 500)
+          if (rtm_hold_start == 0) rtm_hold_start = now;
+          if (now - rtm_hold_start >= 500)
           {
-            hold_start = 0;
+            rtm_hold_start    = 0;
             rtm_tx_state      = RTM_ACTIVE;
             rtm_active_start_ms = now;
             rtm_tx_active     = true;
@@ -111,7 +114,7 @@ void runRtmLoop()
         }
         else
         {
-          hold_start = 0;
+          rtm_hold_start = 0;
         }
       }
       break;

@@ -1,9 +1,14 @@
+// V3 - 2026-04-25 - P7: Added runRtmLoop() call in loop(); forward declarations
 #include "BREmote_V2_Rx.h"
 
 SX1262 radio = new Module(P_LORA_NSS, P_LORA_DIO, P_LORA_RST, P_LORA_BUSY);
 Adafruit_AW9523 aw;
 Ticker ticksrc;
 TinyGPSPlus gps;
+
+// V3 - 2026-04-25 - P7: RTM state machine and compass heading function
+void runRtmLoop();
+float getCompassHeading();
 
 void setup()
 {
@@ -45,7 +50,11 @@ void loop()
   
   // Process Logger LED and button in main thread (AW9523 I2C is not ISR-safe)
   loggerLoop();
-  
+
+  // V3 - 2026-04-25 - P7: RTM state machine — safety gates, steering override, Phase C.
+  // Runs at 10Hz regardless of the 1000ms GPS/VESC gate below.
+  runRtmLoop();
+
   if(millis()-loop_timer > 1000)
   {
     loop_timer = millis();

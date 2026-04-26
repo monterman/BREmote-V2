@@ -163,7 +163,8 @@ float getCompassHeading()
   // Reject uncalibrated scale (default 1.0f after runcal is fine; 0.0f = never set)
   if (usrConf.mag_scale_x == 0.0f || usrConf.mag_scale_y == 0.0f) return -1.0f;
 
-  readCompassRaw();
+  // Return -1 on I2C failure — stale magX/magY from a previous read would give a wrong heading.
+  if (!readCompassRaw()) return -1.0f;
 
   float cal_x = ((float)magX - (float)usrConf.mag_offset_x) * usrConf.mag_scale_x;
   float cal_y = ((float)magY - (float)usrConf.mag_offset_y) * usrConf.mag_scale_y;

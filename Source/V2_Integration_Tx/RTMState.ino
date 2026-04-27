@@ -230,48 +230,124 @@ void runRtmLoop()
 
 // ============================================================
 // FM STATE MACHINE
+// V3 - 2026-04-27 - P8.1: FM redesigned as arm/disarm toggle with persistent mode memory.
+//
+// ARM (LEFT tap + RIGHT hold 5s, first time or after disarm):
+//   - Arms at last_fm_mode (RAM; defaults to F1 on power cycle — never resets to F0/disabled)
+//   - Blinks "F[mode]" x2 on display; fires Pattern 4 (2 fast buzzes) as arm confirm
+//   - FM active: user engages throttle to ride
+//
+// CHANGE MODE while armed (LEFT hold 2s, intercepted by Hall.ino):
+//   - Cycles F0→F1→F2→F3→F0; stays armed; sends new mode to RX; resets arm timer
+//
+// DISARM (any of):
+//   - Same combo again (LEFT tap + RIGHT hold 5s) — toggle
+//   - Throttle release for 3s after first throttle input — Gate 1
+//   - Arm window expires (fm_arm_window_s) before any throttle input — auto-disarm
 // ============================================================
 
-static uint8_t fm_current_mode = 0;  // current TX-side FM selection (0-3)
+static bool          fm_armed         = false;  // FM arm state; RAM only, cleared on power cycle
+static uint8_t       last_fm_mode     = 1;      // last active FM mode (1-3); defaults F1; RAM only
+static unsigned long fm_arm_ms        = 0;      // time of arm, or time of last throttle >10 while armed
+static bool          fm_throttle_seen = false;  // becomes true once thr_scaled>10 after arming
 
-// Show the current FM mode number on display: "F0", "F1", "F2", "F3"
-// V3 - 2026-04-27 - P8: Changed from named modes ("0ff"/"bEh"/"nR"/"nL") to F0-F3 for clarity
+// Returns true if FM is currently armed; called by Hall.ino to intercept LEFT hold 2s
+bool isFmArmed() { return fm_armed; }
+
+// Show FM mode code briefly: "F0"…"F3"
 static void showFmMode(uint8_t mode)
 {
-  displayDigits(LET_F, mode);  // mode is 0-3, a valid num0[] digit
+  displayDigits(LET_F, mode);
   updateDisplay();
   delay(500);
 }
 
-// Called by handleGearToggle(+1) long press when fm_override_enabled.
-// Cycles FM mode and queues 0xF2 meta-packet burst.
+// Internal disarm: clears state, notifies RX, fires haptic, shows "F-"
+static void fmDisarm()
+{
+  fm_armed         = false;
+  fm_throttle_seen = false;
+  queueMetaPacketBurst(0xF2, 0);   // mode 0 = FM disabled on RX (followme_mode=0)
+  current_vib_pattern = 4;         // Pattern 4: 2 fast buzzes = disarm confirm
+  displayDigits(LET_F, DASH);      // "F-" = FM off
+  updateDisplay();
+  delay(600);
+}
+
+// Called by handleGearToggle() combo (LEFT tap + RIGHT hold 5s) — toggles arm/disarm.
+// On arm: uses last_fm_mode (default F1); blinks mode x2; fires Pattern 4; sends 0xF2 to RX.
 void cycleFmMode()
 {
   if (!usrConf.fm_override_enabled || !usrConf.gps_en) return;
 
-  // Enter FM with brief "FM" flash
-  displayDigits(LET_F, LET_M);
-  updateDisplay();
-  delay(500);
-
-  // Cycle once
-  fm_current_mode = (fm_current_mode + 1) % 4;
-  showFmMode(fm_current_mode);
-
-  // Watch for additional right-holds within 2s to keep cycling
-  unsigned long last_action = millis();
-  while (millis() - last_action < 2000UL)
+  if (fm_armed)
   {
-    if (tog_input == 1)  // right hold
-    {
-      fm_current_mode = (fm_current_mode + 1) % 4;
-      showFmMode(fm_current_mode);
-      last_action = millis();
-      while (tog_input == 1) delay(20);  // wait for release
-    }
-    delay(50);
+    // Already armed → disarm (toggle)
+    fmDisarm();
+    return;
   }
 
-  // User stopped cycling — send the selected mode
-  queueMetaPacketBurst(0xF2, fm_current_mode);
+  // Arm at last used mode (never arms at F0 = disabled; last_fm_mode defaults to 1)
+  fm_armed         = true;
+  fm_arm_ms        = millis();
+  fm_throttle_seen = false;
+  current_vib_pattern = 4;         // Pattern 4: 2 fast buzzes = arm confirm
+
+  // Blink current mode x2 ("F1" "F1" etc.)
+  for (int i = 0; i < 2; i++)
+  {
+    displayDigits(LET_F, last_fm_mode);
+    updateDisplay();
+    delay(700);
+  }
+
+  queueMetaPacketBurst(0xF2, last_fm_mode);
+}
+
+// Called by handleGearToggle(-1) simple LEFT hold 2s when FM is armed (Hall.ino checks isFmArmed()).
+// Cycles mode F0→F1→F2→F3→F0; stays armed; resets arm timer.
+void cycleFmModeArmed()
+{
+  if (!fm_armed) return;
+  last_fm_mode = (last_fm_mode + 1) % 4;
+  showFmMode(last_fm_mode);                // show new mode briefly
+  queueMetaPacketBurst(0xF2, last_fm_mode);
+  fm_arm_ms = millis();                    // reset arm window — user is actively choosing a mode
+}
+
+// Called from loop() every ~110ms.
+// Handles arm-window auto-disarm and Gate 1 (throttle-release disarm).
+void runFmLoop()
+{
+  if (!fm_armed) return;
+
+  unsigned long now = millis();
+
+  // Arm-window auto-disarm: if user never applied throttle since arming, disarm after fm_arm_window_s
+  if (!fm_throttle_seen)
+  {
+    if (now - fm_arm_ms > (unsigned long)usrConf.fm_arm_window_s * 1000UL)
+    {
+      fmDisarm();
+      return;
+    }
+  }
+
+  // Track throttle engagement; while riding, keep arm timer alive
+  if (thr_scaled > 10)
+  {
+    fm_throttle_seen = true;
+    fm_arm_ms = now;  // reset — Gate 1 timer starts from last throttle input
+  }
+
+  // Gate 1: throttle release for 3s after first engagement → disarm FM
+  // 3s grace allows brief stops without losing FM (e.g., obstacle avoidance)
+  if (fm_throttle_seen && thr_scaled < 5)
+  {
+    if (now - fm_arm_ms > 3000UL)
+    {
+      fmDisarm();
+      return;
+    }
+  }
 }

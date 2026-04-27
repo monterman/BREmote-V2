@@ -1,6 +1,7 @@
 // V3 - 2026-04-25 - P7: Simplified getTxGPSLoop() gate to gps_en only; added runRtmLoop() call in loop()
 // V3 - 2026-04-24 - Call initTxGPS() in setup() after applyConfigSettings() so GPS UART is ready on boot
 // V3 - 2026-04-21 - Added getTxGPSLoop() call in loop() and forward declarations for TX GPS functions
+// V3 - 2026-04-27 - P8: loop() calls renderRtmInfoDisplay() instead of renderOperationalDisplay() when rtm_tx_active
 #include "BREmote_V2_Tx.h"
 // Function prototypes — forward declarations to resolve Arduino IDE ordering issues
 // Init & Setup Functions
@@ -37,9 +38,14 @@ void initTxGPS();
 void getTxGPSLoop();
 // RTM & FM State Machine Functions (defined in RTMState.ino)
 void runRtmLoop();
+void runFmLoop();
 void setRtmArmed();
 void cycleFmMode();
+void cycleFmModeArmed();
+bool isFmArmed();
 uint8_t calcRtmThrottleCap();
+// RTM/FM Active Display (defined in Display.ino)
+void renderRtmInfoDisplay();
 // Cross-Tab Subsystem Initializers
 void startupRadio();
 void startupDisplay();
@@ -136,6 +142,8 @@ void loop()
 
   // V3 - 2026-04-25 - P7: RTM state machine (arming, active, cooldown) and FM mode cycle.
   runRtmLoop();
+  // V3 - 2026-04-27 - P8.1: FM arm/disarm state machine (arm window + Gate 1 throttle-release)
+  runFmLoop();
 
   checkSerial();
 
@@ -144,7 +152,11 @@ void loop()
     deepSleep();
   }
 
-  renderOperationalDisplay();
+  // V3 - 2026-04-27 - P8: Show RTM/FM info (distance/speed) when RTM is active; normal display otherwise
+  if (rtm_tx_active)
+    renderRtmInfoDisplay();
+  else
+    renderOperationalDisplay();
   
   //delay(110);
   vTaskDelay(pdMS_TO_TICKS(110));

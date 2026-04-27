@@ -3,6 +3,7 @@
 // V3 - 2026-04-22 - Added gps_chip_type field (GPS module selector: 0=BN-220, 2=M10); sizeof 92→96
 // V3 - 2026-04-25 - P7: Added RTM meta-packet queue globals (rtm_meta_type/value/count) and RTM throttle cap (rtm_thr_cap_tx, rtm_tx_active)
 // V3 - 2026-04-27 - P8: Added rtm_display_mode, fm_warn_distance_m, rtm_steer_exit_on_input to confStruct; TelemetryPacket adds rtm_distance at index 5; rtm_max_runtime_s default 120→0
+// V3 - 2026-04-27 - P8.1: Added fm_arm_window_s to confStruct; FM redesigned as arm/disarm toggle with mode memory; sizeof 124→128
 
 /*
 ** Includes
@@ -149,9 +150,17 @@ struct confStruct {
     uint16_t rtm_display_mode;         // RTM/FM active info display: 0=distance(default), 1=speed, 2=alternating 2.5s each
     uint16_t fm_warn_distance_m;       // TX-RX distance to trigger FM proximity warning vibration; 50-1000m; default 150
     uint16_t rtm_steer_exit_on_input;  // 1=any steering input exits RTM (default); 0=blend/steering correction only
+
+    // ============================================================
+    // V3 - 2026-04-27 - PRIORITY 8.1: FM UX REDESIGN
+    //
+    // 1 new uint16_t field — sizeof grows 124→128 (126 data + 2 tail padding; 126%4=2).
+    // First flash of P8.1 firmware resets all TX settings to defaults.
+    // ============================================================
+    uint16_t fm_arm_window_s;          // FM auto-disarms after this many seconds with no throttle input; 10-60s; default 30
 };
 
-static_assert(sizeof(confStruct) == 124, "confStruct size mismatch — expected 124 bytes (V3.4/P8). Update this assert if you change the struct.");  // V3 fix (N-1): pinned to exact size; catches both shrinkage and unexpected growth
+static_assert(sizeof(confStruct) == 128, "confStruct size mismatch — expected 128 bytes (V3.4/P8.1). Update this assert if you change the struct.");  // V3 fix (N-1): pinned to exact size; catches both shrinkage and unexpected growth
 confStruct usrConf;
 confStruct defaultConf = {  // V3 default configuration — tuned for monterman hardware
   SW_VERSION,    // version (3)
@@ -214,7 +223,9 @@ confStruct defaultConf = {  // V3 default configuration — tuned for monterman 
   // V3 - 2026-04-27 - Priority 8 UX overhaul defaults
   0,    // rtm_display_mode (0=distance; set 1 for speed, 2 for alternating)
   150,  // fm_warn_distance_m (150m FM proximity warning threshold)
-  1     // rtm_steer_exit_on_input (1=steering exits RTM; 0=blend only)
+  1,    // rtm_steer_exit_on_input (1=steering exits RTM; 0=blend only)
+  // V3 - 2026-04-27 - Priority 8.1 FM UX redesign defaults
+  30    // fm_arm_window_s (30s before auto-disarm if no throttle input)
 };
 
 

@@ -1,5 +1,6 @@
 // TX-specific config field table and cross-validation.
 // Shared engine is in ../Common/ConfigServiceEngine.h (included via BREmote_V2_Tx.h).
+// V3 - 2026-04-27 - P8: Added rtm_display_mode, fm_warn_distance_m, rtm_steer_exit_on_input; rtm_max_runtime_s min changed 30→0
 
 const CfgFieldSpec kCfgFields[] = {
   {"radio_preset", CFG_U16, offsetof(confStruct, radio_preset), true, true, true, 1.0f, 3.0f, 0, false},
@@ -52,10 +53,16 @@ const CfgFieldSpec kCfgFields[] = {
   {"rtm_throttle_max_pct",   CFG_U16, offsetof(confStruct, rtm_throttle_max_pct),   true, false, true, 30.0f,  90.0f,    0, false},
   {"rtm_ramp_duration_s",    CFG_U16, offsetof(confStruct, rtm_ramp_duration_s),    true, false, true,  2.0f,  15.0f,    0, false},
   {"rtm_stop_distance_m",    CFG_U16, offsetof(confStruct, rtm_stop_distance_m),    true, false, true,  3.0f,  20.0f,    0, false},
-  {"rtm_max_runtime_s",      CFG_U16, offsetof(confStruct, rtm_max_runtime_s),      true, false, true, 30.0f, 300.0f,    0, false},
+  {"rtm_max_runtime_s",      CFG_U16, offsetof(confStruct, rtm_max_runtime_s),      true, false, true,  0.0f, 300.0f,    0, false},  // P8: min 30→0 (0=disabled)
   {"rtm_gps_timeout_ms",     CFG_U16, offsetof(confStruct, rtm_gps_timeout_ms),     true, false, true, 500.0f,3000.0f,   0, false},
   {"fm_hold_duration_s",     CFG_U16, offsetof(confStruct, fm_hold_duration_s),     true, false, true,  4.0f,  10.0f,    0, false},
   {"fm_override_enabled",    CFG_U16, offsetof(confStruct, fm_override_enabled),    true, false, true,  0.0f,   1.0f,    0, false},
+  // V3 - 2026-04-27 - Priority 8 UX overhaul parameters
+  {"rtm_display_mode",         CFG_U16, offsetof(confStruct, rtm_display_mode),         true, false, true,  0.0f,   2.0f,    0, false},  // 0=distance, 1=speed, 2=alternating 2.5s
+  {"fm_warn_distance_m",       CFG_U16, offsetof(confStruct, fm_warn_distance_m),       true, false, true, 50.0f, 1000.0f,   0, false},  // FM proximity warning threshold in meters
+  {"rtm_steer_exit_on_input",  CFG_U16, offsetof(confStruct, rtm_steer_exit_on_input),  true, false, true,  0.0f,   1.0f,    0, false},  // 1=steering exits RTM, 0=blend only
+  // V3 - 2026-04-27 - Priority 8.1 FM UX redesign parameter
+  {"fm_arm_window_s",          CFG_U16, offsetof(confStruct, fm_arm_window_s),          true, false, true, 10.0f,  60.0f,    0, false},  // FM auto-disarm after N seconds of no throttle input
   {"paired", CFG_U16, offsetof(confStruct, paired), true, false, true, 0.0f, 1.0f, 0, false},
   {"own_address", CFG_ADDR3, offsetof(confStruct, own_address), true, false, false, 0.0f, 0.0f, 0, false},
   {"dest_address", CFG_ADDR3, offsetof(confStruct, dest_address), true, false, false, 0.0f, 0.0f, 0, false}

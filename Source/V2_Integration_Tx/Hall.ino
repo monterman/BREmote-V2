@@ -298,11 +298,19 @@ void handleGearToggle(int direction)
           // Simple RIGHT hold 2s → cycle telemetry display mode
           cycleDisplayMode(1);
         }
-        else if (direction < 0 && !usrConf.no_lock)
+        else if (direction < 0)
         {
-          // Simple LEFT hold 2s → lock remote
-          system_locked = 1;
-          displayLock();
+          if (isFmArmed())
+          {
+            // FM armed: LEFT hold 2s → cycle FM mode (stays armed)
+            cycleFmModeArmed();
+          }
+          else if (!usrConf.no_lock)
+          {
+            // FM not armed: LEFT hold 2s → lock remote
+            system_locked = 1;
+            displayLock();
+          }
         }
         last_tap_dir   = 0;  // consume the tap after any long-press action
         long_press_done = true;

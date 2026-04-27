@@ -1,6 +1,11 @@
 // V3 - 2026-04-25 - P7: TX RTM and FM state machines.
 // RTM: left-hold gesture → arm → squeeze(s) → active → cooldown → idle
 // FM:  right-hold gesture → cycle FM mode 0→1→2→3→0 → send 0xF2 meta-packet
+// V3 - 2026-04-27 - P8: setRtmArmed shows "rn" ×2 (static, 3s total); showFmMode shows F0-F3;
+//   added setRtmDisarmed(); steer-exit gate in ACTIVE; rtm_max_runtime_s=0 disables runtime gate
+// V3 - 2026-04-27 - fix: extern declaration for current_vib_pattern (defined in System.ino)
+
+extern volatile uint8_t current_vib_pattern;
 
 // ============================================================
 // RTM STATE MACHINE
@@ -31,8 +36,9 @@ uint8_t calcRtmThrottleCap()
   return (uint8_t)(pct * 255.0f / 100.0f);
 }
 
-// ---- Called by handleGearToggle() when left long-press threshold is reached ----
-// Transitions from IDLE to ARMED and shows "rtn" on display.
+// ---- Called by handleGearToggle() when RTM combo gesture completes ----
+// Transitions from IDLE to ARMED; shows "rn" static ×2 (1.5 s each = 3 s total);
+// fires Pattern 4 haptic confirm (2 fast short pulses).
 void setRtmArmed()
 {
   if (!usrConf.rtm_enabled || !usrConf.gps_en) return;
@@ -41,8 +47,23 @@ void setRtmArmed()
   rtm_hold_start   = 0;    // reset single-mode hold timer each time we arm
   rtm_tx_active    = false;
   rtm_thr_cap_tx   = 255;
-  queueMetaPacketBurst(0xF1, 0);  // tell RX: RTM not yet active (just armed on TX)
-  scroll3Digits(LET_R, LET_T, LET_N, 100);
+  queueMetaPacketBurst(0xF1, 0);  // tell RX: RTM armed but not yet active
+  current_vib_pattern = 4;        // Pattern 4: 2 fast short = RTM arm confirm
+  // Show "rn" (return now) as 2 static passes of 1.5 s each
+  for (int i = 0; i < 2; i++)
+  {
+    displayDigits(LET_R, LET_N);
+    updateDisplay();
+    delay(1500);
+  }
+}
+
+// ---- Called to disengage RTM from the gesture layer (user-initiated) ----
+// Transitions to COOLDOWN via rtmDisengage() and fires Pattern 4 haptic confirm.
+static void setRtmDisarmed()
+{
+  rtmDisengage();
+  current_vib_pattern = 4;  // Pattern 4: 2 fast short = RTM disarm confirm
 }
 
 // ---- Disengage RTM: return to COOLDOWN, notify RX ----
@@ -76,10 +97,11 @@ void runRtmLoop()
         rtm_tx_state = RTM_IDLE;
         break;
       }
-      // Show "rtn" on display (blink every ~500ms while waiting)
+      // Blink "rn" every ~500ms while waiting for squeeze
       if ((now / 500) % 2 == 0)
       {
-        scroll3Digits(LET_R, LET_T, LET_N, 50);
+        displayDigits(LET_R, LET_N);
+        updateDisplay();
       }
 
       if (usrConf.rtm_double_squeeze_en)
@@ -150,8 +172,9 @@ void runRtmLoop()
       // Update throttle cap for ramp
       rtm_thr_cap_tx = calcRtmThrottleCap();
 
-      // Gate 1: max runtime
-      if (now - rtm_active_start_ms > (unsigned long)usrConf.rtm_max_runtime_s * 1000UL)
+      // Gate 1: max runtime (0 = disabled — safety gates handle all real scenarios)
+      if (usrConf.rtm_max_runtime_s > 0 &&
+          now - rtm_active_start_ms > (unsigned long)usrConf.rtm_max_runtime_s * 1000UL)
       {
         rtmDisengage();
         break;
@@ -182,8 +205,15 @@ void runRtmLoop()
         rtm_release_ms = 0;
       }
 
-      // Display "rtn" while active
-      scroll3Digits(LET_R, LET_T, LET_N, 30);
+      // Gate 4: steering exit (P8 — if enabled, any significant steering input exits RTM)
+      if (usrConf.rtm_steer_exit_on_input && toggle_blocked_by_steer &&
+          abs((int)steer_scaled - 127) > 20)
+      {
+        setRtmDisarmed();
+        break;
+      }
+
+      // Display handled by renderRtmInfoDisplay() in loop() when rtm_tx_active==true
       break;
     }
 
@@ -204,16 +234,13 @@ void runRtmLoop()
 
 static uint8_t fm_current_mode = 0;  // current TX-side FM selection (0-3)
 
-// Show the current FM mode abbreviation on display
+// Show the current FM mode number on display: "F0", "F1", "F2", "F3"
+// V3 - 2026-04-27 - P8: Changed from named modes ("0ff"/"bEh"/"nR"/"nL") to F0-F3 for clarity
 static void showFmMode(uint8_t mode)
 {
-  switch (mode)
-  {
-    case 0: scroll3Digits(0, LET_F, LET_F, 150);     break;  // "0ff"
-    case 1: scroll3Digits(LET_B, LET_E, LET_H, 150); break;  // "bEh"
-    case 2: displayDigits(LET_N, LET_R); updateDisplay(); delay(500); break;  // "nR"
-    case 3: displayDigits(LET_N, LET_L); updateDisplay(); delay(500); break;  // "nL"
-  }
+  displayDigits(LET_F, mode);  // mode is 0-3, a valid num0[] digit
+  updateDisplay();
+  delay(500);
 }
 
 // Called by handleGearToggle(+1) long press when fm_override_enabled.

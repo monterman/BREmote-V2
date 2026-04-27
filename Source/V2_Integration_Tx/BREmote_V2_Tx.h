@@ -2,6 +2,7 @@
 // V3 - 2026-04-22 - Fixed speed_src/volatile comments; defaults gps_en=0,speed_src=0; added gps_max_hdop field (HDOP*100, tail-padding slot, sizeof stays 92)
 // V3 - 2026-04-22 - Added gps_chip_type field (GPS module selector: 0=BN-220, 2=M10); sizeof 92→96
 // V3 - 2026-04-25 - P7: Added RTM meta-packet queue globals (rtm_meta_type/value/count) and RTM throttle cap (rtm_thr_cap_tx, rtm_tx_active)
+// V3 - 2026-04-27 - P8: Added rtm_display_mode, fm_warn_distance_m, rtm_steer_exit_on_input to confStruct; TelemetryPacket adds rtm_distance at index 5; rtm_max_runtime_s default 120→0
 
 /*
 ** Includes
@@ -138,9 +139,19 @@ struct confStruct {
     uint16_t rtm_gps_timeout_ms;       // TX GPS loss timeout before safety stop; 500-3000 ms; default 2000
     uint16_t fm_hold_duration_s;       // RIGHT hold time for FM mode cycle; 4-10 s; default 5
     uint16_t fm_override_enabled;      // Allow TX to override RX follow-me mode; 0=off, 1=on; default 1
+
+    // ============================================================
+    // V3 - 2026-04-27 - PRIORITY 8: DISPLAY, GESTURE & UX OVERHAUL
+    //
+    // 3 new uint16_t fields — sizeof grows 120→124 (118 data + 6 = 124; 124 % 4 == 0, no tail padding).
+    // First flash of P8 firmware resets all TX settings to defaults.
+    // ============================================================
+    uint16_t rtm_display_mode;         // RTM/FM active info display: 0=distance(default), 1=speed, 2=alternating 2.5s each
+    uint16_t fm_warn_distance_m;       // TX-RX distance to trigger FM proximity warning vibration; 50-1000m; default 150
+    uint16_t rtm_steer_exit_on_input;  // 1=any steering input exits RTM (default); 0=blend/steering correction only
 };
 
-static_assert(sizeof(confStruct) == 120, "confStruct size mismatch — expected 120 bytes (V3.3/P7). Update this assert if you change the struct.");  // V3 fix (N-1): pinned to exact size; catches both shrinkage and unexpected growth
+static_assert(sizeof(confStruct) == 124, "confStruct size mismatch — expected 124 bytes (V3.4/P8). Update this assert if you change the struct.");  // V3 fix (N-1): pinned to exact size; catches both shrinkage and unexpected growth
 confStruct usrConf;
 confStruct defaultConf = {  // V3 default configuration — tuned for monterman hardware
   SW_VERSION,    // version (3)
@@ -196,23 +207,30 @@ confStruct defaultConf = {  // V3 default configuration — tuned for monterman 
   70,   // rtm_throttle_max_pct
   5,    // rtm_ramp_duration_s
   10,   // rtm_stop_distance_m
-  120,  // rtm_max_runtime_s
+  0,    // rtm_max_runtime_s (0=disabled — safety gates handle all real scenarios; P8 changed from 120)
   2000, // rtm_gps_timeout_ms
   5,    // fm_hold_duration_s
-  1     // fm_override_enabled
+  1,    // fm_override_enabled
+  // V3 - 2026-04-27 - Priority 8 UX overhaul defaults
+  0,    // rtm_display_mode (0=distance; set 1 for speed, 2 for alternating)
+  150,  // fm_warn_distance_m (150m FM proximity warning threshold)
+  1     // rtm_steer_exit_on_input (1=steering exits RTM; 0=blend only)
 };
 
 
 //Telemetry to receive, MUST BE 8-bit!!
+// V3 - 2026-04-27 - P8: Added rtm_distance at index 5; link_quality moved to index 6 (must remain last).
+// Encoding: 0-99 = tenths of meter (0.0–9.9 m), 100-254 = meters offset (value-90 = actual m, so 100=10m, 199=109m), 255 = N/A.
 struct __attribute__((packed)) TelemetryPacket {
-    uint8_t foil_bat = 0xFF;    // index 0 — battery % 0-100
-    uint8_t foil_temp = 0xFF;   // index 1 — FET temp degC
-    uint8_t foil_speed = 0xFF;  // index 2 — speed km/h
-    uint8_t error_code = 0;     // index 3 — fault flags
+    uint8_t foil_bat = 0xFF;      // index 0 — battery % 0-100
+    uint8_t foil_temp = 0xFF;     // index 1 — FET temp degC
+    uint8_t foil_speed = 0xFF;    // index 2 — speed km/h
+    uint8_t error_code = 0;       // index 3 — fault flags
     // SCALE=watts/50  DECODE=foil_power*50  range 0-12750W at 50W resolution
-    uint8_t foil_power = 0xFF;  // index 4 — power (watts/50); 0xFF = not available
+    uint8_t foil_power = 0xFF;    // index 4 — power (watts/50); 0xFF = not available
+    uint8_t rtm_distance = 0xFF;  // index 5 — RX→TX distance during RTM/FM; see encoding above; 0xFF = N/A
     //This must be the last entry
-    uint8_t link_quality = 0;   // index 5 (was 4)
+    uint8_t link_quality = 0;     // index 6 (must be last)
 } telemetry;
 
 /*

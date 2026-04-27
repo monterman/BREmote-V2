@@ -1,5 +1,7 @@
 // V3 - 2026-04-25 - P7: handleGearToggle() left-hold arms RTM; right-hold cycles FM
 // V3 - 2026-04-21 - Updated DISPLAY_MODE_SPEED availability check to support TX GPS speed sources
+// V3 - 2026-04-27 - P8: Gesture redesign — combo state machine; LEFT hold=display cycle; RIGHT+LEFT=RTM; LEFT+RIGHT=FM
+// V3 - 2026-04-27 - fix: COMBO_TAP_MAX_MS 500ms; tap detection was tied to gear_change_waittime (100ms — too tight)
 
 // Returns true if the given display mode has a valid value
 bool isDisplayModeAvailable(uint8_t mode)
@@ -220,76 +222,100 @@ bool ctminus()
   return tog_input == -1;
 }
 
-// direction: -1 = gear down (long press locks), +1 = gear up (long press follow-me)
+// ============================================================
+// V3 - 2026-04-27 - P8: COMBO GESTURE STATE MACHINE
+//
+// Direction convention (unchanged since V2):
+//   Physical LEFT toggle → tog_input = -1 → handleGearToggle(-1) → direction = -1
+//   Physical RIGHT toggle → tog_input = +1 → handleGearToggle(+1) → direction = +1
+// NOTE: In P8, simple LEFT hold = display cycle (was RTM arm in P7). This is
+// intentional — the P8 spec moved RTM arm to the combo gesture for safety.
+//
+// Tap = press released before COMBO_TAP_MAX_MS (500ms). Recorded as last_tap_dir.
+// A tap that lasts 100ms–500ms will also fire a gear/cap change as a side effect
+// (gear_change_waittime = 100ms), but the tap is still recorded for combo purposes.
+// Combo = opposite tap within COMBO_WINDOW_MS followed by a long hold.
+//
+// Gesture map (lock feature removed in P8; system always boots unlocked):
+//   LEFT hold 2s (simple)              → cycle telemetry display mode
+//   RIGHT hold 2s (simple)             → reserved, no action
+//   RIGHT tap → LEFT hold 5s (combo)   → arm RTM
+//   LEFT tap → RIGHT hold 5s (combo)   → FM mode cycle
+// ============================================================
+static int           last_tap_dir   = 0;    // last recorded tap direction: +1=right, -1=left, 0=none
+static unsigned long last_tap_ms    = 0;    // millis() when last tap was recorded
+static const unsigned long COMBO_WINDOW_MS  = 3000UL;  // max gap between tap and hold for combo
+// Separate from gear_change_waittime — gives users a comfortable ~500ms window to perform
+// a tap without needing sub-100ms precision. A slightly-long tap may also adjust gear/cap
+// (side effect) but still primes the combo correctly.
+static const unsigned long COMBO_TAP_MAX_MS = 500UL;
+
+// direction: -1 = left toggle press, +1 = right toggle press
 void handleGearToggle(int direction)
 {
   bool (*isActive)() = (direction < 0) ? ctminus : ctplus;
 
-  in_menu = usrConf.menu_timeout+1;
+  in_menu = usrConf.menu_timeout + 1;
   delay(50);
   unsigned long pushtime = millis();
-  bool change_once = 1;
+  bool change_once       = 1;
+  bool long_press_done   = false;
 
-  while(isActive())
+  // Combo valid only if opposite direction tap happened within the window
+  bool has_combo = (last_tap_dir != 0) &&
+                   (last_tap_dir != direction) &&
+                   (millis() - last_tap_ms < COMBO_WINDOW_MS);
+
+  // Combo holds need 5s; simple holds need 2s
+  unsigned long long_press_ms = has_combo ? 5000UL : 2000UL;
+
+  while (isActive())
   {
     delay(10);
-    // V3 - 2026-04-25 - P7: When RTM is enabled, left long-press arms RTM instead of locking.
-    // When FM override is enabled, right long-press cycles FM mode instead of cycling display.
-    // RTM threshold = rtm_hold_duration_s (default 5s) >= lock_waittime (2s).
-    // If RTM disabled: threshold stays at lock_waittime for normal lock behavior.
-    unsigned long long_press_ms = (direction < 0 && usrConf.rtm_enabled && usrConf.gps_en)
-                                  ? (unsigned long)usrConf.rtm_hold_duration_s * 1000UL
-                                  : (unsigned long)usrConf.lock_waittime;
 
-    if(millis() - pushtime > long_press_ms)
+    if (millis() - pushtime > long_press_ms)
     {
-      if(thr_scaled < 10)
+      if (thr_scaled < 10)
       {
-        if(direction < 0)
+        if (has_combo)
         {
-          if (usrConf.rtm_enabled && usrConf.gps_en)
+          if (direction < 0 && last_tap_dir == 1)
           {
-            // Left long-press: arm RTM
-            setRtmArmed();
+            // RIGHT tap + LEFT hold 5s → arm RTM
+            if (usrConf.rtm_enabled && usrConf.gps_en)
+              setRtmArmed();
           }
-          else if(!usrConf.no_lock)
+          else if (direction > 0 && last_tap_dir == -1)
           {
-            // RTM disabled: normal lock behavior
-            system_locked = 1;
-            displayLock();
+            // LEFT tap + RIGHT hold 5s → FM mode cycle
+            if (usrConf.fm_override_enabled && usrConf.gps_en)
+              cycleFmMode();
           }
         }
-        else
+        else if (direction < 0)
         {
-          if (usrConf.fm_override_enabled && usrConf.gps_en)
-          {
-            // Right long-press: FM mode cycling
-            cycleFmMode();
-          }
-          else
-          {
-            //Long press plus: cycle display mode (original behavior)
-            cycleDisplayMode(1);
-          }
+          // Simple LEFT hold 2s → cycle telemetry display mode
+          cycleDisplayMode(-1);
         }
+        // Simple RIGHT hold 2s → reserved, no action
+        last_tap_dir   = 0;  // consume the tap after any long-press action
+        long_press_done = true;
         in_menu = usrConf.menu_timeout;
       }
-      while(isActive())
-      {
-        delay(100);
-      }
+      while (isActive()) delay(100);
       break;
     }
-    if(millis() - pushtime > usrConf.gear_change_waittime)
+
+    if (millis() - pushtime > usrConf.gear_change_waittime)
     {
-      if(change_once)
+      if (change_once)
       {
-        switch(usrConf.throttle_mode)
+        switch (usrConf.throttle_mode)
         {
           case 0: // Gears
           default:
-            if(direction < 0 && gear > 0) gear--;
-            else if(direction > 0 && gear < usrConf.max_gears-1) gear++;
+            if (direction < 0 && gear > 0) gear--;
+            else if (direction > 0 && gear < usrConf.max_gears - 1) gear++;
             showNewGear();
             break;
           case 1: // No gears — cycle display
@@ -305,14 +331,25 @@ void handleGearToggle(int direction)
       }
     }
   }
-  if(!(millis() - pushtime > usrConf.lock_waittime))
+
+  unsigned long held_ms = millis() - pushtime;
+
+  // Record tap if released before COMBO_TAP_MAX_MS (500ms). Decoupled from gear_change_waittime
+  // (100ms) so that a tap that also fires a gear/cap change still primes the combo correctly.
+  // Bug fix: old threshold was gear_change_waittime (100ms from pushtime after 50ms initial delay
+  // = ~150ms total from press). This window was too tight — any tap over ~150ms total was silently
+  // dropped and last_tap_dir was never set, so combos never triggered.
+  if (!long_press_done && held_ms < COMBO_TAP_MAX_MS)
   {
-    while(isActive())
-    {
-      delay(10);
-    }
+    last_tap_dir = direction;  // +1 or -1
+    last_tap_ms  = millis();
+  }
+
+  if (!long_press_done)
+  {
+    while (isActive()) delay(10);
     delay(50);
-    while(millis() - pushtime < usrConf.gear_display_time)
+    while (millis() - pushtime < usrConf.gear_display_time)
     {
       runMenu();
       delay(10);

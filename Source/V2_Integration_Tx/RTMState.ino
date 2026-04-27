@@ -4,6 +4,8 @@
 // V3 - 2026-04-27 - P8: setRtmArmed shows "rn" ×2 (static, 3s total); showFmMode shows F0-F3;
 //   added setRtmDisarmed(); steer-exit gate in ACTIVE; rtm_max_runtime_s=0 disables runtime gate
 // V3 - 2026-04-27 - fix: extern declaration for current_vib_pattern (defined in System.ino)
+// V3 - 2026-04-27 - P8.1 Bug 2 fix: FM mode display uses scroll3Digits("FM[n]") — digit "1" as second
+//   character of displayDigits() renders as a barely-visible horizontal bar, so all modes looked like "F"
 
 extern volatile uint8_t current_vib_pattern;
 
@@ -254,24 +256,23 @@ static bool          fm_throttle_seen = false;  // becomes true once thr_scaled>
 // Returns true if FM is currently armed; called by Hall.ino to intercept LEFT hold 2s
 bool isFmArmed() { return fm_armed; }
 
-// Show FM mode code briefly: "F0"…"F3"
+// Show FM mode code briefly: scrolls "FM0"…"FM3" across the display (~700ms).
+// Uses scroll3Digits instead of displayDigits because digit "1" as the second character
+// of a 2-char display renders as a single thin horizontal bar — nearly invisible next to "F".
+// scroll3Digits shows all three characters (F, M, mode) in a clear scrolling animation.
 static void showFmMode(uint8_t mode)
 {
-  displayDigits(LET_F, mode);
-  updateDisplay();
-  delay(500);
+  scroll3Digits(LET_F, LET_M, mode, 50);
 }
 
-// Internal disarm: clears state, notifies RX, fires haptic, shows "F-"
+// Internal disarm: clears state, notifies RX, fires haptic, scrolls "FM-"
 static void fmDisarm()
 {
   fm_armed         = false;
   fm_throttle_seen = false;
-  queueMetaPacketBurst(0xF2, 0);   // mode 0 = FM disabled on RX (followme_mode=0)
-  current_vib_pattern = 4;         // Pattern 4: 2 fast buzzes = disarm confirm
-  displayDigits(LET_F, DASH);      // "F-" = FM off
-  updateDisplay();
-  delay(600);
+  queueMetaPacketBurst(0xF2, 0);          // mode 0 = FM disabled on RX (followme_mode=0)
+  current_vib_pattern = 4;                // Pattern 4: 2 fast buzzes = disarm confirm
+  scroll3Digits(LET_F, LET_M, DASH, 50); // scroll "FM-" = FM off (~700ms)
 }
 
 // Called by handleGearToggle() combo (LEFT tap + RIGHT hold 5s) — toggles arm/disarm.
@@ -293,12 +294,10 @@ void cycleFmMode()
   fm_throttle_seen = false;
   current_vib_pattern = 4;         // Pattern 4: 2 fast buzzes = arm confirm
 
-  // Blink current mode x2 ("F1" "F1" etc.)
+  // Scroll "FM[mode]" x2 (~700ms each = ~1.4s total) as arm confirm
   for (int i = 0; i < 2; i++)
   {
-    displayDigits(LET_F, last_fm_mode);
-    updateDisplay();
-    delay(700);
+    scroll3Digits(LET_F, LET_M, last_fm_mode, 50);
   }
 
   queueMetaPacketBurst(0xF2, last_fm_mode);

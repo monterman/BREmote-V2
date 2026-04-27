@@ -1,5 +1,7 @@
 // V3 - 2026-04-21 - Added initTxGPS() call in applyConfigSettings() for TX GPS speed display
 // V3 - 2026-04-22 - Simplified initTxGPS() call site: speed_src guard moved into initTxGPS() itself
+// V3 - 2026-04-27 - P8: applyConfigSettings() always boots unlocked (lock feature removed)
+// V3 - 2026-04-27 - P8.1 Bug 1 fix: Restored no_lock=0/1 boot behavior; system_locked now conditional
 
 // ===== Hardware Initialization =====
 
@@ -77,13 +79,18 @@ void applyConfigSettings()
     return;
   }
 
-  if(usrConf.no_lock)
+  // V3 - 2026-04-27 - P8.1 Bug 1 fix: Restored no_lock=0/1 behavior.
+  // Always wait for throttle release first (safety gate — prevents accidental unlock during boot).
+  // Then apply lock state based on SPIFFS config:
+  //   no_lock=0 (locking enabled)  → system_locked stays 1; user must unlock manually via gesture
+  //   no_lock=1 (locking disabled) → system_locked = 0; boots ready to use immediately
+  while (thr_scaled > 10)
   {
-    while(thr_scaled > 10)
-    {
-      advanceArrow();
-      delay(100);
-    }
+    advanceArrow();
+    delay(100);
+  }
+  if (usrConf.no_lock)
+  {
     system_locked = 0;
 #ifdef WIFI_ENABLED
     webCfgNotifyTxUnlocked();

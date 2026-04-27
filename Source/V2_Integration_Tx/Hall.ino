@@ -2,6 +2,7 @@
 // V3 - 2026-04-21 - Updated DISPLAY_MODE_SPEED availability check to support TX GPS speed sources
 // V3 - 2026-04-27 - P8: Gesture redesign — combo state machine; LEFT hold=display cycle; RIGHT+LEFT=RTM; LEFT+RIGHT=FM
 // V3 - 2026-04-27 - fix: COMBO_TAP_MAX_MS 500ms; tap detection was tied to gear_change_waittime (100ms — too tight)
+// V3 - 2026-04-27 - fix: restored correct gesture map — RIGHT hold=display cycle, LEFT hold=lock (P8 had them swapped)
 
 // Returns true if the given display mode has a valid value
 bool isDisplayModeAvailable(uint8_t mode)
@@ -228,17 +229,17 @@ bool ctminus()
 // Direction convention (unchanged since V2):
 //   Physical LEFT toggle → tog_input = -1 → handleGearToggle(-1) → direction = -1
 //   Physical RIGHT toggle → tog_input = +1 → handleGearToggle(+1) → direction = +1
-// NOTE: In P8, simple LEFT hold = display cycle (was RTM arm in P7). This is
-// intentional — the P8 spec moved RTM arm to the combo gesture for safety.
+// NOTE: P8 initially set LEFT hold = display cycle and removed lock (wrong).
+// Corrected: RIGHT hold = display cycle; LEFT hold = lock (matches user intent).
 //
 // Tap = press released before COMBO_TAP_MAX_MS (500ms). Recorded as last_tap_dir.
 // A tap that lasts 100ms–500ms will also fire a gear/cap change as a side effect
 // (gear_change_waittime = 100ms), but the tap is still recorded for combo purposes.
 // Combo = opposite tap within COMBO_WINDOW_MS followed by a long hold.
 //
-// Gesture map (lock feature removed in P8; system always boots unlocked):
-//   LEFT hold 2s (simple)              → cycle telemetry display mode
-//   RIGHT hold 2s (simple)             → reserved, no action
+// Gesture map:
+//   RIGHT hold 2s (simple)             → cycle telemetry display mode
+//   LEFT hold 2s (simple)              → lock remote (unlock: left hold + throttle touch)
 //   RIGHT tap → LEFT hold 5s (combo)   → arm RTM
 //   LEFT tap → RIGHT hold 5s (combo)   → FM mode cycle
 // ============================================================
@@ -292,12 +293,17 @@ void handleGearToggle(int direction)
               cycleFmMode();
           }
         }
-        else if (direction < 0)
+        else if (direction > 0)
         {
-          // Simple LEFT hold 2s → cycle telemetry display mode
-          cycleDisplayMode(-1);
+          // Simple RIGHT hold 2s → cycle telemetry display mode
+          cycleDisplayMode(1);
         }
-        // Simple RIGHT hold 2s → reserved, no action
+        else if (direction < 0 && !usrConf.no_lock)
+        {
+          // Simple LEFT hold 2s → lock remote
+          system_locked = 1;
+          displayLock();
+        }
         last_tap_dir   = 0;  // consume the tap after any long-press action
         long_press_done = true;
         in_menu = usrConf.menu_timeout;

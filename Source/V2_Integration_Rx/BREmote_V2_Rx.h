@@ -3,6 +3,7 @@
 // V3 - 2026-04-24 - Added rx_tx_gps_lat/lng/timestamp globals for 0xF3 meta-packet reception
 // V3 - 2026-04-24 - Added Phase B GPS handshake params to confStruct; sizeof 128→136; updated defaultConf
 // V3 - 2026-04-25 - P7: Added RTM Phase C + RX safety params; VESC_MORE_VALUES; sizeof 136→152
+// V3 - 2026-04-27 - P8: TelemetryPacket adds rtm_distance at index 5; link_quality moved to index 6
 // V3 - 2026-04-25 - P7: Added rtm_rx_active, rtm_rx_emergency_stop, rtm_steer_override, fm_mode_runtime globals
 // V3 - 2026-04-25 - P7 fix: Changed RTM volatile globals to std::atomic for cross-core safety (core 0 PWM task / core 1 loop task)
 
@@ -314,13 +315,16 @@ inline void webCfgNotifyRxConnected() {}  // No-op stub when WiFi disabled
 #endif
 
 //Telemetry to send, MUST BE 8-bit!!
+// V3 - 2026-04-27 - P8: Added rtm_distance at index 5; link_quality moved to index 6 (must remain last).
+// Encoding: 0-99 = tenths of meter (0.0–9.9 m), 100-254 = meters offset (value-90 = actual m, so 100=10m, 199=109m), 255 = N/A.
 struct __attribute__((packed)) TelemetryPacket {
-    uint8_t foil_bat = 0xFF;    // index 0 — battery % 0-100
-    uint8_t foil_temp = 0xFF;   // index 1 — FET temp degC
-    uint8_t foil_speed = 0xFF;  // index 2 — speed km/h
-    uint8_t error_code = 0;     // index 3 — fault flags
-    uint8_t foil_power = 0xFF;  // index 4 — power (watts/50); 0xFF = not available
-    uint8_t link_quality = 0;   // index 5
+    uint8_t foil_bat = 0xFF;      // index 0 — battery % 0-100
+    uint8_t foil_temp = 0xFF;     // index 1 — FET temp degC
+    uint8_t foil_speed = 0xFF;    // index 2 — speed km/h
+    uint8_t error_code = 0;       // index 3 — fault flags
+    uint8_t foil_power = 0xFF;    // index 4 — power (watts/50); 0xFF = not available
+    uint8_t rtm_distance = 0xFF;  // index 5 — RX→TX distance during RTM/FM; see encoding above; 0xFF = N/A
+    uint8_t link_quality = 0;     // index 6 (must be last)
 } telemetry;
 
 /*

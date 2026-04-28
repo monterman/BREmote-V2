@@ -716,7 +716,7 @@ void checkCharger()
   setBrightness(0x0F);
 }
 
-volatile uint8_t current_vib_pattern = 0;  // active haptic pattern: 0=none, 1=connection lost, 2=bat warning, 3=error
+volatile uint8_t current_vib_pattern = 0;  // active haptic pattern: 0=none, 1=2 short, 2=5 short, 3=5 long, 4=2 fast short (RTM arm/disarm)
 
 void vibrationTask(void *parameter) {
   uint8_t last_error = 0;
@@ -803,11 +803,19 @@ void vibrationTask(void *parameter) {
       }
       current_vib_pattern = 0;
     }
-    else if (current_vib_pattern == 3) { 
+    else if (current_vib_pattern == 3) {
       // PATTERN C: 5 Long
-      for(int i=0; i<5; i++) { 
-        digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(500)); 
-        digitalWrite(P_MOT, LOW);  vTaskDelay(pdMS_TO_TICKS(300)); 
+      for(int i=0; i<5; i++) {
+        digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(500));
+        digitalWrite(P_MOT, LOW);  vTaskDelay(pdMS_TO_TICKS(300));
+      }
+      current_vib_pattern = 0;
+    }
+    // V3 - 2026-04-27 - P8: Pattern 4 — 2 fast short pulses (RTM arm/disarm confirm)
+    else if (current_vib_pattern == 4) {
+      for (int i = 0; i < 2; i++) {
+        digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(80));
+        digitalWrite(P_MOT, LOW);  vTaskDelay(pdMS_TO_TICKS(80));
       }
       current_vib_pattern = 0;
     }

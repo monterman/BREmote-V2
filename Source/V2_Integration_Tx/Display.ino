@@ -1,5 +1,6 @@
 // V3 - 2026-04-21 - Updated DISPLAY_MODE_SPEED case in renderOperationalDisplay() to show TX GPS speed when speed_src 2/3/5
 // V3 - 2026-04-22 - Added GPS status dot at C7 R0 in updateBargraphs(); fixed digit-clear mask 0xFF00→0xFF80 to preserve C7
+// V3 - 2026-04-27 - P8: Fixed displayDigits() clamp 29→33; ANIMATION_DELAY 80→40; ET handler; added renderRtmInfoDisplay()
 
 static void clearDisplayRaw()
 {
@@ -73,8 +74,10 @@ bool beginDisplay()
 
 void displayDigits(uint8_t dig1, uint8_t dig2)
 {
-  if (dig1 > 29) dig1 = BLANK;
-  if (dig2 > 29) dig2 = BLANK;
+  // V3 - 2026-04-27 - P8: Clamp raised 29→33. LET_R(30)/LET_N(31)/LET_S(32)/LET_M(33) were
+  // added to num0[] after this clamp was written, causing them to silently render as BLANK.
+  if (dig1 > 33) dig1 = BLANK;
+  if (dig2 > 33) dig2 = BLANK;
 
   //Delete whole number field
   for(int i = 1; i < 7; i++)
@@ -292,8 +295,27 @@ void renderOperationalDisplay()
   }
   else
   {
-    displayDigits(LET_E, remote_error < 10 ? remote_error : DASH);
-    updateDisplay();
+    // V3 - 2026-04-27 - P8: ET error (code=20=LET_T) shows "--" and auto-clears after 3s.
+    // ET is absent from V3 RX source; this guard is defensive for legacy or future paths.
+    // System stays in manual mode; no RTM/FM engagement; no vibration on ET.
+    static unsigned long et_show_ms = 0;
+    if (remote_error == LET_T)
+    {
+      if (et_show_ms == 0) et_show_ms = millis();
+      displayDigits(DASH, DASH);
+      updateDisplay();
+      if (millis() - et_show_ms > 3000UL)
+      {
+        remote_error = 0;
+        et_show_ms   = 0;
+      }
+    }
+    else
+    {
+      et_show_ms = 0;
+      displayDigits(LET_E, remote_error < 10 ? remote_error : DASH);
+      updateDisplay();
+    }
   }
 }
 
@@ -495,7 +517,7 @@ void displayLock()
   updateDisplay();
 }
 
-#define ANIMATION_DELAY 80
+#define ANIMATION_DELAY 40  // V3 - 2026-04-27 - P8: 80→40ms (2× faster unlock down-arrow)
 void unlockAnimation()
 {
   for(int i = 1; i < 7; i++)
@@ -647,4 +669,66 @@ void updateBargraphs(void *parameter)
     updateDisplay();
     vTaskDelayUntil(&xLastWakeTime, xFrequency);
   }
+}
+
+// ============================================================
+// V3 - 2026-04-27 - P8: RTM/FM ACTIVE INFO DISPLAY
+// Called from loop() instead of renderOperationalDisplay() when rtm_tx_active==true.
+// Modes: 0=distance to TX (default), 1=speed, 2=alternating 2.5s each.
+// Distance telemetry encoding (rtm_distance byte from RX):
+//   0-99  → tenths of meter (0.0–9.9 m), displayed as "X.X" with C3 decimal dot
+//   100-254 → whole meters (value-90 = actual m; 100=10m, 199=109m, 254=164m max)
+//   255   → N/A / RTM inactive on RX side → show "--"
+// ============================================================
+void renderRtmInfoDisplay()
+{
+  static unsigned long alt_last_switch_ms = 0;
+  static uint8_t       alt_showing        = 0;  // 0=distance, 1=speed (used in mode 2)
+
+  uint8_t mode = usrConf.rtm_display_mode;
+
+  if (mode == 2)
+  {
+    if (alt_last_switch_ms == 0)
+      alt_last_switch_ms = millis();  // start timer on first call; show distance first
+    else if (millis() - alt_last_switch_ms >= 2500UL)
+    {
+      alt_showing        = alt_showing ? 0 : 1;
+      alt_last_switch_ms = millis();
+    }
+    mode = alt_showing;
+  }
+
+  if (mode == 0)
+  {
+    // Distance mode
+    uint8_t d = telemetry.rtm_distance;
+    if (d == 0xFF)
+    {
+      displayDigits(DASH, DASH);
+    }
+    else if (d < 100)
+    {
+      // 0-99: tenths of meter → show "X.X" with C3 R4 decimal dot
+      displayDigits(d / 10, d % 10);
+      displayBuffer[5] |= (1 << 3);  // decimal dot at C3 R4 — must set AFTER displayDigits() clears it
+    }
+    else
+    {
+      // 100-254: whole meters (value-90 = actual_m)
+      uint8_t meters = (uint8_t)(d - 90);
+      if (meters > 99) meters = 99;  // 2-digit display limit
+      displayDigits(meters / 10, meters % 10);
+    }
+  }
+  else
+  {
+    // Speed mode (mode == 1 or speed half of mode 2)
+    if (usrConf.speed_src == 2 || usrConf.speed_src == 3 || usrConf.speed_src == 5)
+      displayShowTwoDigitOrDash(tx_gps_speed);
+    else
+      displayShowTwoDigitOrDash(telemetry.foil_speed);
+  }
+
+  updateDisplay();
 }

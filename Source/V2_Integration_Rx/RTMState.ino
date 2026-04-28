@@ -1,4 +1,5 @@
 // V3 - 2026-04-25 - P7: RX RTM state machine, 10 safety gates, Phase C anti-spoofing.
+// V3 - 2026-04-27 - P8: runRtmLoop() encodes RX→TX distance into telemetry.rtm_distance (index 5)
 //
 // The RTM state machine runs in loop() at ~10Hz (100ms rate-limit).
 // When rtm_rx_active is set true by a 0xF1 meta-packet, this module:
@@ -209,9 +210,10 @@ void runRtmLoop()
 
   if (!rtm_rx_active)
   {
-    rtm_rx_emergency_stop = false;
-    rtm_prev_dist_m       = -1.0;
-    rtm_phase_c_ms        = 0;
+    rtm_rx_emergency_stop    = false;
+    rtm_prev_dist_m          = -1.0;
+    rtm_phase_c_ms           = 0;
+    telemetry.rtm_distance   = 0xFF;  // P8: signal N/A to TX when RTM inactive
     return;
   }
 
@@ -226,6 +228,22 @@ void runRtmLoop()
   // All gates pass: clear emergency stop, update steering
   rtm_rx_emergency_stop = false;
   updateRtmSteering();
+
+  // V3 - 2026-04-27 - P8: Encode RX→TX distance into telemetry.rtm_distance for TX display.
+  // Encoding: 0-99 = tenths of meter (0.0-9.9 m); 100-254 = (value-90) whole meters (100=10m, 254=164m).
+  {
+    float dist_m = (float)TinyGPSPlus::distanceBetween(
+        gps_last_lat, gps_last_lng, rx_tx_gps_lat, rx_tx_gps_lng);
+    if (dist_m < 10.0f)
+    {
+      telemetry.rtm_distance = (uint8_t)(dist_m * 10.0f);  // 0-99 range
+    }
+    else
+    {
+      uint8_t whole_m = (uint8_t)(dist_m > 164.0f ? 164.0f : dist_m);  // cap at 164 m (encodes as 254)
+      telemetry.rtm_distance = 90 + whole_m;  // 100=10m, 199=109m, 254=164m
+    }
+  }
 
   // Phase C (every 5s)
   runPhaseC();

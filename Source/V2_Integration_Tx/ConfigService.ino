@@ -52,7 +52,7 @@ const CfgFieldSpec kCfgFields[] = {
   {"rtm_throttle_start_pct", CFG_U16, offsetof(confStruct, rtm_throttle_start_pct), true, false, true, 10.0f,  50.0f,    0, false},
   {"rtm_throttle_max_pct",   CFG_U16, offsetof(confStruct, rtm_throttle_max_pct),   true, false, true, 30.0f,  90.0f,    0, false},
   {"rtm_ramp_duration_s",    CFG_U16, offsetof(confStruct, rtm_ramp_duration_s),    true, false, true,  2.0f,  15.0f,    0, false},
-  {"rtm_stop_distance_m",    CFG_U16, offsetof(confStruct, rtm_stop_distance_m),    true, false, true,  3.0f,  20.0f,    0, false},
+  {"rtm_disengage_distance_m", CFG_U16, offsetof(confStruct, rtm_disengage_distance_m), true, false, true,  3.0f,  20.0f,    0, false},
   {"rtm_max_runtime_s",      CFG_U16, offsetof(confStruct, rtm_max_runtime_s),      true, false, true,  0.0f, 300.0f,    0, false},  // P8: min 30→0 (0=disabled)
   {"rtm_gps_timeout_ms",     CFG_U16, offsetof(confStruct, rtm_gps_timeout_ms),     true, false, true, 500.0f,3000.0f,   0, false},
   {"fm_hold_duration_s",     CFG_U16, offsetof(confStruct, fm_hold_duration_s),     true, false, true,  4.0f,  10.0f,    0, false},

@@ -134,11 +134,30 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 2 new RX SPIFFS params: `gps_max_pair_dist_m` (50-2000m, default 500m), `gps_max_speed_diff_kmh` (10-200km/h, default 50)
 - sizeof(confStruct) 128→136; first flash resets all RX settings to defaults
 
-**Priority 7**: RTM Return-to-Me implementation
-- Full Return-to-Me state machine (see `DESIGN_RETURN_TO_ME.md`)
-- Phase C anti-spoofing runs during active RTM (convergence + VESC ERPM vs GPS + TX GPS freshness)
+**Priority 7 — COMPLETED 2026-04-25 (commit f29c209), compile fixes committed 2026-04-26 (commit e111379)** ✅: RTM Return-to-Me implementation
+- TX RTM + FM state machines in TX/RTMState.ino; left-hold arms RTM; right-hold cycles FM
+- RX RTM state machine in RX/RTMState.ino; 10 safety gates; compass bearing steering
+- Phase C anti-spoofing: convergence check, VESC ERPM vs GPS speed, TX GPS freshness
+- 4 compile errors fixed in RX (PWM.ino cast, extern gps_phase_b_ok, rtm_stop_distance_m struct+ConfigService)
+- CRITICAL safety fix 2026-04-26: `defaultConf.rtm_stop_distance_m` was 0 (disabled Gate 9 hard stop); fixed to 3m
+- sizeof(confStruct) RX: 136→152; TX: 96→120; first flash resets all settings to defaults
+- Bench test checklist: 10/10 PASS (static code review); hardware confirmation still required:
+  - Outdoor GPS fix, motor disconnected bench test, PWM output verification needed before field use
+  - Note: Test 3/4 gate labels may fire as Gate 5/4 in practice (correct stop behavior, different gate)
+  - Note: RX `rtm_stop_distance_m` default is 3m (re-confirm via web config before field test)
 
-**Priority 8**: Follow-Me full implementation (future)
+**Priority 8 — COMPLETED 2026-04-27** ✅: Display, Gesture & UX Overhaul
+- Gesture redesign: LEFT hold 2s=display cycle; RIGHT tap→LEFT hold 5s=RTM arm; LEFT tap→RIGHT hold 5s=FM cycle; lock feature removed (always boots unlocked)
+- RTM display: static "rn" ×2 (3s total); FM display: F0/F1/F2/F3; renderRtmInfoDisplay() replaces renderOperationalDisplay() during RTM active
+- RX→TX distance encoded in telemetry.rtm_distance (TelemetryPacket index 5); sizeof 6→7; TX confStruct sizeof 120→126
+- displayDigits() clamp fixed 29→33; ANIMATION_DELAY 80→40ms; ET error (code=20) shows "--", auto-clears 3s
+- Vibration Pattern 4: 2×80ms fast short = RTM arm/disarm confirm
+- RTM steer exit gate (rtm_steer_exit_on_input); rtm_max_runtime_s=0 default; 3 new TX SPIFFS fields
+- Static code review: PASS. Outdoor GPS + motor bench test still required before field use.
+- TX `rtm_stop_distance_m` renamed → `rtm_disengage_distance_m` (parameter rename only; no behavior change; RX `rtm_stop_distance_m` unchanged)
+- P8.1 bug fixes: no_lock=0 boot-locked state restored; FM mode display changed to scroll3Digits("FM[n]") for visibility
+
+**Priority 9**: Follow-Me full implementation (future)
 
 ---
 

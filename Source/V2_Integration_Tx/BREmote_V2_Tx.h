@@ -135,7 +135,7 @@ struct confStruct {
     uint16_t rtm_throttle_start_pct;   // Initial throttle cap when RTM engages; 10-50 %; default 30
     uint16_t rtm_throttle_max_pct;     // Max throttle cap after ramp; 30-90 %; default 70
     uint16_t rtm_ramp_duration_s;      // Time to ramp throttle start→max; 2-15 s; default 5
-    uint16_t rtm_stop_distance_m;      // Hard stop distance from TX; 3-20 m; default 10
+    uint16_t rtm_disengage_distance_m; // Distance from TX at which RTM disengages (hard stop); 3-20 m; default 10
     uint16_t rtm_max_runtime_s;        // Maximum continuous RTM runtime; 30-300 s; default 120
     uint16_t rtm_gps_timeout_ms;       // TX GPS loss timeout before safety stop; 500-3000 ms; default 2000
     uint16_t fm_hold_duration_s;       // RIGHT hold time for FM mode cycle; 4-10 s; default 5
@@ -215,7 +215,7 @@ confStruct defaultConf = {  // V3 default configuration — tuned for monterman 
   30,   // rtm_throttle_start_pct
   70,   // rtm_throttle_max_pct
   5,    // rtm_ramp_duration_s
-  10,   // rtm_stop_distance_m
+  10,   // rtm_disengage_distance_m
   0,    // rtm_max_runtime_s (0=disabled — safety gates handle all real scenarios; P8 changed from 120)
   2000, // rtm_gps_timeout_ms
   5,    // fm_hold_duration_s

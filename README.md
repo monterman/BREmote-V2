@@ -56,9 +56,14 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 | Log download over WiFi web UI | ❌ | ✅ |
 | US-format log filenames (MMDDYY) | ❌ | ✅ |
 | V3 Config Studio offline HTML tool | ❌ | ✅ |
-| Full codebase audit + stability fixes | ❌ | ✅ |
-| Return-to-Me mode (`rtn`) | ❌ | 🔜 V3.1 |
-| Follow-Me mode override | ❌ | 🔜 V3.x |
+| Full codebase audit + stability fixes (7 critical) | ❌ | ✅ |
+| GPS anti-spoofing: Phase A (RX standalone) | ❌ | ✅ |
+| GPS anti-spoofing: Phase B (TX↔RX handshake) | ❌ | ✅ |
+| GPS anti-spoofing: Phase C (RTM convergence) | ❌ | ✅ |
+| TX→RX GPS coordinate meta-packets (0xF3) | ❌ | ✅ |
+| Return-to-Me mode (RTM) | ❌ | ✅ |
+| Follow-Me mode override (FM) | ❌ | ✅ |
+| RTM/FM info display (distance/speed on TX) | ❌ | ✅ |
 
 ---
 
@@ -142,25 +147,29 @@ The **SP** (Speed) telemetry display mode can now read speed directly from the T
 
 Display shows `--` when no fix is available or the fix is older than the configured stale timeout. Set `gps_en = 1` and reboot after changing it.
 
-**Telemetry display cycle** (cycle with long right toggle press):
+**Telemetry display cycle** (cycle with LEFT toggle hold 2 s):
 
 ```
 TH       → UB           → TE    → SP    → BA
 Throttle → Internal Bat → Temp  → Speed → Foil Bat
 ```
 
-### TX Toggle Button Reference
+### TX Toggle Button Reference — V3 P8 Gestures
 
-| Input                     | Result                                |
-| ---                       | ---                                   |
-| Boot + hold LEFT toggle   | Calibration mode — display shows `CA` |
-| Boot + hold RIGHT toggle  | Pairing mode — display shows `PA`     |
-| Boot + THR + LEFT toggle  | USB charging mode                     |
-| Boot + THR + RIGHT toggle | Delete SPIFFS config (factory reset)  |
-| LEFT toggle held 2 s      | Safety lock (display shows lock icon) |
-| RIGHT toggle held 2 s     | Cycle telemetry display mode          |
-| LEFT toggle held 5 s      | 🔜 Return-to-Me `rtn` *(V3.1)*        |
-| RIGHT toggle held 5 s     | 🔜 Follow-Me override `FM` *(V3.x)*   |
+| Input | Result |
+| --- | --- |
+| Boot + hold LEFT toggle | Calibration mode |
+| Boot + hold RIGHT toggle | Pairing mode |
+| Boot + THR + LEFT toggle | USB charging mode |
+| Boot + THR + RIGHT toggle | Delete SPIFFS config (factory reset) |
+| LEFT tap (quick) | Arm combo window — next RIGHT hold within 3 s triggers FM |
+| RIGHT tap (quick) | Arm combo window — next LEFT hold within 3 s triggers RTM |
+| LEFT hold 2 s | Cycle telemetry display mode |
+| RIGHT hold 2 s | Reserved — no action |
+| RIGHT tap → LEFT hold 5 s | Arm **Return-to-Me** (RTM) — display shows `rn` |
+| LEFT tap → RIGHT hold 5 s | Cycle **Follow-Me** override mode (F0/F1/F2/F3) |
+
+> **Note:** The lock feature has been removed in V3 P8. The system always boots unlocked. Throttle must be at 0 for long-press actions to fire.
 
 ---
 
@@ -215,31 +224,112 @@ This rule is non-negotiable and is enforced at the firmware level — it cannot 
 
 ---
 
-## 🔜 Coming in V3.1 — Return-to-Me (`rtn`)
+## Return-to-Me (RTM) — Full Guide
 
-> Full design in [DESIGN_RETURN_TO_ME.md](DESIGN_RETURN_TO_ME.md). Hardware ready on both TX and RX.
+> RTM is fully implemented in V3 P7/P8. Hardware: GPS on both TX and RX, compass on RX.
 
-For when you are floating on your board and want the buggy to steer itself toward you. **You must actively hold the throttle** — RTM provides automatic steering only.
+For when you are in the water and want the buggy to drive itself toward you. **You must actively hold the throttle** — RTM provides automatic compass-bearing steering only. Releasing the trigger stops the buggy immediately.
 
-**Activation:**
-1. Hold LEFT toggle at full extent for 5 seconds
-2. Dot display shows `rtn` — mode armed (10-second window)
-3. Double-squeeze the throttle to engage (configurable)
-4. Throttle ramps from 30% cap → 70% cap over 5 seconds (all configurable)
-5. Release throttle at any time → buggy stops immediately
-6. Hard stop when buggy reaches configured safe distance from TX (default 10 m)
+### Arming
 
-**Requires:** GPS fix on both TX and RX, valid compass heading on RX, healthy LoRa link. Any sensor loss immediately cuts throttle to 0 and disengages RTM.
+1. **Combo gesture:** Quick-tap RIGHT toggle, then within 3 seconds hold LEFT toggle for 5 s
+2. TX display shows `rn` for 3 s (two 1.5 s static passes) — armed
+3. Haptic: 2 fast short pulses confirm arm
+
+### Engaging
+
+With RTM armed, press throttle to engage (10-second arm window):
+- **Single-squeeze mode** (`rtm_double_squeeze_en = 0`): hold throttle >30% for 500 ms
+- **Double-squeeze mode** (`rtm_double_squeeze_en = 1`, default): squeeze, release, squeeze again
+
+### Active Operation
+
+- Throttle ramps from `rtm_throttle_start_pct` (default 30%) to `rtm_throttle_max_pct` (default 70%) over `rtm_ramp_duration_s` seconds
+- TX display shows distance to TX (in metres) or speed, per `rtm_display_mode`
+- RX compass auto-steers toward TX GPS position
+- Distance-to-TX shown in tenths of metre below 10 m (e.g. `3.5`), whole metres above
+
+### Disengaging
+
+RTM stops automatically when **any** of these conditions occur:
+
+| Safety Gate | Condition |
+|---|---|
+| Throttle release | User releases trigger → buggy stops (Gate 1, unconfigurable) |
+| Hard stop distance | Buggy within `rtm_stop_distance_m` of TX (default 3 m) |
+| GPS lost — TX | TX GPS older than `rtm_gps_timeout_ms` (default 2000 ms) |
+| GPS lost — RX | RX GPS older than 6 s |
+| GPS rejected | Phase A anti-spoofing failure on RX |
+| Handshake failed | Phase B TX↔RX position cross-check failed |
+| Throttle idle 10 s | No throttle input for 10 consecutive seconds while active |
+| LoRa link lost | No packet for failsafe timeout |
+| Max runtime | If `rtm_max_runtime_s > 0` (default: 0 = disabled) |
+| Convergence fail | Distance to TX not decreasing (Phase C, checked every 5 s) |
+| Steering input | Steering override while `rtm_steer_exit_on_input = 1` (default) |
+
+On any gate failure: throttle → 0, TX display shows `Stp` for 2 s, haptic confirms disarm.
+
+### SPIFFS Configuration (TX)
+
+| Parameter | Default | Description |
+|---|---|---|
+| `rtm_enabled` | 1 | Master on/off switch |
+| `rtm_throttle_start_pct` | 30 | Initial throttle cap % when RTM engages |
+| `rtm_throttle_max_pct` | 70 | Max throttle cap % after ramp |
+| `rtm_ramp_duration_s` | 5 | Ramp time start→max in seconds |
+| `rtm_arm_window_s` | 10 | Seconds to engage throttle after arming |
+| `rtm_double_squeeze_en` | 1 | 1=double-squeeze, 0=hold 500ms |
+| `rtm_disengage_distance_m` | 10 | TX-side disengage distance in metres |
+| `rtm_gps_timeout_ms` | 2000 | TX GPS stale timeout in ms |
+| `rtm_max_runtime_s` | 0 | Max runtime (0 = disabled) |
+| `rtm_display_mode` | 0 | 0=distance, 1=speed, 2=alternating |
+| `rtm_steer_exit_on_input` | 1 | 1=steering exits RTM, 0=correction blend |
+
+### SPIFFS Configuration (RX)
+
+| Parameter | Default | Description |
+|---|---|---|
+| `rtm_rx_enabled` | 1 | RX-side RTM enable |
+| `rtm_rx_override_steering` | 1 | Allow RX to auto-steer using compass |
+| `rtm_compass_required` | 1 | Require valid compass or stop |
+| `rtm_stop_distance_m` | 3 | RX-side hard stop distance |
+| `rtm_vesc_speed_diff_kmh` | 20 | Max VESC vs GPS speed diff (Phase C) |
+| `vesc_erpm_per_kmh` | 0 | VESC ERPM per km/h for speed check (0=disabled) |
 
 ---
 
-## 🔜 Coming in V3.x — Follow-Me Mode Override
+## Follow-Me Mode Override (FM) — Full Guide
 
-> Hardware ready on both TX and RX. Software implementation in progress.
+> FM override is fully implemented in V3 P7/P8. It overrides the RX follow-me positioning mode at runtime without a SPIFFS write.
 
-In-session override of the RX follow-me position mode without modifying RX SPIFFS config. The override is RAM-only — RX returns to the web-configured default on reboot.
+The override is RAM-only — RX returns to its web-configured `followme_mode` on reboot.
 
-**Planned activation:** Hold RIGHT toggle 5 seconds → display cycles through `0ff` / `bEh` / `n-R` / `n-L` → release 2 seconds to confirm → TX sends override to RX.
+### Activation
+
+1. **Combo gesture:** Quick-tap LEFT toggle, then within 3 seconds hold RIGHT toggle for 5 s
+2. TX display shows `F` + mode number (e.g. `F0`, `F1`, `F2`, `F3`)
+3. Continue holding RIGHT or re-hold within 2 s to keep cycling modes
+4. Release and wait 2 s — TX sends the selected mode to RX via 0xF2 meta-packet
+
+### Modes
+
+| Display | `followme_mode` value | Behaviour |
+|---|---|---|
+| `F0` | 0 | Disabled — follow-me off |
+| `F1` | 1 | Behind — RX follows directly behind TX |
+| `F2` | 2 | Near Right — RX follows to the right of TX |
+| `F3` | 3 | Near Left — RX follows to the left of TX |
+
+### FM Proximity Warning
+
+If TX-to-RX distance drops below `fm_warn_distance_m` (default 150 m), TX fires a 2×Pattern-2 vibration burst warning (2 short × 2, with 300 ms gap).
+
+### SPIFFS Configuration (TX)
+
+| Parameter | Default | Description |
+|---|---|---|
+| `fm_override_enabled` | 1 | Master on/off switch |
+| `fm_warn_distance_m` | 150 | Proximity warning threshold in metres |
 
 ---
 
@@ -312,27 +402,25 @@ In-session override of the RX follow-me position mode without modifying RX SPIFF
 
 ## Known Limitations
 
-### Features In Progress
+### Features Still Pending
 
 | Feature | Status |
 |---|---|
-| Return-to-Me (RTM) | Fully designed, implementation not started — see `DESIGN_RETURN_TO_ME.md` |
-| Follow-Me mode override | Fully designed, implementation not started |
-| TX GPS coords over LoRa | Protocol designed (opcode 0xF3 reserved), not implemented |
-| Compass heading output | QMC5883L hardware works on RX, heading not yet computed in firmware |
+| Follow-Me full implementation | FM override operational; full autonomous follow-me behaviour (positional control loop) not yet implemented |
 | BLE telemetry forwarding | Planned for future release |
+| RTM/FM hardware field test | Static code review passed (10/10 gates). Outdoor GPS + motor bench test still required before field use. |
 
-### Critical Bugs Identified in V2 Codebase (Fixes in Progress for V3)
+### V2 Critical Bugs — All Fixed in V3
 
-| # | Bug | File | Impact |
-|---|---|---|---|
-| 1 | WDT 1000 ms timeout too close to limit under GPS + VESC + wetness peak load | RX `Init.ino` | Unexpected reboot under load |
-| 2 | `vesc_struct` accessed across dual ESP32-S3 cores without mutex | RX `Logger.ino` | Data corruption or crash |
-| 3 | `logging_active` flag missing `volatile` — stale CPU cache read across cores | RX `Logger.ino` | Logger state mismatch |
-| 4 | `ensureFreeSpace()` silently deletes the currently active log file | RX `Logger.ino` | Active log data loss |
-| 5 | `readBCFromSPIFFS()` heap out-of-bounds read if file is < 102 bytes | RX `SPIFFS.ino` | Crash on corrupt or short file |
-| 6 | `triggeredReceive` and `generatePWM` tasks have 2048-byte stack (too small) | RX `Init.ino` | Stack overflow under load |
-| 7 | `scanI2C()` reinitializes Wire to wrong pins, breaking AW9523 I2C bus | RX `System.ino` | I/O expander failure after scan |
+| # | Bug | Fix in V3 |
+|---|---|---|
+| 1 | WDT 1000 ms timeout too close under load | Raised to 3000 ms (RX `Init.ino`) |
+| 2 | `vesc_struct` race condition across ESP32-S3 cores | `vescMutex` semaphore added (RX `VESC.ino`, `Logger.ino`) |
+| 3 | `logging_active` missing `volatile` | Declared `volatile` (RX `Logger.ino`) |
+| 4 | `ensureFreeSpace()` deletes active log file | Excludes active log from deletion (RX `Logger.ino`) |
+| 5 | `readBCFromSPIFFS()` heap out-of-bounds on short file | `decodedLen < 102` guard added (RX `SPIFFS.ino`) |
+| 6 | `triggeredReceive` / `generatePWM` stack 2048 bytes | Raised to 4096 bytes (RX `Init.ino`) |
+| 7 | `scanI2C()` reinitializes Wire to wrong pins | `Wire.begin()` removed from `scanI2C()` (RX `System.ino`) |
 
 ---
 
@@ -352,6 +440,23 @@ In-session override of the RX follow-me position mode without modifying RX SPIFF
 ---
 
 ## Changelog
+
+### V3 P8 — April 2026 *(monterman)* — Display, Gesture & UX Overhaul
+
+- **Gesture redesign (breaking):** LEFT hold 2s = cycle display; RIGHT tap→LEFT hold 5s = RTM arm; LEFT tap→RIGHT hold 5s = FM cycle; lock feature removed (always boots unlocked)
+- **RTM arm/disarm display:** static `rn` ×2 (3s total), replaces scrolling `rtn`
+- **FM mode display:** `F0`/`F1`/`F2`/`F3` instead of named abbreviations
+- **RTM/FM active info display:** TX shows distance-to-TX or speed on dot matrix while RTM/FM active; `rtm_display_mode` configures mode (0=distance, 1=speed, 2=alternating 2.5s); distance shown as `X.X` m below 10m with C3 decimal dot, `XX` m above
+- **RX→TX distance telemetry:** RX computes and encodes distance into `telemetry.rtm_distance` (TelemetryPacket index 5); TX decodes for display
+- **Vibration Pattern 4:** 2×80ms fast short pulses for RTM arm/disarm confirmation
+- **RTM steer exit gate:** steering input exits RTM when `rtm_steer_exit_on_input=1` (default)
+- **`rtm_max_runtime_s` default 120→0** (0=disabled; safety gates handle all real scenarios)
+- **`displayDigits()` clamp bug fixed:** clamp raised 29→33; LET_R/LET_N/LET_S/LET_M now display correctly (was silently rendering as blank)
+- **Unlock animation 2× faster:** ANIMATION_DELAY 80ms→40ms
+- **ET error handler:** remote_error=20 (LET_T) shows `--` and auto-clears after 3s; no vibration
+- **3 new TX SPIFFS fields:** `rtm_display_mode`, `fm_warn_distance_m`, `rtm_steer_exit_on_input`
+- **TelemetryPacket grows:** `rtm_distance` added at index 5; `link_quality` moved to index 6 (sizeof 6→7); TX+RX bounds-check auto-adapts
+- **confStruct sizeof:** TX 120→126, RX unchanged. First P8 flash resets TX settings to defaults.
 
 ### V3.0.0 — April 2026 *(monterman)*
 

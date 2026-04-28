@@ -16,6 +16,7 @@ void initWatchdog();
 void serPrintPackets(bool json);
 void runMenu();
 void renderOperationalDisplay();
+void showFullScreenMessage(const char* msg, uint16_t duration_ms);
 void deepSleep();
 void checkSerial();
 // Subsystem Activity Toggles

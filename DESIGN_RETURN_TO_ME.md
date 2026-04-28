@@ -1,5 +1,5 @@
 # Return-to-Me (RTM) and Follow-Me Override - Design Document
-**Project:** BREmote V3  
+**Project:** BREmote V2.5-Evo  
 **Date:** April 21, 2026  
 **Status:** Design phase - NO code written yet
 

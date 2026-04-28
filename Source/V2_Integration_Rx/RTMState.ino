@@ -1,5 +1,6 @@
 // V3 - 2026-04-25 - P7: RX RTM state machine, 10 safety gates, Phase C anti-spoofing.
 // V3 - 2026-04-27 - P8: runRtmLoop() encodes RX→TX distance into telemetry.rtm_distance (index 5)
+// V2.5-Evo - 2026-04-28 - P9 Bug1A/1B/1C: Gate9 zero-guard; always-compute dist before gates
 //
 // The RTM state machine runs in loop() at ~10Hz (100ms rate-limit).
 // When rtm_rx_active is set true by a 0xF1 meta-packet, this module:
@@ -85,12 +86,16 @@ static bool checkRtmSafetyGates()
     return false;
   }
 
-  // Gate 9: hard stop distance (buggy within rtm_stop_distance_m of TX)
+  // Gate 9: hard stop distance (buggy within stop distance of TX).
+  // Guard: rtm_stop_distance_m==0 means SPIFFS held the pre-fix zero default.
+  // Use 3m (firmware hard minimum) to keep Gate 9 active regardless of stored config.
+  uint16_t stop_dist_m = (usrConf.rtm_stop_distance_m > 0) ? usrConf.rtm_stop_distance_m : 3u;
   float dist_m = (float)TinyGPSPlus::distanceBetween(
       gps_last_lat, gps_last_lng, rx_tx_gps_lat, rx_tx_gps_lng);
-  if (dist_m < (float)usrConf.rtm_stop_distance_m)
+  if (dist_m < (float)stop_dist_m)
   {
-    Serial.printf("RTM [RX] STOP: within hard stop distance (%.0f m)\n", dist_m);
+    Serial.printf("RTM [RX] STOP: within hard stop (%.0f m < %u m)\n",
+                  dist_m, stop_dist_m);
     rtm_rx_emergency_stop = true;
     return false;
   }
@@ -201,6 +206,38 @@ void runRtmLoop()
   if (now - last_rtm_ms < 100UL) return;
   last_rtm_ms = now;
 
+  // ---- Always compute RX→TX distance when GPS data is available ----
+  // Populates telemetry.rtm_distance for TX at all times (not only during active RTM).
+  // Bug 1B: TX can perform a pre-arm distance check before second-squeeze confirmation.
+  // Bug 1C: Distance is available the moment RTM activates, no telemetry cycle delay.
+  {
+    bool gps_rx_ok = (gps_last_ms > 0) && ((millis() - gps_last_ms) < 6000UL);
+    bool gps_tx_ok = (rx_tx_gps_timestamp > 0) && ((millis() - rx_tx_gps_timestamp) < 5000UL);
+
+    if (gps_rx_ok && gps_tx_ok)
+    {
+      float d = (float)TinyGPSPlus::distanceBetween(
+          gps_last_lat, gps_last_lng, rx_tx_gps_lat, rx_tx_gps_lng);
+
+      if (d < 10.0f)
+      {
+        // 0-99: tenths of metre (d=0.0..9.9 m)
+        telemetry.rtm_distance = (uint8_t)(d * 10.0f);
+      }
+      else
+      {
+        // 100-254: whole metres offset by 90 (100=10m, 254=164m cap)
+        uint8_t whole_m = (uint8_t)(d > 164.0f ? 164.0f : d);
+        telemetry.rtm_distance = 90u + whole_m;
+      }
+    }
+    else if (!rtm_rx_active)
+    {
+      telemetry.rtm_distance = 0xFF;  // mark N/A only when inactive AND no GPS
+    }
+    // If rtm_rx_active but GPS data just expired, keep last known value (don't set 0xFF)
+  }
+
   if (!usrConf.rtm_rx_enabled)
   {
     rtm_rx_active         = false;
@@ -213,7 +250,7 @@ void runRtmLoop()
     rtm_rx_emergency_stop    = false;
     rtm_prev_dist_m          = -1.0;
     rtm_phase_c_ms           = 0;
-    telemetry.rtm_distance   = 0xFF;  // P8: signal N/A to TX when RTM inactive
+    // telemetry.rtm_distance already set above (0xFF if no GPS, else live distance)
     return;
   }
 
@@ -228,22 +265,6 @@ void runRtmLoop()
   // All gates pass: clear emergency stop, update steering
   rtm_rx_emergency_stop = false;
   updateRtmSteering();
-
-  // V3 - 2026-04-27 - P8: Encode RX→TX distance into telemetry.rtm_distance for TX display.
-  // Encoding: 0-99 = tenths of meter (0.0-9.9 m); 100-254 = (value-90) whole meters (100=10m, 254=164m).
-  {
-    float dist_m = (float)TinyGPSPlus::distanceBetween(
-        gps_last_lat, gps_last_lng, rx_tx_gps_lat, rx_tx_gps_lng);
-    if (dist_m < 10.0f)
-    {
-      telemetry.rtm_distance = (uint8_t)(dist_m * 10.0f);  // 0-99 range
-    }
-    else
-    {
-      uint8_t whole_m = (uint8_t)(dist_m > 164.0f ? 164.0f : dist_m);  // cap at 164 m (encodes as 254)
-      telemetry.rtm_distance = 90 + whole_m;  // 100=10m, 199=109m, 254=164m
-    }
-  }
 
   // Phase C (every 5s)
   runPhaseC();

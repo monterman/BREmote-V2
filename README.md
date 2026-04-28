@@ -1,4 +1,4 @@
-# BREmote V3 — Tow Buggy / eFoil Remote
+# BREmote V2.5-Evo — Tow Buggy / eFoil Remote
 
 > **Fork of [BREmote V2](https://github.com/Luddi96/BREmote) by LudwigBre / Luddi96**
 
@@ -460,7 +460,7 @@ If TX-to-RX distance drops below `fm_warn_distance_m` (default 150 m), TX fires 
 
 ### V3.0.0 — April 2026 *(monterman)*
 
-- Fork established as BREmote V3
+- Fork established as BREmote V2.5-Evo
 - Full codebase audit completed — 7 critical bugs and 10 important issues documented
 - TX GPS reading implemented: Beitian BN-220 on Serial1 GPIO 18/19, UBX binary init (115200 baud, 5 Hz), non-blocking polling — does not stall the 10 Hz LoRa cycle
 - GPS speed display in km/h, knots, and mph via `speed_src` SPIFFS parameter (values 2, 3, 5)
@@ -488,7 +488,7 @@ Key V2 milestones:
 |---|---|
 | **[LudwigBre / Luddi96](https://github.com/Luddi96/BREmote)** | Original hardware design, original firmware architecture, and project founder. All core features originate here. GPL 3.0 author. |
 | **Janrusher** | Dynamic throttle cap mode and Web Console foundation — major V2 enhancements forked from LudwigBre, further refined in V3. |
-| **monterman** | BREmote V3 — TX GPS implementation, integrated data logger, deep codebase analysis, critical bug documentation, RTM / Follow-Me mode design. |
+| **monterman** | BREmote V2.5-Evo — TX GPS implementation, integrated data logger, deep codebase analysis, critical bug documentation, RTM / Follow-Me mode design. |
 
 Logo uses *watersport* and *Skate* by Adrien Coquet from [thenounproject.com](https://thenounproject.com) (CC BY 3.0).
 

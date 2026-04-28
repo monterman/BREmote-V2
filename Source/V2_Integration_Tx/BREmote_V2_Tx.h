@@ -4,6 +4,7 @@
 // V3 - 2026-04-25 - P7: Added RTM meta-packet queue globals (rtm_meta_type/value/count) and RTM throttle cap (rtm_thr_cap_tx, rtm_tx_active)
 // V3 - 2026-04-27 - P8: Added rtm_display_mode, fm_warn_distance_m, rtm_steer_exit_on_input to confStruct; TelemetryPacket adds rtm_distance at index 5; rtm_max_runtime_s default 120→0
 // V3 - 2026-04-27 - P8.1: Added fm_arm_window_s to confStruct; FM redesigned as arm/disarm toggle with mode memory; sizeof 124→128
+// V2.5-Evo - 2026-04-28 - P9: Added dist_unit (fills 2-byte tail padding; sizeof stays 128); rtm_arm_dist_m RAM global
 
 /*
 ** Includes
@@ -38,10 +39,14 @@
 #include <WebServer.h>
 #endif
 
-#define SW_VERSION 3
+#define SW_VERSION 25  // V2.5-Evo — 25 = V2.5; first flash resets all TX SPIFFS config to defaults
 const char* CONF_FILE_PATH = "/data.txt";
 
 //#define DELETE_SPIFFS_CONF_AT_STARTUP 1
+
+// V2.5-Evo - 2026-04-28 - P9: Compact 3×7 font entry used by showFullScreenMessage() in Display.ino.
+// Defined here so Arduino IDE's auto-prototype generator sees it before emitting the fc3x7GetChar prototype.
+struct Fc3x7Entry { uint8_t col[3]; };
 
 /*
 ** Structs
@@ -158,12 +163,21 @@ struct confStruct {
     // First flash of P8.1 firmware resets all TX settings to defaults.
     // ============================================================
     uint16_t fm_arm_window_s;          // FM auto-disarms after this many seconds with no throttle input; 10-60s; default 30
+
+    // ============================================================
+    // V2.5-Evo - 2026-04-28 - PRIORITY 9: DISTANCE UNIT SELECTION
+    //
+    // dist_unit fills the 2-byte tail padding left by P8.1; sizeof stays 128.
+    // No SPIFFS reset required — old configs read 0 here (tail padding was zero).
+    // 0 (Metres) is the correct default, so no migration is needed.
+    // ============================================================
+    uint16_t dist_unit;               // Distance display unit: 0=Metres, 1=Feet; default 0
 };
 
-static_assert(sizeof(confStruct) == 128, "confStruct size mismatch — expected 128 bytes (V3.4/P8.1). Update this assert if you change the struct.");  // V3 fix (N-1): pinned to exact size; catches both shrinkage and unexpected growth
+static_assert(sizeof(confStruct) == 128, "confStruct size mismatch — expected 128 bytes (V2.5-Evo P9). Update this assert if you change the struct.");  // pinned to exact size; catches both shrinkage and unexpected growth
 confStruct usrConf;
 confStruct defaultConf = {  // V3 default configuration — tuned for monterman hardware
-  SW_VERSION,    // version (3)
+  SW_VERSION,    // version (25)
   2,             // radio_preset (US 915MHz)
   20,            // rf_power (20)
   1,             // cal_ok
@@ -225,7 +239,8 @@ confStruct defaultConf = {  // V3 default configuration — tuned for monterman 
   150,  // fm_warn_distance_m (150m FM proximity warning threshold)
   1,    // rtm_steer_exit_on_input (1=steering exits RTM; 0=blend only)
   // V3 - 2026-04-27 - Priority 8.1 FM UX redesign defaults
-  30    // fm_arm_window_s (30s before auto-disarm if no throttle input)
+  30,   // fm_arm_window_s (30s before auto-disarm if no throttle input)
+  0     // dist_unit (0 = Metres; no SPIFFS reset needed — tail padding was already zero)
 };
 
 
@@ -343,6 +358,11 @@ volatile uint8_t rtm_meta_count = 0;    // bursts remaining; 0 = idle (uint8_t: 
 // user throttle — never add. Creator safety philosophy enforced here.
 volatile uint8_t rtm_thr_cap_tx = 255;
 volatile bool    rtm_tx_active  = false;
+
+// V2.5-Evo - 2026-04-28 - P9 S4: RTM arm distance captured at engage moment.
+// Used by R5 proximity bar to set the 100% reference distance.
+// RAM only — never written to SPIFFS. Reset to 0.0f when RTM disengages.
+float rtm_arm_dist_m = 0.0f;
 
 //-1 = left, 1 = right input
 volatile int tog_input = 0;

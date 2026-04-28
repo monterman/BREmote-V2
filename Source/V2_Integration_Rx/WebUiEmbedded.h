@@ -62,7 +62,7 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
       <div class="card">
         <div class="row sp">
           <div>
-            <div class="title">BREmote V2 RX Config</div>
+            <div class="title">BREmote V2.5-Evo RX Config</div>
             <div class="sub" id="status">Loading...</div>
             <div class="sub" id="loaded">Loaded 0/0</div>
           </div>
@@ -155,7 +155,7 @@ const fields=[
 {key:"near_diag_offset_deg",label:"Near Diag Offset",description:"Offset from behind for NEAR modes",group:"Follow-Me Tuning",type:"float",def:45.0,min:0,max:180,step:0.1,unit:"deg"},
 {key:"logger_en",label:"Logger Enabled",description:"BREmote Logger runtime enable",group:"Logging",type:"bool",def:1,min:0,max:1},
 {key:"wifi_password",label:"WiFi Password",description:"AP password (exactly 8 characters)",group:"System",type:"text",def:"12345678",minLen:8,maxLen:8},
-{key:"version",label:"Config Version",description:"Must match firmware SW_VERSION",group:"System",type:"int",def:3,min:0,max:65535}
+{key:"version",label:"Config Version",description:"Must match firmware SW_VERSION",group:"System",type:"int",def:25,min:0,max:65535}
 ];
 
 const state={values:{},loaded:{},saved:{},last:'-'};

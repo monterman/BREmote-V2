@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 1. PROJECT OVERVIEW
 
-- BREmote V3 — ESP32 LoRa wireless remote for efoil/RC buggy
+- BREmote V2.5-Evo — ESP32 LoRa wireless remote for efoil/RC buggy
 - TX: ESP32-C3 handheld remote, RX: ESP32-S3 board unit
 - LoRa SX1262 868/915MHz, 6-byte packets, 10Hz control cycle
 - GPS: BN880 on both TX and RX, Compass: QMC5883L on RX

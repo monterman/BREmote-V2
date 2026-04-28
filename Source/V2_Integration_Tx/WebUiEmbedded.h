@@ -53,7 +53,7 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
       <div class="card">
         <div class="row sp">
           <div>
-            <div class="title">BREmote V2 TX Config</div>
+            <div class="title">BREmote V2.5-Evo TX Config</div>
             <div class="sub" id="status">Loading...</div>
             <div class="sub" id="loaded">Loaded 0/0</div>
           </div>
@@ -86,7 +86,7 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
   </div>
 
 <script>
-// ALL 58 TX PARAMETERS (updated 2026-04-27 P8.1: +1 new field fm_arm_window_s)
+// ALL 59 TX PARAMETERS (updated 2026-04-28 P9: +1 new field dist_unit)
 const groupOrder=["Radio","Gears","Throttle","Steering","Toggle","Lock & Timing","Calibration","GPS & Follow-Me","RTM & Follow-Me","System"];
 const fields=[
 {key:"radio_preset",label:"Radio Preset",description:"Select your region",group:"Radio",type:"enum",def:1,min:1,max:3,options:[{v:1,l:"EU868"},{v:2,l:"US/AU915"},{v:3,l:"Reserved"}]},
@@ -145,8 +145,9 @@ const fields=[
 {key:"fm_warn_distance_m",label:"FM Warning Distance",description:"TX-to-RX distance that triggers FM proximity warning vibration (2×Pattern 2). Range 50-1000 m, default 150.",group:"RTM & Follow-Me",type:"int",def:150,min:50,max:1000,unit:"m"},
 {key:"rtm_steer_exit_on_input",label:"RTM Exit on Steering",description:"1=any significant steering input exits RTM immediately (default). 0=steering used for correction only (blend mode).",group:"RTM & Follow-Me",type:"bool",def:1,min:0,max:1},
 {key:"fm_arm_window_s",label:"FM Arm Window",description:"How long FM stays armed before auto-disarming if no throttle input. Default 30s gives time to get ready to ride. Range 10-60 s.",group:"RTM & Follow-Me",type:"int",def:30,min:10,max:60,unit:"s"},
+{key:"dist_unit",label:"Distance Unit",description:"Unit for all distance readouts on the TX display (RTM, FM). Internal math always uses metres. 0=Metres, 1=Feet.",group:"RTM & Follow-Me",type:"enum",def:0,min:0,max:1,options:[{v:0,l:"Metres"},{v:1,l:"Feet"}]},
 {key:"wifi_password",label:"WiFi Password",description:"AP password (exactly 8 characters)",group:"System",type:"text",def:"12345678",minLen:8,maxLen:8},
-{key:"version",label:"Config Version",description:"Must match firmware SW_VERSION",group:"System",type:"int",def:3,min:0,max:65535}
+{key:"version",label:"Config Version",description:"Must match firmware SW_VERSION",group:"System",type:"int",def:25,min:0,max:65535}
 ];
 
 const state={values:{},loaded:{},saved:{},last:'-'};

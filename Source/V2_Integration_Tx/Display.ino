@@ -237,8 +237,16 @@ void showCapPercent()
   uint8_t ones = cap % 10;
   if(cap >= 100)
   {
-    // Show "FL" for full (100%)
-    displayDigits(LET_F, LET_L);
+    // V3 - 2026-04-28 - P9: render "100" via fontCompact3x7 across C0-C8. Non-blocking.
+    // Clears C0-C8 (R0-R6) then writes '1'(C0-C2), '0'(C3-C5), '0'(C6-C8). C9 unchanged.
+    // Column bytes from fc3x7_1={0x40,0x7F,0x42}, fc3x7_0={0x3E,0x41,0x3E} (see font table).
+    for (int row = 1; row <= 7; row++) displayBuffer[row] &= ~0x01FFu;
+    static const uint8_t k100cols[9] = {0x40,0x7F,0x42, 0x3E,0x41,0x3E, 0x3E,0x41,0x3E};
+    for (int col = 0; col < 9; col++) {
+      uint8_t bits = k100cols[col];
+      for (int row = 0; row < 7; row++)
+        if (bits & (1u << row)) displayBuffer[row + 1] |= (1u << col);
+    }
   }
   else
   {
@@ -271,18 +279,21 @@ static void displayShowTwoDigitOrDash(uint8_t value)
 // ============================================================
 
 static const Fc3x7Entry fc3x7_A = {{0x7E, 0x09, 0x7E}};
-static const Fc3x7Entry fc3x7_E = {{0x7F, 0x49, 0x41}};
-static const Fc3x7Entry fc3x7_F = {{0x7F, 0x09, 0x01}};
-static const Fc3x7Entry fc3x7_M = {{0x7F, 0x06, 0x7F}};
-static const Fc3x7Entry fc3x7_P = {{0x7F, 0x09, 0x06}};
-static const Fc3x7Entry fc3x7_S = {{0x46, 0x49, 0x31}};
-static const Fc3x7Entry fc3x7_r = {{0x7C, 0x08, 0x04}};
-static const Fc3x7Entry fc3x7_t = {{0x04, 0x7F, 0x04}};
-static const Fc3x7Entry fc3x7_0 = {{0x3E, 0x41, 0x3E}};
-static const Fc3x7Entry fc3x7_1 = {{0x42, 0x7F, 0x40}};
-static const Fc3x7Entry fc3x7_2 = {{0x71, 0x49, 0x46}};
-static const Fc3x7Entry fc3x7_3 = {{0x41, 0x49, 0x36}};
-static const Fc3x7Entry fc3x7_7 = {{0x61, 0x19, 0x07}};
+// V3 - 2026-04-28 - P9 font fix: col[0]↔col[2] swapped for all asymmetric characters.
+// Physical display maps software col[0] to the rightmost physical LED column, so the
+// HTML fontCompact bit2 (visual-left) must go into col[2], bit0 (visual-right) into col[0].
+static const Fc3x7Entry fc3x7_E = {{0x41, 0x49, 0x7F}};
+static const Fc3x7Entry fc3x7_F = {{0x01, 0x09, 0x7F}};
+static const Fc3x7Entry fc3x7_M = {{0x7F, 0x06, 0x7F}};  // symmetric — unchanged
+static const Fc3x7Entry fc3x7_P = {{0x06, 0x09, 0x7F}};
+static const Fc3x7Entry fc3x7_S = {{0x31, 0x49, 0x46}};
+static const Fc3x7Entry fc3x7_r = {{0x04, 0x08, 0x7C}};
+static const Fc3x7Entry fc3x7_t = {{0x04, 0x7F, 0x04}};  // symmetric — unchanged
+static const Fc3x7Entry fc3x7_0 = {{0x3E, 0x41, 0x3E}};  // symmetric — unchanged
+static const Fc3x7Entry fc3x7_1 = {{0x40, 0x7F, 0x42}};
+static const Fc3x7Entry fc3x7_2 = {{0x46, 0x49, 0x71}};
+static const Fc3x7Entry fc3x7_3 = {{0x36, 0x49, 0x41}};
+static const Fc3x7Entry fc3x7_7 = {{0x07, 0x19, 0x61}};
 
 // Returns pointer to 3-column bitmap for c, or nullptr for unsupported characters.
 static const Fc3x7Entry* fc3x7GetChar(char c)

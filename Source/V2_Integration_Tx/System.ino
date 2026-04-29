@@ -453,11 +453,12 @@ void serPrintTasks(bool json)
 
     if(json)
     {
-      Serial.printf("{\"sendData\":%u,\"telemetry\":%u,\"measBufCalc\":%u,\"bargraph\":%u,\"loop\":%u}\n",
+      Serial.printf("{\"sendData\":%u,\"telemetry\":%u,\"measBufCalc\":%u,\"bargraph\":%u,\"vibration\":%u,\"loop\":%u}\n",
         uxTaskGetStackHighWaterMark(sendDataHandle),
         uxTaskGetStackHighWaterMark(triggeredWaitForTelemetryHandle),
         uxTaskGetStackHighWaterMark(measBufCalcHandle),
         uxTaskGetStackHighWaterMark(updateBargraphsHandle),
+        uxTaskGetStackHighWaterMark(vibrationTaskHandle),
         uxTaskGetStackHighWaterMark(loopTaskHandle));
     }
     else
@@ -467,6 +468,7 @@ void serPrintTasks(bool json)
       Serial.printf("telemetry stack left: %u words\n", uxTaskGetStackHighWaterMark(triggeredWaitForTelemetryHandle));
       Serial.printf("measBufCalc stack left: %u words\n", uxTaskGetStackHighWaterMark(measBufCalcHandle));
       Serial.printf("bargraph stack left: %u words\n", uxTaskGetStackHighWaterMark(updateBargraphsHandle));
+      Serial.printf("vibration stack left: %u words\n", uxTaskGetStackHighWaterMark(vibrationTaskHandle));
       Serial.printf("loop() stack left: %u words\n", uxTaskGetStackHighWaterMark(loopTaskHandle));
       Serial.println("========================\n");
     }

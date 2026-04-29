@@ -276,6 +276,7 @@ TaskHandle_t sendDataHandle = NULL;
 TaskHandle_t triggeredWaitForTelemetryHandle = NULL;
 TaskHandle_t measBufCalcHandle = NULL;
 TaskHandle_t updateBargraphsHandle = NULL;
+TaskHandle_t vibrationTaskHandle = NULL;  // Finding 4-1: saved so ?printtasks can measure stack HWM
 
 //TaskHandle_t triggeredReceiveHandle = NULL;
 //TaskHandle_t checkConnStatusHandle = NULL;

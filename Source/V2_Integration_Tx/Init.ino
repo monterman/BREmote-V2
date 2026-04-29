@@ -2,6 +2,7 @@
 // V3 - 2026-04-22 - Simplified initTxGPS() call site: speed_src guard moved into initTxGPS() itself
 // V3 - 2026-04-27 - P8: applyConfigSettings() always boots unlocked (lock feature removed)
 // V3 - 2026-04-27 - P8.1 Bug 1 fix: Restored no_lock=0/1 boot behavior; system_locked now conditional
+// V2.5-Evo - 2026-04-29 - Fix 4-1: vibrationTask stack 1024→2048 words; handle saved for ?printtasks
 
 // ===== Hardware Initialization =====
 
@@ -47,7 +48,8 @@ void initTasks()
   xTaskCreatePinnedToCore(waitForTelemetry, "wait_for_telem_triggered", 2048, NULL, 4, &triggeredWaitForTelemetryHandle, 0);
   xTaskCreatePinnedToCore(measBufCalc, "wait_for_telem_triggered_10ms", 2048, NULL, 6, &measBufCalcHandle, 0);
   xTaskCreatePinnedToCore(updateBargraphs, "wait_for_telem_triggered_200ms", 2048, NULL, 6, &updateBargraphsHandle, 0);
-  xTaskCreatePinnedToCore(vibrationTask, "Vibration_Task_BG", 1024, NULL, 3, NULL, 0);
+  xTaskCreatePinnedToCore(vibrationTask, "Vibration_Task_BG", 2048, NULL, 3, &vibrationTaskHandle, 0);
+  // Finding 4-1: stack 1024→2048 words; handle saved so ?printtasks can report HWM
 }
 
 void initWatchdog()

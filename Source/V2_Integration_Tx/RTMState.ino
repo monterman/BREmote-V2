@@ -14,6 +14,11 @@
 // V2.5-Evo - 2026-04-28 - Bug2: setRtmArmed() clears fm_armed — RTM and FM are mutually exclusive
 // V2.5-Evo - 2026-04-28 - Bug3: rtmDisengage() clears displayBuffer[6] (R5) to prevent FM phantom pixel
 // V2.5-Evo - 2026-04-28 - Bug4: runDoubleSqueezeArm() rewritten — handles single+double squeeze; removes "A r"; RTM_ARMED dead code
+// V2.5-Evo - 2026-04-28 - Task2: fmSilentDisarm() for arm-window expiry; cycleFmMode() cycles on armed+no-throttle; "F n" display
+// V2.5-Evo - 2026-04-28 - Task3: bobbing advanceArrow() in RTM arm wait loops; delay(250) after unlockAnimation(); Pattern4 after animation; clear on timeout
+// V2.5-Evo - 2026-04-28 - TaskA: rtm_arm_gps_timeout_override — 4× GPS staleness threshold during blocking arm ceremony;
+//   cleared by rtmDisengage() and ceremony timeout paths; Gate 2 reads it via ternary.
+//   TODO: remove when runDoubleSqueezeArm() is refactored to non-blocking.
 
 extern volatile uint8_t current_vib_pattern;
 extern float rtm_arm_dist_m;  // defined in BREmote_V2_Tx.h — captured at RTM engage moment
@@ -33,6 +38,14 @@ static unsigned long rtm_squeeze_ms    = 0;   // when SQUEEZE_WAIT was entered
 // File-scope so setRtmArmed() can reset it. Inside a switch case it can't be reached
 // externally; stale value after arm-window timeout would skip the 500ms hold check.
 static unsigned long rtm_hold_start    = 0;   // single-mode: when thr_scaled first crossed 30%
+
+// Temporary 4× multiplier on the GPS staleness threshold used by Gate 2 in runRtmLoop().
+// runDoubleSqueezeArm() blocks loop() for up to rtm_arm_window_s seconds, freezing GPS
+// polling. Without this, Gate 2 fires immediately on the first runRtmLoop() call after
+// the ceremony because GPS age >> rtm_gps_timeout_ms. Set at ceremony start; cleared by
+// rtmDisengage() (covers all RTM_ACTIVE exit paths) and the two ceremony timeout returns.
+// TODO: remove when arm ceremony is refactored to non-blocking.
+static uint32_t rtm_arm_gps_timeout_override = 0;
 
 // FM session-init and keepalive state (Changes B + E)
 static bool          fm_session_init_done = false;  // Change B: true once last_fm_mode seeded from SPIFFS this session
@@ -88,6 +101,7 @@ static void rtmDisengage()
                                  // stale data here; without clearing, FM mode sees a phantom pixel
   rtm_thr_cap_tx  = 255;
   rtm_arm_dist_m  = 0.0f;        // reset R5 bar reference (defined in BREmote_V2_Tx.h)
+  rtm_arm_gps_timeout_override = 0;  // clear GPS timeout multiplier — ceremony fully over
   queueMetaPacketBurst(0xF1, 0);  // tell RX: RTM inactive
 
   // Fire Pattern 4 BEFORE the blocking display so vibration runs during the 2s flash
@@ -124,61 +138,86 @@ static float decodeRtmDistanceM()
 // ============================================================
 static void runDoubleSqueezeArm()
 {
+  // Relax the GPS staleness threshold (Gate 2) for the duration of this blocking ceremony.
+  // loop() is suspended here for up to rtm_arm_window_s seconds, so GPS age accumulates.
+  // rtmDisengage() clears this on every RTM_ACTIVE exit path.
+  rtm_arm_gps_timeout_override = (uint32_t)usrConf.rtm_gps_timeout_ms * 4UL;
+
   // Show "r n" while waiting for first squeeze
   displayDigitZone("r n");
-  updateDisplay();
+  advanceArrow();   // prime arrow before loop; advanceArrow() calls updateDisplay() internally
 
   // Wait for first squeeze: thr > 30% (thr_scaled > 76) held for 500ms continuous
   bool          first_ok = false;
   unsigned long hold_ms  = 0;
   while (millis() - rtm_arm_start_ms < (unsigned long)usrConf.rtm_arm_window_s * 1000UL)
   {
+    advanceArrow();   // bob arrow every 100ms while waiting for squeeze
     if (thr_scaled > 76)
     {
       if (hold_ms == 0) hold_ms = millis();
       if (millis() - hold_ms >= 500UL) { first_ok = true; hold_ms = 0; break; }
     }
     else { hold_ms = 0; }
-    delay(20);
+    delay(100);
     checkSerial();
   }
-  if (!first_ok) { rtm_tx_state = RTM_IDLE; return; }
+  if (!first_ok)
+  {
+    rtm_arm_gps_timeout_override = 0;  // ceremony aborted — restore normal GPS threshold
+    for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000;
+    updateDisplay();
+    rtm_tx_state = RTM_IDLE;
+    return;
+  }
 
   if (!usrConf.rtm_double_squeeze_en)
   {
-    // Single-squeeze: unlock + Pattern 4, then "r n" arm confirm
-    current_vib_pattern = 4;
+    // Single-squeeze: unlock, pause, then Pattern 4 + "r n" arm confirm
     unlockAnimation();
+    delay(250);
+    current_vib_pattern = 4;   // Pattern 4 after visual unlock completes
     displayDigitZone("r n");
     updateDisplay();
     delay(2000);
   }
   else
   {
-    // Double-squeeze: first unlock (no P4 yet), then black screen, then wait for second squeeze
+    // Double-squeeze: first unlock (no P4 yet), pause, then black screen, then wait for second squeeze
     unlockAnimation();
+    delay(250);
     for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000;
     updateDisplay();
     delay(800);
 
     bool second_ok = false;
     hold_ms = 0;
+    advanceArrow();   // prime arrow for second wait
     while (millis() - rtm_arm_start_ms < (unsigned long)usrConf.rtm_arm_window_s * 1000UL)
     {
+      advanceArrow();   // bob arrow every 100ms while waiting for second squeeze
       if (thr_scaled > 76)
       {
         if (hold_ms == 0) hold_ms = millis();
         if (millis() - hold_ms >= 500UL) { second_ok = true; hold_ms = 0; break; }
       }
       else { hold_ms = 0; }
-      delay(20);
+      delay(100);
       checkSerial();
     }
-    if (!second_ok) { rtm_tx_state = RTM_IDLE; return; }
+    if (!second_ok)
+    {
+      rtm_arm_gps_timeout_override = 0;  // ceremony aborted — restore normal GPS threshold
+      for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000;
+      updateDisplay();
+      rtm_tx_state = RTM_IDLE;
+      return;
+    }
 
-    // Second squeeze confirmed: unlock + Pattern 4, then "r n" arm confirm
-    current_vib_pattern = 4;
+    // Second squeeze confirmed: unlock, pause, then Pattern 4 + "r n" arm confirm
     unlockAnimation();
+    delay(250);
+    current_vib_pattern = 4;   // Pattern 4 after visual unlock completes
     displayDigitZone("r n");
     updateDisplay();
     delay(2000);
@@ -247,11 +286,18 @@ void runRtmLoop()
         break;
       }
 
-      // Gate 2: TX GPS freshness
-      if (gps_tx.location.age() > usrConf.rtm_gps_timeout_ms)
+      // Gate 2: TX GPS freshness — use 4× relaxed threshold in the cycles immediately after
+      // the blocking arm ceremony (GPS age may be high; rtm_arm_gps_timeout_override > 0
+      // until rtmDisengage() clears it on any RTM_ACTIVE exit path).
       {
-        rtmDisengage();
-        break;
+        uint32_t gps_thr = (rtm_arm_gps_timeout_override > 0)
+                           ? rtm_arm_gps_timeout_override
+                           : (uint32_t)usrConf.rtm_gps_timeout_ms;
+        if (gps_tx.location.age() > gps_thr)
+        {
+          rtmDisengage();
+          break;
+        }
       }
 
       // Gate 3: throttle release > 10s → disengage
@@ -320,6 +366,16 @@ static bool          fm_throttle_seen = false;  // becomes true once thr_scaled>
 // Returns true if FM is currently armed; called by Hall.ino to intercept LEFT hold 2s
 bool isFmArmed() { return fm_armed; }
 
+// Silent disarm: clears FM state and notifies RX, but shows no display and fires no haptic.
+// Used when arm-window expires before any throttle input — nothing active to confirm.
+static void fmSilentDisarm()
+{
+  fm_armed         = false;
+  fm_throttle_seen = false;
+  fm_last_sync_ms  = 0;
+  queueMetaPacketBurst(0xF2, 0);   // mode 0 = FM disabled on RX
+}
+
 // Internal disarm: clears state, notifies RX, fires haptic, shows "St" full-screen.
 // V2.5-Evo - 2026-04-28 - P9 S2: showFmMode() removed; disarm shows blocking stop message.
 // V2.5-Evo - 2026-04-28 - ChgE: fm_last_sync_ms reset to 0 on disarm so keepalive timer clears.
@@ -342,8 +398,22 @@ void cycleFmMode()
 
   if (fm_armed)
   {
-    // Already armed → disarm (toggle)
-    fmDisarm();
+    if (fm_throttle_seen)
+    {
+      // User already rode — treat gesture as disarm toggle
+      fmDisarm();
+    }
+    else
+    {
+      // No throttle yet — cycle to next mode rather than disarming
+      last_fm_mode = (last_fm_mode % 3) + 1;
+      char fn[4];
+      snprintf(fn, sizeof(fn), "F%u", last_fm_mode);
+      showFullScreenMessage(fn, 2000);
+      queueMetaPacketBurst(0xF2, last_fm_mode);
+      fm_last_sync_ms = millis();
+      fm_arm_ms       = millis();   // reset arm window — user is actively choosing a mode
+    }
     return;
   }
 
@@ -378,8 +448,9 @@ void cycleFmModeArmed()
   // V2.5-Evo - 2026-04-28 - Change C: Cycle 1→2→3→1, never returning to mode 0 (FM disabled).
   // (last_fm_mode % 3) maps {1→1, 2→2, 3→0} then +1 maps {1→2, 2→3, 0→1}.
   last_fm_mode = (last_fm_mode % 3) + 1;
-  // V2.5-Evo - 2026-04-28 - Change D: "FM" mode-change confirm (6 cols, fits C0-C5)
-  showFullScreenMessage("FM", 2000);
+  char fn[4];
+  snprintf(fn, sizeof(fn), "F%u", last_fm_mode);
+  showFullScreenMessage(fn, 2000);
   queueMetaPacketBurst(0xF2, last_fm_mode);
   fm_last_sync_ms = millis();              // Change E: reset keepalive — just synced
   fm_arm_ms       = millis();             // reset arm window — user is actively choosing a mode
@@ -398,7 +469,7 @@ void runFmLoop()
   {
     if (now - fm_arm_ms > (unsigned long)usrConf.fm_arm_window_s * 1000UL)
     {
-      fmDisarm();
+      fmSilentDisarm();   // arm window expired before first throttle — no confirm needed
       return;
     }
   }

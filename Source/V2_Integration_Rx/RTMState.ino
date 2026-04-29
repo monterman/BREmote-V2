@@ -2,6 +2,10 @@
 // V3 - 2026-04-27 - P8: runRtmLoop() encodes RX→TX distance into telemetry.rtm_distance (index 5)
 // V2.5-Evo - 2026-04-28 - P9 Bug1A/1B/1C: Gate9 zero-guard; always-compute dist before gates
 // V2.5-Evo - 2026-04-28 - Security: Gate 1 resets rtm_steer_override=127 on throttle release
+// V2.5-Evo - 2026-04-29 - Fix 6-1: Gate 4 + Phase C check 3 now use
+//   usrConf.tx_gps_stale_timeout_ms instead of hardcoded 2000ms
+// V2.5-Evo - 2026-04-29 - Fix 6-2: runRtmLoop() revokes gps_phase_b_ok
+//   when TX GPS age exceeds 2× tx_gps_stale_timeout_ms
 //
 // The RTM state machine runs in loop() at ~10Hz (100ms rate-limit).
 // When rtm_rx_active is set true by a 0xF1 meta-packet, this module:
@@ -56,9 +60,11 @@ static bool checkRtmSafetyGates()
     return false;
   }
 
-  // Gate 4: valid TX GPS fix (age < 2000ms)
+  // Gate 4: valid TX GPS fix (age < usrConf.tx_gps_stale_timeout_ms)
+  // Finding 6-1: was hardcoded 2000ms — now reads from SPIFFS so the
+  // WebUI setting actually takes effect. Default is 1000ms.
   if (rx_tx_gps_timestamp == 0 ||
-      (now - rx_tx_gps_timestamp) > 2000UL)
+      (now - rx_tx_gps_timestamp) > (uint32_t)usrConf.tx_gps_stale_timeout_ms)
   {
     Serial.println("RTM [RX] STOP: TX GPS stale or never received");
     rtm_rx_emergency_stop = true;
@@ -191,9 +197,12 @@ static void runPhaseC()
     }
   }
 
-  // Phase C check 3: TX GPS freshness (2s window)
+  // Phase C check 3: TX GPS freshness
+  // Finding 6-1: was hardcoded 2000ms — now reads from SPIFFS.
+  // NOTE: structurally redundant — Gate 4 already enforces this before
+  // runPhaseC() is called. Retained as belt-and-suspenders only.
   if (rx_tx_gps_timestamp == 0 ||
-      (millis() - rx_tx_gps_timestamp) > 2000UL)
+      (millis() - rx_tx_gps_timestamp) > (uint32_t)usrConf.tx_gps_stale_timeout_ms)
   {
     Serial.println("RTM [PhC] FAIL TX GPS freshness");
     rtm_rx_emergency_stop = true;
@@ -212,6 +221,22 @@ void runRtmLoop()
   unsigned long now = millis();
   if (now - last_rtm_ms < 100UL) return;
   last_rtm_ms = now;
+
+  // Finding 6-2: auto-expire Phase B approval when TX GPS goes stale.
+  // gpsPhaseBCheck() sets gps_phase_b_ok=true on pass and never clears it —
+  // it only runs on meta-packet receipt every ~30s. If TX GPS drops,
+  // rx_tx_gps_timestamp stops updating and gps_phase_b_ok stays true
+  // indefinitely. Gate 4 catches this during active RTM, but an RTM arm
+  // attempt immediately after TX GPS loss could still pass Gate 3.
+  // Revoke Phase B if TX GPS is older than 2× the configured stale threshold.
+  {
+    unsigned long phase_b_stale = (uint32_t)usrConf.tx_gps_stale_timeout_ms * 2UL;
+    if (rx_tx_gps_timestamp == 0 ||
+        (now - rx_tx_gps_timestamp) > phase_b_stale)
+    {
+      gps_phase_b_ok = false;
+    }
+  }
 
   // ---- Always compute RX→TX distance when GPS data is available ----
   // Populates telemetry.rtm_distance for TX at all times (not only during active RTM).

@@ -23,6 +23,9 @@
 //   TODO: remove when runDoubleSqueezeArm() is refactored to non-blocking.
 // V2.5-Evo - 2026-04-29 - Fix 4-3: fm_armed declared volatile (read core 0 / write core 1)
 // V2.5-Evo - 2026-04-29 - Fix 2-1: pre-arm rejection path now clears rtm_arm_gps_timeout_override
+// V2.5-Evo - 2026-04-29 - F0: FM cycle extended to 1→2→3→0; landing on 0 disarms FM (RAM-only hand-off mode)
+// V2.5-Evo - 2026-04-29 - Display: F0-F3 confirms and FM arm confirm now use large-font
+//   displayDigits(LET_F, mode) instead of showFullScreenMessage() compact font
 
 extern volatile uint8_t current_vib_pattern;
 extern float rtm_arm_dist_m;  // defined in BREmote_V2_Tx.h — captured at RTM engage moment
@@ -413,11 +416,33 @@ void cycleFmMode()
     }
     else
     {
-      // No throttle yet — cycle to next mode rather than disarming
-      last_fm_mode = (last_fm_mode % 3) + 1;
-      char fn[4];
-      snprintf(fn, sizeof(fn), "F%u", last_fm_mode);
-      showFullScreenMessage(fn, 2000);
+      // No throttle yet — cycle to next mode (1→2→3→0 where 0 = disarm)
+      last_fm_mode = (last_fm_mode < 3) ? last_fm_mode + 1 : 0;
+
+      if (last_fm_mode == 0)
+      {
+        // F0: FM disabled — disarm with brief visual confirm and return to normal display.
+        // Sends 0xF2/0 to RX (FM off), fires Pattern 4, resets mode to SPIFFS default.
+        // This is RAM-only; power cycle restores usrConf.followme_mode.
+        current_vib_pattern = 4;
+        // Large-font F0 disarm confirm: LET_F + 0. Shorter hold (1s) — this is a disarm, not a mode select.
+        displayDigits(LET_F, 0);
+        updateDisplay();
+        delay(1000);
+        queueMetaPacketBurst(0xF2, 0);       // tell RX: FM disabled
+        fm_armed         = false;
+        fm_throttle_seen = false;
+        fm_last_sync_ms  = 0;
+        // Reset mode to SPIFFS default so next arm starts at configured mode, not 0
+        last_fm_mode = (usrConf.followme_mode >= 1 && usrConf.followme_mode <= 3)
+                       ? usrConf.followme_mode : 1;
+        return;
+      }
+
+      // Large-font mode confirm: LET_F + mode digit (1/2/3). snprintf no longer needed.
+      displayDigits(LET_F, last_fm_mode);
+      updateDisplay();
+      delay(2000);
       queueMetaPacketBurst(0xF2, last_fm_mode);
       fm_last_sync_ms = millis();
       fm_arm_ms       = millis();   // reset arm window — user is actively choosing a mode
@@ -442,8 +467,11 @@ void cycleFmMode()
   current_vib_pattern = 4;         // Pattern 4: 2 fast buzzes = arm confirm
   fm_last_sync_ms  = millis();     // Change E: start keepalive timer from now (avoids immediate re-sync)
 
-  // V2.5-Evo - 2026-04-28 - Change D: "FM" arm confirm (F=3, M=3 = 6 cols, fits C0-C5)
-  showFullScreenMessage("FM", 2000);
+  // V2.5-Evo - 2026-04-29 - Display: show actual mode being armed (F1/F2/F3) in large font
+  // instead of the generic "FM" text. Uses large num0[] font via LET_F(15) + mode digit.
+  displayDigits(LET_F, last_fm_mode);
+  updateDisplay();
+  delay(2000);
 
   queueMetaPacketBurst(0xF2, last_fm_mode);
 }
@@ -453,14 +481,35 @@ void cycleFmMode()
 void cycleFmModeArmed()
 {
   if (!fm_armed) return;
-  // V2.5-Evo - 2026-04-28 - Change C: Cycle 1→2→3→1, never returning to mode 0 (FM disabled).
-  // (last_fm_mode % 3) maps {1→1, 2→2, 3→0} then +1 maps {1→2, 2→3, 0→1}.
-  last_fm_mode = (last_fm_mode % 3) + 1;
-  char fn[4];
-  snprintf(fn, sizeof(fn), "F%u", last_fm_mode);
-  showFullScreenMessage(fn, 2000);
+  // Cycle 1→2→3→0 where 0 = disarm (FM disabled RAM-only state for hand-off to inexperienced user).
+  last_fm_mode = (last_fm_mode < 3) ? last_fm_mode + 1 : 0;
+
+  if (last_fm_mode == 0)
+  {
+    // F0: FM disabled — disarm with brief visual confirm and return to normal display.
+    // Sends 0xF2/0 to RX (FM off), fires Pattern 4, resets mode to SPIFFS default.
+    // This is RAM-only; power cycle restores usrConf.followme_mode.
+    current_vib_pattern = 4;
+    // Large-font F0 disarm confirm: LET_F + 0. Shorter hold (1s) — this is a disarm, not a mode select.
+    displayDigits(LET_F, 0);
+    updateDisplay();
+    delay(1000);
+    queueMetaPacketBurst(0xF2, 0);       // tell RX: FM disabled
+    fm_armed         = false;
+    fm_throttle_seen = false;
+    fm_last_sync_ms  = 0;
+    // Reset mode to SPIFFS default so next arm starts at configured mode, not 0
+    last_fm_mode = (usrConf.followme_mode >= 1 && usrConf.followme_mode <= 3)
+                   ? usrConf.followme_mode : 1;
+    return;
+  }
+
+  // Large-font mode confirm: LET_F + mode digit (1/2/3). snprintf no longer needed.
+  displayDigits(LET_F, last_fm_mode);
+  updateDisplay();
+  delay(2000);
   queueMetaPacketBurst(0xF2, last_fm_mode);
-  fm_last_sync_ms = millis();              // Change E: reset keepalive — just synced
+  fm_last_sync_ms = millis();              // reset keepalive — just synced
   fm_arm_ms       = millis();             // reset arm window — user is actively choosing a mode
 }
 

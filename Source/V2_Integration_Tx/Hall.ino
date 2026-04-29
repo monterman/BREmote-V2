@@ -3,6 +3,7 @@
 // V3 - 2026-04-27 - P8: Gesture redesign — combo state machine; LEFT hold=display cycle; RIGHT+LEFT=RTM; LEFT+RIGHT=FM
 // V3 - 2026-04-27 - fix: COMBO_TAP_MAX_MS 500ms; tap detection was tied to gear_change_waittime (100ms — too tight)
 // V3 - 2026-04-27 - fix: restored correct gesture map — RIGHT hold=display cycle, LEFT hold=lock (P8 had them swapped)
+// V2.5-Evo - 2026-04-28 - Change1: post-unlock delay 500→250ms; throttle-release settling 1000→500ms
 
 // Returns true if the given display mode has a valid value
 bool isDisplayModeAvailable(uint8_t mode)
@@ -397,12 +398,12 @@ void runMenu()
             setHallActivityEnabled(true);
             setRadioActivityEnabled(true);
             unlockAnimation();
-            delay(500);
+            delay(250);
             while(thr_scaled > 5)
             {
               delay(100);
             }
-            delay(1000);
+            delay(500);
             system_locked = 0;
 #ifdef WIFI_ENABLED
             webCfgNotifyTxUnlocked();

@@ -8,6 +8,12 @@
 //   character of displayDigits() renders as a barely-visible horizontal bar, so all modes looked like "F"
 // V2.5-Evo - 2026-04-28 - P9: Bug1B pre-arm check; Bug1D all-exit Pattern4/StP; S2 FM full-screen confirms
 // V2.5-Evo - 2026-04-28 - P9 S4: rtm_arm_dist_m captured at engage; reset on disengage (R5 proximity bar)
+// V2.5-Evo - 2026-04-28 - Chg5: runDoubleSqueezeArm() blocking double-squeeze ceremony; "A rM"→"A r"; "St P"→"St"
+// V2.5-Evo - 2026-04-28 - ChgB/C/D/E: SPIFFS seed on first arm; cycle 1→2→3→1 (skip F0); "FM" confirm; 30s keepalive
+// V2.5-Evo - 2026-04-28 - ChgDZ: persistent "r n" blinks use displayDigitZone() to preserve R5 proximity bar
+// V2.5-Evo - 2026-04-28 - Bug2: setRtmArmed() clears fm_armed — RTM and FM are mutually exclusive
+// V2.5-Evo - 2026-04-28 - Bug3: rtmDisengage() clears displayBuffer[6] (R5) to prevent FM phantom pixel
+// V2.5-Evo - 2026-04-28 - Bug4: runDoubleSqueezeArm() rewritten — handles single+double squeeze; removes "A r"; RTM_ARMED dead code
 
 extern volatile uint8_t current_vib_pattern;
 extern float rtm_arm_dist_m;  // defined in BREmote_V2_Tx.h — captured at RTM engage moment
@@ -28,6 +34,10 @@ static unsigned long rtm_squeeze_ms    = 0;   // when SQUEEZE_WAIT was entered
 // externally; stale value after arm-window timeout would skip the 500ms hold check.
 static unsigned long rtm_hold_start    = 0;   // single-mode: when thr_scaled first crossed 30%
 
+// FM session-init and keepalive state (Changes B + E)
+static bool          fm_session_init_done = false;  // Change B: true once last_fm_mode seeded from SPIFFS this session
+static unsigned long fm_last_sync_ms      = 0;      // Change E: millis() of last 0xF2 keepalive; 0 when FM disarmed
+
 // ---- Compute the current throttle cap for the ramp ----
 // Returns 0-255. During ACTIVE, ramps from rtm_throttle_start_pct→max over rtm_ramp_duration_s.
 uint8_t calcRtmThrottleCap()
@@ -42,25 +52,21 @@ uint8_t calcRtmThrottleCap()
 }
 
 // ---- Called by handleGearToggle() when RTM combo gesture completes ----
-// Transitions from IDLE to ARMED; shows "rn" static ×2 (1.5 s each = 3 s total);
-// fires Pattern 4 haptic confirm (2 fast short pulses).
+// Bug2: fm_armed cleared first — RTM and FM are mutually exclusive.
+// Bug4: runDoubleSqueezeArm() now handles both single and double squeeze, fully blocking.
+//       On return rtm_tx_state is RTM_ACTIVE or RTM_IDLE; RTM_ARMED case in runRtmLoop() is dead code.
 void setRtmArmed()
 {
   if (!usrConf.rtm_enabled || !usrConf.gps_en) return;
+  fm_armed         = false;        // Bug2: RTM and FM are mutually exclusive — disarm FM if active
   rtm_tx_state     = RTM_ARMED;
   rtm_arm_start_ms = millis();
-  rtm_hold_start   = 0;    // reset single-mode hold timer each time we arm
+  rtm_hold_start   = 0;
   rtm_tx_active    = false;
   rtm_thr_cap_tx   = 255;
-  queueMetaPacketBurst(0xF1, 0);  // tell RX: RTM armed but not yet active
-  current_vib_pattern = 4;        // Pattern 4: 2 fast short = RTM arm confirm
-  // Show "rn" (return now) as 2 static passes of 1.5 s each
-  for (int i = 0; i < 2; i++)
-  {
-    displayDigits(LET_R, LET_N);
-    updateDisplay();
-    delay(1500);
-  }
+  queueMetaPacketBurst(0xF1, 0);   // tell RX: RTM armed but not yet active
+  current_vib_pattern = 4;         // Pattern 4: 2 fast short = RTM arm confirm
+  runDoubleSqueezeArm();            // Bug4: handles both single and double squeeze
 }
 
 // ---- Called to disengage RTM from the gesture layer (user-initiated) ----
@@ -78,6 +84,8 @@ static void rtmDisengage()
   rtm_tx_state    = RTM_COOLDOWN;
   rtm_cooldown_ms = millis();
   rtm_tx_active   = false;
+  displayBuffer[6] = 0x0000;     // Bug3: clear R5 proximity bar row — updateR5ProximityBar() left
+                                 // stale data here; without clearing, FM mode sees a phantom pixel
   rtm_thr_cap_tx  = 255;
   rtm_arm_dist_m  = 0.0f;        // reset R5 bar reference (defined in BREmote_V2_Tx.h)
   queueMetaPacketBurst(0xF1, 0);  // tell RX: RTM inactive
@@ -85,8 +93,8 @@ static void rtmDisengage()
   // Fire Pattern 4 BEFORE the blocking display so vibration runs during the 2s flash
   current_vib_pattern = 4;  // 2 fast short = RTM disengage confirm
 
-  // Full-screen "St P" (S=3, t=3, space=1, P=3 = 10 cols exactly)
-  showFullScreenMessage("St P", 2000);
+  // Full-screen "St" (S=3, t=3 = 6 cols, fits within C0-C6; bits 7-9 are unconnected hw ROW lines)
+  showFullScreenMessage("St", 2000);
 }
 
 // ---- Decode telemetry.rtm_distance to metres ----
@@ -98,6 +106,104 @@ static float decodeRtmDistanceM()
   if (d == 0xFF) return -1.0f;
   if (d < 100)   return d / 10.0f;     // tenths of metre (0.0–9.9 m)
   return (float)(d - 90);              // whole metres (10–164 m)
+}
+
+// ============================================================
+// V2.5-Evo - 2026-04-28 - Bug4: Full rewrite. Handles both single and double squeeze.
+// Always called blocking from setRtmArmed(). Uses rtm_arm_start_ms as shared arm-window ref.
+// "A r" and "rn ×2" ceremony removed. Arm confirmation is unlockAnimation() + "r n" 2s.
+//
+// Single (rtm_double_squeeze_en==0):
+//   blink "r n" → thr >30% held 500ms → unlockAnimation()+P4 → "r n" 2s → dist check → ACTIVE
+//
+// Double (rtm_double_squeeze_en==1):
+//   blink "r n" → 1st thr >30% held 500ms → unlockAnimation() → blank 800ms →
+//   2nd thr >30% held 500ms → unlockAnimation()+P4 → "r n" 2s → dist check → ACTIVE
+//
+// On return: rtm_tx_state == RTM_ACTIVE (success) or RTM_IDLE (timeout / rejected).
+// ============================================================
+static void runDoubleSqueezeArm()
+{
+  // Show "r n" while waiting for first squeeze
+  displayDigitZone("r n");
+  updateDisplay();
+
+  // Wait for first squeeze: thr > 30% (thr_scaled > 76) held for 500ms continuous
+  bool          first_ok = false;
+  unsigned long hold_ms  = 0;
+  while (millis() - rtm_arm_start_ms < (unsigned long)usrConf.rtm_arm_window_s * 1000UL)
+  {
+    if (thr_scaled > 76)
+    {
+      if (hold_ms == 0) hold_ms = millis();
+      if (millis() - hold_ms >= 500UL) { first_ok = true; hold_ms = 0; break; }
+    }
+    else { hold_ms = 0; }
+    delay(20);
+    checkSerial();
+  }
+  if (!first_ok) { rtm_tx_state = RTM_IDLE; return; }
+
+  if (!usrConf.rtm_double_squeeze_en)
+  {
+    // Single-squeeze: unlock + Pattern 4, then "r n" arm confirm
+    current_vib_pattern = 4;
+    unlockAnimation();
+    displayDigitZone("r n");
+    updateDisplay();
+    delay(2000);
+  }
+  else
+  {
+    // Double-squeeze: first unlock (no P4 yet), then black screen, then wait for second squeeze
+    unlockAnimation();
+    for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000;
+    updateDisplay();
+    delay(800);
+
+    bool second_ok = false;
+    hold_ms = 0;
+    while (millis() - rtm_arm_start_ms < (unsigned long)usrConf.rtm_arm_window_s * 1000UL)
+    {
+      if (thr_scaled > 76)
+      {
+        if (hold_ms == 0) hold_ms = millis();
+        if (millis() - hold_ms >= 500UL) { second_ok = true; hold_ms = 0; break; }
+      }
+      else { hold_ms = 0; }
+      delay(20);
+      checkSerial();
+    }
+    if (!second_ok) { rtm_tx_state = RTM_IDLE; return; }
+
+    // Second squeeze confirmed: unlock + Pattern 4, then "r n" arm confirm
+    current_vib_pattern = 4;
+    unlockAnimation();
+    displayDigitZone("r n");
+    updateDisplay();
+    delay(2000);
+  }
+
+  // Pre-arm distance check: reject if already inside the disengage threshold
+  float prearm_m = decodeRtmDistanceM();
+  if (prearm_m >= 0.0f && prearm_m <= (float)usrConf.rtm_disengage_distance_m)
+  {
+    current_vib_pattern = 4;
+    showFullScreenMessage("St", 2000);
+    rtm_tx_state  = RTM_IDLE;
+    rtm_tx_active = false;
+    queueMetaPacketBurst(0xF1, 0);
+    return;
+  }
+
+  // Activate RTM
+  rtm_tx_state        = RTM_ACTIVE;
+  rtm_active_start_ms = millis();
+  rtm_tx_active       = true;
+  rtm_release_ms      = 0;
+  rtm_arm_dist_m      = decodeRtmDistanceM();
+  if (rtm_arm_dist_m < 0.0f) rtm_arm_dist_m = 0.0f;
+  queueMetaPacketBurst(0xF1, 1);
 }
 
 // ---- Called from loop() every ~110ms ----
@@ -113,117 +219,18 @@ void runRtmLoop()
     case RTM_IDLE:
       break;
 
-    // ---- ARMED: wait for first (or only) squeeze ----
+    // ---- ARMED: dead code — Bug4 moved all arm logic into runDoubleSqueezeArm() ----
+    // setRtmArmed() now calls runDoubleSqueezeArm() blocking for both single and double squeeze.
+    // On return rtm_tx_state is RTM_ACTIVE or RTM_IDLE — this case is never reached.
     case RTM_ARMED:
-      // Arm window timeout
-      if (now - rtm_arm_start_ms > (unsigned long)usrConf.rtm_arm_window_s * 1000UL)
-      {
-        rtm_tx_state = RTM_IDLE;
-        break;
-      }
-      // Blink "rn" every ~500ms while waiting for squeeze
-      if ((now / 500) % 2 == 0)
-      {
-        displayDigits(LET_R, LET_N);
-        updateDisplay();
-      }
-
-      if (usrConf.rtm_double_squeeze_en)
-      {
-        // Wait for first squeeze (thr_scaled > 10%)
-        if (thr_scaled > 25)
-        {
-          displayDigits(LET_A, LET_R);  // "AR" = first squeeze detected
-          updateDisplay();
-          // Wait for user to release throttle (block briefly — this is the trigger ack)
-          unsigned long rel_wait = millis();
-          while (thr_scaled > 5 && millis() - rel_wait < 2000) delay(20);
-          rtm_tx_state  = RTM_SQUEEZE_WAIT;
-          rtm_squeeze_ms = millis();
-        }
-      }
-      else
-      {
-        // Single mode: throttle > 30% for 500ms continuous
-        if (thr_scaled > 76)
-        {
-          if (rtm_hold_start == 0) rtm_hold_start = now;
-          if (now - rtm_hold_start >= 500)
-          {
-            // V2.5-Evo - 2026-04-28 - P9 Bug1B: Pre-arm distance check (single-squeeze mode).
-            float prearm_m = decodeRtmDistanceM();
-            if (prearm_m >= 0.0f && prearm_m <= (float)usrConf.rtm_disengage_distance_m)
-            {
-              current_vib_pattern = 4;
-              showFullScreenMessage("St P", 2000);
-              rtm_tx_state   = RTM_IDLE;
-              rtm_tx_active  = false;
-              rtm_hold_start = 0;
-              queueMetaPacketBurst(0xF1, 0);
-              break;
-            }
-            rtm_hold_start      = 0;
-            rtm_tx_state        = RTM_ACTIVE;
-            rtm_active_start_ms = now;
-            rtm_tx_active       = true;
-            rtm_release_ms      = 0;
-            // Capture current distance as R5 bar 100% reference
-            rtm_arm_dist_m = decodeRtmDistanceM();
-            if (rtm_arm_dist_m < 0.0f) rtm_arm_dist_m = 0.0f;
-            queueMetaPacketBurst(0xF1, 1);
-            showFullScreenMessage("A rM", 2000);
-          }
-        }
-        else
-        {
-          rtm_hold_start = 0;
-        }
-      }
+      rtm_tx_state = RTM_IDLE;
       break;
 
-    // ---- SQUEEZE_WAIT: waiting for second squeeze (double-squeeze mode only) ----
+    // ---- SQUEEZE_WAIT: dead code path (Change 5) ----
+    // Double-squeeze arm is now fully blocking in runDoubleSqueezeArm(), called from setRtmArmed().
+    // This state can no longer be entered; retained for enum completeness only.
     case RTM_SQUEEZE_WAIT:
-      // 5s window
-      if (now - rtm_squeeze_ms > 5000UL)
-      {
-        rtm_tx_state = RTM_IDLE;
-        break;
-      }
-      // Blink "RY" (ready for second squeeze)
-      if ((now / 300) % 2 == 0)
-      {
-        displayDigits(LET_R, LET_Y);
-        updateDisplay();
-      }
-      if (thr_scaled > 25)
-      {
-        // V2.5-Evo - 2026-04-28 - P9 Bug1B: Pre-arm distance check.
-        // Reject if TX is already within rtm_disengage_distance_m of RX.
-        // telemetry.rtm_distance is now always populated by RX when GPS is valid.
-        float prearm_m = decodeRtmDistanceM();
-        if (prearm_m >= 0.0f && prearm_m <= (float)usrConf.rtm_disengage_distance_m)
-        {
-          Serial.printf("RTM [TX] Pre-arm REJECT: %.1f m within limit %u m\n",
-                        prearm_m, usrConf.rtm_disengage_distance_m);
-          current_vib_pattern = 4;
-          showFullScreenMessage("St P", 2000);
-          rtm_tx_state  = RTM_IDLE;
-          rtm_tx_active = false;
-          queueMetaPacketBurst(0xF1, 0);
-          break;
-        }
-        // Second squeeze → ACTIVE
-        rtm_tx_state        = RTM_ACTIVE;
-        rtm_active_start_ms = now;
-        rtm_tx_active       = true;
-        rtm_release_ms      = 0;
-        // Capture current distance as R5 bar 100% reference
-        rtm_arm_dist_m = decodeRtmDistanceM();
-        if (rtm_arm_dist_m < 0.0f) rtm_arm_dist_m = 0.0f;
-        queueMetaPacketBurst(0xF1, 1);
-        // "A rM" confirmation — placed after rtm_tx_active=true so loop() display switch is correct
-        showFullScreenMessage("A rM", 2000);
-      }
+      rtm_tx_state = RTM_IDLE;
       break;
 
     // ---- ACTIVE: RTM running ----
@@ -313,19 +320,22 @@ static bool          fm_throttle_seen = false;  // becomes true once thr_scaled>
 // Returns true if FM is currently armed; called by Hall.ino to intercept LEFT hold 2s
 bool isFmArmed() { return fm_armed; }
 
-// Internal disarm: clears state, notifies RX, fires haptic, shows "St P" full-screen
-// V2.5-Evo - 2026-04-28 - P9 S2: showFmMode() removed; disarm now shows "St P" for consistency with RTM.
+// Internal disarm: clears state, notifies RX, fires haptic, shows "St" full-screen.
+// V2.5-Evo - 2026-04-28 - P9 S2: showFmMode() removed; disarm shows blocking stop message.
+// V2.5-Evo - 2026-04-28 - ChgE: fm_last_sync_ms reset to 0 on disarm so keepalive timer clears.
 static void fmDisarm()
 {
   fm_armed         = false;
   fm_throttle_seen = false;
+  fm_last_sync_ms  = 0;            // Change E: clear keepalive timer
   queueMetaPacketBurst(0xF2, 0);   // mode 0 = FM disabled on RX (followme_mode=0)
   current_vib_pattern = 4;         // Pattern 4: 2 fast buzzes = disarm confirm
-  showFullScreenMessage("St P", 2000);
+  showFullScreenMessage("St", 2000);
 }
 
 // Called by handleGearToggle() combo (LEFT tap + RIGHT hold 5s) — toggles arm/disarm.
-// On arm: uses last_fm_mode (default F1); blinks mode x2; fires Pattern 4; sends 0xF2 to RX.
+// On arm: seeds last_fm_mode from SPIFFS on first arm this session (Change B); fires Pattern 4;
+// shows "FM" confirm (Change D, 6 cols ≤ C0-C5); sends 0xF2 to RX; starts keepalive timer (Change E).
 void cycleFmMode()
 {
   if (!usrConf.fm_override_enabled || !usrConf.gps_en) return;
@@ -337,32 +347,42 @@ void cycleFmMode()
     return;
   }
 
+  // V2.5-Evo - 2026-04-28 - Change B: On first arm this session, seed last_fm_mode from SPIFFS.
+  // usrConf.followme_mode is the user's configured starting mode (range 1-3; 0 is invalid here).
+  // After seeding, fm_session_init_done prevents overriding any mode the user cycled to mid-session.
+  if (!fm_session_init_done)
+  {
+    if (usrConf.followme_mode >= 1 && usrConf.followme_mode <= 3)
+      last_fm_mode = usrConf.followme_mode;
+    fm_session_init_done = true;
+  }
+
   // Arm at last used mode (never arms at F0 = disabled; last_fm_mode defaults to 1)
   fm_armed         = true;
   fm_arm_ms        = millis();
   fm_throttle_seen = false;
   current_vib_pattern = 4;         // Pattern 4: 2 fast buzzes = arm confirm
+  fm_last_sync_ms  = millis();     // Change E: start keepalive timer from now (avoids immediate re-sync)
 
-  // V2.5-Evo - 2026-04-28 - P9 S2: Full-screen FM arm confirm (F=3, M=3, space=1, digit=3 = 10 cols)
-  char fm_msg[5];
-  snprintf(fm_msg, sizeof(fm_msg), "FM %u", (unsigned)last_fm_mode);
-  showFullScreenMessage(fm_msg, 2000);
+  // V2.5-Evo - 2026-04-28 - Change D: "FM" arm confirm (F=3, M=3 = 6 cols, fits C0-C5)
+  showFullScreenMessage("FM", 2000);
 
   queueMetaPacketBurst(0xF2, last_fm_mode);
 }
 
 // Called by handleGearToggle(-1) simple LEFT hold 2s when FM is armed (Hall.ino checks isFmArmed()).
-// Cycles mode F0→F1→F2→F3→F0; stays armed; resets arm timer.
+// Cycles mode 1→2→3→1 (Change C: skips mode 0 = disabled); stays armed; resets arm timer.
 void cycleFmModeArmed()
 {
   if (!fm_armed) return;
-  last_fm_mode = (last_fm_mode + 1) % 4;
-  // V2.5-Evo - 2026-04-28 - P9 S2: Full-screen mode change confirm
-  char fm_msg[5];
-  snprintf(fm_msg, sizeof(fm_msg), "FM %u", (unsigned)last_fm_mode);
-  showFullScreenMessage(fm_msg, 2000);
+  // V2.5-Evo - 2026-04-28 - Change C: Cycle 1→2→3→1, never returning to mode 0 (FM disabled).
+  // (last_fm_mode % 3) maps {1→1, 2→2, 3→0} then +1 maps {1→2, 2→3, 0→1}.
+  last_fm_mode = (last_fm_mode % 3) + 1;
+  // V2.5-Evo - 2026-04-28 - Change D: "FM" mode-change confirm (6 cols, fits C0-C5)
+  showFullScreenMessage("FM", 2000);
   queueMetaPacketBurst(0xF2, last_fm_mode);
-  fm_arm_ms = millis();                    // reset arm window — user is actively choosing a mode
+  fm_last_sync_ms = millis();              // Change E: reset keepalive — just synced
+  fm_arm_ms       = millis();             // reset arm window — user is actively choosing a mode
 }
 
 // Called from loop() every ~110ms.
@@ -399,5 +419,13 @@ void runFmLoop()
       fmDisarm();
       return;
     }
+  }
+
+  // V2.5-Evo - 2026-04-28 - Change E: Send 0xF2 keepalive every 30s while FM is armed.
+  // Ensures RX stays in the correct FM mode after any transient packet loss.
+  if (fm_last_sync_ms > 0 && now - fm_last_sync_ms >= 30000UL)
+  {
+    queueMetaPacketBurst(0xF2, last_fm_mode);
+    fm_last_sync_ms = now;
   }
 }

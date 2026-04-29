@@ -1,6 +1,7 @@
 #ifndef WEB_UI_EMBEDDED_H
 #define WEB_UI_EMBEDDED_H
 // V3 - 2026-04-25 - P7: Added 5 RTM/FM RX fields; added RTM & Follow-Me group
+// V2.5-Evo - 2026-04-28 - Security: added rtm_stop_distance_m field (was in ConfigService but missing from UI)
 
 #include <Arduino.h>
 
@@ -106,7 +107,7 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
   </div>
 
 <script>
-// 40 Parameters for RX
+// 41 Parameters for RX
 const groupOrder=["Radio","Steering","PWM","Motor & Safety","Sensors","Battery","GPS & Follow-Me","Follow-Me Tuning","RTM & Follow-Me","Logging","System"];
 const fields=[
 {key:"radio_preset",label:"Radio Preset",description:"Select your region",group:"Radio",type:"enum",def:1,min:1,max:3,options:[{v:1,l:"EU868"},{v:2,l:"US/AU915"},{v:3,l:"Reserved"}]},
@@ -146,6 +147,7 @@ const fields=[
 {key:"rtm_rx_enabled",label:"RTM RX Enabled",description:"RX-side RTM master enable (safety kill switch). 0=RTM blocked regardless of TX. Default 1.",group:"RTM & Follow-Me",type:"bool",def:1,min:0,max:1},
 {key:"rtm_rx_override_steering",label:"RTM Override Steering",description:"Allow RTM to override steering towards TX GPS position. 0=disable steering override (throttle limiting only). Default 1.",group:"RTM & Follow-Me",type:"bool",def:1,min:0,max:1},
 {key:"rtm_compass_required",label:"RTM Compass Required",description:"Require valid compass reading for RTM arming. 0=allow RTM without compass (steering disabled). Default 1.",group:"RTM & Follow-Me",type:"bool",def:1,min:0,max:1},
+{key:"rtm_stop_distance_m",label:"RTM Hard Stop Distance",description:"Distance at which RTM triggers a hard stop and disengages (Gate 9). Range 1-50 m, default 3 m. Must be less than the arm distance to allow RTM to run.",group:"RTM & Follow-Me",type:"int",def:3,min:1,max:50,unit:"m"},
 {key:"boogie_vmax_in_followme_kmh",label:"Boogie V-Max",description:"Max boogie speed in follow-me mode",group:"Follow-Me Tuning",type:"float",def:25.0,min:0,max:100,step:0.1,unit:"km/h"},
 {key:"min_dist_m",label:"Min Distance",description:"Minimum allowed distance to foiler",group:"Follow-Me Tuning",type:"float",def:10.0,min:0,max:1000,step:0.1,unit:"m"},
 {key:"followme_smoothing_band_m",label:"Smoothing Band",description:"Smoothing band above min distance",group:"Follow-Me Tuning",type:"float",def:10.0,min:0,max:1000,step:0.1,unit:"m"},

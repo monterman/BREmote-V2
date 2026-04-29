@@ -111,7 +111,12 @@ struct confStruct {
     uint16_t paired;
     uint8_t own_address[3];
     uint8_t dest_address[3];
-    char wifi_password[8];      // WPA2 AP password, exactly 8 chars (no null terminator)
+    // wifi_password is 8 chars with NO null terminator. The field is deliberately
+    // undersized — a 9th byte would shift dynamic_power_start and break all existing
+    // SPIFFS configs (sizeof 128 → 130 after compiler alignment padding).
+    // WebConfigEngine.h softAP() call copies into a local char ap_pass[9] buffer
+    // and appends '\0' before passing to WiFi.softAP() — see Common/WebConfigEngine.h.
+    char wifi_password[8];      // WPA2 AP password, exactly 8 chars — null-terminated at call site only
     uint16_t dynamic_power_start;  // 10-100, starting cap for mode 2 (default 85)
     uint16_t dynamic_power_step; // 1-25, step size per toggle press in mode 2 (default 5)
     // V3 - 2026-04-22 - HDOP quality gate for TX GPS. Stored as HDOP*100 to keep the struct

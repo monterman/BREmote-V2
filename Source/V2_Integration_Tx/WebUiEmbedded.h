@@ -1,4 +1,5 @@
 // V3 - 2026-04-25 - P7: Added 12 RTM/FM fields; added RTM & Follow-Me group; sizeof TX confStruct 96→120
+// V2.5-Evo - 2026-04-28 - ChangeA/F: fm_arm_window max 60→120s; followme_mode labels updated, option 0 removed
 #ifndef WEB_UI_EMBEDDED_H
 #define WEB_UI_EMBEDDED_H
 
@@ -123,7 +124,7 @@ const fields=[
 {key:"tog_right",label:"Toggle Right",description:"Raw toggle ADC at right",group:"Calibration",type:"int",def:0,min:0,max:65535},
 {key:"ubat_cal",label:"Battery Cal Factor",description:"ADC-to-voltage calibration",group:"Calibration",type:"float",def:0.000185662,min:0.000001,max:1.0,step:0.000001},
 {key:"gps_en",label:"GPS Enabled",description:"GPS runtime enable flag",group:"GPS & Follow-Me",type:"bool",def:0,min:0,max:1},
-{key:"followme_mode",label:"Follow-Me Mode",description:"Follow-me positioning mode",group:"GPS & Follow-Me",type:"enum",def:0,min:0,max:3,options:[{v:0,l:"Disabled"},{v:1,l:"Behind"},{v:2,l:"Near Right"},{v:3,l:"Near Left"}]},
+{key:"followme_mode",label:"Follow-Me Starting Mode",description:"FM starting mode loaded on first arm this session. RAM override only — never written back to SPIFFS. 1=Near Right (default), 2=Behind, 3=Near Left.",group:"GPS & Follow-Me",type:"enum",def:1,min:1,max:3,options:[{v:1,l:"Near Right (default)"},{v:2,l:"Behind"},{v:3,l:"Near Left"}]},
 {key:"kalman_en",label:"Kalman Filter",description:"Kalman runtime enable",group:"GPS & Follow-Me",type:"bool",def:0,min:0,max:1},
 {key:"speed_src",label:"Speed Source",description:"Speed data source",group:"GPS & Follow-Me",type:"enum",def:0,min:0,max:5,options:[{v:0,l:"GPS RX km/h"},{v:1,l:"GPS RX knots"},{v:2,l:"GPS TX km/h"},{v:3,l:"GPS TX knots"},{v:4,l:"GPS RX mph"},{v:5,l:"GPS TX mph"}]},
 {key:"tx_gps_stale_timeout_ms",label:"TX GPS Stale Timeout",description:"TX GPS stale timeout",group:"GPS & Follow-Me",type:"int",def:1000,min:0,max:65535,unit:"ms"},
@@ -144,7 +145,7 @@ const fields=[
 {key:"rtm_display_mode",label:"RTM/FM Display Mode",description:"Info shown on TX display while RTM or FM is active. 0=distance to TX (default), 1=speed, 2=alternating every 2.5s.",group:"RTM & Follow-Me",type:"enum",def:0,min:0,max:2,options:[{v:0,l:"Distance (default)"},{v:1,l:"Speed"},{v:2,l:"Alternating 2.5s"}]},
 {key:"fm_warn_distance_m",label:"FM Warning Distance",description:"TX-to-RX distance that triggers FM proximity warning vibration (2×Pattern 2). Range 50-1000 m, default 150.",group:"RTM & Follow-Me",type:"int",def:150,min:50,max:1000,unit:"m"},
 {key:"rtm_steer_exit_on_input",label:"RTM Exit on Steering",description:"1=any significant steering input exits RTM immediately (default). 0=steering used for correction only (blend mode).",group:"RTM & Follow-Me",type:"bool",def:1,min:0,max:1},
-{key:"fm_arm_window_s",label:"FM Arm Window",description:"How long FM stays armed before auto-disarming if no throttle input. Default 30s gives time to get ready to ride. Range 10-60 s.",group:"RTM & Follow-Me",type:"int",def:30,min:10,max:60,unit:"s"},
+{key:"fm_arm_window_s",label:"FM Arm Window",description:"How long FM stays armed before auto-disarming if no throttle input. Default 30s gives time to get ready to ride. Range 10-120 s.",group:"RTM & Follow-Me",type:"int",def:30,min:10,max:120,unit:"s"},
 {key:"dist_unit",label:"Distance Unit",description:"Unit for all distance readouts on the TX display (RTM, FM). Internal math always uses metres. 0=Metres, 1=Feet.",group:"RTM & Follow-Me",type:"enum",def:0,min:0,max:1,options:[{v:0,l:"Metres"},{v:1,l:"Feet"}]},
 {key:"wifi_password",label:"WiFi Password",description:"AP password (exactly 8 characters)",group:"System",type:"text",def:"12345678",minLen:8,maxLen:8},
 {key:"version",label:"Config Version",description:"Must match firmware SW_VERSION",group:"System",type:"int",def:25,min:0,max:65535}

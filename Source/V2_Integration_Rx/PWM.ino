@@ -1,4 +1,5 @@
 // V3 - 2026-04-25 - P7: calcPWM() applies RTM emergency stop and steering override via effective_thr/steer
+// V2.5-Evo - 2026-04-28 - Security: gate steer override on thr_received>=25 (belt-and-suspenders)
 void generatePWM(void *parameter) {
   TickType_t xLastWakeTime = xTaskGetTickCount();
   const TickType_t xFrequency = pdMS_TO_TICKS(10);
@@ -39,7 +40,11 @@ void calcPWM()
   // Steering override: bearing-derived value replaces radio steering when RTM is active.
   // RTM can only subtract from user throttle (never add). Creator safety philosophy enforced.
   uint8_t effective_thr   = rtm_rx_emergency_stop ? 0 : thr_received;
-  uint8_t effective_steer = (rtm_rx_active && usrConf.rtm_rx_override_steering)
+  // SAFETY FIX (2026-04-28 audit): also gate on thr_received>=25.
+  // Gate 1 in RTMState.ino resets rtm_steer_override=127 on throttle release (Task 1A),
+  // but that runs at 10Hz. This gate ensures the PWM task (100Hz) cannot apply a stale
+  // bearing value during the up-to-100ms window before Gate 1 next fires.
+  uint8_t effective_steer = (rtm_rx_active && usrConf.rtm_rx_override_steering && thr_received >= 25)
                             ? (uint8_t)rtm_steer_override
                             : steering_received;
 

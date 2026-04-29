@@ -1,6 +1,7 @@
 // V3 - 2026-04-25 - P7: RX RTM state machine, 10 safety gates, Phase C anti-spoofing.
 // V3 - 2026-04-27 - P8: runRtmLoop() encodes RX→TX distance into telemetry.rtm_distance (index 5)
 // V2.5-Evo - 2026-04-28 - P9 Bug1A/1B/1C: Gate9 zero-guard; always-compute dist before gates
+// V2.5-Evo - 2026-04-28 - Security: Gate 1 resets rtm_steer_override=127 on throttle release
 //
 // The RTM state machine runs in loop() at ~10Hz (100ms rate-limit).
 // When rtm_rx_active is set true by a 0xF1 meta-packet, this module:
@@ -29,7 +30,13 @@ static bool checkRtmSafetyGates()
   if (thr_received < 25)
   {
     // Throttle released — this is normal; do not emergency-stop, just return false.
-    // The motor already outputs 0 because thr_received is 0.
+    // SAFETY FIX (2026-04-28 audit): reset steer override to straight (127) before returning.
+    // Without this reset, the last bearing-derived value persists in rtm_steer_override.
+    // calcPWM() applies that stale value to differential motor math even with thr=0:
+    //   steering_offset_1 ≈ +286 at override=200 → PWM1_time=1286µs (motor spins ~28%)
+    //   despite the user not holding the throttle — a hard safety violation.
+    // Belt-and-suspenders companion fix is in PWM.ino calcPWM() (Task 1B).
+    rtm_steer_override = 127;
     return false;
   }
 

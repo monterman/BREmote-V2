@@ -3,6 +3,15 @@
 // V3 - 2026-04-27 - P8: Fixed displayDigits() clamp 29→33; ANIMATION_DELAY 80→40; ET handler; added renderRtmInfoDisplay()
 // V2.5-Evo - 2026-04-28 - P9: fontCompact3x7 + showFullScreenMessage() + E71 full-screen flash
 // V2.5-Evo - 2026-04-28 - P9 S3+S4: displayDistanceInUnits() + R5 proximity bar
+// V2.5-Evo - 2026-04-28 - Reverted P9 col[0]↔col[2] swap: col[0] is left physical column, no swap needed
+// V2.5-Evo - 2026-04-28 - Security: fixed displayDistanceInUnits() metric label (km→×100m) and imperial threshold (100ft→1000ft)
+// V2.5-Evo - 2026-04-28 - Changes2/3/4/6/G: cap→99; fc3x7_n; E71→"E 7"
+// V2.5-Evo - 2026-04-28 - chore: removed bootSelfTest() — restore fast startup
+// V2.5-Evo - 2026-04-28 - ChangeD: persistent "FM" display in renderOperationalDisplay() when fm_armed
+// V2.5-Evo - 2026-04-28 - ChgDZ: displayDigitZone() — safe persistent renderer, preserves R5/R6/C7/C8/C9
+// V2.5-Evo - 2026-04-28 - Bug1: showFullScreenMessage() save+reassert R6 to beat updateBargraphs() FreeRTOS task
+// V2.5-Evo - 2026-04-28 - Bug3: Removed dead fm_armed stub from updateR5ProximityBar() — was unreachable from call site
+// V2.5-Evo - 2026-04-28 - Bug5: fc3x7_r + fc3x7_n bitmaps corrected 0x7C→0x1E/0x04/0x02 — shift up, avoid R5
 
 extern bool fm_armed;  // defined in RTMState.ino — needed by updateR5ProximityBar()
 
@@ -237,16 +246,9 @@ void showCapPercent()
   uint8_t ones = cap % 10;
   if(cap >= 100)
   {
-    // V3 - 2026-04-28 - P9: render "100" via fontCompact3x7 across C0-C8. Non-blocking.
-    // Clears C0-C8 (R0-R6) then writes '1'(C0-C2), '0'(C3-C5), '0'(C6-C8). C9 unchanged.
-    // Column bytes from fc3x7_1={0x40,0x7F,0x42}, fc3x7_0={0x3E,0x41,0x3E} (see font table).
-    for (int row = 1; row <= 7; row++) displayBuffer[row] &= ~0x01FFu;
-    static const uint8_t k100cols[9] = {0x40,0x7F,0x42, 0x3E,0x41,0x3E, 0x3E,0x41,0x3E};
-    for (int col = 0; col < 9; col++) {
-      uint8_t bits = k100cols[col];
-      for (int row = 0; row < 7; row++)
-        if (bits & (1u << row)) displayBuffer[row + 1] |= (1u << col);
-    }
+    // V2.5-Evo - 2026-04-28: full-cap shows 99. fontCompact "100" used cols 0-8; cols 7-8 map
+    // to hw ROW 2/0 which are physically unconnected on this display.
+    displayDigits(9, 9);
   }
   else
   {
@@ -273,27 +275,30 @@ static void displayShowTwoDigitOrDash(uint8_t value)
 // Each entry: 3 bytes = 3 display columns (col[0]=leftmost, col[2]=rightmost).
 // Each byte: 7 bits for 7 display rows — bit 0 = R0 (top), bit 6 = R6 (bottom).
 // Space = 1 dark column, handled by the caller (not in this table).
-// Supported chars: A E F M P S r t 0 1 2 3 7
+// Supported chars: A E F M P S n r t 0 1 2 3 7
 // Bitmaps extracted from HTML row-major values by transposing bit2→col0, bit1→col1, bit0→col2.
 // Fc3x7Entry struct defined in BREmote_V2_Tx.h (must precede Arduino auto-prototype emission).
 // ============================================================
 
 static const Fc3x7Entry fc3x7_A = {{0x7E, 0x09, 0x7E}};
-// V3 - 2026-04-28 - P9 font fix: col[0]↔col[2] swapped for all asymmetric characters.
-// Physical display maps software col[0] to the rightmost physical LED column, so the
-// HTML fontCompact bit2 (visual-left) must go into col[2], bit0 (visual-right) into col[0].
-static const Fc3x7Entry fc3x7_E = {{0x41, 0x49, 0x7F}};
-static const Fc3x7Entry fc3x7_F = {{0x01, 0x09, 0x7F}};
+// col[0]=left physical column, col[1]=middle, col[2]=right. No swap needed.
+// Bitmaps are direct from HTML fontCompact (bit2→col[0], bit1→col[1], bit0→col[2]).
+static const Fc3x7Entry fc3x7_E = {{0x7F, 0x49, 0x41}};
+static const Fc3x7Entry fc3x7_F = {{0x7F, 0x09, 0x01}};
 static const Fc3x7Entry fc3x7_M = {{0x7F, 0x06, 0x7F}};  // symmetric — unchanged
-static const Fc3x7Entry fc3x7_P = {{0x06, 0x09, 0x7F}};
-static const Fc3x7Entry fc3x7_S = {{0x31, 0x49, 0x46}};
-static const Fc3x7Entry fc3x7_r = {{0x04, 0x08, 0x7C}};
+static const Fc3x7Entry fc3x7_P = {{0x7F, 0x09, 0x06}};
+static const Fc3x7Entry fc3x7_S = {{0x46, 0x49, 0x31}};
+// V2.5-Evo - 2026-04-28 - Bug5: Bitmaps shifted up 1 row so characters render R1-R4 instead
+// of R2-R4. Previous 0x7C reached bit 5 (R5, proximity bar row) in showFullScreenMessage().
+// 0x1E = bits 1-4 = R1-R4 (stays clear of R5). Verified with 0x1F clip in displayDigitZone.
+static const Fc3x7Entry fc3x7_n = {{0x1E, 0x02, 0x1E}};  // lowercase n: both legs R1-R4, bridge at R1
+static const Fc3x7Entry fc3x7_r = {{0x1E, 0x04, 0x02}};  // lowercase r: left leg R1-R4, arch at R2, stub at R1
 static const Fc3x7Entry fc3x7_t = {{0x04, 0x7F, 0x04}};  // symmetric — unchanged
 static const Fc3x7Entry fc3x7_0 = {{0x3E, 0x41, 0x3E}};  // symmetric — unchanged
-static const Fc3x7Entry fc3x7_1 = {{0x40, 0x7F, 0x42}};
-static const Fc3x7Entry fc3x7_2 = {{0x46, 0x49, 0x71}};
-static const Fc3x7Entry fc3x7_3 = {{0x36, 0x49, 0x41}};
-static const Fc3x7Entry fc3x7_7 = {{0x07, 0x19, 0x61}};
+static const Fc3x7Entry fc3x7_1 = {{0x42, 0x7F, 0x40}};
+static const Fc3x7Entry fc3x7_2 = {{0x71, 0x49, 0x46}};
+static const Fc3x7Entry fc3x7_3 = {{0x41, 0x49, 0x36}};
+static const Fc3x7Entry fc3x7_7 = {{0x61, 0x19, 0x07}};
 
 // Returns pointer to 3-column bitmap for c, or nullptr for unsupported characters.
 static const Fc3x7Entry* fc3x7GetChar(char c)
@@ -305,6 +310,7 @@ static const Fc3x7Entry* fc3x7GetChar(char c)
     case 'M': return &fc3x7_M;
     case 'P': return &fc3x7_P;
     case 'S': return &fc3x7_S;
+    case 'n': return &fc3x7_n;
     case 'r': return &fc3x7_r;
     case 't': return &fc3x7_t;
     case '0': return &fc3x7_0;
@@ -313,6 +319,43 @@ static const Fc3x7Entry* fc3x7GetChar(char c)
     case '3': return &fc3x7_3;
     case '7': return &fc3x7_7;
     default:  return nullptr;
+  }
+}
+
+// ============================================================
+// V2.5-Evo - 2026-04-28 - ChgDZ: DIGIT ZONE RENDERER (persistent-safe).
+// Renders msg into C0-C6 (bits 0-6), rows R0-R4 (displayBuffer[1..5]) only.
+// Does NOT touch C7 (GPS dot), C8/C9 (temp/signal bars), R5 (proximity bar), R6 (battery bar).
+// Clips font bitmaps to R0-R4 using (colBits & 0x1F) — drops rows R5-R6 silently.
+// Characters and spacing: 3 cols per char, 1 col per space (same as showFullScreenMessage).
+// Column output limited to C0-C6 (col < 7). Does NOT call updateDisplay() — caller handles that.
+// ============================================================
+static void displayDigitZone(const char* msg)
+{
+  // Clear C0-C6 in rows R0-R4 only; preserve C7 GPS dot, C8/C9 bargraphs, R5, R6
+  for (int i = 1; i <= 5; i++) displayBuffer[i] &= 0xFF80;
+
+  uint8_t col = 0;
+  for (int ci = 0; msg[ci] != '\0' && col < 7; ci++)
+  {
+    if (msg[ci] == ' ')
+    {
+      col++;
+    }
+    else
+    {
+      const Fc3x7Entry* entry = fc3x7GetChar(msg[ci]);
+      if (entry == nullptr) { col++; continue; }
+      for (int fc = 0; fc < 3 && col < 7; fc++, col++)
+      {
+        uint8_t colBits = entry->col[fc] & 0x1F;  // clip to R0-R4 (5 rows, bits 0-4)
+        for (int row = 0; row < 5; row++)
+        {
+          if (colBits & (1u << row))
+            displayBuffer[row + 1] |= (1u << col);
+        }
+      }
+    }
   }
 }
 
@@ -353,13 +396,34 @@ void showFullScreenMessage(const char* msg, uint16_t duration_ms)
     }
   }
 
-  updateDisplay();
-  delay(duration_ms);
+  // V2.5-Evo - 2026-04-28 - Bug1: Save R6 (battery bar row) before the hold and re-assert
+  // it every 40ms. The updateBargraphs() FreeRTOS task runs every 200ms and calls
+  // displayHorzBargraph(7,...) which writes displayBuffer[7] (R6) — clearing any R6 pixels
+  // belonging to the message (e.g. the bottom of 'S'). Re-asserting on a 40ms cadence
+  // ensures the message wins the race for the full hold duration.
+  uint16_t fs_r6  = displayBuffer[7];
+  unsigned long fs_end = millis() + duration_ms;
+  while (millis() < fs_end)
+  {
+    displayBuffer[7] = fs_r6;
+    updateDisplay();
+    delay(40);
+  }
   for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000;
 }
 
 void renderOperationalDisplay()
 {
+  // V2.5-Evo - 2026-04-28 - ChgDZ: Persistent "FM" while Follow-Me armed, RTM not active.
+  // displayDigitZone() preserves R5 proximity bar, R6 battery bar, C7 GPS dot, C8/C9 bargraphs.
+  // Previous hand-written render wrote through all 7 rows, destructively clearing R5/R6.
+  if (fm_armed && !rtm_tx_active)
+  {
+    displayDigitZone("FM");
+    updateDisplay();
+    return;
+  }
+
   if(remote_error == 0)
   {
     if(system_locked)
@@ -400,8 +464,8 @@ void renderOperationalDisplay()
   {
     // V2.5-Evo - 2026-04-28 - P9: E71 water ingress — full-screen blinking flash.
     // All existing E71 haptic (Pattern 3: 5×500ms) and detection logic are UNCHANGED.
-    // Display-only change: "E 71" rendered full-screen at 250ms on/off until error clears.
-    // E(3) + space(1) + 7(3) + 1(3) = 10 columns exactly.
+    // Display-only change: "E 7" rendered full-screen at 250ms on/off until error clears.
+    // E(3) + space(1) + 7(3) = 7 columns, all within C0-C6 (bits 7-9 are unconnected hw ROW lines).
     if (remote_error == 71)
     {
       static unsigned long e71_blink_ms    = 0;
@@ -413,7 +477,7 @@ void renderOperationalDisplay()
         if (e71_blink_state)
         {
           for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000;
-          const char* e71msg = "E 71";
+          const char* e71msg = "E 7";
           uint8_t col = 0;
           for (int ci = 0; e71msg[ci] && col < 10; ci++) {
             if (e71msg[ci] == ' ') { col++; continue; }
@@ -815,8 +879,8 @@ void updateBargraphs(void *parameter)
 // Inputs: dist_m in metres (float). Outputs: displayDigits() call + optional
 // decimal dot at C3 R4 (displayBuffer[5] bit 3) for fractional values.
 // Rules:
-//   Metric (0):   <1 m → "00"; 1-99 m → whole metres; 100+ m → X.X km (dot)
-//   Imperial (1): <4 ft → "00"; 4-99 ft → whole feet; 100+ ft → X.X mi (dot)
+//   Metric (0):   <1 m → "00"; 1-99 m → whole metres; 100+ m → X.X ×100m (dot)
+//   Imperial (1): <4 ft → "00"; 4-99 ft → whole feet; 100-999 ft → X.X ×100ft (dot); ≥1000 ft → X.X mi (dot)
 // displayDigits() must be called before setting decimal dot (it clears R4).
 // ============================================================
 static void displayDistanceInUnits(float dist_m)
@@ -835,9 +899,20 @@ static void displayDistanceInUnits(float dist_m)
       if (ft > 99) ft = 99;
       displayDigits(ft / 10, ft % 10);
     }
+    else if (dist_ft < 1000.0f)
+    {
+      // 100-999 ft: tenths of ×100ft (e.g., 1.5 = 150 ft). Covers full RTM op range (100-538 ft).
+      // BUG FIX (2026-04-28 audit): old threshold was 100ft — all RTM distances showed 0.0-0.1 mi.
+      float dist_100ft = dist_ft / 100.0f;
+      uint8_t whole = (uint8_t)dist_100ft;
+      uint8_t frac  = (uint8_t)((dist_100ft - whole) * 10.0f + 0.5f);
+      if (whole > 9) { whole = 9; frac = 9; }
+      displayDigits(whole, frac);
+      displayBuffer[5] |= (1u << 3);  // decimal dot C3 R4
+    }
     else
     {
-      // Tenths of miles: 528 ft = 0.1 mi, cap at 9.9 mi
+      // ≥1000 ft: tenths of miles (528 ft = 0.1 mi), cap at 9.9 mi
       float miles = dist_ft / 5280.0f;
       uint8_t whole = (uint8_t)miles;
       uint8_t frac  = (uint8_t)((miles - whole) * 10.0f + 0.5f);
@@ -861,10 +936,11 @@ static void displayDistanceInUnits(float dist_m)
     }
     else
     {
-      // Tenths of km: 100 m = 1.0 km, cap at 9.9 km
-      float km = dist_m / 100.0f;
-      uint8_t whole = (uint8_t)km;
-      uint8_t frac  = (uint8_t)((km - whole) * 10.0f + 0.5f);
+      // 100 m+: tenths of ×100m (e.g., 1.0=100m, 5.0=500m, 9.9=990m). Cap at 9.9.
+      // BUG FIX (2026-04-28 audit): variable was named 'km' but formula is dist_m/100 (hectometres, not km).
+      float dist_100m = dist_m / 100.0f;
+      uint8_t whole = (uint8_t)dist_100m;
+      uint8_t frac  = (uint8_t)((dist_100m - whole) * 10.0f + 0.5f);
       if (whole > 9) { whole = 9; frac = 9; }
       displayDigits(whole, frac);
       displayBuffer[5] |= (1u << 3);  // decimal dot C3 R4
@@ -941,7 +1017,7 @@ void renderRtmInfoDisplay()
 // RTM: square-root curve from arm distance to 0.
 //   rtm_arm_dist_m captured at engage; pixels = round(sqrt(current/arm)*10), 0-10.
 //   Bar fills C0→C9 (left to right) and shrinks from right as buggy closes in.
-// FM:  stub — single center pixel C4 R5. Full FM bar deferred to Priority 10.
+// FM:  R5 is cleared; FM proximity bar deferred to Priority 10 (stub removed — Bug3).
 // ============================================================
 void updateR5ProximityBar()
 {
@@ -980,9 +1056,9 @@ void updateR5ProximityBar()
     for (uint8_t c = 0; c < pixels; c++)
       displayBuffer[6] |= (1u << c);
   }
-  else if (fm_armed)
-  {
-    // FM stub: single center pixel C4 R5 — full FM bar deferred to Priority 10
-    displayBuffer[6] |= (1u << 4);
-  }
+  // V2.5-Evo - 2026-04-28 - Bug3: Dead FM stub removed. This else-if was unreachable —
+  // updateR5ProximityBar() is only called from renderRtmInfoDisplay(), which only runs when
+  // rtm_tx_active==true, so fm_armed could never be true at this call site. The stub also
+  // left stale R5 data that caused a phantom pixel during FM mode. R5 is now cleared at the
+  // top of this function unconditionally; FM R5 bar deferred to Priority 10.
 }

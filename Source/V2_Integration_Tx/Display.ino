@@ -12,8 +12,10 @@
 // V2.5-Evo - 2026-04-28 - Bug1: showFullScreenMessage() save+reassert R6 to beat updateBargraphs() FreeRTOS task
 // V2.5-Evo - 2026-04-28 - Bug3: Removed dead fm_armed stub from updateR5ProximityBar() — was unreachable from call site
 // V2.5-Evo - 2026-04-28 - Bug5: fc3x7_r + fc3x7_n bitmaps corrected 0x7C→0x1E/0x04/0x02 — shift up, avoid R5
+// V2.5-Evo - 2026-04-29 - Fix 4-3: extern fm_armed updated to volatile to match RTMState.ino
 
-extern bool fm_armed;  // defined in RTMState.ino — needed by updateR5ProximityBar()
+extern volatile bool fm_armed;  // defined in RTMState.ino — volatile: written by loop() core 1,
+                                 // read by updateBargraphs() core 0; must match definition
 
 static void clearDisplayRaw()
 {

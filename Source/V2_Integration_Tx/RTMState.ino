@@ -21,6 +21,8 @@
 // V2.5-Evo - 2026-04-29 - Fix 1-4: setRtmArmed() calls fmSilentDisarm() so RX
 //   receives 0xF2/0 when RTM preempts FM — prevents stale fm_mode_runtime on RX
 //   TODO: remove when runDoubleSqueezeArm() is refactored to non-blocking.
+// V2.5-Evo - 2026-04-29 - Fix 4-3: fm_armed declared volatile (read core 0 / write core 1)
+// V2.5-Evo - 2026-04-29 - Fix 2-1: pre-arm rejection path now clears rtm_arm_gps_timeout_override
 
 extern volatile uint8_t current_vib_pattern;
 extern float rtm_arm_dist_m;  // defined in BREmote_V2_Tx.h — captured at RTM engage moment
@@ -229,6 +231,9 @@ static void runDoubleSqueezeArm()
   float prearm_m = decodeRtmDistanceM();
   if (prearm_m >= 0.0f && prearm_m <= (float)usrConf.rtm_disengage_distance_m)
   {
+    rtm_arm_gps_timeout_override = 0;  // Finding 2-1: only exit path that left
+                                        // the 4× override stale; all other exits
+                                        // (timeouts + rtmDisengage) already clear it
     current_vib_pattern = 4;
     showFullScreenMessage("St", 2000);
     rtm_tx_state  = RTM_IDLE;
@@ -360,7 +365,8 @@ void runRtmLoop()
 //   - Arm window expires (fm_arm_window_s) before any throttle input — auto-disarm
 // ============================================================
 
-bool                 fm_armed         = false;  // FM arm state; RAM only, cleared on power cycle. Not static — extern'd by Display.ino (R5 bar)
+volatile bool        fm_armed         = false;  // FM arm state; RAM only, cleared on power cycle. Not static — extern'd by Display.ino (R5 bar)
+                                                 // volatile: read by updateBargraphs() on core 0, written by loop() on core 1
 static uint8_t       last_fm_mode     = 1;      // last active FM mode (1-3); defaults F1; RAM only
 static unsigned long fm_arm_ms        = 0;      // time of arm, or time of last throttle >10 while armed
 static bool          fm_throttle_seen = false;  // becomes true once thr_scaled>10 after arming

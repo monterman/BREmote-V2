@@ -1,0 +1,1095 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>BREmote V2.5-Evo — Serial Config Tool</title>
+  <style>
+    :root{--bg:#0b1220;--panel:#101828;--panel2:#1e293b;--txt:#e5e7eb;--muted:#9ca3af;--pri:#60a5fa;--err:#ef4444;--ok:#22c55e;--warn:#f59e0b;--pw:clamp(380px,45vw,600px)}
+    *{box-sizing:border-box}
+    body{margin:0;background:radial-gradient(1200px 700px at 10% -10%,#1e3a5f66 0,transparent 45%),linear-gradient(180deg,#0a1120 0,#0b1220 40%);color:var(--txt);font-family:"Avenir Next","Montserrat","Segoe UI",sans-serif;min-height:100vh;transition:padding-right 0.3s ease}
+    body.panel-open{padding-right:var(--pw)}
+
+    /* === LAYOUT === */
+    .wrap{max-width:800px;margin:0 auto;padding:14px 14px 120px}
+    .card{background:linear-gradient(180deg,#121b2e,#101828);border:1px solid #243042;border-radius:14px;padding:12px;box-shadow:0 8px 24px #00000033;margin-bottom:12px}
+    .top{position:sticky;top:0;backdrop-filter:blur(6px);padding-top:6px;z-index:9}
+    .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+    .sp{justify-content:space-between}
+
+    /* === TYPE === */
+    .title{font-weight:700;font-size:18px;color:#38bdf8}
+    .sub{color:var(--muted);font-size:12px}
+    .label{font-weight:700}
+    .desc,.hint{font-size:12px;color:var(--muted)}
+    .err-hint{font-size:12px;color:var(--err)}
+
+    /* === BUTTONS === */
+    .btn{border:0;border-radius:10px;padding:8px 12px;background:var(--pri);color:#08111f;font-weight:700;cursor:pointer;transition:all 0.2s;font-size:13px;white-space:nowrap}
+    .btn:disabled{opacity:.4;cursor:not-allowed}
+    .btn.sec{background:#243042;color:var(--txt)}
+    .btn.danger{background:#b91c1c;color:#fff}
+    .btn.cmp{background:#1e3a5f;color:#60a5fa;border:1px solid #243042}
+    .btn.cmp.active{color:#f59e0b;border-color:#f59e0b}
+    .btn.sm{padding:5px 9px;font-size:11px}
+    .btn.success{background:var(--ok)!important;color:#000!important;box-shadow:0 0 10px rgba(34,197,94,.5)}
+    .active-save{background:#f97316!important;color:#fff!important;animation:pulse 1.5s infinite;border:1px solid #fff!important}
+    @keyframes pulse{0%{transform:scale(1);box-shadow:0 0 0 0 rgba(249,115,22,.7)}70%{transform:scale(1.02);box-shadow:0 0 0 10px rgba(249,115,22,0)}100%{transform:scale(1);box-shadow:0 0 0 0 rgba(249,115,22,0)}}
+
+    /* === LANDING === */
+    #landing{display:flex;align-items:center;justify-content:center;min-height:90vh;padding:20px}
+    .land-box{text-align:center;max-width:480px}
+    .land-box .title{font-size:22px;margin-bottom:12px}
+    .land-box p{color:var(--muted);font-size:14px;margin-bottom:24px;line-height:1.6}
+    .land-btn{font-size:16px;padding:14px 32px;border-radius:12px}
+
+    /* === STATUS === */
+    #statusLine{font-size:12px;color:var(--muted);margin-top:6px;min-height:16px;transition:color 0.2s}
+    #statusLine.ok{color:#22c55e}
+    #statusLine.err{color:#ef4444}
+    #statusLine.warn{color:#f59e0b}
+
+    /* === SERIAL DOT === */
+    .sdot{width:10px;height:10px;border-radius:50%;background:#ef4444;display:inline-block;flex-shrink:0;transition:background 0.3s}
+    .sdot.on{background:#22c55e}
+
+    /* === GROUPS / FIELDS === */
+    .groups{margin-top:10px;display:flex;flex-direction:column;gap:8px}
+    details{background:var(--panel2);border:1px solid #334155;border-radius:12px}
+    summary{cursor:pointer;padding:10px 12px;font-weight:700;color:#cbd5e1;user-select:none}
+    .items{padding:0 10px 10px;display:flex;flex-direction:column;gap:8px}
+    .field{background:var(--panel);border:1px solid #243042;border-radius:10px;padding:10px;transition:border-color 0.2s,background 0.2s}
+    .field.dirty{background:#451a1a!important;border:1px solid #ef4444!important;box-shadow:0 0 8px rgba(239,68,68,.4)}
+
+    /* === INPUTS === */
+    input,select{width:100%;padding:8px;border-radius:8px;border:1px solid #334155;background:#0f172a;color:var(--txt);transition:0.3s;font-size:13px}
+    input[type=checkbox]{width:auto}
+    input[type=range]{width:100%;margin-top:4px;padding:2px 0;background:transparent;border:none}
+    .triple{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+
+    /* === COMPARE === */
+    .field-left{min-width:0}
+    .ctrl-main{margin:8px 0 4px}
+    .ctrl-cmp{display:none}
+    .cmp-val{background:#0f172a;border:1px solid #334155;border-radius:8px;padding:7px 10px;font-size:13px;color:var(--muted);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;word-break:break-all;min-height:36px;width:100%}
+    .cmp-val.diff{background:#451a03;border-color:#f59e0b;color:#fbbf24}
+    body.cmp-on .field{display:flex;padding:0;overflow:hidden}
+    body.cmp-on .field-left{padding:10px;flex:1;min-width:0}
+    body.cmp-on .ctrl-cmp{display:flex;align-items:center;justify-content:center;flex:0 0 clamp(160px,28%,220px);border-left:1px solid #334155;background:#0f172a;padding:10px}
+
+    /* === SERIAL CONSOLE PANEL === */
+    .serial-panel{position:fixed;right:0;top:0;height:100vh;width:var(--pw);transform:translateX(var(--pw));transition:transform 0.3s ease;z-index:100;pointer-events:none}
+    .serial-panel.open{transform:translateX(0);pointer-events:all}
+    .serial-tab{position:fixed;right:0;top:50%;transform:translateY(-50%);width:28px;padding:18px 6px;background:#243042;color:#60a5fa;border:1px solid #243042;border-right:none;border-radius:8px 0 0 8px;cursor:pointer;z-index:102;writing-mode:vertical-rl;text-orientation:mixed;font-weight:700;font-size:11px;letter-spacing:1px;pointer-events:all}
+    .serial-inner{width:100%;height:100%;background:linear-gradient(180deg,#121b2e,#101828);border:1px solid #243042;border-right:none;border-radius:14px 0 0 14px;padding:12px;display:flex;flex-direction:column;gap:8px;overflow-y:auto}
+    .term-wrap{position:relative;flex-shrink:0}
+    .terminal{height:420px;background:#000;color:#00ff00;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;padding:8px;border:1px solid #334155;border-radius:8px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;user-select:text;-webkit-user-select:text;cursor:text}
+    .term-toast{position:absolute;bottom:10px;right:10px;background:#22c55e;color:#fff;font-size:11px;font-weight:700;padding:4px 10px;border-radius:20px;pointer-events:none;opacity:0;transition:opacity 0.1s;z-index:10}
+    .term-toast.show{opacity:1}
+
+    /* === MODALS === */
+    .modal-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:#0b1220ee;display:none;align-items:center;justify-content:center;z-index:200;padding:20px}
+    .modal-overlay.show{display:flex}
+    .modal{background:linear-gradient(180deg,#121b2e,#101828);border:1px solid #243042;border-radius:14px;padding:20px;width:100%;max-width:560px;max-height:80vh;overflow-y:auto}
+    .modal-hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;font-size:16px;font-weight:700}
+    textarea{width:100%;height:200px;font-family:monospace;font-size:12px;background:#0f172a;color:#38bdf8;border:1px solid #334155;border-radius:8px;padding:10px;resize:vertical;outline:none}
+
+    /* === MANUAL TOGGLE BANNER === */
+    #manualToggle{background:#1e293b;border:1px solid #f59e0b;border-radius:12px;padding:12px;margin-bottom:12px;display:none}
+
+    /* === RESPONSIVE === */
+    @media(max-width:640px){
+      :root{--pw:100vw}
+      .btn{padding:7px 9px;font-size:12px}
+    }
+    @media(max-width:768px){body.panel-open{padding-right:0}}
+  </style>
+</head>
+<body>
+
+<!-- ===== LANDING VIEW ===== -->
+<div id="landing">
+  <div class="land-box">
+    <div class="title">BREmote V2.5-Evo<br>Serial Config Tool</div>
+    <p>Select your device to view and edit fields immediately.<br>Connect serial at any time to sync live values from device.</p>
+    <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-bottom:20px">
+      <button class="btn land-btn" onclick="loadOffline('tx')">Load TX Fields</button>
+      <button class="btn land-btn" onclick="loadOffline('rx')">Load RX Fields</button>
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:12px">— or connect for live values —</div>
+    <button class="btn sec" style="font-size:13px;padding:10px 22px" onclick="doConnect()">Connect Serial</button>
+    <div style="margin-top:14px;font-size:11px;color:var(--muted)">Serial requires Chrome or Edge v89+</div>
+  </div>
+</div>
+
+<!-- ===== MAIN UI (hidden until device detected) ===== -->
+<div id="mainUI" style="display:none">
+<div class="wrap">
+
+  <!-- STICKY HEADER -->
+  <div class="top">
+    <div class="card">
+      <div class="row sp">
+        <div class="row" style="gap:8px;flex-wrap:nowrap">
+          <span class="sdot" id="sdot"></span>
+          <div>
+            <div class="title" id="pageTitle">BREmote V2.5-Evo — Serial Config Tool</div>
+            <div class="sub" id="connLabel">Not connected</div>
+          </div>
+        </div>
+        <button class="btn sec" id="btnConn" onclick="toggleConnect()">Connect Serial</button>
+      </div>
+      <div class="row" style="margin-top:8px;gap:6px">
+        <button class="btn sec" id="btnSync" onclick="forceSync()" disabled>Force Sync</button>
+        <button class="btn" id="btnSave" onclick="saveToDevice()" disabled>Save to Device</button>
+        <button class="btn danger" id="btnReboot" onclick="rebootDevice()" disabled>Reboot</button>
+        <button class="btn cmp" id="btnCmp" onclick="toggleCompare()">Compare ▶</button>
+        <button class="btn sec" onclick="exportJson()">Export JSON</button>
+        <button class="btn sec" onclick="document.getElementById('importFile').click()">Import JSON</button>
+        <input type="file" id="importFile" accept=".json" style="display:none" onchange="importJsonFile(this)">
+      </div>
+      <div id="statusLine">—</div>
+    </div>
+  </div>
+
+  <!-- MANUAL DEVICE TOGGLE (shown when detection is ambiguous) -->
+  <div id="manualToggle">
+    <div class="row" style="gap:10px">
+      <span style="color:#f59e0b;font-weight:700">Could not auto-detect device type:</span>
+      <button class="btn" onclick="setDeviceManual('tx')">Set TX</button>
+      <button class="btn sec" onclick="setDeviceManual('rx')">Set RX</button>
+    </div>
+  </div>
+
+  <!-- COMPARE LOAD BAR (visible only in compare mode) -->
+  <div id="cmpBar" class="card" style="display:none">
+    <div class="row" style="gap:8px">
+      <span style="font-weight:700;color:#f59e0b">Compare Mode</span>
+      <button class="btn sec" style="font-size:12px" onclick="showPasteModal()">Paste JSON</button>
+      <button class="btn sec" style="font-size:12px" onclick="document.getElementById('cmpFile').click()">Load File</button>
+      <input type="file" id="cmpFile" accept=".json" style="display:none" onchange="loadCmpFile(this)">
+      <span id="cmpStatus" class="sub"></span>
+    </div>
+  </div>
+
+  <!-- FIELD GROUPS -->
+  <div class="groups" id="groups"></div>
+
+</div><!-- /wrap -->
+</div><!-- /mainUI -->
+
+<!-- ===== SERIAL CONSOLE TAB + PANEL ===== -->
+<button class="serial-tab" onclick="togglePanel()">&gt;_ SERIAL</button>
+<div class="serial-panel" id="serialPanel">
+  <div class="serial-inner">
+    <div class="row sp">
+      <div class="title" style="font-size:14px">&gt;_ Serial Console</div>
+      <div class="row" style="gap:6px">
+        <span class="sdot" id="pdot"></span>
+        <button class="btn sm sec" id="autoScrollBtn" onclick="toggleAutoScroll()" title="Toggle auto-scroll">↓ Auto</button>
+        <button class="btn sec" style="padding:5px 9px" onclick="togglePanel()">&#x2715;</button>
+      </div>
+    </div>
+    <div class="term-wrap">
+      <div id="terminal" class="terminal"></div>
+      <div id="termToast" class="term-toast">Copied</div>
+    </div>
+    <div class="row" style="gap:6px">
+      <input id="cmdInput" type="text" placeholder="Type command… (↑↓ history)" style="flex:1;min-width:0" onkeydown="onCmdKey(event)">
+      <button class="btn" onclick="sendCmd()" style="flex-shrink:0">Send</button>
+    </div>
+    <div class="row" style="flex-wrap:wrap;gap:6px" id="quickBtns"></div>
+    <select id="cmdDrop" onchange="insertFromDrop(this)">
+      <option value="">— Select command —</option>
+    </select>
+  </div>
+</div>
+
+<!-- ===== PASTE MODAL ===== -->
+<div class="modal-overlay" id="pasteModal">
+  <div class="modal">
+    <div class="modal-hdr">
+      <span>Paste JSON for Compare</span>
+      <button class="btn sec" onclick="closePasteModal()">&#x2715;</button>
+    </div>
+    <textarea id="pasteArea" placeholder='{"key":value,...}'></textarea>
+    <div class="row" style="margin-top:8px;gap:8px">
+      <button class="btn" onclick="applyPasted()">Apply</button>
+      <button class="btn sec" onclick="closePasteModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ============================================================
+// TX FIELD DEFINITIONS — exact copy from Source/V2_Integration_Tx/WebUiEmbedded.h
+// BREmote V2.5-Evo TX — 59 parameters
+// ============================================================
+const TX_GROUP_ORDER = ["Radio","Gears","Throttle","Steering","Toggle","Lock & Timing","Calibration","GPS & Follow-Me","RTM & Follow-Me","System"];
+const TX_FIELDS = [
+{key:"radio_preset",label:"Radio Preset",description:"Radio frequency band. 1=EU 868 MHz, 2=US/AU 915 MHz. Do not select 3 — it causes a boot error and the remote will not start.",group:"Radio",type:"enum",def:1,min:1,max:3,options:[{v:1,l:"EU868"},{v:2,l:"US/AU915"},{v:3,l:"Reserved"}]},
+{key:"rf_power",label:"RF Power",description:"LoRa transmit power in dBm. -9=minimum range (bench testing only), 22=maximum range. Higher values draw more current.",group:"Radio",type:"int",def:0,min:-9,max:22,unit:"dBm"},
+{key:"paired",label:"Paired",description:"0=not paired (no RX address stored), 1=paired. Set automatically by the pairing sequence — do not edit manually.",group:"Radio",type:"bool",def:0,min:0,max:1},
+{key:"own_address",label:"Own Address",description:"This TX device's LoRa address. Set automatically by the pairing sequence — do not edit manually.",group:"Radio",type:"address3",def:"00,00,00"},
+{key:"dest_address",label:"Dest Address",description:"Paired RX device address. Set automatically by the pairing sequence — do not edit manually.",group:"Radio",type:"address3",def:"00,00,00"},
+{key:"max_gears",label:"Max Gears",description:"Total throttle gears available. 1=no gear system (single fixed power level), 10=maximum. startgear must be less than this value.",group:"Gears",type:"int",def:10,min:1,max:10},
+{key:"startgear",label:"Start Gear",description:"Gear selected on power-on or after unlock. 0=gear 1 (lowest power). Must be less than max_gears.",group:"Gears",type:"int",def:0,min:0,max:9},
+{key:"throttle_mode",label:"Throttle Mode",description:"0=Gears, 1=No Gears, 2=Dynamic Cap",group:"Gears",type:"enum",def:0,min:0,max:2,options:[{v:0,l:"Gears"},{v:1,l:"No Gears"},{v:2,l:"Dynamic Cap"}]},
+{key:"dynamic_power_start",label:"Dynamic Power Start %",description:"Starting power cap in Dynamic Cap mode (throttle_mode=2). 10%=very conservative start, 100%=full power from the beginning.",group:"Gears",type:"int",def:85,min:10,max:100,unit:"%"},
+{key:"dynamic_power_step",label:"Dynamic Power Step %",description:"Power cap change per toggle press in Dynamic Cap mode (throttle_mode=2). 1%=finest control, 25%=coarsest.",group:"Gears",type:"int",def:5,min:1,max:25,unit:"%"},
+{key:"gear_change_waittime",label:"Gear Change Wait",description:"Toggle hold duration to register a gear change. 0=instant change, 65535=very long hold required. Milliseconds.",group:"Gears",type:"int",def:100,min:0,max:65535,unit:"ms"},
+{key:"gear_display_time",label:"Gear Display Time",description:"How long the gear number flashes after a change. 0=no display, higher=longer flash. Milliseconds.",group:"Gears",type:"int",def:1000,min:0,max:65535,unit:"ms"},
+{key:"thr_expo",label:"Throttle Expo",description:"Throttle response curve. 0=maximum exponential (gentle at low throttle, aggressive at high), 50=linear, 100=reverse exponential. Most riders prefer 30-50.",group:"Throttle",type:"int",def:50,min:0,max:100},
+{key:"thr_expo1",label:"Throttle Expo 1",description:"Reserved/unused",group:"Throttle",type:"int",def:0,min:0,max:65535},
+{key:"steer_enabled",label:"Steering Enabled",description:"0=steering disabled (toggle input controls gears/cap only), 1=steering enabled (toggle also steers vehicle).",group:"Steering",type:"bool",def:1,min:0,max:1},
+{key:"steer_expo",label:"Steering Expo",description:"Reserved/unused",group:"Steering",type:"int",def:50,min:0,max:65535},
+{key:"steer_expo1",label:"Steering Expo 1",description:"Reserved/unused",group:"Steering",type:"int",def:0,min:0,max:65535},
+{key:"tog_deadzone",label:"Toggle Deadzone",description:"Raw ADC deadzone around center position. 100=very sensitive (small movements register), 3000=insensitive. Increase if false inputs occur while riding.",group:"Toggle",type:"int",def:500,min:100,max:3000},
+{key:"tog_diff",label:"Toggle Diff",description:"Minimum ADC movement required to count as input. 1=most sensitive (may pick up electrical noise), 200=least sensitive.",group:"Toggle",type:"int",def:30,min:1,max:200},
+{key:"tog_block_time",label:"Toggle Block Time",description:"After a steering input, block gear-change inputs for this long. 0=no block, 5000=5 second block. Milliseconds.",group:"Toggle",type:"int",def:500,min:0,max:5000},
+{key:"no_lock",label:"No Lock",description:"0=boot locked (must squeeze trigger to unlock before riding), 1=boot unlocked (no unlock step). Default 0 — use 1 with caution.",group:"Lock & Timing",type:"bool",def:0,min:0,max:1},
+{key:"trig_unlock_timeout",label:"Trigger Unlock Timeout",description:"Time allowed to complete the trigger unlock gesture. 0=very short window, 65535=very long squeeze allowed. Milliseconds.",group:"Lock & Timing",type:"int",def:5000,min:0,max:65535,unit:"ms"},
+{key:"lock_waittime",label:"Lock Wait Time",description:"Toggle hold duration to trigger power-off. 0=instant power-off, 65535=effectively disabled. Milliseconds.",group:"Lock & Timing",type:"int",def:2000,min:0,max:65535,unit:"ms"},
+{key:"menu_timeout",label:"Menu Timeout",description:"Delay after menu exit before steering re-enables. 0=immediate re-engage, 1000=1 second delay.",group:"Lock & Timing",type:"int",def:10,min:0,max:1000},
+{key:"err_delete_time",label:"Error Delete Time",description:"How long an error code stays on display before auto-clearing. 0=clears instantly, 65535=persists until reboot. Milliseconds.",group:"Lock & Timing",type:"int",def:2000,min:0,max:65535},
+{key:"cal_ok",label:"Calibration OK",description:"0=throttle not calibrated (trigger output may be incorrect — calibrate before riding), 1=calibrated. Set automatically by the calibration sequence.",group:"Calibration",type:"bool",def:0,min:0,max:1},
+{key:"cal_offset",label:"Cal Offset",description:"Internal ADC calibration offset. Set automatically during calibration — do not edit manually.",group:"Calibration",type:"int",def:100,min:0,max:65535},
+{key:"thr_idle",label:"Throttle Idle",description:"ADC reading at trigger idle (not squeezed). Set automatically during calibration — do not edit manually.",group:"Calibration",type:"int",def:0,min:0,max:65535},
+{key:"thr_pull",label:"Throttle Pull",description:"ADC reading at trigger fully squeezed. Set automatically during calibration — do not edit manually.",group:"Calibration",type:"int",def:0,min:0,max:65535},
+{key:"tog_left",label:"Toggle Left",description:"ADC reading at toggle fully left. Set automatically during calibration — do not edit manually.",group:"Calibration",type:"int",def:0,min:0,max:65535},
+{key:"tog_mid",label:"Toggle Mid",description:"ADC reading at toggle center. Set automatically during calibration — do not edit manually.",group:"Calibration",type:"int",def:0,min:0,max:65535},
+{key:"tog_right",label:"Toggle Right",description:"ADC reading at toggle fully right. Set automatically during calibration — do not edit manually.",group:"Calibration",type:"int",def:0,min:0,max:65535},
+{key:"ubat_cal",label:"Battery Cal Factor",description:"Multiplier to convert raw ADC to battery voltage. Adjust (tiny value, default ≈0.000186) until displayed voltage matches a multimeter reading.",group:"Calibration",type:"float",def:0.000185662,min:0.000001,max:1.0,step:0.000001},
+{key:"gps_en",label:"GPS Enabled",description:"0=GPS disabled (RTM and Follow-Me unavailable), 1=GPS active. Requires GPS module physically installed.",group:"GPS & Follow-Me",type:"bool",def:0,min:0,max:1},
+{key:"followme_mode",label:"Follow-Me Starting Mode",description:"FM starting mode loaded on first arm this session. RAM override only — never written back to SPIFFS. 1=Near Right (default), 2=Behind, 3=Near Left.",group:"GPS & Follow-Me",type:"enum",def:1,min:1,max:3,options:[{v:1,l:"Near Right (default)"},{v:2,l:"Behind"},{v:3,l:"Near Left"}]},
+{key:"kalman_en",label:"Kalman Filter",description:"0=raw GPS coordinates used directly, 1=Kalman filter smooths GPS jitter (recommended when GPS is noisy).",group:"GPS & Follow-Me",type:"bool",def:0,min:0,max:1},
+{key:"speed_src",label:"Speed Source",description:"Speed value shown in SP display mode. 0=RX GPS km/h, 1=RX GPS knots, 2=TX GPS km/h, 3=TX GPS knots, 4=RX GPS mph, 5=TX GPS mph.",group:"GPS & Follow-Me",type:"enum",def:0,min:0,max:5,options:[{v:0,l:"GPS RX km/h"},{v:1,l:"GPS RX knots"},{v:2,l:"GPS TX km/h"},{v:3,l:"GPS TX knots"},{v:4,l:"GPS RX mph"},{v:5,l:"GPS TX mph"}]},
+{key:"tx_gps_stale_timeout_ms",label:"TX GPS Stale Timeout",description:"How long a TX GPS fix is valid before considered stale. 0=never expires, 65535=very lenient. Lower values = stricter RTM GPS safety. Milliseconds.",group:"GPS & Follow-Me",type:"int",def:1000,min:0,max:65535,unit:"ms"},
+{key:"gps_max_hdop",label:"TX GPS Max HDOP",description:"Max GPS Signal Noise (HDOP×100): 150=excellent, 200=good (default), 300=lenient. Lower = stricter filter.",group:"GPS & Follow-Me",type:"int",def:200,min:50,max:500},
+{key:"gps_chip_type",label:"GPS Module Type",description:"GPS module type — determines baud/rate/constellation init sequence. TX supports 0 and 2 only (no compass on TX hardware).",group:"GPS & Follow-Me",type:"enum",def:0,min:0,max:3,options:[{v:0,l:"BN-220 (default, 9600→115200, 5Hz)"},{v:2,l:"M10 no compass (115200 direct, 10Hz, all constellations)"}]},
+{key:"rtm_enabled",label:"RTM Enabled",description:"Master enable for Return-to-Me feature. 0=off, 1=on.",group:"RTM & Follow-Me",type:"bool",def:1,min:0,max:1},
+{key:"rtm_hold_duration_s",label:"RTM Arm Hold Time",description:"Gesture hold duration for RTM arming. Currently fixed at 5s in firmware — this field is reserved for a future configurable threshold.",group:"RTM & Follow-Me",type:"int",def:5,min:4,max:10,unit:"s"},
+{key:"rtm_arm_window_s",label:"RTM Arm Window",description:"Time to complete throttle squeeze(s) after the RTM arm gesture. 5s=very tight window (hard to complete), 30s=generous. Default 10.",group:"RTM & Follow-Me",type:"int",def:10,min:5,max:30,unit:"s"},
+{key:"rtm_double_squeeze_en",label:"RTM Double-Squeeze",description:"1=require two squeezes to engage (default), 0=hold throttle >30% for 500ms.",group:"RTM & Follow-Me",type:"bool",def:1,min:0,max:1},
+{key:"rtm_throttle_start_pct",label:"RTM Start Throttle %",description:"Throttle cap at RTM engage moment. 10%=very gentle start, 50%=aggressive. Ramps to rtm_throttle_max_pct over rtm_ramp_duration_s.",group:"RTM & Follow-Me",type:"int",def:30,min:10,max:50,unit:"%"},
+{key:"rtm_throttle_max_pct",label:"RTM Max Throttle %",description:"Throttle cap after the ramp completes. 30%=slow approach, 90%=fast approach. User throttle is limited to this cap during RTM.",group:"RTM & Follow-Me",type:"int",def:70,min:30,max:90,unit:"%"},
+{key:"rtm_ramp_duration_s",label:"RTM Ramp Duration",description:"Time to ramp from rtm_throttle_start_pct to rtm_throttle_max_pct. 2s=quick ramp, 15s=very gradual. Default 5.",group:"RTM & Follow-Me",type:"int",def:5,min:2,max:15,unit:"s"},
+{key:"rtm_disengage_distance_m",label:"RTM Disengage Distance",description:"Distance at which RTM stops and motor cuts to 0. 3m=stops very close to user, 20m=stops well before reaching user. Allow enough for braking distance. Default 10.",group:"RTM & Follow-Me",type:"int",def:10,min:3,max:20,unit:"m"},
+{key:"rtm_max_runtime_s",label:"RTM Max Runtime",description:"Maximum continuous RTM runtime before auto-disengage. 0=disabled (safety gates handle all real scenarios), 300s=5 minute hard cap. Default 0.",group:"RTM & Follow-Me",type:"int",def:0,min:0,max:300,unit:"s"},
+{key:"rtm_gps_timeout_ms",label:"RTM GPS Timeout",description:"How long TX GPS can be lost before RTM safety-stops. 500ms=very strict, 3000ms=lenient (handles brief outages). Default 2000.",group:"RTM & Follow-Me",type:"int",def:2000,min:500,max:3000,unit:"ms"},
+{key:"fm_hold_duration_s",label:"FM Hold Time",description:"Gesture hold duration for Follow-Me arming. Currently fixed at 5s in firmware — this field is reserved for a future configurable threshold.",group:"RTM & Follow-Me",type:"int",def:5,min:4,max:10,unit:"s"},
+{key:"fm_override_enabled",label:"FM Override Enabled",description:"Allow TX to override RX follow-me mode at runtime (no SPIFFS write). 0=off, 1=on.",group:"RTM & Follow-Me",type:"bool",def:1,min:0,max:1},
+{key:"rtm_display_mode",label:"RTM/FM Display Mode",description:"Info shown on TX display while RTM or FM is active. 0=distance to TX (default), 1=speed, 2=alternating every 2.5s.",group:"RTM & Follow-Me",type:"enum",def:0,min:0,max:2,options:[{v:0,l:"Distance (default)"},{v:1,l:"Speed"},{v:2,l:"Alternating 2.5s"}]},
+{key:"fm_warn_distance_m",label:"FM Warning Distance",description:"TX-to-RX distance that triggers proximity warning vibration in Follow-Me mode. 50m=warn early (more time to react), 1000m=warn only when very close. Default 150.",group:"RTM & Follow-Me",type:"int",def:150,min:50,max:1000,unit:"m"},
+{key:"rtm_steer_exit_on_input",label:"RTM Exit on Steering",description:"1=any significant steering input exits RTM immediately (default). 0=steering used for correction only (blend mode).",group:"RTM & Follow-Me",type:"bool",def:1,min:0,max:1},
+{key:"fm_arm_window_s",label:"FM Arm Window",description:"How long FM stays armed before silently auto-disarming if no throttle input. 10s=short window, 120s=2 minute window. No display or haptic on expiry. Default 30.",group:"RTM & Follow-Me",type:"int",def:30,min:10,max:120,unit:"s"},
+{key:"dist_unit",label:"Distance Unit",description:"Unit for all distance readouts on the TX display (RTM, FM). Internal math always uses metres. 0=Metres, 1=Feet/miles.",group:"RTM & Follow-Me",type:"enum",def:0,min:0,max:1,options:[{v:0,l:"Metres"},{v:1,l:"Feet"}]},
+{key:"wifi_password",label:"WiFi Password",description:"AP password (exactly 8 characters)",group:"System",type:"text",def:"12345678",minLen:8,maxLen:8},
+{key:"version",label:"Config Version",description:"Must match firmware SW_VERSION",group:"System",type:"int",def:25,min:0,max:65535}
+];
+
+// ============================================================
+// RX FIELD DEFINITIONS — exact copy from Source/V2_Integration_Rx/WebUiEmbedded.h
+// BREmote V2.5-Evo RX — 48 parameters
+// (firmware file comment says "41 Parameters" — that comment is stale; actual count from WebUiEmbedded.h is 48)
+// ============================================================
+const RX_GROUP_ORDER = ["Radio","Steering","PWM","Motor & Safety","Sensors","Battery","GPS & Follow-Me","Follow-Me Tuning","RTM & Follow-Me","Logging","System"];
+const RX_FIELDS = [
+{key:"radio_preset",label:"Radio Preset",description:"Radio frequency band. 1=EU 868 MHz, 2=US/AU 915 MHz. Do not select 3 — it causes a boot error and the RX will not start. Must match TX setting.",group:"Radio",type:"enum",def:1,min:1,max:3,options:[{v:1,l:"EU868"},{v:2,l:"US/AU915"},{v:3,l:"Reserved"}]},
+{key:"rf_power",label:"RF Power",description:"RF transmit power in dBm. -9=minimum (shortest range, lowest interference), 22=maximum (longest range). Must match TX setting. Default 0.",group:"Radio",type:"int",def:0,min:-9,max:22,unit:"dBm"},
+{key:"paired",label:"Paired",description:"0=not paired (no TX address stored), 1=paired. Set automatically by the pairing sequence — do not edit manually.",group:"Radio",type:"bool",def:0,min:0,max:1},
+{key:"own_address",label:"Own Address",description:"This RX unit's 3-byte LoRa radio address (hex, e.g. 01,A2,FF). Set automatically during pairing — do not edit manually.",group:"Radio",type:"address3",def:"00,00,00"},
+{key:"dest_address",label:"Dest Address",description:"Paired TX remote's 3-byte LoRa radio address (hex, e.g. 01,A2,FF). Set automatically during pairing — do not edit manually.",group:"Radio",type:"address3",def:"00,00,00"},
+{key:"steering_type",label:"Steering Type",description:"0=Single Motor (one motor, no differential steering), 1=Differential (two motors, speed difference creates turning), 2=Servo (dedicated servo output on PWM1).",group:"Steering",type:"enum",def:0,min:0,max:2,options:[{v:0,l:"Single Motor"},{v:1,l:"Diff Motor"},{v:2,l:"Servo"}]},
+{key:"steering_influence",label:"Steering Influence",description:"How much the steering input modifies motor speed in differential mode. 0=no steering effect (straight only), 100=full differential (one motor fully cut on sharp turn). Default 50.",group:"Steering",type:"int",def:50,min:0,max:100,unit:"%"},
+{key:"steering_inverted",label:"Steering Inverted",description:"0=normal steering direction, 1=inverted (left/right swapped). Use if buggy steers opposite to expectation. Default 0.",group:"Steering",type:"bool",def:0,min:0,max:1},
+{key:"trim",label:"Trim",description:"Steering trim offset applied to the centre position. -500=full left trim, 0=centre, 500=full right trim. Adjust if buggy pulls left or right at neutral. Default 0.",group:"Steering",type:"int",def:0,min:-500,max:500},
+{key:"pwm0_min",label:"PWM0 Min",description:"Motor 0 (main drive) minimum PWM pulse width — maps to zero throttle / idle. 500=shortest pulse, 2500=longest. Typical ESC idle is 1000-1500 µs. Default 1500.",group:"PWM",type:"int",def:1500,min:500,max:2500,unit:"us"},
+{key:"pwm0_max",label:"PWM0 Max",description:"Motor 0 (main drive) maximum PWM pulse width — maps to full throttle. 500=shortest pulse, 2500=longest. Typical ESC full throttle is 1800-2000 µs. Default 2000.",group:"PWM",type:"int",def:2000,min:500,max:2500,unit:"us"},
+{key:"pwm1_min",label:"PWM1 Min",description:"Motor 1 / servo minimum PWM pulse width — maps to zero or full-left position. 500=shortest pulse, 2500=longest. Default 1500.",group:"PWM",type:"int",def:1500,min:500,max:2500,unit:"us"},
+{key:"pwm1_max",label:"PWM1 Max",description:"Motor 1 / servo maximum PWM pulse width — maps to full throttle or full-right position. 500=shortest pulse, 2500=longest. Default 2000.",group:"PWM",type:"int",def:2000,min:500,max:2500,unit:"us"},
+{key:"failsafe_time",label:"Failsafe Time",description:"Time after the last received LoRa packet before the RX cuts motor output to zero. 100ms=very fast failsafe (noisy environment risk), 10000ms=10 second delay (dangerous — motor runs on after signal loss). Default 1000ms (1 second).",group:"Motor & Safety",type:"int",def:1000,min:100,max:10000,unit:"ms"},
+{key:"data_src",label:"Data Source",description:"0=Off (no telemetry sent to TX), 1=Analog (battery voltage via ADC on UBAT pin), 2=VESC UART (full VESC telemetry including speed, ERPM, and motor current). Default 0.",group:"Motor & Safety",type:"enum",def:0,min:0,max:2,options:[{v:0,l:"Off"},{v:1,l:"Analog"},{v:2,l:"VESC UART"}]},
+{key:"foil_num_cells",label:"Battery Cells",description:"Number of LiPo/Li-Ion cells in series (S-count). Used to compute cell voltage from pack voltage. 1=1S (4.2V full), 14=14S (58.8V full). Example: a 14S4P pack is 14 cells in series. Default 10.",group:"Battery",type:"int",def:10,min:1,max:50},
+{key:"ubat_cal",label:"Battery Cal Factor",description:"ADC-to-voltage calibration multiplier. Multiply raw ADC reading by this factor to get pack voltage. Calibrate by measuring real voltage with a multimeter and adjusting until they match. Range 0.000001-1.0, default 0.0095554.",group:"Battery",type:"float",def:0.0095554,min:0.000001,max:1.0,step:0.000001},
+{key:"ubat_offset",label:"Battery Voltage Offset",description:"Fixed voltage offset added to the calibrated ADC reading. Used to correct for resistor divider bias. -100.0V to +100.0V. Adjust in small steps (e.g. ±0.1V) until measured voltage matches multimeter. Default 0.0.",group:"Battery",type:"float",def:0.0,min:-100.0,max:100.0,step:0.0001},
+{key:"bms_det_active",label:"BMS Detection",description:"0=BMS detection disabled, 1=BMS cutoff detection enabled (RX monitors BMS signal pin and shuts output if BMS trips). Default 0.",group:"Sensors",type:"bool",def:0,min:0,max:1},
+{key:"wet_det_active",label:"Water Detection",description:"0=wetness detection disabled, 1=enabled (RX monitors moisture sensor and cuts output if water ingress detected). Default 1.",group:"Sensors",type:"bool",def:1,min:0,max:1},
+{key:"dummy_delete_me",label:"Dummy (reserved)",description:"Reserved field, will be removed",group:"Sensors",type:"int",def:0,min:0,max:65535},
+{key:"gps_en",label:"GPS Enabled",description:"0=GPS module disabled (no UART polling, all GPS-dependent features blocked), 1=GPS enabled. RTM and Follow-Me require GPS enabled. Default 0.",group:"GPS & Follow-Me",type:"bool",def:0,min:0,max:1},
+{key:"gps_chip_type",label:"GPS Module Type",description:"GPS module type — determines init sequence, baud rate, and update rate. 0=BN-220 no compass, 1=BN-880 with compass (default for RX), 2=M10 no compass, 3=M10 with compass. Reboot required after change.",group:"GPS & Follow-Me",type:"enum",def:1,min:0,max:3,options:[{v:0,l:"BN-220 no compass (9600→115200, 5Hz)"},{v:1,l:"BN-880 + compass (default, 9600→115200, 5Hz)"},{v:2,l:"M10 no compass (115200 direct, 10Hz, all constellations)"},{v:3,l:"M10 + compass (115200 direct, 10Hz, all constellations)"}]},
+{key:"followme_mode",label:"Follow-Me Mode",description:"0=Disabled (RTM throttle-limit only, no steering), 1=Behind (directly behind foiler), 2=Near Right (rear-right diagonal), 3=Near Left (rear-left diagonal). Default 0.",group:"GPS & Follow-Me",type:"enum",def:0,min:0,max:3,options:[{v:0,l:"Disabled"},{v:1,l:"Behind"},{v:2,l:"Near Right"},{v:3,l:"Near Left"}]},
+{key:"kalman_en",label:"Kalman Filter",description:"0=Kalman filter disabled (raw GPS position used), 1=Kalman filter enabled (smooths GPS position noise for follow-me and RTM). Enable for autonomous use; disable to debug raw GPS output. Default 0.",group:"GPS & Follow-Me",type:"bool",def:0,min:0,max:1},
+{key:"tx_gps_stale_timeout_ms",label:"TX GPS Stale Timeout",description:"Maximum age of TX GPS data before RX considers it stale and blocks Phase B/C anti-spoofing checks. 0=disabled (never stale), 65535=65 seconds. Default 1000ms (1 second). Reduce if TX GPS updates fall behind.",group:"GPS & Follow-Me",type:"int",def:1000,min:0,max:65535,unit:"ms"},
+{key:"gps_max_hdop",label:"GPS Max HDOP",description:"Maximum HDOP for a valid GPS fix — lower is stricter. Range 0.5-5.0, default 2.0. Readings above this threshold are rejected.",group:"GPS & Follow-Me",type:"float",def:2.0,min:0.5,max:5.0,step:0.1},
+{key:"gps_max_accel_g",label:"GPS Max Acceleration",description:"Maximum implied acceleration between consecutive GPS readings (G-force). Range 1.0-10.0 G, default 3.0 G. Higher-than-max implies a spoofed jump.",group:"GPS & Follow-Me",type:"float",def:3.0,min:1.0,max:10.0,step:0.1,unit:"G"},
+{key:"gps_max_jump_kmh",label:"GPS Max Teleport Speed",description:"Maximum speed implied by position change between readings. Range 50-500 km/h, default 200 km/h. Larger implies GPS teleport.",group:"GPS & Follow-Me",type:"float",def:200.0,min:50.0,max:500.0,step:1.0,unit:"km/h"},
+{key:"gps_suspect_threshold",label:"GPS Suspect Threshold",description:"Consecutive anti-spoofing failures before GPS is marked rejected. Range 1-10, default 3. While rejected, RTM arming is blocked.",group:"GPS & Follow-Me",type:"int",def:3,min:1,max:10},
+{key:"gps_max_pair_dist_m",label:"Phase B: Max Pair Distance",description:"Maximum plausible TX-RX distance during GPS handshake check. Range 50-2000 m, default 500 m. If TX and RX are further apart than this, RTM arming is blocked.",group:"GPS & Follow-Me",type:"float",def:500.0,min:50.0,max:2000.0,step:10.0,unit:"m"},
+{key:"gps_max_speed_diff_kmh",label:"Phase B: Max Speed Difference",description:"Maximum TX-RX GPS speed difference during handshake check. Range 10-200 km/h, default 50 km/h. If speeds differ more than this, RTM arming is blocked.",group:"GPS & Follow-Me",type:"float",def:50.0,min:10.0,max:200.0,step:1.0,unit:"km/h"},
+{key:"rtm_vesc_speed_diff_kmh",label:"Phase C: Max VESC Speed Diff",description:"Phase C: max difference between GPS speed and VESC ERPM-implied speed during active RTM. Range 5-50 km/h, default 20.",group:"GPS & Follow-Me",type:"float",def:20.0,min:5.0,max:50.0,step:1.0,unit:"km/h"},
+{key:"vesc_erpm_per_kmh",label:"VESC ERPM per km/h",description:"Vehicle-specific: how many ERPM equals 1 km/h. Set by driving at known speed and reading ERPM from ?printtasks. 0=disable Phase C VESC check.",group:"GPS & Follow-Me",type:"float",def:0.0,min:0.0,max:9999.0,step:1.0,unit:"ERPM/kmh"},
+{key:"rtm_rx_enabled",label:"RTM RX Enabled",description:"RX-side RTM master enable (safety kill switch). 0=RTM blocked regardless of TX. Default 1.",group:"RTM & Follow-Me",type:"bool",def:1,min:0,max:1},
+{key:"rtm_rx_override_steering",label:"RTM Override Steering",description:"Allow RTM to override steering towards TX GPS position. 0=disable steering override (throttle limiting only). Default 1.",group:"RTM & Follow-Me",type:"bool",def:1,min:0,max:1},
+{key:"rtm_compass_required",label:"RTM Compass Required",description:"Require valid compass reading for RTM arming. 0=allow RTM without compass (steering disabled). Default 1.",group:"RTM & Follow-Me",type:"bool",def:1,min:0,max:1},
+{key:"rtm_stop_distance_m",label:"RTM Hard Stop Distance",description:"Distance at which RTM triggers a hard stop and disengages (Gate 9). Range 1-50 m, default 3 m. Must be less than the arm distance to allow RTM to run.",group:"RTM & Follow-Me",type:"int",def:3,min:1,max:50,unit:"m"},
+{key:"boogie_vmax_in_followme_kmh",label:"Boogie V-Max",description:"Maximum vehicle speed while Follow-Me is active. Throttle is capped so speed never exceeds this value during following. 0=no limit, 100=100 km/h cap. Default 25 km/h. Set to a safe value for your terrain.",group:"Follow-Me Tuning",type:"float",def:25.0,min:0,max:100,step:0.1,unit:"km/h"},
+{key:"min_dist_m",label:"Min Distance",description:"Minimum safe distance the buggy must maintain from the foiler. Throttle is cut if the buggy gets closer than this. 0=no minimum, 1000=1000 m minimum (impractical). Default 10 m.",group:"Follow-Me Tuning",type:"float",def:10.0,min:0,max:1000,step:0.1,unit:"m"},
+{key:"followme_smoothing_band_m",label:"Smoothing Band",description:"Distance band above min_dist_m over which throttle is linearly reduced to zero as the buggy approaches the minimum distance. Larger = smoother slowdown but less responsive. Default 10 m.",group:"Follow-Me Tuning",type:"float",def:10.0,min:0,max:1000,step:0.1,unit:"m"},
+{key:"foiler_low_speed_kmh",label:"Foiler Low Speed",description:"If the foiler's GPS speed drops below this value, Follow-Me throttle is cut (foiler has stopped or crashed). 0=disabled, 100=100 km/h threshold (would always cut). Default 5 km/h.",group:"Follow-Me Tuning",type:"float",def:5.0,min:0,max:100,step:0.1,unit:"km/h"},
+{key:"zone_angle_enter_deg",label:"Zone Angle Enter",description:"Half-angle of the acceptable follow zone behind the foiler. Follow-Me steering activates only when buggy is within ±this angle of directly behind. 0=very narrow corridor, 180=full circle. Default 35°.",group:"Follow-Me Tuning",type:"float",def:35.0,min:0,max:180,step:0.1,unit:"deg"},
+{key:"zone_angle_exit_deg",label:"Zone Angle Exit",description:"Half-angle at which Follow-Me zone steering disengages (hysteresis). Must be ≥ zone_angle_enter_deg to avoid oscillation — typically set 5-15° wider. Default 45°.",group:"Follow-Me Tuning",type:"float",def:45.0,min:0,max:180,step:0.1,unit:"deg"},
+{key:"near_diag_offset_deg",label:"Near Diag Offset",description:"Target bearing offset from directly-behind for Near Right and Near Left Follow-Me modes. 0=directly behind foiler, 90=beside foiler. Applied as +offset for Near Right, -offset for Near Left. Default 45°.",group:"Follow-Me Tuning",type:"float",def:45.0,min:0,max:180,step:0.1,unit:"deg"},
+{key:"logger_en",label:"Logger Enabled",description:"0=data logger disabled (no CSV files written to SPIFFS), 1=logger enabled (records speed, GPS, VESC, and control data to SPIFFS at 10Hz). Disable if storage is full or to extend SPIFFS lifetime. Default 1.",group:"Logging",type:"bool",def:1,min:0,max:1},
+{key:"wifi_password",label:"WiFi Password",description:"AP password (exactly 8 characters)",group:"System",type:"text",def:"12345678",minLen:8,maxLen:8},
+{key:"version",label:"Config Version",description:"Must match firmware SW_VERSION",group:"System",type:"int",def:25,min:0,max:65535}
+];
+
+// ============================================================
+// SERIAL COMMAND DROPDOWN HTML — device-specific
+// ============================================================
+const TX_CMD_HTML = `
+<option value="">— Select command —</option>
+<optgroup label="Config">
+  <option value="?conf">?conf — print current config</option>
+  <option value="?conf json">?conf json — print config as JSON</option>
+  <option value="?get ">?get &lt;key&gt; — read one value</option>
+  <option value="?set  ">?set &lt;key&gt; &lt;val&gt; — set value in RAM</option>
+  <option value="?save">?save — persist RAM config to SPIFFS</option>
+  <option value="?keys">?keys — list all config key names</option>
+  <option value="?state">?state — subsystem state overview</option>
+</optgroup>
+<optgroup label="System">
+  <option value="?reboot">?reboot — reboot TX</option>
+  <option value="?exitchg">?exitchg — exit USB charging mode</option>
+  <option value="?printtasks">?printtasks — FreeRTOS task stack usage</option>
+  <option value="?">? — list all commands</option>
+</optgroup>
+<optgroup label="Radio &amp; Inputs">
+  <option value="?printrssi">?printrssi — live RSSI/SNR (quit to exit)</option>
+  <option value="?printinputs">?printinputs — live throttle/toggle ADC (quit to exit)</option>
+  <option value="?printpackets">?printpackets — TX/RX packet counts</option>
+</optgroup>
+<optgroup label="GPS">
+  <option value="?printgps">?printgps — GPS fix state and coordinates</option>
+  <option value="?gpsraw 5">?gpsraw 5 — dump raw NMEA for 5s</option>
+  <option value="?gpsreinit">?gpsreinit — reinitialize GPS module</option>
+</optgroup>
+<optgroup label="WiFi">
+  <option value="?wifi">?wifi — print WiFi AP status</option>
+</optgroup>
+<optgroup label="Subsystems">
+  <option value="?printbat">?printbat — battery voltage ADC reading</option>
+</optgroup>`;
+
+const RX_CMD_HTML = `
+<option value="">— Select command —</option>
+<optgroup label="Config">
+  <option value="?conf">?conf — print current config</option>
+  <option value="?conf json">?conf json — print config as JSON</option>
+  <option value="?get ">?get &lt;key&gt; — read one value</option>
+  <option value="?set  ">?set &lt;key&gt; &lt;val&gt; — set value in RAM</option>
+  <option value="?save">?save — persist RAM config to SPIFFS</option>
+  <option value="?keys">?keys — list all config key names</option>
+</optgroup>
+<optgroup label="System">
+  <option value="?reboot">?reboot — reboot RX</option>
+  <option value="?printtasks">?printtasks — FreeRTOS task stack usage</option>
+  <option value="?">? — list all commands</option>
+</optgroup>
+<optgroup label="Diagnostics">
+  <option value="?printpwm">?printpwm — live PWM output values</option>
+  <option value="?printreceived">?printreceived — last received LoRa packet</option>
+  <option value="?printbat">?printbat — battery voltage ADC reading</option>
+  <option value="?printrssi">?printrssi — live RSSI/SNR (quit to exit)</option>
+</optgroup>
+<optgroup label="GPS &amp; Compass">
+  <option value="?printgps">?printgps — GPS fix state and coordinates</option>
+  <option value="?printcompass">?printcompass — raw compass XYZ readings</option>
+  <option value="?compassheading">?compassheading — computed heading degrees</option>
+  <option value="?compasscal">?compasscal — start compass calibration (runcal)</option>
+  <option value="?i2c">?i2c — scan I2C bus for devices</option>
+</optgroup>
+<optgroup label="Logging">
+  <option value="?start">?start — start data logger</option>
+  <option value="?stop">?stop — stop data logger</option>
+  <option value="?list">?list — list log files on SPIFFS</option>
+  <option value="?lograte 10">?lograte 10 — set log rate to 10 Hz</option>
+</optgroup>`;
+
+// ============================================================
+// RUNTIME STATE
+// ============================================================
+let fields     = null;   // active field array (TX_FIELDS or RX_FIELDS)
+let groupOrder = null;   // active group order
+let pendingObj = null;   // cached JSON when detection is ambiguous
+
+const st = {
+  values:  {},    // current working values
+  saved:   {},    // last confirmed device values — the dirty source-of-truth
+  compare: {},    // compare mode values
+  device:  null,  // 'tx' | 'rx' | null
+  cmpOn:   false,
+};
+
+// ============================================================
+// ADDRESS HELPERS
+// ============================================================
+function normAddr(v){
+  let s=String(v||'').replace(/[\[\]]/g,'').replace(/[:;-]/g,',').trim();
+  const p=s.split(',').map(x=>x.trim()).filter(Boolean).slice(0,3);
+  while(p.length<3)p.push('00');
+  return p.map(x=>x.replace(/^0x/i,'').replace(/[^0-9a-f]/gi,'').slice(0,2))
+          .map(x=>x.length?parseInt(x,16):0).map(n=>isNaN(n)?0:Math.max(0,Math.min(255,n)));
+}
+function toHex(v){return normAddr(v).map(n=>n.toString(16).toUpperCase().padStart(2,'0'));}
+function addrColon(v){return toHex(v).join(':');}
+
+function canonV(f,v){
+  if(f.type==='address3')return toHex(v).join(',');
+  return String(v??'').trim();
+}
+function isDirty(k){
+  if(!fields)return false;
+  const f=fields.find(x=>x.key===k);
+  if(!f)return false;
+  return canonV(f,st.values[k])!==canonV(f,st.saved[k]);
+}
+function anyDirty(){return fields?fields.some(f=>isDirty(f.key)):false;}
+
+function normalizeVal(f,raw){
+  if(f.type==='address3')return toHex(String(raw)).join(',');
+  return String(raw);
+}
+function defaultVal(f){
+  return f.type==='address3'?(f.def||'00,00,00'):String(f.def??'');
+}
+
+// ============================================================
+// SERIAL STATE
+// ============================================================
+let sport=null,swriter=null,sopen=false;
+let autoScroll=true;
+let isSelecting=false;
+const dataHandlers=[];
+
+// ============================================================
+// SERIAL READ LOOP
+// ============================================================
+async function readLoop(){
+  const dec=new TextDecoder();
+  try{
+    while(sport&&sport.readable){
+      const rdr=sport.readable.getReader();
+      try{
+        while(true){
+          const{value,done}=await rdr.read();
+          if(done)break;
+          const txt=dec.decode(value);
+          termWrite(txt);
+          dataHandlers.slice().forEach(h=>h(txt));
+        }
+      }catch(e){if(sopen)termWrite('\n[Read error: '+e.message+']\n');}
+      finally{rdr.releaseLock();}
+    }
+  }finally{if(sopen)doDisconnect();}
+}
+
+// ============================================================
+// CONNECT / DISCONNECT
+// ============================================================
+async function toggleConnect(){sopen?doDisconnect():doConnect();}
+
+async function doConnect(){
+  if(!('serial' in navigator)){
+    setStatus('Web Serial API not available — use Chrome or Edge v89+.','err');
+    return;
+  }
+  try{
+    sport=await navigator.serial.requestPort();
+    await sport.open({baudRate:115200});
+    sopen=true;
+    swriter=sport.writable.getWriter();
+    setConnUI(true);
+    setStatus('Connected at 115200 baud — detecting device…','ok');
+    readLoop();
+    await fetchAndDetect();
+  }catch(e){
+    setStatus('Connect failed: '+e.message,'err');
+    sport=null;swriter=null;sopen=false;
+    setConnUI(false);
+  }
+}
+
+async function doDisconnect(){
+  sopen=false;
+  try{if(swriter){swriter.releaseLock();swriter=null;}}catch(e){}
+  try{if(sport){await sport.close();sport=null;}}catch(e){}
+  setConnUI(false);
+  setStatus('Disconnected.','');
+}
+
+function setConnUI(on){
+  document.getElementById('sdot').classList.toggle('on',on);
+  document.getElementById('pdot').classList.toggle('on',on);
+  document.getElementById('btnConn').textContent=on?'Disconnect':'Connect Serial';
+  document.getElementById('connLabel').textContent=on?'Connected — 115200 baud':'Not connected';
+  ['btnSync','btnSave','btnReboot'].forEach(id=>document.getElementById(id).disabled=!on);
+}
+
+// ============================================================
+// JSON EXTRACTOR — finds first balanced {...} in a stream buffer
+// ============================================================
+function extractJson(buf){
+  const s=buf.indexOf('{');
+  if(s<0)return null;
+  let depth=0,inStr=false,esc=false;
+  for(let i=s;i<buf.length;i++){
+    const c=buf[i];
+    if(esc){esc=false;continue;}
+    if(c==='\\'&&inStr){esc=true;continue;}
+    if(c==='"')inStr=!inStr;
+    if(!inStr){if(c==='{')depth++;else if(c==='}'){depth--;if(depth===0)return buf.slice(s,i+1);}}
+  }
+  return null;
+}
+
+// ============================================================
+// FETCH DEVICE JSON — sends ?conf json, waits for complete response
+// ============================================================
+async function fetchDeviceJson(){
+  return new Promise(async resolve=>{
+    let buf='',done=false;
+    const tid=setTimeout(()=>{
+      if(!done){done=true;cleanup();setStatus('Load timed out — no JSON response within 5s.','err');resolve(null);}
+    },5000);
+    function handler(txt){
+      if(done)return;
+      buf+=txt;
+      const json=extractJson(buf);
+      if(json){
+        done=true;cleanup();clearTimeout(tid);
+        try{resolve(JSON.parse(json));}
+        catch(e){setStatus('JSON parse error: '+e.message,'err');resolve(null);}
+      }
+    }
+    function cleanup(){const i=dataHandlers.indexOf(handler);if(i>=0)dataHandlers.splice(i,1);}
+    dataHandlers.push(handler);
+    await serialSend('?conf json');
+  });
+}
+
+// ============================================================
+// DEVICE DETECTION
+// ============================================================
+function detectDevice(obj){
+  if('rtm_double_squeeze_en' in obj) return 'tx';
+  if('steering_type'         in obj) return 'rx';
+  return null;
+}
+
+async function fetchAndDetect(){
+  const obj=await fetchDeviceJson();
+  if(!obj)return;
+  const detected=detectDevice(obj);
+  if(detected){
+    if(st.device&&st.device!==detected){
+      if(confirm('Connected device is '+detected.toUpperCase()+', but '+st.device.toUpperCase()+' fields are loaded. Switch to '+detected.toUpperCase()+'?')){
+        activateDevice(detected,obj);
+      }else{applyDevice(obj);}
+    }else{activateDevice(detected,obj);}
+  }else{
+    pendingObj=obj;
+    if(!fields)showMainUI(null);
+    document.getElementById('manualToggle').style.display='';
+    setStatus('Auto-detection failed — select device type manually.','warn');
+  }
+}
+
+function setDeviceManual(type){
+  document.getElementById('manualToggle').style.display='none';
+  const obj=pendingObj||{};pendingObj=null;activateDevice(type,obj);
+}
+
+// ============================================================
+// ACTIVATE DEVICE — switch field set, render, update title
+// ============================================================
+function activateDevice(type,obj){
+  showMainUI(type);
+  applyDevice(obj);
+}
+
+// Offline mode — show field set immediately with default values, no serial required
+function loadOffline(type){
+  showMainUI(type);
+  for(const f of fields){const val=defaultVal(f);st.values[f.key]=val;st.saved[f.key]=val;}
+  renderGroups();checkDirtyUI();
+  setStatus('Showing '+type.toUpperCase()+' default values — connect serial to load live values from device.','');
+}
+
+function showMainUI(type){
+  document.getElementById('landing').style.display='none';
+  document.getElementById('mainUI').style.display='';
+  st.device=type;
+  if(type){
+    fields    =type==='tx'?TX_FIELDS    :RX_FIELDS;
+    groupOrder=type==='tx'?TX_GROUP_ORDER:RX_GROUP_ORDER;
+    const label=type.toUpperCase();
+    document.getElementById('pageTitle').textContent=`BREmote V2.5-Evo ${label} — Serial Config Tool`;
+    document.title=`BREmote V2.5-Evo ${label} — Serial Config Tool`;
+    updateSerialPanel(type);
+  }
+}
+
+// ============================================================
+// APPLY DEVICE — populate values AND saved (clears all dirty)
+// ============================================================
+function applyDevice(obj){
+  if(!fields)return;
+  let n=0;
+  for(const f of fields){
+    const raw=obj[f.key];
+    const val=raw!==undefined?normalizeVal(f,raw):defaultVal(f);
+    st.values[f.key]=val;
+    st.saved[f.key]=val;   // ← dirty state fix: saved always updated on device load
+    if(raw!==undefined)n++;
+  }
+  renderGroups();
+  checkDirtyUI();
+  if(st.cmpOn)updateAllCmp();
+  setStatus('Loaded '+n+'/'+fields.length+' fields from device.','ok');
+}
+
+// ============================================================
+// FORCE SYNC
+// ============================================================
+async function forceSync(){
+  if(!sopen){setStatus('Not connected.','err');return;}
+  if(anyDirty()&&!confirm('Force Sync will discard unsaved changes. Continue?'))return;
+  setStatus('Syncing from device…','');
+  const obj=await fetchDeviceJson();
+  if(!obj)return;
+  // Re-detect in case a different device was connected
+  const detected=detectDevice(obj);
+  if(detected&&detected!==st.device){
+    activateDevice(detected,obj);
+  }else{
+    applyDevice(obj);
+  }
+}
+
+// ============================================================
+// SAVE TO DEVICE
+// ============================================================
+async function saveToDevice(){
+  if(!sopen){setStatus('Not connected.','err');return;}
+  const dirty=fields.filter(f=>isDirty(f.key));
+  if(!dirty.length){setStatus('No changes to save.','');return;}
+  for(const f of dirty){
+    const e=validate(f,st.values[f.key]);
+    if(e){setStatus('Validation error on "'+f.label+'": '+e,'err');return;}
+  }
+  const btn=document.getElementById('btnSave');
+  btn.disabled=true;
+  setStatus('Saving '+dirty.length+' field(s) to device…','');
+  try{
+    for(const f of dirty){
+      const sv=f.type==='address3'?addrColon(st.values[f.key]):String(st.values[f.key]).trim();
+      await serialSend('?set '+f.key+' '+sv);
+      await delay(65);
+    }
+    await serialSend('?save');
+    await delay(350);
+    const obj=await fetchDeviceJson();
+    if(obj){
+      applyDevice(obj);  // updates saved → dirty clears
+      btn.classList.add('success');
+      setTimeout(()=>{btn.classList.remove('success');btn.disabled=false;},1500);
+      setStatus('Saved and confirmed '+dirty.length+' field(s).','ok');
+    }else{
+      btn.disabled=false;
+      setStatus('Save sent but reload timed out — check serial console for errors.','warn');
+    }
+  }catch(e){btn.disabled=false;setStatus('Save error: '+e.message,'err');}
+}
+
+// ============================================================
+// REBOOT
+// ============================================================
+async function rebootDevice(){
+  if(!sopen){setStatus('Not connected.','err');return;}
+  if(!confirm('Reboot device now? Serial connection will close.'))return;
+  await serialSend('?reboot');
+  setTimeout(()=>doDisconnect(),500);
+}
+
+const delay=ms=>new Promise(r=>setTimeout(r,ms));
+
+async function serialSend(line){
+  if(!swriter)return;
+  await swriter.write(new TextEncoder().encode(line+'\r\n'));
+}
+
+// ============================================================
+// VALIDATION
+// ============================================================
+function validate(f,v){
+  const s=String(v??'').trim();
+  if(!s.length)return'Required';
+  if(f.type==='address3')return null;
+  if(f.type==='text'){
+    if(f.minLen&&s.length<f.minLen)return'Min '+f.minLen+' chars';
+    if(f.maxLen&&s.length>f.maxLen)return'Max '+f.maxLen+' chars';
+    return null;
+  }
+  if(f.type==='float'){
+    const n=parseFloat(s);
+    if(isNaN(n))return'Must be a number';
+    if(n<f.min||n>f.max)return'Range '+f.min+'..'+f.max;
+    return null;
+  }
+  const n=parseInt(s,10);
+  if(isNaN(n))return'Must be integer';
+  if(n<f.min||n>f.max)return'Range '+f.min+'..'+f.max;
+  if(f.key==='startgear'){const mg=parseInt(st.values.max_gears??'10',10);if(!isNaN(mg)&&n>=mg)return'Must be < max_gears';}
+  return null;
+}
+
+// ============================================================
+// FIELD SETTERS (called from inline event handlers)
+// ============================================================
+function setVal(k,v){st.values[k]=String(v);updateHint(k);checkDirtyUI();updateCmpCell(k);}
+function setBool(k,c){setVal(k,c?'1':'0');}
+function setEnum(k,v){setVal(k,v);}
+function setAddrPart(k,i,v){
+  const h=toHex(st.values[k]);
+  h[i]=String(v||'').toUpperCase().replace(/[^0-9A-F]/g,'').slice(0,2);
+  st.values[k]=h.join(',');
+  checkDirtyUI();updateCmpCell(k);
+}
+
+function updateHint(k){
+  if(!fields)return;
+  const f=fields.find(x=>x.key===k);if(!f)return;
+  const e=validate(f,st.values[k]);
+  const el=document.getElementById('hint-'+k);if(!el)return;
+  const h=f.type==='address3'?'Hex bytes e.g. 46:C9:E0':
+           f.type==='text'?`${f.minLen||0}-${f.maxLen||255} chars`:
+           `Range ${f.min}..${f.max}${f.unit?' '+f.unit:''} | default: ${f.def}`;
+  el.textContent=e||h;el.className=e?'err-hint':'hint';
+}
+
+// ============================================================
+// DIRTY UI
+// ============================================================
+function checkDirtyUI(){
+  if(!fields)return;
+  for(const f of fields){
+    const el=document.querySelector(`.field[data-key="${f.key}"]`);
+    if(el)el.classList.toggle('dirty',isDirty(f.key));
+  }
+  const btn=document.getElementById('btnSave');
+  if(anyDirty()&&sopen)btn.classList.add('active-save');
+  else btn.classList.remove('active-save');
+}
+
+// ============================================================
+// STATUS LINE
+// ============================================================
+function setStatus(msg,cls=''){
+  const el=document.getElementById('statusLine');
+  if(el){el.textContent=msg;el.className=cls;}
+}
+
+// ============================================================
+// RENDER FIELD GROUPS
+// ============================================================
+function renderGroups(){
+  if(!fields||!groupOrder)return;
+  const con=document.getElementById('groups');
+  const openState={};
+  con.querySelectorAll('details').forEach(d=>{openState[d.dataset.group]=d.open;});
+  con.innerHTML='';
+  for(const g of groupOrder){
+    const gf=fields.filter(f=>f.group===g);if(!gf.length)continue;
+    const det=document.createElement('details');
+    det.dataset.group=g;
+    det.open=openState[g]!==undefined?openState[g]:true;
+    const sum=document.createElement('summary');sum.textContent=g;det.appendChild(sum);
+    const items=document.createElement('div');items.className='items';
+    for(const f of gf)items.appendChild(buildField(f));
+    det.appendChild(items);con.appendChild(det);
+  }
+}
+
+function buildField(f){
+  const el=document.createElement('div');
+  el.className='field'+(isDirty(f.key)?' dirty':'');
+  el.dataset.key=f.key;
+  const v=st.values[f.key]??defaultVal(f);
+  const err=validate(f,v);
+  const hint=f.type==='address3'?'Hex bytes e.g. 46:C9:E0':
+             f.type==='text'?`${f.minLen||0}-${f.maxLen||255} chars`:
+             `Range ${f.min}..${f.max}${f.unit?' '+f.unit:''} | default: ${f.def}`;
+  el.innerHTML=
+    `<div class="field-left">`+
+      `<div class="label">${esc(f.label)}</div>`+
+      `<div class="desc">${esc(f.description)}</div>`+
+      `<div class="ctrl-main">${buildControl(f,v)}</div>`+
+      `<div id="hint-${f.key}" class="${err?'err-hint':'hint'}">${esc(err||hint)}</div>`+
+    `</div>`+
+    `<div class="ctrl-cmp"><div class="cmp-val" id="cmp-${f.key}">—</div></div>`;
+  return el;
+}
+
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
+function buildControl(f,v){
+  const k=f.key;
+  switch(f.type){
+    case 'bool':{
+      const chk=v==='1'||v===1||v===true;
+      return `<input type="checkbox"${chk?' checked':''} onchange="setBool('${k}',this.checked)">`;
+    }
+    case 'enum':{
+      const opts=(f.options||[]).map(o=>`<option value="${o.v}"${String(v)===String(o.v)?' selected':''}>${esc(o.l)}</option>`).join('');
+      return `<select onchange="setEnum('${k}',this.value)">${opts}</select>`;
+    }
+    case 'int':{
+      const n=parseInt(v,10)||0;
+      const range=f.max-f.min;
+      let html=`<input type="number" id="n_${k}" value="${n}" min="${f.min}" max="${f.max}" oninput="setVal('${k}',this.value);var s=document.getElementById('r_${k}');if(s)s.value=this.value;">`;
+      if(range>0&&range<=100)html+=`<input type="range" id="r_${k}" value="${n}" min="${f.min}" max="${f.max}" oninput="setVal('${k}',this.value);document.getElementById('n_${k}').value=this.value;">`;
+      return html;
+    }
+    case 'float':
+      return `<input type="number" value="${v}" min="${f.min}" max="${f.max}" step="${f.step||'any'}" oninput="setVal('${k}',this.value)">`;
+    case 'address3':{
+      const h=toHex(v);
+      return `<div class="triple mono">`+
+        `<input type="text" maxlength="2" value="${h[0]}" placeholder="00" oninput="setAddrPart('${k}',0,this.value)">`+
+        `<input type="text" maxlength="2" value="${h[1]}" placeholder="00" oninput="setAddrPart('${k}',1,this.value)">`+
+        `<input type="text" maxlength="2" value="${h[2]}" placeholder="00" oninput="setAddrPart('${k}',2,this.value)">`+
+        `</div>`;
+    }
+    case 'text':
+      return `<input type="text" value="${esc(v)}" maxlength="${f.maxLen||255}" oninput="setVal('${k}',this.value)">`;
+    default:
+      return `<input type="text" value="${esc(v)}" oninput="setVal('${k}',this.value)">`;
+  }
+}
+
+// ============================================================
+// COMPARE MODE
+// ============================================================
+function toggleCompare(){
+  st.cmpOn=!st.cmpOn;
+  document.body.classList.toggle('cmp-on',st.cmpOn);
+  document.getElementById('cmpBar').style.display=st.cmpOn?'':'none';
+  const btn=document.getElementById('btnCmp');
+  btn.textContent=st.cmpOn?'Compare ▶ ON':'Compare ▶';
+  btn.classList.toggle('active',st.cmpOn);
+  if(st.cmpOn)updateAllCmp();
+}
+
+function updateAllCmp(){if(fields)for(const f of fields)updateCmpCell(f.key);}
+
+function updateCmpCell(k){
+  const el=document.getElementById('cmp-'+k);if(!el)return;
+  if(!fields)return;
+  const f=fields.find(x=>x.key===k);
+  const cv=st.compare[k];
+  if(cv===undefined){el.textContent='—';el.className='cmp-val';return;}
+  el.textContent=f.type==='address3'?addrColon(cv):String(cv);
+  el.className='cmp-val'+(canonV(f,cv)!==canonV(f,st.values[k])?' diff':'');
+}
+
+function applyCompareObj(obj){
+  if(!fields)return;
+  for(const f of fields){
+    const raw=obj[f.key];if(raw===undefined)continue;
+    st.compare[f.key]=f.type==='address3'?toHex(String(raw)).join(','):String(raw);
+  }
+  updateAllCmp();
+  const diffs=fields.filter(f=>st.compare[f.key]!==undefined&&canonV(f,st.compare[f.key])!==canonV(f,st.values[f.key])).length;
+  document.getElementById('cmpStatus').textContent=diffs+' difference(s) highlighted';
+}
+
+function loadCmpFile(inp){
+  const file=inp.files[0];if(!file)return;
+  const r=new FileReader();
+  r.onload=e=>{
+    try{applyCompareObj(JSON.parse(e.target.result));}
+    catch(err){document.getElementById('cmpStatus').textContent='Invalid JSON: '+err.message;}
+  };
+  r.readAsText(file);inp.value='';
+}
+
+function showPasteModal(){document.getElementById('pasteModal').classList.add('show');}
+function closePasteModal(){document.getElementById('pasteModal').classList.remove('show');}
+function applyPasted(){
+  try{applyCompareObj(JSON.parse(document.getElementById('pasteArea').value));closePasteModal();}
+  catch(e){alert('Invalid JSON: '+e.message);}
+}
+
+// ============================================================
+// JSON EXPORT / IMPORT
+// ============================================================
+function exportJson(){
+  if(!fields){setStatus('No device loaded — connect first or import JSON.','warn');return;}
+  const obj={};
+  for(const f of fields){
+    const v=st.values[f.key]??defaultVal(f);
+    if(f.type==='address3')obj[f.key]=addrColon(v);
+    else if(f.type==='float')obj[f.key]=parseFloat(v)||0;
+    else if(f.type==='bool'||f.type==='int'||f.type==='enum')obj[f.key]=parseInt(v,10)||0;
+    else obj[f.key]=v;
+  }
+  const dev=st.device||'device';
+  const ts=new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([JSON.stringify(obj,null,2)],{type:'application/json'}));
+  a.download=`bremote-${dev}-config-${ts}.json`;a.click();
+  setStatus('JSON exported.','ok');
+}
+
+function importJsonFile(inp){
+  const file=inp.files[0];if(!file)return;
+  const r=new FileReader();
+  r.onload=e=>{
+    try{
+      const obj=JSON.parse(e.target.result);
+      // Detect device from imported JSON if not yet connected
+      if(!fields){
+        const detected=detectDevice(obj);
+        if(detected){showMainUI(detected);}
+        else{setStatus('Cannot detect device type from JSON — connect serial first.','err');return;}
+      }
+      let n=0;
+      for(const f of fields){
+        const raw=obj[f.key];if(raw===undefined)continue;
+        st.values[f.key]=normalizeVal(f,raw);  // saved is NOT updated — keeps values dirty
+        n++;
+      }
+      renderGroups();checkDirtyUI();
+      setStatus('Imported '+n+' field(s) — review changes and Save to Device.','warn');
+    }catch(err){setStatus('Import failed: '+err.message,'err');}
+  };
+  r.readAsText(file);inp.value='';
+}
+
+// ============================================================
+// SERIAL CONSOLE
+// ============================================================
+let cmdHist=[],histIdx=-1,savedCmd='';
+
+function togglePanel(){
+  const p=document.getElementById('serialPanel');
+  document.body.classList.toggle('panel-open',p.classList.toggle('open'));
+}
+
+function termWrite(txt){
+  const t=document.getElementById('terminal');
+  t.textContent+=txt;
+  if(autoScroll&&!isSelecting)t.scrollTop=t.scrollHeight;
+}
+
+function toggleAutoScroll(){
+  autoScroll=!autoScroll;
+  updateAutoScrollBtn();
+  if(autoScroll){const t=document.getElementById('terminal');t.scrollTop=t.scrollHeight;}
+}
+
+function updateAutoScrollBtn(){
+  const btn=document.getElementById('autoScrollBtn');
+  btn.textContent=autoScroll?'↓ Auto':'⏸ Scroll';
+  btn.title=autoScroll?'Auto-scroll ON — click to pause':'Auto-scroll paused — click to resume';
+}
+
+function showTermToast(){
+  const t=document.getElementById('termToast');
+  t.style.transition='opacity 0.1s';
+  t.classList.add('show');
+  clearTimeout(t._tid);
+  t._tid=setTimeout(()=>{t.style.transition='opacity 0.4s';t.classList.remove('show');},1500);
+}
+
+function updateSerialPanel(device){
+  // Quick buttons
+  const cmds=device==='tx'?['?conf','?reboot','?exitchg']:['?conf','?reboot','?compasscal'];
+  document.getElementById('quickBtns').innerHTML=
+    cmds.map(c=>`<button class="btn sec" onclick="insertCmd('${c}')">${c}</button>`).join('');
+  // Command dropdown
+  document.getElementById('cmdDrop').innerHTML=device==='tx'?TX_CMD_HTML:RX_CMD_HTML;
+}
+
+function insertCmd(c){const i=document.getElementById('cmdInput');i.value=c;i.focus();}
+function insertFromDrop(sel){if(sel.value){insertCmd(sel.value);sel.selectedIndex=0;}}
+
+function onCmdKey(e){
+  const inp=e.target;
+  if(e.key==='Enter'){sendCmd();}
+  else if(e.key==='ArrowUp'){
+    e.preventDefault();if(!cmdHist.length)return;
+    if(histIdx===-1){savedCmd=inp.value;histIdx=cmdHist.length-1;}
+    else if(histIdx>0)histIdx--;
+    inp.value=cmdHist[histIdx];
+  }
+  else if(e.key==='ArrowDown'){
+    e.preventDefault();if(histIdx===-1)return;
+    if(histIdx<cmdHist.length-1){inp.value=cmdHist[++histIdx];}
+    else{histIdx=-1;inp.value=savedCmd;}
+  }
+}
+
+async function sendCmd(){
+  const inp=document.getElementById('cmdInput'),cmd=inp.value.trim();
+  if(!cmd)return;
+  cmdHist.push(cmd);histIdx=-1;savedCmd='';
+  if(swriter){
+    try{await swriter.write(new TextEncoder().encode(cmd+'\r\n'));termWrite('> '+cmd+'\n');inp.value='';}
+    catch(e){termWrite('[Send error: '+e.message+']\n');}
+  }else{termWrite('[Not connected]\n');}
+}
+
+// ============================================================
+// BOOT
+// ============================================================
+// Smart auto-scroll re-enable when user scrolls back to bottom
+document.getElementById('terminal').addEventListener('scroll',function(){
+  if(!autoScroll&&(this.scrollHeight-this.scrollTop-this.clientHeight)<5){
+    autoScroll=true;
+    updateAutoScrollBtn();
+  }
+});
+
+// Fix 2 — pause auto-scroll while user is actively selecting text
+document.getElementById('terminal').addEventListener('mousedown',function(){isSelecting=true;});
+document.addEventListener('mouseup',function(){isSelecting=false;});
+
+// Fix 3 — auto-copy selection to clipboard with toast on mouseup
+document.getElementById('terminal').addEventListener('mouseup',function(){
+  const txt=window.getSelection()?window.getSelection().toString():'';
+  if(txt.length>0&&navigator.clipboard){
+    navigator.clipboard.writeText(txt).then(()=>showTermToast()).catch(()=>{});
+  }
+});
+
+// Fix 4 — click outside open panel closes it (left-click only; right-click ignored)
+document.addEventListener('mousedown',function(e){
+  if(e.button!==0)return;
+  const panel=document.getElementById('serialPanel');
+  const tab=document.querySelector('.serial-tab');
+  if(panel.classList.contains('open')&&!panel.contains(e.target)&&!tab.contains(e.target)){
+    togglePanel();
+  }
+});
+
+document.getElementById('terminal').textContent=
+  'Web Serial console — click Connect Serial to open port.\nRequires Chrome or Edge v89+.\n';
+</script>
+</body>
+</html>

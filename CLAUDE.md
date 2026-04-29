@@ -10,6 +10,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - TX: ESP32-C3 handheld remote, RX: ESP32-S3 board unit
 - LoRa SX1262 868/915MHz, 6-byte packets, 10Hz control cycle
 - GPS: BN880 on both TX and RX, Compass: QMC5883L on RX
+- See `BUGGY_FOIL_DOMAIN.md` for physical mechanics, operational context, and the
+  safety philosophy behind RTM/FM design decisions.
 
 ---
 

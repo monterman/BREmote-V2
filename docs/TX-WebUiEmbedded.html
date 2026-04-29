@@ -1,12 +1,3 @@
-// V3 - 2026-04-25 - P7: Added 12 RTM/FM fields; added RTM & Follow-Me group; sizeof TX confStruct 96→120
-// V2.5-Evo - 2026-04-28 - ChangeA/F: fm_arm_window max 60→120s; followme_mode labels updated, option 0 removed
-// V2.5-Evo - 2026-04-29 - TaskB: full description audit — bool 0/1 values, enum all options inline, int/float extremes explained
-#ifndef WEB_UI_EMBEDDED_H
-#define WEB_UI_EMBEDDED_H
-
-#include <Arduino.h>
-
-static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
 <!doctype html>
 <html>
 <head>
@@ -28,7 +19,7 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
     .btn:disabled{opacity:.55;cursor:not-allowed}
     .btn.sec{background:#243042;color:var(--txt)}
     .btn.warn{background:#b91c1c;color:#fff}
-    
+
     /* --- INTERACTIVE FEEDBACK UI --- */
     .btn.success { background: #22c55e !important; color: #000 !important; box-shadow: 0 0 10px rgba(34, 197, 94, 0.5); }
     .dirty { background-color: #451a1a !important; border: 1px solid #ef4444 !important; box-shadow: 0 0 8px rgba(239, 68, 68, 0.4); }
@@ -44,7 +35,7 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
     input,select{width:100%;padding:8px;border-radius:8px;border:1px solid #334155;background:#0f172a;color:var(--txt); transition: 0.3s;}
     input[type='checkbox']{width:auto} input[type='range']{width:100%}
     .triple{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.foot{margin-top:10px}
-    
+
     /* --- JSON EDITOR STYLE --- */
     textarea { width:100%; height:180px; font-family:monospace; font-size:12px; background:#0f172a; color:#38bdf8; border:1px solid #334155; border-radius:8px; padding:10px; resize:vertical; outline:none;}
   </style>
@@ -67,14 +58,14 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
         </div>
       </div>
     </div>
-    
+
     <div class="groups" id="groups"></div>
-    
+
     <div class="card" style="margin-top: 20px;">
-        <div class="title" style="margin-bottom: 10px;">Raw JSON Backup & Restore</div>
+        <div class="title" style="margin-bottom: 10px;">Raw JSON Backup &amp; Restore</div>
         <div class="desc" style="margin-bottom: 10px;">Copy/Paste configurations manually or use files. Click 'Load from Text' to apply imported settings to the UI above before saving to the board.</div>
         <textarea id="jsonBox" spellcheck="false"></textarea>
-        
+
         <div class="row" style="margin-top: 10px;">
             <button class="btn sec" id="btnCopy" onclick="copyJson()">Copy to Clipboard</button>
             <button class="btn" style="background:#f59e0b; color:black;" onclick="loadFromJsonText()">Load from Text</button>
@@ -172,7 +163,7 @@ function hasUnsavedChanges(){
 function checkDirtyUI() {
     const hasChanges = hasUnsavedChanges();
     const btn = document.getElementById('saveBtn');
-    
+
     if(hasChanges) {
         btn.classList.add('active-save');
         btn.innerText = '⚠️ Save Required';
@@ -235,8 +226,8 @@ function importJsonFile(input) {
     const reader = new FileReader();
     reader.onload = function(e) {
         document.getElementById('jsonBox').value = e.target.result;
-        loadFromJsonText(); 
-        input.value = ''; 
+        loadFromJsonText();
+        input.value = '';
     };
     reader.readAsText(file);
 }
@@ -244,8 +235,8 @@ function importJsonFile(input) {
 function loadFromJsonText() {
     try {
         const rawJson = JSON.parse(document.getElementById('jsonBox').value);
-        const parsedData = rawJson.data || rawJson; 
-        
+        const parsedData = rawJson.data || rawJson;
+
         let count = 0;
         for (const f of fields) {
             if (parsedData[f.key] !== undefined) {
@@ -255,7 +246,7 @@ function loadFromJsonText() {
         }
         render();
         checkDirtyUI();
-        syncJsonBox(); 
+        syncJsonBox();
         alert(`Successfully mapped ${count} values from JSON. \n\nPlease review the RED boxes, then click 'Save All' to apply them to the hardware.`);
     } catch(e) {
         alert("Error: Invalid JSON format. Make sure the brackets {} and quotes are correct.");
@@ -266,12 +257,12 @@ function loadFromJsonText() {
 async function saveAll(){
     const btn = document.getElementById('saveBtn');
     btn.innerText = 'Saving...';
-    
+
     for(const f of fields){const e=validate(f,state.values[f.key]);if(e){alert(`${f.label}: ${e}`); checkDirtyUI(); return;}}
     for(const f of fields){const body=`key=${encodeURIComponent(f.key)}&value=${encodeURIComponent(valueForSend(f,state.values[f.key]))}`;const r=await api('/api/set','POST',body);if(!r.ok){alert(`SET ${f.key} failed: ${r.err||'ERR'}`); checkDirtyUI(); return;}}
     const s=await api('/api/save','POST');if(!s.ok){alert(s.err||'SAVE failed'); checkDirtyUI(); return;}
     await refreshAll();
-    
+
     btn.classList.add('success');
     btn.innerText = 'Saved OK';
     setTimeout(() => { btn.classList.remove('success'); checkDirtyUI(); }, 1500);
@@ -280,10 +271,10 @@ async function saveAll(){
 async function loadCfg(){
     const btn = document.getElementById('loadBtn');
     btn.innerText = 'Syncing...';
-    
+
     await api('/api/load','POST');
     await refreshAll();
-    
+
     btn.classList.add('success');
     btn.innerText = 'Synced OK';
     setTimeout(() => { btn.classList.remove('success'); btn.innerText = 'Force Sync'; }, 1500);
@@ -335,8 +326,3 @@ refreshAll();
 </script>
 </body>
 </html>
-)HTML";
-
-static const size_t WEB_UI_INDEX_HTML_LEN = sizeof(WEB_UI_INDEX_HTML) - 1;
-
-#endif

@@ -31,6 +31,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - All version strings must reflect V3
 - After every change, remind user to compile in Arduino IDE and test before proceeding
 - Document every change with clear comments in code explaining what changed and why
+- After every commit that modifies `WebUiEmbedded.h` on either TX or RX, regenerate `docs/TX-WebUiEmbedded.html` and `docs/RX-WebUiEmbedded.html` by extracting the HTML content between `R"HTML(` and `)HTML"` from each file
 
 ### CODE COMMENT RULES (apply to every change)
 

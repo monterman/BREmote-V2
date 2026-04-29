@@ -18,6 +18,8 @@
 // V2.5-Evo - 2026-04-28 - Task3: bobbing advanceArrow() in RTM arm wait loops; delay(250) after unlockAnimation(); Pattern4 after animation; clear on timeout
 // V2.5-Evo - 2026-04-28 - TaskA: rtm_arm_gps_timeout_override — 4× GPS staleness threshold during blocking arm ceremony;
 //   cleared by rtmDisengage() and ceremony timeout paths; Gate 2 reads it via ternary.
+// V2.5-Evo - 2026-04-29 - Fix 1-4: setRtmArmed() calls fmSilentDisarm() so RX
+//   receives 0xF2/0 when RTM preempts FM — prevents stale fm_mode_runtime on RX
 //   TODO: remove when runDoubleSqueezeArm() is refactored to non-blocking.
 
 extern volatile uint8_t current_vib_pattern;
@@ -71,7 +73,7 @@ uint8_t calcRtmThrottleCap()
 void setRtmArmed()
 {
   if (!usrConf.rtm_enabled || !usrConf.gps_en) return;
-  fm_armed         = false;        // Bug2: RTM and FM are mutually exclusive — disarm FM if active
+  fmSilentDisarm();                // Bug2 + Finding 1-4: disarm FM and notify RX via 0xF2/0 before RTM arms
   rtm_tx_state     = RTM_ARMED;
   rtm_arm_start_ms = millis();
   rtm_hold_start   = 0;

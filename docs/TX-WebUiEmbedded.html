@@ -38,15 +38,6 @@
 
     /* --- JSON EDITOR STYLE --- */
     textarea { width:100%; height:180px; font-family:monospace; font-size:12px; background:#0f172a; color:#38bdf8; border:1px solid #334155; border-radius:8px; padding:10px; resize:vertical; outline:none;}
-
-    /* --- SERIAL CONSOLE PANEL --- */
-    .serial-panel{position:fixed;right:0;top:0;height:100vh;width:420px;transform:translateX(420px);transition:transform 0.3s ease;z-index:100;pointer-events:none;}
-    .serial-panel.open{transform:translateX(0);pointer-events:all;}
-    .serial-tab{position:fixed;right:0;top:50%;transform:translateY(-50%);width:28px;padding:18px 6px;background:#243042;color:#60a5fa;border:1px solid #243042;border-right:none;border-radius:8px 0 0 8px;cursor:pointer;z-index:102;writing-mode:vertical-rl;text-orientation:mixed;font-weight:700;font-size:11px;letter-spacing:1px;pointer-events:all;}
-    .serial-inner{width:100%;height:100%;background:linear-gradient(180deg,#121b2e,#101828);border:1px solid #243042;border-right:none;border-radius:14px 0 0 14px;padding:12px;display:flex;flex-direction:column;gap:8px;overflow-y:auto;}
-    .terminal{height:350px;background:#000;color:#00ff00;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;padding:8px;border:1px solid #334155;border-radius:8px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;flex-shrink:0;}
-    .serial-dot{width:10px;height:10px;border-radius:50%;background:#ef4444;display:inline-block;flex-shrink:0;}
-    .serial-dot.connected{background:#22c55e;}
   </style>
 </head>
 <body>
@@ -71,7 +62,7 @@
     <div class="groups" id="groups"></div>
 
     <div class="card" style="margin-top: 20px;">
-        <div class="title" style="margin-bottom: 10px;">Raw JSON Backup &amp; Restore</div>
+        <div class="title" style="margin-bottom: 10px;">Raw JSON Backup & Restore</div>
         <div class="desc" style="margin-bottom: 10px;">Copy/Paste configurations manually or use files. Click 'Load from Text' to apply imported settings to the UI above before saving to the board.</div>
         <textarea id="jsonBox" spellcheck="false"></textarea>
 
@@ -86,73 +77,6 @@
     </div>
     <div class="card foot"><div class="sub mono" id="last">Last: -</div></div>
   </div>
-
-<!-- Serial Console Tab (always visible at right viewport edge) -->
-<button class="serial-tab" onclick="toggleSerial()">&gt;_ SERIAL</button>
-
-<!-- Serial Console Panel -->
-<div class="serial-panel" id="serialPanel">
-  <div class="serial-inner">
-    <div class="row sp">
-      <div class="title" style="font-size:14px">&gt;_ Serial Console</div>
-      <div class="row" style="gap:8px">
-        <span class="serial-dot" id="serialDot"></span>
-        <button class="btn" id="connectBtn" onclick="toggleConnect()">Connect</button>
-        <button class="btn sec" onclick="toggleSerial()">&#x2715;</button>
-      </div>
-    </div>
-    <div id="terminal" class="terminal"></div>
-    <div class="row" style="gap:6px">
-      <input id="cmdInput" type="text" placeholder="Type command... (↑↓ history)" style="flex:1;min-width:0" onkeydown="onCmdKeydown(event)">
-      <button class="btn" onclick="sendSerialCmd()" style="flex-shrink:0">Send</button>
-    </div>
-    <div class="row" style="flex-wrap:wrap;gap:6px">
-      <button class="btn sec" onclick="insertSerialCmd('?conf')">?conf</button>
-      <button class="btn sec" onclick="insertSerialCmd('?reboot')">?reboot</button>
-    </div>
-    <select onchange="insertFromSerialDropdown(this)">
-      <option value="">— Select command —</option>
-      <optgroup label="Config">
-        <option value="?conf">?conf — print current config</option>
-        <option value="?conf json">?conf json — print config as JSON</option>
-        <option value="?get ">?get &lt;key&gt; — read one value</option>
-        <option value="?set  ">?set &lt;key&gt; &lt;val&gt; — set value in RAM</option>
-        <option value="?save">?save — persist RAM config to SPIFFS</option>
-        <option value="?keys">?keys — list all config key names</option>
-        <option value="?state">?state — subsystem state overview</option>
-      </optgroup>
-      <optgroup label="System">
-        <option value="?reboot">?reboot — reboot TX</option>
-        <option value="?exitchg">?exitchg — exit USB charging mode</option>
-        <option value="?printtasks">?printtasks — FreeRTOS task stack usage</option>
-        <option value="?">? — list all commands</option>
-      </optgroup>
-      <optgroup label="Radio &amp; Inputs">
-        <option value="?printrssi">?printrssi — live RSSI/SNR (type quit to exit)</option>
-        <option value="?printinputs">?printinputs — live throttle/toggle ADC (quit to exit)</option>
-        <option value="?printpackets">?printpackets — TX/RX packet counts</option>
-      </optgroup>
-      <optgroup label="GPS">
-        <option value="?printgps">?printgps — GPS fix state and coordinates</option>
-        <option value="?gpsraw 5">?gpsraw 5 — dump raw NMEA for 5s</option>
-        <option value="?gpsreinit">?gpsreinit — re-run GPS init without reboot</option>
-      </optgroup>
-      <optgroup label="WiFi">
-        <option value="?wifi on">?wifi on — start config AP</option>
-        <option value="?wifi off">?wifi off — stop config AP</option>
-        <option value="?wifistate">?wifistate — AP state and request counters</option>
-        <option value="?wifiver">?wifiver — web UI version info</option>
-      </optgroup>
-      <optgroup label="Subsystems">
-        <option value="?display on">?display on — enable display</option>
-        <option value="?display off">?display off — disable display</option>
-        <option value="?radio on">?radio on — enable LoRa radio</option>
-        <option value="?radio off">?radio off — disable LoRa radio</option>
-        <option value="?all off">?all off — disable all subsystems</option>
-      </optgroup>
-    </select>
-  </div>
-</div>
 
 <script>
 // ALL 59 TX PARAMETERS (updated 2026-04-28 P9: +1 new field dist_unit)
@@ -211,7 +135,7 @@ const fields=[
 {key:"fm_hold_duration_s",label:"FM Hold Time",description:"Gesture hold duration for Follow-Me arming. Currently fixed at 5s in firmware — this field is reserved for a future configurable threshold.",group:"RTM & Follow-Me",type:"int",def:5,min:4,max:10,unit:"s"},
 {key:"fm_override_enabled",label:"FM Override Enabled",description:"Allow TX to override RX follow-me mode at runtime (no SPIFFS write). 0=off, 1=on.",group:"RTM & Follow-Me",type:"bool",def:1,min:0,max:1},
 {key:"rtm_display_mode",label:"RTM/FM Display Mode",description:"Info shown on TX display while RTM or FM is active. 0=distance to TX (default), 1=speed, 2=alternating every 2.5s.",group:"RTM & Follow-Me",type:"enum",def:0,min:0,max:2,options:[{v:0,l:"Distance (default)"},{v:1,l:"Speed"},{v:2,l:"Alternating 2.5s"}]},
-{key:"fm_warn_distance_m",label:"FM Warning Distance",description:"TX-to-RX distance that triggers proximity warning vibration in Follow-Me mode. 50m=warn early (more time to react), 1000m=warn only when very close. Default 150.",group:"RTM & Follow-Me",type:"int",def:150,min:50,max:1000,unit:"m"},
+{key:"fm_warn_distance_m",label:"FM Warning Distance (not yet implemented)",description:"[NOT YET IMPLEMENTED] Reserved for future use: TX-to-RX distance that will trigger proximity warning vibration in Follow-Me mode. Setting this value has no effect in the current firmware. Default 150.",group:"RTM & Follow-Me",type:"int",def:150,min:50,max:1000,unit:"m"},
 {key:"rtm_steer_exit_on_input",label:"RTM Exit on Steering",description:"1=any significant steering input exits RTM immediately (default). 0=steering used for correction only (blend mode).",group:"RTM & Follow-Me",type:"bool",def:1,min:0,max:1},
 {key:"fm_arm_window_s",label:"FM Arm Window",description:"How long FM stays armed before silently auto-disarming if no throttle input. 10s=short window, 120s=2 minute window. No display or haptic on expiry. Default 30.",group:"RTM & Follow-Me",type:"int",def:30,min:10,max:120,unit:"s"},
 {key:"dist_unit",label:"Distance Unit",description:"Unit for all distance readouts on the TX display (RTM, FM). Internal math always uses metres. 0=Metres, 1=Feet/miles.",group:"RTM & Follow-Me",type:"enum",def:0,min:0,max:1,options:[{v:0,l:"Metres"},{v:1,l:"Feet"}]},
@@ -397,77 +321,8 @@ async function refreshAll(){
 
 async function rebootDev(){if(hasUnsavedChanges()){const ignore=confirm("Unsaved config changes detected. Press OK to ignore and reboot.");if(!ignore)return;}await api('/api/reboot','POST');}
 
-// --- SERIAL CONSOLE ---
-let serialPort=null,serialWriter=null,serialOpen=false;
-let cmdHistory=[],historyIdx=-1,savedInput='';
-
-function toggleSerial(){document.getElementById('serialPanel').classList.toggle('open');}
-function insertSerialCmd(cmd){const i=document.getElementById('cmdInput');i.value=cmd;i.focus();}
-function insertFromSerialDropdown(sel){if(sel.value){insertSerialCmd(sel.value);sel.selectedIndex=0;}}
-function termWrite(text){const t=document.getElementById('terminal');t.textContent+=text;t.scrollTop=t.scrollHeight;}
-
-function onCmdKeydown(e){
-  const inp=e.target;
-  if(e.key==='Enter'){sendSerialCmd();}
-  else if(e.key==='ArrowUp'){
-    e.preventDefault();
-    if(!cmdHistory.length)return;
-    if(historyIdx===-1){savedInput=inp.value;historyIdx=cmdHistory.length-1;}
-    else if(historyIdx>0)historyIdx--;
-    inp.value=cmdHistory[historyIdx];
-  }
-  else if(e.key==='ArrowDown'){
-    e.preventDefault();
-    if(historyIdx===-1)return;
-    if(historyIdx<cmdHistory.length-1){inp.value=cmdHistory[++historyIdx];}
-    else{historyIdx=-1;inp.value=savedInput;}
-  }
-}
-
-async function toggleConnect(){
-  if(!('serial' in navigator)){
-    const t=document.getElementById('terminal');
-    t.innerHTML='<span style="color:#ef4444">Web Serial requires Chrome or Edge (v89+).</span>';
-    document.getElementById('connectBtn').disabled=true;return;
-  }
-  serialOpen?await disconnectSerial():await connectSerial();
-}
-async function connectSerial(){
-  try{
-    serialPort=await navigator.serial.requestPort();
-    await serialPort.open({baudRate:115200});
-    serialOpen=true;
-    document.getElementById('connectBtn').innerText='Disconnect';
-    document.getElementById('serialDot').classList.add('connected');
-    serialWriter=serialPort.writable.getWriter();
-    termWrite('[Connected at 115200 baud]\n');
-    (async()=>{
-      const dec=new TextDecoder();
-      try{for await(const chunk of serialPort.readable)termWrite(dec.decode(chunk));}
-      catch(e){if(serialOpen)termWrite('\n[Read error: '+e.message+']\n');}
-      finally{if(serialOpen)disconnectSerial();}
-    })();
-  }catch(e){termWrite('[Connect failed: '+e.message+']\n');}
-}
-async function disconnectSerial(){
-  serialOpen=false;
-  try{if(serialWriter){serialWriter.releaseLock();serialWriter=null;}}catch(e){}
-  try{if(serialPort){await serialPort.close();serialPort=null;}}catch(e){}
-  document.getElementById('connectBtn').innerText='Connect';
-  document.getElementById('serialDot').classList.remove('connected');
-  termWrite('[Disconnected]\n');
-}
-async function sendSerialCmd(){
-  const inp=document.getElementById('cmdInput'),cmd=inp.value.trim();
-  if(!cmd||!serialOpen||!serialWriter)return;
-  cmdHistory.push(cmd);historyIdx=-1;savedInput='';
-  try{await serialWriter.write(new TextEncoder().encode(cmd+'\r\n'));termWrite('> '+cmd+'\n');inp.value='';}
-  catch(e){termWrite('[Send error: '+e.message+']\n');}
-}
-
-window.setVal=setVal;window.setBool=setBool;window.setEnum=setEnum;window.syncField=syncField;window.setAddrPart=setAddrPart;window.saveAll=saveAll;window.loadCfg=loadCfg;window.refreshAll=refreshAll;window.copyJson=copyJson;window.exportJsonFile=exportJsonFile;window.importJsonFile=importJsonFile;window.loadFromJsonText=loadFromJsonText;window.rebootDev=rebootDev;window.toggleSerial=toggleSerial;window.toggleConnect=toggleConnect;window.sendSerialCmd=sendSerialCmd;window.insertSerialCmd=insertSerialCmd;window.insertFromSerialDropdown=insertFromSerialDropdown;window.onCmdKeydown=onCmdKeydown;
+window.setVal=setVal;window.setBool=setBool;window.setEnum=setEnum;window.syncField=syncField;window.setAddrPart=setAddrPart;window.saveAll=saveAll;window.loadCfg=loadCfg;window.refreshAll=refreshAll;window.copyJson=copyJson;window.exportJsonFile=exportJsonFile;window.importJsonFile=importJsonFile;window.loadFromJsonText=loadFromJsonText;window.rebootDev=rebootDev;
 refreshAll();
-(function(){const t=document.getElementById('terminal');if(t)t.textContent='Web Serial console — click Connect to open port.\nRequires Chrome or Edge.\n';})();
 </script>
 </body>
 </html>

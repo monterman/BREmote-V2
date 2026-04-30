@@ -160,6 +160,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - TX `rtm_stop_distance_m` renamed → `rtm_disengage_distance_m` (parameter rename only; no behavior change; RX `rtm_stop_distance_m` unchanged)
 - P8.1 bug fixes: no_lock=0 boot-locked state restored; FM mode display changed to scroll3Digits("FM[n]") for visibility
 
+**P8.2 — COMPLETED 2026-04-29** ✅: TX auto-sleep dual-condition logic
+- Sleeps after `sleep_timeout_s` of inactivity (default 300s, 0 = disabled)
+- Dual-condition OR: user idle (no throttle > 20 or steer deviation > 15 counts above deadzone) OR RX silent (no LoRa packets) — pocket-safe thresholds prevent accidental timer resets
+- 1 new TX SPIFFS param: `sleep_timeout_s` (0–3600s); fully pipelined confStruct→ConfigService→WebUiEmbedded.h→docs HTML tool
+- TX confStruct sizeof 128→132; SW_VERSION bumped 25→26; first flash resets TX settings to defaults
+
 **Priority 9**: Follow-Me full implementation (future)
 
 ---

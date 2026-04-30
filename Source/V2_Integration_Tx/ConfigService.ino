@@ -3,6 +3,7 @@
 // V3 - 2026-04-27 - P8: Added rtm_display_mode, fm_warn_distance_m, rtm_steer_exit_on_input; rtm_max_runtime_s min changed 30→0
 // V2.5-Evo - 2026-04-28 - P9: Added dist_unit (0=Metres, 1=Feet; range 0-1)
 // V2.5-Evo - 2026-04-28 - ChangeA: fm_arm_window_s max raised 60→120s (no struct change, no SPIFFS reset)
+// V2.5-Evo - 2026-04-29 - Sleep: added sleep_timeout_s to ConfigService validation table
 
 const CfgFieldSpec kCfgFields[] = {
   {"radio_preset", CFG_U16, offsetof(confStruct, radio_preset), true, true, true, 1.0f, 3.0f, 0, false},
@@ -67,6 +68,9 @@ const CfgFieldSpec kCfgFields[] = {
   {"fm_arm_window_s",          CFG_U16, offsetof(confStruct, fm_arm_window_s),          true, false, true, 10.0f, 120.0f,    0, false},  // FM auto-disarm after N seconds of no throttle input
   // V2.5-Evo - 2026-04-28 - P9: Distance unit selector. 0=Metres, 1=Feet.
   {"dist_unit",                CFG_U16, offsetof(confStruct, dist_unit),                true, false, true,  0.0f,   1.0f,    0, false},
+  // V2.5-Evo - 2026-04-29 - Sleep timeout. 0=disabled, 60-3600 s; default 300 (5 minutes).
+  // Controls how long TX waits with no LoRa packet from RX before deep sleeping.
+  {"sleep_timeout_s", CFG_U16, offsetof(confStruct, sleep_timeout_s), true, false, true, 0.0f, 3600.0f, 0, false},
   {"paired", CFG_U16, offsetof(confStruct, paired), true, false, true, 0.0f, 1.0f, 0, false},
   {"own_address", CFG_ADDR3, offsetof(confStruct, own_address), true, false, false, 0.0f, 0.0f, 0, false},
   {"dest_address", CFG_ADDR3, offsetof(confStruct, dest_address), true, false, false, 0.0f, 0.0f, 0, false}

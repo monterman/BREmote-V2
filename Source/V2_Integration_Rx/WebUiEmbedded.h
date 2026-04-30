@@ -3,6 +3,7 @@
 // V3 - 2026-04-25 - P7: Added 5 RTM/FM RX fields; added RTM & Follow-Me group
 // V2.5-Evo - 2026-04-28 - Security: added rtm_stop_distance_m field (was in ConfigService but missing from UI)
 // V2.5-Evo - 2026-04-29 - TaskC: full description audit — bool 0/1 values, enum all options inline, int/float extremes explained
+// V3 - 2026-04-30 - RTM approach decel zone: rtm_approach_zone_m field added to RTM & Follow-Me group
 // V3 - 2026-04-30 - Rename: gps_max_jump_kmh → gps_max_teleport_kmh (clarity)
 // V3 - 2026-04-30 - Bundle E: gps_update_hz field added to GPS & Follow-Me group; gps_max_teleport_kmh default 200→80
 // V3 - 2026-04-29 - Bundle A: radio_preset max clamped to 2; dead foil_speed != 99 sentinel removed
@@ -154,6 +155,7 @@ const fields=[
 {key:"rtm_rx_override_steering",label:"RTM Override Steering",description:"Allow RTM to override steering towards TX GPS position. 0=disable steering override (throttle limiting only). Default 1.",group:"RTM & Follow-Me",type:"bool",def:1,min:0,max:1},
 {key:"rtm_compass_required",label:"RTM Compass Required",description:"Require valid compass reading for RTM arming. 0=allow RTM without compass (steering disabled). Default 1.",group:"RTM & Follow-Me",type:"bool",def:1,min:0,max:1},
 {key:"rtm_stop_distance_m",label:"RTM Hard Stop Distance",description:"Distance at which RTM triggers a hard stop and disengages (Gate 9). Range 1-50 m, default 3 m. Must be less than the arm distance to allow RTM to run.",group:"RTM & Follow-Me",type:"int",def:3,min:1,max:50,unit:"m"},
+{key:"rtm_approach_zone_m",label:"RTM Approach Zone",description:"Distance from TX at which RTM begins ramping throttle down toward zero. Throttle reduces linearly from full at this outer edge to zero at the Hard Stop Distance — smooth arrival instead of sudden cut. 0=disabled (hard stop only, no ramp). Must be greater than Hard Stop Distance to have effect. Range 0-100 m, default 15 m.",group:"RTM & Follow-Me",type:"int",def:15,min:0,max:100,unit:"m"},
 {key:"boogie_vmax_in_followme_kmh",label:"Boogie V-Max",description:"Maximum vehicle speed while Follow-Me is active. Throttle is capped so speed never exceeds this value during following. 0=no limit, 100=100 km/h cap. Default 25 km/h. Set to a safe value for your terrain.",group:"Follow-Me Tuning",type:"float",def:25.0,min:0,max:100,step:0.1,unit:"km/h"},
 {key:"min_dist_m",label:"Min Distance",description:"Minimum safe distance the buggy must maintain from the foiler. Throttle is cut if the buggy gets closer than this. 0=no minimum, 1000=1000 m minimum (impractical). Default 10 m.",group:"Follow-Me Tuning",type:"float",def:10.0,min:0,max:1000,step:0.1,unit:"m"},
 {key:"followme_smoothing_band_m",label:"Smoothing Band",description:"Distance band above min_dist_m over which throttle is linearly reduced to zero as the buggy approaches the minimum distance. Larger = smoother slowdown but less responsive. Default 10 m.",group:"Follow-Me Tuning",type:"float",def:10.0,min:0,max:1000,step:0.1,unit:"m"},

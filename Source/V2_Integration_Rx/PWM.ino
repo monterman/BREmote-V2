@@ -1,3 +1,4 @@
+// V3 - 2026-04-30 - calcPWM() applies rtm_approach_cap for RTM approach decel zone
 // V3 - 2026-04-25 - P7: calcPWM() applies RTM emergency stop and steering override via effective_thr/steer
 // V2.5-Evo - 2026-04-28 - Security: gate steer override on thr_received>=25 (belt-and-suspenders)
 void generatePWM(void *parameter) {
@@ -40,6 +41,14 @@ void calcPWM()
   // Steering override: bearing-derived value replaces radio steering when RTM is active.
   // RTM can only subtract from user throttle (never add). Creator safety philosophy enforced.
   uint8_t effective_thr   = rtm_rx_emergency_stop ? 0 : thr_received;
+  // Approach decel zone: cap effective_thr when RTM is guiding the buggy into the stop zone.
+  // rtm_approach_cap is 255 (no cap) in manual mode and outside the approach zone.
+  // Only RTMState.ino sets it below 255 — during active RTM when dist < rtm_approach_zone_m.
+  // RTM can only subtract from user throttle, never add — creator safety philosophy enforced.
+  if ((uint8_t)rtm_approach_cap < effective_thr)
+  {
+    effective_thr = rtm_approach_cap;
+  }
   // SAFETY FIX (2026-04-28 audit): also gate on thr_received>=25.
   // Gate 1 in RTMState.ino resets rtm_steer_override=127 on throttle release (Task 1A),
   // but that runs at 10Hz. This gate ensures the PWM task (100Hz) cannot apply a stale

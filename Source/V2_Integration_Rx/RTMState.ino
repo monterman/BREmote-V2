@@ -1,3 +1,4 @@
+// V3 - 2026-04-30 - Gate 9 clean disengagement (handoff to manual, no emergency stop); re-arm fix (0xFF when inactive); approach decel zone computation
 // V3 - 2026-04-25 - P7: RX RTM state machine, 10 safety gates, Phase C anti-spoofing.
 // V3 - 2026-04-27 - P8: runRtmLoop() encodes RX→TX distance into telemetry.rtm_distance (index 5)
 // V2.5-Evo - 2026-04-28 - P9 Bug1A/1B/1C: Gate9 zero-guard; always-compute dist before gates
@@ -99,17 +100,25 @@ static bool checkRtmSafetyGates()
     return false;
   }
 
-  // Gate 9: hard stop distance (buggy within stop distance of TX).
-  // Guard: rtm_stop_distance_m==0 means SPIFFS held the pre-fix zero default.
-  // Use 3m (firmware hard minimum) to keep Gate 9 active regardless of stored config.
+  // Gate 9: hard stop distance — buggy reached TX position.
+  // This is a NORMAL RTM completion, not a safety failure (unlike Gates 2-8).
+  // Clean disengagement: set rtm_rx_active=false and leave rtm_rx_emergency_stop=false
+  // so calcPWM() passes user throttle through immediately (seamless manual handoff).
+  // rtm_approach_cap reset to 255 so manual throttle is uncapped.
+  // The inactive path in runRtmLoop() will set telemetry.rtm_distance=0xFF on the next
+  // tick, clearing the TX pre-arm block so re-arm works after the buggy has moved away.
+  // Guard: rtm_stop_distance_m==0 means SPIFFS held the pre-fix zero default;
+  // use 3m (firmware hard minimum) to keep Gate 9 active regardless of stored config.
   uint16_t stop_dist_m = (usrConf.rtm_stop_distance_m > 0) ? usrConf.rtm_stop_distance_m : 3u;
   float dist_m = (float)TinyGPSPlus::distanceBetween(
       gps_last_lat, gps_last_lng, rx_tx_gps_lat, rx_tx_gps_lng);
   if (dist_m < (float)stop_dist_m)
   {
-    Serial.printf("RTM [RX] STOP: within hard stop (%.0f m < %u m)\n",
+    Serial.printf("RTM [RX] Gate 9: reached stop distance (%.1f m < %u m) — clean handoff to manual\n",
                   dist_m, stop_dist_m);
-    rtm_rx_emergency_stop = true;
+    rtm_rx_active         = false;   // disarm — enter inactive path next tick
+    rtm_rx_emergency_stop = false;   // no emergency; motor returns to user throttle immediately
+    rtm_approach_cap      = 255;     // clear decel cap so manual throttle is uncapped
     return false;
   }
 
@@ -238,10 +247,12 @@ void runRtmLoop()
     }
   }
 
-  // ---- Always compute RX→TX distance when GPS data is available ----
-  // Populates telemetry.rtm_distance for TX at all times (not only during active RTM).
-  // Bug 1B: TX can perform a pre-arm distance check before second-squeeze confirmation.
-  // Bug 1C: Distance is available the moment RTM activates, no telemetry cycle delay.
+  // ---- Distance computation: telemetry encoding + approach decel cap ----
+  // When RTM is ACTIVE: encodes real distance for TX display and computes approach decel cap.
+  // When RTM is INACTIVE: always sets telemetry.rtm_distance = 0xFF (no-data sentinel).
+  //   This unblocks the TX pre-arm check — TX decodes 0xFF as -1.0f (no data) and skips
+  //   the proximity guard. Re-arm is no longer blocked after a Gate 9 stop.
+  //   rtm_approach_cap is reset to 255 (no cap) so manual throttle is never limited.
   {
     bool gps_rx_ok = (gps_last_ms > 0) && ((millis() - gps_last_ms) < 6000UL);
     bool gps_tx_ok = (rx_tx_gps_timestamp > 0) && ((millis() - rx_tx_gps_timestamp) < 5000UL);
@@ -251,23 +262,62 @@ void runRtmLoop()
       float d = (float)TinyGPSPlus::distanceBetween(
           gps_last_lat, gps_last_lng, rx_tx_gps_lat, rx_tx_gps_lng);
 
-      if (d < 10.0f)
+      if (rtm_rx_active)
       {
-        // 0-99: tenths of metre (d=0.0..9.9 m)
-        telemetry.rtm_distance = (uint8_t)(d * 10.0f);
+        // RTM active: encode real distance for TX proximity bar and display
+        if (d < 10.0f)
+        {
+          // 0-99: tenths of metre (d=0.0..9.9 m)
+          telemetry.rtm_distance = (uint8_t)(d * 10.0f);
+        }
+        else
+        {
+          // 100-254: whole metres offset by 90 (100=10m, 254=164m cap)
+          uint8_t whole_m = (uint8_t)(d > 164.0f ? 164.0f : d);
+          telemetry.rtm_distance = 90u + whole_m;
+        }
+
+        // Approach decel zone: linearly ramp the throttle cap as the buggy closes in.
+        // At rtm_approach_zone_m (outer edge): cap = 255 (full user throttle).
+        // At rtm_stop_distance_m (Gate 9 edge):  cap = 0  (buggy coasts to stop naturally).
+        // Between those two distances: linear interpolation.
+        // Gate 9 still fires as the absolute safety floor.
+        // rtm_approach_zone_m == 0 disables the feature (hard stop only).
+        if (usrConf.rtm_approach_zone_m > 0)
+        {
+          uint16_t stop_m    = (usrConf.rtm_stop_distance_m > 0) ? usrConf.rtm_stop_distance_m : 3u;
+          float    approach_m = (float)usrConf.rtm_approach_zone_m;
+          if (approach_m > (float)stop_m && d < approach_m)
+          {
+            float cap_frac = (d - (float)stop_m) / (approach_m - (float)stop_m);
+            if (cap_frac < 0.0f) cap_frac = 0.0f;
+            if (cap_frac > 1.0f) cap_frac = 1.0f;
+            rtm_approach_cap = (uint8_t)(cap_frac * 255.0f);
+          }
+          else
+          {
+            rtm_approach_cap = 255;  // outside zone: no cap
+          }
+        }
+        else
+        {
+          rtm_approach_cap = 255;  // feature disabled: no cap
+        }
       }
       else
       {
-        // 100-254: whole metres offset by 90 (100=10m, 254=164m cap)
-        uint8_t whole_m = (uint8_t)(d > 164.0f ? 164.0f : d);
-        telemetry.rtm_distance = 90u + whole_m;
+        // RTM inactive: send no-data sentinel so TX pre-arm check is bypassed.
+        // Re-arm must never be blocked by a short distance reading after Gate 9.
+        telemetry.rtm_distance = 0xFF;
+        rtm_approach_cap       = 255;  // no cap during manual
       }
     }
     else if (!rtm_rx_active)
     {
-      telemetry.rtm_distance = 0xFF;  // mark N/A only when inactive AND no GPS
+      telemetry.rtm_distance = 0xFF;  // no GPS and RTM inactive: no data
+      rtm_approach_cap       = 255;
     }
-    // If rtm_rx_active but GPS data just expired, keep last known value (don't set 0xFF)
+    // If rtm_rx_active but GPS data just expired: keep last known distance and cap (don't reset)
   }
 
   if (!usrConf.rtm_rx_enabled)
@@ -282,15 +332,17 @@ void runRtmLoop()
     rtm_rx_emergency_stop    = false;
     rtm_prev_dist_m          = -1.0;
     rtm_phase_c_ms           = 0;
-    // telemetry.rtm_distance already set above (0xFF if no GPS, else live distance)
+    rtm_approach_cap         = 255;   // belt-and-suspenders: ensure cap is always clear when inactive
+    // telemetry.rtm_distance already set to 0xFF by the block above (inactive path)
     return;
   }
 
   // RTM active: run all gates
   if (!checkRtmSafetyGates())
   {
-    // Gate 1 (throttle released) returns false without setting emergency_stop.
-    // All other gates set emergency_stop=true. If not emergency, just return.
+    // Gate 1: throttle released — no emergency stop, motor already at 0.
+    // Gate 9: stop distance reached — clean disengagement, rtm_rx_active set false, no emergency stop.
+    // Gates 2-8: safety failure — rtm_rx_emergency_stop=true, calcPWM() forces throttle to 0.
     return;
   }
 

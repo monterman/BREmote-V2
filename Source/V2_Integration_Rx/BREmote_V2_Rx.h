@@ -1,3 +1,4 @@
+// V3 - 2026-04-30 - RTM approach decel zone: rtm_approach_zone_m SPIFFS param; rtm_approach_cap atomic global; sizeof 156→160
 // V3 - 2026-04-30 - Rename: gps_max_jump_kmh → gps_max_teleport_kmh (clarity)
 // V3 - 2026-04-29 - Bundle B: vesc_timeout_s SPIFFS param replaces hardcoded 20s VESC timeout
 // V3 - 2026-04-22 - Added gps_chip_type field to confStruct (GPS module selector); sizeof 108→112; updated defaultConf
@@ -201,8 +202,15 @@ struct confStruct {
 
     // V3 - 2026-04-30 - BUNDLE E: GPS POLLING RATE
     uint16_t gps_update_hz;   // 1-10 Hz; default 2; how often per second to drain the GPS UART (2=500ms, 5=200ms)
+
+    // V3 - 2026-04-30 - RTM APPROACH DECEL ZONE
+    // Distance from TX at which the approach throttle ramp begins during active RTM.
+    // Throttle cap = thr × (dist − rtm_stop_distance_m) / (rtm_approach_zone_m − rtm_stop_distance_m)
+    // Result: full throttle at the outer edge; cap reaches 0 at rtm_stop_distance_m; Gate 9 hard stop still applies.
+    // Set to 0 to disable the decel zone and use Gate 9 hard stop only.
+    uint16_t rtm_approach_zone_m;  // 0=disabled, 5-100 m; default 15; outer edge of RTM approach decel zone
 };
-static_assert(sizeof(confStruct) == 156, "confStruct size mismatch — expected 156 bytes (V3.3/P7+BundleB+BundleE). Update this assert if you change the struct.");  // 112->128 Phase A; 128->136 Phase B; 136->152 P7 RTM (2026-04-25); 152->154 Bundle B vesc_timeout_s (2026-04-29); 154->156 Bundle B vesc_timeout_s actual alignment (2026-04-29); 156 unchanged — Bundle E gps_update_hz fills tail padding (2026-04-30).
+static_assert(sizeof(confStruct) == 160, "confStruct size mismatch — expected 160 bytes. Update this assert if you change the struct.");  // 112->128 Phase A; 128->136 Phase B; 136->152 P7 RTM; 152->156 Bundle B; 156 unchanged BundleE; 156->160 rtm_approach_zone_m (uint16_t + 2-byte tail pad) (2026-04-30).
 confStruct usrConf;
   //The orginal confs were:  ##// confStruct defaultConf = {SW_VERSION, 1, 0, 0, 50, 0, 0, 1500, 2000, 1500, 2000, 1000, 10, 0, 1, 0, 0, 0, 0, 0, 25.0f, 10.0f, 10.0f, 5.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0, 1000, 1, 0, {0, 0, 0}, {0, 0, 0}, {'1','2','3','4','5','6','7','8'}};
   // V3 default configuration — tuned for monterman hardware
@@ -235,7 +243,9 @@ confStruct defaultConf = {SW_VERSION, 2, 20, 1, 50, 0, 0, 1000, 2000, 1000, 2000
   // V3 - 2026-04-29 - Bundle B: vesc_timeout_s replaces hardcoded 20s VESC connection timeout
   12,         // vesc_timeout_s: seconds without VESC UART packet before bat/temp shown as N/A (range 5-60s; default 12s)
   // V3 - 2026-04-30 - Bundle E: gps_update_hz replaces hardcoded 1Hz GPS poll cadence
-  2           // gps_update_hz: GPS NMEA polling rate in Hz (range 1-10 Hz; default 2 Hz = 500ms interval)
+  2,          // gps_update_hz: GPS NMEA polling rate in Hz (range 1-10 Hz; default 2 Hz = 500ms interval)
+  // V3 - 2026-04-30 - RTM approach decel zone default
+  15          // rtm_approach_zone_m: outer edge of RTM throttle decel zone (0=disabled, 5-100 m; default 15 m)
 };
   /// these equal to:  {"version":3,"radio_preset":2,"rf_power":20,"steering_type":1,"steering_influence":50,"steering_inverted":0,"trim":0,"pwm0_min":1000,"pwm0_max":2000,"pwm1_min":1000,"pwm1_max":2000,"failsafe_time":1000,"foil_num_cells":10,"bms_det_active":0,"wet_det_active":1,"dummy_delete_me":0,"data_src":2,"gps_en":1,"followme_mode":2,"kalman_en":1,"boogie_vmax_in_followme_kmh":25,"min_dist_m":10,"followme_smoothing_band_m":10,"foiler_low_speed_kmh":8,"zone_angle_enter_deg":35,"zone_angle_exit_deg":45,"near_diag_offset_deg":45,"ubat_cal":0.0095554,"ubat_offset":0,"tx_gps_stale_timeout_ms":1000,"logger_en":0,"paired":1,"own_address":"46:C9:E0","dest_address":"46:CB:CC","wifi_password":"12345678","mag_offset_x":0,"mag_offset_y":0,"mag_scale_x":1.0,"mag_scale_y":1.0,"gps_chip_type":1,"gps_max_hdop":2.0,"gps_max_accel_g":3.0,"gps_max_teleport_kmh":80.0,"gps_suspect_threshold":3,"gps_max_pair_dist_m":500.0,"gps_max_speed_diff_kmh":50.0,"rtm_vesc_speed_diff_kmh":20.0,"vesc_erpm_per_kmh":0.0,"rtm_rx_enabled":1,"rtm_rx_override_steering":1,"rtm_compass_required":1,"rtm_stop_distance_m":3,"vesc_timeout_s":12,"gps_update_hz":2}
   ///
@@ -284,6 +294,7 @@ std::atomic<bool>    rtm_rx_active         {false};
 std::atomic<bool>    rtm_rx_emergency_stop {false};
 std::atomic<uint8_t> rtm_steer_override    {127};
 std::atomic<uint8_t> fm_mode_runtime       {0xFF};
+std::atomic<uint8_t> rtm_approach_cap      {255};  // V3 - 2026-04-30 - approach decel cap (0-255); 255=no cap; computed by RTMState.ino during active RTM; applied by calcPWM()
 
 #include "../Common/SPIFFSEngine.h"
 

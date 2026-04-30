@@ -5,6 +5,7 @@
 // V3 - 2026-04-27 - P8: Added rtm_display_mode, fm_warn_distance_m, rtm_steer_exit_on_input to confStruct; TelemetryPacket adds rtm_distance at index 5; rtm_max_runtime_s default 120→0
 // V3 - 2026-04-27 - P8.1: Added fm_arm_window_s to confStruct; FM redesigned as arm/disarm toggle with mode memory; sizeof 124→128
 // V2.5-Evo - 2026-04-28 - P9: Added dist_unit (fills 2-byte tail padding; sizeof stays 128); rtm_arm_dist_m RAM global
+// V2.5-Evo - 2026-04-29 - Sleep: added sleep_timeout_s to confStruct; SW_VERSION 25→26
 
 /*
 ** Includes
@@ -39,7 +40,8 @@
 #include <WebServer.h>
 #endif
 
-#define SW_VERSION 25  // V2.5-Evo — 25 = V2.5; first flash resets all TX SPIFFS config to defaults
+#define SW_VERSION 26  // V2.5-Evo - 2026-04-29: sleep_timeout_s added to confStruct; first
+                       // flash resets all TX SPIFFS settings to defaults — re-configure via WebUI
 const char* CONF_FILE_PATH = "/data.txt";
 
 //#define DELETE_SPIFFS_CONF_AT_STARTUP 1
@@ -177,12 +179,23 @@ struct confStruct {
     // 0 (Metres) is the correct default, so no migration is needed.
     // ============================================================
     uint16_t dist_unit;               // Distance display unit: 0=Metres, 1=Feet; default 0
+
+    // ============================================================
+    // V2.5-Evo - 2026-04-29 - SLEEP TIMEOUT PARAMETER
+    //
+    // Adds sleep_timeout_s after dist_unit. sizeof grows 128→132
+    // (130 data bytes + 2 tail padding; 130 % 4 == 2, float forces 4-byte alignment).
+    // SW_VERSION bumped 25→26 — first flash resets all TX SPIFFS settings to defaults.
+    // ============================================================
+    uint16_t sleep_timeout_s;  // Inactivity sleep timeout; 0=disabled, 60-3600 s; default 300
+                               // TX sleeps after this many seconds with no LoRa packet from RX.
+                               // Set to 0 to disable auto-sleep entirely.
 };
 
-static_assert(sizeof(confStruct) == 128, "confStruct size mismatch — expected 128 bytes (V2.5-Evo P9). Update this assert if you change the struct.");  // pinned to exact size; catches both shrinkage and unexpected growth
+static_assert(sizeof(confStruct) == 132, "confStruct size mismatch — expected 132 bytes (V2.5-Evo sleep_timeout_s). Update this assert if you change the struct.");  // pinned to exact size; catches both shrinkage and unexpected growth
 confStruct usrConf;
 confStruct defaultConf = {  // V3 default configuration — tuned for monterman hardware
-  SW_VERSION,    // version (25)
+  SW_VERSION,    // version (26)
   2,             // radio_preset (US 915MHz)
   20,            // rf_power (20)
   1,             // cal_ok
@@ -245,7 +258,9 @@ confStruct defaultConf = {  // V3 default configuration — tuned for monterman 
   1,    // rtm_steer_exit_on_input (1=steering exits RTM; 0=blend only)
   // V3 - 2026-04-27 - Priority 8.1 FM UX redesign defaults
   30,   // fm_arm_window_s (30s before auto-disarm if no throttle input)
-  0     // dist_unit (0 = Metres; no SPIFFS reset needed — tail padding was already zero)
+  0,    // dist_unit (0 = Metres)
+  // V2.5-Evo - 2026-04-29 - sleep timeout default
+  300,  // sleep_timeout_s — 300s = 5 minutes; set to 0 to disable
 };
 
 

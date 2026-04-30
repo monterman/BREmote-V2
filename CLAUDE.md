@@ -143,7 +143,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Phase C anti-spoofing: convergence check, VESC ERPM vs GPS speed, TX GPS freshness
 - 4 compile errors fixed in RX (PWM.ino cast, extern gps_phase_b_ok, rtm_stop_distance_m struct+ConfigService)
 - CRITICAL safety fix 2026-04-26: `defaultConf.rtm_stop_distance_m` was 0 (disabled Gate 9 hard stop); fixed to 3m
-- sizeof(confStruct) RX: 136→152; TX: 96→120; first flash resets all settings to defaults
+- sizeof(confStruct) RX: 136→152 (154 actual pre-BundleB due to alignment; 156 after BundleB); TX: 96→120; first flash resets all settings to defaults
 - Bench test checklist: 10/10 PASS (static code review); hardware confirmation still required:
   - Outdoor GPS fix, motor disconnected bench test, PWM output verification needed before field use
   - Note: Test 3/4 gate labels may fire as Gate 5/4 in practice (correct stop behavior, different gate)
@@ -295,3 +295,36 @@ What to verify:
 - New SPIFFS fields are fully pipelined per Section 10 (manual review)
 
 If PowerShell is unavailable, ask Claude Code to run the equivalent check using Bash.
+
+---
+
+## 15. MULTI-TX / CLONE OPERATION (Future Design — Not Implemented)
+
+### Use Case
+Two TX units cloned to the same RX address allow two riders to share one buggy.
+Each rider holds their own remote. Safe operating rule (current): power off TX-A before TX-B powers on.
+
+### Master / Slave Architecture (Approved Design — Implement Later)
+- RX stores two SPIFFS addresses: `master_addr` (existing) + `slave_addr` (new, 0 = no slave configured)
+- TX gets a SPIFFS bool: `tx_is_slave` (0 = master, 1 = slave)
+- RX tracks `last_master_packet_ms` timestamp
+- If master heard within `master_timeout_ms`: slave packets silently dropped
+- If master silent for `master_timeout_ms`: slave takes full control
+- RTM/FM: only the currently active controller can arm; slave cannot arm while master is present
+- On master return (while slave has control): force RTM disengage + throttle=0 before handoff
+- If no slave address configured: RX behaves exactly as today, zero code path difference
+- `master_timeout_ms` default 10–15s — survives brief RF dropouts without transferring control
+
+### Graceful Handoff (Preferred Long-Term — Option A, No Hardware Change)
+- Add a deliberate "power off" gesture or WebUI button on TX
+- Firmware sends a bye-bye packet → then calls deepSleep()
+- Magnet removal = emergency hard off only; deliberate session swap uses the gesture
+- Option B (hardware): hold-up cap 100–470µF on 3.3V rail + Hall sensor wired to GPIO interrupt — gives ~50–150ms window for firmware to send bye-bye packet before power collapses
+
+### Safety Rules (enforce when implemented)
+- Master takeover must always force throttle=0 and RTM disengage before accepting master commands
+- Slave can never increase throttle above what master last commanded (safety philosophy still applies)
+- Both TX units must be on the same firmware version — mixed versions not supported
+
+### Hook
+TX Radio.ino line ~63: existing TODO "Implement address conflict detection during pairing" is the entry point for this work.

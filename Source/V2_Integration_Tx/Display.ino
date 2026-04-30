@@ -13,6 +13,7 @@
 // V2.5-Evo - 2026-04-28 - Bug3: Removed dead fm_armed stub from updateR5ProximityBar() — was unreachable from call site
 // V2.5-Evo - 2026-04-28 - Bug5: fc3x7_r + fc3x7_n bitmaps corrected 0x7C→0x1E/0x04/0x02 — shift up, avoid R5
 // V2.5-Evo - 2026-04-29 - Fix 4-3: extern fm_armed updated to volatile to match RTMState.ino
+// V2.5-Evo - 2026-04-29 - Display: fc3x7_F middle bar R3→R2 for visual consistency
 
 extern volatile bool fm_armed;  // defined in RTMState.ino — volatile: written by loop() core 1,
                                  // read by updateBargraphs() core 0; must match definition
@@ -286,7 +287,9 @@ static const Fc3x7Entry fc3x7_A = {{0x7E, 0x09, 0x7E}};
 // col[0]=left physical column, col[1]=middle, col[2]=right. No swap needed.
 // Bitmaps are direct from HTML fontCompact (bit2→col[0], bit1→col[1], bit0→col[2]).
 static const Fc3x7Entry fc3x7_E = {{0x7F, 0x49, 0x41}};
-static const Fc3x7Entry fc3x7_F = {{0x7F, 0x09, 0x01}};
+static const Fc3x7Entry fc3x7_F = {{0x7F, 0x05, 0x01}};
+// col[1] changed 0x09→0x05: middle bar moved from R3 (bit 3) to R2 (bit 2).
+// Top bar (bit 0 = R0) and right top pixel (col[2] bit 0) unchanged.
 static const Fc3x7Entry fc3x7_M = {{0x7F, 0x06, 0x7F}};  // symmetric — unchanged
 static const Fc3x7Entry fc3x7_P = {{0x7F, 0x09, 0x06}};
 static const Fc3x7Entry fc3x7_S = {{0x46, 0x49, 0x31}};

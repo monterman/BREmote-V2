@@ -198,7 +198,7 @@ struct confStruct {
     // V3 - 2026-04-29 - BUNDLE B: VESC UART TIMEOUT
     uint16_t vesc_timeout_s;  // 5-60 s; default 12; how long without a VESC UART packet before bat/temp shown as N/A
 };
-static_assert(sizeof(confStruct) == 154, "confStruct size mismatch — expected 154 bytes (V3.3/P7+BundleB). Update this assert if you change the struct.");  // 112->128 Phase A; 128->136 Phase B; 136->152 P7 RTM (2026-04-25); 152->154 Bundle B vesc_timeout_s (2026-04-29).
+static_assert(sizeof(confStruct) == 156, "confStruct size mismatch — expected 156 bytes (V3.3/P7+BundleB). Update this assert if you change the struct.");  // 112->128 Phase A; 128->136 Phase B; 136->152 P7 RTM (2026-04-25); 152->154 Bundle B vesc_timeout_s (2026-04-29); 154->156 Bundle B vesc_timeout_s actual alignment (2026-04-29).
 confStruct usrConf;
   //The orginal confs were:  ##// confStruct defaultConf = {SW_VERSION, 1, 0, 0, 50, 0, 0, 1500, 2000, 1500, 2000, 1000, 10, 0, 1, 0, 0, 0, 0, 0, 25.0f, 10.0f, 10.0f, 5.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0, 1000, 1, 0, {0, 0, 0}, {0, 0, 0}, {'1','2','3','4','5','6','7','8'}};
   // V3 default configuration — tuned for monterman hardware

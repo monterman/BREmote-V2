@@ -164,7 +164,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Sleeps after `sleep_timeout_s` of inactivity (default 300s, 0 = disabled)
 - Dual-condition OR: user idle (no throttle > 20 or steer deviation > 15 counts above deadzone) OR RX silent (no LoRa packets) — pocket-safe thresholds prevent accidental timer resets
 - 1 new TX SPIFFS param: `sleep_timeout_s` (0–3600s); fully pipelined confStruct→ConfigService→WebUiEmbedded.h→docs HTML tool
-- TX confStruct sizeof 128→132; SW_VERSION bumped 25→26; first flash resets TX settings to defaults
+- TX confStruct sizeof 126→128; SW_VERSION bumped 25→26; first flash resets TX settings to defaults
 
 **Priority 9**: Follow-Me full implementation (future)
 
@@ -175,6 +175,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Stability first — manual control must always work even if all other systems fail
 - SPIFFS/usrConf controls all user parameters — nothing hardcoded
 - GPS anti-spoofing: 3-phase design (Phase A: RX standalone always-on; Phase B: TX↔RX handshake; Phase C: RTM-active convergence) — see Section 11
+- Max physical craft speed: foiler ~40 km/h (25 mph), buggy less (surface drag limits it despite motors). Use this when setting Phase A spoofing thresholds — 80 km/h is a safe ceiling; 200 km/h is unrealistically permissive for this platform.
 - BLE GATT telemetry forwarding to iPhone/Android/Watch (future, Option A preferred)
 
 ---
@@ -244,7 +245,7 @@ Runs only while RTM is engaged. Adds physical-world behavioral checks.
 |---|---|---|---|---|---|
 | `gps_max_hdop` | 0.5–5.0 | 2.0 | — | A | Maximum HDOP for a valid GPS reading |
 | `gps_max_accel_g` | 1.0–10.0 | 3.0 | G | A | Maximum implied acceleration between readings |
-| `gps_max_jump_kmh` | 50–500 | 200 | km/h | A | Maximum position-implied speed for teleport check |
+| `gps_max_jump_kmh` | 50–500 | 80 | km/h | A | Maximum position-implied speed for teleport check — set to 80 km/h (2× craft max) for this platform |
 | `gps_suspect_threshold` | 1–10 | 3 | count | A | Consecutive failures before GPS rejected |
 | `gps_max_pair_dist_m` | 50–2000 | 500 | meters | B | Maximum plausible TX-RX distance at handshake |
 | `gps_max_speed_diff_kmh` | 10–200 | 50 | km/h | B | Maximum TX-RX speed difference for handshake |

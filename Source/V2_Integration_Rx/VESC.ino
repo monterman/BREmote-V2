@@ -1,3 +1,4 @@
+// V3 - 2026-04-29 - Bundle B: vesc_timeout_s SPIFFS param replaces hardcoded 20s VESC timeout
 // Define the global struct
 vesc_struct vesc;
 
@@ -16,8 +17,9 @@ void getVescLoop()
   }
   get_vesc_timer = millis();
   
-  // Check for VESC connection break
-  if(millis() - last_uart_packet > 20000)
+  // Use configurable timeout (vesc_timeout_s). Default 12s gives margin above ~8-9s VESC cold-restart time.
+  // If no UART packet received within this window, mark battery and temperature as unavailable.
+  if(millis() - last_uart_packet > ((uint32_t)usrConf.vesc_timeout_s * 1000UL))
   {
     telemetry.foil_bat = 0xFF;
     telemetry.foil_temp = 0xFF;

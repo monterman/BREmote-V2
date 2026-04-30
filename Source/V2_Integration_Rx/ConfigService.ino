@@ -1,10 +1,11 @@
 // RX-specific config field table and cross-validation.
 // Shared engine is in ../Common/ConfigServiceEngine.h (included via BREmote_V2_Rx.h).
 // V3 - 2026-04-22 - Added gps_chip_type field (GPS module selector: 0=BN-220, 1=BN-880+compass, 2=M10, 3=M10+compass)
-// V3 - 2026-04-22 - Added Phase A GPS anti-spoofing fields: gps_max_hdop, gps_max_accel_g, gps_max_jump_kmh, gps_suspect_threshold
+// V3 - 2026-04-22 - Added Phase A GPS anti-spoofing fields: gps_max_hdop, gps_max_accel_g, gps_max_teleport_kmh, gps_suspect_threshold
 // V3 - 2026-04-24 - Added Phase B GPS handshake fields: gps_max_pair_dist_m, gps_max_speed_diff_kmh
 // V3 - 2026-04-25 - P7: Added RTM Phase C + RX safety fields: rtm_vesc_speed_diff_kmh, vesc_erpm_per_kmh, rtm_rx_enabled, rtm_rx_override_steering, rtm_compass_required
-// V3 - 2026-04-30 - Bundle E: gps_update_hz SPIFFS param added; gps_max_jump_kmh default 200→80
+// V3 - 2026-04-30 - Rename: gps_max_jump_kmh → gps_max_teleport_kmh (clarity)
+// V3 - 2026-04-30 - Bundle E: gps_update_hz SPIFFS param added; gps_max_teleport_kmh default 200→80
 // V3 - 2026-04-29 - Bundle A: radio_preset max clamped to 2; dead foil_speed != 99 sentinel removed
 
 #include <stddef.h>
@@ -45,7 +46,7 @@ const CfgFieldSpec kCfgFields[] = {
   // V3 - 2026-04-22 - Phase A GPS anti-spoofing parameters (see CLAUDE.md Section 11)
   {"gps_max_hdop",           CFG_FLOAT, offsetof(confStruct, gps_max_hdop),           true, false, true,  0.5f,  5.0f, 1, false},
   {"gps_max_accel_g",        CFG_FLOAT, offsetof(confStruct, gps_max_accel_g),        true, false, true,  1.0f, 10.0f, 1, false},
-  {"gps_max_jump_kmh",       CFG_FLOAT, offsetof(confStruct, gps_max_jump_kmh),       true, false, true, 50.0f,500.0f, 1, false},
+  {"gps_max_teleport_kmh",       CFG_FLOAT, offsetof(confStruct, gps_max_teleport_kmh),       true, false, true, 50.0f,500.0f, 1, false},
   {"gps_suspect_threshold",  CFG_U16,   offsetof(confStruct, gps_suspect_threshold),  true, false, true,  1.0f, 10.0f, 0, false},
   // V3 - 2026-04-24 - Phase B GPS handshake anti-spoofing parameters (see CLAUDE.md Section 11)
   {"gps_max_pair_dist_m",    CFG_FLOAT, offsetof(confStruct, gps_max_pair_dist_m),    true, false, true, 50.0f, 2000.0f, 1, false},

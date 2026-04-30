@@ -1,3 +1,4 @@
+// V3 - 2026-04-30 - Rename: gps_max_jump_kmh → gps_max_teleport_kmh (clarity)
 // V3 - 2026-04-30 - Bundle E: replaced 300ms blocking serial drain with non-blocking while(available()) drain
 // V3 - 2026-04-24 - Added Phase B FIELD SERVICE NOTE (sizeof confStruct 128→136)
 // V3 - 2026-04-22 - Added gps_chip_type branch: type 0/1=BN-220/BN-880 (9600→115200, 5Hz), type 2/3=M10 (115200 direct, 10Hz, all constellations)
@@ -66,7 +67,7 @@ unsigned long gps_last_ms        = 0;     // millis() timestamp of last accepted
 //
 //   2) Teleport check: reject if the position change since the
 //      last accepted reading implies travel faster than
-//      usrConf.gps_max_jump_kmh km/h (physically impossible)
+//      usrConf.gps_max_teleport_kmh km/h (physically impossible)
 //
 //   3) Acceleration check: reject if the speed change since the
 //      last accepted reading implies acceleration >
@@ -88,7 +89,7 @@ unsigned long gps_last_ms        = 0;     // millis() timestamp of last accepted
 // Side effects:
 //   Reads module-level state: gps_last_lat, gps_last_lng,
 //   gps_last_ms, gps_last_speed_kmh.
-//   Reads usrConf.gps_max_hdop, gps_max_jump_kmh, gps_max_accel_g.
+//   Reads usrConf.gps_max_hdop, gps_max_teleport_kmh, gps_max_accel_g.
 //   Prints diagnostics to Serial when a check fails.
 // ============================================================
 static bool gpsPhaseACheck(double cur_lat, double cur_lng, float cur_speed_kmh) {
@@ -113,9 +114,9 @@ static bool gpsPhaseACheck(double cur_lat, double cur_lng, float cur_speed_kmh) 
       float dist_m      = (float)TinyGPSPlus::distanceBetween(
                                    gps_last_lat, gps_last_lng, cur_lat, cur_lng);
       float implied_kmh = (dist_m / dt_s) * 3.6f;
-      if (implied_kmh > usrConf.gps_max_jump_kmh) {
+      if (implied_kmh > usrConf.gps_max_teleport_kmh) {
         Serial.printf("GPS [PhA] Teleport %.0f km/h exceeds max %.0f km/h — reading rejected\n",
-                      implied_kmh, usrConf.gps_max_jump_kmh);
+                      implied_kmh, usrConf.gps_max_teleport_kmh);
         return false;
       }
 

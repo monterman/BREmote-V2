@@ -3,7 +3,8 @@
 // V3 - 2026-04-25 - P7: Added 5 RTM/FM RX fields; added RTM & Follow-Me group
 // V2.5-Evo - 2026-04-28 - Security: added rtm_stop_distance_m field (was in ConfigService but missing from UI)
 // V2.5-Evo - 2026-04-29 - TaskC: full description audit — bool 0/1 values, enum all options inline, int/float extremes explained
-// V3 - 2026-04-30 - Bundle E: gps_update_hz field added to GPS & Follow-Me group; gps_max_jump_kmh default 200→80
+// V3 - 2026-04-30 - Rename: gps_max_jump_kmh → gps_max_teleport_kmh (clarity)
+// V3 - 2026-04-30 - Bundle E: gps_update_hz field added to GPS & Follow-Me group; gps_max_teleport_kmh default 200→80
 // V3 - 2026-04-29 - Bundle A: radio_preset max clamped to 2; dead foil_speed != 99 sentinel removed
 
 #include <Arduino.h>
@@ -143,7 +144,7 @@ const fields=[
 {key:"tx_gps_stale_timeout_ms",label:"TX GPS Stale Timeout",description:"Maximum age of TX GPS data before RX considers it stale and blocks Phase B/C anti-spoofing checks. 0=disabled (never stale), 65535=65 seconds. Default 1000ms (1 second). Reduce if TX GPS updates fall behind.",group:"GPS & Follow-Me",type:"int",def:1000,min:0,max:65535,unit:"ms"},
 {key:"gps_max_hdop",label:"GPS Max HDOP",description:"Maximum HDOP for a valid GPS fix — lower is stricter. Range 0.5-5.0, default 2.0. Readings above this threshold are rejected.",group:"GPS & Follow-Me",type:"float",def:2.0,min:0.5,max:5.0,step:0.1},
 {key:"gps_max_accel_g",label:"GPS Max Acceleration",description:"Maximum implied acceleration between consecutive GPS readings (G-force). Range 1.0-10.0 G, default 3.0 G. Higher-than-max implies a spoofed jump.",group:"GPS & Follow-Me",type:"float",def:3.0,min:1.0,max:10.0,step:0.1,unit:"G"},
-{key:"gps_max_jump_kmh",label:"GPS Max Teleport Speed",description:"Maximum speed implied by position change between readings. Range 50-500 km/h, default 80 km/h. Larger implies GPS teleport.",group:"GPS & Follow-Me",type:"float",def:80.0,min:50.0,max:500.0,step:1.0,unit:"km/h"},
+{key:"gps_max_teleport_kmh",label:"GPS Max Teleport Speed",description:"Maximum speed implied by position change between readings. Range 50-500 km/h, default 80 km/h. Larger implies GPS teleport.",group:"GPS & Follow-Me",type:"float",def:80.0,min:50.0,max:500.0,step:1.0,unit:"km/h"},
 {key:"gps_suspect_threshold",label:"GPS Suspect Threshold",description:"Consecutive anti-spoofing failures before GPS is marked rejected. Range 1-10, default 3. While rejected, RTM arming is blocked.",group:"GPS & Follow-Me",type:"int",def:3,min:1,max:10},
 {key:"gps_max_pair_dist_m",label:"Phase B: Max Pair Distance",description:"Maximum plausible TX-RX distance during GPS handshake check. Range 50-2000 m, default 500 m. If TX and RX are further apart than this, RTM arming is blocked.",group:"GPS & Follow-Me",type:"float",def:500.0,min:50.0,max:2000.0,step:10.0,unit:"m"},
 {key:"gps_max_speed_diff_kmh",label:"Phase B: Max Speed Difference",description:"Maximum TX-RX GPS speed difference during handshake check. Range 10-200 km/h, default 50 km/h. If speeds differ more than this, RTM arming is blocked.",group:"GPS & Follow-Me",type:"float",def:50.0,min:10.0,max:200.0,step:1.0,unit:"km/h"},

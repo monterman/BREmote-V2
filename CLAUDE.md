@@ -219,7 +219,7 @@ Three independent phases stack coverage without requiring each other to function
 Runs on every RX GPS reading with no TX dependency.
 - **HDOP check**: reading rejected if HDOP > `gps_max_hdop` (default 2.0)
 - **Acceleration check**: implied speed change between readings rejected if > `gps_max_accel_g` G (default 3.0)
-- **Teleport check**: position jump rejected if it implies speed > `gps_max_jump_kmh` (default 200 km/h)
+- **Teleport check**: position jump rejected if it implies speed > `gps_max_teleport_kmh` (default 200 km/h)
 - After `gps_suspect_threshold` (default 3) consecutive failures → GPS marked **rejected**, blocks RTM arming
 - ~20 lines in RX `GPS.ino`
 
@@ -245,7 +245,7 @@ Runs only while RTM is engaged. Adds physical-world behavioral checks.
 |---|---|---|---|---|---|
 | `gps_max_hdop` | 0.5–5.0 | 2.0 | — | A | Maximum HDOP for a valid GPS reading |
 | `gps_max_accel_g` | 1.0–10.0 | 3.0 | G | A | Maximum implied acceleration between readings |
-| `gps_max_jump_kmh` | 50–500 | 80 | km/h | A | Maximum position-implied speed for teleport check — set to 80 km/h (2× craft max) for this platform |
+| `gps_max_teleport_kmh` | 50–500 | 80 | km/h | A | Maximum position-implied speed for teleport check — set to 80 km/h (2× craft max) for this platform |
 | `gps_suspect_threshold` | 1–10 | 3 | count | A | Consecutive failures before GPS rejected |
 | `gps_max_pair_dist_m` | 50–2000 | 500 | meters | B | Maximum plausible TX-RX distance at handshake |
 | `gps_max_speed_diff_kmh` | 10–200 | 50 | km/h | B | Maximum TX-RX speed difference for handshake |

@@ -1,3 +1,4 @@
+// V3 - 2026-04-30 - Rename: gps_max_jump_kmh → gps_max_teleport_kmh (clarity)
 // V3 - 2026-04-29 - Bundle B: vesc_timeout_s SPIFFS param replaces hardcoded 20s VESC timeout
 // V3 - 2026-04-22 - Added gps_chip_type field to confStruct (GPS module selector); sizeof 108→112; updated defaultConf
 // V3 - 2026-04-22 - Added Phase A GPS anti-spoofing params to confStruct; sizeof 112→128; updated defaultConf
@@ -148,7 +149,7 @@ struct confStruct {
     // ============================================================
     float    gps_max_hdop;            // Max HDOP for a valid fix; range 0.5-5.0; default 2.0; dimensionless
     float    gps_max_accel_g;         // Max implied acceleration between readings; range 1.0-10.0G; default 3.0G
-    float    gps_max_jump_kmh;        // Max position-implied speed (teleport check); range 50-500 km/h; default 200
+    float    gps_max_teleport_kmh;        // Max position-implied speed for teleport check; range 50-500 km/h; default 80
     uint16_t gps_suspect_threshold;   // Consecutive failures before GPS marked rejected; range 1-10; default 3
 
     // ============================================================
@@ -216,7 +217,7 @@ confStruct defaultConf = {SW_VERSION, 2, 20, 1, 50, 0, 0, 1000, 2000, 1000, 2000
   // V3 - 2026-04-22 - Phase A GPS anti-spoofing defaults (see CLAUDE.md Section 11)
   2.0f,       // gps_max_hdop:           max HDOP for valid reading (range 0.5-5.0)
   3.0f,       // gps_max_accel_g:        max implied acceleration (range 1.0-10.0 G)
-  80.0f,      // gps_max_jump_kmh:       max teleport-implied speed (range 50-500 km/h; default lowered 200→80 2026-04-30)
+  80.0f,      // gps_max_teleport_kmh:       max teleport-implied speed (range 50-500 km/h; default lowered 200→80 2026-04-30)
   3,          // gps_suspect_threshold:  consecutive failures before GPS rejected (range 1-10)
   // V3 - 2026-04-24 - Phase B GPS handshake anti-spoofing defaults (see CLAUDE.md Section 11)
   500.0f,     // gps_max_pair_dist_m:    max TX-RX pairing distance (range 50-2000 m)
@@ -236,7 +237,7 @@ confStruct defaultConf = {SW_VERSION, 2, 20, 1, 50, 0, 0, 1000, 2000, 1000, 2000
   // V3 - 2026-04-30 - Bundle E: gps_update_hz replaces hardcoded 1Hz GPS poll cadence
   2           // gps_update_hz: GPS NMEA polling rate in Hz (range 1-10 Hz; default 2 Hz = 500ms interval)
 };
-  /// these equal to:  {"version":3,"radio_preset":2,"rf_power":20,"steering_type":1,"steering_influence":50,"steering_inverted":0,"trim":0,"pwm0_min":1000,"pwm0_max":2000,"pwm1_min":1000,"pwm1_max":2000,"failsafe_time":1000,"foil_num_cells":10,"bms_det_active":0,"wet_det_active":1,"dummy_delete_me":0,"data_src":2,"gps_en":1,"followme_mode":2,"kalman_en":1,"boogie_vmax_in_followme_kmh":25,"min_dist_m":10,"followme_smoothing_band_m":10,"foiler_low_speed_kmh":8,"zone_angle_enter_deg":35,"zone_angle_exit_deg":45,"near_diag_offset_deg":45,"ubat_cal":0.0095554,"ubat_offset":0,"tx_gps_stale_timeout_ms":1000,"logger_en":0,"paired":1,"own_address":"46:C9:E0","dest_address":"46:CB:CC","wifi_password":"12345678","mag_offset_x":0,"mag_offset_y":0,"mag_scale_x":1.0,"mag_scale_y":1.0,"gps_chip_type":1,"gps_max_hdop":2.0,"gps_max_accel_g":3.0,"gps_max_jump_kmh":80.0,"gps_suspect_threshold":3,"gps_max_pair_dist_m":500.0,"gps_max_speed_diff_kmh":50.0,"rtm_vesc_speed_diff_kmh":20.0,"vesc_erpm_per_kmh":0.0,"rtm_rx_enabled":1,"rtm_rx_override_steering":1,"rtm_compass_required":1,"rtm_stop_distance_m":3,"vesc_timeout_s":12,"gps_update_hz":2}
+  /// these equal to:  {"version":3,"radio_preset":2,"rf_power":20,"steering_type":1,"steering_influence":50,"steering_inverted":0,"trim":0,"pwm0_min":1000,"pwm0_max":2000,"pwm1_min":1000,"pwm1_max":2000,"failsafe_time":1000,"foil_num_cells":10,"bms_det_active":0,"wet_det_active":1,"dummy_delete_me":0,"data_src":2,"gps_en":1,"followme_mode":2,"kalman_en":1,"boogie_vmax_in_followme_kmh":25,"min_dist_m":10,"followme_smoothing_band_m":10,"foiler_low_speed_kmh":8,"zone_angle_enter_deg":35,"zone_angle_exit_deg":45,"near_diag_offset_deg":45,"ubat_cal":0.0095554,"ubat_offset":0,"tx_gps_stale_timeout_ms":1000,"logger_en":0,"paired":1,"own_address":"46:C9:E0","dest_address":"46:CB:CC","wifi_password":"12345678","mag_offset_x":0,"mag_offset_y":0,"mag_scale_x":1.0,"mag_scale_y":1.0,"gps_chip_type":1,"gps_max_hdop":2.0,"gps_max_accel_g":3.0,"gps_max_teleport_kmh":80.0,"gps_suspect_threshold":3,"gps_max_pair_dist_m":500.0,"gps_max_speed_diff_kmh":50.0,"rtm_vesc_speed_diff_kmh":20.0,"vesc_erpm_per_kmh":0.0,"rtm_rx_enabled":1,"rtm_rx_override_steering":1,"rtm_compass_required":1,"rtm_stop_distance_m":3,"vesc_timeout_s":12,"gps_update_hz":2}
   ///
 
 #include "../Common/ConfigServiceEngine.h"

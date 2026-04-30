@@ -1,5 +1,6 @@
 // V3 - 2026-04-24 - Added 0xF3 GPS meta-packet burst at 2Hz in sendData(); THR capped at 0xF2
 // V3 - 2026-04-25 - P7: Added RTM/FM meta-packet queue consumer in sendData(); cap 0xF2→0xF0; queueMetaPacketBurst()
+// V3 - 2026-04-29 - Bundle A: radio_preset max clamped to 2; dead foil_speed != 99 sentinel removed
 void setRadioActivityEnabled(bool enabled)
 {
   radio_activity_enabled = enabled;
@@ -410,7 +411,8 @@ void waitForTelemetry(void *parameter)
           }
 
           // Speed conversion: RX sends speed in km/h; convert to the unit selected in web config.
-          if (rcvArray[3] == 2 && telemetry.foil_speed != 0xFF && telemetry.foil_speed != 99) 
+          // 0xFF = no GPS data sentinel (V3 fix: old V2 sentinel 99 km/h removed — collided with real speed)
+          if (rcvArray[3] == 2 && telemetry.foil_speed != 0xFF)
           {
               if (usrConf.speed_src == 1) {
                   // Option 1: GPS RX knots (km/h * 0.539957)

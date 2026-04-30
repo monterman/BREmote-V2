@@ -3,6 +3,7 @@
 // V3 - 2026-04-25 - P7: Added 5 RTM/FM RX fields; added RTM & Follow-Me group
 // V2.5-Evo - 2026-04-28 - Security: added rtm_stop_distance_m field (was in ConfigService but missing from UI)
 // V2.5-Evo - 2026-04-29 - TaskC: full description audit — bool 0/1 values, enum all options inline, int/float extremes explained
+// V3 - 2026-04-29 - Bundle A: radio_preset max clamped to 2; dead foil_speed != 99 sentinel removed
 
 #include <Arduino.h>
 
@@ -111,7 +112,7 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
 // 41 Parameters for RX
 const groupOrder=["Radio","Steering","PWM","Motor & Safety","Sensors","Battery","GPS & Follow-Me","Follow-Me Tuning","RTM & Follow-Me","Logging","System"];
 const fields=[
-{key:"radio_preset",label:"Radio Preset",description:"Radio frequency band. 1=EU 868 MHz, 2=US/AU 915 MHz. Do not select 3 — it causes a boot error and the RX will not start. Must match TX setting.",group:"Radio",type:"enum",def:1,min:1,max:3,options:[{v:1,l:"EU868"},{v:2,l:"US/AU915"},{v:3,l:"Reserved"}]},
+{key:"radio_preset",label:"Radio Preset",description:"Radio frequency band. 1=EU 868 MHz, 2=US/AU 915 MHz. Do not select 3 — it causes a boot error and the RX will not start. Must match TX setting.",group:"Radio",type:"enum",def:1,min:1,max:2,options:[{v:1,l:"EU868"},{v:2,l:"US/AU915"}]},
 {key:"rf_power",label:"RF Power",description:"RF transmit power in dBm. -9=minimum (shortest range, lowest interference), 22=maximum (longest range). Must match TX setting. Default 0.",group:"Radio",type:"int",def:0,min:-9,max:22,unit:"dBm"},
 {key:"paired",label:"Paired",description:"0=not paired (no TX address stored), 1=paired. Set automatically by the pairing sequence — do not edit manually.",group:"Radio",type:"bool",def:0,min:0,max:1},
 {key:"own_address",label:"Own Address",description:"This RX unit's 3-byte LoRa radio address (hex, e.g. 01,A2,FF). Set automatically during pairing — do not edit manually.",group:"Radio",type:"address3",def:"00,00,00"},

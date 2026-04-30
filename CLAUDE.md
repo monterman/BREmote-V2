@@ -262,3 +262,29 @@ Runs only while RTM is engaged. Adds physical-world behavioral checks.
 - If the field cannot avoid `0x00` as a valid value, add a companion `bool valid` flag
 - Document the sentinel value in the struct field comment
 - **Why this rule exists**: `decodeRtmDistanceM()` BugA (2026-04-29) — `d == 0x00` (zero-init telemetry) was decoded as `0.0m`, which falsely passed the "within stop distance" pre-arm check and silently aborted RTM arming. Fixed by returning `-1.0f` for `d == 0x00`. The non-zero sentinel (`-1.0f`) is now the documented "no data" value.
+
+---
+
+## 14. POST-COMMIT COMMENT CHECK (after every commit)
+
+After every commit, verify that all changed files have proper comments per Section 3
+(Code Comment Rules). Run in PowerShell first; fall back to Claude Code if PowerShell
+is unavailable.
+
+**PowerShell — check version tags on committed files:**
+```powershell
+git diff HEAD~1 --name-only | ForEach-Object { Write-Host "`n=== $_ ===" -ForegroundColor Cyan; Select-String -Path $_ -Pattern "// V2\.5-Evo|// V3" | Select-Object -First 3 }
+```
+
+**PowerShell — check for orphaned TODOs in committed files:**
+```powershell
+git diff HEAD~1 --name-only | ForEach-Object { Select-String -Path $_ -Pattern "TODO|FIXME" }
+```
+
+What to verify:
+- Every modified .ino or .h file has at least one version tag line at the top
+- No orphaned TODO or FIXME comments left in changed files
+- New functions have header comments (manual review)
+- New SPIFFS fields are fully pipelined per Section 10 (manual review)
+
+If PowerShell is unavailable, ask Claude Code to run the equivalent check using Bash.

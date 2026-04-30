@@ -28,6 +28,9 @@
 //   displayDigits(LET_F, mode) instead of showFullScreenMessage() compact font
 // V2.5-Evo - 2026-04-29 - Display: "St" confirm now uses large-font displayDigits(LET_S, LET_T)
 //   in all three call sites (rtmDisengage, runDoubleSqueezeArm rejection, fmInternalDisarm)
+// V2.5-Evo - 2026-04-29 - Bug fix: RTM arm always failed — two root causes:
+//   BugA: decodeRtmDistanceM() returned 0.0m for zero-init telemetry (d==0x00 now → -1.0f)
+//   BugB: GPS age exceeded 4× override on double-squeeze; drain Serial1 before RTM_ACTIVE
 
 extern volatile uint8_t current_vib_pattern;
 extern float rtm_arm_dist_m;  // defined in BREmote_V2_Tx.h — captured at RTM engage moment
@@ -124,14 +127,17 @@ static void rtmDisengage()
 }
 
 // ---- Decode telemetry.rtm_distance to metres ----
-// Returns -1.0f if no valid distance available (telemetry.rtm_distance == 0xFF).
+// Returns -1.0f if no valid distance available (telemetry.rtm_distance == 0xFF or 0x00).
 // Used by pre-arm check (Bug 1B) and R5 proximity bar.
 static float decodeRtmDistanceM()
 {
   uint8_t d = telemetry.rtm_distance;
-  if (d == 0xFF) return -1.0f;
-  if (d < 100)   return d / 10.0f;     // tenths of metre (0.0–9.9 m)
-  return (float)(d - 90);              // whole metres (10–164 m)
+  // Bug A fix: treat 0x00 as "no data" same as 0xFF.
+  // 0x00 is the zero-initialized default before any RX telemetry packet arrives.
+  // Previously returned 0.0m → pre-arm check saw 0.0m ≤ disengage threshold → always rejected.
+  if (d == 0xFF || d == 0x00) return -1.0f;
+  if (d < 100) return d / 10.0f;      // tenths of metre (0.0–9.9 m)
+  return (float)(d - 90);             // whole metres (10–164 m)
 }
 
 // ============================================================
@@ -251,6 +257,20 @@ static void runDoubleSqueezeArm()
     rtm_tx_active = false;
     queueMetaPacketBurst(0xF1, 0);
     return;
+  }
+
+  // Bug B fix: drain Serial1 NMEA backlog before activating.
+  // loop() was suspended for the entire ceremony; gps_tx.encode() was not called.
+  // gps_tx.location.age() has accumulated to ceremony duration (7-10s for double-squeeze).
+  // Gate 2 threshold is rtm_gps_timeout_ms × 4 = 8000ms — a normal user exceeds this.
+  // Processing the queued sentences refreshes age to near-zero before the first Gate 2 check.
+  // 300ms cap prevents blocking indefinitely if module is sending continuous data.
+  {
+    unsigned long drain_start = millis();
+    while (Serial1.available() && millis() - drain_start < 300UL)
+    {
+      gps_tx.encode(Serial1.read());
+    }
   }
 
   // Activate RTM

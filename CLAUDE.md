@@ -243,3 +243,22 @@ Runs only while RTM is engaged. Adds physical-world behavioral checks.
 | `gps_max_pair_dist_m` | 50–2000 | 500 | meters | B | Maximum plausible TX-RX distance at handshake |
 | `gps_max_speed_diff_kmh` | 10–200 | 50 | km/h | B | Maximum TX-RX speed difference for handshake |
 | `rtm_vesc_speed_diff_kmh` | 5–50 | 20 | km/h | C | Maximum GPS vs VESC speed difference during RTM |
+
+---
+
+## 12. DISPLAY CHANGE RULES (enforce on every display change)
+
+- Any new display function or font style must be validated on hardware at **ONE call site** before being rolled out to multiple call sites
+- Do not batch-implement display changes across N call sites until Andres has confirmed the single-site test looks correct on the physical device
+- Any call that blocks `loop()` for > 200ms must be explicitly flagged in the plan as:
+  > **BLOCKING CALL — freezes GPS polling, FreeRTOS task scheduling, and Serial1 reads for the duration. Confirm this is acceptable before implementing.**
+
+---
+
+## 13. STRUCT FIELD SENTINEL RULES (enforce on every struct change)
+
+- Any struct field used as a validity check must have an explicit "no data" sentinel that is **NOT `0x00`**
+- Zero is the C++ zero-initialization default and will silently pass any `> 0` guard
+- If the field cannot avoid `0x00` as a valid value, add a companion `bool valid` flag
+- Document the sentinel value in the struct field comment
+- **Why this rule exists**: `decodeRtmDistanceM()` BugA (2026-04-29) — `d == 0x00` (zero-init telemetry) was decoded as `0.0m`, which falsely passed the "within stop distance" pre-arm check and silently aborted RTM arming. Fixed by returning `-1.0f` for `d == 0x00`. The non-zero sentinel (`-1.0f`) is now the documented "no data" value.

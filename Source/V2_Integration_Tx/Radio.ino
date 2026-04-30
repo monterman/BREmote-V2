@@ -84,7 +84,11 @@ bool initiatePairing()
     #endif
     // Send pairing request
     radio.implicitHeader(5);
-    radio.startTransmit(pairingPacket, 5);
+    {
+      int16_t _txErr = radio.startTransmit(pairingPacket, 5);
+      if (_txErr != RADIOLIB_ERR_NONE)
+        Serial.printf("[Radio] startTransmit error %d at line %d\n", _txErr, __LINE__);
+    }
     delay(10);
     radio.implicitHeader(8);
     radio.startReceive();
@@ -131,7 +135,11 @@ bool initiatePairing()
             radio.implicitHeader(8);
             for(int i = 0; i < 3; i++)
             {
-              radio.startTransmit(pairingPacket, 8);
+              {
+                int16_t _txErr = radio.startTransmit(pairingPacket, 8);
+                if (_txErr != RADIOLIB_ERR_NONE)
+                  Serial.printf("[Radio] startTransmit error %d at line %d\n", _txErr, __LINE__);
+              }
               delay(300);
             }
 
@@ -246,7 +254,11 @@ void sendData(void *parameter)
         #endif
 
         radio.implicitHeader(6);
-        radio.startTransmit(metaPkt, 6);
+        {
+          int16_t _txErr = radio.startTransmit(metaPkt, 6);
+          if (_txErr != RADIOLIB_ERR_NONE)
+            Serial.printf("[Radio] startTransmit error %d at line %d\n", _txErr, __LINE__);
+        }
         rtm_meta_count--;
         num_sent_packets++;
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -289,7 +301,11 @@ void sendData(void *parameter)
         #endif
 
         radio.implicitHeader(6);
-        radio.startTransmit(announcePkt, 6);
+        {
+          int16_t _txErr = radio.startTransmit(announcePkt, 6);
+          if (_txErr != RADIOLIB_ERR_NONE)
+            Serial.printf("[Radio] startTransmit error %d at line %d\n", _txErr, __LINE__);
+        }
         num_sent_packets++;
         vTaskDelay(pdMS_TO_TICKS(10));  // wait for 6-byte TX to complete; RX switches mode during this window
 
@@ -315,7 +331,11 @@ void sendData(void *parameter)
         #endif
 
         radio.implicitHeader(14);
-        radio.startTransmit(gpsPkt, 14);
+        {
+          int16_t _txErr = radio.startTransmit(gpsPkt, 14);
+          if (_txErr != RADIOLIB_ERR_NONE)
+            Serial.printf("[Radio] startTransmit error %d at line %d\n", _txErr, __LINE__);
+        }
         // 14-byte packet needs slightly more air time than 6-byte at SF6/BW250
         vTaskDelay(pdMS_TO_TICKS(15));
       }
@@ -356,7 +376,11 @@ void sendData(void *parameter)
         #endif
 
         radio.implicitHeader(6);
-        radio.startTransmit(sendArray, 6);
+        {
+          int16_t _txErr = radio.startTransmit(sendArray, 6);
+          if (_txErr != RADIOLIB_ERR_NONE)
+            Serial.printf("[Radio] startTransmit error %d at line %d\n", _txErr, __LINE__);
+        }
         num_sent_packets++;
         vTaskDelay(pdMS_TO_TICKS(10));
       }

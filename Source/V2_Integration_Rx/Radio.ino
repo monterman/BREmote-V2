@@ -1,3 +1,4 @@
+// V3 - 2026-04-29 - Bundle C: startTransmit() return value checked and logged on error
 // V3 - 2026-04-24 - Added GPS meta-packet reception: gps_meta_pending state, processMetaGpsPacket(), triggeredReceive() 2-path state machine
 // V3 - 2026-04-24 - Added Phase B GPS handshake check: gpsPhaseBCheck() called from processMetaGpsPacket()
 // V3 - 2026-04-25 - P7: Added processRtmStatePacket(), processFmOverridePacket(); dispatch 0xF1/0xF2 in triggeredReceive()
@@ -93,7 +94,11 @@ bool waitForPairing()
           #endif
           // Send response
           radio.implicitHeader(8);
-          radio.startTransmit(responsePacket, 8);
+          {
+            int16_t _txErr = radio.startTransmit(responsePacket, 8);
+            if (_txErr != RADIOLIB_ERR_NONE)
+              Serial.printf("[Radio] startTransmit error %d at line %d\n", _txErr, __LINE__);
+          }
           delay(10);
           radio.startReceive();
           rfInterrupt = false;
@@ -479,7 +484,11 @@ void triggeredReceive(void *parameter) {
 
                 vTaskDelay(pdMS_TO_TICKS(10));
                 radio.implicitHeader(6);
-                radio.startTransmit(sendArray, 6);
+                {
+                  int16_t _txErr = radio.startTransmit(sendArray, 6);
+                  if (_txErr != RADIOLIB_ERR_NONE)
+                    Serial.printf("[Radio] startTransmit error %d at line %d\n", _txErr, __LINE__);
+                }
                 vTaskDelay(pdMS_TO_TICKS(10));
               }
             }

@@ -2,8 +2,8 @@
 // V3 - 2026-04-24 - Call initTxGPS() in setup() after applyConfigSettings() so GPS UART is ready on boot
 // V3 - 2026-04-21 - Added getTxGPSLoop() call in loop() and forward declarations for TX GPS functions
 // V3 - 2026-04-27 - P8: loop() calls renderRtmInfoDisplay() instead of renderOperationalDisplay() when rtm_tx_active
-// V2.5-Evo - 2026-04-29 - Sleep: replaced hardcoded SLEEP_TIMEOUT_MS with
-//   usrConf.sleep_timeout_s (SPIFFS); 0=disabled, default 300s
+// V2.5-Evo - 2026-04-29 - Sleep: dual-condition auto-sleep — user idle (no throttle/toggle
+//   above deadzone) OR RX silent; both use sleep_timeout_s; pocket-safe thresholds applied
 #include "BREmote_V2_Tx.h"
 // Function prototypes — forward declarations to resolve Arduino IDE ordering issues
 // Init & Setup Functions
@@ -69,6 +69,12 @@ Adafruit_ADS1115 ads;
 //Ticker ticksrc; // Unused — replaced by FreeRTOS tasks
 // V2.5-Evo - 2026-04-29 - Sleep: SLEEP_TIMEOUT_MS removed; timeout now read from
 // usrConf.sleep_timeout_s (SPIFFS). 0 = disabled. Default 300s = 5 minutes.
+
+// Tracks time of last intentional user input for inactivity sleep.
+// Reset when throttle is pulled above noise floor or toggle moves off center.
+// Pocket-safe: ADC noise and accidental contact below these thresholds are ignored.
+static unsigned long last_user_input_ms  = 0;
+static uint8_t       last_sleep_steer    = 127;  // last known steer_scaled; 127=centre
 
 void setup()
 {
@@ -151,15 +157,30 @@ void loop()
 
   checkSerial();
 
-  // Auto-sleep: if RX has been silent longer than the configured timeout, deep sleep.
-  // Uses last_packet (time of last LoRa telemetry from RX) as the inactivity signal.
-  // Pocket-safe: accidental throttle/toggle input does not reset this timer — only
-  // a live RX connection keeps the TX awake.
-  // sleep_timeout_s == 0 disables auto-sleep entirely.
-  if (usrConf.sleep_timeout_s > 0 &&
-      millis() - last_packet > (uint32_t)usrConf.sleep_timeout_s * 1000UL)
+  // Update last_user_input_ms when intentional input is detected.
+  // Throttle threshold: thr_scaled > 20 (~8% pull — above noise floor).
+  // Toggle threshold: steer_scaled moved > 15 counts from centre (127) — deliberate movement.
+  // Both thresholds are chosen to reject pocket pressure and ADC noise.
+  if (thr_scaled > 20 || abs((int)steer_scaled - 127) > 15)
   {
-    deepSleep();
+    last_user_input_ms = millis();
+  }
+  last_sleep_steer = steer_scaled;
+
+  // Auto-sleep: fires when EITHER condition is true for sleep_timeout_s seconds.
+  // Primary:  no intentional user input (throttle or toggle above deadzone).
+  // Fallback: no LoRa packet received from RX (RX off or out of range).
+  // Both use the same timeout. sleep_timeout_s == 0 disables auto-sleep entirely.
+  // Pocket-safe: thr_scaled ≤ 20 and steer within 15 counts of centre do not count as input.
+  if (usrConf.sleep_timeout_s > 0)
+  {
+    uint32_t sleep_ms   = (uint32_t)usrConf.sleep_timeout_s * 1000UL;
+    bool     user_idle  = (millis() - last_user_input_ms > sleep_ms);
+    bool     rx_silent  = (millis() - last_packet        > sleep_ms);
+    if (user_idle || rx_silent)
+    {
+      deepSleep();
+    }
   }
 
   // V3 - 2026-04-27 - P8: Show RTM/FM info (distance/speed) when RTM is active; normal display otherwise

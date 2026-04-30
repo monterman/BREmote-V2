@@ -45,7 +45,7 @@
 
 #include <TinyGPS++.h> //TinyGPSPlus 1.0.3 Mikal Hart
 
-#define SW_VERSION 27  // V2.5-Evo — 27 = V2.7; first flash resets all RX SPIFFS config to defaults
+#define SW_VERSION 28  // V2.5-Evo — 28 = V2.8; first flash resets all RX SPIFFS config to defaults
 const char* CONF_FILE_PATH = "/data.txt";
 const char* BC_FILE_PATH = "/batconf.txt";
 

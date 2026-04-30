@@ -26,6 +26,8 @@
 // V2.5-Evo - 2026-04-29 - F0: FM cycle extended to 1→2→3→0; landing on 0 disarms FM (RAM-only hand-off mode)
 // V2.5-Evo - 2026-04-29 - Display: F0-F3 confirms and FM arm confirm now use large-font
 //   displayDigits(LET_F, mode) instead of showFullScreenMessage() compact font
+// V2.5-Evo - 2026-04-29 - Display: "St" confirm now uses large-font displayDigits(LET_S, LET_T)
+//   in all three call sites (rtmDisengage, runDoubleSqueezeArm rejection, fmInternalDisarm)
 
 extern volatile uint8_t current_vib_pattern;
 extern float rtm_arm_dist_m;  // defined in BREmote_V2_Tx.h — captured at RTM engage moment
@@ -114,8 +116,11 @@ static void rtmDisengage()
   // Fire Pattern 4 BEFORE the blocking display so vibration runs during the 2s flash
   current_vib_pattern = 4;  // 2 fast short = RTM disengage confirm
 
-  // Full-screen "St" (S=3, t=3 = 6 cols, fits within C0-C6; bits 7-9 are unconnected hw ROW lines)
-  showFullScreenMessage("St", 2000);
+  // Large-font stop confirm: LET_S(32) renders as "5", LET_T(20) renders as "t".
+  // "5t" appearance is intentional — matches large-font style of F0-F3 confirms.
+  displayDigits(LET_S, LET_T);
+  updateDisplay();
+  delay(2000);
 }
 
 // ---- Decode telemetry.rtm_distance to metres ----
@@ -238,7 +243,10 @@ static void runDoubleSqueezeArm()
                                         // the 4× override stale; all other exits
                                         // (timeouts + rtmDisengage) already clear it
     current_vib_pattern = 4;
-    showFullScreenMessage("St", 2000);
+    // Large-font stop confirm on arm rejection.
+    displayDigits(LET_S, LET_T);
+    updateDisplay();
+    delay(2000);
     rtm_tx_state  = RTM_IDLE;
     rtm_tx_active = false;
     queueMetaPacketBurst(0xF1, 0);
@@ -397,7 +405,10 @@ static void fmDisarm()
   fm_last_sync_ms  = 0;            // Change E: clear keepalive timer
   queueMetaPacketBurst(0xF2, 0);   // mode 0 = FM disabled on RX (followme_mode=0)
   current_vib_pattern = 4;         // Pattern 4: 2 fast buzzes = disarm confirm
-  showFullScreenMessage("St", 2000);
+  // Large-font stop confirm on FM disarm.
+  displayDigits(LET_S, LET_T);
+  updateDisplay();
+  delay(2000);
 }
 
 // Called by handleGearToggle() combo (LEFT tap + RIGHT hold 5s) — toggles arm/disarm.

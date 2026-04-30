@@ -201,7 +201,7 @@ struct confStruct {
     // V3 - 2026-04-30 - BUNDLE E: GPS POLLING RATE
     uint16_t gps_update_hz;   // 1-10 Hz; default 2; how often per second to drain the GPS UART (2=500ms, 5=200ms)
 };
-static_assert(sizeof(confStruct) == 158, "confStruct size mismatch — expected 158 bytes (V3.3/P7+BundleB+BundleE). Update this assert if you change the struct.");  // 112->128 Phase A; 128->136 Phase B; 136->152 P7 RTM (2026-04-25); 152->154 Bundle B vesc_timeout_s (2026-04-29); 154->156 Bundle B vesc_timeout_s actual alignment (2026-04-29); 156->158 Bundle E gps_update_hz (2026-04-30).
+static_assert(sizeof(confStruct) == 156, "confStruct size mismatch — expected 156 bytes (V3.3/P7+BundleB+BundleE). Update this assert if you change the struct.");  // 112->128 Phase A; 128->136 Phase B; 136->152 P7 RTM (2026-04-25); 152->154 Bundle B vesc_timeout_s (2026-04-29); 154->156 Bundle B vesc_timeout_s actual alignment (2026-04-29); 156 unchanged — Bundle E gps_update_hz fills tail padding (2026-04-30).
 confStruct usrConf;
   //The orginal confs were:  ##// confStruct defaultConf = {SW_VERSION, 1, 0, 0, 50, 0, 0, 1500, 2000, 1500, 2000, 1000, 10, 0, 1, 0, 0, 0, 0, 0, 25.0f, 10.0f, 10.0f, 5.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0, 1000, 1, 0, {0, 0, 0}, {0, 0, 0}, {'1','2','3','4','5','6','7','8'}};
   // V3 default configuration — tuned for monterman hardware

@@ -31,9 +31,28 @@
 // V2.5-Evo - 2026-04-29 - Bug fix: RTM arm always failed — two root causes:
 //   BugA: decodeRtmDistanceM() returned 0.0m for zero-init telemetry (d==0x00 now → -1.0f)
 //   BugB: GPS age exceeded 4× override on double-squeeze; drain Serial1 before RTM_ACTIVE
+// V2.5-Evo - 2026-04-29 - GPS dot fix: gpsKeepAliveDelay() replaces bare delay() in
+//   ceremony and confirms; drains Serial1 to keep gps_tx.location.age() fresh and
+//   prevent GPS dot blinking during blocking display holds.
 
 extern volatile uint8_t current_vib_pattern;
 extern float rtm_arm_dist_m;  // defined in BREmote_V2_Tx.h — captured at RTM engage moment
+
+// ---- GPS-aware blocking delay ----
+// Replaces bare delay() calls in the arm ceremony and mode confirms.
+// Drains Serial1 in 10ms chunks so gps_tx.location.age() stays fresh.
+// Prevents the GPS dot from blinking during blocking display animations.
+// Safe to call from loop() only (core 1) — gps_tx.encode() must not be
+// called concurrently from core 0.
+static void gpsKeepAliveDelay(uint32_t ms)
+{
+  unsigned long start = millis();
+  while (millis() - start < ms)
+  {
+    while (Serial1.available()) gps_tx.encode(Serial1.read());
+    delay(10);
+  }
+}
 
 // ============================================================
 // RTM STATE MACHINE
@@ -123,7 +142,7 @@ static void rtmDisengage()
   // "5t" appearance is intentional — matches large-font style of F0-F3 confirms.
   displayDigits(LET_S, LET_T);
   updateDisplay();
-  delay(2000);
+  gpsKeepAliveDelay(2000);
 }
 
 // ---- Decode telemetry.rtm_distance to metres ----
@@ -193,20 +212,20 @@ static void runDoubleSqueezeArm()
   {
     // Single-squeeze: unlock, pause, then Pattern 4 + "r n" arm confirm
     unlockAnimation();
-    delay(250);
+    gpsKeepAliveDelay(250);
     current_vib_pattern = 4;   // Pattern 4 after visual unlock completes
     displayDigitZone("r n");
     updateDisplay();
-    delay(2000);
+    gpsKeepAliveDelay(2000);
   }
   else
   {
     // Double-squeeze: first unlock (no P4 yet), pause, then black screen, then wait for second squeeze
     unlockAnimation();
-    delay(250);
+    gpsKeepAliveDelay(250);
     for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000;
     updateDisplay();
-    delay(800);
+    gpsKeepAliveDelay(800);
 
     bool second_ok = false;
     hold_ms = 0;
@@ -234,11 +253,11 @@ static void runDoubleSqueezeArm()
 
     // Second squeeze confirmed: unlock, pause, then Pattern 4 + "r n" arm confirm
     unlockAnimation();
-    delay(250);
+    gpsKeepAliveDelay(250);
     current_vib_pattern = 4;   // Pattern 4 after visual unlock completes
     displayDigitZone("r n");
     updateDisplay();
-    delay(2000);
+    gpsKeepAliveDelay(2000);
   }
 
   // Pre-arm distance check: reject if already inside the disengage threshold
@@ -252,7 +271,7 @@ static void runDoubleSqueezeArm()
     // Large-font stop confirm on arm rejection.
     displayDigits(LET_S, LET_T);
     updateDisplay();
-    delay(2000);
+    gpsKeepAliveDelay(2000);
     rtm_tx_state  = RTM_IDLE;
     rtm_tx_active = false;
     queueMetaPacketBurst(0xF1, 0);
@@ -428,7 +447,7 @@ static void fmDisarm()
   // Large-font stop confirm on FM disarm.
   displayDigits(LET_S, LET_T);
   updateDisplay();
-  delay(2000);
+  gpsKeepAliveDelay(2000);
 }
 
 // Called by handleGearToggle() combo (LEFT tap + RIGHT hold 5s) — toggles arm/disarm.
@@ -459,7 +478,7 @@ void cycleFmMode()
         // Large-font F0 disarm confirm: LET_F + 0. Shorter hold (1s) — this is a disarm, not a mode select.
         displayDigits(LET_F, 0);
         updateDisplay();
-        delay(1000);
+        gpsKeepAliveDelay(1000);
         queueMetaPacketBurst(0xF2, 0);       // tell RX: FM disabled
         fm_armed         = false;
         fm_throttle_seen = false;
@@ -473,7 +492,7 @@ void cycleFmMode()
       // Large-font mode confirm: LET_F + mode digit (1/2/3). snprintf no longer needed.
       displayDigits(LET_F, last_fm_mode);
       updateDisplay();
-      delay(2000);
+      gpsKeepAliveDelay(2000);
       queueMetaPacketBurst(0xF2, last_fm_mode);
       fm_last_sync_ms = millis();
       fm_arm_ms       = millis();   // reset arm window — user is actively choosing a mode
@@ -502,7 +521,7 @@ void cycleFmMode()
   // instead of the generic "FM" text. Uses large num0[] font via LET_F(15) + mode digit.
   displayDigits(LET_F, last_fm_mode);
   updateDisplay();
-  delay(2000);
+  gpsKeepAliveDelay(2000);
 
   queueMetaPacketBurst(0xF2, last_fm_mode);
 }
@@ -524,7 +543,7 @@ void cycleFmModeArmed()
     // Large-font F0 disarm confirm: LET_F + 0. Shorter hold (1s) — this is a disarm, not a mode select.
     displayDigits(LET_F, 0);
     updateDisplay();
-    delay(1000);
+    gpsKeepAliveDelay(1000);
     queueMetaPacketBurst(0xF2, 0);       // tell RX: FM disabled
     fm_armed         = false;
     fm_throttle_seen = false;
@@ -538,7 +557,7 @@ void cycleFmModeArmed()
   // Large-font mode confirm: LET_F + mode digit (1/2/3). snprintf no longer needed.
   displayDigits(LET_F, last_fm_mode);
   updateDisplay();
-  delay(2000);
+  gpsKeepAliveDelay(2000);
   queueMetaPacketBurst(0xF2, last_fm_mode);
   fm_last_sync_ms = millis();              // reset keepalive — just synced
   fm_arm_ms       = millis();             // reset arm window — user is actively choosing a mode

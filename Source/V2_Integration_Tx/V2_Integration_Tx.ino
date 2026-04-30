@@ -2,6 +2,8 @@
 // V3 - 2026-04-24 - Call initTxGPS() in setup() after applyConfigSettings() so GPS UART is ready on boot
 // V3 - 2026-04-21 - Added getTxGPSLoop() call in loop() and forward declarations for TX GPS functions
 // V3 - 2026-04-27 - P8: loop() calls renderRtmInfoDisplay() instead of renderOperationalDisplay() when rtm_tx_active
+// V2.5-Evo - 2026-04-29 - Sleep: replaced hardcoded SLEEP_TIMEOUT_MS with
+//   usrConf.sleep_timeout_s (SPIFFS); 0=disabled, default 300s
 #include "BREmote_V2_Tx.h"
 // Function prototypes — forward declarations to resolve Arduino IDE ordering issues
 // Init & Setup Functions
@@ -65,7 +67,8 @@ void vibrationTask(void *parameter);   // haptic feedback task — drives vibrat
 SX1262 radio = new Module(P_LORA_NSS, P_LORA_DIO, P_LORA_RST, P_LORA_BUSY);
 Adafruit_ADS1115 ads;
 //Ticker ticksrc; // Unused — replaced by FreeRTOS tasks
-static constexpr uint32_t SLEEP_TIMEOUT_MS = 5UL * 60UL * 1000UL;
+// V2.5-Evo - 2026-04-29 - Sleep: SLEEP_TIMEOUT_MS removed; timeout now read from
+// usrConf.sleep_timeout_s (SPIFFS). 0 = disabled. Default 300s = 5 minutes.
 
 void setup()
 {
@@ -148,7 +151,13 @@ void loop()
 
   checkSerial();
 
-  if(millis() - last_packet > SLEEP_TIMEOUT_MS)
+  // Auto-sleep: if RX has been silent longer than the configured timeout, deep sleep.
+  // Uses last_packet (time of last LoRa telemetry from RX) as the inactivity signal.
+  // Pocket-safe: accidental throttle/toggle input does not reset this timer — only
+  // a live RX connection keeps the TX awake.
+  // sleep_timeout_s == 0 disables auto-sleep entirely.
+  if (usrConf.sleep_timeout_s > 0 &&
+      millis() - last_packet > (uint32_t)usrConf.sleep_timeout_s * 1000UL)
   {
     deepSleep();
   }

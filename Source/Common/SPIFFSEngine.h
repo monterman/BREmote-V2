@@ -1,6 +1,7 @@
 #ifndef SPIFFS_ENGINE_H
 #define SPIFFS_ENGINE_H
 
+// V3 - 2026-04-30 - WebUI auto-reinstall via FNV1a content hash; removed WEB_UI_VERSION date string
 // Shared SPIFFS config persistence and WebUI embedding for BREmote V2 TX and RX.
 // Requirements before #include:
 //   - <SPIFFS.h>, "mbedtls/base64.h" included
@@ -30,7 +31,11 @@ uint8_t esp_crc8(uint8_t *data, uint8_t length);
 static const char* WEB_UI_INDEX_PATH = "/index.html";
 static const char* WEB_UI_INDEX_TMP_PATH = "/index.new";
 static const char* WEB_UI_VERSION_PATH = "/ui.version";
-static const char* WEB_UI_VERSION = "2026-04-22.4"; // V3 - 2026-04-22 - bumped to force reinstall after removing broken mag_offset/scale entries from RX web UI (fields were not in kCfgFields, so GET/POST would fail)
+// V3 - 2026-04-30 - WebUI version tracking replaced with automatic FNV1a content hash.
+// WEB_UI_VERSION date string removed. webUiWriteVersionFile() now writes the hash of
+// WEB_UI_INDEX_HTML to /ui.version. ensureWebUiInSPIFFS() compares that hash against
+// a freshly computed hash of the embedded HTML on every boot. Any change to
+// WebUiEmbedded.h changes the hash, triggers automatic reinstall. No manual bump needed.
 
 static uint32_t webUiFnv1a(const uint8_t* data, size_t len)
 {
@@ -59,13 +64,19 @@ static uint32_t webUiFileFnv1a(File &file)
   return hash;
 }
 
+// Writes the FNV1a hash of the embedded HTML to /ui.version as an 8-char hex string.
+// Called after every successful WebUI install. The stored hash is compared on next boot
+// to detect whether WebUiEmbedded.h has changed since the last install.
 static bool webUiWriteVersionFile()
 {
+  const uint32_t hash = webUiFnv1a((const uint8_t*)WEB_UI_INDEX_HTML, WEB_UI_INDEX_HTML_LEN);
+  char hashStr[9];  // 8 hex chars + null terminator
+  snprintf(hashStr, sizeof(hashStr), "%08X", hash);
   File vf = SPIFFS.open(WEB_UI_VERSION_PATH, FILE_WRITE);
   if (!vf) return false;
-  const size_t written = vf.print(WEB_UI_VERSION);
+  const size_t written = vf.print(hashStr);
   vf.close();
-  return written == String(WEB_UI_VERSION).length();
+  return written == 8;
 }
 
 static bool webUiReadVersionFile(String &outVersion)
@@ -117,9 +128,14 @@ static bool webUiInstallEmbedded()
   return webUiWriteVersionFile();
 }
 
+// Returns the FNV1a hash of the currently embedded HTML as an 8-char hex string.
+// Used for serial diagnostics — shows what version would be installed on next mismatch.
 String getTargetWebUiVersion()
 {
-  return String(WEB_UI_VERSION);
+  const uint32_t hash = webUiFnv1a((const uint8_t*)WEB_UI_INDEX_HTML, WEB_UI_INDEX_HTML_LEN);
+  char hashStr[9];
+  snprintf(hashStr, sizeof(hashStr), "%08X", hash);
+  return String(hashStr);
 }
 
 String getInstalledWebUiVersion()
@@ -134,13 +150,23 @@ bool forceUpdateWebUiInSPIFFS()
   return webUiInstallEmbedded();
 }
 
+// Checks whether the WebUI stored in SPIFFS matches the embedded HTML in WebUiEmbedded.h.
+// Comparison is done via FNV1a hash — any change to WebUiEmbedded.h changes the hash,
+// which triggers automatic reinstall on next boot. No manual version bump ever needed.
 bool ensureWebUiInSPIFFS()
 {
+  // Compute hash of the currently embedded HTML (runs once at boot, ~1-2ms)
+  const uint32_t currentHash = webUiFnv1a((const uint8_t*)WEB_UI_INDEX_HTML, WEB_UI_INDEX_HTML_LEN);
+  char currentHashStr[9];
+  snprintf(currentHashStr, sizeof(currentHashStr), "%08X", currentHash);
+
+  // Reinstall if the page file is missing entirely
   bool needsInstall = !SPIFFS.exists(WEB_UI_INDEX_PATH);
-  String installedVersion;
   if (!needsInstall)
   {
-    if (!webUiReadVersionFile(installedVersion) || installedVersion != WEB_UI_VERSION)
+    // Reinstall if stored hash doesn't match current HTML hash
+    String storedHash;
+    if (!webUiReadVersionFile(storedHash) || storedHash != String(currentHashStr))
     {
       needsInstall = true;
     }

@@ -1,3 +1,4 @@
+// V3 - 2026-04-30 - Bundle E: GPS moved to its own gps_loop_timer (rate = gps_update_hz); removed from 1000ms gate
 // V3 - 2026-04-25 - P7: Added runRtmLoop() call in loop(); forward declarations
 #include "BREmote_V2_Rx.h"
 
@@ -38,6 +39,7 @@ void setup()
 }
 
 unsigned long loop_timer = 0;
+unsigned long gps_loop_timer = 0;  // V3 - 2026-04-30 - Bundle E: separate GPS polling timer
 int wetness_counter = 0;
 
 void loop()
@@ -55,10 +57,23 @@ void loop()
   // Runs at 10Hz regardless of the 1000ms GPS/VESC gate below.
   runRtmLoop();
 
+  // GPS runs on its own configurable-rate timer, independent of the 1000ms VESC/wetness gate.
+  // gps_update_hz=2 → 500ms interval; gps_update_hz=5 → 200ms interval.
+  // Guard against zero (divide-by-zero): fall back to 500ms if gps_update_hz is unset.
+  if(usrConf.gps_en)
+  {
+    uint32_t gps_interval_ms = (usrConf.gps_update_hz > 0) ? (1000UL / usrConf.gps_update_hz) : 500UL;
+    if(millis() - gps_loop_timer >= gps_interval_ms)
+    {
+      gps_loop_timer = millis();
+      getGPSLoop();
+    }
+  }
+
   if(millis()-loop_timer > 1000)
   {
     loop_timer = millis();
-    
+
     if(usrConf.wet_det_active)
     {
       wetness_counter++;
@@ -67,11 +82,6 @@ void loop()
         checkWetness();
         wetness_counter = 0;
       }
-    }
-
-    if(usrConf.gps_en)
-    {
-      getGPSLoop();
     }
 
     if(usrConf.data_src == 1)

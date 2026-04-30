@@ -1,3 +1,4 @@
+// V3 - 2026-04-30 - Bundle E: replaced 300ms blocking serial drain with non-blocking while(available()) drain
 // V3 - 2026-04-24 - Added Phase B FIELD SERVICE NOTE (sizeof confStruct 128→136)
 // V3 - 2026-04-22 - Added gps_chip_type branch: type 0/1=BN-220/BN-880 (9600→115200, 5Hz), type 2/3=M10 (115200 direct, 10Hz, all constellations)
 // V3 - 2026-04-22 - Added Phase A GPS anti-spoofing: HDOP check, teleport check, acceleration check (gpsPhaseACheck)
@@ -312,23 +313,15 @@ void getGPSLoop()
   Serial1.flush();
   
   // Reset buffer for new reading
+  // Non-blocking drain: read all bytes currently in the UART buffer and return immediately.
+  // The GPS module sends NMEA sentences at its configured rate (5-10Hz); calling getGPSLoop()
+  // on its own timer (V2_Integration_Rx.ino gps_loop_timer) ensures each call arrives after
+  // at least one sentence interval, so nothing is missed and loop() is never blocked.
   bool newData = false;
-  unsigned long startTime = millis();
-  
-  while (millis() - startTime < 300) {
-    if (Serial1.available())
-    {
-      char c = Serial1.read();
-      // Feed each character to TinyGPS++ object
-      if (gps.encode(c)) {
-        newData = true;
-      }
-    }
-    else
-    {
-      // No data available, yield to other tasks
-      vTaskDelay(1 / portTICK_PERIOD_MS);
-    }
+  while (Serial1.available())
+  {
+    char c = Serial1.read();
+    if (gps.encode(c)) newData = true;
   }
 
   // V3 - 2026-04-25 - Fix: use isValid() not isUpdated() for speed check — isUpdated() fails when stationary blocking Phase B

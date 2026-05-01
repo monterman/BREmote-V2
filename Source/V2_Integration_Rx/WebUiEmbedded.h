@@ -7,6 +7,7 @@
 // V3 - 2026-04-30 - Rename: gps_max_jump_kmh → gps_max_teleport_kmh (clarity)
 // V3 - 2026-04-30 - Bundle E: gps_update_hz field added to GPS & Follow-Me group; gps_max_teleport_kmh default 200→80
 // V3 - 2026-04-29 - Bundle A: radio_preset max clamped to 2; dead foil_speed != 99 sentinel removed
+// V3 - 2026-05-01 - fix: wet_det_active description corrected — warning-only (E71 + vibration), output is never cut
 
 #include <Arduino.h>
 
@@ -135,7 +136,7 @@ const fields=[
 {key:"ubat_cal",label:"Battery Cal Factor",description:"ADC-to-voltage calibration multiplier. Multiply raw ADC reading by this factor to get pack voltage. Calibrate by measuring real voltage with a multimeter and adjusting until they match. Range 0.000001-1.0, default 0.0095554.",group:"Battery",type:"float",def:0.0095554,min:0.000001,max:1.0,step:0.000001},
 {key:"ubat_offset",label:"Battery Voltage Offset",description:"Fixed voltage offset added to the calibrated ADC reading. Used to correct for resistor divider bias. -100.0V to +100.0V. Adjust in small steps (e.g. ±0.1V) until measured voltage matches multimeter. Default 0.0.",group:"Battery",type:"float",def:0.0,min:-100.0,max:100.0,step:0.0001},
 {key:"bms_det_active",label:"BMS Detection",description:"0=BMS detection disabled, 1=BMS cutoff detection enabled (RX monitors BMS signal pin and shuts output if BMS trips). Default 0.",group:"Sensors",type:"bool",def:0,min:0,max:1},
-{key:"wet_det_active",label:"Water Detection",description:"0=wetness detection disabled, 1=enabled (RX monitors moisture sensor and cuts output if water ingress detected). Default 1.",group:"Sensors",type:"bool",def:1,min:0,max:1},
+{key:"wet_det_active",label:"Water Detection",description:"0=wetness detection disabled, 1=enabled (RX monitors moisture sensor and sends E71 warning to TX display with vibration alert if water ingress detected — motor output is NOT cut, user can continue riding and return to shore). Default 1.",group:"Sensors",type:"bool",def:1,min:0,max:1},
 {key:"dummy_delete_me",label:"Dummy (reserved)",description:"Reserved field, will be removed",group:"Sensors",type:"int",def:0,min:0,max:65535},
 {key:"gps_en",label:"GPS Enabled",description:"0=GPS module disabled (no UART polling, all GPS-dependent features blocked), 1=GPS enabled. RTM and Follow-Me require GPS enabled. Default 0.",group:"GPS & Follow-Me",type:"bool",def:0,min:0,max:1},
 {key:"gps_update_hz",label:"GPS Update Rate",description:"How many times per second the RX drains the GPS UART for new NMEA data. 2=500ms interval (default, safe for BN-880 at 5Hz), 5=200ms (poll every 200ms, catches all 5Hz sentences). Range 1-10 Hz. Does not change the GPS module output rate — only how often the firmware reads it.",group:"GPS & Follow-Me",type:"int",def:2,min:1,max:10,unit:"Hz"},

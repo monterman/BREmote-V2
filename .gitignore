@@ -26,3 +26,8 @@ Source(JanRush V2)/
 
 # Claude Code local settings (machine-specific, never commit)
 .claude/
+
+# Claude AI workflow files — local only, not published to GitHub
+CLAUDE.md
+.claudeignore
+docs/superpowers/

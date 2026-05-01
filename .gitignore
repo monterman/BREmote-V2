@@ -7,6 +7,10 @@
 *.bootloader.bin
 *.partitions.bin
 
+# Allow versioned firmware release binaries
+!firmware/**/*.bin
+!firmware/**/*.merged.bin
+
 # VS Code
 .vscode/
 *.code-workspace

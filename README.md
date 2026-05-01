@@ -20,7 +20,7 @@ BREmote is a collaborative open-source project built by the efoil and esk8 commu
 | **Janrusher** | Dynamic throttle cap mode and Web Console foundation — significant V2 enhancements forked from LudwigBre, further refined in V2.5-Evo |
 | **monterman** | V2.5-Evo firmware: TX GPS implementation, dev-logger AUX button toggle with LED status feedback (5× flash = start, 2× flash = stop), date format DDMMYY → MMDDYY, web console major rebuild (upload/download/compare JSON, integrated serial console, TX+RX coverage, plain-English parameter docs for every setting), deep codebase analysis, critical bug documentation, RTM/FM mode design |
 
-This fork exists because LudwigBre published open hardware and firmware under GPL 3.0. V3 enhancements are released under the same license and dedicated back to the community.
+This fork exists because LudwigBre published open hardware and firmware under GPL 3.0. V2.5-Evo enhancements are released under the same license and dedicated back to the community.
 
 ---
 
@@ -48,14 +48,14 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 
 ## What's New in V2.5-Evo
 
-| Feature | V2 | V3 |
+| Feature | V2 | V2.5-Evo |
 |---|---|---|
 | TX GPS speed display (mph / km/h / knots) | ❌ | ✅ |
 | GPS speed source SPIFFS-configurable | ❌ | ✅ |
 | Data logger AUX button toggle + LED feedback *(logger by LudwigBre)* | ❌ | ✅ |
 | Log download over WiFi web UI | ❌ | ✅ |
 | US-format log filenames (MMDDYY) | ❌ | ✅ |
-| V3 Config Studio offline HTML tool | ❌ | ✅ |
+| Web Serial Config Tool (offline HTML, USB serial) | ❌ | ✅ |
 | Full codebase audit + stability fixes (7 critical) | ❌ | ✅ |
 | GPS anti-spoofing: Phase A (RX standalone) | ❌ | ✅ |
 | GPS anti-spoofing: Phase B (TX↔RX handshake) | ❌ | ✅ |
@@ -90,7 +90,7 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 2. **Power on both TX and RX** — TX shows `EP` (not paired) on first boot
 3. **Pair** — hold RIGHT toggle on TX at boot; hold BIND on RX at boot simultaneously
 4. **Connect to WiFi AP** — SSID shown on the device; default password `12345678`
-5. **Open V3 Config Studio** — configure all parameters with plain English labels
+5. **Open the Web Serial Config Tool** — configure all parameters with plain English labels
 6. **Calibrate TX** — hold LEFT toggle at boot, follow the display prompts
 
 ---
@@ -152,10 +152,10 @@ The **SP** (Speed) telemetry display mode can now read speed directly from the T
 |---|---|---|---|
 | 0 | RX GPS | km/h | V2 original |
 | 1 | RX GPS | knots | V2 original |
-| 2 | TX GPS | km/h | ✅ V3 new |
-| 3 | TX GPS | knots | ✅ V3 new |
-| 4 | RX GPS | mph | ✅ V3 new |
-| 5 | TX GPS | mph | ✅ V3 new |
+| 2 | TX GPS | km/h | ✅ V2.5-Evo |
+| 3 | TX GPS | knots | ✅ V2.5-Evo |
+| 4 | RX GPS | mph | ✅ V2.5-Evo |
+| 5 | TX GPS | mph | ✅ V2.5-Evo |
 
 Display shows `--` when no fix is available or the fix is older than the configured stale timeout. Set `gps_en = 1` and reboot after changing it.
 
@@ -166,7 +166,7 @@ TH       → UB           → TE    → SP    → BA
 Throttle → Internal Bat → Temp  → Speed → Foil Bat
 ```
 
-### TX Toggle Button Reference — V3 P8 Gestures
+### TX Toggle Button Reference — V2.5-Evo P8 Gestures
 
 | Input | Result |
 | --- | --- |
@@ -181,7 +181,7 @@ Throttle → Internal Bat → Temp  → Speed → Foil Bat
 | RIGHT tap → LEFT hold 5 s | Arm **Return-to-Me** (RTM) — display shows `rn` |
 | LEFT tap → RIGHT hold 5 s | Cycle **Follow-Me** override mode (F0/F1/F2/F3) |
 
-> **Note:** The lock feature has been removed in V3 P8. The system always boots unlocked. Throttle must be at 0 for long-press actions to fire.
+> **Note:** The lock feature has been removed in V2.5-Evo. The system always boots unlocked. Throttle must be at 0 for long-press actions to fire.
 
 ---
 
@@ -197,7 +197,7 @@ Throttle → Internal Bat → Temp  → Speed → Foil Bat
 - Foil battery cell count and voltage monitoring
 - BMS detection
 - GPS positioning (BN-880)
-- QMC5883L compass (hardware present, heading computation coming in V3.x)
+- QMC5883L compass (hardware present, heading computation coming in V2.5-Evo)
 - Kalman filter on GPS data
 - Follow-me mode framework (positional modes: behind, near right, near left)
 - WiFi AP for web configuration and log management
@@ -476,9 +476,9 @@ Full bar (10 pixels) = buggy at arm distance. Shrinks from the right as the bugg
 | BLE telemetry forwarding | Planned for future release |
 | RTM/FM hardware field test | Static code review passed (10/10 gates). Outdoor GPS + motor bench test still required before field use. |
 
-### V2 Critical Bugs — All Fixed in V3
+### V2 Critical Bugs — All Fixed in V2.5-Evo
 
-| # | Bug | Fix in V3 |
+| # | Bug | Fix in V2.5-Evo |
 |---|---|---|
 | 1 | WDT 1000 ms timeout too close under load | Raised to 3000 ms (RX `Init.ino`) |
 | 2 | `vesc_struct` race condition across ESP32-S3 cores | `vescMutex` semaphore added (RX `VESC.ino`, `Logger.ino`) |
@@ -531,10 +531,10 @@ Full bar (10 pixels) = buggy at arm distance. Shrinks from the right as the bugg
 - Full codebase audit completed — 7 critical bugs and 10 important issues documented
 - TX GPS reading implemented: Beitian BN-220 on Serial1 GPIO 18/19, UBX binary init (115200 baud, 5 Hz), non-blocking polling — does not stall the 10 Hz LoRa cycle
 - GPS speed display in km/h, knots, and mph via `speed_src` SPIFFS parameter (values 2, 3, 5)
-- All user parameters SPIFFS-configurable via V3 Config Studio — nothing hardcoded
-- V3 Config Studio standalone HTML tool created (offline, no install required)
+- All user parameters SPIFFS-configurable via the Web Serial Config Tool — nothing hardcoded
+- Web Serial Config Tool created (offline HTML, no install required)
 - `DESIGN_RETURN_TO_ME.md` added — RTM mode fully designed with state machines, safety gates, and SPIFFS parameter table
-- LoRa meta-packet protocol designed: opcodes 0xF1–0xFE reserved for V3.x autonomous assist features
+- LoRa meta-packet protocol designed: opcodes 0xF1–0xFE reserved for V2.5-Evo autonomous assist features
 - SW_VERSION bumped to 3
 - `CLAUDE.md` added for AI-assisted development workflow and standing safety rules
 

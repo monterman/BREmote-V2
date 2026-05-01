@@ -49,8 +49,9 @@ Step 7: On RX reboot, mode returns to web-configured SPIFFS default
 | State | Display | Duration |
 |---|---|---|
 | RTM armed, waiting for throttle | `rn` blink | Until throttle or arm window timeout |
+| RTM armed + throttle squeezed | `rn` blink + unlock animation | 2s confirm |
 | RTM active (motor running) | RTM info display (distance or speed) | While active |
-| RTM disengaged or hard stop | `St P` full-screen flash | 2s then normal telemetry |
+| RTM disengaged or hard stop | `St` (large-font 2s) | 2s then normal telemetry |
 | FM mode selected | `F0` / `F1` / `F2` / `F3` full-screen flash | 2s confirmation |
 | *(Deprecated)* double-squeeze first squeeze | ~~`Arm`~~ | Removed in P8 |
 | *(Deprecated)* double-squeeze ready | ~~`rdy`~~ | Removed in P8 |
@@ -86,7 +87,7 @@ Failure → RTM arming blocked until next successful handshake. Spoofing event l
 7. VESC ERPM-implied speed is within `rtm_vesc_speed_diff_kmh` (default 20 km/h) of GPS speed
 8. TX GPS data age < `tx_gps_stale_timeout_ms` (TX GPS still fresh)
 
-Any Phase C failure → throttle immediately forced to 0, RTM disengages, display shows `St P` full-screen flash for 2s.
+Any Phase C failure → throttle immediately forced to 0, RTM disengages, display shows `St` for 2s.
 
 ### 3d. RTM Motor Safety Gates (every loop cycle, ALL must pass while RTM active)
 
@@ -103,7 +104,7 @@ When RTM is active, ALL of the following must be true or motor immediately cuts 
 9. Distance to TX > `rtm_stop_distance_m` (hard stop distance)
 10. Throttle not released for > 10s (or RTM disengages)
 
-Any gate failure → throttle forced to 0, `St P` full-screen flash for 2s, RTM disengages.
+Any gate failure → throttle forced to 0, `St` for 2s, RTM disengages.
 
 ---
 
@@ -197,7 +198,7 @@ States: IDLE → ARMING → ARMED → ACTIVE → COOLDOWN → IDLE
 - ARMING: LEFT held after RIGHT tap, counting toward rtm_hold_duration_s
 - ARMED: `rn` blink displayed, arm window active, waiting for throttle squeeze
 - ACTIVE: Motor engaged, throttle ramping, safety gates checked every loop
-- COOLDOWN: `St P` flash for 2s before returning to IDLE
+- COOLDOWN: `St` for 2s before returning to IDLE
 *(SQUEEZE_WAIT state removed — double-squeeze mode deprecated in P8)*
 
 ### 6b. RX state machine for RTM
@@ -217,7 +218,7 @@ RX side: Receives 0xF2 meta-packet, updates runtime variable, no SPIFFS write
 
 | Failure | Detection | Recovery |
 |---|---|---|
-| TX GPS loss | Age > rtm_gps_timeout_ms | Immediate throttle=0, `St P` flash, RTM disengages |
+| TX GPS loss | Age > rtm_gps_timeout_ms | Immediate throttle=0, `St` for 2s, RTM disengages |
 | RX GPS loss | Age > rtm_gps_timeout_ms | Same |
 | Compass invalid | Calibration check fails | Same |
 | LoRa link loss | Last packet > failsafe_time | Standard failsafe (existing) |

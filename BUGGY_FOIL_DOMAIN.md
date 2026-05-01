@@ -25,7 +25,9 @@ navigate back to the foiler's GPS coordinates. Default ON during RTM. The user
 may apply BREmote steering during RTM to course-correct — this is called
 course correction and is the only manual override during RTM.
 
-FM (Follow Me) mode has NO autonomous steering. See FM section below.
+FM (Follow Me) mode is designed to use autonomous steering when engaged — GPS-guided
+  heading corrections to trail the foiler, combined with distance-based throttle gating.
+  See FM section below. Note: FM autonomous steering is not yet implemented (Priority 9, future work).
 
 ## The Tow Phase
 At the start of a session, the foiler holds the tow rope attached to the back of
@@ -57,12 +59,15 @@ After the rope is released:
 FM is designed for the post-release phase. Once the foiler has caught the wave
 and separated from the buggy, FM allows the buggy to trail the foiler.
 
-**FM has no autonomous steering.** The buggy's lateral offset relative to the
-foiler (behind-left, directly behind, behind-right) is a static SPIFFS parameter
-set by the user before the session. The buggy follows by controlling throttle to
-maintain the configured follow distance — it does not steer to track GPS.
-Exception: when the buggy is near-stationary, BREmote steering may be applied to
-reposition. While both buggy and foiler are moving, no steering correction is made.
+**FM uses autonomous steering when engaged.** The buggy applies GPS-guided heading
+corrections to maintain a configured lateral offset relative to the foiler (behind-left,
+directly behind, behind-right — set via SPIFFS before the session). Throttle is gated
+by follow distance: the buggy only moves when the foiler is beyond the minimum follow
+distance, and throttle ramps gradually to avoid sudden engagement.
+
+*Note: FM autonomous steering and GPS following are not yet implemented in firmware.
+The current code supports FM mode selection (F0-F3) via gesture and displays the R5
+proximity bar. Full autonomous FM following is Priority 9 (future work).*
 
 **Throttle model (non-negotiable safety rule):**
 - The user must hold the throttle trigger for the buggy to move — always.
@@ -104,7 +109,7 @@ must be notified (0xF2/0 packet) before RTM proceeds.
 ## Edge Cases the System Does Not Solve
 - Foiler falls and cannot hold the remote: trigger released, buggy stops.
 - Buggy hit by a wave and changes heading: RTM self-corrects via GPS/compass;
-  FM has no heading correction — it follows throttle distance only.
+  FM's intended design includes heading correction; current implementation is throttle-distance gating only (Priority 9 pending).
 - Foiler ends up behind the buggy after a turn: hard stop zone prevents collision
   approach; FM has no directional awareness beyond distance.
 - Rope wrap or entanglement: outside scope of software — operational procedure.

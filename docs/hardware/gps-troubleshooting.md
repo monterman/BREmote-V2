@@ -194,7 +194,7 @@ Garbage symbols — GPS is sending but at a different speed.
 **Fix:** Go to web config at `http://192.168.4.1` (connect to WiFi `BREmoteV2-TX-WebConfig`). Set `gps_chip_type`:
 
 - BN-220 → `0`  
-- M10 or M100 Mini → `2`
+- HGLRC M100 Micro (M10 chip) → `2`
 
 Save, reboot, test again.
 
@@ -231,6 +231,10 @@ Once `?gpsraw` shows clean sentences, the wiring is correct. Now get a satellite
 - [ ] `?printgps` shows `Location valid: YES`  
 - [ ] Latitude and longitude match your phone within 5 meters  
 - [ ] `Sentences failed: 0`
+- [ ] GPS dot on TX display is **slow blinking** (acquiring fix — `gps_en=1` and correct `gps_chip_type` set)
+- [ ] After outdoor fix: GPS dot goes **solid** — confirms GPS signal will show through potting
+
+  > **Why this matters:** Once the GPS is potted you cannot see the blue/red LEDs inside. After potting, the TX display GPS dot (C7 R0) is your only real-time indicator. Slow blink = no fix; solid = locked. GPS dot only appears when `gps_en = 1` in SPIFFS and `gps_chip_type` is set to match the installed module.
 
 ---
 
@@ -260,7 +264,12 @@ Once `?gpsraw` shows clean sentences, the wiring is correct. Now get a satellite
 
 ## **Supported GPS modules**
 
-| Module | Voltage | Works on TX? | Notes | |---|---|---| | **BN-220** | 3.3V | ✅ Confirmed | Recommended. Set `gps_chip_type=0` | | **M100 Mini** | 3.3–5V | ✅ Expected | For Nano TX. Set `gps_chip_type=2` | | M100 Pro | 3.6–5.5V | ❌ No | Needs more than 3.3V — UART corrupted at 3.3V | | M101Q / M10Q | 5V | ❌ No | Needs 5V — TX only provides 3.3V |
+| Module | Voltage | Works on TX? | Notes |
+|---|---|---|---|
+| **BN-220** | 3.3V | ✅ Confirmed | Recommended for TX. Set `gps_chip_type=0` |
+| **[HGLRC M100 Micro](https://www.hglrc.com/products/hglrc-m100_mini-gps)** | 3.3–5V | ✅ Expected | M10 chip, no compass. Set `gps_chip_type=2` |
+| [HGLRC M100 Pro](https://www.hglrc.com/products/m100-pro-gps) | 3.6–5.5V | ❌ No | Needs >3.3V — UART corrupted at ESP32-C3 3.3V supply |
+| M101Q / M10Q | 5V | ❌ No | Needs 5V — TX only provides 3.3V |
 
 ---
 
@@ -274,6 +283,28 @@ Once `?gpsraw` shows clean sentences, the wiring is correct. Now get a satellite
 | `?gpsreinit` | Re-run GPS initialization without rebooting |
 
 ---
+
+## RX Compass — Wiring Verification and Serial Commands
+
+**Who this is for:** Builders connecting the QMC5883L compass (or BN-880 module) to the BREmote RX unit.
+**When to use it:** Compass not detected at boot, RTM steering unreliable, or before potting the RX unit.
+
+### Compass I2C Wiring (RX ESP32-S3)
+
+The QMC5883L compass connects via I2C. The BN-880 GPS module includes an integrated QMC5883L — if using BN-880, the GPS and compass share one I2C cable.
+
+| RX ESP32-S3 Pin | Compass / BN-880 | Signal |
+|---|---|---|
+| **GPIO 2** | SDA | I2C Data |
+| **GPIO 1** | SCL | I2C Clock |
+| 3.3V | VCC | Power |
+| GND | GND | Ground |
+
+> The I2C bus is shared — AW9523 I/O expander (0x58) and compass (QMC5883L at 0x0D) both use the same SDA/SCL lines. Pull-up resistors are on the PCB; do not add external ones.
+
+### Step 1 — Verify Compass Detection with `?i2c`
+
+Open the RX Serial Monitor at 115200 baud and type:
 
 *Guide created: 2026-04-24 — based on real diagnosis during TX unit 1 build.*  
 

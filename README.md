@@ -73,14 +73,14 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 |---|---|---|
 | MCU | ESP32-C3 | ESP32-S3 (dual-core) |
 | Radio | SX1262 LoRa | SX1262 LoRa |
-| GPS | BN-220 or [HGLRC M100 Mini](https://www.hglrc.com/products/hglrc-m100_mini-gps) (M10 chip, no compass, 3.3V–5V) | BN-880 or [HGLRC M100-5883](https://www.hglrc.com/products/m100-5883-gps) (M10 chip + compass) |
+| GPS | BN-220 or [HGLRC M100 Micro](https://www.hglrc.com/products/hglrc-m100_mini-gps) (M10 chip, no compass, 3.3V–5V) | BN-880 or [HGLRC M100-5883](https://www.hglrc.com/products/m100-5883-gps) (M10 chip + compass) |
 | Compass | None | QMC5883L (I2C) |
 | Display | HT16K33 dot matrix (I2C 0x70) | None |
 | ADC | ADS1115 (I2C 0x48) | None |
 | I/O Expander | None | AW9523 (I2C) |
 | ESC / VESC | None | VESC UART or PWM (RMT GPIO 9) |
 
-> ⚠️ **TX GPS must be 3.3V tolerant** — the ESP32-C3 supplies 3.3V only. Both the BN-220 and HGLRC M100 Mini meet this requirement.
+> ⚠️ **TX GPS must be 3.3V tolerant** — the ESP32-C3 supplies 3.3V only. Both the BN-220 and HGLRC M100 Micro meet this requirement.
 
 ---
 
@@ -197,7 +197,7 @@ Throttle → Internal Bat → Temp  → Speed → Foil Bat
 - Foil battery cell count and voltage monitoring
 - BMS detection
 - GPS positioning (BN-880)
-- QMC5883L compass (hardware present, heading computation coming in V2.5-Evo)
+- QMC5883L compass (I2C, fully implemented — heading used by RTM auto-steering)
 - Kalman filter on GPS data
 - Follow-me mode framework (positional modes: behind, near right, near left)
 - WiFi AP for web configuration and log management
@@ -285,7 +285,7 @@ RTM stops automatically when **any** of these conditions occur:
 | Convergence fail | Distance to TX not decreasing (Phase C, checked every 5 s) |
 | Steering input | Steering override while `rtm_steer_exit_on_input = 1` (default) |
 
-On any gate failure: throttle → 0, TX display shows `Stp` for 2 s, haptic confirms disarm.
+On any gate failure: throttle → 0, TX display shows `St P` full-screen flash for 2 s, haptic confirms disarm.
 
 ### SPIFFS Configuration (TX)
 
@@ -524,6 +524,30 @@ Full bar (10 pixels) = buggy at arm distance. Shrinks from the right as the bugg
 - **3 new TX SPIFFS fields:** `rtm_display_mode`, `fm_warn_distance_m`, `rtm_steer_exit_on_input`
 - **TelemetryPacket grows:** `rtm_distance` added at index 5; `link_quality` moved to index 6 (sizeof 6→7); TX+RX bounds-check auto-adapts
 - **confStruct sizeof:** TX 120→126, RX unchanged. First P8 flash resets TX settings to defaults.
+
+### V2.5.10 — April 2026 *(monterman)* — R5 Proximity Bar, Distance Units, Full-Screen Messages
+
+- **R5 proximity bar:** Row R5 (C0–C9) lights as proximity indicator during RTM and FM. Blinks 1 s on / 500 ms off.
+  - RTM bar: square-root shrink curve, full at arm distance, gone at hard stop (C0→C9 left-fill, shrinks from right)
+  - FM bar: linear fill (placeholder — center-expanding from C4–C5 intended; separate future change)
+- **Distance unit display:** `dist_unit` SPIFFS param — 0=metres/km, 1=feet/miles. All distance math stays in metres; conversion is display-layer only. No sizeof change (fills tail padding).
+- **Full-screen confirmation messages:** `A rM` (RTM activate), `St P` (RTM stop / pre-arm fail), `FM 0`–`FM 3` (mode confirm), `E 71` (water ingress blink). All use compact 3×7 font across all 10 columns.
+- **Scrolling Stp removed:** All RTM exit events now show `St P` full-screen flash. Old scrolling `Stp` scroll3Digits removed.
+- **FM proximity warning vibration:** TX fires 2×Pattern-2 burst when TX-RX distance drops below `fm_warn_distance_m` (default 150 m).
+- **`dist_unit` new TX SPIFFS field.** No sizeof change.
+
+### V2.5.09 — April 2026 *(monterman)* — Stability, GPS Hz, Approach Zone
+
+- **Gate 9 clean disengagement:** RTM hard stop is now a clean handoff to manual — no emergency stop, no display glitch. Throttle ramps to 0 in approach zone then disengages seamlessly.
+- **RTM re-arm fix:** Non-zero sentinel (0xFF) used when RTM inactive — zero-init throttle no longer falsely passes arm guard.
+- **Approach decel zone:** `rtm_approach_zone_m` (default 15 m) — linear throttle ramp to 0 begins this many metres before the hard stop distance.
+- **GPS non-blocking:** GPS polling restructured to avoid stalling the 10 Hz LoRa cycle. `gps_update_hz` SPIFFS param controls update rate (default 2 Hz; 5 Hz recommended for RTM direction tuning, but uses more bandwidth).
+- **`vesc_timeout_s` SPIFFS param:** VESC "not available" timeout configurable (was hardcoded 20 s).
+- **`radio_preset` capped at 2:** Value 3 caused `radioErrorHalt` on boot; max now enforced in ConfigService.
+- **startTransmit() errors now logged:** Return value was silently discarded; now printed to serial on failure.
+- **`gps_max_teleport_kmh` default 200→80:** 80 km/h = 2× craft max speed (was unrealistically permissive).
+- **3 new TX SPIFFS fields:** `rtm_approach_zone_m`, `gps_update_hz`, `vesc_timeout_s`.
+- **RX confStruct sizeof:** 156→160 (approach zone field + alignment pad). First P8.4 flash resets all RX settings to defaults — re-pair, re-configure, re-run `?compasscal`.
 
 ### V2.5.01 — April 2026 *(monterman)*
 

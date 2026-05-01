@@ -93,7 +93,7 @@ Run ?gpsraw to check Serial1 output.
 
 ---
 
-## **Step 4 — Check GPS status with `?printgps`**
+## **Step 4 — Check GPS status with ``?printgps`**
 
 Type this command and press Enter:
 
@@ -304,8 +304,9 @@ The QMC5883L compass connects via I2C. The BN-880 GPS module includes an integra
 
 ### Step 1 — Verify Compass Detection with `?i2c`
 
-Open the RX Serial Monitor at 115200 baud and type:   ?i2c
-
+```
+?i2c
+```
 Expected output — all I2C devices present:
 Scanning I2C bus (initialized on SDA:2 SCL:1)...
 I2C device found at address 0x0D (QMC5883L Compass) !
@@ -318,7 +319,9 @@ If `QMC5883L Compass` is **missing** from the output:
 - If AW9523 is also missing, the entire I2C bus is open — check PCB solder joints
 
 ### Step 2 — Check Raw Compass Data with `?printcompass`
+```
 ?printcompass
+```
 
 Rotate the RX board while watching X, Y, Z values. They must change as you rotate. Type `quit` to stop.
 
@@ -327,14 +330,18 @@ If values are all zero or completely static → compass power or wiring problem.
 ### Step 3 — Calibrate with `?compasscal`
 
 Run before first use and after any mechanical change to the buggy installation:
+```
 ?compasscal
+```
 
 Slowly rotate the buggy 360° in the horizontal plane for 45 seconds. The calibration samples the full magnetic range and saves offsets to SPIFFS. Live min/max values print during rotation, then a completion message confirms success.
 
 Calibration persists across reboots. Re-run any time the buggy's internal layout changes (motor, battery, or electronics moved).
 
 ### Step 4 — Verify Live Heading with `?compassheading`
+```
 ?compassheading
+```
 
 Prints heading in degrees every 500 ms. Type `quit` to stop.
 

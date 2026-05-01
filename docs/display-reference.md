@@ -96,12 +96,12 @@ Source font: `docs/Dot_Matrix_Display_10x7_Render.html` — canonical pixel layo
 
 | Message | Columns | Trigger |
 |---|---|---|
-| `A rM` | A(3) + space(1) + r(3) + M(3) = 10 | RTM activates (arm confirmed) |
-| `St P` | S(3) + t(3) + space(1) + P(3) = 10 | RTM disengages (any exit path) or pre-arm rejected |
+| *(removed)* `A rM` | — | Arm confirm replaced by unlock animation + `rn` 2s blink (removed in P9 Bug4) |
+| `St` | large-font `displayDigits(LET_S, LET_T)` — not compact font | RTM disengages (any exit path) or pre-arm rejected |
 | `FM 0` – `FM 3` | F(3) + M(3) + space(1) + 0-3(3) = 10 | FM mode cycled or FM arm confirmed |
 | `E 71` | E(3) + space(1) + 7(3) + 1(3) = 10 | Water ingress error (blinks 250ms on/off — non-blocking) |
 
-**Note:** The old scrolling `Stp` (scroll3Digits LET_S LET_T LET_P) is removed. All RTM exit events now use the full-screen `St P` flash. `showFullScreenMessage()` is blocking for 2000ms; the FreeRTOS vibration task continues running during the hold.
+RTM exit shows `St` via `displayDigits(LET_S, LET_T)` (large-font, 2s). `showFullScreenMessage()` is still used for `FM 0`–`FM 3` and `E 71`. FreeRTOS vibration task continues running during any blocking display hold.
 
 ## R5 Proximity Bar (P9 New)
 Row R5 (`displayBuffer[6]`) is used as a proximity bar during RTM or FM.
@@ -129,10 +129,9 @@ Blink pattern: 1000 ms on / 500 ms off.
 | Code | Meaning |
 |---|---|
 | rn | RTM armed (waiting for squeeze) — static 1.5s flash ×2 on arm; blinks 500ms during arm window |
-| AR | First squeeze detected (double-squeeze mode only) |
-| RY | Ready for second squeeze (double-squeeze mode only) |
-| A rM | RTM activated — full-screen 2s flash (fontCompact3x7) |
-| St P | RTM disengaged or pre-arm rejected — full-screen 2s flash (fontCompact3x7) |
+| AR | *(deprecated)* First squeeze detected (double-squeeze mode removed) |
+| RY | *(deprecated)* Ready for second squeeze (double-squeeze mode removed) |
+| St | RTM disengaged or pre-arm rejected — large-font `displayDigits(LET_S, LET_T)`, 2s |
 | FM 0 / FM 1 / FM 2 / FM 3 | FM mode confirmed — full-screen 2s flash (fontCompact3x7) |
 | -- | ET error or no-data — auto-clears after 3s |
 

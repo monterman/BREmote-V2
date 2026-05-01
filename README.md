@@ -285,7 +285,7 @@ RTM stops automatically when **any** of these conditions occur:
 | Convergence fail | Distance to TX not decreasing (Phase C, checked every 5 s) |
 | Steering input | Steering override while `rtm_steer_exit_on_input = 1` (default) |
 
-On any gate failure: throttle → 0, TX display shows `St P` full-screen flash for 2 s, haptic confirms disarm.
+On any gate failure: throttle → 0, TX display shows `St` for 2 s, haptic confirms disarm.
 
 ### SPIFFS Configuration (TX)
 
@@ -531,8 +531,9 @@ Full bar (10 pixels) = buggy at arm distance. Shrinks from the right as the bugg
   - RTM bar: square-root shrink curve, full at arm distance, gone at hard stop (C0→C9 left-fill, shrinks from right)
   - FM bar: linear fill (placeholder — center-expanding from C4–C5 intended; separate future change)
 - **Distance unit display:** `dist_unit` SPIFFS param — 0=metres/km, 1=feet/miles. All distance math stays in metres; conversion is display-layer only. No sizeof change (fills tail padding).
-- **Full-screen confirmation messages:** `A rM` (RTM activate), `St P` (RTM stop / pre-arm fail), `FM 0`–`FM 3` (mode confirm), `E 71` (water ingress blink). All use compact 3×7 font across all 10 columns.
-- **Scrolling Stp removed:** All RTM exit events now show `St P` full-screen flash. Old scrolling `Stp` scroll3Digits removed.
+- **Stop display:** RTM exit now shows `St` in large-font (`displayDigits(LET_S, LET_T)`) for 2 s. Arm confirm is unlock animation + `rn` blink. Compact-font full-screen messages for stop and arm were introduced then replaced by large-font `St` in the same P9 cycle (Bug4/Chg5 in RTMState.ino).
+- **`FM 0`–`FM 3` and `E 71`** still use compact 3×7 full-screen font.
+- **Old scrolling `Stp`** (scroll3Digits LET_S LET_T LET_P) removed.
 - **FM proximity warning vibration:** TX fires 2×Pattern-2 burst when TX-RX distance drops below `fm_warn_distance_m` (default 150 m).
 - **`dist_unit` new TX SPIFFS field.** No sizeof change.
 

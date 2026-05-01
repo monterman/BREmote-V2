@@ -23,3 +23,6 @@ Thumbs.db
 # Old V2 backup folders
 Source (montermanv2) - w logger-compass (good)/
 Source(JanRush V2)/
+
+# Claude Code local settings (machine-specific, never commit)
+.claude/

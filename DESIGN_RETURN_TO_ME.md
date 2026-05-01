@@ -67,7 +67,7 @@ Runs on every RX GPS reading regardless of operating mode.
 
 1. HDOP < `gps_max_hdop` (default 2.0)
 2. Implied acceleration between consecutive readings < `gps_max_accel_g` G (default 3.0)
-3. Position change since last reading implies speed < `gps_max_jump_kmh` (default 200 km/h)
+3. Position change since last reading implies speed < `gps_max_teleport_kmh` (default 80 km/h — 2× craft max speed)
 
 After `gps_suspect_threshold` (default 3) consecutive failures → RX GPS marked as **rejected**.  
 Rejected GPS blocks RTM arming and all RTM distance calculations.

@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-05-01 - Release: DEBUG_RX commented out for production build
 // V3 - 2026-04-30 - RTM approach decel zone: rtm_approach_zone_m SPIFFS param; rtm_approach_cap atomic global; sizeof 156→160
 // V3 - 2026-04-30 - Rename: gps_max_jump_kmh → gps_max_teleport_kmh (clarity)
 // V3 - 2026-04-29 - Bundle B: vesc_timeout_s SPIFFS param replaces hardcoded 20s VESC timeout
@@ -447,8 +448,8 @@ unsigned long percent_last_thr_change = 0;
 #define AP_EN_WET_MEAS 14
 #define AP_WET_MEAS 15
 
-//Debug options
-#define DEBUG_RX
+//Debug options — comment out for release builds
+//#define DEBUG_RX
 //#define DEBUG_VESC
 
 #if defined DEBUG_RX

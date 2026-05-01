@@ -6,6 +6,7 @@
 // V3 - 2026-04-27 - P8.1: Added fm_arm_window_s to confStruct; FM redesigned as arm/disarm toggle with mode memory; sizeof 124→128
 // V2.5-Evo - 2026-04-28 - P9: Added dist_unit (fills 2-byte tail padding; sizeof stays 128); rtm_arm_dist_m RAM global
 // V2.5-Evo - 2026-04-29 - Sleep: added sleep_timeout_s to confStruct; SW_VERSION 25→26
+// V2.5-Evo - 2026-05-01 - Release: DEBUG_RX commented out for production build
 
 /*
 ** Includes
@@ -471,8 +472,8 @@ String web_cfg_last_err = "";
 #define P_UBAT_MEAS 3 
 #define P_CHGSTAT   2
 
-//Debug options
-#define DEBUG_RX
+//Debug options — comment out for release builds
+//#define DEBUG_RX
 
 #if defined DEBUG_RX
    #define rxprint(x)    Serial.print(x)

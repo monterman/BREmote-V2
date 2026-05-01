@@ -1,7 +1,7 @@
 # Return-to-Me (RTM) and Follow-Me Override - Design Document
 **Project:** BREmote V2.5-Evo  
 **Date:** April 21, 2026  
-**Status:** Design phase - NO code written yet
+**Status:** Implemented and operational — Beta release as of V2.5-Evo P8/P9. RTM and FM mode selection are live. FM autonomous following (Priority 9) is not yet implemented. Full field test pending.
 
 ---
 
@@ -12,11 +12,11 @@ Two new user-activated modes on the TX toggle, both strictly respecting the crea
 - Autonomous systems can only steer and subtract from throttle, never add
 - Release throttle = buggy stops immediately, always
 
-### Mode A: Return-to-Me (RTM / "rtn")
+### Mode A: Return-to-Me (RTM / "rn")
 For when user is sitting on board drifting slowly in water, activate mode to have the buggy come toward their GPS location. User must actively hold throttle to drive it home. Buggy performs automatic steering only, capped and ramped throttle. Hard stop at configured safe distance.
 
 ### Mode B: Follow-Me Mode Override (FM)
-In-session override of RX's follow-me behavior without modifying RX SPIFFS. Cycles through 0=Off, 1=Behind, 2=Near Right, 3=Near Left. Resets to RX web-configured default on reboot.
+In-session override of RX's follow-me behavior without modifying RX SPIFFS. Cycles through F0=Off, F1=Right, F2=Behind, F3=Left. Resets to RX web-configured default on reboot.
 
 ---
 
@@ -24,17 +24,10 @@ In-session override of RX's follow-me behavior without modifying RX SPIFFS. Cycl
 
 ### 2a. RTM Activation Sequence
 
-Step 1: User holds LEFT toggle at full extent for `rtm_hold_duration_s` seconds (default 5s, configurable 4-10s)  
-Step 2: Dot display shows "rtn" - mode armed, 10s window starts (`rtm_arm_window_s`, configurable)  
-Step 3a: If `rtm_double_squeeze_en = 1` (DEFAULT):
-  - User squeezes throttle once (any amount above 10%)
-  - Dot shows "Arm" briefly
-  - User releases throttle
-  - User squeezes throttle again within 5s
-  - Motor engages, throttle-follows-squeeze with ramp cap  
-Step 3b: If `rtm_double_squeeze_en = 0`:
-  - User must hold throttle >30% for 500ms continuously
-  - Motor engages after 500ms filter, throttle-follows-squeeze with ramp cap  
+Step 1: User performs gesture: RIGHT tap, then LEFT hold for `rtm_hold_duration_s` seconds (default 5s)  
+Step 2: Dot display shows "rn" blink — mode armed, arm window starts (`rtm_arm_window_s`, configurable)  
+Step 3: User squeezes throttle above 10% — motor engages immediately with ramp cap  
+*(Note: double-squeeze mode was deprecated in P8. The `rtm_double_squeeze_en` SPIFFS field is retained for compatibility but defaults to 0. "Arm" and "rdy" display codes no longer appear in firmware.)*  
 Step 4: Throttle ramps from `rtm_throttle_start_pct` (default 30%) to `rtm_throttle_max_pct` (default 70%) over `rtm_ramp_duration_s` seconds (default 5s)  
 Step 5: Release throttle at any time → buggy stops immediately (normal failsafe)  
 Step 6: If throttle released >10s during active mode → RTM disengages, user must re-activate from Step 1  
@@ -44,7 +37,7 @@ Step 8: Hard stop when distance to TX < `rtm_stop_distance_m` (default 10m, rang
 ### 2b. Follow-Me Mode Override Sequence
 
 Step 1: User holds RIGHT toggle at full extent for `fm_hold_duration_s` seconds (default 5s, configurable 4-10s)  
-Step 2: Dot shows "FM" for 500ms then current mode abbreviation: "0ff", "bEh", "n-R", "n-L"  
+Step 2: Dot shows full-screen confirmation: "F0", "F1", "F2", or "F3" for the selected mode  
 Step 3: Each additional right-hold advances one step through the cycle  
 Step 4: User releases toggle for 2s without further right-holds → selection locked  
 Step 5: TX sends mode change meta-packet 3x with 100ms gap for reliability  
@@ -55,14 +48,13 @@ Step 7: On RX reboot, mode returns to web-configured SPIFFS default
 
 | State | Display | Duration |
 |---|---|---|
-| RTM armed, waiting for throttle | `rtn` | Until throttle or 10s timeout |
-| RTM double-squeeze first pulled | `Arm` | 500ms |
-| RTM double-squeeze ready for second | `rdy` | Up to 5s |
-| RTM active (motor running) | `rtn` | While active |
-| RTM hard stop at distance | `Stp` | 2s then returns to normal |
-| RTM disengaged (throttle released >10s) | Normal telemetry | - |
-| FM mode entering | `FM` | 500ms |
-| FM mode cycling | `0ff` / `bEh` / `n-R` / `n-L` | Until 2s release |
+| RTM armed, waiting for throttle | `rn` blink | Until throttle or arm window timeout |
+| RTM active (motor running) | RTM info display (distance or speed) | While active |
+| RTM disengaged or hard stop | `St P` full-screen flash | 2s then normal telemetry |
+| FM mode selected | `F0` / `F1` / `F2` / `F3` full-screen flash | 2s confirmation |
+| *(Deprecated)* double-squeeze first squeeze | ~~`Arm`~~ | Removed in P8 |
+| *(Deprecated)* double-squeeze ready | ~~`rdy`~~ | Removed in P8 |
+| *(Deprecated)* FM cycling abbreviations | ~~`0ff` / `bEh` / `n-R` / `n-L`~~ | Removed in P8 |
 
 ---
 
@@ -94,7 +86,7 @@ Failure → RTM arming blocked until next successful handshake. Spoofing event l
 7. VESC ERPM-implied speed is within `rtm_vesc_speed_diff_kmh` (default 20 km/h) of GPS speed
 8. TX GPS data age < `tx_gps_stale_timeout_ms` (TX GPS still fresh)
 
-Any Phase C failure → throttle immediately forced to 0, RTM disengages, display shows `Stp` for 2s.
+Any Phase C failure → throttle immediately forced to 0, RTM disengages, display shows `St P` full-screen flash for 2s.
 
 ### 3d. RTM Motor Safety Gates (every loop cycle, ALL must pass while RTM active)
 
@@ -111,7 +103,7 @@ When RTM is active, ALL of the following must be true or motor immediately cuts 
 9. Distance to TX > `rtm_stop_distance_m` (hard stop distance)
 10. Throttle not released for > 10s (or RTM disengages)
 
-Any gate failure → throttle forced to 0, `rtn` display changes to `Stp` for 2s, RTM disengages.
+Any gate failure → throttle forced to 0, `St P` full-screen flash for 2s, RTM disengages.
 
 ---
 
@@ -199,14 +191,14 @@ Meta-packets sent 3 times with 100ms gap between sends. RX considers mode change
 
 ### 6a. TX state machine for RTM
 
-States: IDLE → ARMING → ARMED → SQUEEZE_WAIT → ACTIVE → COOLDOWN → IDLE
+States: IDLE → ARMING → ARMED → ACTIVE → COOLDOWN → IDLE
 
-- IDLE: Normal operation, watching for LEFT hold
-- ARMING: LEFT held, counting toward rtm_hold_duration_s
-- ARMED: rtn displayed, 10s window active
-- SQUEEZE_WAIT: First squeeze detected (if double_squeeze mode), waiting for second
+- IDLE: Normal operation, watching for RIGHT tap + LEFT hold gesture
+- ARMING: LEFT held after RIGHT tap, counting toward rtm_hold_duration_s
+- ARMED: `rn` blink displayed, arm window active, waiting for throttle squeeze
 - ACTIVE: Motor engaged, throttle ramping, safety gates checked every loop
-- COOLDOWN: Post-stop display, 2s before returning to IDLE
+- COOLDOWN: `St P` flash for 2s before returning to IDLE
+*(SQUEEZE_WAIT state removed — double-squeeze mode deprecated in P8)*
 
 ### 6b. RX state machine for RTM
 
@@ -225,7 +217,7 @@ RX side: Receives 0xF2 meta-packet, updates runtime variable, no SPIFFS write
 
 | Failure | Detection | Recovery |
 |---|---|---|
-| TX GPS loss | Age > rtm_gps_timeout_ms | Immediate throttle=0, "Stp" display, RTM disengages |
+| TX GPS loss | Age > rtm_gps_timeout_ms | Immediate throttle=0, `St P` flash, RTM disengages |
 | RX GPS loss | Age > rtm_gps_timeout_ms | Same |
 | Compass invalid | Calibration check fails | Same |
 | LoRa link loss | Last packet > failsafe_time | Standard failsafe (existing) |
@@ -261,8 +253,31 @@ RX side: Receives 0xF2 meta-packet, updates runtime variable, no SPIFFS write
 ### 8d. Full field test
 - Only after all bench and controlled tests pass
 - Helmet + PFD, spotter present
-- Start with rtm_throttle_max_pct reduced to 40%
-- Gradually increase after confidence established
+- Start with `rtm_throttle_max_pct` at 70-75% (default 70% — this is the recommended field test starting point; 40% is too conservative for meaningful water testing)
+- `rtm_throttle_start_pct` controls the ramp start (default 30%); leave at default for first tests
+- `rtm_approach_zone_m` controls the decel ramp start distance (default 15m); buggy smoothly reduces throttle to 0 as it enters this zone before the hard stop
+- `rtm_stop_distance_m` (RX) is the hard stop distance (default 3m); confirm via RX web config before field use
+- `rtm_disengage_distance_m` (TX) is the TX-side disengage threshold — keep ≥ rtm_stop_distance_m (RX)
+
+**Key SPIFFS parameters for RTM field testing:**
+| Param | Board | Default | Notes |
+|---|---|---|---|
+| `rtm_throttle_max_pct` | TX | 70% | Max throttle during RTM run |
+| `rtm_throttle_start_pct` | TX | 30% | Ramp start at engagement |
+| `rtm_ramp_duration_s` | TX | 5s | Time from start% to max% |
+| `rtm_approach_zone_m` | TX | 15m | Distance where decel ramp begins |
+| `rtm_disengage_distance_m` | TX | 10m | TX-side disengage trigger |
+| `rtm_stop_distance_m` | RX | 3m | Hard stop distance |
+| `rtm_max_runtime_s` | TX | 0 (disabled) | 0=no runtime limit |
+| `rtm_arm_window_s` | TX | 10s | Window to squeeze after "rn" arm |
+
+**Key SPIFFS parameters for FM field testing (mode selection only — autonomous FM not yet implemented):**
+| Param | Board | Default | Notes |
+|---|---|---|---|
+| `fm_override_enabled` | TX | 1 | Must be 1 to allow F0-F3 cycling via gesture |
+| `fm_warn_distance_m` | TX | 150m | TX-RX distance triggers proximity vibration warning |
+
+*FM autonomous following (GPS-guided heading + throttle gating) is Priority 9 and not yet implemented. FM gesture cycles the mode selection on RX; no autonomous steering occurs.*
 
 ---
 
@@ -337,7 +352,7 @@ Always on. No TX dependency. Catches obvious spoofed signals before they reach a
 
 - **HDOP gate**: signal quality check — weak satellite lock rejected immediately
 - **Acceleration gate**: physics check — no real vehicle does > 3G without a crash
-- **Teleport gate**: continuity check — GPS position cannot jump 10 km instantaneously
+- **Teleport gate**: continuity check — GPS position cannot jump faster than `gps_max_teleport_kmh` (default 80 km/h, 2× foil/buggy max speed)
 
 These three checks are independent and can be evaluated in any order. Failure counter resets to 0 on any passing reading.
 
@@ -363,7 +378,7 @@ Only during active RTM. Adds behavioral checks that only make sense when the bug
 |---|---|---|---|---|---|
 | `gps_max_hdop` | 0.5–5.0 | 2.0 | — | A | Maximum HDOP for a valid GPS reading |
 | `gps_max_accel_g` | 1.0–10.0 | 3.0 | G | A | Maximum implied acceleration between readings |
-| `gps_max_jump_kmh` | 50–500 | 200 | km/h | A | Maximum position-implied speed for teleport check |
+| `gps_max_teleport_kmh` | 50–500 | 80 | km/h | A | Maximum position-implied speed for teleport check (80 km/h = 2× max craft speed) |
 | `gps_suspect_threshold` | 1–10 | 3 | count | A | Consecutive failures before GPS rejected |
 | `gps_max_pair_dist_m` | 50–2000 | 500 | meters | B | Maximum plausible TX-RX distance at handshake |
 | `gps_max_speed_diff_kmh` | 10–200 | 50 | km/h | B | Maximum TX-RX speed difference for handshake |

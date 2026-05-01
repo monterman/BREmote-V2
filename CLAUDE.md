@@ -33,7 +33,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - All version strings must reflect V3
 - After every change, remind user to compile in Arduino IDE and test before proceeding
 - Document every change with clear comments in code explaining what changed and why
-- After every commit that adds, removes, or modifies SPIFFS parameters in either TX or RX firmware (changes to confStruct, ConfigService, or WebUiEmbedded.h on either board), also update `docs/BREmote-WebSerial-Config-Tool.html` to reflect the change. Specifically: update the `TX_FIELDS` or `RX_FIELDS` array in the tool to match the current `WebUiEmbedded.h` field definitions exactly. The tool must always be in sync with the firmware. This applies to both TX and RX field sets independently.
+- After every commit that adds, removes, or modifies SPIFFS parameters in either TX or RX firmware (changes to confStruct, ConfigService, or WebUiEmbedded.h on either board), update ALL THREE of these surfaces to stay in sync:
+1. `docs/BREmote_V2.5-Evo_Web_Serial_Config_Tool.html` — update the `TX_FIELDS` or `RX_FIELDS` array to match the current `WebUiEmbedded.h` field definitions exactly. Live at: https://monterman.github.io/BREmote-V2/BREmote_V2.5-Evo_Web_Serial_Config_Tool.html
+2. TX embedded web page (`Source/V2_Integration_Tx/WebUiEmbedded.h`) — add new fields with appropriate input types and valid range hints.
+3. RX embedded web page (`Source/V2_Integration_Rx/WebUiEmbedded.h`) — same.
+All three must always reflect the current confStruct exactly. This applies to TX and RX field sets independently.
 
 ### CODE COMMENT RULES (apply to every change)
 

@@ -9,13 +9,13 @@ Driver: HT16K33 at I2C address 0x70
 |---|---|---|
 | Digits | C0-C2 (left) + C4-C6 (right), R0-R4 | Two character display |
 | Gap | C3, R0-R4 | Normally dark — separates digits; R4 used as decimal dot during RTM distance display |
-| GPS status | C7 R0 only | NEW in V3 — see below |
+| GPS status | C7 R0 only | NEW in V2.5-Evo — see below |
 | Temperature | C8, R0-R4 | VESC temp, fills bottom→top |
 | Signal | C9, R0-R4 | LoRa signal, fills bottom→top |
 | R5 proximity bar | R5, C0-C9 | RTM/FM proximity indicator — NEW in P9 (see below) |
 | Battery | R6, all cols | VESC battery, fills left→right |
 
-## GPS Status Dot (C7 R0) — V3 New Feature
+## GPS Status Dot (C7 R0) — V2.5-Evo New Feature
 Only visible when gps_en = 1 in SPIFFS config.
 
 | State | Display | Meaning |
@@ -31,7 +31,7 @@ When `rtm_display_mode = 0` (distance) and the value is ≥100m (metric) or ≥1
 - `12` → left digit "1", no decimal dot, right digit "2" (e.g. 12 m or 12 ft — whole value)
 - Set via `displayBuffer[5] |= (1u << 3)` **after** calling `displayDigits()` (displayDigits clears R4)
 
-## Vibration Feedback Patterns — V3 P8
+## Vibration Feedback Patterns — V2.5-Evo P8
 | Pattern | Feel | Trigger |
 |---|---|---|
 | 2 short (150ms) | Gentle | Low VESC battery warning (Pattern 1) |
@@ -39,7 +39,7 @@ When `rtm_display_mode = 0` (distance) and the value is ≥100m (metric) or ≥1
 | 5 long (500ms) | Emergency | Water detected inside buggy — E71 (Pattern 3) |
 | 2 fast short (80ms) | Quick confirm | RTM arm / RTM disarm confirmed (Pattern 4) — NEW in P8 |
 
-## Gesture Map — V3 P8 (Breaking Change from P7)
+## Gesture Map — V2.5-Evo P8 (Breaking Change from P7)
 | Gesture | Action | Notes |
 |---|---|---|
 | LEFT tap | Record tap (starts 3s combo window) | Sets up combo |
@@ -64,7 +64,7 @@ When `rtm_display_mode = 0` (distance) and the value is ≥100m (metric) or ≥1
 | 5P | Speed | km/h, knots or mph per speed_src setting | GPS enabled |
 | bA | VESC battery | Remaining % | VESC connected |
 
-## RTM / FM Active Display — V3 P8 + P9
+## RTM / FM Active Display — V2.5-Evo P8 + P9
 When `rtm_tx_active == true`, normal display is replaced by RTM info display.
 Controlled by `rtm_display_mode` SPIFFS field:
 
@@ -115,9 +115,9 @@ Blink pattern: 1000 ms on / 500 ms off.
 - At 25% distance: 5 pixels lit (sqrt(0.25) = 0.5 × 10 = 5).
 - At 0% (hard stop): 0 pixels — bar gone just before RTM disengages.
 
-**FM bar (stub):**
-- Single center pixel C4 R5 when `fm_armed == true`.
-- Full FM bar implementation deferred to Priority 10.
+**FM bar (Priority 10 — linear fill; center-expanding version pending):**
+- Current implementation: left-to-right linear fill. Full bar (10 pixels) = buggy close. Empty = buggy ≥30m away.
+- Intended design (pending separate code change): center-expanding from C4-C5 sweet spot. 2 pixels (C4, C5) = ideal following distance; bar expands outward as buggy lags; 1 pixel (C4 only) = buggy too close. See `docs/fm_bar_animation.gif`.
 
 **`rtm_arm_dist_m` variable:**
 - RAM only — never written to SPIFFS.
@@ -147,7 +147,7 @@ Blink pattern: 1000 ms on / 500 ms off.
 | U5b | USB serial mode active |
 | XX | Power saver mode — remote going to sleep |
 
-## New SPIFFS Fields — V3 P8 (TX-side)
+## New SPIFFS Fields — V2.5-Evo P8 (TX-side)
 | Field | Range | Default | Description |
 |---|---|---|---|
 | `rtm_display_mode` | 0-2 | 0 | RTM/FM active display: 0=distance, 1=speed, 2=alternating 2.5s |

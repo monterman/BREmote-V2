@@ -4,7 +4,7 @@
 
 [![Original by LudwigBre](https://img.shields.io/badge/Original%20HW%20%26%20FW-LudwigBre%20%2F%20Luddi96-blue)](https://github.com/Luddi96/BREmote)
 [![Web Console by Janrusher](https://img.shields.io/badge/Web%20Console%20%26%20Dynamic%20Throttle-Janrusher-green)](https://github.com/Janrusher)
-[![V3 by monterman](https://img.shields.io/badge/V3%20GPS%20%2F%20Logger%20%2F%20Analysis-monterman-orange)](https://github.com/monterman)
+[![V2.5-Evo by monterman](https://img.shields.io/badge/V2.5--Evo%20GPS%20%2F%20RTM%20%2F%20Web%20Console-monterman-orange)](https://github.com/monterman)
 
 ESP32 LoRa wireless remote for efoil and RC tow buggy — 868/915 MHz, 10 Hz control cycle, VESC UART telemetry, GPS speed display, integrated data logger.
 
@@ -16,9 +16,9 @@ BREmote is a collaborative open-source project built by the efoil and esk8 commu
 
 | Contributor | Contribution |
 |---|---|
-| **[LudwigBre / Luddi96](https://github.com/Luddi96/BREmote)** | **Original hardware design, original firmware architecture, and project founder. All core features originate here.** |
-| **Janrusher** | Dynamic throttle cap mode and Web Console foundation — significant V2 enhancements forked from LudwigBre, further refined in V3 |
-| **monterman** | V3 firmware: TX GPS implementation, integrated data logger, deep codebase analysis, critical bug documentation, RTM/FM mode design |
+| **[LudwigBre / Luddi96](https://github.com/Luddi96/BREmote)** | **Original hardware design, original firmware architecture, project founder, and dev-logger framework (dev-logger branch). All core features originate here.** |
+| **Janrusher** | Dynamic throttle cap mode and Web Console foundation — significant V2 enhancements forked from LudwigBre, further refined in V2.5-Evo |
+| **monterman** | V2.5-Evo firmware: TX GPS implementation, dev-logger AUX button toggle with LED status feedback (5× flash = start, 2× flash = stop), date format DDMMYY → MMDDYY, web console major rebuild (upload/download/compare JSON, integrated serial console, TX+RX coverage, plain-English parameter docs for every setting), deep codebase analysis, critical bug documentation, RTM/FM mode design |
 
 This fork exists because LudwigBre published open hardware and firmware under GPL 3.0. V3 enhancements are released under the same license and dedicated back to the community.
 
@@ -46,13 +46,13 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 
 ---
 
-## What's New in V3
+## What's New in V2.5-Evo
 
 | Feature | V2 | V3 |
 |---|---|---|
 | TX GPS speed display (mph / km/h / knots) | ❌ | ✅ |
 | GPS speed source SPIFFS-configurable | ❌ | ✅ |
-| Integrated flash data logger | ❌ | ✅ |
+| Data logger AUX button toggle + LED feedback *(logger by LudwigBre)* | ❌ | ✅ |
 | Log download over WiFi web UI | ❌ | ✅ |
 | US-format log filenames (MMDDYY) | ❌ | ✅ |
 | V3 Config Studio offline HTML tool | ❌ | ✅ |
@@ -73,12 +73,14 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 |---|---|---|
 | MCU | ESP32-C3 | ESP32-S3 (dual-core) |
 | Radio | SX1262 LoRa | SX1262 LoRa |
-| GPS | BN-220, Serial1 GPIO 18/19 | BN-880, Serial1 via I2C mux |
+| GPS | BN-220 or [HGLRC M100 Mini](https://www.hglrc.com/products/hglrc-m100_mini-gps) (M10 chip, no compass, 3.3V–5V) | BN-880 or [HGLRC M100-5883](https://www.hglrc.com/products/m100-5883-gps) (M10 chip + compass) |
 | Compass | None | QMC5883L (I2C) |
 | Display | HT16K33 dot matrix (I2C 0x70) | None |
 | ADC | ADS1115 (I2C 0x48) | None |
 | I/O Expander | None | AW9523 (I2C) |
 | ESC / VESC | None | VESC UART or PWM (RMT GPIO 9) |
+
+> ⚠️ **TX GPS must be 3.3V tolerant** — the ESP32-C3 supplies 3.3V only. Both the BN-220 and HGLRC M100 Mini meet this requirement.
 
 ---
 
@@ -93,24 +95,34 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 
 ---
 
-## 🛠️ V3 Config Studio
+## 🛠️ Web Configuration Interfaces
 
-The **V3 Config Studio** is a standalone HTML tool that works offline in any browser — no install, no server, no dependencies.
+BREmote V2.5-Evo has three separate web configuration interfaces:
+
+### 1. TX Embedded Web Page
+Served by the TX WiFi AP for the first 120 seconds after boot. Connect to the TX WiFi AP and open the device IP in any browser. Configures all TX SPIFFS parameters with valid range hints.
+
+### 2. RX Embedded Web Page
+Served by the RX WiFi AP for the first 120 seconds after boot. Configures all RX SPIFFS parameters and provides log file management (list, download, delete).
+
+### 3. BREmote V2.5-Evo — Web Serial Config Tool *(standalone, offline)*
+
+The most capable interface. Connects to TX or RX via USB serial (requires Chrome or Edge).
+
+**Open directly — no download needed:**
+[https://monterman.github.io/BREmote-V2/BREmote_V2.5-Evo_Web_Serial_Config_Tool.html](https://monterman.github.io/BREmote-V2/BREmote_V2.5-Evo_Web_Serial_Config_Tool.html)
+
+**Or download for fully offline use:** [`docs/BREmote_V2.5-Evo_Web_Serial_Config_Tool.html`](docs/BREmote_V2.5-Evo_Web_Serial_Config_Tool.html)
 
 **What it does:**
-- Configure all TX and RX parameters with plain English labels and valid range hints
-- Compare two configurations side by side
-- Export config as **JSON** (for web console import) or **Base64** (for serial paste)
-- Download and manage RX data logs over WiFi
-- Dirty state highlighting — changed fields are highlighted so you know what's unsaved
-- Toast notifications on save / load
-
-**How to use:**
-1. Download `BREmote_V3_Config_Studio.html` from this repository
-2. Open it in any browser — works fully offline
-3. Connect your browser to the TX or RX WiFi AP to push / pull config live
-
-> Config Studio replaces the need to memorize parameter names or edit raw Base64 strings. It covers everything the web console does, plus offline editing and log management.
+- Configure both TX and RX — switch between boards without leaving the page
+- Upload / download / compare two configurations side by side
+- Integrated serial console with custom commands dropdown
+- Extensive plain-English descriptions for every parameter — you know what each setting does and its valid range before you change it
+- Export config as **JSON** or **Base64** (for serial paste)
+- Log file download and management
+- Dirty-state highlighting — changed fields highlighted until saved
+- Works fully offline after download
 
 ---
 
@@ -130,9 +142,9 @@ The **V3 Config Studio** is a standalone HTML tool that works offline in any bro
 - USB charging detection and display
 - Pairing with address-based authentication
 - WiFi AP for web configuration
-- Serial USB configuration interface (`?conf`, `?conf json`, `?tasks`, etc.)
+- Serial USB configuration interface (`?conf`, `?conf json`, `?tasks`, etc.) — also configurable via the [BREmote V2.5-Evo Web Serial Config Tool](https://monterman.github.io/BREmote-V2/BREmote_V2.5-Evo_Web_Serial_Config_Tool.html), which is easier than raw serial and includes plain-English descriptions for every parameter
 
-### V3 New: TX GPS Speed Display
+### V2.5-Evo: TX GPS Speed Display
 
 The **SP** (Speed) telemetry display mode can now read speed directly from the TX GPS module (BN-220 on Serial1), eliminating dependence on the LoRa telemetry round-trip. Configure `speed_src` in Config Studio or the web UI:
 
@@ -190,23 +202,27 @@ Throttle → Internal Bat → Temp  → Speed → Foil Bat
 - Follow-me mode framework (positional modes: behind, near right, near left)
 - WiFi AP for web configuration and log management
 
-### V3 New: Integrated Data Logger
+### V2.5-Evo: Data Logger *(framework by LudwigBre — AUX toggle by monterman)*
 
-The RX board logs GPS position, VESC telemetry, voltage, speed, and timestamps to on-board flash storage. Enable with `logger_en = 1` in RX Config Studio.
+The RX board logs GPS position, VESC telemetry, voltage, speed, and timestamps to on-board flash storage.
 
-**Using the logger:**
+> **Keep `logger_en = 0` (the default).** Use the AUX button to start and stop individual logging sessions. If you set `logger_en = 1`, the logger starts automatically on every boot and logs continuously — not recommended, as it fills flash quickly and runs without GPS-lock confirmation.
+
+**Starting and stopping a session:**
 
 | Action | LED | Meaning |
 |---|---|---|
-| Press AUX once | 5× flash | Logging started |
-| Press AUX once again | 2× flash | Logging stopped |
+| Press AUX once | 5× flash | Logging session started |
+| Press AUX once again | 2× flash | Logging session stopped |
 
 **Tips:**
 - **Wait for GPS lock** before pressing AUX — entries without a valid fix record zero coordinates
 - **WiFi auto-disables** while logging to reduce current draw and RF interference with GPS
-- **Brownout warning:** the logger auto-stops if supply voltage drops below threshold; WiFi + logging together draw significant current, ensure adequate power supply
-- **File format:** `MMDDYY_HHMMSS.csv` (UTC timestamp in filename)
-- **Download:** Connect to RX WiFi AP → open V3 Config Studio or the web UI → **Manage Logs** section
+- **Brownout warning:** the logger auto-stops if supply voltage drops below threshold; WiFi + logging together draw significant current — ensure adequate power supply
+- **File format:** `MMDDYY_HHMMSS.csv` (UTC, US date order) *
+- **Download:** Connect to RX WiFi AP → open the RX embedded web page or the Web Serial Config Tool → **Manage Logs** section
+
+*\* Date format changed from DDMMYY (original LudwigBre) to MMDDYY in V2.5-Evo.*
 
 ---
 
@@ -226,7 +242,9 @@ This rule is non-negotiable and is enforced at the firmware level — it cannot 
 
 ## Return-to-Me (RTM) — Full Guide
 
-> RTM is fully implemented in V3 P7/P8. Hardware: GPS on both TX and RX, compass on RX.
+> RTM is fully implemented in V2.5-Evo. Hardware: GPS on both TX and RX, compass on RX.
+
+> **Display note:** The TX dot matrix shows lowercase **`rn`** while Return-to-Me is active. `rn` = Return to Me = RTM. All SPIFFS parameters and code use the `rtm_` prefix — RTM is the canonical name for this mode.
 
 For when you are in the water and want the buggy to drive itself toward you. **You must actively hold the throttle** — RTM provides automatic compass-bearing steering only. Releasing the trigger stops the buggy immediately.
 
@@ -300,7 +318,9 @@ On any gate failure: throttle → 0, TX display shows `Stp` for 2 s, haptic conf
 
 ## Follow-Me Mode Override (FM) — Full Guide
 
-> FM override is fully implemented in V3 P7/P8. It overrides the RX follow-me positioning mode at runtime without a SPIFFS write.
+> FM override is fully implemented in V2.5-Evo. It overrides the RX follow-me positioning mode at runtime without a SPIFFS write.
+
+> **⚠️ Follow-Me autonomous control is not implemented in this release.** The mode override display (F0 / F1 / F2 / F3) is fully functional — you can cycle and set the mode on the TX display. The autonomous positional steering loop is a future feature and setting an FM mode currently has no effect on vehicle behavior.
 
 The override is RAM-only — RX returns to its web-configured `followme_mode` on reboot.
 
@@ -316,9 +336,9 @@ The override is RAM-only — RX returns to its web-configured `followme_mode` on
 | Display | `followme_mode` value | Behaviour |
 |---|---|---|
 | `F0` | 0 | Disabled — follow-me off |
-| `F1` | 1 | Behind — RX follows directly behind TX |
-| `F2` | 2 | Near Right — RX follows to the right of TX |
-| `F3` | 3 | Near Left — RX follows to the left of TX |
+| `F1` | 1 | Right — RX follows to the right of TX |
+| `F2` | 2 | Behind — RX follows directly behind TX |
+| `F3` | 3 | Left — RX follows to the left of TX |
 
 ### FM Proximity Warning
 
@@ -349,6 +369,13 @@ If TX-to-RX distance drops below `fm_warn_distance_m` (default 150 m), TX fires 
 | `EHFI` | LoRa init error |
 | `EHFP` | LoRa parameter error |
 | `ECH` | Charger error |
+| `rn` | Return-to-Me (RTM) mode active |
+| `F0` | Follow-Me override: disabled |
+| `F1` | Follow-Me override: Right side |
+| `F2` | Follow-Me override: Behind |
+| `F3` | Follow-Me override: Left side |
+| `St` | Stop — RTM safety gate triggered or arming blocked |
+| `99` | Full throttle reached (100%) |
 
 ### RX
 
@@ -363,6 +390,45 @@ If TX-to-RX distance drops below `fm_warn_distance_m` (default 150 m), TX fires 
 | BIND — blink 2× | TX power error |
 | BIND — blink 3× | LoRa setting error |
 | BIND — blink 4× | LoRa init error |
+
+---
+
+## Display Layout
+
+The TX uses a 10×7 LED dot matrix (two 5×7 matrices side by side, driven by HT16K33 at I2C 0x70).
+
+![BREmote V2.5-Evo Display Reference](docs/display-reference.png)
+
+*[Full display zone map, font reference, and code details → docs/display-reference.md](docs/display-reference.md)*
+
+### GPS Status Dot (C7 R0)
+
+Visible only when `gps_en = 1`. Located at the top-right corner of the digit area.
+
+| State | Meaning |
+|---|---|
+| Solid | Valid GPS fix — RTM and Follow-Me ready |
+| Slow blink (1 s) | Acquiring fix — waiting for satellites |
+| Fast blink (250 ms) | GPS rejected — spoofing check failed or signal too poor |
+| Off | GPS disabled (`gps_en = 0`) |
+
+### R5 Proximity Bar
+
+Row R5 (just below the digit area, C0–C9) is a proximity indicator during RTM or FM. Blinks 1 s on / 500 ms off.
+
+**RTM bar** — shrinks right-to-left as the buggy approaches:
+
+![RTM Proximity Bar](docs/rtm_bar_animation.gif)
+
+Full bar (10 pixels) = buggy at arm distance. Shrinks from the right as the buggy closes in. Gone at stop distance just before RTM disengages.
+
+**FM bar** — expands outward from center sweet spot:
+
+![FM Proximity Bar](docs/fm_bar_animation.gif)
+
+2 pixels at C4–C5 = ideal following distance. Expands symmetrically outward as the buggy lags further behind. 1 pixel = buggy too close.
+
+> See [docs/display-reference.md](docs/display-reference.md) for full implementation details and current FM bar status.
 
 ---
 
@@ -427,7 +493,8 @@ If TX-to-RX distance drops below `fm_warn_distance_m` (default 150 m), TX fires 
 ## Links
 
 - [Original BREmote V2 repository — Luddi96](https://github.com/Luddi96/BREmote)
-- [V3 Config Studio — BREmote_V3_Config_Studio.html](Tools/BREmote_V3_Config_Studio.html) *(offline HTML tool)*
+- [Web Serial Config Tool — open in browser](https://monterman.github.io/BREmote-V2/BREmote_V2.5-Evo_Web_Serial_Config_Tool.html) *(Chrome/Edge — no download needed)*
+- [Web Serial Config Tool — offline download](docs/BREmote_V2.5-Evo_Web_Serial_Config_Tool.html)
 - [RTM Design Document — DESIGN_RETURN_TO_ME.md](DESIGN_RETURN_TO_ME.md)
 - [Config Tool — lbre.de](https://lbre.de) *(LudwigBre's original web config tool)*
 - [Build Video](https://github.com/Luddi96/BREmote) — see original Luddi96 repository
@@ -441,7 +508,7 @@ If TX-to-RX distance drops below `fm_warn_distance_m` (default 150 m), TX fires 
 
 ## Changelog
 
-### V3 P8 — April 2026 *(monterman)* — Display, Gesture & UX Overhaul
+### V2.5.08 — April 2026 *(monterman)* — Display, Gesture & UX Overhaul
 
 - **Gesture redesign (breaking):** LEFT hold 2s = cycle display; RIGHT tap→LEFT hold 5s = RTM arm; LEFT tap→RIGHT hold 5s = FM cycle; lock feature removed (always boots unlocked)
 - **RTM arm/disarm display:** static `rn` ×2 (3s total), replaces scrolling `rtn`
@@ -458,7 +525,7 @@ If TX-to-RX distance drops below `fm_warn_distance_m` (default 150 m), TX fires 
 - **TelemetryPacket grows:** `rtm_distance` added at index 5; `link_quality` moved to index 6 (sizeof 6→7); TX+RX bounds-check auto-adapts
 - **confStruct sizeof:** TX 120→126, RX unchanged. First P8 flash resets TX settings to defaults.
 
-### V3.0.0 — April 2026 *(monterman)*
+### V2.5.01 — April 2026 *(monterman)*
 
 - Fork established as BREmote V2.5-Evo
 - Full codebase audit completed — 7 critical bugs and 10 important issues documented
@@ -486,10 +553,9 @@ Key V2 milestones:
 
 | Contributor | Role |
 |---|---|
-| **[LudwigBre / Luddi96](https://github.com/Luddi96/BREmote)** | Original hardware design, original firmware architecture, and project founder. All core features originate here. GPL 3.0 author. |
-| **Janrusher** | Dynamic throttle cap mode and Web Console foundation — major V2 enhancements forked from LudwigBre, further refined in V3. |
-| **monterman** | BREmote V2.5-Evo — TX GPS implementation, integrated data logger, deep codebase analysis, critical bug documentation, RTM / Follow-Me mode design. |
+| **[LudwigBre / Luddi96](https://github.com/Luddi96/BREmote)** | Original hardware design, original firmware architecture, project founder, and dev-logger framework (dev-logger branch). All core features originate here. GPL 3.0 author. |
+| **Janrusher** | Dynamic throttle cap mode and Web Console foundation — major V2 enhancements forked from LudwigBre, further refined in V2.5-Evo. |
+| **monterman** | BREmote V2.5-Evo — TX GPS implementation, dev-logger AUX button toggle with LED status feedback (5× flash = start, 2× flash = stop), date format DDMMYY → MMDDYY, web console major rebuild (upload/download/compare JSON, integrated serial console, TX+RX coverage, plain-English parameter docs for every setting), deep codebase analysis, critical bug documentation, RTM/FM mode design. |
 
-Logo uses *watersport* and *Skate* by Adrien Coquet from [thenounproject.com](https://thenounproject.com) (CC BY 3.0).
 
 **License:** GNU General Public License v3.0 — same as the original BREmote. See LICENSE file.

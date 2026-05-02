@@ -532,7 +532,7 @@ Full bar (10 pixels) = buggy at arm distance. Shrinks from the right as the bugg
   - FM bar: linear fill (placeholder — center-expanding from C4–C5 intended; separate future change)
 - **Distance unit display:** `dist_unit` SPIFFS param — 0=metres/km, 1=feet/miles. All distance math stays in metres; conversion is display-layer only. No sizeof change (fills tail padding).
 - **Stop display:** RTM exit now shows `St` in large-font (`displayDigits(LET_S, LET_T)`) for 2 s. Arm confirm is unlock animation + `rn` blink. Compact-font full-screen messages for stop and arm were introduced then replaced by large-font `St` in the same P9 cycle (Bug4/Chg5 in RTMState.ino).
-- **`FM 0`–`FM 3` and `E 71`** still use compact 3×7 full-screen font.
+- **`FM 0`–`FM 3` and `E 7`** still use compact 3×7 full-screen font. (Error code E71 — display renders as `E 7` due to screen width.)
 - **Old scrolling `Stp`** (scroll3Digits LET_S LET_T LET_P) removed.
 - **FM proximity warning vibration:** TX fires 2×Pattern-2 burst when TX-RX distance drops below `fm_warn_distance_m` (default 150 m).
 - **`dist_unit` new TX SPIFFS field.** No sizeof change.

@@ -99,9 +99,9 @@ Source font: `docs/Dot_Matrix_Display_10x7_Render.html` — canonical pixel layo
 | *(removed)* `A rM` | — | Arm confirm replaced by unlock animation + `rn` 2s blink (removed in P9 Bug4) |
 | `St` | large-font `displayDigits(LET_S, LET_T)` — not compact font | RTM disengages (any exit path) or pre-arm rejected |
 | `FM 0` – `FM 3` | F(3) + M(3) + space(1) + 0-3(3) = 10 | FM mode cycled or FM arm confirmed |
-| `E 71` | E(3) + space(1) + 7(3) + 1(3) = 10 | Water ingress error (blinks 250ms on/off — non-blocking) |
+| `E 7` | E(3) + space(1) + 7(3) = 7 columns | Water ingress error code E71 (display shows "E 7" — the "1" does not fit; blinks 250ms on/off, non-blocking) |
 
-RTM exit shows `St` via `displayDigits(LET_S, LET_T)` (large-font, 2s). `showFullScreenMessage()` is still used for `FM 0`–`FM 3` and `E 71`. FreeRTOS vibration task continues running during any blocking display hold.
+RTM exit shows `St` via `displayDigits(LET_S, LET_T)` (large-font, 2s). `showFullScreenMessage()` is still used for `FM 0`–`FM 3` and `E 7` (water ingress). FreeRTOS vibration task continues running during any blocking display hold.
 
 ## R5 Proximity Bar (P9 New)
 Row R5 (`displayBuffer[6]`) is used as a proximity bar during RTM or FM.
@@ -115,9 +115,13 @@ Blink pattern: 1000 ms on / 500 ms off.
 - At 25% distance: 5 pixels lit (sqrt(0.25) = 0.5 × 10 = 5).
 - At 0% (hard stop): 0 pixels — bar gone just before RTM disengages.
 
+![RTM Proximity Bar Animation](rtm_bar_animation.gif)
+
 **FM bar (Priority 10 — linear fill; center-expanding version pending):**
 - Current implementation: left-to-right linear fill. Full bar (10 pixels) = buggy close. Empty = buggy ≥30m away.
-- Intended design (pending separate code change): center-expanding from C4-C5 sweet spot. 2 pixels (C4, C5) = ideal following distance; bar expands outward as buggy lags; 1 pixel (C4 only) = buggy too close. See `docs/fm_bar_animation.gif`.
+- **Implemented** (2026-04-30): center-expanding from C4-C5 sweet spot. 2 pixels at C4+C5 = ideal follow distance. Bar expands outward symmetrically as buggy gets closer. Dark when ≥30 m away. Full bar (C0-C9) = buggy right next to user.
+
+![FM Proximity Bar Animation](fm_bar_animation.gif)
 
 **`rtm_arm_dist_m` variable:**
 - RAM only — never written to SPIFFS.

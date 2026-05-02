@@ -228,7 +228,7 @@
 // TX FIELD DEFINITIONS — exact copy from Source/V2_Integration_Tx/WebUiEmbedded.h
 // BREmote V2.5-Evo TX — 59 parameters
 // ============================================================
-const TX_GROUP_ORDER = ["Radio","Gears","Throttle","Steering","Toggle","Lock & Timing","Calibration","GPS & Follow-Me","RTM & Follow-Me","System"];
+const TX_GROUP_ORDER = ["Radio","Gears","Throttle","Steering","Toggle","Lock & Timing","Calibration","GPS","RTM","Follow-Me","System"];
 const TX_FIELDS = [
 {key:"radio_preset",label:"Radio Preset",description:"Radio frequency band. 1=EU 868 MHz, 2=US/AU 915 MHz. Do not select 3 — it causes a boot error and the remote will not start.",group:"Radio",type:"enum",def:1,min:1,max:3,options:[{v:1,l:"EU868"},{v:2,l:"US/AU915"},{v:3,l:"Reserved"}]},
 {key:"rf_power",label:"RF Power",description:"LoRa transmit power in dBm. -9=minimum range (bench testing only), 22=maximum range. Higher values draw more current.",group:"Radio",type:"int",def:0,min:-9,max:22,unit:"dBm"},
@@ -243,7 +243,6 @@ const TX_FIELDS = [
 {key:"gear_change_waittime",label:"Gear Change Wait",description:"Toggle hold duration to register a gear change. 0=instant change, 65535=very long hold required. Milliseconds.",group:"Gears",type:"int",def:100,min:0,max:65535,unit:"ms"},
 {key:"gear_display_time",label:"Gear Display Time",description:"How long the gear number flashes after a change. 0=no display, higher=longer flash. Milliseconds.",group:"Gears",type:"int",def:1000,min:0,max:65535,unit:"ms"},
 {key:"thr_expo",label:"Throttle Expo",description:"Throttle response curve. 0=maximum exponential (gentle at low throttle, aggressive at high), 50=linear, 100=reverse exponential. Most riders prefer 30-50.",group:"Throttle",type:"int",def:50,min:0,max:100},
-{key:"thr_expo1",label:"Throttle Expo 1",description:"Reserved/unused",group:"Throttle",type:"int",def:0,min:0,max:65535},
 {key:"steer_enabled",label:"Steering Enabled",description:"0=steering disabled (toggle input controls gears/cap only), 1=steering enabled (toggle also steers vehicle).",group:"Steering",type:"bool",def:1,min:0,max:1},
 {key:"steer_expo",label:"Steering Expo",description:"Reserved/unused",group:"Steering",type:"int",def:50,min:0,max:65535},
 {key:"steer_expo1",label:"Steering Expo 1",description:"Reserved/unused",group:"Steering",type:"int",def:0,min:0,max:65535},
@@ -285,6 +284,7 @@ const TX_FIELDS = [
 {key:"rtm_display_mode",label:"RTM/FM Display Mode",description:"Info shown on TX display while RTM or FM is active. 0=distance to TX (default), 1=speed, 2=alternating every 2.5s.",group:"RTM & Follow-Me",type:"enum",def:0,min:0,max:2,options:[{v:0,l:"Distance (default)"},{v:1,l:"Speed"},{v:2,l:"Alternating 2.5s"}]},
 {key:"fm_warn_distance_m",label:"FM Warning Distance",description:"TX-to-RX distance that triggers proximity warning vibration in Follow-Me mode. 50m=warn early (more time to react), 1000m=warn only when very close. Default 150.",group:"RTM & Follow-Me",type:"int",def:150,min:50,max:1000,unit:"m"},
 {key:"rtm_steer_exit_on_input",label:"RTM Exit on Steering",description:"1=any significant steering input exits RTM immediately (default). 0=steering used for correction only (blend mode).",group:"RTM & Follow-Me",type:"bool",def:1,min:0,max:1},
+{key:"fm_display_mode",label:"FM Digit Display",description:"What the TX digit zone shows while Follow-Me is armed. 1=TX GPS speed (in selected speed unit), 2=distance to buggy (in selected distance unit), 3=buggy speed (RX telemetry), 4=throttle %.",group:"RTM & Follow-Me",type:"enum",def:1,min:1,max:4,options:[{v:1,l:"TX GPS Speed (default)"},{v:2,l:"Distance to Buggy"},{v:3,l:"Buggy Speed"},{v:4,l:"Throttle %"}]},
 {key:"fm_arm_window_s",label:"FM Arm Window",description:"How long FM stays armed before silently auto-disarming if no throttle input. 10s=short window, 120s=2 minute window. No display or haptic on expiry. Default 30.",group:"RTM & Follow-Me",type:"int",def:30,min:10,max:120,unit:"s"},
 {key:"dist_unit",label:"Distance Unit",description:"Unit for all distance readouts on the TX display (RTM, FM). Internal math always uses metres. 0=Metres, 1=Feet/miles.",group:"RTM & Follow-Me",type:"enum",def:0,min:0,max:1,options:[{v:0,l:"Metres"},{v:1,l:"Feet"}]},
 {key:"wifi_password",label:"WiFi Password",description:"AP password (exactly 8 characters)",group:"System",type:"text",def:"12345678",minLen:8,maxLen:8},

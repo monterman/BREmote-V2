@@ -454,15 +454,40 @@ Full bar (10 pixels) = buggy at arm distance. Shrinks from the right as the bugg
 
 ## Connection Examples
 
+<details>
+<summary>VESC with UART — click to expand</summary>
+
 ![VESC with UART](https://github.com/Luddi96/BREmote-V2/raw/main/img/conn_vesc.PNG)
+
+</details>
+
+<details>
+<summary>ESC with BREmote BEC — click to expand</summary>
 
 ![ESC with BREmote BEC](https://github.com/Luddi96/BREmote-V2/raw/main/img/conn_esc_bbec.PNG)
 
+</details>
+
+<details>
+<summary>ESC with own BEC — click to expand</summary>
+
 ![ESC with own BEC](https://github.com/Luddi96/BREmote-V2/raw/main/img/conn_esc_obec.PNG)
+
+</details>
+
+<details>
+<summary>VESC + Servo — click to expand</summary>
 
 ![VESC + Servo](https://github.com/Luddi96/BREmote-V2/raw/main/img/conn_vesc_servo.PNG)
 
+</details>
+
+<details>
+<summary>ESC + Servo — click to expand</summary>
+
 ![ESC + Servo](https://github.com/Luddi96/BREmote-V2/raw/main/img/conn_esc_servo.PNG)
+
+</details>
 
 ---
 

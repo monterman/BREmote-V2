@@ -7,6 +7,7 @@
 // V2.5-Evo - 2026-04-28 - P9: Added dist_unit (fills 2-byte tail padding; sizeof stays 128); rtm_arm_dist_m RAM global
 // V2.5-Evo - 2026-04-29 - Sleep: added sleep_timeout_s to confStruct; SW_VERSION 25→26
 // V2.5-Evo - 2026-05-01 - Release: DEBUG_RX commented out for production build
+// V3 - 2026-05-01 - thr_expo1 repurposed as fm_display_mode (FM digit zone data selector, 1-4)
 
 /*
 ** Includes
@@ -93,7 +94,8 @@ struct confStruct {
     uint16_t steer_enabled; //If steering feature is enabled
     
     uint16_t thr_expo; //Exponential function, 50 = linear
-    uint16_t thr_expo1; //currently unused
+    uint16_t fm_display_mode;  // FM digit zone display: 1=TX speed (default), 2=distance to buggy,
+                               // 3=buggy speed (RX telemetry), 4=throttle %; range 1-4
 
     uint16_t steer_expo; //currently unused
     uint16_t steer_expo1; //currently unused
@@ -221,7 +223,7 @@ confStruct defaultConf = {  // V3 default configuration — tuned for monterman 
   0,             // startgear
   1,             // steer_enabled
   100,           // thr_expo
-  0,             // thr_expo1
+  1,             // fm_display_mode (1=TX speed default; old configs had 0 here — ConfigService min:1 auto-corrects to 1)
   50,            // steer_expo
   0,             // steer_expo1
   0.000185662f,  // ubat_cal

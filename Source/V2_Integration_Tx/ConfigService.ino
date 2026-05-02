@@ -4,6 +4,7 @@
 // V2.5-Evo - 2026-04-28 - P9: Added dist_unit (0=Metres, 1=Feet; range 0-1)
 // V2.5-Evo - 2026-04-28 - ChangeA: fm_arm_window_s max raised 60→120s (no struct change, no SPIFFS reset)
 // V2.5-Evo - 2026-04-29 - Sleep: added sleep_timeout_s to ConfigService validation table
+// V3 - 2026-05-01 - thr_expo1 repurposed as fm_display_mode; range 1-4, default 1
 
 const CfgFieldSpec kCfgFields[] = {
   {"radio_preset", CFG_U16, offsetof(confStruct, radio_preset), true, true, true, 1.0f, 2.0f, 0, false},
@@ -34,7 +35,8 @@ const CfgFieldSpec kCfgFields[] = {
   {"gear_change_waittime", CFG_U16, offsetof(confStruct, gear_change_waittime), true, false, true, 0.0f, 65535.0f, 0, false},
   {"gear_display_time", CFG_U16, offsetof(confStruct, gear_display_time), true, false, true, 0.0f, 65535.0f, 0, false},
   {"err_delete_time", CFG_U16, offsetof(confStruct, err_delete_time), true, false, true, 0.0f, 65535.0f, 0, false},
-  {"thr_expo1", CFG_U16, offsetof(confStruct, thr_expo1), true, false, true, 0.0f, 65535.0f, 0, false},
+  // FM digit zone data selector: 1=TX speed, 2=distance to buggy, 3=buggy speed, 4=throttle %
+  {"fm_display_mode", CFG_U16, offsetof(confStruct, fm_display_mode), true, false, true, 1.0f, 4.0f, 1, false},
   {"steer_expo", CFG_U16, offsetof(confStruct, steer_expo), true, false, true, 0.0f, 65535.0f, 0, false},
   {"steer_expo1", CFG_U16, offsetof(confStruct, steer_expo1), true, false, true, 0.0f, 65535.0f, 0, false},
   {"ubat_cal", CFG_FLOAT, offsetof(confStruct, ubat_cal), true, false, true, 0.000001f, 1.0f, 9, false},

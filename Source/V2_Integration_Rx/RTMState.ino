@@ -1,3 +1,6 @@
+// V3 - 2026-05-01 - Fix D: gps_tx_ok relaxed for FM/idle; never reset rtm_distance to 0xFF when RTM inactive
+// V3 - 2026-05-01 - Fix C: FM bar keep-last-known on GPS dropout; only 0xFF if TX GPS never received
+// V3 - 2026-05-01 - Fix B: encode rtm_distance always when GPS valid; feeds FM bar and enables correct pre-arm block within stop distance
 // V3 - 2026-04-30 - Gate 9 clean disengagement (handoff to manual, no emergency stop); re-arm fix (0xFF when inactive); approach decel zone computation
 // V3 - 2026-04-25 - P7: RX RTM state machine, 10 safety gates, Phase C anti-spoofing.
 // V3 - 2026-04-27 - P8: runRtmLoop() encodes RX→TX distance into telemetry.rtm_distance (index 5)
@@ -248,35 +251,40 @@ void runRtmLoop()
   }
 
   // ---- Distance computation: telemetry encoding + approach decel cap ----
-  // When RTM is ACTIVE: encodes real distance for TX display and computes approach decel cap.
-  // When RTM is INACTIVE: always sets telemetry.rtm_distance = 0xFF (no-data sentinel).
-  //   This unblocks the TX pre-arm check — TX decodes 0xFF as -1.0f (no data) and skips
-  //   the proximity guard. Re-arm is no longer blocked after a Gate 9 stop.
-  //   rtm_approach_cap is reset to 255 (no cap) so manual throttle is never limited.
+  // Distance is always encoded when both GPS sources are valid — feeds the TX R5 proximity
+  // bar during RTM and FM modes, and enables the TX pre-arm check to correctly block
+  // re-arm while within rtm_disengage_distance_m (correct safety behaviour after Gate 9).
+  // Approach decel cap is only computed during active RTM; reset to 255 otherwise.
   {
     bool gps_rx_ok = (gps_last_ms > 0) && ((millis() - gps_last_ms) < 6000UL);
-    bool gps_tx_ok = (rx_tx_gps_timestamp > 0) && ((millis() - rx_tx_gps_timestamp) < 5000UL);
+    // RTM active: require fresh TX GPS (5 s) for Phase C safety checks.
+    // RTM inactive (FM/idle): any previously received TX GPS position is acceptable.
+    // The 14-byte GPS meta-packet has higher loss than 6-byte control packets; a tight
+    // freshness window causes gps_tx_ok to drop false between packets and prevents Fix B
+    // from encoding distance during FM — relaxing it here breaks that failure mode.
+    bool gps_tx_ok = rtm_rx_active
+                   ? ((rx_tx_gps_timestamp > 0) && ((millis() - rx_tx_gps_timestamp) < 5000UL))
+                   : (rx_tx_gps_lat != 0.0 || rx_tx_gps_lng != 0.0);
 
     if (gps_rx_ok && gps_tx_ok)
     {
       float d = (float)TinyGPSPlus::distanceBetween(
           gps_last_lat, gps_last_lng, rx_tx_gps_lat, rx_tx_gps_lng);
 
+      // Always encode real distance when both GPS sources are valid.
+      // 0-99: tenths of metre (0.0-9.9 m); 100-254: whole metres offset by 90 (10-164 m)
+      if (d < 10.0f)
+      {
+        telemetry.rtm_distance = (uint8_t)(d * 10.0f);
+      }
+      else
+      {
+        uint8_t whole_m = (uint8_t)(d > 164.0f ? 164.0f : d);
+        telemetry.rtm_distance = 90u + whole_m;
+      }
+
       if (rtm_rx_active)
       {
-        // RTM active: encode real distance for TX proximity bar and display
-        if (d < 10.0f)
-        {
-          // 0-99: tenths of metre (d=0.0..9.9 m)
-          telemetry.rtm_distance = (uint8_t)(d * 10.0f);
-        }
-        else
-        {
-          // 100-254: whole metres offset by 90 (100=10m, 254=164m cap)
-          uint8_t whole_m = (uint8_t)(d > 164.0f ? 164.0f : d);
-          telemetry.rtm_distance = 90u + whole_m;
-        }
-
         // Approach decel zone: linearly ramp the throttle cap as the buggy closes in.
         // At rtm_approach_zone_m (outer edge): cap = 255 (full user throttle).
         // At rtm_stop_distance_m (Gate 9 edge):  cap = 0  (buggy coasts to stop naturally).
@@ -285,7 +293,7 @@ void runRtmLoop()
         // rtm_approach_zone_m == 0 disables the feature (hard stop only).
         if (usrConf.rtm_approach_zone_m > 0)
         {
-          uint16_t stop_m    = (usrConf.rtm_stop_distance_m > 0) ? usrConf.rtm_stop_distance_m : 3u;
+          uint16_t stop_m     = (usrConf.rtm_stop_distance_m > 0) ? usrConf.rtm_stop_distance_m : 3u;
           float    approach_m = (float)usrConf.rtm_approach_zone_m;
           if (approach_m > (float)stop_m && d < approach_m)
           {
@@ -306,18 +314,18 @@ void runRtmLoop()
       }
       else
       {
-        // RTM inactive: send no-data sentinel so TX pre-arm check is bypassed.
-        // Re-arm must never be blocked by a short distance reading after Gate 9.
-        telemetry.rtm_distance = 0xFF;
-        rtm_approach_cap       = 255;  // no cap during manual
+        rtm_approach_cap = 255;  // RTM inactive: no approach cap
       }
     }
     else if (!rtm_rx_active)
     {
-      telemetry.rtm_distance = 0xFF;  // no GPS and RTM inactive: no data
-      rtm_approach_cap       = 255;
+      // FM/idle: never actively write 0xFF here. The struct field initialises to 0xFF;
+      // Fix B above updates it to real distance once gps_rx_ok && gps_tx_ok is satisfied.
+      // Actively resetting to 0xFF on any GPS hiccup caused the FM bar to stay dark.
+      // rtm_approach_cap must be 255 when RTM is inactive — no throttle capping outside RTM.
+      rtm_approach_cap = 255;
     }
-    // If rtm_rx_active but GPS data just expired: keep last known distance and cap (don't reset)
+    // GPS conditions failed (RTM active or inactive): keep last known distance and cap.
   }
 
   if (!usrConf.rtm_rx_enabled)

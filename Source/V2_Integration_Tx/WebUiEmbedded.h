@@ -2,6 +2,8 @@
 // V2.5-Evo - 2026-04-28 - ChangeA/F: fm_arm_window max 60→120s; followme_mode labels updated, option 0 removed
 // V2.5-Evo - 2026-04-29 - TaskB: full description audit — bool 0/1 values, enum all options inline, int/float extremes explained
 // V2.5-Evo - 2026-04-29 - Sleep: added sleep_timeout_s to TX WebUI
+// V3 - 2026-05-01 - thr_expo1 removed; fm_display_mode added to RTM & Follow-Me group
+// V3 - 2026-05-02 - Split GPS/RTM/FM into separate groups; added Collapse All / Expand All buttons
 #ifndef WEB_UI_EMBEDDED_H
 #define WEB_UI_EMBEDDED_H
 
@@ -69,6 +71,10 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
       </div>
     </div>
     
+    <div style="display:flex;gap:8px;margin-bottom:6px">
+      <button class="btn sec" onclick="expandAll()">Expand All</button>
+      <button class="btn sec" onclick="collapseAll()">Collapse All</button>
+    </div>
     <div class="groups" id="groups"></div>
     
     <div class="card" style="margin-top: 20px;">
@@ -90,7 +96,7 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
 
 <script>
 // ALL 59 TX PARAMETERS (updated 2026-04-28 P9: +1 new field dist_unit)
-const groupOrder=["Radio","Gears","Throttle","Steering","Toggle","Lock & Timing","Calibration","GPS & Follow-Me","RTM & Follow-Me","System"];
+const groupOrder=["Radio","Gears","Throttle","Steering","Toggle","Lock & Timing","Calibration","GPS","RTM","Follow-Me","System"];
 const fields=[
 {key:"radio_preset",label:"Radio Preset",description:"Radio frequency band. 1=EU 868 MHz, 2=US/AU 915 MHz. Do not select 3 — it causes a boot error and the remote will not start.",group:"Radio",type:"enum",def:1,min:1,max:2,options:[{v:1,l:"EU868"},{v:2,l:"US/AU915"}]},
 {key:"rf_power",label:"RF Power",description:"LoRa transmit power in dBm. -9=minimum range (bench testing only), 22=maximum range. Higher values draw more current.",group:"Radio",type:"int",def:0,min:-9,max:22,unit:"dBm"},
@@ -105,7 +111,6 @@ const fields=[
 {key:"gear_change_waittime",label:"Gear Change Wait",description:"Toggle hold duration to register a gear change. 0=instant change, 65535=very long hold required. Milliseconds.",group:"Gears",type:"int",def:100,min:0,max:65535,unit:"ms"},
 {key:"gear_display_time",label:"Gear Display Time",description:"How long the gear number flashes after a change. 0=no display, higher=longer flash. Milliseconds.",group:"Gears",type:"int",def:1000,min:0,max:65535,unit:"ms"},
 {key:"thr_expo",label:"Throttle Expo",description:"Throttle response curve. 0=maximum exponential (gentle at low throttle, aggressive at high), 50=linear, 100=reverse exponential. Most riders prefer 30-50.",group:"Throttle",type:"int",def:50,min:0,max:100},
-{key:"thr_expo1",label:"Throttle Expo 1",description:"Reserved/unused",group:"Throttle",type:"int",def:0,min:0,max:65535},
 {key:"steer_enabled",label:"Steering Enabled",description:"0=steering disabled (toggle input controls gears/cap only), 1=steering enabled (toggle also steers vehicle).",group:"Steering",type:"bool",def:1,min:0,max:1},
 {key:"steer_expo",label:"Steering Expo",description:"Reserved/unused",group:"Steering",type:"int",def:50,min:0,max:65535},
 {key:"steer_expo1",label:"Steering Expo 1",description:"Reserved/unused",group:"Steering",type:"int",def:0,min:0,max:65535},
@@ -125,30 +130,31 @@ const fields=[
 {key:"tog_mid",label:"Toggle Mid",description:"ADC reading at toggle center. Set automatically during calibration — do not edit manually.",group:"Calibration",type:"int",def:0,min:0,max:65535},
 {key:"tog_right",label:"Toggle Right",description:"ADC reading at toggle fully right. Set automatically during calibration — do not edit manually.",group:"Calibration",type:"int",def:0,min:0,max:65535},
 {key:"ubat_cal",label:"Battery Cal Factor",description:"Multiplier to convert raw ADC to battery voltage. Adjust (tiny value, default ≈0.000186) until displayed voltage matches a multimeter reading.",group:"Calibration",type:"float",def:0.000185662,min:0.000001,max:1.0,step:0.000001},
-{key:"gps_en",label:"GPS Enabled",description:"0=GPS disabled (RTM and Follow-Me unavailable), 1=GPS active. Requires GPS module physically installed.",group:"GPS & Follow-Me",type:"bool",def:0,min:0,max:1},
-{key:"followme_mode",label:"Follow-Me Starting Mode",description:"FM starting mode loaded on first arm this session. RAM override only — never written back to SPIFFS. 1=Near Right (default), 2=Behind, 3=Near Left.",group:"GPS & Follow-Me",type:"enum",def:1,min:1,max:3,options:[{v:1,l:"Near Right (default)"},{v:2,l:"Behind"},{v:3,l:"Near Left"}]},
-{key:"kalman_en",label:"Kalman Filter",description:"0=raw GPS coordinates used directly, 1=Kalman filter smooths GPS jitter (recommended when GPS is noisy).",group:"GPS & Follow-Me",type:"bool",def:0,min:0,max:1},
-{key:"speed_src",label:"Speed Source",description:"Speed value shown in SP display mode. 0=RX GPS km/h, 1=RX GPS knots, 2=TX GPS km/h, 3=TX GPS knots, 4=RX GPS mph, 5=TX GPS mph.",group:"GPS & Follow-Me",type:"enum",def:0,min:0,max:5,options:[{v:0,l:"GPS RX km/h"},{v:1,l:"GPS RX knots"},{v:2,l:"GPS TX km/h"},{v:3,l:"GPS TX knots"},{v:4,l:"GPS RX mph"},{v:5,l:"GPS TX mph"}]},
-{key:"tx_gps_stale_timeout_ms",label:"TX GPS Stale Timeout",description:"How long a TX GPS fix is valid before considered stale. 0=never expires, 65535=very lenient. Lower values = stricter RTM GPS safety. Milliseconds.",group:"GPS & Follow-Me",type:"int",def:1000,min:0,max:65535,unit:"ms"},
-{key:"gps_max_hdop",label:"TX GPS Max HDOP",description:"Max GPS Signal Noise (HDOP×100): 150=excellent, 200=good (default), 300=lenient. Lower = stricter filter.",group:"GPS & Follow-Me",type:"int",def:200,min:50,max:500},
-{key:"gps_chip_type",label:"GPS Module Type",description:"GPS module type — determines baud/rate/constellation init sequence. TX supports 0 and 2 only (no compass on TX hardware).",group:"GPS & Follow-Me",type:"enum",def:0,min:0,max:3,options:[{v:0,l:"BN-220 (default, 9600→11520​0, 5Hz)"},{v:2,l:"M10 no compass (115200 direct, 10Hz, all constellations)"}]},
-{key:"rtm_enabled",label:"RTM Enabled",description:"Master enable for Return-to-Me feature. 0=off, 1=on.",group:"RTM & Follow-Me",type:"bool",def:1,min:0,max:1},
-{key:"rtm_hold_duration_s",label:"RTM Arm Hold Time",description:"Gesture hold duration for RTM arming. Currently fixed at 5s in firmware — this field is reserved for a future configurable threshold.",group:"RTM & Follow-Me",type:"int",def:5,min:4,max:10,unit:"s"},
-{key:"rtm_arm_window_s",label:"RTM Arm Window",description:"Time to complete throttle squeeze(s) after the RTM arm gesture. 5s=very tight window (hard to complete), 30s=generous. Default 10.",group:"RTM & Follow-Me",type:"int",def:10,min:5,max:30,unit:"s"},
-{key:"rtm_double_squeeze_en",label:"RTM Double-Squeeze",description:"1=require two squeezes to engage (default), 0=hold throttle >30% for 500ms.",group:"RTM & Follow-Me",type:"bool",def:1,min:0,max:1},
-{key:"rtm_throttle_start_pct",label:"RTM Start Throttle %",description:"Throttle cap at RTM engage moment. 10%=very gentle start, 50%=aggressive. Ramps to rtm_throttle_max_pct over rtm_ramp_duration_s.",group:"RTM & Follow-Me",type:"int",def:30,min:10,max:50,unit:"%"},
-{key:"rtm_throttle_max_pct",label:"RTM Max Throttle %",description:"Throttle cap after the ramp completes. 30%=slow approach, 90%=fast approach. User throttle is limited to this cap during RTM.",group:"RTM & Follow-Me",type:"int",def:70,min:30,max:90,unit:"%"},
-{key:"rtm_ramp_duration_s",label:"RTM Ramp Duration",description:"Time to ramp from rtm_throttle_start_pct to rtm_throttle_max_pct. 2s=quick ramp, 15s=very gradual. Default 5.",group:"RTM & Follow-Me",type:"int",def:5,min:2,max:15,unit:"s"},
-{key:"rtm_disengage_distance_m",label:"RTM Disengage Distance",description:"Distance at which RTM stops and motor cuts to 0. 3m=stops very close to user, 20m=stops well before reaching user. Allow enough for braking distance. Default 10.",group:"RTM & Follow-Me",type:"int",def:10,min:3,max:20,unit:"m"},
-{key:"rtm_max_runtime_s",label:"RTM Max Runtime",description:"Maximum continuous RTM runtime before auto-disengage. 0=disabled (safety gates handle all real scenarios), 300s=5 minute hard cap. Default 0.",group:"RTM & Follow-Me",type:"int",def:0,min:0,max:300,unit:"s"},
-{key:"rtm_gps_timeout_ms",label:"RTM GPS Timeout",description:"How long TX GPS can be lost before RTM safety-stops. 500ms=very strict, 3000ms=lenient (handles brief outages). Default 2000.",group:"RTM & Follow-Me",type:"int",def:2000,min:500,max:3000,unit:"ms"},
-{key:"fm_hold_duration_s",label:"FM Hold Time",description:"Gesture hold duration for Follow-Me arming. Currently fixed at 5s in firmware — this field is reserved for a future configurable threshold.",group:"RTM & Follow-Me",type:"int",def:5,min:4,max:10,unit:"s"},
-{key:"fm_override_enabled",label:"FM Override Enabled",description:"Allow TX to override RX follow-me mode at runtime (no SPIFFS write). 0=off, 1=on.",group:"RTM & Follow-Me",type:"bool",def:1,min:0,max:1},
-{key:"rtm_display_mode",label:"RTM/FM Display Mode",description:"Info shown on TX display while RTM or FM is active. 0=distance to TX (default), 1=speed, 2=alternating every 2.5s.",group:"RTM & Follow-Me",type:"enum",def:0,min:0,max:2,options:[{v:0,l:"Distance (default)"},{v:1,l:"Speed"},{v:2,l:"Alternating 2.5s"}]},
-{key:"fm_warn_distance_m",label:"FM Warning Distance (not yet implemented)",description:"[NOT YET IMPLEMENTED] Reserved for future use: TX-to-RX distance that will trigger proximity warning vibration in Follow-Me mode. Setting this value has no effect in the current firmware. Default 150.",group:"RTM & Follow-Me",type:"int",def:150,min:50,max:1000,unit:"m"},
-{key:"rtm_steer_exit_on_input",label:"RTM Exit on Steering",description:"1=any significant steering input exits RTM immediately (default). 0=steering used for correction only (blend mode).",group:"RTM & Follow-Me",type:"bool",def:1,min:0,max:1},
-{key:"fm_arm_window_s",label:"FM Arm Window",description:"How long FM stays armed before silently auto-disarming if no throttle input. 10s=short window, 120s=2 minute window. No display or haptic on expiry. Default 30.",group:"RTM & Follow-Me",type:"int",def:30,min:10,max:120,unit:"s"},
-{key:"dist_unit",label:"Distance Unit",description:"Unit for all distance readouts on the TX display (RTM, FM). Internal math always uses metres. 0=Metres, 1=Feet/miles.",group:"RTM & Follow-Me",type:"enum",def:0,min:0,max:1,options:[{v:0,l:"Metres"},{v:1,l:"Feet"}]},
+{key:"gps_en",label:"GPS Enabled",description:"0=GPS disabled (RTM and Follow-Me unavailable), 1=GPS active. Requires GPS module physically installed.",group:"GPS",type:"bool",def:0,min:0,max:1},
+{key:"followme_mode",label:"Follow-Me Starting Mode",description:"FM starting mode loaded on first arm this session. RAM override only — never written back to SPIFFS. 1=Near Right (default), 2=Behind, 3=Near Left.",group:"Follow-Me",type:"enum",def:1,min:1,max:3,options:[{v:1,l:"Near Right (default)"},{v:2,l:"Behind"},{v:3,l:"Near Left"}]},
+{key:"kalman_en",label:"Kalman Filter",description:"0=raw GPS coordinates used directly, 1=Kalman filter smooths GPS jitter (recommended when GPS is noisy).",group:"GPS",type:"bool",def:0,min:0,max:1},
+{key:"speed_src",label:"Speed Source",description:"Speed value shown in SP display mode. 0=RX GPS km/h, 1=RX GPS knots, 2=TX GPS km/h, 3=TX GPS knots, 4=RX GPS mph, 5=TX GPS mph.",group:"GPS",type:"enum",def:0,min:0,max:5,options:[{v:0,l:"GPS RX km/h"},{v:1,l:"GPS RX knots"},{v:2,l:"GPS TX km/h"},{v:3,l:"GPS TX knots"},{v:4,l:"GPS RX mph"},{v:5,l:"GPS TX mph"}]},
+{key:"tx_gps_stale_timeout_ms",label:"TX GPS Stale Timeout",description:"How long a TX GPS fix is valid before considered stale. 0=never expires, 65535=very lenient. Lower values = stricter RTM GPS safety. Milliseconds.",group:"RTM",type:"int",def:1000,min:0,max:65535,unit:"ms"},
+{key:"gps_max_hdop",label:"TX GPS Max HDOP",description:"Max GPS Signal Noise (HDOP×100): 150=excellent, 200=good (default), 300=lenient. Lower = stricter filter.",group:"GPS",type:"int",def:200,min:50,max:500},
+{key:"gps_chip_type",label:"GPS Module Type",description:"GPS module type — determines baud/rate/constellation init sequence. TX supports 0 and 2 only (no compass on TX hardware).",group:"GPS",type:"enum",def:0,min:0,max:3,options:[{v:0,l:"BN-220 (default, 9600→11520​0, 5Hz)"},{v:2,l:"M10 no compass (115200 direct, 10Hz, all constellations)"}]},
+{key:"rtm_enabled",label:"RTM Enabled",description:"Master enable for Return-to-Me feature. 0=off, 1=on.",group:"RTM",type:"bool",def:1,min:0,max:1},
+{key:"rtm_hold_duration_s",label:"RTM Arm Hold Time",description:"Gesture hold duration for RTM arming. Currently fixed at 5s in firmware — this field is reserved for a future configurable threshold.",group:"RTM",type:"int",def:5,min:4,max:10,unit:"s"},
+{key:"rtm_arm_window_s",label:"RTM Arm Window",description:"Time to complete throttle squeeze(s) after the RTM arm gesture. 5s=very tight window (hard to complete), 30s=generous. Default 10.",group:"RTM",type:"int",def:10,min:5,max:30,unit:"s"},
+{key:"rtm_double_squeeze_en",label:"RTM Double-Squeeze",description:"1=require two squeezes to engage (default), 0=hold throttle >30% for 500ms.",group:"RTM",type:"bool",def:1,min:0,max:1},
+{key:"rtm_throttle_start_pct",label:"RTM Start Throttle %",description:"Throttle cap at RTM engage moment. 10%=very gentle start, 50%=aggressive. Ramps to rtm_throttle_max_pct over rtm_ramp_duration_s.",group:"RTM",type:"int",def:30,min:10,max:50,unit:"%"},
+{key:"rtm_throttle_max_pct",label:"RTM Max Throttle %",description:"Throttle cap after the ramp completes. 30%=slow approach, 90%=fast approach. User throttle is limited to this cap during RTM.",group:"RTM",type:"int",def:70,min:30,max:90,unit:"%"},
+{key:"rtm_ramp_duration_s",label:"RTM Ramp Duration",description:"Time to ramp from rtm_throttle_start_pct to rtm_throttle_max_pct. 2s=quick ramp, 15s=very gradual. Default 5.",group:"RTM",type:"int",def:5,min:2,max:15,unit:"s"},
+{key:"rtm_disengage_distance_m",label:"RTM Disengage Distance",description:"Distance at which RTM stops and motor cuts to 0. 3m=stops very close to user, 20m=stops well before reaching user. Allow enough for braking distance. Default 10.",group:"RTM",type:"int",def:10,min:3,max:20,unit:"m"},
+{key:"rtm_max_runtime_s",label:"RTM Max Runtime",description:"Maximum continuous RTM runtime before auto-disengage. 0=disabled (safety gates handle all real scenarios), 300s=5 minute hard cap. Default 0.",group:"RTM",type:"int",def:0,min:0,max:300,unit:"s"},
+{key:"rtm_gps_timeout_ms",label:"RTM GPS Timeout",description:"How long TX GPS can be lost before RTM safety-stops. 500ms=very strict, 3000ms=lenient (handles brief outages). Default 2000.",group:"RTM",type:"int",def:2000,min:500,max:3000,unit:"ms"},
+{key:"fm_hold_duration_s",label:"FM Hold Time",description:"Gesture hold duration for Follow-Me arming. Currently fixed at 5s in firmware — this field is reserved for a future configurable threshold.",group:"Follow-Me",type:"int",def:5,min:4,max:10,unit:"s"},
+{key:"fm_override_enabled",label:"FM Override Enabled",description:"Allow TX to override RX follow-me mode at runtime (no SPIFFS write). 0=off, 1=on.",group:"Follow-Me",type:"bool",def:1,min:0,max:1},
+{key:"rtm_display_mode",label:"RTM Display Mode",description:"Info shown on TX display while RTM is active. 0=distance to TX (default), 1=speed, 2=alternating every 2.5s. FM has its own separate digit display setting below.",group:"RTM",type:"enum",def:0,min:0,max:2,options:[{v:0,l:"Distance (default)"},{v:1,l:"Speed"},{v:2,l:"Alternating 2.5s"}]},
+{key:"fm_warn_distance_m",label:"FM Warning Distance (not yet implemented)",description:"[NOT YET IMPLEMENTED] Reserved for future use: TX-to-RX distance that will trigger proximity warning vibration in Follow-Me mode. Setting this value has no effect in the current firmware. Default 150.",group:"Follow-Me",type:"int",def:150,min:50,max:1000,unit:"m"},
+{key:"rtm_steer_exit_on_input",label:"RTM Exit on Steering",description:"1=any significant steering input exits RTM immediately (default). 0=steering used for correction only (blend mode).",group:"RTM",type:"bool",def:1,min:0,max:1},
+{key:"fm_display_mode",label:"FM Digit Display",description:"What the TX digit zone shows while Follow-Me is armed. 1=TX GPS speed (in selected speed unit), 2=distance to buggy (in selected distance unit), 3=buggy speed (RX telemetry), 4=throttle %.",group:"Follow-Me",type:"enum",def:1,min:1,max:4,options:[{v:1,l:"TX GPS Speed (default)"},{v:2,l:"Distance to Buggy"},{v:3,l:"Buggy Speed"},{v:4,l:"Throttle %"}]},
+{key:"fm_arm_window_s",label:"FM Arm Window",description:"How long FM stays armed before silently auto-disarming if no throttle input. 10s=short window, 120s=2 minute window. No display or haptic on expiry. Default 30.",group:"Follow-Me",type:"int",def:30,min:10,max:120,unit:"s"},
+{key:"dist_unit",label:"Distance Unit",description:"Unit for all distance readouts on the TX display (RTM, FM). Internal math always uses metres. 0=Metres, 1=Feet/miles.",group:"GPS",type:"enum",def:0,min:0,max:1,options:[{v:0,l:"Metres"},{v:1,l:"Feet"}]},
 {key:"wifi_password",label:"WiFi Password",description:"AP password (exactly 8 characters)",group:"System",type:"text",def:"12345678",minLen:8,maxLen:8},
 {key:"version",label:"Config Version",description:"Must match firmware SW_VERSION",group:"System",type:"int",def:25,min:0,max:65535},
 {key:"sleep_timeout_s",label:"Auto-Sleep Timeout",description:"How long TX waits with no LoRa reply from RX before deep sleeping. 0=disabled, 60=1 min, 300=5 min (default), 3600=1 hour. Set to 0 to disable auto-sleep entirely.",group:"System",type:"int",def:300,min:0,max:3600,unit:"s"}
@@ -293,6 +299,8 @@ async function loadCfg(){
 
 function ctrlHtml(f){const v=state.values[f.key]??String(f.def);if(f.type==='bool'){const on=String(v).trim()==='1';return `<label class='row'><input type='checkbox' data-key='${f.key}' ${on?'checked':''} onchange="setBool('${f.key}',this.checked)"><span>${on?'Enabled':'Disabled'}</span></label>`;}if(f.type==='enum'){const opts=f.options.map(o=>`<option value='${o.v}' ${String(v)===String(o.v)?'selected':''}>${o.l}</option>`).join('');return `<select data-key='${f.key}' onchange="setEnum('${f.key}',this.value)">${opts}</select>`;}if(f.type==='address3'){const p=toAddrHex(v);return `<div class='triple'><input value='${p[0]}' maxlength='2' oninput="setAddrPart('${f.key}',0,this.value)"><input value='${p[1]}' maxlength='2' oninput="setAddrPart('${f.key}',1,this.value)"><input value='${p[2]}' maxlength='2' oninput="setAddrPart('${f.key}',2,this.value)"></div>`;}const step=f.type==='float'?(f.step||0.000001):1;const n=parseFloat(v);const showSlider=f.type==='int'&&(f.max-f.min)<=1000;const slider=showSlider?`<input type='range' data-key='${f.key}' min='${f.min}' max='${f.max}' step='1' value='${Number.isNaN(n)?f.min:Math.max(f.min,Math.min(f.max,n))}' oninput="setVal('${f.key}',this.value);syncField('${f.key}',this.value)">`:'';return `<input type='number' data-key='${f.key}' step='${step}' min='${f.min}' max='${f.max}' value='${v}' oninput="setVal('${f.key}',this.value);syncField('${f.key}',this.value)">${slider}`;}
 
+function collapseAll(){document.querySelectorAll('.groups details').forEach(d=>{d.open=false;openGroups[d.dataset.group]=false;});}
+function expandAll(){document.querySelectorAll('.groups details').forEach(d=>{d.open=true;openGroups[d.dataset.group]=true;});}
 function render(){
   document.querySelectorAll('.groups details').forEach(d=>{openGroups[d.dataset.group]=d.open;});
   const gEl=document.getElementById('groups');

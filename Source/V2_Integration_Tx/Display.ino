@@ -1,3 +1,6 @@
+// V3 - 2026-05-01 - Fix A: lazy-capture rtm_arm_dist_m on first valid render if missed at arm time
+// V3 - 2026-04-30 - FM R5 bar: replaced linear fill with center-expanding from C4-C5
+// V3 - 2026-04-30 - Priority 10: FM R5 proximity bar implemented in updateR5ProximityBar(); called from renderOperationalDisplay() FM path
 // V3 - 2026-04-21 - Updated DISPLAY_MODE_SPEED case in renderOperationalDisplay() to show TX GPS speed when speed_src 2/3/5
 // V3 - 2026-04-22 - Added GPS status dot at C7 R0 in updateBargraphs(); fixed digit-clear mask 0xFF00→0xFF80 to preserve C7
 // V3 - 2026-04-27 - P8: Fixed displayDigits() clamp 29→33; ANIMATION_DELAY 80→40; ET handler; added renderRtmInfoDisplay()
@@ -14,6 +17,7 @@
 // V2.5-Evo - 2026-04-28 - Bug5: fc3x7_r + fc3x7_n bitmaps corrected 0x7C→0x1E/0x04/0x02 — shift up, avoid R5
 // V2.5-Evo - 2026-04-29 - Fix 4-3: extern fm_armed updated to volatile to match RTMState.ino
 // V2.5-Evo - 2026-04-29 - Display: fc3x7_F middle bar R3→R2 for visual consistency
+// V3 - 2026-05-01 - FM digit zone shows fm_display_mode data (1=TX speed, 2=dist, 3=buggy spd, 4=thr%)
 
 extern volatile bool fm_armed;  // defined in RTMState.ino — volatile: written by loop() core 1,
                                  // read by updateBargraphs() core 0; must match definition
@@ -424,7 +428,38 @@ void renderOperationalDisplay()
   // Previous hand-written render wrote through all 7 rows, destructively clearing R5/R6.
   if (fm_armed && !rtm_tx_active)
   {
-    displayDigitZone("FM");
+    // V3 - 2026-05-01 - FM digit zone: show data selected by fm_display_mode instead of static "FM" text.
+    // R5 center-expanding bar already signals FM active — digit zone shows useful data instead.
+    // Option 1: TX GPS speed in the unit selected by speed_src (0xFF = no fix → shows "--").
+    // Option 2: Distance to buggy decoded from telemetry.rtm_distance (same encoding as RTM bar).
+    // Option 3: Buggy speed from RX telemetry (0xFF = not available → shows "--").
+    // Option 4: Current throttle percentage 0-100.
+    switch (usrConf.fm_display_mode)
+    {
+      case 2:
+      {
+        uint8_t d = telemetry.rtm_distance;
+        if (d == 0xFF)
+          displayDigits(DASH, DASH);
+        else
+        {
+          float actual_m = (d < 100) ? d / 10.0f : (float)(d - 90);
+          displayDistanceInUnits(actual_m);
+        }
+        break;
+      }
+      case 3:
+        displayShowTwoDigitOrDash(telemetry.foil_speed);
+        break;
+      case 4:
+        displayShowTwoDigitOrDash((uint8_t)(calcFinalThrottle() * 100U / 255U));
+        break;
+      case 1:
+      default:
+        displayShowTwoDigitOrDash(tx_gps_speed);
+        break;
+    }
+    updateR5ProximityBar();  // Priority 10: FM following-distance bar on R5
     updateDisplay();
     return;
   }
@@ -1046,12 +1081,16 @@ void updateR5ProximityBar()
 
   if (rtm_tx_active)
   {
-    if (rtm_arm_dist_m <= 0.0f) return;  // no valid arm distance — skip to avoid divide-by-zero
-
     uint8_t d = telemetry.rtm_distance;
     if (d == 0xFF) return;  // no distance data — leave R5 dark
 
     float current_m = (d < 100) ? d / 10.0f : (float)(d - 90);
+
+    // rtm_arm_dist_m is captured at arm-engage time but RX telemetry may still be 0xFF
+    // at that instant (RX hasn't transitioned to active yet). Lazily capture it from the
+    // first valid render call — buggy is still near arm distance at this point.
+    if (rtm_arm_dist_m <= 0.0f) rtm_arm_dist_m = current_m;
+    if (rtm_arm_dist_m <= 0.0f) return;  // buggy literally at 0 m at arm — skip to avoid divide-by-zero
 
     float ratio = current_m / rtm_arm_dist_m;
     if (ratio > 1.0f) ratio = 1.0f;
@@ -1061,9 +1100,35 @@ void updateR5ProximityBar()
     for (uint8_t c = 0; c < pixels; c++)
       displayBuffer[6] |= (1u << c);
   }
-  // V2.5-Evo - 2026-04-28 - Bug3: Dead FM stub removed. This else-if was unreachable —
-  // updateR5ProximityBar() is only called from renderRtmInfoDisplay(), which only runs when
-  // rtm_tx_active==true, so fm_armed could never be true at this call site. The stub also
-  // left stale R5 data that caused a phantom pixel during FM mode. R5 is now cleared at the
-  // top of this function unconditionally; FM R5 bar deferred to Priority 10.
+  else if (fm_armed)
+  {
+    // FM proximity bar: center-expanding from C4+C5 outward.
+    // Full bar (C0-C9, 10 pixels) = buggy right next to user (0 m).
+    // Sweet-spot distance (half_width=1) = just C4+C5 lit (2 center pixels).
+    // Bar grows outward symmetrically as buggy gets closer; dark when >= 30 m.
+    // Uses the same telemetry.rtm_distance byte the RX always sends (RX→TX distance).
+    uint8_t d = telemetry.rtm_distance;
+    if (d == 0xFF) return;  // no distance data from RX — leave R5 dark
+
+    float current_m = (d < 100) ? d / 10.0f : (float)(d - 90);
+
+    const float FM_BAR_REF_M = 30.0f;  // reference distance: bar is dark at this distance or beyond
+    float dist_ratio = current_m / FM_BAR_REF_M;
+    if (dist_ratio > 1.0f) dist_ratio = 1.0f;
+
+    // half_width: 0=dark, 1=C4+C5, 2=C3-C6, 3=C2-C7, 4=C1-C8, 5=C0-C9 (all 10 pixels)
+    uint8_t half_width = (uint8_t)((1.0f - dist_ratio) * 5.0f + 0.5f);
+    if (half_width > 5) half_width = 5;
+
+    // Set bits symmetrically outward from C4 (bit 4) and C5 (bit 5)
+    for (uint8_t i = 0; i < half_width; i++)
+    {
+      displayBuffer[6] |= (1u << (4 - i));  // left half:  C4, C3, C2, C1, C0
+      displayBuffer[6] |= (1u << (5 + i));  // right half: C5, C6, C7, C8, C9
+    }
+  }
+  // V2.5-Evo - 2026-04-28 - Bug3 history: dead FM stub was removed because this function
+  // was only called from renderRtmInfoDisplay() (rtm_tx_active path). Now that
+  // renderOperationalDisplay() also calls updateR5ProximityBar() for the FM path,
+  // the fm_armed branch above is reachable. Priority 10 complete.
 }

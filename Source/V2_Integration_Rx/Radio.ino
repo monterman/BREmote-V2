@@ -1,3 +1,4 @@
+// V3 - 2026-05-03 - Removed if(0) dead code; checkAndAdjustAddress() TODO noted
 // V3 - 2026-04-29 - Bundle C: startTransmit() return value checked and logged on error
 // V3 - 2026-04-24 - Added GPS meta-packet reception: gps_meta_pending state, processMetaGpsPacket(), triggeredReceive() 2-path state machine
 // V3 - 2026-04-24 - Added Phase B GPS handshake check: gpsPhaseBCheck() called from processMetaGpsPacket()
@@ -39,11 +40,7 @@ bool waitForPairing()
 {
   usrConf.paired = false;
 
-  // First check for address conflicts
-  if (0)//!checkAndAdjustAddress())
-  {
-    return false;  // Too many conflicts
-  }
+  // TODO: re-evaluate checkAndAdjustAddress() — removed if(0) dead code guard (LOW audit cleanup)
 
   uint8_t responsePacket[8];
   unsigned long startTime = millis();

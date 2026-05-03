@@ -289,11 +289,11 @@ Once `?gpsraw` shows clean sentences, the wiring is correct. Now get a satellite
 **Who this is for:** Builders connecting the QMC5883L compass (or BN-880 module) to the BREmote RX unit.
 **When to use it:** Compass not detected at boot, RTM steering unreliable, or before potting the RX unit.
 
-### Compass I2C Wiring (RX ESP32-S3)
+### Compass I2C Wiring (RX ESP32-C3)
 
 The QMC5883L compass connects via I2C. The BN-880 GPS module includes an integrated QMC5883L — if using BN-880, the GPS and compass share one I2C cable.
 
-| RX ESP32-S3 Pin | Compass / BN-880 | Signal |
+| RX ESP32-C3 Pin | Compass / BN-880 | Signal |
 |---|---|---|
 | **GPIO 2** | SDA | I2C Data |
 | **GPIO 1** | SCL | I2C Clock |
@@ -379,7 +379,7 @@ The default partition scheme will fill up at 92-94% flash usage and block furthe
 | Board | Setting | Value |
 |---|---|---|
 | TX (ESP32-C3) | Tools → Partition Scheme | **Huge APP (3MB No OTA)** |
-| RX (ESP32-S3) | Tools → Partition Scheme | **Huge APP (3MB No OTA)** |
+| RX (ESP32-C3) | Tools → Partition Scheme | **Huge APP (3MB No OTA)** |
 
 **Why:** The default 4MB partition gives only 1.2MB for the app. Huge APP gives 3MB — more than double. SPIFFS shrinks slightly from 1.5MB to 1.0MB but config data is only a few KB so this has no impact.
 

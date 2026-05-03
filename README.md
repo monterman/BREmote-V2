@@ -32,7 +32,7 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 ┌────────────────────────────┐              ┌──────────────────────────────────┐
 │      TX — Handheld         │              │       RX — Board Unit            │
 │                            │              │                                  │
-│  ESP32-C3                  │              │  ESP32-S3  (dual-core)           │
+│  ESP32-C3                  │              │  ESP32-C3                        │
 │  SX1262 LoRa               │◄──────────►  │  SX1262 LoRa                     │
 │  BN-220 GPS (GPIO 18/19)   │  868/915MHz  │  BN-880 GPS  (Serial1 + I2C mux) │
 │  Dot matrix display        │    10 Hz     │  QMC5883L Compass  (I2C)         │
@@ -71,7 +71,7 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 
 | Component | TX (Handheld) | RX (Board Unit) |
 |---|---|---|
-| MCU | ESP32-C3 | ESP32-S3 (dual-core) |
+| MCU | ESP32-C3 | ESP32-C3 |
 | Radio | SX1262 LoRa | SX1262 LoRa |
 | GPS | BN-220 or [HGLRC M100 Micro](https://www.hglrc.com/products/hglrc-m100_mini-gps) (M10 chip, no compass, 3.3V–5V) | BN-880 or [HGLRC M100-5883](https://www.hglrc.com/products/m100-5883-gps) (M10 chip + compass) |
 | Compass | None | QMC5883L (I2C) |
@@ -506,7 +506,7 @@ Full bar (10 pixels) = buggy at arm distance. Shrinks from the right as the bugg
 | # | Bug | Fix in V2.5-Evo |
 |---|---|---|
 | 1 | WDT 1000 ms timeout too close under load | Raised to 3000 ms (RX `Init.ino`) |
-| 2 | `vesc_struct` race condition across ESP32-S3 cores | `vescMutex` semaphore added (RX `VESC.ino`, `Logger.ino`) |
+| 2 | `vesc_struct` race condition across ESP32-C3 cores | `vescMutex` semaphore added (RX `VESC.ino`, `Logger.ino`) |
 | 3 | `logging_active` missing `volatile` | Declared `volatile` (RX `Logger.ino`) |
 | 4 | `ensureFreeSpace()` deletes active log file | Excludes active log from deletion (RX `Logger.ino`) |
 | 5 | `readBCFromSPIFFS()` heap out-of-bounds on short file | `decodedLen < 102` guard added (RX `SPIFFS.ino`) |

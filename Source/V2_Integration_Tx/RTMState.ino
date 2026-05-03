@@ -34,6 +34,7 @@
 // V2.5-Evo - 2026-04-29 - GPS dot fix: gpsKeepAliveDelay() replaces bare delay() in
 //   ceremony and confirms; drains Serial1 to keep gps_tx.location.age() fresh and
 //   prevent GPS dot blinking during blocking display holds.
+// V3 - 2026-05-02 - Gate 3 throttle-release timeout reduced 10000→4000ms (10s was too long for tow buggy field use)
 
 extern volatile uint8_t current_vib_pattern;
 extern float rtm_arm_dist_m;  // defined in BREmote_V2_Tx.h — captured at RTM engage moment
@@ -357,12 +358,13 @@ void runRtmLoop()
         }
       }
 
-      // Gate 3: throttle release > 10s → disengage
+      // Gate 3: throttle release timeout — 4s gives time to re-apply before RTM disengages.
+      // Kept hardcoded (not SPIFFS) by design. Total re-arm window after release = ~6s (4s gate + 2s cooldown).
       // V2.5-Evo - 2026-04-28 - P9 Bug1D: now calls rtmDisengage() so Pattern 4 + "St P" fire.
       if (thr_scaled < 10)
       {
         if (rtm_release_ms == 0) rtm_release_ms = now;
-        if (now - rtm_release_ms > 10000UL)
+        if (now - rtm_release_ms > 4000UL)
         {
           rtmDisengage();
           break;

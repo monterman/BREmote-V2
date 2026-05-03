@@ -1,6 +1,9 @@
 // V3 - 2026-04-21 - New TX GPS module: UBX init (115200/5Hz) and non-blocking speed polling for speed_src 2/3/5
 // V3 - 2026-04-22 - Added speed_src guard to initTxGPS(); 512-byte RX buffer; NMEA sentence filtering (GPGSV/GPGLL/GPVTG disabled); HDOP gate in getTxGPSLoop()
 // V3 - 2026-04-22 - Added gps_chip_type branch: type 0=BN-220 (existing path), type 2=M10 (115200 direct, 10Hz, all constellations)
+// V3 - 2026-05-03 - Decouple TX GPS init from speed_src (M1 audit fix).
+//                   GPS now inits whenever gps_en=1 — Phase B anti-spoofing
+//                   no longer silently broken for RX-speed users.
 
 // ============================================================
 // TX GPS - Reads GPS data over Serial1 on the TX (handheld
@@ -55,9 +58,8 @@ static bool tx_gps_initialized = false;
 //
 // Inputs:
 //   - usrConf.gps_en        : master enable; returns early if 0.
-//   - usrConf.speed_src     : must be 2, 3, or 5 (TX-GPS options);
-//                             returns early otherwise.
 //   - usrConf.gps_chip_type : selects the init sequence (0 or 2 on TX).
+//   (speed_src no longer gates init — GPS runs whenever gps_en=1.)
 //
 // Outputs:
 //   None (no return value).
@@ -84,15 +86,9 @@ void initTxGPS()
     return;
   }
 
-  // V3 - 2026-04-22 - Speed source guard (I-3 fix): only initialize the
-  // GPS hardware when a TX GPS speed option is selected. This is the
-  // authoritative gate — callers do not need to repeat this check.
-  // Values 2/3/5 are TX km/h, TX knots, TX mph (see speed_src comment).
-  if (usrConf.speed_src != 2 && usrConf.speed_src != 3 && usrConf.speed_src != 5)
-  {
-    Serial.println("TX GPS: speed_src is not a TX GPS option, skipping init");
-    return;
-  }
+  // TX GPS initializes whenever gps_en=1, regardless of speed_src.
+  // Anti-spoofing (Phase B) always needs TX GPS — it compares RX vs TX position,
+  // independent of which speed source the user has selected for display.
 
   // V3 - 2026-04-22 - Increase RX buffer to 512 bytes before any begin().
   // At 115200 baud / 5-10Hz the GPS emits several NMEA sentences per cycle;

@@ -1,3 +1,4 @@
+// V3 - 2026-05-03 - Added reserved/warning comments (LOW audit cleanup)
 // V3 - 2026-04-24 - Added ?printgps, ?gpsraw, ?gpsreinit serial commands for TX GPS diagnostics
 // V3 - 2026-04-22 - P4: signal-drop haptic warning (Pattern A) when sq_graph drops to 1 while connected
 const char* SYS_DEVICE_LABEL = "TX";
@@ -280,6 +281,8 @@ void cmdPrintGPS(const String &args) {
   Serial.println("-------------------------");
 }
 
+// WARNING: this function uses blocking delay(). Do not call while RTM or FM is
+// active — it will freeze the GPS/RTM/FM loop for the duration.
 // ---- ?gpsraw : dump raw NMEA bytes from Serial1 for 5 seconds ----
 // Tells us immediately if GPS module is alive and at what baud rate.
 // See $GPRMC/$GPGGA lines = GPS alive and parsing correctly.
@@ -503,6 +506,8 @@ void serPrintPackets(bool json)
   }
 }
 
+// WARNING: this function uses blocking delay(). Do not call while RTM or FM is
+// active — it will freeze the GPS/RTM/FM loop for the duration.
 void serPrintRSSI(bool json)
 {
   while (true)

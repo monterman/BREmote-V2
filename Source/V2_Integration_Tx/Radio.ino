@@ -1,3 +1,4 @@
+// V3 - 2026-05-03 - Added reserved/warning comments (LOW audit cleanup)
 // V3 - 2026-04-24 - Added 0xF3 GPS meta-packet burst at 2Hz in sendData(); THR capped at 0xF2
 // V3 - 2026-04-25 - P7: Added RTM/FM meta-packet queue consumer in sendData(); cap 0xF2→0xF0; queueMetaPacketBurst()
 // V3 - 2026-04-29 - Bundle A: radio_preset max clamped to 2; dead foil_speed != 99 sentinel removed
@@ -361,6 +362,7 @@ void sendData(void *parameter)
           uint8_t thr = calcFinalThrottle();
           // V3 - 2026-04-25 - P7: cap at 0xF0 (240=94.1%) to reserve 0xF1-0xFF for all meta-packet types.
           // 0xF1=RTM state, 0xF2=FM override, 0xF3=GPS coord. Was 0xF2 cap before P7.
+          // 0xF1 and 0xF2 are intentionally reserved packet type bytes — do not assign.
           sendArray[3] = (thr > 0xF0) ? 0xF0 : thr;
           sendArray[4] = steer_scaled;
         }

@@ -1,5 +1,7 @@
 #ifndef WEB_UI_EMBEDDED_H
 #define WEB_UI_EMBEDDED_H
+// V3 - 2026-05-03 - Log UI: Delete All + Delete Selected buttons;
+//                   exportJsonFile() redirects to server endpoint (iPhone fix)
 // V3 - 2026-04-25 - P7: Added 5 RTM/FM RX fields; added RTM & Follow-Me group
 // V2.5-Evo - 2026-04-28 - Security: added rtm_stop_distance_m field (was in ConfigService but missing from UI)
 // V2.5-Evo - 2026-04-29 - TaskC: full description audit — bool 0/1 values, enum all options inline, int/float extremes explained
@@ -239,11 +241,7 @@ function copyJson() {
 }
 
 function exportJsonFile() {
-    const blob = new Blob([document.getElementById('jsonBox').value], {type:'application/json'});
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'bremote_rx_backup.json';
-    a.click();
+    window.location.href = '/api/config/export?format=json';
 }
 
 function importJsonFile(input) {
@@ -359,10 +357,11 @@ async function openLogs(){
       l.innerHTML='<div class="sub">No logs found on device.</div>';
       return;
     }
-    let h='';
+    state.logs=res.logs;
+    let h='<div style="margin-bottom:8px;display:flex;gap:8px"><button class="btn danger" onclick="deleteAllLogs()">Delete All</button><button class="btn danger" onclick="deleteSelected()">Delete Selected</button></div>';
     res.logs.forEach(x=>{
       const kb=(x.size/1024).toFixed(1);
-      h+=`<div class="log-item"><div><div class="log-name">${x.name}</div><div class="log-size">${kb} KB</div></div><div class="log-actions"><a class="btn" href="/api/logs/download?file=${x.name}" target="_blank" style="text-decoration:none;font-size:12px;padding:7px 10px">Download CSV</a><button class="btn warn" style="font-size:12px;padding:7px 10px" onclick="deleteLog('${x.name}')">Delete</button></div></div>`;
+      h+=`<div class="log-item"><input type="checkbox" class="log-check" data-name="${x.name}"><div><div class="log-name">${x.name}</div><div class="log-size">${kb} KB</div></div><div class="log-actions"><a class="btn" href="/api/logs/download?file=${x.name}" target="_blank" style="text-decoration:none;font-size:12px;padding:7px 10px">Download CSV</a><button class="btn warn" style="font-size:12px;padding:7px 10px" onclick="deleteLog('${x.name}')">Delete</button></div></div>`;
     });
     l.innerHTML=h;
   }else{
@@ -375,8 +374,24 @@ async function deleteLog(fname){
   if(res.ok) openLogs();
   else alert('Delete failed');
 }
+async function deleteAllLogs(){
+  if(!confirm('Delete ALL log files? This cannot be undone.'))return;
+  for(const f of state.logs||[]){
+    await fetch('/api/logs/delete?file='+encodeURIComponent(f.name),{method:'POST'});
+  }
+  openLogs();
+}
+async function deleteSelected(){
+  const checked=[...document.querySelectorAll('.log-check:checked')].map(el=>el.dataset.name);
+  if(!checked.length)return;
+  if(!confirm('Delete '+checked.length+' selected log(s)?'))return;
+  for(const f of checked){
+    await fetch('/api/logs/delete?file='+encodeURIComponent(f),{method:'POST'});
+  }
+  openLogs();
+}
 
-window.setVal=setVal;window.setBool=setBool;window.setEnum=setEnum;window.syncField=syncField;window.setAddrPart=setAddrPart;window.saveAll=saveAll;window.loadCfg=loadCfg;window.rebootDev=rebootDev;window.refreshAll=refreshAll;window.openLogs=openLogs;window.deleteLog=deleteLog;window.copyJson=copyJson;window.exportJsonFile=exportJsonFile;window.importJsonFile=importJsonFile;window.loadFromJsonText=loadFromJsonText;
+window.setVal=setVal;window.setBool=setBool;window.setEnum=setEnum;window.syncField=syncField;window.setAddrPart=setAddrPart;window.saveAll=saveAll;window.loadCfg=loadCfg;window.rebootDev=rebootDev;window.refreshAll=refreshAll;window.openLogs=openLogs;window.deleteLog=deleteLog;window.deleteAllLogs=deleteAllLogs;window.deleteSelected=deleteSelected;window.copyJson=copyJson;window.exportJsonFile=exportJsonFile;window.importJsonFile=importJsonFile;window.loadFromJsonText=loadFromJsonText;
 refreshAll();
 </script>
 </body>

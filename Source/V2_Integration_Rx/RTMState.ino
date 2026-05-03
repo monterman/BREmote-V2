@@ -1,3 +1,4 @@
+// V3 - 2026-05-03 - C1/M2 audit fix: gps_tx_ok uses timestamp age on both paths; 0.0 lat/lng sentinel removed
 // V3 - 2026-05-01 - Fix D: gps_tx_ok relaxed for FM/idle; never reset rtm_distance to 0xFF when RTM inactive
 // V3 - 2026-05-01 - Fix C: FM bar keep-last-known on GPS dropout; only 0xFF if TX GPS never received
 // V3 - 2026-05-01 - Fix B: encode rtm_distance always when GPS valid; feeds FM bar and enables correct pre-arm block within stop distance
@@ -257,14 +258,16 @@ void runRtmLoop()
   // Approach decel cap is only computed during active RTM; reset to 255 otherwise.
   {
     bool gps_rx_ok = (gps_last_ms > 0) && ((millis() - gps_last_ms) < 6000UL);
-    // RTM active: require fresh TX GPS (5 s) for Phase C safety checks.
-    // RTM inactive (FM/idle): any previously received TX GPS position is acceptable.
-    // The 14-byte GPS meta-packet has higher loss than 6-byte control packets; a tight
-    // freshness window causes gps_tx_ok to drop false between packets and prevents Fix B
-    // from encoding distance during FM — relaxing it here breaks that failure mode.
-    bool gps_tx_ok = rtm_rx_active
-                   ? ((rx_tx_gps_timestamp > 0) && ((millis() - rx_tx_gps_timestamp) < 5000UL))
-                   : (rx_tx_gps_lat != 0.0 || rx_tx_gps_lng != 0.0);
+    // C1/M2 audit fix: both active and inactive paths now require a fresh
+    // rx_tx_gps_timestamp instead of the 0.0 lat/lng sentinel.
+    // The 0.0 sentinel accepted any stale coordinate — field logs confirmed
+    // GPS timestamps froze for 50+ seconds in urban environments, causing
+    // RTM distance to read near-zero while actually 20m+ away.
+    // Active RTM: 5s max age (tight — buggy is moving, staleness is dangerous).
+    // Inactive/FM: 10s max age (tolerates brief meta-packet gaps without
+    //              suppressing the FM bar; still rejects genuinely stale GPS).
+    bool gps_tx_ok = (rx_tx_gps_timestamp > 0) &&
+                     ((millis() - rx_tx_gps_timestamp) < (rtm_rx_active ? 5000UL : 10000UL));
 
     if (gps_rx_ok && gps_tx_ok)
     {

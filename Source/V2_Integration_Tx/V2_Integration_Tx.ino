@@ -1,3 +1,4 @@
+// V3 - 2026-05-03 - Removed commented-out SPIFFS.remove dead code (LOW audit cleanup)
 // V3 - 2026-04-25 - P7: Simplified getTxGPSLoop() gate to gps_en only; added runRtmLoop() call in loop()
 // V3 - 2026-04-24 - Call initTxGPS() in setup() after applyConfigSettings() so GPS UART is ready on boot
 // V3 - 2026-04-21 - Added getTxGPSLoop() call in loop() and forward declarations for TX GPS functions
@@ -84,9 +85,6 @@ void setup()
   initHardware();
   initStorage();
   
-  // SURGICAL STRIKE: Deletes only the old webpage, leaves configs 100% safe.  //Coment out after it works fins and no new changes//
-  //SPIFFS.remove("/index.html"); 
-
   checkCharger();
   initTasks();
   runBootSequence();

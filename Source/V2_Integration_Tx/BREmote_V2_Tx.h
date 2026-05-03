@@ -8,6 +8,7 @@
 // V2.5-Evo - 2026-04-29 - Sleep: added sleep_timeout_s to confStruct; SW_VERSION 25→26
 // V2.5-Evo - 2026-05-01 - Release: DEBUG_RX commented out for production build
 // V3 - 2026-05-01 - thr_expo1 repurposed as fm_display_mode (FM digit zone data selector, 1-4)
+// V3 - 2026-05-02 - Added displayMutex SemaphoreHandle_t (Core 0/Core 1 displayBuffer race fix)
 
 /*
 ** Includes
@@ -319,6 +320,7 @@ volatile uint8_t tx_gps_speed = 0xFF;
 ** Variables
 */
 uint16_t displayBuffer[8];
+SemaphoreHandle_t displayMutex;   // protects displayBuffer + updateDisplay() — created in initTasks() before tasks start
 // Unused — shadowed by local declarations in displayDigits(), scroll3Digits(), scroll4Digits()
 //uint8_t digitBuffer[6];
 

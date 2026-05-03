@@ -18,6 +18,7 @@
 // V2.5-Evo - 2026-04-29 - Fix 4-3: extern fm_armed updated to volatile to match RTMState.ino
 // V2.5-Evo - 2026-04-29 - Display: fc3x7_F middle bar R3→R2 for visual consistency
 // V3 - 2026-05-01 - FM digit zone shows fm_display_mode data (1=TX speed, 2=dist, 3=buggy spd, 4=thr%)
+// V3 - 2026-05-02 - displayMutex applied to updateBargraphs (Core 0) and main loop render path (Core 1)
 
 extern volatile bool fm_armed;  // defined in RTMState.ino — volatile: written by loop() core 1,
                                  // read by updateBargraphs() core 0; must match definition
@@ -423,6 +424,7 @@ void showFullScreenMessage(const char* msg, uint16_t duration_ms)
 
 void renderOperationalDisplay()
 {
+  xSemaphoreTake(displayMutex, portMAX_DELAY);  // Core 1 render — waits for Core 0 updateBargraphs to release
   // V2.5-Evo - 2026-04-28 - ChgDZ: Persistent "FM" while Follow-Me armed, RTM not active.
   // displayDigitZone() preserves R5 proximity bar, R6 battery bar, C7 GPS dot, C8/C9 bargraphs.
   // Previous hand-written render wrote through all 7 rows, destructively clearing R5/R6.
@@ -461,6 +463,7 @@ void renderOperationalDisplay()
     }
     updateR5ProximityBar();  // Priority 10: FM following-distance bar on R5
     updateDisplay();
+    xSemaphoreGive(displayMutex);
     return;
   }
 
@@ -535,6 +538,7 @@ void renderOperationalDisplay()
         }
         updateDisplay();
       }
+      xSemaphoreGive(displayMutex);
       return;
     }
 
@@ -560,6 +564,7 @@ void renderOperationalDisplay()
       updateDisplay();
     }
   }
+  xSemaphoreGive(displayMutex);  // release after all render paths complete
 }
 
 void displayError(int err)
@@ -818,8 +823,17 @@ void updateBargraphs(void *parameter)
 {
   TickType_t xLastWakeTime = xTaskGetTickCount();
   const TickType_t xFrequency = pdMS_TO_TICKS(200);
-  while (1) 
+  while (1)
   {
+    // Take mutex before writing displayBuffer. Timeout 50ms — if Core 1 is mid-render,
+    // skip this 200ms cycle entirely (vTaskDelayUntil keeps timing aligned).
+    // Note: 'continue' used here, NOT 'return' — returning from a FreeRTOS task function
+    // permanently terminates the task; continue skips just this cycle and loops back.
+    if (xSemaphoreTake(displayMutex, pdMS_TO_TICKS(50)) != pdTRUE)
+    {
+      vTaskDelayUntil(&xLastWakeTime, xFrequency);  // keep 200ms cadence aligned
+      continue;
+    }
     if(millis()-last_packet < 1000)
     {
       if(telemetry.link_quality)
@@ -910,6 +924,7 @@ void updateBargraphs(void *parameter)
 
     displayVertBargraph(9, sq_graph, 2);
     updateDisplay();
+    xSemaphoreGive(displayMutex);  // release before delay — don't hold mutex during 200ms sleep
     vTaskDelayUntil(&xLastWakeTime, xFrequency);
   }
 }
@@ -999,6 +1014,7 @@ static void displayDistanceInUnits(float dist_m)
 // ============================================================
 void renderRtmInfoDisplay()
 {
+  xSemaphoreTake(displayMutex, portMAX_DELAY);  // Core 1 render — waits for Core 0 updateBargraphs to release
   static unsigned long alt_last_switch_ms = 0;
   static uint8_t       alt_showing        = 0;  // 0=distance, 1=speed (used in mode 2)
 
@@ -1046,6 +1062,7 @@ void renderRtmInfoDisplay()
 
   updateR5ProximityBar();
   updateDisplay();
+  xSemaphoreGive(displayMutex);
 }
 
 // ============================================================

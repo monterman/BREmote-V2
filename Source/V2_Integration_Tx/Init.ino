@@ -3,6 +3,7 @@
 // V3 - 2026-04-27 - P8: applyConfigSettings() always boots unlocked (lock feature removed)
 // V3 - 2026-04-27 - P8.1 Bug 1 fix: Restored no_lock=0/1 boot behavior; system_locked now conditional
 // V2.5-Evo - 2026-04-29 - Fix 4-1: vibrationTask stack 1024→2048 words; handle saved for ?printtasks
+// V3 - 2026-05-02 - Create displayMutex before tasks start
 
 // ===== Hardware Initialization =====
 
@@ -44,6 +45,8 @@ void initTasks()
 {
   if(config_version_error) return;
 
+  displayMutex = xSemaphoreCreateMutex();
+  configASSERT(displayMutex != NULL);   // halt at boot if allocation fails — better than silent corruption
   xTaskCreatePinnedToCore(sendData, "Send_Data_100ms", 2048, NULL, 5, &sendDataHandle, 0);
   xTaskCreatePinnedToCore(waitForTelemetry, "wait_for_telem_triggered", 2048, NULL, 4, &triggeredWaitForTelemetryHandle, 0);
   xTaskCreatePinnedToCore(measBufCalc, "wait_for_telem_triggered_10ms", 2048, NULL, 6, &measBufCalcHandle, 0);

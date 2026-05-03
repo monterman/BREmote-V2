@@ -1,3 +1,5 @@
+// V3 - 2026-05-03 - H4: deleteCandidates String[]→char[][] (no heap alloc);
+//                   deleteLogFile() active-file guard added
 #include <FS.h>
 #include <SPIFFS.h>
 #include "freertos/FreeRTOS.h"
@@ -128,7 +130,9 @@ bool ensureFreeSpace() {
   // active file lost its exclusion identity and could be deleted along with the old logs.
   // The active file stays open; SPIFFS allows deleting other files while one is held open.
 
-  String deleteCandidates[20];
+  // char[20][32] instead of String[20] — avoids 20 heap allocations during
+  // log cleanup. SPIFFS filenames max ~18 chars + slash + null, 32 is safe.
+  char deleteCandidates[20][32];
   int candidateCount = 0;
   File root = SPIFFS.open("/");
   if (root && root.isDirectory()) {
@@ -140,7 +144,8 @@ bool ensureFreeSpace() {
         if (fullPath == currentLogFileName) {
           // V3 fix (Bug 4): never delete the file we are currently writing to
         } else {
-          deleteCandidates[candidateCount++] = fullPath;
+          strncpy(deleteCandidates[candidateCount++], fullPath.c_str(), 31);
+          deleteCandidates[candidateCount-1][31] = '\0'; // null-terminate
         }
       }
       file.close();
@@ -153,10 +158,9 @@ bool ensureFreeSpace() {
 
   int deleted = 0;
   for (int i = 0; i < candidateCount && (SPIFFS.totalBytes() - SPIFFS.usedBytes()) < (MIN_FREE_SPACE_KB * 1024); i++) {
-    String targetFile = deleteCandidates[i];
     for (int retry = 0; retry < 5; retry++) {
       vTaskDelay(pdMS_TO_TICKS(100 * (retry + 1)));
-      if (SPIFFS.remove(targetFile)) {
+      if (SPIFFS.remove(deleteCandidates[i])) {
         deleted++;
         break;
       }
@@ -362,6 +366,12 @@ void deleteLogFile(const char* filename) {
   while (fullPath.startsWith("/")) fullPath.remove(0, 1);
   fullPath = "/" + fullPath;
   
+  // Do not delete the currently active log file
+  if (logging_active && fullPath == currentLogFileName) {
+    Serial.println("LOG: skipped delete of active log file");
+    return;
+  }
+
   if (SPIFFS.exists(fullPath)) {
     SPIFFS.remove(fullPath);
   }

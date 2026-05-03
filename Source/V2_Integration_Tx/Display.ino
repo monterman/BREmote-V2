@@ -1,3 +1,4 @@
+// V3 - 2026-05-03 - displayError() clamp corrected 29→33 (H6 audit fix)
 // V3 - 2026-05-01 - Fix A: lazy-capture rtm_arm_dist_m on first valid render if missed at arm time
 // V3 - 2026-04-30 - FM R5 bar: replaced linear fill with center-expanding from C4-C5
 // V3 - 2026-04-30 - Priority 10: FM R5 proximity bar implemented in updateR5ProximityBar(); called from renderOperationalDisplay() FM path
@@ -569,7 +570,7 @@ void renderOperationalDisplay()
 
 void displayError(int err)
 {
-  displayDigits(LET_E, min(err, 29));  // Clamp to prevent array overflow (num0[30][3])
+  displayDigits(LET_E, min(err, 33));  // clamp to 33 — num0[] has 34 entries (indices 0–33); was 29, silently wrong for err 30–33
   updateDisplay();
 }
 

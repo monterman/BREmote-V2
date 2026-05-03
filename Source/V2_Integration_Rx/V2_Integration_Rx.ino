@@ -1,3 +1,4 @@
+// V3 - 2026-05-03 - Removed commented-out SPIFFS.remove dead code (LOW audit cleanup)
 // V3 - 2026-04-30 - Bundle E: GPS moved to its own gps_loop_timer (rate = gps_update_hz); removed from 1000ms gate
 // V3 - 2026-04-25 - P7: Added runRtmLoop() call in loop(); forward declarations
 #include "BREmote_V2_Rx.h"
@@ -20,9 +21,6 @@ void setup()
   
   // ---> NEW: Initialize the QMC5883L Compass <---
   initCompass(); 
-
-  // SURGICAL STRIKE: Deletes only the old webpage, leaves configs 100% safe.  //Coment out after it works fins and no new changes//
-  //SPIFFS.remove("/index.html"); 
 
   runBootSequence();
   initTasks();

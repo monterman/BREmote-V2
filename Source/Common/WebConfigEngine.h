@@ -4,6 +4,7 @@
 #ifdef WIFI_ENABLED
 
 // Shared web config AP and HTTP API for BREmote V2 TX and RX.
+// V3 - 2026-05-03 - Content-Disposition header on export (iPhone filename fix)
 
 // Forward declarations — defined per-side in WebConfig.ino.
 extern const char* WEB_CFG_AP_SSID;
@@ -308,6 +309,10 @@ static void webCfgHandleExport()
       return;
     }
     webCfgMarkOk();
+    // Content-Disposition forces iOS Safari to download the file instead of
+    // rendering it inline. filename includes SW_VERSION for easy identification.
+    webCfgServer.sendHeader("Content-Disposition",
+        "attachment; filename=\"bremote-config-sw" + String(SW_VERSION) + ".json\"");
     webCfgSendJson(200, "{\"ok\":1,\"format\":\"json\",\"data\":" + jsonOut + "}");
   }
   else

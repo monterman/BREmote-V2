@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-05-06 - D2: Add updateCompassSnapshot() and snapshot globals (clean heading captured during motor-idle for future RTM heading source)
 // V3 - 2026-04-25 - P7: Added getCompassHeading() function
 #include <Wire.h>
 #include <esp_task_wdt.h> // <-- Added to feed the Watchdog
@@ -6,6 +7,8 @@
 
 int16_t magX = 0, magY = 0, magZ = 0;
 bool compass_detected = false;
+float         compass_snapshot_heading = -1.0f; // Last "clean" compass heading captured while motor was idle (degrees, 0–360 clockwise from North). -1.0f = no valid snapshot yet.
+unsigned long compass_snapshot_ms      = 0;     // millis() timestamp of last snapshot capture. 0 = no snapshot yet.
 
 // We link to your existing save command to automate the process
 extern void cmdSave(const String& params);
@@ -173,4 +176,52 @@ float getCompassHeading()
   if (heading < 0.0f) heading += 360.0f;
 
   return heading;
+}
+
+// ============================================================
+// updateCompassSnapshot - Capture a clean compass heading during motor-idle
+// ============================================================
+//
+// What it does:
+//   Attempts to capture a fresh, unbiased compass heading and store it in
+//   compass_snapshot_heading / compass_snapshot_ms. Only updates when the
+//   motor is effectively idle, because motor current induces a magnetic field
+//   that biases the QMC5883L by 100°+ at even moderate throttle. Idle moments
+//   give a usable reference heading unaffected by drive-current EMI.
+//
+// Inputs:
+//   Reads thr_received (global volatile, declared extern here to avoid header change).
+//   Calls getCompassHeading() for a fresh calibrated heading.
+//
+// Side effects:
+//   Updates compass_snapshot_heading and compass_snapshot_ms when all conditions
+//   are met (compass detected, calibrated, motor idle, valid heading returned).
+//   No side effects if any condition fails — snapshot is left unchanged.
+//
+// When called:
+//   Intended to be called every ~100ms from runRtmLoop() in RTMState.ino.
+//   D5 will wire this in. This function is defined here but not yet called.
+//   Safe to call from any FreeRTOS task context — getCompassHeading() takes
+//   a few ms (I2C reads) but does not block indefinitely.
+// ============================================================
+void updateCompassSnapshot()
+{
+  // Gate 1: compass hardware must be present
+  if (!compass_detected) return;
+
+  // Gate 2: compass must be calibrated (default 0.0f means runcal was never run)
+  if (usrConf.mag_scale_x == 0.0f || usrConf.mag_scale_y == 0.0f) return;
+
+  // Gate 3: motor must be idle. thr_received < 25 means the user is not pressing
+  // the throttle trigger enough to spin the motor. Threshold matches RTM Gate 1
+  // in RTMState.ino so snapshot and RTM arming use a consistent idle definition.
+  extern volatile uint8_t thr_received;
+  if (thr_received >= 25) return;
+
+  // Take a fresh heading reading. Skip update on I2C failure or uncalibrated result.
+  float h = getCompassHeading();
+  if (h < 0.0f) return;
+
+  compass_snapshot_heading = h;
+  compass_snapshot_ms      = millis();
 }

@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-05-06 - LOG-EXT-2: convertToLogData populates 12 heading debug fields; inline-duplicate of getRtmHeading() (must stay in sync with RTMState.ino); default lograte changed 1Hz→5Hz at line 21 (manual user edit, do not revert)
 // V3 - 2026-05-03 - H4: deleteCandidates String[]→char[][] (no heap alloc);
 //                   deleteLogFile() active-file guard added
 #include <FS.h>
@@ -18,7 +19,7 @@ static TaskHandle_t loggerTaskHandle = NULL;
 static SemaphoreHandle_t fileMutex = NULL;
 SemaphoreHandle_t vescMutex = NULL;         // V3 fix (Bug 2): non-static — visible to VESC.ino. Protects vesc struct against Core 0/1 data race between loggerTask (reader) and getVescLoop() (writer).
 static volatile bool logging_active = false; // V3 fix (Bug 3): volatile — loggerTask on Core 0 reads this in a while(true) loop; without volatile the compiler may cache the value in a register and never see startLog()/stopLog() writes from Core 1.
-static uint32_t log_interval_ms = 1000; // Default 1 Hz
+static uint32_t log_interval_ms = 200; // Default 5 Hz =200 (was 1 Hz =1000)
 static File currentLogFile;
 static String currentLogFileName = "";
 static uint32_t last_space_check = 0;
@@ -114,6 +115,112 @@ VescLogData convertToLogData() {
   data.latitude  = gps.location.lat();
   data.longitude = gps.location.lng();
   data.datetime  = gps.time.value();
+
+  // ============================================================
+  // LOG-EXT-2: Populate heading source debug fields (LOG-EXT-1).
+  // All externs are declared locally to keep this a single-file edit.
+  // ============================================================
+  {
+    extern volatile uint8_t      thr_received;
+    extern std::atomic<bool>     rtm_rx_active;
+    extern std::atomic<uint8_t>  rtm_steer_override;
+    extern bool                  gps_phase_b_ok;
+    extern float                 gps_last_course_deg;
+    extern unsigned long         gps_last_course_ms;
+    extern float                 compass_snapshot_heading;
+    extern unsigned long         compass_snapshot_ms;
+    extern float                 gps_last_speed_kmh;
+    extern float                 getCompassHeading();
+
+    // Simple state reads
+    data.thr_received_log       = thr_received;
+    data.rtm_rx_active_log      = rtm_rx_active.load() ? 1 : 0;
+    data.rtm_steer_override_log = rtm_steer_override.load();
+    data.gps_phase_b_ok_log     = gps_phase_b_ok ? 1 : 0;
+
+    // Live compass heading × 10 (0xFFFF = invalid/uncalibrated)
+    float live_compass = getCompassHeading();
+    if (live_compass >= 0.0f && live_compass < 360.0f) {
+      data.compass_live_dx10 = (uint16_t)(live_compass * 10.0f);
+    } else {
+      data.compass_live_dx10 = 0xFFFF;
+    }
+
+    // Snapshot heading × 10 + snapshot age in seconds (0xFFFF = no snapshot)
+    unsigned long now_ms = millis();
+    if (compass_snapshot_heading >= 0.0f && compass_snapshot_ms > 0) {
+      data.compass_snap_dx10 = (uint16_t)(compass_snapshot_heading * 10.0f);
+      unsigned long age_s = (now_ms - compass_snapshot_ms) / 1000UL;
+      data.snap_age_s = (uint16_t)((age_s > 0xFFFEUL) ? 0xFFFE : age_s);
+    } else {
+      data.compass_snap_dx10 = 0xFFFF;
+      data.snap_age_s        = 0xFFFF;
+    }
+
+    // GPS COG × 10 + COG age in 10ms units (0xFFFF = no fix or invalid)
+    if (gps_last_course_ms > 0 && gps_last_course_deg >= 0.0f && gps_last_course_deg < 360.0f) {
+      data.gps_course_dx10 = (uint16_t)(gps_last_course_deg * 10.0f);
+      unsigned long age_ms    = now_ms - gps_last_course_ms;
+      unsigned long age_units = age_ms / 10UL;
+      data.cog_age_ms_div10   = (uint16_t)((age_units > 0xFFFEUL) ? 0xFFFE : age_units);
+    } else {
+      data.gps_course_dx10  = 0xFFFF;
+      data.cog_age_ms_div10 = 0xFFFF;
+    }
+
+    // ============================================================
+    // CRITICAL MAINTENANCE: This block is an inline duplicate of
+    // getRtmHeading() in RTMState.ino (D5). If you change the heading
+    // source selection logic there, you MUST update this duplicate
+    // to match, or log records will diverge from runtime behavior.
+    // The duplicate exists to keep this a single-file edit per project rule.
+    // ============================================================
+    uint16_t mode          = usrConf.rtm_use_compass;
+    uint16_t cog_min_speed = usrConf.rtm_cog_min_speed_kmh;
+    uint8_t  src           = 0;       // 0 = NONE
+    uint8_t  conf          = 0;       // 0 = NONE
+    float    chosen        = -1.0f;
+
+    if (mode == 2) {
+      // Compass-only mode (DIAGNOSTIC)
+      if (live_compass >= 0.0f) {
+        src    = 3;     // COMPASS_LIVE
+        conf   = 2;     // MEDIUM
+        chosen = live_compass;
+      }
+    } else {
+      // Modes 0 and 1: GPS COG primary
+      bool cog_valid = (gps_last_course_ms > 0) &&
+                       (gps_last_course_deg >= 0.0f) &&
+                       ((now_ms - gps_last_course_ms) < 1500UL) &&
+                       (gps_last_speed_kmh >= (float)cog_min_speed);
+      if (cog_valid) {
+        src    = 1;     // GPS_COG
+        conf   = 3;     // HIGH
+        chosen = gps_last_course_deg;
+      } else if (mode == 1) {
+        // Hybrid: fall back to compass snapshot
+        if (compass_snapshot_heading >= 0.0f && compass_snapshot_ms > 0) {
+          unsigned long snap_age_ms = now_ms - compass_snapshot_ms;
+          if (snap_age_ms < 1000UL) {
+            src    = 2;   // COMPASS_SNAPSHOT
+            conf   = 2;   // MEDIUM
+            chosen = compass_snapshot_heading;
+          } else if (snap_age_ms < 3000UL) {
+            src    = 2;   // COMPASS_SNAPSHOT
+            conf   = 1;   // LOW
+            chosen = compass_snapshot_heading;
+          }
+        }
+      }
+      // Mode 0 with no valid COG: src/conf stay 0 (hold straight)
+    }
+
+    data.rtm_source              = src;
+    data.rtm_confidence          = conf;
+    data.rtm_heading_chosen_dx10 = (chosen < 0.0f) ? -1 : (int16_t)(chosen * 10.0f);
+  }
+
   return data;
 }
 

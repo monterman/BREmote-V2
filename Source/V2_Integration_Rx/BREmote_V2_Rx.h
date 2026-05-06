@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-05-06 - LOG-EXT-1: VescLogData extended with heading source debug fields (12 fields, +18 bytes)
 // V2.5-Evo - 2026-05-06 - D3-Fix: rtm_use_compass + rtm_cog_min_speed_kmh changed uint8_t→uint16_t for ConfigService CFG_U16 compatibility; SW_VERSION 29→30; sizeof 160→164
 // V2.5-Evo - 2026-05-06 - D3: Added rtm_use_compass + rtm_cog_min_speed_kmh; sizeof stays 160 (fills tail pad); SW_VERSION 28→29
 // V2.5-Evo - 2026-05-01 - Release: DEBUG_RX commented out for production build
@@ -362,6 +363,22 @@ struct __attribute__((packed)) VescLogData {
     float latitude;               // Latitude in degrees
     float longitude;              // Longitude in degrees
     uint32_t datetime;            // UTC datetime as unix timestamp
+    // V2.5-Evo - 2026-05-06 - LOG-EXT-1: heading source debug fields.
+    // Populated by convertToLogData() in Logger.ino (LOG-EXT-2).
+    // All ×10 fields use 0xFFFF as the "invalid/no data" sentinel.
+    // rtm_heading_chosen_dx10 uses int16, -1 sentinel for "no source".
+    uint8_t  thr_received_log;          // TX throttle last received (0-255)
+    uint8_t  rtm_source;                // 0=NONE, 1=GPS_COG, 2=COMPASS_SNAPSHOT, 3=COMPASS_LIVE (legacy mode)
+    uint8_t  rtm_confidence;            // 0=NONE, 1=LOW, 2=MEDIUM, 3=HIGH
+    uint8_t  rtm_rx_active_log;         // RTM engagement state (0/1)
+    uint8_t  gps_phase_b_ok_log;        // Phase B anti-spoofing handshake state (0/1)
+    uint8_t  rtm_steer_override_log;    // Current steering command 0-255 (127 = straight ahead)
+    int16_t  rtm_heading_chosen_dx10;   // getRtmHeading() output × 10 deg; -1 if no valid source
+    uint16_t compass_live_dx10;         // Live compass heading × 10 deg (0xFFFF = invalid/uncalibrated)
+    uint16_t compass_snap_dx10;         // Clean compass snapshot × 10 deg (0xFFFF = no snapshot yet)
+    uint16_t snap_age_s;                // Snapshot age in seconds (0xFFFF = no snapshot yet)
+    uint16_t gps_course_dx10;           // GPS course-over-ground × 10 deg (0xFFFF = no fix or invalid)
+    uint16_t cog_age_ms_div10;          // GPS course age in 10ms units (0xFFFF = no fix yet)
 };
 #define ENABLE_WEB_LOG_DOWNLOAD // Enable log download endpoints
 

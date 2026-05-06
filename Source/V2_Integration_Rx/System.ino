@@ -1,4 +1,7 @@
 // V3 - 2026-04-25 - P7: Added ?compassheading serial diagnostic command
+// V2.5-Evo - 2026-05-05 - cmdMagTest: bench-test logger for compass EMI vs motor current
+// V2.5-Evo - 2026-05-05 - cmdVescPing: VESC UART telemetry verification (?vescping)
+// V2.5-Evo - 2026-05-06 - cmdVescRaw: raw VESC UART byte-dump probe (?vescraw)
 #include <Wire.h>
 
 const char* SYS_DEVICE_LABEL = "RX";
@@ -272,6 +275,261 @@ void cmdPrintCompassHeading(const String& params) {
   }
 }
 
+// ============================================================
+// cmdMagTest - Compass + Motor Current EMI Bench Test Logger
+// ============================================================
+//
+// What it does:
+//   Streams CSV data to Serial at 10 Hz for up to 120 seconds, capturing
+//   raw magnetometer readings (X/Y/Z/magnitude/heading) alongside VESC
+//   motor current, ERPM, and received throttle byte. Intended to let you
+//   see how motor EMI shifts compass magnitude and heading as you increase
+//   throttle on the stationary buggy.
+//
+// How to invoke:
+//   Type '?magtest' in a serial terminal. Type 'quit' to abort early.
+//
+// Expected use:
+//   Motor disconnected from load, buggy on bench. Bring throttle 0->100%
+//   slowly. Save serial output as a .csv file and plot in Excel or Python.
+//
+// Output columns:
+//   millis, magX, magY, magZ, magnitude, heading_deg,
+//   vesc_erpm, vesc_motor_current_a, thr_received
+//   heading_deg = -1.0 if compass not calibrated or I2C read failed.
+//   vesc_erpm and vesc_motor_current_a = -1 if vescMutex take times out.
+void cmdMagTest(const String& params) {
+  extern SemaphoreHandle_t vescMutex; // declared in Logger.ino; guards vesc struct
+  extern vesc_struct vesc;            // VESC telemetry struct; written by VESC.ino
+
+  Serial.println("=== Compass + Motor Current Bench Test ===");
+  Serial.println("Type 'quit' to abort. Runs up to 120 seconds.");
+  Serial.println("Recommended: bring throttle 0->100% slowly while collecting data.");
+  Serial.println();
+  Serial.println("millis,magX,magY,magZ,magnitude,heading_deg,vesc_erpm,vesc_motor_current_a,thr_received");
+
+  const uint32_t TEST_DURATION_MS = 120000UL;
+  uint32_t start = millis();
+
+  while ((millis() - start) < TEST_DURATION_MS) {
+    esp_task_wdt_reset(); // prevent WDT timeout during the 120s blocking loop
+
+    if (checkSerialQuit()) break;
+
+    // Refresh raw magnetometer globals magX/magY/magZ from QMC5883L via I2C.
+    // Result ignored — magnitude is computed below regardless; stale globals
+    // are acceptable for a diagnostic logger if I2C briefly fails.
+    readCompassRaw();
+    float magnitude = sqrtf((float)magX * magX + (float)magY * magY + (float)magZ * magZ);
+
+    // getCompassHeading() applies hard/soft iron correction and returns
+    // degrees 0-360. Returns -1.0 if compass not detected or not calibrated.
+    // Note: internally calls readCompassRaw() again, so magX/Y/Z may update;
+    // at 10 Hz bench-test precision this one-sample gap is negligible.
+    float heading = getCompassHeading();
+
+    // Read VESC ERPM and motor current under mutex, exactly as runPhaseC() does
+    // in RTMState.ino. motCur is stored in 0.01 A units; divide by 100 for amps.
+    long  snap_erpm    = -1L;
+    float snap_motor_a = -1.0f;
+    if (vescMutex && xSemaphoreTake(vescMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+      snap_erpm    = (long)vesc.erpm;
+      snap_motor_a = (float)vesc.motCur / 100.0f;
+      xSemaphoreGive(vescMutex);
+    }
+
+    // thr_received is volatile uint8_t — single-byte read is atomic on this arch.
+    uint8_t snap_thr = thr_received;
+
+    Serial.printf("%lu,%d,%d,%d,%.1f,%.1f,%ld,%.2f,%u\n",
+                  millis(),
+                  (int)magX, (int)magY, (int)magZ,
+                  magnitude, heading,
+                  snap_erpm, snap_motor_a,
+                  (unsigned)snap_thr);
+
+    vTaskDelay(pdMS_TO_TICKS(100)); // 10 Hz output rate
+  }
+
+  Serial.println("=== Test complete. Save serial output to a .csv file for analysis. ===");
+}
+
+// ============================================================
+// cmdVescPing - VESC UART Telemetry Verification
+// ============================================================
+//
+// What it does:
+//   Reads the vesc struct (guarded by vescMutex) and the global
+//   last_uart_packet timestamp at 2 Hz for up to 30 seconds, printing
+//   a CSV line each iteration. The key diagnostic field is pkt_age_ms:
+//   if it stays < ~1200 ms, the VESC is actively sending UART packets.
+//   If it grows continuously past 1500 ms without resetting, the VESC is
+//   silent — check wiring, baud rate, and the data_src SPIFFS parameter.
+//
+// How to invoke:
+//   Type '?vescping' in a serial terminal. Type 'quit' to abort early.
+//
+// What to look for:
+//   pkt_age_ms < 1200 throughout  → VESC UART healthy; motor current is real.
+//   pkt_age_ms grows unboundedly  → VESC UART silent; struct values are stale.
+//   motCur_a near 0 with healthy UART → unloaded motor, low current is normal.
+void cmdVescPing(const String& params) {
+  extern SemaphoreHandle_t vescMutex; // declared in Logger.ino; guards vesc struct
+  extern vesc_struct vesc;            // VESC telemetry struct; written by VESC.ino
+
+  Serial.println("=== VESC UART Verification ===");
+  Serial.println("Type 'quit' to abort. Runs up to 30 seconds at 2 Hz.");
+  Serial.println("Run with motor OFF first (baseline), then turn motor ON and observe.");
+  Serial.println("If 'pkt_age_ms' keeps growing past ~1500 and never resets to ~0,");
+  Serial.println("the VESC is NOT responding over UART (wiring or config issue).");
+  Serial.println();
+  Serial.println("millis,motCur_a,erpm,batVolt_v,fetTemp_c,pkt_age_ms,thr_received");
+
+  const uint32_t TEST_DURATION_MS = 30000UL;
+  uint32_t start = millis();
+
+  while ((millis() - start) < TEST_DURATION_MS) {
+    esp_task_wdt_reset(); // prevent WDT timeout during the 30s blocking loop
+
+    if (checkSerialQuit()) break;
+
+    // Read VESC struct fields under mutex — same pattern as runPhaseC() in RTMState.ino.
+    // Units: motCur = 0.01 A, batVolt = 0.01 V, fetTemp = 0.1 °C.
+    float  snap_motcur_a  = -1.0f;
+    long   snap_erpm      = -1L;
+    float  snap_batvolt_v = -1.0f;
+    float  snap_fettemp_c = -1.0f;
+    if (vescMutex && xSemaphoreTake(vescMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+      snap_motcur_a  = (float)vesc.motCur  / 100.0f;
+      snap_erpm      = (long)vesc.erpm;
+      snap_batvolt_v = (float)vesc.batVolt / 100.0f;
+      snap_fettemp_c = (float)vesc.fetTemp / 10.0f;
+      xSemaphoreGive(vescMutex);
+    }
+
+    // last_uart_packet is a volatile unsigned long updated by getVescLoop() each time
+    // a valid VESC packet arrives. Age tells us whether VESC is actively responding.
+    unsigned long pkt_age_ms = millis() - last_uart_packet;
+
+    // Single-byte volatile read — atomic on ESP32-C3, no mutex needed.
+    uint8_t snap_thr = thr_received;
+
+    Serial.printf("%lu,%.2f,%ld,%.2f,%.1f,%lu,%u\n",
+                  millis(),
+                  snap_motcur_a, snap_erpm,
+                  snap_batvolt_v, snap_fettemp_c,
+                  pkt_age_ms,
+                  (unsigned)snap_thr);
+
+    vTaskDelay(pdMS_TO_TICKS(500)); // 2 Hz output rate
+  }
+
+  Serial.println();
+  Serial.println("=== Verification complete. ===");
+  Serial.println("If pkt_age_ms stayed < 1200 throughout: VESC UART is healthy. Motor current is real.");
+  Serial.println("If pkt_age_ms grew unboundedly: VESC UART is silent. Check wiring, baud, and data_src.");
+}
+
+// ============================================================
+// cmdVescRaw - Raw VESC UART Byte-Dump Probe
+// ============================================================
+//
+// What it does:
+//   Bypasses the normal getVescLoop() pipeline entirely. Manually switches
+//   the UART mux to channel 0 (VESC), sends a raw COMM_GET_VALUES short-frame
+//   query, then dumps every byte received in hex for up to 200ms. Repeats
+//   every 2 seconds for 15 iterations (30 seconds total).
+//
+//   This probes the physical UART path rather than the parsed struct, so it
+//   reveals whether the VESC is reachable at the hardware level independently
+//   of whether getVescLoop() parses the response correctly.
+//
+// Inputs:  params - unused
+// Outputs: hex dump to Serial; no struct writes; no global state changes
+// Side effects: switches UART mux to channel 0 each iteration (same as normal VESC operation)
+//
+// How to interpret output:
+//   Zero bytes every iteration    -> VESC unreachable. Check mux IC channel 0,
+//                                    VESC TX wire, and GND connection.
+//   Bytes received, no 0x02 lead  -> Baud rate mismatch. Firmware uses 115200;
+//                                    check VESC Tool App Configuration -> General -> UART Baud.
+//   Response starts with 0x02     -> VESC is alive and responding. The issue
+//                                    is in receiveFromVESC() parsing, not hardware.
+void cmdVescRaw(const String& params) {
+  Serial.println("=== VESC Raw UART Probe ===");
+  Serial.println("Sends COMM_GET_VALUES every 2s, dumps received bytes in hex.");
+  Serial.println("Type 'quit' to abort. Runs up to 30 seconds (15 attempts).");
+  Serial.println();
+  Serial.println("Expected outcomes:");
+  Serial.println("  Zero bytes received  -> mux/wiring/baud issue (VESC unreachable)");
+  Serial.println("  Garbage bytes        -> baud rate mismatch");
+  Serial.println("  Frame starts with 02 -> VESC responding, parser failing elsewhere");
+  Serial.println();
+  Serial.println("  VESC short-frame format: [0x02][LEN][PAYLOAD][CRC16][0x03]");
+  Serial.println();
+
+  // Precomputed VESC short-frame for COMM_GET_VALUES (command ID 4).
+  // [0x02 start][0x01 payload-len=1][0x04 COMM_GET_VALUES][0x40 CRC16_HI][0x07 CRC16_LO][0x03 end]
+  // CRC16-CCITT (init=0) over single payload byte {0x04} = 0x4007.
+  static const uint8_t getValuesQuery[] = { 0x02, 0x01, 0x04, 0x40, 0x07, 0x03 };
+
+  const int MAX_ITERATIONS = 15;
+
+  for (int iter = 1; iter <= MAX_ITERATIONS; iter++) {
+    esp_task_wdt_reset(); // prevent WDT timeout during the 30s blocking loop
+
+    if (checkSerialQuit()) break;
+
+    // Switch mux to channel 0 (VESC) and allow it to settle
+    setUartMux(0);
+    vTaskDelay(pdMS_TO_TICKS(10));
+
+    // Drain any stale bytes from a previous response before sending the query
+    while (Serial1.available()) Serial1.read();
+
+    // Send the raw COMM_GET_VALUES request directly — NOT via getVescLoop()
+    Serial1.write(getValuesQuery, sizeof(getValuesQuery));
+    Serial1.flush();
+
+    Serial.printf("Iteration %d: sent 6 bytes, listening 200ms...\n", iter);
+
+    // Collect every byte that arrives within 200ms
+    uint8_t rxBuf[256];
+    int rxCount = 0;
+    uint32_t listenStart = millis();
+    while ((millis() - listenStart) < 200 && rxCount < (int)sizeof(rxBuf)) {
+      if (Serial1.available()) {
+        rxBuf[rxCount++] = (uint8_t)Serial1.read();
+      }
+    }
+
+    if (rxCount == 0) {
+      Serial.println("  NO BYTES RECEIVED -- VESC unreachable on this iteration");
+    } else {
+      Serial.printf("  Received %d bytes:\n", rxCount);
+      // Hex dump: rows of 16 bytes, two-digit hex, space-separated
+      for (int i = 0; i < rxCount; i++) {
+        if (i > 0 && (i % 16) == 0) Serial.println();
+        if ((i % 16) == 0) Serial.print("  ");
+        Serial.printf("%02X", rxBuf[i]);
+        if ((i % 16) != 15 && i != rxCount - 1) Serial.print(" ");
+      }
+      Serial.println();
+    }
+
+    // Wait the remainder of the 2s cycle (~1700ms after 10ms mux + 200ms listen)
+    vTaskDelay(pdMS_TO_TICKS(1700));
+  }
+
+  Serial.println();
+  Serial.println("=== Probe complete. ===");
+  Serial.println("Summary heuristic:");
+  Serial.println("  All 15 iterations 0 bytes  -> wiring or mux. Check VESC TX wire, GND, mux IC.");
+  Serial.println("  Most iterations 0 bytes    -> intermittent -- likely loose connection.");
+  Serial.println("  Bytes received but no 0x02 -> baud mismatch. Try VESC Tool App config.");
+  Serial.println("  0x02 0xXX received         -> VESC alive! Parser issue in receiveFromVESC().");
+}
+
 void cmdHelp(const String& params);
 
 static const SerialCommand kCommands[] = {
@@ -316,6 +574,9 @@ static const SerialCommand kCommands[] = {
   {"printcompass", "print raw compass X/Y/Z", cmdPrintCompass},
   {"compasscal", "start 45s automated calibration", cmdCompassCal},
   {"compassheading", "print live compass heading in degrees", cmdPrintCompassHeading},
+  {"magtest", "120s CSV log: compass X/Y/Z + VESC current vs throttle (bench EMI test)", cmdMagTest},
+  {"vescping", "stream VESC fields + UART packet age (2Hz, up to 30s; verify VESC UART)", cmdVescPing},
+  {"vescraw", "raw VESC UART byte dump (sends GET_VALUES, prints any bytes received as hex)", cmdVescRaw},
 
   {"", "show this help", cmdHelp},
 };

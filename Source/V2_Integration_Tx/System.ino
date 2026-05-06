@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-05-06 - FIX-HELP-1: corrected raw-GPS-dump help text from "type q to quit" to "type 'quit' to abort"
 // V3 - 2026-05-03 - Added reserved/warning comments (LOW audit cleanup)
 // V3 - 2026-04-24 - Added ?printgps, ?gpsraw, ?gpsreinit serial commands for TX GPS diagnostics
 // V3 - 2026-04-22 - P4: signal-drop haptic warning (Pattern A) when sq_graph drops to 1 while connected
@@ -289,7 +290,7 @@ void cmdPrintGPS(const String &args) {
 // See garbage/symbols = wrong baud rate.
 // See nothing = wiring or power problem.
 void cmdGpsRaw(const String &args) {
-  Serial.println("--- Raw GPS bytes from Serial1 (5 seconds, type q to quit) ---");
+  Serial.println("--- Raw GPS bytes from Serial1 (5 seconds, type 'quit' to abort) ---");
   if (!tx_gps_initialized) {
     Serial.println("WARNING: tx_gps_initialized=false. Serial1 may not be configured.");
     Serial.println("Try ?gpsreinit first, then ?gpsraw again.");

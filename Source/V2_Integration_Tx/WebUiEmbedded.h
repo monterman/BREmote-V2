@@ -4,6 +4,7 @@
 // V2.5-Evo - 2026-04-29 - Sleep: added sleep_timeout_s to TX WebUI
 // V3 - 2026-05-01 - thr_expo1 removed; fm_display_mode added to RTM & Follow-Me group
 // V3 - 2026-05-02 - Split GPS/RTM/FM into separate groups; added Collapse All / Expand All buttons
+// V2.5-Evo - 2026-05-06 - FIX-WEB-1: saveAll() now validates and sends only DIRTY fields (was: all 60 fields every save → blocked by any stale state)
 #ifndef WEB_UI_EMBEDDED_H
 #define WEB_UI_EMBEDDED_H
 
@@ -274,15 +275,45 @@ function loadFromJsonText() {
 async function saveAll(){
     const btn = document.getElementById('saveBtn');
     btn.innerText = 'Saving...';
-    
-    for(const f of fields){const e=validate(f,state.values[f.key]);if(e){alert(`${f.label}: ${e}`); checkDirtyUI(); return;}}
-    for(const f of fields){const body=`key=${encodeURIComponent(f.key)}&value=${encodeURIComponent(valueForSend(f,state.values[f.key]))}`;const r=await api('/api/set','POST',body);if(!r.ok){alert(`SET ${f.key} failed: ${r.err||'ERR'}`); checkDirtyUI(); return;}}
-    const s=await api('/api/save','POST');if(!s.ok){alert(s.err||'SAVE failed'); checkDirtyUI(); return;}
+
+    // V2.5-Evo - 2026-05-06 - FIX-WEB-1: only validate and send DIRTY fields.
+    // Previous behavior validated and sent all 60 fields on every save. Any pre-existing
+    // stale value in state.values (e.g. version mismatch after firmware update, or
+    // calibration field returning empty) would block legitimate user changes with
+    // a misleading "FIELD: Required" alert. Restrict the loop to fields actually
+    // modified by the user since the last refresh.
+    const dirty = fields.filter(f => String(state.values[f.key] ?? '') !== String(state.saved[f.key] ?? ''));
+
+    if (dirty.length === 0) {
+        // Nothing to save — surface this to the user instead of silently doing nothing.
+        btn.classList.add('success');
+        btn.innerText = 'Nothing to save';
+        setTimeout(() => { btn.classList.remove('success'); btn.innerText = 'Save All'; checkDirtyUI(); }, 1500);
+        return;
+    }
+
+    // Validate dirty fields only.
+    for(const f of dirty){
+        const e = validate(f, state.values[f.key]);
+        if(e){ alert(`${f.label}: ${e}`); checkDirtyUI(); btn.innerText='Save All'; return; }
+    }
+
+    // Send dirty fields only.
+    for(const f of dirty){
+        const body = `key=${encodeURIComponent(f.key)}&value=${encodeURIComponent(valueForSend(f, state.values[f.key]))}`;
+        const r = await api('/api/set','POST', body);
+        if(!r.ok){ alert(`SET ${f.key} failed: ${r.err||'ERR'}`); checkDirtyUI(); btn.innerText='Save All'; return; }
+    }
+
+    // Final commit to SPIFFS.
+    const s = await api('/api/save','POST');
+    if(!s.ok){ alert(s.err||'SAVE failed'); checkDirtyUI(); btn.innerText='Save All'; return; }
+
     await refreshAll();
-    
+
     btn.classList.add('success');
-    btn.innerText = 'Saved OK';
-    setTimeout(() => { btn.classList.remove('success'); checkDirtyUI(); }, 1500);
+    btn.innerText = `Saved OK (${dirty.length})`;
+    setTimeout(() => { btn.classList.remove('success'); btn.innerText = 'Save All'; checkDirtyUI(); }, 1500);
 }
 
 async function loadCfg(){

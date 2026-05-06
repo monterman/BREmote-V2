@@ -8,6 +8,8 @@
 
 ESP32 LoRa wireless remote for efoil and RC tow buggy — 868/915 MHz, 10 Hz control cycle, VESC UART telemetry, GPS speed display, integrated data logger.
 
+**Status: Pre-Alpha — not yet field-tested on the water. See Alpha Testing Notes below before any in-water use.**
+
 ---
 
 ## Credits
@@ -493,6 +495,19 @@ Full bar (10 pixels) = buggy at arm distance. Shrinks from the right as the bugg
 
 ---
 
+## Alpha Testing Notes
+
+BREmote V2.5-Evo is in Pre-Alpha. The firmware compiles, has been bench-tested for control flow and safety gates, and includes anti-spoofing and RTM/FM features — but it has not been field-tested on the water as of this writing. If you are an alpha tester building on this fork, the project recommends:
+
+- Test in a controlled environment (shallow water, short range, motors disconnected for first dry run, second run with motors on a leashed test stand) before any open-water use.
+- Until the compass EMI behavior on your specific hardware is characterized, treat RTM steering as advisory, not autonomous. Keep `rtm_steer_exit_on_input = 1` enabled (any sideways toggle disengages RTM immediately and returns full manual control).
+- Manual control must always work even if RTM, FM, GPS, or compass fail. Do not rely on autonomous features as the primary safety path.
+- Releasing the throttle trigger always stops the motor — this is the failsafe, and it works regardless of what RTM, FM, or telemetry are doing.
+
+Anyone field-testing this fork should treat each session as data-gathering, not as production use.
+
+---
+
 ## Known Limitations
 
 ### Features Still Pending
@@ -503,17 +518,23 @@ Full bar (10 pixels) = buggy at arm distance. Shrinks from the right as the bugg
 | BLE telemetry forwarding | Planned for future release |
 | RTM/FM hardware field test | Static code review passed (10/10 gates). Outdoor GPS + motor bench test still required before field use. |
 
-### V2 Critical Bugs — All Fixed in V2.5-Evo
+### Bugs Found and Fixed Between Upstream and V2.5-Evo
 
-| # | Bug | Fix in V2.5-Evo |
-|---|---|---|
-| 1 | WDT 1000 ms timeout too close under load | Raised to 3000 ms (RX `Init.ino`) |
-| 2 | `vesc_struct` race condition across ESP32-C3 cores | `vescMutex` semaphore added (RX `VESC.ino`, `Logger.ino`) |
-| 3 | `logging_active` missing `volatile` | Declared `volatile` (RX `Logger.ino`) |
-| 4 | `ensureFreeSpace()` deletes active log file | Excludes active log from deletion (RX `Logger.ino`) |
-| 5 | `readBCFromSPIFFS()` heap out-of-bounds on short file | `decodedLen < 102` guard added (RX `SPIFFS.ino`) |
-| 6 | `triggeredReceive` / `generatePWM` stack 2048 bytes | Raised to 4096 bytes (RX `Init.ino`) |
-| 7 | `scanI2C()` reinitializes Wire to wrong pins | `Wire.begin()` removed from `scanI2C()` (RX `System.ino`) |
+> BREmote V2.5-Evo is a fork of Jan's BREmote V2 codebase, which itself extends Ludwig's original BREmote. The architecture decisions (3-byte addressing, CRC8 pairing, semaphore-driven LoRa ISR, the Common engine pattern) are from upstream and are sound. The issues below were uncovered during the V2.5-Evo audit. Some are defects that existed in the upstream regardless of feature set; others only became safety-relevant when V2.5-Evo added concurrent GPS polling, Phase A anti-spoofing, RTM, and FM, which significantly increased the loop-task workload.
+
+| # | Issue | V2.5-Evo file:line | Note | Fix |
+|---|---|---|---|---|
+| 1 | Watchdog 1000ms timeout | `Source/V2_Integration_Rx/Init.ino:52-58` | Adequate for upstream feature set; insufficient under V2.5-Evo combined GPS (~300ms) + wetness (~300ms) + VESC (~210ms) load (~810ms peak, ~190ms margin). | Raised to 3000ms with full load math in source comment. |
+| 2 | `vesc_struct` cross-core race | `Source/V2_Integration_Rx/VESC.ino`, `Logger.ino` | `vesc` written on core 1, read on core 0; no synchronization. Defect existed upstream; harder to hit there because Logger ran less aggressively. | Added `vescMutex` semaphore, 50ms take timeout on both readers and writer. |
+| 3 | `logging_active` non-volatile flag | `Source/V2_Integration_Rx/Logger.ino` | Compiler-cached value across cores; flag toggle from one core not always seen by the other. | Declared `volatile`. |
+| 4 | `ensureFreeSpace()` could delete the active log file | `Source/V2_Integration_Rx/Logger.ino` | Free-space loop iterated all `.log` files including the one currently being written. | Active log file path now excluded from deletion candidates. |
+| 5 | `readBCFromSPIFFS()` heap out-of-bounds | `Source/V2_Integration_Rx/SPIFFS.ino` | Decoded payload < 102 bytes overran a fixed-size struct copy. | Length check added: `decodedLen < 102` rejects short files. |
+| 6 | `triggeredReceive` and `generatePWM` 2048-byte stacks | `Source/V2_Integration_Rx/Init.ino:41-43` | Stack size adequate for upstream; tight under V2.5-Evo with RadioLib SX1262 path + RMT driver + Phase A + meta-packet decoding. | Raised to 4096 / 4096 / 3072. Use `?printtasks` to monitor high-water marks. |
+| 7 | `scanI2C()` re-initialized Wire mid-runtime | `Source/V2_Integration_Rx/System.ino:157-196` | Function inherited from upstream; `Wire.begin()` inside the scan reset I2C and could glitch in-progress AW9523 traffic. | Removed redundant `Wire.begin()`; Wire is now only initialized once in `initHardware()`. |
+
+### Compass EMI Bench-Test Tool
+
+BREmote V2.5-Evo ships with a serial diagnostic command, `?magtest`, that lets any builder verify whether motor current is biasing the QMC5883L magnetometer on their specific hardware. The command streams CSV at 10 Hz (millis, mag X/Y/Z, magnitude, heading, VESC ERPM, motor current, throttle) for up to 120 seconds. Recommended use: bench-mount the buggy with motors free-spinning, capture serial output to a `.csv` file, and bring throttle slowly from 0 to maximum while logging. The resulting trace makes magnetic bias from the phase wires visible — magnitude shifts > 5% or heading shifts > 5° at any current point indicate the compass cannot be trusted for steering during active motor operation. This concern was raised by upstream maintainer Jan during the V2.5-Evo review; the test command exists so builders can collect their own measurements rather than rely on assertion.
 
 ---
 

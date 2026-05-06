@@ -4,6 +4,7 @@
 // V3 - 2026-04-27 - fix: COMBO_TAP_MAX_MS 500ms; tap detection was tied to gear_change_waittime (100ms — too tight)
 // V3 - 2026-04-27 - fix: restored correct gesture map — RIGHT hold=display cycle, LEFT hold=lock (P8 had them swapped)
 // V2.5-Evo - 2026-04-28 - Change1: post-unlock delay 500→250ms; throttle-release settling 1000→500ms
+// V2.5-Evo - 2026-05-06 - FIX-GESTURE-1: COMBO_TAP_MAX_MS 500ms→1000ms. In no_gears mode the 100ms display cycle confused users into holding the tap longer than 500ms, causing has_combo=false and LEFT-hold-5s to fall into the 2s LOCK branch instead of arming RTM (~70% failure rate per Andres field report).
 
 // Returns true if the given display mode has a valid value
 bool isDisplayModeAvailable(uint8_t mode)
@@ -233,7 +234,7 @@ bool ctminus()
 // NOTE: P8 initially set LEFT hold = display cycle and removed lock (wrong).
 // Corrected: RIGHT hold = display cycle; LEFT hold = lock (matches user intent).
 //
-// Tap = press released before COMBO_TAP_MAX_MS (500ms). Recorded as last_tap_dir.
+// Tap = press released before COMBO_TAP_MAX_MS (1000ms). Recorded as last_tap_dir.
 // A tap that lasts 100ms–500ms will also fire a gear/cap change as a side effect
 // (gear_change_waittime = 100ms), but the tap is still recorded for combo purposes.
 // Combo = opposite tap within COMBO_WINDOW_MS followed by a long hold.
@@ -250,7 +251,7 @@ static const unsigned long COMBO_WINDOW_MS  = 3000UL;  // max gap between tap an
 // Separate from gear_change_waittime — gives users a comfortable ~500ms window to perform
 // a tap without needing sub-100ms precision. A slightly-long tap may also adjust gear/cap
 // (side effect) but still primes the combo correctly.
-static const unsigned long COMBO_TAP_MAX_MS = 500UL;
+static const unsigned long COMBO_TAP_MAX_MS = 1000UL;
 
 // direction: -1 = left toggle press, +1 = right toggle press
 void handleGearToggle(int direction)
@@ -349,7 +350,7 @@ void handleGearToggle(int direction)
 
   unsigned long held_ms = millis() - pushtime;
 
-  // Record tap if released before COMBO_TAP_MAX_MS (500ms). Decoupled from gear_change_waittime
+  // Record tap if released before COMBO_TAP_MAX_MS (1000ms). Decoupled from gear_change_waittime
   // (100ms) so that a tap that also fires a gear/cap change still primes the combo correctly.
   // Bug fix: old threshold was gear_change_waittime (100ms from pushtime after 50ms initial delay
   // = ~150ms total from press). This window was too tight — any tap over ~150ms total was silently

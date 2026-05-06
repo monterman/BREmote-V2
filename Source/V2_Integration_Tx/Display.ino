@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-05-05 - 30s digit cache for foil_temp/foil_bat to suppress telemetry-drop dashes
+// V2.5-Evo - 2026-05-05 - PV display: foil_power rendered as kW with decimal point (X.Y kW)
 // V3 - 2026-05-03 - displayError() clamp corrected 29→33 (H6 audit fix)
 // V3 - 2026-05-01 - Fix A: lazy-capture rtm_arm_dist_m on first valid render if missed at arm time
 // V3 - 2026-04-30 - FM R5 bar: replaced linear fill with center-expanding from C4-C5
@@ -23,6 +25,16 @@
 
 extern volatile bool fm_armed;  // defined in RTMState.ino — volatile: written by loop() core 1,
                                  // read by updateBargraphs() core 0; must match definition
+
+// ============================================================
+// FOIL DATA DIGIT CACHE - holds last-known foil_temp/foil_bat values
+// for up to 30s so brief VESC UART silences don't flash "--" on the digit display.
+// ============================================================
+static uint8_t        last_known_foil_temp            = 0xFF;
+static uint8_t        last_known_foil_bat             = 0xFF;
+static unsigned long  foil_temp_last_valid_ms         = 0;
+static unsigned long  foil_bat_last_valid_ms          = 0;
+static const unsigned long FOIL_DATA_CACHE_TIMEOUT_MS = 30000;  // 30s before admitting stale
 
 static void clearDisplayRaw()
 {
@@ -423,8 +435,41 @@ void showFullScreenMessage(const char* msg, uint16_t duration_ms)
   for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000;
 }
 
+// V2.5-Evo - 2026-05-05 - 30s cache for foil_temp/foil_bat digit display.
+// Brief telemetry drops (UART mux contention, momentary VESC silence) cause
+// foil_temp/foil_bat to flicker to 0xFF on RX. Without caching, the digit
+// display would show '--' for sub-second drops, distracting the rider.
+// Solution: hold last-known value for up to 30s before admitting stale.
+// Bargraph blink behavior in updateBargraphs() is preserved as the
+// 'no fresh data right now' signal — digits show context, bars show liveness.
+void updateFoilDataCache() {
+  if (telemetry.foil_temp != 0xFF) {
+    last_known_foil_temp    = telemetry.foil_temp;
+    foil_temp_last_valid_ms = millis();
+  }
+  if (telemetry.foil_bat != 0xFF) {
+    last_known_foil_bat    = telemetry.foil_bat;
+    foil_bat_last_valid_ms = millis();
+  }
+}
+
+uint8_t getEffectiveFoilTemp() {
+  if (telemetry.foil_temp != 0xFF) return telemetry.foil_temp;
+  if (foil_temp_last_valid_ms == 0) return 0xFF;  // never had valid data
+  if (millis() - foil_temp_last_valid_ms > FOIL_DATA_CACHE_TIMEOUT_MS) return 0xFF;
+  return last_known_foil_temp;
+}
+
+uint8_t getEffectiveFoilBat() {
+  if (telemetry.foil_bat != 0xFF) return telemetry.foil_bat;
+  if (foil_bat_last_valid_ms == 0) return 0xFF;
+  if (millis() - foil_bat_last_valid_ms > FOIL_DATA_CACHE_TIMEOUT_MS) return 0xFF;
+  return last_known_foil_bat;
+}
+
 void renderOperationalDisplay()
 {
+  updateFoilDataCache();  // refresh digit cache once per render cycle, before mutex and switch
   xSemaphoreTake(displayMutex, portMAX_DELAY);  // Core 1 render — waits for Core 0 updateBargraphs to release
   // V2.5-Evo - 2026-04-28 - ChgDZ: Persistent "FM" while Follow-Me armed, RTM not active.
   // displayDigitZone() preserves R5 proximity bar, R6 battery bar, C7 GPS dot, C8/C9 bargraphs.
@@ -485,7 +530,7 @@ void renderOperationalDisplay()
         }
       }
       switch(display_mode) {
-        case DISPLAY_MODE_TEMP:   displayShowTwoDigitOrDash(telemetry.foil_temp); break;
+        case DISPLAY_MODE_TEMP:   displayShowTwoDigitOrDash(getEffectiveFoilTemp()); break;
         // V3 - 2026-04-21 - Show TX GPS speed when a TX-GPS unit is selected (speed_src 2/3/5);
         // fall back to RX telemetry speed for all other speed_src values.
         // tx_gps_speed is already 0xFF when no fix, so displayShowTwoDigitOrDash renders "--" automatically.
@@ -495,8 +540,21 @@ void renderOperationalDisplay()
           else
             displayShowTwoDigitOrDash(telemetry.foil_speed);
           break;
-        case DISPLAY_MODE_POWER:  displayShowTwoDigitOrDash(telemetry.foil_power != 0xFF ? min((uint8_t)(telemetry.foil_power / 2), (uint8_t)99) : 0xFF); break;
-        case DISPLAY_MODE_BAT:    displayShowTwoDigitOrDash(telemetry.foil_bat); break;
+        // V2.5-Evo - 2026-05-05 - PV display: kW with decimal at C3R4.
+        // Encoding chain: RX VESC.ino sets foil_power = watts/50 (byte 0-255).
+        // On TX: foil_power/2 = watts/100 = kW × 10.
+        // Render as 'X.Y' kW with decimal point. Range 0.0-9.9 kW (cap at 99).
+        // Higher-power motors (>9.9 kW) would need RX-side encoding rescale — TODO.
+        case DISPLAY_MODE_POWER:
+          if (telemetry.foil_power == 0xFF) {
+            displayShowTwoDigitOrDash(0xFF);                       // renders "--" (no data)
+          } else {
+            uint8_t pv_x10 = min((uint8_t)(telemetry.foil_power / 2), (uint8_t)99);
+            displayDigits(pv_x10 / 10, pv_x10 % 10);              // leading zero shown: 0.4 kW → "0.4"
+            displayBuffer[5] |= (1u << 3);                         // decimal dot C3 R4; auto-cleared by next displayDigits() call
+          }
+          break;
+        case DISPLAY_MODE_BAT:    displayShowTwoDigitOrDash(getEffectiveFoilBat()); break;
         case DISPLAY_MODE_THR:    displayShowTwoDigitOrDash(thr_scaled * 99 / 255); break;
         case DISPLAY_MODE_INTBAT: displayShowTwoDigitOrDash((uint8_t)(int_bat_volt * 10)); break;
         default: displayShowTwoDigitOrDash(telemetry.foil_temp); break;

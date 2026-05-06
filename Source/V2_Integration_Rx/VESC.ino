@@ -1,4 +1,5 @@
 // V3 - 2026-04-29 - Bundle B: vesc_timeout_s SPIFFS param replaces hardcoded 20s VESC timeout
+// V2.5-Evo - 2026-05-06 - Drain Serial1 RX buffer in getVescLoop() to prevent stale GPS NMEA from corrupting VESC frame parsing
 // Define the global struct
 vesc_struct vesc;
 
@@ -6,8 +7,18 @@ void getVescLoop()
 {
   setUartMux(0);
   vTaskDelay(pdMS_TO_TICKS(10));
-  
-  // Flush the serial buffer to get fresh data
+
+  // V2.5-Evo - 2026-05-06 - RX-buffer drain before VESC query.
+  // Serial1 is shared with GPS via an AW9523-controlled analog mux. After mux
+  // switch from GPS to VESC, the Serial1 RX buffer still contains partial NMEA
+  // sentences. Without this drain, those bytes prefix the VESC response and
+  // corrupt frame parsing in receiveFromVESC(), causing every VESC packet to be
+  // rejected and last_uart_packet never to update. Verified by ?vescping showing
+  // pkt_age_ms growing unboundedly before this fix. Non-blocking: only drains
+  // bytes already in the buffer, never blocks waiting for new ones.
+  while (Serial1.available()) Serial1.read();
+
+  // Flush the serial buffer to get fresh data (TX-side drain only)
   Serial1.flush();
   
   if( getValuesSelective(&Serial1) )

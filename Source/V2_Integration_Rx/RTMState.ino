@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-05-06 - D5: getRtmHeading() layered heading source; updateRtmSteering() rewritten; Gate 6 accepts any source; updateCompassSnapshot() called from runRtmLoop top
 // V3 - 2026-05-03 - C1/M2 audit fix: gps_tx_ok uses timestamp age on both paths; 0.0 lat/lng sentinel removed
 // V3 - 2026-05-01 - Fix D: gps_tx_ok relaxed for FM/idle; never reset rtm_distance to 0xFF when RTM inactive
 // V3 - 2026-05-01 - Fix C: FM bar keep-last-known on GPS dropout; only 0xFF if TX GPS never received
@@ -21,8 +22,13 @@
 //
 // All outputs are written to volatile globals read by calcPWM() and triggeredReceive().
 
-// REPLACE WITH (add the extern line above it):
 extern bool gps_phase_b_ok;   // V3 - P7 fix: defined in Radio.ino (Phase B section)
+// V2.5-Evo - 2026-05-06 - D5: extern declarations for D1+D2 capture globals.
+extern float         gps_last_course_deg;       // From GPS.ino (D1) — last valid GPS course-over-ground (0-360 deg, -1.0 if none)
+extern unsigned long gps_last_course_ms;        // From GPS.ino (D1) — millis() of last course update (0 if none)
+extern float         compass_snapshot_heading;  // From Compass.ino (D2) — clean compass heading captured during motor-idle (0-360 deg, -1.0 if none)
+extern unsigned long compass_snapshot_ms;       // From Compass.ino (D2) — millis() of snapshot capture (0 if none)
+extern void          updateCompassSnapshot();   // From Compass.ino (D2) — captures clean compass heading when motor idle
 // ---- Phase C convergence tracking ----
 static double        rtm_prev_dist_m = -1.0;   // distance to TX at last Phase C check
 static unsigned long rtm_phase_c_ms  = 0;       // last Phase C check time
@@ -84,13 +90,19 @@ static bool checkRtmSafetyGates()
     return false;
   }
 
-  // Gate 6: valid compass (if required)
+  // Gate 6: valid heading source (any source, per usrConf.rtm_use_compass mode)
+  // V2.5-Evo - 2026-05-06 - D5: was compass-only check; now accepts GPS COG OR
+  // compass snapshot OR live compass per the configured heading mode.
+  // The legacy field name rtm_compass_required is preserved as the gate enable/disable.
+  // When set to 1 (default), at least one valid heading source must exist.
+  // When set to 0, this gate is bypassed (advanced/manual users only).
   if (usrConf.rtm_compass_required)
   {
-    float h = getCompassHeading();
-    if (h < 0.0f)
+    float h_unused;
+    uint8_t conf_unused;
+    if (!getRtmHeading(&h_unused, &conf_unused))
     {
-      Serial.println("RTM [RX] STOP: Compass not available");
+      Serial.println("RTM [RX] STOP: No valid heading source (GPS COG too slow + compass snapshot stale)");
       rtm_rx_emergency_stop = true;
       return false;
     }
@@ -129,16 +141,117 @@ static bool checkRtmSafetyGates()
   return true;
 }
 
+// V2.5-Evo - 2026-05-06 - D5: Layered heading source for RTM steering.
+//
+// Returns the best available heading (deg, 0-360 clockwise from North) based on
+// usrConf.rtm_use_compass mode and current sensor state. Three modes:
+//   0 = GPS COG only — no compass fallback. Safest choice for builds where compass
+//       is biased by motor current (this hardware's bench-tested behavior).
+//   1 = Hybrid (DEFAULT) — GPS COG primary; compass snapshot when buggy is too slow
+//       for COG to be reliable. Compass snapshot is updated only when motor is idle
+//       (thr_received < 25), so it represents an unbiased reading.
+//   2 = Compass only — DIAGNOSTIC ONLY. Should NOT be used on water on builds with
+//       known motor EMI. Available for non-EMI builds with proven clean compass
+//       behavior under load.
+//
+// Confidence levels (output param):
+//   3 = HIGH:   GPS COG, fresh and above min_speed threshold
+//   2 = MEDIUM: compass snapshot < 1000ms old, or compass-only mode (legacy)
+//   1 = LOW:    compass snapshot 1000-3000ms old (degraded — caller should reduce steering authority)
+//   0 = NONE:   no valid heading source — caller must hold straight (rtm_steer_override = 127)
+//
+// Returns true if heading is valid (any non-zero confidence), false if no source.
+//
+// SAFETY: This function is read-only on globals; it never modifies sensor state.
+//         Caller (updateRtmSteering) must handle confidence=0 as a hold-straight
+//         scenario, not as a steering command.
+static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
+{
+  uint16_t mode           = usrConf.rtm_use_compass;
+  uint16_t cog_min_speed  = usrConf.rtm_cog_min_speed_kmh;
+  unsigned long now       = millis();
+
+  // ---- Mode 2: Compass only (legacy/diagnostic) ----
+  // Use compass directly; valid only if compass returns non-error.
+  // SAFETY: This mode SHOULD NOT be used on water — see field-service note in BREmote_V2_Rx.h.
+  if (mode == 2) {
+    float h = getCompassHeading();
+    if (h < 0.0f) {
+      *out_heading = -1.0f;
+      *out_confidence = 0;
+      return false;
+    }
+    *out_heading = h;
+    *out_confidence = 2;  // MEDIUM — known biased under load but user opted in
+    return true;
+  }
+
+  // ---- GPS COG (preferred for modes 0 and 1) ----
+  // Valid if: course was captured (ms > 0), course is in valid range,
+  //           course age < 1500ms, GPS speed >= cog_min_speed_kmh.
+  bool cog_valid = (gps_last_course_ms > 0) &&
+                   (gps_last_course_deg >= 0.0f) &&
+                   ((now - gps_last_course_ms) < 1500UL) &&
+                   (gps_last_speed_kmh >= (float)cog_min_speed);
+
+  if (cog_valid) {
+    *out_heading = gps_last_course_deg;
+    *out_confidence = 3;  // HIGH
+    return true;
+  }
+
+  // ---- Mode 0: GPS COG only — no fallback ----
+  // If COG is invalid (slow speed or stale), return no source.
+  // updateRtmSteering() will hold straight.
+  if (mode == 0) {
+    *out_heading = -1.0f;
+    *out_confidence = 0;
+    return false;
+  }
+
+  // ---- Mode 1 (Hybrid): try compass snapshot ----
+  // Snapshot is captured by updateCompassSnapshot() in Compass.ino during motor-idle.
+  // Age determines confidence:
+  //   < 1000ms : MEDIUM (likely still fresh)
+  //   1000-3000ms : LOW (degraded; reduce steering authority)
+  //   > 3000ms : NONE (too stale)
+  if (compass_snapshot_heading >= 0.0f && compass_snapshot_ms > 0) {
+    unsigned long age_ms = now - compass_snapshot_ms;
+    if (age_ms < 1000UL) {
+      *out_heading = compass_snapshot_heading;
+      *out_confidence = 2;  // MEDIUM
+      return true;
+    } else if (age_ms < 3000UL) {
+      *out_heading = compass_snapshot_heading;
+      *out_confidence = 1;  // LOW — caller should reduce steering authority
+      return true;
+    }
+  }
+
+  // ---- No valid heading source ----
+  *out_heading = -1.0f;
+  *out_confidence = 0;
+  return false;
+}
+
 // ---- Compute RTM steering override ----
-// Uses compass heading + TX GPS bearing to derive rtm_steer_override (0-255, 127=straight).
+// V2.5-Evo - 2026-05-06 - D5: Use layered heading source instead of compass-only.
+// Heading source comes from getRtmHeading() — GPS COG primary, compass snapshot fallback.
+// LOW-confidence sources reduce steering authority by 50% to prevent oscillation
+// when the available data is degraded.
 static void updateRtmSteering()
 {
   if (!usrConf.rtm_rx_override_steering) return;
 
-  float compass_heading = getCompassHeading();
-  if (compass_heading < 0.0f)
-  {
-    rtm_steer_override = 127;  // straight ahead if no compass
+  float current_heading;
+  uint8_t confidence;
+  bool valid = getRtmHeading(&current_heading, &confidence);
+
+  if (!valid) {
+    // No valid heading source — hold straight ahead.
+    // SAFETY: User throttle still passes through; this just means RTM cannot steer.
+    // Better to coast straight than to steer based on biased data.
+    rtm_steer_override = 127;
     return;
   }
 
@@ -147,7 +260,7 @@ static void updateRtmSteering()
       gps_last_lat, gps_last_lng, rx_tx_gps_lat, rx_tx_gps_lng);
 
   // Heading error: positive = need to turn right, negative = turn left
-  float heading_error = (float)(bearing_deg - compass_heading);
+  float heading_error = (float)(bearing_deg - current_heading);
   while (heading_error >  180.0f) heading_error -= 360.0f;
   while (heading_error < -180.0f) heading_error += 360.0f;
 
@@ -156,12 +269,17 @@ static void updateRtmSteering()
   if (clamped >  90.0f) clamped =  90.0f;
   if (clamped < -90.0f) clamped = -90.0f;
 
+  // Reduce steering authority by 50% when confidence is LOW (stale snapshot).
+  // Prevents aggressive steering on degraded data.
+  float authority = (confidence == 1) ? 0.5f : 1.0f;
+
   // Map to 0-255 (127 = straight, >127 = right, <127 = left)
-  rtm_steer_override = (uint8_t)(127.0f + (clamped / 90.0f) * 127.0f);
+  rtm_steer_override = (uint8_t)(127.0f + authority * (clamped / 90.0f) * 127.0f);
 
   #ifdef DEBUG_RX
-  Serial.printf("RTM steer: bear=%.1f head=%.1f err=%.1f ovr=%d\n",
-                (float)bearing_deg, compass_heading, heading_error, (int)(uint8_t)rtm_steer_override);
+  Serial.printf("RTM steer: conf=%u bear=%.1f head=%.1f err=%.1f auth=%.2f ovr=%d\n",
+                (unsigned)confidence, (float)bearing_deg, current_heading,
+                heading_error, authority, (int)(uint8_t)rtm_steer_override);
   #endif
 }
 
@@ -229,6 +347,13 @@ static void runPhaseC()
 // ---- Main RTM loop — call from RX loop() ----
 void runRtmLoop()
 {
+  // V2.5-Evo - 2026-05-06 - D5: Always update the compass snapshot, regardless
+  // of RTM state or rate-limit gate. Snapshot only updates when motor is idle
+  // (thr_received < 25, checked inside updateCompassSnapshot()), so this is cheap
+  // and safe to call every iteration. The snapshot is consumed by getRtmHeading()
+  // as the low-speed fallback heading source in Hybrid mode.
+  updateCompassSnapshot();
+
   // Rate-limit to 10Hz (compass I2C + TinyGPS math takes ~2ms per call)
   static unsigned long last_rtm_ms = 0;
   unsigned long now = millis();

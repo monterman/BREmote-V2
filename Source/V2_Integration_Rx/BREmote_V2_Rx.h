@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-05-06 - D3-Fix: rtm_use_compass + rtm_cog_min_speed_kmh changed uint8_t→uint16_t for ConfigService CFG_U16 compatibility; SW_VERSION 29→30; sizeof 160→164
 // V2.5-Evo - 2026-05-06 - D3: Added rtm_use_compass + rtm_cog_min_speed_kmh; sizeof stays 160 (fills tail pad); SW_VERSION 28→29
 // V2.5-Evo - 2026-05-01 - Release: DEBUG_RX commented out for production build
 // V3 - 2026-04-30 - RTM approach decel zone: rtm_approach_zone_m SPIFFS param; rtm_approach_cap atomic global; sizeof 156→160
@@ -47,7 +48,7 @@
 
 #include <TinyGPS++.h> //TinyGPSPlus 1.0.3 Mikal Hart
 
-#define SW_VERSION 29  // V2.5-Evo — 29 = V2.9; first flash resets all RX SPIFFS config to defaults
+#define SW_VERSION 30  // V2.5-Evo — 30 = V3.0; first flash resets all RX SPIFFS config to defaults
 const char* CONF_FILE_PATH = "/data.txt";
 const char* BC_FILE_PATH = "/batconf.txt";
 
@@ -231,20 +232,20 @@ struct confStruct {
     //                      the buggy in the wrong direction. For non-EMI builds
     //                      that have proven clean compass behavior under load only.
     //
-    // !!! These 2 uint8_t fields fill the 2-byte tail padding from   !!!
-    // !!! rtm_approach_zone_m — sizeof(confStruct) stays 160.       !!!
-    // !!! sizeof does NOT change, but SW_VERSION 28→29 still        !!!
-    // !!! triggers a SPIFFS reset on first flash. After flashing:   !!!
-    // !!!   1) Re-pair TX and RX                                    !!!
-    // !!!   2) Re-configure all settings via web UI                 !!!
-    // !!!   3) Re-calibrate compass (runcal)                        !!!
-    // !!!   4) Verify rtm_use_compass = 1 (hybrid default)          !!!
-    // !!!   5) Verify rtm_cog_min_speed_kmh = 3                     !!!
+    // !!! Adding these fields changes sizeof(confStruct) 160→164,         !!!
+    // !!! and bumps SW_VERSION 29→30. SPIFFS resets ALL settings to       !!!
+    // !!! defaults again (the second time, because D3-Fix changes layout). !!!
+    // !!! After flashing:                                                  !!!
+    // !!!   1) Re-pair TX and RX                                           !!!
+    // !!!   2) Re-configure all settings via web UI                        !!!
+    // !!!   3) Re-calibrate compass (runcal)                               !!!
+    // !!!   4) Verify rtm_use_compass = 1 (hybrid default)                 !!!
+    // !!!   5) Verify rtm_cog_min_speed_kmh = 3                            !!!
     // ============================================================
-    uint8_t  rtm_use_compass;        // 0=GPS COG only; 1=Hybrid (default); 2=Compass only DIAGNOSTIC ONLY DO NOT USE ON WATER
-    uint8_t  rtm_cog_min_speed_kmh;  // Min GPS speed for COG to be primary heading source; 1-15 km/h; default 3
+    uint16_t rtm_use_compass;        // 0=GPS COG only; 1=Hybrid (default); 2=Compass only DIAGNOSTIC ONLY DO NOT USE ON WATER
+    uint16_t rtm_cog_min_speed_kmh;  // Min GPS speed for COG to be primary heading source; 1-15 km/h; default 3
 };
-static_assert(sizeof(confStruct) == 160, "confStruct size mismatch — expected 160 bytes. Update this assert if you change the struct.");  // 112->128 Phase A; 128->136 Phase B; 136->152 P7 RTM; 152->156 Bundle B; 156 unchanged BundleE; 156->160 rtm_approach_zone_m (uint16_t + 2-byte tail pad) (2026-04-30); D3 rtm_use_compass + rtm_cog_min_speed_kmh (2x uint8_t) fill the 2-byte tail pad — sizeof stays 160 (2026-05-06).
+static_assert(sizeof(confStruct) == 164, "confStruct size mismatch — expected 164 bytes. Update this assert if you change the struct.");  // 112->128 Phase A; 128->136 Phase B; 136->152 P7 RTM; 152->156 Bundle B; 156 unchanged BundleE; 156->160 rtm_approach_zone_m (uint16_t + 2-byte tail pad) (2026-04-30); D3 rtm_use_compass + rtm_cog_min_speed_kmh (2x uint8_t) fill the 2-byte tail pad — sizeof stays 160 (2026-05-06); D3-Fix: uint8_t→uint16_t for ConfigService compatibility, sizeof unchanged at 164 (2026-05-06).
 confStruct usrConf;
   //The orginal confs were:  ##// confStruct defaultConf = {SW_VERSION, 1, 0, 0, 50, 0, 0, 1500, 2000, 1500, 2000, 1000, 10, 0, 1, 0, 0, 0, 0, 0, 25.0f, 10.0f, 10.0f, 5.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0, 1000, 1, 0, {0, 0, 0}, {0, 0, 0}, {'1','2','3','4','5','6','7','8'}};
   // V3 default configuration — tuned for monterman hardware

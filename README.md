@@ -162,9 +162,11 @@ Display shows `--` when no fix is available or the fix is older than the configu
 **Telemetry display cycle** (cycle with LEFT toggle hold 2 s):
 
 ```
-TH       → UB           → TE    → SP    → BA
-Throttle → Internal Bat → Temp  → Speed → Foil Bat
+TH       → UB           → TP    → SP    → PV    → BA
+Throttle → Internal Bat → Temp  → Speed → Power → Foil Bat
 ```
+
+**PV** shows VESC battery-side power in kW with one decimal (e.g., `4.4` = 4400 W). Capped at 9.9 kW.
 
 ### TX Toggle Button Reference — V2.5-Evo P8 Gestures
 

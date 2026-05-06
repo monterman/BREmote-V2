@@ -8,6 +8,7 @@
 // V3 - 2026-04-30 - Rename: gps_max_jump_kmh → gps_max_teleport_kmh (clarity)
 // V3 - 2026-04-30 - Bundle E: gps_update_hz SPIFFS param added; gps_max_teleport_kmh default 200→80
 // V3 - 2026-04-29 - Bundle A: radio_preset max clamped to 2; dead foil_speed != 99 sentinel removed
+// V2.5-Evo - 2026-05-06 - D4: Added rtm_use_compass + rtm_cog_min_speed_kmh fields to ConfigService table
 
 #include <stddef.h>
 
@@ -65,6 +66,11 @@ const CfgFieldSpec kCfgFields[] = {
   {"gps_update_hz",            CFG_U16,   offsetof(confStruct, gps_update_hz),            true, false, true,  1.0f, 10.0f,   0, false},
   // V3 - 2026-04-30 - RTM approach decel zone (0 = disabled; outer edge where throttle ramp begins)
   {"rtm_approach_zone_m",      CFG_U16,   offsetof(confStruct, rtm_approach_zone_m),      true, false, true,  0.0f, 100.0f,  0, false},
+  // V2.5-Evo - 2026-05-06 - D4: RTM heading source selection (rtm_use_compass + rtm_cog_min_speed_kmh)
+  // rtm_use_compass: 0=GPS COG only, 1=Hybrid (default), 2=Compass only DIAGNOSTIC ONLY DO NOT USE ON WATER
+  // rtm_cog_min_speed_kmh: GPS speed threshold below which compass snapshot is used; range 1-15 km/h, default 3
+  {"rtm_use_compass",          CFG_U16,   offsetof(confStruct, rtm_use_compass),          true, false, true,  0.0f,   2.0f,  0, false},
+  {"rtm_cog_min_speed_kmh",    CFG_U16,   offsetof(confStruct, rtm_cog_min_speed_kmh),    true, false, true,  1.0f,  15.0f,  0, false},
   {"logger_en", CFG_U16, offsetof(confStruct, logger_en), true, false, true, 0.0f, 1.0f, 0, false},
   {"paired", CFG_U16, offsetof(confStruct, paired), true, false, true, 0.0f, 1.0f, 0, false},
   {"own_address", CFG_ADDR3, offsetof(confStruct, own_address), true, false, false, 0.0f, 0.0f, 0, false},

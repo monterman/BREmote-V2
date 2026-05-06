@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-05-06 - D1: Capture GPS course-over-ground (gps_last_course_deg/ms) for future RTM heading source
 // V3 - 2026-04-30 - Rename: gps_max_jump_kmh → gps_max_teleport_kmh (clarity)
 // V3 - 2026-04-30 - Bundle E: replaced 300ms blocking serial drain with non-blocking while(available()) drain
 // V3 - 2026-04-24 - Added Phase B FIELD SERVICE NOTE (sizeof confStruct 128→136)
@@ -52,8 +53,10 @@ uint8_t       gps_suspect_count  = 0;     // consecutive suspicious readings; re
 bool          gps_rejected       = false; // true = GPS marked rejected; blocks RTM arming
 double        gps_last_lat       = 0.0;   // last accepted latitude (degrees)
 double        gps_last_lng       = 0.0;   // last accepted longitude (degrees)
-float         gps_last_speed_kmh = 0.0;   // last accepted speed (km/h)
-unsigned long gps_last_ms        = 0;     // millis() timestamp of last accepted reading
+float         gps_last_speed_kmh  = 0.0;   // last accepted speed (km/h)
+unsigned long gps_last_ms         = 0;     // millis() timestamp of last accepted reading
+float         gps_last_course_deg = -1.0f; // Last valid GPS course over ground (degrees, 0–360 clockwise from North). -1.0f = no valid reading yet.
+unsigned long gps_last_course_ms  = 0;     // millis() timestamp of last valid course update. 0 = no valid reading yet.
 
 // ============================================================
 // gpsPhaseACheck - Phase A GPS anti-spoofing validation
@@ -343,6 +346,18 @@ void getGPSLoop()
       gps_last_lng       = cur_lng;
       gps_last_speed_kmh = cur_speed;
       gps_last_ms        = millis();
+
+      // V2.5-Evo - 2026-05-06 - Capture GPS course-over-ground for use as heading source.
+      // gps.course.deg() is unreliable when the buggy is stationary or moving very slowly
+      // (typically < 3 km/h), but at higher speeds it is the most accurate heading source
+      // available — unaffected by motor-current EMI that biases the compass.
+      // We capture it here unconditionally when valid; consumers (RTM steering) will gate
+      // on speed and age before using the value.
+      if (gps.course.isValid()) {
+        gps_last_course_deg = (float)gps.course.deg();
+        gps_last_course_ms  = millis();
+      }
+
       // Cap at 254: 0xFF (255) is the reserved "no data" sentinel.
       telemetry.foil_speed = (cur_speed >= 254.0f) ? 254 : (uint8_t)cur_speed;
     } else {

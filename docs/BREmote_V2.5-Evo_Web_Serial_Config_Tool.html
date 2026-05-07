@@ -667,6 +667,7 @@ function applyDevice(obj){
   checkDirtyUI();
   if(st.cmpOn)updateAllCmp();
   setStatus('Loaded '+n+'/'+fields.length+' fields from device.','ok');
+  updateLogsSectionVisibility();
 }
 
 // ============================================================
@@ -1096,6 +1097,236 @@ document.addEventListener('mousedown',function(e){
 
 document.getElementById('terminal').textContent=
   'Web Serial console — click Connect Serial to open port.\nRequires Chrome or Edge v89+.\n';
+
+// ============================================================
+// V2.5-Evo - 2026-05-06 - FEAT-WEB-LOGS: Log management section
+//
+// Adds a collapsible "Logs" section at the bottom of the PC Web Serial
+// Config Tool. Provides list/download/delete operations for RX SPIFFS
+// log files via the existing serial commands ?list, ?download <name>,
+// ?deletelog <name>. Only visible when an RX device is connected
+// (auto-detected by st.device === 'rx', set by activateDevice/showMainUI).
+//
+// Serial reads hook into the existing dataHandlers[] array — same pattern
+// as fetchDeviceJson(). readLoop() owns the reader lock and fans incoming
+// bytes out to all registered handlers; no second reader is ever opened.
+//
+// sendSerialCommand(): quiet-period approach — resolves after 800ms of
+// silence (or timeoutMs total), whichever comes first. Chosen over a fixed
+// timeout so short commands (?list, ?deletelog) return quickly.
+// sendSerialCommandWithProgress(): same, but fires a progressCb(bytesReceived)
+// on every incoming chunk so downloadLogFile() can animate the progress bar.
+//
+// Companion to FIX-LOGDL-2 (Logger.ino) which fixes the WDT crash and
+// updates the CSV format to include LOG-EXT-1 heading fields.
+// ============================================================
+
+function isCurrentlyRx() {
+  // st.device is set to 'rx' or 'tx' by activateDevice() / showMainUI().
+  return st.device === 'rx';
+}
+
+function updateLogsSectionVisibility() {
+  const sec = document.getElementById('logs-section');
+  if (!sec) return;
+  sec.style.display = isCurrentlyRx() ? 'block' : 'none';
+}
+
+// Sends a command and accumulates the full response.
+// Resolves when 'quietMs' of silence is observed, or 'timeoutMs' total elapses.
+// Uses the same dataHandlers[] pattern as fetchDeviceJson().
+async function sendSerialCommand(cmd, timeoutMs=3000, quietMs=800) {
+  return new Promise(async (resolve) => {
+    let buf='', settled=false, quietTimer=null;
+
+    function finish() {
+      if (settled) return;
+      settled = true;
+      clearTimeout(quietTimer);
+      clearTimeout(maxTimer);
+      const i = dataHandlers.indexOf(handler);
+      if (i >= 0) dataHandlers.splice(i, 1);
+      resolve(buf);
+    }
+
+    function handler(txt) {
+      if (settled) return;
+      buf += txt;
+      clearTimeout(quietTimer);
+      quietTimer = setTimeout(finish, quietMs);
+    }
+
+    dataHandlers.push(handler);
+    const maxTimer = setTimeout(finish, timeoutMs);
+    await serialSend(cmd);
+    // Start quiet timer immediately in case the command produces no output.
+    quietTimer = setTimeout(finish, quietMs);
+  });
+}
+
+// Like sendSerialCommand but fires progressCb(bytesReceived) on every chunk.
+async function sendSerialCommandWithProgress(cmd, timeoutMs=60000, progressCb=null, quietMs=800) {
+  return new Promise(async (resolve) => {
+    let buf='', bytesReceived=0, settled=false, quietTimer=null;
+
+    function finish() {
+      if (settled) return;
+      settled = true;
+      clearTimeout(quietTimer);
+      clearTimeout(maxTimer);
+      const i = dataHandlers.indexOf(handler);
+      if (i >= 0) dataHandlers.splice(i, 1);
+      resolve(buf);
+    }
+
+    function handler(txt) {
+      if (settled) return;
+      buf += txt;
+      bytesReceived += txt.length;
+      if (progressCb) progressCb(bytesReceived);
+      clearTimeout(quietTimer);
+      quietTimer = setTimeout(finish, quietMs);
+    }
+
+    dataHandlers.push(handler);
+    const maxTimer = setTimeout(finish, timeoutMs);
+    await serialSend(cmd);
+    quietTimer = setTimeout(finish, quietMs);
+  });
+}
+
+async function refreshLogList() {
+  if (!sopen) { document.getElementById('logs-status').textContent = 'Not connected.'; return; }
+  const status = document.getElementById('logs-status');
+  const btn = document.getElementById('logs-refresh-btn');
+  btn.disabled = true;
+  status.textContent = 'Loading...';
+  try {
+    const text = await sendSerialCommand('?list', 3000);
+    const lines = text.split(/\r?\n/);
+    const logs = [];
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('=') || trimmed.startsWith('-') ||
+          trimmed.startsWith('Filename') || trimmed.startsWith('Total ')) continue;
+      const parts = trimmed.split(/\s+/);
+      if (parts.length >= 2 && parts[0].endsWith('.log')) {
+        const sizeKB = parseFloat(parts[1]);
+        if (!isNaN(sizeKB)) logs.push({ name: parts[0], sizeKB: sizeKB });
+      }
+    }
+    renderLogList(logs);
+    status.textContent = logs.length + ' log(s) found';
+  } catch (e) {
+    status.textContent = 'Error: ' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderLogList(logs) {
+  const div = document.getElementById('logs-list');
+  if (logs.length === 0) {
+    div.innerHTML = '<div style="color:#999;text-align:center;padding:20px">No log files</div>';
+    return;
+  }
+  // Filenames are mmddyy_hhmmss.log — lexical sort is chronological. Newest first.
+  logs.sort((a, b) => b.name.localeCompare(a.name));
+  div.innerHTML = logs.map(log => `
+    <div style="display:flex;align-items:center;padding:8px;border-bottom:1px solid #eee">
+      <div style="flex:1">
+        <div style="font-family:monospace">${log.name}</div>
+        <div style="font-size:12px;color:#666">${log.sizeKB.toFixed(2)} KB</div>
+      </div>
+      <button onclick="downloadLogFile('${log.name}')" style="margin-right:8px">Download CSV</button>
+      <button onclick="deleteLogFile('${log.name}')" style="background:#c33;color:white">Delete</button>
+    </div>
+  `).join('');
+}
+
+async function downloadLogFile(filename) {
+  if (!sopen) { document.getElementById('logs-status').textContent = 'Not connected.'; return; }
+  const status = document.getElementById('logs-status');
+  const progress = document.getElementById('logs-progress');
+  const progressBar = document.getElementById('logs-progress-bar');
+  const progressLabel = document.getElementById('logs-progress-label');
+
+  status.textContent = 'Downloading ' + filename + '...';
+  progress.style.display = 'block';
+  progressBar.style.width = '0%';
+  progressLabel.textContent = 'Sending request...';
+
+  try {
+    const text = await sendSerialCommandWithProgress(
+      '?download ' + filename,
+      60000,
+      (bytesReceived) => {
+        // Show live byte count; cap bar at 95% until done to avoid false "100%".
+        progressLabel.textContent = 'Received ' + bytesReceived + ' bytes...';
+        progressBar.style.width = Math.min(95, (bytesReceived / 100000) * 100) + '%';
+      }
+    );
+
+    const beginMatch = text.indexOf('=== BEGIN CSV DATA ===');
+    const endMatch = text.indexOf('=== END CSV DATA ===');
+    if (beginMatch < 0 || endMatch < 0) {
+      throw new Error('Markers not found in response — download may have been interrupted');
+    }
+    // Skip past the BEGIN marker line (newline after it).
+    const csvStart = text.indexOf('\n', beginMatch) + 1;
+    const csv = text.substring(csvStart, endMatch).trim();
+
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const baseName = filename.endsWith('.log') ? filename.slice(0, -4) : filename;
+    a.download = baseName + '.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    progressBar.style.width = '100%';
+    progressLabel.textContent = 'Done — ' + csv.length + ' bytes saved';
+    status.textContent = 'Saved ' + baseName + '.csv';
+    setTimeout(() => { progress.style.display = 'none'; }, 3000);
+  } catch (e) {
+    progressLabel.textContent = 'Error';
+    status.textContent = 'Download failed: ' + e.message;
+  }
+}
+
+async function deleteLogFile(filename) {
+  if (!confirm('Delete ' + filename + '? This cannot be undone.')) return;
+  if (!sopen) { document.getElementById('logs-status').textContent = 'Not connected.'; return; }
+  const status = document.getElementById('logs-status');
+  status.textContent = 'Deleting ' + filename + '...';
+  try {
+    await sendSerialCommand('?deletelog ' + filename, 3000);
+    status.textContent = 'Deleted ' + filename;
+    await refreshLogList();
+  } catch (e) {
+    status.textContent = 'Delete failed: ' + e.message;
+  }
+}
 </script>
+
+<details id="logs-section" style="margin-top:24px;border:1px solid #ddd;padding:12px;border-radius:6px;display:none">
+  <summary style="cursor:pointer;font-weight:bold;font-size:16px">📁 Logs (RX only)</summary>
+  <div id="logs-content" style="margin-top:12px">
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <button onclick="refreshLogList()" id="logs-refresh-btn">Refresh List</button>
+      <span id="logs-status" style="margin-left:12px;font-size:13px;color:#666"></span>
+    </div>
+    <div id="logs-list" style="max-height:300px;overflow:auto"></div>
+    <div id="logs-progress" style="margin-top:12px;display:none">
+      <div style="background:#eee;height:18px;border-radius:4px;overflow:hidden">
+        <div id="logs-progress-bar" style="background:#0a7;height:100%;width:0%;transition:width 0.2s"></div>
+      </div>
+      <div id="logs-progress-label" style="font-size:12px;color:#666;margin-top:4px">Idle</div>
+    </div>
+  </div>
+</details>
 </body>
 </html>

@@ -148,8 +148,8 @@
         <button class="btn sec" onclick="exportJson()">Export JSON</button>
         <button class="btn sec" onclick="document.getElementById('importFile').click()">Import JSON</button>
         <input type="file" id="importFile" accept=".json" style="display:none" onchange="importJsonFile(this)">
-        <button class="btn sec" id="btn-collapse-all" onclick="collapseAllGroups()">Collapse All</button>
-        <button class="btn sec" id="btn-expand-all" onclick="expandAllGroups()">Expand All</button>
+        <button class="btn sec" id="btn-collapse-all" onclick="collapseAllGroups()" style="font-size:12px">Collapse All</button>
+        <button class="btn sec" id="btn-expand-all" onclick="expandAllGroups()" style="font-size:12px">Expand All</button>
       </div>
       <div id="statusLine">—</div>
     </div>
@@ -1101,6 +1101,7 @@ document.getElementById('terminal').textContent=
   'Web Serial console — click Connect Serial to open port.\nRequires Chrome or Edge v89+.\n';
 
 // ============================================================
+// V2.5-Evo - 2026-05-06 - FEAT-WEB-LOGS-V3: button restyle — use existing btn / btn sec / btn danger classes for consistency; remove ugly inline styles
 // V2.5-Evo - 2026-05-06 - FEAT-WEB-COLLAPSE
 // Collapse-all / expand-all controls. Operates on every <details>
 // element regardless of which section it belongs to (config groups,
@@ -1253,8 +1254,8 @@ function renderLogList(logs) {
         <div style="font-family:monospace">${log.name}</div>
         <div style="font-size:12px;color:#666">${log.sizeKB.toFixed(2)} KB</div>
       </div>
-      <button onclick="downloadLogFile('${log.name}')" style="margin-right:8px">Download CSV</button>
-      <button onclick="deleteLogFile('${log.name}')" style="background:#c33;color:white">Delete</button>
+      <button class="btn sec" onclick="downloadLogFile('${log.name}')" style="margin-right:8px;font-size:12px;padding:4px 10px">Download CSV</button>
+      <button class="btn danger" onclick="deleteLogFile('${log.name}')" style="font-size:12px;padding:4px 10px">Delete</button>
     </div>
   `).join('');
 }
@@ -1331,7 +1332,7 @@ async function deleteLogFile(filename) {
   <summary style="cursor:pointer;font-weight:bold;font-size:16px">📁 Logs (RX only)</summary>
   <div id="logs-content" style="margin-top:12px">
     <div style="display:flex;gap:8px;margin-bottom:12px">
-      <button onclick="refreshLogList()" id="logs-refresh-btn">Refresh List</button>
+      <button class="btn sec" onclick="refreshLogList()" id="logs-refresh-btn" style="font-size:12px">Refresh List</button>
       <span id="logs-status" style="margin-left:12px;font-size:13px;color:#666"></span>
     </div>
     <div id="logs-list" style="max-height:300px;overflow:auto"></div>

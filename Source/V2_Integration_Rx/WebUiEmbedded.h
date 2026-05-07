@@ -10,6 +10,7 @@
 // V3 - 2026-04-30 - Bundle E: gps_update_hz field added to GPS & Follow-Me group; gps_max_teleport_kmh default 200→80
 // V3 - 2026-04-29 - Bundle A: radio_preset max clamped to 2; dead foil_speed != 99 sentinel removed
 // V3 - 2026-05-01 - fix: wet_det_active description corrected — warning-only (E71 + vibration), output is never cut
+// V2.5-Evo - 2026-05-06 - FEAT-WEB-EMBEDDED-LOGS-MOBILE: Logs section moved to top of page; per-log row restructured for mobile (stacked layout, word-break, flex-wrap buttons)
 // V2.5-Evo - 2026-05-06 - D6: Added rtm_use_compass + rtm_cog_min_speed_kmh UI controls in RTM & Follow-Me group
 
 #include <Arduino.h>
@@ -56,14 +57,9 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
     /* --- JSON EDITOR STYLE --- */
     textarea { width:100%; height:180px; font-family:monospace; font-size:12px; background:#0f172a; color:#38bdf8; border:1px solid #334155; border-radius:8px; padding:10px; resize:vertical; outline:none;}
     
-    .modal-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:#0b1220e6;display:none;align-items:center;justify-content:center;z-index:99;padding:20px}
-    .modal{background:linear-gradient(180deg,#121b2e,#101828);border:1px solid #243042;border-radius:14px;padding:20px;width:100%;max-width:500px;max-height:80vh;overflow-y:auto;box-shadow:0 8px 24px #00000066}
-    .modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;font-size:18px;font-weight:700}
-    .log-item{display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid #243042;}
-    .log-item:last-child{border-bottom:none;}
-    .log-name{font-family:ui-monospace,SFMono-Regular,monospace;font-size:14px;color:var(--txt)}
-    .log-size{color:var(--muted);font-size:12px;margin-top:4px}
-    .log-actions{display:flex;gap:8px;}
+    .logs-panel{background:var(--panel2);border:1px solid #334155;border-radius:12px;margin-bottom:12px}
+    .logs-panel summary{cursor:pointer;padding:10px 12px;font-weight:700;color:#cbd5e1;list-style:none}
+    .logs-panel summary::-webkit-details-marker{display:none}
   </style>
 </head>
 <body>
@@ -79,13 +75,20 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
           <div class="row">
             <button class="btn sec" id="loadBtn" onclick="loadCfg()">Force Sync</button>
             <button class="btn" id="saveBtn" onclick="saveAll()">Save All</button>
-            <button class="btn sec" onclick="openLogs()">Manage Logs</button>
+            <button class="btn sec" onclick="openLogs()">Refresh Logs</button>
             <button class="btn warn" onclick="rebootDev()">Reboot RX</button>
           </div>
         </div>
       </div>
     </div>
     
+    <details class="logs-panel" open>
+      <summary>&#128193; Logs</summary>
+      <div id="logs-content" style="padding:8px 4px">
+        <div id="logList"><div class="sub">Loading...</div></div>
+      </div>
+    </details>
+
     <div class="groups" id="groups"></div>
     
     <div class="card" style="margin-top: 20px;">
@@ -105,15 +108,6 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
     <div class="card foot"><div class="sub mono" id="last">Last: -</div></div>
   </div>
 
-  <div class="modal-overlay" id="logModal">
-    <div class="modal">
-      <div class="modal-header">
-        <span>Data Logs</span>
-        <button class="btn sec" onclick="document.getElementById('logModal').style.display='none'">Close</button>
-      </div>
-      <div id="logList"></div>
-    </div>
-  </div>
 
 <script>
 // 41 Parameters for RX
@@ -344,27 +338,25 @@ async function refreshAll(){
   render();
   checkDirtyUI();
   syncJsonBox(); // Load fresh data into the text box
+  openLogs();   // Auto-refresh inline log list on every page sync
 }
 
 async function rebootDev(){if(hasUnsavedChanges()){const ignore=confirm("Unsaved config changes detected. Press OK to ignore and reboot.");if(!ignore)return;}await api('/api/reboot','POST');}
 
 // --- LOG MANAGEMENT ---
+// V2.5-Evo - 2026-05-06 - FEAT-WEB-EMBEDDED-LOGS-MOBILE: renders into inline #logList (no modal);
+// stacked per-row layout with word-break + flex-wrap buttons for mobile usability.
 async function openLogs(){
-  const m = document.getElementById('logModal');
   const l = document.getElementById('logList');
-  m.style.display='flex';
   l.innerHTML='<div class="sub">Loading...</div>';
   const res = await api('/api/logs/list');
   if(res.ok){
-    if(res.logs.length===0){
-      l.innerHTML='<div class="sub">No logs found on device.</div>';
-      return;
-    }
+    if(res.logs.length===0){l.innerHTML='<div class="sub">No logs found on device.</div>';return;}
     state.logs=res.logs;
-    let h='<div style="margin-bottom:8px;display:flex;gap:8px"><button class="btn danger" onclick="deleteAllLogs()">Delete All</button><button class="btn danger" onclick="deleteSelected()">Delete Selected</button></div>';
+    let h='<div style="margin-bottom:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn warn" onclick="deleteAllLogs()">Delete All</button><button class="btn sec" onclick="deleteSelected()">Delete Selected</button></div>';
     res.logs.forEach(x=>{
       const kb=(x.size/1024).toFixed(1);
-      h+=`<div class="log-item"><input type="checkbox" class="log-check" data-name="${x.name}"><div><div class="log-name">${x.name}</div><div class="log-size">${kb} KB</div></div><div class="log-actions"><a class="btn" href="/api/logs/download?file=${x.name}" target="_blank" style="text-decoration:none;font-size:12px;padding:7px 10px">Download CSV</a><button class="btn warn" style="font-size:12px;padding:7px 10px" onclick="deleteLog('${x.name}')">Delete</button></div></div>`;
+      h+=`<div style="border-bottom:1px solid #334155;padding:8px 4px"><label style="display:flex;align-items:flex-start;gap:6px;margin-bottom:4px"><input type="checkbox" class="log-check" data-name="${x.name}" style="margin-top:3px"><span style="font-family:monospace;font-size:13px;word-break:break-all">${x.name}</span></label><div style="font-size:11px;color:#9ca3af;margin:2px 0 6px">${kb} KB</div><div style="display:flex;gap:6px;flex-wrap:wrap"><a class="btn" href="/api/logs/download?file=${x.name}" target="_blank" style="text-decoration:none;font-size:12px;padding:6px 10px;flex:1;min-width:120px;text-align:center">Download CSV</a><button class="btn warn" onclick="deleteLog('${x.name}')" style="font-size:12px;padding:6px 10px;flex:1;min-width:80px">Delete</button></div></div>`;
     });
     l.innerHTML=h;
   }else{

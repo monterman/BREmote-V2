@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-05-06 - DIAG: ?gpscoldreset command added
 // V2.5-Evo - 2026-05-06 - FIX-HELP-1: corrected raw-GPS-dump help text from "type q to quit" to "type 'quit' to abort"
 // V3 - 2026-05-03 - Added reserved/warning comments (LOW audit cleanup)
 // V3 - 2026-04-24 - Added ?printgps, ?gpsraw, ?gpsreinit serial commands for TX GPS diagnostics
@@ -327,6 +328,16 @@ void cmdGpsReinit(const String &args) {
   Serial.println("Run ?gpsraw to check Serial1 output.");
 }
 
+// V2.5-Evo - 2026-05-06 - DIAG: ?gpscoldreset command handler
+// ---- ?gpscoldreset : send UBX-CFG-RST cold-restart to GPS module ----
+// Clears all ephemeris/almanac/clock data; forces fresh acquisition.
+// Use when GPS appears stuck (PPS LED firing but no valid NMEA fix).
+void cmdGpsColdReset(const String &args) {
+  Serial.println("Sending UBX-CFG-RST cold-restart to GPS module...");
+  extern void txGpsColdReset();
+  txGpsColdReset();
+}
+
 // ===== Dispatch Table =====
 
 const CmdEntry cmdTable[] = {
@@ -360,6 +371,7 @@ const CmdEntry cmdTable[] = {
   { "printgps",    cmdPrintGPS,     "",                "TX GPS state and fix status" },
   { "gpsraw",      cmdGpsRaw,       "[sec]",           "dump raw Serial1 NMEA output (default 5s)" },
   { "gpsreinit",   cmdGpsReinit,    "",                "re-run initTxGPS() without rebooting" },
+  { "gpscoldreset", cmdGpsColdReset, "",              "send UBX-CFG-RST cold-restart to GPS (clear all cached data)" },
 };
 const size_t cmdTableSize = sizeof(cmdTable) / sizeof(cmdTable[0]);
 

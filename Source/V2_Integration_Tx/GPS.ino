@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-05-06 - DIAG: GSV/GLL/VTG disable commented out; txGpsColdReset() added
 // V3 - 2026-04-21 - New TX GPS module: UBX init (115200/5Hz) and non-blocking speed polling for speed_src 2/3/5
 // V3 - 2026-04-22 - Added speed_src guard to initTxGPS(); 512-byte RX buffer; NMEA sentence filtering (GPGSV/GPGLL/GPVTG disabled); HDOP gate in getTxGPSLoop()
 // V3 - 2026-04-22 - Added gps_chip_type branch: type 0=BN-220 (existing path), type 2=M10 (115200 direct, 10Hz, all constellations)
@@ -148,15 +149,15 @@ void initTxGPS()
       byte disableGPGSV[] = {0xB5, 0x62, 0x06, 0x01, 0x03, 0x00, 0xF0, 0x03, 0x00, 0xFD, 0x15};  // satellite view
       byte disableGPGLL[] = {0xB5, 0x62, 0x06, 0x01, 0x03, 0x00, 0xF0, 0x01, 0x00, 0xFB, 0x11};  // lat/lon (dup of GPRMC)
       byte disableGPVTG[] = {0xB5, 0x62, 0x06, 0x01, 0x03, 0x00, 0xF0, 0x05, 0x00, 0xFF, 0x19};  // track/speed (dup)
-      Serial1.write(disableGPGSV, sizeof(disableGPGSV));
-      Serial1.flush();
-      Serial1.write(disableGPGLL, sizeof(disableGPGLL));
-      Serial1.flush();
-      Serial1.write(disableGPVTG, sizeof(disableGPVTG));
-      Serial1.flush();
+      // V2.5-Evo - 2026-05-06 - DIAG: NMEA filter temporarily DISABLED to keep GSV
+      // (satellites in view) visible during fix-acquisition troubleshooting. Re-enable
+      // these three writes once GPS fix issue is resolved if buffer pressure becomes a concern.
+      // Serial1.write(disableGPGSV, sizeof(disableGPGSV)); Serial1.flush();
+      // Serial1.write(disableGPGLL, sizeof(disableGPGLL)); Serial1.flush();
+      // Serial1.write(disableGPVTG, sizeof(disableGPVTG)); Serial1.flush();
 
       tx_gps_initialized = true;
-      Serial.println("TX GPS [BN-220]: init complete (115200, 5Hz, NMEA filtered)");
+      Serial.println("TX GPS [BN-220]: init complete (115200, 5Hz, GSV/GLL/VTG enabled for diagnostics)");
       break;
     }
 
@@ -204,12 +205,15 @@ void initTxGPS()
       byte disableGPGSV_m10[] = {0xB5, 0x62, 0x06, 0x01, 0x03, 0x00, 0xF0, 0x03, 0x00, 0xFD, 0x15};  // satellite view
       byte disableGPGLL_m10[] = {0xB5, 0x62, 0x06, 0x01, 0x03, 0x00, 0xF0, 0x01, 0x00, 0xFB, 0x11};  // lat/lon (dup of GPRMC)
       byte disableGPVTG_m10[] = {0xB5, 0x62, 0x06, 0x01, 0x03, 0x00, 0xF0, 0x05, 0x00, 0xFF, 0x19};  // track/speed (dup)
-      Serial1.write(disableGPGSV_m10, sizeof(disableGPGSV_m10)); Serial1.flush();
-      Serial1.write(disableGPGLL_m10, sizeof(disableGPGLL_m10)); Serial1.flush();
-      Serial1.write(disableGPVTG_m10, sizeof(disableGPVTG_m10)); Serial1.flush();
+      // V2.5-Evo - 2026-05-06 - DIAG: NMEA filter temporarily DISABLED to keep GSV
+      // (satellites in view) visible during fix-acquisition troubleshooting. Re-enable
+      // these three writes once GPS fix issue is resolved if buffer pressure becomes a concern.
+      // Serial1.write(disableGPGSV_m10, sizeof(disableGPGSV_m10)); Serial1.flush();
+      // Serial1.write(disableGPGLL_m10, sizeof(disableGPGLL_m10)); Serial1.flush();
+      // Serial1.write(disableGPVTG_m10, sizeof(disableGPVTG_m10)); Serial1.flush();
 
       tx_gps_initialized = true;
-      Serial.println("TX GPS [M10]: init complete (115200, 10Hz, GPS+Galileo+BDS+GLONASS, NMEA filtered)");
+      Serial.println("TX GPS [M10]: init complete (115200, 10Hz, GPS+Galileo+BDS+GLONASS, GSV/GLL/VTG enabled for diagnostics)");
       break;
     }
 
@@ -222,6 +226,32 @@ void initTxGPS()
       // tx_gps_initialized stays false; getTxGPSLoop() will safely do nothing.
       break;
   }
+}
+
+// ============================================================
+// txGpsColdReset - Send UBX-CFG-RST cold-restart to GPS module
+// ============================================================
+//
+// V2.5-Evo - 2026-05-06 - DIAG: send UBX-CFG-RST cold-restart clear-all to GPS.
+// Used by ?gpscoldreset serial command. Forces the GPS module to discard all
+// ephemeris/almanac/clock data and acquire from scratch. Useful when the chip
+// appears stuck (e.g. PPS LED firing but NMEA empty due to stale cache).
+// bbr_mask=0xFFFF (clear all BBR), reset_mode=0x02 (controlled GPS-subsystem
+// software reset). Checksum CK_A=0x0E, CK_B=0x61 verified by Fletcher-8.
+// (Note: prompt specified mode=0x01 but checksum 0x0E/0x61 is correct for 0x02.)
+void txGpsColdReset() {
+  if (!tx_gps_initialized) {
+    Serial.println("TX GPS: not initialized; run ?gpsreinit first");
+    return;
+  }
+  byte coldReset[] = {
+    0xB5, 0x62, 0x06, 0x04, 0x04, 0x00,
+    0xFF, 0xFF, 0x02, 0x00,
+    0x0E, 0x61
+  };
+  Serial1.write(coldReset, sizeof(coldReset));
+  Serial1.flush();
+  Serial.println("TX GPS: cold-restart command sent. Wait 30-60s for fresh acquisition.");
 }
 
 // ============================================================

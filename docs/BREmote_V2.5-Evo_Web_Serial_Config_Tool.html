@@ -83,6 +83,14 @@
     .serial-panel.open{transform:translateX(0);pointer-events:all}
     .serial-tab{position:fixed;right:0;top:50%;transform:translateY(-50%);width:28px;padding:18px 6px;background:#243042;color:#60a5fa;border:1px solid #243042;border-right:none;border-radius:8px 0 0 8px;cursor:pointer;z-index:102;writing-mode:vertical-rl;text-orientation:mixed;font-weight:700;font-size:11px;letter-spacing:1px;pointer-events:all}
     .serial-inner{width:100%;height:100%;background:linear-gradient(180deg,#121b2e,#101828);border:1px solid #243042;border-right:none;border-radius:14px 0 0 14px;padding:12px;display:flex;flex-direction:column;gap:8px;overflow-y:auto}
+
+    /* ===== LOGS PANEL (LEFT side, mirrors SERIAL panel on right) ===== */
+    .logs-panel{position:fixed;left:0;top:0;height:100vh;width:var(--pw);transform:translateX(calc(-1 * var(--pw)));transition:transform 0.3s ease;z-index:100;pointer-events:none}
+    .logs-panel.open{transform:translateX(0);pointer-events:all}
+    .logs-tab{position:fixed;left:0;top:50%;transform:translateY(-50%);width:28px;padding:18px 6px;background:#243042;color:#60a5fa;border:1px solid #243042;border-left:none;border-radius:0 8px 8px 0;cursor:pointer;z-index:102;writing-mode:vertical-rl;text-orientation:mixed;font-weight:700;font-size:11px;letter-spacing:1px;pointer-events:all;display:none}
+    .logs-tab.visible{display:block}
+    .logs-inner{width:100%;height:100%;background:linear-gradient(180deg,#121b2e,#101828);border:1px solid #243042;border-left:none;border-radius:0 14px 14px 0;padding:12px;display:flex;flex-direction:column;gap:8px;overflow-y:auto}
+
     .term-wrap{position:relative;flex-shrink:0}
     .terminal{height:420px;background:#000;color:#00ff00;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;padding:8px;border:1px solid #334155;border-radius:8px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;user-select:text;-webkit-user-select:text;cursor:text}
     .term-toast{position:absolute;bottom:10px;right:10px;background:#22c55e;color:#fff;font-size:11px;font-weight:700;padding:4px 10px;border-radius:20px;pointer-events:none;opacity:0;transition:opacity 0.1s;z-index:10}
@@ -148,8 +156,10 @@
         <button class="btn sec" onclick="exportJson()">Export JSON</button>
         <button class="btn sec" onclick="document.getElementById('importFile').click()">Import JSON</button>
         <input type="file" id="importFile" accept=".json" style="display:none" onchange="importJsonFile(this)">
-        <button class="btn sec" id="btn-collapse-all" onclick="collapseAllGroups()" style="font-size:12px">Collapse All</button>
-        <button class="btn sec" id="btn-expand-all" onclick="expandAllGroups()" style="font-size:12px">Expand All</button>
+      </div>
+      <div class="row" style="margin-top:6px;gap:0">
+        <button class="btn sec" id="btn-collapse-all" onclick="collapseAllGroups()" style="font-size:12px;padding:4px 12px;border-radius:3px 0 0 3px">Collapse All</button>
+        <button class="btn sec" id="btn-expand-all" onclick="expandAllGroups()" style="font-size:12px;padding:4px 12px;border-radius:0 3px 3px 0;border-left:1px solid rgba(255,255,255,0.15)">Expand All</button>
       </div>
       <div id="statusLine">—</div>
     </div>
@@ -205,6 +215,28 @@
     <select id="cmdDrop" onchange="insertFromDrop(this)">
       <option value="">— Select command —</option>
     </select>
+  </div>
+</div>
+
+<!-- ===== LOGS PANEL (LEFT side, RX only) ===== -->
+<button class="logs-tab" id="logsTab" onclick="toggleLogsPanel()">📁 LOGS</button>
+<div class="logs-panel" id="logsPanel">
+  <div class="logs-inner">
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <div class="title" style="font-size:14px">📁 RX Logs</div>
+      <button class="btn sec" onclick="toggleLogsPanel()" style="font-size:12px;padding:4px 8px">✕</button>
+    </div>
+    <div class="row" style="gap:6px">
+      <button class="btn sec" onclick="refreshLogList()" id="logs-refresh-btn" style="font-size:12px">Refresh List</button>
+      <span id="logs-status" style="font-size:12px;color:#9ca3af"></span>
+    </div>
+    <div id="logs-list" style="flex:1;overflow:auto"></div>
+    <div id="logs-progress" style="display:none">
+      <div style="background:#1a2435;height:14px;border-radius:3px;overflow:hidden;border:1px solid #243042">
+        <div id="logs-progress-bar" style="background:#60a5fa;height:100%;width:0%;transition:width 0.2s"></div>
+      </div>
+      <div id="logs-progress-label" style="font-size:11px;color:#9ca3af;margin-top:4px">Idle</div>
+    </div>
   </div>
 </div>
 
@@ -1101,6 +1133,7 @@ document.getElementById('terminal').textContent=
   'Web Serial console — click Connect Serial to open port.\nRequires Chrome or Edge v89+.\n';
 
 // ============================================================
+// V2.5-Evo - 2026-05-06 - FEAT-WEB-LOGS-V4 + FEAT-WEB-COLLAPSE-V2: Logs section converted to left-side sliding panel mirroring SERIAL panel pattern; Collapse/Expand moved to dedicated second row
 // V2.5-Evo - 2026-05-06 - FEAT-WEB-LOGS-V3: button restyle — use existing btn / btn sec / btn danger classes for consistency; remove ugly inline styles
 // V2.5-Evo - 2026-05-06 - FEAT-WEB-COLLAPSE
 // Collapse-all / expand-all controls. Operates on every <details>
@@ -1142,10 +1175,17 @@ function isCurrentlyRx() {
   return st.device === 'rx';
 }
 
+function toggleLogsPanel(){
+  document.getElementById('logsPanel').classList.toggle('open');
+}
+
 function updateLogsSectionVisibility() {
-  const sec = document.getElementById('logs-section');
-  if (!sec) return;
-  sec.style.display = isCurrentlyRx() ? 'block' : 'none';
+  const tab = document.getElementById('logsTab');
+  const panel = document.getElementById('logsPanel');
+  const isRx = isCurrentlyRx();
+  if (tab) tab.classList.toggle('visible', isRx);
+  // Auto-collapse panel when switching away from RX
+  if (!isRx && panel) panel.classList.remove('open');
 }
 
 // Sends a command and accumulates the full response.
@@ -1249,13 +1289,13 @@ function renderLogList(logs) {
   // Filenames are mmddyy_hhmmss.log — lexical sort is chronological. Newest first.
   logs.sort((a, b) => b.name.localeCompare(a.name));
   div.innerHTML = logs.map(log => `
-    <div style="display:flex;align-items:center;padding:8px;border-bottom:1px solid #eee">
-      <div style="flex:1">
-        <div style="font-family:monospace">${log.name}</div>
-        <div style="font-size:12px;color:#666">${log.sizeKB.toFixed(2)} KB</div>
+    <div style="display:flex;align-items:center;padding:6px 8px;border-bottom:1px solid #1a2435;color:#e5e7eb">
+      <div style="flex:1;min-width:0">
+        <div style="font-family:monospace;font-size:13px">${log.name}</div>
+        <div style="font-size:11px;color:#9ca3af">${log.sizeKB.toFixed(2)} KB</div>
       </div>
-      <button class="btn sec" onclick="downloadLogFile('${log.name}')" style="margin-right:8px;font-size:12px;padding:4px 10px">Download CSV</button>
-      <button class="btn danger" onclick="deleteLogFile('${log.name}')" style="font-size:12px;padding:4px 10px">Delete</button>
+      <button class="btn sec" onclick="downloadLogFile('${log.name}')" style="margin-right:6px;font-size:11px;padding:3px 8px">Download</button>
+      <button class="btn danger" onclick="deleteLogFile('${log.name}')" style="font-size:11px;padding:3px 8px">Delete</button>
     </div>
   `).join('');
 }
@@ -1328,21 +1368,5 @@ async function deleteLogFile(filename) {
 }
 </script>
 
-<details id="logs-section" style="margin-top:24px;border:1px solid #ddd;padding:12px;border-radius:6px;display:none">
-  <summary style="cursor:pointer;font-weight:bold;font-size:16px">📁 Logs (RX only)</summary>
-  <div id="logs-content" style="margin-top:12px">
-    <div style="display:flex;gap:8px;margin-bottom:12px">
-      <button class="btn sec" onclick="refreshLogList()" id="logs-refresh-btn" style="font-size:12px">Refresh List</button>
-      <span id="logs-status" style="margin-left:12px;font-size:13px;color:#666"></span>
-    </div>
-    <div id="logs-list" style="max-height:300px;overflow:auto"></div>
-    <div id="logs-progress" style="margin-top:12px;display:none">
-      <div style="background:#eee;height:18px;border-radius:4px;overflow:hidden">
-        <div id="logs-progress-bar" style="background:#0a7;height:100%;width:0%;transition:width 0.2s"></div>
-      </div>
-      <div id="logs-progress-label" style="font-size:12px;color:#666;margin-top:4px">Idle</div>
-    </div>
-  </div>
-</details>
 </body>
 </html>

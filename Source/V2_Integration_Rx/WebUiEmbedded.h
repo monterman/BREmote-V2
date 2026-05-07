@@ -11,6 +11,7 @@
 // V3 - 2026-04-29 - Bundle A: radio_preset max clamped to 2; dead foil_speed != 99 sentinel removed
 // V3 - 2026-05-01 - fix: wet_det_active description corrected — warning-only (E71 + vibration), output is never cut
 // V2.5-Evo - 2026-05-06 - D6: Added rtm_use_compass + rtm_cog_min_speed_kmh UI controls in RTM & Follow-Me group
+// V2.5-Evo - 2026-05-07 - FIX-WEBUI-LOGS-CSS: minimal CSS-only mobile fix for Logs modal — flex-wrap on log-item, mobile media query for stacked layout
 
 #include <Arduino.h>
 
@@ -59,8 +60,18 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
     .modal-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:#0b1220e6;display:none;align-items:center;justify-content:center;z-index:99;padding:20px}
     .modal{background:linear-gradient(180deg,#121b2e,#101828);border:1px solid #243042;border-radius:14px;padding:20px;width:100%;max-width:500px;max-height:80vh;overflow-y:auto;box-shadow:0 8px 24px #00000066}
     .modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;font-size:18px;font-weight:700}
-    .log-item{display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid #243042;}
+    .log-item{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid #243042;}
     .log-item:last-child{border-bottom:none;}
+    /* V2.5-Evo - 2026-05-07 - FIX-WEBUI-LOGS-CSS: stack log row content vertically on narrow viewports */
+    @media (max-width: 600px) {
+      .log-item { flex-direction: column; align-items: stretch; }
+      .log-item .log-actions { display: flex; gap: 6px; margin-top: 6px; }
+      .log-item .log-name { word-break: break-all; font-size: 13px; }
+      .log-item .log-size { font-size: 11px; }
+      .log-item .log-actions .btn { flex: 1; text-align: center; font-size: 12px; }
+      .modal-overlay { padding: 10px; }
+      .modal { padding: 14px; }
+    }
     .log-name{font-family:ui-monospace,SFMono-Regular,monospace;font-size:14px;color:var(--txt)}
     .log-size{color:var(--muted);font-size:12px;margin-top:4px}
     .log-actions{display:flex;gap:8px;}

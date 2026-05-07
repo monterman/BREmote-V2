@@ -5,6 +5,7 @@
 
 // Shared web config AP and HTTP API for BREmote V2 TX and RX.
 // V3 - 2026-05-03 - Content-Disposition header on export (iPhone filename fix)
+// V2.5-Evo - 2026-05-06 - FIX-LOGDL-1: log download CSV updated for LOG-EXT-1 fields (24 columns); WDT reset + FreeRTOS yield added inside read loop to support files >40KB without AP reboot
 
 // Forward declarations — defined per-side in WebConfig.ino.
 extern const char* WEB_CFG_AP_SSID;
@@ -483,30 +484,54 @@ static void webCfgHandleDownloadLog()
   webCfgServer.sendHeader("Content-Disposition", "attachment; filename=\"" + fname.substring(1) + ".csv\"");
   webCfgServer.send(200, "text/csv", "");
 
-  String header = "timestamp_ms,motor_current_A,battery_current_A,duty_cycle_%,voltage_V,ERPM,temp_mos_C,fault_code,speed_kmh,latitude,longitude,datetime_unix\n";
+  String header = "timestamp_ms,motor_current_A,battery_current_A,duty_cycle_%,voltage_V,ERPM,temp_mos_C,fault_code,speed_kmh,latitude,longitude,datetime_unix,thr_received,rtm_source,rtm_confidence,rtm_rx_active,gps_phase_b_ok,rtm_steer_override,rtm_heading_chosen_dx10,compass_live_dx10,compass_snap_dx10,snap_age_s,gps_course_dx10,cog_age_ms_div10\n";
   webCfgServer.sendContent(header);
 
   VescLogData logData;
-  char row[256];
+  char row[384];
+  uint16_t recordCount = 0;
   while (file.available())
   {
+    // V2.5-Evo - 2026-05-06 - FIX-LOGDL-1: feed WDT inside loop and yield to FreeRTOS.
+    // Without these, files >~40KB cause WDT (3s timeout) to fire mid-download because the
+    // WiFi-bound sendContent() per-record latency accumulates past the timeout.
+    // Andres confirmed crash on 58.6KB log without these fixes.
+    esp_task_wdt_reset();
+
     size_t bytesRead = file.read((uint8_t*)&logData, sizeof(VescLogData));
     if (bytesRead == sizeof(VescLogData))
     {
-      snprintf(row, sizeof(row), "%u,%.2f,%.2f,%d,%.1f,%d,%u,%u,%.1f,%.6f,%.6f,%u\n",
+      snprintf(row, sizeof(row), "%u,%.2f,%.2f,%d,%.1f,%d,%u,%u,%.1f,%.6f,%.6f,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u\n",
                     logData.timestamp,
                     logData.current_motor / 100.0f,
                     logData.current_battery / 100.0f,
-                    (int16_t)logData.duty_cycle,
+                    logData.duty_cycle,
                     logData.voltage / 10.0f,
-                    (int32_t)logData.ERPM * 10,
+                    logData.ERPM,
                     logData.temp_mos,
                     logData.fault_code,
                     logData.speed / 10.0f,
                     logData.latitude,
                     logData.longitude,
-                    logData.datetime);
+                    logData.datetime,
+                    (unsigned)logData.thr_received_log,
+                    (unsigned)logData.rtm_source,
+                    (unsigned)logData.rtm_confidence,
+                    (unsigned)logData.rtm_rx_active_log,
+                    (unsigned)logData.gps_phase_b_ok_log,
+                    (unsigned)logData.rtm_steer_override_log,
+                    (int)logData.rtm_heading_chosen_dx10,
+                    (unsigned)logData.compass_live_dx10,
+                    (unsigned)logData.compass_snap_dx10,
+                    (unsigned)logData.snap_age_s,
+                    (unsigned)logData.gps_course_dx10,
+                    (unsigned)logData.cog_age_ms_div10);
       webCfgServer.sendContent(row);
+
+      // Yield to FreeRTOS every 50 records to keep the WiFi stack and other tasks responsive.
+      if ((++recordCount % 50) == 0) {
+        delay(1);
+      }
     }
     else
     {

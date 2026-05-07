@@ -1,4 +1,5 @@
 // V2.5-Evo - 2026-05-06 - DIAG: GSV/GLL/VTG disable commented out; txGpsColdReset() added
+// V2.5-Evo - 2026-05-06 - FIX-GPS-1: dual-baud init in initTxGPS() to prevent UART RX lockout from retained-config baud mismatch
 // V3 - 2026-04-21 - New TX GPS module: UBX init (115200/5Hz) and non-blocking speed polling for speed_src 2/3/5
 // V3 - 2026-04-22 - Added speed_src guard to initTxGPS(); 512-byte RX buffer; NMEA sentence filtering (GPGSV/GPGLL/GPVTG disabled); HDOP gate in getTxGPSLoop()
 // V3 - 2026-04-22 - Added gps_chip_type branch: type 0=BN-220 (existing path), type 2=M10 (115200 direct, 10Hz, all constellations)
@@ -67,9 +68,9 @@ static bool tx_gps_initialized = false;
 //
 // Side effects:
 //   - Calls Serial1.setRxBufferSize(512) before any begin().
-//   - For type 0: calls Serial1.begin(9600)/end()/begin(115200).
-//     Blocks ~450ms across three delays.
-//   - For type 2: calls Serial1.begin(115200) once. Blocks ~250ms.
+//   - For type 0: dual-baud: begin(115200)/end()/begin(9600)/end()/begin(115200).
+//     Blocks ~750ms across five delays.
+//   - For type 2: same dual-baud sequence. Blocks ~750ms.
 //   - Sets tx_gps_initialized = true on success. No UBX ACK is
 //     verified — the flag means "init attempted".
 //
@@ -122,26 +123,55 @@ void initTxGPS()
         0x01, 0x00, 0xDE, 0x6A
       };
 
-      // Step 1: open at the GPS factory default (9600) so it hears the baud cmd.
-      Serial.println("TX GPS [BN-220]: connecting at 9600...");
-      Serial1.begin(9600, SERIAL_8N1, P_U1_RX, P_U1_TX);
-      delay(200);   // let the UART settle and the GPS wake up
+      // V2.5-Evo - 2026-05-06 - FIX-GPS-1: dual-baud init.
+      // Standard u-blox best practice. Handles both possible GPS startup states:
+      //   (a) Factory default 9600 (first ever power-on)
+      //   (b) Retained 115200 in battery-backed memory (after a prior successful init)
+      // Without dual-baud, scenario (b) floods the GPS at wrong baud → 100+ frame errors
+      // → u-blox firmware disables UART RX → GPS becomes unresponsive to all commands.
+      // Confirmed bug 2026-05-06 via "$GNTXT ... UART RX was disabled" diagnostic message.
+      //
+      // Total wrong-baud bytes sent in either path: ~28. Well under the 100-frame-error
+      // threshold that triggers the UART RX disable.
 
-      // Step 2: send baud-change command. flush() drains outbound buffer;
-      // the small delay lets the UART finish physically shifting the bytes.
+      // Step 1: open at 115200. If GPS was already at 115200 from a previous boot,
+      // this command is delivered cleanly and confirms the config.
+      Serial.println("TX GPS [BN-220]: dual-baud init, attempt 115200 first...");
+      Serial1.begin(115200, SERIAL_8N1, P_U1_RX, P_U1_TX);
+      delay(200);
+
+      // Send UBX-CFG-PRT targeting 115200. If GPS is at 115200 → accepted.
+      // If GPS is at 9600 → looks like garbage (~28 bytes), well under threshold.
       Serial1.write(setBaud, sizeof(setBaud));
       Serial1.flush();
-      delay(50);
+      delay(100);
 
-      // Step 3: reopen our side at 115200 so we can talk to the GPS after it switches.
+      // Step 2: close and reopen at 9600 to handle the factory-default case.
+      Serial1.end();
+      delay(100);
+      Serial.println("TX GPS [BN-220]: dual-baud init, attempt 9600 fallback...");
+      Serial1.begin(9600, SERIAL_8N1, P_U1_RX, P_U1_TX);
+      delay(200);
+
+      // Send same UBX-CFG-PRT at 9600. If GPS was at factory default 9600 → accepted,
+      // GPS switches to 115200. If GPS is already at 115200 (from step 1) → garbage at
+      // 115200 receiver, ~28 bytes, under threshold.
+      Serial1.write(setBaud, sizeof(setBaud));
+      Serial1.flush();
+      delay(100);
+
+      // Step 3: GPS should now be at 115200 regardless of starting state.
+      // Reopen our side at 115200 to match.
       Serial1.end();
       delay(100);
       Serial1.begin(115200, SERIAL_8N1, P_U1_RX, P_U1_TX);
+      Serial.println("TX GPS [BN-220]: now at 115200, sending rate config...");
 
-      // Step 4: send the 5Hz measurement-rate command.
+      // Step 4: send the 5Hz measurement-rate command at the final baud.
       delay(100);
       Serial1.write(setRate5Hz, sizeof(setRate5Hz));
       Serial1.flush();
+      delay(50);
 
       // Step 5: disable verbose NMEA sentences we don't parse to reduce buffer load.
       // We only need GPRMC (speed, lat/lon) and GPGGA (fix quality, HDOP).
@@ -166,10 +196,45 @@ void initTxGPS()
     // --------------------------------------------------------
     case 2:
     {
-      // M10 boots at 115200 baud by default — no baud-switch command needed.
-      Serial.println("TX GPS [M10]: connecting at 115200...");
+      // UBX-CFG-PRT: configure UART1 for 115200 baud, 8N1, UBX+NMEA both directions.
+      // Same byte sequence as case 0 — valid for both NEO-M8 and M10.
+      // Redefined here because case 0's setBaud is block-scoped and out of reach.
+      byte setBaud[] = {
+        0xB5, 0x62, 0x06, 0x00, 0x14, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0xD0, 0x08, 0x00, 0x00, 0x00, 0xC2, 0x01, 0x00, 0x07, 0x00,
+        0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x7E
+      };
+
+      // V2.5-Evo - 2026-05-06 - FIX-GPS-1: dual-baud init for M10.
+      // M10 defaults to 115200 but battery-backed config may have saved a different rate.
+      // Same dual-baud sequence as BN-220 — covers both the native-115200 and any saved-rate case.
+
+      // Step 1: open at 115200. If M10 is already here, setBaud is accepted cleanly.
+      Serial.println("TX GPS [M10]: dual-baud init, attempt 115200 first...");
       Serial1.begin(115200, SERIAL_8N1, P_U1_RX, P_U1_TX);
-      delay(200);   // let the UART settle
+      delay(200);
+
+      Serial1.write(setBaud, sizeof(setBaud));
+      Serial1.flush();
+      delay(100);
+
+      // Step 2: close and reopen at 9600 to cover the factory/saved-9600 case.
+      Serial1.end();
+      delay(100);
+      Serial.println("TX GPS [M10]: dual-baud init, attempt 9600 fallback...");
+      Serial1.begin(9600, SERIAL_8N1, P_U1_RX, P_U1_TX);
+      delay(200);
+
+      Serial1.write(setBaud, sizeof(setBaud));
+      Serial1.flush();
+      delay(100);
+
+      // Step 3: GPS is now at 115200 regardless of starting state.
+      // Reopen our side to match.
+      Serial1.end();
+      delay(100);
+      Serial1.begin(115200, SERIAL_8N1, P_U1_RX, P_U1_TX);
+      Serial.println("TX GPS [M10]: now at 115200, sending rate/GNSS config...");
 
       // UBX-CFG-RATE: measurement period 100 ms = 10 Hz, GPS time reference.
       // Fletcher-8 checksum: CK_A=0x7A, CK_B=0x12 (pre-calculated).
@@ -177,6 +242,7 @@ void initTxGPS()
         0xB5, 0x62, 0x06, 0x08, 0x06, 0x00, 0x64, 0x00, 0x01, 0x00,
         0x01, 0x00, 0x7A, 0x12
       };
+      delay(100);
       Serial1.write(setRate10Hz, sizeof(setRate10Hz));
       Serial1.flush();
       delay(50);

@@ -148,6 +148,8 @@
         <button class="btn sec" onclick="exportJson()">Export JSON</button>
         <button class="btn sec" onclick="document.getElementById('importFile').click()">Import JSON</button>
         <input type="file" id="importFile" accept=".json" style="display:none" onchange="importJsonFile(this)">
+        <button class="btn sec" id="btn-collapse-all" onclick="collapseAllGroups()">Collapse All</button>
+        <button class="btn sec" id="btn-expand-all" onclick="expandAllGroups()">Expand All</button>
       </div>
       <div id="statusLine">—</div>
     </div>
@@ -1097,6 +1099,19 @@ document.addEventListener('mousedown',function(e){
 
 document.getElementById('terminal').textContent=
   'Web Serial console — click Connect Serial to open port.\nRequires Chrome or Edge v89+.\n';
+
+// ============================================================
+// V2.5-Evo - 2026-05-06 - FEAT-WEB-COLLAPSE
+// Collapse-all / expand-all controls. Operates on every <details>
+// element regardless of which section it belongs to (config groups,
+// Logs section, future sections). No state tracking needed.
+// ============================================================
+function collapseAllGroups() {
+  document.querySelectorAll('details').forEach(d => { d.open = false; });
+}
+function expandAllGroups() {
+  document.querySelectorAll('details').forEach(d => { d.open = true; });
+}
 
 // ============================================================
 // V2.5-Evo - 2026-05-06 - FEAT-WEB-LOGS: Log management section

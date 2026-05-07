@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-05-06 - FIX-LOGDL-2: serial ?download CSV updated for LOG-EXT-1 fields (24 columns); WDT reset + FreeRTOS yield added inside read loop to support files >30KB without crash
 // V2.5-Evo - 2026-05-06 - LOG-EXT-2: convertToLogData populates 12 heading debug fields; inline-duplicate of getRtmHeading() (must stay in sync with RTMState.ino); default lograte changed 1Hz→5Hz at line 21 (manual user edit, do not revert)
 // V3 - 2026-05-03 - H4: deleteCandidates String[]→char[][] (no heap alloc);
 //                   deleteLogFile() active-file guard added
@@ -439,26 +440,50 @@ void downloadLogFile(const char* filename) {
   if (!file) return;
 
   Serial.println("\n=== BEGIN CSV DATA ===");
-  Serial.println("timestamp_ms,motor_current_A,battery_current_A,duty_cycle_%,voltage_V,ERPM,temp_mos_C,fault_code,speed_kmh,latitude,longitude,datetime_unix");
+  // V2.5-Evo - 2026-05-06 - FIX-LOGDL-2: header updated to 24 fields (LOG-EXT-1 added 12 heading-debug columns)
+  Serial.println("timestamp_ms,motor_current_A,battery_current_A,duty_cycle_%,voltage_V,ERPM,temp_mos_C,fault_code,speed_kmh,latitude,longitude,datetime_unix,thr_received,rtm_source,rtm_confidence,rtm_rx_active,gps_phase_b_ok,rtm_steer_override,rtm_heading_chosen_dx10,compass_live_dx10,compass_snap_dx10,snap_age_s,gps_course_dx10,cog_age_ms_div10");
 
   VescLogData logData;
+  uint16_t recordCount = 0;
   while (file.available()) {
+    // V2.5-Evo - 2026-05-06 - FIX-LOGDL-2: feed WDT inside loop and yield to FreeRTOS.
+    // Without these, files >~30KB cause WDT (3s timeout) to fire mid-download (Andres
+    // confirmed crash at ~3 min / ~350KB on 050626_204204.log).
+    esp_task_wdt_reset();
+
     size_t bytesRead = file.read((uint8_t*)&logData, sizeof(VescLogData));
-    
+
     if (bytesRead == sizeof(VescLogData)) {
-      Serial.printf("%u,%.2f,%.2f,%d,%.1f,%d,%u,%u,%.1f,%.6f,%.6f,%u\n",
+      Serial.printf("%u,%.2f,%.2f,%d,%.1f,%d,%u,%u,%.1f,%.6f,%.6f,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u\n",
                     logData.timestamp,
                     logData.current_motor / 100.0f,
                     logData.current_battery / 100.0f,
-                    (int16_t)logData.duty_cycle, 
+                    (int16_t)logData.duty_cycle,
                     logData.voltage / 10.0f,
-                    (int32_t)logData.ERPM * 10, 
+                    (int32_t)logData.ERPM * 10,
                     logData.temp_mos,
                     logData.fault_code,
-                    logData.speed / 10.0f,  
+                    logData.speed / 10.0f,
                     logData.latitude,
                     logData.longitude,
-                    logData.datetime);
+                    logData.datetime,
+                    (unsigned)logData.thr_received_log,
+                    (unsigned)logData.rtm_source,
+                    (unsigned)logData.rtm_confidence,
+                    (unsigned)logData.rtm_rx_active_log,
+                    (unsigned)logData.gps_phase_b_ok_log,
+                    (unsigned)logData.rtm_steer_override_log,
+                    (int)logData.rtm_heading_chosen_dx10,
+                    (unsigned)logData.compass_live_dx10,
+                    (unsigned)logData.compass_snap_dx10,
+                    (unsigned)logData.snap_age_s,
+                    (unsigned)logData.gps_course_dx10,
+                    (unsigned)logData.cog_age_ms_div10);
+
+      // Yield to FreeRTOS every 50 records to keep other tasks responsive.
+      if ((++recordCount % 50) == 0) {
+        delay(1);
+      }
     } else {
       break;
     }

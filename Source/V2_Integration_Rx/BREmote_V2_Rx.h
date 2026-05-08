@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-05-08 - Bundle 1: RTM/FM steering preset system (rtm_steer_response 0-4); SW_VERSION 30→31; sizeof unchanged at 164; FM placeholder comments improved; VescLogData +4 bytes for tuning telemetry
 // V2.5-Evo - 2026-05-06 - LOG-EXT-1: VescLogData extended with heading source debug fields (12 fields, +18 bytes)
 // V2.5-Evo - 2026-05-06 - D3-Fix: rtm_use_compass + rtm_cog_min_speed_kmh changed uint8_t→uint16_t for ConfigService CFG_U16 compatibility; SW_VERSION 29→30; sizeof 160→164
 // V2.5-Evo - 2026-05-06 - D3: Added rtm_use_compass + rtm_cog_min_speed_kmh; sizeof stays 160 (fills tail pad); SW_VERSION 28→29
@@ -49,7 +50,7 @@
 
 #include <TinyGPS++.h> //TinyGPSPlus 1.0.3 Mikal Hart
 
-#define SW_VERSION 30  // V2.5-Evo — 30 = V3.0; first flash resets all RX SPIFFS config to defaults
+#define SW_VERSION 31  // V2.5-Evo — 31 = Bundle 1 RTM/FM steering presets; first flash resets all RX SPIFFS config to defaults
 const char* CONF_FILE_PATH = "/data.txt";
 const char* BC_FILE_PATH = "/batconf.txt";
 
@@ -83,7 +84,14 @@ struct confStruct {
     uint16_t bms_det_active;
     uint16_t wet_det_active;
 
-    uint16_t dummy_delete_me;
+    uint16_t rtm_steer_response;  // Steering preset index 0-4 for RTM/FM heading controller.
+                                  // 0 = Very Soft (big waves, aggressive surfer)
+                                  // 1 = Soft (choppy water)
+                                  // 2 = Normal (DEFAULT — mixed conditions)
+                                  // 3 = Sharp (calm water, RC use)
+                                  // 4 = Very Sharp (glass-flat, no waves)
+                                  // Drives kSteerPresets[] table in RTMState.ino which
+                                  // sets PID gains (Kp, Kd) + bearing filter time constant.
 
     //UART config
     uint16_t data_src; //0: off, 1:analog, 2: VESC UART
@@ -98,9 +106,26 @@ struct confStruct {
     float min_dist_m; // minimum allowed distance to the foiler
     float followme_smoothing_band_m; // smoothing band above min distance
     float foiler_low_speed_kmh; // low-speed threshold for safety stop (hysteresis)
-    float zone_angle_enter_deg; // Half-angle for zone entry (deg)
-    float zone_angle_exit_deg;  // Half-angle for zone exit (deg)
-    float near_diag_offset_deg; // Offset from behind for NEAR modes (deg)
+    // FM ENGAGEMENT CONE half-angle (degrees). FM mode engages only when surfer's
+    // relative bearing falls within this half-angle of the expected position
+    // (directly behind for followme_mode=1; offset by near_diag_offset_deg for modes 2/3).
+    // Prevents chase when surfer is in a position that doesn't match the chosen mode.
+    // Range: 5-90°. Default 35° (±35° cone, 70° total). CURRENTLY UNUSED — placeholder for FM logic.
+    float zone_angle_enter_deg;
+
+    // FM ENGAGEMENT HYSTERESIS half-angle (degrees). FM DISengages when surfer's bearing
+    // drifts beyond this half-angle. MUST be > zone_angle_enter_deg by 5-15° to prevent
+    // flap-flap at the boundary (Schmitt-trigger hysteresis pattern).
+    // Range: 10-95°. Default 45°. CURRENTLY UNUSED — placeholder for FM logic.
+    float zone_angle_exit_deg;
+
+    // NEAR-MODE DIAGONAL OFFSET (degrees from "directly behind surfer").
+    // followme_mode=2 (Near Right): target bearing = surfer_bearing + offset (behind-and-right).
+    // followme_mode=3 (Near Left):  target bearing = surfer_bearing - offset (behind-and-left).
+    // 0° = directly behind, 90° = beside the surfer. Diagonal placement keeps buggy
+    // out of the surfer's wake/spray path while still towing.
+    // Range: 0-90°. Default 45°. CURRENTLY UNUSED — placeholder for FM logic.
+    float near_diag_offset_deg;
     
     //System parameters
     float ubat_cal; //ADC to volt cal for bat meas
@@ -246,11 +271,11 @@ struct confStruct {
     uint16_t rtm_use_compass;        // 0=GPS COG only; 1=Hybrid (default); 2=Compass only DIAGNOSTIC ONLY DO NOT USE ON WATER
     uint16_t rtm_cog_min_speed_kmh;  // Min GPS speed for COG to be primary heading source; 1-15 km/h; default 3
 };
-static_assert(sizeof(confStruct) == 164, "confStruct size mismatch — expected 164 bytes. Update this assert if you change the struct.");  // 112->128 Phase A; 128->136 Phase B; 136->152 P7 RTM; 152->156 Bundle B; 156 unchanged BundleE; 156->160 rtm_approach_zone_m (uint16_t + 2-byte tail pad) (2026-04-30); D3 rtm_use_compass + rtm_cog_min_speed_kmh (2x uint8_t) fill the 2-byte tail pad — sizeof stays 160 (2026-05-06); D3-Fix: uint8_t→uint16_t for ConfigService compatibility, sizeof unchanged at 164 (2026-05-06).
+static_assert(sizeof(confStruct) == 164, "confStruct size mismatch — expected 164 bytes. Update this assert if you change the struct.");  // 112->128 Phase A; 128->136 Phase B; 136->152 P7 RTM; 152->156 Bundle B; 156 unchanged BundleE; 156->160 rtm_approach_zone_m (uint16_t + 2-byte tail pad) (2026-04-30); D3 rtm_use_compass + rtm_cog_min_speed_kmh (2x uint8_t) fill the 2-byte tail pad — sizeof stays 160 (2026-05-06); D3-Fix: uint8_t→uint16_t for ConfigService compatibility, sizeof unchanged at 164 (2026-05-06); Bundle 1: dummy_delete_me renamed to rtm_steer_response in-place, sizeof unchanged at 164 (2026-05-08)
 confStruct usrConf;
   //The orginal confs were:  ##// confStruct defaultConf = {SW_VERSION, 1, 0, 0, 50, 0, 0, 1500, 2000, 1500, 2000, 1000, 10, 0, 1, 0, 0, 0, 0, 0, 25.0f, 10.0f, 10.0f, 5.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0, 1000, 1, 0, {0, 0, 0}, {0, 0, 0}, {'1','2','3','4','5','6','7','8'}};
   // V3 default configuration — tuned for monterman hardware
-confStruct defaultConf = {SW_VERSION, 2, 20, 1, 50, 0, 0, 1000, 2000, 1000, 2000, 1000, 10, 0, 1, 0, 2, 1, 2, 1, 25.0f, 10.0f, 10.0f, 8.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0f, 1000, 0, 1, {0x46, 0xC9, 0xE0}, {0x46, 0xCB, 0xCC}, {'1','2','3','4','5','6','7','8'},
+confStruct defaultConf = {SW_VERSION, 2, 20, 1, 50, 0, 0, 1000, 2000, 1000, 2000, 1000, 10, 0, 1, 2, 2, 1, 2, 1, 25.0f, 10.0f, 10.0f, 8.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0f, 1000, 0, 1, {0x46, 0xC9, 0xE0}, {0x46, 0xCB, 0xCC}, {'1','2','3','4','5','6','7','8'},
   // V3 - 2026-04-22 - Compass calibration fields (previously implicit zeros).
   // Made explicit here so gps_chip_type can follow. Safe neutral values:
   // offsets=0 (no bias), scales=1.0f (unity gain = no correction applied).
@@ -286,7 +311,7 @@ confStruct defaultConf = {SW_VERSION, 2, 20, 1, 50, 0, 0, 1000, 2000, 1000, 2000
   1,          // rtm_use_compass: 1 = Hybrid (GPS COG primary, compass snapshot at low speed). 0=COG only, 2=compass only DIAGNOSTIC.
   3           // rtm_cog_min_speed_kmh: GPS speed threshold below which compass snapshot is used; 1-15 km/h; default 3
 };
-  /// these equal to:  {"version":3,"radio_preset":2,"rf_power":20,"steering_type":1,"steering_influence":50,"steering_inverted":0,"trim":0,"pwm0_min":1000,"pwm0_max":2000,"pwm1_min":1000,"pwm1_max":2000,"failsafe_time":1000,"foil_num_cells":10,"bms_det_active":0,"wet_det_active":1,"dummy_delete_me":0,"data_src":2,"gps_en":1,"followme_mode":2,"kalman_en":1,"boogie_vmax_in_followme_kmh":25,"min_dist_m":10,"followme_smoothing_band_m":10,"foiler_low_speed_kmh":8,"zone_angle_enter_deg":35,"zone_angle_exit_deg":45,"near_diag_offset_deg":45,"ubat_cal":0.0095554,"ubat_offset":0,"tx_gps_stale_timeout_ms":1000,"logger_en":0,"paired":1,"own_address":"46:C9:E0","dest_address":"46:CB:CC","wifi_password":"12345678","mag_offset_x":0,"mag_offset_y":0,"mag_scale_x":1.0,"mag_scale_y":1.0,"gps_chip_type":1,"gps_max_hdop":2.0,"gps_max_accel_g":3.0,"gps_max_teleport_kmh":80.0,"gps_suspect_threshold":3,"gps_max_pair_dist_m":500.0,"gps_max_speed_diff_kmh":50.0,"rtm_vesc_speed_diff_kmh":20.0,"vesc_erpm_per_kmh":0.0,"rtm_rx_enabled":1,"rtm_rx_override_steering":1,"rtm_compass_required":1,"rtm_stop_distance_m":3,"vesc_timeout_s":12,"gps_update_hz":2}
+  /// these equal to:  {"version":3,"radio_preset":2,"rf_power":20,"steering_type":1,"steering_influence":50,"steering_inverted":0,"trim":0,"pwm0_min":1000,"pwm0_max":2000,"pwm1_min":1000,"pwm1_max":2000,"failsafe_time":1000,"foil_num_cells":10,"bms_det_active":0,"wet_det_active":1,"rtm_steer_response":2,"data_src":2,"gps_en":1,"followme_mode":2,"kalman_en":1,"boogie_vmax_in_followme_kmh":25,"min_dist_m":10,"followme_smoothing_band_m":10,"foiler_low_speed_kmh":8,"zone_angle_enter_deg":35,"zone_angle_exit_deg":45,"near_diag_offset_deg":45,"ubat_cal":0.0095554,"ubat_offset":0,"tx_gps_stale_timeout_ms":1000,"logger_en":0,"paired":1,"own_address":"46:C9:E0","dest_address":"46:CB:CC","wifi_password":"12345678","mag_offset_x":0,"mag_offset_y":0,"mag_scale_x":1.0,"mag_scale_y":1.0,"gps_chip_type":1,"gps_max_hdop":2.0,"gps_max_accel_g":3.0,"gps_max_teleport_kmh":80.0,"gps_suspect_threshold":3,"gps_max_pair_dist_m":500.0,"gps_max_speed_diff_kmh":50.0,"rtm_vesc_speed_diff_kmh":20.0,"vesc_erpm_per_kmh":0.0,"rtm_rx_enabled":1,"rtm_rx_override_steering":1,"rtm_compass_required":1,"rtm_stop_distance_m":3,"vesc_timeout_s":12,"gps_update_hz":2}
   ///
 
 #include "../Common/ConfigServiceEngine.h"
@@ -379,6 +404,12 @@ struct __attribute__((packed)) VescLogData {
     uint16_t snap_age_s;                // Snapshot age in seconds (0xFFFF = no snapshot yet)
     uint16_t gps_course_dx10;           // GPS course-over-ground × 10 deg (0xFFFF = no fix or invalid)
     uint16_t cog_age_ms_div10;          // GPS course age in 10ms units (0xFFFF = no fix yet)
+    // V2.5-Evo - 2026-05-08 - Bundle 1: heading controller tuning telemetry fields.
+    // 0x7FFF (32767) is the "no data" sentinel per CLAUDE.md Section 14 — NOT 0x0000.
+    int16_t heading_error_dx10;   // Heading error in 0.1° units (signed; -1800..+1800).
+                                  // 0x7FFF = no valid heading source. Positive = need turn right.
+    int16_t d_error_dx10;         // Rate-of-change of heading error in 0.1°/s units.
+                                  // 0x7FFF = no prior sample (first cycle). For tuning Kd.
 };
 #define ENABLE_WEB_LOG_DOWNLOAD // Enable log download endpoints
 

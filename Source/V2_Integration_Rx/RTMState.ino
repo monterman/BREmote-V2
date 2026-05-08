@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-05-08 - Bundle 1: P+D+filter steering controller; preset table; bearing filter for FM path-following
 // V2.5-Evo - 2026-05-06 - D5: getRtmHeading() layered heading source; updateRtmSteering() rewritten; Gate 6 accepts any source; updateCompassSnapshot() called from runRtmLoop top
 // V3 - 2026-05-03 - C1/M2 audit fix: gps_tx_ok uses timestamp age on both paths; 0.0 lat/lng sentinel removed
 // V3 - 2026-05-01 - Fix D: gps_tx_ok relaxed for FM/idle; never reset rtm_distance to 0xFF when RTM inactive
@@ -29,6 +30,49 @@ extern unsigned long gps_last_course_ms;        // From GPS.ino (D1) — millis(
 extern float         compass_snapshot_heading;  // From Compass.ino (D2) — clean compass heading captured during motor-idle (0-360 deg, -1.0 if none)
 extern unsigned long compass_snapshot_ms;       // From Compass.ino (D2) — millis() of snapshot capture (0 if none)
 extern void          updateCompassSnapshot();   // From Compass.ino (D2) — captures clean compass heading when motor idle
+// ============================================================
+// RTM/FM STEERING CONTROLLER PRESETS — Bundle 1 (2026-05-08)
+//
+// PID-style controller: output = Kp * clamped_error - Kd * d(error)/dt
+// Plus a low-pass filter on TARGET POSITION (lat/lng) for FM path-following
+// — surfer's high-frequency bottom turns are smoothed out, buggy follows
+// the surfer's path rather than chasing every wobble.
+//
+// For RTM (TX stationary), filter τ is set very low so behavior is essentially
+// unfiltered — the filter doesn't hurt because there's nothing to smooth.
+//
+// 5 presets cover flat-water-to-heavy-surf range. Operator picks via WebUI
+// before each session based on conditions. Default = Normal (index 2).
+// ============================================================
+struct SteerPreset {
+  float error_clamp_deg;     // Saturation: heading error clamped to ±this before P/D math.
+  float kp;                  // Proportional gain (PID Kp). 1.0 = baseline.
+  float kd;                  // Derivative gain (PID Kd). 0.0 disables D term entirely.
+  float target_filter_tau_s; // Low-pass filter time constant on target position (seconds).
+                             // 0.5 ≈ no smoothing for RTM; 1-5 path-following for FM.
+};
+
+static const SteerPreset kSteerPresets[5] = {
+  // {clamp,    Kp,   Kd,   tau_s }
+  {  150.0f,  0.70f, 0.50f, 5.00f },  // 0 Very Soft   — heavy surf, aggressive surfer
+  {  120.0f,  0.85f, 0.40f, 3.00f },  // 1 Soft        — choppy normal session
+  {   90.0f,  1.00f, 0.30f, 2.00f },  // 2 Normal      — DEFAULT, mixed conditions
+  {   60.0f,  1.20f, 0.20f, 1.00f },  // 3 Sharp       — calm water, RC use
+  {   45.0f,  1.40f, 0.10f, 0.50f },  // 4 Very Sharp  — glass-flat, no waves
+};
+
+// ---- Bundle 1 module-level state for P+D controller and bearing filter ----
+static float         prev_heading_error_deg    = 0.0f;
+static unsigned long prev_steering_update_ms   = 0;
+static double        tx_pos_filtered_lat       = 0.0;  // Filtered TX lat (degrees)
+static double        tx_pos_filtered_lng       = 0.0;  // Filtered TX lng (degrees)
+static bool          tx_pos_filter_initialized = false;
+
+// Non-static globals exported to Logger.ino via extern (Bundle 1 tuning telemetry).
+// 0x7FFF is the "no data" sentinel per CLAUDE.md Section 14 (non-zero).
+int16_t g_heading_error_dx10 = 0x7FFF;  // Last heading error × 10 deg; 0x7FFF = no data
+int16_t g_d_error_dx10       = 0x7FFF;  // Last derivative × 10 deg/s; 0x7FFF = no data
+
 // ---- Phase C convergence tracking ----
 static double        rtm_prev_dist_m = -1.0;   // distance to TX at last Phase C check
 static unsigned long rtm_phase_c_ms  = 0;       // last Phase C check time
@@ -234,52 +278,102 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
   return false;
 }
 
-// ---- Compute RTM steering override ----
-// V2.5-Evo - 2026-05-06 - D5: Use layered heading source instead of compass-only.
-// Heading source comes from getRtmHeading() — GPS COG primary, compass snapshot fallback.
-// LOW-confidence sources reduce steering authority by 50% to prevent oscillation
-// when the available data is degraded.
+// ---- Compute RTM steering override (Bundle 1: P+D + bearing filter) ----
+// V2.5-Evo - 2026-05-08 - Bundle 1: Replaced fixed ±90° clamp with preset-driven P+D controller.
+// Added first-order low-pass filter on TX target position for FM path-following smoothness.
+// Heading source still comes from getRtmHeading() (GPS COG primary, snapshot fallback).
+// LOW-confidence sources reduce steering authority by 50% (unchanged from D5).
+// Filter state + D-term reset on invalid heading to satisfy CLAUDE.md Section 12 rule 2.
 static void updateRtmSteering()
 {
-  if (!usrConf.rtm_rx_override_steering) return;
+  if (!usrConf.rtm_rx_override_steering) {
+    rtm_steer_override = 127;
+    g_heading_error_dx10 = 0x7FFF;
+    g_d_error_dx10 = 0x7FFF;
+    return;
+  }
 
   float current_heading;
   uint8_t confidence;
   bool valid = getRtmHeading(&current_heading, &confidence);
 
   if (!valid) {
-    // No valid heading source — hold straight ahead.
-    // SAFETY: User throttle still passes through; this just means RTM cannot steer.
-    // Better to coast straight than to steer based on biased data.
+    // No valid heading — hold straight. Reset filter + D-term state so we don't
+    // resume with stale data on next cycle. (Per CLAUDE.md Section 12 rule 2.)
     rtm_steer_override = 127;
+    prev_heading_error_deg = 0.0f;
+    tx_pos_filter_initialized = false;
+    g_heading_error_dx10 = 0x7FFF;
+    g_d_error_dx10 = 0x7FFF;
     return;
   }
 
-  // Bearing from RX GPS to TX GPS position (0-360, clockwise from North)
-  double bearing_deg = TinyGPSPlus::courseTo(
-      gps_last_lat, gps_last_lng, rx_tx_gps_lat, rx_tx_gps_lng);
+  // Lookup active preset — clamp index defensively
+  uint16_t idx = usrConf.rtm_steer_response;
+  if (idx > 4) idx = 2;  // fallback to Normal on bad config
+  const SteerPreset &p = kSteerPresets[idx];
 
-  // Heading error: positive = need to turn right, negative = turn left
+  // ---- Bearing-target low-pass filter (for FM path-following) ----
+  // First-order exponential moving average on TX position.
+  // alpha = dt / (tau + dt). dt is loop period, tau is preset's filter time constant.
+  unsigned long now = millis();
+  float dt_s = (prev_steering_update_ms == 0) ? 0.1f : ((now - prev_steering_update_ms) / 1000.0f);
+  if (dt_s <= 0.0f || dt_s > 1.0f) dt_s = 0.1f;  // sanity clamp
+  prev_steering_update_ms = now;
+
+  if (!tx_pos_filter_initialized) {
+    tx_pos_filtered_lat = rx_tx_gps_lat;
+    tx_pos_filtered_lng = rx_tx_gps_lng;
+    tx_pos_filter_initialized = true;
+  } else if (p.target_filter_tau_s > 0.0f) {
+    float alpha = dt_s / (p.target_filter_tau_s + dt_s);
+    tx_pos_filtered_lat += alpha * (rx_tx_gps_lat - tx_pos_filtered_lat);
+    tx_pos_filtered_lng += alpha * (rx_tx_gps_lng - tx_pos_filtered_lng);
+  } else {
+    tx_pos_filtered_lat = rx_tx_gps_lat;
+    tx_pos_filtered_lng = rx_tx_gps_lng;
+  }
+
+  // Bearing from RX GPS to FILTERED TX position
+  double bearing_deg = TinyGPSPlus::courseTo(
+      gps_last_lat, gps_last_lng, tx_pos_filtered_lat, tx_pos_filtered_lng);
+
+  // Heading error (signed, wrapped to ±180°)
   float heading_error = (float)(bearing_deg - current_heading);
   while (heading_error >  180.0f) heading_error -= 360.0f;
   while (heading_error < -180.0f) heading_error += 360.0f;
 
-  // Clamp to ±90° (full lock at 90° off course; ignore U-turns)
+  // Saturate (preset clamp angle)
   float clamped = heading_error;
-  if (clamped >  90.0f) clamped =  90.0f;
-  if (clamped < -90.0f) clamped = -90.0f;
+  if (clamped >  p.error_clamp_deg) clamped =  p.error_clamp_deg;
+  if (clamped < -p.error_clamp_deg) clamped = -p.error_clamp_deg;
 
-  // Reduce steering authority by 50% when confidence is LOW (stale snapshot).
-  // Prevents aggressive steering on degraded data.
+  // P term (normalized to ±127 at full clamp)
+  float p_term = (clamped / p.error_clamp_deg) * 127.0f * p.kp;
+
+  // D term (rate of change of error). Skip on first cycle (prev=0 baseline).
+  float d_error = (heading_error - prev_heading_error_deg) / dt_s;
+  float d_term = p.kd * d_error;
+  prev_heading_error_deg = heading_error;
+
+  // Confidence: LOW conf reduces total authority by 50% (preserves D5 behavior)
   float authority = (confidence == 1) ? 0.5f : 1.0f;
 
-  // Map to 0-255 (127 = straight, >127 = right, <127 = left)
-  rtm_steer_override = (uint8_t)(127.0f + authority * (clamped / 90.0f) * 127.0f);
+  float output = 127.0f + authority * (p_term - d_term);
+  if (output < 0.0f)   output = 0.0f;
+  if (output > 254.0f) output = 254.0f;
+  rtm_steer_override = (uint8_t)output;
+
+  // Export for logger (with sentinel-safe conversion)
+  g_heading_error_dx10 = (int16_t)(heading_error * 10.0f);
+  g_d_error_dx10       = (int16_t)(d_error * 10.0f);
+  if (g_heading_error_dx10 == 0x7FFF) g_heading_error_dx10 = 0x7FFE;  // avoid sentinel collision
+  if (g_d_error_dx10       == 0x7FFF) g_d_error_dx10       = 0x7FFE;
 
   #ifdef DEBUG_RX
-  Serial.printf("RTM steer: conf=%u bear=%.1f head=%.1f err=%.1f auth=%.2f ovr=%d\n",
-                (unsigned)confidence, (float)bearing_deg, current_heading,
-                heading_error, authority, (int)(uint8_t)rtm_steer_override);
+  Serial.printf("RTM steer[%u]: bear=%.1f head=%.1f err=%.1f d_err=%.1f P=%.1f D=%.1f auth=%.2f ovr=%d\n",
+                idx, (float)bearing_deg, current_heading, heading_error, d_error,
+                p_term, d_term, authority, (int)rtm_steer_override);
   #endif
 }
 
@@ -469,6 +563,12 @@ void runRtmLoop()
     rtm_prev_dist_m          = -1.0;
     rtm_phase_c_ms           = 0;
     rtm_approach_cap         = 255;   // belt-and-suspenders: ensure cap is always clear when inactive
+    // Bundle 1: reset filter + D-term state so re-arm starts fresh (not from last session)
+    tx_pos_filter_initialized = false;
+    prev_heading_error_deg    = 0.0f;
+    prev_steering_update_ms   = 0;
+    g_heading_error_dx10      = 0x7FFF;
+    g_d_error_dx10            = 0x7FFF;
     // telemetry.rtm_distance already set to 0xFF by the block above (inactive path)
     return;
   }

@@ -293,6 +293,11 @@ On any gate failure: throttle → 0, TX display shows `St` for 2 s, haptic confi
 
 ### SPIFFS Configuration (TX)
 
+<details>
+<summary><strong>Click to expand: RTM TX SPIFFS parameters (11 fields)</strong></summary>
+
+<br>
+
 | Parameter | Default | Description |
 |---|---|---|
 | `rtm_enabled` | 1 | Master on/off switch |
@@ -307,7 +312,14 @@ On any gate failure: throttle → 0, TX display shows `St` for 2 s, haptic confi
 | `rtm_display_mode` | 0 | 0=distance, 1=speed, 2=alternating |
 | `rtm_steer_exit_on_input` | 1 | 1=steering exits RTM, 0=correction blend |
 
+</details>
+
 ### SPIFFS Configuration (RX)
+
+<details>
+<summary><strong>Click to expand: RTM RX SPIFFS parameters (6 fields)</strong></summary>
+
+<br>
 
 | Parameter | Default | Description |
 |---|---|---|
@@ -317,6 +329,8 @@ On any gate failure: throttle → 0, TX display shows `St` for 2 s, haptic confi
 | `rtm_stop_distance_m` | 3 | RX-side hard stop distance |
 | `rtm_vesc_speed_diff_kmh` | 20 | Max VESC vs GPS speed diff (Phase C) |
 | `vesc_erpm_per_kmh` | 0 | VESC ERPM per km/h for speed check (0=disabled) |
+
+</details>
 
 ---
 
@@ -350,10 +364,17 @@ If TX-to-RX distance drops below `fm_warn_distance_m` (default 150 m), TX fires 
 
 ### SPIFFS Configuration (TX)
 
+<details>
+<summary><strong>Click to expand: FM TX SPIFFS parameters (2 fields)</strong></summary>
+
+<br>
+
 | Parameter | Default | Description |
 |---|---|---|
 | `fm_override_enabled` | 1 | Master on/off switch |
 | `fm_warn_distance_m` | 150 | Proximity warning threshold in metres |
+
+</details>
 
 ---
 
@@ -524,6 +545,11 @@ The data logger is the primary tool for validating and tuning the RTM/FM steerin
 
 **Key columns for steering tuning (full set is 26 columns):**
 
+<details>
+<summary><strong>Click to expand: Full log column reference (14 fields with tuning relevance)</strong></summary>
+
+<br>
+
 | Column | Meaning | Why it matters for tuning |
 |---|---|---|
 | `timestamp_ms` | Time since boot (ms) | X-axis for any plot |
@@ -543,6 +569,8 @@ The data logger is the primary tool for validating and tuning the RTM/FM steerin
 | `motor_current_A`, `voltage_V`, `ERPM` | VESC telemetry | Power/load context; correlates compass EMI with current draw |
 
 The two **bold** columns (`heading_error_dx10`, `d_error_dx10`) were added specifically to make steering tuning data-driven. Plot them over time during an RTM/FM run: sustained ±20–50° wobble at 1–3 Hz means the buggy is snaking and the active preset has too little damping; smooth curves trending to zero mean the controller is working.
+
+</details>
 
 ---
 
@@ -618,6 +646,11 @@ BREmote V2.5-Evo ships with a serial diagnostic command, `?magtest`, that lets a
 - **TelemetryPacket grows:** `rtm_distance` added at index 5; `link_quality` moved to index 6 (sizeof 6→7); TX+RX bounds-check auto-adapts
 - **confStruct sizeof:** TX 120→126, RX unchanged. First P8 flash resets TX settings to defaults.
 
+<details>
+<summary><strong>Click to expand: Older changelog entries (V2.5.10, V2.5.09, V2.5.01, V2.x)</strong></summary>
+
+<br>
+
 ### V2.5.10 — April 2026 *(monterman)* — R5 Proximity Bar, Distance Units, Full-Screen Messages
 
 - **R5 proximity bar:** Row R5 (C0–C9) lights as proximity indicator during RTM and FM. Blinks 1 s on / 500 ms off.
@@ -664,6 +697,8 @@ Key V2 milestones:
 - Dynamic throttle cap mode and Web Console (Janrusher, forked from LudwigBre)
 - GPS framework, follow-me skeleton, data logger foundation (Janrusher / LudwigBre)
 - Initial release: LoRa link, VESC UART, servo steering, gears, water ingress, expo curve (LudwigBre)
+
+</details>
 
 ---
 

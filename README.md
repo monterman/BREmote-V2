@@ -378,7 +378,7 @@ If TX-to-RX distance drops below `fm_warn_distance_m` (default 150 m), TX fires 
 | `F1` | Follow-Me override: Right side |
 | `F2` | Follow-Me override: Behind |
 | `F3` | Follow-Me override: Left side |
-| `St` | Stop — RTM safety gate triggered or arming blocked |
+| `St` | Stop — RTM or FM safety gate triggered, or arming blocked *(FM gating is forward-looking; FM logic not yet implemented)* |
 | `99` | Full throttle reached (100%) |
 
 ### RX
@@ -506,6 +506,44 @@ BREmote V2.5-Evo is in Pre-Alpha. The firmware compiles, has been bench-tested f
 
 Anyone field-testing this fork should treat each session as data-gathering, not as production use.
 
+### Logging for Tuning
+
+The data logger is the primary tool for validating and tuning the RTM/FM steering controller during early field sessions. The controller ships with five preset values (Very Soft → Very Sharp) that have been chosen analytically; **empirical validation against your specific hardware and water conditions is required** before trusting any preset on the water. A separate steering-tuning guide and a log-analysis web tool are planned for a later development phase. For now, raw CSV logs viewed in any spreadsheet or plotted with Python / gnuplot will surface the patterns that matter.
+
+**How to record a session (briefly — full details in the Data Logger section above):**
+
+- Power on, wait for GPS lock (entries without fix record zero coordinates).
+- Press the AUX button once → green LED flashes 5× → logging starts.
+- Run your test (RTM walk, FM run, manual ride).
+- Press AUX again → green LED flashes 2× → logging stops.
+- Pull the file via the embedded WebUI Logs panel or via `?download <filename>` over serial.
+
+**Default logging rate:** 5 Hz (200 ms per sample), set in firmware. Override per session with `?lograte <ms>` over serial — typical values 100 ms (10 Hz) to 1000 ms (1 Hz). Lower Hz = smaller files = longer sessions; higher Hz = better resolution for tuning fast oscillation.
+
+**Storage note:** if SPIFFS fills too quickly during long sessions, lower the rate with `?lograte`, **don't trim columns** — every diagnostic field is there to make the controller observable when something goes wrong, and the cost of dropping them is much greater than the storage savings.
+
+**Key columns for steering tuning (full set is 26 columns):**
+
+| Column | Meaning | Why it matters for tuning |
+|---|---|---|
+| `timestamp_ms` | Time since boot (ms) | X-axis for any plot |
+| `speed_kmh` | RX GPS speed (km/h) | Confirms whether buggy is moving fast enough for GPS COG to be primary heading source |
+| `latitude` / `longitude` | RX position | Plot the actual path; visual sanity-check |
+| `thr_received` | Final throttle command (0–254) | What the user requested vs what RTM allowed |
+| `rtm_source` | Heading source picked: 0=GPS COG, 1=GPS COG fresh, 2=compass snapshot, 3=no data | Confirms layered logic chose the right source at each moment |
+| `rtm_confidence` | 3=HIGH, 2=MED, 1=LOW, 0=none | Modifier on steering authority |
+| `rtm_rx_active` | 1 = RTM engaged, 0 = idle | Mark when RTM is actually doing work |
+| `rtm_steer_override` | Final steering output (127 = straight) | What the buggy was told to do |
+| `rtm_heading_chosen_dx10` | Heading used for steering (0.1° units) | What the controller used as "current heading" |
+| `gps_course_dx10` | Raw GPS COG (0.1° units) | Independent reference for direction-of-travel |
+| `compass_live_dx10` | Live compass (0.1° units) | Independent reference; diverges from GPS COG under motor EMI |
+| `cog_age_ms_div10` | GPS COG freshness (10 ms units, ≤150 = fresh) | Confirms COG didn't go stale |
+| **`heading_error_dx10`** | Bearing-to-target − current-heading (0.1° units; 32767 = no data) | **Primary tuning signal — magnitude and oscillation visible here** |
+| **`d_error_dx10`** | Rate-of-change of heading error (0.1°/sec) | **Kd tuning signal — high during settling = need more damping** |
+| `motor_current_A`, `voltage_V`, `ERPM` | VESC telemetry | Power/load context; correlates compass EMI with current draw |
+
+The two **bold** columns (`heading_error_dx10`, `d_error_dx10`) were added specifically to make steering tuning data-driven. Plot them over time during an RTM/FM run: sustained ±20–50° wobble at 1–3 Hz means the buggy is snaking and the active preset has too little damping; smooth curves trending to zero mean the controller is working.
+
 ---
 
 ## Known Limitations
@@ -522,6 +560,11 @@ Anyone field-testing this fork should treat each session as data-gathering, not 
 
 > BREmote V2.5-Evo is a fork of Jan's BREmote V2 codebase, which itself extends Ludwig's original BREmote. The architecture decisions (3-byte addressing, CRC8 pairing, semaphore-driven LoRa ISR, the Common engine pattern) are from upstream and are sound. The issues below were uncovered during the V2.5-Evo audit. Some are defects that existed in the upstream regardless of feature set; others only became safety-relevant when V2.5-Evo added concurrent GPS polling, Phase A anti-spoofing, RTM, and FM, which significantly increased the loop-task workload.
 
+<details>
+<summary><strong>Click to expand the full bug list (7 issues fixed)</strong></summary>
+
+<br>
+
 | # | Issue | V2.5-Evo file:line | Note | Fix |
 |---|---|---|---|---|
 | 1 | Watchdog 1000ms timeout | `Source/V2_Integration_Rx/Init.ino:52-58` | Adequate for upstream feature set; insufficient under V2.5-Evo combined GPS (~300ms) + wetness (~300ms) + VESC (~210ms) load (~810ms peak, ~190ms margin). | Raised to 3000ms with full load math in source comment. |
@@ -531,6 +574,8 @@ Anyone field-testing this fork should treat each session as data-gathering, not 
 | 5 | `readBCFromSPIFFS()` heap out-of-bounds | `Source/V2_Integration_Rx/SPIFFS.ino` | Decoded payload < 102 bytes overran a fixed-size struct copy. | Length check added: `decodedLen < 102` rejects short files. |
 | 6 | `triggeredReceive` and `generatePWM` 2048-byte stacks | `Source/V2_Integration_Rx/Init.ino:41-43` | Stack size adequate for upstream; tight under V2.5-Evo with RadioLib SX1262 path + RMT driver + Phase A + meta-packet decoding. | Raised to 4096 / 4096 / 3072. Use `?printtasks` to monitor high-water marks. |
 | 7 | `scanI2C()` re-initialized Wire mid-runtime | `Source/V2_Integration_Rx/System.ino:157-196` | Function inherited from upstream; `Wire.begin()` inside the scan reset I2C and could glitch in-progress AW9523 traffic. | Removed redundant `Wire.begin()`; Wire is now only initialized once in `initHardware()`. |
+
+</details>
 
 ### Compass EMI Bench-Test Tool
 

@@ -5,6 +5,7 @@
 // V3 - 2026-05-01 - thr_expo1 removed; fm_display_mode added to RTM & Follow-Me group
 // V3 - 2026-05-02 - Split GPS/RTM/FM into separate groups; added Collapse All / Expand All buttons
 // V2.5-Evo - 2026-05-06 - FIX-WEB-1: saveAll() now validates and sends only DIRTY fields (was: all 60 fields every save → blocked by any stale state)
+// V2.5-Evo - 2026-05-08 - Bundle 4: Web UI parameter regrouping. Renamed "GPS & Follow-Me" → "GPS"; "RTM & Follow-Me" → "RTM"; split RTM and Follow-Me into separate groups; moved followme_mode + rtm_vesc_speed_diff_kmh + vesc_erpm_per_kmh out of GPS group; merged "Follow-Me Tuning" into "Follow-Me". Cosmetic only — no struct/firmware changes.
 #ifndef WEB_UI_EMBEDDED_H
 #define WEB_UI_EMBEDDED_H
 
@@ -135,7 +136,7 @@ const fields=[
 {key:"followme_mode",label:"Follow-Me Starting Mode",description:"FM starting mode loaded on first arm this session. RAM override only — never written back to SPIFFS. 1=Near Right (default), 2=Behind, 3=Near Left.",group:"Follow-Me",type:"enum",def:1,min:1,max:3,options:[{v:1,l:"Near Right (default)"},{v:2,l:"Behind"},{v:3,l:"Near Left"}]},
 {key:"kalman_en",label:"Kalman Filter",description:"0=raw GPS coordinates used directly, 1=Kalman filter smooths GPS jitter (recommended when GPS is noisy).",group:"GPS",type:"bool",def:0,min:0,max:1},
 {key:"speed_src",label:"Speed Source",description:"Speed value shown in SP display mode. 0=RX GPS km/h, 1=RX GPS knots, 2=TX GPS km/h, 3=TX GPS knots, 4=RX GPS mph, 5=TX GPS mph.",group:"GPS",type:"enum",def:0,min:0,max:5,options:[{v:0,l:"GPS RX km/h"},{v:1,l:"GPS RX knots"},{v:2,l:"GPS TX km/h"},{v:3,l:"GPS TX knots"},{v:4,l:"GPS RX mph"},{v:5,l:"GPS TX mph"}]},
-{key:"tx_gps_stale_timeout_ms",label:"TX GPS Stale Timeout",description:"How long a TX GPS fix is valid before considered stale. 0=never expires, 65535=very lenient. Lower values = stricter RTM GPS safety. Milliseconds.",group:"RTM",type:"int",def:1000,min:0,max:65535,unit:"ms"},
+{key:"tx_gps_stale_timeout_ms",label:"TX GPS Stale Timeout",description:"How long a TX GPS fix is valid before considered stale. 0=never expires, 65535=very lenient. Lower values = stricter RTM GPS safety. Milliseconds.",group:"GPS",type:"int",def:1000,min:0,max:65535,unit:"ms"},
 {key:"gps_max_hdop",label:"TX GPS Max HDOP",description:"Max GPS Signal Noise (HDOP×100): 150=excellent, 200=good (default), 300=lenient. Lower = stricter filter.",group:"GPS",type:"int",def:200,min:50,max:500},
 {key:"gps_chip_type",label:"GPS Module Type",description:"GPS module type — determines baud/rate/constellation init sequence. TX supports 0 and 2 only (no compass on TX hardware).",group:"GPS",type:"enum",def:0,min:0,max:3,options:[{v:0,l:"BN-220 (default, 9600→11520​0, 5Hz)"},{v:2,l:"M10 no compass (115200 direct, 10Hz, all constellations)"}]},
 {key:"rtm_enabled",label:"RTM Enabled",description:"Master enable for Return-to-Me feature. 0=off, 1=on.",group:"RTM",type:"bool",def:1,min:0,max:1},
@@ -155,7 +156,7 @@ const fields=[
 {key:"rtm_steer_exit_on_input",label:"RTM Exit on Steering",description:"1=any significant steering input exits RTM immediately (default). 0=steering used for correction only (blend mode).",group:"RTM",type:"bool",def:1,min:0,max:1},
 {key:"fm_display_mode",label:"FM Digit Display",description:"What the TX digit zone shows while Follow-Me is armed. 1=TX GPS speed (in selected speed unit), 2=distance to buggy (in selected distance unit), 3=buggy speed (RX telemetry), 4=throttle %.",group:"Follow-Me",type:"enum",def:1,min:1,max:4,options:[{v:1,l:"TX GPS Speed (default)"},{v:2,l:"Distance to Buggy"},{v:3,l:"Buggy Speed"},{v:4,l:"Throttle %"}]},
 {key:"fm_arm_window_s",label:"FM Arm Window",description:"How long FM stays armed before silently auto-disarming if no throttle input. 10s=short window, 120s=2 minute window. No display or haptic on expiry. Default 30.",group:"Follow-Me",type:"int",def:30,min:10,max:120,unit:"s"},
-{key:"dist_unit",label:"Distance Unit",description:"Unit for all distance readouts on the TX display (RTM, FM). Internal math always uses metres. 0=Metres, 1=Feet/miles.",group:"GPS",type:"enum",def:0,min:0,max:1,options:[{v:0,l:"Metres"},{v:1,l:"Feet"}]},
+{key:"dist_unit",label:"Distance Unit",description:"Unit for all distance readouts on the TX display (RTM, FM). Internal math always uses metres. 0=Metres, 1=Feet/miles.",group:"RTM",type:"enum",def:0,min:0,max:1,options:[{v:0,l:"Metres"},{v:1,l:"Feet"}]},
 {key:"wifi_password",label:"WiFi Password",description:"AP password (exactly 8 characters)",group:"System",type:"text",def:"12345678",minLen:8,maxLen:8},
 {key:"version",label:"Config Version",description:"Must match firmware SW_VERSION",group:"System",type:"int",def:25,min:0,max:65535},
 {key:"sleep_timeout_s",label:"Auto-Sleep Timeout",description:"How long TX waits with no LoRa reply from RX before deep sleeping. 0=disabled, 60=1 min, 300=5 min (default), 3600=1 hour. Set to 0 to disable auto-sleep entirely.",group:"System",type:"int",def:300,min:0,max:3600,unit:"s"}

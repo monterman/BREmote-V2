@@ -1,6 +1,6 @@
 # BREmote V2.5-Evo — Heading Control Tuning Guide
 
-**Document version: 1.0 — 2026-05-08 — Bundle 1 reference**
+**Document version: 1.1 — 2026-05-08 — Bundle 1 reference (Bundle 5b adds ArduPilot architectural context)**
 Applies to firmware SW_VERSION 31 and later.
 
 ## TL;DR
@@ -135,12 +135,23 @@ Future work: an I term can be added later without restructuring. The preset stru
 
 ## 8. References
 
-- **ArduRover** (ArduPilot rover branch) — cascaded PID for ground-vehicle steering. Reference for serious heading control under wind / slope. Their `STEER_RATE_*` and `STR_TO_SRV_*` parameters are direct analogs of our Kp / Kd, at higher complexity for waypoint-tracking precision.
+- **ArduRover** (ArduPilot rover branch) — cascaded PID for ground-vehicle steering. Useful as a *framework* reference: their `STEER_RATE_*` and `STR_TO_SRV_*` parameters are conceptual analogs of our Kp / Kd. The absolute tuning values are NOT directly transferable — ArduRover is tuned for autonomous waypoint-following on much larger, heavier vehicles with different actuator dynamics. **Borrow the structure, not the numbers.**
 - **OpenMower / Pixhawk Boat** — PID with I term for marine drift compensation. Their I term works because the disturbances (current, wind) are quasi-steady. We rejected it because tow-buggy use cases see more transient than steady disturbance.
 - **Betaflight (drone PID)** — 400 Hz PID with sophisticated filtering. Far more complex than necessary for surface vehicles at 10 Hz LoRa cadence. Useful as a reference for filter design, not for tuning numbers.
 
+### Why we don't run ArduPilot/ArduRover directly
+
+Some custom-built marine projects — for example Mike Holden's [Ardupilot-GPS-Tag](https://github.com/MikeHolden3/Ardupilot-GPS-Tag-Archive), an ESP32 LoRa tag that talks to an onboard Pixhawk running ArduRover BOAT class — get autonomous behavior "for free" by delegating all control to a full ArduPilot stack. We deliberately did NOT take that path:
+
+1. **Safety philosophy is non-negotiable.** ArduPilot's `GUIDED` mode is autonomous by default: the vehicle moves toward the target without any user trigger input. Our hard rule (the Tow Buggy ONLY moves when the user physically holds the throttle trigger) directly conflicts with this. Hacking ArduPilot to require continuous throttle fights the framework's design and adds risk.
+2. **Hardware footprint.** ArduPilot needs a Pixhawk-class flight controller (~$100+) plus a separate ESP32 LoRa bridge. Our single ESP32-C3 + VESC stack is leaner, lighter, and cheaper for the use case.
+3. **Iteration speed.** Editing a small custom firmware loop and reflashing is faster than configuring an ArduPilot parameter tree, especially for a small purpose-built application.
+4. **Scope.** ArduPilot is built for waypoint missions, surveys, RTL, geofences, full mission planning. We need exactly two things: "come back to this person" (RTM) and later "follow this person's path while the user holds the trigger" (FM). A smaller surface is easier to keep safe and predictable.
+
+What we DO borrow from the ArduPilot ecosystem: control-theory structure (PID layout, filter design, anti-windup awareness), log-driven tuning workflow, and validation that "lightweight LoRa GPS feed → downstream controller" is a proven architectural pattern.
+
 ---
 
-**Last updated:** 2026-05-08 (Bundle 1)
+**Last updated:** 2026-05-08 (Bundle 1 + Bundle 5b)
 **Maintainer:** monterman / LudwigBre
 **Source firmware:** `Source/V2_Integration_Rx/RTMState.ino` — see `kSteerPresets[]` array and `updateRtmSteering()` function.

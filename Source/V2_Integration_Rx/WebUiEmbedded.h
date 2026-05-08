@@ -13,6 +13,7 @@
 // V2.5-Evo - 2026-05-06 - D6: Added rtm_use_compass + rtm_cog_min_speed_kmh UI controls in RTM & Follow-Me group
 // V2.5-Evo - 2026-05-08 - Bundle 1: Replace dummy_delete_me with rtm_steer_response enum dropdown in RTM & Follow-Me group
 // V2.5-Evo - 2026-05-07 - FIX-WEBUI-LOGS-CSS: minimal CSS-only mobile fix for Logs modal — flex-wrap on log-item, mobile media query for stacked layout
+// V2.5-Evo - 2026-05-08 - Bundle 3a: Shrink per-row Download CSV + Delete buttons in Logs modal (smaller padding+font-size; flex:0 0 auto on mobile so filename gets more space)
 
 #include <Arduino.h>
 
@@ -69,7 +70,7 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
       .log-item .log-actions { display: flex; gap: 6px; margin-top: 6px; }
       .log-item .log-name { word-break: break-all; font-size: 13px; }
       .log-item .log-size { font-size: 11px; }
-      .log-item .log-actions .btn { flex: 1; text-align: center; font-size: 12px; }
+      .log-item .log-actions .btn { flex: 0 0 auto; text-align: center; font-size: 11px; padding: 2px 7px; }
       .modal-overlay { padding: 10px; }
       .modal { padding: 14px; }
     }
@@ -376,7 +377,7 @@ async function openLogs(){
     let h='<div style="margin-bottom:8px;display:flex;gap:8px"><button class="btn danger" onclick="deleteAllLogs()">Delete All</button><button class="btn danger" onclick="deleteSelected()">Delete Selected</button></div>';
     res.logs.forEach(x=>{
       const kb=(x.size/1024).toFixed(1);
-      h+=`<div class="log-item"><input type="checkbox" class="log-check" data-name="${x.name}"><div><div class="log-name">${x.name}</div><div class="log-size">${kb} KB</div></div><div class="log-actions"><a class="btn" href="/api/logs/download?file=${x.name}" target="_blank" style="text-decoration:none;font-size:12px;padding:7px 10px">Download CSV</a><button class="btn warn" style="font-size:12px;padding:7px 10px" onclick="deleteLog('${x.name}')">Delete</button></div></div>`;
+      h+=`<div class="log-item"><input type="checkbox" class="log-check" data-name="${x.name}"><div><div class="log-name">${x.name}</div><div class="log-size">${kb} KB</div></div><div class="log-actions"><a class="btn" href="/api/logs/download?file=${x.name}" target="_blank" style="text-decoration:none;font-size:11px;padding:2px 7px">Download CSV</a><button class="btn warn" style="font-size:11px;padding:2px 7px" onclick="deleteLog('${x.name}')">Delete</button></div></div>`;
     });
     l.innerHTML=h;
   }else{

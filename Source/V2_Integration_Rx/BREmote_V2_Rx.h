@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-05-09 - Bundle 9-Final: Added USB CDC On Boot compile-time guard
 // V2.5-Evo - 2026-05-08 - Bundle 1: RTM/FM steering preset system (rtm_steer_response 0-4); SW_VERSION 30→31; sizeof unchanged at 164; FM placeholder comments improved; VescLogData +4 bytes for tuning telemetry
 // V2.5-Evo - 2026-05-06 - LOG-EXT-1: VescLogData extended with heading source debug fields (12 fields, +18 bytes)
 // V2.5-Evo - 2026-05-06 - D3-Fix: rtm_use_compass + rtm_cog_min_speed_kmh changed uint8_t→uint16_t for ConfigService CFG_U16 compatibility; SW_VERSION 29→30; sizeof 160→164
@@ -14,6 +15,26 @@
 // V3 - 2026-04-27 - P8: TelemetryPacket adds rtm_distance at index 5; link_quality moved to index 6
 // V3 - 2026-04-25 - P7: Added rtm_rx_active, rtm_rx_emergency_stop, rtm_steer_override, fm_mode_runtime globals
 // V3 - 2026-04-25 - P7 fix: Changed RTM volatile globals to std::atomic for cross-core safety (core 0 PWM task / core 1 loop task)
+
+// ============================================================
+// V2.5-Evo - 2026-05-09 - Bundle 9-Final: USB CDC On Boot guard
+//
+// ESP32-C3 chip-level hardware default: GPIO 18 = USB D-, GPIO 19 = USB D+.
+// RX firmware uses GPIO 18/19 as UART for the BN-880 GPS via Serial1.
+// If "USB CDC On Boot" is enabled at compile time, the ESP32-C3 USB
+// peripheral claims GPIO 18/19 internally and Serial1.begin() silently
+// fails — GPS init never reaches the module, no fix is ever acquired,
+// hours of debugging follow.
+//
+// REQUIRED: Arduino IDE → Tools → USB CDC On Boot → Disabled
+//   OR     arduino-cli --fqbn esp32:esp32:esp32c3:CDCOnBoot=default
+//
+// Debug Serial output goes via UART0 (GPIO 20/21) → CH340 USB-to-UART chip
+// → USB connector. Same physical USB cable, same COM port, no debug loss.
+// ============================================================
+#if defined(ARDUINO_USB_CDC_ON_BOOT) && (ARDUINO_USB_CDC_ON_BOOT != 0)
+#error "RX firmware requires USB CDC On Boot = Disabled. ESP32-C3 USB peripheral claims GPIO 18/19 (used by Serial1 for GPS) when CDC On Boot is enabled. Set Tools -> USB CDC On Boot -> Disabled in Arduino IDE, OR pass :CDCOnBoot=default to arduino-cli's --fqbn argument. See file header for full explanation."
+#endif
 
 /*
 ** Includes

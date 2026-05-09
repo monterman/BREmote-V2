@@ -9,6 +9,27 @@
 // V2.5-Evo - 2026-05-01 - Release: DEBUG_RX commented out for production build
 // V3 - 2026-05-01 - thr_expo1 repurposed as fm_display_mode (FM digit zone data selector, 1-4)
 // V3 - 2026-05-02 - Added displayMutex SemaphoreHandle_t (Core 0/Core 1 displayBuffer race fix)
+// V2.5-Evo - 2026-05-09 - Bundle 9-Final: Added USB CDC On Boot compile-time guard
+
+// ============================================================
+// V2.5-Evo - 2026-05-09 - Bundle 9-Final: USB CDC On Boot guard
+//
+// ESP32-C3 chip-level hardware default: GPIO 18 = USB D-, GPIO 19 = USB D+.
+// This firmware uses those pins as UART for the BN-220 GPS via Serial1.
+// If "USB CDC On Boot" is enabled at compile time, the ESP32-C3 USB
+// peripheral claims GPIO 18/19 internally and Serial1.begin() silently
+// fails — GPS init never reaches the module, no fix is ever acquired,
+// hours of debugging follow.
+//
+// REQUIRED: Arduino IDE → Tools → USB CDC On Boot → Disabled
+//   OR     arduino-cli --fqbn esp32:esp32:esp32c3:CDCOnBoot=default
+//
+// Debug Serial output goes via UART0 (GPIO 20/21) → CH340 USB-to-UART chip
+// → USB connector. Same physical USB cable, same COM port, no debug loss.
+// ============================================================
+#if defined(ARDUINO_USB_CDC_ON_BOOT) && (ARDUINO_USB_CDC_ON_BOOT != 0)
+#error "TX firmware requires USB CDC On Boot = Disabled. ESP32-C3 USB peripheral claims GPIO 18/19 (used by Serial1 for GPS) when CDC On Boot is enabled. Set Tools -> USB CDC On Boot -> Disabled in Arduino IDE, OR pass :CDCOnBoot=default to arduino-cli's --fqbn argument. See file header for full explanation."
+#endif
 
 /*
 ** Includes

@@ -35,6 +35,7 @@
 //   ceremony and confirms; drains Serial1 to keep gps_tx.location.age() fresh and
 //   prevent GPS dot blinking during blocking display holds.
 // V3 - 2026-05-02 - Gate 3 throttle-release timeout reduced 10000→4000ms (10s was too long for tow buggy field use)
+// V3 - 2026-05-10 - SAFETY FIX: zero rtm_thr_cap_tx during arm ceremony to prevent motor runaway (see setRtmArmed)
 
 extern volatile uint8_t current_vib_pattern;
 extern float rtm_arm_dist_m;  // defined in BREmote_V2_Tx.h — captured at RTM engage moment
@@ -108,7 +109,12 @@ void setRtmArmed()
   rtm_arm_start_ms = millis();
   rtm_hold_start   = 0;
   rtm_tx_active    = false;
-  rtm_thr_cap_tx   = 255;
+  // SAFETY FIX: sendData() FreeRTOS task keeps running while loop() is blocked inside
+  // runDoubleSqueezeArm(). With cap=255, every arm-squeeze byte goes straight to RX and
+  // drives the motor at full duty with rtm_rx_active=0 (no RX gate suppression).
+  // Hold cap=0 for the entire ceremony; all abort paths below restore it to 255;
+  // success path leaves it at 0 so calcRtmThrottleCap() ramp takes over on first RTM_ACTIVE tick.
+  rtm_thr_cap_tx   = 0;
   queueMetaPacketBurst(0xF1, 0);   // tell RX: RTM armed but not yet active
   current_vib_pattern = 4;         // Pattern 4: 2 fast short = RTM arm confirm
   runDoubleSqueezeArm();            // Bug4: handles both single and double squeeze
@@ -203,6 +209,7 @@ static void runDoubleSqueezeArm()
   if (!first_ok)
   {
     rtm_arm_gps_timeout_override = 0;  // ceremony aborted — restore normal GPS threshold
+    rtm_thr_cap_tx = 255;              // restore throttle passthrough — arm aborted
     for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000;
     updateDisplay();
     rtm_tx_state = RTM_IDLE;
@@ -246,6 +253,7 @@ static void runDoubleSqueezeArm()
     if (!second_ok)
     {
       rtm_arm_gps_timeout_override = 0;  // ceremony aborted — restore normal GPS threshold
+      rtm_thr_cap_tx = 255;              // restore throttle passthrough — arm aborted
       for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000;
       updateDisplay();
       rtm_tx_state = RTM_IDLE;
@@ -265,9 +273,11 @@ static void runDoubleSqueezeArm()
   float prearm_m = decodeRtmDistanceM();
   if (prearm_m >= 0.0f && prearm_m <= (float)usrConf.rtm_disengage_distance_m)
   {
-    rtm_arm_gps_timeout_override = 0;  // Finding 2-1: only exit path that left
+    rtm_arm_gps_timeout_override = 0;  // restore GPS threshold — arm rejected
+                                        // Finding 2-1: only exit path that previously left
                                         // the 4× override stale; all other exits
                                         // (timeouts + rtmDisengage) already clear it
+    rtm_thr_cap_tx = 255;              // restore throttle passthrough — arm rejected
     current_vib_pattern = 4;
     // Large-font stop confirm on arm rejection.
     displayDigits(LET_S, LET_T);

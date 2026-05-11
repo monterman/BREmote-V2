@@ -36,3 +36,10 @@ CLAUDE.md
 .claudeignore
 docs/superpowers/
 docs/CLI_compile_export.md
+
+# Unknown artifact files — origin unclear, excluded until identified
+ed SVG, update README tables, P5 plan doc added
+
+# Local testing logs and field notes — data files, not source
+Logs testing/
+field tests RTM*.docx

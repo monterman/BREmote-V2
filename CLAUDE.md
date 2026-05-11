@@ -402,7 +402,8 @@ $cli = "C:\Users\$env:USERNAME\AppData\Local\Programs\Arduino IDE\resources\app\
 - If compile fails, fix errors before committing
 - Flash % note: arduino-cli reports against the default 1.2MB partition — ~93% from arduino-cli = ~39% of the actual Huge APP 3MB slot. Flag only if binary exceeds ~2.8MB
 
-**After clean compile, remind Andres to:**
-1. Open Arduino IDE → Sketch → Export Compiled Binary (for changed board/s)
-2. Run the firmware release prompt to rename and move .bin files into `firmware/TX/` or `firmware/RX/` with version numbers
-3. Then `git push`
+**After clean compile, export binaries using the CLI workflow:**
+- Full step-by-step procedure (compile → export → delete .elf/.map → rename → move → commit → push) is in:
+  `docs/CLI_compile_export.md` — **always read this file before doing any binary export or release.**
+- The file is local-only (gitignored). If it is missing, recreate it from the workflow documented in this section and Section 17 history.
+- Do NOT ask Andres to use Arduino IDE for binary export — the CLI workflow handles everything end-to-end.

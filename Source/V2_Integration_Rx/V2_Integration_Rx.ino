@@ -1,7 +1,7 @@
-// V2.5-Evo - 2026-05-11 - Telemetry Fix: VESC moved to its own vesc_loop_timer (2Hz); checkButtons() added to loop() for runtime BIND compass cal
-// V3 - 2026-05-03 - Removed commented-out SPIFFS.remove dead code (LOW audit cleanup)
-// V3 - 2026-04-30 - Bundle E: GPS moved to its own gps_loop_timer (rate = gps_update_hz); removed from 1000ms gate
-// V3 - 2026-04-25 - P7: Added runRtmLoop() call in loop(); forward declarations
+﻿// V2.5-Evo - 2026-05-11 - Telemetry Fix: VESC moved to its own vesc_loop_timer (2Hz); checkButtons() added to loop() for runtime BIND compass cal
+// V2.5-Evo - 2026-05-03 - Removed commented-out SPIFFS.remove dead code (LOW audit cleanup)
+// V2.5-Evo - 2026-04-30 - Bundle E: GPS moved to its own gps_loop_timer (rate = gps_update_hz); removed from 1000ms gate
+// V2.5-Evo - 2026-04-25 - P7: Added runRtmLoop() call in loop(); forward declarations
 #include "BREmote_V2_Rx.h"
 
 SX1262 radio = new Module(P_LORA_NSS, P_LORA_DIO, P_LORA_RST, P_LORA_BUSY);
@@ -9,7 +9,7 @@ Adafruit_AW9523 aw;
 Ticker ticksrc;
 TinyGPSPlus gps;
 
-// V3 - 2026-04-25 - P7: RTM state machine and compass heading function
+// V2.5-Evo - 2026-04-25 - P7: RTM state machine and compass heading function
 void runRtmLoop();
 float getCompassHeading();
 
@@ -38,8 +38,8 @@ void setup()
 }
 
 unsigned long loop_timer = 0;
-unsigned long gps_loop_timer  = 0;  // V3 - 2026-04-30 - Bundle E: separate GPS polling timer
-unsigned long vesc_loop_timer = 0;  // V3 - 2026-05-11 - Telemetry Fix: separate VESC polling timer (2Hz)
+unsigned long gps_loop_timer  = 0;  // V2.5-Evo - 2026-04-30 - Bundle E: separate GPS polling timer
+unsigned long vesc_loop_timer = 0;  // V2.5-Evo - 2026-05-11 - Telemetry Fix: separate VESC polling timer (2Hz)
 int wetness_counter = 0;
 
 void loop()
@@ -56,7 +56,7 @@ void loop()
   // Runtime button detection: BIND = compass cal. Boot-time pairing is guarded inside.
   checkButtons();
 
-  // V3 - 2026-04-25 - P7: RTM state machine — safety gates, steering override, Phase C.
+  // V2.5-Evo - 2026-04-25 - P7: RTM state machine — safety gates, steering override, Phase C.
   // Runs at 10Hz regardless of the 1000ms GPS/VESC gate below.
   runRtmLoop();
 

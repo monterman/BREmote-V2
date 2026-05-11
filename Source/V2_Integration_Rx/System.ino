@@ -1,5 +1,5 @@
-// V2.5-Evo - 2026-05-11 - Compass Cal: runtime BIND press triggers compass calibration with LED feedback
-// V3 - 2026-04-25 - P7: Added ?compassheading serial diagnostic command
+﻿// V2.5-Evo - 2026-05-11 - Compass Cal: runtime BIND press triggers compass calibration with LED feedback
+// V2.5-Evo - 2026-04-25 - P7: Added ?compassheading serial diagnostic command
 // V2.5-Evo - 2026-05-05 - cmdMagTest: bench-test logger for compass EMI vs motor current
 // V2.5-Evo - 2026-05-05 - cmdVescPing: VESC UART telemetry verification (?vescping)
 // V2.5-Evo - 2026-05-06 - cmdVescRaw: raw VESC UART byte-dump probe (?vescraw)

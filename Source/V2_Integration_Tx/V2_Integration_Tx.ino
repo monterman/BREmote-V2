@@ -1,8 +1,8 @@
-// V3 - 2026-05-03 - Removed commented-out SPIFFS.remove dead code (LOW audit cleanup)
-// V3 - 2026-04-25 - P7: Simplified getTxGPSLoop() gate to gps_en only; added runRtmLoop() call in loop()
-// V3 - 2026-04-24 - Call initTxGPS() in setup() after applyConfigSettings() so GPS UART is ready on boot
-// V3 - 2026-04-21 - Added getTxGPSLoop() call in loop() and forward declarations for TX GPS functions
-// V3 - 2026-04-27 - P8: loop() calls renderRtmInfoDisplay() instead of renderOperationalDisplay() when rtm_tx_active
+﻿// V2.5-Evo - 2026-05-03 - Removed commented-out SPIFFS.remove dead code (LOW audit cleanup)
+// V2.5-Evo - 2026-04-25 - P7: Simplified getTxGPSLoop() gate to gps_en only; added runRtmLoop() call in loop()
+// V2.5-Evo - 2026-04-24 - Call initTxGPS() in setup() after applyConfigSettings() so GPS UART is ready on boot
+// V2.5-Evo - 2026-04-21 - Added getTxGPSLoop() call in loop() and forward declarations for TX GPS functions
+// V2.5-Evo - 2026-04-27 - P8: loop() calls renderRtmInfoDisplay() instead of renderOperationalDisplay() when rtm_tx_active
 // V2.5-Evo - 2026-04-29 - Sleep: dual-condition auto-sleep — user idle (no throttle/toggle
 //   above deadzone) OR RX silent; both use sleep_timeout_s; pocket-safe thresholds applied
 #include "BREmote_V2_Tx.h"
@@ -89,7 +89,7 @@ void setup()
   initTasks();
   runBootSequence();
   applyConfigSettings();
-  // V3 - 2026-04-24 - Call initTxGPS() on boot so GPS UART is ready before loop() starts polling
+  // V2.5-Evo - 2026-04-24 - Call initTxGPS() on boot so GPS UART is ready before loop() starts polling
   initTxGPS();
   initWatchdog();
 
@@ -137,7 +137,7 @@ void loop()
   webCfgLoop();
 #endif
 
-  // V3 - 2026-04-25 - P7: Run GPS loop whenever gps_en=1, regardless of speed_src.
+  // V2.5-Evo - 2026-04-25 - P7: Run GPS loop whenever gps_en=1, regardless of speed_src.
   // RTM mode needs TX GPS position for meta-packets even when speed display uses
   // an RX-side source (speed_src 0/1/4). Non-blocking — safe every 110ms tick.
   if (usrConf.gps_en)
@@ -148,9 +148,9 @@ void loop()
   runMenu();
   if(in_menu > 0) in_menu--;
 
-  // V3 - 2026-04-25 - P7: RTM state machine (arming, active, cooldown) and FM mode cycle.
+  // V2.5-Evo - 2026-04-25 - P7: RTM state machine (arming, active, cooldown) and FM mode cycle.
   runRtmLoop();
-  // V3 - 2026-04-27 - P8.1: FM arm/disarm state machine (arm window + Gate 1 throttle-release)
+  // V2.5-Evo - 2026-04-27 - P8.1: FM arm/disarm state machine (arm window + Gate 1 throttle-release)
   runFmLoop();
 
   checkSerial();
@@ -181,7 +181,7 @@ void loop()
     }
   }
 
-  // V3 - 2026-04-27 - P8: Show RTM/FM info (distance/speed) when RTM is active; normal display otherwise
+  // V2.5-Evo - 2026-04-27 - P8: Show RTM/FM info (distance/speed) when RTM is active; normal display otherwise
   if (rtm_tx_active)
     renderRtmInfoDisplay();
   else

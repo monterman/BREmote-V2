@@ -1,8 +1,8 @@
-// V3 - 2026-05-03 - Removed if(0) dead code; checkAndAdjustAddress() TODO noted
-// V3 - 2026-04-29 - Bundle C: startTransmit() return value checked and logged on error
-// V3 - 2026-04-24 - Added GPS meta-packet reception: gps_meta_pending state, processMetaGpsPacket(), triggeredReceive() 2-path state machine
-// V3 - 2026-04-24 - Added Phase B GPS handshake check: gpsPhaseBCheck() called from processMetaGpsPacket()
-// V3 - 2026-04-25 - P7: Added processRtmStatePacket(), processFmOverridePacket(); dispatch 0xF1/0xF2 in triggeredReceive()
+﻿// V2.5-Evo - 2026-05-03 - Removed if(0) dead code; checkAndAdjustAddress() TODO noted
+// V2.5-Evo - 2026-04-29 - Bundle C: startTransmit() return value checked and logged on error
+// V2.5-Evo - 2026-04-24 - Added GPS meta-packet reception: gps_meta_pending state, processMetaGpsPacket(), triggeredReceive() 2-path state machine
+// V2.5-Evo - 2026-04-24 - Added Phase B GPS handshake check: gpsPhaseBCheck() called from processMetaGpsPacket()
+// V2.5-Evo - 2026-04-25 - P7: Added processRtmStatePacket(), processFmOverridePacket(); dispatch 0xF1/0xF2 in triggeredReceive()
 
 void radioErrorHalt(int type)
 {
@@ -277,7 +277,7 @@ static void gpsPhaseBCheck()
   gps_phase_b_prev_tx_ms  = now;
 }
 
-// V3 - 2026-04-25 - P7: Handle 0xF1 RTM state meta-packet from TX.
+// V2.5-Evo - 2026-04-25 - P7: Handle 0xF1 RTM state meta-packet from TX.
 // pkt: 6-byte buffer. byte[3]=0xF1, byte[4]: 0=RTM deactivate, 1=RTM activate.
 // Sets rtm_rx_active. Safety gates in RTMState.ino may override during active RTM.
 static void processRtmStatePacket(const uint8_t *pkt)
@@ -297,7 +297,7 @@ static void processRtmStatePacket(const uint8_t *pkt)
   }
 }
 
-// V3 - 2026-04-25 - P7: Handle 0xF2 FM override meta-packet from TX.
+// V2.5-Evo - 2026-04-25 - P7: Handle 0xF2 FM override meta-packet from TX.
 // pkt: 6-byte buffer. byte[3]=0xF2, byte[4]: FM mode 0-3.
 // Updates runtime FM mode without writing SPIFFS. Resets to 0xFF (use SPIFFS) on RX reboot.
 static void processFmOverridePacket(const uint8_t *pkt)
@@ -307,7 +307,7 @@ static void processFmOverridePacket(const uint8_t *pkt)
   Serial.printf("FM [RX] mode override: %d\n", mode);
 }
 
-// V3 - 2026-04-24 - GPS meta-packet state and handler for 0xF3 protocol
+// V2.5-Evo - 2026-04-24 - GPS meta-packet state and handler for 0xF3 protocol
 
 // gps_meta_pending: set true when a 0xF3 announcement (6-byte) is received.
 // On the NEXT wakeup of triggeredReceive, read 14 bytes (GPS data) instead

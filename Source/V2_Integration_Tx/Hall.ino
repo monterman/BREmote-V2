@@ -1,8 +1,8 @@
-// V3 - 2026-04-25 - P7: handleGearToggle() left-hold arms RTM; right-hold cycles FM
-// V3 - 2026-04-21 - Updated DISPLAY_MODE_SPEED availability check to support TX GPS speed sources
-// V3 - 2026-04-27 - P8: Gesture redesign — combo state machine; LEFT hold=display cycle; RIGHT+LEFT=RTM; LEFT+RIGHT=FM
-// V3 - 2026-04-27 - fix: COMBO_TAP_MAX_MS 500ms; tap detection was tied to gear_change_waittime (100ms — too tight)
-// V3 - 2026-04-27 - fix: restored correct gesture map — RIGHT hold=display cycle, LEFT hold=lock (P8 had them swapped)
+﻿// V2.5-Evo - 2026-04-25 - P7: handleGearToggle() left-hold arms RTM; right-hold cycles FM
+// V2.5-Evo - 2026-04-21 - Updated DISPLAY_MODE_SPEED availability check to support TX GPS speed sources
+// V2.5-Evo - 2026-04-27 - P8: Gesture redesign — combo state machine; LEFT hold=display cycle; RIGHT+LEFT=RTM; LEFT+RIGHT=FM
+// V2.5-Evo - 2026-04-27 - fix: COMBO_TAP_MAX_MS 500ms; tap detection was tied to gear_change_waittime (100ms — too tight)
+// V2.5-Evo - 2026-04-27 - fix: restored correct gesture map — RIGHT hold=display cycle, LEFT hold=lock (P8 had them swapped)
 // V2.5-Evo - 2026-04-28 - Change1: post-unlock delay 500→250ms; throttle-release settling 1000→500ms
 // V2.5-Evo - 2026-05-06 - FIX-GESTURE-1: COMBO_TAP_MAX_MS 500ms→1000ms. In no_gears mode the 100ms display cycle confused users into holding the tap longer than 500ms, causing has_combo=false and LEFT-hold-5s to fall into the 2s LOCK branch instead of arming RTM (~70% failure rate per Andres field report).
 
@@ -11,7 +11,7 @@ bool isDisplayModeAvailable(uint8_t mode)
 {
   switch(mode) {
     case DISPLAY_MODE_TEMP:   return telemetry.foil_temp  != 0xFF;
-    // V3 - 2026-04-21 - When a TX-GPS speed unit is selected (speed_src 2/3/5),
+    // V2.5-Evo - 2026-04-21 - When a TX-GPS speed unit is selected (speed_src 2/3/5),
     // SPEED mode is always available (shows "--" when no fix, live value otherwise).
     // For RX-sourced speed, availability still depends on the telemetry sentinel.
     case DISPLAY_MODE_SPEED:
@@ -226,7 +226,7 @@ bool ctminus()
 }
 
 // ============================================================
-// V3 - 2026-04-27 - P8: COMBO GESTURE STATE MACHINE
+// V2.5-Evo - 2026-04-27 - P8: COMBO GESTURE STATE MACHINE
 //
 // Direction convention (unchanged since V2):
 //   Physical LEFT toggle → tog_input = -1 → handleGearToggle(-1) → direction = -1

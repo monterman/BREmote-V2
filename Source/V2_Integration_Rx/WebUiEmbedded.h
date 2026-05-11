@@ -1,15 +1,15 @@
-#ifndef WEB_UI_EMBEDDED_H
+﻿#ifndef WEB_UI_EMBEDDED_H
 #define WEB_UI_EMBEDDED_H
-// V3 - 2026-05-03 - Log UI: Delete All + Delete Selected buttons;
+// V2.5-Evo - 2026-05-03 - Log UI: Delete All + Delete Selected buttons;
 //                   exportJsonFile() redirects to server endpoint (iPhone fix)
-// V3 - 2026-04-25 - P7: Added 5 RTM/FM RX fields; added RTM & Follow-Me group
+// V2.5-Evo - 2026-04-25 - P7: Added 5 RTM/FM RX fields; added RTM & Follow-Me group
 // V2.5-Evo - 2026-04-28 - Security: added rtm_stop_distance_m field (was in ConfigService but missing from UI)
 // V2.5-Evo - 2026-04-29 - TaskC: full description audit — bool 0/1 values, enum all options inline, int/float extremes explained
-// V3 - 2026-04-30 - RTM approach decel zone: rtm_approach_zone_m field added to RTM & Follow-Me group
-// V3 - 2026-04-30 - Rename: gps_max_jump_kmh → gps_max_teleport_kmh (clarity)
-// V3 - 2026-04-30 - Bundle E: gps_update_hz field added to GPS & Follow-Me group; gps_max_teleport_kmh default 200→80
-// V3 - 2026-04-29 - Bundle A: radio_preset max clamped to 2; dead foil_speed != 99 sentinel removed
-// V3 - 2026-05-01 - fix: wet_det_active description corrected — warning-only (E71 + vibration), output is never cut
+// V2.5-Evo - 2026-04-30 - RTM approach decel zone: rtm_approach_zone_m field added to RTM & Follow-Me group
+// V2.5-Evo - 2026-04-30 - Rename: gps_max_jump_kmh → gps_max_teleport_kmh (clarity)
+// V2.5-Evo - 2026-04-30 - Bundle E: gps_update_hz field added to GPS & Follow-Me group; gps_max_teleport_kmh default 200→80
+// V2.5-Evo - 2026-04-29 - Bundle A: radio_preset max clamped to 2; dead foil_speed != 99 sentinel removed
+// V2.5-Evo - 2026-05-01 - fix: wet_det_active description corrected — warning-only (E71 + vibration), output is never cut
 // V2.5-Evo - 2026-05-06 - D6: Added rtm_use_compass + rtm_cog_min_speed_kmh UI controls in RTM & Follow-Me group
 // V2.5-Evo - 2026-05-08 - Bundle 1: Replace dummy_delete_me with rtm_steer_response enum dropdown in RTM & Follow-Me group
 // V2.5-Evo - 2026-05-07 - FIX-WEBUI-LOGS-CSS: minimal CSS-only mobile fix for Logs modal — flex-wrap on log-item, mobile media query for stacked layout

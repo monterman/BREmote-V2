@@ -1,10 +1,10 @@
-// TX-specific config field table and cross-validation.
+﻿// TX-specific config field table and cross-validation.
 // Shared engine is in ../Common/ConfigServiceEngine.h (included via BREmote_V2_Tx.h).
-// V3 - 2026-04-27 - P8: Added rtm_display_mode, fm_warn_distance_m, rtm_steer_exit_on_input; rtm_max_runtime_s min changed 30→0
+// V2.5-Evo - 2026-04-27 - P8: Added rtm_display_mode, fm_warn_distance_m, rtm_steer_exit_on_input; rtm_max_runtime_s min changed 30→0
 // V2.5-Evo - 2026-04-28 - P9: Added dist_unit (0=Metres, 1=Feet; range 0-1)
 // V2.5-Evo - 2026-04-28 - ChangeA: fm_arm_window_s max raised 60→120s (no struct change, no SPIFFS reset)
 // V2.5-Evo - 2026-04-29 - Sleep: added sleep_timeout_s to ConfigService validation table
-// V3 - 2026-05-01 - thr_expo1 repurposed as fm_display_mode; range 1-4, default 1
+// V2.5-Evo - 2026-05-01 - thr_expo1 repurposed as fm_display_mode; range 1-4, default 1
 
 const CfgFieldSpec kCfgFields[] = {
   {"radio_preset", CFG_U16, offsetof(confStruct, radio_preset), true, true, true, 1.0f, 2.0f, 0, false},
@@ -45,11 +45,11 @@ const CfgFieldSpec kCfgFields[] = {
   {"kalman_en", CFG_U16, offsetof(confStruct, kalman_en), true, false, true, 0.0f, 1.0f, 0, false},
   {"speed_src", CFG_U16, offsetof(confStruct, speed_src), true, false, true, 0.0f, 5.0f, 0, false},
   {"tx_gps_stale_timeout_ms", CFG_U16, offsetof(confStruct, tx_gps_stale_timeout_ms), true, false, true, 0.0f, 65535.0f, 0, false},
-  // V3 - 2026-04-22 - HDOP quality gate for TX GPS (stored as HDOP*100; 200 = HDOP 2.0; range 50-500)
+  // V2.5-Evo - 2026-04-22 - HDOP quality gate for TX GPS (stored as HDOP*100; 200 = HDOP 2.0; range 50-500)
   {"gps_max_hdop", CFG_U16, offsetof(confStruct, gps_max_hdop), true, false, true, 50.0f, 500.0f, 0, false},
-  // V3 - 2026-04-22 - GPS chip type selector (0=BN-220, 2=M10; types 1/3 rejected by cross-field check since TX has no compass)
+  // V2.5-Evo - 2026-04-22 - GPS chip type selector (0=BN-220, 2=M10; types 1/3 rejected by cross-field check since TX has no compass)
   {"gps_chip_type", CFG_U16, offsetof(confStruct, gps_chip_type), true, false, true, 0.0f, 3.0f, 0, false},
-  // V3 - 2026-04-25 - Priority 7 RTM and FM mode parameters
+  // V2.5-Evo - 2026-04-25 - Priority 7 RTM and FM mode parameters
   {"rtm_enabled",            CFG_U16, offsetof(confStruct, rtm_enabled),            true, false, true,  0.0f,   1.0f,    0, false},
   {"rtm_hold_duration_s",    CFG_U16, offsetof(confStruct, rtm_hold_duration_s),    true, false, true,  4.0f,  10.0f,    0, false},
   {"rtm_arm_window_s",       CFG_U16, offsetof(confStruct, rtm_arm_window_s),       true, false, true,  5.0f,  30.0f,    0, false},
@@ -62,11 +62,11 @@ const CfgFieldSpec kCfgFields[] = {
   {"rtm_gps_timeout_ms",     CFG_U16, offsetof(confStruct, rtm_gps_timeout_ms),     true, false, true, 500.0f,3000.0f,   0, false},
   {"fm_hold_duration_s",     CFG_U16, offsetof(confStruct, fm_hold_duration_s),     true, false, true,  4.0f,  10.0f,    0, false},
   {"fm_override_enabled",    CFG_U16, offsetof(confStruct, fm_override_enabled),    true, false, true,  0.0f,   1.0f,    0, false},
-  // V3 - 2026-04-27 - Priority 8 UX overhaul parameters
+  // V2.5-Evo - 2026-04-27 - Priority 8 UX overhaul parameters
   {"rtm_display_mode",         CFG_U16, offsetof(confStruct, rtm_display_mode),         true, false, true,  0.0f,   2.0f,    0, false},  // 0=distance, 1=speed, 2=alternating 2.5s
   {"fm_warn_distance_m",       CFG_U16, offsetof(confStruct, fm_warn_distance_m),       true, false, true, 50.0f, 1000.0f,   0, false},  // FM proximity warning threshold in meters
   {"rtm_steer_exit_on_input",  CFG_U16, offsetof(confStruct, rtm_steer_exit_on_input),  true, false, true,  0.0f,   1.0f,    0, false},  // 1=steering exits RTM, 0=blend only
-  // V3 - 2026-04-27 - Priority 8.1 FM UX redesign parameter
+  // V2.5-Evo - 2026-04-27 - Priority 8.1 FM UX redesign parameter
   {"fm_arm_window_s",          CFG_U16, offsetof(confStruct, fm_arm_window_s),          true, false, true, 10.0f, 120.0f,    0, false},  // FM auto-disarm after N seconds of no throttle input
   // V2.5-Evo - 2026-04-28 - P9: Distance unit selector. 0=Metres, 1=Feet.
   {"dist_unit",                CFG_U16, offsetof(confStruct, dist_unit),                true, false, true,  0.0f,   1.0f,    0, false},
@@ -98,7 +98,7 @@ bool cfgValidateCrossField(confStruct &candidate, String &err)
   if (candidate.dynamic_power_step < 1) candidate.dynamic_power_step = 1;
   if (candidate.dynamic_power_step > 25) candidate.dynamic_power_step = 25;
 
-  // V3 - 2026-04-22 - TX hardware has no compass. Types 1 (BN-880+compass) and
+  // V2.5-Evo - 2026-04-22 - TX hardware has no compass. Types 1 (BN-880+compass) and
   // 3 (M10+compass) are RX-only. Reject them here so the user gets a clear error
   // rather than silently falling back to a wrong init path.
   if (candidate.gps_chip_type == 1 || candidate.gps_chip_type == 3)

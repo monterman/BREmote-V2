@@ -1,7 +1,7 @@
-#ifndef SPIFFS_ENGINE_H
+﻿#ifndef SPIFFS_ENGINE_H
 #define SPIFFS_ENGINE_H
 
-// V3 - 2026-04-30 - WebUI auto-reinstall via FNV1a content hash; removed WEB_UI_VERSION date string
+// V2.5-Evo - 2026-04-30 - WebUI auto-reinstall via FNV1a content hash; removed WEB_UI_VERSION date string
 // Shared SPIFFS config persistence and WebUI embedding for BREmote V2 TX and RX.
 // Requirements before #include:
 //   - <SPIFFS.h>, "mbedtls/base64.h" included
@@ -31,7 +31,7 @@ uint8_t esp_crc8(uint8_t *data, uint8_t length);
 static const char* WEB_UI_INDEX_PATH = "/index.html";
 static const char* WEB_UI_INDEX_TMP_PATH = "/index.new";
 static const char* WEB_UI_VERSION_PATH = "/ui.version";
-// V3 - 2026-04-30 - WebUI version tracking replaced with automatic FNV1a content hash.
+// V2.5-Evo - 2026-04-30 - WebUI version tracking replaced with automatic FNV1a content hash.
 // WEB_UI_VERSION date string removed. webUiWriteVersionFile() now writes the hash of
 // WEB_UI_INDEX_HTML to /ui.version. ensureWebUiInSPIFFS() compares that hash against
 // a freshly computed hash of the embedded HTML on every boot. Any change to

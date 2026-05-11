@@ -1,5 +1,5 @@
-// V3 - 2026-04-30 - calcPWM() applies rtm_approach_cap for RTM approach decel zone
-// V3 - 2026-04-25 - P7: calcPWM() applies RTM emergency stop and steering override via effective_thr/steer
+﻿// V2.5-Evo - 2026-04-30 - calcPWM() applies rtm_approach_cap for RTM approach decel zone
+// V2.5-Evo - 2026-04-25 - P7: calcPWM() applies RTM emergency stop and steering override via effective_thr/steer
 // V2.5-Evo - 2026-04-28 - Security: gate steer override on thr_received>=25 (belt-and-suspenders)
 void generatePWM(void *parameter) {
   TickType_t xLastWakeTime = xTaskGetTickCount();
@@ -36,7 +36,7 @@ void generatePWM(void *parameter) {
 
 void calcPWM()
 {
-  // V3 - 2026-04-25 - P7: Apply RTM overrides before any PWM calculation.
+  // V2.5-Evo - 2026-04-25 - P7: Apply RTM overrides before any PWM calculation.
   // Emergency stop: any safety gate failure forces throttle to neutral regardless of user input.
   // Steering override: bearing-derived value replaces radio steering when RTM is active.
   // RTM can only subtract from user throttle (never add). Creator safety philosophy enforced.

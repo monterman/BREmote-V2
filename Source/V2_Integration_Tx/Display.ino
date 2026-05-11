@@ -1,12 +1,12 @@
-// V2.5-Evo - 2026-05-05 - 30s digit cache for foil_temp/foil_bat to suppress telemetry-drop dashes
+﻿// V2.5-Evo - 2026-05-05 - 30s digit cache for foil_temp/foil_bat to suppress telemetry-drop dashes
 // V2.5-Evo - 2026-05-05 - PV display: foil_power rendered as kW with decimal point (X.Y kW)
-// V3 - 2026-05-03 - displayError() clamp corrected 29→33 (H6 audit fix)
-// V3 - 2026-05-01 - Fix A: lazy-capture rtm_arm_dist_m on first valid render if missed at arm time
-// V3 - 2026-04-30 - FM R5 bar: replaced linear fill with center-expanding from C4-C5
-// V3 - 2026-04-30 - Priority 10: FM R5 proximity bar implemented in updateR5ProximityBar(); called from renderOperationalDisplay() FM path
-// V3 - 2026-04-21 - Updated DISPLAY_MODE_SPEED case in renderOperationalDisplay() to show TX GPS speed when speed_src 2/3/5
-// V3 - 2026-04-22 - Added GPS status dot at C7 R0 in updateBargraphs(); fixed digit-clear mask 0xFF00→0xFF80 to preserve C7
-// V3 - 2026-04-27 - P8: Fixed displayDigits() clamp 29→33; ANIMATION_DELAY 80→40; ET handler; added renderRtmInfoDisplay()
+// V2.5-Evo - 2026-05-03 - displayError() clamp corrected 29→33 (H6 audit fix)
+// V2.5-Evo - 2026-05-01 - Fix A: lazy-capture rtm_arm_dist_m on first valid render if missed at arm time
+// V2.5-Evo - 2026-04-30 - FM R5 bar: replaced linear fill with center-expanding from C4-C5
+// V2.5-Evo - 2026-04-30 - Priority 10: FM R5 proximity bar implemented in updateR5ProximityBar(); called from renderOperationalDisplay() FM path
+// V2.5-Evo - 2026-04-21 - Updated DISPLAY_MODE_SPEED case in renderOperationalDisplay() to show TX GPS speed when speed_src 2/3/5
+// V2.5-Evo - 2026-04-22 - Added GPS status dot at C7 R0 in updateBargraphs(); fixed digit-clear mask 0xFF00→0xFF80 to preserve C7
+// V2.5-Evo - 2026-04-27 - P8: Fixed displayDigits() clamp 29→33; ANIMATION_DELAY 80→40; ET handler; added renderRtmInfoDisplay()
 // V2.5-Evo - 2026-04-28 - P9: fontCompact3x7 + showFullScreenMessage() + E71 full-screen flash
 // V2.5-Evo - 2026-04-28 - P9 S3+S4: displayDistanceInUnits() + R5 proximity bar
 // V2.5-Evo - 2026-04-28 - Reverted P9 col[0]↔col[2] swap: col[0] is left physical column, no swap needed
@@ -20,8 +20,8 @@
 // V2.5-Evo - 2026-04-28 - Bug5: fc3x7_r + fc3x7_n bitmaps corrected 0x7C→0x1E/0x04/0x02 — shift up, avoid R5
 // V2.5-Evo - 2026-04-29 - Fix 4-3: extern fm_armed updated to volatile to match RTMState.ino
 // V2.5-Evo - 2026-04-29 - Display: fc3x7_F middle bar R3→R2 for visual consistency
-// V3 - 2026-05-01 - FM digit zone shows fm_display_mode data (1=TX speed, 2=dist, 3=buggy spd, 4=thr%)
-// V3 - 2026-05-02 - displayMutex applied to updateBargraphs (Core 0) and main loop render path (Core 1)
+// V2.5-Evo - 2026-05-01 - FM digit zone shows fm_display_mode data (1=TX speed, 2=dist, 3=buggy spd, 4=thr%)
+// V2.5-Evo - 2026-05-02 - displayMutex applied to updateBargraphs (Core 0) and main loop render path (Core 1)
 
 extern volatile bool fm_armed;  // defined in RTMState.ino — volatile: written by loop() core 1,
                                  // read by updateBargraphs() core 0; must match definition
@@ -108,7 +108,7 @@ bool beginDisplay()
 
 void displayDigits(uint8_t dig1, uint8_t dig2)
 {
-  // V3 - 2026-04-27 - P8: Clamp raised 29→33. LET_R(30)/LET_N(31)/LET_S(32)/LET_M(33) were
+  // V2.5-Evo - 2026-04-27 - P8: Clamp raised 29→33. LET_R(30)/LET_N(31)/LET_S(32)/LET_M(33) were
   // added to num0[] after this clamp was written, causing them to silently render as BLANK.
   if (dig1 > 33) dig1 = BLANK;
   if (dig2 > 33) dig2 = BLANK;
@@ -476,7 +476,7 @@ void renderOperationalDisplay()
   // Previous hand-written render wrote through all 7 rows, destructively clearing R5/R6.
   if (fm_armed && !rtm_tx_active)
   {
-    // V3 - 2026-05-01 - FM digit zone: show data selected by fm_display_mode instead of static "FM" text.
+    // V2.5-Evo - 2026-05-01 - FM digit zone: show data selected by fm_display_mode instead of static "FM" text.
     // R5 center-expanding bar already signals FM active — digit zone shows useful data instead.
     // Option 1: TX GPS speed in the unit selected by speed_src (0xFF = no fix → shows "--").
     // Option 2: Distance to buggy decoded from telemetry.rtm_distance (same encoding as RTM bar).
@@ -531,7 +531,7 @@ void renderOperationalDisplay()
       }
       switch(display_mode) {
         case DISPLAY_MODE_TEMP:   displayShowTwoDigitOrDash(getEffectiveFoilTemp()); break;
-        // V3 - 2026-04-21 - Show TX GPS speed when a TX-GPS unit is selected (speed_src 2/3/5);
+        // V2.5-Evo - 2026-04-21 - Show TX GPS speed when a TX-GPS unit is selected (speed_src 2/3/5);
         // fall back to RX telemetry speed for all other speed_src values.
         // tx_gps_speed is already 0xFF when no fix, so displayShowTwoDigitOrDash renders "--" automatically.
         case DISPLAY_MODE_SPEED:
@@ -601,7 +601,7 @@ void renderOperationalDisplay()
       return;
     }
 
-    // V3 - 2026-04-27 - P8: ET error (code=20=LET_T) shows "--" and auto-clears after 3s.
+    // V2.5-Evo - 2026-04-27 - P8: ET error (code=20=LET_T) shows "--" and auto-clears after 3s.
     // ET is absent from V3 RX source; this guard is defensive for legacy or future paths.
     // System stays in manual mode; no RTM/FM engagement; no vibration on ET.
     static unsigned long et_show_ms = 0;
@@ -824,7 +824,7 @@ void displayLock()
   updateDisplay();
 }
 
-#define ANIMATION_DELAY 40  // V3 - 2026-04-27 - P8: 80→40ms (2× faster unlock down-arrow)
+#define ANIMATION_DELAY 40  // V2.5-Evo - 2026-04-27 - P8: 80→40ms (2× faster unlock down-arrow)
 void unlockAnimation()
 {
   for(int i = 1; i < 7; i++)
@@ -1063,7 +1063,7 @@ static void displayDistanceInUnits(float dist_m)
 }
 
 // ============================================================
-// V3 - 2026-04-27 - P8: RTM/FM ACTIVE INFO DISPLAY
+// V2.5-Evo - 2026-04-27 - P8: RTM/FM ACTIVE INFO DISPLAY
 // Called from loop() instead of renderOperationalDisplay() when rtm_tx_active==true.
 // Modes: 0=distance to TX (default), 1=speed, 2=alternating 2.5s each.
 // Distance telemetry encoding (rtm_distance byte from RX):

@@ -1,8 +1,8 @@
-// V2.5-Evo - 2026-05-06 - DIAG: ?gpscoldreset command added
+﻿// V2.5-Evo - 2026-05-06 - DIAG: ?gpscoldreset command added
 // V2.5-Evo - 2026-05-06 - FIX-HELP-1: corrected raw-GPS-dump help text from "type q to quit" to "type 'quit' to abort"
-// V3 - 2026-05-03 - Added reserved/warning comments (LOW audit cleanup)
-// V3 - 2026-04-24 - Added ?printgps, ?gpsraw, ?gpsreinit serial commands for TX GPS diagnostics
-// V3 - 2026-04-22 - P4: signal-drop haptic warning (Pattern A) when sq_graph drops to 1 while connected
+// V2.5-Evo - 2026-05-03 - Added reserved/warning comments (LOW audit cleanup)
+// V2.5-Evo - 2026-04-24 - Added ?printgps, ?gpsraw, ?gpsreinit serial commands for TX GPS diagnostics
+// V2.5-Evo - 2026-04-22 - P4: signal-drop haptic warning (Pattern A) when sq_graph drops to 1 while connected
 const char* SYS_DEVICE_LABEL = "TX";
 
 void deepSleep()
@@ -831,7 +831,7 @@ void vibrationTask(void *parameter) {
       }
       current_vib_pattern = 0;
     }
-    // V3 - 2026-04-27 - P8: Pattern 4 — 2 fast short pulses (RTM arm/disarm confirm)
+    // V2.5-Evo - 2026-04-27 - P8: Pattern 4 — 2 fast short pulses (RTM arm/disarm confirm)
     else if (current_vib_pattern == 4) {
       for (int i = 0; i < 2; i++) {
         digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(80));

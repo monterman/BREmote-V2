@@ -1,14 +1,14 @@
-// V2.5-Evo - 2026-05-06 - D1: Capture GPS course-over-ground (gps_last_course_deg/ms) for future RTM heading source
-// V3 - 2026-04-30 - Rename: gps_max_jump_kmh → gps_max_teleport_kmh (clarity)
-// V3 - 2026-04-30 - Bundle E: replaced 300ms blocking serial drain with non-blocking while(available()) drain
-// V3 - 2026-04-24 - Added Phase B FIELD SERVICE NOTE (sizeof confStruct 128→136)
-// V3 - 2026-04-22 - Added gps_chip_type branch: type 0/1=BN-220/BN-880 (9600→115200, 5Hz), type 2/3=M10 (115200 direct, 10Hz, all constellations)
-// V3 - 2026-04-22 - Added Phase A GPS anti-spoofing: HDOP check, teleport check, acceleration check (gpsPhaseACheck)
+﻿// V2.5-Evo - 2026-05-06 - D1: Capture GPS course-over-ground (gps_last_course_deg/ms) for future RTM heading source
+// V2.5-Evo - 2026-04-30 - Rename: gps_max_jump_kmh → gps_max_teleport_kmh (clarity)
+// V2.5-Evo - 2026-04-30 - Bundle E: replaced 300ms blocking serial drain with non-blocking while(available()) drain
+// V2.5-Evo - 2026-04-24 - Added Phase B FIELD SERVICE NOTE (sizeof confStruct 128→136)
+// V2.5-Evo - 2026-04-22 - Added gps_chip_type branch: type 0/1=BN-220/BN-880 (9600→115200, 5Hz), type 2/3=M10 (115200 direct, 10Hz, all constellations)
+// V2.5-Evo - 2026-04-22 - Added Phase A GPS anti-spoofing: HDOP check, teleport check, acceleration check (gpsPhaseACheck)
 
 // ============================================================
 // FIELD SERVICE NOTE
 //
-// V3 - 2026-04-22: sizeof(confStruct) changed from 108 to 112
+// V2.5-Evo - 2026-04-22: sizeof(confStruct) changed from 108 to 112
 // bytes (gps_chip_type added). On the first V3 flash, SPIFFS
 // will detect the size mismatch and reset ALL settings to
 // defaults. After flashing, you must:
@@ -16,7 +16,7 @@
 //   2) Re-configure all settings via the web UI
 //   3) Re-calibrate compass via the 'runcal' serial command
 //
-// V3 - 2026-04-22: sizeof(confStruct) changed from 112 to 128
+// V2.5-Evo - 2026-04-22: sizeof(confStruct) changed from 112 to 128
 // bytes (Phase A anti-spoofing params added). On the first
 // flash after this change, SPIFFS will again detect the size
 // mismatch and reset ALL settings to defaults. After flashing:
@@ -32,7 +32,7 @@
 // ============================================================
 
 // ============================================================
-// V3 - 2026-04-24: sizeof(confStruct) changed from 128 to 136
+// V2.5-Evo - 2026-04-24: sizeof(confStruct) changed from 128 to 136
 // bytes (Phase B GPS handshake params added). On the first
 // flash after this change, SPIFFS will again detect the size
 // mismatch and reset ALL settings to defaults. After flashing:
@@ -176,7 +176,7 @@ void configureGPS() {
   // that confuse TinyGPS++. setRxBufferSize() MUST be called before begin().
   Serial1.setRxBufferSize(512);
 
-  // V3 - 2026-04-22 - Branch on GPS chip type. Each chip type has a
+  // V2.5-Evo - 2026-04-22 - Branch on GPS chip type. Each chip type has a
   // different factory baud rate and supported feature set.
   switch (usrConf.gps_chip_type)
   {
@@ -328,7 +328,7 @@ void getGPSLoop()
     if (gps.encode(c)) newData = true;
   }
 
-  // V3 - 2026-04-25 - Fix: use isValid() not isUpdated() for speed check — isUpdated() fails when stationary blocking Phase B
+  // V2.5-Evo - 2026-04-25 - Fix: use isValid() not isUpdated() for speed check — isUpdated() fails when stationary blocking Phase B
   if (!newData || !gps.location.isValid() || !gps.speed.isValid()) {
     // No valid fix or no valid speed — not a spoof event, just no usable data.
     telemetry.foil_speed = 0xFF;  // 0xFF = no data (V3 fix N-4: 99 collides with real speed)

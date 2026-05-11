@@ -1,10 +1,10 @@
-#ifndef WEB_CONFIG_ENGINE_H
+﻿#ifndef WEB_CONFIG_ENGINE_H
 #define WEB_CONFIG_ENGINE_H
 
 #ifdef WIFI_ENABLED
 
 // Shared web config AP and HTTP API for BREmote V2 TX and RX.
-// V3 - 2026-05-03 - Content-Disposition header on export (iPhone filename fix)
+// V2.5-Evo - 2026-05-03 - Content-Disposition header on export (iPhone filename fix)
 // V2.5-Evo - 2026-05-08 - Bundle 1: HTTP log download updated for 26-column CSV (+heading_error_dx10, d_error_dx10)
 // V2.5-Evo - 2026-05-06 - FIX-LOGDL-1: log download CSV updated for LOG-EXT-1 fields (24 columns); WDT reset + FreeRTOS yield added inside read loop to support files >40KB without AP reboot
 

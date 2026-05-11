@@ -1,4 +1,4 @@
-// V3 - 2026-04-25 - P7: calcFinalThrottle() applies rtm_thr_cap_tx ramp
+﻿// V2.5-Evo - 2026-04-25 - P7: calcFinalThrottle() applies rtm_thr_cap_tx ramp
 // Centralized throttle calculation module.
 // Handles gear mode (0), no-gear mode (1), and dynamic cap mode (2).
 
@@ -20,7 +20,7 @@ uint8_t calcFinalThrottle()
       break;
   }
 
-  // V3 - 2026-04-25 - P7: Apply RTM throttle ramp cap.
+  // V2.5-Evo - 2026-04-25 - P7: Apply RTM throttle ramp cap.
   // rtm_thr_cap_tx is 255 when RTM is not active (no effect on normal operation).
   // When RTM is ACTIVE, ramps from rtm_throttle_start_pct to rtm_throttle_max_pct.
   // This enforces the creator safety rule: RTM can only subtract from user throttle.

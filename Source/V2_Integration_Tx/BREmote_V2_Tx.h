@@ -1,14 +1,14 @@
-// V3 - 2026-04-21 - Added TinyGPS++ include, gps_tx + tx_gps_speed globals, and P_U1_RX/P_U1_TX pin defines for TX GPS (BN-220 on Serial1)
-// V3 - 2026-04-22 - Fixed speed_src/volatile comments; defaults gps_en=0,speed_src=0; added gps_max_hdop field (HDOP*100, tail-padding slot, sizeof stays 92)
-// V3 - 2026-04-22 - Added gps_chip_type field (GPS module selector: 0=BN-220, 2=M10); sizeof 92→96
-// V3 - 2026-04-25 - P7: Added RTM meta-packet queue globals (rtm_meta_type/value/count) and RTM throttle cap (rtm_thr_cap_tx, rtm_tx_active)
-// V3 - 2026-04-27 - P8: Added rtm_display_mode, fm_warn_distance_m, rtm_steer_exit_on_input to confStruct; TelemetryPacket adds rtm_distance at index 5; rtm_max_runtime_s default 120→0
-// V3 - 2026-04-27 - P8.1: Added fm_arm_window_s to confStruct; FM redesigned as arm/disarm toggle with mode memory; sizeof 124→128
+﻿// V2.5-Evo - 2026-04-21 - Added TinyGPS++ include, gps_tx + tx_gps_speed globals, and P_U1_RX/P_U1_TX pin defines for TX GPS (BN-220 on Serial1)
+// V2.5-Evo - 2026-04-22 - Fixed speed_src/volatile comments; defaults gps_en=0,speed_src=0; added gps_max_hdop field (HDOP*100, tail-padding slot, sizeof stays 92)
+// V2.5-Evo - 2026-04-22 - Added gps_chip_type field (GPS module selector: 0=BN-220, 2=M10); sizeof 92→96
+// V2.5-Evo - 2026-04-25 - P7: Added RTM meta-packet queue globals (rtm_meta_type/value/count) and RTM throttle cap (rtm_thr_cap_tx, rtm_tx_active)
+// V2.5-Evo - 2026-04-27 - P8: Added rtm_display_mode, fm_warn_distance_m, rtm_steer_exit_on_input to confStruct; TelemetryPacket adds rtm_distance at index 5; rtm_max_runtime_s default 120→0
+// V2.5-Evo - 2026-04-27 - P8.1: Added fm_arm_window_s to confStruct; FM redesigned as arm/disarm toggle with mode memory; sizeof 124→128
 // V2.5-Evo - 2026-04-28 - P9: Added dist_unit (fills 2-byte tail padding; sizeof stays 128); rtm_arm_dist_m RAM global
 // V2.5-Evo - 2026-04-29 - Sleep: added sleep_timeout_s to confStruct; SW_VERSION 25→26
 // V2.5-Evo - 2026-05-01 - Release: DEBUG_RX commented out for production build
-// V3 - 2026-05-01 - thr_expo1 repurposed as fm_display_mode (FM digit zone data selector, 1-4)
-// V3 - 2026-05-02 - Added displayMutex SemaphoreHandle_t (Core 0/Core 1 displayBuffer race fix)
+// V2.5-Evo - 2026-05-01 - thr_expo1 repurposed as fm_display_mode (FM digit zone data selector, 1-4)
+// V2.5-Evo - 2026-05-02 - Added displayMutex SemaphoreHandle_t (Core 0/Core 1 displayBuffer race fix)
 // V2.5-Evo - 2026-05-09 - Bundle 9-Final: Added USB CDC On Boot compile-time guard
 
 // ============================================================
@@ -146,12 +146,12 @@ struct confStruct {
     char wifi_password[8];      // WPA2 AP password, exactly 8 chars — null-terminated at call site only
     uint16_t dynamic_power_start;  // 10-100, starting cap for mode 2 (default 85)
     uint16_t dynamic_power_step; // 1-25, step size per toggle press in mode 2 (default 5)
-    // V3 - 2026-04-22 - HDOP quality gate for TX GPS. Stored as HDOP*100 to keep the struct
+    // V2.5-Evo - 2026-04-22 - HDOP quality gate for TX GPS. Stored as HDOP*100 to keep the struct
     // as uint16 throughout (e.g. 200 = HDOP 2.0). Placed at the end to reuse the 2 bytes of
     // tail padding that the float member forces; sizeof was 92 after this field.
     uint16_t gps_max_hdop;       // TX GPS HDOP threshold *100 (50-500 = HDOP 0.5-5.0; default 200 = HDOP 2.0)
 
-    // V3 - 2026-04-22 - GPS chip type selector. Determines which baud/rate/constellation
+    // V2.5-Evo - 2026-04-22 - GPS chip type selector. Determines which baud/rate/constellation
     // init sequence is used by initTxGPS(). TX hardware has no compass, so types 1 and 3
     // are rejected by cfgValidateCrossField(). Adding this field grows sizeof 92→96 (2 bytes
     // data + 2 bytes new tail padding). Old 92-byte SPIFFS configs fail the decodedLen check
@@ -159,7 +159,7 @@ struct confStruct {
     uint16_t gps_chip_type;      // 0=BN-220 (default, 9600→115200, 5Hz), 2=M10 (115200, 10Hz, all constellations); TX valid: 0 and 2 only
 
     // ============================================================
-    // V3 - 2026-04-25 - PRIORITY 7: RTM AND FM MODE PARAMETERS
+    // V2.5-Evo - 2026-04-25 - PRIORITY 7: RTM AND FM MODE PARAMETERS
     //
     // 12 new uint16_t fields — sizeof grows 96→120.
     // First flash of P7 firmware resets all TX settings to defaults.
@@ -179,7 +179,7 @@ struct confStruct {
     uint16_t fm_override_enabled;      // Allow TX to override RX follow-me mode; 0=off, 1=on; default 1
 
     // ============================================================
-    // V3 - 2026-04-27 - PRIORITY 8: DISPLAY, GESTURE & UX OVERHAUL
+    // V2.5-Evo - 2026-04-27 - PRIORITY 8: DISPLAY, GESTURE & UX OVERHAUL
     //
     // 3 new uint16_t fields — sizeof grows 120→124 (118 data + 6 = 124; 124 % 4 == 0, no tail padding).
     // First flash of P8 firmware resets all TX settings to defaults.
@@ -189,7 +189,7 @@ struct confStruct {
     uint16_t rtm_steer_exit_on_input;  // 1=any steering input exits RTM (default); 0=blend/steering correction only
 
     // ============================================================
-    // V3 - 2026-04-27 - PRIORITY 8.1: FM UX REDESIGN
+    // V2.5-Evo - 2026-04-27 - PRIORITY 8.1: FM UX REDESIGN
     //
     // 1 new uint16_t field — sizeof grows 124→128 (126 data + 2 tail padding; 126%4=2).
     // First flash of P8.1 firmware resets all TX settings to defaults.
@@ -260,11 +260,11 @@ confStruct defaultConf = {  // V3 default configuration — tuned for monterman 
   {'1','2','3','4','5','6','7','8'}, // wifi_password
   85,            // dynamic_power_start
   5,             // dynamic_power_step
-  // V3 - 2026-04-22 - default HDOP gate: 200 = HDOP 2.0. Fits in former tail-padding bytes.
+  // V2.5-Evo - 2026-04-22 - default HDOP gate: 200 = HDOP 2.0. Fits in former tail-padding bytes.
   200,           // gps_max_hdop (200 = HDOP 2.0; existing configs read 0 here → validation rejects → defaults written)
-  // V3 - 2026-04-22 - GPS chip type: 0 = BN-220 (9600→115200, 5Hz). TX only supports 0 and 2.
+  // V2.5-Evo - 2026-04-22 - GPS chip type: 0 = BN-220 (9600→115200, 5Hz). TX only supports 0 and 2.
   0,             // gps_chip_type (0=BN-220 default; old configs → decodedLen check fails → defaults written)
-  // V3 - 2026-04-25 - Priority 7 RTM/FM defaults
+  // V2.5-Evo - 2026-04-25 - Priority 7 RTM/FM defaults
   1,    // rtm_enabled
   5,    // rtm_hold_duration_s
   10,   // rtm_arm_window_s
@@ -277,11 +277,11 @@ confStruct defaultConf = {  // V3 default configuration — tuned for monterman 
   2000, // rtm_gps_timeout_ms
   5,    // fm_hold_duration_s
   1,    // fm_override_enabled
-  // V3 - 2026-04-27 - Priority 8 UX overhaul defaults
+  // V2.5-Evo - 2026-04-27 - Priority 8 UX overhaul defaults
   0,    // rtm_display_mode (0=distance; set 1 for speed, 2 for alternating)
   150,  // fm_warn_distance_m (150m FM proximity warning threshold)
   1,    // rtm_steer_exit_on_input (1=steering exits RTM; 0=blend only)
-  // V3 - 2026-04-27 - Priority 8.1 FM UX redesign defaults
+  // V2.5-Evo - 2026-04-27 - Priority 8.1 FM UX redesign defaults
   30,   // fm_arm_window_s (30s before auto-disarm if no throttle input)
   0,    // dist_unit (0 = Metres)
   // V2.5-Evo - 2026-04-29 - sleep timeout default
@@ -290,7 +290,7 @@ confStruct defaultConf = {  // V3 default configuration — tuned for monterman 
 
 
 //Telemetry to receive, MUST BE 8-bit!!
-// V3 - 2026-04-27 - P8: Added rtm_distance at index 5; link_quality moved to index 6 (must remain last).
+// V2.5-Evo - 2026-04-27 - P8: Added rtm_distance at index 5; link_quality moved to index 6 (must remain last).
 // Encoding: 0-99 = tenths of meter (0.0–9.9 m), 100-254 = meters offset (value-90 = actual m, so 100=10m, 199=109m), 255 = N/A.
 struct __attribute__((packed)) TelemetryPacket {
     uint8_t foil_bat = 0xFF;      // index 0 — battery % 0-100
@@ -392,14 +392,14 @@ volatile uint8_t steer_scaled = 0;
 volatile uint8_t thr_sent = 0;   // Post-expo+gear throttle actually sent over radio
 volatile uint8_t steer_sent = 0; // Steering value actually sent over radio
 
-// V3 - 2026-04-25 - P7 RTM meta-packet burst queue.
+// V2.5-Evo - 2026-04-25 - P7 RTM meta-packet burst queue.
 // Loop task writes type/value then sets count; sendData task reads count and consumes.
 // Writing count LAST (after type/value) is safe: sendData won't act until count > 0.
 volatile uint8_t rtm_meta_type  = 0;    // 0xF1=RTM state, 0xF2=FM override
 volatile uint8_t rtm_meta_value = 0;    // for 0xF1: 0=inactive 1=active; for 0xF2: 0-3 FM mode
 volatile uint8_t rtm_meta_count = 0;    // bursts remaining; 0 = idle (uint8_t: value is always 0 or 3)
 
-// V3 - 2026-04-25 - P7 RTM throttle cap.
+// V2.5-Evo - 2026-04-25 - P7 RTM throttle cap.
 // 255 = no cap (RTM not active). During RTM ACTIVE, set to the ramped cap value
 // (30-70% of 255). Applied in calcFinalThrottle(). RTM can only subtract from
 // user throttle — never add. Creator safety philosophy enforced here.

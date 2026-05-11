@@ -1,9 +1,9 @@
-// V3 - 2026-04-25 - P7: Added 12 RTM/FM fields; added RTM & Follow-Me group; sizeof TX confStruct 96→120
+﻿// V2.5-Evo - 2026-04-25 - P7: Added 12 RTM/FM fields; added RTM & Follow-Me group; sizeof TX confStruct 96→120
 // V2.5-Evo - 2026-04-28 - ChangeA/F: fm_arm_window max 60→120s; followme_mode labels updated, option 0 removed
 // V2.5-Evo - 2026-04-29 - TaskB: full description audit — bool 0/1 values, enum all options inline, int/float extremes explained
 // V2.5-Evo - 2026-04-29 - Sleep: added sleep_timeout_s to TX WebUI
-// V3 - 2026-05-01 - thr_expo1 removed; fm_display_mode added to RTM & Follow-Me group
-// V3 - 2026-05-02 - Split GPS/RTM/FM into separate groups; added Collapse All / Expand All buttons
+// V2.5-Evo - 2026-05-01 - thr_expo1 removed; fm_display_mode added to RTM & Follow-Me group
+// V2.5-Evo - 2026-05-02 - Split GPS/RTM/FM into separate groups; added Collapse All / Expand All buttons
 // V2.5-Evo - 2026-05-06 - FIX-WEB-1: saveAll() now validates and sends only DIRTY fields (was: all 60 fields every save → blocked by any stale state)
 // V2.5-Evo - 2026-05-08 - Bundle 4: Web UI parameter regrouping. Renamed "GPS & Follow-Me" → "GPS"; "RTM & Follow-Me" → "RTM"; split RTM and Follow-Me into separate groups; moved followme_mode + rtm_vesc_speed_diff_kmh + vesc_erpm_per_kmh out of GPS group; merged "Follow-Me Tuning" into "Follow-Me". Cosmetic only — no struct/firmware changes.
 #ifndef WEB_UI_EMBEDDED_H

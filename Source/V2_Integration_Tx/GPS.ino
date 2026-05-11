@@ -1,9 +1,9 @@
-// V2.5-Evo - 2026-05-06 - DIAG: GSV/GLL/VTG disable commented out; txGpsColdReset() added
+﻿// V2.5-Evo - 2026-05-06 - DIAG: GSV/GLL/VTG disable commented out; txGpsColdReset() added
 // V2.5-Evo - 2026-05-06 - FIX-GPS-1: dual-baud init in initTxGPS() to prevent UART RX lockout from retained-config baud mismatch
-// V3 - 2026-04-21 - New TX GPS module: UBX init (115200/5Hz) and non-blocking speed polling for speed_src 2/3/5
-// V3 - 2026-04-22 - Added speed_src guard to initTxGPS(); 512-byte RX buffer; NMEA sentence filtering (GPGSV/GPGLL/GPVTG disabled); HDOP gate in getTxGPSLoop()
-// V3 - 2026-04-22 - Added gps_chip_type branch: type 0=BN-220 (existing path), type 2=M10 (115200 direct, 10Hz, all constellations)
-// V3 - 2026-05-03 - Decouple TX GPS init from speed_src (M1 audit fix).
+// V2.5-Evo - 2026-04-21 - New TX GPS module: UBX init (115200/5Hz) and non-blocking speed polling for speed_src 2/3/5
+// V2.5-Evo - 2026-04-22 - Added speed_src guard to initTxGPS(); 512-byte RX buffer; NMEA sentence filtering (GPGSV/GPGLL/GPVTG disabled); HDOP gate in getTxGPSLoop()
+// V2.5-Evo - 2026-04-22 - Added gps_chip_type branch: type 0=BN-220 (existing path), type 2=M10 (115200 direct, 10Hz, all constellations)
+// V2.5-Evo - 2026-05-03 - Decouple TX GPS init from speed_src (M1 audit fix).
 //                   GPS now inits whenever gps_en=1 — Phase B anti-spoofing
 //                   no longer silently broken for RX-speed users.
 
@@ -92,13 +92,13 @@ void initTxGPS()
   // Anti-spoofing (Phase B) always needs TX GPS — it compares RX vs TX position,
   // independent of which speed source the user has selected for display.
 
-  // V3 - 2026-04-22 - Increase RX buffer to 512 bytes before any begin().
+  // V2.5-Evo - 2026-04-22 - Increase RX buffer to 512 bytes before any begin().
   // At 115200 baud / 5-10Hz the GPS emits several NMEA sentences per cycle;
   // 256 bytes can overflow between loop ticks and cause sentence fragments
   // that confuse TinyGPS++. setRxBufferSize() MUST be called before begin().
   Serial1.setRxBufferSize(512);
 
-  // V3 - 2026-04-22 - Branch on GPS chip type. Each chip type requires a
+  // V2.5-Evo - 2026-04-22 - Branch on GPS chip type. Each chip type requires a
   // different init sequence (factory baud, rate, constellation config).
   // TX hardware has no compass, so types 1/3 are blocked by ConfigService.
   switch (usrConf.gps_chip_type)
@@ -387,7 +387,7 @@ void getTxGPSLoop()
     return;
   }
 
-  // V3 - 2026-04-22 - HDOP quality gate (N-3 fix): reject fixes with poor
+  // V2.5-Evo - 2026-04-22 - HDOP quality gate (N-3 fix): reject fixes with poor
   // satellite geometry before publishing speed. Both usrConf.gps_max_hdop
   // and gps_tx.hdop.value() are stored as HDOP*100, so no float math is
   // needed — direct uint16 comparison. A value of 0 skips the check (out

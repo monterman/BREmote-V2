@@ -1,10 +1,10 @@
-// V3 - 2026-04-25 - P7: TX RTM and FM state machines.
+﻿// V2.5-Evo - 2026-04-25 - P7: TX RTM and FM state machines.
 // RTM: left-hold gesture → arm → squeeze(s) → active → cooldown → idle
 // FM:  right-hold gesture → cycle FM mode 0→1→2→3→0 → send 0xF2 meta-packet
-// V3 - 2026-04-27 - P8: setRtmArmed shows "rn" ×2 (static, 3s total); showFmMode shows F0-F3;
+// V2.5-Evo - 2026-04-27 - P8: setRtmArmed shows "rn" ×2 (static, 3s total); showFmMode shows F0-F3;
 //   added setRtmDisarmed(); steer-exit gate in ACTIVE; rtm_max_runtime_s=0 disables runtime gate
-// V3 - 2026-04-27 - fix: extern declaration for current_vib_pattern (defined in System.ino)
-// V3 - 2026-04-27 - P8.1 Bug 2 fix: FM mode display uses scroll3Digits("FM[n]") — digit "1" as second
+// V2.5-Evo - 2026-04-27 - fix: extern declaration for current_vib_pattern (defined in System.ino)
+// V2.5-Evo - 2026-04-27 - P8.1 Bug 2 fix: FM mode display uses scroll3Digits("FM[n]") — digit "1" as second
 //   character of displayDigits() renders as a barely-visible horizontal bar, so all modes looked like "F"
 // V2.5-Evo - 2026-04-28 - P9: Bug1B pre-arm check; Bug1D all-exit Pattern4/StP; S2 FM full-screen confirms
 // V2.5-Evo - 2026-04-28 - P9 S4: rtm_arm_dist_m captured at engage; reset on disengage (R5 proximity bar)
@@ -34,8 +34,8 @@
 // V2.5-Evo - 2026-04-29 - GPS dot fix: gpsKeepAliveDelay() replaces bare delay() in
 //   ceremony and confirms; drains Serial1 to keep gps_tx.location.age() fresh and
 //   prevent GPS dot blinking during blocking display holds.
-// V3 - 2026-05-02 - Gate 3 throttle-release timeout reduced 10000→4000ms (10s was too long for tow buggy field use)
-// V3 - 2026-05-10 - SAFETY FIX: zero rtm_thr_cap_tx during arm ceremony to prevent motor runaway (see setRtmArmed)
+// V2.5-Evo - 2026-05-02 - Gate 3 throttle-release timeout reduced 10000→4000ms (10s was too long for tow buggy field use)
+// V2.5-Evo - 2026-05-10 - SAFETY FIX: zero rtm_thr_cap_tx during arm ceremony to prevent motor runaway (see setRtmArmed)
 
 extern volatile uint8_t current_vib_pattern;
 extern float rtm_arm_dist_m;  // defined in BREmote_V2_Tx.h — captured at RTM engage moment
@@ -411,7 +411,7 @@ void runRtmLoop()
 
 // ============================================================
 // FM STATE MACHINE
-// V3 - 2026-04-27 - P8.1: FM redesigned as arm/disarm toggle with persistent mode memory.
+// V2.5-Evo - 2026-04-27 - P8.1: FM redesigned as arm/disarm toggle with persistent mode memory.
 //
 // ARM (LEFT tap + RIGHT hold 5s, first time or after disarm):
 //   - Arms at last_fm_mode (RAM; defaults to F1 on power cycle — never resets to F0/disabled)

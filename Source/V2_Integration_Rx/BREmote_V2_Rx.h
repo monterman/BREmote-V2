@@ -1,20 +1,20 @@
-// V2.5-Evo - 2026-05-09 - Bundle 9-Final: Added USB CDC On Boot compile-time guard
+﻿// V2.5-Evo - 2026-05-09 - Bundle 9-Final: Added USB CDC On Boot compile-time guard
 // V2.5-Evo - 2026-05-08 - Bundle 1: RTM/FM steering preset system (rtm_steer_response 0-4); SW_VERSION 30→31; sizeof unchanged at 164; FM placeholder comments improved; VescLogData +4 bytes for tuning telemetry
 // V2.5-Evo - 2026-05-06 - LOG-EXT-1: VescLogData extended with heading source debug fields (12 fields, +18 bytes)
 // V2.5-Evo - 2026-05-06 - D3-Fix: rtm_use_compass + rtm_cog_min_speed_kmh changed uint8_t→uint16_t for ConfigService CFG_U16 compatibility; SW_VERSION 29→30; sizeof 160→164
 // V2.5-Evo - 2026-05-06 - D3: Added rtm_use_compass + rtm_cog_min_speed_kmh; sizeof stays 160 (fills tail pad); SW_VERSION 28→29
 // V2.5-Evo - 2026-05-01 - Release: DEBUG_RX commented out for production build
-// V3 - 2026-04-30 - RTM approach decel zone: rtm_approach_zone_m SPIFFS param; rtm_approach_cap atomic global; sizeof 156→160
-// V3 - 2026-04-30 - Rename: gps_max_jump_kmh → gps_max_teleport_kmh (clarity)
-// V3 - 2026-04-29 - Bundle B: vesc_timeout_s SPIFFS param replaces hardcoded 20s VESC timeout
-// V3 - 2026-04-22 - Added gps_chip_type field to confStruct (GPS module selector); sizeof 108→112; updated defaultConf
-// V3 - 2026-04-22 - Added Phase A GPS anti-spoofing params to confStruct; sizeof 112→128; updated defaultConf
-// V3 - 2026-04-24 - Added rx_tx_gps_lat/lng/timestamp globals for 0xF3 meta-packet reception
-// V3 - 2026-04-24 - Added Phase B GPS handshake params to confStruct; sizeof 128→136; updated defaultConf
-// V3 - 2026-04-25 - P7: Added RTM Phase C + RX safety params; VESC_MORE_VALUES; sizeof 136→152
-// V3 - 2026-04-27 - P8: TelemetryPacket adds rtm_distance at index 5; link_quality moved to index 6
-// V3 - 2026-04-25 - P7: Added rtm_rx_active, rtm_rx_emergency_stop, rtm_steer_override, fm_mode_runtime globals
-// V3 - 2026-04-25 - P7 fix: Changed RTM volatile globals to std::atomic for cross-core safety (core 0 PWM task / core 1 loop task)
+// V2.5-Evo - 2026-04-30 - RTM approach decel zone: rtm_approach_zone_m SPIFFS param; rtm_approach_cap atomic global; sizeof 156→160
+// V2.5-Evo - 2026-04-30 - Rename: gps_max_jump_kmh → gps_max_teleport_kmh (clarity)
+// V2.5-Evo - 2026-04-29 - Bundle B: vesc_timeout_s SPIFFS param replaces hardcoded 20s VESC timeout
+// V2.5-Evo - 2026-04-22 - Added gps_chip_type field to confStruct (GPS module selector); sizeof 108→112; updated defaultConf
+// V2.5-Evo - 2026-04-22 - Added Phase A GPS anti-spoofing params to confStruct; sizeof 112→128; updated defaultConf
+// V2.5-Evo - 2026-04-24 - Added rx_tx_gps_lat/lng/timestamp globals for 0xF3 meta-packet reception
+// V2.5-Evo - 2026-04-24 - Added Phase B GPS handshake params to confStruct; sizeof 128→136; updated defaultConf
+// V2.5-Evo - 2026-04-25 - P7: Added RTM Phase C + RX safety params; VESC_MORE_VALUES; sizeof 136→152
+// V2.5-Evo - 2026-04-27 - P8: TelemetryPacket adds rtm_distance at index 5; link_quality moved to index 6
+// V2.5-Evo - 2026-04-25 - P7: Added rtm_rx_active, rtm_rx_emergency_stop, rtm_steer_override, fm_mode_runtime globals
+// V2.5-Evo - 2026-04-25 - P7 fix: Changed RTM volatile globals to std::atomic for cross-core safety (core 0 PWM task / core 1 loop task)
 
 // ============================================================
 // V2.5-Evo - 2026-05-09 - Bundle 9-Final: USB CDC On Boot guard
@@ -170,7 +170,7 @@ struct confStruct {
     float mag_scale_y;
 
     // ============================================================
-    // V3 - 2026-04-22 - GPS CHIP TYPE SELECTOR
+    // V2.5-Evo - 2026-04-22 - GPS CHIP TYPE SELECTOR
     //
     // !!! IMPORTANT: Adding this field changes sizeof(confStruct)  !!!
     // !!! from 108 bytes to 112 bytes.                             !!!
@@ -186,7 +186,7 @@ struct confStruct {
     uint16_t gps_chip_type;  // 0=BN-220, 1=BN-880+compass (default), 2=M10 no compass, 3=M10+compass; range 0-3
 
     // ============================================================
-    // V3 - 2026-04-22 - PHASE A GPS ANTI-SPOOFING PARAMETERS
+    // V2.5-Evo - 2026-04-22 - PHASE A GPS ANTI-SPOOFING PARAMETERS
     //
     // These four parameters control the always-on Phase A anti-
     // spoofing filter in GPS.ino. A reading is rejected if ANY
@@ -204,7 +204,7 @@ struct confStruct {
     uint16_t gps_suspect_threshold;   // Consecutive failures before GPS marked rejected; range 1-10; default 3
 
     // ============================================================
-    // V3 - 2026-04-24 - PHASE B GPS HANDSHAKE ANTI-SPOOFING PARAMETERS
+    // V2.5-Evo - 2026-04-24 - PHASE B GPS HANDSHAKE ANTI-SPOOFING PARAMETERS
     //
     // These two parameters control Phase B, which runs every time a
     // 0xF3 GPS meta-packet is received from TX (at most every 30s).
@@ -227,7 +227,7 @@ struct confStruct {
     float gps_max_speed_diff_kmh;   // Max TX-RX speed difference for handshake; range 10-200 km/h; default 50 km/h
 
     // ============================================================
-    // V3 - 2026-04-25 - PRIORITY 7: RTM PHASE C + RX SAFETY PARAMETERS
+    // V2.5-Evo - 2026-04-25 - PRIORITY 7: RTM PHASE C + RX SAFETY PARAMETERS
     //
     // sizeof grows 136->152. Layout:
     //   float rtm_vesc_speed_diff_kmh  (4)
@@ -247,13 +247,13 @@ struct confStruct {
     uint16_t rtm_compass_required;       // Require valid compass for RTM arming; 0=no, 1=yes; default 1
     uint16_t rtm_stop_distance_m;        // Hard stop radius in metres; RTM stops when within this dist of TX; 1-50; default 3
 
-    // V3 - 2026-04-29 - BUNDLE B: VESC UART TIMEOUT
+    // V2.5-Evo - 2026-04-29 - BUNDLE B: VESC UART TIMEOUT
     uint16_t vesc_timeout_s;  // 5-60 s; default 12; how long without a VESC UART packet before bat/temp shown as N/A
 
-    // V3 - 2026-04-30 - BUNDLE E: GPS POLLING RATE
+    // V2.5-Evo - 2026-04-30 - BUNDLE E: GPS POLLING RATE
     uint16_t gps_update_hz;   // 1-10 Hz; default 2; how often per second to drain the GPS UART (2=500ms, 5=200ms)
 
-    // V3 - 2026-04-30 - RTM APPROACH DECEL ZONE
+    // V2.5-Evo - 2026-04-30 - RTM APPROACH DECEL ZONE
     // Distance from TX at which the approach throttle ramp begins during active RTM.
     // Throttle cap = thr × (dist − rtm_stop_distance_m) / (rtm_approach_zone_m − rtm_stop_distance_m)
     // Result: full throttle at the outer edge; cap reaches 0 at rtm_stop_distance_m; Gate 9 hard stop still applies.
@@ -297,36 +297,36 @@ confStruct usrConf;
   //The orginal confs were:  ##// confStruct defaultConf = {SW_VERSION, 1, 0, 0, 50, 0, 0, 1500, 2000, 1500, 2000, 1000, 10, 0, 1, 0, 0, 0, 0, 0, 25.0f, 10.0f, 10.0f, 5.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0, 1000, 1, 0, {0, 0, 0}, {0, 0, 0}, {'1','2','3','4','5','6','7','8'}};
   // V3 default configuration — tuned for monterman hardware
 confStruct defaultConf = {SW_VERSION, 2, 20, 1, 50, 0, 0, 1000, 2000, 1000, 2000, 1000, 10, 0, 1, 2, 2, 1, 2, 1, 25.0f, 10.0f, 10.0f, 8.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0f, 1000, 0, 1, {0x46, 0xC9, 0xE0}, {0x46, 0xCB, 0xCC}, {'1','2','3','4','5','6','7','8'},
-  // V3 - 2026-04-22 - Compass calibration fields (previously implicit zeros).
+  // V2.5-Evo - 2026-04-22 - Compass calibration fields (previously implicit zeros).
   // Made explicit here so gps_chip_type can follow. Safe neutral values:
   // offsets=0 (no bias), scales=1.0f (unity gain = no correction applied).
   0, 0,      // mag_offset_x, mag_offset_y (no compass bias correction by default)
   1.0f, 1.0f, // mag_scale_x, mag_scale_y (unity gain — run 'runcal' to calibrate)
-  // V3 - 2026-04-22 - GPS chip type: 1 = BN-880 (GPS+compass). RX default.
+  // V2.5-Evo - 2026-04-22 - GPS chip type: 1 = BN-880 (GPS+compass). RX default.
   1,          // gps_chip_type (1 = BN-880 + compass; run 'runcal' after first boot)
-  // V3 - 2026-04-22 - Phase A GPS anti-spoofing defaults (see CLAUDE.md Section 11)
+  // V2.5-Evo - 2026-04-22 - Phase A GPS anti-spoofing defaults (see CLAUDE.md Section 11)
   2.0f,       // gps_max_hdop:           max HDOP for valid reading (range 0.5-5.0)
   3.0f,       // gps_max_accel_g:        max implied acceleration (range 1.0-10.0 G)
   80.0f,      // gps_max_teleport_kmh:       max teleport-implied speed (range 50-500 km/h; default lowered 200→80 2026-04-30)
   3,          // gps_suspect_threshold:  consecutive failures before GPS rejected (range 1-10)
-  // V3 - 2026-04-24 - Phase B GPS handshake anti-spoofing defaults (see CLAUDE.md Section 11)
+  // V2.5-Evo - 2026-04-24 - Phase B GPS handshake anti-spoofing defaults (see CLAUDE.md Section 11)
   500.0f,     // gps_max_pair_dist_m:    max TX-RX pairing distance (range 50-2000 m)
   50.0f,      // gps_max_speed_diff_kmh: max TX-RX speed difference (range 10-200 km/h)
-  // V3 - 2026-04-25 - Priority 7 RTM Phase C + RX safety defaults
+  // V2.5-Evo - 2026-04-25 - Priority 7 RTM Phase C + RX safety defaults
   20.0f,      // rtm_vesc_speed_diff_kmh: max GPS vs VESC speed diff (5-50 km/h)
   0.0f,       // vesc_erpm_per_kmh: 0 = skip Phase C VESC check until calibrated
   1,          // rtm_rx_enabled: 1 = RTM enabled on RX side
   1,          // rtm_rx_override_steering: 1 = RTM may override steering
   1,          // rtm_compass_required: 1 = compass required for RTM arming
-  // V3 - 2026-04-26 - CRITICAL FIX: rtm_stop_distance_m was missing from defaultConf; zero-init
+  // V2.5-Evo - 2026-04-26 - CRITICAL FIX: rtm_stop_distance_m was missing from defaultConf; zero-init
   // would have set it to 0, making Gate 9 check (dist_m < 0.0f) never fire — permanently
   // disabling the hard stop that prevents the buggy from hitting the user.
   3,          // rtm_stop_distance_m: 3m hard stop radius (range 1-50m; default 3m per CLAUDE.md)
-  // V3 - 2026-04-29 - Bundle B: vesc_timeout_s replaces hardcoded 20s VESC connection timeout
+  // V2.5-Evo - 2026-04-29 - Bundle B: vesc_timeout_s replaces hardcoded 20s VESC connection timeout
   6,          // vesc_timeout_s: seconds without VESC UART packet before bat/temp shown as N/A (range 5-60s; default 6s)
-  // V3 - 2026-04-30 - Bundle E: gps_update_hz replaces hardcoded 1Hz GPS poll cadence
+  // V2.5-Evo - 2026-04-30 - Bundle E: gps_update_hz replaces hardcoded 1Hz GPS poll cadence
   2,          // gps_update_hz: GPS NMEA polling rate in Hz (range 1-10 Hz; default 2 Hz = 500ms interval)
-  // V3 - 2026-04-30 - RTM approach decel zone default
+  // V2.5-Evo - 2026-04-30 - RTM approach decel zone default
   15,         // rtm_approach_zone_m: outer edge of RTM throttle decel zone (0=disabled, 5-100 m; default 15 m)
   // V2.5-Evo - 2026-05-06 - D3: RTM heading source selection defaults
   1,          // rtm_use_compass: 1 = Hybrid (GPS COG primary, compass snapshot at low speed). 0=COG only, 2=compass only DIAGNOSTIC.
@@ -352,7 +352,7 @@ String web_cfg_last_err = "";
 volatile bool config_version_error = false;
 
 // ============================================================
-// V3 - 2026-04-24 - TX GPS COORDINATES (received via 0xF3 meta-packet)
+// V2.5-Evo - 2026-04-24 - TX GPS COORDINATES (received via 0xF3 meta-packet)
 //
 // Written by processMetaGpsPacket() in Radio.ino at 2Hz whenever TX sends
 // a GPS meta-packet and RX successfully validates it.
@@ -366,12 +366,12 @@ double        rx_tx_gps_lat       = 0.0;  // TX latitude (degrees, WGS84)
 double        rx_tx_gps_lng       = 0.0;  // TX longitude (degrees, WGS84)
 unsigned long rx_tx_gps_timestamp = 0;    // millis() when last meta-packet received; 0 = never
 
-// V3 - 2026-04-25 - P7 RTM/FM runtime state (set by Radio.ino meta-packet handlers)
+// V2.5-Evo - 2026-04-25 - P7 RTM/FM runtime state (set by Radio.ino meta-packet handlers)
 // rtm_rx_active: true = TX signalled RTM active; safety gates in RTMState.ino may override.
 // rtm_rx_emergency_stop: true = safety gate failed; calcPWM() forces throttle to 0.
 // rtm_steer_override: bearing-derived steering value (0-255, 127=straight ahead).
 // fm_mode_runtime: TX-side FM mode override (0-3); 0xFF = use SPIFFS default.
-// V3 - 2026-04-25 - P7 fix: use std::atomic to ensure cross-core visibility.
+// V2.5-Evo - 2026-04-25 - P7 fix: use std::atomic to ensure cross-core visibility.
 // generatePWM runs on core 0; RTMState.ino loop() runs on core 1. volatile alone
 // does not provide a memory barrier on Xtensa dual-core. std::atomic provides
 // seq_cst, matching the established rfInterrupt pattern at line 334.
@@ -379,7 +379,7 @@ std::atomic<bool>    rtm_rx_active         {false};
 std::atomic<bool>    rtm_rx_emergency_stop {false};
 std::atomic<uint8_t> rtm_steer_override    {127};
 std::atomic<uint8_t> fm_mode_runtime       {0xFF};
-std::atomic<uint8_t> rtm_approach_cap      {255};  // V3 - 2026-04-30 - approach decel cap (0-255); 255=no cap; computed by RTMState.ino during active RTM; applied by calcPWM()
+std::atomic<uint8_t> rtm_approach_cap      {255};  // V2.5-Evo - 2026-04-30 - approach decel cap (0-255); 255=no cap; computed by RTMState.ino during active RTM; applied by calcPWM()
 
 #include "../Common/SPIFFSEngine.h"
 
@@ -445,7 +445,7 @@ inline void webCfgNotifyRxConnected() {}  // No-op stub when WiFi disabled
 #endif
 
 //Telemetry to send, MUST BE 8-bit!!
-// V3 - 2026-04-27 - P8: Added rtm_distance at index 5; link_quality moved to index 6 (must remain last).
+// V2.5-Evo - 2026-04-27 - P8: Added rtm_distance at index 5; link_quality moved to index 6 (must remain last).
 // Encoding: 0-99 = tenths of meter (0.0–9.9 m), 100-254 = meters offset (value-90 = actual m, so 100=10m, 199=109m), 255 = N/A.
 struct __attribute__((packed)) TelemetryPacket {
     uint8_t foil_bat = 0xFF;      // index 0 — battery % 0-100

@@ -1,3 +1,4 @@
+// V3 - 2026-05-11 - Compass Cal: runtime BIND press triggers compass calibration with LED feedback
 // V3 - 2026-04-25 - P7: Added ?compassheading serial diagnostic command
 // V2.5-Evo - 2026-05-05 - cmdMagTest: bench-test logger for compass EMI vs motor current
 // V2.5-Evo - 2026-05-05 - cmdVescPing: VESC UART telemetry verification (?vescping)
@@ -901,57 +902,85 @@ void serPrintReceived()
 
 void checkButtons()
 {
-  // --- EXISTING BIND / RESET LOGIC ---
-  if(!aw.digitalRead(AP_S_BIND))
-  {
-    if(!aw.digitalRead(AP_S_AUX))
-    {
-      delay(10);
-      if(!aw.digitalRead(AP_S_AUX))
-      {
-        Serial.println("Deleting config and rebooting");
-        deleteConfFromSPIFFS();
-        delay(1000);
-        ESP.restart();
-      }
-    }
-    delay(10);
+  // --- BOOT-TIME BIND / RESET LOGIC ---
+  // Runs only on the first call (via runBootSequence() during setup). Static guard
+  // prevents pairing and factory-reset from triggering during runtime calls from loop().
+  static bool first_call = true;
+  if (first_call) {
+    first_call = false;
     if(!aw.digitalRead(AP_S_BIND))
     {
-      //Start pairing
-      waitForPairing();
+      if(!aw.digitalRead(AP_S_AUX))
+      {
+        delay(10);
+        if(!aw.digitalRead(AP_S_AUX))
+        {
+          Serial.println("Deleting config and rebooting");
+          deleteConfFromSPIFFS();
+          delay(1000);
+          ESP.restart();
+        }
+      }
+      delay(10);
+      if(!aw.digitalRead(AP_S_BIND))
+      {
+        //Start pairing
+        waitForPairing();
+      }
     }
   }
 
-  // --- NEW AUX BUTTON LOGGER TOGGLE ---
+  // --- AUX BUTTON: LOGGER TOGGLE ---
   // Static variables remember their state between loops
   static bool aux_last_state = true;
   // true = HIGH (unpressed due to pullup)
   bool aux_current = aw.digitalRead(AP_S_AUX);
   // Detect a "falling edge" (button was just pressed down)
-  if (aux_last_state == true && aux_current == false) 
+  if (aux_last_state == true && aux_current == false)
   {
     vTaskDelay(pdMS_TO_TICKS(50));
     // 50ms Debounce to prevent double-clicks
-    if (aw.digitalRead(AP_S_AUX) == false) 
+    if (aw.digitalRead(AP_S_AUX) == false)
     {
-      if (isLoggingActive()) 
+      if (isLoggingActive())
       {
         stopLog();
         blinkErr(2, AP_L_AUX); // Blink AUX LED 2 times to confirm STOP
-      } 
-      else 
+      }
+      else
       {
         startLog();
         blinkErr(5, AP_L_AUX); // Blink AUX LED 5 times to confirm START
       }
-      
+
       // Wait for the user to let go of the button before continuing
       while(aw.digitalRead(AP_S_AUX) == false) { vTaskDelay(pdMS_TO_TICKS(10));
-      } 
+      }
     }
   }
   aux_last_state = aux_current;
+
+  // --- RUNTIME BIND: COMPASS CALIBRATION ---
+  // Short BIND press (falling edge, 50ms debounce) triggers 45s calibration.
+  // blinkBind(5) = starting, blinkBind(2) = success, blinkBind(10) = compass not detected.
+  // Boot-time pairing/reset cannot reach this block (guarded by first_call above).
+  static bool bind_last_state = true;
+  bool bind_current = aw.digitalRead(AP_S_BIND);
+  if (bind_last_state == true && bind_current == false) {
+    vTaskDelay(pdMS_TO_TICKS(50));
+    if (aw.digitalRead(AP_S_BIND) == false) {
+      blinkBind(5);
+      extern bool compass_detected;  // global bool set by initCompass(); false if sensor absent
+      runCompassCalibration();        // 45s collection, hard/soft-iron calc, auto-save to SPIFFS
+      if (compass_detected) {
+        blinkBind(2);
+      } else {
+        blinkBind(10);
+      }
+      while (aw.digitalRead(AP_S_BIND) == false) { vTaskDelay(pdMS_TO_TICKS(10)); }
+    }
+  }
+  bind_last_state = bind_current;
 }
 
 void checkConnStatus(void *parameter)

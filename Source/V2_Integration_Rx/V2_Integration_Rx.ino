@@ -1,3 +1,4 @@
+// V3 - 2026-05-11 - Telemetry Fix: VESC moved to its own vesc_loop_timer (2Hz); checkButtons() added to loop() for runtime BIND compass cal
 // V3 - 2026-05-03 - Removed commented-out SPIFFS.remove dead code (LOW audit cleanup)
 // V3 - 2026-04-30 - Bundle E: GPS moved to its own gps_loop_timer (rate = gps_update_hz); removed from 1000ms gate
 // V3 - 2026-04-25 - P7: Added runRtmLoop() call in loop(); forward declarations
@@ -37,7 +38,8 @@ void setup()
 }
 
 unsigned long loop_timer = 0;
-unsigned long gps_loop_timer = 0;  // V3 - 2026-04-30 - Bundle E: separate GPS polling timer
+unsigned long gps_loop_timer  = 0;  // V3 - 2026-04-30 - Bundle E: separate GPS polling timer
+unsigned long vesc_loop_timer = 0;  // V3 - 2026-05-11 - Telemetry Fix: separate VESC polling timer (2Hz)
 int wetness_counter = 0;
 
 void loop()
@@ -50,6 +52,9 @@ void loop()
   
   // Process Logger LED and button in main thread (AW9523 I2C is not ISR-safe)
   loggerLoop();
+
+  // Runtime button detection: BIND = compass cal. Boot-time pairing is guarded inside.
+  checkButtons();
 
   // V3 - 2026-04-25 - P7: RTM state machine — safety gates, steering override, Phase C.
   // Runs at 10Hz regardless of the 1000ms GPS/VESC gate below.
@@ -65,6 +70,16 @@ void loop()
     {
       gps_loop_timer = millis();
       getGPSLoop();
+    }
+  }
+
+  // VESC at 2Hz, independent of GPS and wetness gate.
+  if(usrConf.data_src == 2)
+  {
+    if(millis() - vesc_loop_timer >= 500)
+    {
+      vesc_loop_timer = millis();
+      getVescLoop();
     }
   }
 
@@ -85,10 +100,6 @@ void loop()
     if(usrConf.data_src == 1)
     {
       getUbatLoop();
-    }
-    else if(usrConf.data_src == 2)
-    {
-      getVescLoop();
     }
   }
 

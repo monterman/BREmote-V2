@@ -1,3 +1,4 @@
+// V3 - 2026-05-11 - Telemetry Fix: foil_power invalidated on VESC timeout; dead Serial1.flush() removed
 // V3 - 2026-04-29 - Bundle B: vesc_timeout_s SPIFFS param replaces hardcoded 20s VESC timeout
 // V2.5-Evo - 2026-05-06 - Drain Serial1 RX buffer in getVescLoop() to prevent stale GPS NMEA from corrupting VESC frame parsing
 // Define the global struct
@@ -18,9 +19,6 @@ void getVescLoop()
   // bytes already in the buffer, never blocks waiting for new ones.
   while (Serial1.available()) Serial1.read();
 
-  // Flush the serial buffer to get fresh data (TX-side drain only)
-  Serial1.flush();
-  
   if( getValuesSelective(&Serial1) )
   {
     last_uart_packet = millis();
@@ -32,8 +30,9 @@ void getVescLoop()
   // If no UART packet received within this window, mark battery and temperature as unavailable.
   if(millis() - last_uart_packet > ((uint32_t)usrConf.vesc_timeout_s * 1000UL))
   {
-    telemetry.foil_bat = 0xFF;
-    telemetry.foil_temp = 0xFF;
+    telemetry.foil_bat   = 0xFF;
+    telemetry.foil_temp  = 0xFF;
+    telemetry.foil_power = 0xFF;
   }
 }
 

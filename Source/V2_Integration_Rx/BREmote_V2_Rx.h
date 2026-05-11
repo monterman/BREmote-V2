@@ -323,7 +323,7 @@ confStruct defaultConf = {SW_VERSION, 2, 20, 1, 50, 0, 0, 1000, 2000, 1000, 2000
   // disabling the hard stop that prevents the buggy from hitting the user.
   3,          // rtm_stop_distance_m: 3m hard stop radius (range 1-50m; default 3m per CLAUDE.md)
   // V3 - 2026-04-29 - Bundle B: vesc_timeout_s replaces hardcoded 20s VESC connection timeout
-  12,         // vesc_timeout_s: seconds without VESC UART packet before bat/temp shown as N/A (range 5-60s; default 12s)
+  6,          // vesc_timeout_s: seconds without VESC UART packet before bat/temp shown as N/A (range 5-60s; default 6s)
   // V3 - 2026-04-30 - Bundle E: gps_update_hz replaces hardcoded 1Hz GPS poll cadence
   2,          // gps_update_hz: GPS NMEA polling rate in Hz (range 1-10 Hz; default 2 Hz = 500ms interval)
   // V3 - 2026-04-30 - RTM approach decel zone default

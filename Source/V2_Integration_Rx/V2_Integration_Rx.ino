@@ -1,4 +1,4 @@
-// V3 - 2026-05-11 - Telemetry Fix: VESC moved to its own vesc_loop_timer (2Hz); checkButtons() added to loop() for runtime BIND compass cal
+// V2.5-Evo - 2026-05-11 - Telemetry Fix: VESC moved to its own vesc_loop_timer (2Hz); checkButtons() added to loop() for runtime BIND compass cal
 // V3 - 2026-05-03 - Removed commented-out SPIFFS.remove dead code (LOW audit cleanup)
 // V3 - 2026-04-30 - Bundle E: GPS moved to its own gps_loop_timer (rate = gps_update_hz); removed from 1000ms gate
 // V3 - 2026-04-25 - P7: Added runRtmLoop() call in loop(); forward declarations

@@ -1,4 +1,5 @@
-﻿// V2.5-Evo - 2026-05-08 - Bundle 1: P+D+filter steering controller; preset table; bearing filter for FM path-following
+﻿// V2.5-Evo - 2026-05-11 - Phase C fix: VESC ERPM check now verifies data freshness via vesc.last_packet before comparing to GPS speed
+// V2.5-Evo - 2026-05-08 - Bundle 1: P+D+filter steering controller; preset table; bearing filter for FM path-following
 // V2.5-Evo - 2026-05-06 - D5: getRtmHeading() layered heading source; updateRtmSteering() rewritten; Gate 6 accepts any source; updateCompassSnapshot() called from runRtmLoop top
 // V2.5-Evo - 2026-05-03 - C1/M2 audit fix: gps_tx_ok uses timestamp age on both paths; 0.0 lat/lng sentinel removed
 // V2.5-Evo - 2026-05-01 - Fix D: gps_tx_ok relaxed for FM/idle; never reset rtm_distance to 0xFF when RTM inactive
@@ -401,23 +402,38 @@ static void runPhaseC()
   rtm_prev_dist_m = dist_m;
 
   // Phase C check 2: VESC ERPM vs GPS speed (only if vesc_erpm_per_kmh is configured)
+  // V2.5-Evo - 2026-05-11 - Freshness guard: vesc.last_packet is read inside the same mutex
+  // that protects vesc.erpm. If the VESC data is older than vesc_timeout_s (e.g. VESC dropped
+  // during heavy regen braking), skip the check rather than comparing stale ERPM to live GPS
+  // speed — a false FAIL here would abort RTM mid-run. Phase C check 1 (convergence) is the
+  // primary safety gate and remains active regardless.
   if (usrConf.vesc_erpm_per_kmh > 0.0f)
   {
     extern vesc_struct vesc;
-    // vescMutex guards vesc.erpm against concurrent writes from the VESC task.
     extern SemaphoreHandle_t vescMutex;
     if (xSemaphoreTake(vescMutex, pdMS_TO_TICKS(50)) == pdTRUE)
     {
+      unsigned long vesc_age_ms = millis() - vesc.last_packet;
       float vesc_speed_kmh = (float)abs(vesc.erpm) / usrConf.vesc_erpm_per_kmh;
       xSemaphoreGive(vescMutex);
-      float speed_diff = fabsf(vesc_speed_kmh - gps_last_speed_kmh);
-      if (speed_diff > usrConf.rtm_vesc_speed_diff_kmh)
+
+      if (vesc_age_ms > (unsigned long)usrConf.vesc_timeout_s * 1000UL)
       {
-        Serial.printf("RTM [PhC] FAIL VESC speed: VESC=%.1f km/h GPS=%.1f km/h diff=%.1f\n",
-                      vesc_speed_kmh, gps_last_speed_kmh, speed_diff);
-        rtm_rx_emergency_stop = true;
-        rtm_rx_active = false;
-        return;
+        // Stale VESC data — skip rather than falsely fail. Log for diagnostics.
+        Serial.printf("RTM [PhC] SKIP VESC check: data age %lu ms > timeout %d s\n",
+                      vesc_age_ms, (int)usrConf.vesc_timeout_s);
+      }
+      else
+      {
+        float speed_diff = fabsf(vesc_speed_kmh - gps_last_speed_kmh);
+        if (speed_diff > usrConf.rtm_vesc_speed_diff_kmh)
+        {
+          Serial.printf("RTM [PhC] FAIL VESC speed: VESC=%.1f km/h GPS=%.1f km/h diff=%.1f\n",
+                        vesc_speed_kmh, gps_last_speed_kmh, speed_diff);
+          rtm_rx_emergency_stop = true;
+          rtm_rx_active = false;
+          return;
+        }
       }
     }
   }

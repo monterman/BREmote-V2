@@ -1,4 +1,5 @@
-﻿// V2.5-Evo - 2026-05-08 - Bundle 1: +2 CSV columns (heading_error_dx10, d_error_dx10); 24→26 columns; VescLogData +4 bytes; extern g_heading_error_dx10/g_d_error_dx10 from RTMState.ino
+﻿// V2.5-Evo - 2026-05-11 - E7 Fix: +1 CSV column (remote_error); 26→27 columns; error_code_log from telemetry.error_code
+// V2.5-Evo - 2026-05-08 - Bundle 1: +2 CSV columns (heading_error_dx10, d_error_dx10); 24→26 columns; VescLogData +4 bytes; extern g_heading_error_dx10/g_d_error_dx10 from RTMState.ino
 // V2.5-Evo - 2026-05-06 - FIX-LOGDL-2: serial ?download CSV updated for LOG-EXT-1 fields (24 columns); WDT reset + FreeRTOS yield added inside read loop to support files >30KB without crash
 // V2.5-Evo - 2026-05-06 - LOG-EXT-2: convertToLogData populates 12 heading debug fields; inline-duplicate of getRtmHeading() (must stay in sync with RTMState.ino); default lograte changed 1Hz→5Hz at line 21 (manual user edit, do not revert)
 // V2.5-Evo - 2026-05-03 - H4: deleteCandidates String[]→char[][] (no heap alloc);
@@ -231,6 +232,10 @@ VescLogData convertToLogData() {
     data.d_error_dx10       = g_d_error_dx10;
   }
 
+  // V2.5-Evo - 2026-05-11 - E7 Fix: log BREmote error code so E7 events are visible in CSV
+  // rather than inferred from abrupt log restarts. 0 = no error, 7 = water ingress.
+  data.error_code_log = telemetry.error_code;
+
   return data;
 }
 
@@ -449,8 +454,8 @@ void downloadLogFile(const char* filename) {
   if (!file) return;
 
   Serial.println("\n=== BEGIN CSV DATA ===");
-  // V2.5-Evo - 2026-05-08 - Bundle 1: header updated to 26 fields (+heading_error_dx10, d_error_dx10)
-  Serial.println("timestamp_ms,motor_current_A,battery_current_A,duty_cycle_%,voltage_V,ERPM,temp_mos_C,fault_code,speed_kmh,latitude,longitude,datetime_unix,thr_received,rtm_source,rtm_confidence,rtm_rx_active,gps_phase_b_ok,rtm_steer_override,rtm_heading_chosen_dx10,compass_live_dx10,compass_snap_dx10,snap_age_s,gps_course_dx10,cog_age_ms_div10,heading_error_dx10,d_error_dx10");
+  // V2.5-Evo - 2026-05-11 - E7 Fix: header updated to 27 fields (+remote_error)
+  Serial.println("timestamp_ms,motor_current_A,battery_current_A,duty_cycle_%,voltage_V,ERPM,temp_mos_C,fault_code,speed_kmh,latitude,longitude,datetime_unix,thr_received,rtm_source,rtm_confidence,rtm_rx_active,gps_phase_b_ok,rtm_steer_override,rtm_heading_chosen_dx10,compass_live_dx10,compass_snap_dx10,snap_age_s,gps_course_dx10,cog_age_ms_div10,heading_error_dx10,d_error_dx10,remote_error");
 
   VescLogData logData;
   uint16_t recordCount = 0;
@@ -463,7 +468,7 @@ void downloadLogFile(const char* filename) {
     size_t bytesRead = file.read((uint8_t*)&logData, sizeof(VescLogData));
 
     if (bytesRead == sizeof(VescLogData)) {
-      Serial.printf("%u,%.2f,%.2f,%d,%.1f,%d,%u,%u,%.1f,%.6f,%.6f,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%d,%d\n",
+      Serial.printf("%u,%.2f,%.2f,%d,%.1f,%d,%u,%u,%.1f,%.6f,%.6f,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%d,%d,%u\n",
                     logData.timestamp,
                     logData.current_motor / 100.0f,
                     logData.current_battery / 100.0f,
@@ -490,7 +495,9 @@ void downloadLogFile(const char* filename) {
                     (unsigned)logData.cog_age_ms_div10,
                     // Bundle 1: heading controller tuning columns (0x7FFF = no data sentinel)
                     (int)logData.heading_error_dx10,
-                    (int)logData.d_error_dx10);
+                    (int)logData.d_error_dx10,
+                    // E7 Fix: BREmote remote_error code (0 = none, 7 = E7 water ingress)
+                    (unsigned)logData.error_code_log);
 
       // Yield to FreeRTOS every 50 records to keep other tasks responsive.
       if ((++recordCount % 50) == 0) {

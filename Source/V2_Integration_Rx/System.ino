@@ -1,4 +1,5 @@
-﻿// V2.5-Evo - 2026-05-11 - Compass Cal: runtime BIND press triggers compass calibration with LED feedback
+﻿// V2.5-Evo - 2026-05-11 - E7 Fix: checkWetness() debounced — requires 2 consecutive confirmed-wet calls to set E7; single clean read clears
+// V2.5-Evo - 2026-05-11 - Compass Cal: runtime BIND press triggers compass calibration with LED feedback
 // V2.5-Evo - 2026-04-25 - P7: Added ?compassheading serial diagnostic command
 // V2.5-Evo - 2026-05-05 - cmdMagTest: bench-test logger for compass EMI vs motor current
 // V2.5-Evo - 2026-05-05 - cmdVescPing: VESC UART telemetry verification (?vescping)
@@ -52,32 +53,77 @@ void setUartMux(int channel)
 
 void checkWetness()
 {
+  // ============================================================
+  // E7 PULSE-AND-SNOOZE — called every ~10s via wetness_counter
+  //
+  // Behavior (not a latch):
+  //   1. 2 consecutive all-wet calls (~20s) → set E7 (TX vibrates + shows warning)
+  //   2. On the very next call (~10s later) → auto-clear E7 (TX display clears)
+  //   3. Snooze for 27 calls (~270s) — silent even if still wet
+  //   4. After snooze expires → repeat from step 1 if still wet
+  //   Total alarm-to-alarm cycle: ~300s = 5 minutes
+  //
+  // Genuine dry-out at any point resets everything immediately.
+  // Prevents false triggers from motor EMI (which corrupts AW9523 I2C reads
+  // at high current and makes all 5 samples return LOW).
+  // ============================================================
+  static uint8_t wet_strike   = 0;   // Consecutive all-wet calls; needs >=2 to trigger
+  static uint8_t snooze_count = 0;   // Calls remaining in snooze window
+
   aw.digitalWrite(AP_EN_WET_MEAS, HIGH);
   vTaskDelay(pdMS_TO_TICKS(50));
-  if(!aw.digitalRead(AP_WET_MEAS))
+
+  uint8_t dry_count = 0;
+  for (uint8_t i = 0; i < 5; i++)
   {
-    uint8_t amt = 0;
-    for(uint8_t i = 0; i < 5; i++)
+    vTaskDelay(pdMS_TO_TICKS(50));
+    if (aw.digitalRead(AP_WET_MEAS)) dry_count++;
+  }
+
+  aw.digitalWrite(AP_EN_WET_MEAS, LOW);
+
+  // --- Genuine dry-out: clear everything immediately, regardless of state ---
+  if (dry_count >= 4)
+  {
+    wet_strike         = 0;
+    snooze_count       = 0;
+    telemetry.error_code = 0;
+    return;
+  }
+
+  // --- Auto-clear active E7 alarm; TX had ~10s to display and vibrate ---
+  // Start the 5-minute snooze so the user isn't spammed while riding back.
+  if (telemetry.error_code == 7)
+  {
+    telemetry.error_code = 0;
+    snooze_count         = 27;  // 27 calls × ~10s = 270s snooze; +10s alarm +20s confirm = 300s total
+    wet_strike           = 0;
+    return;
+  }
+
+  // --- Snooze: tick down; stay silent even if still wet ---
+  if (snooze_count > 0)
+  {
+    snooze_count--;
+    return;
+  }
+
+  // --- Normal detection window ---
+  if (dry_count == 0)
+  {
+    // All 5 samples LOW: wet or I2C corruption from motor EMI.
+    // Require 2 consecutive calls (~20s) before alarming.
+    if (++wet_strike >= 2)
     {
-      vTaskDelay(pdMS_TO_TICKS(50));
-      amt += aw.digitalRead(AP_WET_MEAS);
-    }
-    if(amt == 0)
-    {
-      if(telemetry.error_code == 0)
-      {
-       telemetry.error_code = 7;
-      }
+      telemetry.error_code = 7;  // TX sees this within 100ms (10Hz LoRa); alarm auto-clears next call
+      wet_strike           = 0;
     }
   }
   else
   {
-    if(telemetry.error_code == 7)
-    {
-      telemetry.error_code = 0;
-    }
+    // Mixed result (1–3 of 5 HIGH): inconclusive, likely transient EMI — reset strike.
+    wet_strike = 0;
   }
-  aw.digitalWrite(AP_EN_WET_MEAS, LOW);
 }
 
 void getUbatLoop()

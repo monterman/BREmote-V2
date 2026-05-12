@@ -173,16 +173,11 @@ struct confStruct {
     // ============================================================
     // V2.5-Evo - 2026-04-22 - GPS CHIP TYPE SELECTOR
     //
-    // !!! IMPORTANT: Adding this field changes sizeof(confStruct)  !!!
+    // !!! IMPORTANT: Adding this field changed sizeof(confStruct)  !!!
     // !!! from 108 bytes to 112 bytes.                             !!!
-    // !!!                                                          !!!
-    // !!! On first V3 boot, the SPIFFS config will fail the size  !!!
-    // !!! check and ALL RX SETTINGS WILL RESET TO DEFAULTS.       !!!
-    // !!!                                                          !!!
-    // !!! After flashing V3 firmware for the first time, you must !!!
-    // !!!   1) Re-pair TX and RX                                   !!!
-    // !!!   2) Re-enter all config settings via web UI             !!!
-    // !!!   3) Re-calibrate compass (run 'runcal' command)         !!!
+    // !!! On first V2.5-Evo boot after this change, SPIFFS config  !!!
+    // !!! failed the size check — ALL RX SETTINGS RESET TO        !!!
+    // !!! DEFAULTS. One-time migration; complete on existing units. !!!
     // ============================================================
     uint16_t gps_chip_type;  // 0=BN-220, 1=BN-880+compass (default), 2=M10 no compass, 3=M10+compass; range 0-3
 
@@ -194,10 +189,9 @@ struct confStruct {
     // check fails. After gps_suspect_threshold consecutive
     // rejections, gps_rejected is set and RTM arming is blocked.
     //
-    // !!! Adding these fields changes sizeof(confStruct) 112→128. !!!
-    // !!! On first V3.1 boot, SPIFFS resets ALL settings to       !!!
-    // !!! defaults. After flashing: re-pair TX/RX, re-configure   !!!
-    // !!! all settings via web UI, re-run runcal.                 !!!
+    // !!! Adding these fields changed sizeof(confStruct) 112→128.  !!!
+    // !!! On first V2.5-Evo boot after this change, SPIFFS reset  !!!
+    // !!! ALL settings to defaults. One-time migration; complete.  !!!
     // ============================================================
     float    gps_max_hdop;            // Max HDOP for a valid fix; range 0.5-5.0; default 2.0; dimensionless
     float    gps_max_accel_g;         // Max implied acceleration between readings; range 1.0-10.0G; default 3.0G
@@ -249,7 +243,13 @@ struct confStruct {
     uint16_t rtm_stop_distance_m;        // Hard stop radius in metres; RTM stops when within this dist of TX; 1-50; default 3
 
     // V2.5-Evo - 2026-04-29 - BUNDLE B: VESC UART TIMEOUT
-    uint16_t vesc_timeout_s;  // 5-60 s; default 12; how long without a VESC UART packet before bat/temp shown as N/A
+    // Set to 6s (down from the original hardcoded 20s) to minimise stale VESC data.
+    // At 20s the TX display would show a valid battery % and FET temp for up to 20s after
+    // the VESC UART connection dropped — misleading the rider. 6s matches the typical
+    // VESC polling cadence (data_src=2 polls every ~1s) with room for 5 missed packets.
+    // Minimum 5s: going lower causes false N/A during normal VESC dropout transients
+    // (e.g. heavy regen braking briefly interrupts UART). Maximum 60s for diagnostic use.
+    uint16_t vesc_timeout_s;  // 5-60 s; default 6; how long without a VESC UART packet before bat/temp shown as N/A
 
     // V2.5-Evo - 2026-04-30 - BUNDLE E: GPS POLLING RATE
     uint16_t gps_update_hz;   // 1-10 Hz; default 2; how often per second to drain the GPS UART (2=500ms, 5=200ms)
@@ -296,7 +296,7 @@ struct confStruct {
 static_assert(sizeof(confStruct) == 164, "confStruct size mismatch — expected 164 bytes. Update this assert if you change the struct.");  // 112->128 Phase A; 128->136 Phase B; 136->152 P7 RTM; 152->156 Bundle B; 156 unchanged BundleE; 156->160 rtm_approach_zone_m (uint16_t + 2-byte tail pad) (2026-04-30); D3 rtm_use_compass + rtm_cog_min_speed_kmh (2x uint8_t) fill the 2-byte tail pad — sizeof stays 160 (2026-05-06); D3-Fix: uint8_t→uint16_t for ConfigService compatibility, sizeof unchanged at 164 (2026-05-06); Bundle 1: dummy_delete_me renamed to rtm_steer_response in-place, sizeof unchanged at 164 (2026-05-08)
 confStruct usrConf;
   //The orginal confs were:  ##// confStruct defaultConf = {SW_VERSION, 1, 0, 0, 50, 0, 0, 1500, 2000, 1500, 2000, 1000, 10, 0, 1, 0, 0, 0, 0, 0, 25.0f, 10.0f, 10.0f, 5.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0, 1000, 1, 0, {0, 0, 0}, {0, 0, 0}, {'1','2','3','4','5','6','7','8'}};
-  // V3 default configuration — tuned for monterman hardware
+  // V2.5-Evo default configuration — tuned for monterman hardware
 confStruct defaultConf = {SW_VERSION, 2, 20, 1, 50, 0, 0, 1000, 2000, 1000, 2000, 1000, 10, 0, 1, 2, 2, 1, 2, 1, 25.0f, 10.0f, 10.0f, 8.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0f, 1000, 0, 1, {0x46, 0xC9, 0xE0}, {0x46, 0xCB, 0xCC}, {'1','2','3','4','5','6','7','8'},
   // V2.5-Evo - 2026-04-22 - Compass calibration fields (previously implicit zeros).
   // Made explicit here so gps_chip_type can follow. Safe neutral values:
@@ -333,7 +333,7 @@ confStruct defaultConf = {SW_VERSION, 2, 20, 1, 50, 0, 0, 1000, 2000, 1000, 2000
   1,          // rtm_use_compass: 1 = Hybrid (GPS COG primary, compass snapshot at low speed). 0=COG only, 2=compass only DIAGNOSTIC.
   3           // rtm_cog_min_speed_kmh: GPS speed threshold below which compass snapshot is used; 1-15 km/h; default 3
 };
-  /// these equal to:  {"version":3,"radio_preset":2,"rf_power":20,"steering_type":1,"steering_influence":50,"steering_inverted":0,"trim":0,"pwm0_min":1000,"pwm0_max":2000,"pwm1_min":1000,"pwm1_max":2000,"failsafe_time":1000,"foil_num_cells":10,"bms_det_active":0,"wet_det_active":1,"rtm_steer_response":2,"data_src":2,"gps_en":1,"followme_mode":2,"kalman_en":1,"boogie_vmax_in_followme_kmh":25,"min_dist_m":10,"followme_smoothing_band_m":10,"foiler_low_speed_kmh":8,"zone_angle_enter_deg":35,"zone_angle_exit_deg":45,"near_diag_offset_deg":45,"ubat_cal":0.0095554,"ubat_offset":0,"tx_gps_stale_timeout_ms":1000,"logger_en":0,"paired":1,"own_address":"46:C9:E0","dest_address":"46:CB:CC","wifi_password":"12345678","mag_offset_x":0,"mag_offset_y":0,"mag_scale_x":1.0,"mag_scale_y":1.0,"gps_chip_type":1,"gps_max_hdop":2.0,"gps_max_accel_g":3.0,"gps_max_teleport_kmh":80.0,"gps_suspect_threshold":3,"gps_max_pair_dist_m":500.0,"gps_max_speed_diff_kmh":50.0,"rtm_vesc_speed_diff_kmh":20.0,"vesc_erpm_per_kmh":0.0,"rtm_rx_enabled":1,"rtm_rx_override_steering":1,"rtm_compass_required":1,"rtm_stop_distance_m":3,"vesc_timeout_s":12,"gps_update_hz":2}
+  /// these equal to:  {"version":31,"radio_preset":2,"rf_power":20,"steering_type":1,"steering_influence":50,"steering_inverted":0,"trim":0,"pwm0_min":1000,"pwm0_max":2000,"pwm1_min":1000,"pwm1_max":2000,"failsafe_time":1000,"foil_num_cells":10,"bms_det_active":0,"wet_det_active":1,"rtm_steer_response":2,"data_src":2,"gps_en":1,"followme_mode":2,"kalman_en":1,"boogie_vmax_in_followme_kmh":25,"min_dist_m":10,"followme_smoothing_band_m":10,"foiler_low_speed_kmh":8,"zone_angle_enter_deg":35,"zone_angle_exit_deg":45,"near_diag_offset_deg":45,"ubat_cal":0.0095554,"ubat_offset":0,"tx_gps_stale_timeout_ms":1000,"logger_en":0,"paired":1,"own_address":"46:C9:E0","dest_address":"46:CB:CC","wifi_password":"12345678","mag_offset_x":0,"mag_offset_y":0,"mag_scale_x":1.0,"mag_scale_y":1.0,"gps_chip_type":1,"gps_max_hdop":2.0,"gps_max_accel_g":3.0,"gps_max_teleport_kmh":80.0,"gps_suspect_threshold":3,"gps_max_pair_dist_m":500.0,"gps_max_speed_diff_kmh":50.0,"rtm_vesc_speed_diff_kmh":20.0,"vesc_erpm_per_kmh":0.0,"rtm_rx_enabled":1,"rtm_rx_override_steering":1,"rtm_compass_required":1,"rtm_stop_distance_m":3,"vesc_timeout_s":6,"gps_update_hz":2}
   ///
 
 #include "../Common/ConfigServiceEngine.h"
@@ -436,6 +436,7 @@ struct __attribute__((packed)) VescLogData {
     // 0 = no error, 7 = E7 water ingress (see checkWetness() in System.ino).
     uint8_t error_code_log;       // telemetry.error_code at log time. 0 = no BREmote error.
 };
+static_assert(sizeof(VescLogData) == 69, "VescLogData size mismatch — check binary log compat.");  // 47 base; +18 LOG-EXT-1 (2026-05-06); +4 Bundle 1 tuning fields (2026-05-08); +1 error_code_log E7 fix (2026-05-11)
 #define ENABLE_WEB_LOG_DOWNLOAD // Enable log download endpoints
 
 #ifdef WIFI_ENABLED
@@ -475,6 +476,11 @@ extern TaskHandle_t loopTaskHandle;
 
 // Semaphore for triggered task
 SemaphoreHandle_t triggerReceiveSemaphore;
+
+// Mutex protecting Wire/AW9523 — shared across Core 0 (generatePWM, checkConnStatus)
+// and Core 1 (checkWetness, checkButtons, setUartMux, blinkErr, blinkBind, readCompassRaw).
+// Created in initHardware() before Wire.begin() so startupAW() can safely use it.
+SemaphoreHandle_t i2cMutex;
 
 /*
 ** Variables

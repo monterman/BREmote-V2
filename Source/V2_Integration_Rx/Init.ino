@@ -2,6 +2,7 @@
 
 void initHardware()
 {
+  i2cMutex = xSemaphoreCreateMutex();
   Wire.begin(P_I2C_SDA, P_I2C_SCL);
   Wire.setClock(400000);
   startupAW();
@@ -34,7 +35,7 @@ void initTasks()
 {
   loopTaskHandle = xTaskGetCurrentTaskHandle();
 
-  // V3 fix (Bug 6): increased stack sizes from 2048 bytes — too small for tasks that call
+  // V2.5-Evo fix (Bug 6): increased stack sizes from 2048 bytes — too small for tasks that call
   // RadioLib, RMT driver, AW9523 I2C, and handle interrupt nesting. Use ?printtasks to
   // monitor high-water marks after the fix; reduce if headroom proves excessive.
   //Runs every 10ms to generate both PWM signals, high prio
@@ -49,7 +50,7 @@ void initWatchdog()
 {
   if(config_version_error) return;
 
-  // V3 fix (Bug 1): increased from 1000ms to 3000ms.
+  // V2.5-Evo fix (Bug 1): increased from 1000ms to 3000ms.
   // Peak loop load: getGPSLoop(300ms) + checkWetness(300ms) + getVescLoop(210ms) = ~810ms
   // before the loop task resets the WDT. 1000ms left only 190ms margin — a false trigger
   // under any combination of GPS + wetness + VESC in one iteration. 3000ms gives 3.7x margin
@@ -65,6 +66,7 @@ void initWatchdog()
     esp_task_wdt_add(NULL);  // loop task
     esp_task_wdt_add(generatePWMHandle);
     esp_task_wdt_add(checkConnStatusHandle);
+    esp_task_wdt_add(triggeredReceiveHandle);
     Serial.println("WDT: initialized");
   } else {
     Serial.println("WDT: init failed");

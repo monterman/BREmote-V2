@@ -41,13 +41,17 @@ void setUartMux(int channel)
 {
   if(channel == 0)
   {
+    xSemaphoreTake(i2cMutex, portMAX_DELAY);
     aw.digitalWrite(AP_U1_MUX_0, LOW);
     aw.digitalWrite(AP_U1_MUX_1, LOW);
+    xSemaphoreGive(i2cMutex);
   }
   if(channel == 1)
   {
+    xSemaphoreTake(i2cMutex, portMAX_DELAY);
     aw.digitalWrite(AP_U1_MUX_0, HIGH);
     aw.digitalWrite(AP_U1_MUX_1, LOW);
+    xSemaphoreGive(i2cMutex);
   }
 }
 
@@ -70,17 +74,23 @@ void checkWetness()
   static uint8_t wet_strike   = 0;   // Consecutive all-wet calls; needs >=2 to trigger
   static uint8_t snooze_count = 0;   // Calls remaining in snooze window
 
+  xSemaphoreTake(i2cMutex, portMAX_DELAY);
   aw.digitalWrite(AP_EN_WET_MEAS, HIGH);
+  xSemaphoreGive(i2cMutex);
   vTaskDelay(pdMS_TO_TICKS(50));
 
   uint8_t dry_count = 0;
   for (uint8_t i = 0; i < 5; i++)
   {
     vTaskDelay(pdMS_TO_TICKS(50));
+    xSemaphoreTake(i2cMutex, portMAX_DELAY);
     if (aw.digitalRead(AP_WET_MEAS)) dry_count++;
+    xSemaphoreGive(i2cMutex);
   }
 
+  xSemaphoreTake(i2cMutex, portMAX_DELAY);
   aw.digitalWrite(AP_EN_WET_MEAS, LOW);
+  xSemaphoreGive(i2cMutex);
 
   // --- Genuine dry-out: clear everything immediately, regardless of state ---
   if (dry_count >= 4)
@@ -183,9 +193,13 @@ void blinkErr(int num, uint8_t pin)
 {
   for(int i = 0; i < num; i++)
   {
+    xSemaphoreTake(i2cMutex, portMAX_DELAY);
     aw.digitalWrite(pin, LOW);
+    xSemaphoreGive(i2cMutex);
     delay(200);
+    xSemaphoreTake(i2cMutex, portMAX_DELAY);
     aw.digitalWrite(pin, HIGH);
+    xSemaphoreGive(i2cMutex);
     delay(200);
   }
   delay(500);
@@ -196,9 +210,13 @@ void blinkBind(int num)
 {
   for(int i = 0; i < num; i++)
   {
+    xSemaphoreTake(i2cMutex, portMAX_DELAY);
     aw.digitalWrite(AP_L_BIND, LOW);
+    xSemaphoreGive(i2cMutex);
     delay(50);
+    xSemaphoreTake(i2cMutex, portMAX_DELAY);
     aw.digitalWrite(AP_L_BIND, HIGH);
+    xSemaphoreGive(i2cMutex);
     delay(50);
   }
 }
@@ -208,14 +226,16 @@ void scanI2C() {
   byte error, address;
   int nDevices = 0;
 
-  // V3 fix (Bug 7): do not call Wire.begin() here. Wire was already initialised to the
+  // V2.5-Evo fix (Bug 7): do not call Wire.begin() here. Wire was already initialised to the
   // correct pins (SDA=%d SCL=%d) in initHardware(). Re-initialising mid-session resets
   // the I2C peripheral and can glitch an in-progress AW9523 transaction.
   Serial.printf("Scanning I2C bus (initialized on SDA:%d SCL:%d)...\n", P_I2C_SDA, P_I2C_SCL);
 
   for(address = 1; address < 127; address++ ) {
+    xSemaphoreTake(i2cMutex, portMAX_DELAY);
     Wire.beginTransmission(address);
     error = Wire.endTransmission();
+    xSemaphoreGive(i2cMutex);
 
     if (error == 0) {
       Serial.print("I2C device found at address 0x");
@@ -954,12 +974,21 @@ void checkButtons()
   static bool first_call = true;
   if (first_call) {
     first_call = false;
-    if(!aw.digitalRead(AP_S_BIND))
+    xSemaphoreTake(i2cMutex, portMAX_DELAY);
+    bool s_bind_boot = !aw.digitalRead(AP_S_BIND);
+    xSemaphoreGive(i2cMutex);
+    if(s_bind_boot)
     {
-      if(!aw.digitalRead(AP_S_AUX))
+      xSemaphoreTake(i2cMutex, portMAX_DELAY);
+      bool s_aux_boot = !aw.digitalRead(AP_S_AUX);
+      xSemaphoreGive(i2cMutex);
+      if(s_aux_boot)
       {
         delay(10);
-        if(!aw.digitalRead(AP_S_AUX))
+        xSemaphoreTake(i2cMutex, portMAX_DELAY);
+        s_aux_boot = !aw.digitalRead(AP_S_AUX);
+        xSemaphoreGive(i2cMutex);
+        if(s_aux_boot)
         {
           Serial.println("Deleting config and rebooting");
           deleteConfFromSPIFFS();
@@ -968,7 +997,10 @@ void checkButtons()
         }
       }
       delay(10);
-      if(!aw.digitalRead(AP_S_BIND))
+      xSemaphoreTake(i2cMutex, portMAX_DELAY);
+      s_bind_boot = !aw.digitalRead(AP_S_BIND);
+      xSemaphoreGive(i2cMutex);
+      if(s_bind_boot)
       {
         //Start pairing
         waitForPairing();
@@ -980,13 +1012,18 @@ void checkButtons()
   // Static variables remember their state between loops
   static bool aux_last_state = true;
   // true = HIGH (unpressed due to pullup)
+  xSemaphoreTake(i2cMutex, portMAX_DELAY);
   bool aux_current = aw.digitalRead(AP_S_AUX);
+  xSemaphoreGive(i2cMutex);
   // Detect a "falling edge" (button was just pressed down)
   if (aux_last_state == true && aux_current == false)
   {
     vTaskDelay(pdMS_TO_TICKS(50));
     // 50ms Debounce to prevent double-clicks
-    if (aw.digitalRead(AP_S_AUX) == false)
+    xSemaphoreTake(i2cMutex, portMAX_DELAY);
+    bool aux_debounced = (aw.digitalRead(AP_S_AUX) == false);
+    xSemaphoreGive(i2cMutex);
+    if (aux_debounced)
     {
       if (isLoggingActive())
       {
@@ -1000,7 +1037,14 @@ void checkButtons()
       }
 
       // Wait for the user to let go of the button before continuing
-      while(aw.digitalRead(AP_S_AUX) == false) { vTaskDelay(pdMS_TO_TICKS(10));
+      xSemaphoreTake(i2cMutex, portMAX_DELAY);
+      bool aux_held = (aw.digitalRead(AP_S_AUX) == false);
+      xSemaphoreGive(i2cMutex);
+      while(aux_held) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        xSemaphoreTake(i2cMutex, portMAX_DELAY);
+        aux_held = (aw.digitalRead(AP_S_AUX) == false);
+        xSemaphoreGive(i2cMutex);
       }
     }
   }
@@ -1011,10 +1055,15 @@ void checkButtons()
   // blinkBind(5) = starting, blinkBind(2) = success, blinkBind(10) = compass not detected.
   // Boot-time pairing/reset cannot reach this block (guarded by first_call above).
   static bool bind_last_state = true;
+  xSemaphoreTake(i2cMutex, portMAX_DELAY);
   bool bind_current = aw.digitalRead(AP_S_BIND);
+  xSemaphoreGive(i2cMutex);
   if (bind_last_state == true && bind_current == false) {
     vTaskDelay(pdMS_TO_TICKS(50));
-    if (aw.digitalRead(AP_S_BIND) == false) {
+    xSemaphoreTake(i2cMutex, portMAX_DELAY);
+    bool bind_debounced = (aw.digitalRead(AP_S_BIND) == false);
+    xSemaphoreGive(i2cMutex);
+    if (bind_debounced) {
       blinkBind(5);
       extern bool compass_detected;  // global bool set by initCompass(); false if sensor absent
       runCompassCalibration();        // 45s collection, hard/soft-iron calc, auto-save to SPIFFS
@@ -1023,7 +1072,15 @@ void checkButtons()
       } else {
         blinkBind(10);
       }
-      while (aw.digitalRead(AP_S_BIND) == false) { vTaskDelay(pdMS_TO_TICKS(10)); }
+      xSemaphoreTake(i2cMutex, portMAX_DELAY);
+      bool bind_held = (aw.digitalRead(AP_S_BIND) == false);
+      xSemaphoreGive(i2cMutex);
+      while (bind_held) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        xSemaphoreTake(i2cMutex, portMAX_DELAY);
+        bind_held = (aw.digitalRead(AP_S_BIND) == false);
+        xSemaphoreGive(i2cMutex);
+      }
     }
   }
   bind_last_state = bind_current;
@@ -1043,7 +1100,9 @@ void checkConnStatus(void *parameter)
         if(bind_pin_state != 1)
         {
           bind_pin_state = 1;
+          xSemaphoreTake(i2cMutex, portMAX_DELAY);
           aw.digitalWrite(AP_L_BIND, LOW);
+          xSemaphoreGive(i2cMutex);
         }
       }
       else
@@ -1051,12 +1110,16 @@ void checkConnStatus(void *parameter)
         if(bind_pin_state)
         {
           bind_pin_state = 0;
+          xSemaphoreTake(i2cMutex, portMAX_DELAY);
           aw.digitalWrite(AP_L_BIND, HIGH);
+          xSemaphoreGive(i2cMutex);
         }
         else
         {
           bind_pin_state = 1;
+          xSemaphoreTake(i2cMutex, portMAX_DELAY);
           aw.digitalWrite(AP_L_BIND, LOW);
+          xSemaphoreGive(i2cMutex);
         }
       }
     }
@@ -1066,9 +1129,13 @@ void checkConnStatus(void *parameter)
       if(unpairedBlink == 4)
       {
         unpairedBlink = 0;
+        xSemaphoreTake(i2cMutex, portMAX_DELAY);
         aw.digitalWrite(AP_L_BIND, LOW);
+        xSemaphoreGive(i2cMutex);
         vTaskDelay(pdMS_TO_TICKS(10));
+        xSemaphoreTake(i2cMutex, portMAX_DELAY);
         aw.digitalWrite(AP_L_BIND, HIGH);
+        xSemaphoreGive(i2cMutex);
       }
     }
     vTaskDelayUntil(&xLastWakeTime, xFrequency);

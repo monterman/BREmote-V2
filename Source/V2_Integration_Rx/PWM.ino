@@ -18,16 +18,20 @@ void generatePWM(void *parameter) {
         alternatePWMChannel = 0;
         generate_pulse(PWM0_time);
         vTaskDelay(pdMS_TO_TICKS(2));
+        xSemaphoreTake(i2cMutex, portMAX_DELAY);
         aw.pinMode(AP_EN_PWM0, INPUT);
         aw.pinMode(AP_EN_PWM1, OUTPUT);
+        xSemaphoreGive(i2cMutex);
       }
       else
       {
         alternatePWMChannel = 1;
         generate_pulse(PWM1_time);
         vTaskDelay(pdMS_TO_TICKS(2));
+        xSemaphoreTake(i2cMutex, portMAX_DELAY);
         aw.pinMode(AP_EN_PWM1, INPUT);
         aw.pinMode(AP_EN_PWM0, OUTPUT);
+        xSemaphoreGive(i2cMutex);
       }
     }
     vTaskDelayUntil(&xLastWakeTime, xFrequency);

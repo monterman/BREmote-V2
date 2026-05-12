@@ -14,24 +14,32 @@ unsigned long compass_snapshot_ms      = 0;     // millis() timestamp of last sn
 extern void cmdSave(const String& params);
 
 void initCompass() {
-  Wire.setTimeOut(20); 
+  Wire.setTimeOut(20);
 
+  xSemaphoreTake(i2cMutex, portMAX_DELAY);
   Wire.beginTransmission(QMC5883L_ADDR);
-  if (Wire.endTransmission() == 0) {
+  bool found = (Wire.endTransmission() == 0);
+  xSemaphoreGive(i2cMutex);
+
+  if (found) {
     compass_detected = true;
     Serial.println("QMC5883L Compass detected. Initializing...");
 
+    xSemaphoreTake(i2cMutex, portMAX_DELAY);
     Wire.beginTransmission(QMC5883L_ADDR);
-    Wire.write(0x0B); 
-    Wire.write(0x01); 
+    Wire.write(0x0B);
+    Wire.write(0x01);
     Wire.endTransmission();
+    xSemaphoreGive(i2cMutex);
 
     // 50Hz Data Rate for stability
+    xSemaphoreTake(i2cMutex, portMAX_DELAY);
     Wire.beginTransmission(QMC5883L_ADDR);
-    Wire.write(0x09); 
-    Wire.write(0x15); 
+    Wire.write(0x09);
+    Wire.write(0x15);
     Wire.endTransmission();
-    
+    xSemaphoreGive(i2cMutex);
+
     Serial.println("Compass Init OK (50Hz Mode).");
   } else {
     compass_detected = false;
@@ -42,19 +50,25 @@ void initCompass() {
 bool readCompassRaw() {
   if (!compass_detected) return false;
 
+  xSemaphoreTake(i2cMutex, portMAX_DELAY);
   Wire.beginTransmission(QMC5883L_ADDR);
-  Wire.write(0x00); 
-  if (Wire.endTransmission(false) != 0) return false; 
+  Wire.write(0x00);
+  if (Wire.endTransmission(false) != 0) {
+    xSemaphoreGive(i2cMutex);
+    return false;
+  }
 
   uint8_t bytesReceived = Wire.requestFrom((uint8_t)QMC5883L_ADDR, (uint8_t)6, (uint8_t)true);
-  
+
   if (bytesReceived == 6) {
     magX = (int16_t)(Wire.read() | (Wire.read() << 8));
     magY = (int16_t)(Wire.read() | (Wire.read() << 8));
     magZ = (int16_t)(Wire.read() | (Wire.read() << 8));
+    xSemaphoreGive(i2cMutex);
     return true;
   }
-  
+
+  xSemaphoreGive(i2cMutex);
   return false;
 }
 
@@ -199,8 +213,7 @@ float getCompassHeading()
 //   No side effects if any condition fails — snapshot is left unchanged.
 //
 // When called:
-//   Intended to be called every ~100ms from runRtmLoop() in RTMState.ino.
-//   D5 will wire this in. This function is defined here but not yet called.
+//   Called every ~100ms from runRtmLoop() in RTMState.ino (top of loop).
 //   Safe to call from any FreeRTOS task context — getCompassHeading() takes
 //   a few ms (I2C reads) but does not block indefinitely.
 // ============================================================

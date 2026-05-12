@@ -204,7 +204,9 @@ void saveConfToSPIFFS(const confStruct& data) {
     SPIFFS.remove(CONF_FILE_PATH);
     SPIFFS.rename("/data.tmp", CONF_FILE_PATH);
     Serial.println("Struct saved to SPIFFS as Base64");
+    #if defined(DEBUG_RX) || defined(DEBUG_TX)
     Serial.println("Encoded Data: " + String((char*)encodedData));
+    #endif
     delete[] encodedData;
 }
 

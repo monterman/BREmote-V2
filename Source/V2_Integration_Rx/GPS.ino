@@ -313,10 +313,6 @@ void getGPSLoop()
   //Serial1.begin(115200, SERIAL_8N1, P_U1_RX, P_U1_TX);
   //while(!Serial1) vTaskDelay(pdMS_TO_TICKS(10));
   
-  // Flush the serial buffer to get fresh data
-  Serial1.flush();
-  
-  // Reset buffer for new reading
   // Non-blocking drain: read all bytes currently in the UART buffer and return immediately.
   // The GPS module sends NMEA sentences at its configured rate (5-10Hz); calling getGPSLoop()
   // on its own timer (V2_Integration_Rx.ino gps_loop_timer) ensures each call arrives after

@@ -74,7 +74,7 @@ All three must always reflect the current confStruct exactly. This applies to TX
 - GPS loop blocks main thread ~300ms/second (RX `GPS.ino`)
 - GPS data logged without validity/HDOP check (RX `Logger.ino`)
 - Speed sentinel value 99 km/h collides with real vehicle speed — use `0xFE` instead
-- VESC timeout is 20s before "not available" shown — should be reduced to 2–3s
+- VESC timeout (`vesc_timeout_s`) defaults to 6s before "not available" shown (configurable 5–60s via web UI)
 - TX deep sleeps during active WiFi config session after 5 minutes of inactivity
 - LoRa telemetry takes ~600ms for full struct update cycle
 - GPS polled at 1Hz despite being configured at 5Hz

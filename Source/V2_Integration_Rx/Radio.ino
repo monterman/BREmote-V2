@@ -40,8 +40,6 @@ bool waitForPairing()
 {
   usrConf.paired = false;
 
-  // TODO: re-evaluate checkAndAdjustAddress() — removed if(0) dead code guard (LOW audit cleanup)
-
   uint8_t responsePacket[8];
   unsigned long startTime = millis();
 
@@ -375,8 +373,12 @@ static void processMetaGpsPacket(uint8_t *pkt)
 void triggeredReceive(void *parameter) {
   while (1)
   {
-    // Wait for semaphore given by packetReceived() ISR on any DIO1 event
-    if (xSemaphoreTake(triggerReceiveSemaphore, portMAX_DELAY) == pdTRUE)
+    // Feed WDT on every iteration regardless of packet activity.
+    // portMAX_DELAY would block indefinitely when TX is off, preventing WDT reset.
+    // 2000ms timeout: short enough to feed the 3000ms WDT, long enough to avoid
+    // busy-looping when the radio is quiet.
+    esp_task_wdt_reset();
+    if (xSemaphoreTake(triggerReceiveSemaphore, pdMS_TO_TICKS(2000)) == pdTRUE)
     {
       if (gps_meta_pending)
       {

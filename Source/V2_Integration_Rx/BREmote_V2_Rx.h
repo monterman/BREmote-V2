@@ -1,5 +1,5 @@
 ﻿// V2.5-Evo - 2026-05-09 - Bundle 9-Final: Added USB CDC On Boot compile-time guard
-// V2.5-Evo - 2026-05-11 - E7 Fix: VescLogData +1 byte (error_code_log); sizeof 68→69; old SPIFFS logs misparse after this flash
+// V2.5-Evo - 2026-05-11 - E7 Fix: VescLogData +1 byte (error_code_log); sizeof 51→52; old SPIFFS logs misparse after this flash
 // V2.5-Evo - 2026-05-08 - Bundle 1: RTM/FM steering preset system (rtm_steer_response 0-4); SW_VERSION 30→31; sizeof unchanged at 164; VescLogData +4 bytes for tuning telemetry
 // V2.5-Evo - 2026-05-06 - LOG-EXT-1: VescLogData extended with heading source debug fields (12 fields, +18 bytes)
 // V2.5-Evo - 2026-05-06 - D3-Fix: rtm_use_compass + rtm_cog_min_speed_kmh changed uint8_t→uint16_t for ConfigService CFG_U16 compatibility; SW_VERSION 29→30; sizeof 160→164
@@ -436,7 +436,7 @@ struct __attribute__((packed)) VescLogData {
     // 0 = no error, 7 = E7 water ingress (see checkWetness() in System.ino).
     uint8_t error_code_log;       // telemetry.error_code at log time. 0 = no BREmote error.
 };
-static_assert(sizeof(VescLogData) == 69, "VescLogData size mismatch — check binary log compat.");  // 47 base; +18 LOG-EXT-1 (2026-05-06); +4 Bundle 1 tuning fields (2026-05-08); +1 error_code_log E7 fix (2026-05-11)
+static_assert(sizeof(VescLogData) == 52, "VescLogData size mismatch — check binary log compat.");  // 29 base; +18 LOG-EXT-1 (2026-05-06); +4 Bundle 1 tuning fields (2026-05-08); +1 error_code_log E7 fix (2026-05-11)
 #define ENABLE_WEB_LOG_DOWNLOAD // Enable log download endpoints
 
 #ifdef WIFI_ENABLED

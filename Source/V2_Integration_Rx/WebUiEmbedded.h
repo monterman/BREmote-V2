@@ -1,4 +1,5 @@
-﻿// V2.5-Evo - 2026-05-13 - SW34: WebUI UX — reboot btn feedback, log Refresh btn, overflow-x fix, compact log rows
+﻿// V2.5-Evo - 2026-05-13 - SW39 RX: Expand All / Collapse All buttons above config groups
+// V2.5-Evo - 2026-05-13 - SW34: WebUI UX — reboot btn feedback, log Refresh btn, overflow-x fix, compact log rows
 #ifndef WEB_UI_EMBEDDED_H
 #define WEB_UI_EMBEDDED_H
 // V2.5-Evo - 2026-05-03 - Log UI: Delete All + Delete Selected buttons;
@@ -93,6 +94,10 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
       </div>
     </div>
     
+    <div class="row" style="margin:4px 0 6px">
+      <button class="btn sec" style="font-size:12px;padding:5px 10px" onclick="expandAll()">Expand All</button>
+      <button class="btn sec" style="font-size:12px;padding:5px 10px" onclick="collapseAll()">Collapse All</button>
+    </div>
     <div class="groups" id="groups"></div>
     
     <div class="card" style="margin-top: 20px;">
@@ -354,6 +359,8 @@ async function refreshAll(){
 }
 
 async function rebootDev(){if(hasUnsavedChanges()){const ignore=confirm("Unsaved config changes detected. Press OK to ignore and reboot.");if(!ignore)return;}const b=document.querySelector('[onclick="rebootDev()"]');if(b){b.textContent='Rebooting…';b.classList.add('active-save');b.disabled=true;}await api('/api/reboot','POST');}
+function expandAll(){document.querySelectorAll('.groups details').forEach(d=>{d.open=true;openGroups[d.dataset.group]=true;});}
+function collapseAll(){document.querySelectorAll('.groups details').forEach(d=>{d.open=false;openGroups[d.dataset.group]=false;});}
 
 // --- LOG MANAGEMENT ---
 async function openLogs(){
@@ -401,7 +408,7 @@ async function deleteSelected(){
   openLogs();
 }
 
-window.setVal=setVal;window.setBool=setBool;window.setEnum=setEnum;window.syncField=syncField;window.setAddrPart=setAddrPart;window.saveAll=saveAll;window.loadCfg=loadCfg;window.rebootDev=rebootDev;window.refreshAll=refreshAll;window.openLogs=openLogs;window.deleteLog=deleteLog;window.deleteAllLogs=deleteAllLogs;window.deleteSelected=deleteSelected;window.copyJson=copyJson;window.exportJsonFile=exportJsonFile;window.importJsonFile=importJsonFile;window.loadFromJsonText=loadFromJsonText;
+window.setVal=setVal;window.setBool=setBool;window.setEnum=setEnum;window.syncField=syncField;window.setAddrPart=setAddrPart;window.saveAll=saveAll;window.loadCfg=loadCfg;window.rebootDev=rebootDev;window.refreshAll=refreshAll;window.openLogs=openLogs;window.deleteLog=deleteLog;window.deleteAllLogs=deleteAllLogs;window.deleteSelected=deleteSelected;window.copyJson=copyJson;window.exportJsonFile=exportJsonFile;window.importJsonFile=importJsonFile;window.loadFromJsonText=loadFromJsonText;window.expandAll=expandAll;window.collapseAll=collapseAll;
 refreshAll();
 </script>
 </body>

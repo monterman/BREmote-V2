@@ -1,4 +1,5 @@
-﻿// V2.5-Evo - 2026-05-11 - E7 Fix: +1 CSV column (remote_error); 26→27 columns; error_code_log from telemetry.error_code
+// V2.5-Evo - 2026-05-12 - Fix REAL-BUG-B: guard aw.*/AW9523 calls in loggerLoop() and triggerBlink() with i2cMutex (generatePWM Core 0 race)
+// V2.5-Evo - 2026-05-11 - E7 Fix: +1 CSV column (remote_error); 26→27 columns; error_code_log from telemetry.error_code
 // V2.5-Evo - 2026-05-08 - Bundle 1: +2 CSV columns (heading_error_dx10, d_error_dx10); 24→26 columns; VescLogData +4 bytes; extern g_heading_error_dx10/g_d_error_dx10 from RTMState.ino
 // V2.5-Evo - 2026-05-06 - FIX-LOGDL-2: serial ?download CSV updated for LOG-EXT-1 fields (24 columns); WDT reset + FreeRTOS yield added inside read loop to support files >30KB without crash
 // V2.5-Evo - 2026-05-06 - LOG-EXT-2: convertToLogData populates 12 heading debug fields; inline-duplicate of getRtmHeading() (must stay in sync with RTMState.ino); default lograte changed 1Hz→5Hz at line 21 (manual user edit, do not revert)
@@ -14,6 +15,7 @@
 
 extern TinyGPSPlus gps;
 extern Adafruit_AW9523 aw;   // Pull in the global AW9523 expander
+extern SemaphoreHandle_t i2cMutex;
 
 #define MIN_FREE_SPACE_KB 500  
 
@@ -45,7 +47,9 @@ void triggerBlink(int blinks, int speedMs) {
   blinkSpeedMs = speedMs;
   lastBlinkTime = millis();
   blinkState = true; 
+  xSemaphoreTake(i2cMutex, portMAX_DELAY);
   aw.digitalWrite(AP_L_AUX, LOW); // Turn ON immediately (Active-Low)
+  xSemaphoreGive(i2cMutex);
 }
 
 // Safely handles UI updates from the main thread
@@ -60,21 +64,31 @@ void loggerLoop() {
        
        if (blinksRemaining > 0) {
           blinkState = !blinkState;
+          xSemaphoreTake(i2cMutex, portMAX_DELAY);
           aw.digitalWrite(AP_L_AUX, blinkState ? LOW : HIGH);
+          xSemaphoreGive(i2cMutex);
        } else {
           // Blinking finished, set solid state based on logging status
+          xSemaphoreTake(i2cMutex, portMAX_DELAY);
           aw.digitalWrite(AP_L_AUX, logging_active ? LOW : HIGH);
+          xSemaphoreGive(i2cMutex);
        }
     }
   } else {
     // Keep LED synced to state just in case
+    xSemaphoreTake(i2cMutex, portMAX_DELAY);
     aw.digitalWrite(AP_L_AUX, logging_active ? LOW : HIGH);
+    xSemaphoreGive(i2cMutex);
   }
 
   // 2. Process Button
   if (now - lastBtnTime >= 50) { // 50ms polling & debounce
     lastBtnTime = now;
-    bool currentBtnState = aw.digitalRead(AP_S_AUX);
+    bool currentBtnState = lastBtnState; // safe default if mutex unavailable
+    if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+      currentBtnState = aw.digitalRead(AP_S_AUX);
+      xSemaphoreGive(i2cMutex);
+    }
     
     // Detect press (HIGH to LOW)
     if (currentBtnState == LOW && lastBtnState == HIGH) {

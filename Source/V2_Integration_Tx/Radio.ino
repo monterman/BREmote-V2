@@ -1,6 +1,8 @@
 ﻿// V2.5-Evo - 2026-05-03 - Added reserved/warning comments (LOW audit cleanup)
 // V2.5-Evo - 2026-04-24 - Added 0xF3 GPS meta-packet burst at 2Hz in sendData(); THR capped at 0xF2
 // V2.5-Evo - 2026-04-25 - P7: Added RTM/FM meta-packet queue consumer in sendData(); cap 0xF2→0xF0; queueMetaPacketBurst()
+// V2.5-Evo - 2026-05-13 - SW32 L3: stale checkAndAdjustAddress TODO block removed (function never implemented)
+// V2.5-Evo - 2026-05-13 - SW32 M3: queueMetaPacketBurst uses release/relaxed; sendData consumer uses acquire load
 // V2.5-Evo - 2026-04-29 - Bundle A: radio_preset max clamped to 2; dead foil_speed != 99 sentinel removed
 void setRadioActivityEnabled(bool enabled)
 {
@@ -60,12 +62,6 @@ bool initiatePairing()
 
   rxprintln("Initiating Pairing...");
   usrConf.paired = false;
-  
-  // TODO: Implement address conflict detection during pairing
-  //if (!checkAndAdjustAddress())
-  //{
-  //    return false;  // Too many conflicts
-  //}
   
   uint8_t pairingPacket[8];  // 0xAB + 3 bytes address + CRC (up to 8 bytes for confirmation)
   unsigned long startTime = millis();
@@ -241,12 +237,14 @@ void sendData(void *parameter)
       // ---- Meta-packet burst path (highest priority, preempts GPS and control packets) ----
       // Sends one 6-byte meta-packet per iteration until count reaches 0.
       // 3 bursts × 100ms cycle = 300ms total. Type/value written before count by loop task.
-      if (rtm_meta_count > 0)
+      // V2.5-Evo - 2026-05-13 - SW32 M3: acquire load on count pairs with release store in
+      // queueMetaPacketBurst(); guarantees type/value are visible before count reads as >0.
+      if (rtm_meta_count.load(std::memory_order_acquire) > 0)
       {
         uint8_t metaPkt[6];
         memcpy(metaPkt, usrConf.dest_address, 3);
-        metaPkt[3] = rtm_meta_type;
-        metaPkt[4] = rtm_meta_value;
+        metaPkt[3] = rtm_meta_type.load(std::memory_order_relaxed);
+        metaPkt[4] = rtm_meta_value.load(std::memory_order_relaxed);
         metaPkt[5] = esp_crc8(metaPkt, 5);
 
         rxprint("RTM meta-pkt: ");
@@ -260,7 +258,7 @@ void sendData(void *parameter)
           if (_txErr != RADIOLIB_ERR_NONE)
             Serial.printf("[Radio] startTransmit error %d at line %d\n", _txErr, __LINE__);
         }
-        rtm_meta_count--;
+        rtm_meta_count.fetch_sub(1, std::memory_order_relaxed);
         num_sent_packets++;
         vTaskDelay(pdMS_TO_TICKS(10));
         radio.implicitHeader(6);
@@ -479,13 +477,16 @@ void waitForTelemetry(void *parameter)
 // getLinkQuality() is now in ../Common/RadioCommon.h
 
 // V2.5-Evo - 2026-04-25 - P7: Queue a 3-burst meta-packet transmission.
+// V2.5-Evo - 2026-05-13 - SW32 M3: explicit memory ordering — type/value stored relaxed
+// (count is the guard), count stored with memory_order_release so the Core 0 acquire load
+// in sendData() is guaranteed to observe the correct type/value before acting on count>0.
 // Called from loop task (RTM/FM state machines in RTMState.ino).
 // sendData() FreeRTOS task consumes the queue.
 // type: 0xF1=RTM state, 0xF2=FM override
 // value: for 0xF1: 0=inactive 1=active; for 0xF2: 0-3 FM mode
 void queueMetaPacketBurst(uint8_t type, uint8_t value)
 {
-  rtm_meta_type  = type;
-  rtm_meta_value = value;
-  rtm_meta_count = 3;  // 3 bursts at 100ms intervals = 300ms total send window
+  rtm_meta_type.store(type, std::memory_order_relaxed);
+  rtm_meta_value.store(value, std::memory_order_relaxed);
+  rtm_meta_count.store(3, std::memory_order_release);  // release: type/value visible before count
 }

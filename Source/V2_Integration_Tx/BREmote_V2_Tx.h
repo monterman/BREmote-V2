@@ -9,6 +9,8 @@
 // V2.5-Evo - 2026-05-01 - Release: DEBUG_RX commented out for production build
 // V2.5-Evo - 2026-05-01 - thr_expo1 repurposed as fm_display_mode (FM digit zone data selector, 1-4)
 // V2.5-Evo - 2026-05-02 - Added displayMutex SemaphoreHandle_t (Core 0/Core 1 displayBuffer race fix)
+// V2.5-Evo - 2026-05-13 - SW32 M3: rtm_meta_type/value/count + rtm_thr_cap_tx + rtm_tx_active changed volatile→std::atomic<T>; release/acquire ordering in queue/consumer
+// V2.5-Evo - 2026-05-13 - SW32: default display_mode changed 0→DISPLAY_MODE_THR (throttle % as boot display; field test feedback)
 // V2.5-Evo - 2026-05-09 - Bundle 9-Final: Added USB CDC On Boot compile-time guard
 
 // ============================================================
@@ -393,18 +395,24 @@ volatile uint8_t thr_sent = 0;   // Post-expo+gear throttle actually sent over r
 volatile uint8_t steer_sent = 0; // Steering value actually sent over radio
 
 // V2.5-Evo - 2026-04-25 - P7 RTM meta-packet burst queue.
-// Loop task writes type/value then sets count; sendData task reads count and consumes.
-// Writing count LAST (after type/value) is safe: sendData won't act until count > 0.
-volatile uint8_t rtm_meta_type  = 0;    // 0xF1=RTM state, 0xF2=FM override
-volatile uint8_t rtm_meta_value = 0;    // for 0xF1: 0=inactive 1=active; for 0xF2: 0-3 FM mode
-volatile uint8_t rtm_meta_count = 0;    // bursts remaining; 0 = idle (uint8_t: value is always 0 or 3)
+// V2.5-Evo - 2026-05-13 - SW32 M3: changed volatile→std::atomic<T>.
+// Loop task (Core 1) writes type/value with memory_order_relaxed, then stores count
+// with memory_order_release. sendData task (Core 0) loads count with memory_order_acquire
+// before reading type/value. volatile prevented compiler caching but not CPU store-buffer
+// reordering; std::atomic release/acquire prevents Core 0 from observing count>0
+// while type/value are still stale in Core 1's store buffer.
+std::atomic<uint8_t> rtm_meta_type  {0};    // 0xF1=RTM state, 0xF2=FM override
+std::atomic<uint8_t> rtm_meta_value {0};    // for 0xF1: 0=inactive 1=active; for 0xF2: 0-3 FM mode
+std::atomic<uint8_t> rtm_meta_count {0};    // bursts remaining; 0 = idle (value is always 0 or 3)
 
 // V2.5-Evo - 2026-04-25 - P7 RTM throttle cap.
+// V2.5-Evo - 2026-05-13 - SW32 M3: changed volatile→std::atomic<T>.
+// Written by loop task (Core 1) via RTMState.ino; read by sendData (Core 0) via calcFinalThrottle().
 // 255 = no cap (RTM not active). During RTM ACTIVE, set to the ramped cap value
 // (30-70% of 255). Applied in calcFinalThrottle(). RTM can only subtract from
 // user throttle — never add. Creator safety philosophy enforced here.
-volatile uint8_t rtm_thr_cap_tx = 255;
-volatile bool    rtm_tx_active  = false;
+std::atomic<uint8_t> rtm_thr_cap_tx {255};
+std::atomic<bool>    rtm_tx_active  {false};
 
 // V2.5-Evo - 2026-04-28 - P9 S4: RTM arm distance captured at engage moment.
 // Used by R5 proximity bar to set the 100% reference distance.
@@ -427,7 +435,10 @@ volatile bool system_locked = 1;
 #define DISPLAY_MODE_THR     4
 #define DISPLAY_MODE_INTBAT  5
 #define DISPLAY_MODE_COUNT   6
-volatile uint8_t display_mode = 0;
+// V2.5-Evo - 2026-05-13 - SW32: throttle % (DISPLAY_MODE_THR) as default boot display.
+// Field test feedback: throttle % is more useful at-a-glance than temperature on first unlock.
+// User can still cycle all modes via toggle. Was 0 (DISPLAY_MODE_TEMP).
+volatile uint8_t display_mode = DISPLAY_MODE_THR;
 
 volatile uint16_t toggle_blocked_counter = 0;
 volatile bool toggle_blocked_by_steer = 0;

@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-05-13 - SW43: GPS gate relaxed to location.isValid() only — date absent when UART mux fragments RMC; T_HHMMSS filename when time valid but date missing
 // V2.5-Evo - 2026-05-13 - SW40: loggerLoop() button section removed — checkButtons() is the sole AUX handler; pending timeout 5min→15s start-anyway (was: give-up)
 // V2.5-Evo - 2026-05-13 - SW38: log_pending state — GPS gate moved to startLog()/loggerLoop(); LED heartbeat (1 blink/3s) while waiting; auto-transitions to active on fix; 5-min timeout → 3 slow error blinks
 // V2.5-Evo - 2026-05-13 - SW37: createNewLogFile() — no GPS wait; file created immediately; GPS name if fix available, millis fallback otherwise
@@ -83,13 +84,14 @@ void loggerLoop() {
       log_heartbeat_ms = now;
       triggerBlink(1, 80);
     }
-    if (gps.location.isValid() && gps.date.isValid()) {
+    // SW43: gate on location only — date may be absent when mux contention fragments RMC sentences
+    if (gps.location.isValid()) {
       // Fix acquired — transition to active
       log_pending = false;
       logging_active = true;
       last_space_check = millis();
       triggerBlink(5, 80); // "Logging started" confirmation
-      Serial.println("GPS fix acquired — log started");
+      Serial.println("GPS location fix acquired — log started");
     } else if (now - log_pending_since >= LOG_GPS_PENDING_TIMEOUT_MS) {
       // 15s timeout — start anyway with millis-based filename; GPS data fills in per-record once fix arrives
       log_pending = false;
@@ -345,14 +347,20 @@ bool createNewLogFile() {
   if (!ensureFreeSpace()) return false;
 
   char filenameBuffer[30];
-  if (gps.location.isValid() && gps.date.isValid()) {
+  if (gps.location.isValid() && gps.date.isValid() && gps.time.isValid()) {
+    // Full GPS timestamp: MMDDYY_HHMMSS.log
     snprintf(filenameBuffer, sizeof(filenameBuffer), "/%02d%02d%02d_%02d%02d%02d.log",
              gps.date.month(), gps.date.day(), (gps.date.year() % 100),
              gps.time.hour(), gps.time.minute(), gps.time.second());
-    Serial.println("GPS fix available — using GPS timestamp filename");
+    Serial.println("GPS timestamp filename");
+  } else if (gps.location.isValid() && gps.time.isValid()) {
+    // Location + time but no date (RMC fragmented by UART mux): T_HHMMSS_<ms>.log
+    snprintf(filenameBuffer, sizeof(filenameBuffer), "/T_%02d%02d%02d_%u.log",
+             gps.time.hour(), gps.time.minute(), gps.time.second(), (unsigned)(millis() % 100000));
+    Serial.println("GPS time-only filename (no date from RMC)");
   } else {
     snprintf(filenameBuffer, sizeof(filenameBuffer), "/ms%u.log", (unsigned)millis());
-    Serial.println("No GPS fix — using millis filename");
+    Serial.println("No GPS fix — millis filename");
   }
 
   currentLogFileName = String(filenameBuffer);
@@ -446,17 +454,18 @@ void initLogger() {
 void startLog() {
   if (logging_active || log_pending) return;
   Serial.println("Log requested...");
-  if (gps.location.isValid() && gps.date.isValid()) {
+  // SW43: gate on location only — date may be absent when mux contention fragments RMC sentences
+  if (gps.location.isValid()) {
     logging_active = true;
     last_space_check = millis();
     triggerBlink(5, 80); // "Logging started" confirmation
-    Serial.println("Log started — GPS fix available");
+    Serial.println("Log started — GPS location fix available");
   } else {
     log_pending     = true;
     log_pending_since = millis();
     log_heartbeat_ms  = millis();
     triggerBlink(1, 400); // Single slow blink: "acknowledged, waiting for GPS"
-    Serial.println("Log pending — waiting for GPS fix (up to 5 min)");
+    Serial.println("Log pending — waiting for GPS location fix (up to 15s)");
   }
 }
 

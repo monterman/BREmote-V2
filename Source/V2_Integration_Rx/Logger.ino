@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-05-12 - Logger activity gate: block start/stop during RTM/FM/active throttle; single-blink rejection (Option B)
 // V2.5-Evo - 2026-05-12 - Fix REAL-BUG-B: guard aw.*/AW9523 calls in loggerLoop() and triggerBlink() with i2cMutex (generatePWM Core 0 race)
 // V2.5-Evo - 2026-05-11 - E7 Fix: +1 CSV column (remote_error); 26→27 columns; error_code_log from telemetry.error_code
 // V2.5-Evo - 2026-05-08 - Bundle 1: +2 CSV columns (heading_error_dx10, d_error_dx10); 24→26 columns; VescLogData +4 bytes; extern g_heading_error_dx10/g_d_error_dx10 from RTMState.ino
@@ -52,6 +53,18 @@ void triggerBlink(int blinks, int speedMs) {
   xSemaphoreGive(i2cMutex);
 }
 
+// Returns true when the logger button must be ignored (system is actively running).
+// Prevents accidental start/stop during RTM, FM, or active manual throttle.
+// FM extension: add || fm_rx_active.load() here when FM implements its active flag.
+static bool isLoggerGated() {
+  extern std::atomic<bool>     rtm_rx_active;
+  extern volatile uint8_t      thr_received;
+  extern volatile unsigned long last_packet;
+  if (rtm_rx_active.load()) return true;
+  if (thr_received > 10 && (millis() - last_packet) < (unsigned long)usrConf.failsafe_time) return true;
+  return false;
+}
+
 // Safely handles UI updates from the main thread
 void loggerLoop() {
   unsigned long now = millis();
@@ -92,7 +105,9 @@ void loggerLoop() {
     
     // Detect press (HIGH to LOW)
     if (currentBtnState == LOW && lastBtnState == HIGH) {
-       if (isLoggingActive()) {
+       if (isLoggerGated()) {
+          triggerBlink(1, 30); // Reject: system active — one fast flash, no action
+       } else if (isLoggingActive()) {
           stopLog();
        } else {
           startLog();

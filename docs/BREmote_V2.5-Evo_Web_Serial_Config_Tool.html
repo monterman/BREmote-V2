@@ -465,6 +465,8 @@ const RX_CMD_HTML = `
   <option value="?start">?start — start data logger</option>
   <option value="?stop">?stop — stop data logger</option>
   <option value="?list">?list — list log files on SPIFFS</option>
+  <option value="?logstat">?logstat — dump logger + GPS state (diagnose)</option>
+  <option value="?download ">?download &lt;filename&gt; — serial CSV download</option>
   <option value="?lograte 10">?lograte 10 — set log rate to 10 Hz</option>
 </optgroup>`;
 
@@ -1068,7 +1070,7 @@ function showTermToast(){
 
 function updateSerialPanel(device){
   // Quick buttons
-  const cmds=device==='tx'?['?conf','?reboot','?exitchg']:['?conf','?reboot','?compasscal'];
+  const cmds=device==='tx'?['?conf','?reboot','?exitchg']:['?conf','?reboot','?compasscal','?logstat'];
   document.getElementById('quickBtns').innerHTML=
     cmds.map(c=>`<button class="btn sec" onclick="insertCmd('${c}')">${c}</button>`).join('');
   // Command dropdown

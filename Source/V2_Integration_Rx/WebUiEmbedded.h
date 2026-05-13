@@ -1,4 +1,5 @@
-﻿// V2.5-Evo - 2026-05-13 - SW41 RX: modal-overlay height 100%→100vh (Android Firefox centering fix)
+﻿// V2.5-Evo - 2026-05-13 - SW42 RX: Del All button in log modal header (red, small); fixed btn danger→btn warn on list body buttons
+// V2.5-Evo - 2026-05-13 - SW41 RX: modal-overlay height 100%→100vh (Android Firefox centering fix)
 // V2.5-Evo - 2026-05-13 - SW39 RX: Expand All / Collapse All buttons above config groups
 // V2.5-Evo - 2026-05-13 - SW34: WebUI UX — reboot btn feedback, log Refresh btn, overflow-x fix, compact log rows
 #ifndef WEB_UI_EMBEDDED_H
@@ -122,7 +123,7 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
     <div class="modal">
       <div class="modal-header">
         <span>Data Logs</span>
-        <div style="display:flex;gap:6px"><button class="btn sec" style="font-size:13px;padding:5px 10px" onclick="openLogs()" title="Refresh log list">↺</button><button class="btn sec" onclick="document.getElementById('logModal').style.display='none'">Close</button></div>
+        <div style="display:flex;gap:6px"><button class="btn sec" style="font-size:13px;padding:5px 10px" onclick="openLogs()" title="Refresh log list">↺</button><button class="btn warn" style="font-size:11px;padding:4px 8px" onclick="deleteAllLogs()" title="Delete all log files">Del All</button><button class="btn sec" onclick="document.getElementById('logModal').style.display='none'">Close</button></div>
       </div>
       <div id="logList"></div>
     </div>
@@ -376,7 +377,7 @@ async function openLogs(){
       return;
     }
     state.logs=res.logs;
-    let h='<div class="sub" style="margin-bottom:6px">Sizes are on-device binary. CSV downloads are ~2× larger.</div><div style="margin-bottom:8px;display:flex;gap:8px"><button class="btn danger" onclick="deleteAllLogs()">Delete All</button><button class="btn danger" onclick="deleteSelected()">Delete Selected</button></div>';
+    let h='<div class="sub" style="margin-bottom:6px">Sizes are on-device binary. CSV downloads are ~2× larger.</div><div style="margin-bottom:8px;display:flex;gap:8px"><button class="btn warn" onclick="deleteAllLogs()">Delete All</button><button class="btn warn" onclick="deleteSelected()">Delete Selected</button></div>';
     res.logs.forEach(x=>{
       const kb=(x.size/1024).toFixed(1);
       h+=`<div class="log-item"><input type="checkbox" class="log-check" data-name="${x.name}"><div class="log-info"><span class="log-name">${x.name}</span><span class="log-size">${kb} KB raw</span></div><div class="log-actions"><a class="btn" href="/api/logs/download?file=${x.name}" target="_blank" style="text-decoration:none;font-size:10px;padding:2px 6px">CSV</a><button class="btn warn" style="font-size:10px;padding:2px 6px" onclick="deleteLog('${x.name}')">Del</button></div></div>`;

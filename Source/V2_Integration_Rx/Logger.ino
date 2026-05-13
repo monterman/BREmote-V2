@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-05-13 - SW38: log_pending state — GPS gate moved to startLog()/loggerLoop(); LED heartbeat (1 blink/3s) while waiting; auto-transitions to active on fix; 5-min timeout → 3 slow error blinks
 // V2.5-Evo - 2026-05-13 - SW37: createNewLogFile() — no GPS wait; file created immediately; GPS name if fix available, millis fallback otherwise
 // V2.5-Evo - 2026-05-13 - SW37: loggerTask() periodic close+reopen every 30s — forces SPIFFS directory entry finalization; limits power-loss data loss to last 30s
 // V2.5-Evo - 2026-05-13 - SW36: createNewLogFile() GPS fallback — 10s timeout then millis-based filename (was: 300s then return false, silently killing all logs with no GPS fix)
@@ -29,7 +30,12 @@ extern SemaphoreHandle_t i2cMutex;
 static TaskHandle_t loggerTaskHandle = NULL;
 static SemaphoreHandle_t fileMutex = NULL;
 SemaphoreHandle_t vescMutex = NULL;         // V3 fix (Bug 2): non-static — visible to VESC.ino. Protects vesc struct against FreeRTOS preemption race between loggerTask (reader) and getVescLoop() (writer) on the single ESP32-C3 core.
-static volatile bool logging_active = false; // V3 fix (Bug 3): volatile — loggerTask on Core 0 reads this in a while(true) loop; without volatile the compiler may cache the value in a register and never see startLog()/stopLog() writes from Core 1.
+static volatile bool logging_active  = false; // V3 fix (Bug 3): volatile — loggerTask on Core 0 reads this in a while(true) loop; without volatile the compiler may cache the value in a register and never see startLog()/stopLog() writes from Core 1.
+static volatile bool log_pending     = false; // GPS not yet valid; waiting to transition to logging_active
+static uint32_t      log_pending_since = 0;   // millis() when pending started
+static uint32_t      log_heartbeat_ms  = 0;   // last heartbeat blink while pending
+#define LOG_GPS_PENDING_TIMEOUT_MS (300000UL)  // 5 minutes — then give up with error blinks
+#define LOG_GPS_HEARTBEAT_MS       (3000UL)    // 1 quick blink every 3s while waiting for fix
 static uint32_t log_interval_ms = 200; // Default 5 Hz =200 (was 1 Hz =1000)
 static File currentLogFile;
 static String currentLogFileName = "";
@@ -70,6 +76,28 @@ static bool isLoggerGated() {
 // Safely handles UI updates from the main thread
 void loggerLoop() {
   unsigned long now = millis();
+
+  // 0. GPS-pending state — heartbeat LED + auto-transition when fix arrives
+  if (log_pending) {
+    // Heartbeat: 1 quick blink every 3s — "waiting for GPS, not logging yet"
+    if (now - log_heartbeat_ms >= LOG_GPS_HEARTBEAT_MS) {
+      log_heartbeat_ms = now;
+      triggerBlink(1, 80);
+    }
+    if (gps.location.isValid() && gps.date.isValid()) {
+      // Fix acquired — transition to active
+      log_pending = false;
+      logging_active = true;
+      last_space_check = millis();
+      triggerBlink(5, 80); // "Logging started" confirmation
+      Serial.println("GPS fix acquired — log started");
+    } else if (now - log_pending_since >= LOG_GPS_PENDING_TIMEOUT_MS) {
+      // 5-minute timeout — give up
+      log_pending = false;
+      triggerBlink(3, 600); // 3 slow blinks = "gave up, no GPS fix"
+      Serial.println("Log timeout — no GPS fix after 5 minutes");
+    }
+  }
 
   // 1. Process LED Blinks
   if (blinksRemaining > 0) {
@@ -118,6 +146,8 @@ void loggerLoop() {
           triggerBlink(1, 30); // Reject: system active — one fast flash, no action
        } else if (isLoggingActive()) {
           stopLog();
+       } else if (log_pending) {
+          stopLog(); // Cancel GPS wait
        } else {
           startLog();
        }
@@ -435,17 +465,26 @@ void initLogger() {
 }
 
 void startLog() {
-  if (logging_active) return;
-  Serial.println("Starting data logging...");
-  logging_active = true;
-  last_space_check = millis();
-  
-  triggerBlink(5, 80); // Fast start
+  if (logging_active || log_pending) return;
+  Serial.println("Log requested...");
+  if (gps.location.isValid() && gps.date.isValid()) {
+    logging_active = true;
+    last_space_check = millis();
+    triggerBlink(5, 80); // "Logging started" confirmation
+    Serial.println("Log started — GPS fix available");
+  } else {
+    log_pending     = true;
+    log_pending_since = millis();
+    log_heartbeat_ms  = millis();
+    triggerBlink(1, 400); // Single slow blink: "acknowledged, waiting for GPS"
+    Serial.println("Log pending — waiting for GPS fix (up to 5 min)");
+  }
 }
 
 void stopLog() {
-  if (!logging_active) return;
+  if (!logging_active && !log_pending) return;
   Serial.println("Stopping data logging...");
+  log_pending    = false;
   logging_active = false;
   
   triggerBlink(2, 400); // Slow stop (400ms pulses)

@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-05-13 - SW35: Logger fix — ledSyncState change-only gate (was: portMAX_DELAY every loop); throttle activity gate removed (was blocking all field logging)
 // V2.5-Evo - 2026-05-12 - Logger activity gate: block start/stop during RTM/FM/active throttle; single-blink rejection (Option B)
 // V2.5-Evo - 2026-05-12 - Fix REAL-BUG-B: guard aw.*/AW9523 calls in loggerLoop() and triggerBlink() with i2cMutex (FreeRTOS preemption race with generatePWM task)
 // V2.5-Evo - 2026-05-11 - E7 Fix: +1 CSV column (remote_error); 26→27 columns; error_code_log from telemetry.error_code
@@ -57,12 +58,8 @@ void triggerBlink(int blinks, int speedMs) {
 // Prevents accidental start/stop during RTM, FM, or active manual throttle.
 // FM extension: add || fm_rx_active.load() here when FM implements its active flag.
 static bool isLoggerGated() {
-  extern std::atomic<bool>     rtm_rx_active;
-  extern volatile uint8_t      thr_received;
-  extern volatile unsigned long last_packet;
-  if (rtm_rx_active.load()) return true;
-  if (thr_received > 10 && (millis() - last_packet) < (unsigned long)usrConf.failsafe_time) return true;
-  return false;
+  extern std::atomic<bool> rtm_rx_active;
+  return rtm_rx_active.load();
 }
 
 // Safely handles UI updates from the main thread
@@ -88,10 +85,15 @@ void loggerLoop() {
        }
     }
   } else {
-    // Keep LED synced to state just in case
-    xSemaphoreTake(i2cMutex, portMAX_DELAY);
-    aw.digitalWrite(AP_L_AUX, logging_active ? LOW : HIGH);
-    xSemaphoreGive(i2cMutex);
+    // Sync LED only on state change — not every loop iteration (i2cMutex contention with generatePWM)
+    static bool ledSyncState = false;
+    if (logging_active != ledSyncState) {
+      ledSyncState = logging_active;
+      if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+        aw.digitalWrite(AP_L_AUX, logging_active ? LOW : HIGH);
+        xSemaphoreGive(i2cMutex);
+      }
+    }
   }
 
   // 2. Process Button

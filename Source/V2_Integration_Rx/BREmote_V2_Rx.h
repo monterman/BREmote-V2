@@ -240,7 +240,7 @@ struct confStruct {
     uint16_t rtm_rx_enabled;             // RX-side RTM master enable; 0=off, 1=on; default 1
     uint16_t rtm_rx_override_steering;   // Allow RTM to override steering; 0=off, 1=on; default 1
     uint16_t rtm_compass_required;       // Require valid compass for RTM arming; 0=no, 1=yes; default 1
-    uint16_t rtm_stop_distance_m;        // Hard stop radius in metres; RTM stops when within this dist of TX; 1-50; default 3
+    uint16_t rtm_stop_distance_m;        // Hard stop radius in metres; RTM stops when within this dist of TX; 1-50; default 10
 
     // V2.5-Evo - 2026-04-29 - BUNDLE B: VESC UART TIMEOUT
     // Set to 6s (down from the original hardcoded 20s) to minimise stale VESC data.
@@ -322,7 +322,7 @@ confStruct defaultConf = {SW_VERSION, 2, 20, 1, 50, 0, 0, 1000, 2000, 1000, 2000
   // V2.5-Evo - 2026-04-26 - CRITICAL FIX: rtm_stop_distance_m was missing from defaultConf; zero-init
   // would have set it to 0, making Gate 9 check (dist_m < 0.0f) never fire — permanently
   // disabling the hard stop that prevents the buggy from hitting the user.
-  3,          // rtm_stop_distance_m: 3m hard stop radius (range 1-50m; default 3m per CLAUDE.md)
+  10,         // rtm_stop_distance_m: 10m hard stop radius (range 1-50m; default 10m — GPS accuracy floor ~5m makes <10m unreliable)
   // V2.5-Evo - 2026-04-29 - Bundle B: vesc_timeout_s replaces hardcoded 20s VESC connection timeout
   6,          // vesc_timeout_s: seconds without VESC UART packet before bat/temp shown as N/A (range 5-60s; default 6s)
   // V2.5-Evo - 2026-04-30 - Bundle E: gps_update_hz replaces hardcoded 1Hz GPS poll cadence

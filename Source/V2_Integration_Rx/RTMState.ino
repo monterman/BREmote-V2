@@ -169,8 +169,8 @@ static bool checkRtmSafetyGates()
   // The inactive path in runRtmLoop() will set telemetry.rtm_distance=0xFF on the next
   // tick, clearing the TX pre-arm block so re-arm works after the buggy has moved away.
   // Guard: rtm_stop_distance_m==0 means SPIFFS held the pre-fix zero default;
-  // use 3m (firmware hard minimum) to keep Gate 9 active regardless of stored config.
-  uint16_t stop_dist_m = (usrConf.rtm_stop_distance_m > 0) ? usrConf.rtm_stop_distance_m : 3u;
+  // use 10m (firmware hard minimum) to keep Gate 9 active regardless of stored config.
+  uint16_t stop_dist_m = (usrConf.rtm_stop_distance_m > 0) ? usrConf.rtm_stop_distance_m : 10u;
   float dist_m = (float)TinyGPSPlus::distanceBetween(
       gps_last_lat, gps_last_lng, rx_tx_gps_lat, rx_tx_gps_lng);
   if (dist_m < (float)stop_dist_m)
@@ -531,7 +531,7 @@ void runRtmLoop()
         // rtm_approach_zone_m == 0 disables the feature (hard stop only).
         if (usrConf.rtm_approach_zone_m > 0)
         {
-          uint16_t stop_m     = (usrConf.rtm_stop_distance_m > 0) ? usrConf.rtm_stop_distance_m : 3u;
+          uint16_t stop_m     = (usrConf.rtm_stop_distance_m > 0) ? usrConf.rtm_stop_distance_m : 10u;
           float    approach_m = (float)usrConf.rtm_approach_zone_m;
           if (approach_m > (float)stop_m && d < approach_m)
           {

@@ -146,12 +146,12 @@ All three must always reflect the current confStruct exactly. This applies to TX
 - RX RTM state machine in RX/RTMState.ino; 10 safety gates; compass bearing steering
 - Phase C anti-spoofing: convergence check, VESC ERPM vs GPS speed, TX GPS freshness
 - 4 compile errors fixed in RX (PWM.ino cast, extern gps_phase_b_ok, rtm_stop_distance_m struct+ConfigService)
-- CRITICAL safety fix 2026-04-26: `defaultConf.rtm_stop_distance_m` was 0 (disabled Gate 9 hard stop); fixed to 3m
+- CRITICAL safety fix 2026-04-26: `defaultConf.rtm_stop_distance_m` was 0 (disabled Gate 9 hard stop); fixed to 3m; updated to 10m default 2026-05-12 (GPS accuracy floor ~5m makes <10m unreliable)
 - sizeof(confStruct) RX: 136→152 (154 actual pre-BundleB due to alignment; 156 after BundleB); TX: 96→120; first flash resets all settings to defaults
 - Bench test checklist: 10/10 PASS (static code review); hardware confirmation still required:
   - Outdoor GPS fix, motor disconnected bench test, PWM output verification needed before field use
   - Note: Test 3/4 gate labels may fire as Gate 5/4 in practice (correct stop behavior, different gate)
-  - Note: RX `rtm_stop_distance_m` default is 3m (re-confirm via web config before field test)
+  - Note: RX `rtm_stop_distance_m` default is 10m (GPS accuracy floor ~5m; do not set below 8m)
 
 **Priority 8 — COMPLETED 2026-04-27** ✅: Display, Gesture & UX Overhaul
 - Gesture redesign: LEFT hold 2s=display cycle; RIGHT tap→LEFT hold 5s=RTM arm; LEFT tap→RIGHT hold 5s=FM cycle; lock feature removed (always boots unlocked)

@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-05-13 - SW37: createNewLogFile() — no GPS wait; file created immediately; GPS name if fix available, millis fallback otherwise
+// V2.5-Evo - 2026-05-13 - SW37: loggerTask() periodic close+reopen every 30s — forces SPIFFS directory entry finalization; limits power-loss data loss to last 30s
 // V2.5-Evo - 2026-05-13 - SW36: createNewLogFile() GPS fallback — 10s timeout then millis-based filename (was: 300s then return false, silently killing all logs with no GPS fix)
 // V2.5-Evo - 2026-05-13 - SW36: remaining portMAX_DELAY in triggerBlink() and blink-active loggerLoop() path → pdMS_TO_TICKS(10)
 // V2.5-Evo - 2026-05-13 - SW35: Logger fix — ledSyncState change-only gate (was: portMAX_DELAY every loop); throttle activity gate removed (was blocking all field logging)
@@ -329,30 +331,19 @@ bool ensureFreeSpace() {
   return freeBytes >= (MIN_FREE_SPACE_KB * 1024);
 }
 
-// Create new log file
+// Create new log file — no GPS wait; file created immediately on startLog()
 bool createNewLogFile() {
-  Serial.println("Waiting for GPS lock to timestamp log file...");
-  uint32_t startWait = millis();
-
-  while (!gps.location.isValid() || !gps.date.isValid()) {
-    vTaskDelay(pdMS_TO_TICKS(500));
-    if (!logging_active) return false;
-    if (millis() - startWait > 10000) {
-      Serial.println("GPS fix timeout — using millis fallback filename");
-      break;
-    }
-  }
-
   if (!ensureFreeSpace()) return false;
 
   char filenameBuffer[30];
   if (gps.location.isValid() && gps.date.isValid()) {
-    Serial.println("GPS lock acquired!");
     snprintf(filenameBuffer, sizeof(filenameBuffer), "/%02d%02d%02d_%02d%02d%02d.log",
              gps.date.month(), gps.date.day(), (gps.date.year() % 100),
              gps.time.hour(), gps.time.minute(), gps.time.second());
+    Serial.println("GPS fix available — using GPS timestamp filename");
   } else {
-    snprintf(filenameBuffer, sizeof(filenameBuffer), "/nogps_%u.log", (unsigned)millis());
+    snprintf(filenameBuffer, sizeof(filenameBuffer), "/ms%u.log", (unsigned)millis());
+    Serial.println("No GPS fix — using millis filename");
   }
 
   currentLogFileName = String(filenameBuffer);
@@ -370,6 +361,8 @@ bool createNewLogFile() {
 
 // Logger background task (SPIFFS writes only!)
 void loggerTask(void* parameter) {
+  static uint32_t last_reopen_ms = 0;
+  const uint32_t  REOPEN_INTERVAL_MS = 30000; // Close+reopen every 30s — forces SPIFFS directory finalization
   while (true) {
     if (logging_active) {
       if (!currentLogFile || currentLogFileName.length() == 0) {
@@ -377,6 +370,7 @@ void loggerTask(void* parameter) {
           vTaskDelay(pdMS_TO_TICKS(100));
           continue;
         }
+        last_reopen_ms = millis();
       }
 
       if (millis() - last_space_check > SPACE_CHECK_INTERVAL) {
@@ -384,8 +378,21 @@ void loggerTask(void* parameter) {
         if (!ensureFreeSpace()) continue;
       }
 
+      // Periodic close+reopen: finalizes SPIFFS directory entry so abrupt power-off
+      // only loses data since the last reopen, not the entire session.
+      if (millis() - last_reopen_ms >= REOPEN_INTERVAL_MS) {
+        last_reopen_ms = millis();
+        if (xSemaphoreTake(fileMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+          if (currentLogFile) {
+            currentLogFile.close();
+            currentLogFile = SPIFFS.open(currentLogFileName, FILE_APPEND);
+          }
+          xSemaphoreGive(fileMutex);
+        }
+      }
+
       VescLogData logData = convertToLogData();
-      
+
       if (xSemaphoreTake(fileMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
         if (currentLogFile) {
           currentLogFile.write((uint8_t*)&logData, sizeof(VescLogData));

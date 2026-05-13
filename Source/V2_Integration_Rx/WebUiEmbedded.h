@@ -1,4 +1,5 @@
-﻿// V2.5-Evo - 2026-05-13 - SW39 RX: Expand All / Collapse All buttons above config groups
+﻿// V2.5-Evo - 2026-05-13 - SW41 RX: modal-overlay height 100%→100vh (Android Firefox centering fix)
+// V2.5-Evo - 2026-05-13 - SW39 RX: Expand All / Collapse All buttons above config groups
 // V2.5-Evo - 2026-05-13 - SW34: WebUI UX — reboot btn feedback, log Refresh btn, overflow-x fix, compact log rows
 #ifndef WEB_UI_EMBEDDED_H
 #define WEB_UI_EMBEDDED_H
@@ -62,7 +63,7 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
     /* --- JSON EDITOR STYLE --- */
     textarea { width:100%; height:180px; font-family:monospace; font-size:12px; background:#0f172a; color:#38bdf8; border:1px solid #334155; border-radius:8px; padding:10px; resize:vertical; outline:none;}
     
-    .modal-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:#0b1220e6;display:none;align-items:center;justify-content:center;z-index:99;padding:20px}
+    .modal-overlay{position:fixed;top:0;left:0;width:100%;height:100vh;background:#0b1220e6;display:none;align-items:center;justify-content:center;z-index:99;padding:20px;overflow-y:auto}
     .modal{background:linear-gradient(180deg,#121b2e,#101828);border:1px solid #243042;border-radius:14px;padding:20px;width:100%;max-width:500px;max-height:80vh;overflow-y:auto;box-shadow:0 8px 24px #00000066}
     .modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;font-size:18px;font-weight:700}
     .log-item{display:flex;align-items:center;gap:5px;padding:3px 0;border-bottom:1px solid #1a2535;}

@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-05-13 - SW36: createNewLogFile() GPS fallback — 10s timeout then millis-based filename (was: 300s then return false, silently killing all logs with no GPS fix)
+// V2.5-Evo - 2026-05-13 - SW36: remaining portMAX_DELAY in triggerBlink() and blink-active loggerLoop() path → pdMS_TO_TICKS(10)
 // V2.5-Evo - 2026-05-13 - SW35: Logger fix — ledSyncState change-only gate (was: portMAX_DELAY every loop); throttle activity gate removed (was blocking all field logging)
 // V2.5-Evo - 2026-05-12 - Logger activity gate: block start/stop during RTM/FM/active throttle; single-blink rejection (Option B)
 // V2.5-Evo - 2026-05-12 - Fix REAL-BUG-B: guard aw.*/AW9523 calls in loggerLoop() and triggerBlink() with i2cMutex (FreeRTOS preemption race with generatePWM task)
@@ -45,13 +47,14 @@ void loggerTask(void* parameter);
 
 // Triggers the non-blocking blink sequence
 void triggerBlink(int blinks, int speedMs) {
-  blinksRemaining = blinks * 2; 
+  blinksRemaining = blinks * 2;
   blinkSpeedMs = speedMs;
   lastBlinkTime = millis();
-  blinkState = true; 
-  xSemaphoreTake(i2cMutex, portMAX_DELAY);
-  aw.digitalWrite(AP_L_AUX, LOW); // Turn ON immediately (Active-Low)
-  xSemaphoreGive(i2cMutex);
+  blinkState = true;
+  if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+    aw.digitalWrite(AP_L_AUX, LOW); // Turn ON immediately (Active-Low)
+    xSemaphoreGive(i2cMutex);
+  }
 }
 
 // Returns true when the logger button must be ignored (system is actively running).
@@ -74,14 +77,16 @@ void loggerLoop() {
        
        if (blinksRemaining > 0) {
           blinkState = !blinkState;
-          xSemaphoreTake(i2cMutex, portMAX_DELAY);
-          aw.digitalWrite(AP_L_AUX, blinkState ? LOW : HIGH);
-          xSemaphoreGive(i2cMutex);
+          if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+            aw.digitalWrite(AP_L_AUX, blinkState ? LOW : HIGH);
+            xSemaphoreGive(i2cMutex);
+          }
        } else {
           // Blinking finished, set solid state based on logging status
-          xSemaphoreTake(i2cMutex, portMAX_DELAY);
-          aw.digitalWrite(AP_L_AUX, logging_active ? LOW : HIGH);
-          xSemaphoreGive(i2cMutex);
+          if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+            aw.digitalWrite(AP_L_AUX, logging_active ? LOW : HIGH);
+            xSemaphoreGive(i2cMutex);
+          }
        }
     }
   } else {
@@ -328,24 +333,28 @@ bool ensureFreeSpace() {
 bool createNewLogFile() {
   Serial.println("Waiting for GPS lock to timestamp log file...");
   uint32_t startWait = millis();
-  
+
   while (!gps.location.isValid() || !gps.date.isValid()) {
     vTaskDelay(pdMS_TO_TICKS(500));
-    if (millis() - startWait > 300000) {  
-      Serial.println("GPS fix timeout!");
-      return false;
-    }
     if (!logging_active) return false;
+    if (millis() - startWait > 10000) {
+      Serial.println("GPS fix timeout — using millis fallback filename");
+      break;
+    }
   }
 
-  Serial.println("GPS lock acquired!");
   if (!ensureFreeSpace()) return false;
 
   char filenameBuffer[30];
-  snprintf(filenameBuffer, sizeof(filenameBuffer), "/%02d%02d%02d_%02d%02d%02d.log", 
-           gps.date.month(), gps.date.day(), (gps.date.year() % 100), 
-           gps.time.hour(), gps.time.minute(), gps.time.second());
-           
+  if (gps.location.isValid() && gps.date.isValid()) {
+    Serial.println("GPS lock acquired!");
+    snprintf(filenameBuffer, sizeof(filenameBuffer), "/%02d%02d%02d_%02d%02d%02d.log",
+             gps.date.month(), gps.date.day(), (gps.date.year() % 100),
+             gps.time.hour(), gps.time.minute(), gps.time.second());
+  } else {
+    snprintf(filenameBuffer, sizeof(filenameBuffer), "/nogps_%u.log", (unsigned)millis());
+  }
+
   currentLogFileName = String(filenameBuffer);
   
   if (xSemaphoreTake(fileMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {

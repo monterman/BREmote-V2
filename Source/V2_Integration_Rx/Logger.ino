@@ -1,5 +1,5 @@
 // V2.5-Evo - 2026-05-12 - Logger activity gate: block start/stop during RTM/FM/active throttle; single-blink rejection (Option B)
-// V2.5-Evo - 2026-05-12 - Fix REAL-BUG-B: guard aw.*/AW9523 calls in loggerLoop() and triggerBlink() with i2cMutex (generatePWM Core 0 race)
+// V2.5-Evo - 2026-05-12 - Fix REAL-BUG-B: guard aw.*/AW9523 calls in loggerLoop() and triggerBlink() with i2cMutex (FreeRTOS preemption race with generatePWM task)
 // V2.5-Evo - 2026-05-11 - E7 Fix: +1 CSV column (remote_error); 26→27 columns; error_code_log from telemetry.error_code
 // V2.5-Evo - 2026-05-08 - Bundle 1: +2 CSV columns (heading_error_dx10, d_error_dx10); 24→26 columns; VescLogData +4 bytes; extern g_heading_error_dx10/g_d_error_dx10 from RTMState.ino
 // V2.5-Evo - 2026-05-06 - FIX-LOGDL-2: serial ?download CSV updated for LOG-EXT-1 fields (24 columns); WDT reset + FreeRTOS yield added inside read loop to support files >30KB without crash
@@ -23,7 +23,7 @@ extern SemaphoreHandle_t i2cMutex;
 // Task handles and configuration
 static TaskHandle_t loggerTaskHandle = NULL;
 static SemaphoreHandle_t fileMutex = NULL;
-SemaphoreHandle_t vescMutex = NULL;         // V3 fix (Bug 2): non-static — visible to VESC.ino. Protects vesc struct against Core 0/1 data race between loggerTask (reader) and getVescLoop() (writer).
+SemaphoreHandle_t vescMutex = NULL;         // V3 fix (Bug 2): non-static — visible to VESC.ino. Protects vesc struct against FreeRTOS preemption race between loggerTask (reader) and getVescLoop() (writer) on the single ESP32-C3 core.
 static volatile bool logging_active = false; // V3 fix (Bug 3): volatile — loggerTask on Core 0 reads this in a while(true) loop; without volatile the compiler may cache the value in a register and never see startLog()/stopLog() writes from Core 1.
 static uint32_t log_interval_ms = 200; // Default 5 Hz =200 (was 1 Hz =1000)
 static File currentLogFile;
@@ -139,8 +139,8 @@ VescLogData convertToLogData() {
     xSemaphoreGive(vescMutex);
   }
 
-  // gps.* is written by Core 1 (getGPSLoop feeds TinyGPS++ in the main loop task) and read here on Core 0.
-  // This IS a cross-core access. The race is benign: GPS updates at ~1Hz and log writes at 1Hz,
+  // gps.* is written by getGPSLoop (main loop task) and read here in loggerTask — FreeRTOS preemption race on the single ESP32-C3 core.
+  // The race is benign: GPS updates at ~1Hz and log writes at 1Hz,
   // so collisions are rare and the worst case is one torn log record. TinyGPS++ is not thread-safe;
   // a gpsMutex would be the strict fix if every record must be clean.
   data.speed     = (uint16_t)(gps.speed.kmph() * 10);

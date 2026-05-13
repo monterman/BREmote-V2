@@ -477,8 +477,9 @@ extern TaskHandle_t loopTaskHandle;
 // Semaphore for triggered task
 SemaphoreHandle_t triggerReceiveSemaphore;
 
-// Mutex protecting Wire/AW9523 — shared across Core 0 (generatePWM, checkConnStatus)
-// and Core 1 (checkWetness, checkButtons, setUartMux, blinkErr, blinkBind, readCompassRaw).
+// Mutex protecting Wire/AW9523 — accessed by multiple FreeRTOS tasks that preempt each
+// other on the single ESP32-C3 core: generatePWM, checkConnStatus, checkWetness,
+// checkButtons, setUartMux, blinkErr, blinkBind, readCompassRaw, loggerLoop, triggerBlink.
 // Created in initHardware() before Wire.begin() so startupAW() can safely use it.
 SemaphoreHandle_t i2cMutex;
 

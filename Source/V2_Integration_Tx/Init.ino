@@ -4,11 +4,13 @@
 // V2.5-Evo - 2026-04-27 - P8.1 Bug 1 fix: Restored no_lock=0/1 boot behavior; system_locked now conditional
 // V2.5-Evo - 2026-04-29 - Fix 4-1: vibrationTask stack 1024→2048 words; handle saved for ?printtasks
 // V2.5-Evo - 2026-05-02 - Create displayMutex before tasks start
+// V2.5-Evo - 2026-05-13 - SW33: Added pinMode(P_MAG, INPUT) in initHardware() for DRV5032 Hall sensor on GPIO 9
 
 // ===== Hardware Initialization =====
 
 void initHardware()
 {
+  pinMode(P_MAG, INPUT);
   Wire.begin(P_I2C_SDA, P_I2C_SCL);
   Wire.setClock(400000);
   startupDisplay();

@@ -1,4 +1,6 @@
-﻿// V2.5-Evo - 2026-04-21 - Added TinyGPS++ include, gps_tx + tx_gps_speed globals, and P_U1_RX/P_U1_TX pin defines for TX GPS (BN-220 on Serial1)
+﻿// V2.5-Evo - 2026-05-13 - SW33: GPIO 9 repurposed as P_MAG digital Hall sensor (DRV5032FADBZR); removed from serialOff OUTPUT-LOW block; mag_seen_high boot guard added
+// V2.5-Evo - 2026-05-13 - SW33b: BT dot test (C7 R1) driven by P_MAG Hall sensor; bt_dot_state + BT_DOT_* defines added
+// V2.5-Evo - 2026-04-21 - Added TinyGPS++ include, gps_tx + tx_gps_speed globals, and P_U1_RX/P_U1_TX pin defines for TX GPS (BN-220 on Serial1)
 // V2.5-Evo - 2026-04-22 - Fixed speed_src/volatile comments; defaults gps_en=0,speed_src=0; added gps_max_hdop field (HDOP*100, tail-padding slot, sizeof stays 92)
 // V2.5-Evo - 2026-04-22 - Added gps_chip_type field (GPS module selector: 0=BN-220, 2=M10); sizeof 92→96
 // V2.5-Evo - 2026-04-25 - P7: Added RTM meta-packet queue globals (rtm_meta_type/value/count) and RTM throttle cap (rtm_thr_cap_tx, rtm_tx_active)
@@ -454,6 +456,12 @@ volatile bool exitChargeScreen = 0;
 volatile bool followme_enabled = false;
 
 volatile bool serialOff = false;
+volatile bool mag_seen_high = false;  // set true when GPIO 9 first reads HIGH after boot; gates intentional activation
+// BT dot test states — Hall sensor (P_MAG / GPIO 9) drives bt_dot_state; display renders at C7 R1
+#define BT_DOT_OFF  0
+#define BT_DOT_SLOW 1
+#define BT_DOT_FAST 2
+volatile uint8_t bt_dot_state = BT_DOT_OFF;
 volatile bool display_activity_enabled = true;
 volatile bool radio_activity_enabled = true;
 volatile bool radio_driver_ready = false;
@@ -502,10 +510,12 @@ String web_cfg_last_err = "";
 #define P_U1_RX 18
 #define P_U1_TX 19
 
-//ADC Pins
+// Magnet sensor (DRV5032FADBZR, push-pull, digital) — LOW = magnet present, HIGH = no magnet
+#define P_MAG 9
+//ADC Pins (ADS1115 channel numbers, not GPIO)
 #define P_HALL_THR  0
 #define P_HALL_TOG  1
-#define P_UBAT_MEAS 3 
+#define P_UBAT_MEAS 3
 #define P_CHGSTAT   2
 
 //Debug options — comment out for release builds

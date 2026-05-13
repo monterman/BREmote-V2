@@ -1,4 +1,6 @@
-﻿// V2.5-Evo - 2026-05-03 - Removed commented-out SPIFFS.remove dead code (LOW audit cleanup)
+﻿// V2.5-Evo - 2026-05-13 - SW33: Removed GPIO 9 from serialOff OUTPUT-LOW block (P_MAG reserved for DRV5032 Hall sensor)
+// V2.5-Evo - 2026-05-13 - SW33b: Hall mag reading state machine added to loop(); drives bt_dot_state
+// V2.5-Evo - 2026-05-03 - Removed commented-out SPIFFS.remove dead code (LOW audit cleanup)
 // V2.5-Evo - 2026-04-25 - P7: Simplified getTxGPSLoop() gate to gps_en only; added runRtmLoop() call in loop()
 // V2.5-Evo - 2026-04-24 - Call initTxGPS() in setup() after applyConfigSettings() so GPS UART is ready on boot
 // V2.5-Evo - 2026-04-21 - Added getTxGPSLoop() call in loop() and forward declarations for TX GPS functions
@@ -120,7 +122,6 @@ void setup()
     Serial.end();
     digitalWrite(20, LOW); pinMode(20, OUTPUT);
     digitalWrite(21, LOW); pinMode(21, OUTPUT);
-    digitalWrite(9, LOW); pinMode(9, OUTPUT);
   }
 }
 
@@ -152,6 +153,41 @@ void loop()
   runRtmLoop();
   // V2.5-Evo - 2026-04-27 - P8.1: FM arm/disarm state machine (arm window + Gate 1 throttle-release)
   runFmLoop();
+
+  // V2.5-Evo - 2026-05-13 - SW33b: Hall mag sensor (P_MAG / GPIO 9) — polled every 20ms.
+  // Drives bt_dot_state: short hold (400ms-4999ms) toggles OFF/SLOW; long hold (5s+) → FAST; FAST + any release → OFF.
+  {
+    static bool     mag_was_low   = false;
+    static uint32_t mag_low_since = 0;
+    static uint32_t mag_check_ms  = 0;
+    if (millis() - mag_check_ms >= 20)
+    {
+      mag_check_ms = millis();
+      if (digitalRead(P_MAG) == HIGH) mag_seen_high = true;
+      bool mag_low = mag_seen_high && (digitalRead(P_MAG) == LOW);
+      if (mag_low && !mag_was_low)
+      {
+        mag_low_since = millis();
+      }
+      if (!mag_low && mag_was_low)
+      {
+        uint32_t held_ms = millis() - mag_low_since;
+        if (bt_dot_state == BT_DOT_FAST)
+        {
+          bt_dot_state = BT_DOT_OFF;
+        }
+        else if (held_ms >= 5000)
+        {
+          bt_dot_state = BT_DOT_FAST;
+        }
+        else if (held_ms >= 400)
+        {
+          bt_dot_state = (bt_dot_state == BT_DOT_OFF) ? BT_DOT_SLOW : BT_DOT_OFF;
+        }
+      }
+      mag_was_low = mag_low;
+    }
+  }
 
   checkSerial();
 

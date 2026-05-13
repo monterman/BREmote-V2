@@ -1,4 +1,5 @@
-﻿// V2.5-Evo - 2026-05-05 - 30s digit cache for foil_temp/foil_bat to suppress telemetry-drop dashes
+﻿// V2.5-Evo - 2026-05-13 - SW33b: BT status dot at C7 R1 added to updateBargraphs(); blinks from bt_dot_state
+// V2.5-Evo - 2026-05-05 - 30s digit cache for foil_temp/foil_bat to suppress telemetry-drop dashes
 // V2.5-Evo - 2026-05-05 - PV display: foil_power rendered as kW with decimal point (X.Y kW)
 // V2.5-Evo - 2026-05-03 - displayError() clamp corrected 29→33 (H6 audit fix)
 // V2.5-Evo - 2026-05-01 - Fix A: lazy-capture rtm_arm_dist_m on first valid render if missed at arm time
@@ -980,6 +981,27 @@ void updateBargraphs(void *parameter)
       else               displayBuffer[1] &= ~(1u << 7);
     }
     // ---- End GPS status dot --------------------------------------------
+
+    // ---- BT status dot  C7 R1 ----------------------------------------
+    // Bit 7 of displayBuffer[2] (row R1, col C7) — one row below GPS dot.
+    // Preserved across digit updates by the 0xFF80 clear mask.
+    static uint32_t bt_dot_ms = 0;
+    static bool     bt_dot_on = false;
+    switch (bt_dot_state) {
+      case BT_DOT_OFF:
+        bt_dot_on = false;
+        bt_dot_ms = millis();
+        break;
+      case BT_DOT_SLOW:
+        if (millis() - bt_dot_ms >= 500) { bt_dot_on = !bt_dot_on; bt_dot_ms = millis(); }
+        break;
+      case BT_DOT_FAST:
+        if (millis() - bt_dot_ms >= 200) { bt_dot_on = !bt_dot_on; bt_dot_ms = millis(); }
+        break;
+    }
+    if (bt_dot_on) displayBuffer[2] |=  (1u << 7);
+    else           displayBuffer[2] &= ~(1u << 7);
+    // ---- End BT status dot --------------------------------------------
 
     displayVertBargraph(9, sq_graph, 2);
     updateDisplay();

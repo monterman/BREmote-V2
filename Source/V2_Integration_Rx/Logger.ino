@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-05-13 - SW40: loggerLoop() button section removed — checkButtons() is the sole AUX handler; pending timeout 5min→15s start-anyway (was: give-up)
 // V2.5-Evo - 2026-05-13 - SW38: log_pending state — GPS gate moved to startLog()/loggerLoop(); LED heartbeat (1 blink/3s) while waiting; auto-transitions to active on fix; 5-min timeout → 3 slow error blinks
 // V2.5-Evo - 2026-05-13 - SW37: createNewLogFile() — no GPS wait; file created immediately; GPS name if fix available, millis fallback otherwise
 // V2.5-Evo - 2026-05-13 - SW37: loggerTask() periodic close+reopen every 30s — forces SPIFFS directory entry finalization; limits power-loss data loss to last 30s
@@ -34,7 +35,7 @@ static volatile bool logging_active  = false; // V3 fix (Bug 3): volatile — lo
 static volatile bool log_pending     = false; // GPS not yet valid; waiting to transition to logging_active
 static uint32_t      log_pending_since = 0;   // millis() when pending started
 static uint32_t      log_heartbeat_ms  = 0;   // last heartbeat blink while pending
-#define LOG_GPS_PENDING_TIMEOUT_MS (300000UL)  // 5 minutes — then give up with error blinks
+#define LOG_GPS_PENDING_TIMEOUT_MS (15000UL)   // 15s wait for GPS timestamp; then start anyway with millis filename
 #define LOG_GPS_HEARTBEAT_MS       (3000UL)    // 1 quick blink every 3s while waiting for fix
 static uint32_t log_interval_ms = 200; // Default 5 Hz =200 (was 1 Hz =1000)
 static File currentLogFile;
@@ -42,9 +43,7 @@ static String currentLogFileName = "";
 static uint32_t last_space_check = 0;
 static const uint32_t SPACE_CHECK_INTERVAL = 60000; 
 
-// LED/Button State Machine Variables (Non-Blocking)
-static unsigned long lastBtnTime = 0;
-static bool lastBtnState = HIGH;
+// LED Blink State Machine Variables
 static int blinksRemaining = 0;
 static unsigned long lastBlinkTime = 0;
 static bool blinkState = false;
@@ -92,10 +91,12 @@ void loggerLoop() {
       triggerBlink(5, 80); // "Logging started" confirmation
       Serial.println("GPS fix acquired — log started");
     } else if (now - log_pending_since >= LOG_GPS_PENDING_TIMEOUT_MS) {
-      // 5-minute timeout — give up
+      // 15s timeout — start anyway with millis-based filename; GPS data fills in per-record once fix arrives
       log_pending = false;
-      triggerBlink(3, 600); // 3 slow blinks = "gave up, no GPS fix"
-      Serial.println("Log timeout — no GPS fix after 5 minutes");
+      logging_active = true;
+      last_space_check = millis();
+      triggerBlink(3, 200); // 3 medium blinks = "starting without GPS fix"
+      Serial.println("Log started without GPS fix (15s timeout — millis filename)");
     }
   }
 
@@ -131,29 +132,7 @@ void loggerLoop() {
     }
   }
 
-  // 2. Process Button
-  if (now - lastBtnTime >= 50) { // 50ms polling & debounce
-    lastBtnTime = now;
-    bool currentBtnState = lastBtnState; // safe default if mutex unavailable
-    if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
-      currentBtnState = aw.digitalRead(AP_S_AUX);
-      xSemaphoreGive(i2cMutex);
-    }
-    
-    // Detect press (HIGH to LOW)
-    if (currentBtnState == LOW && lastBtnState == HIGH) {
-       if (isLoggerGated()) {
-          triggerBlink(1, 30); // Reject: system active — one fast flash, no action
-       } else if (isLoggingActive()) {
-          stopLog();
-       } else if (log_pending) {
-          stopLog(); // Cancel GPS wait
-       } else {
-          startLog();
-       }
-    }
-    lastBtnState = currentBtnState;
-  }
+  // Button handled by checkButtons() in System.ino — single handler, no duplicate reads here
 }
 
 // Scale and convert data

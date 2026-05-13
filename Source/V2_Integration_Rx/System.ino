@@ -309,6 +309,7 @@ void cmdDownloadLog(const String& params) {
   }
 }
 
+void cmdLogStat(const String& params);
 void cmdDeleteLog(const String& params) {
   if(params.length() == 0) {
     Serial.println("Error: Specify filename (e.g. ?deletelog /filename.log)");
@@ -324,6 +325,37 @@ void cmdLogRate(const String& params) {
   } else {
     Serial.println("Error: Specify rate in Hz (e.g., ?lograte 1 or ?lograte 0.1)");
   }
+}
+
+void cmdLogStat(const String& params) {
+  extern volatile bool logging_active;
+  extern volatile bool log_pending;
+  extern uint32_t      log_pending_since;
+  extern String        currentLogFileName;
+
+  Serial.println("=== Logger State ===");
+  Serial.printf("logging_active  : %s\n", logging_active ? "true" : "false");
+  Serial.printf("log_pending     : %s\n", log_pending    ? "true" : "false");
+  if (log_pending) {
+    Serial.printf("pending_age_ms  : %u\n", (unsigned)(millis() - log_pending_since));
+  }
+  Serial.printf("currentLogFile  : %s\n", currentLogFileName.length() ? currentLogFileName.c_str() : "(none)");
+  Serial.printf("gps_en (config) : %u\n", usrConf.gps_en);
+  Serial.printf("logger_en       : %u\n", usrConf.logger_en);
+  Serial.println("--- GPS (TinyGPS++) ---");
+  Serial.printf("location.isValid: %s\n", gps.location.isValid() ? "YES" : "NO");
+  Serial.printf("date.isValid    : %s\n", gps.date.isValid()     ? "YES" : "NO");
+  Serial.printf("satellites      : %u\n", gps.satellites.value());
+  Serial.printf("hdop            : %.1f\n", gps.hdop.hdop());
+  Serial.printf("lat/lng         : %.6f / %.6f\n", gps.location.lat(), gps.location.lng());
+  Serial.printf("chars processed : %u\n", gps.charsProcessed());
+  Serial.printf("sentences       : %u\n", gps.sentencesWithFix());
+  Serial.printf("failed checksum : %u\n", gps.failedChecksum());
+  Serial.println("--- SPIFFS ---");
+  Serial.printf("total KB        : %u\n", (unsigned)(SPIFFS.totalBytes() / 1024));
+  Serial.printf("used  KB        : %u\n", (unsigned)(SPIFFS.usedBytes()  / 1024));
+  Serial.printf("free  KB        : %u\n", (unsigned)((SPIFFS.totalBytes() - SPIFFS.usedBytes()) / 1024));
+  Serial.println("====================");
 }
 
 // ===== Compass Serial Command Handlers =====
@@ -635,6 +667,7 @@ static const SerialCommand kCommands[] = {
   {"download", "<filename> download log as CSV", cmdDownloadLog},
   {"deletelog", "<filename> delete specific log file", cmdDeleteLog},
   {"lograte", "<Hz> set log rate (e.g. 1 or 0.1)", cmdLogRate},
+  {"logstat", "dump logger + GPS state (diagnose why logging fails)", cmdLogStat},
   
   // --- Hardware Diagnostics ---
   {"i2c", "scan I2C bus for compass", cmdScanI2C},

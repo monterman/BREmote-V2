@@ -1,4 +1,5 @@
-﻿// V2.5-Evo - 2026-04-25 - P7: Added 12 RTM/FM fields; added RTM & Follow-Me group; sizeof TX confStruct 96→120
+﻿// V2.5-Evo - 2026-05-13 - SW34: WebUI UX — reboot btn feedback, overflow-x fix
+// V2.5-Evo - 2026-04-25 - P7: Added 12 RTM/FM fields; added RTM & Follow-Me group; sizeof TX confStruct 96→120
 // V2.5-Evo - 2026-04-28 - ChangeA/F: fm_arm_window max 60→120s; followme_mode labels updated, option 0 removed
 // V2.5-Evo - 2026-04-29 - TaskB: full description audit — bool 0/1 values, enum all options inline, int/float extremes explained
 // V2.5-Evo - 2026-04-29 - Sleep: added sleep_timeout_s to TX WebUI
@@ -21,7 +22,7 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
   <style>
     :root{--bg:#0b1220;--panel:#101828;--panel2:#1e293b;--txt:#e5e7eb;--muted:#9ca3af;--pri:#60a5fa;--err:#ef4444}
     *{box-sizing:border-box}
-    body{margin:0;background:radial-gradient(1200px 700px at 10% -10%,#1e3a5f66 0,transparent 45%),linear-gradient(180deg,#0a1120 0,#0b1220 40%);color:var(--txt);font-family:"Avenir Next","Montserrat","Segoe UI",sans-serif; padding-top: 15px;}
+    body{margin:0;overflow-x:hidden;background:radial-gradient(1200px 700px at 10% -10%,#1e3a5f66 0,transparent 45%),linear-gradient(180deg,#0a1120 0,#0b1220 40%);color:var(--txt);font-family:"Avenir Next","Montserrat","Segoe UI",sans-serif; padding-top: 15px;}
     .wrap{max-width:980px;margin:0 auto;padding:14px 14px 110px}
     .card{background:linear-gradient(180deg,#121b2e,#101828);border:1px solid #243042;border-radius:14px;padding:12px;box-shadow:0 8px 24px #00000033; margin-bottom: 15px;}
     .top{position:sticky;top:0;backdrop-filter:blur(6px);padding-top:6px;z-index:9}
@@ -370,7 +371,7 @@ async function refreshAll(){
   syncJsonBox(); // Load fresh data into the text box
 }
 
-async function rebootDev(){if(hasUnsavedChanges()){const ignore=confirm("Unsaved config changes detected. Press OK to ignore and reboot.");if(!ignore)return;}await api('/api/reboot','POST');}
+async function rebootDev(){if(hasUnsavedChanges()){const ignore=confirm("Unsaved config changes detected. Press OK to ignore and reboot.");if(!ignore)return;}const b=document.querySelector('[onclick="rebootDev()"]');if(b){b.textContent='Rebooting…';b.classList.add('active-save');b.disabled=true;}await api('/api/reboot','POST');}
 
 window.setVal=setVal;window.setBool=setBool;window.setEnum=setEnum;window.syncField=syncField;window.setAddrPart=setAddrPart;window.saveAll=saveAll;window.loadCfg=loadCfg;window.refreshAll=refreshAll;window.copyJson=copyJson;window.exportJsonFile=exportJsonFile;window.importJsonFile=importJsonFile;window.loadFromJsonText=loadFromJsonText;window.rebootDev=rebootDev;
 refreshAll();

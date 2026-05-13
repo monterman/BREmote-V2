@@ -1,4 +1,5 @@
-﻿#ifndef WEB_UI_EMBEDDED_H
+﻿// V2.5-Evo - 2026-05-13 - SW34: WebUI UX — reboot btn feedback, log Refresh btn, overflow-x fix, compact log rows
+#ifndef WEB_UI_EMBEDDED_H
 #define WEB_UI_EMBEDDED_H
 // V2.5-Evo - 2026-05-03 - Log UI: Delete All + Delete Selected buttons;
 //                   exportJsonFile() redirects to server endpoint (iPhone fix)
@@ -28,7 +29,7 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
   <style>
     :root{--bg:#0b1220;--panel:#101828;--panel2:#1e293b;--txt:#e5e7eb;--muted:#9ca3af;--pri:#60a5fa;--err:#ef4444}
     *{box-sizing:border-box}
-    body{margin:0;background:radial-gradient(1200px 700px at 10% -10%,#1e3a5f66 0,transparent 45%),linear-gradient(180deg,#0a1120 0,#0b1220 40%);color:var(--txt);font-family:"Avenir Next","Montserrat","Segoe UI",sans-serif; padding-top: 15px;}
+    body{margin:0;overflow-x:hidden;background:radial-gradient(1200px 700px at 10% -10%,#1e3a5f66 0,transparent 45%),linear-gradient(180deg,#0a1120 0,#0b1220 40%);color:var(--txt);font-family:"Avenir Next","Montserrat","Segoe UI",sans-serif; padding-top: 15px;}
     .wrap{max-width:980px;margin:0 auto;padding:14px 14px 110px}
     .card{background:linear-gradient(180deg,#121b2e,#101828);border:1px solid #243042;border-radius:14px;padding:12px;box-shadow:0 8px 24px #00000033; margin-bottom: 15px;}
     .top{position:sticky;top:0;backdrop-filter:blur(6px);padding-top:6px;z-index:9}
@@ -63,21 +64,13 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
     .modal-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:#0b1220e6;display:none;align-items:center;justify-content:center;z-index:99;padding:20px}
     .modal{background:linear-gradient(180deg,#121b2e,#101828);border:1px solid #243042;border-radius:14px;padding:20px;width:100%;max-width:500px;max-height:80vh;overflow-y:auto;box-shadow:0 8px 24px #00000066}
     .modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;font-size:18px;font-weight:700}
-    .log-item{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid #243042;}
+    .log-item{display:flex;align-items:center;gap:5px;padding:3px 0;border-bottom:1px solid #1a2535;}
     .log-item:last-child{border-bottom:none;}
-    /* V2.5-Evo - 2026-05-07 - FIX-WEBUI-LOGS-CSS: stack log row content vertically on narrow viewports */
-    @media (max-width: 600px) {
-      .log-item { flex-direction: column; align-items: stretch; }
-      .log-item .log-actions { display: flex; gap: 6px; margin-top: 6px; }
-      .log-item .log-name { word-break: break-all; font-size: 13px; }
-      .log-item .log-size { font-size: 11px; }
-      .log-item .log-actions .btn { flex: 0 0 auto; text-align: center; font-size: 11px; padding: 2px 7px; }
-      .modal-overlay { padding: 10px; }
-      .modal { padding: 14px; }
-    }
-    .log-name{font-family:ui-monospace,SFMono-Regular,monospace;font-size:14px;color:var(--txt)}
-    .log-size{color:var(--muted);font-size:12px;margin-top:4px}
-    .log-actions{display:flex;gap:8px;}
+    .log-info{flex:1;overflow:hidden;min-width:0;}
+    .log-name{font-family:ui-monospace,SFMono-Regular,monospace;font-size:11px;color:var(--txt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;}
+    .log-size{font-size:10px;color:var(--muted);}
+    .log-actions{display:flex;gap:3px;flex-shrink:0;}
+    @media (max-width:600px){.modal-overlay{padding:8px;}.modal{padding:10px;}}
   </style>
 </head>
 <body>
@@ -123,7 +116,7 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
     <div class="modal">
       <div class="modal-header">
         <span>Data Logs</span>
-        <button class="btn sec" onclick="document.getElementById('logModal').style.display='none'">Close</button>
+        <div style="display:flex;gap:6px"><button class="btn sec" style="font-size:13px;padding:5px 10px" onclick="openLogs()" title="Refresh log list">↺</button><button class="btn sec" onclick="document.getElementById('logModal').style.display='none'">Close</button></div>
       </div>
       <div id="logList"></div>
     </div>
@@ -360,7 +353,7 @@ async function refreshAll(){
   syncJsonBox(); // Load fresh data into the text box
 }
 
-async function rebootDev(){if(hasUnsavedChanges()){const ignore=confirm("Unsaved config changes detected. Press OK to ignore and reboot.");if(!ignore)return;}await api('/api/reboot','POST');}
+async function rebootDev(){if(hasUnsavedChanges()){const ignore=confirm("Unsaved config changes detected. Press OK to ignore and reboot.");if(!ignore)return;}const b=document.querySelector('[onclick="rebootDev()"]');if(b){b.textContent='Rebooting…';b.classList.add('active-save');b.disabled=true;}await api('/api/reboot','POST');}
 
 // --- LOG MANAGEMENT ---
 async function openLogs(){
@@ -375,10 +368,10 @@ async function openLogs(){
       return;
     }
     state.logs=res.logs;
-    let h='<div style="margin-bottom:8px;display:flex;gap:8px"><button class="btn danger" onclick="deleteAllLogs()">Delete All</button><button class="btn danger" onclick="deleteSelected()">Delete Selected</button></div>';
+    let h='<div class="sub" style="margin-bottom:6px">Sizes are on-device binary. CSV downloads are ~2× larger.</div><div style="margin-bottom:8px;display:flex;gap:8px"><button class="btn danger" onclick="deleteAllLogs()">Delete All</button><button class="btn danger" onclick="deleteSelected()">Delete Selected</button></div>';
     res.logs.forEach(x=>{
       const kb=(x.size/1024).toFixed(1);
-      h+=`<div class="log-item"><input type="checkbox" class="log-check" data-name="${x.name}"><div><div class="log-name">${x.name}</div><div class="log-size">${kb} KB</div></div><div class="log-actions"><a class="btn" href="/api/logs/download?file=${x.name}" target="_blank" style="text-decoration:none;font-size:11px;padding:2px 7px">Download CSV</a><button class="btn warn" style="font-size:11px;padding:2px 7px" onclick="deleteLog('${x.name}')">Delete</button></div></div>`;
+      h+=`<div class="log-item"><input type="checkbox" class="log-check" data-name="${x.name}"><div class="log-info"><span class="log-name">${x.name}</span><span class="log-size">${kb} KB raw</span></div><div class="log-actions"><a class="btn" href="/api/logs/download?file=${x.name}" target="_blank" style="text-decoration:none;font-size:10px;padding:2px 6px">CSV</a><button class="btn warn" style="font-size:10px;padding:2px 6px" onclick="deleteLog('${x.name}')">Del</button></div></div>`;
     });
     l.innerHTML=h;
   }else{

@@ -493,7 +493,7 @@ void cmdVescPing(const String& params) {
     if (checkSerialQuit()) break;
 
     // Read VESC struct fields under mutex — same pattern as runPhaseC() in RTMState.ino.
-    // Units: motCur = 0.01 A, batVolt = 0.01 V, fetTemp = 0.1 °C.
+    // Units: motCur = 0.01 A, batVolt = 0.1 V, fetTemp = 0.1 °C.
     float  snap_motcur_a  = -1.0f;
     long   snap_erpm      = -1L;
     float  snap_batvolt_v = -1.0f;
@@ -501,7 +501,7 @@ void cmdVescPing(const String& params) {
     if (vescMutex && xSemaphoreTake(vescMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
       snap_motcur_a  = (float)vesc.motCur  / 100.0f;
       snap_erpm      = (long)vesc.erpm;
-      snap_batvolt_v = (float)vesc.batVolt / 100.0f;
+      snap_batvolt_v = (float)vesc.batVolt / 10.0f;
       snap_fettemp_c = (float)vesc.fetTemp / 10.0f;
       xSemaphoreGive(vescMutex);
     }

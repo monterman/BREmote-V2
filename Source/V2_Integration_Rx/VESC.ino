@@ -1,4 +1,5 @@
-﻿// V2.5-Evo - 2026-05-13 - SW45: fbatVolt moved before power calc (was after — foil_power was always 0); last_uart_packet boot guard
+﻿// V2.5-Evo - 2026-05-13 - SW49: batCur_amps divisor 100000→100 (0.01A scale; typo caused power to always read 0)
+// V2.5-Evo - 2026-05-13 - SW45: fbatVolt moved before power calc (was after — foil_power was always 0); last_uart_packet boot guard
 // V2.5-Evo - 2026-05-11 - Telemetry Fix: foil_power invalidated on VESC timeout; dead Serial1.flush() removed
 // V2.5-Evo - 2026-04-29 - Bundle B: vesc_timeout_s SPIFFS param replaces hardcoded 20s VESC timeout
 // V2.5-Evo - 2026-05-06 - Drain Serial1 RX buffer in getVescLoop() to prevent stale GPS NMEA from corrupting VESC frame parsing
@@ -99,7 +100,7 @@ bool getValuesSelective(Stream* interface)
 
     #ifdef VESC_MORE_VALUES
       // Power calculation uses vesc.batCur/erpm which were just written on this same core — no race here
-      float batCur_amps = (float)vesc.batCur / 100000.0f;
+      float batCur_amps = (float)vesc.batCur / 100.0f;
       float watts = fbatVolt * batCur_amps;
       if (watts < 0.0f) watts = 0.0f;
       telemetry.foil_power = (uint8_t)constrain(watts / 50.0f, 0.0f, 255.0f);

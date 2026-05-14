@@ -1,5 +1,5 @@
 // V2.5-Evo - 2026-05-12 - Fix Phase B recovery: recheck gate reduces from 30s to 2s when gps_phase_b_ok=false, eliminating up to 30s RTM motor block after any TX GPS gap
-﻿// V2.5-Evo - 2026-05-03 - Removed if(0) dead code; checkAndAdjustAddress() TODO noted
+// V2.5-Evo - 2026-05-03 - Removed if(0) dead code; checkAndAdjustAddress() TODO noted
 // V2.5-Evo - 2026-04-29 - Bundle C: startTransmit() return value checked and logged on error
 // V2.5-Evo - 2026-04-24 - Added GPS meta-packet reception: gps_meta_pending state, processMetaGpsPacket(), triggeredReceive() 2-path state machine
 // V2.5-Evo - 2026-04-24 - Added Phase B GPS handshake check: gpsPhaseBCheck() called from processMetaGpsPacket()

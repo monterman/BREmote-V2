@@ -1,4 +1,5 @@
-﻿// V2.5-Evo - 2026-05-13 - SW33b: BT status dot at C7 R1 added to updateBargraphs(); blinks from bt_dot_state
+﻿// V2.5-Evo - 2026-05-13 - SW47: unlockAnimation() per-frame clear (smear→clean arrow); boot battery display 1s→3s; ANIMATION_DELAY 40→60ms
+// V2.5-Evo - 2026-05-13 - SW33b: BT status dot at C7 R1 added to updateBargraphs(); blinks from bt_dot_state
 // V2.5-Evo - 2026-05-05 - 30s digit cache for foil_temp/foil_bat to suppress telemetry-drop dashes
 // V2.5-Evo - 2026-05-05 - PV display: foil_power rendered as kW with decimal point (X.Y kW)
 // V2.5-Evo - 2026-05-03 - displayError() clamp corrected 29→33 (H6 audit fix)
@@ -743,7 +744,7 @@ void bootAnimation()
 
   displayDigits(temp_volt/10,temp_volt-10*(temp_volt/10));
   updateDisplay();
-  delay(1000);
+  delay(3000);  // SW47: was 1000ms; extended to push padlock appearance to ~5s after boot
 }
 
 uint8_t arrowPos = 0;
@@ -825,53 +826,52 @@ void displayLock()
   updateDisplay();
 }
 
-#define ANIMATION_DELAY 40  // V2.5-Evo - 2026-04-27 - P8: 80→40ms (2× faster unlock down-arrow)
+// V2.5-Evo - 2026-05-13 - SW47: ANIMATION_DELAY 40→60ms; per-frame buffer clear added (was |=-only → smeared square)
+#define ANIMATION_DELAY 60
+// Helper: clear digit zone preserving C7 GPS dot and C8/C9 bargraphs (bit 7 = C7)
+#define ANIM_CLEAR() for(int _i = 0; _i < 7; _i++) displayBuffer[_i] &= 0xFF80
+
 void unlockAnimation()
 {
-  for(int i = 1; i < 7; i++)
-  {
-    displayBuffer[i] &= 0xFF80;  // preserve bit 7 (C7 = GPS status dot)
-  }
-
+  ANIM_CLEAR();
   displayBuffer[0] |= 0x3E;
   displayBuffer[1] |= 0x3E;
   displayBuffer[2] |= 0x1C;
   displayBuffer[3] |= 0x1C;
   displayBuffer[4] |= 0x08;
   updateDisplay();
-
   delay(ANIMATION_DELAY);
 
+  ANIM_CLEAR();
   displayBuffer[1] |= 0x3E;
   displayBuffer[2] |= 0x3E;
   displayBuffer[3] |= 0x1C;
   displayBuffer[4] |= 0x1C;
   displayBuffer[5] |= 0x08;
   updateDisplay();
-
   delay(ANIMATION_DELAY);
 
+  ANIM_CLEAR();
   displayBuffer[2] |= 0x3E;
   displayBuffer[3] |= 0x3E;
   displayBuffer[4] |= 0x1C;
   displayBuffer[5] |= 0x1C;
   updateDisplay();
-
   delay(ANIMATION_DELAY);
 
+  ANIM_CLEAR();
   displayBuffer[3] |= 0x3E;
   displayBuffer[4] |= 0x3E;
   displayBuffer[5] |= 0x1C;
   updateDisplay();
-
   delay(ANIMATION_DELAY);
 
+  ANIM_CLEAR();
   displayBuffer[4] |= 0x3E;
   displayBuffer[5] |= 0x3E;
   updateDisplay();
-
   delay(ANIMATION_DELAY);
-  
+
   arrowPos = 0;
 }
 

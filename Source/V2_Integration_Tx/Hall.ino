@@ -36,6 +36,7 @@ void cycleDisplayMode(int direction)
     if(isDisplayModeAvailable(next)) break;
   }
   display_mode = next;
+  DISP_LOCK();
   switch(display_mode) {
     case DISPLAY_MODE_TEMP:   displayDigits(LET_T, LET_P); break;
     case DISPLAY_MODE_SPEED:  displayDigits(5, LET_P); break;
@@ -45,6 +46,7 @@ void cycleDisplayMode(int direction)
     case DISPLAY_MODE_INTBAT: displayDigits(LET_U, LET_B); break;
   }
   updateDisplay();
+  DISP_UNLOCK();
   delay(500);
 }
 
@@ -311,7 +313,7 @@ void handleGearToggle(int direction)
           {
             // FM not armed: LEFT hold 2s → lock remote
             system_locked = 1;
-            displayLock();
+            DISP_LOCK(); displayLock(); DISP_UNLOCK();
           }
         }
         last_tap_dir   = 0;  // consume the tap after any long-press action

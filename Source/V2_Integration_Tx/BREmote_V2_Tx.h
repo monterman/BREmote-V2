@@ -1,4 +1,5 @@
-﻿// V2.5-Evo - 2026-05-13 - SW46: DISPLAY_MODE order — Temp(0)/Thr(1)/Speed(2)/Power(3)/Bat(4)/IntBat(5); THR centre, LEFT=Temp, RIGHT=Speed
+﻿// V2.5-Evo - 2026-05-13 - SW48: DISP_LOCK/UNLOCK macros; mutex all bare display callers outside renderOperationalDisplay/updateBargraphs
+// V2.5-Evo - 2026-05-13 - SW46: DISPLAY_MODE order — Temp(0)/Thr(1)/Speed(2)/Power(3)/Bat(4)/IntBat(5); THR centre, LEFT=Temp, RIGHT=Speed
 // V2.5-Evo - 2026-05-13 - SW33: GPIO 9 repurposed as P_MAG digital Hall sensor (DRV5032FADBZR); removed from serialOff OUTPUT-LOW block; mag_seen_high boot guard added
 // V2.5-Evo - 2026-05-13 - SW33b: BT dot test (C7 R1) driven by P_MAG Hall sensor; bt_dot_state + BT_DOT_* defines added
 // V2.5-Evo - 2026-04-21 - Added TinyGPS++ include, gps_tx + tx_gps_speed globals, and P_U1_RX/P_U1_TX pin defines for TX GPS (BN-220 on Serial1)
@@ -347,6 +348,11 @@ volatile uint8_t tx_gps_speed = 0xFF;
 */
 uint16_t displayBuffer[8];
 SemaphoreHandle_t displayMutex;   // protects displayBuffer + updateDisplay() — created in initTasks() before tasks start
+// SW48: convenience macros — use these in all code that writes displayBuffer or calls updateDisplay()
+// from outside an already-held displayMutex context (i.e. NOT from inside renderOperationalDisplay
+// or updateBargraphs which take the mutex themselves).
+#define DISP_LOCK()   do { if(displayMutex) xSemaphoreTake(displayMutex, portMAX_DELAY); } while(0)
+#define DISP_UNLOCK() do { if(displayMutex) xSemaphoreGive(displayMutex); } while(0)
 // Unused — shadowed by local declarations in displayDigits(), scroll3Digits(), scroll4Digits()
 //uint8_t digitBuffer[6];
 

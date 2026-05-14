@@ -147,8 +147,7 @@ static void rtmDisengage()
 
   // Large-font stop confirm: LET_S(32) renders as "5", LET_T(20) renders as "t".
   // "5t" appearance is intentional — matches large-font style of F0-F3 confirms.
-  displayDigits(LET_S, LET_T);
-  updateDisplay();
+  DISP_LOCK(); displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
   gpsKeepAliveDelay(2000);
 }
 
@@ -210,8 +209,7 @@ static void runDoubleSqueezeArm()
   {
     rtm_arm_gps_timeout_override = 0;  // ceremony aborted — restore normal GPS threshold
     rtm_thr_cap_tx = 255;              // restore throttle passthrough — arm aborted
-    for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000;
-    updateDisplay();
+    DISP_LOCK(); for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000; updateDisplay(); DISP_UNLOCK();
     rtm_tx_state = RTM_IDLE;
     return;
   }
@@ -222,8 +220,7 @@ static void runDoubleSqueezeArm()
     unlockAnimation();
     gpsKeepAliveDelay(250);
     current_vib_pattern = 4;   // Pattern 4 after visual unlock completes
-    displayDigitZone("r n");
-    updateDisplay();
+    DISP_LOCK(); displayDigitZone("r n"); updateDisplay(); DISP_UNLOCK();
     gpsKeepAliveDelay(2000);
   }
   else
@@ -231,8 +228,7 @@ static void runDoubleSqueezeArm()
     // Double-squeeze: first unlock (no P4 yet), pause, then black screen, then wait for second squeeze
     unlockAnimation();
     gpsKeepAliveDelay(250);
-    for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000;
-    updateDisplay();
+    DISP_LOCK(); for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000; updateDisplay(); DISP_UNLOCK();
     gpsKeepAliveDelay(800);
 
     bool second_ok = false;
@@ -254,8 +250,7 @@ static void runDoubleSqueezeArm()
     {
       rtm_arm_gps_timeout_override = 0;  // ceremony aborted — restore normal GPS threshold
       rtm_thr_cap_tx = 255;              // restore throttle passthrough — arm aborted
-      for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000;
-      updateDisplay();
+      DISP_LOCK(); for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000; updateDisplay(); DISP_UNLOCK();
       rtm_tx_state = RTM_IDLE;
       return;
     }
@@ -264,8 +259,7 @@ static void runDoubleSqueezeArm()
     unlockAnimation();
     gpsKeepAliveDelay(250);
     current_vib_pattern = 4;   // Pattern 4 after visual unlock completes
-    displayDigitZone("r n");
-    updateDisplay();
+    DISP_LOCK(); displayDigitZone("r n"); updateDisplay(); DISP_UNLOCK();
     gpsKeepAliveDelay(2000);
   }
 
@@ -280,8 +274,7 @@ static void runDoubleSqueezeArm()
     rtm_thr_cap_tx = 255;              // restore throttle passthrough — arm rejected
     current_vib_pattern = 4;
     // Large-font stop confirm on arm rejection.
-    displayDigits(LET_S, LET_T);
-    updateDisplay();
+    DISP_LOCK(); displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
     gpsKeepAliveDelay(2000);
     rtm_tx_state  = RTM_IDLE;
     rtm_tx_active = false;
@@ -457,8 +450,7 @@ static void fmDisarm()
   queueMetaPacketBurst(0xF2, 0);   // mode 0 = FM disabled on RX (followme_mode=0)
   current_vib_pattern = 4;         // Pattern 4: 2 fast buzzes = disarm confirm
   // Large-font stop confirm on FM disarm.
-  displayDigits(LET_S, LET_T);
-  updateDisplay();
+  DISP_LOCK(); displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
   gpsKeepAliveDelay(2000);
 }
 
@@ -488,8 +480,10 @@ void cycleFmMode()
         // This is RAM-only; power cycle restores usrConf.followme_mode.
         current_vib_pattern = 4;
         // Large-font F0 disarm confirm: LET_F + 0. Shorter hold (1s) — this is a disarm, not a mode select.
+        DISP_LOCK();
         displayDigits(LET_F, 0);
         updateDisplay();
+        DISP_UNLOCK();
         gpsKeepAliveDelay(1000);
         queueMetaPacketBurst(0xF2, 0);       // tell RX: FM disabled
         fm_armed         = false;
@@ -502,8 +496,10 @@ void cycleFmMode()
       }
 
       // Large-font mode confirm: LET_F + mode digit (1/2/3). snprintf no longer needed.
+      DISP_LOCK();
       displayDigits(LET_F, last_fm_mode);
       updateDisplay();
+      DISP_UNLOCK();
       gpsKeepAliveDelay(2000);
       queueMetaPacketBurst(0xF2, last_fm_mode);
       fm_last_sync_ms = millis();
@@ -531,8 +527,10 @@ void cycleFmMode()
 
   // V2.5-Evo - 2026-04-29 - Display: show actual mode being armed (F1/F2/F3) in large font
   // instead of the generic "FM" text. Uses large num0[] font via LET_F(15) + mode digit.
+  DISP_LOCK();
   displayDigits(LET_F, last_fm_mode);
   updateDisplay();
+  DISP_UNLOCK();
   gpsKeepAliveDelay(2000);
 
   queueMetaPacketBurst(0xF2, last_fm_mode);
@@ -553,8 +551,10 @@ void cycleFmModeArmed()
     // This is RAM-only; power cycle restores usrConf.followme_mode.
     current_vib_pattern = 4;
     // Large-font F0 disarm confirm: LET_F + 0. Shorter hold (1s) — this is a disarm, not a mode select.
+    DISP_LOCK();
     displayDigits(LET_F, 0);
     updateDisplay();
+    DISP_UNLOCK();
     gpsKeepAliveDelay(1000);
     queueMetaPacketBurst(0xF2, 0);       // tell RX: FM disabled
     fm_armed         = false;
@@ -567,8 +567,10 @@ void cycleFmModeArmed()
   }
 
   // Large-font mode confirm: LET_F + mode digit (1/2/3). snprintf no longer needed.
+  DISP_LOCK();
   displayDigits(LET_F, last_fm_mode);
   updateDisplay();
+  DISP_UNLOCK();
   gpsKeepAliveDelay(2000);
   queueMetaPacketBurst(0xF2, last_fm_mode);
   fm_last_sync_ms = millis();              // reset keepalive — just synced

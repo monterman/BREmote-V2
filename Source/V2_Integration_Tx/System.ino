@@ -11,8 +11,10 @@ void deepSleep()
   {
     setDisplayActivityEnabled(true);
   }
+  DISP_LOCK();
   displayDigits(LET_X, LET_X);
   updateDisplay();
+  DISP_UNLOCK();
   setBrightness(0x00);
   Serial.println("Going to sleep now");
   setRadioActivityEnabled(false);

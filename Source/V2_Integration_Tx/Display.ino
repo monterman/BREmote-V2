@@ -1,4 +1,5 @@
-﻿// V2.5-Evo - 2026-05-13 - SW47: unlockAnimation() per-frame clear (smear→clean arrow); boot battery display 1s→3s; ANIMATION_DELAY 40→60ms
+﻿// V2.5-Evo - 2026-05-13 - SW48: advanceArrow/unlockAnimation/displayError mutex-wrapped; cycleDisplayMode/displayLock call sites fixed in Hall+RTMState+System
+// V2.5-Evo - 2026-05-13 - SW47: unlockAnimation() per-frame clear (smear→clean arrow); boot battery display 1s→3s; ANIMATION_DELAY 40→60ms
 // V2.5-Evo - 2026-05-13 - SW33b: BT status dot at C7 R1 added to updateBargraphs(); blinks from bt_dot_state
 // V2.5-Evo - 2026-05-05 - 30s digit cache for foil_temp/foil_bat to suppress telemetry-drop dashes
 // V2.5-Evo - 2026-05-05 - PV display: foil_power rendered as kW with decimal point (X.Y kW)
@@ -630,8 +631,10 @@ void renderOperationalDisplay()
 
 void displayError(int err)
 {
+  DISP_LOCK();
   displayDigits(LET_E, min(err, 33));  // clamp to 33 — num0[] has 34 entries (indices 0–33); was 29, silently wrong for err 30–33
   updateDisplay();
+  DISP_UNLOCK();
 }
 
 void scroll3Digits(uint8_t dig1, uint8_t dig2, uint8_t dig3, int del)
@@ -750,6 +753,7 @@ void bootAnimation()
 uint8_t arrowPos = 0;
 void advanceArrow()
 {
+  DISP_LOCK();
   //Delete whole number field
   for(int i = 1; i < 7; i++)
   {
@@ -766,6 +770,7 @@ void advanceArrow()
   displayBuffer[4+arrowPos] |= 0x08;
 
   updateDisplay();
+  DISP_UNLOCK();
 }
 
 uint8_t chargeAnimationPos = 0;
@@ -827,12 +832,14 @@ void displayLock()
 }
 
 // V2.5-Evo - 2026-05-13 - SW47: ANIMATION_DELAY 40→60ms; per-frame buffer clear added (was |=-only → smeared square)
+// V2.5-Evo - 2026-05-13 - SW48: holds displayMutex for entire animation (300ms) — Core 0 skips one bargraph cycle, which is fine
 #define ANIMATION_DELAY 60
 // Helper: clear digit zone preserving C7 GPS dot and C8/C9 bargraphs (bit 7 = C7)
 #define ANIM_CLEAR() for(int _i = 0; _i < 7; _i++) displayBuffer[_i] &= 0xFF80
 
 void unlockAnimation()
 {
+  DISP_LOCK();
   ANIM_CLEAR();
   displayBuffer[0] |= 0x3E;
   displayBuffer[1] |= 0x3E;
@@ -873,6 +880,7 @@ void unlockAnimation()
   delay(ANIMATION_DELAY);
 
   arrowPos = 0;
+  DISP_UNLOCK();
 }
 
 // GPS rejection flag — set by future TX Phase A anti-spoofing (GPS.ino) via extern.

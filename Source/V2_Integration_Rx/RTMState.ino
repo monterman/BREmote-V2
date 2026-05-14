@@ -202,7 +202,7 @@ static bool checkRtmSafetyGates()
 // Confidence levels (output param):
 //   3 = HIGH:   GPS COG, fresh and above min_speed threshold
 //   2 = MEDIUM: compass snapshot < 1000ms old, or compass-only mode (legacy)
-//   1 = LOW:    compass snapshot 1000-3000ms old (degraded — caller should reduce steering authority)
+//   1 = LOW:    compass snapshot 1000-8000ms old (degraded — caller should reduce steering authority)
 //   0 = NONE:   no valid heading source — caller must hold straight (rtm_steer_override = 127)
 //
 // Returns true if heading is valid (any non-zero confidence), false if no source.
@@ -258,15 +258,15 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
   // Snapshot is captured by updateCompassSnapshot() in Compass.ino during motor-idle.
   // Age determines confidence:
   //   < 1000ms : MEDIUM (likely still fresh)
-  //   1000-3000ms : LOW (degraded; reduce steering authority)
-  //   > 3000ms : NONE (too stale)
+  //   1000-8000ms : LOW (degraded; reduce steering authority) — SW45: extended from 3000ms for stationary RTM arm
+  //   > 8000ms : NONE (too stale)
   if (compass_snapshot_heading >= 0.0f && compass_snapshot_ms > 0) {
     unsigned long age_ms = now - compass_snapshot_ms;
     if (age_ms < 1000UL) {
       *out_heading = compass_snapshot_heading;
       *out_confidence = 2;  // MEDIUM
       return true;
-    } else if (age_ms < 3000UL) {
+    } else if (age_ms < 8000UL) {
       *out_heading = compass_snapshot_heading;
       *out_confidence = 1;  // LOW — caller should reduce steering authority
       return true;

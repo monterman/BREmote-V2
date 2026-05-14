@@ -1,4 +1,5 @@
-﻿// V2.5-Evo - 2026-05-11 - Telemetry Fix: foil_power invalidated on VESC timeout; dead Serial1.flush() removed
+﻿// V2.5-Evo - 2026-05-13 - SW45: fbatVolt moved before power calc (was after — foil_power was always 0); last_uart_packet boot guard
+// V2.5-Evo - 2026-05-11 - Telemetry Fix: foil_power invalidated on VESC timeout; dead Serial1.flush() removed
 // V2.5-Evo - 2026-04-29 - Bundle B: vesc_timeout_s SPIFFS param replaces hardcoded 20s VESC timeout
 // V2.5-Evo - 2026-05-06 - Drain Serial1 RX buffer in getVescLoop() to prevent stale GPS NMEA from corrupting VESC frame parsing
 // Define the global struct
@@ -6,6 +7,10 @@ vesc_struct vesc;
 
 void getVescLoop()
 {
+  // SW45: start timeout clock from first actual call, not from boot (last_uart_packet=0 caused instant 6s timeout)
+  static bool vesc_first_call = true;
+  if (vesc_first_call) { last_uart_packet = millis(); vesc_first_call = false; }
+
   setUartMux(0);
   vTaskDelay(pdMS_TO_TICKS(10));
 
@@ -89,6 +94,9 @@ bool getValuesSelective(Stream* interface)
       xSemaphoreGive(vescMutex);
     }
 
+    // SW45: fbatVolt must be updated before the power block — previous location (after #endif) used stale value
+    fbatVolt = (float)vesc.batVolt / 10.0;
+
     #ifdef VESC_MORE_VALUES
       // Power calculation uses vesc.batCur/erpm which were just written on this same core — no race here
       float batCur_amps = (float)vesc.batCur / 100000.0f;
@@ -105,7 +113,6 @@ bool getValuesSelective(Stream* interface)
       #endif
     #endif
 
-    fbatVolt = (float)vesc.batVolt / 10.0;
     telemetry.foil_bat = getUbatPercent(fbatVolt);
     telemetry.foil_temp = (uint8_t)(vesc.fetTemp / 10);
 

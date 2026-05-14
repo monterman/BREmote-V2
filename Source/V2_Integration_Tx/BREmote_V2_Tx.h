@@ -1,4 +1,4 @@
-﻿// V2.5-Evo - 2026-05-13 - SW46: DISPLAY_MODE order — Temp(0)/Speed(1)/Thr(2)/Power(3)/Bat(4)/IntBat(5); primary 3 consecutive for left/mid/right feel
+﻿// V2.5-Evo - 2026-05-13 - SW46: DISPLAY_MODE order — Temp(0)/Thr(1)/Speed(2)/Power(3)/Bat(4)/IntBat(5); THR centre, LEFT=Temp, RIGHT=Speed
 // V2.5-Evo - 2026-05-13 - SW33: GPIO 9 repurposed as P_MAG digital Hall sensor (DRV5032FADBZR); removed from serialOff OUTPUT-LOW block; mag_seen_high boot guard added
 // V2.5-Evo - 2026-05-13 - SW33b: BT dot test (C7 R1) driven by P_MAG Hall sensor; bt_dot_state + BT_DOT_* defines added
 // V2.5-Evo - 2026-04-21 - Added TinyGPS++ include, gps_tx + tx_gps_speed globals, and P_U1_RX/P_U1_TX pin defines for TX GPS (BN-220 on Serial1)
@@ -430,13 +430,12 @@ volatile float int_bat_volt = 0.0;
 volatile bool mot_active = 0;
 volatile bool system_locked = 1;
 
-// V2.5-Evo - 2026-05-13 - SW46: reorder so primary 3 are consecutive — left=Temp(0), middle=Speed(1), right=Thr(2).
-// Tap LEFT from THR→SPEED→TEMP; tap RIGHT from THR→POWER→BAT→INTBAT.
+// V2.5-Evo - 2026-05-13 - SW46: THR at centre(1) — LEFT=Temp(0), RIGHT=Speed(2)→Power(3)→Bat(4)→IntBat(5)→wrap Temp.
 // All switch() cases use named constants — only these #defines change.
-// display mode cycle: 0=temp, 1=speed, 2=throttle, 3=power, 4=vesc bat, 5=int bat
+// display mode cycle: 0=temp, 1=throttle, 2=speed, 3=power, 4=vesc bat, 5=int bat
 #define DISPLAY_MODE_TEMP    0
-#define DISPLAY_MODE_SPEED   1
-#define DISPLAY_MODE_THR     2
+#define DISPLAY_MODE_THR     1
+#define DISPLAY_MODE_SPEED   2
 #define DISPLAY_MODE_POWER   3
 #define DISPLAY_MODE_BAT     4
 #define DISPLAY_MODE_INTBAT  5

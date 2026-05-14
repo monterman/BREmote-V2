@@ -21,7 +21,7 @@ bool isDisplayModeAvailable(uint8_t mode)
     case DISPLAY_MODE_POWER:  return telemetry.foil_power != 0xFF;
     case DISPLAY_MODE_BAT:    return telemetry.foil_bat   != 0xFF;
     case DISPLAY_MODE_THR:    return true;
-    case DISPLAY_MODE_INTBAT: return true;
+    case DISPLAY_MODE_AMP:    return telemetry.foil_motor_amps != 0xFF;
     default: return false;
   }
 }
@@ -43,7 +43,7 @@ void cycleDisplayMode(int direction)
     case DISPLAY_MODE_POWER:  displayDigits(LET_P, LET_V); break;
     case DISPLAY_MODE_BAT:    displayDigits(LET_B, LET_A); break;
     case DISPLAY_MODE_THR:    displayDigits(LET_T, LET_H); break;
-    case DISPLAY_MODE_INTBAT: displayDigits(LET_U, LET_B); break;
+    case DISPLAY_MODE_AMP:    displayDigits(LET_M, LET_A); break;
   }
   updateDisplay();
   DISP_UNLOCK();

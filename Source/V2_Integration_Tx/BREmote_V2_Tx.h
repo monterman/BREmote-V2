@@ -1,4 +1,5 @@
-﻿// V2.5-Evo - 2026-05-13 - SW48: DISP_LOCK/UNLOCK macros; mutex all bare display callers outside renderOperationalDisplay/updateBargraphs
+﻿// V2.5-Evo - 2026-05-13 - SW50: DISPLAY_MODE_AMP replaces INTBAT; TelemetryPacket +foil_motor_amps byte (index 6); link_quality→index 7
+// V2.5-Evo - 2026-05-13 - SW48: DISP_LOCK/UNLOCK macros; mutex all bare display callers outside renderOperationalDisplay/updateBargraphs
 // V2.5-Evo - 2026-05-13 - SW46: DISPLAY_MODE order — Temp(0)/Thr(1)/Speed(2)/Power(3)/Bat(4)/IntBat(5); THR centre, LEFT=Temp, RIGHT=Speed
 // V2.5-Evo - 2026-05-13 - SW33: GPIO 9 repurposed as P_MAG digital Hall sensor (DRV5032FADBZR); removed from serialOff OUTPUT-LOW block; mag_seen_high boot guard added
 // V2.5-Evo - 2026-05-13 - SW33b: BT dot test (C7 R1) driven by P_MAG Hall sensor; bt_dot_state + BT_DOT_* defines added
@@ -306,8 +307,9 @@ struct __attribute__((packed)) TelemetryPacket {
     // SCALE=watts/50  DECODE=foil_power*50  range 0-12750W at 50W resolution
     uint8_t foil_power = 0xFF;    // index 4 — power (watts/50); 0xFF = not available
     uint8_t rtm_distance = 0xFF;  // index 5 — RX→TX distance during RTM/FM; see encoding above; 0xFF = N/A
+    uint8_t foil_motor_amps = 0xFF; // index 6 — SW50: motor current in whole amps (0=0A…250=250A); 0xFF=N/A
     //This must be the last entry
-    uint8_t link_quality = 0;     // index 6 (must be last)
+    uint8_t link_quality = 0;     // index 7 (must be last)
 } telemetry;
 
 /*
@@ -444,7 +446,7 @@ volatile bool system_locked = 1;
 #define DISPLAY_MODE_SPEED   2
 #define DISPLAY_MODE_POWER   3
 #define DISPLAY_MODE_BAT     4
-#define DISPLAY_MODE_INTBAT  5
+#define DISPLAY_MODE_AMP     5
 #define DISPLAY_MODE_COUNT   6
 // V2.5-Evo - 2026-05-13 - SW32: throttle % (DISPLAY_MODE_THR) as default boot display.
 // Field test feedback: throttle % is more useful at-a-glance than temperature on first unlock.

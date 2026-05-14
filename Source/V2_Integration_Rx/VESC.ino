@@ -1,4 +1,5 @@
-﻿// V2.5-Evo - 2026-05-13 - SW49: batCur_amps divisor 100000→100 (0.01A scale; typo caused power to always read 0)
+﻿// V2.5-Evo - 2026-05-13 - SW50: foil_motor_amps encoded (whole amps, 0–250); added to VESC timeout reset
+// V2.5-Evo - 2026-05-13 - SW49: batCur_amps divisor 100000→100 (0.01A scale; typo caused power to always read 0)
 // V2.5-Evo - 2026-05-13 - SW45: fbatVolt moved before power calc (was after — foil_power was always 0); last_uart_packet boot guard
 // V2.5-Evo - 2026-05-11 - Telemetry Fix: foil_power invalidated on VESC timeout; dead Serial1.flush() removed
 // V2.5-Evo - 2026-04-29 - Bundle B: vesc_timeout_s SPIFFS param replaces hardcoded 20s VESC timeout
@@ -36,9 +37,10 @@ void getVescLoop()
   // If no UART packet received within this window, mark battery and temperature as unavailable.
   if(millis() - last_uart_packet > ((uint32_t)usrConf.vesc_timeout_s * 1000UL))
   {
-    telemetry.foil_bat   = 0xFF;
-    telemetry.foil_temp  = 0xFF;
-    telemetry.foil_power = 0xFF;
+    telemetry.foil_bat         = 0xFF;
+    telemetry.foil_temp        = 0xFF;
+    telemetry.foil_power       = 0xFF;
+    telemetry.foil_motor_amps  = 0xFF;
   }
 }
 
@@ -103,7 +105,8 @@ bool getValuesSelective(Stream* interface)
       float batCur_amps = (float)vesc.batCur / 100.0f;
       float watts = fbatVolt * batCur_amps;
       if (watts < 0.0f) watts = 0.0f;
-      telemetry.foil_power = (uint8_t)constrain(watts / 50.0f, 0.0f, 255.0f);
+      telemetry.foil_power      = (uint8_t)constrain(watts / 50.0f, 0.0f, 255.0f);
+      telemetry.foil_motor_amps = (uint8_t)constrain((float)vesc.motCur / 100.0f, 0.0f, 250.0f);
 
       #ifdef DEBUG_VESC
       Serial.print("V="); Serial.print(fbatVolt);

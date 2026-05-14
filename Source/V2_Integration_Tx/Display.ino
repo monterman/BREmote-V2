@@ -559,7 +559,7 @@ void renderOperationalDisplay()
           break;
         case DISPLAY_MODE_BAT:    displayShowTwoDigitOrDash(getEffectiveFoilBat()); break;
         case DISPLAY_MODE_THR:    displayShowTwoDigitOrDash(thr_scaled * 99 / 255); break;
-        case DISPLAY_MODE_INTBAT: displayShowTwoDigitOrDash((uint8_t)(int_bat_volt * 10)); break;
+        case DISPLAY_MODE_AMP:    displayShowTwoDigitOrDash(min(telemetry.foil_motor_amps, (uint8_t)99)); break;
         default: displayShowTwoDigitOrDash(telemetry.foil_temp); break;
       }
       updateDisplay();

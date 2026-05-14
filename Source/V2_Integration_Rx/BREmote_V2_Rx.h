@@ -459,7 +459,8 @@ struct __attribute__((packed)) TelemetryPacket {
     uint8_t error_code = 0;       // index 3 — fault flags
     uint8_t foil_power = 0xFF;    // index 4 — power (watts/50); 0xFF = not available
     uint8_t rtm_distance = 0xFF;  // index 5 — RX→TX distance during RTM/FM; see encoding above; 0xFF = N/A
-    uint8_t link_quality = 0;     // index 6 (must be last)
+    uint8_t foil_motor_amps = 0xFF; // index 6 — SW50: motor current in whole amps (0=0A…250=250A); 0xFF=N/A (no VESC_MORE_VALUES or VESC offline)
+    uint8_t link_quality = 0;     // index 7 (must be last)
 } telemetry;
 
 /*

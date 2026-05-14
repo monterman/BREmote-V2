@@ -438,15 +438,15 @@ volatile float int_bat_volt = 0.0;
 volatile bool mot_active = 0;
 volatile bool system_locked = 1;
 
-// V2.5-Evo - 2026-05-13 - SW46: THR at centre(1) — LEFT=Temp(0), RIGHT=Speed(2)→Power(3)→Bat(4)→IntBat(5)→wrap Temp.
+// V2.5-Evo - 2026-05-13 - SW46: THR at centre(1) — LEFT=Temp(0), RIGHT=Speed(2)→Power(3)→Amp(4)→Bat(5)→wrap Temp.
 // All switch() cases use named constants — only these #defines change.
-// display mode cycle: 0=temp, 1=throttle, 2=speed, 3=power, 4=vesc bat, 5=int bat
+// display mode cycle: 0=temp, 1=throttle, 2=speed, 3=power(kW), 4=motor amps(MA), 5=vesc bat
 #define DISPLAY_MODE_TEMP    0
 #define DISPLAY_MODE_THR     1
 #define DISPLAY_MODE_SPEED   2
 #define DISPLAY_MODE_POWER   3
-#define DISPLAY_MODE_BAT     4
-#define DISPLAY_MODE_AMP     5
+#define DISPLAY_MODE_AMP     4
+#define DISPLAY_MODE_BAT     5
 #define DISPLAY_MODE_COUNT   6
 // V2.5-Evo - 2026-05-13 - SW32: throttle % (DISPLAY_MODE_THR) as default boot display.
 // Field test feedback: throttle % is more useful at-a-glance than temperature on first unlock.

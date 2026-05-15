@@ -43,7 +43,7 @@ void initBLE()
 
   NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
   adv->addServiceUUID(NUS_SERVICE_UUID);
-  adv->setScanResponse(true);
+  // setScanResponse removed — not available in NimBLE 2.x; advertising works without it
   NimBLEDevice::startAdvertising();
 
   bleRunning = true;

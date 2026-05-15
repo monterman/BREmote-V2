@@ -14,9 +14,10 @@ static NimBLEServer*         bleServer  = nullptr;
 static NimBLECharacteristic* nusTxChar  = nullptr;
 static bool                  bleRunning = false;
 
+// NimBLE-Arduino 2.x callback signatures — connInfo + reason added in 2.0
 class BLEServerCB : public NimBLEServerCallbacks {
-  void onConnect(NimBLEServer*) override { }
-  void onDisconnect(NimBLEServer*) override {
+  void onConnect(NimBLEServer*, NimBLEConnInfo&) override { }
+  void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int) override {
     NimBLEDevice::startAdvertising();  // auto-restart so phone can reconnect
   }
 };
@@ -24,7 +25,7 @@ class BLEServerCB : public NimBLEServerCallbacks {
 void initBLE()
 {
   NimBLEDevice::init("BREmote-TX");
-  NimBLEDevice::setPower(ESP_PWR_LVL_P9);
+  NimBLEDevice::setPower(9);  // 9 dBm max; NimBLE 2.x takes dBm directly (not ESP_PWR_LVL enum)
 
   bleServer = NimBLEDevice::createServer();
   bleServer->setCallbacks(new BLEServerCB());

@@ -8,7 +8,7 @@
 
 ESP32 LoRa wireless remote for efoil and RC tow buggy — 868/915 MHz, 10 Hz control cycle, VESC UART telemetry, GPS speed display, integrated data logger.
 
-**Status: Pre-Alpha — not yet field-tested on the water. See Alpha Testing Notes below before any in-water use.**
+**Status: Beta — bench-validated, awaiting first water test. See Alpha Testing Notes below before any in-water use.**
 
 ---
 
@@ -20,7 +20,7 @@ BREmote is a collaborative open-source project built by the efoil and esk8 commu
 |---|---|
 | **[LudwigBre / Luddi96](https://github.com/Luddi96/BREmote)** | **Original hardware design, original firmware architecture, project founder, and dev-logger framework (dev-logger branch). All core features originate here.** |
 | **Janrusher** | Dynamic throttle cap mode and Web Console foundation — significant V2 enhancements forked from LudwigBre, further refined in V2.5-Evo |
-| **monterman** | V2.5-Evo firmware: TX GPS implementation, dev-logger AUX button toggle with LED status feedback (5× flash = start, 2× flash = stop), date format DDMMYY → MMDDYY, web console major rebuild (upload/download/compare JSON, integrated serial console, TX+RX coverage, plain-English parameter docs for every setting), deep codebase analysis, critical bug documentation, RTM/FM mode design |
+| **monterman** | V2.5-Evo firmware: TX GPS implementation, dev-logger AUX button toggle with LED status feedback (5× flash = start, 2× flash = stop), date format DDMMYY → MMDDYY, web console major rebuild (upload/download/compare JSON, integrated serial console, TX+RX coverage, plain-English parameter docs for every setting), deep codebase analysis, critical bug documentation, RTM/FM mode design, VESC UART telemetry diagnosis and root-cause fix (SW55), DISPLAY_MODE_INTBAT 7th display mode, BT status dot + Hall sensor activation framework |
 
 This fork exists because LudwigBre published open hardware and firmware under GPL 3.0. V2.5-Evo enhancements are released under the same license and dedicated back to the community.
 
@@ -164,9 +164,11 @@ Display shows `--` when no fix is available or the fix is older than the configu
 **Telemetry display cycle** (cycle with LEFT toggle hold 2 s):
 
 ```
-TH       → UB           → TP    → SP    → PV    → BA
-Throttle → Internal Bat → Temp  → Speed → Power → Foil Bat
+TP    → TH       → SP    → PV    → MA           → UB           → BA
+Temp  → Throttle → Speed → Power → Motor Amps   → Internal Bat → Foil Bat
 ```
+
+Unavailable modes (no VESC lock or no GPS fix) are skipped automatically. `MA` requires VESC telemetry; `SP` with RX GPS source requires GPS fix (TX GPS source always shows, using `--` when no fix).
 
 **PV** shows VESC battery-side power in kW with one decimal (e.g., `4.4` = 4400 W). Capped at 9.9 kW.
 
@@ -437,6 +439,20 @@ Visible only when `gps_en = 1`. Located at the top-right corner of the digit are
 | Fast blink (250 ms) | GPS rejected — spoofing check failed or signal too poor |
 | Off | GPS disabled (`gps_en = 0`) |
 
+### BT Status Dot (C7 R1)
+
+Located just below the GPS dot. Driven by `bt_dot_state`, controlled by the DRV5032 Hall sensor hold duration on P_MAG (GPIO 9).
+
+| State | `bt_dot_state` | Meaning |
+|---|---|---|
+| Off | `BT_DOT_OFF` | BLE inactive |
+| Slow blink (1 s on/off) | `BT_DOT_SLOW` | BLE ready — toggled by a short Hall sensor hold (400 ms – 4.9 s) |
+| Fast blink (250 ms on/off) | `BT_DOT_FAST` | BLE active — triggered by a long hold (5 s+) from slow state |
+
+Releasing the magnet while `BT_DOT_FAST` → returns to `BT_DOT_OFF`. Short hold while `BT_DOT_SLOW` → toggles back to `BT_DOT_OFF`.
+
+> BLE GATT/radio layer is in active in-house development. The hardware (integrated HT-CT62 BLE radio), display indicator, and Hall sensor state machine are fully implemented in firmware. Radio pairing and telemetry streaming are the next sprint (`feature/bluetooth`).
+
 ### R5 Proximity Bar
 
 Row R5 (just below the digit area, C0–C9) is a proximity indicator during RTM or FM. Blinks 1 s on / 500 ms off.
@@ -581,7 +597,7 @@ The two **bold** columns (`heading_error_dx10`, `d_error_dx10`) were added speci
 | Feature | Status |
 |---|---|
 | Follow-Me full implementation | FM override operational; full autonomous follow-me behaviour (positional control loop) not yet implemented |
-| BLE telemetry forwarding | Planned for future release |
+| BLE telemetry | Hardware confirmed — HT-CT62 integrates ESP32-C3 + BLE + WiFi + LoRa (SX1262) in one module. Display indicator (`bt_dot_state`, C7 R1) and Hall sensor activation (DRV5032, GPIO 9) are implemented in firmware. GATT/radio layer in active in-house development. `feature/bluetooth` branch forthcoming. |
 | RTM/FM hardware field test | Static code review passed (10/10 gates). Outdoor GPS + motor bench test still required before field use. |
 
 ### Bugs Found and Fixed Between Upstream and V2.5-Evo
@@ -611,6 +627,32 @@ BREmote V2.5-Evo ships with a serial diagnostic command, `?magtest`, that lets a
 
 ---
 
+## RX Serial Diagnostic Commands
+
+Connect to the RX at 115200 baud. All commands are prefixed with `?`.
+
+| Command | Description |
+|---|---|
+| `?vescping` | Send a single VESC status request and print the parsed response — confirms the UART link is alive |
+| `?vescraw` | Dump raw VESC packet bytes to serial — use when `?vescping` returns no data to diagnose framing issues |
+| `?logstat` | Print SPIFFS log storage statistics — file count, total bytes used, bytes free |
+| `?lograte <ms>` | Override logging rate per session (default 200 ms / 5 Hz). Example: `?lograte 100` = 10 Hz. Change is RAM-only; resets on reboot. |
+| `?deletelog <filename>` | Delete a specific log file from SPIFFS. Use `?list` to see filenames first. |
+| `?list` | List all log files on SPIFFS with sizes |
+| `?download <filename>` | Stream a log file as raw CSV over serial |
+| `?start` / `?stop` | Start or stop the data logger (same as AUX button) |
+| `?compassheading` | Stream live compass heading (degrees) at 10 Hz — useful for verifying QMC5883L orientation and EMI influence |
+| `?magtest` | Stream CSV telemetry (mag X/Y/Z, heading, VESC ERPM, motor current, throttle) at 10 Hz for up to 120 s — see Compass EMI section above for full usage |
+| `?compasscal` | Trigger soft-iron compass calibration routine |
+| `?printrssi` | Print current LoRa RSSI and SNR |
+| `?printtasks` | Print FreeRTOS task stack high-water marks — use to verify stack headroom after tuning |
+| `?printgps` | Print current RX GPS fix (lat, lon, speed, fix type) |
+| `?printbat` | Print RX battery voltage reading |
+
+TX-only commands (connect to TX board): `?gpsraw`, `?gpsreinit`, `?gpscoldreset`, `?printrssi`, `?printinputs`, `?printtasks`, `?printpackets`.
+
+---
+
 ## Links
 
 - [Original BREmote V2 repository — Luddi96](https://github.com/Luddi96/BREmote)
@@ -628,6 +670,27 @@ BREmote V2.5-Evo ships with a serial diagnostic command, `?magtest`, that lets a
 ---
 
 ## Changelog
+
+### SW51–SW55 — May 2026 *(monterman)* — VESC Telemetry Fix, Display Polish, RTM Bench-Complete
+
+**VESC telemetry — root cause confirmed and fixed:**
+- **Primary root cause:** USB-C serial cable on GPIO 18/19 silences VESC UART during field use — ESP32-C3 native USB D−/D+ shares these pins with Serial1. Operational fix: unplug USB-C during field use.
+- **SW55:** GPS MUX not yielding — `getGPSLoop()` and `configureGPS()` now call `setUartMux(0)` on return. GPS always has priority on the UART MUX; always yields the bus back to VESC when done.
+- **SW55:** `rcv_err` flag persistence bug removed — one stray byte poisoned the full 200 ms receive window. CRC handles frame validation; the flag was redundant and harmful.
+- **SW55:** Boot MUX state — `configureGPS()` now ends with `setUartMux(0)` so boot starts with the MUX on the VESC channel.
+- **SW54:** MUX retry loops reverted — rapid I2C writes to AW9523 caused bus corruption (GPS chars=0, VESC zero packets).
+
+**Display improvements:**
+- **SW53:** `unlockAnimation()` rewritten — 3-frame paintbrush sweep R0→R6; each row stays lit as the arrow descends (`|=` without inter-frame clear); R4–R6 outer columns fully painted; boot delay 3 s → 500 ms.
+- **SW55:** Boot timing refined — VI display 250 ms, voltage display 1450 ms; padlock appears at ~4.5 s total boot.
+
+**New features:**
+- **DISPLAY_MODE_INTBAT:** 7th TX display mode — shows TX internal LiPo voltage (UB label, C7 R1 BT dot co-located). Cycle: TEMP → THR → SPEED → POWER → AMP → UBat → BAT.
+- **LATEST header convention:** Single `// *** LATEST: ... ***` line at top of both integration `.ino` files shows current SW version at a glance.
+
+Compiled clean: TX 39% / RX 40% flash (huge_app). SW_VERSION unchanged: TX=26, RX=31 (no confStruct changes).
+
+---
 
 ### V2.5.08 — April 2026 *(monterman)* — Display, Gesture & UX Overhaul
 
@@ -708,7 +771,7 @@ Key V2 milestones:
 |---|---|
 | **[LudwigBre / Luddi96](https://github.com/Luddi96/BREmote)** | Original hardware design, original firmware architecture, project founder, and dev-logger framework (dev-logger branch). All core features originate here. GPL 3.0 author. |
 | **Janrusher** | Dynamic throttle cap mode and Web Console foundation — major V2 enhancements forked from LudwigBre, further refined in V2.5-Evo. |
-| **monterman** | BREmote V2.5-Evo — TX GPS implementation, dev-logger AUX button toggle with LED status feedback (5× flash = start, 2× flash = stop), date format DDMMYY → MMDDYY, web console major rebuild (upload/download/compare JSON, integrated serial console, TX+RX coverage, plain-English parameter docs for every setting), deep codebase analysis, critical bug documentation, RTM/FM mode design. |
+| **monterman** | BREmote V2.5-Evo — TX GPS implementation, dev-logger AUX button toggle with LED status feedback (5× flash = start, 2× flash = stop), date format DDMMYY → MMDDYY, web console major rebuild (upload/download/compare JSON, integrated serial console, TX+RX coverage, plain-English parameter docs for every setting), deep codebase analysis, critical bug documentation, RTM/FM mode design, VESC UART telemetry diagnosis and root-cause fix (SW55), DISPLAY_MODE_INTBAT 7th display mode, BT status dot + Hall sensor activation framework. |
 
 
 **License:** GNU General Public License v3.0 — same as the original BREmote. See LICENSE file.

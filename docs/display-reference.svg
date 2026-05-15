@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 628" width="760" height="628"
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 772" width="760" height="772"
      font-family="'Courier New', 'Lucida Console', monospace">
 <defs>
   <filter id="gr" x="-60%" y="-60%" width="220%" height="220%">
@@ -13,11 +13,11 @@
 </defs>
 
 <!-- ── background ── -->
-<rect width="760" height="628" fill="#0d0d0d"/>
+<rect width="760" height="772" fill="#0d0d0d"/>
 
 <!-- ── title ── -->
 <text x="380" y="29" text-anchor="middle" font-size="16" font-weight="bold"
-      fill="#e6e6e6" letter-spacing="0.4">BREmote V3 — display pixel map</text>
+      fill="#e6e6e6" letter-spacing="0.4">BREmote V2.5-Evo — display pixel map</text>
 <text x="380" y="48" text-anchor="middle" font-size="11" fill="#888">
   10 cols × 7 rows — throttle mode 95% shown
 </text>
@@ -39,10 +39,11 @@
   Digit "9" in C0-C2 rows 0-4:   ###  / # # / ### /   # / ###
   Digit "5" in C4-C6 rows 0-4:   ###  / #   / ### /   # / ###
   C3 gap always dark
-  C7 R0 = GPS green
+  C7 R0 = GPS green (solid = fix acquired)
+  C7 R1 = BLE blue  (slow-blink state shown)
   C8 R4 only = temp low (orange)
   C9 R0-R4 = signal full (green)
-  R5 all dark (unused)
+  R5 all dark (proximity bar — off in this snapshot)
   R6 C0-C6 = battery 7/10 (orange-red)
 -->
 
@@ -54,7 +55,7 @@
 <circle cx="188" cy="89" r="8" fill="#ff3322" filter="url(#gr)"/>  <!-- C4 digit 5 -->
 <circle cx="216" cy="89" r="8" fill="#ff3322" filter="url(#gr)"/>  <!-- C5 -->
 <circle cx="244" cy="89" r="8" fill="#ff3322" filter="url(#gr)"/>  <!-- C6 -->
-<circle cx="272" cy="89" r="8" fill="#00cc44" filter="url(#gg)"/>  <!-- C7 GPS ● green -->
+<circle cx="272" cy="89" r="8" fill="#00cc44" filter="url(#gg)"/>  <!-- C7 R0 GPS ● green solid = fix -->
 <circle cx="300" cy="89" r="8" fill="#261010"/>                     <!-- C8 temp off -->
 <circle cx="328" cy="89" r="8" fill="#00dd66" filter="url(#gg)"/>  <!-- C9 signal -->
 
@@ -66,7 +67,7 @@
 <circle cx="188" cy="117" r="8" fill="#ff3322" filter="url(#gr)"/>
 <circle cx="216" cy="117" r="8" fill="#261010"/>                    <!-- C5 off -->
 <circle cx="244" cy="117" r="8" fill="#261010"/>                    <!-- C6 off -->
-<circle cx="272" cy="117" r="8" fill="#261010"/>
+<circle cx="272" cy="117" r="8" fill="#3399ff" filter="url(#gg)"/>  <!-- C7 R1 BLE ● blue slow-blink -->
 <circle cx="300" cy="117" r="8" fill="#261010"/>
 <circle cx="328" cy="117" r="8" fill="#00dd66" filter="url(#gg)"/>
 
@@ -106,7 +107,7 @@
 <circle cx="300" cy="201" r="8" fill="#ff8800" filter="url(#gg)"/>  <!-- C8 TEMP low — R4 only -->
 <circle cx="328" cy="201" r="8" fill="#00dd66" filter="url(#gg)"/>
 
-<!-- ═══ ROW 5  y=229  — ALL DARK (unused) ═══ -->
+<!-- ═══ ROW 5  y=229  — ALL DARK (proximity bar — off in this snapshot) ═══ -->
 <circle cx="76"  cy="229" r="8" fill="#1c1c1c" stroke="#252525" stroke-width="0.5"/>
 <circle cx="104" cy="229" r="8" fill="#1c1c1c" stroke="#252525" stroke-width="0.5"/>
 <circle cx="132" cy="229" r="8" fill="#1c1c1c" stroke="#252525" stroke-width="0.5"/>
@@ -146,8 +147,8 @@
 <text x="104" y="320" text-anchor="middle" font-size="9" font-weight="bold" fill="#cc4422">DIGIT 1</text>
 <text x="160" y="320" text-anchor="middle" font-size="8"  fill="#424242">GAP</text>
 <text x="216" y="320" text-anchor="middle" font-size="9" font-weight="bold" fill="#cc4422">DIGIT 2</text>
-<text x="272" y="317" text-anchor="middle" font-size="8" font-weight="bold" fill="#00cc44">GPS</text>
-<text x="272" y="328" text-anchor="middle" font-size="7" fill="#009933">★ V3</text>
+<text x="272" y="315" text-anchor="middle" font-size="8" font-weight="bold" fill="#00cc44">GPS</text>
+<text x="272" y="326" text-anchor="middle" font-size="8" font-weight="bold" fill="#3399ff">BLE</text>
 <text x="300" y="320" text-anchor="middle" font-size="9" font-weight="bold" fill="#ff8800">TEMP</text>
 <text x="328" y="320" text-anchor="middle" font-size="9" font-weight="bold" fill="#00cc66">SIG</text>
 
@@ -166,14 +167,15 @@
 <line x1="364" y1="201" x2="396" y2="201" stroke="#333" stroke-width="1"/>
 <line x1="395" y1="89"  x2="395" y2="201" stroke="#404040" stroke-width="1.5"/>
 <line x1="395" y1="145" x2="408" y2="145" stroke="#404040" stroke-width="1.5"/>
-<text x="411" y="106" font-size="10" fill="#cc4422">Digits  R0–R4</text>
-<text x="411" y="120" font-size="10" fill="#00cc44">+ GPS indicator  C7</text>
-<text x="411" y="134" font-size="10" fill="#ff8800">+ Temp bar  C8</text>
-<text x="411" y="148" font-size="10" fill="#00dd66">+ Signal bar  C9</text>
+<text x="411" y="103" font-size="10" fill="#cc4422">Digits  R0–R4</text>
+<text x="411" y="116" font-size="10" fill="#00cc44">+ GPS dot  C7 R0</text>
+<text x="411" y="129" font-size="10" fill="#3399ff">+ BLE dot  C7 R1</text>
+<text x="411" y="142" font-size="10" fill="#ff8800">+ Temp bar  C8</text>
+<text x="411" y="155" font-size="10" fill="#00dd66">+ Signal bar  C9</text>
 
 <!-- R5 annotation -->
 <line x1="364" y1="229" x2="408" y2="229" stroke="#333" stroke-width="1"/>
-<text x="411" y="233" font-size="10" fill="#484848">★ Row 5 — unused / reserved</text>
+<text x="411" y="233" font-size="10" fill="#484848">★ Row 5 — proximity bar (RTM / FM)</text>
 
 <!-- R6 annotation -->
 <line x1="364" y1="257" x2="408" y2="257" stroke="#333" stroke-width="1"/>
@@ -181,16 +183,16 @@
 
 <!-- ── GPS status legend ── -->
 <rect x="50" y="344" width="660" height="116" rx="5" fill="#131313" stroke="#2b2b2b" stroke-width="1"/>
-<text x="66" y="362" font-size="11" font-weight="bold" fill="#00cc44">GPS STATUS DOT  (C7 R0) — V3 new feature</text>
+<text x="66" y="362" font-size="11" font-weight="bold" fill="#00cc44">GPS STATUS DOT  (C7 R0) — V2.5-Evo</text>
 <text x="66" y="376" font-size="9" fill="#555">Visible only when gps_en = 1.  Drives haptic alert (5 buzzes) when rejected during autonomous mode.</text>
 
-<!-- State 1: solid on = fix -->
+<!-- GPS State 1: solid on = fix -->
 <circle cx="72"  cy="402" r="7" fill="#00cc44" filter="url(#gg)"/>
 <text x="85"  y="398" font-size="10" font-weight="bold" fill="#ddd">Solid on</text>
 <text x="85"  y="411" font-size="9"  fill="#00cc44">Valid GPS fix</text>
 <text x="85"  y="423" font-size="8"  fill="#555">Ready for RTM / Follow-Me</text>
 
-<!-- State 2: slow blink = acquiring -->
+<!-- GPS State 2: slow blink = acquiring -->
 <circle cx="216" cy="402" r="7" fill="#1a1a1a" stroke="#00cc44" stroke-width="1.5"/>
 <circle cx="234" cy="402" r="7" fill="#00cc44"/>
 <circle cx="252" cy="402" r="7" fill="#1a1a1a" stroke="#00cc44" stroke-width="1.5"/>
@@ -198,7 +200,7 @@
 <text x="266" y="411" font-size="9"  fill="#aaa">Acquiring fix</text>
 <text x="266" y="423" font-size="8"  fill="#555">Waiting for satellites</text>
 
-<!-- State 3: fast blink = rejected -->
+<!-- GPS State 3: fast blink = rejected -->
 <circle cx="436" cy="402" r="7" fill="#00cc44"/>
 <circle cx="452" cy="402" r="7" fill="#1a1a1a" stroke="#00cc44" stroke-width="1"/>
 <circle cx="468" cy="402" r="7" fill="#00cc44"/>
@@ -207,49 +209,81 @@
 <text x="498" y="411" font-size="9"  fill="#ff4444">GPS rejected</text>
 <text x="498" y="423" font-size="8"  fill="#555">Spoofing / bad signal alert + haptic buzz</text>
 
-<!-- State 4: off = disabled -->
+<!-- GPS State 4: off = disabled -->
 <circle cx="72"  cy="443" r="7" fill="#1c1c1c" stroke="#3a3a3a" stroke-width="1"/>
 <text x="85"  y="439" font-size="10" font-weight="bold" fill="#ddd">Off</text>
 <text x="85"  y="452" font-size="9"  fill="#555">GPS disabled  (gps_en = 0)</text>
 
+<!-- ── BLE status legend ── -->
+<rect x="50" y="474" width="660" height="116" rx="5" fill="#0d1420" stroke="#1a3060" stroke-width="1"/>
+<text x="66" y="492" font-size="11" font-weight="bold" fill="#3399ff">BLE STATUS DOT  (C7 R1) — Hall sensor activation  (P_MAG GPIO 9)</text>
+<text x="66" y="506" font-size="9" fill="#446688">Only visible when BLE is active.  Never solid — slow or fast blink only.  Off = BLE inactive (default).</text>
+
+<!-- BLE State 1: off = inactive -->
+<circle cx="72"  cy="538" r="7" fill="#101826" stroke="#224488" stroke-width="1.5"/>
+<text x="85"  y="532" font-size="10" font-weight="bold" fill="#ddd">Off</text>
+<text x="85"  y="545" font-size="9"  fill="#556677">BLE inactive</text>
+<text x="85"  y="557" font-size="8"  fill="#334455">Default on boot</text>
+
+<!-- BLE State 2: slow blink = BLE ready -->
+<circle cx="216" cy="538" r="7" fill="#101826" stroke="#3399ff" stroke-width="1.5"/>
+<circle cx="234" cy="538" r="7" fill="#3399ff" filter="url(#gg)"/>
+<circle cx="252" cy="538" r="7" fill="#101826" stroke="#3399ff" stroke-width="1.5"/>
+<text x="266" y="532" font-size="10" font-weight="bold" fill="#ddd">Slow blink  (1 s)</text>
+<text x="266" y="545" font-size="9"  fill="#3399ff">BLE ready</text>
+<text x="266" y="557" font-size="8"  fill="#446688">Short Hall hold  400 ms – 4.9 s</text>
+
+<!-- BLE State 3: fast blink = BLE active -->
+<circle cx="436" cy="538" r="7" fill="#3399ff" filter="url(#gg)"/>
+<circle cx="452" cy="538" r="7" fill="#101826" stroke="#3399ff" stroke-width="1"/>
+<circle cx="468" cy="538" r="7" fill="#3399ff" filter="url(#gg)"/>
+<circle cx="484" cy="538" r="7" fill="#101826" stroke="#3399ff" stroke-width="1"/>
+<text x="498" y="532" font-size="10" font-weight="bold" fill="#ddd">Fast blink  (250 ms)</text>
+<text x="498" y="545" font-size="9"  fill="#66aaff">BLE active</text>
+<text x="498" y="557" font-size="8"  fill="#446688">Long Hall hold  5 s+  from slow state</text>
+
 <!-- ── zone reference table ── -->
-<rect x="50" y="474" width="660" height="142" rx="5" fill="#111" stroke="#282828" stroke-width="1"/>
-<text x="66" y="491" font-size="11" font-weight="bold" fill="#bbb">Zone reference</text>
-<line x1="64" y1="496" x2="702" y2="496" stroke="#252525" stroke-width="1"/>
+<rect x="50" y="604" width="660" height="156" rx="5" fill="#111" stroke="#282828" stroke-width="1"/>
+<text x="66" y="621" font-size="11" font-weight="bold" fill="#bbb">Zone reference</text>
+<line x1="64" y1="626" x2="702" y2="626" stroke="#252525" stroke-width="1"/>
 
 <!-- table header -->
-<text x="68"  y="509" font-size="9" font-weight="bold" fill="#666">ZONE</text>
-<text x="170" y="509" font-size="9" font-weight="bold" fill="#666">LOCATION</text>
-<text x="330" y="509" font-size="9" font-weight="bold" fill="#666">DESCRIPTION</text>
-<line x1="64" y1="513" x2="702" y2="513" stroke="#222" stroke-width="1"/>
+<text x="68"  y="639" font-size="9" font-weight="bold" fill="#666">ZONE</text>
+<text x="170" y="639" font-size="9" font-weight="bold" fill="#666">LOCATION</text>
+<text x="330" y="639" font-size="9" font-weight="bold" fill="#666">DESCRIPTION</text>
+<line x1="64" y1="643" x2="702" y2="643" stroke="#222" stroke-width="1"/>
 
-<!-- rows -->
-<text x="68"  y="526" font-size="10" fill="#cc4422">Digits</text>
-<text x="170" y="526" font-size="10" fill="#666">C0-C2, C4-C6  R0-R4</text>
-<text x="330" y="526" font-size="10" fill="#bbb">Two-character display (e.g. "95" = 95% throttle)</text>
+<!-- table rows -->
+<text x="68"  y="656" font-size="10" fill="#cc4422">Digits</text>
+<text x="170" y="656" font-size="10" fill="#666">C0-C2, C4-C6  R0-R4</text>
+<text x="330" y="656" font-size="10" fill="#bbb">Two-character display (e.g. "95" = 95% throttle)</text>
 
-<text x="68"  y="540" font-size="10" fill="#444">Gap</text>
-<text x="170" y="540" font-size="10" fill="#666">C3  R0-R4</text>
-<text x="330" y="540" font-size="10" fill="#666">Always dark — separates digits</text>
+<text x="68"  y="670" font-size="10" fill="#444">Gap</text>
+<text x="170" y="670" font-size="10" fill="#666">C3  R0-R4</text>
+<text x="330" y="670" font-size="10" fill="#666">Always dark — separates digits</text>
 
-<text x="68"  y="554" font-size="10" fill="#00cc44">GPS</text>
-<text x="170" y="554" font-size="10" fill="#666">C7 R0 only</text>
-<text x="330" y="554" font-size="10" fill="#bbb">Fix / acquire / reject indicator — NEW in V3</text>
+<text x="68"  y="684" font-size="10" fill="#00cc44">GPS</text>
+<text x="170" y="684" font-size="10" fill="#666">C7 R0</text>
+<text x="330" y="684" font-size="10" fill="#bbb">Fix / acquire / reject indicator (green dot)</text>
 
-<text x="68"  y="568" font-size="10" fill="#ff8800">Temp</text>
-<text x="170" y="568" font-size="10" fill="#666">C8  R0-R4</text>
-<text x="330" y="568" font-size="10" fill="#bbb">VESC temperature — fills bottom→top</text>
+<text x="68"  y="698" font-size="10" fill="#3399ff">BLE</text>
+<text x="170" y="698" font-size="10" fill="#666">C7 R1</text>
+<text x="330" y="698" font-size="10" fill="#bbb">BLE status — off / slow blink / fast blink (blue dot)</text>
 
-<text x="68"  y="582" font-size="10" fill="#00dd66">Signal</text>
-<text x="170" y="582" font-size="10" fill="#666">C9  R0-R4</text>
-<text x="330" y="582" font-size="10" fill="#bbb">LoRa signal quality — fills bottom→top</text>
+<text x="68"  y="712" font-size="10" fill="#ff8800">Temp</text>
+<text x="170" y="712" font-size="10" fill="#666">C8  R0-R4</text>
+<text x="330" y="712" font-size="10" fill="#bbb">VESC temperature — fills bottom→top</text>
 
-<text x="68"  y="596" font-size="10" fill="#484848">Unused</text>
-<text x="170" y="596" font-size="10" fill="#666">R5  all cols</text>
-<text x="330" y="596" font-size="10" fill="#555">Reserved for future indicators</text>
+<text x="68"  y="726" font-size="10" fill="#00dd66">Signal</text>
+<text x="170" y="726" font-size="10" fill="#666">C9  R0-R4</text>
+<text x="330" y="726" font-size="10" fill="#bbb">LoRa signal quality — fills bottom→top</text>
 
-<text x="68"  y="610" font-size="10" fill="#ff5500">Battery</text>
-<text x="170" y="610" font-size="10" fill="#666">R6  C0-C9</text>
-<text x="330" y="610" font-size="10" fill="#bbb">VESC battery level — fills left→right (7/10 shown)</text>
+<text x="68"  y="740" font-size="10" fill="#484848">Prox bar</text>
+<text x="170" y="740" font-size="10" fill="#666">R5  C0-C9</text>
+<text x="330" y="740" font-size="10" fill="#555">RTM / FM proximity indicator — off in this snapshot</text>
+
+<text x="68"  y="754" font-size="10" fill="#ff5500">Battery</text>
+<text x="170" y="754" font-size="10" fill="#666">R6  C0-C9</text>
+<text x="330" y="754" font-size="10" fill="#bbb">VESC battery level — fills left→right (7/10 shown)</text>
 
 </svg>

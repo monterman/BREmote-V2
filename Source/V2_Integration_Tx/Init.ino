@@ -69,8 +69,8 @@ void initTasks()
   xTaskCreatePinnedToCore(updateBargraphs, "wait_for_telem_triggered_200ms", 2048, NULL, 6, &updateBargraphsHandle, 0);
   xTaskCreatePinnedToCore(vibrationTask, "Vibration_Task_BG", 2048, NULL, 3, &vibrationTaskHandle, 0);
   // Finding 4-1: stack 1024→2048 words; handle saved so ?printtasks can report HWM
-  // BLE init: one-shot task, 5s delayed, Core 1, priority 1, 4KB stack (NimBLE needs headroom)
-  xTaskCreatePinnedToCore(bleInitTask, "BLE_Init", 4096, NULL, 1, NULL, 1);
+  // BLE init: one-shot task, 5s delayed, Core 0 (ESP32-C3 is single-core), priority 1, 4KB stack
+  xTaskCreatePinnedToCore(bleInitTask, "BLE_Init", 4096, NULL, 1, NULL, 0);
 }
 
 void initWatchdog()

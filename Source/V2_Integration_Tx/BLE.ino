@@ -43,7 +43,11 @@ void initBLE()
 
   NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
   adv->addServiceUUID(NUS_SERVICE_UUID);
-  // setScanResponse removed — not available in NimBLE 2.x; advertising works without it
+  // Explicitly include device name in advertisement — NimBLE 2.x doesn't add it automatically
+  NimBLEAdvertisementData advData;
+  advData.setName("BREmote-TX");
+  advData.addServiceUUID(NUS_SERVICE_UUID);
+  adv->setAdvertisementData(advData);
   NimBLEDevice::startAdvertising();
 
   bleRunning = true;

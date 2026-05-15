@@ -90,18 +90,23 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 
 ## Quick Start
 
+> ⚠️ **`master` branch contains monterman's personal calibration values** (throttle ADC, compass soft-iron cal, toggle positions, radio addresses). These are correct for monterman's specific hardware. After flashing, you **must** recalibrate for your own devices: run TX calibration (hold LEFT toggle at boot), run `?compasscal` on RX, and re-pair to set your own radio addresses. If you flash without recalibrating, the remote will not respond correctly to your throttle or compass.
+
 1. **Flash firmware** — use the Flash Download Tool (link below) or Arduino IDE
 2. **Power on both TX and RX** — TX shows `EP` (not paired) on first boot
 3. **Pair** — hold RIGHT toggle on TX at boot; hold BIND on RX at boot simultaneously
-4. **Connect to WiFi AP** — SSID shown on the device; default password `12345678`
+4. **Connect to WiFi AP** — SSID shown on the device; default password `12345678` *(power off the other device first — see WiFi note below)*
 5. **Open the Web Serial Config Tool** — configure all parameters with plain English labels
 6. **Calibrate TX** — hold LEFT toggle at boot, follow the display prompts
+7. **Calibrate RX compass** — connect to RX serial at 115200 baud, run `?compasscal`, rotate the buggy through a full horizontal circle, wait for confirmation
 
 ---
 
 ## 🛠️ Web Configuration Interfaces
 
 BREmote V2.5-Evo has three separate web configuration interfaces:
+
+> ⚠️ **WiFi turns off automatically when TX and RX are paired and in range.** LoRa takes precedence over WiFi. To access the web UI on either device, make sure the **other device is powered off** — otherwise the LoRa link forms, WiFi shuts down, and you cannot connect. Once you have finished configuring, power the other device back on.
 
 ### 1. TX Embedded Web Page
 Served by the TX WiFi AP for the first 120 seconds after boot. Connect to the TX WiFi AP and open the device IP in any browser. Configures all TX SPIFFS parameters with valid range hints.

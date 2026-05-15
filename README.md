@@ -396,6 +396,7 @@ If TX-to-RX distance drops below `fm_warn_distance_m` (default 150 m), TX fires 
 | `EHFI` | LoRa init error |
 | `EHFP` | LoRa parameter error |
 | `ECH` | Charger error |
+| `E 7` | Water ingress detected — blinking full-screen alert + 5 long vibrations; motor output **not** cut (see below) |
 | `rn` | Return-to-Me (RTM) mode active |
 | `F0` | Follow-Me override: disabled |
 | `F1` | Follow-Me override: Right side |
@@ -417,6 +418,27 @@ If TX-to-RX distance drops below `fm_warn_distance_m` (default 150 m), TX fires 
 | BIND — blink 2× | TX power error |
 | BIND — blink 3× | LoRa setting error |
 | BIND — blink 4× | LoRa init error |
+
+### Water Ingress Detection (E71)
+
+When the RX detects moisture inside the buggy housing it sends an **E71** alert to the TX remote.
+
+**What you will see and feel:**
+- TX display flashes `E 7` full-screen (250 ms on / 250 ms off)
+- TX vibrates with 5 long pulses (500 ms each) — the strongest haptic pattern
+- **Motor output is NOT cut** — you can keep riding and drive the buggy back to the beach safely
+
+**How the alert cycle works:**
+
+| Step | What happens | When |
+|---|---|---|
+| 1 — Confirm | RX requires 2 consecutive wet readings ~20 s apart before alarming. A single splash or brief electrical noise is silently ignored. | — |
+| 2 — Alert | `E 7` appears on TX, 5 long buzzes fire. | t = 0 |
+| 3 — Auto-clear | Display clears automatically. No power cycle needed. | t ≈ +10 s |
+| 4 — Snooze | Sensor stays quiet for ~5 minutes even if still wet — you are not buzzed repeatedly during the ride back. | t ≈ +10 s to +5 min |
+| 5 — Repeat | If the buggy is still wet after the snooze the cycle restarts from step 1. | t ≈ +5 min |
+
+To disable wetness detection: set `wet_det_active = 0` in the web configurator.
 
 ---
 

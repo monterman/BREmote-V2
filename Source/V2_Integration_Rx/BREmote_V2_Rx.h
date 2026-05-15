@@ -433,7 +433,7 @@ struct __attribute__((packed)) VescLogData {
     int16_t d_error_dx10;         // Rate-of-change of heading error in 0.1°/s units.
                                   // 0x7FFF = no prior sample (first cycle). For tuning Kd.
     // V2.5-Evo - 2026-05-11 - E7 Fix: BREmote remote_error code for cross-correlation with VESC/motor data.
-    // 0 = no error, 7 = E7 water ingress (see checkWetness() in System.ino).
+    // 0 = no error, 71 = E71 water ingress (see checkWetness() in System.ino).
     uint8_t error_code_log;       // telemetry.error_code at log time. 0 = no BREmote error.
 };
 static_assert(sizeof(VescLogData) == 52, "VescLogData size mismatch — check binary log compat.");  // 29 base; +18 LOG-EXT-1 (2026-05-06); +4 Bundle 1 tuning fields (2026-05-08); +1 error_code_log E7 fix (2026-05-11)

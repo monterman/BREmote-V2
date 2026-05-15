@@ -451,9 +451,12 @@ void waitForTelemetry(void *parameter)
           }
           // ------------------------------------------
 
-          if(telemetry.error_code)
-          {
-            remote_error = telemetry.error_code;
+          // V2.5-Evo - 2026-05-15 - E71 fix: bidirectional sync — set on 71, clear when RX clears it.
+          // One-way write (only on non-zero) left remote_error latched on TX after RX auto-cleared the alarm.
+          if (telemetry.error_code == 71) {
+            remote_error = 71;   // E71 water ingress — arm TX display and haptic
+          } else if (remote_error == 71) {
+            remote_error = 0;    // RX auto-cleared E71 — mirror the clear to TX
           }
           last_packet = millis();
         }

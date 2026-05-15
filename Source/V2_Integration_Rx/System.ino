@@ -103,7 +103,7 @@ void checkWetness()
 
   // --- Auto-clear active E7 alarm; TX had ~10s to display and vibrate ---
   // Start the 5-minute snooze so the user isn't spammed while riding back.
-  if (telemetry.error_code == 7)
+  if (telemetry.error_code == 71)
   {
     telemetry.error_code = 0;
     snooze_count         = 27;  // 27 calls × ~10s = 270s snooze; +10s alarm +20s confirm = 300s total
@@ -125,7 +125,7 @@ void checkWetness()
     // Require 2 consecutive calls (~20s) before alarming.
     if (++wet_strike >= 2)
     {
-      telemetry.error_code = 7;  // TX sees this within 100ms (10Hz LoRa); alarm auto-clears next call
+      telemetry.error_code = 71;  // TX sees this within 100ms (10Hz LoRa); alarm auto-clears next call
       wet_strike           = 0;
     }
   }

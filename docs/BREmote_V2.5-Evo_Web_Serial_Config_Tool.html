@@ -325,13 +325,13 @@ const TX_FIELDS = [
 {key:"fm_hold_duration_s",label:"FM Hold Time",description:"Gesture hold duration for Follow-Me arming. Currently fixed at 5s in firmware — this field is reserved for a future configurable threshold.",group:"Follow-Me",type:"int",def:5,min:4,max:10,unit:"s"},
 {key:"fm_override_enabled",label:"FM Override Enabled",description:"Allow TX to override RX follow-me mode at runtime (no SPIFFS write). 0=off, 1=on.",group:"Follow-Me",type:"bool",def:1,min:0,max:1},
 {key:"rtm_display_mode",label:"RTM/FM Display Mode",description:"Info shown on TX display while RTM or FM is active. 0=distance to TX (default), 1=speed, 2=alternating every 2.5s.",group:"RTM",type:"enum",def:0,min:0,max:2,options:[{v:0,l:"Distance (default)"},{v:1,l:"Speed"},{v:2,l:"Alternating 2.5s"}]},
-{key:"fm_warn_distance_m",label:"FM Warning Distance",description:"TX-to-RX distance that triggers proximity warning vibration in Follow-Me mode. 50m=warn early (more time to react), 1000m=warn only when very close. Default 150.",group:"Follow-Me",type:"int",def:150,min:50,max:1000,unit:"m"},
+{key:"fm_warn_distance_m",label:"FM Warning Distance (not yet implemented)",description:"[NOT YET IMPLEMENTED] Reserved for future use: TX-to-RX distance that will trigger proximity warning vibration in Follow-Me mode. Setting this value has no effect in the current firmware. Default 150.",group:"Follow-Me",type:"int",def:150,min:50,max:1000,unit:"m"},
 {key:"rtm_steer_exit_on_input",label:"RTM Exit on Steering",description:"1=any significant steering input exits RTM immediately (default). 0=steering used for correction only (blend mode).",group:"RTM",type:"bool",def:1,min:0,max:1},
 {key:"fm_display_mode",label:"FM Digit Display",description:"What the TX digit zone shows while Follow-Me is armed. 1=TX GPS speed (in selected speed unit), 2=distance to buggy (in selected distance unit), 3=buggy speed (RX telemetry), 4=throttle %.",group:"Follow-Me",type:"enum",def:1,min:1,max:4,options:[{v:1,l:"TX GPS Speed (default)"},{v:2,l:"Distance to Buggy"},{v:3,l:"Buggy Speed"},{v:4,l:"Throttle %"}]},
 {key:"fm_arm_window_s",label:"FM Arm Window",description:"How long FM stays armed before silently auto-disarming if no throttle input. 10s=short window, 120s=2 minute window. No display or haptic on expiry. Default 30.",group:"Follow-Me",type:"int",def:30,min:10,max:120,unit:"s"},
 {key:"dist_unit",label:"Distance Unit",description:"Unit for all distance readouts on the TX display (RTM, FM). Internal math always uses metres. 0=Metres, 1=Feet/miles.",group:"RTM",type:"enum",def:0,min:0,max:1,options:[{v:0,l:"Metres"},{v:1,l:"Feet"}]},
 {key:"wifi_password",label:"WiFi Password",description:"AP password (exactly 8 characters)",group:"System",type:"text",def:"12345678",minLen:8,maxLen:8},
-{key:"version",label:"Config Version",description:"Must match firmware SW_VERSION",group:"System",type:"int",def:25,min:0,max:65535},
+{key:"version",label:"Config Version",description:"Must match firmware SW_VERSION",group:"System",type:"int",def:26,min:0,max:65535},
 {key:"sleep_timeout_s",label:"Auto-Sleep Timeout",description:"How long TX waits with no LoRa reply from RX before deep sleeping. 0=disabled, 60=1 min, 300=5 min (default), 3600=1 hour. Set to 0 to disable auto-sleep entirely.",group:"System",type:"int",def:300,min:0,max:3600,unit:"s"}
 ];
 
@@ -397,7 +397,7 @@ const RX_FIELDS = [
 {key:"near_diag_offset_deg",label:"Near Diag Offset",description:"Target bearing offset from directly-behind for Near Right and Near Left Follow-Me modes. 0=directly behind foiler, 90=beside foiler. Applied as +offset for Near Right, -offset for Near Left. Default 45°.",group:"Follow-Me",type:"float",def:45.0,min:0,max:180,step:0.1,unit:"deg"},
 {key:"logger_en",label:"Logger Enabled",description:"0=data logger disabled (no CSV files written to SPIFFS), 1=logger enabled (records speed, GPS, VESC, and control data to SPIFFS at 10Hz). Disable if storage is full or to extend SPIFFS lifetime. Default 1.",group:"Logging",type:"bool",def:1,min:0,max:1},
 {key:"wifi_password",label:"WiFi Password",description:"AP password (exactly 8 characters)",group:"System",type:"text",def:"12345678",minLen:8,maxLen:8},
-{key:"version",label:"Config Version",description:"Must match firmware SW_VERSION",group:"System",type:"int",def:25,min:0,max:65535}
+{key:"version",label:"Config Version",description:"Must match firmware SW_VERSION",group:"System",type:"int",def:31,min:0,max:65535}
 ];
 
 // ============================================================
@@ -463,7 +463,12 @@ const RX_CMD_HTML = `
   <option value="?printcompass">?printcompass — raw compass XYZ readings</option>
   <option value="?compassheading">?compassheading — computed heading degrees</option>
   <option value="?compasscal">?compasscal — start compass calibration (runcal)</option>
+  <option value="?magtest">?magtest — CSV mag/heading/VESC/throttle stream for EMI diagnostics</option>
   <option value="?i2c">?i2c — scan I2C bus for devices</option>
+</optgroup>
+<optgroup label="VESC">
+  <option value="?vescping">?vescping — send one VESC status request and print parsed response</option>
+  <option value="?vescraw">?vescraw — dump raw VESC packet bytes (diagnose framing issues)</option>
 </optgroup>
 <optgroup label="Logging">
   <option value="?start">?start — start data logger</option>
@@ -471,6 +476,7 @@ const RX_CMD_HTML = `
   <option value="?list">?list — list log files on SPIFFS</option>
   <option value="?logstat">?logstat — dump logger + GPS state (diagnose)</option>
   <option value="?download ">?download &lt;filename&gt; — serial CSV download</option>
+  <option value="?deletelog ">?deletelog &lt;filename&gt; — delete one log file from SPIFFS</option>
   <option value="?lograte 10">?lograte 10 — set log rate to 10 Hz</option>
 </optgroup>`;
 

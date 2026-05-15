@@ -131,7 +131,7 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
   </div>
 
 <script>
-// 41 Parameters for RX
+// 57 Parameters for RX
 const groupOrder=["Radio","Steering","PWM","Motor & Safety","VESC","Sensors","Battery","GPS","RTM","Follow-Me","Logging","System"];
 const fields=[
 {key:"radio_preset",label:"Radio Preset",description:"Radio frequency band. 1=EU 868 MHz, 2=US/AU 915 MHz. Do not select 3 — it causes a boot error and the RX will not start. Must match TX setting.",group:"Radio",type:"enum",def:1,min:1,max:2,options:[{v:1,l:"EU868"},{v:2,l:"US/AU915"}]},
@@ -190,7 +190,7 @@ const fields=[
 {key:"near_diag_offset_deg",label:"Near Diag Offset",description:"Target bearing offset from directly-behind for Near Right and Near Left Follow-Me modes. 0=directly behind foiler, 90=beside foiler. Applied as +offset for Near Right, -offset for Near Left. Default 45°.",group:"Follow-Me",type:"float",def:45.0,min:0,max:180,step:0.1,unit:"deg"},
 {key:"logger_en",label:"Logger Enabled",description:"0=data logger disabled (no CSV files written to SPIFFS), 1=logger enabled (records speed, GPS, VESC, and control data to SPIFFS at 10Hz). Disable if storage is full or to extend SPIFFS lifetime. Default 1.",group:"Logging",type:"bool",def:1,min:0,max:1},
 {key:"wifi_password",label:"WiFi Password",description:"AP password (exactly 8 characters)",group:"System",type:"text",def:"12345678",minLen:8,maxLen:8},
-{key:"version",label:"Config Version",description:"Must match firmware SW_VERSION",group:"System",type:"int",def:25,min:0,max:65535}
+{key:"version",label:"Config Version",description:"Must match firmware SW_VERSION",group:"System",type:"int",def:31,min:0,max:65535}
 ];
 
 const state={values:{},loaded:{},saved:{},last:'-'};

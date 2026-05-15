@@ -74,7 +74,9 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 | Component | TX (Handheld) | RX (Board Unit) |
 |---|---|---|
 | MCU | ESP32-C3 | ESP32-C3 |
+| Module | HT-CT62 (ESP32-C3 + SX1262 + WiFi + **BLE** integrated) | HT-CT62 |
 | Radio | SX1262 LoRa | SX1262 LoRa |
+| BLE | Built-in (ESP32-C3) — BLE telemetry output planned (`feature/bluetooth`) | Built-in (ESP32-C3) |
 | GPS | BN-220 or [HGLRC M100 Micro](https://www.hglrc.com/products/hglrc-m100_mini-gps) (M10 chip, no compass, 3.3V–5V) | BN-880 or [HGLRC M100-5883](https://www.hglrc.com/products/m100-5883-gps) (M10 chip + compass) |
 | Compass | None | QMC5883L (I2C) |
 | Display | HT16K33 dot matrix (I2C 0x70) | None |
@@ -203,7 +205,7 @@ Unavailable modes (no VESC lock or no GPS fix) are skipped automatically. `MA` r
 - Foil battery cell count and voltage monitoring
 - BMS detection
 - GPS positioning (BN-880)
-- QMC5883L compass (I2C, fully implemented — heading used by RTM auto-steering)
+- QMC5883L compass (I2C, fully calibrated) — RTM uses GPS COG as primary heading, compass snapshot as low-speed fallback; pure compass mode available as diagnostic option (`rtm_use_compass=2`)
 - Kalman filter on GPS data
 - Follow-me mode framework (positional modes: behind, near right, near left)
 - WiFi AP for web configuration and log management
@@ -252,7 +254,7 @@ This rule is non-negotiable and is enforced at the firmware level — it cannot 
 
 > **Display note:** The TX dot matrix shows lowercase **`rn`** while Return-to-Me is active. `rn` = Return to Me = RTM. All SPIFFS parameters and code use the `rtm_` prefix — RTM is the canonical name for this mode.
 
-For when you are in the water and want the buggy to drive itself toward you. **You must actively hold the throttle** — RTM provides automatic compass-bearing steering only. Releasing the trigger stops the buggy immediately.
+For when you are in the water and want the buggy to drive itself toward you. **You must actively hold the throttle** — RTM provides automatic GPS+compass-bearing steering only; it cannot drive the motor independently. Releasing the trigger stops the buggy immediately.
 
 ### Arming
 
@@ -270,8 +272,20 @@ With RTM armed, press throttle to engage (10-second arm window):
 
 - Throttle ramps from `rtm_throttle_start_pct` (default 30%) to `rtm_throttle_max_pct` (default 70%) over `rtm_ramp_duration_s` seconds
 - TX display shows distance to TX (in metres) or speed, per `rtm_display_mode`
-- RX compass auto-steers toward TX GPS position
+- RX auto-steers toward TX GPS position — **heading source is GPS COG (primary) + compass snapshot (fallback at low speed)**. See heading modes below.
 - Distance-to-TX shown in tenths of metre below 10 m (e.g. `3.5`), whole metres above
+
+#### Heading Source — `rtm_use_compass` SPIFFS field (RX)
+
+The compass was removed as primary steering source due to motor EMF biasing the QMC5883L by 100°+ under throttle. Steering now uses a layered heading strategy:
+
+| `rtm_use_compass` | Mode | Behavior |
+|---|---|---|
+| `0` | GPS COG only | Uses GPS course-over-ground exclusively. Safest for all EMI builds. Requires minimum speed (`rtm_cog_min_speed_kmh`) to produce a valid bearing. |
+| `1` *(default)* | Hybrid | GPS COG primary above min speed. Falls back to compass snapshot when buggy is too slow for GPS COG to be reliable. Snapshot is captured automatically every ~100 ms **only when motor is idle** (no throttle), so it is always an EMI-free reading. |
+| `2` | Compass only | Diagnostic use only. Do not use on water with EMI-affected hardware. |
+
+The compass snapshot is taken continuously by `updateCompassSnapshot()` whenever `thr_received < 25` — no user action required. As soon as throttle engages, GPS COG + PD control takes over.
 
 ### Disengaging
 
@@ -319,15 +333,17 @@ On any gate failure: throttle → 0, TX display shows `St` for 2 s, haptic confi
 ### SPIFFS Configuration (RX)
 
 <details>
-<summary><strong>Click to expand: RTM RX SPIFFS parameters (6 fields)</strong></summary>
+<summary><strong>Click to expand: RTM RX SPIFFS parameters (8 fields)</strong></summary>
 
 <br>
 
 | Parameter | Default | Description |
 |---|---|---|
 | `rtm_rx_enabled` | 1 | RX-side RTM enable |
-| `rtm_rx_override_steering` | 1 | Allow RX to auto-steer using compass |
-| `rtm_compass_required` | 1 | Require valid compass or stop |
+| `rtm_rx_override_steering` | 1 | Allow RX to auto-steer (0=disable steering override) |
+| `rtm_compass_required` | 1 | Require at least one valid heading source before RTM runs; 0=bypass (advanced only) |
+| `rtm_use_compass` | 1 | Heading source mode: 0=GPS COG only, 1=Hybrid GPS+snapshot (default), 2=Compass only (diagnostic) |
+| `rtm_cog_min_speed_kmh` | 3 | Minimum speed (km/h) for GPS COG to be considered reliable. Below this, falls back to compass snapshot. |
 | `rtm_stop_distance_m` | 3 | RX-side hard stop distance |
 | `rtm_vesc_speed_diff_kmh` | 20 | Max VESC vs GPS speed diff (Phase C) |
 | `vesc_erpm_per_kmh` | 0 | VESC ERPM per km/h for speed check (0=disabled) |
@@ -671,7 +687,28 @@ Connect to the RX at 115200 baud. All commands are prefixed with `?`.
 | `?printgps` | Print current RX GPS fix (lat, lon, speed, fix type) |
 | `?printbat` | Print RX battery voltage reading |
 
-TX-only commands (connect to TX board): `?gpsraw`, `?gpsreinit`, `?gpscoldreset`, `?printrssi`, `?printinputs`, `?printtasks`, `?printpackets`.
+## TX Serial Diagnostic Commands
+
+Connect to the TX at 115200 baud. All commands are prefixed with `?`.
+
+| Command | Args | Description |
+|---|---|---|
+| `?conf` | | Print TX config info and current `usrConf` values |
+| `?get` | `<key>` | Get a single config field by name |
+| `?set` | `<key> <value>` | Set a config field in RAM (use `?save` to persist) |
+| `?save` | | Persist current RAM config to SPIFFS |
+| `?keys` | | List all config field names |
+| `?state` | `[json]` | Subsystem state overview |
+| `?printrssi` | `[json]` | Stream live RSSI/SNR (type `quit` to stop) |
+| `?printinputs` | `[json]` | Stream live input values — throttle, toggles, Hall sensor (type `quit` to stop) |
+| `?printtasks` | `[json]` | FreeRTOS task stack high-water marks |
+| `?printpackets` | | TX/RX packet counts |
+| `?printgps` | | TX GPS state and current fix status |
+| `?gpsraw` | `[sec]` | Dump raw NMEA output from GPS module (default 5 s, type `quit` to abort) |
+| `?gpsreinit` | | Re-run `initTxGPS()` without rebooting — useful after cable swap |
+| `?gpscoldreset` | | Send UBX-CFG-RST cold-restart to GPS module (clears all cached satellite data) |
+| `?wifiver` | | Print embedded web UI version info |
+| `?wifiupd` | | Force web UI update to SPIFFS |
 
 ---
 

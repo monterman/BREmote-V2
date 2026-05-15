@@ -4,6 +4,7 @@
 // V2.5-Evo - 2026-04-28 - P9: Added dist_unit (0=Metres, 1=Feet; range 0-1)
 // V2.5-Evo - 2026-04-28 - ChangeA: fm_arm_window_s max raised 60→120s (no struct change, no SPIFFS reset)
 // V2.5-Evo - 2026-04-29 - Sleep: added sleep_timeout_s to ConfigService validation table
+// V2.5-Evo - 2026-05-15 - feature/bluetooth: added bt_enabled (0=off, 1=Hall/session, 2=always on)
 // V2.5-Evo - 2026-05-01 - thr_expo1 repurposed as fm_display_mode; range 1-4, default 1
 
 const CfgFieldSpec kCfgFields[] = {
@@ -73,6 +74,7 @@ const CfgFieldSpec kCfgFields[] = {
   // V2.5-Evo - 2026-04-29 - Sleep timeout. 0=disabled, 60-3600 s; default 300 (5 minutes).
   // Controls how long TX waits with no LoRa packet from RX before deep sleeping.
   {"sleep_timeout_s", CFG_U16, offsetof(confStruct, sleep_timeout_s), true, false, true, 0.0f, 3600.0f, 0, false},
+  {"bt_enabled",      CFG_U16, offsetof(confStruct, bt_enabled),      true, false, true, 0.0f,    2.0f, 0, false},
   {"paired", CFG_U16, offsetof(confStruct, paired), true, false, true, 0.0f, 1.0f, 0, false},
   {"own_address", CFG_ADDR3, offsetof(confStruct, own_address), true, false, false, 0.0f, 0.0f, 0, false},
   {"dest_address", CFG_ADDR3, offsetof(confStruct, dest_address), true, false, false, 0.0f, 0.0f, 0, false}

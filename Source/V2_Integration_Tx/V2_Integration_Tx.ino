@@ -1,4 +1,5 @@
-﻿// *** LATEST: V2.5-Evo - 2026-05-14 - SW55 — bootAnimation VI 250ms / voltage 1450ms; padlock at ~4.5s total boot ***
+﻿// *** LATEST: V2.5-Evo - 2026-05-15 - feature/bluetooth Tier 1: NUS skeleton (BLE.ino); bt_enabled SPIFFS field; boot gesture; bleInitTask 5s delayed ***
+// V2.5-Evo - 2026-05-14 - SW55 — bootAnimation VI 250ms / voltage 1450ms; padlock at ~4.5s total boot
 // V2.5-Evo - 2026-05-13 - SW33: Removed GPIO 9 from serialOff OUTPUT-LOW block (P_MAG reserved for DRV5032 Hall sensor)
 // V2.5-Evo - 2026-05-13 - SW33b: Hall mag reading state machine added to loop(); drives bt_dot_state
 // V2.5-Evo - 2026-05-03 - Removed commented-out SPIFFS.remove dead code (LOW audit cleanup)
@@ -53,6 +54,9 @@ bool isFmArmed();
 uint8_t calcRtmThrottleCap();
 // RTM/FM Active Display (defined in Display.ino)
 void renderRtmInfoDisplay();
+// BLE Functions (defined in BLE.ino)
+void initBLE();
+void bleTelemetryLoop();
 // Cross-Tab Subsystem Initializers
 void startupRadio();
 void startupDisplay();
@@ -191,6 +195,7 @@ void loop()
   }
 
   checkSerial();
+  bleTelemetryLoop();
 
   // Update last_user_input_ms when intentional input is detected.
   // Throttle threshold: thr_scaled > 20 (~8% pull — above noise floor).

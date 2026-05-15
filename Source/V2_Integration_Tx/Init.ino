@@ -43,6 +43,20 @@ void initStorage()
 
 // ===== FreeRTOS Tasks =====
 
+// V2.5-Evo - 2026-05-15 - feature/bluetooth: one-shot init task.
+// Delays 5s to let LoRa and WiFi settle before starting BLE stack.
+// Calls initBLE() then self-deletes. Pinned to Core 1 (loop core) at lowest priority.
+static void bleInitTask(void* param)
+{
+  vTaskDelay(pdMS_TO_TICKS(5000));
+  if (usrConf.bt_enabled > 0 || bt_session_forced)
+  {
+    initBLE();
+    if (usrConf.bt_enabled == 2) bt_dot_state = BT_DOT_SLOW;  // always-on → pre-light the dot
+  }
+  vTaskDelete(NULL);
+}
+
 void initTasks()
 {
   if(config_version_error) return;
@@ -55,6 +69,8 @@ void initTasks()
   xTaskCreatePinnedToCore(updateBargraphs, "wait_for_telem_triggered_200ms", 2048, NULL, 6, &updateBargraphsHandle, 0);
   xTaskCreatePinnedToCore(vibrationTask, "Vibration_Task_BG", 2048, NULL, 3, &vibrationTaskHandle, 0);
   // Finding 4-1: stack 1024→2048 words; handle saved so ?printtasks can report HWM
+  // BLE init: one-shot task, 5s delayed, Core 1, priority 1, 4KB stack (NimBLE needs headroom)
+  xTaskCreatePinnedToCore(bleInitTask, "BLE_Init", 4096, NULL, 1, NULL, 1);
 }
 
 void initWatchdog()

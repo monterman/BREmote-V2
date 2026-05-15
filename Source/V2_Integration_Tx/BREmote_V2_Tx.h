@@ -222,11 +222,15 @@ struct confStruct {
     uint16_t sleep_timeout_s;  // Inactivity sleep timeout; 0=disabled, 60-3600 s; default 300
                                // TX sleeps after this many seconds with no LoRa packet from RX.
                                // Set to 0 to disable auto-sleep entirely.
+    // V2.5-Evo - 2026-05-15 - feature/bluetooth: bt_enabled fills the 2-byte tail padding left by
+    // sleep_timeout_s. sizeof stays 132. SW_VERSION stays 26 — no SPIFFS reset on first flash.
+    // Existing configs read 0 here (padding was zero) = BLE off until set via web UI.
+    uint16_t bt_enabled;       // BLE mode: 0=always off, 1=Hall/session (default), 2=always on
 };
 
-static_assert(sizeof(confStruct) == 132, "confStruct size mismatch — expected 132 bytes (V2.5-Evo sleep_timeout_s). Update this assert if you change the struct.");  // pinned to exact size; catches both shrinkage and unexpected growth
+static_assert(sizeof(confStruct) == 132, "confStruct size mismatch — expected 132 bytes (V2.5-Evo sleep_timeout_s + bt_enabled fills tail padding). Update this assert if you change the struct.");  // pinned to exact size; catches both shrinkage and unexpected growth
 confStruct usrConf;
-confStruct defaultConf = {  // V3 default configuration — tuned for monterman hardware
+confStruct defaultConf = {  // V2.5-Evo default configuration — tuned for monterman hardware
   SW_VERSION,    // version (26)
   2,             // radio_preset (US 915MHz)
   20,            // rf_power (20)
@@ -293,6 +297,7 @@ confStruct defaultConf = {  // V3 default configuration — tuned for monterman 
   0,    // dist_unit (0 = Metres)
   // V2.5-Evo - 2026-04-29 - sleep timeout default
   300,  // sleep_timeout_s — 300s = 5 minutes; set to 0 to disable
+  1,    // bt_enabled: 1=Hall/session (new installs). Old SPIFFS reads 0=off here (safe; set to 1 via web UI to enable).
 };
 
 
@@ -474,6 +479,7 @@ volatile bool mag_seen_high = false;  // set true when GPIO 9 first reads HIGH a
 #define BT_DOT_SLOW 1
 #define BT_DOT_FAST 2
 volatile uint8_t bt_dot_state = BT_DOT_OFF;
+volatile bool bt_session_forced = false;  // set by LEFT-hold boot gesture; enables BLE for session regardless of bt_enabled
 volatile bool display_activity_enabled = true;
 volatile bool radio_activity_enabled = true;
 volatile bool radio_driver_ready = false;

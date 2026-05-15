@@ -1,7 +1,63 @@
 # VESC Telemetry Fix — Analysis & Implementation Plan
 
 **BREmote V2.5-Evo | RX firmware | Filed: 2026-05-09**
-**Status: Pending implementation — does NOT block Bug 1 safety fix**
+**Status: Root cause confirmed and fixed — SW51–SW55 (2026-05-14). See resolution section below.**
+
+---
+
+## SW51–SW55 Resolution — 2026-05-14
+
+### Primary Root Cause (Field Discovery)
+
+**USB-C serial cable on GPIO 18/19 completely silences VESC UART.**
+
+The ESP32-C3 native USB peripheral's D− and D+ lines share GPIO 18 and GPIO 19 with Serial1 (the UART used for GPS and VESC via the hardware MUX). Any USB-C cable plugged into the HT-CT62 during field operation overrides Serial1, dropping all VESC UART traffic to zero.
+
+**Operational fix:** Unplug the USB-C cable before field use. This is a hardware constraint of the ESP32-C3 — no firmware change can eliminate it.
+
+---
+
+### Code Defects Fixed in SW55
+
+Three additional firmware defects were found and fixed as part of the investigation:
+
+**1. GPS MUX never yielding**
+
+`getGPSLoop()` and `configureGPS()` were switching the UART MUX to GPS (channel 1) but never returning it to VESC (channel 0) on exit. VESC was left waiting indefinitely on every GPS poll cycle.
+
+Fix: `setUartMux(0)` added at the end of both `getGPSLoop()` and `configureGPS()`. GPS always has priority on the MUX; GPS always yields the bus back to VESC when done.
+
+**2. `rcv_err` flag persistence bug**
+
+`receiveFromVESC()` set `rcv_err = true` on any bad first byte but never cleared the flag within the 200 ms receive window. One stray byte in the UART buffer poisoned the entire receive attempt for that cycle.
+
+Fix: `rcv_err` flag removed entirely from `receiveFromVESC()`. CRC handles frame validation — the flag was redundant and harmful.
+
+**3. Boot MUX state undefined**
+
+`configureGPS()` (called at boot) left the MUX on GPS channel (channel 1) at exit. The first VESC poll after boot could fail if the MUX was never switched back.
+
+Fix: `configureGPS()` now ends with `setUartMux(0)`. Boot sequence starts with the MUX on the VESC channel.
+
+---
+
+### SW54 Revert (MUX Retry Loops)
+
+SW51 and SW52 added retry loops that re-attempted failed `setUartMux()` I2C writes 3–5 times in rapid succession. Under field conditions, the rapid I2C writes caused AW9523 bus corruption, manifesting as GPS chars=0 and VESC zero-packet responses — the opposite of the intended fix.
+
+SW54 reverted all MUX retry logic. Single `setUartMux()` calls are reliable when the bus is not stressed by rapid retries.
+
+---
+
+### Status of Original Findings After SW51–SW55
+
+| Finding | Description | Status |
+|---|---|---|
+| 1 | `Serial1.flush()` drains TX not RX | Fixed — removed (2026-05-11) |
+| 2 | GPS/VESC share single 1 Hz timer | Partially mitigated — MUX discipline (SW55) reduces contention; independent timers not yet implemented |
+| 3 | `foil_speed` / `foil_power` not reset on timeout | Fixed — `foil_power` and `foil_motor_amps` added to timeout reset block (SW49/SW50) |
+| 4 | `vesc_timeout_s` default 12 s too long | Default now configurable via SPIFFS; field-appropriate value to be set after water test |
+| 5 | E7 wetness de-latch path missing | Still pending — requires log evidence from a session where E7 triggers |
 
 ---
 

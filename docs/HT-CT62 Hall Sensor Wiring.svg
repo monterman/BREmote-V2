@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 510" width="760" height="510"
+     font-family="'Courier New', 'Lucida Console', monospace">
+
+<!-- background -->
+<rect width="760" height="510" fill="#0d0d0d"/>
+
+<!-- title -->
+<text x="380" y="31" text-anchor="middle" font-size="15" font-weight="bold"
+      fill="#e6e6e6" letter-spacing="0.3">DRV5032 Hall Sensor Wiring — BREmote V2.5-Evo TX</text>
+<text x="380" y="49" text-anchor="middle" font-size="10" fill="#555">
+  P_MAG · GPIO 9 · BLE activation · any available 3V3 and GND pin on the board
+</text>
+
+<!-- ══════════════════════════════════════════
+     HT-CT62 board
+     ══════════════════════════════════════════ -->
+<rect x="50" y="72" width="185" height="300" rx="8"
+      fill="#181818" stroke="#383838" stroke-width="2"/>
+
+<!-- board label -->
+<text x="142" y="97"  text-anchor="middle" font-size="13" font-weight="bold" fill="#dddddd">HT-CT62</text>
+<text x="142" y="111" text-anchor="middle" font-size="9"  fill="#4a4a4a">ESP32-C3 · SX1262 · BLE · WiFi</text>
+
+<!-- chip silhouette (decorative) -->
+<rect x="82" y="122" width="121" height="100" rx="4" fill="#101010" stroke="#222" stroke-width="1"/>
+<text x="142" y="162" text-anchor="middle" font-size="11" fill="#252525">ESP32-C3</text>
+<rect x="98" y="175" width="88" height="40" rx="3" fill="#0d0d0d" stroke="#1a1a1a" stroke-width="1"/>
+<text x="142" y="200" text-anchor="middle" font-size="10" fill="#1a2e1a">SX1262</text>
+
+<!-- antenna dot (decorative) -->
+<circle cx="215" cy="90" r="6" fill="#222" stroke="#333" stroke-width="1"/>
+<text x="215" y="94" text-anchor="middle" font-size="6" fill="#333">ANT</text>
+
+<!-- ── pin stubs + connection circles on right edge of board (board right = x=235) ── -->
+
+<!-- 3V3 / VDD — red — y=253 -->
+<text x="228" y="248" text-anchor="end" font-size="11" font-weight="bold" fill="#ff5555">3V3</text>
+<text x="228" y="262" text-anchor="end" font-size="8"  fill="#882222">VDD · any pin</text>
+<line x1="235" y1="253" x2="257" y2="253" stroke="#cc3333" stroke-width="2.5"/>
+<circle cx="257" cy="253" r="5.5" fill="#cc3333" stroke="#ff5555" stroke-width="1.5"/>
+
+<!-- GND — dark grey — y=305 -->
+<text x="228" y="300" text-anchor="end" font-size="11" font-weight="bold" fill="#aaaaaa">GND</text>
+<text x="228" y="314" text-anchor="end" font-size="8"  fill="#555">any GND pin</text>
+<line x1="235" y1="305" x2="257" y2="305" stroke="#666" stroke-width="2.5"/>
+<circle cx="257" cy="305" r="5.5" fill="#666" stroke="#999" stroke-width="1.5"/>
+
+<!-- GPIO 9 — orange — y=357 -->
+<text x="228" y="351" text-anchor="end" font-size="11" font-weight="bold" fill="#ff9933">GPIO 9</text>
+<text x="228" y="364" text-anchor="end" font-size="8"  fill="#995500">IO9 · P_MAG</text>
+<line x1="235" y1="355" x2="257" y2="355" stroke="#cc7700" stroke-width="2.5"/>
+<circle cx="257" cy="355" r="5.5" fill="#cc7700" stroke="#ff9933" stroke-width="1.5"/>
+
+<!-- ══════════════════════════════════════════
+     DRV5032
+     ══════════════════════════════════════════ -->
+<rect x="502" y="218" width="168" height="168" rx="6"
+      fill="#0a150a" stroke="#1a3a1a" stroke-width="2"/>
+
+<!-- IC label -->
+<text x="586" y="245" text-anchor="middle" font-size="13" font-weight="bold" fill="#88cc88">DRV5032</text>
+<text x="586" y="259" text-anchor="middle" font-size="9"  fill="#446644">FADBZR · SOT-23-3</text>
+<text x="586" y="271" text-anchor="middle" font-size="8"  fill="#2d472d">Unipole Hall-effect sensor</text>
+
+<!-- IC body outline -->
+<rect x="530" y="282" width="110" height="88" rx="4" fill="#060e06" stroke="#143214" stroke-width="1"/>
+<text x="585" y="322" text-anchor="middle" font-size="9" fill="#143214">DRV</text>
+<text x="585" y="335" text-anchor="middle" font-size="9" fill="#143214">5032</text>
+<!-- pin 1 marker -->
+<circle cx="537" cy="289" r="3" fill="#224422"/>
+
+<!-- ── pin stubs + circles on left edge of DRV5032 (left = x=502) ── -->
+
+<!-- VCC — red — y=299 -->
+<line x1="502" y1="299" x2="480" y2="299" stroke="#cc3333" stroke-width="2.5"/>
+<circle cx="480" cy="299" r="5.5" fill="#cc3333" stroke="#ff5555" stroke-width="1.5"/>
+<text x="508" y="295" font-size="11" font-weight="bold" fill="#ff5555">VCC</text>
+<text x="508" y="307" font-size="8"  fill="#882222">Pin 1</text>
+
+<!-- GND — dark grey — y=333 -->
+<line x1="502" y1="333" x2="480" y2="333" stroke="#666" stroke-width="2.5"/>
+<circle cx="480" cy="333" r="5.5" fill="#666" stroke="#999" stroke-width="1.5"/>
+<text x="508" y="329" font-size="11" font-weight="bold" fill="#aaaaaa">GND</text>
+<text x="508" y="341" font-size="8"  fill="#555">Pin 2</text>
+
+<!-- OUT — orange — y=365 -->
+<line x1="502" y1="365" x2="480" y2="365" stroke="#cc7700" stroke-width="2.5"/>
+<circle cx="480" cy="365" r="5.5" fill="#cc7700" stroke="#ff9933" stroke-width="1.5"/>
+<text x="508" y="361" font-size="11" font-weight="bold" fill="#ff9933">OUT</text>
+<text x="508" y="373" font-size="8"  fill="#995500">Pin 3</text>
+
+<!-- ══════════════════════════════════════════
+     Wires — bezier curves, no crossings
+     HT-CT62 side → DRV5032 side
+     Red:    (257,253) → (480,299)   goes slightly down
+     Black:  (257,305) → (480,333)   goes slightly down
+     Orange: (257,355) → (480,365)   nearly horizontal
+     ══════════════════════════════════════════ -->
+
+<!-- Red: 3V3 → VCC -->
+<path d="M 257 253 C 368 253 368 299 480 299"
+      fill="none" stroke="#cc3333" stroke-width="3.5" stroke-linecap="round"/>
+
+<!-- Black: GND → GND -->
+<path d="M 257 305 C 368 305 368 333 480 333"
+      fill="none" stroke="#555" stroke-width="3.5" stroke-linecap="round"/>
+
+<!-- Orange: GPIO9 → OUT -->
+<path d="M 257 355 C 368 355 368 365 480 365"
+      fill="none" stroke="#cc7700" stroke-width="3.5" stroke-linecap="round"/>
+
+<!-- mid-wire labels -->
+<text x="368" y="244" text-anchor="middle" font-size="9" fill="#ff5555">3.3 V</text>
+<text x="368" y="317" text-anchor="middle" font-size="9" fill="#888">GND</text>
+<text x="368" y="347" text-anchor="middle" font-size="9" fill="#ff9933">SIG</text>
+
+<!-- ══════════════════════════════════════════
+     Connection table
+     ══════════════════════════════════════════ -->
+<rect x="50" y="398" width="660" height="74" rx="4" fill="#111" stroke="#252525" stroke-width="1"/>
+
+<!-- table header -->
+<text x="68"  y="415" font-size="9" font-weight="bold" fill="#555">HT-CT62 PIN</text>
+<text x="248" y="415" font-size="9" font-weight="bold" fill="#555">WIRE</text>
+<text x="348" y="415" font-size="9" font-weight="bold" fill="#555">DRV5032 PIN</text>
+<text x="548" y="415" font-size="9" font-weight="bold" fill="#555">NOTES</text>
+<line x1="54" y1="419" x2="706" y2="419" stroke="#222" stroke-width="1"/>
+
+<!-- row 1 — 3V3 -->
+<text x="68"  y="432" font-size="10" fill="#ff5555">3V3 / VDD</text>
+<text x="248" y="432" font-size="10" fill="#cc3333">● red</text>
+<text x="348" y="432" font-size="10" fill="#ff5555">VCC  (Pin 1)</text>
+<text x="548" y="432" font-size="9"  fill="#555">any 3V3 pin on board</text>
+
+<!-- row 2 — GND -->
+<text x="68"  y="447" font-size="10" fill="#aaa">GND</text>
+<text x="248" y="447" font-size="10" fill="#777">● black</text>
+<text x="348" y="447" font-size="10" fill="#aaa">GND  (Pin 2)</text>
+<text x="548" y="447" font-size="9"  fill="#555">any GND pin on board</text>
+
+<!-- row 3 — GPIO9 -->
+<text x="68"  y="462" font-size="10" fill="#ff9933">GPIO 9 / IO9 / P_MAG</text>
+<text x="248" y="462" font-size="10" fill="#cc7700">● orange</text>
+<text x="348" y="462" font-size="10" fill="#ff9933">OUT  (Pin 3)</text>
+<text x="548" y="462" font-size="9"  fill="#555">internal pull-up in firmware</text>
+
+<!-- ══════════════════════════════════════════
+     Installation notes
+     ══════════════════════════════════════════ -->
+<text x="380" y="486" text-anchor="middle" font-size="9" fill="#2a5a2a">
+  ★  Installing a GPS at the same time?  The Hall sensor shares the same 3V3 and GND rails — add these 3 wires at no extra access cost.
+</text>
+<text x="380" y="500" text-anchor="middle" font-size="8" fill="#333">
+  Verify Pin 1 (VCC) dot/notch marking on your DRV5032 component before soldering.
+</text>
+
+</svg>

@@ -24,7 +24,14 @@ class BLEServerCB : public NimBLEServerCallbacks {
 
 void initBLE()
 {
-  NimBLEDevice::init("BREmote-TX");
+  // Build unique name: BRemote-TX-XX where XX = last byte of BT MAC (hex, uppercase)
+  // Lets riders distinguish units on the same water — e.g. BRemote-TX-50 vs BRemote-TX-A3
+  uint8_t mac[6];
+  esp_read_mac(mac, ESP_MAC_BT);
+  char devName[20];
+  snprintf(devName, sizeof(devName), "BRemote-TX-%02X", mac[5]);
+
+  NimBLEDevice::init(devName);
   NimBLEDevice::setPower(9);  // 9 dBm max; NimBLE 2.x takes dBm directly (not ESP_PWR_LVL enum)
 
   bleServer = NimBLEDevice::createServer();
@@ -42,16 +49,14 @@ void initBLE()
   nus->start();
 
   NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
-  adv->addServiceUUID(NUS_SERVICE_UUID);
-  // Explicitly include device name in advertisement — NimBLE 2.x doesn't add it automatically
   NimBLEAdvertisementData advData;
-  advData.setName("BREmote-TX");
+  advData.setName(devName);
   advData.addServiceUUID(NUS_SERVICE_UUID);
   adv->setAdvertisementData(advData);
   NimBLEDevice::startAdvertising();
 
   bleRunning = true;
-  Serial.println("BLE: advertising as BREmote-TX (NUS)");
+  Serial.printf("BLE: advertising as %s (NUS)\n", devName);
 }
 
 // CSV format over NUS:

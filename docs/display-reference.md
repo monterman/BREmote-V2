@@ -9,21 +9,33 @@ Driver: HT16K33 at I2C address 0x70
 |---|---|---|
 | Digits | C0-C2 (left) + C4-C6 (right), R0-R4 | Two character display |
 | Gap | C3, R0-R4 | Normally dark — separates digits; R4 used as decimal dot during RTM distance display |
-| GPS status | C7 R0 only | NEW in V2.5-Evo — see below |
+| GPS status | C7 R0 only | V2.5-Evo — see below |
+| BLE status | C7 R1 only | V2.5-Evo SW55 — see below |
 | Temperature | C8, R0-R4 | VESC temp, fills bottom→top |
 | Signal | C9, R0-R4 | LoRa signal, fills bottom→top |
 | R5 proximity bar | R5, C0-C9 | RTM/FM proximity indicator — NEW in P9 (see below) |
 | Battery | R6, all cols | VESC battery, fills left→right |
 
-## GPS Status Dot (C7 R0) — V2.5-Evo New Feature
-Only visible when gps_en = 1 in SPIFFS config.
+## GPS Status Dot (C7 R0) — V2.5-Evo
+Only visible when `gps_en = 1` in SPIFFS config.
 
 | State | Display | Meaning |
 |---|---|---|
 | Solid green | ● | Valid GPS fix — ready for RTM/Follow-Me |
 | Slow blink 1s | ○ ● ○ ● | Acquiring fix — waiting for satellites |
 | Fast blink 250ms | ●●●● | GPS rejected — spoofing or bad signal alert |
-| Off | (dark) | GPS disabled (gps_en = 0) |
+| Off | (dark) | GPS disabled (`gps_en = 0`) |
+
+## BLE Status Dot (C7 R1) — V2.5-Evo SW55
+Controlled by `bt_dot_state`, driven by the DRV5032 Hall sensor on P_MAG (GPIO 9). Never solid — always blinking or off. Only visible when BLE is active.
+
+| State | `bt_dot_state` | Display | Meaning |
+|---|---|---|---|
+| Off | `BT_DOT_OFF` | (dark) | BLE inactive — default on boot |
+| Slow blink 1s | `BT_DOT_SLOW` | ○ ● ○ ● | BLE ready — toggled by short Hall hold (400 ms – 4.9 s) |
+| Fast blink 250ms | `BT_DOT_FAST` | ●○●○ | BLE active — long Hall hold 5 s+ from slow state |
+
+Releasing the magnet while `BT_DOT_FAST` → returns to `BT_DOT_OFF`. Short hold while `BT_DOT_SLOW` → toggles back to `BT_DOT_OFF`. BLE GATT/radio layer is in active development (`feature/bluetooth`).
 
 ## Decimal Dot (C3 R4) — Distance Display
 When `rtm_display_mode = 0` (distance) and the value is ≥100m (metric) or ≥100ft (imperial), the gap column pixel at R4 lights as a decimal point for fractional km or miles:
@@ -56,13 +68,46 @@ When `rtm_display_mode = 0` (distance) and the value is ≥100m (metric) or ≥1
 - Tap window: 3s (`COMBO_WINDOW_MS`). Tap must occur before the hold begins.
 
 ## Display Modes (LEFT toggle hold 2s cycles through)
-| Code | Full name | Shows | Available when |
-|---|---|---|---|
-| tH | Throttle | 0-99% trigger pull | Always |
-| Ub | Internal battery | Remote voltage ×10 (e.g. 42 = 4.2V) | Always |
-| tE | Temperature | VESC temp °C | VESC connected |
-| 5P | Speed | km/h, knots or mph per speed_src setting | GPS enabled |
-| bA | VESC battery | Remaining % | VESC connected |
+
+Cycle is `DISPLAY_MODE_COUNT = 7`. Modes with unavailable data (sentinel `0xFF`) are skipped automatically — `cycleDisplayMode()` loops until it finds an available mode.
+
+| # | Code | Full name | Shows | Available when |
+|---|---|---|---|---|
+| 0 | tP | Temperature | VESC FET temp °C | VESC connected (`foil_temp != 0xFF`) |
+| 1 | tH | Throttle | 0–99% trigger pull | Always |
+| 2 | 5P | Speed | km/h, knots or mph per `speed_src` | TX GPS: always (`--` when no fix); RX GPS: fix required |
+| 3 | PV | VESC Power | Battery-side power in kW, 1 decimal (e.g. `4.4` = 4400 W, capped 9.9 kW) | VESC connected (`foil_power != 0xFF`) |
+| 4 | MA | Motor Amps | Motor current in whole amps (0–250 A) | VESC connected (`foil_motor_amps != 0xFF`) |
+| 5 | Ub | Internal battery | TX LiPo voltage ×10 (e.g. `42` = 4.2 V) | Always |
+| 6 | bA | VESC battery | Remaining % (0–100) | VESC connected (`foil_bat != 0xFF`) |
+
+Default boot mode: `DISPLAY_MODE_THR` (mode 1). VESC timeout resets `foil_bat`, `foil_temp`, `foil_power`, `foil_motor_amps` to `0xFF`, hiding VESC-dependent modes automatically when the ESC is offline.
+
+## Boot Sequence Timing — SW55
+
+Total boot-to-padlock: ~4.5 seconds.
+
+| Phase | Duration | Display |
+|---|---|---|
+| Firmware init | ~100 ms | Dark |
+| VI splash | 250 ms | `VI` (version info) |
+| Battery voltage | 1450 ms | Voltage reading (e.g. `42` = 4.2 V) — user reads battery before padlock |
+| Unlock animation | ~700 ms | Paintbrush sweep R0→R6 (see below) |
+| Operational | — | Default mode: `tH` (throttle %) |
+
+## Unlock Animation — SW53 Paintbrush Sweep
+
+`unlockAnimation()` runs at the end of boot. 3 frames, each ~230 ms.
+
+**Frame sequence** — arrow descends row by row, each row stays lit (no inter-frame clear):
+
+| Frame | Rows lit |
+|---|---|
+| 1 | R0 lit — top bar only |
+| 2 | R0 + R1 + R2 lit — arrow growing downward |
+| 3 | R0 → R6 fully lit — all rows painted |
+
+Column rule: R0–R3 light C1–C8 (inner columns). R4–R6 also paint C0 and C9 (outer columns fully). Uses `|=` to accumulate pixels across frames — no `clear()` between frames, so each row stays lit as the arrow descends. Boot delay was 3 s before SW53; reduced to 500 ms.
 
 ## RTM / FM Active Display — V2.5-Evo P8 + P9
 When `rtm_tx_active == true`, normal display is replaced by RTM info display.

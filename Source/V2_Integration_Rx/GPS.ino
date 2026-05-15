@@ -1,4 +1,5 @@
-﻿// V2.5-Evo - 2026-05-06 - D1: Capture GPS course-over-ground (gps_last_course_deg/ms) for future RTM heading source
+﻿// V2.5-Evo - 2026-05-14 - SW55: setUartMux(0) at end of getGPSLoop() and configureGPS() — GPS resets MUX to VESC on exit; GPS always has priority
+// V2.5-Evo - 2026-05-06 - D1: Capture GPS course-over-ground (gps_last_course_deg/ms) for future RTM heading source
 // V2.5-Evo - 2026-04-30 - Rename: gps_max_jump_kmh → gps_max_teleport_kmh (clarity)
 // V2.5-Evo - 2026-04-30 - Bundle E: replaced 300ms blocking serial drain with non-blocking while(available()) drain
 // V2.5-Evo - 2026-04-24 - Added Phase B FIELD SERVICE NOTE (sizeof confStruct 128→136)
@@ -302,6 +303,9 @@ void configureGPS() {
       }
       break;
   }
+
+  // SW55: leave MUX in VESC state after GPS init — boot starts with MUX on VESC (channel 0).
+  setUartMux(0);
 }
 
 // Task for GPS reading
@@ -368,6 +372,10 @@ void getGPSLoop()
       telemetry.foil_speed = 0xFF;
     }
   }
+
+  // SW55: release MUX back to VESC — GPS always runs first and always yields when done.
+  // VESC defers; GPS never holds the MUX after its read is complete.
+  setUartMux(0);
 }
 
 // Function to print satellite information

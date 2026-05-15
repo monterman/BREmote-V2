@@ -1,4 +1,8 @@
-﻿// V2.5-Evo - 2026-05-13 - SW50: foil_motor_amps encoded (whole amps, 0–250); added to VESC timeout reset
+﻿// V2.5-Evo - 2026-05-14 - SW55: rcv_err removed from receiveFromVESC() — flag was never cleared within 200ms window, any stray byte poisoned entire receive attempt; CRC handles frame validation
+// V2.5-Evo - 2026-05-14 - SW54: revert SW51/SW52 retry loop — rapid repeated I2C writes caused AW9523 bus corruption at idle; back to single setUartMux(0) + 20ms delay
+// V2.5-Evo - 2026-05-14 - SW52: MUX retry count 3→5 for better EMI resilience under sustained motor load
+// V2.5-Evo - 2026-05-14 - SW51: setUartMux(0) retried 3× in getVescLoop() — motor EMI corrupts AW9523 I2C writes, single write unreliable under load
+// V2.5-Evo - 2026-05-13 - SW50: foil_motor_amps encoded (whole amps, 0–250); added to VESC timeout reset
 // V2.5-Evo - 2026-05-13 - SW49: batCur_amps divisor 100000→100 (0.01A scale; typo caused power to always read 0)
 // V2.5-Evo - 2026-05-13 - SW45: fbatVolt moved before power calc (was after — foil_power was always 0); last_uart_packet boot guard
 // V2.5-Evo - 2026-05-11 - Telemetry Fix: foil_power invalidated on VESC timeout; dead Serial1.flush() removed
@@ -13,8 +17,11 @@ void getVescLoop()
   static bool vesc_first_call = true;
   if (vesc_first_call) { last_uart_packet = millis(); vesc_first_call = false; }
 
+  // SW54: single setUartMux(0) + 20ms settle. SW51/SW52 retry loops caused I2C bus
+  // corruption at idle (GPS chars=0, VESC zero packets). Longer settle time gives MUX
+  // more time to stabilise without hammering AW9523.
   setUartMux(0);
-  vTaskDelay(pdMS_TO_TICKS(10));
+  vTaskDelay(pdMS_TO_TICKS(20));
 
   // V2.5-Evo - 2026-05-06 - RX-buffer drain before VESC query.
   // Serial1 is shared with GPS via an AW9523-controlled analog mux. After mux
@@ -133,7 +140,6 @@ int receiveFromVESC(uint8_t * buf, Stream* interface)
   uint8_t cnt = 0;
   uint8_t eom = 30; // Increased buffer max
   uint8_t raw_message[eom];
-  bool rcv_err = 0;
 
   unsigned long started = millis();
 
@@ -146,8 +152,10 @@ int receiveFromVESC(uint8_t * buf, Stream* interface)
       {
         if(raw_message[0] != 2)
         {
+          // SW55: keep scanning — don't poison the window with a persistent error flag.
+          // A stray byte resets the counter; the next 0x02 starts a fresh frame attempt.
+          // CRC at the end handles frame integrity.
           VESC_DEBUG_PRINTLN(".");
-          rcv_err = true;  
           cnt=0;
         }
       }
@@ -172,7 +180,7 @@ int receiveFromVESC(uint8_t * buf, Stream* interface)
   Serial.println();
 #endif
 
-  if(!rcv_err && raw_message[eom-1] == 3)
+  if(raw_message[eom-1] == 3)
   {
     uint16_t crcMessage = 0;
     uint16_t crcPayload = 0;

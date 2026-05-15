@@ -1,4 +1,6 @@
-﻿// V2.5-Evo - 2026-05-13 - SW48: advanceArrow/unlockAnimation/displayError mutex-wrapped; cycleDisplayMode/displayLock call sites fixed in Hall+RTMState+System
+﻿// V2.5-Evo - 2026-05-14 - SW55: bootAnimation VI display 500→250ms; battery voltage display 500→1450ms; total boot to padlock ~4.5s
+// V2.5-Evo - 2026-05-14 - SW53: unlockAnimation() rewritten 3-frame sweep R0→R6 (was 5 frames starting at invisible row); bootAnimation battery delay 3s→500ms
+// V2.5-Evo - 2026-05-13 - SW48: advanceArrow/unlockAnimation/displayError mutex-wrapped; cycleDisplayMode/displayLock call sites fixed in Hall+RTMState+System
 // V2.5-Evo - 2026-05-13 - SW47: unlockAnimation() per-frame clear (smear→clean arrow); boot battery display 1s→3s; ANIMATION_DELAY 40→60ms
 // V2.5-Evo - 2026-05-13 - SW33b: BT status dot at C7 R1 added to updateBargraphs(); blinks from bt_dot_state
 // V2.5-Evo - 2026-05-05 - 30s digit cache for foil_temp/foil_bat to suppress telemetry-drop dashes
@@ -560,6 +562,7 @@ void renderOperationalDisplay()
         case DISPLAY_MODE_BAT:    displayShowTwoDigitOrDash(getEffectiveFoilBat()); break;
         case DISPLAY_MODE_THR:    displayShowTwoDigitOrDash(thr_scaled * 99 / 255); break;
         case DISPLAY_MODE_AMP:    displayShowTwoDigitOrDash(min(telemetry.foil_motor_amps, (uint8_t)99)); break;
+        case DISPLAY_MODE_INTBAT: displayShowTwoDigitOrDash((uint8_t)(int_bat_volt * 10)); break;
         default: displayShowTwoDigitOrDash(telemetry.foil_temp); break;
       }
       updateDisplay();
@@ -741,13 +744,13 @@ void bootAnimation()
 
   displayDigits(LET_V,LET_I);
   updateDisplay();
-  delay(500);
+  delay(250);   // SW55: trimmed — quick version flash before voltage
 
   uint8_t temp_volt = uint8_t(int_bat_volt*10);
 
   displayDigits(temp_volt/10,temp_volt-10*(temp_volt/10));
   updateDisplay();
-  delay(3000);  // SW47: was 1000ms; extended to push padlock appearance to ~5s after boot
+  delay(1450);  // SW55: extended — user reads voltage before padlock; ~4.5s total boot time
 }
 
 uint8_t arrowPos = 0;
@@ -837,19 +840,16 @@ void displayLock()
 // Helper: clear digit zone preserving C7 GPS dot and C8/C9 bargraphs (bit 7 = C7)
 #define ANIM_CLEAR() for(int _i = 0; _i < 7; _i++) displayBuffer[_i] &= 0xFF80
 
+// SW53: paintbrush sweep. Arrow descends R0→R6 using |= without clearing between frames —
+// each row the arrow passes through stays lit. Same pattern as advanceArrow().
+// 3 frames × 60ms = 180ms. Final state: R0-R3 = 0x3E (wide), R4-R5 = 0x1C (mid), R6 = 0x08 (tip).
 void unlockAnimation()
 {
   DISP_LOCK();
-  ANIM_CLEAR();
-  displayBuffer[0] |= 0x3E;
-  displayBuffer[1] |= 0x3E;
-  displayBuffer[2] |= 0x1C;
-  displayBuffer[3] |= 0x1C;
-  displayBuffer[4] |= 0x08;
-  updateDisplay();
-  delay(ANIMATION_DELAY);
+  ANIM_CLEAR();                // clear once — frames paint on top without erasing
+  displayBuffer[7] &= 0xFF80; // clear battery row cols C0-C6 so tip pixel has clean base
 
-  ANIM_CLEAR();
+  // Frame 1 — arrow head at R0, tip at R4
   displayBuffer[1] |= 0x3E;
   displayBuffer[2] |= 0x3E;
   displayBuffer[3] |= 0x1C;
@@ -858,24 +858,23 @@ void unlockAnimation()
   updateDisplay();
   delay(ANIMATION_DELAY);
 
-  ANIM_CLEAR();
+  // Frame 2 — arrow moves to R1; R0 stays lit
   displayBuffer[2] |= 0x3E;
   displayBuffer[3] |= 0x3E;
   displayBuffer[4] |= 0x1C;
   displayBuffer[5] |= 0x1C;
+  displayBuffer[6] |= 0x08;
   updateDisplay();
   delay(ANIMATION_DELAY);
 
-  ANIM_CLEAR();
+  // Frame 3 — arrow tip reaches R6; all rows R0-R6 painted at full head width (0x3E)
+  // R4/R5 widened to 0x3E (were 0x1C — missing C1 and C5).
+  // R6 explicitly painted to 0x3E so rectangle is complete even when VESC battery bar is off.
   displayBuffer[3] |= 0x3E;
   displayBuffer[4] |= 0x3E;
-  displayBuffer[5] |= 0x1C;
-  updateDisplay();
-  delay(ANIMATION_DELAY);
-
-  ANIM_CLEAR();
-  displayBuffer[4] |= 0x3E;
   displayBuffer[5] |= 0x3E;
+  displayBuffer[6] |= 0x3E;
+  displayBuffer[7] |= 0x3E;
   updateDisplay();
   delay(ANIMATION_DELAY);
 

@@ -1,4 +1,5 @@
-﻿// V2.5-Evo - 2026-05-13 - SW33: Removed GPIO 9 from serialOff OUTPUT-LOW block (P_MAG reserved for DRV5032 Hall sensor)
+﻿// *** LATEST: V2.5-Evo - 2026-05-14 - SW55 — bootAnimation VI 250ms / voltage 1450ms; padlock at ~4.5s total boot ***
+// V2.5-Evo - 2026-05-13 - SW33: Removed GPIO 9 from serialOff OUTPUT-LOW block (P_MAG reserved for DRV5032 Hall sensor)
 // V2.5-Evo - 2026-05-13 - SW33b: Hall mag reading state machine added to loop(); drives bt_dot_state
 // V2.5-Evo - 2026-05-03 - Removed commented-out SPIFFS.remove dead code (LOW audit cleanup)
 // V2.5-Evo - 2026-04-25 - P7: Simplified getTxGPSLoop() gate to gps_en only; added runRtmLoop() call in loop()

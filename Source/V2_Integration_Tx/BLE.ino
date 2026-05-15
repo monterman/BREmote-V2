@@ -183,6 +183,7 @@ void initBLE() {
   nus->start();
 
   NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
+  adv->setAdvertisingDuration(0);   // advertise indefinitely — survives water disconnects
   NimBLEAdvertisementData advData;
   advData.setName(devName);
   advData.addServiceUUID(NUS_SERVICE_UUID);

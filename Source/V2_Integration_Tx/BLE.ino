@@ -12,6 +12,7 @@
 #define NUS_SERVICE_UUID  "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
 #define NUS_RX_CHAR_UUID  "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
 #define NUS_TX_CHAR_UUID  "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
+#define COMM_FW_VERSION   0x00
 #define COMM_GET_VALUES   0x04
 
 static NimBLEServer*         bleServer     = nullptr;
@@ -74,6 +75,34 @@ static int parseVescCommand(const uint8_t* data, size_t len) {
   if (crc16(data + 2, plen) != crc_recv) return -1;
   if (data[4 + plen] != 0x03) return -1;
   return data[2];  // command byte is first payload byte
+}
+
+// COMM_FW_VERSION (0x00) response — required handshake before VESC Tool shows gauges.
+// Payload: cmd | major | minor | hw_name\0 | uuid[12] | pairing | fw_test | hw_type | custom_cfg
+static void sendVescFwVersion() {
+  if (!bleRunning || !nusTxChar) return;
+  if (!bleServer->getConnectedCount()) return;
+
+  uint8_t pl[64];
+  int idx = 0;
+
+  pl[idx++] = COMM_FW_VERSION;
+  pl[idx++] = 6;                          // major
+  pl[idx++] = 5;                          // minor — Floaty supports 6.02/6.05/6.06
+  const char* hwName = "BREmote";
+  memcpy(pl + idx, hwName, strlen(hwName) + 1);   // includes null terminator
+  idx += (int)strlen(hwName) + 1;
+  memset(pl + idx, 0, 12);               // STM32 UUID — zeroed
+  idx += 12;
+  pl[idx++] = 0;                          // pairing_done
+  pl[idx++] = 0;                          // fw_test_version_number
+  pl[idx++] = 0;                          // hw_type: 0 = VESC
+  pl[idx++] = 0;                          // custom_config
+
+  uint8_t frame[72];
+  int flen = buildVescFrame(frame, pl, (uint8_t)idx);
+  nusTxChar->setValue(frame, flen);
+  nusTxChar->notify();
 }
 
 // Build and send COMM_GET_VALUES response (VESC Tool / Floaty format)
@@ -149,8 +178,11 @@ class NusRxCB : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic* pChar, NimBLEConnInfo&) override {
     auto val = pChar->getValue();
     int cmd = parseVescCommand((const uint8_t*)val.data(), val.length());
-    if (cmd == COMM_GET_VALUES) {
-      vescProtoMode = true;   // switch to request-driven VESC protocol
+    if (cmd == COMM_FW_VERSION) {
+      vescProtoMode = true;
+      sendVescFwVersion();
+    } else if (cmd == COMM_GET_VALUES) {
+      vescProtoMode = true;
       sendVescGetValues();
     }
   }
@@ -190,10 +222,20 @@ void initBLE() {
   nus->start();
 
   NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
+
+  // Main advert: flags (3 B) + NUS UUID 128-bit (18 B) = 21 B — fits in 31-byte BLE limit.
+  // Putting UUID here ensures VESC Tool / Floaty UUID scan filters find this device.
+  // Name + UUID together = 37 B and silently truncates the UUID, making the device invisible.
   NimBLEAdvertisementData advData;
-  advData.setName(devName);
+  advData.setFlags(0x06);               // LE General Discoverable | BR/EDR Not Supported
   advData.addServiceUUID(NUS_SERVICE_UUID);
   adv->setAdvertisementData(advData);
+
+  // Scan response: device name — sent on active SCAN_REQ; visible as device label in app list.
+  NimBLEAdvertisementData scanRsp;
+  scanRsp.setName(devName);
+  adv->setScanResponseData(scanRsp);
+
   NimBLEDevice::startAdvertising();
 
   bleRunning = true;

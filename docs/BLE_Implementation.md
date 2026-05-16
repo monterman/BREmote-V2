@@ -113,12 +113,12 @@ Example: `BRemote-TX-A4`
 
 ---
 
-## Confirmed Compatible Apps
+## App Compatibility
 
-| App | Platform | Notes |
-|---|---|---|
-| VESC Tool | iOS / Android | Full gauge support — Temp, Motor A, Duty, Voltage, RPM |
-| Floaty | iOS / Android | Efoil-optimised UI, same protocol, FW 6.05 in range |
+| App | Platform | Status | Notes |
+|---|---|---|---|
+| VESC Tool | iOS / Android | ✓ Working | Full gauge support — Temp, Motor A, Duty, Voltage, RPM |
+| Floaty | iOS / Android | ✗ Blocked | Requires motor config (`COMM_GET_MCCONF` / `COMM_GET_APPCONF`) after FW handshake. Implementing those responses risks a deeper cascade of required commands. Floaty also paywalls most features. Not worth pursuing. |
 
 ---
 
@@ -126,7 +126,7 @@ Example: `BRemote-TX-A4`
 
 - `amp_hours`, `watt_hours`, `avg_input_current` always report 0 — not present in LoRa telemetry struct
 - Single VESC client only — NimBLE configured for 1 connection
-- No COMM_GET_MCCONF / COMM_GET_APPCONF handlers — config reads fail silently (not needed for gauges)
+- No `COMM_GET_MCCONF` / `COMM_GET_APPCONF` handlers — Floaty requires these after FW handshake; implementing them risks a cascade of additional required responses and is intentionally deferred
 - BLE and field operation: unplug USB before riding; USB power triggers charging mode and blocks BLE init
 
 ---

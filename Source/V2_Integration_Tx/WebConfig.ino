@@ -19,7 +19,10 @@ void webCfgResetCalibration(confStruct& conf)
 
 void webCfgNotifyTxUnlocked()
 {
-  web_cfg_should_shutdown = true;
+  // Stop the AP immediately and synchronously — deferred flag-only approach left it
+  // running during the unlock animation, causing WiFi stack tasks to preempt Core 0
+  // animation frames. Direct call ensures AP is gone before unlockAnimation() runs.
+  webCfgStopService(WEB_CFG_SHUTDOWN_REASON);
 }
 
 #endif // WIFI_ENABLED

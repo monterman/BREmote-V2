@@ -57,21 +57,7 @@ void getVescLoop()
   }
 }
 
-// VESC custom float32 encoding (exponent bias 126 instead of IEEE-754's 127).
-// Needed for WattHours — VESC sends watt_hours as float32_auto.
-static float buffer_get_float32_auto(const uint8_t *buf, int32_t *idx) {
-  uint32_t r = ((uint32_t)buf[*idx])     << 24 |
-               ((uint32_t)buf[*idx + 1]) << 16 |
-               ((uint32_t)buf[*idx + 2]) << 8  |
-               (uint32_t) buf[*idx + 3];
-  *idx += 4;
-  int e = (int)((r >> 23) & 0xFF) - 126;
-  r &= 0x807FFFFF;
-  if (e != -126) r |= 0x3F800000;
-  float f;
-  memcpy(&f, &r, sizeof(f));
-  return ldexpf(f, e);
-}
+// buffer_get_float32_auto() is provided by vesc_buffer.cpp (exponent bias 126, not IEEE-754 127).
 
 bool getValuesSelective(Stream* interface)
 {

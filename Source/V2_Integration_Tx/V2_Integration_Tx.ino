@@ -57,6 +57,8 @@ void renderRtmInfoDisplay();
 // BLE Functions (defined in BLE.ino)
 void initBLE();
 void bleTelemetryLoop();
+// Aux control command (defined in Radio.ino — queues 0xF4 meta-packet burst to RX)
+void sendAuxCommand(uint8_t flags);
 // Cross-Tab Subsystem Initializers
 void startupRadio();
 void startupDisplay();

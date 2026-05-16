@@ -392,6 +392,7 @@ struct vesc_struct {
   int16_t duty = 0;
   int32_t erpm = 0;
   int16_t batVolt = 0;
+  int32_t wh_raw = 0;          // session Wh×10 from VESC float32_auto; 0 = unavailable
   uint8_t fault_code = 0;
   unsigned long last_packet = 0;
 };
@@ -449,18 +450,29 @@ void webCfgNotifyRxConnected();
 inline void webCfgNotifyRxConnected() {}  // No-op stub when WiFi disabled
 #endif
 
+// V2.5-Evo - 2026-05-16 - feat(telemetry): expand LoRa packet 8→19 bytes + 0xF4 aux meta-packet
 //Telemetry to send, MUST BE 8-bit!!
-// V2.5-Evo - 2026-04-27 - P8: Added rtm_distance at index 5; link_quality moved to index 6 (must remain last).
-// Encoding: 0-99 = tenths of meter (0.0–9.9 m), 100-254 = meters offset (value-90 = actual m, so 100=10m, 199=109m), 255 = N/A.
+// V2.5-Evo - 2026-04-27 - P8: rtm_distance at index 5; encoding: 0-99=tenths of m, 100-254=(value-90) whole m, 255=N/A.
 struct __attribute__((packed)) TelemetryPacket {
-    uint8_t foil_bat = 0xFF;      // index 0 — battery % 0-100
-    uint8_t foil_temp = 0xFF;     // index 1 — FET temp degC
-    uint8_t foil_speed = 0xFF;    // index 2 — speed km/h
-    uint8_t error_code = 0;       // index 3 — fault flags
-    uint8_t foil_power = 0xFF;    // index 4 — power (watts/50); 0xFF = not available
-    uint8_t rtm_distance = 0xFF;  // index 5 — RX→TX distance during RTM/FM; see encoding above; 0xFF = N/A
-    uint8_t foil_motor_amps = 0xFF; // index 6 — SW50: motor current in whole amps (0=0A…250=250A); 0xFF=N/A (no VESC_MORE_VALUES or VESC offline)
-    uint8_t link_quality = 0;     // index 7 (must be last)
+    uint8_t foil_bat = 0xFF;          // index 0 — battery % 0-100
+    uint8_t foil_temp = 0xFF;         // index 1 — FET temp degC
+    uint8_t foil_speed = 0xFF;        // index 2 — speed km/h
+    uint8_t error_code = 0;           // index 3 — fault flags
+    uint8_t foil_power = 0xFF;        // index 4 — power (watts/50); 0xFF = N/A
+    uint8_t rtm_distance = 0xFF;      // index 5 — RX→TX distance; see encoding above; 0xFF = N/A
+    uint8_t foil_motor_amps = 0xFF;   // index 6 — motor current whole amps; 0xFF = N/A
+    uint8_t foil_voltage = 0xFF;      // index 7 — battery voltage V×2 (0.5V res); 0xFF = N/A
+    uint8_t foil_duty = 0xFF;         // index 8 — duty cycle 0-100%; 0xFF = N/A
+    uint8_t foil_erpm_lo = 0xFF;      // index 9 — |ERPM|÷100 low byte; 0xFFFF when both=0xFF means N/A
+    uint8_t foil_erpm_hi = 0xFF;      // index 10 — |ERPM|÷100 high byte
+    uint8_t foil_wh_lo = 0xFF;        // index 11 — session Wh×10 low byte; 0xFFFF when both=0xFF means N/A
+    uint8_t foil_wh_hi = 0xFF;        // index 12 — session Wh×10 high byte
+    uint8_t rx_heading = 0xFF;        // index 13 — GPS COG÷2 (0-179→0-358°); 0xFF = N/A
+    uint8_t fm_heading_err = 127;     // index 14 — bearing error+127; 127 = no data
+    uint8_t fm_status = 0;            // index 15 — [7]=aux2_on [6]=aux1_on [5]=vesc_online [4]=rx_wetness [3:2]=heading_conf [1]=rtm_active [0]=fm_active
+    uint8_t reserved_tx_imu = 0xFF;   // index 16 — RESERVED: future TX IMU wipeout flags
+    uint8_t rx_bearing_to_tx = 0xFF;  // index 17 — bearing from buggy toward rider÷2; 0xFF = N/A
+    uint8_t link_quality = 0;         // index 18 (must be last)
 } telemetry;
 
 /*
@@ -515,6 +527,7 @@ volatile unsigned long get_vesc_timer = 0;
 volatile unsigned long last_uart_packet = 0;
 
 volatile uint8_t bind_pin_state = 0;
+volatile uint8_t rx_aux_flags = 0;   // set by 0xF4 meta-packet: bit0=strobe, bit3=find-me
 
 float fbatVolt = 0.0;
 float noload_offset = 0.0;
@@ -528,8 +541,8 @@ unsigned long percent_last_thr_change = 0;
 // VESC speed matches GPS speed during active RTM. gps_en + vesc_erpm_per_kmh>0 required.
 #define VESC_MORE_VALUES
 #ifdef VESC_MORE_VALUES
-  #define VESC_PACK_LEN 23
-  uint8_t vescRelayBuffer[30];
+  #define VESC_PACK_LEN 27  // +4 bytes for watt_hours (float32_auto)
+  uint8_t vescRelayBuffer[34];
 #else
   #define VESC_PACK_LEN 9
   uint8_t vescRelayBuffer[15];

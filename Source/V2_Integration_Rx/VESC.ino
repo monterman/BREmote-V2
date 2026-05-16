@@ -48,7 +48,29 @@ void getVescLoop()
     telemetry.foil_temp        = 0xFF;
     telemetry.foil_power       = 0xFF;
     telemetry.foil_motor_amps  = 0xFF;
+    telemetry.foil_voltage     = 0xFF;
+    telemetry.foil_duty        = 0xFF;
+    telemetry.foil_erpm_lo     = 0xFF;
+    telemetry.foil_erpm_hi     = 0xFF;
+    telemetry.foil_wh_lo       = 0xFF;
+    telemetry.foil_wh_hi       = 0xFF;
   }
+}
+
+// VESC custom float32 encoding (exponent bias 126 instead of IEEE-754's 127).
+// Needed for WattHours — VESC sends watt_hours as float32_auto.
+static float buffer_get_float32_auto(const uint8_t *buf, int32_t *idx) {
+  uint32_t r = ((uint32_t)buf[*idx])     << 24 |
+               ((uint32_t)buf[*idx + 1]) << 16 |
+               ((uint32_t)buf[*idx + 2]) << 8  |
+               (uint32_t) buf[*idx + 3];
+  *idx += 4;
+  int e = (int)((r >> 23) & 0xFF) - 126;
+  r &= 0x807FFFFF;
+  if (e != -126) r |= 0x3F800000;
+  float f;
+  memcpy(&f, &r, sizeof(f));
+  return ldexpf(f, e);
 }
 
 bool getValuesSelective(Stream* interface)
@@ -65,13 +87,15 @@ bool getValuesSelective(Stream* interface)
   #define ERPM 7
   
   //Byte 3:
-  #define BatVolt 0
+  #define BatVolt   0
+  #define WattHours 3
 
   vesc_command[1] = 0;
   vesc_command[2] = 0;
   vesc_command[3] = (1<<BatVolt);
-  
+
   #ifdef VESC_MORE_VALUES
+    vesc_command[3] |= (1<<WattHours);
     vesc_command[4] = (1<<FET_TEMP) + (1<<MotCurrent) + (1<<BatCurrent) + (1<<Duty) + (1<<ERPM);
   #else
     vesc_command[4] = (1<<FET_TEMP);
@@ -101,6 +125,9 @@ bool getValuesSelective(Stream* interface)
       #endif
 
       vesc.batVolt = buffer_get_int16(message, &cnt);
+      #ifdef VESC_MORE_VALUES
+        vesc.wh_raw = (int32_t)(buffer_get_float32_auto(message, &cnt) * 10.0f);
+      #endif
       xSemaphoreGive(vescMutex);
     }
 
@@ -114,6 +141,21 @@ bool getValuesSelective(Stream* interface)
       if (watts < 0.0f) watts = 0.0f;
       telemetry.foil_power      = (uint8_t)constrain(watts / 50.0f, 0.0f, 255.0f);
       telemetry.foil_motor_amps = (uint8_t)constrain((float)vesc.motCur / 100.0f, 0.0f, 250.0f);
+
+      telemetry.foil_voltage = (fbatVolt > 0.1f)
+          ? (uint8_t)constrain(fbatVolt * 2.0f, 0.0f, 254.0f) : 0xFF;
+
+      float duty_pct = fabsf((float)vesc.duty / 10.0f);
+      telemetry.foil_duty = (duty_pct <= 100.0f) ? (uint8_t)(duty_pct) : 0xFF;
+
+      uint16_t erpm_s = (uint16_t)constrain((long)(abs(vesc.erpm) / 100), 0L, 0xFFFEL);
+      telemetry.foil_erpm_lo = (uint8_t)(erpm_s & 0xFF);
+      telemetry.foil_erpm_hi = (uint8_t)(erpm_s >> 8);
+
+      uint16_t wh_val = (vesc.wh_raw >= 0 && vesc.wh_raw <= 0xFFFE)
+                        ? (uint16_t)vesc.wh_raw : 0xFFFF;
+      telemetry.foil_wh_lo = (uint8_t)(wh_val & 0xFF);
+      telemetry.foil_wh_hi = (uint8_t)(wh_val >> 8);
 
       #ifdef DEBUG_VESC
       Serial.print("V="); Serial.print(fbatVolt);

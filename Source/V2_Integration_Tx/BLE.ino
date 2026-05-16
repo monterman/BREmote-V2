@@ -4,7 +4,7 @@
 // Auto-detects app type: VESC binary requests → VESC protocol mode (request-driven).
 // No VESC requests → CSV push every 500ms (Serial BT Terminal compat).
 // Dependency: NimBLE-Arduino 2.x (install via Arduino Library Manager).
-// v_in shows 0.0V until RX telemetry is extended to include foil_voltage (future).
+// v_in, duty, rpm now decoded from expanded 19-byte RX packet (foil_voltage, foil_duty, foil_erpm).
 
 #include <NimBLEDevice.h>
 #include <esp_mac.h>
@@ -78,28 +78,35 @@ static int parseVescCommand(const uint8_t* data, size_t len) {
 
 // Build and send COMM_GET_VALUES response (VESC Tool / Floaty format)
 // Fields mapped from LoRa telemetry struct. Unknown fields sent as 0.
-// VESC Tool gauges that work: Temp, Motor Amps, Power (W).
-// VESC Tool gauges that show 0: Voltage, RPM, Duty, Ah, Wh (no RX data yet).
+// VESC Tool gauges that work: Temp, Motor Amps, Power (W), Voltage, Duty, RPM.
+// VESC Tool gauges that show 0: Ah, Wh (not tracked).
 static void sendVescGetValues() {
   if (!bleRunning || !nusTxChar) return;
   if (!bleServer->getConnectedCount()) return;
 
-  float temp  = (telemetry.foil_temp       != 0xFF) ? (float)telemetry.foil_temp       : 0.0f;
-  float mAmps = (telemetry.foil_motor_amps != 0xFF) ? (float)telemetry.foil_motor_amps : 0.0f;
+  float temp      = (telemetry.foil_temp       != 0xFF) ? (float)telemetry.foil_temp       : 0.0f;
+  float mAmps     = (telemetry.foil_motor_amps != 0xFF) ? (float)telemetry.foil_motor_amps : 0.0f;
+  float v_in      = (telemetry.foil_voltage    != 0xFF) ? (float)telemetry.foil_voltage * 0.5f : 0.0f;
+  float duty_frac = (telemetry.foil_duty       != 0xFF) ? (float)telemetry.foil_duty / 100.0f  : 0.0f;
+  float rpm       = 0.0f;
+  {
+    uint16_t es = ((uint16_t)telemetry.foil_erpm_hi << 8) | telemetry.foil_erpm_lo;
+    if (es != 0xFFFF) rpm = (float)es * 100.0f;
+  }
 
   uint8_t pl[80];
   int idx = 0;
 
   pl[idx++] = COMM_GET_VALUES;
-  appendFloat16(pl, idx, temp,  10.0f);     // temp_fet (°C × 10)
-  appendFloat16(pl, idx, temp,  10.0f);     // temp_motor — same, only one sensor available
-  appendFloat32(pl, idx, mAmps, 100.0f);    // avg_motor_current (A × 100)
-  appendFloat32(pl, idx, 0.0f,  100.0f);    // avg_input_current — not available
-  appendFloat32(pl, idx, 0.0f,  100.0f);    // avg_id
-  appendFloat32(pl, idx, 0.0f,  100.0f);    // avg_iq
-  appendFloat16(pl, idx, 0.0f,  1000.0f);   // duty_cycle — not available
-  appendFloat32(pl, idx, 0.0f,  1.0f);      // rpm — not available
-  appendFloat16(pl, idx, 0.0f,  10.0f);     // v_in — 0V until RX telemetry adds foil_voltage
+  appendFloat16(pl, idx, temp,      10.0f);    // temp_fet (°C × 10)
+  appendFloat16(pl, idx, temp,      10.0f);    // temp_motor — same, only one sensor
+  appendFloat32(pl, idx, mAmps,    100.0f);    // avg_motor_current (A × 100)
+  appendFloat32(pl, idx, 0.0f,     100.0f);    // avg_input_current — not available
+  appendFloat32(pl, idx, 0.0f,     100.0f);    // avg_id
+  appendFloat32(pl, idx, 0.0f,     100.0f);    // avg_iq
+  appendFloat16(pl, idx, duty_frac, 1000.0f);  // duty_cycle (fraction × 1000)
+  appendFloat32(pl, idx, rpm,        1.0f);    // rpm (|ERPM|)
+  appendFloat16(pl, idx, v_in,       10.0f);   // v_in (battery voltage)
   appendFloat32(pl, idx, 0.0f,  10000.0f);  // amp_hours
   appendFloat32(pl, idx, 0.0f,  10000.0f);  // amp_hours_charged
   appendFloat32(pl, idx, 0.0f,  10000.0f);  // watt_hours

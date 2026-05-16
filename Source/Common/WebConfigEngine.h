@@ -566,8 +566,22 @@ static void webCfgHandleDeleteLog()
 static void webCfgHandleDeleteAllLogs()
 {
   webCfgLogReq("logs_delete_all", "");
-  deleteAllLogFiles();
-  webCfgSendJson(200, "{\"ok\":1}");
+  // Inline — deleteAllLogFiles() in Logger.ino isn't visible here at include time.
+  // Mirrors the same logic: iterate SPIFFS, remove all .log files.
+  extern bool logging_active;
+  extern String currentLogFileName;
+  File root = SPIFFS.open("/");
+  File f = root.openNextFile();
+  int deleted = 0;
+  while (f) {
+    String fname = String("/") + f.name();
+    f = root.openNextFile();
+    if (!fname.endsWith(".log")) continue;
+    if (logging_active && fname == currentLogFileName) continue;
+    SPIFFS.remove(fname);
+    deleted++;
+  }
+  webCfgSendJson(200, "{\"ok\":1,\"deleted\":" + String(deleted) + "}");
 }
 #endif
 

@@ -236,6 +236,7 @@
     </div>
     <div class="row" style="gap:6px">
       <button class="btn sec" onclick="refreshLogList()" id="logs-refresh-btn" style="font-size:12px">Refresh List</button>
+      <button class="btn danger" onclick="deleteAllLogs()" id="logs-deleteall-btn" style="font-size:12px">Delete All</button>
       <span id="logs-status" style="font-size:12px;color:#9ca3af"></span>
     </div>
     <div id="logs-list" style="flex:1;overflow:auto"></div>
@@ -1384,6 +1385,24 @@ async function deleteLogFile(filename) {
     await refreshLogList();
   } catch (e) {
     status.textContent = 'Delete failed: ' + e.message;
+  }
+}
+
+async function deleteAllLogs() {
+  if (!confirm('Delete ALL log files? This cannot be undone.')) return;
+  if (!sopen) { document.getElementById('logs-status').textContent = 'Not connected.'; return; }
+  const status = document.getElementById('logs-status');
+  const btn = document.getElementById('logs-deleteall-btn');
+  btn.disabled = true;
+  status.textContent = 'Deleting all logs...';
+  try {
+    await sendSerialCommand('?deleteallogs', 5000);
+    status.textContent = 'All logs deleted.';
+    await refreshLogList();
+  } catch (e) {
+    status.textContent = 'Delete all failed: ' + e.message;
+  } finally {
+    btn.disabled = false;
   }
 }
 </script>

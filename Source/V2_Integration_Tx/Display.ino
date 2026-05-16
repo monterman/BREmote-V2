@@ -84,8 +84,15 @@ bool isDisplayActivityEnabled()
 void startupDisplay()
 {
   Serial.print("Starting Display...");
-  if(!beginDisplay())
-  {
+  // HT16K33 tPOR ≤ 1ms but PCB power-rail settle can take longer.
+  // Retry for up to 100ms before declaring failure — prevents boot hang
+  // on first power cycle when the display chip isn't ready yet.
+  bool found = false;
+  for (int i = 0; i < 20 && !found; i++) {
+    found = beginDisplay();
+    if (!found) delay(5);
+  }
+  if (!found) {
     Serial.println(" Failed");
     while(1) delay(100);
   }

@@ -10,7 +10,7 @@
 // FIELD SERVICE NOTE
 //
 // V2.5-Evo - 2026-04-22: sizeof(confStruct) changed from 108 to 112
-// bytes (gps_chip_type added). On the first V3 flash, SPIFFS
+// bytes (gps_chip_type added). On the first V2.5-Evo flash, SPIFFS
 // will detect the size mismatch and reset ALL settings to
 // defaults. After flashing, you must:
 //   1) Re-pair TX and RX
@@ -171,7 +171,7 @@ void configureGPS() {
   // This must happen before any Serial1 traffic regardless of chip type.
   setUartMux(1);
 
-  // V3 fix (I-2): Increase RX buffer to 512 bytes before any Serial1.begin().
+  // V2.5-Evo fix (I-2): Increase RX buffer to 512 bytes before any Serial1.begin().
   // At 10Hz (M10) the GPS emits multiple NMEA sentences per cycle; the default
   // 256-byte buffer can overflow between loop ticks, causing sentence fragments
   // that confuse TinyGPS++. setRxBufferSize() MUST be called before begin().
@@ -331,7 +331,7 @@ void getGPSLoop()
   // V2.5-Evo - 2026-04-25 - Fix: use isValid() not isUpdated() for speed check — isUpdated() fails when stationary blocking Phase B
   if (!newData || !gps.location.isValid() || !gps.speed.isValid()) {
     // No valid fix or no valid speed — not a spoof event, just no usable data.
-    telemetry.foil_speed = 0xFF;  // 0xFF = no data (V3 fix N-4: 99 collides with real speed)
+    telemetry.foil_speed = 0xFF;  // 0xFF = no data (V2.5-Evo fix N-4: 99 collides with real speed)
   } else {
     double cur_lat   = gps.location.lat();
     double cur_lng   = gps.location.lng();

@@ -1,4 +1,4 @@
-// RX-specific SPIFFS definitions.
+﻿// RX-specific SPIFFS definitions.
 // Shared engine is in ../Common/SPIFFSEngine.h (included via BREmote_V2_Rx.h).
 
 void spiffsFormatNotify(bool starting)
@@ -88,7 +88,7 @@ bool readBCFromSPIFFS() {
         return false;
     }
 
-    // V3 fix (Bug 5): guard against heap out-of-bounds read on corrupt/truncated SPIFFS file.
+    // V2.5-Evo fix (Bug 5): guard against heap out-of-bounds read on corrupt/truncated SPIFFS file.
     // We need decodedData[0] (noload_offset) + decodedData[1..101] (bc_arr) = 102 bytes minimum.
     // Without this check a short file causes memcpy to walk past the end of the allocation.
     // Mirrors the identical guard in readConfFromSPIFFS() in SPIFFSEngine.h.

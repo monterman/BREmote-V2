@@ -264,7 +264,7 @@ void initTxGPS()
       Serial1.write(setGNSS, sizeof(setGNSS));
       Serial1.flush();
 
-      // V3 fix (I-1): Disable verbose NMEA sentences on M10 path — same filtering applied
+      // V2.5-Evo fix (I-1): Disable verbose NMEA sentences on M10 path — same filtering applied
       // on BN-220 path. At 10Hz the omission is worse: ~800 bytes/s of GPGSV/GPGLL/GPVTG
       // that TinyGPS++ never uses, needlessly filling the 512-byte RX buffer.
       // UBX-CFG-MSG: B5 62 06 01 03 00 [NMEA class F0] [msg id] [rate=0] CK_A CK_B

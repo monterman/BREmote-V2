@@ -536,7 +536,7 @@ uint8_t percent_last_val = 0xFF;
 uint8_t percent_last_thr = 1;
 unsigned long percent_last_thr_change = 0;
 
-// V3: ERPM added to VESC selective-get mask; payload length is 23 bytes.
+// V2.5-Evo: ERPM added to VESC selective-get mask; payload length is 23 bytes.
 // P7: ERPM is also read by Phase C RTM anti-spoofing (RTMState.ino) to verify
 // VESC speed matches GPS speed during active RTM. gps_en + vesc_erpm_per_kmh>0 required.
 #define VESC_MORE_VALUES

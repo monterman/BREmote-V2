@@ -95,7 +95,7 @@ bool getValuesSelective(Stream* interface)
   {
     int32_t cnt = 5;
 
-    // V3 fix (Bug 2): guard ALL vesc struct writes inside the mutex block.
+    // V2.5-Evo fix (Bug 2): guard ALL vesc struct writes inside the mutex block.
     // convertToLogData() on Core 0 (loggerTask) reads these same fields simultaneously.
     // If the take times out (50ms), skip this packet's struct update entirely —
     // one missed update is safer than a torn cross-core write.

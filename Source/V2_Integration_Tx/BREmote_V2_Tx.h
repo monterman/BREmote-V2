@@ -57,7 +57,7 @@
 #include "SPIFFS.h"
 #include "mbedtls/base64.h"
 
-// --- V3: TX GPS support (BN-220 on Serial1) ---
+// --- V2.5-Evo: TX GPS support (BN-220 on Serial1) ---
 // Added for Priority 1: read TX GPS speed and drive the SP display mode
 // when usrConf.speed_src selects a TX-GPS option (2=km/h, 3=knots, 5=mph).
 // Library: TinyGPSPlus 1.0.3 by Mikal Hart (same version used on RX).
@@ -84,7 +84,7 @@ struct Fc3x7Entry { uint8_t col[3]; };
 /*
 ** Structs
 */
-// NOTE: Not packed — sizeof is 96 (V3, was 92 before gps_chip_type, 80 in V2). Float forces 4-byte struct alignment.
+// NOTE: Not packed — sizeof is 96 (V2.5-Evo, was 92 before gps_chip_type, 80 in V2). Float forces 4-byte struct alignment.
 // Do not add __attribute__((packed)), it would break existing SPIFFS configs and the web config tool.
 struct confStruct {
     //Version
@@ -260,10 +260,10 @@ confStruct defaultConf = {  // V2.5-Evo default configuration — tuned for mont
   50,            // steer_expo
   0,             // steer_expo1
   0.000185662f,  // ubat_cal
-  0,             // gps_en — V3: default off; opt in via web config (claiming Serial1 on every device is wrong)
+  0,             // gps_en — V2.5-Evo: default off; opt in via web config (claiming Serial1 on every device is wrong)
   1,             // followme_mode
   1,             // kalman_en
-  0,             // speed_src — V3: default RX km/h; TX GPS source requires explicit opt-in
+  0,             // speed_src — V2.5-Evo: default RX km/h; TX GPS source requires explicit opt-in
   2000,          // tx_gps_stale_timeout_ms
   1,             // paired
   {0x46, 0xCB, 0xCC}, // own_address (Hex formatted)
@@ -345,7 +345,7 @@ TaskHandle_t vibrationTaskHandle = NULL;  // Finding 4-1: saved so ?printtasks c
 
 extern TaskHandle_t loopTaskHandle;
 
-// --- V3: TX GPS globals ---
+// --- V2.5-Evo: TX GPS globals ---
 // gps_tx   : TinyGPS++ parser instance fed by Serial1 (BN-220).
 // tx_gps_speed : Current speed in the UNIT selected by usrConf.speed_src.
 //                Sentinel 0xFF = no fix / no valid data (matches existing
@@ -357,7 +357,7 @@ extern TaskHandle_t loopTaskHandle;
 //                these accesses; no cross-core synchronization is needed.
 TinyGPSPlus gps_tx;
 volatile uint8_t tx_gps_speed = 0xFF;
-// --- End V3: TX GPS globals ---
+// --- End V2.5-Evo: TX GPS globals ---
 
 /*
 ** Variables
@@ -529,7 +529,7 @@ String web_cfg_last_err = "";
 //Misc Pins
 #define P_MOT 0
 
-// V3: GPS UART pins for TX (BN-220 on Serial1).
+// V2.5-Evo: GPS UART pins for TX (BN-220 on Serial1).
 // Same numeric assignment as RX (P_U1_RX=18, P_U1_TX=19) — shared physical
 // convention across TX and RX boards. Used by initTxGPS() and getTxGPSLoop()
 // in Tx/GPS.ino. No UART mux on TX (unlike RX), so Serial1 talks to the

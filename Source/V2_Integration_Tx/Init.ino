@@ -75,7 +75,7 @@ void initTasks()
 
 void initWatchdog()
 {
-  // V3: Watchdog handled natively by Arduino ESP32 Core.
+  // V2.5-Evo: Watchdog handled natively by Arduino ESP32 Core.
   // Custom WDT init removed to prevent 1000ms panic reboots during TX unlock / WiFi shutdown.
   Serial.println("WDT: Handled by native Arduino Core");
 }

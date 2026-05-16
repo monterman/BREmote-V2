@@ -615,7 +615,7 @@ void renderOperationalDisplay()
     }
 
     // V2.5-Evo - 2026-04-27 - P8: ET error (code=20=LET_T) shows "--" and auto-clears after 3s.
-    // ET is absent from V3 RX source; this guard is defensive for legacy or future paths.
+    // ET is absent from V2.5-Evo RX source; this guard is defensive for legacy or future paths.
     // System stays in manual mode; no RTM/FM engagement; no vibration on ET.
     static unsigned long et_show_ms = 0;
     if (remote_error == LET_T)

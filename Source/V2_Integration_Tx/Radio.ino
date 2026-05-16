@@ -435,7 +435,7 @@ void waitForTelemetry(void *parameter)
           }
 
           // Speed conversion: RX sends speed in km/h; convert to the unit selected in web config.
-          // 0xFF = no GPS data sentinel (V3 fix: old V2 sentinel 99 km/h removed — collided with real speed)
+          // 0xFF = no GPS data sentinel (V2.5-Evo fix: old V2 sentinel 99 km/h removed — collided with real speed)
           if (rcvArray[3] == 2 && telemetry.foil_speed != 0xFF)
           {
               if (usrConf.speed_src == 1) {

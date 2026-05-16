@@ -117,8 +117,7 @@ Example: `BRemote-TX-A4`
 
 | App | Platform | Status | Notes |
 |---|---|---|---|
-| VESC Tool | iOS / Android | ✓ Working | Full gauge support — Temp, Motor A, Duty, Voltage, RPM |
-| Floaty | iOS / Android | ✗ Blocked | Requires motor config (`COMM_GET_MCCONF` / `COMM_GET_APPCONF`) after FW handshake. Implementing those responses risks a deeper cascade of required commands. Floaty also paywalls most features. Not worth pursuing. |
+| VESC Tool | iOS / Android | ✓ Working | Free. Full gauge support — Temp, Motor A, Duty, Voltage, RPM. Recommended. |
 
 ---
 

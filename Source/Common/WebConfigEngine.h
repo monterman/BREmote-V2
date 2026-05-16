@@ -562,6 +562,13 @@ static void webCfgHandleDeleteLog()
     webCfgSendJson(500, "{\"ok\":0,\"err\":\"Delete failed\"}");
   }
 }
+
+static void webCfgHandleDeleteAllLogs()
+{
+  webCfgLogReq("logs_delete_all", "");
+  deleteAllLogFiles();
+  webCfgSendJson(200, "{\"ok\":1}");
+}
 #endif
 
 static void webCfgHandleNotFound()
@@ -611,6 +618,7 @@ void webCfgInit()
   webCfgServer.on("/api/logs/list", HTTP_GET, webCfgHandleListLogs);
   webCfgServer.on("/api/logs/download", HTTP_GET, webCfgHandleDownloadLog);
   webCfgServer.on("/api/logs/delete", HTTP_POST, webCfgHandleDeleteLog);
+  webCfgServer.on("/api/logs/delete_all", HTTP_POST, webCfgHandleDeleteAllLogs);
 #endif
 
   webCfgServer.onNotFound(webCfgHandleNotFound);

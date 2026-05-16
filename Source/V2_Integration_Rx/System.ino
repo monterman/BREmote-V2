@@ -318,6 +318,10 @@ void cmdDeleteLog(const String& params) {
   }
 }
 
+void cmdDeleteAllLogs(const String& params) {
+  deleteAllLogFiles();
+}
+
 void cmdLogRate(const String& params) {
   if (params.length() > 0) {
     float rate = params.toFloat();
@@ -666,6 +670,7 @@ static const SerialCommand kCommands[] = {
   {"list", "list saved log files", cmdListLogs},
   {"download", "<filename> download log as CSV", cmdDownloadLog},
   {"deletelog", "<filename> delete specific log file", cmdDeleteLog},
+  {"deleteallogs", "delete all log files (skips active log)", cmdDeleteAllLogs},
   {"lograte", "<Hz> set log rate (e.g. 1 or 0.1)", cmdLogRate},
   {"logstat", "dump logger + GPS state (diagnose why logging fails)", cmdLogStat},
   

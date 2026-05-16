@@ -602,6 +602,23 @@ void deleteLogFile(const char* filename) {
   }
 }
 
+void deleteAllLogFiles() {
+  File root = SPIFFS.open("/");
+  File file = root.openNextFile();
+  int deleted = 0, skipped = 0;
+  while (file) {
+    String fname = String("/") + file.name();
+    file = root.openNextFile();  // advance before remove
+    if (!fname.endsWith(".log")) continue;
+    if (logging_active && fname == currentLogFileName) { skipped++; continue; }
+    SPIFFS.remove(fname);
+    deleted++;
+  }
+  Serial.printf("LOG: deleted %d log file(s)", deleted);
+  if (skipped) Serial.printf(", skipped %d active", skipped);
+  Serial.println();
+}
+
 bool isLoggingActive() {
   return logging_active;
 }

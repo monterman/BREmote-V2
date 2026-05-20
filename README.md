@@ -487,7 +487,7 @@ Visible only when `gps_en = 1`. Located at the top-right corner of the digit are
 
 ### BT Status Dot (C7 R1)
 
-Located just below the GPS dot. Driven by `bt_dot_state`, controlled by the DRV5032 Hall sensor hold duration on P_MAG (GPIO 9). BREmote already uses Hall-effect sensors for throttle, toggle, and power switch — this adds a fourth on a free GPIO for magnet-based BLE activation. See [Hall Sensor Expansion guide](docs/Hall_Sensor_Expansion.md) for wiring and firmware details.
+Located just below the GPS dot. Driven by `bt_dot_state`, controlled by the DRV5032 Hall sensor hold duration on P_MAG (GPIO 9). BREmote already uses Hall-effect sensors for throttle, toggle, and power switch — this adds a fourth on a free GPIO for magnet-based BLE activation. See the [Hall Sensor Expansion guide](docs/Hall_Sensor_Expansion.md) for wiring and firmware details, or the [install tutorial](docs/Hall_Sensor_Install_Tutorial.md) for step-by-step fitting instructions and hardware options (including easier-to-solder alternatives to the SOT-23 package).
 
 | State | `bt_dot_state` | Meaning |
 |---|---|---|

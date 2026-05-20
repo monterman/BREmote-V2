@@ -14,6 +14,8 @@ These are the original LudwigBre design choices. Hall sensors are contactless, w
 
 ---
 
+> **Installing for the first time?** See the [step-by-step install tutorial](Hall_Sensor_Install_Tutorial.md) — includes hardware options, soldering notes, and troubleshooting.
+
 ## The Expansion — Adding a Fourth Sensor for BLE Control
 
 V2.5-Evo adds an optional fourth Hall sensor on **P_MAG (GPIO 9)** specifically for BLE activation without reaching for the phone. The idea: hold a small magnet against the outside of the enclosure to toggle BLE on/off while riding.

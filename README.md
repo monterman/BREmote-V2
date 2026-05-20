@@ -499,6 +499,22 @@ Releasing the magnet while `BT_DOT_FAST` → returns to `BT_DOT_OFF`. Short hold
 
 > BLE NUS (Nordic UART Service) is in **master** — field-confirmed ✅ (2026-05-16). The stack advertises as `BRemote-TX-XX` (last byte of BT MAC) and serves live VESC telemetry in VESC Tool binary protocol (auto-detected) or CSV push mode for generic NUS apps. Use **VESC Tool** (iOS/Android, free) — scan, connect to `BRemote-TX-XX`, and live gauges appear immediately: FET Temp, Motor Amps, Duty, Voltage, RPM. Enable via the `bt_enabled` SPIFFS field (0=off, 1=Hall/session default, 2=always on) or force for a single session with the `Throttle + LEFT toggle` boot gesture. **Boot on battery** — USB power blocks BLE init.
 
+### How to Enable BLE
+
+Three ways to activate BLE on the TX — choose whichever fits your use:
+
+| Method | How | Persists |
+|---|---|---|
+| **SPIFFS config** | Set `bt_enabled` via the Web Serial Config Tool or `?set bt_enabled 2` + `?save` over serial. `0`=always off, `1`=Hall/session mode (see below), `2`=always on (BLE starts 5 s after boot every ride). | Across reboots |
+| **Boot gesture** | Hold **Throttle + LEFT toggle** while powering on. BLE activates for that session regardless of `bt_enabled`. Display shows `bt`. | Session only |
+| **Hall sensor** (if fitted) | With `bt_enabled=1`: short magnet hold (400 ms – 4.9 s) → BT dot slow blink (BLE ready). Long hold (5 s+) from slow state → BT dot fast blink (BLE active and advertising). Short hold again → BLE off. | Until magnet gesture or reboot |
+
+> **Always boot on battery.** Plugging in USB during boot triggers the charger detection loop — `initTasks()` never runs and BLE never starts regardless of which method you use.
+
+Once BLE is active, open **VESC Tool** (iOS or Android, free), scan for `BRemote-TX-XX`, connect, and live gauges appear — FET temp, motor amps, duty, voltage, RPM.
+
+---
+
 ### R5 Proximity Bar
 
 Row R5 (just below the digit area, C0–C9) is a proximity indicator during RTM or FM. Blinks 1 s on / 500 ms off.

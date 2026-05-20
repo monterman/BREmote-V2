@@ -162,9 +162,9 @@ Blink pattern: 1000 ms on / 500 ms off.
 
 ![RTM Proximity Bar Animation](rtm_bar_animation.gif)
 
-**FM bar (Priority 10 — linear fill; center-expanding version pending):**
-- Current implementation: left-to-right linear fill. Full bar (10 pixels) = buggy close. Empty = buggy ≥30m away.
-- **Implemented** (2026-04-30): center-expanding from C4-C5 sweet spot. 2 pixels at C4+C5 = ideal follow distance. Bar expands outward symmetrically as buggy gets closer. Dark when ≥30 m away. Full bar (C0-C9) = buggy right next to user.
+**FM bar (Priority 10 — center-expanding from C4+C5):**
+- 2 pixels at C4+C5 = ideal following distance (sweet spot). Bar expands outward symmetrically as buggy gets closer. Dark when ≥30 m away. Full bar (C0-C9) = buggy right next to user.
+- Implemented 2026-04-30 in `Display.ino:updateR5ProximityBar()` — replaced an earlier left-to-right linear fill. Center-expanding is the current and only implementation.
 
 ![FM Proximity Bar Animation](fm_bar_animation.gif)
 
@@ -177,9 +177,7 @@ Blink pattern: 1000 ms on / 500 ms off.
 ## Status / Mode Codes (TX dot display)
 | Code | Meaning |
 |---|---|
-| rn | RTM armed (waiting for squeeze) — static 1.5s flash ×2 on arm; blinks 500ms during arm window |
-| AR | *(deprecated)* First squeeze detected (double-squeeze mode removed) |
-| RY | *(deprecated)* Ready for second squeeze (double-squeeze mode removed) |
+| rn | RTM armed — blinks during arm window; static 2s after arm confirmed |
 | St | RTM disengaged or pre-arm rejected — large-font `displayDigits(LET_S, LET_T)`, 2s |
 | FM 0 / FM 1 / FM 2 / FM 3 | FM mode confirmed — full-screen 2s flash (fontCompact3x7) |
 | -- | ET error or no-data — auto-clears after 3s |

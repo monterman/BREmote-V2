@@ -76,7 +76,7 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 | MCU | ESP32-C3 | ESP32-C3 |
 | Module | HT-CT62 (ESP32-C3 + SX1262 + WiFi + **BLE** integrated) | HT-CT62 |
 | Radio | SX1262 LoRa | SX1262 LoRa |
-| BLE | Built-in (ESP32-C3) — BLE telemetry output planned (`feature/bluetooth`) | Built-in (ESP32-C3) |
+| BLE | Built-in (ESP32-C3) — NUS + VESC Tool protocol on `feature/bluetooth`; `bt_enabled` SPIFFS config | Built-in (ESP32-C3) — RX BLE planned |
 | GPS | BN-220 or [HGLRC M100 Micro](https://www.hglrc.com/products/hglrc-m100_mini-gps) (M10 chip, no compass, 3.3V–5V) | BN-880 or [HGLRC M100-5883](https://www.hglrc.com/products/m100-5883-gps) (M10 chip + compass) |
 | Compass | None | QMC5883L (I2C) |
 | Display | HT16K33 dot matrix (I2C 0x70) | None |
@@ -185,7 +185,7 @@ Unavailable modes (no VESC lock or no GPS fix) are skipped automatically. `MA` r
 | --- | --- |
 | Boot + hold LEFT toggle | Calibration mode |
 | Boot + hold RIGHT toggle | Pairing mode |
-| Boot + THR + LEFT toggle | USB charging mode |
+| Boot + THR + LEFT toggle | Force BLE for session — activates BLE regardless of `bt_enabled` setting; display shows `bt`; persists until reboot |
 | Boot + THR + RIGHT toggle | Delete SPIFFS config (factory reset) |
 | LEFT tap (quick) | Arm combo window — next RIGHT hold within 3 s triggers FM |
 | RIGHT tap (quick) | Arm combo window — next LEFT hold within 3 s triggers RTM |
@@ -494,7 +494,7 @@ Located just below the GPS dot. Driven by `bt_dot_state`, controlled by the DRV5
 
 Releasing the magnet while `BT_DOT_FAST` → returns to `BT_DOT_OFF`. Short hold while `BT_DOT_SLOW` → toggles back to `BT_DOT_OFF`.
 
-> BLE GATT/radio layer is in active in-house development. The hardware (integrated HT-CT62 BLE radio), display indicator, and Hall sensor state machine are fully implemented in firmware. Radio pairing and telemetry streaming are the next sprint (`feature/bluetooth`).
+> BLE NUS (Nordic UART Service) is implemented on `feature/bluetooth`. The stack advertises as `BRemote-TX-XX` (last byte of BT MAC) and serves live VESC telemetry in VESC Tool binary protocol (auto-detected) or CSV push mode for generic NUS apps. Use VESC Tool, Floaty, or nRF Toolbox to connect. Enable via the `bt_enabled` SPIFFS field (0=off, 1=Hall/session default, 2=always on) or force for a single session with the `Throttle + LEFT toggle` boot gesture.
 
 ### R5 Proximity Bar
 
@@ -524,7 +524,7 @@ Full bar (10 pixels) = buggy at arm distance. Shrinks from the right as the bugg
 |---|---|
 | LEFT toggle | Calibration mode |
 | RIGHT toggle | Pairing mode |
-| Throttle + LEFT toggle | USB charging mode |
+| Throttle + LEFT toggle | Force BLE for session (activates BLE regardless of `bt_enabled` setting) |
 | Throttle + RIGHT toggle | Delete SPIFFS config (factory reset) |
 
 ### RX
@@ -640,7 +640,7 @@ The two **bold** columns (`heading_error_dx10`, `d_error_dx10`) were added speci
 | Feature | Status |
 |---|---|
 | Follow-Me full implementation | FM override operational; full autonomous follow-me behaviour (positional control loop) not yet implemented |
-| BLE telemetry | Hardware confirmed — HT-CT62 integrates ESP32-C3 + BLE + WiFi + LoRa (SX1262) in one module. Display indicator (`bt_dot_state`, C7 R1) and Hall sensor activation (DRV5032, GPIO 9) are implemented in firmware. GATT/radio layer in active in-house development. `feature/bluetooth` branch forthcoming. |
+| BLE telemetry | NUS (Nordic UART Service) stack implemented on `feature/bluetooth`. Advertises as `BRemote-TX-XX`. Serves VESC Tool binary protocol (COMM_GET_VALUES — auto-detected) and CSV push mode. Live gauges: Temp, Motor Amps, Voltage, Duty, RPM. Enable via `bt_enabled` SPIFFS field (0=off, 1=Hall/session, 2=always on) or `Throttle + LEFT toggle` boot gesture. |
 | RTM/FM hardware field test | Static code review passed (10/10 gates). Outdoor GPS + motor bench test still required before field use. |
 
 ### Bugs Found and Fixed Between Upstream and V2.5-Evo
@@ -676,15 +676,18 @@ Connect to the RX at 115200 baud. All commands are prefixed with `?`.
 
 | Command | Description |
 |---|---|
+| `?conf` | Print current RX config (all SPIFFS fields and their live values) |
 | `?vescping` | Send a single VESC status request and print the parsed response — confirms the UART link is alive |
 | `?vescraw` | Dump raw VESC packet bytes to serial — use when `?vescping` returns no data to diagnose framing issues |
 | `?logstat` | Print SPIFFS log storage statistics — file count, total bytes used, bytes free |
 | `?lograte <ms>` | Override logging rate per session (default 200 ms / 5 Hz). Example: `?lograte 100` = 10 Hz. Change is RAM-only; resets on reboot. |
 | `?deletelog <filename>` | Delete a specific log file from SPIFFS. Use `?list` to see filenames first. |
+| `?deleteallogs` | Delete all log files from SPIFFS (skips the currently active log if logging is running) |
 | `?list` | List all log files on SPIFFS with sizes |
 | `?download <filename>` | Stream a log file as raw CSV over serial |
 | `?start` / `?stop` | Start or stop the data logger (same as AUX button) |
 | `?compassheading` | Stream live compass heading (degrees) at 10 Hz — useful for verifying QMC5883L orientation and EMI influence |
+| `?printcompass` | Print a single raw compass reading (X/Y/Z counts) — quick sanity check without streaming |
 | `?magtest` | Stream CSV telemetry (mag X/Y/Z, heading, VESC ERPM, motor current, throttle) at 10 Hz for up to 120 s — see Compass EMI section above for full usage |
 | `?compasscal` | Trigger soft-iron compass calibration routine |
 | `?printrssi` | Print current LoRa RSSI and SNR |

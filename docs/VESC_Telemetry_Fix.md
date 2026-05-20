@@ -54,7 +54,7 @@ SW54 reverted all MUX retry logic. Single `setUartMux()` calls are reliable when
 | Finding | Description | Status |
 |---|---|---|
 | 1 | `Serial1.flush()` drains TX not RX | Fixed — removed (2026-05-11) |
-| 2 | GPS/VESC share single 1 Hz timer | Partially mitigated — MUX discipline (SW55) reduces contention; independent timers not yet implemented |
+| 2 | GPS/VESC share single 1 Hz timer | Fixed — independent `vesc_loop_timer` (2Hz) and `gps_loop_timer` (rate=`gps_update_hz`) implemented in SW55; GPS and VESC no longer compete for the same 1Hz slot |
 | 3 | `foil_speed` / `foil_power` not reset on timeout | Fixed — `foil_power` and `foil_motor_amps` added to timeout reset block (SW49/SW50) |
 | 4 | `vesc_timeout_s` default 12 s too long | Default now configurable via SPIFFS; field-appropriate value to be set after water test |
 | 5 | E7 wetness de-latch path missing | Still pending — requires log evidence from a session where E7 triggers |
@@ -73,7 +73,9 @@ during active riding. Before any implementation, the standing safety rule applie
 
 ---
 
-## Exact Execution Model (Read From Source)
+## Exact Execution Model (Pre-SW55 — Historical Reference)
+
+> **Note:** This block shows the unfixed execution model as it existed before SW55. Findings 1–3 are now fixed. The independent timer structure in Finding 2 replaces the single `loop_timer` shown here.
 
 ```
 Core 1 — Arduino loop task

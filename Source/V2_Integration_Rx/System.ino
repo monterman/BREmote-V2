@@ -318,6 +318,10 @@ void cmdDeleteLog(const String& params) {
   }
 }
 
+void cmdDeleteAllLogs(const String& params) {
+  deleteAllLogFiles();
+}
+
 void cmdLogRate(const String& params) {
   if (params.length() > 0) {
     float rate = params.toFloat();
@@ -666,6 +670,7 @@ static const SerialCommand kCommands[] = {
   {"list", "list saved log files", cmdListLogs},
   {"download", "<filename> download log as CSV", cmdDownloadLog},
   {"deletelog", "<filename> delete specific log file", cmdDeleteLog},
+  {"deleteallogs", "delete all log files (skips active log)", cmdDeleteAllLogs},
   {"lograte", "<Hz> set log rate (e.g. 1 or 0.1)", cmdLogRate},
   {"logstat", "dump logger + GPS state (diagnose why logging fails)", cmdLogStat},
   
@@ -775,7 +780,7 @@ void testPercent()
 {
   while(1)
   {
-    esp_task_wdt_reset(); // V3 fix (I3): prevent WDT panic during blocking debug command
+    esp_task_wdt_reset(); // V2.5-Evo fix (I3): prevent WDT panic during blocking debug command
     if (Serial.available()) {
       String input = Serial.readStringUntil('\n'); // read until newline
       input.trim(); // remove spaces and newlines
@@ -801,7 +806,7 @@ void testPercent()
 
 void readTelemetryUntilQuit() {
     while (true) {
-        esp_task_wdt_reset(); // V3 fix (I3): prevent WDT panic during blocking debug command
+        esp_task_wdt_reset(); // V2.5-Evo fix (I3): prevent WDT panic during blocking debug command
         if (Serial.available()) {
             String input = Serial.readStringUntil('\n'); // read line
             input.trim(); // remove CR/LF/whitespace
@@ -849,7 +854,7 @@ void serPrintBat()
 {
   while (true)
   {
-    esp_task_wdt_reset(); // V3 fix (I3): prevent WDT panic during blocking debug command
+    esp_task_wdt_reset(); // V2.5-Evo fix (I3): prevent WDT panic during blocking debug command
     if(checkSerialQuit()) break;
     if(usrConf.data_src == 1)
     {
@@ -926,7 +931,7 @@ void serPrintTasks()
 {
   while (true)
   {
-    esp_task_wdt_reset(); // V3 fix (I3): prevent WDT panic during blocking debug command
+    esp_task_wdt_reset(); // V2.5-Evo fix (I3): prevent WDT panic during blocking debug command
     if(checkSerialQuit()) break;
 
     Serial.println("\n=== Task Stack Usage ===");
@@ -945,7 +950,7 @@ void serPrintRSSI()
 {
   while (true)
   {
-    esp_task_wdt_reset(); // V3 fix (I3): prevent WDT panic during blocking debug command
+    esp_task_wdt_reset(); // V2.5-Evo fix (I3): prevent WDT panic during blocking debug command
     if(checkSerialQuit()) break;
     // Print the variable
     if(millis() - last_packet < usrConf.failsafe_time)
@@ -968,7 +973,7 @@ void serPrintPWM()
 {
   while (true)
   {
-    esp_task_wdt_reset(); // V3 fix (I3): prevent WDT panic during blocking debug command
+    esp_task_wdt_reset(); // V2.5-Evo fix (I3): prevent WDT panic during blocking debug command
     if(checkSerialQuit()) break;
     // Print the variable
     Serial.print(PWM0_time);
@@ -982,7 +987,7 @@ void serPrintReceived()
 {
   while (true)
   {
-    esp_task_wdt_reset(); // V3 fix (I3): prevent WDT panic during blocking debug command
+    esp_task_wdt_reset(); // V2.5-Evo fix (I3): prevent WDT panic during blocking debug command
     if(checkSerialQuit()) break;
     // Print received throttle/steering in JSON format for test correlation
     Serial.print("{\"throttle\":");

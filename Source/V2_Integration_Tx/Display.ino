@@ -84,8 +84,15 @@ bool isDisplayActivityEnabled()
 void startupDisplay()
 {
   Serial.print("Starting Display...");
-  if(!beginDisplay())
-  {
+  // HT16K33 tPOR ≤ 1ms but PCB power-rail settle can take longer.
+  // Retry for up to 100ms before declaring failure — prevents boot hang
+  // on first power cycle when the display chip isn't ready yet.
+  bool found = false;
+  for (int i = 0; i < 20 && !found; i++) {
+    found = beginDisplay();
+    if (!found) delay(5);
+  }
+  if (!found) {
     Serial.println(" Failed");
     while(1) delay(100);
   }
@@ -608,7 +615,7 @@ void renderOperationalDisplay()
     }
 
     // V2.5-Evo - 2026-04-27 - P8: ET error (code=20=LET_T) shows "--" and auto-clears after 3s.
-    // ET is absent from V3 RX source; this guard is defensive for legacy or future paths.
+    // ET is absent from V2.5-Evo RX source; this guard is defensive for legacy or future paths.
     // System stays in manual mode; no RTM/FM engagement; no vibration on ET.
     static unsigned long et_show_ms = 0;
     if (remote_error == LET_T)

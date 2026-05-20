@@ -3,6 +3,7 @@
 // V2.5-Evo - 2026-04-28 - ChangeA/F: fm_arm_window max 60→120s; followme_mode labels updated, option 0 removed
 // V2.5-Evo - 2026-04-29 - TaskB: full description audit — bool 0/1 values, enum all options inline, int/float extremes explained
 // V2.5-Evo - 2026-04-29 - Sleep: added sleep_timeout_s to TX WebUI
+// V2.5-Evo - 2026-05-15 - feature/bluetooth: added bt_enabled enum to System group
 // V2.5-Evo - 2026-05-01 - thr_expo1 removed; fm_display_mode added to RTM & Follow-Me group
 // V2.5-Evo - 2026-05-02 - Split GPS/RTM/FM into separate groups; added Collapse All / Expand All buttons
 // V2.5-Evo - 2026-05-06 - FIX-WEB-1: saveAll() now validates and sends only DIRTY fields (was: all 60 fields every save → blocked by any stale state)
@@ -160,7 +161,8 @@ const fields=[
 {key:"dist_unit",label:"Distance Unit",description:"Unit for all distance readouts on the TX display (RTM, FM). Internal math always uses metres. 0=Metres, 1=Feet/miles.",group:"RTM",type:"enum",def:0,min:0,max:1,options:[{v:0,l:"Metres"},{v:1,l:"Feet"}]},
 {key:"wifi_password",label:"WiFi Password",description:"AP password (exactly 8 characters)",group:"System",type:"text",def:"12345678",minLen:8,maxLen:8},
 {key:"version",label:"Config Version",description:"Must match firmware SW_VERSION",group:"System",type:"int",def:26,min:0,max:65535},
-{key:"sleep_timeout_s",label:"Auto-Sleep Timeout",description:"How long TX waits with no LoRa reply from RX before deep sleeping. 0=disabled, 60=1 min, 300=5 min (default), 3600=1 hour. Set to 0 to disable auto-sleep entirely.",group:"System",type:"int",def:300,min:0,max:3600,unit:"s"}
+{key:"sleep_timeout_s",label:"Auto-Sleep Timeout",description:"How long TX waits with no LoRa reply from RX before deep sleeping. 0=disabled, 60=1 min, 300=5 min (default), 3600=1 hour. Set to 0 to disable auto-sleep entirely.",group:"System",type:"int",def:300,min:0,max:3600,unit:"s"},
+{key:"bt_enabled",label:"Bluetooth Mode",description:"BLE telemetry over Nordic UART Service (NUS). 0=always off. 1=Hall sensor activates (default) — short hold toggles dot slow, long hold (5s) → dot fast, bleTelemetryLoop sends when dot active. 2=always on, advertises on boot. Connect with VESC Tool, nRF Toolbox, or any NUS app. Boot gesture (LEFT toggle held) forces BLE on for session regardless of this setting.",group:"System",type:"enum",def:1,min:0,max:2,options:[{v:0,l:"Always Off"},{v:1,l:"Hall / Session"},{v:2,l:"Always On"}]}
 ];
 
 const state={values:{},loaded:{},saved:{},last:'-'};

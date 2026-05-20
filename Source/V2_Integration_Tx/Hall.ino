@@ -1,4 +1,5 @@
-﻿// V2.5-Evo - 2026-04-25 - P7: handleGearToggle() left-hold arms RTM; right-hold cycles FM
+﻿// V2.5-Evo - 2026-05-16 - SW56: stop WiFi AP synchronously before unlockAnimation() — AP was running during frames, WiFi stack tasks preempted Core 0 causing last-frame stutter on first boot unlock only
+// V2.5-Evo - 2026-04-25 - P7: handleGearToggle() left-hold arms RTM; right-hold cycles FM
 // V2.5-Evo - 2026-04-21 - Updated DISPLAY_MODE_SPEED availability check to support TX GPS speed sources
 // V2.5-Evo - 2026-04-27 - P8: Gesture redesign — combo state machine; LEFT hold=display cycle; RIGHT+LEFT=RTM; LEFT+RIGHT=FM
 // V2.5-Evo - 2026-04-27 - fix: COMBO_TAP_MAX_MS 500ms; tap detection was tied to gear_change_waittime (100ms — too tight)
@@ -402,6 +403,9 @@ void runMenu()
           {
             setHallActivityEnabled(true);
             setRadioActivityEnabled(true);
+#ifdef WIFI_ENABLED
+            webCfgNotifyTxUnlocked();  // stop WiFi AP before animation — eliminates Core 0 preemption during frames
+#endif
             unlockAnimation();
             delay(250);
             while(thr_scaled > 5)
@@ -410,9 +414,6 @@ void runMenu()
             }
             delay(500);
             system_locked = 0;
-#ifdef WIFI_ENABLED
-            webCfgNotifyTxUnlocked();
-#endif
             throttleReset();
             in_menu = usrConf.menu_timeout;
           }

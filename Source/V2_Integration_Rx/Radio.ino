@@ -434,6 +434,12 @@ void triggeredReceive(void *parameter) {
                 last_packet = millis();  // meta-packet proves TX is alive
                 processFmOverridePacket(rcvArray);
               }
+              else if (rcvArray[3] == 0xF4)
+              {
+                // ---- Aux control meta-packet ----
+                last_packet = millis();
+                rx_aux_flags = rcvArray[4];
+              }
               else if (rcvArray[3] == 0xF3)
               {
                 // ---- GPS announcement ----

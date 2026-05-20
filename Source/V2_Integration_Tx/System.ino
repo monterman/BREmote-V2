@@ -141,13 +141,13 @@ void checkStartupButtons()
     }
     else if (tog_input == -1)
     {
-      //USB Mode
-      Serial.println("USB Mode, type '?' for info...");
-      while(1)
-      {
-        scroll3Digits(LET_U, 5, LET_B, 200);
-        checkSerial();
-      }
+      // V2.5-Evo - 2026-05-15 - feature/bluetooth: LEFT toggle at boot enables BLE for session.
+      // Replaces the old USB charging mode (removed — serial config works in normal mode).
+      // bt_session_forced persists until reboot; activates BLE regardless of bt_enabled SPIFFS setting.
+      bt_session_forced = true;
+      Serial.println("BLE session forced via boot gesture");
+      displayDigits(LET_B, LET_T);
+      delay(1500);
     }
   }
   else

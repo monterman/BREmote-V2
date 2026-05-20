@@ -470,6 +470,43 @@ void runRtmLoop()
   if (now - last_rtm_ms < 100UL) return;
   last_rtm_ms = now;
 
+  // ---- Extended telemetry: rx_heading, fm_heading_err, fm_status ----
+  // rx_heading: GPS COG÷2 (0-179 maps to 0-358°); 0xFF = no valid COG
+  if (gps_last_course_deg >= 0.0f && gps_last_course_ms > 0 &&
+      (now - gps_last_course_ms) < 3000UL) {
+    telemetry.rx_heading = (uint8_t)((uint16_t)(gps_last_course_deg) / 2);
+  } else {
+    telemetry.rx_heading = 0xFF;
+  }
+
+  // fm_heading_err: bearing error + 127 bias; 127 = no data
+  if (g_heading_error_dx10 == 0x7FFF) {
+    telemetry.fm_heading_err = 127;
+  } else {
+    int16_t e = g_heading_error_dx10 / 10;
+    if (e < -126) e = -126;
+    if (e >  126) e =  126;
+    telemetry.fm_heading_err = (uint8_t)(e + 127);
+  }
+
+  // fm_status: [7]=aux2_on [6]=aux1_on [5]=vesc_online [4]=rx_wetness [3:2]=heading_conf [1]=rtm_active [0]=fm_active
+  {
+    uint8_t st = 0;
+    uint8_t fm = fm_mode_runtime.load(std::memory_order_relaxed);
+    if (fm >= 1 && fm <= 3) st |= (1 << 0);
+    if (rtm_rx_active)      st |= (1 << 1);
+    float h_unused; uint8_t conf;
+    getRtmHeading(&h_unused, &conf);
+    st |= (conf & 0x03) << 2;
+    if (telemetry.error_code == 71) st |= (1 << 4);
+    bool vesc_ok = (millis() - last_uart_packet) <
+                   ((uint32_t)usrConf.vesc_timeout_s * 1000UL);
+    if (vesc_ok)                 st |= (1 << 5);
+    if (rx_aux_flags & (1 << 0)) st |= (1 << 6);
+    if (rx_aux_flags & (1 << 1)) st |= (1 << 7);
+    telemetry.fm_status = st;
+  }
+
   // Finding 6-2: auto-expire Phase B approval when TX GPS goes stale.
   // gpsPhaseBCheck() sets gps_phase_b_ok=true on pass and never clears it —
   // it only runs on meta-packet receipt every ~30s. If TX GPS drops,
@@ -519,6 +556,13 @@ void runRtmLoop()
       {
         uint8_t whole_m = (uint8_t)(d > 164.0f ? 164.0f : d);
         telemetry.rtm_distance = 90u + whole_m;
+      }
+
+      // rx_bearing_to_tx: compass bearing from buggy toward rider position÷2 (0-179); 0xFF = N/A
+      {
+        double btx = TinyGPSPlus::courseTo(
+            gps_last_lat, gps_last_lng, rx_tx_gps_lat, rx_tx_gps_lng);
+        telemetry.rx_bearing_to_tx = (uint8_t)((uint16_t)(btx) / 2);
       }
 
       if (rtm_rx_active)

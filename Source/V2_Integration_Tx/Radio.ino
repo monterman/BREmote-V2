@@ -435,7 +435,7 @@ void waitForTelemetry(void *parameter)
           }
 
           // Speed conversion: RX sends speed in km/h; convert to the unit selected in web config.
-          // 0xFF = no GPS data sentinel (V3 fix: old V2 sentinel 99 km/h removed — collided with real speed)
+          // 0xFF = no GPS data sentinel (V2.5-Evo fix: old V2 sentinel 99 km/h removed — collided with real speed)
           if (rcvArray[3] == 2 && telemetry.foil_speed != 0xFF)
           {
               if (usrConf.speed_src == 1) {
@@ -485,11 +485,17 @@ void waitForTelemetry(void *parameter)
 // in sendData() is guaranteed to observe the correct type/value before acting on count>0.
 // Called from loop task (RTM/FM state machines in RTMState.ino).
 // sendData() FreeRTOS task consumes the queue.
-// type: 0xF1=RTM state, 0xF2=FM override
-// value: for 0xF1: 0=inactive 1=active; for 0xF2: 0-3 FM mode
+// type: 0xF1=RTM state, 0xF2=FM override, 0xF4=aux control
+// value: for 0xF1: 0=inactive 1=active; for 0xF2: 0-3 FM mode; for 0xF4: aux flags byte
 void queueMetaPacketBurst(uint8_t type, uint8_t value)
 {
   rtm_meta_type.store(type, std::memory_order_relaxed);
   rtm_meta_value.store(value, std::memory_order_relaxed);
   rtm_meta_count.store(3, std::memory_order_release);  // release: type/value visible before count
+}
+
+// Queue a 0xF4 aux control burst to RX (3× for reliability).
+// flags: bit0=strobe/light, bit1=horn(reserved), bit2=aux3(reserved), bit3=find-me flash, bits4-7=reserved.
+void sendAuxCommand(uint8_t flags) {
+  queueMetaPacketBurst(0xF4, flags);
 }

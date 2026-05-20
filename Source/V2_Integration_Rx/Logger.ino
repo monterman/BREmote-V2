@@ -1,4 +1,4 @@
-// V2.5-Evo - 2026-05-13 - SW43: GPS gate relaxed to location.isValid() only — date absent when UART mux fragments RMC; T_HHMMSS filename when time valid but date missing
+﻿// V2.5-Evo - 2026-05-13 - SW43: GPS gate relaxed to location.isValid() only — date absent when UART mux fragments RMC; T_HHMMSS filename when time valid but date missing
 // V2.5-Evo - 2026-05-13 - SW40: loggerLoop() button section removed — checkButtons() is the sole AUX handler; pending timeout 5min→15s start-anyway (was: give-up)
 // V2.5-Evo - 2026-05-13 - SW38: log_pending state — GPS gate moved to startLog()/loggerLoop(); LED heartbeat (1 blink/3s) while waiting; auto-transitions to active on fix; 5-min timeout → 3 slow error blinks
 // V2.5-Evo - 2026-05-13 - SW37: createNewLogFile() — no GPS wait; file created immediately; GPS name if fix available, millis fallback otherwise
@@ -31,8 +31,8 @@ extern SemaphoreHandle_t i2cMutex;
 // Task handles and configuration
 static TaskHandle_t loggerTaskHandle = NULL;
 static SemaphoreHandle_t fileMutex = NULL;
-SemaphoreHandle_t vescMutex = NULL;         // V3 fix (Bug 2): non-static — visible to VESC.ino. Protects vesc struct against FreeRTOS preemption race between loggerTask (reader) and getVescLoop() (writer) on the single ESP32-C3 core.
-static volatile bool logging_active  = false; // V3 fix (Bug 3): volatile — loggerTask on Core 0 reads this in a while(true) loop; without volatile the compiler may cache the value in a register and never see startLog()/stopLog() writes from Core 1.
+SemaphoreHandle_t vescMutex = NULL;         // V2.5-Evo fix (Bug 2): non-static — visible to VESC.ino. Protects vesc struct against FreeRTOS preemption race between loggerTask (reader) and getVescLoop() (writer) on the single ESP32-C3 core.
+static volatile bool logging_active  = false; // V2.5-Evo fix (Bug 3): volatile — loggerTask on Core 0 reads this in a while(true) loop; without volatile the compiler may cache the value in a register and never see startLog()/stopLog() writes from Core 1.
 static volatile bool log_pending     = false; // GPS not yet valid; waiting to transition to logging_active
 static uint32_t      log_pending_since = 0;   // millis() when pending started
 static uint32_t      log_heartbeat_ms  = 0;   // last heartbeat blink while pending
@@ -139,11 +139,11 @@ void loggerLoop() {
 
 // Scale and convert data
 VescLogData convertToLogData() {
-  // V3 fix (Bug 2): zero-init so vesc fields stay 0 if vescMutex times out (hold time is <1µs, so timeout is effectively impossible)
+  // V2.5-Evo fix (Bug 2): zero-init so vesc fields stay 0 if vescMutex times out (hold time is <1µs, so timeout is effectively impossible)
   VescLogData data = {};
   data.timestamp = millis();
 
-  // V3 fix (Bug 2): guard all vesc.* reads with vescMutex.
+  // V2.5-Evo fix (Bug 2): guard all vesc.* reads with vescMutex.
   // This function runs on Core 0 (loggerTask); getVescLoop() writes vesc on Core 1 (loop task).
   // Without the mutex, the ESP32-S3 dual-core pipeline can produce a torn log record where
   // some fields are from one VESC packet and some from the next.
@@ -296,7 +296,7 @@ bool ensureFreeSpace() {
   if (freeBytes > (MIN_FREE_SPACE_KB * 1024)) return true;
 
   Serial.printf("Space low: %u KB free (need %d)\n", freeBytes / 1024, MIN_FREE_SPACE_KB);
-  // V3 fix (Bug 4): removed the block that closed currentLogFile here.
+  // V2.5-Evo fix (Bug 4): removed the block that closed currentLogFile here.
   // The old code cleared currentLogFileName before building the candidate list, so the
   // active file lost its exclusion identity and could be deleted along with the old logs.
   // The active file stays open; SPIFFS allows deleting other files while one is held open.
@@ -313,7 +313,7 @@ bool ensureFreeSpace() {
       String fullPath = "/" + filename;
       if (fullPath.endsWith(".log")) {
         if (fullPath == currentLogFileName) {
-          // V3 fix (Bug 4): never delete the file we are currently writing to
+          // V2.5-Evo fix (Bug 4): never delete the file we are currently writing to
         } else {
           strncpy(deleteCandidates[candidateCount++], fullPath.c_str(), 31);
           deleteCandidates[candidateCount-1][31] = '\0'; // null-terminate
@@ -433,7 +433,7 @@ void initLogger() {
     Serial.println("FATAL: Failed to create fileMutex!");
     return;
   }
-  // V3 fix (Bug 2): must be created here in setup() — before loop() starts calling getVescLoop() on Core 1
+  // V2.5-Evo fix (Bug 2): must be created here in setup() — before loop() starts calling getVescLoop() on Core 1
   vescMutex = xSemaphoreCreateMutex();
   if (vescMutex == NULL) {
     Serial.println("FATAL: Failed to create vescMutex!");
@@ -600,6 +600,23 @@ void deleteLogFile(const char* filename) {
   if (SPIFFS.exists(fullPath)) {
     SPIFFS.remove(fullPath);
   }
+}
+
+void deleteAllLogFiles() {
+  File root = SPIFFS.open("/");
+  File file = root.openNextFile();
+  int deleted = 0, skipped = 0;
+  while (file) {
+    String fname = String("/") + file.name();
+    file = root.openNextFile();  // advance before remove
+    if (!fname.endsWith(".log")) continue;
+    if (logging_active && fname == currentLogFileName) { skipped++; continue; }
+    SPIFFS.remove(fname);
+    deleted++;
+  }
+  Serial.printf("LOG: deleted %d log file(s)", deleted);
+  if (skipped) Serial.printf(", skipped %d active", skipped);
+  Serial.println();
 }
 
 bool isLoggingActive() {

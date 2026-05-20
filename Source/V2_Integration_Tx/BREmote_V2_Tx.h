@@ -57,7 +57,7 @@
 #include "SPIFFS.h"
 #include "mbedtls/base64.h"
 
-// --- V3: TX GPS support (BN-220 on Serial1) ---
+// --- V2.5-Evo: TX GPS support (BN-220 on Serial1) ---
 // Added for Priority 1: read TX GPS speed and drive the SP display mode
 // when usrConf.speed_src selects a TX-GPS option (2=km/h, 3=knots, 5=mph).
 // Library: TinyGPSPlus 1.0.3 by Mikal Hart (same version used on RX).
@@ -84,7 +84,7 @@ struct Fc3x7Entry { uint8_t col[3]; };
 /*
 ** Structs
 */
-// NOTE: Not packed — sizeof is 96 (V3, was 92 before gps_chip_type, 80 in V2). Float forces 4-byte struct alignment.
+// NOTE: Not packed — sizeof is 96 (V2.5-Evo, was 92 before gps_chip_type, 80 in V2). Float forces 4-byte struct alignment.
 // Do not add __attribute__((packed)), it would break existing SPIFFS configs and the web config tool.
 struct confStruct {
     //Version
@@ -222,11 +222,15 @@ struct confStruct {
     uint16_t sleep_timeout_s;  // Inactivity sleep timeout; 0=disabled, 60-3600 s; default 300
                                // TX sleeps after this many seconds with no LoRa packet from RX.
                                // Set to 0 to disable auto-sleep entirely.
+    // V2.5-Evo - 2026-05-15 - feature/bluetooth: bt_enabled fills the 2-byte tail padding left by
+    // sleep_timeout_s. sizeof stays 132. SW_VERSION stays 26 — no SPIFFS reset on first flash.
+    // Existing configs read 0 here (padding was zero) = BLE off until set via web UI.
+    uint16_t bt_enabled;       // BLE mode: 0=always off, 1=Hall/session (default), 2=always on
 };
 
-static_assert(sizeof(confStruct) == 132, "confStruct size mismatch — expected 132 bytes (V2.5-Evo sleep_timeout_s). Update this assert if you change the struct.");  // pinned to exact size; catches both shrinkage and unexpected growth
+static_assert(sizeof(confStruct) == 132, "confStruct size mismatch — expected 132 bytes (V2.5-Evo sleep_timeout_s + bt_enabled fills tail padding). Update this assert if you change the struct.");  // pinned to exact size; catches both shrinkage and unexpected growth
 confStruct usrConf;
-confStruct defaultConf = {  // V3 default configuration — tuned for monterman hardware
+confStruct defaultConf = {  // V2.5-Evo default configuration — tuned for monterman hardware
   SW_VERSION,    // version (26)
   2,             // radio_preset (US 915MHz)
   20,            // rf_power (20)
@@ -256,10 +260,10 @@ confStruct defaultConf = {  // V3 default configuration — tuned for monterman 
   50,            // steer_expo
   0,             // steer_expo1
   0.000185662f,  // ubat_cal
-  0,             // gps_en — V3: default off; opt in via web config (claiming Serial1 on every device is wrong)
+  0,             // gps_en — V2.5-Evo: default off; opt in via web config (claiming Serial1 on every device is wrong)
   1,             // followme_mode
   1,             // kalman_en
-  0,             // speed_src — V3: default RX km/h; TX GPS source requires explicit opt-in
+  0,             // speed_src — V2.5-Evo: default RX km/h; TX GPS source requires explicit opt-in
   2000,          // tx_gps_stale_timeout_ms
   1,             // paired
   {0x46, 0xCB, 0xCC}, // own_address (Hex formatted)
@@ -293,23 +297,33 @@ confStruct defaultConf = {  // V3 default configuration — tuned for monterman 
   0,    // dist_unit (0 = Metres)
   // V2.5-Evo - 2026-04-29 - sleep timeout default
   300,  // sleep_timeout_s — 300s = 5 minutes; set to 0 to disable
+  1,    // bt_enabled: 1=Hall/session (new installs). Old SPIFFS reads 0=off here (safe; set to 1 via web UI to enable).
 };
 
 
+// V2.5-Evo - 2026-05-16 - feat(telemetry): expand LoRa packet 8→19 bytes + 0xF4 aux meta-packet
 //Telemetry to receive, MUST BE 8-bit!!
-// V2.5-Evo - 2026-04-27 - P8: Added rtm_distance at index 5; link_quality moved to index 6 (must remain last).
-// Encoding: 0-99 = tenths of meter (0.0–9.9 m), 100-254 = meters offset (value-90 = actual m, so 100=10m, 199=109m), 255 = N/A.
+// V2.5-Evo - 2026-04-27 - P8: Added rtm_distance at index 5; see encoding comment at RX side.
 struct __attribute__((packed)) TelemetryPacket {
-    uint8_t foil_bat = 0xFF;      // index 0 — battery % 0-100
-    uint8_t foil_temp = 0xFF;     // index 1 — FET temp degC
-    uint8_t foil_speed = 0xFF;    // index 2 — speed km/h
-    uint8_t error_code = 0;       // index 3 — fault flags
-    // SCALE=watts/50  DECODE=foil_power*50  range 0-12750W at 50W resolution
-    uint8_t foil_power = 0xFF;    // index 4 — power (watts/50); 0xFF = not available
-    uint8_t rtm_distance = 0xFF;  // index 5 — RX→TX distance during RTM/FM; see encoding above; 0xFF = N/A
-    uint8_t foil_motor_amps = 0xFF; // index 6 — SW50: motor current in whole amps (0=0A…250=250A); 0xFF=N/A
-    //This must be the last entry
-    uint8_t link_quality = 0;     // index 7 (must be last)
+    uint8_t foil_bat = 0xFF;          // index 0 — battery % 0-100
+    uint8_t foil_temp = 0xFF;         // index 1 — FET temp degC
+    uint8_t foil_speed = 0xFF;        // index 2 — speed km/h
+    uint8_t error_code = 0;           // index 3 — fault flags
+    uint8_t foil_power = 0xFF;        // index 4 — power (watts/50); 0xFF = N/A
+    uint8_t rtm_distance = 0xFF;      // index 5 — RX→TX distance; 0xFF = N/A
+    uint8_t foil_motor_amps = 0xFF;   // index 6 — motor current whole amps; 0xFF = N/A
+    uint8_t foil_voltage = 0xFF;      // index 7 — battery voltage V×2 (0.5V res); 0xFF = N/A
+    uint8_t foil_duty = 0xFF;         // index 8 — duty cycle 0-100%; 0xFF = N/A
+    uint8_t foil_erpm_lo = 0xFF;      // index 9 — |ERPM|÷100 low byte; 0xFFFF when both=0xFF means N/A
+    uint8_t foil_erpm_hi = 0xFF;      // index 10 — |ERPM|÷100 high byte
+    uint8_t foil_wh_lo = 0xFF;        // index 11 — session Wh×10 low byte; 0xFFFF when both=0xFF means N/A
+    uint8_t foil_wh_hi = 0xFF;        // index 12 — session Wh×10 high byte
+    uint8_t rx_heading = 0xFF;        // index 13 — GPS COG÷2 (0-179→0-358°); 0xFF = N/A
+    uint8_t fm_heading_err = 127;     // index 14 — bearing error+127; 127 = no data
+    uint8_t fm_status = 0;            // index 15 — [7]=aux2_on [6]=aux1_on [5]=vesc_online [4]=rx_wetness [3:2]=heading_conf [1]=rtm_active [0]=fm_active
+    uint8_t reserved_tx_imu = 0xFF;   // index 16 — RESERVED: future TX IMU wipeout flags
+    uint8_t rx_bearing_to_tx = 0xFF;  // index 17 — bearing from buggy toward rider÷2; 0xFF = N/A
+    uint8_t link_quality = 0;         // index 18 (must be last)
 } telemetry;
 
 /*
@@ -331,7 +345,7 @@ TaskHandle_t vibrationTaskHandle = NULL;  // Finding 4-1: saved so ?printtasks c
 
 extern TaskHandle_t loopTaskHandle;
 
-// --- V3: TX GPS globals ---
+// --- V2.5-Evo: TX GPS globals ---
 // gps_tx   : TinyGPS++ parser instance fed by Serial1 (BN-220).
 // tx_gps_speed : Current speed in the UNIT selected by usrConf.speed_src.
 //                Sentinel 0xFF = no fix / no valid data (matches existing
@@ -343,7 +357,7 @@ extern TaskHandle_t loopTaskHandle;
 //                these accesses; no cross-core synchronization is needed.
 TinyGPSPlus gps_tx;
 volatile uint8_t tx_gps_speed = 0xFF;
-// --- End V3: TX GPS globals ---
+// --- End V2.5-Evo: TX GPS globals ---
 
 /*
 ** Variables
@@ -474,6 +488,7 @@ volatile bool mag_seen_high = false;  // set true when GPIO 9 first reads HIGH a
 #define BT_DOT_SLOW 1
 #define BT_DOT_FAST 2
 volatile uint8_t bt_dot_state = BT_DOT_OFF;
+volatile bool bt_session_forced = false;  // set by LEFT-hold boot gesture; enables BLE for session regardless of bt_enabled
 volatile bool display_activity_enabled = true;
 volatile bool radio_activity_enabled = true;
 volatile bool radio_driver_ready = false;
@@ -514,7 +529,7 @@ String web_cfg_last_err = "";
 //Misc Pins
 #define P_MOT 0
 
-// V3: GPS UART pins for TX (BN-220 on Serial1).
+// V2.5-Evo: GPS UART pins for TX (BN-220 on Serial1).
 // Same numeric assignment as RX (P_U1_RX=18, P_U1_TX=19) — shared physical
 // convention across TX and RX boards. Used by initTxGPS() and getTxGPSLoop()
 // in Tx/GPS.ino. No UART mux on TX (unlike RX), so Serial1 talks to the

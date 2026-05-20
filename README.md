@@ -487,7 +487,7 @@ Visible only when `gps_en = 1`. Located at the top-right corner of the digit are
 
 ### BT Status Dot (C7 R1)
 
-Located just below the GPS dot. Driven by `bt_dot_state`, controlled by the DRV5032 Hall sensor hold duration on P_MAG (GPIO 9).
+Located just below the GPS dot. Driven by `bt_dot_state`, controlled by the DRV5032 Hall sensor hold duration on P_MAG (GPIO 9). BREmote already uses Hall-effect sensors for throttle, toggle, and power switch — this adds a fourth on a free GPIO for magnet-based BLE activation. See [Hall Sensor Expansion guide](docs/Hall_Sensor_Expansion.md) for wiring and firmware details.
 
 | State | `bt_dot_state` | Meaning |
 |---|---|---|
@@ -507,7 +507,7 @@ Three ways to activate BLE on the TX — choose whichever fits your use:
 |---|---|---|
 | **SPIFFS config** | Set `bt_enabled` via the Web Serial Config Tool or `?set bt_enabled 2` + `?save` over serial. `0`=always off, `1`=Hall/session mode (see below), `2`=always on (BLE starts 5 s after boot every ride). | Across reboots |
 | **Boot gesture** | Hold **Throttle + LEFT toggle** while powering on. BLE activates for that session regardless of `bt_enabled`. Display shows `bt`. | Session only |
-| **Hall sensor** (if fitted) | With `bt_enabled=1`: short magnet hold (400 ms – 4.9 s) → BT dot slow blink (BLE ready). Long hold (5 s+) from slow state → BT dot fast blink (BLE active and advertising). Short hold again → BLE off. | Until magnet gesture or reboot |
+| **Hall sensor expansion** ([wiring guide](docs/Hall_Sensor_Expansion.md)) | Connect a DRV5032 to GPIO 9 (P_MAG) — BREmote already uses Hall sensors for throttle, toggle, and power switch; this adds a fourth on a free GPIO. With `bt_enabled=1`: short magnet hold (400 ms – 4.9 s) → BT dot slow blink (BLE ready). Long hold (5 s+) from slow state → BT dot fast blink (BLE active). Short hold again → BLE off. | Until magnet gesture or reboot |
 
 > **Always boot on battery.** Plugging in USB during boot triggers the charger detection loop — `initTasks()` never runs and BLE never starts regardless of which method you use.
 

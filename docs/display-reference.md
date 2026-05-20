@@ -35,7 +35,7 @@ Controlled by `bt_dot_state`, driven by the DRV5032 Hall sensor on P_MAG (GPIO 9
 | Slow blink 1s | `BT_DOT_SLOW` | ○ ● ○ ● | BLE ready — toggled by short Hall hold (400 ms – 4.9 s) |
 | Fast blink 250ms | `BT_DOT_FAST` | ●○●○ | BLE active — long Hall hold 5 s+ from slow state |
 
-Releasing the magnet while `BT_DOT_FAST` → returns to `BT_DOT_OFF`. Short hold while `BT_DOT_SLOW` → toggles back to `BT_DOT_OFF`. BLE GATT/radio layer is in active development (`feature/bluetooth`).
+Releasing the magnet while `BT_DOT_FAST` → returns to `BT_DOT_OFF`. Short hold while `BT_DOT_SLOW` → toggles back to `BT_DOT_OFF`. BLE NUS + VESC Tool binary protocol released in master — field-confirmed 2026-05-16. Connect with VESC Tool (iOS/Android, free): scan for `BRemote-TX-XX`, connect, live gauges appear immediately.
 
 ## Decimal Dot (C3 R4) — Distance Display
 When `rtm_display_mode = 0` (distance) and the value is ≥100m (metric) or ≥100ft (imperial), the gap column pixel at R4 lights as a decimal point for fractional km or miles:

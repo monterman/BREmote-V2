@@ -8,7 +8,7 @@
 
 ESP32 LoRa wireless remote for efoil and RC tow buggy — 868/915 MHz, 10 Hz control cycle, VESC UART telemetry, GPS speed display, integrated data logger.
 
-**Status: Beta — bench-validated, awaiting first water test. See Alpha Testing Notes below before any in-water use.**
+**Status: Beta — BLE + VESC Tool field-confirmed ✅ (2026-05-16). RTM/FM bench-complete, awaiting water field test. See Alpha Testing Notes below before any in-water use.**
 
 ---
 
@@ -20,7 +20,7 @@ BREmote is a collaborative open-source project built by the efoil and esk8 commu
 |---|---|
 | **[LudwigBre / Luddi96](https://github.com/Luddi96/BREmote)** | **Original hardware design, original firmware architecture, project founder, and dev-logger framework (dev-logger branch). All core features originate here.** |
 | **Janrusher** | Dynamic throttle cap mode and Web Console foundation — significant V2 enhancements forked from LudwigBre, further refined in V2.5-Evo |
-| **monterman** | V2.5-Evo firmware: TX GPS implementation, dev-logger AUX button toggle with LED status feedback (5× flash = start, 2× flash = stop), date format DDMMYY → MMDDYY, web console major rebuild (upload/download/compare JSON, integrated serial console, TX+RX coverage, plain-English parameter docs for every setting), deep codebase analysis, critical bug documentation, RTM/FM mode design, VESC UART telemetry diagnosis and root-cause fix (SW55), DISPLAY_MODE_INTBAT 7th display mode, BT status dot + Hall sensor activation framework |
+| **monterman** | V2.5-Evo firmware: TX GPS implementation, dev-logger AUX button toggle with LED status feedback (5× flash = start, 2× flash = stop), date format DDMMYY → MMDDYY, web console major rebuild (upload/download/compare JSON, integrated serial console, TX+RX coverage, plain-English parameter docs for every setting), deep codebase analysis, critical bug documentation, RTM/FM mode design, VESC UART telemetry diagnosis and root-cause fix (SW55), DISPLAY_MODE_INTBAT 7th display mode, BT status dot + Hall sensor activation framework, BLE NUS + VESC Tool binary protocol live gauges (field-confirmed 2026-05-16) |
 
 This fork exists because LudwigBre published open hardware and firmware under GPL 3.0. V2.5-Evo enhancements are released under the same license and dedicated back to the community.
 
@@ -66,6 +66,9 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 | Return-to-Me mode (RTM) | ❌ | ✅ |
 | Follow-Me mode override (FM) | ❌ | ✅ |
 | RTM/FM info display (distance/speed on TX) | ❌ | ✅ |
+| BLE live telemetry — VESC Tool / VESC App (iOS/Android, free) | ❌ | ✅ |
+| NUS + VESC binary protocol (COMM_GET_VALUES, auto-detected) | ❌ | ✅ |
+| Gauges: FET temp, motor amps, duty, voltage, RPM | ❌ | ✅ |
 
 ---
 
@@ -76,7 +79,7 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 | MCU | ESP32-C3 | ESP32-C3 |
 | Module | HT-CT62 (ESP32-C3 + SX1262 + WiFi + **BLE** integrated) | HT-CT62 |
 | Radio | SX1262 LoRa | SX1262 LoRa |
-| BLE | Built-in (ESP32-C3) — NUS + VESC Tool protocol on `feature/bluetooth`; `bt_enabled` SPIFFS config | Built-in (ESP32-C3) — RX BLE planned |
+| BLE | Built-in (ESP32-C3) — NUS + VESC Tool protocol ✅ in master; `bt_enabled` SPIFFS config (0=off, 1=Hall-mode, 2=always-on) | Built-in (ESP32-C3) — RX BLE planned |
 | GPS | BN-220 or [HGLRC M100 Micro](https://www.hglrc.com/products/hglrc-m100_mini-gps) (M10 chip, no compass, 3.3V–5V) | BN-880 or [HGLRC M100-5883](https://www.hglrc.com/products/m100-5883-gps) (M10 chip + compass) |
 | Compass | None | QMC5883L (I2C) |
 | Display | HT16K33 dot matrix (I2C 0x70) | None |
@@ -494,7 +497,7 @@ Located just below the GPS dot. Driven by `bt_dot_state`, controlled by the DRV5
 
 Releasing the magnet while `BT_DOT_FAST` → returns to `BT_DOT_OFF`. Short hold while `BT_DOT_SLOW` → toggles back to `BT_DOT_OFF`.
 
-> BLE NUS (Nordic UART Service) is implemented on `feature/bluetooth`. The stack advertises as `BRemote-TX-XX` (last byte of BT MAC) and serves live VESC telemetry in VESC Tool binary protocol (auto-detected) or CSV push mode for generic NUS apps. Use VESC Tool, Floaty, or nRF Toolbox to connect. Enable via the `bt_enabled` SPIFFS field (0=off, 1=Hall/session default, 2=always on) or force for a single session with the `Throttle + LEFT toggle` boot gesture.
+> BLE NUS (Nordic UART Service) is in **master** — field-confirmed ✅ (2026-05-16). The stack advertises as `BRemote-TX-XX` (last byte of BT MAC) and serves live VESC telemetry in VESC Tool binary protocol (auto-detected) or CSV push mode for generic NUS apps. Use **VESC Tool** (iOS/Android, free) — scan, connect to `BRemote-TX-XX`, and live gauges appear immediately: FET Temp, Motor Amps, Duty, Voltage, RPM. Enable via the `bt_enabled` SPIFFS field (0=off, 1=Hall/session default, 2=always on) or force for a single session with the `Throttle + LEFT toggle` boot gesture. **Boot on battery** — USB power blocks BLE init.
 
 ### R5 Proximity Bar
 
@@ -640,7 +643,7 @@ The two **bold** columns (`heading_error_dx10`, `d_error_dx10`) were added speci
 | Feature | Status |
 |---|---|
 | Follow-Me full implementation | FM override operational; full autonomous follow-me behaviour (positional control loop) not yet implemented |
-| BLE telemetry | NUS (Nordic UART Service) stack implemented on `feature/bluetooth`. Advertises as `BRemote-TX-XX`. Serves VESC Tool binary protocol (COMM_GET_VALUES — auto-detected) and CSV push mode. Live gauges: Temp, Motor Amps, Voltage, Duty, RPM. Enable via `bt_enabled` SPIFFS field (0=off, 1=Hall/session, 2=always on) or `Throttle + LEFT toggle` boot gesture. |
+| BLE telemetry | ✅ **Released in master — field-confirmed 2026-05-16.** NUS + VESC Tool binary protocol (COMM_GET_VALUES auto-detected). Live gauges: Temp, Motor Amps, Voltage, Duty, RPM. Connect with VESC Tool (iOS/Android, free) to `BRemote-TX-XX`. Enable via `bt_enabled` SPIFFS field (0=off, 1=Hall/session, 2=always on) or `Throttle + LEFT toggle` boot gesture. Boot on battery — USB blocks BLE init. |
 | RTM/FM hardware field test | Static code review passed (10/10 gates). Outdoor GPS + motor bench test still required before field use. |
 
 ### Bugs Found and Fixed Between Upstream and V2.5-Evo
@@ -737,6 +740,21 @@ Connect to the TX at 115200 baud. All commands are prefixed with `?`.
 ---
 
 ## Changelog
+
+### SW56–SW58 — May 2026 *(monterman)* — BLE Live Telemetry Released to Master
+
+**BLE feature merged from `feature/bluetooth` → `master` — field-confirmed ✅ (2026-05-16):**
+
+- **NUS + VESC binary protocol:** TX advertises `BRemote-TX-XX` (last byte of BT MAC). Connect with VESC Tool (iOS/Android, free) and get live gauges — FET temp, motor amps, duty cycle, battery voltage, RPM — sourced from whatever the LoRa link is carrying from the foil.
+- **Auto-detect mode:** First `COMM_GET_VALUES` request → VESC protocol mode (app-driven). No request within 500 ms → CSV push mode (generic NUS serial apps).
+- **`bt_enabled` SPIFFS config:** 0=always off, 1=Hall-sensor/session mode, 2=always on after 5s boot. Boot gesture: `Throttle + LEFT toggle` forces BLE for the session.
+- **BT dot display (C7 R1):** Slow blink = BLE ready, Fast blink = BLE active.
+- **Advertisement fix:** NUS UUID in main advert (21 B, fits BLE 31-byte limit); device name in scan response — UUID scan filters work correctly in VESC Tool and Floaty.
+- **Expanded LoRa packet 8→19 bytes:** `foil_voltage`, `foil_duty`, `foil_erpm_hi/lo` now carried over LoRa from RX, decoded by TX and served via BLE.
+- **Dependency:** NimBLE-Arduino 2.x (install via Arduino Library Manager).
+- **Boot note:** Always boot on battery for BLE — USB-C power triggers `checkCharger()` and blocks `initTasks()`.
+
+---
 
 ### SW51–SW55 — May 2026 *(monterman)* — VESC Telemetry Fix, Display Polish, RTM Bench-Complete
 
@@ -838,7 +856,7 @@ Key V2 milestones:
 |---|---|
 | **[LudwigBre / Luddi96](https://github.com/Luddi96/BREmote)** | Original hardware design, original firmware architecture, project founder, and dev-logger framework (dev-logger branch). All core features originate here. GPL 3.0 author. |
 | **Janrusher** | Dynamic throttle cap mode and Web Console foundation — major V2 enhancements forked from LudwigBre, further refined in V2.5-Evo. |
-| **monterman** | BREmote V2.5-Evo — TX GPS implementation, dev-logger AUX button toggle with LED status feedback (5× flash = start, 2× flash = stop), date format DDMMYY → MMDDYY, web console major rebuild (upload/download/compare JSON, integrated serial console, TX+RX coverage, plain-English parameter docs for every setting), deep codebase analysis, critical bug documentation, RTM/FM mode design, VESC UART telemetry diagnosis and root-cause fix (SW55), DISPLAY_MODE_INTBAT 7th display mode, BT status dot + Hall sensor activation framework. |
+| **monterman** | BREmote V2.5-Evo — TX GPS implementation, dev-logger AUX button toggle with LED status feedback (5× flash = start, 2× flash = stop), date format DDMMYY → MMDDYY, web console major rebuild (upload/download/compare JSON, integrated serial console, TX+RX coverage, plain-English parameter docs for every setting), deep codebase analysis, critical bug documentation, RTM/FM mode design, VESC UART telemetry diagnosis and root-cause fix (SW55), DISPLAY_MODE_INTBAT 7th display mode, BT status dot + Hall sensor activation framework, BLE NUS + VESC Tool binary protocol (COMM_GET_VALUES live gauges — field-confirmed 2026-05-16). |
 
 
 **License:** GNU General Public License v3.0 — same as the original BREmote. See LICENSE file.

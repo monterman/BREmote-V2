@@ -114,7 +114,7 @@ const fields=[
 {key:"dynamic_power_step",label:"Dynamic Power Step %",description:"Power cap change per toggle press in Dynamic Cap mode (throttle_mode=2). 1%=finest control, 25%=coarsest.",group:"Gears",type:"int",def:5,min:1,max:25,unit:"%"},
 {key:"gear_change_waittime",label:"Gear Change Wait",description:"Toggle hold duration to register a gear change. 0=instant change, 65535=very long hold required. Milliseconds.",group:"Gears",type:"int",def:100,min:0,max:65535,unit:"ms"},
 {key:"gear_display_time",label:"Gear Display Time",description:"How long the gear number flashes after a change. 0=no display, higher=longer flash. Milliseconds.",group:"Gears",type:"int",def:1000,min:0,max:65535,unit:"ms"},
-{key:"thr_expo",label:"Throttle Expo",description:"Throttle response curve. 0=maximum exponential (gentle at low throttle, aggressive at high), 50=linear, 100=reverse exponential. Most riders prefer 30-50.",group:"Throttle",type:"int",def:50,min:0,max:100},
+{key:"thr_expo",label:"Throttle Expo",description:"Throttle response curve. 50=linear (finger position = motor power 1:1). Above 50=gentle slow start, faster at high throttle (x-squared curve). Below 50=aggressive at low throttle. Tow-buggy/foil riders prefer 70-80. Default 50.",group:"Throttle",type:"int",def:50,min:0,max:100},
 {key:"steer_enabled",label:"Steering Enabled",description:"0=steering disabled (toggle input controls gears/cap only), 1=steering enabled (toggle also steers vehicle).",group:"Steering",type:"bool",def:1,min:0,max:1},
 {key:"steer_expo",label:"Steering Expo",description:"Reserved/unused",group:"Steering",type:"int",def:50,min:0,max:65535},
 {key:"steer_expo1",label:"Steering Expo 1",description:"Reserved/unused",group:"Steering",type:"int",def:0,min:0,max:65535},

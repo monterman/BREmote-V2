@@ -1,4 +1,5 @@
-﻿// V2.5-Evo - 2026-05-09 - Bundle 9-Final: Added USB CDC On Boot compile-time guard
+﻿// V2.5-Evo - 2026-05-22 - SW32: Two-phase RTM throttle: rtm_align_threshold_deg + rtm_target_speed_kmh; sizeof 164→172; SW_VERSION 31→32
+// V2.5-Evo - 2026-05-09 - Bundle 9-Final: Added USB CDC On Boot compile-time guard
 // V2.5-Evo - 2026-05-11 - E7 Fix: VescLogData +1 byte (error_code_log); sizeof 51→52; old SPIFFS logs misparse after this flash
 // V2.5-Evo - 2026-05-08 - Bundle 1: RTM/FM steering preset system (rtm_steer_response 0-4); SW_VERSION 30→31; sizeof unchanged at 164; VescLogData +4 bytes for tuning telemetry
 // V2.5-Evo - 2026-05-06 - LOG-EXT-1: VescLogData extended with heading source debug fields (12 fields, +18 bytes)
@@ -72,7 +73,7 @@
 
 #include <TinyGPS++.h> //TinyGPSPlus 1.0.3 Mikal Hart
 
-#define SW_VERSION 31  // V2.5-Evo — 31 = Bundle 1 RTM/FM steering presets; first flash resets all RX SPIFFS config to defaults
+#define SW_VERSION 32  // V2.5-Evo — 32 = Two-phase RTM throttle (align + GPS speed governor); first flash resets all RX SPIFFS config to defaults
 const char* CONF_FILE_PATH = "/data.txt";
 const char* BC_FILE_PATH = "/batconf.txt";
 
@@ -292,8 +293,25 @@ struct confStruct {
     // ============================================================
     uint16_t rtm_use_compass;        // 0=GPS COG only; 1=Hybrid (default); 2=Compass only DIAGNOSTIC ONLY DO NOT USE ON WATER
     uint16_t rtm_cog_min_speed_kmh;  // Min GPS speed for COG to be primary heading source; 1-15 km/h; default 3
+
+    // ============================================================
+    // V2.5-Evo - 2026-05-22 - SW32: TWO-PHASE RTM THROTTLE CONTROL
+    //
+    // Phase 1 (Align): when |heading_error| > rtm_align_threshold_deg, throttle is
+    //   suppressed to ~5% so the buggy pivots toward the target without driving away.
+    //   At near-zero throttle, motor current is minimal — compass bias is also reduced,
+    //   so hybrid heading mode has cleaner compass snapshot data during alignment.
+    //
+    // Phase 2 (Run): once aligned, throttle is governed by GPS speed so behaviour is
+    //   consistent across different boogies regardless of motor/prop curve.
+    //   rtm_target_speed_kmh == 0 disables the governor (approach decel zone only).
+    //
+    // sizeof grows 164 → 172. SW_VERSION 31 → 32. First flash resets SPIFFS config.
+    // ============================================================
+    float    rtm_target_speed_kmh;      // Phase 2 run speed cap (GPS-based); 0=disabled; 0-20 km/h; default 4.0
+    uint16_t rtm_align_threshold_deg;   // Phase 1→2 transition: heading error below which run phase begins; 10-90°; default 45
 };
-static_assert(sizeof(confStruct) == 164, "confStruct size mismatch — expected 164 bytes. Update this assert if you change the struct.");  // 112->128 Phase A; 128->136 Phase B; 136->152 P7 RTM; 152->156 Bundle B; 156 unchanged BundleE; 156->160 rtm_approach_zone_m (uint16_t + 2-byte tail pad) (2026-04-30); D3 rtm_use_compass + rtm_cog_min_speed_kmh (2x uint8_t) fill the 2-byte tail pad — sizeof stays 160 (2026-05-06); D3-Fix: uint8_t→uint16_t for ConfigService compatibility, sizeof unchanged at 164 (2026-05-06); Bundle 1: dummy_delete_me renamed to rtm_steer_response in-place, sizeof unchanged at 164 (2026-05-08)
+static_assert(sizeof(confStruct) == 172, "confStruct size mismatch — expected 172 bytes. Update this assert if you change the struct.");  // 112->128 Phase A; 128->136 Phase B; 136->152 P7 RTM; 152->156 Bundle B; 156 unchanged BundleE; 156->160 rtm_approach_zone_m (uint16_t + 2-byte tail pad) (2026-04-30); D3 rtm_use_compass + rtm_cog_min_speed_kmh (2x uint8_t) fill the 2-byte tail pad — sizeof stays 160 (2026-05-06); D3-Fix: uint8_t→uint16_t for ConfigService compatibility, sizeof unchanged at 164 (2026-05-06); Bundle 1: dummy_delete_me renamed to rtm_steer_response in-place, sizeof unchanged at 164 (2026-05-08)
 confStruct usrConf;
   //The orginal confs were:  ##// confStruct defaultConf = {SW_VERSION, 1, 0, 0, 50, 0, 0, 1500, 2000, 1500, 2000, 1000, 10, 0, 1, 0, 0, 0, 0, 0, 25.0f, 10.0f, 10.0f, 5.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0, 1000, 1, 0, {0, 0, 0}, {0, 0, 0}, {'1','2','3','4','5','6','7','8'}};
   // V2.5-Evo default configuration — tuned for monterman hardware
@@ -331,7 +349,10 @@ confStruct defaultConf = {SW_VERSION, 2, 20, 1, 50, 0, 0, 1000, 2000, 1000, 2000
   15,         // rtm_approach_zone_m: outer edge of RTM throttle decel zone (0=disabled, 5-100 m; default 15 m)
   // V2.5-Evo - 2026-05-06 - D3: RTM heading source selection defaults
   1,          // rtm_use_compass: 1 = Hybrid (GPS COG primary, compass snapshot at low speed). 0=COG only, 2=compass only DIAGNOSTIC.
-  3           // rtm_cog_min_speed_kmh: GPS speed threshold below which compass snapshot is used; 1-15 km/h; default 3
+  3,          // rtm_cog_min_speed_kmh: GPS speed threshold below which compass snapshot is used; 1-15 km/h; default 3
+  // V2.5-Evo - 2026-05-22 - SW32: Two-phase RTM throttle defaults
+  4.0f,       // rtm_target_speed_kmh: Phase 2 GPS speed cap; 4 km/h default; 0=disabled
+  45          // rtm_align_threshold_deg: heading error threshold for Phase 1→2 transition; 45° default
 };
   /// these equal to:  {"version":31,"radio_preset":2,"rf_power":20,"steering_type":1,"steering_influence":50,"steering_inverted":0,"trim":0,"pwm0_min":1000,"pwm0_max":2000,"pwm1_min":1000,"pwm1_max":2000,"failsafe_time":1000,"foil_num_cells":10,"bms_det_active":0,"wet_det_active":1,"rtm_steer_response":2,"data_src":2,"gps_en":1,"followme_mode":2,"kalman_en":1,"boogie_vmax_in_followme_kmh":25,"min_dist_m":10,"followme_smoothing_band_m":10,"foiler_low_speed_kmh":8,"zone_angle_enter_deg":35,"zone_angle_exit_deg":45,"near_diag_offset_deg":45,"ubat_cal":0.0095554,"ubat_offset":0,"tx_gps_stale_timeout_ms":3000,"logger_en":0,"paired":1,"own_address":"46:C9:E0","dest_address":"46:CB:CC","wifi_password":"12345678","mag_offset_x":0,"mag_offset_y":0,"mag_scale_x":1.0,"mag_scale_y":1.0,"gps_chip_type":1,"gps_max_hdop":2.0,"gps_max_accel_g":3.0,"gps_max_teleport_kmh":80.0,"gps_suspect_threshold":3,"gps_max_pair_dist_m":500.0,"gps_max_speed_diff_kmh":50.0,"rtm_vesc_speed_diff_kmh":20.0,"vesc_erpm_per_kmh":0.0,"rtm_rx_enabled":1,"rtm_rx_override_steering":1,"rtm_compass_required":1,"rtm_stop_distance_m":10,"vesc_timeout_s":6,"gps_update_hz":2}
   ///

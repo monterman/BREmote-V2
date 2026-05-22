@@ -1,4 +1,5 @@
-﻿// V2.5-Evo - 2026-05-11 - Phase C fix: VESC ERPM check now verifies data freshness via vesc.last_packet before comparing to GPS speed
+﻿// V2.5-Evo - 2026-05-22 - SW32: Two-phase RTM throttle — align phase suppresses throttle until heading < rtm_align_threshold_deg; run phase GPS speed governor
+// V2.5-Evo - 2026-05-11 - Phase C fix: VESC ERPM check now verifies data freshness via vesc.last_packet before comparing to GPS speed
 // V2.5-Evo - 2026-05-08 - Bundle 1: P+D+filter steering controller; preset table; bearing filter for FM path-following
 // V2.5-Evo - 2026-05-06 - D5: getRtmHeading() layered heading source; updateRtmSteering() rewritten; Gate 6 accepts any source; updateCompassSnapshot() called from runRtmLoop top
 // V2.5-Evo - 2026-05-03 - C1/M2 audit fix: gps_tx_ok uses timestamp age on both paths; 0.0 lat/lng sentinel removed
@@ -645,6 +646,31 @@ void runRtmLoop()
   // All gates pass: clear emergency stop, update steering
   rtm_rx_emergency_stop = false;
   updateRtmSteering();
+
+  // Two-phase RTM throttle control (SW32):
+  // Phase 1 (Align): heading error > rtm_align_threshold_deg → ~5% throttle cap.
+  //   Buggy pivots toward target without driving away. At near-zero throttle, motor
+  //   current is minimal so compass bias is reduced — hybrid heading mode gets cleaner
+  //   snapshot data during alignment, benefiting builds with BN-880 compass installed.
+  // Phase 2 (Run): heading OK → GPS speed governor keeps speed at rtm_target_speed_kmh
+  //   regardless of buggy power curve. Behaviour is consistent across different boogies.
+  //   rtm_target_speed_kmh == 0 disables the governor (approach decel zone only).
+  {
+    float abs_err = (g_heading_error_dx10 != 0x7FFF) ?
+        fabsf((float)g_heading_error_dx10 / 10.0f) : 180.0f;
+
+    if (abs_err > (float)usrConf.rtm_align_threshold_deg) {
+      // Phase 1 — Align: ~5% throttle — differential steers; buggy barely moves forward
+      const uint8_t kAlignCap = 13;
+      if (rtm_approach_cap > kAlignCap) rtm_approach_cap = kAlignCap;
+    } else if (usrConf.rtm_target_speed_kmh > 0.0f) {
+      // Phase 2 — Run: proportional GPS speed governor (full cap at target, zero cap at rest)
+      float speed_frac = gps_last_speed_kmh / usrConf.rtm_target_speed_kmh;
+      if (speed_frac > 1.0f) speed_frac = 1.0f;
+      uint8_t speed_cap = (uint8_t)((1.0f - speed_frac) * 255.0f);
+      if (rtm_approach_cap > speed_cap) rtm_approach_cap = speed_cap;
+    }
+  }
 
   // Phase C (every 5s)
   runPhaseC();

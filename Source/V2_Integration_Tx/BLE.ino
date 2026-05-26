@@ -220,6 +220,7 @@ void initBLE() {
   nusRxChar->setCallbacks(new NusRxCB());
 
   nus->start();
+  initPatronService(bleServer);
 
   NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
 

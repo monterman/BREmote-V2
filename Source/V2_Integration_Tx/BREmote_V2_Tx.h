@@ -63,6 +63,11 @@
 // Library: TinyGPSPlus 1.0.3 by Mikal Hart (same version used on RX).
 #include <TinyGPS++.h>
 
+// NimBLE-Arduino: required for Patron BLE GATT service (BLE_Patron.ino).
+// NimBLEServer type must be visible here so the forward declaration in
+// V2_Integration_Tx.ino can compile before BLE_Patron.ino is concatenated.
+#include <NimBLEDevice.h>
+
 // Uncomment the line below to enable WiFi AP configuration mode
 #define WIFI_ENABLED
 

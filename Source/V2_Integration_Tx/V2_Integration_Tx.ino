@@ -54,9 +54,11 @@ bool isFmArmed();
 uint8_t calcRtmThrottleCap();
 // RTM/FM Active Display (defined in Display.ino)
 void renderRtmInfoDisplay();
-// BLE Functions (defined in BLE.ino)
+// BLE Functions (defined in BLE.ino / BLE_Patron.ino)
 void initBLE();
 void bleTelemetryLoop();
+void initPatronService(NimBLEServer* srv);
+void patronNotifyLoop();
 // Aux control command (defined in Radio.ino — queues 0xF4 meta-packet burst to RX)
 void sendAuxCommand(uint8_t flags);
 // Cross-Tab Subsystem Initializers
@@ -198,6 +200,7 @@ void loop()
 
   checkSerial();
   bleTelemetryLoop();
+  patronNotifyLoop();
 
   // Update last_user_input_ms when intentional input is detected.
   // Throttle threshold: thr_scaled > 20 (~8% pull — above noise floor).

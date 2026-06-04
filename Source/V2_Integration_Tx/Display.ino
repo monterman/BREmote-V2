@@ -100,6 +100,7 @@ void startupDisplay()
   }
   if (!found) {
     Serial.println(" Failed (no display — continuing)");
+    display_activity_enabled = false;  // stop futile I2C traffic on every render cycle
     return;
   }
 

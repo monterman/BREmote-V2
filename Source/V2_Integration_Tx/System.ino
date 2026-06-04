@@ -26,14 +26,16 @@ void deepSleep()
   // As the LAST display action, fully blank the panel: 0x80 = display OFF, then
   // 0x20 = oscillator OFF. The display ends fully dark. On wake, setup()→
   // startupDisplay()→initDisplay() re-enables the oscillator (0x21) and display
-  // (0x81), so this is safe. Issued directly (not via setBrightness/initDisplay,
-  // which gate on isDisplayActivityEnabled()) so the OFF state is unconditional.
+  // (0x81), so this is safe. Mutex-protected so updateBargraphs() (priority 6)
+  // cannot preempt between the two Wire calls and re-enable the display.
+  DISP_LOCK();
   Wire.beginTransmission(DISPLAY_ADDRESS);
   Wire.write(0x80); // display OFF (no blink)
   Wire.endTransmission();
   Wire.beginTransmission(DISPLAY_ADDRESS);
   Wire.write(0x20); // system oscillator OFF
   Wire.endTransmission();
+  DISP_UNLOCK();
   esp_deep_sleep_start();
 }
 

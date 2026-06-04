@@ -46,6 +46,9 @@ void initStorage()
 // V2.5-Evo - 2026-05-15 - feature/bluetooth: one-shot init task.
 // Delays 5s to let LoRa and WiFi settle before starting BLE stack.
 // Calls initBLE() then self-deletes. Pinned to Core 1 (loop core) at lowest priority.
+// V2.5-Evo - 2026-06-04 - Guarded by BLE_ENABLED (BREmote_V2_Tx.h). With BLE disabled this
+// task is never compiled and never created, so NimBLEDevice::init() can never run.
+#ifdef BLE_ENABLED
 static void bleInitTask(void* param)
 {
   vTaskDelay(pdMS_TO_TICKS(5000));
@@ -56,6 +59,7 @@ static void bleInitTask(void* param)
   }
   vTaskDelete(NULL);
 }
+#endif
 
 void initTasks()
 {
@@ -70,7 +74,12 @@ void initTasks()
   xTaskCreatePinnedToCore(vibrationTask, "Vibration_Task_BG", 2048, NULL, 3, &vibrationTaskHandle, 0);
   // Finding 4-1: stack 1024→2048 words; handle saved so ?printtasks can report HWM
   // BLE init: one-shot task, 5s delayed, Core 0 (ESP32-C3 is single-core), priority 1, 4KB stack
+  // V2.5-Evo - 2026-06-04 - BLE task creation guarded by BLE_ENABLED (BREmote_V2_Tx.h).
+  // This is the single line that starts BLE; with the guard undefined it is never compiled,
+  // so no BLE task is created and no NimBLE heap/CPU is consumed on the single-core C3.
+#ifdef BLE_ENABLED
   xTaskCreatePinnedToCore(bleInitTask, "BLE_Init", 4096, NULL, 1, NULL, 0);
+#endif
 }
 
 void initWatchdog()

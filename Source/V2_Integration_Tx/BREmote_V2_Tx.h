@@ -63,10 +63,21 @@
 // Library: TinyGPSPlus 1.0.3 by Mikal Hart (same version used on RX).
 #include <TinyGPS++.h>
 
+// V2.5-Evo - 2026-06-04 - BLE master kill-switch. Leave BLE_ENABLED UNDEFINED to
+// fully exclude the NimBLE stack: no header, no init, no task, no loop calls.
+// This was added because the BLE work crashed the TX display during water testing.
+// Reversible by investigation: uncomment the #define below to restore BLE exactly as before.
+// The Hall-sensor BT status dot (bt_dot_state / BT_DOT_*) and the boot gesture flag
+// (bt_session_forced) are intentionally left OUTSIDE this guard — they are independent of
+// the NimBLE stack and stay compiled so the rest of the firmware is unchanged.
+// #define BLE_ENABLED
+
 // NimBLE-Arduino: required for Patron BLE GATT service (BLE_Patron.ino).
 // NimBLEServer type must be visible here so the forward declaration in
 // V2_Integration_Tx.ino can compile before BLE_Patron.ino is concatenated.
+#ifdef BLE_ENABLED
 #include <NimBLEDevice.h>
+#endif
 
 // Uncomment the line below to enable WiFi AP configuration mode
 #define WIFI_ENABLED

@@ -55,10 +55,14 @@ uint8_t calcRtmThrottleCap();
 // RTM/FM Active Display (defined in Display.ino)
 void renderRtmInfoDisplay();
 // BLE Functions (defined in BLE.ino / BLE_Patron.ino)
+// V2.5-Evo - 2026-06-04 - Guarded by BLE_ENABLED (BREmote_V2_Tx.h). When undefined, the
+// NimBLE header is excluded, so these decls (one uses NimBLEServer*) must be excluded too.
+#ifdef BLE_ENABLED
 void initBLE();
 void bleTelemetryLoop();
 void initPatronService(NimBLEServer* srv);
 void patronNotifyLoop();
+#endif
 // Aux control command (defined in Radio.ino — queues 0xF4 meta-packet burst to RX)
 void sendAuxCommand(uint8_t flags);
 // Cross-Tab Subsystem Initializers
@@ -199,8 +203,12 @@ void loop()
   }
 
   checkSerial();
+  // V2.5-Evo - 2026-06-04 - BLE per-loop calls guarded by BLE_ENABLED (BREmote_V2_Tx.h).
+  // With BLE disabled, the NimBLE stack is never initialized, so these must not run.
+#ifdef BLE_ENABLED
   bleTelemetryLoop();
   patronNotifyLoop();
+#endif
 
   // Update last_user_input_ms when intentional input is detected.
   // Throttle threshold: thr_scaled > 20 (~8% pull — above noise floor).

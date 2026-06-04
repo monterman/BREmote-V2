@@ -5,6 +5,9 @@
 // No VESC requests → CSV push every 500ms (Serial BT Terminal compat).
 // Dependency: NimBLE-Arduino 2.x (install via Arduino Library Manager).
 // v_in, duty, rpm now decoded from expanded 19-byte RX packet (foil_voltage, foil_duty, foil_erpm).
+// V2.5-Evo - 2026-06-04 - Entire file guarded by BLE_ENABLED (BREmote_V2_Tx.h). With the guard
+// undefined the whole NimBLE stack is excluded from the build (disabled for water testing).
+#ifdef BLE_ENABLED
 
 #include <NimBLEDevice.h>
 #include <esp_mac.h>
@@ -261,3 +264,5 @@ void bleTelemetryLoop() {
 
   sendCSVTelemetry();
 }
+
+#endif // BLE_ENABLED

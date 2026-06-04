@@ -1,4 +1,5 @@
-﻿// V2.5-Evo - 2026-05-14 - SW55: bootAnimation VI display 500→250ms; battery voltage display 500→1450ms; total boot to padlock ~4.5s
+﻿// V2.5-Evo - 2026-06-04 - Fix B (2-3 resets to boot after USB): startupDisplay() no longer hangs or restarts on display-probe fail. Retry window ~3s with Wire.begin() bus re-init; on final failure: log and continue (ESP.restart() removed — it caused CH340 re-reset → probe fail → boot-retry loop)
+// V2.5-Evo - 2026-05-14 - SW55: bootAnimation VI display 500→250ms; battery voltage display 500→1450ms; total boot to padlock ~4.5s
 // V2.5-Evo - 2026-05-14 - SW53: unlockAnimation() rewritten 3-frame sweep R0→R6 (was 5 frames starting at invisible row); bootAnimation battery delay 3s→500ms
 // V2.5-Evo - 2026-05-13 - SW48: advanceArrow/unlockAnimation/displayError mutex-wrapped; cycleDisplayMode/displayLock call sites fixed in Hall+RTMState+System
 // V2.5-Evo - 2026-05-13 - SW47: unlockAnimation() per-frame clear (smear→clean arrow); boot battery display 1s→3s; ANIMATION_DELAY 40→60ms
@@ -84,17 +85,22 @@ bool isDisplayActivityEnabled()
 void startupDisplay()
 {
   Serial.print("Starting Display...");
-  // HT16K33 tPOR ≤ 1ms but PCB power-rail settle can take longer.
-  // Retry for up to 100ms before declaring failure — prevents boot hang
-  // on first power cycle when the display chip isn't ready yet.
+  // After a CH340 USB auto-reset the I2C bus can be briefly unsettled; retry
+  // for up to ~3s with Wire.begin() re-init between attempts. On final failure:
+  // log and continue — do NOT ESP.restart() here, that causes a CH340 re-reset
+  // → probe fails again → another restart → 2-3 boot-retry loop.
+  // 300 attempts × (5ms probe-settle + bus re-init) ≈ up to ~3s bounded window.
   bool found = false;
-  for (int i = 0; i < 20 && !found; i++) {
+  for (int i = 0; i < 300 && !found; i++) {
     found = beginDisplay();
-    if (!found) delay(5);
+    if (!found) {
+      delay(5);
+      Wire.begin(P_I2C_SDA, P_I2C_SCL);  // re-init bus in case it came up half-configured after USB reset
+    }
   }
   if (!found) {
-    Serial.println(" Failed");
-    while(1) delay(100);
+    Serial.println(" Failed (no display — continuing)");
+    return;
   }
 
   clearDisplayBuffer();

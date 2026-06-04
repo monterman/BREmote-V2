@@ -1,4 +1,6 @@
-﻿// V2.5-Evo - 2026-05-06 - DIAG: ?gpscoldreset command added
+﻿// V2.5-Evo - 2026-06-04 - Fix 1 (ghost-in-checkCharger): checkCharger() now blanks stale HT16K33 RAM and powers the display off before the charge loop, then explicitly turns osc+display ON before the first setBrightness(); exits with osc+display OFF for clean handoff to startupDisplay()
+// V2.5-Evo - 2026-06-04 - Fix A (ghost-when-off): deepSleep() now fully blanks the HT16K33 (0x80 display-OFF + 0x20 oscillator-OFF) as the last display action before deep sleep — brightness 0 alone left the chip lit, causing a steady ghost
+// V2.5-Evo - 2026-05-06 - DIAG: ?gpscoldreset command added
 // V2.5-Evo - 2026-05-06 - FIX-HELP-1: corrected raw-GPS-dump help text from "type q to quit" to "type 'quit' to abort"
 // V2.5-Evo - 2026-05-03 - Added reserved/warning comments (LOW audit cleanup)
 // V2.5-Evo - 2026-04-24 - Added ?printgps, ?gpsraw, ?gpsreinit serial commands for TX GPS diagnostics
@@ -19,6 +21,19 @@ void deepSleep()
   Serial.println("Going to sleep now");
   setRadioActivityEnabled(false);
   Serial.flush();
+  // Fix A (ghost-when-off): HT16K33 brightness 0x00 does NOT turn the chip off —
+  // it stays powered and faintly lit, leaving a steady ghost during deep sleep.
+  // As the LAST display action, fully blank the panel: 0x80 = display OFF, then
+  // 0x20 = oscillator OFF. The display ends fully dark. On wake, setup()→
+  // startupDisplay()→initDisplay() re-enables the oscillator (0x21) and display
+  // (0x81), so this is safe. Issued directly (not via setBrightness/initDisplay,
+  // which gate on isDisplayActivityEnabled()) so the OFF state is unconditional.
+  Wire.beginTransmission(DISPLAY_ADDRESS);
+  Wire.write(0x80); // display OFF (no blink)
+  Wire.endTransmission();
+  Wire.beginTransmission(DISPLAY_ADDRESS);
+  Wire.write(0x20); // system oscillator OFF
+  Wire.endTransmission();
   esp_deep_sleep_start();
 }
 
@@ -642,7 +657,14 @@ void serPrintStatus(bool json)
 void checkCharger()
 {
   uint8_t chg_err_cnt = 0;
+  bool chg_disp_on = false;
   Serial.print("Checking if charging...");
+
+  // Clear stale HT16K33 RAM and blank display — prevents ghost of previous content at dim brightness
+  clearDisplayBuffer();
+  updateDisplay();
+  Wire.beginTransmission(DISPLAY_ADDRESS); Wire.write(0x80); Wire.endTransmission();
+  Wire.beginTransmission(DISPLAY_ADDRESS); Wire.write(0x20); Wire.endTransmission();
 
   while(!exitChargeScreen)
   {
@@ -680,6 +702,11 @@ void checkCharger()
     }
     else if(chgstat > 6000 && chgstat < 10000)
     {
+      if (!chg_disp_on) {
+        Wire.beginTransmission(DISPLAY_ADDRESS); Wire.write(0x21); Wire.endTransmission();
+        Wire.beginTransmission(DISPLAY_ADDRESS); Wire.write(0x81); Wire.endTransmission();
+        chg_disp_on = true;
+      }
       setBrightness(0x01);
       advanceChargeAnimation();
       uint8_t chglevel = map(c_bat_volt, 330, 420, 0, 10);
@@ -693,6 +720,11 @@ void checkCharger()
     }
     else if(chgstat > 10000 && chgstat < 18000)
     {
+      if (!chg_disp_on) {
+        Wire.beginTransmission(DISPLAY_ADDRESS); Wire.write(0x21); Wire.endTransmission();
+        Wire.beginTransmission(DISPLAY_ADDRESS); Wire.write(0x81); Wire.endTransmission();
+        chg_disp_on = true;
+      }
       setBrightness(0x01);
       displayBuffer[1] = (displayBuffer[1] & 0xFF80) | 0x1F;  // I-1: preserve bit 7 (GPS dot)
       displayBuffer[4] = 0x1F;
@@ -719,6 +751,11 @@ void checkCharger()
       delay(10);
       if(chg_err_cnt > 10)
       {
+        if (!chg_disp_on) {
+          Wire.beginTransmission(DISPLAY_ADDRESS); Wire.write(0x21); Wire.endTransmission();
+          Wire.beginTransmission(DISPLAY_ADDRESS); Wire.write(0x81); Wire.endTransmission();
+          chg_disp_on = true;
+        }
         setBrightness(0x01);
         Serial.println("CHG ERR!");
         Serial.print("Stat: ");
@@ -734,6 +771,9 @@ void checkCharger()
       }
     }
   }
+  // Blank on every exit — clean state for startupDisplay() which re-initialises properly
+  Wire.beginTransmission(DISPLAY_ADDRESS); Wire.write(0x80); Wire.endTransmission();
+  Wire.beginTransmission(DISPLAY_ADDRESS); Wire.write(0x20); Wire.endTransmission();
   displayHorzBargraph(7,0);
   setBrightness(0x0F);
 }

@@ -78,8 +78,10 @@ void calcPWM()
     int max_steering_offset_0 = map(usrConf.steering_influence, 0, 100, 0, (usrConf.PWM0_max - usrConf.PWM0_min));
     int max_steering_offset_1 = map(usrConf.steering_influence, 0, 100, 0, (usrConf.PWM1_max - usrConf.PWM1_min));
 
-    int steering_offset_0 = map(effective_steer, 0, 255, -max_steering_offset_0, max_steering_offset_0)+1;
-    int steering_offset_1 = map(effective_steer, 0, 255, -max_steering_offset_1, max_steering_offset_1)+1;
+    // V2.5-Evo - 2026-06-05 - H-1 fix: removed +1 bias. It left one motor at PWM_min+1 at rest
+    // (verified 1000,1001 via ?printpwm), causing a faint crawl/hum on tightly-PPM-calibrated VESCs.
+    int steering_offset_0 = map(effective_steer, 0, 255, -max_steering_offset_0, max_steering_offset_0);
+    int steering_offset_1 = map(effective_steer, 0, 255, -max_steering_offset_1, max_steering_offset_1);
 
     if(usrConf.steering_inverted)
     {

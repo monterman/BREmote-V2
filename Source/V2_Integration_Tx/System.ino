@@ -568,6 +568,10 @@ void serPrintInputs(bool json)
     if(checkSerialQuit()) break;
     if(in_menu > 0) in_menu--;
 
+    // V2.5-Evo - 2026-06-05 - DIAG: raw Hall counts for magnet/calibration diagnosis
+    uint16_t rawThr = 0, rawTog = 0;
+    readFilteredInputs(rawThr, rawTog);
+
     if(json)
     {
       Serial.printf("{\"throttle\":%d,\"steering\":%d,\"thr_sent\":%d,\"steer_sent\":%d,\"toggle\":%d,\"toggle_input\":%d,\"locked\":%d,\"in_menu\":%d,\"steer_enabled\":%d,\"hall_enabled\":%d}\n",
@@ -592,7 +596,11 @@ void serPrintInputs(bool json)
       Serial.print(", SteerEn: ");
       Serial.print(usrConf.steer_enabled);
       Serial.print(", HallEn: ");
-      Serial.println(isHallActivityEnabled() ? 1 : 0);
+      Serial.print(isHallActivityEnabled() ? 1 : 0);
+      Serial.print(", RAW_THR: ");
+      Serial.print(rawThr);
+      Serial.print(", RAW_TOG: ");
+      Serial.println(rawTog);
     }
     delay(50);
   }

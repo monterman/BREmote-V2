@@ -1,4 +1,5 @@
-﻿// *** LATEST: V2.5-Evo - 2026-05-14 - SW55 — GPS yields MUX to VESC on exit; rcv_err removed from receiveFromVESC; boot MUX starts on VESC ***
+﻿// *** LATEST: V2.5-Evo - 2026-06-04 - D1 — UART-mux read-back verify (setUartMux); skip VESC poll while throttle high; no confStruct change ***
+// V2.5-Evo - 2026-05-14 - SW55 — GPS yields MUX to VESC on exit; rcv_err removed from receiveFromVESC; boot MUX starts on VESC
 // V2.5-Evo - 2026-05-11 - Telemetry Fix: VESC moved to its own vesc_loop_timer (2Hz); checkButtons() added to loop() for runtime BIND compass cal
 // V2.5-Evo - 2026-05-03 - Removed commented-out SPIFFS.remove dead code (LOW audit cleanup)
 // V2.5-Evo - 2026-04-30 - Bundle E: GPS moved to its own gps_loop_timer (rate = gps_update_hz); removed from 1000ms gate
@@ -75,7 +76,13 @@ void loop()
   }
 
   // VESC at 2Hz, independent of GPS and wetness gate.
-  if(usrConf.data_src == 2)
+  // V2.5-Evo - 2026-06-04 - D1: skip the VESC poll while throttle is high (Rex audit Symptom 2).
+  // getVescLoop() switches the AW9523 UART mux; doing that during active driving collides with
+  // motor-switching EMI on the shared expander and can disrupt PPM/mux routing. Poll telemetry
+  // only at low/zero throttle (thr_received < 25, the same "motor active" threshold used in
+  // PWM.ino/RTMState.ino). Telemetry resumes the instant throttle drops; the vesc_timeout_s
+  // window legitimately N/A's the display during a sustained high-throttle run (expected, per audit).
+  if(usrConf.data_src == 2 && thr_received < 25)
   {
     if(millis() - vesc_loop_timer >= 500)
     {

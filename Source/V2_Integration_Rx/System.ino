@@ -37,22 +37,39 @@ void startupAW()
   Serial.println(" Done");
 }
 
+// V2.5-Evo - 2026-06-04 - D1: UART-mux read-back verify (Rex audit Symptom 2).
+//
+// The AW9523 UART-mux select pins (AP_U1_MUX_0/1) and the PWM-enable pins share the
+// same I2C expander. Under motor switching, MOSFET EMI corrupts I2C writes (documented
+// SW48-SW55, checkWetness() note above): a setUartMux() write can be stripped, leaving
+// Serial1 still routed to the GPS so the VESC query goes nowhere — the intermittent
+// motor / blank-telemetry / startup-stall cluster.
+//
+// Mitigation: after writing the two mux bits, read them back (digitalRead reads the
+// AW9523 INPUT register = actual pad level). If either bit does not match the intended
+// state, re-assert ONCE and re-read ONCE. This is a BOUNDED verify-and-correct, NOT the
+// SW51/SW52 rapid-retry loop that was reverted in SW54 for hammering the bus — at most a
+// single corrective write pass per call. All I2C stays inside the i2cMutex critical section.
 void setUartMux(int channel)
 {
-  if(channel == 0)
+  // Intended pad levels for the two select bits per channel:
+  //   channel 0 (VESC): MUX_0 = LOW,  MUX_1 = LOW
+  //   channel 1 (GPS):  MUX_0 = HIGH, MUX_1 = LOW
+  if(channel != 0 && channel != 1) return;
+  const bool want_mux0 = (channel == 1);
+  const bool want_mux1 = false;
+
+  xSemaphoreTake(i2cMutex, portMAX_DELAY);
+  aw.digitalWrite(AP_U1_MUX_0, want_mux0);
+  aw.digitalWrite(AP_U1_MUX_1, want_mux1);
+
+  // Bounded verify-and-correct: one read-back, at most one corrective re-write.
+  if(aw.digitalRead(AP_U1_MUX_0) != want_mux0 || aw.digitalRead(AP_U1_MUX_1) != want_mux1)
   {
-    xSemaphoreTake(i2cMutex, portMAX_DELAY);
-    aw.digitalWrite(AP_U1_MUX_0, LOW);
-    aw.digitalWrite(AP_U1_MUX_1, LOW);
-    xSemaphoreGive(i2cMutex);
+    aw.digitalWrite(AP_U1_MUX_0, want_mux0);
+    aw.digitalWrite(AP_U1_MUX_1, want_mux1);
   }
-  if(channel == 1)
-  {
-    xSemaphoreTake(i2cMutex, portMAX_DELAY);
-    aw.digitalWrite(AP_U1_MUX_0, HIGH);
-    aw.digitalWrite(AP_U1_MUX_1, LOW);
-    xSemaphoreGive(i2cMutex);
-  }
+  xSemaphoreGive(i2cMutex);
 }
 
 void checkWetness()

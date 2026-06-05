@@ -1,6 +1,14 @@
 ﻿// V2.5-Evo - 2026-04-30 - calcPWM() applies rtm_approach_cap for RTM approach decel zone
 // V2.5-Evo - 2026-04-25 - P7: calcPWM() applies RTM emergency stop and steering override via effective_thr/steer
 // V2.5-Evo - 2026-04-28 - Security: gate steer override on thr_received>=25 (belt-and-suspenders)
+
+// V2.5-Evo - 2026-06-05 - SAFETY: throttle ramp (like the VESC ramp time, but on the remote so it
+// protects every motor even without a tuned VESC). THR_RAMP_TIME_S = seconds for the throttle to
+// rise 0->full. Applied to the THROTTLE ONLY, so Ludwig's instant differential steering is unchanged.
+// FALL is instant so release / failsafe / e-stop drop the motor immediately. (Per-cycle step is
+// derived from this at the 100Hz calcPWM rate.)
+#define THR_RAMP_TIME_S 1.0f
+
 void generatePWM(void *parameter) {
   TickType_t xLastWakeTime = xTaskGetTickCount();
   const TickType_t xFrequency = pdMS_TO_TICKS(10);
@@ -53,6 +61,19 @@ void calcPWM()
   {
     effective_thr = rtm_approach_cap;
   }
+
+  // V2.5-Evo - 2026-06-05 - SAFETY: throttle ramp — limit the THROTTLE rise to THR_RAMP_TIME_S
+  // (seconds for 0->full); fall is instant. Ramps only the throttle base, so differential steering
+  // still applies instantly on top — Ludwig's steering feel is unchanged. Stops the violent yank on a
+  // fast pull and a power-on/link throttle glitch. e-stop / approach-cap / release reduce effective_thr
+  // and the instant-fall passes them through.
+  {
+    static uint8_t thr_ramp = 0;
+    uint8_t thr_step = (uint8_t)max(1.0f, 255.0f / (THR_RAMP_TIME_S * 100.0f));  // 100Hz calcPWM rate
+    if (effective_thr > thr_ramp + thr_step) thr_ramp += thr_step; else thr_ramp = effective_thr;
+    effective_thr = thr_ramp;
+  }
+
   // SAFETY FIX (2026-04-28 audit): also gate on thr_received>=25.
   // Gate 1 in RTMState.ino resets rtm_steer_override=127 on throttle release (Task 1A),
   // but that runs at 10Hz. This gate ensures the PWM task (100Hz) cannot apply a stale

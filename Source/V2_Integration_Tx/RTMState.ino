@@ -1,4 +1,4 @@
-﻿// V2.5-Evo - 2026-04-25 - P7: TX RTM and FM state machines.
+// V2.5-Evo - 2026-04-25 - P7: TX RTM and FM state machines.
 // RTM: left-hold gesture → arm → squeeze(s) → active → cooldown → idle
 // FM:  right-hold gesture → cycle FM mode 0→1→2→3→0 → send 0xF2 meta-packet
 // V2.5-Evo - 2026-04-27 - P8: setRtmArmed shows "rn" ×2 (static, 3s total); showFmMode shows F0-F3;
@@ -63,6 +63,11 @@ static void gpsKeepAliveDelay(uint32_t ms)
 typedef enum { RTM_IDLE, RTM_ARMED, RTM_SQUEEZE_WAIT, RTM_ACTIVE, RTM_COOLDOWN } RtmTxState;
 
 static RtmTxState  rtm_tx_state        = RTM_IDLE;
+
+// V2.5-Evo - 2026-06-05 - C-1: 2nd independent throttle gate. True only during the blocking
+// RTM arm ceremony (RTM_ARMED), cleared on every exit (→RTM_ACTIVE success / →RTM_IDLE fail).
+// sendData() reads this to hard-zero the throttle byte regardless of rtm_thr_cap_tx.
+bool rtmIsArming() { return rtm_tx_state == RTM_ARMED; }
 static unsigned long rtm_arm_start_ms  = 0;   // when ARMED state was entered
 static unsigned long rtm_active_start_ms = 0; // when ACTIVE state was entered
 static unsigned long rtm_release_ms    = 0;   // when throttle was last released during ACTIVE
@@ -218,7 +223,7 @@ static void runDoubleSqueezeArm()
   {
     // Single-squeeze: unlock, pause, then Pattern 4 + "r n" arm confirm
     unlockAnimation();
-    gpsKeepAliveDelay(250);
+    gpsKeepAliveDelay(750);   // V2.5-Evo - 2026-06-05: was 250 — +500ms so the "armed" buzz is clearly separated from the squeeze
     current_vib_pattern = 4;   // Pattern 4 after visual unlock completes
     DISP_LOCK(); displayDigitZone("r n"); updateDisplay(); DISP_UNLOCK();
     gpsKeepAliveDelay(2000);
@@ -257,7 +262,7 @@ static void runDoubleSqueezeArm()
 
     // Second squeeze confirmed: unlock, pause, then Pattern 4 + "r n" arm confirm
     unlockAnimation();
-    gpsKeepAliveDelay(250);
+    gpsKeepAliveDelay(750);   // V2.5-Evo - 2026-06-05: was 250 — +500ms so the "armed" buzz is clearly separated from the squeeze
     current_vib_pattern = 4;   // Pattern 4 after visual unlock completes
     DISP_LOCK(); displayDigitZone("r n"); updateDisplay(); DISP_UNLOCK();
     gpsKeepAliveDelay(2000);

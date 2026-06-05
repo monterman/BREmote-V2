@@ -1,4 +1,4 @@
-﻿// V2.5-Evo - 2026-05-13 - SW50: DISPLAY_MODE_AMP replaces INTBAT; TelemetryPacket +foil_motor_amps byte (index 6); link_quality→index 7
+// V2.5-Evo - 2026-05-13 - SW50: DISPLAY_MODE_AMP replaces INTBAT; TelemetryPacket +foil_motor_amps byte (index 6); link_quality→index 7
 // V2.5-Evo - 2026-05-13 - SW48: DISP_LOCK/UNLOCK macros; mutex all bare display callers outside renderOperationalDisplay/updateBargraphs
 // V2.5-Evo - 2026-05-13 - SW46: DISPLAY_MODE order — Temp(0)/Thr(1)/Speed(2)/Power(3)/Bat(4)/IntBat(5); THR centre, LEFT=Temp, RIGHT=Speed
 // V2.5-Evo - 2026-05-13 - SW33: GPIO 9 repurposed as P_MAG digital Hall sensor (DRV5032FADBZR); removed from serialOff OUTPUT-LOW block; mag_seen_high boot guard added
@@ -454,6 +454,11 @@ std::atomic<uint8_t> rtm_meta_count {0};    // bursts remaining; 0 = idle (value
 // user throttle — never add. Creator safety philosophy enforced here.
 std::atomic<uint8_t> rtm_thr_cap_tx {255};
 std::atomic<bool>    rtm_tx_active  {false};
+
+// V2.5-Evo - 2026-06-05 - C-1: 2nd independent throttle gate during RTM arm ceremony.
+// true only while rtm_tx_state == RTM_ARMED (the blocking arm window). Read by sendData()
+// to hard-zero the throttle byte independently of rtm_thr_cap_tx. Defined in RTMState.ino.
+bool rtmIsArming();
 
 // V2.5-Evo - 2026-04-28 - P9 S4: RTM arm distance captured at engage moment.
 // Used by R5 proximity bar to set the 100% reference distance.

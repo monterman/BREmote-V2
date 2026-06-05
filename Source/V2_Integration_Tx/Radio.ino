@@ -1,4 +1,4 @@
-﻿// V2.5-Evo - 2026-05-03 - Added reserved/warning comments (LOW audit cleanup)
+// V2.5-Evo - 2026-05-03 - Added reserved/warning comments (LOW audit cleanup)
 // V2.5-Evo - 2026-04-24 - Added 0xF3 GPS meta-packet burst at 2Hz in sendData(); THR capped at 0xF2
 // V2.5-Evo - 2026-04-25 - P7: Added RTM/FM meta-packet queue consumer in sendData(); cap 0xF2→0xF0; queueMetaPacketBurst()
 // V2.5-Evo - 2026-05-13 - SW32 L3: stale checkAndAdjustAddress TODO block removed (function never implemented)
@@ -358,6 +358,9 @@ void sendData(void *parameter)
         else
         {
           uint8_t thr = calcFinalThrottle();
+          // V2.5-Evo - 2026-06-05 - C-1: 2nd independent gate — hard-zero throttle during the RTM
+          // arm ceremony, regardless of rtm_thr_cap_tx. Both gates must fail to pass throttle while arming.
+          if (rtmIsArming()) thr = 0;
           // V2.5-Evo - 2026-04-25 - P7: cap at 0xF0 (240=94.1%) to reserve 0xF1-0xFF for all meta-packet types.
           // 0xF1=RTM state, 0xF2=FM override, 0xF3=GPS coord. Was 0xF2 cap before P7.
           // 0xF1 and 0xF2 are intentionally reserved packet type bytes — do not assign.

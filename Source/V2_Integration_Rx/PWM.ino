@@ -78,10 +78,14 @@ void calcPWM()
     int max_steering_offset_0 = map(usrConf.steering_influence, 0, 100, 0, (usrConf.PWM0_max - usrConf.PWM0_min));
     int max_steering_offset_1 = map(usrConf.steering_influence, 0, 100, 0, (usrConf.PWM1_max - usrConf.PWM1_min));
 
-    // V2.5-Evo - 2026-06-05 - H-1 fix: removed +1 bias. It left one motor at PWM_min+1 at rest
-    // (verified 1000,1001 via ?printpwm), causing a faint crawl/hum on tightly-PPM-calibrated VESCs.
-    int steering_offset_0 = map(effective_steer, 0, 255, -max_steering_offset_0, max_steering_offset_0);
-    int steering_offset_1 = map(effective_steer, 0, 255, -max_steering_offset_1, max_steering_offset_1);
+    // V2.5-Evo - 2026-06-05 - H-1 recentering: removed the +1 bias AND recentre so neutral steering (127)
+    // maps to exactly 0 — both motors sit at PWM_min at rest, killing the ~2us map-quantization residual
+    // that read 1000,1002 (127 mapped to -2 because 0-255 has no whole-number centre). No dead zone, smooth
+    // steering. Neutral stability is handled upstream by the TX tog_deadzone.
+    int center_off_0 = map(127, 0, 255, -max_steering_offset_0, max_steering_offset_0);
+    int center_off_1 = map(127, 0, 255, -max_steering_offset_1, max_steering_offset_1);
+    int steering_offset_0 = map(effective_steer, 0, 255, -max_steering_offset_0, max_steering_offset_0) - center_off_0;
+    int steering_offset_1 = map(effective_steer, 0, 255, -max_steering_offset_1, max_steering_offset_1) - center_off_1;
 
     if(usrConf.steering_inverted)
     {

@@ -1,4 +1,4 @@
-﻿// V2.5-Evo - 2026-05-13 - SW34: WebUI UX — reboot btn feedback, overflow-x fix
+// V2.5-Evo - 2026-05-13 - SW34: WebUI UX — reboot btn feedback, overflow-x fix
 // V2.5-Evo - 2026-04-25 - P7: Added 12 RTM/FM fields; added RTM & Follow-Me group; sizeof TX confStruct 96→120
 // V2.5-Evo - 2026-04-28 - ChangeA/F: fm_arm_window max 60→120s; followme_mode labels updated, option 0 removed
 // V2.5-Evo - 2026-04-29 - TaskB: full description audit — bool 0/1 values, enum all options inline, int/float extremes explained

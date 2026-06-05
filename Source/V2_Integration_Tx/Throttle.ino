@@ -1,4 +1,4 @@
-﻿// V2.5-Evo - 2026-04-25 - P7: calcFinalThrottle() applies rtm_thr_cap_tx ramp
+// V2.5-Evo - 2026-04-25 - P7: calcFinalThrottle() applies rtm_thr_cap_tx ramp
 // Centralized throttle calculation module.
 // Handles gear mode (0), no-gear mode (1), and dynamic cap mode (2).
 

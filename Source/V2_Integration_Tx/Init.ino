@@ -1,4 +1,4 @@
-﻿// V2.5-Evo - 2026-04-21 - Added initTxGPS() call in applyConfigSettings() for TX GPS speed display
+// V2.5-Evo - 2026-04-21 - Added initTxGPS() call in applyConfigSettings() for TX GPS speed display
 // V2.5-Evo - 2026-04-22 - Simplified initTxGPS() call site: speed_src guard moved into initTxGPS() itself
 // V2.5-Evo - 2026-04-27 - P8: applyConfigSettings() always boots unlocked (lock feature removed)
 // V2.5-Evo - 2026-04-27 - P8.1 Bug 1 fix: Restored no_lock=0/1 boot behavior; system_locked now conditional

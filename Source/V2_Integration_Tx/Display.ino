@@ -1,4 +1,4 @@
-﻿// V2.5-Evo - 2026-05-14 - SW55: bootAnimation VI display 500→250ms; battery voltage display 500→1450ms; total boot to padlock ~4.5s
+// V2.5-Evo - 2026-05-14 - SW55: bootAnimation VI display 500→250ms; battery voltage display 500→1450ms; total boot to padlock ~4.5s
 // V2.5-Evo - 2026-05-14 - SW53: unlockAnimation() rewritten 3-frame sweep R0→R6 (was 5 frames starting at invisible row); bootAnimation battery delay 3s→500ms
 // V2.5-Evo - 2026-05-13 - SW48: advanceArrow/unlockAnimation/displayError mutex-wrapped; cycleDisplayMode/displayLock call sites fixed in Hall+RTMState+System
 // V2.5-Evo - 2026-05-13 - SW47: unlockAnimation() per-frame clear (smear→clean arrow); boot battery display 1s→3s; ANIMATION_DELAY 40→60ms

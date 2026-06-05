@@ -1,4 +1,4 @@
-﻿// V2.5-Evo - 2026-05-06 - DIAG: ?gpscoldreset command added
+// V2.5-Evo - 2026-05-06 - DIAG: ?gpscoldreset command added
 // V2.5-Evo - 2026-05-06 - FIX-HELP-1: corrected raw-GPS-dump help text from "type q to quit" to "type 'quit' to abort"
 // V2.5-Evo - 2026-05-03 - Added reserved/warning comments (LOW audit cleanup)
 // V2.5-Evo - 2026-04-24 - Added ?printgps, ?gpsraw, ?gpsreinit serial commands for TX GPS diagnostics

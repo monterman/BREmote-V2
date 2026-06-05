@@ -1,4 +1,4 @@
-﻿// V2.5-Evo - 2026-05-06 - DIAG: GSV/GLL/VTG disable commented out; txGpsColdReset() added
+// V2.5-Evo - 2026-05-06 - DIAG: GSV/GLL/VTG disable commented out; txGpsColdReset() added
 // V2.5-Evo - 2026-05-06 - FIX-GPS-1: dual-baud init in initTxGPS() to prevent UART RX lockout from retained-config baud mismatch
 // V2.5-Evo - 2026-04-21 - New TX GPS module: UBX init (115200/5Hz) and non-blocking speed polling for speed_src 2/3/5
 // V2.5-Evo - 2026-04-22 - Added speed_src guard to initTxGPS(); 512-byte RX buffer; NMEA sentence filtering (GPGSV/GPGLL/GPVTG disabled); HDOP gate in getTxGPSLoop()
@@ -182,12 +182,13 @@ void initTxGPS()
       // V2.5-Evo - 2026-05-06 - DIAG: NMEA filter temporarily DISABLED to keep GSV
       // (satellites in view) visible during fix-acquisition troubleshooting. Re-enable
       // these three writes once GPS fix issue is resolved if buffer pressure becomes a concern.
-      // Serial1.write(disableGPGSV, sizeof(disableGPGSV)); Serial1.flush();
-      // Serial1.write(disableGPGLL, sizeof(disableGPGLL)); Serial1.flush();
-      // Serial1.write(disableGPVTG, sizeof(disableGPVTG)); Serial1.flush();
+      // V2.5-Evo - 2026-06-05 - L-2: NMEA filter re-enabled (fix-acquisition diag complete) — drop GSV/GLL/VTG to spare the 512B RX buffer
+      Serial1.write(disableGPGSV, sizeof(disableGPGSV)); Serial1.flush();
+      Serial1.write(disableGPGLL, sizeof(disableGPGLL)); Serial1.flush();
+      Serial1.write(disableGPVTG, sizeof(disableGPVTG)); Serial1.flush();
 
       tx_gps_initialized = true;
-      Serial.println("TX GPS [BN-220]: init complete (115200, 5Hz, GSV/GLL/VTG enabled for diagnostics)");
+      Serial.println("TX GPS [BN-220]: init complete (115200, 5Hz, GSV/GLL/VTG filtered)");
       break;
     }
 
@@ -274,12 +275,13 @@ void initTxGPS()
       // V2.5-Evo - 2026-05-06 - DIAG: NMEA filter temporarily DISABLED to keep GSV
       // (satellites in view) visible during fix-acquisition troubleshooting. Re-enable
       // these three writes once GPS fix issue is resolved if buffer pressure becomes a concern.
-      // Serial1.write(disableGPGSV_m10, sizeof(disableGPGSV_m10)); Serial1.flush();
-      // Serial1.write(disableGPGLL_m10, sizeof(disableGPGLL_m10)); Serial1.flush();
-      // Serial1.write(disableGPVTG_m10, sizeof(disableGPVTG_m10)); Serial1.flush();
+      // V2.5-Evo - 2026-06-05 - L-2: NMEA filter re-enabled (fix-acquisition diag complete) — drop GSV/GLL/VTG to spare the 512B RX buffer at 10Hz
+      Serial1.write(disableGPGSV_m10, sizeof(disableGPGSV_m10)); Serial1.flush();
+      Serial1.write(disableGPGLL_m10, sizeof(disableGPGLL_m10)); Serial1.flush();
+      Serial1.write(disableGPVTG_m10, sizeof(disableGPVTG_m10)); Serial1.flush();
 
       tx_gps_initialized = true;
-      Serial.println("TX GPS [M10]: init complete (115200, 10Hz, GPS+Galileo+BDS+GLONASS, GSV/GLL/VTG enabled for diagnostics)");
+      Serial.println("TX GPS [M10]: init complete (115200, 10Hz, GPS+Galileo+BDS+GLONASS, GSV/GLL/VTG filtered)");
       break;
     }
 

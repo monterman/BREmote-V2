@@ -71,7 +71,7 @@ static double        tx_pos_filtered_lng       = 0.0;  // Filtered TX lng (degre
 static bool          tx_pos_filter_initialized = false;
 
 // Non-static globals exported to Logger.ino via extern (Bundle 1 tuning telemetry).
-// 0x7FFF is the "no data" sentinel per CLAUDE.md Section 14 (non-zero).
+// 0x7FFF is the "no data" sentinel (non-zero).
 int16_t g_heading_error_dx10 = 0x7FFF;  // Last heading error × 10 deg; 0x7FFF = no data
 int16_t g_d_error_dx10       = 0x7FFF;  // Last derivative × 10 deg/s; 0x7FFF = no data
 
@@ -285,7 +285,7 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
 // Added first-order low-pass filter on TX target position for FM path-following smoothness.
 // Heading source still comes from getRtmHeading() (GPS COG primary, snapshot fallback).
 // LOW-confidence sources reduce steering authority by 50% (unchanged from D5).
-// Filter state + D-term reset on invalid heading to satisfy CLAUDE.md Section 12 rule 2.
+// Filter state + D-term reset on invalid heading to satisfy the heading-filter rule.
 static void updateRtmSteering()
 {
   if (!usrConf.rtm_rx_override_steering) {
@@ -301,7 +301,7 @@ static void updateRtmSteering()
 
   if (!valid) {
     // No valid heading — hold straight. Reset filter + D-term state so we don't
-    // resume with stale data on next cycle. (Per CLAUDE.md Section 12 rule 2.)
+    // resume with stale data on next cycle. (project rule)
     rtm_steer_override = 127;
     prev_heading_error_deg = 0.0f;
     tx_pos_filter_initialized = false;

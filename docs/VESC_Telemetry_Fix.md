@@ -231,7 +231,7 @@ fast enough to show stale clearly, slow enough to survive VESC fault transients.
 
 ### Finding 5 — E7 Wetness Latch: De-Latch Path Missing
 
-**Filed from:** Claude Code session + field test observation
+**Filed from:** the build workflow session + field test observation
 **Severity:** High — survives TX power cycle, only clears on RX reboot
 
 **Symptom:** E7 (water ingress) error displays on TX and is latched on RX.
@@ -262,7 +262,7 @@ an explicit `remote_error &= ~E7_MASK` somewhere that doesn't appear to exist.
 
 ---
 
-## Implementation Order for Claude Code
+## Implementation Order for the build workflow
 
 | Priority | Finding                            | Files                 | Risk   | Lines                  |
 | -------- | ---------------------------------- | --------------------- | ------ | ---------------------- |
@@ -272,7 +272,7 @@ an explicit `remote_error &= ~E7_MASK` somewhere that doesn't appear to exist.
 | 4        | vesc_timeout_s default 12→6        | BREmote_V2_Rx.h       | Zero   | 1                      |
 | 5        | E7 de-latch path                   | System.ino            | Medium | TBD after log analysis |
 
-**Findings 1–4 are safe to bundle into one Claude Code session.**
+**Findings 1–4 are safe to bundle into one the build workflow session.**
 **Finding 5 (E7) needs log evidence first — file separately.**
 
 ---

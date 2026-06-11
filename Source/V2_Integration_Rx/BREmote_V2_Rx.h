@@ -330,12 +330,12 @@ confStruct defaultConf = {SW_VERSION, 2, 20, 1, 50, 0, 0, 1000, 2000, 1000, 2000
   1.0f, 1.0f, // mag_scale_x, mag_scale_y (unity gain — run 'runcal' to calibrate)
   // V2.5-Evo - 2026-04-22 - GPS chip type: 1 = BN-880 (GPS+compass). RX default.
   1,          // gps_chip_type (1 = BN-880 + compass; run 'runcal' after first boot)
-  // V2.5-Evo - 2026-04-22 - Phase A GPS anti-spoofing defaults (see CLAUDE.md Section 11)
+  // V2.5-Evo - 2026-04-22 - Phase A GPS anti-spoofing defaults
   2.0f,       // gps_max_hdop:           max HDOP for valid reading (range 0.5-5.0)
   3.0f,       // gps_max_accel_g:        max implied acceleration (range 1.0-10.0 G)
   80.0f,      // gps_max_teleport_kmh:       max teleport-implied speed (range 50-500 km/h; default lowered 200→80 2026-04-30)
   3,          // gps_suspect_threshold:  consecutive failures before GPS rejected (range 1-10)
-  // V2.5-Evo - 2026-04-24 - Phase B GPS handshake anti-spoofing defaults (see CLAUDE.md Section 11)
+  // V2.5-Evo - 2026-04-24 - Phase B GPS handshake anti-spoofing defaults
   500.0f,     // gps_max_pair_dist_m:    max TX-RX pairing distance (range 50-2000 m)
   50.0f,      // gps_max_speed_diff_kmh: max TX-RX speed difference (range 10-200 km/h)
   // V2.5-Evo - 2026-04-25 - Priority 7 RTM Phase C + RX safety defaults
@@ -458,7 +458,7 @@ struct __attribute__((packed)) VescLogData {
     uint16_t gps_course_dx10;           // GPS course-over-ground × 10 deg (0xFFFF = no fix or invalid)
     uint16_t cog_age_ms_div10;          // GPS course age in 10ms units (0xFFFF = no fix yet)
     // V2.5-Evo - 2026-05-08 - Bundle 1: heading controller tuning telemetry fields.
-    // 0x7FFF (32767) is the "no data" sentinel per CLAUDE.md Section 14 — NOT 0x0000.
+    // 0x7FFF (32767) is the "no data" sentinel — NOT 0x0000.
     int16_t heading_error_dx10;   // Heading error in 0.1° units (signed; -1800..+1800).
                                   // 0x7FFF = no valid heading source. Positive = need turn right.
     int16_t d_error_dx10;         // Rate-of-change of heading error in 0.1°/s units.

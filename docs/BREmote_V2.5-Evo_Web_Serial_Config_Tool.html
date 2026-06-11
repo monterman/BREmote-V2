@@ -274,7 +274,7 @@
 // ============================================================
 const TX_GROUP_ORDER = ["Radio","Gears","Throttle","Steering","Toggle","Lock & Timing","Calibration","GPS","RTM","Follow-Me","System"];
 const TX_FIELDS = [
-{key:"radio_preset",label:"Radio Preset",description:"Radio frequency band. 1=EU 868 MHz, 2=US/AU 915 MHz. Do not select 3 — it causes a boot error and the remote will not start.",group:"Radio",type:"enum",def:1,min:1,max:3,options:[{v:1,l:"EU868"},{v:2,l:"US/AU915"},{v:3,l:"Reserved"}]},
+{key:"radio_preset",label:"Radio Preset",description:"Radio frequency band. 1=EU 868 MHz, 2=US/AU 915 MHz. Only these two bands exist. Any invalid value safely defaults to EU868 instead of halting boot.",group:"Radio",type:"enum",def:1,min:1,max:2,options:[{v:1,l:"EU868"},{v:2,l:"US/AU915"}]},
 {key:"rf_power",label:"RF Power",description:"LoRa transmit power in dBm. -9=minimum range (bench testing only), 22=maximum range. Higher values draw more current.",group:"Radio",type:"int",def:0,min:-9,max:22,unit:"dBm"},
 {key:"paired",label:"Paired",description:"0=not paired (no RX address stored), 1=paired. Set automatically by the pairing sequence — do not edit manually.",group:"Radio",type:"bool",def:0,min:0,max:1},
 {key:"own_address",label:"Own Address",description:"This TX device's LoRa address. Set automatically by the pairing sequence — do not edit manually.",group:"Radio",type:"address3",def:"00,00,00"},
@@ -344,7 +344,7 @@ const TX_FIELDS = [
 // ============================================================
 const RX_GROUP_ORDER = ["Radio","Steering","PWM","Motor & Safety","VESC","Sensors","Battery","GPS","RTM","Follow-Me","Logging","System"];
 const RX_FIELDS = [
-{key:"radio_preset",label:"Radio Preset",description:"Radio frequency band. 1=EU 868 MHz, 2=US/AU 915 MHz. Do not select 3 — it causes a boot error and the RX will not start. Must match TX setting.",group:"Radio",type:"enum",def:1,min:1,max:3,options:[{v:1,l:"EU868"},{v:2,l:"US/AU915"},{v:3,l:"Reserved"}]},
+{key:"radio_preset",label:"Radio Preset",description:"Radio frequency band. 1=EU 868 MHz, 2=US/AU 915 MHz. Only these two bands exist. Must match the TX setting. Any invalid value safely defaults to EU868 instead of halting boot.",group:"Radio",type:"enum",def:1,min:1,max:2,options:[{v:1,l:"EU868"},{v:2,l:"US/AU915"}]},
 {key:"rf_power",label:"RF Power",description:"RF transmit power in dBm. -9=minimum (shortest range, lowest interference), 22=maximum (longest range). Must match TX setting. Default 0.",group:"Radio",type:"int",def:0,min:-9,max:22,unit:"dBm"},
 {key:"paired",label:"Paired",description:"0=not paired (no TX address stored), 1=paired. Set automatically by the pairing sequence — do not edit manually.",group:"Radio",type:"bool",def:0,min:0,max:1},
 {key:"own_address",label:"Own Address",description:"This RX unit's 3-byte LoRa radio address (hex, e.g. 01,A2,FF). Set automatically during pairing — do not edit manually.",group:"Radio",type:"address3",def:"00,00,00"},

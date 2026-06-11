@@ -37,7 +37,7 @@ void startupAW()
   Serial.println(" Done");
 }
 
-// V2.5-Evo - 2026-06-04 - D1: UART-mux read-back verify (Rex audit Symptom 2).
+// V2.5-Evo - 2026-06-04 - D1: UART-mux read-back verify (audit).
 //
 // The AW9523 UART-mux select pins (AP_U1_MUX_0/1) and the PWM-enable pins share the
 // same I2C expander. Under motor switching, MOSFET EMI corrupts I2C writes (documented

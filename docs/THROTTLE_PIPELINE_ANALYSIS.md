@@ -117,7 +117,7 @@ There are two reasonable readings:
 
 **Reading B (what the code does NOT do):** "I squeeze 100% and the firmware automatically ramps me from 0% to my cap over a few seconds, no toggle needed." This is *not* implemented. There is no time-based slew limiter on `max_power_cap` and no auto-ramp on `result`.
 
-**Recommendation:** confirm which reading matches your intent. If Reading B, that is a **new feature** (call it "auto-ramp" or "soft-start"), straightforward to add: ~15 lines in `calcFinalThrottle()` that lerp `max_power_cap` from `dynamic_power_start` toward `dynamic_power_max` over `dynamic_power_ramp_s` seconds whenever the trigger is engaged. SPIFFS pipeline change required (Section 10 web config rule). I can write the Claude Code prompt for that as a follow-up.
+**Recommendation:** confirm which reading matches your intent. If Reading B, that is a **new feature** (call it "auto-ramp" or "soft-start"), straightforward to add: ~15 lines in `calcFinalThrottle()` that lerp `max_power_cap` from `dynamic_power_start` toward `dynamic_power_max` over `dynamic_power_ramp_s` seconds whenever the trigger is engaged. SPIFFS pipeline change required (Section 10 web config rule). I can write the implementation notes for that as a follow-up.
 
 ### 2.3 Implementation safety — is dynamic throttle solid?
 Audit verdict: **YES, with two minor concerns.**
@@ -179,7 +179,7 @@ If you set `max_gears = 19` and `startgear = 16`, gears mode would be visually i
 
 ### 2.5 What WOULD make dynamic throttle actually different and useful?
 
-If you want to keep `throttle_mode = 2` and make it earn its name, here are three real differentiators ranked by effort. Each is a separate Claude Code prompt — none implemented yet, all gated on your approval.
+If you want to keep `throttle_mode = 2` and make it earn its name, here are three real differentiators ranked by effort. Each is a separate implementation notes — none implemented yet, all gated on your approval.
 
 **Option A — Auto soft-start (time-based ramp from low to high)** ⭐ Recommended
 The cap automatically lerps from `dynamic_power_start` toward `dynamic_power_max` over `dynamic_power_ramp_s` seconds whenever the trigger is engaged. Trigger release > `dynamic_power_reset_ms` resets the ramp; release < that window keeps the ramp where it left off (so quick re-grabs at speed don't drop you to 30%).
@@ -204,7 +204,7 @@ Cap stays at `dynamic_power_start` for the first `dynamic_unlock_s` seconds of c
 - ~10 lines in `Throttle.ino`.
 - Simpler than A but the jump from low to high is not gradual.
 
-**My recommendation:** Option A. Closest match to what you described. Self-contained on TX (no VESC dependency). Predictable behavior. Easiest to reason about. If you approve, I write the Claude Code prompt and Claude Code does the implementation in `Throttle.ino` + SPIFFS pipeline.
+**My recommendation:** Option A. Closest match to what you described. Self-contained on TX (no VESC dependency). Predictable behavior. Easiest to reason about. If you approve, I write the implementation notes and the build workflow does the implementation in `Throttle.ino` + SPIFFS pipeline.
 
 Whichever option you pick, the Section 9 safety rule still holds: this is all subtractive shaping of YOUR trigger input. The buggy still cannot move without you holding the trigger.
 
@@ -249,7 +249,7 @@ Reasoning:
 If you agree with §2.8, here's the action plan in order:
 
 1. **Right now:** apply VESC Step 1 (`foc_sl_openloop_boost_q = 3`). Bench-test with motor in air, then in a tub of water with prop. This is the fastest single change with the biggest impact. No firmware change needed.
-2. **After Step 1 verifies on bench:** approve me to write the Claude Code prompt for Option A (auto soft-start). The prompt I drafted in §7 prompt C is ready; just say "go" and I'll refine and hand it over for Claude Code to implement in `Throttle.ino` + SPIFFS pipeline.
+2. **After Step 1 verifies on bench:** approve me to write the implementation notes for Option A (auto soft-start). The prompt I drafted in §7 prompt C is ready; just say "go" and I'll refine and hand it over for the build workflow to implement in `Throttle.ino` + SPIFFS pipeline.
 3. **Order matters:** do the VESC fix FIRST. If the motor still won't start at low throttle even with auto-ramp giving you 30% from a 100% squeeze, you'll think Option A is broken when it's actually still the VESC. Fix the underlying motor-control issue, then add the user-experience layer on top.
 
 ### 2.11 Interaction matrix (yours, answered)
@@ -349,7 +349,7 @@ When LoRa packets stop for `failsafe_time` (default 1000 ms = 1 s):
 
 **Configure your VESC's PPM "Safe Start" and "Loss-of-Signal" behavior explicitly.** Do not assume RX is sending a safe value during dropout — it's sending nothing. The buggy stops cleanly only because (a) you're not squeezing the trigger physically, AND (b) VESC is configured to brake/coast on signal loss.
 
-⚠️ **Action recommendation:** In VESC Tool, set "Safe Start" = "RegularFwd" or similar with stick-at-zero requirement, and "Loss-of-Signal Behavior" = "Brake" or "Free spin" depending on your safety preference. Document the chosen value in your CLAUDE.md so future you knows.
+⚠️ **Action recommendation:** In VESC Tool, set "Safe Start" = "RegularFwd" or similar with stick-at-zero requirement, and "Loss-of-Signal Behavior" = "Brake" or "Free spin" depending on your safety preference. Document the chosen value in your project notes so future you knows.
 
 ---
 
@@ -371,7 +371,7 @@ Variants reviewed:
 | 7 | MEDIUM | `Common/WebConfigEngine.h:213–266` | POST handlers have no CSRF, no payload size limit, no rate limit. WiFi AP password protection only; once on the AP, anyone can spam config writes. | Attacker on local AP can corrupt config; user opening malicious page while connected to AP can trigger CSRF. Heap exhaustion if attacker POSTs 100MB. | ⚠ Likely PARTIALLY IMPROVED in V2.5-EVO — please verify by reviewing `WebConfigEngine.h` length checks. Not life-safety since attacker needs physical proximity, but worth fixing for robustness. |
 | 8 | LOW | `Source/V2_Integration_Rx/SPIFFS.ino:34–53` | Default battery calibration is a hardcoded Base64 placeholder. Every fresh-flash board reads identical values. | Battery % display is generic, not pack-specific. Annoying but not safety. | Status unknown in V2.5-EVO — verify `SPIFFS.ino` defaults. |
 | 9 | LOW | `Common/WebConfigEngine.h` various | `String` concatenation in hot path web handlers fragments heap over hours of use. | Long-running config sessions can OOM. Not field-relevant since web config is short-lived. | Probably partially fixed; not safety-critical. |
-| 10 | LOW | `Source/V2_Integration_Rx/System.ino` | `scanI2C()` calls `Wire.begin()` mid-runtime, can break AW9523 expander. | I2C bus hang → LED + button expander dies → device looks frozen until reset. | ✅ FIXED in V2.5-EVO (Wire.begin removed from scanI2C per CLAUDE.md Section 4 fix list). |
+| 10 | LOW | `Source/V2_Integration_Rx/System.ino` | `scanI2C()` calls `Wire.begin()` mid-runtime, can break AW9523 expander. | I2C bus hang → LED + button expander dies → device looks frozen until reset. | ✅ FIXED in V2.5-EVO (Wire.begin removed from scanI2C per project notes Section 4 fix list). |
 
 **Summary for Jan:** of the 5 high/critical bugs, V2.5-EVO has fixed 4 confidently and 1 (failsafe RMT loop behavior) is most likely fixed but warrants a bench test. The medium bugs are a mix — V2.5-EVO has improved most of them but the radio-error-check sweep and WebConfig hardening are still partially open. Jan's design (3-byte addressing, CRC8 pairing, semaphore-driven LoRa ISR) is solid; the implementation gaps are exactly what you'd expect from untested sandbox code.
 
@@ -412,7 +412,7 @@ V2.5-EVO is FreeRTOS-conservative:
 - No `xQueueSendFromISR` deep nesting. The LoRa ISR only does `xSemaphoreGiveFromISR()` — one line.
 - Logger task captures full state to SPIFFS before/during incidents — post-incident analysis off the SD card.
 
-There are minor concerns (priority inversion risk on `displayMutex`, GPS struct read without mutex in Logger, some volatile flags that should arguably be `std::atomic`), but none rise to "field-undebuggable". They are documented in the source with the literal `// V3 - <date> - <reason>` comment tags (note: this is the historical version-tag string that already exists across the codebase per CLAUDE.md Section 3 — kept as-is for grep continuity even though the project is now branded V2.5-EVO).
+There are minor concerns (priority inversion risk on `displayMutex`, GPS struct read without mutex in Logger, some volatile flags that should arguably be `std::atomic`), but none rise to "field-undebuggable". They are documented in the source with the literal `// V3 - <date> - <reason>` comment tags (note: this is the historical version-tag string that already exists across the codebase per project notes Section 3 — kept as-is for grep continuity even though the project is now branded V2.5-EVO).
 
 ### 5.4 The honest concession
 Jan is right that *if you ever stack lots of FreeRTOS complexity* (real-time tasks talking to each other through queues, dynamic task pools, soft-real-time deadlines on multiple paths), debugging on the water becomes impossible. **Hold the line on simplicity.** Your three mutexes and seven static tasks is the right complexity ceiling. Any future feature that needs another task should be reviewed against this principle: "could a bare callback in the loop task handle this?" If yes, do that.
@@ -421,7 +421,7 @@ Jan is right that *if you ever stack lots of FreeRTOS complexity* (real-time tas
 
 ## 6. SAFETY ETHICS — REINFORCEMENT
 
-Per CLAUDE.md Section 9 and your stated values:
+Per project notes Section 9 and your stated values:
 
 1. ✅ **Buggy moves only when user holds trigger.** `thr_received` originates from Hall sensor; no autonomous source ever sets it.
 2. ✅ **Autonomous modes only subtract throttle.** Verified at `Throttle.ino:27`, `PWM.ino:43–51`. Three independent code paths, all subtractive.
@@ -432,7 +432,7 @@ Per CLAUDE.md Section 9 and your stated values:
 **One soft spot to bench-test before next field run:**
 - **Failsafe RMT idle behavior.** Per Bug #4 above, confirm with scope or VESC realtime data that the PWM line goes silent (or to neutral) within `failsafe_time` ms when TX is powered off. If the line keeps emitting last commanded value, that is Jan's bug surviving in V2.5-EVO and must be fixed before water.
 
-**Bench test prompt for Claude Code (when you're ready):**
+**Bench test prompt for the build workflow (when you're ready):**
 ```
 Read PWM.ino lines 1-145 in V2.5-EVO RX. Verify that when generatePWM()'s
 "if(PWM_active && millis()-last_packet < usrConf.failsafe_time)" gate

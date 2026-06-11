@@ -76,7 +76,7 @@ void loop()
   }
 
   // VESC at 2Hz, independent of GPS and wetness gate.
-  // V2.5-Evo - 2026-06-04 - D1: skip the VESC poll while throttle is high (Rex audit Symptom 2).
+  // V2.5-Evo - 2026-06-04 - D1: skip the VESC poll while throttle is high (audit).
   // getVescLoop() switches the AW9523 UART mux; doing that during active driving collides with
   // motor-switching EMI on the shared expander and can disrupt PPM/mux routing. Poll telemetry
   // only at low/zero throttle (thr_received < 25, the same "motor active" threshold used in

@@ -2,7 +2,7 @@
 **Field test date:** 2026-05-09, Chicago-area parking lot (lat ~41.902, lng ~-87.823)
 **Firmware:** SW_VERSION 31 (Bundle 1 — P+D heading controller, 26-column logger)
 **Analysis date:** 2026-05-09
-**Author:** monterman + Claude Code (orchestrator session "Tyler")
+**Author:** monterman (orchestrator session "Tyler")
 **Purpose:** Document compass behavior under motor load, calibration offset, and heading source reliability for RTM/FM steering. Reference material for a dedicated compass calibration session.
 
 ---
@@ -282,6 +282,6 @@ The user reported: "I was 20–27 m away when I armed. Distance decreased to 9�
 
 ---
 
-*Log files referenced: `G:/My Drive/Claude AI files/Claude CODE/Projects/Vesc and other related files/050926_*.log.csv`*
+*Log files referenced: `G:/My Drive/Projects/Vesc and other related files/050926_*.log.csv`*
 *Firmware reference: `Source/V2_Integration_Rx/RTMState.ino`, `Source/V2_Integration_Rx/Compass.ino`*
 *Last updated: 2026-05-09 — initial field test analysis; calibration disclaimer added (compass never calibrated on this build)*

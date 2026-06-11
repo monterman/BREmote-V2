@@ -48,12 +48,12 @@ const CfgFieldSpec kCfgFields[] = {
   {"tx_gps_stale_timeout_ms", CFG_U16, offsetof(confStruct, tx_gps_stale_timeout_ms), true, false, true, 0.0f, 65535.0f, 0, false},
   // V2.5-Evo - 2026-04-22 - GPS chip type: 0=BN-220, 1=BN-880+compass (RX default), 2=M10, 3=M10+compass
   {"gps_chip_type", CFG_U16, offsetof(confStruct, gps_chip_type), true, false, true, 0.0f, 3.0f, 0, false},
-  // V2.5-Evo - 2026-04-22 - Phase A GPS anti-spoofing parameters (see CLAUDE.md Section 11)
+  // V2.5-Evo - 2026-04-22 - Phase A GPS anti-spoofing parameters
   {"gps_max_hdop",           CFG_FLOAT, offsetof(confStruct, gps_max_hdop),           true, false, true,  0.5f,  5.0f, 1, false},
   {"gps_max_accel_g",        CFG_FLOAT, offsetof(confStruct, gps_max_accel_g),        true, false, true,  1.0f, 10.0f, 1, false},
   {"gps_max_teleport_kmh",       CFG_FLOAT, offsetof(confStruct, gps_max_teleport_kmh),       true, false, true, 50.0f,500.0f, 1, false},
   {"gps_suspect_threshold",  CFG_U16,   offsetof(confStruct, gps_suspect_threshold),  true, false, true,  1.0f, 10.0f, 0, false},
-  // V2.5-Evo - 2026-04-24 - Phase B GPS handshake anti-spoofing parameters (see CLAUDE.md Section 11)
+  // V2.5-Evo - 2026-04-24 - Phase B GPS handshake anti-spoofing parameters
   {"gps_max_pair_dist_m",    CFG_FLOAT, offsetof(confStruct, gps_max_pair_dist_m),    true, false, true, 50.0f, 2000.0f, 1, false},
   {"gps_max_speed_diff_kmh", CFG_FLOAT, offsetof(confStruct, gps_max_speed_diff_kmh), true, false, true, 10.0f,  200.0f, 1, false},
   // V2.5-Evo - 2026-04-25 - Priority 7 RTM Phase C + RX safety parameters

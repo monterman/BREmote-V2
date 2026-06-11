@@ -193,8 +193,8 @@ For when you're staring at these in the app and wondering what they're for:
 
 ## 9. SOURCES
 
-- `G:\My Drive\Claude AI files\Claude CODE\Projects\BREmote-V3-monterman-main\docs\VESC_FOC_TUNING_NOTES.md` — full deep dive on FOC tuning, FOC-vs-BLDC, and parameter analogies
-- `G:\My Drive\Claude AI files\Claude CODE\Projects\BREmote-V3-monterman-main\docs\THROTTLE_PIPELINE_ANALYSIS.md` — BREmote-side throttle pipeline analysis and recommendations
+- `G:\My Drive\Projects\BREmote\docs\VESC_FOC_TUNING_NOTES.md` — full deep dive on FOC tuning, FOC-vs-BLDC, and parameter analogies
+- `G:\My Drive\Projects\BREmote\docs\THROTTLE_PIPELINE_ANALYSIS.md` — BREmote-side throttle pipeline analysis and recommendations
 - [VESC Tool parameters_mcconf.xml — confirms parameter exists in FW 6.06](https://github.com/vedderb/vesc_tool/blob/master/res/config/6.06/parameters_mcconf.xml)
 - [VESC Project — Sometimes startup problems in FOC-Mode](https://vesc-project.com/node/85)
 - [VESC Project — FOC Startup issues](https://vesc-project.com/node/3671)

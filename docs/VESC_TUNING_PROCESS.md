@@ -240,7 +240,7 @@ When you have a log file you want analyzed:
 
 1. **Save the CSV** to your phone's chosen log folder.
 2. **Transfer to your computer**, easiest via Google Drive: drop the CSV into your existing project folder structure or a new subfolder, e.g.:
-   - `G:\My Drive\Claude AI files\Claude CODE\Projects\Vesc and other related files\logs\`
+   - `G:\My Drive\Projects\Vesc and other related files\logs\`
 3. **Name it descriptively:**
    - `iterA_boost3_openRPM1500_testB_restart_2026-05-03.csv`
    - Format: `iter<X>_<changed-params>_test<Y>_<symptom>_<date>.csv`

@@ -1,4 +1,4 @@
-# Claude Code Prompt — BIND Button Compass Calibration
+# implementation notes — BIND Button Compass Calibration
 
 **BREmote V2.5-Evo | RX firmware | System.ino only**
 
@@ -100,7 +100,7 @@ bind_last_state = bind_current;
 
 ---
 
-## Comment requirements (per CLAUDE.md §3)
+## Comment requirements (per project notes §3)
 
 - Header comment block on the new code section explaining: what it does, why BIND is
   safe to reuse at runtime, and that it does not affect boot-time pairing.

@@ -373,7 +373,7 @@ Only during active RTM. Adds behavioral checks that only make sense when the bug
 - **VESC cross-check**: the physical drivetrain reports wheel speed. If GPS says 15 km/h but VESC ERPM implies 2 km/h, one sensor is wrong — stop.
 - **TX freshness**: stale TX GPS during active RTM means the steering target is invalid — stop.
 
-### 11e. New RX SPIFFS Parameters (7 total — all must follow Section 10 Web Config UI Rule in CLAUDE.md)
+### 11e. New RX SPIFFS Parameters (7 total — all must follow Section 10 Web Config UI Rule in project notes)
 
 | Name | Range | Default | Units | Phase | Description |
 |---|---|---|---|---|---|

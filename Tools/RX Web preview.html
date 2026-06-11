@@ -82,7 +82,7 @@
 // 35 Parameters for RX
 const groupOrder=["Radio","Steering","PWM","Motor & Safety","Sensors","Battery","GPS & Follow-Me","Follow-Me Tuning","Logging","System"];
 const fields=[
-{key:"radio_preset",label:"Radio Preset",description:"Select your region",group:"Radio",type:"enum",def:1,min:1,max:3,options:[{v:1,l:"EU868"},{v:2,l:"US/AU915"},{v:3,l:"Reserved"}]},
+{key:"radio_preset",label:"Radio Preset",description:"Radio frequency band. 1=EU 868 MHz, 2=US/AU 915 MHz. Only these two bands exist. Must match the TX setting.",group:"Radio",type:"enum",def:1,min:1,max:2,options:[{v:1,l:"EU868"},{v:2,l:"US/AU915"}]},
 {key:"rf_power",label:"RF Power",description:"RF transmit power (dBm)",group:"Radio",type:"int",def:0,min:-9,max:22,unit:"dBm"},
 {key:"paired",label:"Paired",description:"Pairing state flag",group:"Radio",type:"bool",def:0,min:0,max:1},
 {key:"own_address",label:"Own Address",description:"Local radio address",group:"Radio",type:"address3",def:"00,00,00"},

@@ -446,7 +446,7 @@ files — output a finding only.
 
 ---
 
-## 7. RECOMMENDED FOLLOW-UP CLAUDE CODE PROMPTS
+## 7. RECOMMENDED FOLLOW-UP implementation notes
 
 Save these for when you're ready to act on findings:
 

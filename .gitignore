@@ -28,12 +28,7 @@ Thumbs.db
 Source (montermanv2) - w logger-compass (good)/
 Source(JanRush V2)/
 
-# Claude Code local settings (machine-specific, never commit)
-.claude/
 
-# Claude AI workflow files — local only, not published to GitHub
-CLAUDE.md
-.claudeignore
 docs/superpowers/
 docs/CLI_compile_export.md
 
@@ -49,3 +44,6 @@ field tests RTM*.docx
 
 # Local wiring reference — hardware build notes, not source
 docs/Waterproof_Connector_Wiring.md
+
+Team Knowledge/
+Deliverables/

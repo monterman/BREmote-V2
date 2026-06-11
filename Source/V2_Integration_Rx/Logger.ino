@@ -1,4 +1,4 @@
-﻿// V2.5-Evo - 2026-05-13 - SW43: GPS gate relaxed to location.isValid() only — date absent when UART mux fragments RMC; T_HHMMSS filename when time valid but date missing
+// V2.5-Evo - 2026-05-13 - SW43: GPS gate relaxed to location.isValid() only — date absent when UART mux fragments RMC; T_HHMMSS filename when time valid but date missing
 // V2.5-Evo - 2026-05-13 - SW40: loggerLoop() button section removed — checkButtons() is the sole AUX handler; pending timeout 5min→15s start-anyway (was: give-up)
 // V2.5-Evo - 2026-05-13 - SW38: log_pending state — GPS gate moved to startLog()/loggerLoop(); LED heartbeat (1 blink/3s) while waiting; auto-transitions to active on fix; 5-min timeout → 3 slow error blinks
 // V2.5-Evo - 2026-05-13 - SW37: createNewLogFile() — no GPS wait; file created immediately; GPS name if fix available, millis fallback otherwise
@@ -258,7 +258,7 @@ VescLogData convertToLogData() {
             src    = 2;   // COMPASS_SNAPSHOT
             conf   = 2;   // MEDIUM
             chosen = compass_snapshot_heading;
-          } else if (snap_age_ms < 3000UL) {
+          } else if (snap_age_ms < 8000UL) {   // Audit #9: synced to RTMState's 8000ms window (was 3000) so logged confidence matches the steering logic
             src    = 2;   // COMPASS_SNAPSHOT
             conf   = 1;   // LOW
             chosen = compass_snapshot_heading;

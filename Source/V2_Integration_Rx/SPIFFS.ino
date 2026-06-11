@@ -1,4 +1,4 @@
-﻿// RX-specific SPIFFS definitions.
+// RX-specific SPIFFS definitions.
 // Shared engine is in ../Common/SPIFFSEngine.h (included via BREmote_V2_Rx.h).
 
 void spiffsFormatNotify(bool starting)
@@ -100,6 +100,17 @@ bool readBCFromSPIFFS() {
 
     noload_offset = ((float)decodedData[0]) / 500.0;
     memcpy(bc_arr, &decodedData[1], 101 * sizeof(decodedData[0]));
+
+    // Audit #11: the battery-% lookup (System.ino) assumes bc_arr is monotonic
+    // (bc_arr[0]=100% high-V … bc_arr[100]=0% low-V, i.e. non-increasing). A corrupt
+    // cal file could break that and make the % read wrong. Validate + warn on load.
+    for (int i = 1; i <= 100; i++) {
+        if (bc_arr[i] > bc_arr[i-1]) {
+            Serial.printf("WARN batcal: bc_arr non-monotonic at idx %d (%u > %u) — battery %% may read wrong\n",
+                          i, (unsigned)bc_arr[i], (unsigned)bc_arr[i-1]);
+            break;
+        }
+    }
 
     Serial.print("batcal: noload_offset: ");
     Serial.print(noload_offset);

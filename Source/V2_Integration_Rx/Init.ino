@@ -38,6 +38,12 @@ void initTasks()
   // V2.5-Evo fix (Bug 6): increased stack sizes from 2048 bytes — too small for tasks that call
   // RadioLib, RMT driver, AW9523 I2C, and handle interrupt nesting. Use ?printtasks to
   // monitor high-water marks after the fix; reduce if headroom proves excessive.
+  //
+  // L-1 NOTE (single-core): this RX runs on the single-core ESP32-C3 (HT-CT62). The `0` in
+  // xTaskCreatePinnedToCore() is the only core. Comments elsewhere mentioning "Core 0/Core 1",
+  // "dual-core" or "Xtensa" are legacy from the ESP32-S3 port — all tasks AND loop() run on the
+  // one core. The volatile / std::atomic / mutex guards are still correct: they protect against
+  // FreeRTOS *task preemption* and give compiler memory barriers, not against multiple cores.
   //Runs every 10ms to generate both PWM signals, high prio
   xTaskCreatePinnedToCore(generatePWM, "Generate_PWM_10ms", 4096, NULL, 10, &generatePWMHandle, 0);
   //Runs upon RF interrupt and reads packet & responds, medium-high prio

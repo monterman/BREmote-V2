@@ -1,4 +1,4 @@
-﻿#ifndef SPIFFS_ENGINE_H
+#ifndef SPIFFS_ENGINE_H
 #define SPIFFS_ENGINE_H
 
 // V2.5-Evo - 2026-04-30 - WebUI auto-reinstall via FNV1a content hash; removed WEB_UI_VERSION date string

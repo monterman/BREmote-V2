@@ -1,4 +1,4 @@
-﻿// V2.5-Evo - 2026-05-11 - E7 Fix: checkWetness() debounced — requires 2 consecutive confirmed-wet calls to set E7; single clean read clears
+// V2.5-Evo - 2026-05-11 - E7 Fix: checkWetness() debounced — requires 2 consecutive confirmed-wet calls to set E7; single clean read clears
 // V2.5-Evo - 2026-05-11 - Compass Cal: runtime BIND press triggers compass calibration with LED feedback
 // V2.5-Evo - 2026-04-25 - P7: Added ?compassheading serial diagnostic command
 // V2.5-Evo - 2026-05-05 - cmdMagTest: bench-test logger for compass EMI vs motor current

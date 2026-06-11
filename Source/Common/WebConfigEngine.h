@@ -1,4 +1,4 @@
-﻿#ifndef WEB_CONFIG_ENGINE_H
+#ifndef WEB_CONFIG_ENGINE_H
 #define WEB_CONFIG_ENGINE_H
 
 #ifdef WIFI_ENABLED

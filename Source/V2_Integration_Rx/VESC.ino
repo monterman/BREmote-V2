@@ -1,4 +1,4 @@
-﻿// V2.5-Evo - 2026-05-14 - SW55: rcv_err removed from receiveFromVESC() — flag was never cleared within 200ms window, any stray byte poisoned entire receive attempt; CRC handles frame validation
+// V2.5-Evo - 2026-05-14 - SW55: rcv_err removed from receiveFromVESC() — flag was never cleared within 200ms window, any stray byte poisoned entire receive attempt; CRC handles frame validation
 // V2.5-Evo - 2026-05-14 - SW54: revert SW51/SW52 retry loop — rapid repeated I2C writes caused AW9523 bus corruption at idle; back to single setUartMux(0) + 20ms delay
 // V2.5-Evo - 2026-05-14 - SW52: MUX retry count 3→5 for better EMI resilience under sustained motor load
 // V2.5-Evo - 2026-05-14 - SW51: setUartMux(0) retried 3× in getVescLoop() — motor EMI corrupts AW9523 I2C writes, single write unreliable under load
@@ -40,7 +40,7 @@ void getVescLoop()
   }
   get_vesc_timer = millis();
   
-  // Use configurable timeout (vesc_timeout_s). Default 12s gives margin above ~8-9s VESC cold-restart time.
+  // Use configurable timeout (vesc_timeout_s). Default 6s minimises stale VESC data (range 5-60s; raise toward 12s if the VESC's ~8-9s cold-restart trips a false N/A).
   // If no UART packet received within this window, mark battery and temperature as unavailable.
   if(millis() - last_uart_packet > ((uint32_t)usrConf.vesc_timeout_s * 1000UL))
   {
@@ -168,6 +168,9 @@ int receiveFromVESC(uint8_t * buf, Stream* interface)
   uint8_t cnt = 0;
   uint8_t eom = 30; // Increased buffer max
   uint8_t raw_message[eom];
+  // V2.5-Evo - 2026-06-07 - Audit #6: zero the buffer so a truncated VESC reply
+  // can't read leftover stack at raw_message[eom-1] / via the length byte.
+  memset(raw_message, 0, sizeof(raw_message));
 
   unsigned long started = millis();
 
@@ -207,6 +210,11 @@ int receiveFromVESC(uint8_t * buf, Stream* interface)
   }
   Serial.println();
 #endif
+
+  // V2.5-Evo - 2026-06-07 - Audit #6: if the length byte never arrived (truncated
+  // reply), eom is still 30 and raw_message[eom-1] would read uninitialized stack.
+  // Bail before touching the buffer. Telemetry-only path; no motor/safety impact.
+  if (cnt < 2) return 0;
 
   if(raw_message[eom-1] == 3)
   {

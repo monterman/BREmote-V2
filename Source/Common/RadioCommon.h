@@ -58,8 +58,13 @@ static int initRadioHardware()
   }
   else
   {
-    Serial.println("Error, unsupported HF setting");
-    radioErrorHalt(2);
+    // V2.5-Evo - 2026-06-07 - Removed Ludwig's "preset 3" placeholder (no 3rd band or
+    // radio type ever shipped — only EU868 / US915 exist) and its radioErrorHalt() boot
+    // brick. Any out-of-range value (legacy/corrupt config; config + web UI already clamp
+    // to 1-2) now defaults to EU868 instead of halting, so a stale radio_preset can never
+    // brick the device again.
+    Serial.print(" [radio_preset out of range -> default EU868]");
+    state = radio.begin(869.525, 250.0, 6, 7, RADIOLIB_SX126X_SYNC_WORD_PRIVATE, usrConf.rf_power, 8, 1.8, false);
   }
 
   //radio.setCurrentLimit(60.0);

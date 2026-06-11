@@ -37,9 +37,15 @@ CLAUDE.md
 docs/superpowers/
 docs/CLI_compile_export.md
 
+# foilIQ patron channel — private UUID, lives in foiliq private repo
+Source/V2_Integration_Tx/BLE_Patron.ino
+
 # Unknown artifact files — origin unclear, excluded until identified
 ed SVG, update README tables, P5 plan doc added
 
 # Local testing logs and field notes — data files, not source
 Logs testing/
 field tests RTM*.docx
+
+# Local wiring reference — hardware build notes, not source
+docs/Waterproof_Connector_Wiring.md

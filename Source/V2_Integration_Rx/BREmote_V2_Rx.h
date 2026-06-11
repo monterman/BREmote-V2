@@ -1,4 +1,4 @@
-﻿// V2.5-Evo - 2026-05-22 - SW32: Two-phase RTM throttle: rtm_align_threshold_deg + rtm_target_speed_kmh; sizeof 164→172; SW_VERSION 31→32
+// V2.5-Evo - 2026-05-22 - SW32: Two-phase RTM throttle: rtm_align_threshold_deg + rtm_target_speed_kmh; sizeof 164→172; SW_VERSION 31→32
 // V2.5-Evo - 2026-05-09 - Bundle 9-Final: Added USB CDC On Boot compile-time guard
 // V2.5-Evo - 2026-05-11 - E7 Fix: VescLogData +1 byte (error_code_log); sizeof 51→52; old SPIFFS logs misparse after this flash
 // V2.5-Evo - 2026-05-08 - Bundle 1: RTM/FM steering preset system (rtm_steer_response 0-4); SW_VERSION 30→31; sizeof unchanged at 164; VescLogData +4 bytes for tuning telemetry
@@ -402,10 +402,10 @@ unsigned long rx_tx_gps_timestamp = 0;    // millis() when last meta-packet rece
 // rtm_rx_emergency_stop: true = safety gate failed; calcPWM() forces throttle to 0.
 // rtm_steer_override: bearing-derived steering value (0-255, 127=straight ahead).
 // fm_mode_runtime: TX-side FM mode override (0-3); 0xFF = use SPIFFS default.
-// V2.5-Evo - 2026-04-25 - P7 fix: use std::atomic to ensure cross-core visibility.
-// generatePWM runs on core 0; RTMState.ino loop() runs on core 1. volatile alone
-// does not provide a memory barrier on Xtensa dual-core. std::atomic provides
-// seq_cst, matching the established rfInterrupt pattern at line 334.
+// V2.5-Evo - 2026-04-25 - P7 fix: use std::atomic for safe access across FreeRTOS task
+// preemption. generatePWM (task) and RTMState.ino loop() both run on the single-core
+// ESP32-C3; std::atomic gives an indivisible read/write + compiler barrier so a higher-
+// priority task can't observe a torn value. (seq_cst, matching the rfInterrupt pattern.)
 std::atomic<bool>    rtm_rx_active         {false};
 std::atomic<bool>    rtm_rx_emergency_stop {false};
 std::atomic<uint8_t> rtm_steer_override    {127};

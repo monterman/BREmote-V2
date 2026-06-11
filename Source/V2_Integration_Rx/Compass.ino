@@ -1,4 +1,4 @@
-﻿// V2.5-Evo - 2026-05-06 - D2: Add updateCompassSnapshot() and snapshot globals (clean heading captured during motor-idle for future RTM heading source)
+// V2.5-Evo - 2026-05-06 - D2: Add updateCompassSnapshot() and snapshot globals (clean heading captured during motor-idle for future RTM heading source)
 // V2.5-Evo - 2026-04-25 - P7: Added getCompassHeading() function
 #include <Wire.h>
 #include <esp_task_wdt.h> // <-- Added to feed the Watchdog

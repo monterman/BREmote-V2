@@ -363,6 +363,15 @@ extern TaskHandle_t loopTaskHandle;
 
 // --- V2.5-Evo: TX GPS globals ---
 // gps_tx   : TinyGPS++ parser instance fed by Serial1 (BN-220).
+//            V2.5-Evo - 2026-06-07 - Audit #10 invariant: TinyGPS++ is NOT
+//            reentrant. gps_tx.encode() (writes) and every .location/.speed/.hdop
+//            read must happen from the Arduino loop() task ONLY — never from an
+//            ISR or a second core. On this single-core C3 with a cooperative loop
+//            the encode sites (GPS.ino getTxGPSLoop; RTMState.ino keepalive +
+//            pre-arm drain) and all readers run sequentially, so no torn mid-
+//            sentence read can occur; the NMEA checksum also discards any garbled
+//            sentence before its fields become readable. Keep all gps_tx access on
+//            the loop task to preserve this guarantee.
 // tx_gps_speed : Current speed in the UNIT selected by usrConf.speed_src.
 //                Sentinel 0xFF = no fix / no valid data (matches existing
 //                telemetry.foil_speed "not available" convention so the

@@ -1,4 +1,4 @@
-﻿// *** LATEST: V2.5-Evo - 2026-06-04 - D1 — UART-mux read-back verify (setUartMux); skip VESC poll while throttle high; no confStruct change ***
+// *** LATEST: V2.5-Evo - 2026-06-04 - D1 — UART-mux read-back verify (setUartMux); skip VESC poll while throttle high; no confStruct change ***
 // V2.5-Evo - 2026-05-14 - SW55 — GPS yields MUX to VESC on exit; rcv_err removed from receiveFromVESC; boot MUX starts on VESC
 // V2.5-Evo - 2026-05-11 - Telemetry Fix: VESC moved to its own vesc_loop_timer (2Hz); checkButtons() added to loop() for runtime BIND compass cal
 // V2.5-Evo - 2026-05-03 - Removed commented-out SPIFFS.remove dead code (LOW audit cleanup)

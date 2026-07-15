@@ -237,6 +237,7 @@ The RX board logs GPS position, VESC telemetry, voltage, speed, and timestamps t
 - **Brownout warning:** the logger auto-stops if supply voltage drops below threshold; WiFi + logging together draw significant current — ensure adequate power supply
 - **File format:** `MMDDYY_HHMMSS.csv` (UTC, US date order) *
 - **Download:** Connect to RX WiFi AP → open the RX embedded web page or the Web Serial Config Tool → **Manage Logs** section
+- **Log rate:** default **3 Hz**, tuned for propeller / max-speed testing. Raise to 5 Hz for RTM/steering analysis with `?lograte 5` over serial (resets to 3 Hz on reboot; not persisted). Record size, rate→duration table, and SPIFFS capacity: see `docs/LOGGER_NOTES.md`.
 
 *\* Date format changed from DDMMYY (original LudwigBre) to MMDDYY in V2.5-Evo.*
 
@@ -756,6 +757,16 @@ Connect to the TX at 115200 baud. All commands are prefixed with `?`.
 ---
 
 ## Changelog
+
+### V2.5.11 — July 2026 *(monterman)* — Collision Backoff, RX Radio Self-Heal, No-OTA Partition & 3 Hz Logger
+
+- **Feature A — adaptive RF collision backoff (TX `sendData()`):** two remotes sharing the same RF preset no longer stay locked in a colliding timeslot. On a missed telemetry reply the TX adds slot-jitter that permanently phase-shifts it into a different slot, and after 3 consecutive misses the base cadence drops 100 ms → 200 ms, recovering to 100 ms after ~50 s of clean replies. *Upstream collision-detection mechanism by LudwigBre (2.2.7)* — adapted for this fork: variable send cadence, the GPS meta-packet ≥2 Hz floor is preserved by gating the backoff off while Follow-Me/RTM is active, and the jitter PRNG is seeded per-unit from `own_address` so identical units actually de-correlate.
+- **Feature C — RX SX1262 self-heal:** the RX `triggeredReceive()` semaphore-timeout branch now re-arms the radio (`implicitHeader(6)` + `startReceive()`). Previously a wedged SX1262 or a dropped DIO interrupt left the link dead until a power-cycle; now it recovers on its own after 2 s of silence. Motor-safe — runs only when the link is already down and the failsafe has zeroed throttle.
+- **Logger default 5 Hz → 3 Hz:** better suited to propeller / max-speed testing and stretches on-board session capacity. Raise to 5 Hz at runtime for RTM/steering analysis with `?lograte 5` over serial (resets to the 3 Hz default on reboot; the rate is not persisted). Record size, rate→duration table, and capacity guidance: see `docs/LOGGER_NOTES.md`.
+- **Custom no-OTA partition (RX):** OTA is intentionally dropped (RX is flashed over USB), reclaiming the second app slot for a single 2.0 MB app + 1.875 MB SPIFFS layout (`Source/V2_Integration_Rx/partitions.csv`). Gives ~809 KB of app headroom for Follow-Me work and a larger SPIFFS than before for longer logging. First flash after the partition change reformats SPIFFS → RX settings reset and compass re-cal required (binding survives).
+- **No confStruct changes; SW_VERSION unchanged (TX/RX).** TX compiles at 39% of the huge_app slot; RX at 60% of the new 2.0 MB app slot.
+
+---
 
 ### SW56–SW58 — May 2026 *(monterman)* — BLE Live Telemetry Released to Master
 

@@ -282,6 +282,6 @@ The user reported: "I was 20–27 m away when I armed. Distance decreased to 9�
 
 ---
 
-*Log files referenced: `G:/My Drive/Projects/Vesc and other related files/050926_*.log.csv`*
+*Log files referenced: `C:/Users/Andress Montero/My Drive/Projects/Vesc and other related files/050926_*.log.csv`*
 *Firmware reference: `Source/V2_Integration_Rx/RTMState.ino`, `Source/V2_Integration_Rx/Compass.ino`*
 *Last updated: 2026-05-09 — initial field test analysis; calibration disclaimer added (compass never calibrated on this build)*

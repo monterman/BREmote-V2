@@ -220,18 +220,56 @@ void checkPairing()
 
 // V2.5-Evo - 2026-04-24 - Added 0xF3 GPS meta-packet burst at 2Hz for Phase B anti-spoofing.
 //                   THR capped at 0xF2: 0xF3 is reserved as the GPS meta-packet marker.
+// V2.5-Evo - 2026-07-14 - Feature A: adaptive RF collision backoff (adapted from Ludwig 2.2.7).
 void sendData(void *parameter)
 {
   TickType_t xLastWakeTime = xTaskGetTickCount();
-  const TickType_t xFrequency = pdMS_TO_TICKS(100);
 
-  // GPS meta-packet cycle counter. Incremented each control cycle (100ms).
-  // Wraps at 5 → resets to 0. The GPS meta-packet fires on the cycle where
-  // it resets to 0 (i.e., every 5 × 100ms = 500ms = 2Hz).
+  // GPS meta-packet cycle counter. Incremented each control cycle.
+  // Wraps at 5 → resets to 0. The GPS meta-packet fires on the cycle where it resets to 0
+  // (i.e., every 5 control cycles = 2Hz at the 100ms base cadence).
   static uint8_t gps_cycle = 0;
+
+  // -----------------------------------------------------------------------
+  // Feature A — adaptive RF collision backoff (adapted from Ludwig 2.2.7).
+  // Identifier names kept 1:1 with Ludwig for cross-fork diffability.
+  //   base_interval         - nominal control cadence in ms (100 normal, 200 when degraded)
+  //   consecutive_misses    - run of cycles with no telemetry reply (drives the 100->200 drop)
+  //   consecutive_successes - run of clean replies at 200ms (drives the 200->100 recovery)
+  // -----------------------------------------------------------------------
+  static uint32_t base_interval         = 100;
+  static uint8_t  consecutive_misses    = 0;
+  static uint8_t  consecutive_successes = 0;
+
+  // Feature A req#4: seed the PRNG per-unit from own_address so two identical units do NOT produce
+  // the same jitter sequence — a shared seed de-syncs nothing. own_address is persistent+unique.
+  // NOTE (HW RNG dependency): if the ESP32-C3 Arduino core's random() already draws from esp_random()
+  // (hardware RNG), this seed is redundant-but-harmless; if random() uses the newlib PRNG, this
+  // per-unit seed is what actually makes two colliding TXs de-correlate.
+  randomSeed(((uint32_t)usrConf.own_address[0] << 16) |
+             ((uint32_t)usrConf.own_address[1] << 8)  |
+              (uint32_t)usrConf.own_address[2]);
 
   while(1)
   {
+    // Feature A — per-cycle one-shot slot-jitter (0/33/66ms); 0 = no jitter this cycle.
+    uint32_t extra_delay = 0;
+
+    // Feature A req#3 — suspend the backoff while an autonomous mode is active (FM armed or RTM
+    // active). CLAUDE.md §12.4 requires GPS meta-packets >=2Hz during active FM steering, and the
+    // every-5th-cycle GPS meta only stays at 2Hz while the cadence is a flat 100ms. Holding
+    // base_interval at 100 and applying no jitter here preserves the >=2Hz meta floor (§12 rules
+    // 1-4: the collision heuristic must never starve the FM/anti-spoofing data path).
+    // Trade-off: two units both in FM/RTM will not de-sync until the mode disarms — the floor wins.
+    // isFmArmed() (accessor) used instead of raw fm_armed: fm_armed lives in RTMState.ino, which
+    // Arduino concatenates AFTER Radio.ino, so the raw variable is not yet declared here.
+    bool backoff_allowed = !(isFmArmed() || rtm_tx_active.load(std::memory_order_relaxed));
+    if (!backoff_allowed)
+    {
+      base_interval         = 100;
+      consecutive_misses    = 0;
+      consecutive_successes = 0;
+    }
     if(usrConf.paired && isRadioActivityEnabled())
     {
       // ---- Meta-packet burst path (highest priority, preempts GPS and control packets) ----
@@ -265,7 +303,10 @@ void sendData(void *parameter)
         rfInterrupt = false;
         radio.startReceive();
         xTaskNotifyGive(triggeredWaitForTelemetryHandle);
-        vTaskDelayUntil(&xLastWakeTime, xFrequency);
+        // Feature A req#3 — meta-packet bursts (RTM/FM/aux) always run at the base 100ms cadence.
+        // Bursts get no telemetry reply (RX does not reply to 0xF1/0xF2/0xF4), so they must never
+        // be scored as misses, and RTM/FM bursts must stay prompt — the backoff never slows them.
+        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(100));
         continue;
       }
 
@@ -396,8 +437,62 @@ void sendData(void *parameter)
       rfInterrupt = false;
       radio.startReceive();
       xTaskNotifyGive(triggeredWaitForTelemetryHandle);
+
+      // ---------------------------------------------------------------
+      // Feature A req#2/#7 — collision miss/success evaluation.
+      // Runs ONLY on a normal control cycle: GPS-meta cycles and RTM/FM/aux bursts get no
+      // telemetry reply, so scoring them would false-trigger a miss. backoff_allowed also gates
+      // it off during active FM/RTM (req#3, >=2Hz meta floor).
+      // The 30ms reply window lets the RX telemetry reply land and update last_packet BEFORE we
+      // test it — without it, last_packet would still be from the previous cycle and every cycle
+      // would read as a miss (Rex caution #1). Window + >40ms threshold match Ludwig 1:1.
+      // ---------------------------------------------------------------
+      if (!send_gps_meta && backoff_allowed && last_packet > 0)
+      {
+        vTaskDelay(pdMS_TO_TICKS(30));  // bounded reply window (matches Ludwig's 30ms)
+
+        if (millis() - last_packet > 40)
+        {
+          // === PACKET MISSED === telemetry reply did not land this cycle (collision or obstacle).
+          consecutive_misses++;
+          consecutive_successes = 0;  // reset success streak
+
+          // After 3 consecutive missed replies, downgrade to the 200ms base cadence.
+          if (base_interval == 100 && consecutive_misses >= 3)
+          {
+            base_interval = 200;
+            Serial.println("Change to 200ms interval");
+          }
+
+          // Slot-jitter (0/33/66ms). Added via vTaskDelayUntil below, it permanently phase-shifts
+          // this TX into a new slot so two colliding units de-sync. random() is per-unit seeded.
+          extra_delay = random(0, 3) * 33;
+          Serial.print("Added random: ");
+          Serial.println(extra_delay);
+        }
+        else
+        {
+          // === PACKET RECEIVED CLEANLY ===
+          consecutive_misses = 0;
+
+          // If degraded to 200ms, count clean replies and promote back to 100ms after ~50s.
+          if (base_interval == 200)
+          {
+            consecutive_successes++;
+            if (consecutive_successes >= 250)
+            {
+              base_interval = 100;
+              consecutive_successes = 0;
+              Serial.println("Change to 100ms interval");
+            }
+          }
+        }
+      }
     }
-    vTaskDelayUntil(&xLastWakeTime, xFrequency);
+    // Feature A — variable cadence = base_interval + one-shot slot-jitter. Because vTaskDelayUntil
+    // computes from xLastWakeTime, adding extra_delay permanently shifts this TX's phase into the
+    // new slot (the de-sync mechanism). Worst case 200 + 66 = 266ms << 3000ms WDT.
+    vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(base_interval + extra_delay));
   }
 }
 

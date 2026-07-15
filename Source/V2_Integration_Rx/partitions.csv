@@ -1,0 +1,14 @@
+# BREmote V2.5-Evo RX custom partition table (4 MB ESP32-C3 HT-CT62)
+# V2.5-Evo - 2026-07-14 - No-OTA single-app layout: 2.0 MB app slot + 1.875 MB SPIFFS.
+# Rationale: OTA is intentionally dropped (RX is flashed over USB), so the second 1.25 MB
+# OTA app slot from default.csv is reclaimed. Split gives ~730 KB app headroom for FM-mode
+# future work AND a larger SPIFFS than the old default (1.375 MB) for on-board VESC logging.
+# At 52 B/record: 5 Hz ~= 1.75 hr, 3 Hz ~= 2.9 hr of continuous logging.
+# Offsets sum exactly to 0x400000 (4 MB). SPIFFS is located by label, not offset, so the
+# filesystem re-formats on first mount after reflash (expected: wipes settings, keep runcal).
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
+app0,     app,  ota_0,   0x10000,  0x200000,
+spiffs,   data, spiffs,  0x210000, 0x1E0000,
+coredump, data, coredump,0x3F0000, 0x10000,

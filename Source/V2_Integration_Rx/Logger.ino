@@ -38,7 +38,11 @@ static uint32_t      log_pending_since = 0;   // millis() when pending started
 static uint32_t      log_heartbeat_ms  = 0;   // last heartbeat blink while pending
 #define LOG_GPS_PENDING_TIMEOUT_MS (15000UL)   // 15s wait for GPS timestamp; then start anyway with millis filename
 #define LOG_GPS_HEARTBEAT_MS       (3000UL)    // 1 quick blink every 3s while waiting for fix
-static uint32_t log_interval_ms = 200; // Default 5 Hz =200 (was 1 Hz =1000)
+// V2.5-Evo - 2026-07-14 - Default lowered 5 Hz → 3 Hz (333ms) for prop/max-speed testing (Andres):
+// 3 Hz is plenty for speed/trend logging and stretches on-board session capacity vs 5 Hz. Bump back
+// to 5 Hz at runtime for RTM/steering analysis via the serial command "?lograte 5" (cmdLogRate →
+// setLogRate(), System.ino). Rate is NOT persisted — this boot static is the only default lever.
+static uint32_t log_interval_ms = 333; // Default 3 Hz =333 (was 5 Hz =200; 1 Hz =1000)
 static File currentLogFile;
 static String currentLogFileName = "";
 static uint32_t last_space_check = 0;

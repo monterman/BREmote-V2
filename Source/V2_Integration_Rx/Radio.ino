@@ -513,6 +513,25 @@ void triggeredReceive(void *parameter) {
       radio.startReceive();
       rfInterrupt = false;
     }
+    else
+    {
+      // ============================================================
+      // Feature C - SX1262 self-heal on the semaphore-timeout branch
+      // ============================================================
+      // V2.5-Evo - 2026-07-14 - Feature C: re-arm the radio when the 2000ms semaphore times out.
+      // The bug: the took-semaphore branch above re-arms the SX1262 (implicitHeader(6)+startReceive)
+      // on every packet, but the timeout branch previously did NOTHING except loop back to feed the
+      // WDT. If the SX1262 wedges or drops its DIO IRQ, no packet ever fires the semaphore again, so
+      // the receiver is never re-armed and the link stays dead until a power-cycle.
+      // The fix: on timeout, re-run the same re-arm sequence used at the common exit so a wedged
+      // radio self-heals. startReceive() resets the FIFO/IRQ state, so it doubles as the buffer flush.
+      // Motor-safety: this runs only after 2000ms of RF silence, by which point the RX failsafe has
+      // long since zeroed the motor (PWM.ino:13 gates on millis()-last_packet). This branch never
+      // writes thr_received, last_packet, or any PWM state — motor-safe by construction.
+      radio.implicitHeader(6);
+      radio.startReceive();
+      rfInterrupt = false;
+    }
   }
 }
 

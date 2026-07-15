@@ -47,3 +47,6 @@ docs/Waterproof_Connector_Wiring.md
 
 Team Knowledge/
 Deliverables/
+
+# built firmware binaries (distribute via Releases, not tree)
+firmware/

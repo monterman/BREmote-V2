@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-07-18 - FM mode mapping canonicalized to TX convention (1=Near-Right, 2=Behind, 3=Near-Left); defaultConf.followme_mode 2→1 preserves the Near-Right default across the relabel (old RX labels had 2=near_right). Labels/comment only — no struct/SW_VERSION change.
 // V2.5-Evo - 2026-05-22 - SW32: Two-phase RTM throttle: rtm_align_threshold_deg + rtm_target_speed_kmh; sizeof 164→172; SW_VERSION 31→32
 // V2.5-Evo - 2026-05-09 - Bundle 9-Final: Added USB CDC On Boot compile-time guard
 // V2.5-Evo - 2026-05-11 - E7 Fix: VescLogData +1 byte (error_code_log); sizeof 51→52; old SPIFFS logs misparse after this flash
@@ -121,7 +122,7 @@ struct confStruct {
 
     // GPS features related flags
     uint16_t gps_en;         // GPS runtime enable flag (0=disabled, 1=enabled)
-    uint16_t followme_mode;  // Follow-me runtime mode flag (0=disabled, 1=behind, 2=near_right, 3=near_left)
+    uint16_t followme_mode;  // Follow-me mode (0=disabled, 1=near_right, 2=behind, 3=near_left) — canonical mapping, matches TX + README
     uint16_t kalman_en;      // Kalman filter runtime enable flag (0=disabled, 1=enabled)
 
     //Follow-me
@@ -322,7 +323,7 @@ static_assert(sizeof(confStruct) == 176, "confStruct size mismatch — expected 
 confStruct usrConf;
   //The orginal confs were:  ##// confStruct defaultConf = {SW_VERSION, 1, 0, 0, 50, 0, 0, 1500, 2000, 1500, 2000, 1000, 10, 0, 1, 0, 0, 0, 0, 0, 25.0f, 10.0f, 10.0f, 5.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0, 1000, 1, 0, {0, 0, 0}, {0, 0, 0}, {'1','2','3','4','5','6','7','8'}};
   // V2.5-Evo default configuration — tuned for monterman hardware
-confStruct defaultConf = {SW_VERSION, 2, 20, 1, 50, 0, 0, 1000, 2000, 1000, 2000, 1000, 10, 0, 1, 2, 2, 1, 2, 1, 25.0f, 10.0f, 10.0f, 8.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0f, 3000, 0, 1, {0x46, 0xC9, 0xE0}, {0x46, 0xCB, 0xCC}, {'1','2','3','4','5','6','7','8'},
+confStruct defaultConf = {SW_VERSION, 2, 20, 1, 50, 0, 0, 1000, 2000, 1000, 2000, 1000, 10, 0, 1, 2, 2, 1, 1, 1, 25.0f, 10.0f, 10.0f, 8.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0f, 3000, 0, 1, {0x46, 0xC9, 0xE0}, {0x46, 0xCB, 0xCC}, {'1','2','3','4','5','6','7','8'},
   // V2.5-Evo - 2026-04-22 - Compass calibration fields (previously implicit zeros).
   // Made explicit here so gps_chip_type can follow. Safe neutral values:
   // offsets=0 (no bias), scales=1.0f (unity gain = no correction applied).

@@ -381,9 +381,9 @@ The override is RAM-only — RX returns to its web-configured `followme_mode` on
 | Display | `followme_mode` value | Behaviour |
 |---|---|---|
 | `F0` | 0 | Disabled — follow-me off |
-| `F1` | 1 | Right — RX follows to the right of TX |
-| `F2` | 2 | Behind — RX follows directly behind TX |
-| `F3` | 3 | Left — RX follows to the left of TX |
+| `F1` | 1 | Near-Right (default) — RX trails behind-right of the rider |
+| `F2` | 2 | Behind — RX trails directly behind the rider |
+| `F3` | 3 | Near-Left — RX trails behind-left of the rider |
 
 ### FM Proximity Warning
 
@@ -424,9 +424,9 @@ If TX-to-RX distance drops below `fm_warn_distance_m` (default 150 m), TX fires 
 | `E 7` | Water ingress detected — blinking full-screen alert + 5 long vibrations; motor output **not** cut (see below) |
 | `rn` | Return-to-Me (RTM) mode active |
 | `F0` | Follow-Me override: disabled |
-| `F1` | Follow-Me override: Right side |
+| `F1` | Follow-Me override: Near-Right (default) |
 | `F2` | Follow-Me override: Behind |
-| `F3` | Follow-Me override: Left side |
+| `F3` | Follow-Me override: Near-Left |
 | `St` | Stop — RTM or FM safety gate triggered, or arming blocked *(FM gating is forward-looking; FM logic not yet implemented)* |
 | `99` | Full throttle reached (100%) |
 

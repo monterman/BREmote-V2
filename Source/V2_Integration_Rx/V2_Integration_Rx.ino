@@ -76,13 +76,13 @@ void loop()
   }
 
   // VESC at 2Hz, independent of GPS and wetness gate.
-  // V2.5-Evo - 2026-06-04 - D1: skip the VESC poll while throttle is high (audit).
-  // getVescLoop() switches the AW9523 UART mux; doing that during active driving collides with
-  // motor-switching EMI on the shared expander and can disrupt PPM/mux routing. Poll telemetry
-  // only at low/zero throttle (thr_received < 25, the same "motor active" threshold used in
-  // PWM.ino/RTMState.ino). Telemetry resumes the instant throttle drops; the vesc_timeout_s
-  // window legitimately N/A's the display during a sustained high-throttle run (expected, per audit).
-  if(usrConf.data_src == 2 && thr_received < 25)
+  // V2.5-Evo - 2026-07-18 - REGRESSION FIX: removed D1's "&& thr_received < 25" throttle gate.
+  // D1 (2026-06-04) skipped the VESC poll while throttle >= 25 to dodge mux-switch EMI during driving,
+  // but on a continuous-throttle vehicle (tow buggy) the poll then NEVER runs -> telemetry freezes at
+  // the boot 0xFF default (dashes) for the whole ride. The EMI concern is already covered by the
+  // bounded read-back-verify inside setUartMux() (System.ino), so the throttle-skip was redundant
+  // belt-and-suspenders that cost all in-ride telemetry. Restore the SW55 unconditional 2Hz poll.
+  if(usrConf.data_src == 2)
   {
     if(millis() - vesc_loop_timer >= 500)
     {

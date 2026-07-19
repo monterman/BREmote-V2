@@ -194,8 +194,8 @@ Unavailable modes (no VESC lock or no GPS fix) are skipped automatically. `MA` r
 | RIGHT tap (quick) | Arm combo window — next LEFT hold within 3 s triggers RTM |
 | LEFT hold 2 s | Cycle telemetry display mode |
 | RIGHT hold 2 s | Reserved — no action |
-| RIGHT tap → LEFT hold 5 s | Arm **Return-to-Me** (RTM) — display shows `rn` |
-| LEFT tap → RIGHT hold 5 s | Cycle **Follow-Me** override mode (F0/F1/F2/F3) |
+| RIGHT tap → LEFT hold (default 5 s, tunable 4–10 s) | Arm **Return-to-Me** (RTM) — display shows `rn` |
+| LEFT tap → RIGHT hold (default 5 s, tunable 4–10 s) | Cycle **Follow-Me** override mode (F0/F1/F2/F3) |
 
 > **Note:** The lock feature has been removed in V2.5-Evo. The system always boots unlocked. Throttle must be at 0 for long-press actions to fire.
 
@@ -267,7 +267,7 @@ For when you are in the water and want the buggy to drive itself toward you. **Y
 
 ### Arming
 
-1. **Combo gesture:** Quick-tap RIGHT toggle, then within 3 seconds hold LEFT toggle for 5 s
+1. **Combo gesture:** Quick-tap RIGHT toggle, then within 3 seconds hold LEFT toggle for the arm-hold duration (`rtm_hold_duration_s`, default 5 s, tunable 4–10 s)
 2. TX display shows `rn` for 3 s (two 1.5 s static passes) — armed
 3. Haptic: 2 fast short pulses confirm arm
 
@@ -319,13 +319,14 @@ On any gate failure: throttle → 0, TX display shows `St` for 2 s, haptic confi
 ### SPIFFS Configuration (TX)
 
 <details>
-<summary><strong>Click to expand: RTM TX SPIFFS parameters (11 fields)</strong></summary>
+<summary><strong>Click to expand: RTM TX SPIFFS parameters (12 fields)</strong></summary>
 
 <br>
 
 | Parameter | Default | Description |
 |---|---|---|
 | `rtm_enabled` | 1 | Master on/off switch |
+| `rtm_hold_duration_s` | 5 | LEFT-hold duration to arm RTM, in seconds (4–10) |
 | `rtm_throttle_start_pct` | 30 | Initial throttle cap % when RTM engages |
 | `rtm_throttle_max_pct` | 70 | Max throttle cap % after ramp |
 | `rtm_ramp_duration_s` | 5 | Ramp time start→max in seconds |
@@ -365,13 +366,13 @@ On any gate failure: throttle → 0, TX display shows `St` for 2 s, haptic confi
 
 > FM override is fully implemented in V2.5-Evo. It overrides the RX follow-me positioning mode at runtime without a SPIFFS write.
 
-> **⚠️ Follow-Me autonomous control is not implemented in this release.** The mode override display (F0 / F1 / F2 / F3) is fully functional — you can cycle and set the mode on the TX display. The autonomous positional steering loop is a future feature and setting an FM mode currently has no effect on vehicle behavior.
+> **⚠️ Follow-Me autonomous control is not implemented in this release.** The mode override display (F0 / F1 / F2 / F3) is fully functional — you can cycle and set the mode on the TX display. The autonomous positional steering loop is a future feature and setting an FM mode currently has no effect on vehicle behavior. The control law is fully specified in [`DESIGN_FOLLOW_ME.md`](DESIGN_FOLLOW_ME.md) but not yet coded.
 
 The override is RAM-only — RX returns to its web-configured `followme_mode` on reboot.
 
 ### Activation
 
-1. **Combo gesture:** Quick-tap LEFT toggle, then within 3 seconds hold RIGHT toggle for 5 s
+1. **Combo gesture:** Quick-tap LEFT toggle, then within 3 seconds hold RIGHT toggle for the hold duration (`fm_hold_duration_s`, default 5 s, tunable 4–10 s)
 2. TX display shows `F` + mode number (e.g. `F0`, `F1`, `F2`, `F3`)
 3. Continue holding RIGHT or re-hold within 2 s to keep cycling modes
 4. Release and wait 2 s — TX sends the selected mode to RX via 0xF2 meta-packet
@@ -392,13 +393,14 @@ If TX-to-RX distance drops below `fm_warn_distance_m` (default 150 m), TX fires 
 ### SPIFFS Configuration (TX)
 
 <details>
-<summary><strong>Click to expand: FM TX SPIFFS parameters (2 fields)</strong></summary>
+<summary><strong>Click to expand: FM TX SPIFFS parameters (3 fields)</strong></summary>
 
 <br>
 
 | Parameter | Default | Description |
 |---|---|---|
 | `fm_override_enabled` | 1 | Master on/off switch |
+| `fm_hold_duration_s` | 5 | RIGHT-hold duration to cycle FM mode, in seconds (4–10) |
 | `fm_warn_distance_m` | 150 | Proximity warning threshold in metres |
 
 </details>
@@ -698,7 +700,7 @@ Connect to the RX at 115200 baud. All commands are prefixed with `?`.
 |---|---|
 | `?conf` | Print current RX config (all SPIFFS fields and their live values) |
 | `?vescping` | Send a single VESC status request and print the parsed response — confirms the UART link is alive |
-| `?vescraw` | Dump raw VESC packet bytes to serial — use when `?vescping` returns no data to diagnose framing issues |
+| `?vescraw` | Send a correctly-framed `COMM_GET_VALUES` probe (`02 01 04 40 84 03`) and dump the raw reply bytes — use when `?vescping` returns no data to diagnose framing issues. *(The probe CRC was fixed in V2.5.12; before that this command hardcoded a bad CRC and always printed "NO BYTES" even against a healthy VESC.)* |
 | `?logstat` | Print SPIFFS log storage statistics — file count, total bytes used, bytes free |
 | `?lograte <ms>` | Override logging rate per session (default 200 ms / 5 Hz). Example: `?lograte 100` = 10 Hz. Change is RAM-only; resets on reboot. |
 | `?deletelog <filename>` | Delete a specific log file from SPIFFS. Use `?list` to see filenames first. |
@@ -746,6 +748,7 @@ Connect to the TX at 115200 baud. All commands are prefixed with `?`.
 - [Web Serial Config Tool — open in browser](https://monterman.github.io/BREmote-V2/BREmote_V2.5-Evo_Web_Serial_Config_Tool.html) *(Chrome/Edge — no download needed)*
 - [Web Serial Config Tool — offline download](docs/BREmote_V2.5-Evo_Web_Serial_Config_Tool.html)
 - [RTM Design Document — DESIGN_RETURN_TO_ME.md](DESIGN_RETURN_TO_ME.md)
+- [FM Autonomous-Following Design Document — DESIGN_FOLLOW_ME.md](DESIGN_FOLLOW_ME.md) *(approved design — not yet implemented)*
 - [Config Tool — lbre.de](https://lbre.de) *(LudwigBre's original web config tool)*
 - [Build Video](https://github.com/Luddi96/BREmote) — see original Luddi96 repository
 - [SW Setup / Config Video](https://github.com/Luddi96/BREmote) — see original Luddi96 repository
@@ -757,6 +760,17 @@ Connect to the TX at 115200 baud. All commands are prefixed with `?`.
 ---
 
 ## Changelog
+
+### V2.5.12 — July 2026 *(monterman)* — VESC Telemetry Restored, FM Mode Mapping Canonicalized, Tunable Arm-Hold
+
+- **VESC telemetry restored — the long-standing "no telemetry" issue was a wrong CRC in the `?vescraw` diagnostic; the actual telemetry path was always correct.** The `?vescraw` command hardcoded the wrong CRC16 (`0x4007`) on its `COMM_GET_VALUES` probe. The correct value is `0x4084` — CRC16-CCITT/XMODEM (poly `0x1021`, init 0) over payload `{0x04}`. A VESC silently discards any bad-CRC packet and never replies at any baud, so `?vescraw` always printed "NO BYTES" even against a perfectly healthy VESC — a false negative that masked good hardware and sent the diagnosis chasing the VESC, RX, AW9523 MUX, cables, and firmware when none of them were at fault. Bench-proven over an FTDI on **both VESC FW 6.05 and 6.06**: the correct frame `02 01 04 40 84 03` returns a full GET_VALUES reply (live 39.5 V / 26.7 °C). The real telemetry path (`getValuesSelective` → `sendToVESC` → `vesc_crc16`) was always correct — only the `?vescraw` diagnostic frame was wrong.
+- **In-ride telemetry unfroze (RX):** removed a throttle-skip gate that skipped the VESC poll while throttle ≥ 25. On a continuous-throttle vehicle (tow buggy) that meant `getVescLoop()` never ran once you were on the trigger, freezing telemetry to dashes for the whole ride. Reverted to the SW55 unconditional 2 Hz poll; the MUX-EMI concern the gate targeted is already covered by the read-back-verify in `setUartMux()`.
+- **FM mode mapping canonicalized to `1 = Near-Right, 2 = Behind, 3 = Near-Left` (RX):** RX comments and web-UI labels were relabeled to match the TX convention already used on the display, in the TX web UI, and in this README. `defaultConf.followme_mode` moved `2 → 1` to preserve the Near-Right default across the relabel (old RX labels had `2 = near-right`), and the `foiler_low_speed` default text was corrected `5 → 8` km/h to match `defaultConf`. Labels and defaults only — no control-logic change, no confStruct / SW_VERSION change.
+- **TX arm-hold now tunable:** `rtm_hold_duration_s` (RTM LEFT-hold) and `fm_hold_duration_s` (FM RIGHT-hold) are now live SPIFFS fields, configurable 4–10 s. Both were previously hardcoded to 5 s and labeled "reserved" in the web UI. Default stays 5 s. No confStruct / SW_VERSION change.
+- **`DESIGN_FOLLOW_ME.md` added:** the approved design spec for FM autonomous following (state machine, activation gates, target-point math, throttle cap chain). **Design only — FM autonomous following is not implemented in this release.** Selecting an FM mode (F0–F3) cycles and stores the mode but does not yet make the buggy follow the rider.
+- **No confStruct changes; SW_VERSION unchanged (TX/RX).**
+
+---
 
 ### V2.5.11 — July 2026 *(monterman)* — Collision Backoff, RX Radio Self-Heal, No-OTA Partition & 3 Hz Logger
 

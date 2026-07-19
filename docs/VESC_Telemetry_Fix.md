@@ -1,7 +1,66 @@
 # VESC Telemetry Fix — Analysis & Implementation Plan
 
 **BREmote V2.5-Evo | RX firmware | Filed: 2026-05-09**
-**Status: Root cause confirmed and fixed — SW51–SW55 (2026-05-14). See resolution section below.**
+**Status: RESOLVED. The definitive "telemetry appears dead" root cause was a diagnostic bug — see 2026-07-19 section below. The SW51–SW55 fixes and the USB-C hardware constraint (below that) remain valid.**
+
+---
+
+## 2026-07-19 — Definitive Root Cause: the `?vescraw` Diagnostic Was Lying
+
+The "VESC telemetry is dead / no telemetry" symptom that drove months of investigation
+was, in the end, a **diagnostic false negative — not a hardware, cable, MUX, config, or
+firmware fault.** Two independent bugs were found and fixed; neither was in the real
+telemetry path.
+
+### Bug 1 (the headline) — `?vescraw` hardcoded the wrong CRC
+
+`?vescraw` builds a `COMM_GET_VALUES` probe by hand and hardcoded the CRC16 as `0x4007`.
+The correct value is **`0x4084`** — CRC16-CCITT/XMODEM (poly `0x1021`, init 0) computed
+over the single-byte payload `{0x04}`.
+
+A VESC **silently discards any packet whose CRC does not match** — it does not NAK, does
+not reply at any baud, it just drops the frame. So the malformed probe produced zero bytes
+back **every time, against a perfectly healthy VESC**. `?vescraw` dutifully reported
+"NO BYTES", which read as "the VESC is dead" — a **false negative that masked good
+hardware** and sent the diagnosis chasing the VESC, the RX, the AW9523 MUX, the cabling,
+the config, and firmware 6.06, none of which were ever at fault.
+
+**Bench proof (FTDI, direct to VESC):** the corrected frame
+
+```
+02 01 04 40 84 03
+```
+
+returns a full `GET_VALUES` reply on **both VESC FW 6.05 and FW 6.06** — live 39.5 V /
+26.7 °C. Wrong CRC → silence; correct CRC → full telemetry, on the same hardware, same
+cable, same session.
+
+**Fix:** `System.ino` `?vescraw` now emits `0x4084` and returns the real reply
+(commit `492d672`).
+
+**The production telemetry path was never affected.** The real path
+(`getValuesSelective` → `sendToVESC` → `vesc_crc16`, table-driven CRC in `vesc_crc.cpp`)
+always computed the CRC correctly. Only the hand-rolled `?vescraw` diagnostic frame carried
+the wrong constant, which is exactly why live gauges (BLE, TX display) worked while the
+diagnostic insisted the link was dead.
+
+### Bug 2 — in-ride telemetry frozen by a throttle-skip gate
+
+Separately, a regression (the "D1" gate, introduced 2026-06-04) skipped the VESC poll
+whenever `thr_received ≥ 25`. On a continuous-throttle vehicle (the tow buggy) that means
+`getVescLoop()` never runs once you are on the trigger, so telemetry froze at the boot
+`0xFF` default (dashes) for the entire ride. Reverted to the SW55 unconditional 2 Hz poll
+(commit `d68ed07`). The MUX-EMI concern the gate was meant to address is already covered by
+the read-back-verify inside `setUartMux()`, so the skip was redundant.
+
+### Bottom line
+
+Nothing was wrong with the VESC, the RX, the AW9523 MUX, the cables, the config, or
+firmware 6.06. The "no telemetry" verdict came from a diagnostic that was itself broken.
+The SW51–SW55 findings below (GPS MUX yield, `rcv_err` persistence, boot MUX state) were
+real and are still fixed; the USB-C-on-GPIO-18/19 constraint below is still a genuine
+hardware limitation to respect in the field. But the thing that made telemetry *look*
+dead was the `?vescraw` CRC.
 
 ---
 

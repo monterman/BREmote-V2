@@ -1,4 +1,5 @@
 // V2.5-Evo - 2026-05-16 - SW56: stop WiFi AP synchronously before unlockAnimation() — AP was running during frames, WiFi stack tasks preempted Core 0 causing last-frame stutter on first boot unlock only
+// V2.5-Evo - 2026-07-18 - Arm-hold now SPIFFS-tunable: combo hold reads rtm_hold_duration_s (RTM LEFT-hold) / fm_hold_duration_s (FM RIGHT-hold) instead of a hardcoded 5000ms. Both 4-10s (ConfigService-clamped). No struct/SW_VERSION change.
 // V2.5-Evo - 2026-04-25 - P7: handleGearToggle() left-hold arms RTM; right-hold cycles FM
 // V2.5-Evo - 2026-04-21 - Updated DISPLAY_MODE_SPEED availability check to support TX GPS speed sources
 // V2.5-Evo - 2026-04-27 - P8: Gesture redesign — combo state machine; LEFT hold=display cycle; RIGHT+LEFT=RTM; LEFT+RIGHT=FM
@@ -274,8 +275,15 @@ void handleGearToggle(int direction)
                    (last_tap_dir != direction) &&
                    (millis() - last_tap_ms < COMBO_WINDOW_MS);
 
-  // Combo holds need 5s; simple holds need 2s
-  unsigned long long_press_ms = has_combo ? 5000UL : 2000UL;
+  // Combo holds: RTM arm (LEFT hold, direction<0) uses rtm_hold_duration_s;
+  // FM cycle (RIGHT hold, direction>0) uses fm_hold_duration_s — both 4-10s, SPIFFS-tunable.
+  // Simple holds = 2s. ConfigService clamps both fields to 4-10s, so no accidental sub-4s arm.
+  unsigned long long_press_ms;
+  if (has_combo)
+    long_press_ms = (unsigned long)(direction < 0 ? usrConf.rtm_hold_duration_s
+                                                  : usrConf.fm_hold_duration_s) * 1000UL;
+  else
+    long_press_ms = 2000UL;
 
   while (isActive())
   {

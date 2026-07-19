@@ -589,9 +589,14 @@ void cmdVescRaw(const String& params) {
   Serial.println();
 
   // Precomputed VESC short-frame for COMM_GET_VALUES (command ID 4).
-  // [0x02 start][0x01 payload-len=1][0x04 COMM_GET_VALUES][0x40 CRC16_HI][0x07 CRC16_LO][0x03 end]
-  // CRC16-CCITT (init=0) over single payload byte {0x04} = 0x4007.
-  static const uint8_t getValuesQuery[] = { 0x02, 0x01, 0x04, 0x40, 0x07, 0x03 };
+  // [0x02 start][0x01 payload-len=1][0x04 COMM_GET_VALUES][0x40 CRC16_HI][0x84 CRC16_LO][0x03 end]
+  // V2.5-Evo - 2026-07-19 - CRC FIX: low byte was 0x07 (WRONG) -> 0x84. CRC16-CCITT/XMODEM
+  // (poly 0x1021, init 0) over payload {0x04} = 0x4084, NOT 0x4007. The bad CRC made the VESC
+  // silently drop this query (no reply at ANY baud), so ?vescraw always printed "NO BYTES" even
+  // with a perfectly healthy VESC — a false negative that masked good hardware for a whole session.
+  // Bench-proven over FTDI (both FW 6.05 and 6.06): 02 01 04 40 84 03 -> full GET_VALUES reply.
+  // (The real telemetry path getValuesSelective()->sendToVESC()->vesc_crc16() was always correct.)
+  static const uint8_t getValuesQuery[] = { 0x02, 0x01, 0x04, 0x40, 0x84, 0x03 };
 
   const int MAX_ITERATIONS = 15;
 

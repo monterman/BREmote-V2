@@ -91,7 +91,22 @@ bool getValuesSelective(Stream* interface)
   
   uint8_t message[30];
   
-  if(receiveFromVESC(message, interface) == VESC_PACK_LEN)
+  // V2.5-Evo - 2026-07-19 - Version-robust reply validation (works across VESC FW 3.x-7.x).
+  // Accept the reply if it ECHOES our exact command id + 4-byte mask AND is at least
+  // VESC_PACK_LEN bytes, instead of requiring an EXACT total-length match. VESC only ever
+  // APPENDS new fields at the end of the values struct across firmware versions, so a
+  // mask-matched reply always carries our requested fields at the known offsets regardless
+  // of any trailing bytes a newer firmware adds. A short or mismatched reply is rejected
+  // (never misparsed). Telemetry-only path; no motor/safety impact. (Previously == VESC_PACK_LEN,
+  // which would silently drop a valid reply if any future VESC FW changed the total length.)
+  int vescRxLen = receiveFromVESC(message, interface);
+  bool vescReplyValid = (vescRxLen >= VESC_PACK_LEN) &&
+                        (message[0] == vesc_command[0]) &&   // COMM_GET_VALUES_SELECTIVE echoed
+                        (message[1] == vesc_command[1]) &&   // 4-byte mask echoed back...
+                        (message[2] == vesc_command[2]) &&
+                        (message[3] == vesc_command[3]) &&
+                        (message[4] == vesc_command[4]);
+  if(vescReplyValid)
   {
     int32_t cnt = 5;
 

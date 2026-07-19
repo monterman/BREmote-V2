@@ -1,7 +1,7 @@
 # Forum Post Draft — foil.zone thread #298
-**Status:** Draft — review before posting
+**Status:** Draft — review before posting. DO NOT post until the telemetry fix + robust parser are field-tested and pushed to GitHub.
 **Target:** foil.zone, thread #298 (BREmote / tow buggy remote thread)
-**Date:** 2026-05-20
+**Date:** 2026-07-19
 
 ---
 
@@ -9,47 +9,45 @@
 
 Hey all,
 
-Sharing a major update on the V2.5-Evo fork — a lot has landed since the last post.
+Big update on the V2.5-Evo fork — the VESC UART telemetry issue that's bitten a few of us is finally solved, and I want to save everyone the rabbit hole I went down.
 
-**BLE live telemetry is in master and field-confirmed.**
+**VESC UART telemetry — real root cause found and fixed.**
 
-The TX now advertises as `BRemote-TX-XX` (last byte of BT MAC) over BLE. It speaks NUS + VESC Tool binary protocol (COMM_GET_VALUES, auto-detected). Open VESC Tool on iOS or Android, scan, connect — live gauges appear immediately: FET temp, motor amps, duty, voltage, RPM, power. Free app, no config needed.
+If you've ever had "no VESC data" over UART that made no sense — wiring checks out, config checks out, the VESC talks fine over Bluetooth, but the remote shows nothing — here's what it was on my end, and it's worth knowing:
 
-Three ways to activate BLE:
-- Set `bt_enabled = 2` via the web config for always-on
-- Boot gesture: hold Throttle + LEFT toggle — BLE activates for the session, display shows `bt`
-- Hall sensor expansion: add a DRV5032 to GPIO 9 (P_MAG) for magnet-based activation without touching the remote
+The on-board `?vescraw` diagnostic was sending its VESC request with a **wrong CRC**. A VESC **silently drops any packet with a bad CRC** — no error, no reply, at any baud — so the diagnostic always printed "NO BYTES" even against a perfectly healthy VESC. That false negative had me chasing dead-hardware ghosts (RX board, mux, cables, VESC firmware) for hours. The *actual* telemetry path always computed the CRC correctly — only the diagnostic frame was wrong.
 
-One constraint: boot on battery. USB-C during boot blocks BLE init — hardware limitation of the ESP32-C3, not fixable in firmware.
+Bench-proven with an FTDI straight to the VESC: the correct GET_VALUES request `02 01 04 40 84 03` returns full live data on both VESC firmware **6.05 and 6.06**. Two fixes shipped: corrected the diagnostic CRC, and hardened the telemetry parser to validate replies by the **echoed command + mask** instead of an exact byte-length — so it stays compatible across VESC firmware **3.x–7.x** (VESC only ever appends new fields at the end of the struct).
 
----
+Also removed an in-ride telemetry freeze: an earlier throttle-gate skipped the VESC poll whenever throttle was held, which froze the readout to dashes on a continuous-throttle vehicle like a tow buggy. Gone.
 
-**VESC telemetry root cause fixed (SW55).**
-
-For anyone hitting flickery or silent VESC data: the culprit is USB-C. The ESP32-C3's native USB peripheral shares GPIO 18/19 with Serial1, which carries both GPS and VESC through the hardware MUX. Any USB cable plugged in during field use silences UART completely. Unplug before riding.
-
-Two code fixes shipped in the same sprint:
-- GPS MUX was taking the bus and never returning it — VESC starved on every GPS poll cycle. Fixed with `setUartMux(0)` at exit of both `getGPSLoop()` and `configureGPS()`.
-- Stale error flag in `receiveFromVESC()` was poisoning reads after a single bad byte. Removed — CRC handles validation.
-
-Both TX and RX compile clean: 39% / 40% flash (huge_app partition, ESP32-C3).
+**If you're setting this up:** VESC App Config → *App to Use = PPM and UART*, UART baud **115200**, and wire to the VESC's actual **UART TX/RX/GND** — not the CAN or COMM/BLE pins, those are separate ports. Works with VESC FW 3.x through 7.x, no per-version selection needed.
 
 ---
 
-**RTM and FM bench-complete, water test pending.**
+**BLE live telemetry (unchanged, still solid).**
 
-Full RTM implementation (GPS+compass layered heading, 10 safety gates, convergence check) passed static code review. Waiting on a proper outdoor + motor test before calling it field-ready. If anyone has water access and wants to alpha test — DM me.
+The TX advertises as `BRemote-TX-XX` over BLE and speaks NUS + the VESC Tool binary protocol. Open VESC Tool on iOS/Android, scan, connect — live gauges appear: FET temp, motor amps, duty, voltage, RPM, power. Activate via `bt_enabled = 2`, the boot gesture (hold Throttle + LEFT toggle), or a DRV5032 hall on GPIO 9. One constraint: boot on battery — USB-C during boot blocks BLE init (ESP32-C3 hardware limitation, not fixable in firmware).
 
 ---
 
-**Hardware note: HT-CT62 confirmed**
+**Return-To-Me (RTM): implemented, water-test pending.**
 
-Heltec HT-CT62 integrates ESP32-C3 + SX1262 LoRa + BLE on one module. No separate Bluetooth hardware needed.
+Full RTM (GPS + compass heading, safety gates, approach convergence) passed code review and bench testing. Still finishing outdoor + motor field tests before I call it done — there's a known near-target behaviour I'm tuning. Not "set and forget" yet.
+
+**Follow-Me (FM): mode *selection* works; autonomous *following* is designed but NOT shipped.**
+
+You can cycle and set the FM mode on the TX (F0/F1/F2/F3 = Off / Near-Right / Behind / Near-Left, default **Near-Right**) and it's sent to the RX. But the autonomous *following* control law — the buggy actually trailing you after you release the rope — is **not implemented yet**. Selecting a mode does not make the buggy follow. The design is written and it's the next build; I'm calling this out so nobody flashes this expecting FM to drive. When it's real and field-tested, I'll post.
+
+---
+
+**Hardware: HT-CT62 confirmed** — Heltec HT-CT62 integrates ESP32-C3 + SX1262 LoRa + BLE on one module. No separate BT hardware needed.
 
 GitHub: https://github.com/monterman/BREmote-V2.git
 
 ---
 
 *Edit notes before posting:*
-- *Check thread #298 for last post — avoid repeating anything already covered*
+- *Check thread #298 for the last post — avoid repeating anything already covered*
 - *foilIQ / Waveshare peripheral: don't mention yet, nothing to show*
+- *Hold until telemetry fix + robust parser are field-tested and pushed*

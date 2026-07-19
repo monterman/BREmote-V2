@@ -876,7 +876,7 @@ Compiled clean: TX 39% / RX 40% flash (huge_app). SW_VERSION unchanged: TX=26, R
 - `DESIGN_RETURN_TO_ME.md` added — RTM mode fully designed with state machines, safety gates, and SPIFFS parameter table
 - LoRa meta-packet protocol designed: opcodes 0xF1–0xFE reserved for V2.5-Evo autonomous assist features
 - SW_VERSION bumped to 3
-- `project notes` added for AI-assisted development workflow and standing safety rules
+- `project notes` added for development conventions and standing safety rules
 
 ### V2.x — *(Janrusher / LudwigBre releases)*
 

@@ -4,6 +4,7 @@
 //   Role selected by the new mag_mode SPIFFS field (0=off/not fitted default, 1=FM, 2=RTM, 3=FM+RTM).
 // V2.5-Evo - 2026-05-16 - SW56: stop WiFi AP synchronously before unlockAnimation() — AP was running during frames, WiFi stack tasks preempted Core 0 causing last-frame stutter on first boot unlock only
 // V2.5-Evo - 2026-07-18 - Arm-hold now SPIFFS-tunable: combo hold reads rtm_hold_duration_s (RTM LEFT-hold) / fm_hold_duration_s (FM RIGHT-hold) instead of a hardcoded 5000ms. Both 4-10s (ConfigService-clamped). No struct/SW_VERSION change.
+// V2.5-Evo - 2026-07-20 - Hold-duration floor lowered 4s → 3s (comment only in this file; see handleGearToggle for why the floor is 3 not 2 — it must exceed the hardcoded 2000ms simple-hold). No code change here.
 // V2.5-Evo - 2026-04-25 - P7: handleGearToggle() left-hold arms RTM; right-hold cycles FM
 // V2.5-Evo - 2026-04-21 - Updated DISPLAY_MODE_SPEED availability check to support TX GPS speed sources
 // V2.5-Evo - 2026-04-27 - P8: Gesture redesign — combo state machine; LEFT hold=display cycle; RIGHT+LEFT=RTM; LEFT+RIGHT=FM
@@ -280,8 +281,17 @@ void handleGearToggle(int direction)
                    (millis() - last_tap_ms < COMBO_WINDOW_MS);
 
   // Combo holds: RTM arm (LEFT hold, direction<0) uses rtm_hold_duration_s;
-  // FM cycle (RIGHT hold, direction>0) uses fm_hold_duration_s — both 4-10s, SPIFFS-tunable.
-  // Simple holds = 2s. ConfigService clamps both fields to 4-10s, so no accidental sub-4s arm.
+  // FM cycle (RIGHT hold, direction>0) uses fm_hold_duration_s — both 3-10s, SPIFFS-tunable.
+  // Simple holds = 2s (hardcoded below).
+  //
+  // V2.5-Evo - 2026-07-20 - The ConfigService floor is 3s (lowered from 4s), NOT 2s, and the
+  // 3 is deliberate — do not lower it. The combo hold MUST exceed the hardcoded 2000ms simple
+  // hold: a "tap" is any press < COMBO_TAP_MAX_MS (1000ms) and routine gear/cap changes are
+  // taps, so an ordinary opposite-direction tap within COMBO_WINDOW_MS (3000ms) sets has_combo.
+  // If the combo hold could equal 2s it would fire at the exact instant the user expects the
+  // simple 2s action (lock / display-cycle), with no dead-time window to signal "this is the
+  // other gesture". At 3s the user still gets ~1s of separation, so the two gestures stay
+  // distinct.
   unsigned long long_press_ms;
   if (has_combo)
     long_press_ms = (unsigned long)(direction < 0 ? usrConf.rtm_hold_duration_s

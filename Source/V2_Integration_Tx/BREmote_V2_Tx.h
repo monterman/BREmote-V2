@@ -3,9 +3,25 @@
 //   magnet gesture arms: 1=FM (2s), 2=RTM (2s), 3=FM (2s) + RTM (5s). magGestureRole() + MAG_ROLE_*
 //   defines added. bt_enabled is UNCHANGED (still 0-2) — BLE and the optional Hall sensor are
 //   separate concerns and get separate fields.
-//   ⚠ SW_VERSION bump RESETS the TX SPIFFS config to defaultConf on first flash. defaultConf has
-//   NOT been updated with the owner's live tuning — capture his running config and bake it in
-//   BEFORE this is flashed, or his pairing/calibration/throttle/RTM/FM settings are lost.
+//   ⚠ SW_VERSION bump RESETS the TX SPIFFS config to defaultConf on first flash.
+// V2.5-Evo - 2026-07-20 - SW27 defaults bake: defaultConf now carries the owner's live SW26
+//   configuration, captured from COM3 (MAC CCCB517D7850) on 2026-07-20 — pairing addresses,
+//   throttle/toggle calibration, thr_expo, GPS/speed source and the full RTM/FM tuning. The
+//   SW27 first flash therefore restores his setup instead of wiping it. Two deliberate
+//   deviations from the capture: fm_arm_window_s is baked at 180 (not the captured 30 — see
+//   the rationale comment at the field) and mag_mode is baked at 1 (magnet arms FM).
+//   No struct change: sizeof(confStruct) stays 136 and SW_VERSION stays 27.
+//
+// ============================================================
+// ⚠⚠ RELEASE-REVERT REQUIRED BEFORE ANY GITHUB PUSH / GENERAL RELEASE ⚠⚠
+// V2.5-Evo - 2026-07-20 - defaultConf.mag_mode is baked to 1 (magnet arms FM) as a convenience
+// for monterman's OWN device, which has the DRV5032 Hall sensor + magnet fitted. This is NOT a
+// shippable default: not every user has the sensor, and P_MAG (GPIO 9) reads an UNDEFINED state
+// without it, which would let the magnet gesture mis-fire on hardware that was never meant to
+// use it. Set defaultConf.mag_mode back to 0 before pushing to GitHub or cutting a release.
+// (The confStruct FIELD default remains documented as 0 = opt-in; only this device-tuned
+// defaultConf initializer carries the 1.)
+// ============================================================
 // V2.5-Evo - 2026-05-13 - SW50: DISPLAY_MODE_AMP replaces INTBAT; TelemetryPacket +foil_motor_amps byte (index 6); link_quality→index 7
 // V2.5-Evo - 2026-05-13 - SW48: DISP_LOCK/UNLOCK macros; mutex all bare display callers outside renderOperationalDisplay/updateBargraphs
 // V2.5-Evo - 2026-05-13 - SW46: DISPLAY_MODE order — Temp(0)/Thr(1)/Speed(2)/Power(3)/Bat(4)/IntBat(5); THR centre, LEFT=Temp, RIGHT=Speed
@@ -98,8 +114,8 @@
 
 #define SW_VERSION 27  // V2.5-Evo - 2026-07-20: mag_mode added to confStruct (magnet/Hall gesture role);
                        // sizeof 132→136. First flash of SW27 RESETS all TX SPIFFS settings to defaultConf.
-                       // ⚠ defaultConf has NOT yet been updated with the owner's live tuning — see the
-                       // header block at the top of this file before flashing.
+                       // defaultConf was baked from the owner's live SW26 capture on 2026-07-20, so the
+                       // reset is lossless — see the defaultConf header block before changing any default.
                        // V2.5-Evo - 2026-04-29: sleep_timeout_s added to confStruct; first
                        // flash resets all TX SPIFFS settings to defaults — re-configure via WebUI
 const char* CONF_FILE_PATH = "/data.txt";
@@ -202,7 +218,7 @@ struct confStruct {
     // After flashing: re-pair TX/RX, re-enter all settings via web UI.
     // ============================================================
     uint16_t rtm_enabled;              // RTM master enable; 0=off, 1=on; default 1
-    uint16_t rtm_hold_duration_s;      // LEFT hold time to arm RTM; 4-10 s; default 5
+    uint16_t rtm_hold_duration_s;      // LEFT hold time to arm RTM; 3-10 s (floor lowered 4→3 2026-07-20); default 5
     uint16_t rtm_arm_window_s;         // Window to engage throttle after arming; 5-30 s; default 10
     uint16_t rtm_double_squeeze_en;    // Require double-squeeze (1) or 500ms hold (0); default 1
     uint16_t rtm_throttle_start_pct;   // Initial throttle cap when RTM engages; 10-50 %; default 30
@@ -211,7 +227,7 @@ struct confStruct {
     uint16_t rtm_disengage_distance_m; // Distance from TX at which RTM disengages (hard stop); 3-20 m; default 10
     uint16_t rtm_max_runtime_s;        // Maximum continuous RTM runtime; 30-300 s; default 120
     uint16_t rtm_gps_timeout_ms;       // TX GPS loss timeout before safety stop; 500-3000 ms; default 2000
-    uint16_t fm_hold_duration_s;       // RIGHT hold time for FM mode cycle; 4-10 s; default 5
+    uint16_t fm_hold_duration_s;       // RIGHT hold time for FM mode cycle; 3-10 s (floor lowered 4→3 2026-07-20); default 5
     uint16_t fm_override_enabled;      // Allow TX to override RX follow-me mode; 0=off, 1=on; default 1
 
     // ============================================================
@@ -306,41 +322,68 @@ static inline uint8_t magGestureRole()
   }
 }
 
+// ============================================================
+// V2.5-Evo - 2026-07-20 - SW27: defaults BAKED from the owner's live TX capture
+// (COM3, MAC CCCB517D7850, SW26, captured 2026-07-20).
+//
+// WHY: the SW26→SW27 bump changes sizeof(confStruct) 132→136, so the first flash
+// of SW27 discards the SPIFFS config and writes defaultConf verbatim. Whatever is
+// in this initializer is exactly what the owner ends up running. Before this bake,
+// defaultConf still held stale factory-ish values, so flashing SW27 would have
+// silently destroyed his pairing addresses, throttle/toggle calibration, throttle
+// expo and his whole RTM/FM tuning — none of which are recoverable without
+// re-running calibration by hand on the beach.
+//
+// The captured SW26 base64 blob is NOT a migration path: it is a 132-byte layout
+// and cannot be restored with ?setconf onto a 136-byte build. Baking here IS the
+// migration.
+//
+// ⚠ POSITIONAL INITIALIZER — the order below is confStruct declaration order.
+// Inserting, removing or transposing a single entry silently shifts every value
+// after it (corrupt calibration, wrong LoRa address) with NO compile error.
+// If you add a struct field, add its initializer entry at the MATCHING position.
+// ============================================================
 confStruct defaultConf = {  // V2.5-Evo default configuration — tuned for monterman hardware
-  SW_VERSION,    // version (26)
+  SW_VERSION,    // version (27 — always SW_VERSION, never a hardcoded number)
   2,             // radio_preset (US 915MHz)
-  20,            // rf_power (20)
+  22,            // rf_power (22 — live capture; was 20)
+  // --- TX CALIBRATION BLOCK — device-specific raw ADC endpoints, from the
+  // 2026-07-20 live capture of MAC CCCB517D7850. These are the throttle and
+  // toggle travel limits measured on THIS remote's Hall sensors; they are not
+  // generic defaults. If they are wrong, the owner must re-run throttle + toggle
+  // calibration on the device to recover them. Do not "tidy" or round these.
   1,             // cal_ok
   100,           // cal_offset
-  15195,         // thr_idle
-  11909,         // thr_pull
-  12310,         // tog_left (swapped vs factory default — matches monterman hardware)
-  13806,         // tog_mid
-  14908,         // tog_right (swapped vs factory default — matches monterman hardware)
+  15263,         // thr_idle   (live capture; was 15195)
+  11670,         // thr_pull   (live capture; was 11909)
+  14929,         // tog_left   (live capture; was 12310)
+  13683,         // tog_mid    (live capture; was 13806)
+  12370,         // tog_right  (live capture; was 14908)
+  // --- end calibration block ---
   500,           // tog_deadzone
   30,            // tog_diff
   200,           // tog_block_time   (wait to finish steering before Dynamic Throttle /was 500 5 secs)
   3500,          // trig_unlock_timeout
   2000,          // lock_waittime
-  100,           // gear_change_waittime
-  1000,          // gear_display_time
-  10,            // menu_timeout
+  80,            // gear_change_waittime (live capture; was 100)
+  800,           // gear_display_time (live capture; was 1000)
+  2,             // menu_timeout (live capture; was 10)
   2000,          // err_delete_time
   0,             // no_lock
   2,             // throttle_mode
   6,             // max_gears
   0,             // startgear
   1,             // steer_enabled
-  100,           // thr_expo
-  1,             // fm_display_mode (1=TX speed default; old configs had 0 here — ConfigService min:1 auto-corrects to 1)
+  70,            // thr_expo (live capture; was 100 = linear)
+  2,             // fm_display_mode (live capture 14:30: 2 = distance to buggy; was 1 = TX speed)
   50,            // steer_expo
   0,             // steer_expo1
   0.000185662f,  // ubat_cal
-  0,             // gps_en — V2.5-Evo: default off; opt in via web config (claiming Serial1 on every device is wrong)
+  1,             // gps_en (live capture: TX GPS in use; was 0)
   1,             // followme_mode
   1,             // kalman_en
-  0,             // speed_src — V2.5-Evo: default RX km/h; TX GPS source requires explicit opt-in
-  2000,          // tx_gps_stale_timeout_ms
+  5,             // speed_src (live capture: 5 = TX mph; was 0 = RX km/h)
+  3000,          // tx_gps_stale_timeout_ms (live capture; was 2000)
   1,             // paired
   {0x46, 0xCB, 0xCC}, // own_address (Hex formatted)
   {0x46, 0xC9, 0xE0}, // dest_address (Hex formatted)
@@ -353,31 +396,47 @@ confStruct defaultConf = {  // V2.5-Evo default configuration — tuned for mont
   0,             // gps_chip_type (0=BN-220 default; old configs → decodedLen check fails → defaults written)
   // V2.5-Evo - 2026-04-25 - Priority 7 RTM/FM defaults
   1,    // rtm_enabled
-  5,    // rtm_hold_duration_s
-  10,   // rtm_arm_window_s
-  1,    // rtm_double_squeeze_en
+  3,    // rtm_hold_duration_s (owner's choice 2026-07-20; range floor lowered 4→3 this change; 3 = at floor)
+  15,   // rtm_arm_window_s (live capture 14:30; was 10)
+  0,    // rtm_double_squeeze_en (live capture: 0 = 500ms hold, not double-squeeze; was 1)
   30,   // rtm_throttle_start_pct
   70,   // rtm_throttle_max_pct
   5,    // rtm_ramp_duration_s
-  10,   // rtm_disengage_distance_m
+  4,    // rtm_disengage_distance_m (live capture; was 10)
   0,    // rtm_max_runtime_s (0=disabled — safety gates handle all real scenarios; P8 changed from 120)
   2000, // rtm_gps_timeout_ms
-  5,    // fm_hold_duration_s
+  3,    // fm_hold_duration_s (owner's choice 2026-07-20; range floor lowered 4→3 this change; 3 = at floor)
   1,    // fm_override_enabled
   // V2.5-Evo - 2026-04-27 - Priority 8 UX overhaul defaults
   0,    // rtm_display_mode (0=distance; set 1 for speed, 2 for alternating)
   150,  // fm_warn_distance_m (150m FM proximity warning threshold)
   1,    // rtm_steer_exit_on_input (1=steering exits RTM; 0=blend only)
   // V2.5-Evo - 2026-04-27 - Priority 8.1 FM UX redesign defaults
-  30,   // fm_arm_window_s (30s before auto-disarm if no throttle input)
+  // V2.5-Evo - 2026-07-20 - SW27: fm_arm_window_s baked at 180 s (3 minutes).
+  // THE FLOOR IS LOAD-BEARING — do not "tidy" this back down to the old 30s default.
+  // Reason: the toggle doubles as the steering control on the throttle, so FM must be
+  // armed while the rider is still floating, before he is holding steering. The armed
+  // window then has to survive the whole sequence float → takeoff → tow → whip, and at
+  // 30s it expires mid-sequence, silently disarming FM before it is ever useful.
+  // The exact value is the owner's PREFERENCE, not a derived number: units are seconds,
+  // the validated range is 10-600 (10 s to 10 minutes), and he chose 180 = 3 minutes.
+  // (His 60 in the 14:30 JSON export was interim — picked while SW26 still clamped the
+  // max at 120. With the ceiling now 600 he settled on 180.) Tune freely above the
+  // floor; just never drop it back toward 30.
+  180,  // fm_arm_window_s (180s = 3 min before auto-disarm if no throttle input; range 10-600)
   0,    // dist_unit (0 = Metres)
   // V2.5-Evo - 2026-04-29 - sleep timeout default
   300,  // sleep_timeout_s — 300s = 5 minutes; set to 0 to disable
-  1,    // bt_enabled: 1=Hall/session (new installs). Old SPIFFS reads 0=off here (safe; set to 1 via web UI to enable).
-  // V2.5-Evo - 2026-07-20 - MagGesture: mag_mode default 0 = OFF / Hall sensor not fitted.
-  // The DRV5032 on GPIO 9 is optional extra hardware, so the gesture is opt-in: a remote
-  // without a magnet sensor sees no behaviour change at all. Set 1/2/3 via the web UI.
-  0,    // mag_mode
+  2,    // bt_enabled (live capture: 2 = BLE always on; was 1 = Hall/session)
+  // V2.5-Evo - 2026-07-20 - MagGesture: the FIELD default is documented as 0 = OFF / Hall
+  // sensor not fitted (see the mag_mode field comment in confStruct) — the general, optional-
+  // hardware case, where the gesture must stay opt-in because a remote with no DRV5032 on
+  // GPIO 9 has undefined P_MAG state.
+  // HERE, in monterman's device-tuned defaultConf, it is baked to 1 = magnet arms FM: the
+  // owner has the DRV5032 Hall fitted and wants magnet<2s-hold FM arming live on first flash
+  // (RTM stays toggle-only in mode 1). ⚠ See the RELEASE-REVERT note in the file header block:
+  // this 1 MUST return to 0 before any GitHub push / general release.
+  1,    // mag_mode (device-tuned: 1 = magnet arms FM; general/release default is 0)
 };
 
 

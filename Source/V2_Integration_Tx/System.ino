@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-07-20 - MagGesture: vibration Patterns 5 and 6 added — 5 = one 150ms pulse (magnet 2s "release for FM" advisory);
+//   6 = three 80ms pulses (magnet 5s "release for RTM" advisory). Pattern 6 exists so the RTM advisory is not
+//   confused with the Pattern 4 arm confirm that follows it. Feel map: 1→2 = FM armed, 3→2 = RTM armed.
 // V2.5-Evo - 2026-05-06 - DIAG: ?gpscoldreset command added
 // V2.5-Evo - 2026-05-06 - FIX-HELP-1: corrected raw-GPS-dump help text from "type q to quit" to "type 'quit' to abort"
 // V2.5-Evo - 2026-05-03 - Added reserved/warning comments (LOW audit cleanup)
@@ -746,7 +749,7 @@ void checkCharger()
   setBrightness(0x0F);
 }
 
-volatile uint8_t current_vib_pattern = 0;  // active haptic pattern: 0=none, 1=2 short, 2=5 short, 3=5 long, 4=2 fast short (RTM arm/disarm)
+volatile uint8_t current_vib_pattern = 0;  // active haptic pattern: 0=none, 1=2 short, 2=5 short, 3=5 long, 4=2 fast short (RTM/FM arm/disarm confirm), 5=1 short (magnet 2s "release for FM" advisory), 6=3 fast short (magnet 5s "release for RTM" advisory)
 
 void vibrationTask(void *parameter) {
   uint8_t last_error = 0;
@@ -844,6 +847,30 @@ void vibrationTask(void *parameter) {
     // V2.5-Evo - 2026-04-27 - P8: Pattern 4 — 2 fast short pulses (RTM arm/disarm confirm)
     else if (current_vib_pattern == 4) {
       for (int i = 0; i < 2; i++) {
+        digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(80));
+        digitalWrite(P_MOT, LOW);  vTaskDelay(pdMS_TO_TICKS(80));
+      }
+      current_vib_pattern = 0;
+    }
+    // V2.5-Evo - 2026-07-20 - MagGesture: Pattern 5 — ONE short pulse.
+    // Used only as the magnet-gesture 2s advisory ("release the magnet now and FM will arm").
+    // Deliberately a single pulse so it cannot be confused by feel with Pattern 4 (two pulses),
+    // which is the 5s RTM advisory and every arm/disarm confirm. 150ms matches the "short"
+    // pulse length already used by Patterns A and B.
+    else if (current_vib_pattern == 5) {
+      digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(150));
+      digitalWrite(P_MOT, LOW);
+      current_vib_pattern = 0;
+    }
+    // V2.5-Evo - 2026-07-20 - MagGesture: Pattern 6 — THREE short pulses.
+    // Used only as the magnet-gesture 5s advisory ("release the magnet now and RTM will arm").
+    // Why this is not Pattern 4: the RTM arm confirm fired by setRtmArmed() is itself Pattern 4,
+    // so reusing it would give the rider two identical double-buzzes separated only by the
+    // release — indistinguishable by feel. Three pulses makes both tiers unambiguous:
+    //   1 pulse then 2 = FM armed;  3 pulses then 2 = RTM armed.
+    // 80ms on/off matches Pattern 4's cadence so it reads as the same family of "fast" buzz.
+    else if (current_vib_pattern == 6) {
+      for (int i = 0; i < 3; i++) {
         digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(80));
         digitalWrite(P_MOT, LOW);  vTaskDelay(pdMS_TO_TICKS(80));
       }

@@ -1,3 +1,11 @@
+// V2.5-Evo - 2026-07-20 - MagGesture: SW_VERSION 26 → 27; sizeof(confStruct) 132 → 136 (2 bytes are alignment tail padding).
+//   New TX field mag_mode (uint16_t, 0-3, default 0 = off / Hall sensor not fitted) selects what the
+//   magnet gesture arms: 1=FM (2s), 2=RTM (2s), 3=FM (2s) + RTM (5s). magGestureRole() + MAG_ROLE_*
+//   defines added. bt_enabled is UNCHANGED (still 0-2) — BLE and the optional Hall sensor are
+//   separate concerns and get separate fields.
+//   ⚠ SW_VERSION bump RESETS the TX SPIFFS config to defaultConf on first flash. defaultConf has
+//   NOT been updated with the owner's live tuning — capture his running config and bake it in
+//   BEFORE this is flashed, or his pairing/calibration/throttle/RTM/FM settings are lost.
 // V2.5-Evo - 2026-05-13 - SW50: DISPLAY_MODE_AMP replaces INTBAT; TelemetryPacket +foil_motor_amps byte (index 6); link_quality→index 7
 // V2.5-Evo - 2026-05-13 - SW48: DISP_LOCK/UNLOCK macros; mutex all bare display callers outside renderOperationalDisplay/updateBargraphs
 // V2.5-Evo - 2026-05-13 - SW46: DISPLAY_MODE order — Temp(0)/Thr(1)/Speed(2)/Power(3)/Bat(4)/IntBat(5); THR centre, LEFT=Temp, RIGHT=Speed
@@ -88,7 +96,11 @@
 #include <WebServer.h>
 #endif
 
-#define SW_VERSION 26  // V2.5-Evo - 2026-04-29: sleep_timeout_s added to confStruct; first
+#define SW_VERSION 27  // V2.5-Evo - 2026-07-20: mag_mode added to confStruct (magnet/Hall gesture role);
+                       // sizeof 132→136. First flash of SW27 RESETS all TX SPIFFS settings to defaultConf.
+                       // ⚠ defaultConf has NOT yet been updated with the owner's live tuning — see the
+                       // header block at the top of this file before flashing.
+                       // V2.5-Evo - 2026-04-29: sleep_timeout_s added to confStruct; first
                        // flash resets all TX SPIFFS settings to defaults — re-configure via WebUI
 const char* CONF_FILE_PATH = "/data.txt";
 
@@ -243,10 +255,57 @@ struct confStruct {
     // sleep_timeout_s. sizeof stays 132. SW_VERSION stays 26 — no SPIFFS reset on first flash.
     // Existing configs read 0 here (padding was zero) = BLE off until set via web UI.
     uint16_t bt_enabled;       // BLE mode: 0=always off, 1=Hall/session (default), 2=always on
+    // ============================================================
+    // V2.5-Evo - 2026-07-20 - MagGesture: SW_VERSION 26 → 27, sizeof(confStruct) 132 → 136.
+    // ============================================================
+    // Magnet/Hall gesture role. Selects what the magnet gesture arms when a magnet is held
+    // against the case and then removed. Deliberately a SEPARATE field from bt_enabled:
+    // BLE and the Hall sensor are independent concerns, and the DRV5032 on GPIO 9 is
+    // OPTIONAL EXTRA HARDWARE that many remotes will never have fitted.
+    //
+    //   0 = off / sensor not fitted (DEFAULT — feature is opt-in; Hall behaves exactly as
+    //       it did before this feature existed, i.e. BT dot only)
+    //   1 = magnet arms FM   (single 2s threshold — one buzz at 2s, arms on removal)
+    //   2 = magnet arms RTM  (single 2s threshold — one buzz at 2s, arms on removal)
+    //   3 = magnet arms FM at 2s / RTM at 5s (full two-tier gesture; the tier is decided
+    //       by how long the magnet was held, and arming fires on REMOVAL)
+    //
+    // Valid range 0-3; default 0. Implemented by runMagGesture() in Hall.ino.
+    uint16_t mag_mode;         // magnet/Hall gesture role; 0-3; default 0 (off / not fitted)
 };
 
-static_assert(sizeof(confStruct) == 132, "confStruct size mismatch — expected 132 bytes (V2.5-Evo sleep_timeout_s + bt_enabled fills tail padding). Update this assert if you change the struct.");  // pinned to exact size; catches both shrinkage and unexpected growth
+// V2.5-Evo - 2026-07-20 - MagGesture: 132 → 136. mag_mode is a uint16_t (+2 bytes = 134), but the
+// struct's alignment is 4 (it contains uint32_t/float members), so the compiler pads the tail back
+// out to 136. Those 2 trailing padding bytes are the slot a future uint16_t field can occupy for
+// free — exactly how bt_enabled was added at SW26 without changing sizeof.
+static_assert(sizeof(confStruct) == 136, "confStruct size mismatch — expected 136 bytes (V2.5-Evo sleep_timeout_s + bt_enabled + mag_mode + 2 tail padding). Update this assert if you change the struct.");  // pinned to exact size; catches both shrinkage and unexpected growth
 confStruct usrConf;
+
+// ============================================================
+// V2.5-Evo - 2026-07-20 - MagGesture: mag_mode role decoding
+// Single source of truth for what the magnet gesture arms.
+// See the mag_mode field comment above for the mode table.
+// ============================================================
+#define MAG_ROLE_NONE  0   // magnet gesture dormant; Hall behaves exactly as it did pre-gesture
+#define MAG_ROLE_FM    1   // single 2s threshold arms FM
+#define MAG_ROLE_RTM   2   // single 2s threshold arms RTM
+#define MAG_ROLE_BOTH  3   // two-tier: 2s → FM, 5s → RTM
+
+// Returns what the magnet gesture should arm for the current mag_mode value.
+// Inputs: usrConf.mag_mode (0-3). Output: MAG_ROLE_NONE / _FM / _RTM / _BOTH.
+// No side effects. Mode 0 and anything out of range return NONE, so the gesture stays
+// completely dormant for remotes with no Hall sensor fitted (the default).
+static inline uint8_t magGestureRole()
+{
+  switch (usrConf.mag_mode)
+  {
+    case 1:  return MAG_ROLE_FM;
+    case 2:  return MAG_ROLE_RTM;
+    case 3:  return MAG_ROLE_BOTH;
+    default: return MAG_ROLE_NONE;
+  }
+}
+
 confStruct defaultConf = {  // V2.5-Evo default configuration — tuned for monterman hardware
   SW_VERSION,    // version (26)
   2,             // radio_preset (US 915MHz)
@@ -315,6 +374,10 @@ confStruct defaultConf = {  // V2.5-Evo default configuration — tuned for mont
   // V2.5-Evo - 2026-04-29 - sleep timeout default
   300,  // sleep_timeout_s — 300s = 5 minutes; set to 0 to disable
   1,    // bt_enabled: 1=Hall/session (new installs). Old SPIFFS reads 0=off here (safe; set to 1 via web UI to enable).
+  // V2.5-Evo - 2026-07-20 - MagGesture: mag_mode default 0 = OFF / Hall sensor not fitted.
+  // The DRV5032 on GPIO 9 is optional extra hardware, so the gesture is opt-in: a remote
+  // without a magnet sensor sees no behaviour change at all. Set 1/2/3 via the web UI.
+  0,    // mag_mode
 };
 
 

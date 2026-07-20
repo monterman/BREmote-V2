@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-07-20 - MagGesture: runMagGesture() called from loop() after the SW33b Hall block; prototype added
 // *** LATEST: V2.5-Evo - 2026-05-15 - feature/bluetooth Tier 1: NUS skeleton (BLE.ino); bt_enabled SPIFFS field; boot gesture; bleInitTask 5s delayed ***
 // V2.5-Evo - 2026-05-14 - SW55 — bootAnimation VI 250ms / voltage 1450ms; padlock at ~4.5s total boot
 // V2.5-Evo - 2026-05-13 - SW33: Removed GPIO 9 from serialOff OUTPUT-LOW block (P_MAG reserved for DRV5032 Hall sensor)
@@ -22,6 +23,7 @@ void initWatchdog();
 // Loop & System Functions
 void serPrintPackets(bool json);
 void runMenu();
+void runMagGesture();   // magnet/Hall arm gesture (defined in Hall.ino) — loop()-only, may block
 void renderOperationalDisplay();
 void showFullScreenMessage(const char* msg, uint16_t duration_ms);
 void deepSleep();
@@ -201,6 +203,12 @@ void loop()
       mag_was_low = mag_low;
     }
   }
+
+  // V2.5-Evo - 2026-07-20 - MagGesture: magnet arm gesture. Runs AFTER the SW33b block above
+  // so it sees an up-to-date mag_seen_high. It only reads P_MAG and mag_seen_high — it never
+  // writes bt_dot_state, so the BT status dot behaves exactly as before.
+  // Called from loop() (not a task) because it can call the blocking RTM/FM arm entry points.
+  runMagGesture();
 
   checkSerial();
   // V2.5-Evo - 2026-06-04 - BLE per-loop calls guarded by BLE_ENABLED (BREmote_V2_Tx.h).

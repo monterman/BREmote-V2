@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-07-20 - MagGesture: magnet/Hall arm gesture (runMagGesture()) added — hold magnet
+//   >=2s <5s then REMOVE = arm FM; hold >=5s then REMOVE = arm RTM. Advisory buzz at each threshold.
+//   Arm-only: no-op if FM/RTM already armed. Reads P_MAG without touching the SW33b bt_dot_state machine.
+//   Role selected by the new mag_mode SPIFFS field (0=off/not fitted default, 1=FM, 2=RTM, 3=FM+RTM).
 // V2.5-Evo - 2026-05-16 - SW56: stop WiFi AP synchronously before unlockAnimation() — AP was running during frames, WiFi stack tasks preempted Core 0 causing last-frame stutter on first boot unlock only
 // V2.5-Evo - 2026-07-18 - Arm-hold now SPIFFS-tunable: combo hold reads rtm_hold_duration_s (RTM LEFT-hold) / fm_hold_duration_s (FM RIGHT-hold) instead of a hardcoded 5000ms. Both 4-10s (ConfigService-clamped). No struct/SW_VERSION change.
 // V2.5-Evo - 2026-04-25 - P7: handleGearToggle() left-hold arms RTM; right-hold cycles FM
@@ -384,6 +388,271 @@ void handleGearToggle(int direction)
       delay(10);
     }
     in_menu = usrConf.menu_timeout;
+  }
+}
+
+// ============================================================
+// V2.5-Evo - 2026-07-20 - MAGNET (HALL) ARM GESTURE
+//
+// WHAT IT DOES
+//   Lets the rider arm Follow-Me or Return-To-Me by holding a magnet against the
+//   potted case and then taking it away. Faster and more reliable in the water than
+//   the tap+hold toggle combos, and it works through the sealed housing.
+//
+//   What the gesture arms is user-selectable via the mag_mode SPIFFS field (0-3).
+//   magGestureRole() decodes it; see the mode table on mag_mode in BREmote_V2_Tx.h.
+//   The Hall sensor is OPTIONAL EXTRA HARDWARE, so mag_mode defaults to 0 (off).
+//
+//   MAG_ROLE_BOTH (mag_mode 3) — the full two-tier gesture:
+//     Magnet held        Feedback while holding          On magnet REMOVAL
+//     -----------        ----------------------          -----------------
+//     < 2s               none                            nothing (accident guard)
+//     >= 2s and < 5s     ONE pulse at 2s   (Pattern 5)   arm FM   (cycleFmMode())
+//     >= 5s              THREE pulses at 5s (Pattern 6)  arm RTM  (setRtmArmed())
+//
+//   Haptic feel map — the advisory and the confirm that follows it are always different,
+//   so the rider can tell from the buzz alone which mode they just armed:
+//     1 pulse  then 2 fast (Pattern 4) = FM armed
+//     3 pulses then 2 fast (Pattern 4) = RTM armed
+//
+//   MAG_ROLE_FM (mag_mode 1) / MAG_ROLE_RTM (mag_mode 2) — single-tier. There is no second
+//   tier to disambiguate, so the 2s threshold is the only one: one pulse (Pattern 5) at 2s,
+//   arm that one mode on release. The 5s threshold is not used in these roles.
+//
+//   MAG_ROLE_NONE (mag_mode 0, the default) — dormant. The function returns immediately
+//   and the Hall sensor behaves exactly as it did before this feature existed.
+//
+// WHY THE ACTION FIRES ON REMOVAL, NOT ON THE THRESHOLD
+//   A 5s RTM hold necessarily passes through the 2s FM threshold on its way. If FM
+//   armed at the 2s mark, the rider would get an FM arm they never asked for, and RTM
+//   would then have to preempt it a few seconds later. So the 2s / 5s buzzes are purely
+//   advisory — they mean "let go now and you will get X". The arming happens only when
+//   the magnet actually leaves.
+//
+// ARM ONLY (v1)
+//   If FM or RTM is already armed/active, the gesture is a deliberate no-op. cycleFmMode()
+//   is a toggle: calling it while armed would cycle the mode or disarm instead of arming.
+//   Disarming stays on its existing paths (toggle combo, F0 cycle, arm-window expiry,
+//   RTM preemption).
+//
+// ARMING WHILE ON THE THROTTLE IS INTENTIONAL
+//   Unlike the toggle combos, this gesture does NOT require a released throttle. The approved
+//   FM design has the rider arm during the tow, while on the trigger — the toggle physically
+//   cannot do that (it doubles as the steering control whenever thr_scaled > 3), which is a
+//   large part of why this gesture exists. Arming only declares intent; it moves nothing.
+//   FM and RTM each still enforce all of their own conditions, and neither can produce motion
+//   without a held trigger. See the guard block in the removal branch below.
+//
+// HOW THIS AVOIDS DISTURBING THE BT STATUS DOT
+//   The SW33b block in V2_Integration_Tx.ino loop() owns bt_dot_state and owns setting
+//   mag_seen_high. This function only ever READS digitalRead(P_MAG) and mag_seen_high.
+//   It keeps its own private debounce/timer state and writes nothing the dot machine uses,
+//   so the dot behaves exactly as before.
+//
+// INPUTS:  P_MAG (GPIO 9, DRV5032FADBZR, LOW = magnet present), mag_seen_high boot guard
+// OUTPUTS: none (void)
+// SIDE EFFECTS: may call cycleFmMode() or setRtmArmed(), both of which BLOCK for several
+//   seconds (display confirms / squeeze ceremony), and may fire current_vib_pattern.
+//   MUST therefore be called from loop() only — never from a FreeRTOS task.
+// ============================================================
+
+// current_vib_pattern is defined in System.ino, which the Arduino build concatenates
+// AFTER Hall.ino, so it needs an extern here.
+extern volatile uint8_t current_vib_pattern;
+// rtmIsArming() is defined in RTMState.ino (also concatenated after this file).
+bool rtmIsArming();
+
+// ---- Gesture timing constants (compile-time only — deliberately NOT SPIFFS fields, no confStruct change) ----
+static const uint32_t kMagFmHoldMs   = 2000UL;   // hold >= this and release before kMagRtmHoldMs → arm FM
+static const uint32_t kMagRtmHoldMs  = 5000UL;   // hold >= this → arm RTM on release
+// Software debounce on top of the DRV5032's own hysteresis. A marginal magnet position can
+// still flutter the pin; the level must read the same for this long before it is accepted.
+// 120ms is well under the 2000ms shortest meaningful hold, so it cannot mask a real gesture.
+static const uint32_t kMagDebounceMs = 120UL;
+static const uint32_t kMagPollMs     = 20UL;     // sampling interval — matches the SW33b dot poll rate
+// Parked-magnet guard: if the magnet stays present longer than this, the rider is not making
+// a gesture — the remote is stowed against something magnetic. The gesture is abandoned and
+// removal does nothing. Without this, un-stowing the remote hours later would arm RTM.
+static const uint32_t kMagMaxHoldMs  = 30000UL;
+
+// ---- Called from loop() every cycle; self-rate-limits to kMagPollMs ----
+void runMagGesture()
+{
+  // Private debounce + timing state. Kept separate from the SW33b dot machine's state
+  // so the two never interfere.
+  static uint32_t mag_next_poll_ms = 0;   // next millis() at which we sample the pin
+  static bool     mag_raw_last     = false;  // previous raw sample (true = magnet present)
+  static uint32_t mag_raw_since    = 0;   // millis() when the current raw run started
+  static bool     mag_stable_low   = false;  // debounced level (true = magnet present)
+  static uint32_t mag_hold_start   = 0;   // millis() of the accepted magnet-arrival edge
+  static bool     fm_advised       = false;  // 2s advisory buzz already fired this hold
+  static bool     rtm_advised      = false;  // 5s advisory buzz already fired this hold
+  static bool     hold_abandoned   = false;  // parked-magnet guard tripped this hold
+
+  // Role gate. With mag_mode == 0 (the default — no Hall sensor fitted) the gesture does not
+  // exist: bail out before touching any state, so the Hall behaves exactly as it did before
+  // this feature was added and a user without the optional magnet sees zero change.
+  // Re-read every call (not cached) so a live web-UI config change takes effect immediately.
+  uint8_t role = magGestureRole();
+  if (role == MAG_ROLE_NONE)
+  {
+    // Reset state so switching roles mid-session cannot inherit a half-finished hold.
+    mag_raw_last   = false;
+    mag_stable_low = false;
+    hold_abandoned = false;
+    return;
+  }
+
+  uint32_t now = millis();
+  if ((int32_t)(now - mag_next_poll_ms) < 0) return;
+  mag_next_poll_ms = now + kMagPollMs;
+
+  // Boot guard (SW33): until GPIO 9 has been seen HIGH at least once since power-up we cannot
+  // tell "rider is holding a magnet" from "a magnet was already sitting there when it booted".
+  // mag_seen_high is set by the bt_dot_state block in loop(); we only read it.
+  if (!mag_seen_high)
+  {
+    mag_raw_last   = false;
+    mag_stable_low = false;
+    return;
+  }
+
+  // ---- Debounce: a level must persist for kMagDebounceMs before it is accepted ----
+  bool raw_low = (digitalRead(P_MAG) == LOW);   // LOW = magnet present
+  if (raw_low != mag_raw_last)
+  {
+    mag_raw_last  = raw_low;
+    mag_raw_since = now;   // start timing this new run
+  }
+
+  bool edge_accepted = false;
+  if (raw_low != mag_stable_low && (now - mag_raw_since) >= kMagDebounceMs)
+  {
+    mag_stable_low = raw_low;
+    edge_accepted  = true;
+  }
+
+  // ---- Magnet arrived: start timing the hold ----
+  // The hold clock is set to mag_raw_since (the real electrical edge), not to now, so the
+  // debounce window is not silently subtracted from the rider's 2s / 5s hold.
+  if (edge_accepted && mag_stable_low)
+  {
+    mag_hold_start = mag_raw_since;
+    fm_advised     = false;
+    rtm_advised    = false;
+    hold_abandoned = false;
+    return;
+  }
+
+  // ---- Magnet present: fire the advisory buzzes as each threshold is crossed ----
+  if (mag_stable_low && !hold_abandoned)
+  {
+    uint32_t held = now - mag_hold_start;
+
+    if (held >= kMagMaxHoldMs)
+    {
+      // Parked magnet — abandon this hold entirely; removal will do nothing.
+      hold_abandoned = true;
+      return;
+    }
+    // Advisories are ONLY hints about what removal would do. They arm nothing.
+    // Guarded on current_vib_pattern == 0 so an advisory never stomps a warning
+    // pattern (signal drop, low battery, E71) that is already playing.
+    // The 5s tier exists only in MAG_ROLE_BOTH; the single-role modes stop at 2s.
+    if (role == MAG_ROLE_BOTH && !rtm_advised && held >= kMagRtmHoldMs)
+    {
+      rtm_advised = true;
+      // Pattern 6 = three fast buzzes = "release for RTM". Deliberately NOT Pattern 4:
+      // Pattern 4 is the arm confirm that setRtmArmed() fires moments later, and two
+      // identical double-buzzes back to back are indistinguishable by feel.
+      if (current_vib_pattern == 0) current_vib_pattern = 6;
+    }
+    else if (!fm_advised && held >= kMagFmHoldMs)
+    {
+      fm_advised = true;
+      // One short buzz = "release now". In MAG_ROLE_BOTH that means FM; in the
+      // single-role modes it means whichever mode this remote is configured for.
+      if (current_vib_pattern == 0) current_vib_pattern = 5;
+    }
+    return;
+  }
+
+  // ---- Magnet removed: this is where the arming actually happens ----
+  if (edge_accepted && !mag_stable_low)
+  {
+    // Duration is measured to mag_raw_since (the real departure edge) for the same reason
+    // the arrival edge is used above.
+    uint32_t held = mag_raw_since - mag_hold_start;
+    bool     was_abandoned = hold_abandoned;
+
+    // Clear per-hold state before doing anything blocking.
+    fm_advised     = false;
+    rtm_advised    = false;
+    hold_abandoned = false;
+
+    if (was_abandoned) return;          // parked-magnet guard tripped
+    if (held < kMagFmHoldMs) return;    // accident guard — too short to mean anything
+
+    // ---- Common preconditions: states in which no arm gesture should be honoured at all ----
+    if (system_locked) return;                      // remote locked — no arming from a stowed remote
+    if (in_setup) return;                           // mid-calibration / setup
+    if (remote_error && !remote_error_blocked) return;  // unacknowledged error on screen
+
+    // NOTE — deliberately NO throttle-released check here, unlike handleGearToggle().
+    // handleGearToggle() requires thr_scaled < 10 because the toggle IS the steering control
+    // whenever the rider is on the trigger (see calcFilter(): thr_scaled > 3 sets
+    // toggle_blocked_by_steer). That guard resolves an INPUT CONFLICT on the toggle; it is not
+    // a safety rule. The magnet is an independent input with no such conflict, so the check
+    // does not transfer.
+    // It also must not transfer: the approved FM design has the rider arm DURING the tow, i.e.
+    // while on throttle — something the toggle physically cannot do. Requiring a released
+    // throttle here would remove the one capability that justifies this gesture existing.
+    // Safety is unaffected: arming only DECLARES INTENT. It moves nothing. FM and RTM each
+    // still require every one of their own conditions plus a held trigger before any motion.
+
+    // ---- Decide which mode this hold asked for ----
+    // MAG_ROLE_BOTH is the only two-tier role: >=5s means RTM, otherwise FM.
+    // The single-role modes have one threshold (2s, already checked above), so the
+    // hold length beyond 2s is irrelevant — they always arm their one configured mode.
+    bool want_rtm;
+    if (role == MAG_ROLE_BOTH)      want_rtm = (held >= kMagRtmHoldMs);
+    else if (role == MAG_ROLE_RTM)  want_rtm = true;
+    else                            want_rtm = false;   // MAG_ROLE_FM
+
+    if (want_rtm)
+    {
+      // ---- arm RTM ----
+      // ARM ONLY: skip if RTM is already active or mid-ceremony.
+      if (rtm_tx_active || rtmIsArming()) return;
+      if (usrConf.rtm_enabled && usrConf.gps_en)
+      {
+        // setRtmArmed() is only the gesture half of RTM arming: it disarms FM (mutual
+        // exclusion), sets RTM_ARMED, zeroes rtm_thr_cap_tx, then runs the blocking
+        // runDoubleSqueezeArm() throttle-squeeze ceremony — exactly as the toggle path does.
+        setRtmArmed();
+      }
+    }
+    else
+    {
+      // ---- arm FM ----
+      // ARM ONLY: cycleFmMode() is a toggle. Calling it while FM is armed would cycle the
+      // mode or disarm; calling it while RTM runs would fight the mutual-exclusion rule.
+      if (isFmArmed() || rtm_tx_active || rtmIsArming()) return;
+      if (usrConf.fm_override_enabled && usrConf.gps_en)
+      {
+        cycleFmMode();
+      }
+    }
+
+    // setRtmArmed() / cycleFmMode() block for seconds. The magnet may have been re-applied
+    // in the meantime, so resynchronise the debounce state to the pin as it is right now.
+    // A new gesture then requires a fresh, fully debounced magnet-arrival edge.
+    mag_raw_last     = (digitalRead(P_MAG) == LOW);
+    mag_stable_low   = mag_raw_last;
+    mag_raw_since    = millis();
+    mag_hold_start   = millis();
+    hold_abandoned   = mag_stable_low;  // magnet still there on return → treat as parked, not a new gesture
+    mag_next_poll_ms = millis() + kMagPollMs;
   }
 }
 

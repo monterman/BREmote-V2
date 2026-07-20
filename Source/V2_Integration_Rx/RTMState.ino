@@ -1,5 +1,6 @@
 // V2.5-Evo - 2026-07-19 - P3 FM (DESIGN_FOLLOW_ME.md sections 4-7): Follow-Me autonomous following. Adds runFmLoop() 10Hz state machine (IDLE/ARMED/ACTIVE/DEMOTED incl. the missing 0xFF->usrConf.followme_mode fallback — SUPERSEDED 2026-07-20, see R0 below), all 9 activation/hold conditions with Schmitt hysteresis on distance and side-zone, the lag-anchor trailing target-point geometry, and the 5-stage subtract-only throttle cap chain. Reuses the existing EMA filter / P+D / heading ladder / authority / wrap pipeline unchanged - updateRtmSteering() only gains a target selector (RTM = rider position, FM = trailing point). telemetry.fm_status bit0 now reports FM engaged rather than FM mode selected. No confStruct change; SW_VERSION stays 33.
 // V2.5-Evo - 2026-07-20 - FM engagement semantics (R0/R1/R2): (R0) BOTH 0xFF->usrConf.followme_mode fallbacks removed — 0xFF now means FM_IDLE always, killing the latently-armed factory boot; usrConf.followme_mode is the TX arm-gesture seed only. (R1) separation latch: FM's FIRST entry into ACTIVE now also requires dist > kFmEngageFactor(1.5) x d_follow sustained kFmSepDwellMs(2000) — the tow rope (6.7-7.6 m) is longer than the old engage distance, so FM could engage mid-tow; existing Schmitt hysteresis governs after the latch sets. (R2) two clears: thr_received<25 for kFmThrReleaseClearMs(10 s) clears the latch (ARMED-unlatched, mode memory kept); no 0xF2 refresh for kFmModeAgeMs(95 s) -> FM_IDLE. P3 geometry/cap/steering untouched. No confStruct change; SW_VERSION stays 33.
+// V2.5-Evo - 2026-07-20 - FM control "brain" (Fable v1.4): (A) holds-vs-faults — condition 1=DEADMAN (throttle, never a fault), 8/9=HOLD (cap 0, stays ARMED, auto-resume, +kFmSpeedHystKmh speed hysteresis), 2-7=FAULT (FM_STOPPING ramp 0->255 over kFmStopRampMs -> FM_IDLE, re-arm required); heading loss (cond 6) is now ALWAYS a fault regardless of rtm_compass_required. (C) steer-cancel while ACTIVE -> ARMED-UNLATCHED (latch cleared, no alarm) guarded by kFmEngageGraceMs grace + kFmSteerPersistMs persistence; ARMED has no steer-cancel by construction. (D) fm_flags telemetry byte (repurposed reserved_tx_imu): armed/engaged/armed-not-ready/fault-stop-sticky(kFmFaultStickyMs). FM_DEMOTED renamed FM_HOLD; FM_STOPPING added. All compile-time constants; no confStruct change; SW_VERSION stays 33.
 // V2.5-Evo - 2026-07-19 - Rex hardening: reset D-term continuity statics (prev_heading_src_valid/prev_heading_error_deg/prev_steering_update_ms) in the override-disabled early return so an off->on toggle can't differentiate a stale error across the gap
 // V2.5-Evo - 2026-07-19 - FM triage (Fable audit §5): (1) no-fix engagement guard — getRtmHeading() returns confidence 0 unless a fresh RX GPS fix exists, so RTM/FM cannot report confidence 2 or engage with datetime_unix=0; (2) D-term differentiated only across consecutive same heading-source samples — skip the step on a source switch (COG<->compass) or a compass-snapshot re-snap to kill the ±300°/s Kd spikes
 // V2.5-Evo - 2026-05-22 - SW32: Two-phase RTM throttle — align phase suppresses throttle until heading < rtm_align_threshold_deg; run phase GPS speed governor
@@ -384,6 +385,40 @@ static const uint32_t kFmThrReleaseClearMs   = 10000;  // ms
 // way to find out. This is the backstop that expires a declaration nobody is refreshing.
 static const uint32_t kFmModeAgeMs           = 95000;  // ms
 
+// ---- A3 holds-vs-faults + steer-cancel constants (V2.5-Evo - 2026-07-20) ----
+// Compile-time only, like the four above: no confStruct fields, no SW_VERSION bump, no SPIFFS reset.
+
+// Condition 9 (rider speed) RESUME hysteresis. FM HOLDs when the rider drops below
+// foiler_low_speed_kmh and only resumes once they are back above foiler_low_speed_kmh +
+// kFmSpeedHystKmh. WHY: falling below speed is normal and recurring, so it is a HOLD not a fault;
+// without the +2 km/h gap a rider hovering at the threshold would flap HOLD<->ACTIVE every fix.
+// Mirrors the distance Schmitt band.
+static const float    kFmSpeedHystKmh        = 2.0f;   // km/h
+
+// FAULT stop ramp. On a fault (conditions 2-7) FM hands throttle back to the rider by ramping the
+// cap 0 -> 255 over this window, then drops to FM_IDLE (re-arm required). WHY the ramp: the rider
+// may still be holding the trigger, so returning full manual throttle instantly would lurch.
+static const uint32_t kFmStopRampMs          = 2000;   // ms
+
+// How long the surprise-gated fault-stop notification stays sticky in fm_flags bit 3. WHY:
+// telemetry rotates every ~2.4 s, so a one-shot notification could land between rotations and
+// never reach the TX. 6 s guarantees the TX sees it and can fire the St + stop buzz exactly once.
+static const uint32_t kFmFaultStickyMs       = 6000;   // ms
+
+// Engage grace: FM ignores steer-cancel for this long after engaging. WHY: technique 2 (whip by
+// steering the buggy away) means the rider is often still feeding the tail of that steering input
+// at the instant FM engages; without the grace that tail would immediately cancel the fresh FM.
+static const uint32_t kFmEngageGraceMs       = 2000;   // ms
+
+// Steering persistence filter for steer-cancel. A steering deflection must be sustained beyond
+// the deadband for this long before it cancels an ACTIVE FM. WHY: a momentary blip (chop, a bump)
+// must not drop FM; only a deliberate, held steer is a manual-control declaration.
+static const uint32_t kFmSteerPersistMs      = 500;    // ms
+
+// Steering deadband for steer-cancel, in raw steering counts either side of 127 (centre). A
+// deflection smaller than this is treated as centred and never counts toward steer-cancel.
+static const uint8_t  kFmSteerCancelDeadband = 40;     // counts from 127
+
 // ---- FM state machine (DESIGN_FOLLOW_ME.md section 4) ----
 //   FM_IDLE    : FM off (mode 0), RTM owns the buggy, or GPS/FM disabled.
 //                No throttle cap (255) and no steering override - fully manual buggy.
@@ -391,13 +426,22 @@ static const uint32_t kFmModeAgeMs           = 95000;  // ms
 //                yet. The throttle chain is INACTIVE (cap 255) so the rider still has full
 //                manual control of the buggy while FM waits for the follow geometry.
 //   FM_ACTIVE  : every activation condition holds. Steering override on, throttle cap chain on.
-//   FM_DEMOTED : FM was ACTIVE and a condition dropped out. This is the section-4 "FM_ARMED with
-//                throttle cap 0" demotion state: the motor stops, the mode stays selected, and
-//                FM re-engages through the engage ramp once conditions restore - never a jump.
-//                Kept as a distinct state from FM_ARMED because the two carry different caps
-//                (255 vs 0): before FM has ever engaged the rider must keep manual throttle,
-//                but once FM has taken control a fault must stop the buggy.
-enum FmState : uint8_t { FM_IDLE = 0, FM_ARMED = 1, FM_ACTIVE = 2, FM_DEMOTED = 3 };
+//   FM_HOLD    : FM was ACTIVE and a HOLD condition dropped out - condition 8 (distance / stop
+//                radius) or 9 (rider below foiler_low_speed_kmh), or the trigger was released
+//                (DEADMAN). These are geometry / throttle pauses, NOT faults: the motor stops
+//                (cap 0), the declaration stays ARMED, no alarm sounds, and FM auto-resumes to
+//                FM_ACTIVE through the engage ramp once the conditions restore AND the separation
+//                latch is set. Falling below speed is a normal, recurring part of riding, so it
+//                must never force a re-arm. Kept distinct from FM_ARMED because the two carry
+//                different caps (0 vs 255): before FM ever engaged the rider keeps manual throttle,
+//                but once FM has held control a paused hold must stop the buggy. (Was FM_DEMOTED.)
+//   FM_STOPPING: FM was engaged and a FAULT dropped out - conditions 2-7 (Phase A/B, TX/RX GPS
+//                stale, heading invalid, LoRa). Something actually broke, so autonomy ends for
+//                this run: the throttle cap ramps 0 -> 255 over kFmStopRampMs (throttle always
+//                returns, never a lurch under a held trigger), then FM drops to FM_IDLE and a
+//                fresh TX declaration is required to re-arm. A surprise-gated St + stop buzz fires
+//                (fm_flags bit 3) only if the trigger was held at the fault instant.
+enum FmState : uint8_t { FM_IDLE = 0, FM_ARMED = 1, FM_ACTIVE = 2, FM_HOLD = 3, FM_STOPPING = 4 };
 static FmState fm_state = FM_IDLE;
 
 // ---- FM rider tracking state ----
@@ -444,6 +488,20 @@ static unsigned long fm_sep_over_since_ms = 0;
 // millis() when thr_received first dropped below 25; 0 = throttle currently held.
 // Counts the kFmThrReleaseClearMs window that clears the latch at the end of a run.
 static unsigned long fm_thr_low_since_ms  = 0;
+
+// ---- A3 fault-stop + steer-cancel state (V2.5-Evo - 2026-07-20) ----
+// millis() when FM entered FM_STOPPING; drives the 0 -> 255 fault ramp. 0 = not stopping.
+static unsigned long fm_stop_ms          = 0;
+
+// millis() of the last SURPRISING fault stop (a fault that occurred while the trigger was held).
+// Drives the sticky fm_flags bit 3 for kFmFaultStickyMs so the TX cannot miss the stop
+// notification across the ~2.4 s telemetry rotation. 0 = no recent surprising fault. Deliberately
+// NOT cleared by fmEnterIdle() — the notification must survive the transition into FM_IDLE.
+static unsigned long fm_fault_alarm_ms   = 0;
+
+// millis() when the rider's steering first exceeded kFmSteerCancelDeadband while FM was ACTIVE;
+// 0 = steering currently centred. Counts the kFmSteerPersistMs persistence filter for steer-cancel.
+static unsigned long fm_steer_input_since_ms = 0;
 
 // The computed trailing target point FM steers toward. Written by computeFmTarget() and
 // read by updateRtmSteering() when fm_rx_active is set.
@@ -730,6 +788,30 @@ void runRtmLoop()
     if (rx_aux_flags & (1 << 0)) st |= (1 << 6);
     if (rx_aux_flags & (1 << 1)) st |= (1 << 7);
     telemetry.fm_status = st;
+  }
+
+  // fm_flags (index 16): coherent Follow-Me engagement sub-state for the TX display (A2/A3/arming).
+  // V2.5-Evo - 2026-07-20 - repurposed the former reserved_tx_imu byte. Kept SEPARATE from
+  // fm_status (whose 8 bits are already full with aux/vesc/wetness/heading_conf/rtm_active) so no
+  // working telemetry is disturbed and a TX still on the old firmware simply ignores this byte.
+  // Bit map (the TX renders these in a later pass):
+  //   [0] armed           - a live TX declaration is held (FM_ARMED / FM_ACTIVE / FM_HOLD). Scanner.
+  //   [1] engaged         - FM is actively following (FM_ACTIVE). Grow-with-far distance bar.
+  //   [2] armed-not-ready - armed but not yet engage-eligible on RX facts (no separation latch yet).
+  //                         The TX ORs its own TX-local readiness (own GPS fix/age, pairing, last
+  //                         reply age) on top, then renders blink-in-place (not ready) vs sweep (ready).
+  //   [3] fault-stop      - a FAULT ended FM while the trigger was held; sticky kFmFaultStickyMs so
+  //                         the TX cannot miss it across the ~2.4 s rotation and fires St + stop buzz.
+  // The four A3 disarm-ownership facts (armed drops, engaged drops, fault-sticky rises) let the TX
+  // detect an RX-side fault and clear its own fm_armed so display and engagement cannot disagree.
+  {
+    uint8_t f = 0;
+    FmState s = fm_state;
+    if (s == FM_ARMED || s == FM_ACTIVE || s == FM_HOLD)    f |= (1 << 0);
+    if (s == FM_ACTIVE)                                     f |= (1 << 1);
+    if ((s == FM_ARMED || s == FM_HOLD) && !fm_sep_latched) f |= (1 << 2);
+    if (fm_fault_alarm_ms != 0 && (now - fm_fault_alarm_ms) < kFmFaultStickyMs) f |= (1 << 3);
+    telemetry.fm_flags = f;
   }
 
   // Finding 6-2: auto-expire Phase B approval when TX GPS goes stale.
@@ -1178,24 +1260,27 @@ static void computeFmTarget(double* out_lat, double* out_lng)
 }
 
 // ------------------------------------------------------------
-// checkFmHardConditions - activation/hold conditions 1-7 (the fault conditions)
+// checkFmFaultConditions - the FM FAULT conditions (2-7)
 // ------------------------------------------------------------
-// What it does (DESIGN_FOLLOW_ME.md section 5 conditions 1-7):
-//   Mirrors RTM's safety gates 1-7 exactly, and for the same reasons. Any one of these
-//   failing means FM must not be steering, and the caller drives the throttle cap to 0.
-//   Unlike RTM this function does NOT set rtm_rx_emergency_stop - FM stops the motor through
-//   its own fm_throttle_cap so the two systems can never fight over one flag.
+// What it does (DESIGN_FOLLOW_ME.md section 5, A3 holds-vs-faults classification):
+//   Evaluates the six FAULT conditions only - the ones that mean something actually BROKE, so FM
+//   must end for the run and a fresh declaration is required to re-arm. Two conditions are handled
+//   by the CALLER, not here, because they are not faults:
+//     - Condition 1 (throttle >= 25) is the DEADMAN. A trigger release is never a fault (treating
+//       it as one would end FM on every release, worse than the original bug); the caller reads it
+//       as thr_held and the motor is already 0 by the base architecture when it is low.
+//     - Conditions 8 (distance) and 9 (rider speed) are geometric HOLDs: they pause FM (cap 0) but
+//       keep it ARMED and auto-resume. The caller evaluates them as dist_ok / speed_ok.
+//   Like RTM, any one of these six failing means FM must not be steering. This function does NOT
+//   set rtm_rx_emergency_stop - FM stops the motor through its own fm_throttle_cap so the two
+//   systems can never fight over one flag.
 //
-// Returns: true only if all seven hold.
+// Returns: true only if all six fault conditions hold.
 // Side effects: none (read-only on all globals).
 // ------------------------------------------------------------
-static bool checkFmHardConditions()
+static bool checkFmFaultConditions()
 {
   unsigned long now = millis();
-
-  // 1. ABSOLUTE: the rider must physically be holding the throttle trigger.
-  //    Below 25 the motor is already 0 - this is normal, not a fault.
-  if (thr_received < 25) return false;
 
   // 2. Phase A: the RX's own GPS has not been rejected as implausible/spoofed.
   if (gps_rejected) return false;
@@ -1210,8 +1295,11 @@ static bool checkFmHardConditions()
   // 5. The buggy's (RX) GPS position is fresh (same 6 s window as RTM gate 5).
   if (gps_last_ms == 0 || (now - gps_last_ms) > 6000UL) return false;
 
-  // 6. A valid heading source exists, honouring rtm_compass_required as the gate enable.
-  if (usrConf.rtm_compass_required) {
+  // 6. A valid heading source exists. V2.5-Evo - 2026-07-20 - A3: FM ALWAYS requires a heading
+  //    source, regardless of rtm_compass_required. That flag was an RTM-arming convenience; a
+  //    missing heading source in FM means the buggy would steer blind at the ~5% align cap, which
+  //    is a FAULT, not something to silently permit. This is the R4 heading-source-loss fix.
+  {
     float h_unused; uint8_t conf_unused;
     if (!getRtmHeading(&h_unused, &conf_unused)) return false;
   }
@@ -1323,6 +1411,12 @@ static void fmEnterIdle()
   fm_sep_latched       = false;
   fm_sep_over_since_ms = 0;
   fm_thr_low_since_ms  = 0;
+
+  // V2.5-Evo - 2026-07-20 - A3: clear the steer-cancel persistence timer and the fault-ramp clock.
+  // fm_fault_alarm_ms is deliberately NOT reset here: the surprise-gated stop notification must
+  // stay sticky for kFmFaultStickyMs even after FM has dropped into FM_IDLE.
+  fm_steer_input_since_ms = 0;
+  fm_stop_ms              = 0;
 }
 
 // ------------------------------------------------------------
@@ -1391,6 +1485,31 @@ void runFmLoop()
     return;
   }
 
+  // ---- FM_STOPPING: a FAULT ended FM; ramp throttle back to manual, then go IDLE (A3) ----
+  // V2.5-Evo - 2026-07-20 - A3 FAULT semantics. Once a fault has stopped FM this run, autonomy is
+  // over until a fresh declaration. We do NOT re-check the conditions here: even if the fault
+  // clears mid-ramp, FM stays down and requires re-arm (silent resume after an anomaly is exactly
+  // the unrequested autonomy this architecture forbids). We only ramp the throttle cap back up so
+  // the rider regains manual control smoothly, then drop to FM_IDLE.
+  // MOTOR SAFETY: the cap only ever RISES toward 255 (subtract-only, never adds throttle); the
+  // rider's held trigger stays the sole throttle source, and starting the ramp from 0 means no
+  // lurch. (RTM preemption / GPS-off / mode-off above still abort straight to IDLE.)
+  if (fm_state == FM_STOPPING) {
+    fm_rx_active       = false;
+    rtm_steer_override = 127;
+    unsigned long stop_elapsed = now - fm_stop_ms;
+    if (stop_elapsed >= kFmStopRampMs) {
+      // Ramp done: require a fresh TX declaration to re-arm (mirror the mode-age expiry path so the
+      // TX must re-send 0xF2/mode; the TX also learns of the fault via fm_flags and clears its own
+      // fm_armed - see runRtmLoop's fm_flags bit 3).
+      fm_mode_runtime.store(0xFF, std::memory_order_relaxed);
+      fmEnterIdle();
+      return;
+    }
+    fm_throttle_cap = (uint8_t)(((float)stop_elapsed / (float)kFmStopRampMs) * 255.0f);
+    return;
+  }
+
   // ---- R2(a): throttle-release clear — the end-of-run session boundary ----
   // The trigger being released for kFmThrReleaseClearMs (10 s) means this run is over: the
   // rider is swimming, resting, or rigging for the next tow. Clear the separation latch so
@@ -1404,7 +1523,7 @@ void runFmLoop()
     if (fm_thr_low_since_ms == 0) {
       fm_thr_low_since_ms = now;
     } else if ((now - fm_thr_low_since_ms) >= kFmThrReleaseClearMs) {
-      if (fm_sep_latched || fm_state == FM_DEMOTED) {
+      if (fm_sep_latched || fm_state == FM_HOLD) {
         Serial.println("FM [RX] throttle released 10s -> separation latch cleared, ARMED-unlatched");
       }
       fm_sep_latched       = false;
@@ -1419,10 +1538,13 @@ void runFmLoop()
     fm_thr_low_since_ms = 0;
   }
 
-  // ---- Evaluate the nine activation / hold conditions ----
-  bool  hard_ok  = checkFmHardConditions();   // conditions 1-7 (faults)
-  bool  speed_ok = false;                     // condition 9 (rider moving)
-  bool  dist_ok  = false;                     // condition 8 (follow geometry)
+  // ---- Evaluate the conditions, split by A3 class ----
+  // DEADMAN = condition 1 (throttle). FAULT = conditions 2-7. HOLD = conditions 8-9.
+  bool  thr_held = (thr_received >= 25);       // condition 1 (DEADMAN — never a fault)
+  bool  fault_ok = checkFmFaultConditions();   // conditions 2-7 (FAULT)
+  bool  hard_ok  = thr_held && fault_ok;       // both needed for a trustworthy distance / latch
+  bool  speed_ok = false;                      // condition 9 (HOLD — rider moving)
+  bool  dist_ok  = false;                      // condition 8 (HOLD — follow geometry)
   float dist_m   = 0.0f;
 
   if (hard_ok) {
@@ -1433,9 +1555,15 @@ void runFmLoop()
     float min_dist = usrConf.min_dist_m;
     float band     = usrConf.followme_smoothing_band_m;
 
-    // Condition 9: the rider must actually be moving. Below the threshold the rider may be
-    // down or swimming, and the buggy must not manoeuvre around them.
-    speed_ok = (fm_rider_speed_kmh >= usrConf.foiler_low_speed_kmh);
+    // Condition 9 (HOLD) with RESUME hysteresis. Below foiler_low_speed_kmh the rider may be down
+    // or swimming, and the buggy must not manoeuvre around them — but a fall is normal and
+    // recurring, so this is a HOLD (stays ARMED), never a fault. When already ACTIVE, stay down to
+    // the plain threshold; when trying to (re)engage from HOLD/ARMED, require foiler_low_speed_kmh
+    // + kFmSpeedHystKmh so FM cannot flap on and off at the speed line (mirrors the distance Schmitt).
+    if (fm_state == FM_ACTIVE)
+      speed_ok = (fm_rider_speed_kmh >= usrConf.foiler_low_speed_kmh);
+    else
+      speed_ok = (fm_rider_speed_kmh >= (usrConf.foiler_low_speed_kmh + kFmSpeedHystKmh));
 
     // Condition 8: Schmitt hysteresis on distance so FM cannot flap at the band edge.
     //   to ENGAGE  : the rider must be beyond min_dist + band
@@ -1475,15 +1603,53 @@ void runFmLoop()
   }
 
   // The separation latch gates eligibility. Without it FM stays ARMED and the buggy stays
-  // fully manual, no matter how well the other nine conditions read.
+  // fully manual, no matter how well the other conditions read.
   bool can_be_active = hard_ok && speed_ok && dist_ok && fm_sep_latched;
 
   if (can_be_active) {
+    // ---- Steer-cancel while ACTIVE (A3 PART 2 / R-steering) ----
+    // If the rider is ALREADY following and applies a sustained steering input, they have taken
+    // manual control: exit to ARMED and CLEAR the separation latch, so FM cannot silently resume —
+    // it may only re-engage after a fresh >D_engage / kFmSepDwellMs separation is re-proven. This
+    // is a rider DECLARATION, not a fault, so no alarm fires and the mode is kept. Two guards stop
+    // the tail of the whip-separation steering from killing a just-engaged FM:
+    //   1. kFmEngageGraceMs grace after engaging (ignore steer-cancel entirely for the first 2 s);
+    //   2. kFmSteerPersistMs persistence past the deadband (a brief blip never cancels).
+    // ARMED (not following) has NO steer-cancel path at all — that is what makes the whip-by-
+    // steering separation safe: steering while merely armed is just steering. v1 policy = cancel;
+    // the advanced steer-adjust-while-following blend (rtm_steer_exit_on_input == 0) is DEFERRED —
+    // that param lives on the TX, not the RX, this pass.
+    if (fm_state == FM_ACTIVE) {
+      int sdev = (int)steering_received - 127;
+      if (sdev < 0) sdev = -sdev;
+      if (sdev >= (int)kFmSteerCancelDeadband) {
+        if (fm_steer_input_since_ms == 0) fm_steer_input_since_ms = now;
+      } else {
+        fm_steer_input_since_ms = 0;
+      }
+      bool past_grace = (fm_engage_ms != 0) && ((now - fm_engage_ms) >= kFmEngageGraceMs);
+      bool persisted  = (fm_steer_input_since_ms != 0) &&
+                        ((now - fm_steer_input_since_ms) >= kFmSteerPersistMs);
+      if (past_grace && persisted) {
+        Serial.println("FM [RX] steer-cancel -> ARMED-UNLATCHED (separation latch cleared, no alarm)");
+        fm_state                = FM_ARMED;
+        fm_sep_latched          = false;   // deliberate: no silent resume, separation must re-prove
+        fm_sep_over_since_ms    = 0;
+        fm_steer_input_since_ms = 0;
+        fm_rx_active            = false;
+        rtm_steer_override      = 127;
+        fm_engage_ms            = 0;
+        fm_throttle_cap         = 255;      // manual; trigger may be held, but the latch is now clear
+        return;
+      }
+    }
+
     // ---- FM_ACTIVE ----
     if (fm_state != FM_ACTIVE) {
-      // Entering FM_ACTIVE from ARMED or DEMOTED.
-      fm_engage_ms        = now;    // start the engage ramp - re-engagement is never a jump
-      fm_diagonal_engaged = false;  // re-evaluate which side we are on for this engagement
+      // Entering FM_ACTIVE from ARMED or HOLD.
+      fm_engage_ms            = now;    // start the engage ramp - re-engagement is never a jump
+      fm_diagonal_engaged     = false;  // re-evaluate which side we are on for this engagement
+      fm_steer_input_since_ms = 0;      // ignore any pre-engagement deflection; the grace starts now
 
       // Reset the shared P+D derivative continuity. Without this the controller would
       // differentiate a fresh heading error against a stale pre-engagement sample across the
@@ -1503,23 +1669,38 @@ void runFmLoop()
     fm_throttle_cap = (uint8_t)fmComputeThrottleCap(dist_m, now);
   }
   else {
-    // ---- Not eligible to steer: FM_ARMED (never engaged) or FM_DEMOTED (was engaged) ----
-    fm_rx_active       = false;
-    rtm_steer_override = 127;   // hand steering straight back to the rider
-    fm_engage_ms       = 0;     // any re-engagement ramps from zero again
+    // ---- Not eligible to steer — classify the drop (A3 DEADMAN / HOLD / FAULT) ----
+    fm_rx_active            = false;
+    rtm_steer_override      = 127;   // hand steering straight back to the rider
+    fm_engage_ms            = 0;     // any re-engagement ramps from zero again
+    fm_steer_input_since_ms = 0;
 
-    if (fm_state == FM_ACTIVE || fm_state == FM_DEMOTED) {
-      // FM had taken control, so a dropped condition must STOP the buggy. The rider is not
-      // watching it - failing open to full manual throttle here would be unsafe.
-      if (fm_state == FM_ACTIVE) {
-        Serial.printf("FM [RX] DEMOTE -> cap 0 (hard=%d speed=%d dist=%d) mode held, will re-engage via ramp\n",
-                      (int)hard_ok, (int)speed_ok, (int)dist_ok);
-      }
-      fm_state        = FM_DEMOTED;
-      fm_throttle_cap = 0;      // subtract-only hard stop: motor to 0
+    bool was_engaged = (fm_state == FM_ACTIVE || fm_state == FM_HOLD);
+
+    if (!fault_ok && was_engaged) {
+      // ---- FAULT (conditions 2-7): something actually broke while FM had control ----
+      // End autonomy for the run: enter FM_STOPPING, which ramps the throttle cap 0 -> 255 over the
+      // next kFmStopRampMs (handled at the top of runFmLoop), then drops to FM_IDLE — re-arm
+      // required. Fire the stop notification (sticky fm_flags bit 3, drives St + stop buzz on the
+      // TX) ONLY if the trigger was held at this instant: a fault after release is not surprising,
+      // and the bar going dark carries it. R4: heading loss is one of these faults now.
+      if (thr_held) fm_fault_alarm_ms = now;
+      fm_stop_ms      = now;
+      fm_state        = FM_STOPPING;
+      fm_throttle_cap = 0;         // subtract-only hard stop; the ramp begins next tick
+      Serial.printf("FM [RX] FAULT -> STOPPING (ramp %lu ms) -> IDLE, re-arm required (thr_held=%d)\n",
+                    (unsigned long)kFmStopRampMs, (int)thr_held);
+    } else if (was_engaged) {
+      // ---- HOLD (cond 8/9) or DEADMAN (cond 1): a geometry / throttle pause, NOT a fault ----
+      // Motor stops (cap 0) but FM stays ARMED (declaration held) and auto-resumes to FM_ACTIVE
+      // once the conditions restore AND the latch is set. No alarm. This is what lets a rider
+      // fall, slow, or close on the buggy repeatedly without ever having to re-arm.
+      fm_state        = FM_HOLD;
+      fm_throttle_cap = 0;         // subtract-only hard stop: motor to 0
     } else {
-      // FM has never engaged this arm cycle. The throttle chain stays INACTIVE so the rider
-      // keeps full manual control of the buggy while FM waits for the follow geometry.
+      // ---- FM_ARMED: never engaged this arm cycle — fully manual buggy ----
+      // The throttle chain stays INACTIVE (cap 255) so the rider keeps full manual control while
+      // FM waits for the follow geometry. ARMED has no steer-cancel path (see the ACTIVE branch).
       fm_state        = FM_ARMED;
       fm_throttle_cap = 255;
     }

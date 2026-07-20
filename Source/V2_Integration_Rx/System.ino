@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-07-19 - FM triage: cmdGpsDiag (?gpsdiag) — 2Hz GPS feed + RTM COG-valid sub-condition breakdown to diagnose why GPS COG heading never engages
 // V2.5-Evo - 2026-05-11 - E7 Fix: checkWetness() debounced — requires 2 consecutive confirmed-wet calls to set E7; single clean read clears
 // V2.5-Evo - 2026-05-11 - Compass Cal: runtime BIND press triggers compass calibration with LED feedback
 // V2.5-Evo - 2026-04-25 - P7: Added ?compassheading serial diagnostic command
@@ -655,6 +656,98 @@ void cmdVescRaw(const String& params) {
   Serial.println("  0x02 0xXX received         -> VESC alive! Parser issue in receiveFromVESC().");
 }
 
+// ============================================================
+// cmdGpsDiag - GPS Feed Diagnostic for the RTM COG Heading Source
+// ============================================================
+//
+// What it does:
+//   Streams one diagnostic line at 2 Hz for up to 120 seconds showing the RX GPS
+//   feed state AND the exact values the RTM heading ladder (getRtmHeading() in
+//   RTMState.ino) reads when it decides whether GPS course-over-ground (COG) is a
+//   valid heading source. This answers the open field question from the Fable audit:
+//   why does rtm_source=1 (GPS COG) never engage?
+//
+//   Each line reports, in order:
+//     loc/date/time fix validity, satellites, HDOP,
+//     chars/sentences/checksum counters (NMEA parse health),
+//     raw gps.speed.kmph() vs the captured gps_last_speed_kmh that RTM actually reads,
+//     the COG value + its age (ms) + the RX fix age (ms),
+//     and a PASS/FAIL breakdown of the four cog_valid sub-conditions used by
+//     getRtmHeading(): course captured, course in range, age < 1500ms,
+//     speed >= rtm_cog_min_speed_kmh. Also prints gps_rejected + suspect count.
+//
+//   Reading the [cap rng fresh spd>=N] flags tells you WHICH condition blocks COG:
+//     spd=0  -> speed never reaches the threshold (COG stays gated at low speed), OR
+//              gps_last_speed_kmh is not propagating from the parser.
+//     fresh=0-> course is captured but stale (>1.5s) — parse rate or mux starvation.
+//     cap=0  -> course never captured at all — module not emitting RMC/VTG course.
+//
+// How to invoke:
+//   Type '?gpsdiag' in a serial terminal (or the web-UI quick-commands dropdown).
+//   Drive the buggy above rtm_cog_min_speed_kmh while watching COG_VALID flip to YES.
+//   Type 'quit' to abort early.
+//
+// Inputs:  params - unused
+// Side effects: read-only on GPS globals; does not change any control or RTM state.
+void cmdGpsDiag(const String& params) {
+  extern float         gps_last_speed_kmh;
+  extern float         gps_last_course_deg;
+  extern unsigned long gps_last_course_ms;
+  extern unsigned long gps_last_ms;
+  extern bool          gps_rejected;
+  extern uint8_t       gps_suspect_count;
+
+  Serial.println("=== GPS Diagnostic (RTM COG heading source) ===");
+  Serial.printf("rtm_use_compass=%u  rtm_cog_min_speed_kmh=%u  gps_chip_type=%u\n",
+                (unsigned)usrConf.rtm_use_compass,
+                (unsigned)usrConf.rtm_cog_min_speed_kmh,
+                (unsigned)usrConf.gps_chip_type);
+  Serial.println("Drive above the COG min speed and watch COG_VALID flip to YES. Type 'quit' to stop.");
+  Serial.println();
+
+  const uint32_t TEST_DURATION_MS = 120000UL;
+  uint32_t start = millis();
+
+  while ((millis() - start) < TEST_DURATION_MS) {
+    esp_task_wdt_reset(); // prevent WDT timeout during the blocking loop
+    if (checkSerialQuit()) break;
+
+    unsigned long now = millis();
+
+    // Raw TinyGPS++ speed vs the captured value RTM actually reads (gps_last_speed_kmh).
+    // If raw is high but rtm_kmh stays 0, speed is not propagating past Phase A.
+    float raw_kmh = gps.speed.isValid() ? (float)gps.speed.kmph() : -1.0f;
+
+    // COG age and RX fix age (ms). -1 = timestamp never set (no reading yet).
+    long cog_age = (gps_last_course_ms > 0) ? (long)(now - gps_last_course_ms) : -1;
+    long fix_age = (gps_last_ms > 0)        ? (long)(now - gps_last_ms)        : -1;
+
+    // Reproduce the four cog_valid sub-conditions from getRtmHeading() (RTMState.ino).
+    bool c_captured = (gps_last_course_ms > 0);
+    bool c_range    = (gps_last_course_deg >= 0.0f);
+    bool c_fresh    = c_captured && ((now - gps_last_course_ms) < 1500UL);
+    bool c_speed    = (gps_last_speed_kmh >= (float)usrConf.rtm_cog_min_speed_kmh);
+    bool cog_valid  = c_captured && c_range && c_fresh && c_speed;
+
+    Serial.printf(
+      "loc=%d date=%d time=%d sats=%u hdop=%.1f | chars=%u sent=%u cksum=%u | "
+      "raw_kmh=%.1f rtm_kmh=%.1f cog=%.1f cog_age=%ld fix_age=%ld | "
+      "COG_VALID=%s [cap=%d rng=%d fresh=%d spd>=%u:%d] rejected=%d suspect=%u\n",
+      (int)gps.location.isValid(), (int)gps.date.isValid(), (int)gps.time.isValid(),
+      (unsigned)gps.satellites.value(), gps.hdop.hdop(),
+      (unsigned)gps.charsProcessed(), (unsigned)gps.sentencesWithFix(), (unsigned)gps.failedChecksum(),
+      raw_kmh, gps_last_speed_kmh, gps_last_course_deg, cog_age, fix_age,
+      cog_valid ? "YES" : "no",
+      (int)c_captured, (int)c_range, (int)c_fresh,
+      (unsigned)usrConf.rtm_cog_min_speed_kmh, (int)c_speed,
+      (int)gps_rejected, (unsigned)gps_suspect_count);
+
+    vTaskDelay(pdMS_TO_TICKS(500)); // 2 Hz output rate
+  }
+
+  Serial.println("=== GPS diagnostic complete ===");
+}
+
 void cmdHelp(const String& params);
 
 static const SerialCommand kCommands[] = {
@@ -698,6 +791,7 @@ static const SerialCommand kCommands[] = {
   
   // --- Hardware Diagnostics ---
   {"i2c", "scan I2C bus for compass", cmdScanI2C},
+  {"gpsdiag", "2Hz GPS feed + RTM COG-valid breakdown (diagnose why GPS COG heading never engages)", cmdGpsDiag},
   {"printcompass", "print raw compass X/Y/Z", cmdPrintCompass},
   {"compasscal", "start 45s automated calibration", cmdCompassCal},
   {"compassheading", "print live compass heading in degrees", cmdPrintCompassHeading},

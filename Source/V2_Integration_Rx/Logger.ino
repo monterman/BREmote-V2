@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-07-19 - FM triage: +1 CSV column (effective_steer, the steering byte calcPWM actually applied); 27→28 columns; VescLogData +1 byte; no-fix guard mirrored into inline getRtmHeading() duplicate (src/conf forced NONE without a fresh RX GPS fix, matching RTMState.ino)
 // V2.5-Evo - 2026-05-13 - SW43: GPS gate relaxed to location.isValid() only — date absent when UART mux fragments RMC; T_HHMMSS filename when time valid but date missing
 // V2.5-Evo - 2026-05-13 - SW40: loggerLoop() button section removed — checkButtons() is the sole AUX handler; pending timeout 5min→15s start-anyway (was: give-up)
 // V2.5-Evo - 2026-05-13 - SW38: log_pending state — GPS gate moved to startLog()/loggerLoop(); LED heartbeat (1 blink/3s) while waiting; auto-transitions to active on fix; 5-min timeout → 3 slow error blinks
@@ -186,6 +187,8 @@ VescLogData convertToLogData() {
     extern float                 compass_snapshot_heading;
     extern unsigned long         compass_snapshot_ms;
     extern float                 gps_last_speed_kmh;
+    extern unsigned long         gps_last_ms;
+    extern volatile uint8_t      g_effective_steer;
     extern float                 getCompassHeading();
 
     // Simple state reads
@@ -193,6 +196,7 @@ VescLogData convertToLogData() {
     data.rtm_rx_active_log      = rtm_rx_active.load() ? 1 : 0;
     data.rtm_steer_override_log = rtm_steer_override.load();
     data.gps_phase_b_ok_log     = gps_phase_b_ok ? 1 : 0;
+    data.effective_steer_log    = g_effective_steer;   // FM triage: steering byte actually applied by calcPWM()
 
     // Live compass heading × 10 (0xFFFF = invalid/uncalibrated)
     float live_compass = getCompassHeading();
@@ -270,6 +274,14 @@ VescLogData convertToLogData() {
         }
       }
       // Mode 0 with no valid COG: src/conf stay 0 (hold straight)
+    }
+
+    // No-fix guard mirror of getRtmHeading() (RTMState.ino, 2026-07-19 FM triage): with no
+    // fresh RX GPS fix, no heading source is valid for steering — the bearing is computed from
+    // gps_last_lat/lng which are 0,0 without a fix. Force NONE so the log matches runtime
+    // behaviour (Fable audit: confidence=2 logged with datetime_unix=0).
+    if (gps_last_ms == 0 || (now_ms - gps_last_ms) > 6000UL) {
+      src = 0; conf = 0; chosen = -1.0f;
     }
 
     data.rtm_source              = src;
@@ -532,8 +544,8 @@ void downloadLogFile(const char* filename) {
   if (!file) return;
 
   Serial.println("\n=== BEGIN CSV DATA ===");
-  // V2.5-Evo - 2026-05-11 - E7 Fix: header updated to 27 fields (+remote_error)
-  Serial.println("timestamp_ms,motor_current_A,battery_current_A,duty_cycle_%,voltage_V,ERPM,temp_mos_C,fault_code,speed_kmh,latitude,longitude,datetime_unix,thr_received,rtm_source,rtm_confidence,rtm_rx_active,gps_phase_b_ok,rtm_steer_override,rtm_heading_chosen_dx10,compass_live_dx10,compass_snap_dx10,snap_age_s,gps_course_dx10,cog_age_ms_div10,heading_error_dx10,d_error_dx10,remote_error");
+  // V2.5-Evo - 2026-07-19 - FM triage: header updated to 28 fields (+effective_steer)
+  Serial.println("timestamp_ms,motor_current_A,battery_current_A,duty_cycle_%,voltage_V,ERPM,temp_mos_C,fault_code,speed_kmh,latitude,longitude,datetime_unix,thr_received,rtm_source,rtm_confidence,rtm_rx_active,gps_phase_b_ok,rtm_steer_override,rtm_heading_chosen_dx10,compass_live_dx10,compass_snap_dx10,snap_age_s,gps_course_dx10,cog_age_ms_div10,heading_error_dx10,d_error_dx10,remote_error,effective_steer");
 
   VescLogData logData;
   uint16_t recordCount = 0;
@@ -546,7 +558,7 @@ void downloadLogFile(const char* filename) {
     size_t bytesRead = file.read((uint8_t*)&logData, sizeof(VescLogData));
 
     if (bytesRead == sizeof(VescLogData)) {
-      Serial.printf("%u,%.2f,%.2f,%d,%.1f,%d,%u,%u,%.1f,%.6f,%.6f,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%d,%d,%u\n",
+      Serial.printf("%u,%.2f,%.2f,%d,%.1f,%d,%u,%u,%.1f,%.6f,%.6f,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%d,%d,%u,%u\n",
                     logData.timestamp,
                     logData.current_motor / 100.0f,
                     logData.current_battery / 100.0f,
@@ -575,7 +587,9 @@ void downloadLogFile(const char* filename) {
                     (int)logData.heading_error_dx10,
                     (int)logData.d_error_dx10,
                     // E7 Fix: BREmote remote_error code (0 = none, 7 = E7 water ingress)
-                    (unsigned)logData.error_code_log);
+                    (unsigned)logData.error_code_log,
+                    // FM triage: steering byte actually applied by calcPWM() (vs commanded rtm_steer_override)
+                    (unsigned)logData.effective_steer_log);
 
       // Yield to FreeRTOS every 50 records to keep other tasks responsive.
       if ((++recordCount % 50) == 0) {

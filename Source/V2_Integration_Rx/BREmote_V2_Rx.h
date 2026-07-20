@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-07-19 - FM triage: log the steering byte actually applied by calcPWM() (g_effective_steer global + VescLogData.effective_steer_log); VescLogData sizeof 52→53; old SPIFFS logs misparse after this flash; no confStruct change, SW_VERSION unchanged
 // V2.5-Evo - 2026-07-18 - FM mode mapping canonicalized to TX convention (1=Near-Right, 2=Behind, 3=Near-Left); defaultConf.followme_mode 2→1 preserves the Near-Right default across the relabel (old RX labels had 2=near_right). Labels/comment only — no struct/SW_VERSION change.
 // V2.5-Evo - 2026-05-22 - SW32: Two-phase RTM throttle: rtm_align_threshold_deg + rtm_target_speed_kmh; sizeof 164→172; SW_VERSION 31→32
 // V2.5-Evo - 2026-05-09 - Bundle 9-Final: Added USB CDC On Boot compile-time guard
@@ -467,8 +468,13 @@ struct __attribute__((packed)) VescLogData {
     // V2.5-Evo - 2026-05-11 - E7 Fix: BREmote remote_error code for cross-correlation with VESC/motor data.
     // 0 = no error, 71 = E71 water ingress (see checkWetness() in System.ino).
     uint8_t error_code_log;       // telemetry.error_code at log time. 0 = no BREmote error.
+    // V2.5-Evo - 2026-07-19 - FM triage: steering byte actually applied to the motor mix by
+    // calcPWM() (g_effective_steer), NOT just the commanded rtm_steer_override. Reveals the
+    // actuation gap — a valid heading error can log a non-127 rtm_steer_override_log while this
+    // stays 127 because the throttle-release gate suppressed it. 127 = straight ahead.
+    uint8_t effective_steer_log;
 };
-static_assert(sizeof(VescLogData) == 52, "VescLogData size mismatch — check binary log compat.");  // 29 base; +18 LOG-EXT-1 (2026-05-06); +4 Bundle 1 tuning fields (2026-05-08); +1 error_code_log E7 fix (2026-05-11)
+static_assert(sizeof(VescLogData) == 53, "VescLogData size mismatch — check binary log compat.");  // 29 base; +18 LOG-EXT-1 (2026-05-06); +4 Bundle 1 tuning fields (2026-05-08); +1 error_code_log E7 fix (2026-05-11); +1 effective_steer_log FM triage (2026-07-19)
 #define ENABLE_WEB_LOG_DOWNLOAD // Enable log download endpoints
 
 #ifdef WIFI_ENABLED
@@ -553,6 +559,14 @@ volatile uint16_t PWM1_time = 0;
 
 volatile uint8_t thr_received = 0;
 volatile uint8_t steering_received = 127;
+
+// V2.5-Evo - 2026-07-19 - FM triage: the steering byte calcPWM() actually applied to the motor
+// mix this loop (rtm_steer_override while RTM active + override enabled + thr>=25, otherwise the
+// user's steering_received). Written by calcPWM() (generatePWM task, 100Hz) and read by the logger
+// (loggerTask). Single-byte volatile — atomic on ESP32-C3, same pattern as thr_received. Logged so
+// the actuation gap is visible: rtm_steer_override can command a turn while this stays neutral
+// because the throttle-release gate suppressed it. 127 = straight ahead.
+volatile uint8_t g_effective_steer = 127;
 
 volatile unsigned long get_vesc_timer = 0;
 volatile unsigned long last_uart_packet = 0;

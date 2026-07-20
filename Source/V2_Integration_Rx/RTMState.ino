@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-07-19 - FM triage (Fable audit §5): (1) no-fix engagement guard — getRtmHeading() returns confidence 0 unless a fresh RX GPS fix exists, so RTM/FM cannot report confidence 2 or engage with datetime_unix=0; (2) D-term differentiated only across consecutive same heading-source samples — skip the step on a source switch (COG<->compass) or a compass-snapshot re-snap to kill the ±300°/s Kd spikes
 // V2.5-Evo - 2026-05-22 - SW32: Two-phase RTM throttle — align phase suppresses throttle until heading < rtm_align_threshold_deg; run phase GPS speed governor
 // V2.5-Evo - 2026-05-11 - Phase C fix: VESC ERPM check now verifies data freshness via vesc.last_packet before comparing to GPS speed
 // V2.5-Evo - 2026-05-08 - Bundle 1: P+D+filter steering controller; preset table; bearing filter for FM path-following
@@ -66,6 +67,12 @@ static const SteerPreset kSteerPresets[5] = {
 // ---- Bundle 1 module-level state for P+D controller and bearing filter ----
 static float         prev_heading_error_deg    = 0.0f;
 static unsigned long prev_steering_update_ms   = 0;
+// D-term source-continuity tracking (2026-07-19 FM triage). We only differentiate
+// heading_error across two samples that came from the SAME continuous heading source.
+// prev_heading_src_id is a discriminator that changes on a source switch (COG<->compass)
+// AND on a compass-snapshot re-snap; prev_heading_src_valid gates the very first sample.
+static uint32_t      prev_heading_src_id       = 0;
+static bool          prev_heading_src_valid    = false;
 static double        tx_pos_filtered_lat       = 0.0;  // Filtered TX lat (degrees)
 static double        tx_pos_filtered_lng       = 0.0;  // Filtered TX lng (degrees)
 static bool          tx_pos_filter_initialized = false;
@@ -217,6 +224,19 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
   uint16_t cog_min_speed  = usrConf.rtm_cog_min_speed_kmh;
   unsigned long now       = millis();
 
+  // ---- No-fix engagement guard (2026-07-19 FM triage, Fable audit §5) ----
+  // A heading source is only meaningful for RTM/FM steering when the RX has a real
+  // GPS position fix: the steering bearing is computed from gps_last_lat/lng, which are
+  // 0,0 with no fix. The Fable log showed RTM reporting confidence=2 from a compass
+  // snapshot while datetime_unix=0 (no fix) — that must never engage or be reported.
+  // Require a fresh RX GPS fix (same age window as Gate 5) before granting ANY confidence.
+  // A stationary buggy that HAS a fix still passes (gps_last_ms updates while stopped).
+  if (gps_last_ms == 0 || (now - gps_last_ms) > 6000UL) {
+    *out_heading = -1.0f;
+    *out_confidence = 0;
+    return false;
+  }
+
   // ---- Mode 2: Compass only (legacy/diagnostic) ----
   // Use compass directly; valid only if compass returns non-error.
   // SAFETY: This mode SHOULD NOT be used on water — see field-service note in BREmote_V2_Rx.h.
@@ -304,6 +324,7 @@ static void updateRtmSteering()
     // resume with stale data on next cycle. (project rule)
     rtm_steer_override = 127;
     prev_heading_error_deg = 0.0f;
+    prev_heading_src_valid = false;   // no same-source prior sample to differentiate against
     tx_pos_filter_initialized = false;
     g_heading_error_dx10 = 0x7FFF;
     g_d_error_dx10 = 0x7FFF;
@@ -353,10 +374,35 @@ static void updateRtmSteering()
   // P term (normalized to ±127 at full clamp)
   float p_term = (clamped / p.error_clamp_deg) * 127.0f * p.kp;
 
-  // D term (rate of change of error). Skip on first cycle (prev=0 baseline).
-  float d_error = (heading_error - prev_heading_error_deg) / dt_s;
+  // ---- D term: differentiate ONLY across consecutive same-source samples ----
+  // Fable audit §5: when the heading source switches (GPS COG <-> compass) or the
+  // compass snapshot re-snaps, heading_error steps by tens of degrees in a single
+  // 100ms tick. Differentiating across that step injects a false ±300°/s rate into
+  // Kd and commands a violent phantom turn. Build a source id that changes on a
+  // source switch AND on a snapshot re-snap; skip the D term (d_error=0) whenever
+  // the id differs from the previous sample so we never differentiate through a step.
+  uint32_t heading_src_id;
+  if (confidence == 3) {
+    heading_src_id = 1;    // GPS COG — updates smoothly with motion, safe to differentiate
+  } else if (usrConf.rtm_use_compass == 2) {
+    heading_src_id = 2;    // live compass-only (diagnostic) — continuous reading
+  } else {
+    // Hybrid compass snapshot: the value is held constant until re-snapped. Fold the
+    // snapshot timestamp into the id (high bit set so it can never collide with 1/2)
+    // so each re-snap is treated as a new source and the D step across it is skipped.
+    heading_src_id = 0x80000000UL | ((uint32_t)compass_snapshot_ms & 0x7FFFFFFFUL);
+  }
+
+  float d_error;
+  if (prev_heading_src_valid && heading_src_id == prev_heading_src_id) {
+    d_error = (heading_error - prev_heading_error_deg) / dt_s;
+  } else {
+    d_error = 0.0f;  // source switched or snapshot re-snapped — do not differentiate across the step
+  }
   float d_term = p.kd * d_error;
   prev_heading_error_deg = heading_error;
+  prev_heading_src_id    = heading_src_id;
+  prev_heading_src_valid = true;
 
   // Confidence: LOW conf reduces total authority by 50% (preserves D5 behavior)
   float authority = (confidence == 1) ? 0.5f : 1.0f;
@@ -627,6 +673,7 @@ void runRtmLoop()
     // Bundle 1: reset filter + D-term state so re-arm starts fresh (not from last session)
     tx_pos_filter_initialized = false;
     prev_heading_error_deg    = 0.0f;
+    prev_heading_src_valid    = false;   // FM triage: no same-source prior sample after disarm
     prev_steering_update_ms   = 0;
     g_heading_error_dx10      = 0x7FFF;
     g_d_error_dx10            = 0x7FFF;

@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-07-19 - FM triage: calcPWM() records effective_steer into g_effective_steer (diagnostic observer only — no control-path change) so the logger can show the actuation gap
 // V2.5-Evo - 2026-04-30 - calcPWM() applies rtm_approach_cap for RTM approach decel zone
 // V2.5-Evo - 2026-04-25 - P7: calcPWM() applies RTM emergency stop and steering override via effective_thr/steer
 // V2.5-Evo - 2026-04-28 - Security: gate steer override on thr_received>=25 (belt-and-suspenders)
@@ -61,6 +62,10 @@ void calcPWM()
   uint8_t effective_steer = (rtm_rx_active && usrConf.rtm_rx_override_steering && thr_received >= 25)
                             ? (uint8_t)rtm_steer_override
                             : steering_received;
+
+  // V2.5-Evo - 2026-07-19 - FM triage: record the steering byte actually applied this loop for
+  // the logger. Diagnostic observer only — this write does not alter any PWM/motor control path.
+  g_effective_steer = effective_steer;
 
   if(usrConf.steering_type == 0)
   {

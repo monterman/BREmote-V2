@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-07-19 - SW56 F1+F2 (Rex CRITICAL + HIGH / Fable F1+F2, applied post-audit): (F1) clamp the vescRelayBuffer relay memcpy to sizeof(vescRelayBuffer) — SW56 raised the guard ceiling 30→48 but vescRelayBuffer is still 34, so a valid-CRC 35–48 B frame (which fa99429 is designed to ACCEPT from newer VESC FW) overflowed a global by up to 14 B into the adjacent volatile motor-command state (thr_received/PWM_active/PWM0_time/PWM1_time) = motor-safety class, NO-GO for field until fixed. (F2, pre-existing) validate the RAW length byte before the uint8_t `eom = raw_message[1]+5` addition — len 251–255 wrapped eom to 0–4, bypassed the guard, and let the payload copy (which uses raw_message[1], not eom) write up to 255 B into the caller's 48 B buffer. Both fixes are bounds-only; no protocol/offset/CRC/mutex change; confStruct/SW_VERSION unchanged
+// V2.5-Evo - 2026-07-19 - SW56: receiveFromVESC()/getValuesSelective() RX buffers 30→48 — with VESC_MORE_VALUES the COMM_GET_VALUES_SELECTIVE reply is a 32-byte UART frame (27-byte payload +5 framing), but eom=raw_message[1]+5=32 tripped the 30-byte overflow guard (32>30) and returned 0, rejecting every telemetry reply (latent since the extended mask was enabled; single-value mode's 14-byte frame still fit). 48 comfortably holds it (48 > VESC_PACK_LEN+5=32). Buffer size only; mask/offsets/CRC/echo-validation/mutex unchanged; confStruct/SW_VERSION unchanged
 // V2.5-Evo - 2026-05-14 - SW55: rcv_err removed from receiveFromVESC() — flag was never cleared within 200ms window, any stray byte poisoned entire receive attempt; CRC handles frame validation
 // V2.5-Evo - 2026-05-14 - SW54: revert SW51/SW52 retry loop — rapid repeated I2C writes caused AW9523 bus corruption at idle; back to single setUartMux(0) + 20ms delay
 // V2.5-Evo - 2026-05-14 - SW52: MUX retry count 3→5 for better EMI resilience under sustained motor load
@@ -89,7 +91,7 @@ bool getValuesSelective(Stream* interface)
 
   sendToVESC(vesc_command, 5, interface);
   
-  uint8_t message[30];
+  uint8_t message[48];  // SW56: was 30; matches receiveFromVESC() raw_message so the full 27-byte selective payload copies in with margin
   
   // V2.5-Evo - 2026-07-19 - Version-robust reply validation (works across VESC FW 3.x-7.x).
   // Accept the reply if it ECHOES our exact command id + 4-byte mask AND is at least
@@ -181,7 +183,7 @@ bool getValuesSelective(Stream* interface)
 int receiveFromVESC(uint8_t * buf, Stream* interface)
 {
   uint8_t cnt = 0;
-  uint8_t eom = 30; // Increased buffer max
+  uint8_t eom = 48; // SW56: was 30; 32-byte VESC_MORE_VALUES selective frame (eom=raw_message[1]+5=32) overflowed the old 30-byte guard and was rejected. 48 > VESC_PACK_LEN+5
   uint8_t raw_message[eom];
   // V2.5-Evo - 2026-06-07 - Audit #6: zero the buffer so a truncated VESC reply
   // can't read leftover stack at raw_message[eom-1] / via the length byte.
@@ -207,11 +209,17 @@ int receiveFromVESC(uint8_t * buf, Stream* interface)
       }
       if(cnt == 2)
       {
-          eom = raw_message[1] + 5;
-          if (eom > sizeof(raw_message)) {
+          // V2.5-Evo - 2026-07-19 - SW56 F2 (Rex HIGH / Fable F2): validate the RAW length
+          // byte BEFORE the uint8_t addition. eom is uint8_t, so raw_message[1] in [251,255]
+          // wraps eom to 0-4, silently PASSES the old `eom > sizeof(raw_message)` guard, and
+          // the payload copy below (which uses raw_message[1], NOT eom) then writes up to
+          // 255 bytes into the caller's 48-byte buffer. Bounding the raw byte to
+          // sizeof(raw_message)-5 closes the wraparound AND caps that payload copy.
+          if (raw_message[1] > (sizeof(raw_message) - 5)) {
             VESC_DEBUG_PRINTLN("VESC message too long - buffer overflow prevented!");
             return 0;
           }
+          eom = raw_message[1] + 5;
       }
     }
   }
@@ -245,7 +253,16 @@ int receiveFromVESC(uint8_t * buf, Stream* interface)
     
     if(crcPayload == crcMessage)
     {
-      memcpy(&vescRelayBuffer[0], &raw_message[0], eom);
+      // V2.5-Evo - 2026-07-19 - SW56 F1 (Rex CRITICAL / Fable F1): clamp to the DESTINATION
+      // size. SW56 raised the guard ceiling 30->48 with raw_message, but vescRelayBuffer is
+      // still 34 (BREmote_V2_Rx.h) — so a valid-CRC 35-48 byte frame (exactly what the
+      // fa99429 version-robust validation is DESIGNED to accept from newer VESC FW) would
+      // overflow it by up to 14 bytes into adjacent globals. In this translation unit those
+      // include the volatile motor-command state (thr_received / PWM_active / PWM0_time /
+      // PWM1_time), so this was a telemetry path able to corrupt throttle/PWM = the exact
+      // class Section 9 forbids. Clamping restores the invariant: guard ceiling <= every dest.
+      size_t relayLen = (eom < sizeof(vescRelayBuffer)) ? eom : sizeof(vescRelayBuffer);
+      memcpy(&vescRelayBuffer[0], &raw_message[0], relayLen);
       return raw_message[1];
     }
     else

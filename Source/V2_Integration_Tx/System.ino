@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-07-20 - StopFeel: vibration Pattern 7 added — one 400ms LONG pulse = the dedicated
+//   STOP/DISARM confirm for FM and RTM. Arm confirms stay Pattern 4 (2×80ms). Result by feel:
+//   arm = two quick taps, stop = one long buzz. 400ms (not 350) chosen so it is unmistakable from the
+//   single 150ms Pattern 5 advisory while the rider is moving and cannot look at the remote.
 // V2.5-Evo - 2026-07-20 - MagGesture: vibration Patterns 5 and 6 added — 5 = one 150ms pulse (magnet 2s "release for FM" advisory);
 //   6 = three 80ms pulses (magnet 5s "release for RTM" advisory). Pattern 6 exists so the RTM advisory is not
 //   confused with the Pattern 4 arm confirm that follows it. Feel map: 1→2 = FM armed, 3→2 = RTM armed.
@@ -749,7 +753,7 @@ void checkCharger()
   setBrightness(0x0F);
 }
 
-volatile uint8_t current_vib_pattern = 0;  // active haptic pattern: 0=none, 1=2 short, 2=5 short, 3=5 long, 4=2 fast short (RTM/FM arm/disarm confirm), 5=1 short (magnet 2s "release for FM" advisory), 6=3 fast short (magnet 5s "release for RTM" advisory)
+volatile uint8_t current_vib_pattern = 0;  // active haptic pattern: 0=none, 1=2 short, 2=5 short, 3=5 long, 4=2 fast short (RTM/FM ARM confirm), 5=1 short (magnet 2s "release for FM" advisory), 6=3 fast short (magnet 5s "release for RTM" advisory), 7=1 long (RTM/FM STOP/DISARM confirm)
 
 void vibrationTask(void *parameter) {
   uint8_t last_error = 0;
@@ -874,6 +878,20 @@ void vibrationTask(void *parameter) {
         digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(80));
         digitalWrite(P_MOT, LOW);  vTaskDelay(pdMS_TO_TICKS(80));
       }
+      current_vib_pattern = 0;
+    }
+    // V2.5-Evo - 2026-07-20 - StopFeel: Pattern 7 — ONE long 400ms pulse = the STOP/DISARM confirm
+    // for every FM and RTM stop/disengage event (fmDisarm, rtmDisengage, FM F0 disarm, RTM pre-arm
+    // reject). Deliberately a single SUSTAINED buzz so the rider can tell "stopped/off" from the arm
+    // confirm by feel alone while foiling. Distinct from every other pattern:
+    //   - Pattern 4 (arm) is TWO fast 80ms taps; Pattern 6 is THREE — this is ONE, and it is long.
+    //   - Pattern 5 (magnet advisory) is ONE short 150ms pulse — 400ms is ~2.7× longer, so a
+    //     single-pulse collision reads clearly as "long buzz" vs "short blip".
+    // 400ms (not the 350ms first proposed) was chosen to widen that margin for a by-feel signal the
+    // rider acts on without looking. Single pulse only — cannot be confused with the 5×500ms Pattern 3.
+    else if (current_vib_pattern == 7) {
+      digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(400));
+      digitalWrite(P_MOT, LOW);
       current_vib_pattern = 0;
     }
 

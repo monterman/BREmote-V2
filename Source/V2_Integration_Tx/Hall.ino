@@ -1,7 +1,10 @@
+// V2.5-Evo - 2026-07-20 - StopFeel: comment-only sync — every STOP/DISARM confirm now fires Pattern 7
+//   (one 400ms long buzz), not Pattern 4. Arm confirms still Pattern 4. Feel map + disarm-path comments
+//   below updated to match; no code change in this file.
 // V2.5-Evo - 2026-07-20 - MagGesture FIX2: the magnet is now a TOGGLE, mimicking the toggle-combo.
 //   A >=2s hold + release toggles FM (mode 1/3) or RTM (mode 2/3-at-5s): if the mode is disarmed it
 //   arms (as before); if it is ARMED it disarms via the SAME path the toggle uses — fmDisarm() for FM
-//   (0xF2/0, Pattern 4, "St") and setRtmDisarmed()→rtmDisengage() for RTM (0xF1/0, Pattern 4, "St").
+//   (0xF2/0, Pattern 7, "St") and setRtmDisarmed()→rtmDisengage() for RTM (0xF1/0, Pattern 7, "St").
 //   Was arm-only (no-op when already armed). Threshold, vibration and arm behaviour are UNCHANGED.
 // V2.5-Evo - 2026-07-20 - MagGesture: magnet/Hall arm gesture (runMagGesture()) added — hold magnet
 //   >=2s <5s then REMOVE = arm FM; hold >=5s then REMOVE = arm RTM. Advisory buzz at each threshold.
@@ -429,6 +432,9 @@ void handleGearToggle(int direction)
 //   so the rider can tell from the buzz alone which mode they just armed:
 //     1 pulse  then 2 fast (Pattern 4) = FM armed
 //     3 pulses then 2 fast (Pattern 4) = RTM armed
+//   Disarm/stop (magnet re-toggle, or any FM/RTM stop) = ONE long 400ms buzz (Pattern 7) — a single
+//   sustained buzz, deliberately unlike the two/three fast taps of an arm confirm, so the rider can
+//   tell arm from stop by feel alone.
 //
 //   MAG_ROLE_FM (mag_mode 1) / MAG_ROLE_RTM (mag_mode 2) — single-tier. There is no second
 //   tier to disambiguate, so the 2s threshold is the only one: one pulse (Pattern 5) at 2s,
@@ -480,7 +486,7 @@ bool rtmIsArming();
 // fmDisarm() and setRtmDisarmed() are the toggle-combo's own disarm paths (both static in
 // RTMState.ino, concatenated after this file). Declared static here — matching their definitions
 // so the linkage agrees — so the magnet TOGGLE can fire the identical disarm the toggle uses
-// (fmDisarm: 0xF2/0 + Pattern 4 + "St"; setRtmDisarmed→rtmDisengage: 0xF1/0 + Pattern 4 + "St").
+// (fmDisarm: 0xF2/0 + Pattern 7 + "St"; setRtmDisarmed→rtmDisengage: 0xF1/0 + Pattern 7 + "St").
 static void fmDisarm();
 static void setRtmDisarmed();
 
@@ -649,7 +655,7 @@ void runMagGesture()
       if (rtm_tx_active || rtmIsArming())
       {
         // RTM already active (or mid arm-ceremony) → DISARM through the toggle's own path.
-        // setRtmDisarmed()→rtmDisengage() sends 0xF1/0, fires Pattern 4 and shows "St" — identical
+        // setRtmDisarmed()→rtmDisengage() sends 0xF1/0, fires Pattern 7 and shows "St" — identical
         // feel and RX effect to a toggle-combo disengage. (Mid-ceremony is only theoretical here:
         // runDoubleSqueezeArm() blocks loop(), so runMagGesture() cannot be entered while arming.)
         setRtmDisarmed();
@@ -671,7 +677,7 @@ void runMagGesture()
       if (isFmArmed())
       {
         // FM already armed → DISARM via the toggle-combo's own disarm path. fmDisarm() sends 0xF2/0,
-        // fires Pattern 4 and shows "St" — so the magnet disarm feels and behaves exactly like the
+        // fires Pattern 7 and shows "St" — so the magnet disarm feels and behaves exactly like the
         // toggle disarm the owner used successfully. (This is a hard disarm, not cycleFmMode()'s
         // arm/cycle/disarm behaviour: the magnet is a pure arm↔disarm toggle.)
         fmDisarm();

@@ -38,6 +38,12 @@
 // V2.5-Evo - 2026-05-10 - SAFETY FIX: zero rtm_thr_cap_tx during arm ceremony to prevent motor runaway (see setRtmArmed)
 // V2.5-Evo - 2026-07-20 - T1: Gate 1 throttle-release disarm is now the named constant
 //   kFmGate1ReleaseMs, raised 3000 -> 30000 ms (whip gap is 10-25 s off-trigger). Threshold and dead band unchanged.
+// V2.5-Evo - 2026-07-20 - StopFeel: every STOP/DISARM confirm now fires Pattern 7 (one 400ms long pulse)
+//   instead of Pattern 4 (two 80ms taps), so arm and disarm feel different by touch. Changed sites:
+//   rtmDisengage() (RTM disengage), fmDisarm() (FM disarm), the runDoubleSqueezeArm() pre-arm "St"
+//   rejection, and both F0-disarm paths (cycleFmMode / cycleFmModeArmed). ARM confirms are UNCHANGED and
+//   stay Pattern 4: setRtmArmed(), the two runDoubleSqueezeArm() squeeze confirms, and the cycleFmMode()
+//   arm path. fmSilentDisarm() stays silent (arm-window expiry is not a commanded stop).
 
 extern volatile uint8_t current_vib_pattern;
 extern float rtm_arm_dist_m;  // defined in BREmote_V2_Tx.h — captured at RTM engage moment
@@ -128,7 +134,7 @@ void setRtmArmed()
 }
 
 // ---- Called to disengage RTM from the gesture layer (user-initiated) ----
-// Pattern 4 + "St P" now handled inside rtmDisengage().
+// STOP confirm (Pattern 7) + "St" now handled inside rtmDisengage().
 static void setRtmDisarmed()
 {
   rtmDisengage();
@@ -149,8 +155,8 @@ static void rtmDisengage()
   rtm_arm_gps_timeout_override = 0;  // clear GPS timeout multiplier — ceremony fully over
   queueMetaPacketBurst(0xF1, 0);  // tell RX: RTM inactive
 
-  // Fire Pattern 4 BEFORE the blocking display so vibration runs during the 2s flash
-  current_vib_pattern = 4;  // 2 fast short = RTM disengage confirm
+  // Fire the STOP confirm BEFORE the blocking display so vibration runs during the 2s flash
+  current_vib_pattern = 7;  // Pattern 7: one 400ms long buzz = RTM disengage/STOP confirm
 
   // Large-font stop confirm: LET_S(32) renders as "5", LET_T(20) renders as "t".
   // "5t" appearance is intentional — matches large-font style of F0-F3 confirms.
@@ -279,7 +285,7 @@ static void runDoubleSqueezeArm()
                                         // the 4× override stale; all other exits
                                         // (timeouts + rtmDisengage) already clear it
     rtm_thr_cap_tx = 255;              // restore throttle passthrough — arm rejected
-    current_vib_pattern = 4;
+    current_vib_pattern = 7;           // Pattern 7: one 400ms long buzz = STOP confirm (arm aborted, no mode armed)
     // Large-font stop confirm on arm rejection.
     DISP_LOCK(); displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
     gpsKeepAliveDelay(2000);
@@ -466,7 +472,7 @@ static void fmDisarm()
   fm_throttle_seen = false;
   fm_last_sync_ms  = 0;            // Change E: clear keepalive timer
   queueMetaPacketBurst(0xF2, 0);   // mode 0 = FM disabled on RX (followme_mode=0)
-  current_vib_pattern = 4;         // Pattern 4: 2 fast buzzes = disarm confirm
+  current_vib_pattern = 7;         // Pattern 7: one 400ms long buzz = FM STOP/disarm confirm
   // Large-font stop confirm on FM disarm.
   DISP_LOCK(); displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
   gpsKeepAliveDelay(2000);
@@ -494,9 +500,9 @@ void cycleFmMode()
       if (last_fm_mode == 0)
       {
         // F0: FM disabled — disarm with brief visual confirm and return to normal display.
-        // Sends 0xF2/0 to RX (FM off), fires Pattern 4, resets mode to SPIFFS default.
+        // Sends 0xF2/0 to RX (FM off), fires Pattern 7 (STOP confirm), resets mode to SPIFFS default.
         // This is RAM-only; power cycle restores usrConf.followme_mode.
-        current_vib_pattern = 4;
+        current_vib_pattern = 7;         // Pattern 7: one 400ms long buzz = FM STOP/disarm confirm
         // Large-font F0 disarm confirm: LET_F + 0. Shorter hold (1s) — this is a disarm, not a mode select.
         DISP_LOCK();
         displayDigits(LET_F, 0);

@@ -877,11 +877,14 @@ void vibrationTask(void *parameter) {
     // so reusing it would give the rider two identical double-buzzes separated only by the
     // release — indistinguishable by feel. Three pulses makes both tiers unambiguous:
     //   1 pulse then 2 = FM armed;  3 pulses then 2 = RTM armed.
-    // 80ms on/off matches Pattern 4's cadence so it reads as the same family of "fast" buzz.
+    // V2.5-Evo - 2026-07-20 - TapFeel: was 80ms on/80ms off — three taps that fast blur into one
+    // buzz. Now 100ms on / 150ms off so they read UNMISTAKABLY as THREE distinct taps. Still lighter
+    // and quicker than the two firm arm taps (Pattern 4 = 130ms/250ms), and the count (3 vs 2) keeps
+    // them distinct regardless.
     else if (current_vib_pattern == 6) {
       for (int i = 0; i < 3; i++) {
-        digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(80));
-        digitalWrite(P_MOT, LOW);  vTaskDelay(pdMS_TO_TICKS(80));
+        digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(100));
+        digitalWrite(P_MOT, LOW);  vTaskDelay(pdMS_TO_TICKS(150));
       }
       current_vib_pattern = 0;
     }

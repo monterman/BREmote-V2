@@ -1,6 +1,11 @@
+// V2.5-Evo - 2026-07-20 - MagGesture FIX2: the magnet is now a TOGGLE, mimicking the toggle-combo.
+//   A >=2s hold + release toggles FM (mode 1/3) or RTM (mode 2/3-at-5s): if the mode is disarmed it
+//   arms (as before); if it is ARMED it disarms via the SAME path the toggle uses — fmDisarm() for FM
+//   (0xF2/0, Pattern 4, "St") and setRtmDisarmed()→rtmDisengage() for RTM (0xF1/0, Pattern 4, "St").
+//   Was arm-only (no-op when already armed). Threshold, vibration and arm behaviour are UNCHANGED.
 // V2.5-Evo - 2026-07-20 - MagGesture: magnet/Hall arm gesture (runMagGesture()) added — hold magnet
 //   >=2s <5s then REMOVE = arm FM; hold >=5s then REMOVE = arm RTM. Advisory buzz at each threshold.
-//   Arm-only: no-op if FM/RTM already armed. Reads P_MAG without touching the SW33b bt_dot_state machine.
+//   Reads P_MAG without touching the SW33b bt_dot_state machine.
 //   Role selected by the new mag_mode SPIFFS field (0=off/not fitted default, 1=FM, 2=RTM, 3=FM+RTM).
 // V2.5-Evo - 2026-05-16 - SW56: stop WiFi AP synchronously before unlockAnimation() — AP was running during frames, WiFi stack tasks preempted Core 0 causing last-frame stutter on first boot unlock only
 // V2.5-Evo - 2026-07-18 - Arm-hold now SPIFFS-tunable: combo hold reads rtm_hold_duration_s (RTM LEFT-hold) / fm_hold_duration_s (FM RIGHT-hold) instead of a hardcoded 5000ms. Both 4-10s (ConfigService-clamped). No struct/SW_VERSION change.
@@ -439,11 +444,12 @@ void handleGearToggle(int direction)
 //   advisory — they mean "let go now and you will get X". The arming happens only when
 //   the magnet actually leaves.
 //
-// ARM ONLY (v1)
-//   If FM or RTM is already armed/active, the gesture is a deliberate no-op. cycleFmMode()
-//   is a toggle: calling it while armed would cycle the mode or disarm instead of arming.
-//   Disarming stays on its existing paths (toggle combo, F0 cycle, arm-window expiry,
-//   RTM preemption).
+// TOGGLE (v2)
+//   The gesture mimics what the toggle-combo can do: it both arms AND disarms. On removal, if the
+//   selected mode is disarmed it arms; if it is armed it disarms through the toggle's own disarm
+//   path — fmDisarm() for FM, setRtmDisarmed()/rtmDisengage() for RTM — so the haptic feel and the
+//   RX effect are identical to the toggle-combo disarm. FM and RTM stay mutually exclusive: RTM
+//   active/arming blocks any FM toggle, and arming RTM disarms FM first (setRtmArmed()).
 //
 // ARMING WHILE ON THE THROTTLE IS INTENTIONAL
 //   Unlike the toggle combos, this gesture does NOT require a released throttle. The approved
@@ -461,9 +467,9 @@ void handleGearToggle(int direction)
 //
 // INPUTS:  P_MAG (GPIO 9, DRV5032FADBZR, LOW = magnet present), mag_seen_high boot guard
 // OUTPUTS: none (void)
-// SIDE EFFECTS: may call cycleFmMode() or setRtmArmed(), both of which BLOCK for several
-//   seconds (display confirms / squeeze ceremony), and may fire current_vib_pattern.
-//   MUST therefore be called from loop() only — never from a FreeRTOS task.
+// SIDE EFFECTS: may call cycleFmMode()/setRtmArmed() to arm, or fmDisarm()/setRtmDisarmed() to
+//   disarm — all of which BLOCK for several seconds (display confirms / squeeze ceremony) and may
+//   fire current_vib_pattern. MUST therefore be called from loop() only — never from a FreeRTOS task.
 // ============================================================
 
 // current_vib_pattern is defined in System.ino, which the Arduino build concatenates
@@ -471,6 +477,12 @@ void handleGearToggle(int direction)
 extern volatile uint8_t current_vib_pattern;
 // rtmIsArming() is defined in RTMState.ino (also concatenated after this file).
 bool rtmIsArming();
+// fmDisarm() and setRtmDisarmed() are the toggle-combo's own disarm paths (both static in
+// RTMState.ino, concatenated after this file). Declared static here — matching their definitions
+// so the linkage agrees — so the magnet TOGGLE can fire the identical disarm the toggle uses
+// (fmDisarm: 0xF2/0 + Pattern 4 + "St"; setRtmDisarmed→rtmDisengage: 0xF1/0 + Pattern 4 + "St").
+static void fmDisarm();
+static void setRtmDisarmed();
 
 // ---- Gesture timing constants (compile-time only — deliberately NOT SPIFFS fields, no confStruct change) ----
 static const uint32_t kMagFmHoldMs   = 2000UL;   // hold >= this and release before kMagRtmHoldMs → arm FM
@@ -631,25 +643,42 @@ void runMagGesture()
 
     if (want_rtm)
     {
-      // ---- arm RTM ----
-      // ARM ONLY: skip if RTM is already active or mid-ceremony.
-      if (rtm_tx_active || rtmIsArming()) return;
-      if (usrConf.rtm_enabled && usrConf.gps_en)
+      // ---- toggle RTM ----
+      // Bail out entirely if RTM isn't usable — same guard the toggle path applies.
+      if (!(usrConf.rtm_enabled && usrConf.gps_en)) return;
+      if (rtm_tx_active || rtmIsArming())
       {
-        // setRtmArmed() is only the gesture half of RTM arming: it disarms FM (mutual
-        // exclusion), sets RTM_ARMED, zeroes rtm_thr_cap_tx, then runs the blocking
+        // RTM already active (or mid arm-ceremony) → DISARM through the toggle's own path.
+        // setRtmDisarmed()→rtmDisengage() sends 0xF1/0, fires Pattern 4 and shows "St" — identical
+        // feel and RX effect to a toggle-combo disengage. (Mid-ceremony is only theoretical here:
+        // runDoubleSqueezeArm() blocks loop(), so runMagGesture() cannot be entered while arming.)
+        setRtmDisarmed();
+      }
+      else
+      {
+        // RTM disarmed → ARM. setRtmArmed() is only the gesture half of RTM arming: it disarms FM
+        // (mutual exclusion), sets RTM_ARMED, zeroes rtm_thr_cap_tx, then runs the blocking
         // runDoubleSqueezeArm() throttle-squeeze ceremony — exactly as the toggle path does.
         setRtmArmed();
       }
     }
     else
     {
-      // ---- arm FM ----
-      // ARM ONLY: cycleFmMode() is a toggle. Calling it while FM is armed would cycle the
-      // mode or disarm; calling it while RTM runs would fight the mutual-exclusion rule.
-      if (isFmArmed() || rtm_tx_active || rtmIsArming()) return;
-      if (usrConf.fm_override_enabled && usrConf.gps_en)
+      // ---- toggle FM ----
+      // Mutual exclusion: never touch FM while RTM is active or mid-ceremony.
+      if (rtm_tx_active || rtmIsArming()) return;
+      if (!(usrConf.fm_override_enabled && usrConf.gps_en)) return;
+      if (isFmArmed())
       {
+        // FM already armed → DISARM via the toggle-combo's own disarm path. fmDisarm() sends 0xF2/0,
+        // fires Pattern 4 and shows "St" — so the magnet disarm feels and behaves exactly like the
+        // toggle disarm the owner used successfully. (This is a hard disarm, not cycleFmMode()'s
+        // arm/cycle/disarm behaviour: the magnet is a pure arm↔disarm toggle.)
+        fmDisarm();
+      }
+      else
+      {
+        // FM disarmed → ARM. cycleFmMode() arms at last_fm_mode when FM is not currently armed.
         cycleFmMode();
       }
     }

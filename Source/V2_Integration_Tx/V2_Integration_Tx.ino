@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-07-20 - MagGesture FIX1: with mag_mode>0 the Hall is EXCLUSIVELY the FM/RTM gesture input — the SW33b tap→bt_dot_state (BLE-session) toggle is gated OFF and the BT dot is instead driven from BLE state (bt_enabled==2/boot-gesture). mag_mode==0 SW33b behaviour is byte-identical to baseline.
 // V2.5-Evo - 2026-07-20 - MagGesture: runMagGesture() called from loop() after the SW33b Hall block; prototype added
 // *** LATEST: V2.5-Evo - 2026-05-15 - feature/bluetooth Tier 1: NUS skeleton (BLE.ino); bt_enabled SPIFFS field; boot gesture; bleInitTask 5s delayed ***
 // V2.5-Evo - 2026-05-14 - SW55 — bootAnimation VI 250ms / voltage 1450ms; padlock at ~4.5s total boot
@@ -171,6 +172,16 @@ void loop()
 
   // V2.5-Evo - 2026-05-13 - SW33b: Hall mag sensor (P_MAG / GPIO 9) — polled every 20ms.
   // Drives bt_dot_state: short hold (400ms-4999ms) toggles OFF/SLOW; long hold (5s+) → FAST; FAST + any release → OFF.
+  //
+  // V2.5-Evo - 2026-07-20 - MagGesture FIX1: THE BUG — with mag_mode>0 and the DRV5032 fitted, a short
+  // magnet tap fell through this legacy SW33b path and toggled bt_dot_state, which for bt_enabled==1
+  // toggles the BLE session on/off (see BLE.ino bleTelemetryLoop active-gate) and always flips the BT
+  // status dot. That collided with the FM/RTM magnet gesture: a sub-2s tap that armed nothing still
+  // flipped BLE/the dot. THE FIX — when mag_mode>0 the Hall is EXCLUSIVELY the FM/RTM gesture input:
+  // the tap→bt_dot_state toggle below is gated to mag_mode==0 only, and with mag_mode>0 the dot is
+  // driven from the actual BLE state instead (bt_enabled==2 "always on" / boot-gesture bt_session_forced),
+  // so a magnet tap can never change BLE or the dot. mag_seen_high is still updated unconditionally
+  // (runMagGesture() depends on it). When mag_mode==0 this block is byte-identical to baseline.
   {
     static bool     mag_was_low   = false;
     static uint32_t mag_low_since = 0;
@@ -184,8 +195,10 @@ void loop()
       {
         mag_low_since = millis();
       }
-      if (!mag_low && mag_was_low)
+      if (!mag_low && mag_was_low && usrConf.mag_mode == 0)
       {
+        // Legacy SW33b tap→BLE-session/dot toggle. Gated to mag_mode==0: only runs when the magnet
+        // is NOT being used as the FM/RTM gesture input, so the two inputs can never collide.
         uint32_t held_ms = millis() - mag_low_since;
         if (bt_dot_state == BT_DOT_FAST)
         {
@@ -199,6 +212,14 @@ void loop()
         {
           bt_dot_state = (bt_dot_state == BT_DOT_OFF) ? BT_DOT_SLOW : BT_DOT_OFF;
         }
+      }
+      // With mag_mode>0 the magnet no longer owns the dot. Reflect the real BLE state instead:
+      // BT_DOT_SLOW (the "advertising/on" indication used by Init.ino for bt_enabled==2) when BLE
+      // is up via the always-on setting or the boot gesture, otherwise OFF. This is re-derived every
+      // poll from config, never from a magnet edge, so the gesture can never change it.
+      if (usrConf.mag_mode > 0)
+      {
+        bt_dot_state = (usrConf.bt_enabled == 2 || bt_session_forced) ? BT_DOT_SLOW : BT_DOT_OFF;
       }
       mag_was_low = mag_low;
     }

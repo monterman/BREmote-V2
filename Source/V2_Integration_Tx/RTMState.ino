@@ -453,6 +453,44 @@ static bool          fm_throttle_seen = false;  // becomes true once thr_scaled>
 // Returns true if FM is currently armed; called by Hall.ino to intercept LEFT hold 2s
 bool isFmArmed() { return fm_armed; }
 
+// V2.5-Evo - 2026-07-20 - Batch T: previous telemetry.fm_flags snapshot for bit3 (fault-stop)
+// rising-edge detection in runFmLoop(). Updated every runFmLoop() tick so re-arming always
+// starts from a fresh baseline (no stale edge). RAM only.
+static uint8_t fm_flags_prev = 0;
+
+// ============================================================
+// V2.5-Evo - 2026-07-20 - Batch T (Fable FM v1.4): FM arm-time and display readiness gating.
+// All inputs are TX-LOCAL (paired flag, own GPS fix/age, last-reply age) plus the RX's own
+// armed-not-ready bit — instant, zero telemetry dependency, no new confStruct field. Called
+// only from the loop task (core 1): fmFundamentalReject() from cycleFmMode(), fmArmedNotReady()
+// from updateR5ProximityBar() via the render path. gps_tx access stays on core 1 (invariant).
+// ============================================================
+
+// FUNDAMENTAL arm-time reject — the three conditions under which arming would be a lie AND a
+// rider genuinely mid-tow cannot be in, so false-refusal ≈ 0. Everything else (transient GPS
+// staleness, a momentary packet gap, high HDOP) is NOT fundamental: it arms as NOT-READY, so a
+// brief mid-tow glitch never blocks the magnet. Returns true = refuse the fresh arm.
+bool fmFundamentalReject()
+{
+  if (!usrConf.paired)                return true;   // never paired
+  if (last_packet == 0)               return true;   // no RX packet ever this session
+  if (!gps_tx.location.isValid())     return true;   // no TX GPS fix ever this session (isValid latches on first fix)
+  return false;
+}
+
+// ARMED-NOT-READY vs READY — the OR of the RX's armed-not-ready bit (bit2) with the TX-local
+// transient readiness set. Any not-ready input → true (scanner blinks in place). None → false
+// (scanner sweeps). Flips live each render, so the "now it's good" moment appears for free.
+bool fmArmedNotReady()
+{
+  if (telemetry.fm_flags & FM_FLAG_NOTREADY)                          return true;  // RX half: latch not yet proven
+  if (!usrConf.paired)                                               return true;  // pairing lost
+  if (last_packet == 0 || (millis() - last_packet) >= FM_LINK_HEALTHY_MS) return true;  // RX telemetry not recent / link unhealthy
+  if (!(gps_tx.location.isValid() &&
+        gps_tx.location.age() < (unsigned long)usrConf.tx_gps_stale_timeout_ms))  return true;  // TX GPS fix missing or stale
+  return false;  // all TX-local inputs fresh AND RX not-ready clear → READY → sweep
+}
+
 // Silent disarm: clears FM state and notifies RX, but shows no display and fires no haptic.
 // Used when arm-window expires before any throttle input — nothing active to confirm.
 static void fmSilentDisarm()
@@ -532,6 +570,20 @@ void cycleFmMode()
     return;
   }
 
+  // V2.5-Evo - 2026-07-20 - Batch T (Fable FM v1.4): FUNDAMENTAL arm-time reject.
+  // Reached only on a FRESH arm (fm_armed was false above). Covers BOTH entry points — the
+  // toggle combo AND the magnet gesture both funnel through cycleFmMode() when disarmed. On a
+  // fundamental not-ready state the arm DOES NOT TAKE: fire Pattern 7 (long stop buzz) + "St",
+  // leave fm_armed false, and return. Marginal/transient conditions are deliberately NOT checked
+  // here — they arm as NOT-READY (fmArmedNotReady()) so the magnet still arms through a glitch.
+  if (fmFundamentalReject())
+  {
+    current_vib_pattern = 7;         // Pattern 7: one long buzz = STOP/reject (arm refused)
+    DISP_LOCK(); displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
+    gpsKeepAliveDelay(2000);
+    return;                          // arm refused — no fm_armed, no 0xF2, no keepalive
+  }
+
   // V2.5-Evo - 2026-04-28 - Change B: On first arm this session, seed last_fm_mode from SPIFFS.
   // usrConf.followme_mode is the user's configured starting mode (range 1-3; 0 is invalid here).
   // After seeding, fm_session_init_done prevents overriding any mode the user cycled to mid-session.
@@ -605,16 +657,42 @@ void cycleFmModeArmed()
 // Handles arm-window auto-disarm and Gate 1 (throttle-release disarm).
 void runFmLoop()
 {
-  if (!fm_armed) return;
-
   unsigned long now = millis();
+
+  // V2.5-Evo - 2026-07-20 - Batch T (Fable FM v1.4): DISARM OWNERSHIP — the display can't lie.
+  // The RX owns engagement; on an RX fault it stops FM and raises fm_flags bit3 (fault-stop),
+  // held sticky ~6s so this ~110ms loop is guaranteed to catch the rising edge across the
+  // ~2.4s telemetry rotation. On that rising edge, while WE still believe we are armed, the TX
+  // must clear its own arm and STOP re-declaring 0xF2/mode — otherwise the 30s keepalive below
+  // would re-arm the RX within 30s of a fault. fmDisarm() does exactly that: fm_armed=false
+  // (so this function early-returns next tick and the keepalive never fires), queues 0xF2/0
+  // (belt-and-suspenders — RX already idle), and shows the stop as "St" + Pattern 7. bit3 is
+  // already surprise-gated on the RX, so it is only set when the alarm is warranted — no TX
+  // re-gating needed. fm_flags_prev is updated every tick (armed or not) so a re-arm starts clean.
+  uint8_t fm_flags_now = telemetry.fm_flags;
+  bool fault_rising = (fm_flags_now & FM_FLAG_FAULT) && !(fm_flags_prev & FM_FLAG_FAULT);
+  fm_flags_prev = fm_flags_now;
+  if (fm_armed && fault_rising)
+  {
+    fmDisarm();   // clears fm_armed + keepalive, sends 0xF2/0, "St" + Pattern 7 — TX & RX can't disagree
+    return;
+  }
+
+  if (!fm_armed) return;
 
   // Arm-window auto-disarm: if user never applied throttle since arming, disarm after fm_arm_window_s
   if (!fm_throttle_seen)
   {
     if (now - fm_arm_ms > (unsigned long)usrConf.fm_arm_window_s * 1000UL)
     {
-      fmSilentDisarm();   // arm window expired before first throttle — no confirm needed
+      // V2.5-Evo - 2026-07-20 - Batch T (A2 D1): the silent disarm is no longer fully silent.
+      // The scanner going dark is the primary signal; add ONE short blip (Pattern 5, a single
+      // 150ms pulse) as a NUDGE so a rider relying on the long arm window isn't left believing
+      // he is still armed. Distinct by feel from the two-tap arm (Pattern 4) and the long stop
+      // buzz (Pattern 7). Placed at the call site (not inside fmSilentDisarm) so it fires ONLY on
+      // arm-window expiry, never on the RTM-preemption path that also calls fmSilentDisarm().
+      fmSilentDisarm();   // arm window expired before first throttle — no blocking confirm
+      current_vib_pattern = 5;   // nudge: one short blip
       return;
     }
   }

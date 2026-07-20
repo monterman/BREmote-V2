@@ -54,6 +54,9 @@ void setRtmArmed();
 void cycleFmMode();
 void cycleFmModeArmed();
 bool isFmArmed();
+// V2.5-Evo - 2026-07-20 - Batch T: FM readiness helpers (defined in RTMState.ino, called from Display.ino).
+bool fmArmedNotReady();     // true when FM is armed but not READY → scanner blinks in place instead of sweeping
+bool fmFundamentalReject(); // true when a fresh FM arm must be refused (unpaired / no packet ever / no GPS fix ever)
 uint8_t calcRtmThrottleCap();
 // RTM/FM Active Display (defined in Display.ino)
 void renderRtmInfoDisplay();

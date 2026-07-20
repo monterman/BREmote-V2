@@ -1162,21 +1162,36 @@ void renderRtmInfoDisplay()
 
 // ============================================================
 // V2.5-Evo - 2026-04-28 - P9 S4: R5 PROXIMITY BAR
-// Active during RTM or FM armed. Blinks 1000 ms on / 500 ms off.
-// Suppressed during showFullScreenMessage() — buffer is cleared
-// and this function is not called during blocking messages.
+// V2.5-Evo - 2026-07-20 - Batch T (Fable FM v1.4): FM path is now STATE-DRIVEN from
+//   telemetry.fm_flags + TX-local state. Suppressed during showFullScreenMessage() (buffer
+//   cleared, not called during blocking messages). All R5 writes stay inside displayBuffer[6]
+//   under the caller's displayMutex (renderOperationalDisplay / renderRtmInfoDisplay hold it),
+//   so no tearing; no blocking, no delays — pure presentation.
 //
-// RTM: square-root curve from arm distance to 0.
-//   rtm_arm_dist_m captured at engage; pixels = round(sqrt(current/arm)*10), 0-10.
-//   Bar fills C0→C9 (left to right) and shrinks from right as buggy closes in.
-// FM:  R5 is cleared; FM proximity bar deferred to Priority 10 (stub removed — Bug3).
+// RTM (unchanged): blinks 1000/500; square-root curve, GROW-WITH-FAR (full = at arm distance,
+//   shrinks from the right as the buggy closes). rtm_arm_dist_m is the 100% reference.
+//
+// FM R5 states:
+//   Disarmed (!fm_armed)                 → R5 fully OFF (absence = "not armed").
+//   ARMED-READY  (armed, !engaged, ready)→ 3-px Knight-Rider scanner SWEEPS C0→C9→C0, one step
+//                                           per ~200ms (matches the bargraph tick cadence).
+//   ARMED-NOT-READY (armed, !engaged,    → same 3-px segment BLINKS IN PLACE (centered), no sweep
+//     any not-ready per fmArmedNotReady())  — "armed, waiting on GPS/link"; flips to sweep live.
+//   ENGAGED (fm_flags bit1, link fresh)  → static distance bar, GROW-WITH-FAR (same direction as
+//                                           RTM for consistency), center-expanding, SPIFFS-scaled
+//                                           full-scale from usrConf.fm_warn_distance_m (existing
+//                                           field — no new confStruct field).
 // ============================================================
 void updateR5ProximityBar()
 {
   static unsigned long r5_blink_ms    = 0;
   static bool          r5_blink_state = false;
+  // Scanner sweep state (ARMED-READY): 3-px segment ping-pongs across C0..C9, one step per ~200ms.
+  static unsigned long r5_scan_ms  = 0;
+  static int8_t        r5_scan_pos = 0;   // left column of the 3-px segment; bounds 0..COLS-3
+  static int8_t        r5_scan_dir = 1;   // +1 sweeping right, -1 sweeping left
 
-  // Blink: 1000 ms on, 500 ms off
+  // Blink: 1000 ms on, 500 ms off — used by the RTM bar and the FM armed-not-ready blink-in-place.
   unsigned long now = millis();
   if (r5_blink_state)
   {
@@ -1189,10 +1204,11 @@ void updateR5ProximityBar()
 
   displayBuffer[6] = 0x0000;  // clear R5 before every call
 
-  if (!r5_blink_state) return;  // off phase — leave R5 dark
-
+  // ---- RTM proximity bar (unchanged): blinks, GROW-WITH-FAR (full = far) ----
   if (rtm_tx_active)
   {
+    if (!r5_blink_state) return;  // off phase — leave R5 dark
+
     uint8_t d = telemetry.rtm_distance;
     if (d == 0xFF) return;  // no distance data — leave R5 dark
 
@@ -1206,41 +1222,66 @@ void updateR5ProximityBar()
 
     float ratio = current_m / rtm_arm_dist_m;
     if (ratio > 1.0f) ratio = 1.0f;
-    uint8_t pixels = (uint8_t)(sqrtf(ratio) * 10.0f + 0.5f);
+    uint8_t pixels = (uint8_t)(sqrtf(ratio) * 10.0f + 0.5f);  // full at arm distance, shrinks as it closes
     if (pixels > 10) pixels = 10;
 
     for (uint8_t c = 0; c < pixels; c++)
       displayBuffer[6] |= (1u << c);
+    return;
   }
-  else if (fm_armed)
+
+  // ---- FM R5 row (Batch T): state-driven from fm_flags + TX-local readiness ----
+  if (!fm_armed) return;  // Disarmed → R5 fully OFF
+
+  uint8_t f = telemetry.fm_flags;
+  bool link_recent = (last_packet != 0 && (now - last_packet) < FM_LINK_HEALTHY_MS);
+
+  // ENGAGED → static distance bar, GROW-WITH-FAR, SPIFFS-scaled, center-expanding.
+  // Reuses the RX→TX distance byte (telemetry.rtm_distance). Full-scale = fm_warn_distance_m so
+  // the bar fills as the buggy falls behind and is full at the proximity-warn threshold. Same
+  // GROW-WITH-FAR direction as the RTM bar above (one physical row, one meaning across modes).
+  if (link_recent && (f & FM_FLAG_ENGAGED))
   {
-    // FM proximity bar: center-expanding from C4+C5 outward.
-    // Full bar (C0-C9, 10 pixels) = buggy right next to user (0 m).
-    // Sweet-spot distance (half_width=1) = just C4+C5 lit (2 center pixels).
-    // Bar grows outward symmetrically as buggy gets closer; dark when >= 30 m.
-    // Uses the same telemetry.rtm_distance byte the RX always sends (RX→TX distance).
     uint8_t d = telemetry.rtm_distance;
-    if (d == 0xFF) return;  // no distance data from RX — leave R5 dark
+    if (d == 0xFF) return;  // no distance data — leave R5 dark
 
     float current_m = (d < 100) ? d / 10.0f : (float)(d - 90);
-
-    const float FM_BAR_REF_M = 30.0f;  // reference distance: bar is dark at this distance or beyond
-    float dist_ratio = current_m / FM_BAR_REF_M;
+    float ref_m = (float)usrConf.fm_warn_distance_m;   // dynamic SPIFFS full-scale reference
+    if (ref_m < 1.0f) ref_m = 30.0f;                   // guard against a zero/invalid config
+    float dist_ratio = current_m / ref_m;
     if (dist_ratio > 1.0f) dist_ratio = 1.0f;
 
-    // half_width: 0=dark, 1=C4+C5, 2=C3-C6, 3=C2-C7, 4=C1-C8, 5=C0-C9 (all 10 pixels)
-    uint8_t half_width = (uint8_t)((1.0f - dist_ratio) * 5.0f + 0.5f);
+    // GROW-WITH-FAR: near → just the centre pair (C4+C5); far → full 10-px bar. Never fully dark
+    // while engaged (half_width 1..5) so ENGAGED always reads distinct from the OFF/scanner states.
+    uint8_t half_width = 1 + (uint8_t)(dist_ratio * 4.0f + 0.5f);
     if (half_width > 5) half_width = 5;
-
-    // Set bits symmetrically outward from C4 (bit 4) and C5 (bit 5)
     for (uint8_t i = 0; i < half_width; i++)
     {
-      displayBuffer[6] |= (1u << (4 - i));  // left half:  C4, C3, C2, C1, C0
+      displayBuffer[6] |= (1u << (4 - i));  // left  half: C4, C3, C2, C1, C0
       displayBuffer[6] |= (1u << (5 + i));  // right half: C5, C6, C7, C8, C9
     }
+    return;
   }
-  // V2.5-Evo - 2026-04-28 - Bug3 history: dead FM stub was removed because this function
-  // was only called from renderRtmInfoDisplay() (rtm_tx_active path). Now that
-  // renderOperationalDisplay() also calls updateR5ProximityBar() for the FM path,
-  // the fm_armed branch above is reachable. Priority 10 complete.
+
+  // ARMED (not engaged) → 3-px Knight-Rider scanner. READY = sweep, NOT-READY = blink in place.
+  const uint8_t SCAN_COLS = 10;
+  const uint8_t SCAN_SEG  = 3;   // 3-px segment (A3 correction), position bounds 0..COLS-3
+  if (fmArmedNotReady())
+  {
+    // NOT-READY → segment blinks in place (centred), no sweep: "armed, waiting on GPS/link".
+    if (!r5_blink_state) return;                         // off phase — dark
+    const uint8_t center = (SCAN_COLS - SCAN_SEG) / 2;   // = 3 → C3, C4, C5
+    for (uint8_t i = 0; i < SCAN_SEG; i++) displayBuffer[6] |= (1u << (center + i));
+    return;
+  }
+
+  // READY → sweep the 3-px segment one step per ~200ms, ping-pong C0→C9→C0.
+  if (now - r5_scan_ms >= 200UL)
+  {
+    r5_scan_ms = now;
+    r5_scan_pos += r5_scan_dir;
+    if (r5_scan_pos >= (int8_t)(SCAN_COLS - SCAN_SEG)) { r5_scan_pos = SCAN_COLS - SCAN_SEG; r5_scan_dir = -1; }
+    else if (r5_scan_pos <= 0)                          { r5_scan_pos = 0;                    r5_scan_dir =  1; }
+  }
+  for (uint8_t i = 0; i < SCAN_SEG; i++) displayBuffer[6] |= (1u << (r5_scan_pos + i));
 }

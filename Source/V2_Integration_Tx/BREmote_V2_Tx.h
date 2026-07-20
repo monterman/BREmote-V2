@@ -22,6 +22,10 @@
 // (The confStruct FIELD default remains documented as 0 = opt-in; only this device-tuned
 // defaultConf initializer carries the 1.)
 // ============================================================
+// V2.5-Evo - 2026-07-20 - Batch T (FM v1.4): TelemetryPacket index 16 reserved_tx_imu repurposed as fm_flags
+//   ([0]armed [1]engaged [2]armed-not-ready [3]fault-stop-sticky) + FM_FLAG_* / FM_LINK_HEALTHY_MS defines.
+//   No struct size change (byte already present), no confStruct change — sizeof(confStruct) stays 136,
+//   SW_VERSION stays 27, static_assert intact, SPIFFS config NOT reset by this flash.
 // V2.5-Evo - 2026-05-13 - SW50: DISPLAY_MODE_AMP replaces INTBAT; TelemetryPacket +foil_motor_amps byte (index 6); link_quality→index 7
 // V2.5-Evo - 2026-05-13 - SW48: DISP_LOCK/UNLOCK macros; mutex all bare display callers outside renderOperationalDisplay/updateBargraphs
 // V2.5-Evo - 2026-05-13 - SW46: DISPLAY_MODE order — Temp(0)/Thr(1)/Speed(2)/Power(3)/Bat(4)/IntBat(5); THR centre, LEFT=Temp, RIGHT=Speed
@@ -460,10 +464,28 @@ struct __attribute__((packed)) TelemetryPacket {
     uint8_t rx_heading = 0xFF;        // index 13 — GPS COG÷2 (0-179→0-358°); 0xFF = N/A
     uint8_t fm_heading_err = 127;     // index 14 — bearing error+127; 127 = no data
     uint8_t fm_status = 0;            // index 15 — [7]=aux2_on [6]=aux1_on [5]=vesc_online [4]=rx_wetness [3:2]=heading_conf [1]=rtm_active [0]=fm_active
-    uint8_t reserved_tx_imu = 0xFF;   // index 16 — RESERVED: future TX IMU wipeout flags
+    uint8_t fm_flags = 0;             // index 16 — Follow-Me engagement sub-state from the RX FM brain.
+                                      //   [0]=armed [1]=engaged [2]=armed-not-ready(RX: latch not proven) [3]=fault-stop(sticky 6s).
+                                      //   V2.5-Evo - 2026-07-20 - Batch T: repurposed the unused reserved_tx_imu byte (was 0xFF).
+                                      //   Default 0 (not 0xFF) so that before any RX packet arrives no FM bit reads as set — matches
+                                      //   the RX-side default. Written by the generic index-addressed telemetry unpack in Radio.ino.
     uint8_t rx_bearing_to_tx = 0xFF;  // index 17 — bearing from buggy toward rider÷2; 0xFF = N/A
     uint8_t link_quality = 0;         // index 18 (must be last)
 } telemetry;
+
+// ============================================================
+// V2.5-Evo - 2026-07-20 - Batch T (Fable FM v1.4): telemetry.fm_flags (index 16) bit map.
+// The RX FM brain assembles this byte; the new TX consumes it to drive the R5 display and the
+// disarm-ownership rule. An OLD TX ignores index 16 entirely (it was a reserved byte).
+// ============================================================
+#define FM_FLAG_ARMED     0x01  // bit0: RX FM armed
+#define FM_FLAG_ENGAGED   0x02  // bit1: RX FM engaged (actively steering / capping)
+#define FM_FLAG_NOTREADY  0x04  // bit2: RX-side armed-not-ready (separation latch not yet proven)
+#define FM_FLAG_FAULT     0x08  // bit3: RX fault-stop, sticky 6s (already surprise-gated on the RX)
+// Link-health window: the TX treats the RX link as alive only while a packet has landed within
+// this many ms (matches the existing `millis()-last_packet < 1000` failsafe window used for the
+// bargraphs/vibration connectivity checks). Used by the FM readiness OR and the engaged gate.
+#define FM_LINK_HEALTHY_MS 1000UL
 
 /*
 ** FreeRTOS/Task handles

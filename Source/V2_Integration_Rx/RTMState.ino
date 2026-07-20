@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-07-19 - Rex hardening: reset D-term continuity statics (prev_heading_src_valid/prev_heading_error_deg/prev_steering_update_ms) in the override-disabled early return so an off->on toggle can't differentiate a stale error across the gap
 // V2.5-Evo - 2026-07-19 - FM triage (Fable audit §5): (1) no-fix engagement guard — getRtmHeading() returns confidence 0 unless a fresh RX GPS fix exists, so RTM/FM cannot report confidence 2 or engage with datetime_unix=0; (2) D-term differentiated only across consecutive same heading-source samples — skip the step on a source switch (COG<->compass) or a compass-snapshot re-snap to kill the ±300°/s Kd spikes
 // V2.5-Evo - 2026-05-22 - SW32: Two-phase RTM throttle — align phase suppresses throttle until heading < rtm_align_threshold_deg; run phase GPS speed governor
 // V2.5-Evo - 2026-05-11 - Phase C fix: VESC ERPM check now verifies data freshness via vesc.last_packet before comparing to GPS speed
@@ -310,6 +311,12 @@ static void updateRtmSteering()
 {
   if (!usrConf.rtm_rx_override_steering) {
     rtm_steer_override = 127;
+    // Reset D-term continuity statics here too: with override disabled we produce no
+    // steering samples, so on a later off->on toggle the D-term must not differentiate
+    // a fresh heading error against a stale pre-toggle sample across the gap (Kd spike).
+    prev_heading_src_valid  = false;
+    prev_heading_error_deg  = 0.0f;
+    prev_steering_update_ms = 0;
     g_heading_error_dx10 = 0x7FFF;
     g_d_error_dx10 = 0x7FFF;
     return;

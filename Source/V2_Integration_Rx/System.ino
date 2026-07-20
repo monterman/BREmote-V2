@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-07-19 - Rex hardening: cmdGpsDiag (?gpsdiag) refuses to run while RTM active — its ≤120s blocking loop would freeze runRtmLoop()/Phase A/B/convergence/Gate 9
 // V2.5-Evo - 2026-07-19 - FM triage: cmdGpsDiag (?gpsdiag) — 2Hz GPS feed + RTM COG-valid sub-condition breakdown to diagnose why GPS COG heading never engages
 // V2.5-Evo - 2026-05-11 - E7 Fix: checkWetness() debounced — requires 2 consecutive confirmed-wet calls to set E7; single clean read clears
 // V2.5-Evo - 2026-05-11 - Compass Cal: runtime BIND press triggers compass calibration with LED feedback
@@ -696,6 +697,16 @@ void cmdGpsDiag(const String& params) {
   extern unsigned long gps_last_ms;
   extern bool          gps_rejected;
   extern uint8_t       gps_suspect_count;
+  extern std::atomic<bool> rtm_rx_active;
+
+  // Guard: this handler blocks the loop task for up to 120s. If invoked mid-RTM it
+  // would freeze runRtmLoop()/Phase A/B/convergence/Gate 9 for that whole window.
+  // Refuse and return when RTM is engaged — this is a bench/idle diagnostic only.
+  // (Same rtm_rx_active flag the logger gate reads via isLoggerGated().)
+  if (rtm_rx_active.load()) {
+    Serial.println("?gpsdiag refused: not while RTM active - bench/idle only");
+    return;
+  }
 
   Serial.println("=== GPS Diagnostic (RTM COG heading source) ===");
   Serial.printf("rtm_use_compass=%u  rtm_cog_min_speed_kmh=%u  gps_chip_type=%u\n",

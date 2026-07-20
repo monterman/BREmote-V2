@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-07-19 - Rex INFO: corrected stale "ESP32-S3 dual-core / Core 0/Core 1" wording in convertToLogData() vescMutex comment to ESP32-C3 single-core / FreeRTOS-preemption (comment-only)
 // V2.5-Evo - 2026-07-19 - FM triage: +1 CSV column (effective_steer, the steering byte calcPWM actually applied); 27→28 columns; VescLogData +1 byte; no-fix guard mirrored into inline getRtmHeading() duplicate (src/conf forced NONE without a fresh RX GPS fix, matching RTMState.ino)
 // V2.5-Evo - 2026-05-13 - SW43: GPS gate relaxed to location.isValid() only — date absent when UART mux fragments RMC; T_HHMMSS filename when time valid but date missing
 // V2.5-Evo - 2026-05-13 - SW40: loggerLoop() button section removed — checkButtons() is the sole AUX handler; pending timeout 5min→15s start-anyway (was: give-up)
@@ -149,9 +150,10 @@ VescLogData convertToLogData() {
   data.timestamp = millis();
 
   // V2.5-Evo fix (Bug 2): guard all vesc.* reads with vescMutex.
-  // This function runs on Core 0 (loggerTask); getVescLoop() writes vesc on Core 1 (loop task).
-  // Without the mutex, the ESP32-S3 dual-core pipeline can produce a torn log record where
-  // some fields are from one VESC packet and some from the next.
+  // This function runs in loggerTask; getVescLoop() writes vesc from the loop task.
+  // The ESP32-C3 is single-core, so these never run in parallel — but FreeRTOS can
+  // preempt loggerTask mid-read, so without the mutex a torn log record can still
+  // occur where some fields are from one VESC packet and some from the next.
   if (vescMutex && xSemaphoreTake(vescMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
     data.current_motor   = (int16_t)constrain(vesc.motCur,    -30000, 30000);
     data.current_battery = (int16_t)constrain(vesc.batCur,    -30000, 30000);

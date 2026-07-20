@@ -36,6 +36,8 @@
 //   prevent GPS dot blinking during blocking display holds.
 // V2.5-Evo - 2026-05-02 - Gate 3 throttle-release timeout reduced 10000→4000ms (10s was too long for tow buggy field use)
 // V2.5-Evo - 2026-05-10 - SAFETY FIX: zero rtm_thr_cap_tx during arm ceremony to prevent motor runaway (see setRtmArmed)
+// V2.5-Evo - 2026-07-20 - T1: Gate 1 throttle-release disarm is now the named constant
+//   kFmGate1ReleaseMs, raised 3000 -> 30000 ms (whip gap is 10-25 s off-trigger). Threshold and dead band unchanged.
 
 extern volatile uint8_t current_vib_pattern;
 extern float rtm_arm_dist_m;  // defined in BREmote_V2_Tx.h — captured at RTM engage moment
@@ -421,9 +423,20 @@ void runRtmLoop()
 //
 // DISARM (any of):
 //   - Same combo again (LEFT tap + RIGHT hold 5s) — toggle
-//   - Throttle release for 3s after first throttle input — Gate 1
+//   - Throttle release for kFmGate1ReleaseMs (30s) after first throttle input — Gate 1
 //   - Arm window expires (fm_arm_window_s) before any throttle input — auto-disarm
 // ============================================================
+
+// ---- Gate 1 throttle-release disarm window ----
+// How long the throttle may stay fully released (thr_scaled < 5) after the rider has
+// ridden at least once before FM hard-disarms itself on the TX.
+// Units: milliseconds. Compile-time only — deliberately NOT a SPIFFS field (no confStruct change).
+// V2.5-Evo - 2026-07-20 - was a bare 3000UL literal. Raised 3000 -> 30000 ms: across a
+// whip the rider is fully off the trigger for 10-25 s, so the 3 s timer was disarming FM at
+// exactly the moment it was supposed to engage. 30 s is the hard-disarm backstop in the
+// escalation chain (RX latch-clear 10 s -> TX Gate 1 30 s -> RX mode-age 95 s).
+// The threshold (thr_scaled < 5) and the 5-10 dead band are UNCHANGED — timer only.
+static const unsigned long kFmGate1ReleaseMs = 30000UL;
 
 volatile bool        fm_armed         = false;  // FM arm state; RAM only, cleared on power cycle. Not static — extern'd by Display.ino (R5 bar)
                                                  // volatile: read by updateBargraphs() on core 0, written by loop() on core 1
@@ -607,11 +620,12 @@ void runFmLoop()
     fm_arm_ms = now;  // reset — Gate 1 timer starts from last throttle input
   }
 
-  // Gate 1: throttle release for 3s after first engagement → disarm FM
-  // 3s grace allows brief stops without losing FM (e.g., obstacle avoidance)
+  // Gate 1: throttle released (thr_scaled < 5) continuously for kFmGate1ReleaseMs → disarm FM.
+  // The grace period allows the rider to be off the trigger — during a whip that gap is
+  // routinely 10-25 s — without losing the FM declaration they made during the tow.
   if (fm_throttle_seen && thr_scaled < 5)
   {
-    if (now - fm_arm_ms > 3000UL)
+    if (now - fm_arm_ms > kFmGate1ReleaseMs)
     {
       fmDisarm();
       return;

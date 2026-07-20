@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-07-19 - P3 FM: calcPWM() applies fm_throttle_cap (subtract-only, lowest cap wins) and lets fm_rx_active gate the steering override alongside rtm_rx_active. Throttle can still only be reduced, never added, and the thr_received>=25 steering gate is unchanged.
 // V2.5-Evo - 2026-07-19 - FM triage: calcPWM() records effective_steer into g_effective_steer (diagnostic observer only — no control-path change) so the logger can show the actuation gap
 // V2.5-Evo - 2026-04-30 - calcPWM() applies rtm_approach_cap for RTM approach decel zone
 // V2.5-Evo - 2026-04-25 - P7: calcPWM() applies RTM emergency stop and steering override via effective_thr/steer
@@ -55,11 +56,26 @@ void calcPWM()
     effective_thr = rtm_approach_cap;
   }
 
+  // V2.5-Evo - 2026-07-19 - P3 FM: apply the Follow-Me throttle cap.
+  // Same subtract-only shape as rtm_approach_cap above — lowest cap wins, and the cap can only
+  // ever reduce the rider's throttle, never raise it. fm_throttle_cap is 255 (no cap) whenever FM
+  // is idle or merely armed; runFmLoop() drives it to 0 on any FM fault or geometric hold, and to
+  // the cap-chain result while FM is actively following. Creator safety philosophy enforced: the
+  // human trigger remains the sole throttle source.
+  if ((uint8_t)fm_throttle_cap < effective_thr)
+  {
+    effective_thr = fm_throttle_cap;
+  }
+
   // SAFETY FIX (2026-04-28 audit): also gate on thr_received>=25.
   // Gate 1 in RTMState.ino resets rtm_steer_override=127 on throttle release (Task 1A),
   // but that runs at 10Hz. This gate ensures the PWM task (100Hz) cannot apply a stale
   // bearing value during the up-to-100ms window before Gate 1 next fires.
-  uint8_t effective_steer = (rtm_rx_active && usrConf.rtm_rx_override_steering && thr_received >= 25)
+  // V2.5-Evo - 2026-07-19 - P3 FM: FM steers through this same gate. RTM and FM are mutually
+  // exclusive (runFmLoop() forces FM to IDLE whenever rtm_rx_active is set), so they safely share
+  // rtm_steer_override as the steering command. The thr_received>=25 condition is unchanged and
+  // still applies to both — autonomous steering never reaches the motors on a released trigger.
+  uint8_t effective_steer = ((rtm_rx_active || fm_rx_active) && usrConf.rtm_rx_override_steering && thr_received >= 25)
                             ? (uint8_t)rtm_steer_override
                             : steering_received;
 

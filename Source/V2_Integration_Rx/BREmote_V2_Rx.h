@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-07-19 - P3 FM: added fm_rx_active + fm_throttle_cap runtime atomics for the Follow-Me state machine. No confStruct change (FM reuses the 8 existing FM params) — SW_VERSION stays 33, sizeof stays 176, SPIFFS config is NOT reset by this flash.
+// V2.5-Evo - 2026-07-20 - FM engagement semantics: added fm_mode_last_rx_ms atomic (0xF2 declaration age, drives the 95 s mode-age expiry); R6 comment cleanup on the zone_angle_enter/exit + near_diag_offset block (described a non-existent engagement cone, wrong mode numbers, inverted signs, false "CURRENTLY UNUSED"). No confStruct change — sizeof stays 176, SW_VERSION stays 33, SPIFFS config is NOT reset by this flash.
 // V2.5-Evo - 2026-07-19 - FM triage: log the steering byte actually applied by calcPWM() (g_effective_steer global + VescLogData.effective_steer_log); VescLogData sizeof 52→53; old SPIFFS logs misparse after this flash; no confStruct change, SW_VERSION unchanged
 // V2.5-Evo - 2026-07-18 - FM mode mapping canonicalized to TX convention (1=Near-Right, 2=Behind, 3=Near-Left); defaultConf.followme_mode 2→1 preserves the Near-Right default across the relabel (old RX labels had 2=near_right). Labels/comment only — no struct/SW_VERSION change.
 // V2.5-Evo - 2026-05-22 - SW32: Two-phase RTM throttle: rtm_align_threshold_deg + rtm_target_speed_kmh; sizeof 164→172; SW_VERSION 31→32
@@ -131,25 +133,37 @@ struct confStruct {
     float min_dist_m; // minimum allowed distance to the foiler
     float followme_smoothing_band_m; // smoothing band above min distance
     float foiler_low_speed_kmh; // low-speed threshold for safety stop (hysteresis)
-    // FM ENGAGEMENT CONE half-angle (degrees). FM mode engages only when surfer's
-    // relative bearing falls within this half-angle of the expected position
-    // (directly behind for followme_mode=1; offset by near_diag_offset_deg for modes 2/3).
-    // Prevents chase when surfer is in a position that doesn't match the chosen mode.
-    // Range: 5-90°. Default 35° (±35° cone, 70° total). CURRENTLY UNUSED — placeholder for FM logic.
+    // V2.5-Evo - 2026-07-20 - R6: comment block corrected. It previously described an
+    // "engagement cone" gate that does not exist, marked all three params "CURRENTLY UNUSED"
+    // (the FM geometry consumes all three), and gave the wrong mode numbers with the wrong
+    // signs for the diagonal offset. The values and ranges themselves are unchanged.
+
+    // DIAGONAL-BLEND SCHMITT — ENTER half-angle (degrees). This is NOT an engagement gate:
+    // it decides whether the buggy is lined up closely enough BEHIND the rider to apply the
+    // diagonal side offset, or whether it should just sit directly behind. Measured as the
+    // angle between the rider->buggy bearing and "directly behind the rider".
+    // Below this angle the diagonal offset is applied (see computeFmTarget in RTMState.ino).
+    // Range: 5-90°. Default 35°.
     float zone_angle_enter_deg;
 
-    // FM ENGAGEMENT HYSTERESIS half-angle (degrees). FM DISengages when surfer's bearing
-    // drifts beyond this half-angle. MUST be > zone_angle_enter_deg by 5-15° to prevent
-    // flap-flap at the boundary (Schmitt-trigger hysteresis pattern).
-    // Range: 10-95°. Default 45°. CURRENTLY UNUSED — placeholder for FM logic.
+    // DIAGONAL-BLEND SCHMITT — EXIT half-angle (degrees). Once the diagonal is applied it is
+    // dropped again only when the off-axis angle exceeds this value. MUST be > zone_angle_enter_deg
+    // by 5-15° — the hysteresis stops an unstable rider course from whipping the target point
+    // across the rider's wake from one side to the other.
+    // Range: 10-95°. Default 45°.
     float zone_angle_exit_deg;
 
-    // NEAR-MODE DIAGONAL OFFSET (degrees from "directly behind surfer").
-    // followme_mode=2 (Near Right): target bearing = surfer_bearing + offset (behind-and-right).
-    // followme_mode=3 (Near Left):  target bearing = surfer_bearing - offset (behind-and-left).
-    // 0° = directly behind, 90° = beside the surfer. Diagonal placement keeps buggy
-    // out of the surfer's wake/spray path while still towing.
-    // Range: 0-90°. Default 45°. CURRENTLY UNUSED — placeholder for FM logic.
+    // NEAR-MODE DIAGONAL OFFSET (degrees from "directly behind the rider").
+    // Applied as target_bearing = rider_course + 180 + offset, in this board's one bearing
+    // convention (degrees CLOCKWISE from North), where "Near-Right"/"Near-Left" mean the side
+    // the buggy ends up on RELATIVE TO THE RIDER as the rider faces along their course:
+    //   followme_mode=1 (Near Right): offset = -near_diag_offset_deg  (behind-and-right)
+    //   followme_mode=2 (Behind)    : offset = 0
+    //   followme_mode=3 (Near Left) : offset = +near_diag_offset_deg  (behind-and-left)
+    // 0° = directly behind, 90° = beside the rider. Diagonal placement keeps the buggy out of
+    // the rider's wake/spray path. Authoritative derivation: the OFFSET SIGN CONVENTION block
+    // above computeFmTarget() in RTMState.ino.
+    // Range: 0-90°. Default 45°.
     float near_diag_offset_deg;
     
     //System parameters
@@ -412,7 +426,29 @@ std::atomic<bool>    rtm_rx_active         {false};
 std::atomic<bool>    rtm_rx_emergency_stop {false};
 std::atomic<uint8_t> rtm_steer_override    {127};
 std::atomic<uint8_t> fm_mode_runtime       {0xFF};
+
+// V2.5-Evo - 2026-07-20 - R2: millis() when the last 0xF2 FM-mode declaration arrived from the
+// TX; 0 = none has ever arrived this session. The TX refreshes its declaration every 30 s while
+// armed, so RTMState.ino expires the mode after kFmModeAgeMs (95 s, ~3 missed keepalives) and
+// returns FM to IDLE. Without this the RX kept a declared mode forever, which meant a lost
+// disarm burst left the RX armed for the rest of the session with no way to discover it.
+// Written by Radio.ino's meta-packet handler (triggeredReceive task), read by RTMState.ino's
+// runFmLoop() (loop) — std::atomic for the same single-core preemption reason as the flags above.
+std::atomic<unsigned long> fm_mode_last_rx_ms {0};
 std::atomic<uint8_t> rtm_approach_cap      {255};  // V2.5-Evo - 2026-04-30 - approach decel cap (0-255); 255=no cap; computed by RTMState.ino during active RTM; applied by calcPWM()
+
+// V2.5-Evo - 2026-07-19 - P3 Follow-Me (FM) autonomous-following runtime flags.
+// fm_rx_active : true while FM is actively steering. Gates the steering override in calcPWM()
+//                using the SAME pattern as rtm_rx_active (RTM and FM are mutually exclusive, so
+//                they safely share rtm_steer_override as the steering command).
+// fm_throttle_cap : FM's own subtract-only throttle cap (0-255; 255 = no cap). Applied in calcPWM()
+//                alongside rtm_approach_cap (lowest cap wins). Deliberately a SEPARATE global from
+//                rtm_approach_cap so RTM's per-tick housekeeping (which rewrites rtm_approach_cap=255
+//                whenever RTM is inactive) can never transiently clear an FM cap in the window between
+//                runRtmLoop() and runFmLoop() on the single-core ESP32-C3. seq_cst, same as the RTM
+//                atomics — an indivisible read/write the 100Hz generatePWM task cannot tear.
+std::atomic<bool>    fm_rx_active     {false};
+std::atomic<uint8_t> fm_throttle_cap  {255};
 
 #include "../Common/SPIFFSEngine.h"
 

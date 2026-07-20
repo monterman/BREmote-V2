@@ -17,6 +17,7 @@
 // V2.5-Evo - 2026-05-13 - SW32 M3: rtm_meta_type/value/count + rtm_thr_cap_tx + rtm_tx_active changed volatile→std::atomic<T>; release/acquire ordering in queue/consumer
 // V2.5-Evo - 2026-05-13 - SW32: default display_mode changed 0→DISPLAY_MODE_THR (throttle % as boot display; field test feedback)
 // V2.5-Evo - 2026-05-09 - Bundle 9-Final: Added USB CDC On Boot compile-time guard
+// V2.5-Evo - 2026-07-20 - T2: fm_arm_window_s comment corrected 10-60s → 10-600s (validation range was already 10-600; comment was stale). No struct change.
 
 // ============================================================
 // V2.5-Evo - 2026-05-09 - Bundle 9-Final: USB CDC On Boot guard
@@ -217,7 +218,7 @@ struct confStruct {
     // 1 new uint16_t field — sizeof grows 124→128 (126 data + 2 tail padding; 126%4=2).
     // First flash of P8.1 firmware resets all TX settings to defaults.
     // ============================================================
-    uint16_t fm_arm_window_s;          // FM auto-disarms after this many seconds with no throttle input; 10-60s; default 30
+    uint16_t fm_arm_window_s;          // FM auto-disarms after this many seconds with no throttle input; 10-600s; default 30
 
     // ============================================================
     // V2.5-Evo - 2026-04-28 - PRIORITY 9: DISTANCE UNIT SELECTION

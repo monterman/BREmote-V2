@@ -68,7 +68,7 @@ const CfgFieldSpec kCfgFields[] = {
   {"fm_warn_distance_m",       CFG_U16, offsetof(confStruct, fm_warn_distance_m),       true, false, true, 50.0f, 1000.0f,   0, false},  // FM proximity warning threshold in meters
   {"rtm_steer_exit_on_input",  CFG_U16, offsetof(confStruct, rtm_steer_exit_on_input),  true, false, true,  0.0f,   1.0f,    0, false},  // 1=steering exits RTM, 0=blend only
   // V2.5-Evo - 2026-04-27 - Priority 8.1 FM UX redesign parameter
-  {"fm_arm_window_s",          CFG_U16, offsetof(confStruct, fm_arm_window_s),          true, false, true, 10.0f, 120.0f,    0, false},  // FM auto-disarm after N seconds of no throttle input
+  {"fm_arm_window_s",          CFG_U16, offsetof(confStruct, fm_arm_window_s),          true, false, true, 10.0f, 600.0f,    0, false},  // FM auto-disarm after N seconds of no throttle input
   // V2.5-Evo - 2026-04-28 - P9: Distance unit selector. 0=Metres, 1=Feet.
   {"dist_unit",                CFG_U16, offsetof(confStruct, dist_unit),                true, false, true,  0.0f,   1.0f,    0, false},
   // V2.5-Evo - 2026-04-29 - Sleep timeout. 0=disabled, 60-3600 s; default 300 (5 minutes).

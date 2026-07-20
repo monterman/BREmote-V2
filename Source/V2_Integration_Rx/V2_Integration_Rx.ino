@@ -1,4 +1,5 @@
-// *** LATEST: V2.5-Evo - 2026-06-04 - D1 — UART-mux read-back verify (setUartMux); skip VESC poll while throttle high; no confStruct change ***
+// *** LATEST: V2.5-Evo - 2026-07-19 - P3 FM — runFmLoop() added to loop() after runRtmLoop(); Follow-Me autonomous following (see RTMState.ino). No confStruct change; SW_VERSION stays 33 ***
+// V2.5-Evo - 2026-06-04 - D1 — UART-mux read-back verify (setUartMux); skip VESC poll while throttle high; no confStruct change
 // V2.5-Evo - 2026-05-14 - SW55 — GPS yields MUX to VESC on exit; rcv_err removed from receiveFromVESC; boot MUX starts on VESC
 // V2.5-Evo - 2026-05-11 - Telemetry Fix: VESC moved to its own vesc_loop_timer (2Hz); checkButtons() added to loop() for runtime BIND compass cal
 // V2.5-Evo - 2026-05-03 - Removed commented-out SPIFFS.remove dead code (LOW audit cleanup)
@@ -14,6 +15,8 @@ TinyGPSPlus gps;
 // V2.5-Evo - 2026-04-25 - P7: RTM state machine and compass heading function
 void runRtmLoop();
 float getCompassHeading();
+// V2.5-Evo - 2026-07-19 - P3 FM: Follow-Me state machine (RTMState.ino)
+void runFmLoop();
 
 void setup()
 {
@@ -61,6 +64,14 @@ void loop()
   // V2.5-Evo - 2026-04-25 - P7: RTM state machine — safety gates, steering override, Phase C.
   // Runs at 10Hz regardless of the 1000ms GPS/VESC gate below.
   runRtmLoop();
+
+  // V2.5-Evo - 2026-07-19 - P3 FM: Follow-Me state machine — activation conditions, trailing
+  // target-point steering, throttle cap chain. Also rate-limits itself to 10Hz internally.
+  // MUST run after runRtmLoop(): RTM and FM are mutually exclusive and runFmLoop() reads
+  // rtm_rx_active to decide whether RTM already owns the buggy this tick. FM keeps its own
+  // throttle cap (fm_throttle_cap) rather than sharing rtm_approach_cap, so RTM's per-tick
+  // "inactive -> cap 255" housekeeping can never transiently clear an FM cap in between.
+  runFmLoop();
 
   // GPS runs on its own configurable-rate timer, independent of the 1000ms VESC/wetness gate.
   // gps_update_hz=2 → 500ms interval; gps_update_hz=5 → 200ms interval.

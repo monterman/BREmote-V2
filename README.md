@@ -8,7 +8,7 @@
 
 ESP32 LoRa wireless remote for efoil and RC tow buggy — 868/915 MHz, 10 Hz control cycle, VESC UART telemetry, GPS speed display, integrated data logger.
 
-**Status: Beta — BLE + VESC Tool field-confirmed ✅ (2026-05-16). RTM/FM bench-complete, awaiting water field test. See Alpha Testing Notes below before any in-water use.**
+**Status: Alpha (soon Beta) — BLE + VESC Tool field-confirmed ✅ (2026-05-16). RTM encoded + working, FM coded; on-water testing in progress. See Alpha Testing Notes below before any in-water use.**
 
 ---
 
@@ -93,7 +93,7 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 
 ## Quick Start
 
-> ⚠️ **`master` branch contains monterman's personal calibration values** (throttle ADC, compass soft-iron cal, toggle positions, radio addresses). These are correct for monterman's specific hardware. After flashing, you **must** recalibrate for your own devices: run TX calibration (hold LEFT toggle at boot), run `?compasscal` on RX, and re-pair to set your own radio addresses. If you flash without recalibrating, the remote will not respond correctly to your throttle or compass.
+> ⚠️ **`master` ships SAFE factory defaults — unbound and uncalibrated** (no pairing, neutral compass/throttle calibration). After flashing you **must** set up your own devices: pair TX↔RX, run TX calibration (hold LEFT toggle at boot), and run `?compasscal` on RX. Until you do, the remote won't respond correctly to your throttle or compass.
 
 1. **Flash firmware** — use the Flash Download Tool (link below) or Arduino IDE. ⚙️ **Compiling it yourself? (advanced)** Follow the per-board guides — the partition settings **differ between TX and RX**, and the wrong one wipes config: **[RX flashing guide →](docs/FLASHING_RX_ARDUINO.md)** · **[TX flashing guide →](docs/FLASHING_TX_ARDUINO.md)**
 2. **Power on both TX and RX** — TX shows `EP` (not paired) on first boot

@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-07-24 - F9: +3 CSV columns (tx_distance_m, rssi_dbm, snr_db); 28→31 columns; VescLogData +6 bytes; distance decoded from telemetry.rtm_distance, RSSI/SNR from Radio.ino cache (g_last_rssi_dbm/g_last_snr_db); appended for parser compat; no confStruct change, SW_VERSION unchanged
 // V2.5-Evo - 2026-07-19 - Rex INFO: corrected stale "ESP32-S3 dual-core / Core 0/Core 1" wording in convertToLogData() vescMutex comment to ESP32-C3 single-core / FreeRTOS-preemption (comment-only)
 // V2.5-Evo - 2026-07-19 - FM triage: +1 CSV column (effective_steer, the steering byte calcPWM actually applied); 27→28 columns; VescLogData +1 byte; no-fix guard mirrored into inline getRtmHeading() duplicate (src/conf forced NONE without a fresh RX GPS fix, matching RTMState.ino)
 // V2.5-Evo - 2026-05-13 - SW43: GPS gate relaxed to location.isValid() only — date absent when UART mux fragments RMC; T_HHMMSS filename when time valid but date missing
@@ -303,6 +304,36 @@ VescLogData convertToLogData() {
   // rather than inferred from abrupt log restarts. 0 = no error, 7 = water ingress.
   data.error_code_log = telemetry.error_code;
 
+  // V2.5-Evo - 2026-07-24 - F9: owner-requested range telemetry (distance + link quality).
+  // Lets a session log show achievable range at the current TX/RX radio settings.
+  {
+    // last_packet is already a global (volatile unsigned long) from BREmote_V2_Rx.h — no local extern needed.
+    extern float         g_last_rssi_dbm;  // cached last-packet RSSI (Radio.ino, F9)
+    extern float         g_last_snr_db;    // cached last-packet SNR  (Radio.ino, F9)
+
+    // Distance: decode the SAME telemetry.rtm_distance byte RTMState.ino maintains for the TX bar.
+    // Encoding (RTMState.ino ~line 858): 0-99 = tenths of a metre; 100-254 = whole metres offset by 90;
+    // 0xFF = N/A. Re-expanded here to 0.1 m units so the CSV carries the identical RTM distance value.
+    uint8_t dist_enc = telemetry.rtm_distance;
+    if (dist_enc == 0xFF) {
+      data.tx_distance_dx10 = 0xFFFF;                                  // N/A (no valid GPS pair)
+    } else if (dist_enc <= 99) {
+      data.tx_distance_dx10 = (uint16_t)dist_enc;                      // already tenths of a metre (0.0-9.9 m)
+    } else {
+      data.tx_distance_dx10 = (uint16_t)(((uint16_t)dist_enc - 90u) * 10u); // whole metres → tenths (10-164 m)
+    }
+
+    // Link quality: use the cached RSSI/SNR (never touch the radio SPI bus from this task). Mark N/A while
+    // in failsafe (no control packet within failsafe_time) so a link drop reads as a clear gap, not stale data.
+    if ((millis() - last_packet) < usrConf.failsafe_time) {
+      data.rssi_dbm = (int16_t)lroundf(g_last_rssi_dbm);
+      data.snr_dx10 = (int16_t)lroundf(g_last_snr_db * 10.0f);
+    } else {
+      data.rssi_dbm = 0x7FFF;   // N/A — failsafe
+      data.snr_dx10 = 0x7FFF;   // N/A — failsafe
+    }
+  }
+
   return data;
 }
 
@@ -547,7 +578,8 @@ void downloadLogFile(const char* filename) {
 
   Serial.println("\n=== BEGIN CSV DATA ===");
   // V2.5-Evo - 2026-07-19 - FM triage: header updated to 28 fields (+effective_steer)
-  Serial.println("timestamp_ms,motor_current_A,battery_current_A,duty_cycle_%,voltage_V,ERPM,temp_mos_C,fault_code,speed_kmh,latitude,longitude,datetime_unix,thr_received,rtm_source,rtm_confidence,rtm_rx_active,gps_phase_b_ok,rtm_steer_override,rtm_heading_chosen_dx10,compass_live_dx10,compass_snap_dx10,snap_age_s,gps_course_dx10,cog_age_ms_div10,heading_error_dx10,d_error_dx10,remote_error,effective_steer");
+  // V2.5-Evo - 2026-07-24 - F9: header updated to 31 fields (+tx_distance_m, +rssi_dbm, +snr_db). N/A sentinels: distance -1.0, rssi -999, snr -99.0
+  Serial.println("timestamp_ms,motor_current_A,battery_current_A,duty_cycle_%,voltage_V,ERPM,temp_mos_C,fault_code,speed_kmh,latitude,longitude,datetime_unix,thr_received,rtm_source,rtm_confidence,rtm_rx_active,gps_phase_b_ok,rtm_steer_override,rtm_heading_chosen_dx10,compass_live_dx10,compass_snap_dx10,snap_age_s,gps_course_dx10,cog_age_ms_div10,heading_error_dx10,d_error_dx10,remote_error,effective_steer,tx_distance_m,rssi_dbm,snr_db");
 
   VescLogData logData;
   uint16_t recordCount = 0;
@@ -560,7 +592,7 @@ void downloadLogFile(const char* filename) {
     size_t bytesRead = file.read((uint8_t*)&logData, sizeof(VescLogData));
 
     if (bytesRead == sizeof(VescLogData)) {
-      Serial.printf("%u,%.2f,%.2f,%d,%.1f,%d,%u,%u,%.1f,%.6f,%.6f,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%d,%d,%u,%u\n",
+      Serial.printf("%u,%.2f,%.2f,%d,%.1f,%d,%u,%u,%.1f,%.6f,%.6f,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%d,%d,%u,%u,%.1f,%d,%.1f\n",
                     logData.timestamp,
                     logData.current_motor / 100.0f,
                     logData.current_battery / 100.0f,
@@ -591,7 +623,11 @@ void downloadLogFile(const char* filename) {
                     // E7 Fix: BREmote remote_error code (0 = none, 7 = E7 water ingress)
                     (unsigned)logData.error_code_log,
                     // FM triage: steering byte actually applied by calcPWM() (vs commanded rtm_steer_override)
-                    (unsigned)logData.effective_steer_log);
+                    (unsigned)logData.effective_steer_log,
+                    // V2.5-Evo - 2026-07-24 - F9: distance (m) + link quality. N/A → distance -1.0, rssi -999, snr -99.0
+                    (logData.tx_distance_dx10 == 0xFFFF) ? -1.0f : (logData.tx_distance_dx10 / 10.0f),
+                    (logData.rssi_dbm == 0x7FFF) ? -999 : (int)logData.rssi_dbm,
+                    (logData.snr_dx10 == 0x7FFF) ? -99.0f : (logData.snr_dx10 / 10.0f));
 
       // Yield to FreeRTOS every 50 records to keep other tasks responsive.
       if ((++recordCount % 50) == 0) {

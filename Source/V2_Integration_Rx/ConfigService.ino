@@ -11,6 +11,7 @@
 // V2.5-Evo - 2026-05-08 - Bundle 1: dummy_delete_me → rtm_steer_response (0-4 preset index)
 // V2.5-Evo - 2026-05-06 - D4: Added rtm_use_compass + rtm_cog_min_speed_kmh fields to ConfigService table
 // V2.5-Evo - 2026-07-20 - SW34: Added 3 reserved fields to kCfgFields (validation-only; not read by v1): fm_engage_dist_m (0-50, 0=auto), auton_runtime_cap_s (0-3600, 0=disabled), fm_steer_reposition_en (0-1, 0=off)
+// V2.5-Evo - 2026-07-24 - F1 fix: added the two orphaned SW32 fields (rtm_target_speed_kmh, rtm_align_threshold_deg) to kCfgFields so ?set/?get/web-save can reach them; metadata rows only, no confStruct change, sizeof stays 184, SW_VERSION stays 34
 
 #include <stddef.h>
 
@@ -75,6 +76,15 @@ const CfgFieldSpec kCfgFields[] = {
   // rtm_cog_min_speed_kmh: GPS speed threshold below which compass snapshot is used; range 1-15 km/h, default 3
   {"rtm_use_compass",          CFG_U16,   offsetof(confStruct, rtm_use_compass),          true, false, true,  0.0f,   2.0f,  0, false},
   {"rtm_cog_min_speed_kmh",    CFG_U16,   offsetof(confStruct, rtm_cog_min_speed_kmh),    true, false, true,  1.0f,  15.0f,  0, false},
+  // V2.5-Evo - 2026-07-24 - F1 fix: wire the two SW32 two-phase RTM fields into kCfgFields so ?set/?get and
+  // web "Save All" can reach them. Both exist in confStruct (SW32, 2026-05-22) and in WebUiEmbedded fields[]
+  // but were never added here — orphaning them exactly like the mag_* fields were (see the SW44 note below):
+  // /api/config never returned them and cfgSetValueByKey() rejected them as unknown keys, so the RTM Phase-2
+  // speed governor and the Phase 1→2 align threshold were stuck at their defaultConf values. METADATA ROWS
+  // ONLY — no struct change, no size change (stays 184), no SW_VERSION bump. Ranges mirror WebUiEmbedded:
+  // rtm_target_speed_kmh float 0-20 km/h (0 = governor disabled), rtm_align_threshold_deg u16 10-90 deg.
+  {"rtm_target_speed_kmh",     CFG_FLOAT, offsetof(confStruct, rtm_target_speed_kmh),     true, false, true,  0.0f,  20.0f,  1, false},
+  {"rtm_align_threshold_deg",  CFG_U16,   offsetof(confStruct, rtm_align_threshold_deg),  true, false, true, 10.0f,  90.0f,  0, false},
   {"logger_en", CFG_U16, offsetof(confStruct, logger_en), true, false, true, 0.0f, 1.0f, 0, false},
   {"paired", CFG_U16, offsetof(confStruct, paired), true, false, true, 0.0f, 1.0f, 0, false},
   {"own_address", CFG_ADDR3, offsetof(confStruct, own_address), true, false, false, 0.0f, 0.0f, 0, false},

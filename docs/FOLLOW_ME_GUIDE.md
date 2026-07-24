@@ -100,8 +100,8 @@ your direction of travel):
 
 | Mode | Name | Buggy sits |
 |---|---|---|
-| **F1** | **Near-Right** (default) | behind and to your right |
-| **F2** | **Behind** | straight behind you |
+| **F1** | **Near-Right** | behind and to your right |
+| **F2** | **Behind** (default) | straight behind you |
 | **F3** | **Near-Left** | behind and to your left |
 
 The exact angle is set by **`near_diag_offset_deg`** — the number of degrees **off
@@ -113,8 +113,8 @@ straight-behind**. Near-Right and Near-Left are mirror images of it:
 | Offset | Near-Right | Near-Left | Feel |
 |---|---|---|---|
 | 0° | 180° | 180° | straight behind |
-| 45° | 135° | 225° | behind-diagonal |
-| **60° (current)** | **120°** | **240°** | tucked behind, slightly out |
+| **45° (current)** | **135°** | **225°** | behind-diagonal |
+| 60° | 120° | 240° | tucked behind, slightly out |
 | 90° | 90° | 270° | directly beside you |
 
 *(0° = ahead of you, 90° = your right, 180° = straight behind, 270° = your left.)*
@@ -167,8 +167,8 @@ fault while you're holding the trigger. A stop after you've already let go just 
 
 | Setting | What it does | Note |
 |---|---|---|
-| `followme_mode` | default side: 1 = Near-Right, 2 = Behind, 3 = Near-Left | TX seed for the arm gesture |
-| `near_diag_offset_deg` | angle off straight-behind (see §5) | **60** = Right 120° / Left 240° |
+| `followme_mode` | follow side: 1 = Near-Right, **2 = Behind (default)**, 3 = Near-Left | TX seed for the arm gesture |
+| `near_diag_offset_deg` | angle off straight-behind (see §5) | **45** = Right 135° / Left 225° |
 | `min_dist_m` | hard-stop distance — throttle cut to 0 if the buggy gets this close | |
 | `followme_smoothing_band_m` | decel band above the hard stop | follow distance = `min_dist_m` + this |
 | `boogie_vmax_in_followme_kmh` | speed ceiling while following | |

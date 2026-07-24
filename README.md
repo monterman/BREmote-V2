@@ -382,8 +382,8 @@ The override is RAM-only — RX returns to its web-configured `followme_mode` on
 | Display | `followme_mode` value | Behaviour |
 |---|---|---|
 | `F0` | 0 | Disabled — follow-me off |
-| `F1` | 1 | Near-Right (default) — RX trails behind-right of the rider |
-| `F2` | 2 | Behind — RX trails directly behind the rider |
+| `F1` | 1 | Near-Right — RX trails behind-right of the rider |
+| `F2` | 2 | Behind (default) — RX trails directly behind the rider |
 | `F3` | 3 | Near-Left — RX trails behind-left of the rider |
 
 ### FM Proximity Warning
@@ -426,8 +426,8 @@ If TX-to-RX distance drops below `fm_warn_distance_m` (default 150 m), TX fires 
 | `E 7` | Water ingress detected — blinking full-screen alert + 5 long vibrations; motor output **not** cut (see below) |
 | `rn` | Return-to-Me (RTM) mode active |
 | `F0` | Follow-Me override: disabled |
-| `F1` | Follow-Me override: Near-Right (default) |
-| `F2` | Follow-Me override: Behind |
+| `F1` | Follow-Me override: Near-Right |
+| `F2` | Follow-Me override: Behind (default) |
 | `F3` | Follow-Me override: Near-Left |
 | `St` | Stop — RTM or FM safety gate triggered, or arming blocked *(FM gating is forward-looking; FM logic not yet implemented)* |
 | `99` | Full throttle reached (100%) |
@@ -765,7 +765,7 @@ Connect to the TX at 115200 baud. All commands are prefixed with `?`.
 
 - **VESC telemetry restored — the long-standing "no telemetry" issue was a wrong CRC in the `?vescraw` diagnostic; the actual telemetry path was always correct.** The `?vescraw` command hardcoded the wrong CRC16 (`0x4007`) on its `COMM_GET_VALUES` probe. The correct value is `0x4084` — CRC16-CCITT/XMODEM (poly `0x1021`, init 0) over payload `{0x04}`. A VESC silently discards any bad-CRC packet and never replies at any baud, so `?vescraw` always printed "NO BYTES" even against a perfectly healthy VESC — a false negative that masked good hardware and sent the diagnosis chasing the VESC, RX, AW9523 MUX, cables, and firmware when none of them were at fault. Bench-proven over an FTDI on **both VESC FW 6.05 and 6.06**: the correct frame `02 01 04 40 84 03` returns a full GET_VALUES reply (live 39.5 V / 26.7 °C). The real telemetry path (`getValuesSelective` → `sendToVESC` → `vesc_crc16`) was always correct — only the `?vescraw` diagnostic frame was wrong.
 - **In-ride telemetry unfroze (RX):** removed a throttle-skip gate that skipped the VESC poll while throttle ≥ 25. On a continuous-throttle vehicle (tow buggy) that meant `getVescLoop()` never ran once you were on the trigger, freezing telemetry to dashes for the whole ride. Reverted to the SW55 unconditional 2 Hz poll; the MUX-EMI concern the gate targeted is already covered by the read-back-verify in `setUartMux()`.
-- **FM mode mapping canonicalized to `1 = Near-Right, 2 = Behind, 3 = Near-Left` (RX):** RX comments and web-UI labels were relabeled to match the TX convention already used on the display, in the TX web UI, and in this README. `defaultConf.followme_mode` moved `2 → 1` to preserve the Near-Right default across the relabel (old RX labels had `2 = near-right`), and the `foiler_low_speed` default text was corrected `5 → 8` km/h to match `defaultConf`. Labels and defaults only — no control-logic change, no confStruct / SW_VERSION change.
+- **FM mode mapping canonicalized to `1 = Near-Right, 2 = Behind, 3 = Near-Left` (RX):** RX comments and web-UI labels were relabeled to match the TX convention already used on the display, in the TX web UI, and in this README. Both boards ship `defaultConf.followme_mode = 2` (Behind — the defensive FM geometry); every surface (web UI `def:`, HTML tool, README, guide) now states the default as **2 (Behind)**. The `foiler_low_speed` default text was corrected `5 → 8` km/h to match `defaultConf`. Labels and defaults only — no control-logic change, no confStruct / SW_VERSION change.
 - **TX arm-hold now tunable:** `rtm_hold_duration_s` (RTM LEFT-hold) and `fm_hold_duration_s` (FM RIGHT-hold) are now live SPIFFS fields, configurable 4–10 s. Both were previously hardcoded to 5 s and labeled "reserved" in the web UI. Default stays 5 s. No confStruct / SW_VERSION change.
 - **`DESIGN_FOLLOW_ME.md` added:** the approved design spec for FM autonomous following (state machine, activation gates, target-point math, throttle cap chain). **Design only — FM autonomous following is not implemented in this release.** Selecting an FM mode (F0–F3) cycles and stores the mode but does not yet make the buggy follow the rider.
 - **No confStruct changes; SW_VERSION unchanged (TX/RX).**

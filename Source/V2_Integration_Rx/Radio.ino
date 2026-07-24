@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-07-24 - F9: cache last control-packet RSSI/SNR (g_last_rssi_dbm/g_last_snr_db) at receive so the logger task can add distance+link-quality CSV columns without racing the radio SPI bus. No confStruct/SW_VERSION change.
 // V2.5-Evo - 2026-07-20 - FM engagement semantics: processFmOverridePacket() stamps fm_mode_last_rx_ms on every 0xF2 so RTMState.ino can expire an unrefreshed FM declaration (95 s). This handler is now the ONLY path that can arm FM — the RX no longer auto-arms from usrConf.followme_mode.
 // V2.5-Evo - 2026-05-12 - Fix Phase B recovery: recheck gate reduces from 30s to 2s when gps_phase_b_ok=false, eliminating up to 30s RTM motor block after any TX GPS gap
 // V2.5-Evo - 2026-05-03 - Removed if(0) dead code; checkAndAdjustAddress() TODO noted
@@ -5,6 +6,13 @@
 // V2.5-Evo - 2026-04-24 - Added GPS meta-packet reception: gps_meta_pending state, processMetaGpsPacket(), triggeredReceive() 2-path state machine
 // V2.5-Evo - 2026-04-24 - Added Phase B GPS handshake check: gpsPhaseBCheck() called from processMetaGpsPacket()
 // V2.5-Evo - 2026-04-25 - P7: Added processRtmStatePacket(), processFmOverridePacket(); dispatch 0xF1/0xF2 in triggeredReceive()
+
+// V2.5-Evo - 2026-07-24 - F9: cache last control-packet link quality for the logger CSV.
+// radio.getRSSI()/getSNR() read SX1262 registers over SPI and are only valid right after a reception
+// in triggeredReceive(). The logger runs in a separate FreeRTOS task, so it must NOT touch the radio
+// SPI bus concurrently — it reads these cached copies instead (see extern in Logger.ino convertToLogData()).
+float g_last_rssi_dbm = 0.0f;   // dBm; snapshot of the last control packet's RSSI
+float g_last_snr_db   = 0.0f;   // dB;  snapshot of the last control packet's SNR
 
 void radioErrorHalt(int type)
 {
@@ -476,7 +484,11 @@ void triggeredReceive(void *parameter) {
                 thr_received      = rcvArray[3];
                 steering_received = rcvArray[4];
 
-                telemetry.link_quality = getLinkQuality(radio.getRSSI(), radio.getSNR());
+                // V2.5-Evo - 2026-07-24 - F9: snapshot RSSI/SNR while the radio SPI bus is valid (just after
+                // this reception) so the logger task can read them without touching the radio concurrently.
+                g_last_rssi_dbm = radio.getRSSI();
+                g_last_snr_db   = radio.getSNR();
+                telemetry.link_quality = getLinkQuality(g_last_rssi_dbm, g_last_snr_db);
 
                 rxprintln("Sending response");
 

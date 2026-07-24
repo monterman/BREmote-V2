@@ -597,7 +597,7 @@ Full bar (10 pixels) = buggy at arm distance. Shrinks from the right as the bugg
 
 ## Alpha Testing Notes
 
-BREmote V2.5-Evo is in Pre-Alpha. The firmware compiles, has been bench-tested for control flow and safety gates, and includes anti-spoofing and RTM/FM features — but it has not been field-tested on the water as of this writing. If you are an alpha tester building on this fork, the project recommends:
+BREmote V2.5-Evo is in Alpha. The firmware compiles, has been water tested for control flow and safety gates, and includes anti-spoofing and RTM/FM features. Currently running more water tests to graduate to Beta release.  If you are an alpha tester building on this fork, the project recommends:
 
 - Test in a controlled environment (shallow water, short range, motors disconnected for first dry run, second run with motors on a leashed test stand) before any open-water use.
 - Until the compass EMI behavior on your specific hardware is characterized, treat RTM steering as advisory, not autonomous. Keep `rtm_steer_exit_on_input = 1` enabled (any sideways toggle disengages RTM immediately and returns full manual control).
@@ -659,9 +659,9 @@ The two **bold** columns (`heading_error_dx10`, `d_error_dx10`) were added speci
 
 | Feature | Status |
 |---|---|
-| Follow-Me full implementation | FM override operational; full autonomous follow-me behaviour (positional control loop) not yet implemented |
+| Follow-Me full implementation (under testing) | FM override operational; full autonomous follow-me behaviour (positional control loop) implemented |
 | BLE telemetry | ✅ **Released in master — field-confirmed 2026-05-16.** NUS + VESC Tool binary protocol (COMM_GET_VALUES auto-detected). Live gauges: Temp, Motor Amps, Voltage, Duty, RPM. Connect with VESC Tool (iOS/Android, free) to `BRemote-TX-XX`. Enable via `bt_enabled` SPIFFS field (0=off, 1=Hall/session, 2=always on) or `Throttle + LEFT toggle` boot gesture. Boot on battery — USB blocks BLE init. |
-| RTM/FM hardware field test | Static code review passed (10/10 gates). Outdoor GPS + motor bench test still required before field use. |
+| RTM/FM hardware field test | Static code review passed (10/10 gates). Outdoor Water test GPS + motor done. |
 
 ### Bugs Found and Fixed Between Upstream and V2.5-Evo
 
@@ -687,7 +687,7 @@ The two **bold** columns (`heading_error_dx10`, `d_error_dx10`) were added speci
 ### Compass EMI Bench-Test Tool
 
 BREmote V2.5-Evo ships with a serial diagnostic command, `?magtest`, that lets any builder verify whether motor current is biasing the QMC5883L magnetometer on their specific hardware. The command streams CSV at 10 Hz (millis, mag X/Y/Z, magnitude, heading, VESC ERPM, motor current, throttle) for up to 120 seconds. Recommended use: bench-mount the buggy with motors free-spinning, capture serial output to a `.csv` file, and bring throttle slowly from 0 to maximum while logging. The resulting trace makes magnetic bias from the phase wires visible — magnitude shifts > 5% or heading shifts > 5° at any current point indicate the compass cannot be trusted for steering during active motor operation. This concern was raised by upstream maintainer Jan during the V2.5-Evo review; the test command exists so builders can collect their own measurements rather than rely on assertion.
-
+I recommend to place the BN-880 as far as possible from the magnetic field of the battery power cables and of the motor phase wires. Jsut 2 inched make a huge difference! 
 ---
 
 ## RX Serial Diagnostic Commands

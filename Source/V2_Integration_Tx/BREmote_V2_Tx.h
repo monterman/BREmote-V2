@@ -1,3 +1,10 @@
+// V2.5-Evo - 2026-07-20 - BLE re-enable deep-fix (Rex 2026-07-20-bremote-fw-audit-tx-ble-reenable-rootcause):
+//   BLE_ENABLED turned back ON permanently with the single-core coexistence hardening applied —
+//   heap-floor guard on init, relaxed connection interval, consolidated/back-pressured notify stream
+//   moved off loop() into a dedicated task, an i2cMutex serializing the shared HT16K33+ADS1115 Wire bus,
+//   and a WiFi-vs-BLE mutual-exclusion gate. Runtime/task/init changes only — confStruct UNCHANGED,
+//   sizeof stays 136, SW_VERSION stays 27, no SPIFFS reset. Re-commenting #define BLE_ENABLED (below) is
+//   still the instant, proven rollback.
 // V2.5-Evo - 2026-07-20 - MagGesture: SW_VERSION 26 → 27; sizeof(confStruct) 132 → 136 (2 bytes are alignment tail padding).
 //   New TX field mag_mode (uint16_t, 0-3, default 0 = off / Hall sensor not fitted) selects what the
 //   magnet gesture arms: 1=FM (2s), 2=RTM (2s), 3=FM (2s) + RTM (5s). magGestureRole() + MAG_ROLE_*
@@ -82,6 +89,7 @@
 #include <Adafruit_ADS1X15.h> //V2.5.0 adafruit
 #include <Ticker.h>
 #include "esp_task_wdt.h"
+#include "esp_heap_caps.h"  // V2.5-Evo - 2026-07-20 - heap_caps_get_free_size() for the BLE heap-floor guard (Rex §4.1)
 #include "FS.h"
 #include "SPIFFS.h"
 #include "mbedtls/base64.h"
@@ -95,17 +103,66 @@
 // V2.5-Evo - 2026-06-04 - BLE master kill-switch. Leave BLE_ENABLED UNDEFINED to
 // fully exclude the NimBLE stack: no header, no init, no task, no loop calls.
 // This was added because the BLE work crashed the TX display during water testing.
-// Reversible by investigation: uncomment the #define below to restore BLE exactly as before.
 // The Hall-sensor BT status dot (bt_dot_state / BT_DOT_*) and the boot gesture flag
 // (bt_session_forced) are intentionally left OUTSIDE this guard — they are independent of
 // the NimBLE stack and stay compiled so the rest of the firmware is unchanged.
-// #define BLE_ENABLED
+// V2.5-Evo - 2026-07-20 - RE-ENABLED PERMANENTLY. Root-caused (single-core CPU starvation +
+// no-PSRAM heap collapse + un-back-pressured triple notify stream) and hardened per Rex's report
+// 2026-07-20-bremote-fw-audit-tx-ble-reenable-rootcause: heap-floor guard, relaxed conn interval,
+// one back-pressured notify stream in its own Core-0 task, i2cMutex on the shared Wire bus, and a
+// WiFi/BLE mutual-exclusion gate. ROLLBACK IS STILL INSTANT: re-comment the #define below to fully
+// exclude the NimBLE stack again exactly as during the 2026-06-04 → 2026-07-20 water-test kill.
+#define BLE_ENABLED
 
 // NimBLE-Arduino: required for Patron BLE GATT service (BLE_Patron.ino).
 // NimBLEServer type must be visible here so the forward declaration in
 // V2_Integration_Tx.ino can compile before BLE_Patron.ino is concatenated.
 #ifdef BLE_ENABLED
 #include <NimBLEDevice.h>
+
+// V2.5-Evo - 2026-07-20 - BLE re-enable tuning constants (Rex §4.1 / §4.3).
+// -- Heap-floor guard (Rex §4.1, mirrors foilIQ F-2) --
+// bleInitTask reads free INTERNAL DRAM before NimBLEDevice::init(); if it is below this floor the
+// whole BLE stack is skipped gracefully (no boot-loop) so the no-PSRAM C3 never inits into a NULL
+// alloc. Rex's guidance was ~60-70 KB, tune on the bench; the conservative (higher) end is chosen.
+// Same-family data point: the foilIQ S3 measured 81776 free before init → 11688 after → init FAILED,
+// so a comfortable pre-init margin is essential. Bench-tune against the real WiFi-off riding heap.
+// V2.5-Evo - 2026-07-20 - Rex M2 (re-audit): this value is BENCH-TUNABLE and currently UNPROVEN on the
+// C3. The foilIQ S3 above consumed ≈70 KB during NimBLE init and STILL failed — so 70 KB *free* is only
+// a floor to attempt init, not a guarantee of a successful/stable init. Do NOT bump this blindly: a
+// higher floor could block BLE from ever starting if the C3's true free-heap-at-init is modest. The real
+// number is unknown until bench — read it off the prominent pre/post-init Serial.printf heap logs in
+// bleInitTask (Init.ino) and initBLE() (BLE.ino) on the first bench run, THEN set:
+//   BLE_HEAP_FLOOR_BYTES = measured init consumption + runtime notify headroom + safety margin.
+#define BLE_HEAP_FLOOR_BYTES 71680u   // 70 KB internal-DRAM floor to even attempt NimBLE init (BENCH-TUNABLE, Rex M2)
+// -- Runtime heap floor (Rex M2 re-audit) — the standing net the init floor cannot provide --
+// BLE_HEAP_FLOOR_BYTES only guards NimBLEDevice::init() ONCE, at boot. It does nothing against a runtime
+// H2 heap collapse under a live connection. This runtime floor is checked in bleServiceNotify() (the
+// Core-0 notify path) before every push: if free INTERNAL DRAM drops below BLE_HEAP_RUNTIME_FLOOR_BYTES
+// the periodic telemetry notifies are SUSPENDED (push skipped) while the connection + NimBLE stack stay
+// fully up; they RESUME only once free heap climbs back above floor + BLE_HEAP_RUNTIME_HYSTERESIS_BYTES.
+// Suspending pushes is always fail-safe — it only reduces BLE egress and NEVER touches the motor /
+// throttle / steer path. The hysteresis prevents flapping at the threshold; state changes are logged
+// once per transition. BENCH-TUNABLE (Rex M2): once NimBLE is up the runtime free heap is expected to
+// sit well above the init peak, so this floor is a collapse tripwire set well below BLE_HEAP_FLOOR_BYTES,
+// not a normal operating point. Confirm/adjust from the ?printtasks + heap census under a ≥30-min live
+// connection (LoRa 10 Hz + GPS).
+#define BLE_HEAP_RUNTIME_FLOOR_BYTES      20480u   // 20 KB — suspend telemetry notifies below this (BENCH-TUNABLE)
+#define BLE_HEAP_RUNTIME_HYSTERESIS_BYTES  8192u   // 8 KB recovery margin above the floor before resuming
+// -- Relaxed connection interval (Rex §4.3 — highest-leverage single-core mitigation) --
+// Requested on connect via NimBLEServer::updateConnParams(). Longer interval = fewer controller
+// wakeups = less core stolen from the display render + LoRa sendData path on the one C3 core.
+// Units: interval steps are 1.25 ms, supervision timeout steps are 10 ms.
+#define BLE_CONN_MIN_INTERVAL 32u     // 32 * 1.25 ms = 40 ms
+#define BLE_CONN_MAX_INTERVAL 64u     // 64 * 1.25 ms = 80 ms
+#define BLE_CONN_LATENCY      0u      // no slave latency — keep telemetry timely
+#define BLE_CONN_TIMEOUT      200u    // 200 * 10 ms = 2000 ms supervision timeout
+// -- Consolidated notify cadence (Rex §4.4 / §4.5) --
+// One telemetry stream is pushed every BLE_TELEM_INTERVAL_MS (was: patron 200 ms + CSV 500 ms running
+// concurrently). The dedicated notify task wakes every BLE_NOTIFY_TICK_MS; the finer tick lets the
+// backpressure hold-off react promptly when the stack reports congestion.
+#define BLE_TELEM_INTERVAL_MS 250u
+#define BLE_NOTIFY_TICK_MS    50u
 #endif
 
 // Uncomment the line below to enable WiFi AP configuration mode
@@ -539,6 +596,16 @@ SemaphoreHandle_t displayMutex;   // protects displayBuffer + updateDisplay() �
 // or updateBargraphs which take the mutex themselves).
 #define DISP_LOCK()   do { if(displayMutex) xSemaphoreTake(displayMutex, portMAX_DELAY); } while(0)
 #define DISP_UNLOCK() do { if(displayMutex) xSemaphoreGive(displayMutex); } while(0)
+
+// V2.5-Evo - 2026-07-20 - Rex §4.6 (H4): serializes the SHARED I2C bus. The HT16K33 display (0x70)
+// and the ADS1115 throttle/steer/battery ADC (0x48) sit on the same Wire (SDA=2/SCL=1). displayMutex
+// protects the displayBuffer DATA structure; i2cMutex protects the physical BUS. They are separate:
+// the lock order is always displayMutex (outer, optional) → i2cMutex (inner, leaf) on the render path,
+// while the ADS path (measBufCalc, prio 6) takes ONLY i2cMutex — so no cycle, no deadlock. Created in
+// initTasks() before any task starts; the macros no-op until then (startup is single-threaded anyway).
+SemaphoreHandle_t i2cMutex;   // serializes every HT16K33 and ADS1115 Wire transaction — created in initTasks()
+#define I2C_LOCK()   do { if(i2cMutex) xSemaphoreTake(i2cMutex, portMAX_DELAY); } while(0)
+#define I2C_UNLOCK() do { if(i2cMutex) xSemaphoreGive(i2cMutex); } while(0)
 // Unused — shadowed by local declarations in displayDigits(), scroll3Digits(), scroll4Digits()
 //uint8_t digitBuffer[6];
 

@@ -323,6 +323,24 @@ void txGpsColdReset() {
 }
 
 // ============================================================
+// txGpsGoodFix - Canonical "trustworthy fix" gate (single source of truth)
+// ============================================================
+// V2.5-Evo - 2026-07-20 - GPS dot: solid only on FM-grade fix (adds HDOP + speed-valid to match the publish gate).
+// One definition of "good fix" shared by getTxGPSLoop() (the publish decision below)
+// and the Display.ino GPS status dot (solid branch). A fix is good when location and
+// speed are both valid, the fix is fresher than usrConf.tx_gps_stale_timeout_ms, and it
+// passes the HDOP quality gate. gps_max_hdop == 0 disables the HDOP check; both
+// usrConf.gps_max_hdop and gps_tx.hdop.value() are stored as HDOP*100 (uint16 compare).
+bool txGpsGoodFix()
+{
+  return gps_tx.location.isValid()
+      && gps_tx.speed.isValid()
+      && gps_tx.location.age() < usrConf.tx_gps_stale_timeout_ms
+      && (usrConf.gps_max_hdop == 0 ||
+          (gps_tx.hdop.isValid() && gps_tx.hdop.value() <= usrConf.gps_max_hdop));
+}
+
+// ============================================================
 // getTxGPSLoop - Drain pending GPS bytes and update tx_gps_speed
 // ============================================================
 //
@@ -373,31 +391,16 @@ void getTxGPSLoop()
   }
 
   // Decide whether the data is trustworthy enough to publish.
-  // A fix is considered "current" when all three hold:
-  //   1) TinyGPS++ has ever seen a valid location (isValid())
-  //   2) TinyGPS++ has ever seen a valid speed reading
-  //   3) the last location update is newer than the user's
-  //      configured stale timeout (usrConf.tx_gps_stale_timeout_ms)
-  const bool have_current_fix =
-         gps_tx.location.isValid()
-      && gps_tx.speed.isValid()
-      && gps_tx.location.age() < usrConf.tx_gps_stale_timeout_ms;
-
-  if (!have_current_fix)
+  // V2.5-Evo - 2026-07-20 - Publish gate now delegates to txGpsGoodFix() (the canonical
+  // "trustworthy fix" definition above), so the publish path and the Display.ino GPS
+  // status dot share ONE gate. This folds in the former have_current_fix test
+  // (location valid + speed valid + fresher than tx_gps_stale_timeout_ms) AND the HDOP
+  // quality gate (N-3 fix): reject fixes with poor satellite geometry. Both
+  // usrConf.gps_max_hdop and gps_tx.hdop.value() are stored as HDOP*100 (uint16 compare;
+  // a value of 0 disables the HDOP check).
+  if (!txGpsGoodFix())
   {
-    tx_gps_speed = 0xFF;   // "no data" sentinel → display renders "--"
-    return;
-  }
-
-  // V2.5-Evo - 2026-04-22 - HDOP quality gate (N-3 fix): reject fixes with poor
-  // satellite geometry before publishing speed. Both usrConf.gps_max_hdop
-  // and gps_tx.hdop.value() are stored as HDOP*100, so no float math is
-  // needed — direct uint16 comparison. A value of 0 skips the check (out
-  // of range 50-500, so it can only appear if config validation was bypassed).
-  if (usrConf.gps_max_hdop > 0 &&
-      (!gps_tx.hdop.isValid() || gps_tx.hdop.value() > usrConf.gps_max_hdop))
-  {
-    tx_gps_speed = 0xFF;   // poor signal quality → display renders "--"
+    tx_gps_speed = 0xFF;   // no fix / stale / poor HDOP → display renders "--"
     return;
   }
 

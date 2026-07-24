@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-07-21 - DIAG: ?state (serPrintStatus) now prints a BLE status row in both the text and
+//   json branches, guarded by BLE_ENABLED (fallback "DISABLED (compiled out)" when built without BLE).
 // V2.5-Evo - 2026-07-20 - StopFeel: vibration Pattern 7 added — one 400ms LONG pulse = the dedicated
 //   STOP/DISARM confirm for FM and RTM. Arm confirms stay Pattern 4 (2×80ms). Result by feel:
 //   arm = two quick taps, stop = one long buzz. 400ms (not 350) chosen so it is unmistakable from the
@@ -617,7 +619,8 @@ void serPrintStatus(bool json)
 {
   if(json)
   {
-    Serial.printf("{\"hall\":\"%s\",\"radio\":\"%s\",\"display\":\"%s\",\"wifi\":\"%s\",\"locked\":%s,\"paired\":%s,\"throttle_mode\":%d,\"gear\":%d,\"max_gears\":%d,\"max_power_cap\":%d,\"error\":%d,\"last_pkt_ms\":%lu}\n",
+    // Note: no closing brace here — the BLE fields are appended below so the JSON stays one object.
+    Serial.printf("{\"hall\":\"%s\",\"radio\":\"%s\",\"display\":\"%s\",\"wifi\":\"%s\",\"locked\":%s,\"paired\":%s,\"throttle_mode\":%d,\"gear\":%d,\"max_gears\":%d,\"max_power_cap\":%d,\"error\":%d,\"last_pkt_ms\":%lu",
       isHallActivityEnabled() ? "ON" : "OFF",
       isRadioActivityEnabled() ? "ON" : "OFF",
       isDisplayActivityEnabled() ? "ON" : "OFF",
@@ -630,6 +633,19 @@ void serPrintStatus(bool json)
       usrConf.paired ? "true" : "false",
       usrConf.throttle_mode, gear, usrConf.max_gears, max_power_cap, remote_error,
       millis() - last_packet);
+    // V2.5-Evo - 2026-07-21 - DIAG: BLE status appended to ?state json. State derived from bleRunning +
+    // bleIsConnected(); notify reflects the runtime heap-floor tripwire (ble_notify_heap_suspended).
+#ifdef BLE_ENABLED
+    Serial.printf(",\"ble\":\"%s\",\"ble_conn\":%u,\"ble_heap\":%u,\"ble_notify\":\"%s\",\"bt_enabled\":%u",
+      !bleRunning ? "OFF" : (bleIsConnected() ? "CONNECTED" : "ADVERTISING"),
+      (unsigned)((bleRunning && bleServer) ? bleServer->getConnectedCount() : 0),
+      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+      ble_notify_heap_suspended ? "suspended" : "active",
+      (unsigned)usrConf.bt_enabled);
+#else
+    Serial.printf(",\"ble\":\"DISABLED\"");
+#endif
+    Serial.printf("}\n");
   }
   else
   {
@@ -650,6 +666,19 @@ void serPrintStatus(bool json)
     if(usrConf.throttle_mode == 2) { Serial.print("Cap:     "); Serial.print(max_power_cap); Serial.println("%"); }
     Serial.print("Error:   "); Serial.println(remote_error);
     Serial.print("Last pkt (ms ago): "); Serial.println(millis() - last_packet);
+    // V2.5-Evo - 2026-07-21 - DIAG: BLE status row. state=OFF(not init/skipped)/ADVERTISING/CONNECTED(n);
+    // heap=free internal DRAM; notify reflects the runtime heap-floor tripwire; bt_enabled=SPIFFS config.
+    Serial.print("BLE:     ");
+#ifdef BLE_ENABLED
+    if(!bleRunning) { Serial.print("OFF"); }
+    else if(bleIsConnected()) { Serial.print("CONNECTED("); Serial.print(bleServer->getConnectedCount()); Serial.print(")"); }
+    else { Serial.print("ADVERTISING"); }
+    Serial.print("  heap="); Serial.print(heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    Serial.print("  notify="); Serial.print(ble_notify_heap_suspended ? "SUSPENDED" : "active");
+    Serial.print("  bt_enabled="); Serial.println(usrConf.bt_enabled);
+#else
+    Serial.println("DISABLED (compiled out)");
+#endif
     Serial.println("--------------");
   }
 }

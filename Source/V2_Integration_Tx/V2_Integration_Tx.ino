@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-07-20 - BLE re-enable deep-fix (Rex): the per-loop bleTelemetryLoop()/patronNotifyLoop() pushes are REMOVED from loop(); the periodic BLE telemetry push now lives in the dedicated Core-0 bleNotifyTask (see Init.ino/BLE.ino) so BLE cadence can't couple to display-render timing.
 // V2.5-Evo - 2026-07-20 - MagGesture FIX1: with mag_mode>0 the Hall is EXCLUSIVELY the FM/RTM gesture input — the SW33b tap→bt_dot_state (BLE-session) toggle is gated OFF and the BT dot is instead driven from BLE state (bt_enabled==2/boot-gesture). mag_mode==0 SW33b behaviour is byte-identical to baseline.
 // V2.5-Evo - 2026-07-20 - MagGesture: runMagGesture() called from loop() after the SW33b Hall block; prototype added
 // *** LATEST: V2.5-Evo - 2026-05-15 - feature/bluetooth Tier 1: NUS skeleton (BLE.ino); bt_enabled SPIFFS field; boot gesture; bleInitTask 5s delayed ***
@@ -47,6 +48,8 @@ uint8_t throttleGetCapPercent();
 // TX GPS Functions (defined in GPS.ino, declared here as GPS.ino is concatenated after this file)
 void initTxGPS();
 void getTxGPSLoop();
+// V2.5-Evo - 2026-07-20 - canonical "trustworthy fix" gate; shared by getTxGPSLoop() publish path and the Display.ino GPS status dot.
+bool txGpsGoodFix();
 // RTM & FM State Machine Functions (defined in RTMState.ino)
 void runRtmLoop();
 void runFmLoop();
@@ -65,9 +68,16 @@ void renderRtmInfoDisplay();
 // NimBLE header is excluded, so these decls (one uses NimBLEServer*) must be excluded too.
 #ifdef BLE_ENABLED
 void initBLE();
-void bleTelemetryLoop();
+// V2.5-Evo - 2026-07-20 - true on a live BLE connection; Display.ino uses it to make the BT dot SOLID (defined in BLE.ino).
+bool bleIsConnected();
 void initPatronService(NimBLEServer* srv);
-void patronNotifyLoop();
+// V2.5-Evo - 2026-07-20 - BLE re-enable deep-fix (Rex §4.4/§4.5): consolidated back-pressured push
+// (bleServiceNotify), the dedicated Core-0 push task (bleNotifyTask), and the patron stream helpers.
+void bleServiceNotify();
+void bleNotifyTask(void* param);
+bool sendPatronTelemetry();
+bool patronHasSubscriber();
+void patronClearSubscriber();
 #endif
 // Aux control command (defined in Radio.ino — queues 0xF4 meta-packet burst to RX)
 void sendAuxCommand(uint8_t flags);
@@ -235,12 +245,10 @@ void loop()
   runMagGesture();
 
   checkSerial();
-  // V2.5-Evo - 2026-06-04 - BLE per-loop calls guarded by BLE_ENABLED (BREmote_V2_Tx.h).
-  // With BLE disabled, the NimBLE stack is never initialized, so these must not run.
-#ifdef BLE_ENABLED
-  bleTelemetryLoop();
-  patronNotifyLoop();
-#endif
+  // V2.5-Evo - 2026-07-20 - BLE re-enable deep-fix (Rex §4.5): the BLE telemetry push was moved OUT of
+  // loop() into the dedicated Core-0 bleNotifyTask (spawned by bleInitTask after a successful init), so
+  // that BLE cadence can never extend the same loop iteration that renders the display. Nothing BLE-
+  // related runs here anymore; loop() timing (and thus GPS meta ≥2 Hz + RTM/FM cadence) is protected.
 
   // Update last_user_input_ms when intentional input is detected.
   // Throttle threshold: thr_scaled > 20 (~8% pull — above noise floor).

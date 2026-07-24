@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-07-20 - Rex §4.6 (H4): every HT16K33 (0x70) Wire transaction below now takes i2cMutex (I2C_LOCK/UNLOCK) so it can't tear against the ADS1115 ADC read on the shared bus. displayMutex still guards displayBuffer; i2cMutex is the inner bus lock. No leaf-lock function calls another leaf-lock function, so there is no re-entrant deadlock.
+// V2.5-Evo - 2026-07-20 - GPS dot: solid only on FM-grade fix (adds HDOP + speed-valid to match the publish gate); solid branch now calls shared txGpsGoodFix() (GPS.ino).
+// V2.5-Evo - 2026-07-20 - BT dot: SOLID when a BLE device is actually connected (e.g. Waveshare); blink (SLOW/FAST) still means advertising-only. Display-layer override in updateBargraphs(), guarded by BLE_ENABLED; does not touch bt_dot_state.
 // V2.5-Evo - 2026-05-14 - SW55: bootAnimation VI display 500→250ms; battery voltage display 500→1450ms; total boot to padlock ~4.5s
 // V2.5-Evo - 2026-05-14 - SW53: unlockAnimation() rewritten 3-frame sweep R0→R6 (was 5 frames starting at invisible row); bootAnimation battery delay 3s→500ms
 // V2.5-Evo - 2026-05-13 - SW48: advanceArrow/unlockAnimation/displayError mutex-wrapped; cycleDisplayMode/displayLock call sites fixed in Hall+RTMState+System
@@ -43,13 +46,15 @@ static const unsigned long FOIL_DATA_CACHE_TIMEOUT_MS = 30000;  // 30s before ad
 
 static void clearDisplayRaw()
 {
-  Wire.beginTransmission(DISPLAY_ADDRESS);
   uint8_t buffer[17];
   for (uint8_t i = 0; i < 17; i++) {
     buffer[i] = 0x00;
   }
+  I2C_LOCK();
+  Wire.beginTransmission(DISPLAY_ADDRESS);
   Wire.write(buffer,17);
   Wire.endTransmission();
+  I2C_UNLOCK();
 }
 
 void setDisplayActivityEnabled(bool enabled)
@@ -70,9 +75,11 @@ void setDisplayActivityEnabled(bool enabled)
   }
 
   clearDisplayRaw();
+  I2C_LOCK();
   Wire.beginTransmission(DISPLAY_ADDRESS);
   Wire.write(0x80); // display off
   Wire.endTransmission();
+  I2C_UNLOCK();
   display_activity_enabled = false;
 }
 
@@ -105,8 +112,11 @@ void startupDisplay()
 
 bool beginDisplay()
 {
+  I2C_LOCK();
   Wire.beginTransmission(DISPLAY_ADDRESS);
-  return (0 == Wire.endTransmission());
+  bool ok = (0 == Wire.endTransmission());
+  I2C_UNLOCK();
+  return ok;
 }
 
 // Unused — global digitBuffer was shadowed by locals everywhere
@@ -160,6 +170,9 @@ void initDisplay()
 {
   if(!isDisplayActivityEnabled()) return;
 
+  // Both init transactions under one i2cMutex hold. setBrightness() takes the mutex itself, so it is
+  // called AFTER I2C_UNLOCK() to avoid re-entering the non-recursive mutex.
+  I2C_LOCK();
   Wire.beginTransmission(DISPLAY_ADDRESS);
   //System Oscillator on
   Wire.write(0x21);
@@ -169,7 +182,8 @@ void initDisplay()
   //On, no blinking
   Wire.write(0x81);
   Wire.endTransmission();
-  
+  I2C_UNLOCK();
+
   setBrightness(0x0F);
 }
 
@@ -179,10 +193,12 @@ void setBrightness(uint8_t level)
 
   //Set brightness x00..x0F
   if(level > 0x0F) level = 0x0F;
+  I2C_LOCK();
   Wire.beginTransmission(DISPLAY_ADDRESS);
   //Full brightness
   Wire.write(0xE0 | level);
   Wire.endTransmission();
+  I2C_UNLOCK();
 }
 
 void updateDisplay()
@@ -215,9 +231,11 @@ void updateDisplay()
     }
   }
 
+  I2C_LOCK();
   Wire.beginTransmission(DISPLAY_ADDRESS);
   Wire.write(sendBuffer,17);
   Wire.endTransmission();
+  I2C_UNLOCK();
 }
 
 void clearDisplayBuffer()
@@ -979,9 +997,10 @@ void updateBargraphs(void *parameter)
       }
       if (gps_dot_state) displayBuffer[1] |=  (1u << 7);
       else               displayBuffer[1] &= ~(1u << 7);
-    } else if (gps_tx.location.isValid() &&
-               gps_tx.location.age() < usrConf.tx_gps_stale_timeout_ms) {
-      // Valid fresh fix — solid on; reset timer so blink starts cleanly on state change
+    } else if (txGpsGoodFix()) {
+      // V2.5-Evo - 2026-07-20 - GPS dot: solid only on FM-grade fix (adds HDOP + speed-valid to match the publish gate)
+      // canonical gate: GPS.ino getTxGPSLoop() / txGpsGoodFix()
+      // Good FM-grade fix — solid on; reset timer so blink starts cleanly on state change
       gps_dot_state = true;
       gps_dot_ms    = millis();
       displayBuffer[1] |= (1u << 7);
@@ -1013,6 +1032,10 @@ void updateBargraphs(void *parameter)
         if (millis() - bt_dot_ms >= 200) { bt_dot_on = !bt_dot_on; bt_dot_ms = millis(); }
         break;
     }
+#ifdef BLE_ENABLED
+    // V2.5-Evo - 2026-07-20 - BT dot: SOLID when a BLE device is actually connected (e.g. Waveshare); blink = advertising-only.
+    if (bt_dot_state != BT_DOT_OFF && bleIsConnected()) bt_dot_on = true;
+#endif
     if (bt_dot_on) displayBuffer[2] |=  (1u << 7);
     else           displayBuffer[2] &= ~(1u << 7);
     // ---- End BT status dot --------------------------------------------

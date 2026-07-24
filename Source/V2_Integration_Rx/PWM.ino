@@ -15,25 +15,43 @@ void generatePWM(void *parameter) {
     if(PWM_active && millis()-last_packet < usrConf.failsafe_time)
     {
 
+      // V2.5-Evo - 2026-07-22 - <Rex HIGH> WDT self-preservation on i2cMutex.
+      // BUG: this WDT-registered top-priority PWM task took i2cMutex with portMAX_DELAY at the
+      // two AW9523 enable-swap sites. i2cMutex is shared with compass/ADS1115/AW9523-LED/logger;
+      // if the I2C bus wedged, this task blocked unbounded and the 3000ms WDT panic-rebooted the
+      // RX mid-ride. FIX: bound the take to 10ms and skip the swap on timeout (never block >10ms).
+      // CONSISTENCY: the enable swap sets up the enable line for the NEXT iteration's pulse, so
+      // alternatePWMChannel is now advanced ONLY when the swap actually succeeds. On timeout the
+      // channel index is left unchanged, so next cycle re-pulses the SAME, still-enabled motor
+      // (correct VESC) instead of firing the other channel's pulse onto the current enable state.
+      // Worst case under bus contention: one motor gets repeated pulses for a few 10ms cycles while
+      // the other misses updates — no wrong-motor pulse, no unbounded block, no WDT trip. On timeout
+      // we do NOT hold the mutex, so we do NOT give it.
       if(alternatePWMChannel)
       {
-        alternatePWMChannel = 0;
         generate_pulse(PWM0_time);
         vTaskDelay(pdMS_TO_TICKS(2));
-        xSemaphoreTake(i2cMutex, portMAX_DELAY);
-        aw.pinMode(AP_EN_PWM0, INPUT);
-        aw.pinMode(AP_EN_PWM1, OUTPUT);
-        xSemaphoreGive(i2cMutex);
+        if(xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(10)) == pdTRUE)
+        {
+          aw.pinMode(AP_EN_PWM0, INPUT);
+          aw.pinMode(AP_EN_PWM1, OUTPUT);
+          xSemaphoreGive(i2cMutex);
+          alternatePWMChannel = 0;  // advance only on a successful enable swap
+        }
+        // timeout: keep alternatePWMChannel=1 so PWM0 (still enabled) re-pulses next cycle
       }
       else
       {
-        alternatePWMChannel = 1;
         generate_pulse(PWM1_time);
         vTaskDelay(pdMS_TO_TICKS(2));
-        xSemaphoreTake(i2cMutex, portMAX_DELAY);
-        aw.pinMode(AP_EN_PWM1, INPUT);
-        aw.pinMode(AP_EN_PWM0, OUTPUT);
-        xSemaphoreGive(i2cMutex);
+        if(xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(10)) == pdTRUE)
+        {
+          aw.pinMode(AP_EN_PWM1, INPUT);
+          aw.pinMode(AP_EN_PWM0, OUTPUT);
+          xSemaphoreGive(i2cMutex);
+          alternatePWMChannel = 1;  // advance only on a successful enable swap
+        }
+        // timeout: keep alternatePWMChannel=0 so PWM1 (still enabled) re-pulses next cycle
       }
     }
     vTaskDelayUntil(&xLastWakeTime, xFrequency);

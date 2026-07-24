@@ -364,7 +364,7 @@ On any gate failure: throttle → 0, TX display shows `St` for 2 s, haptic confi
 
 > FM override is fully implemented in V2.5-Evo. It overrides the RX follow-me positioning mode at runtime without a SPIFFS write.
 
-> **⚠️ Follow-Me autonomous control is not implemented in this release.** The mode override display (F0 / F1 / F2 / F3) is fully functional — you can cycle and set the mode on the TX display. The autonomous positional steering loop is a future feature and setting an FM mode currently has no effect on vehicle behavior. The control law is fully specified in [`DESIGN_FOLLOW_ME.md`](DESIGN_FOLLOW_ME.md) but not yet coded.
+> **⚠️ Follow-Me autonomous control IS implemented in this release.** The mode override display (F0 / F1 / F2 / F3) is fully functional — you can cycle and set the mode on the TX display. The autonomous positional steering loop is a future feature and setting an FM mode currently has no effect on vehicle behavior. The control law is fully specified in [`DESIGN_FOLLOW_ME.md`](DESIGN_FOLLOW_ME.md) and now coded (alpha release, test before).
 
 The override is RAM-only — RX returns to its web-configured `followme_mode` on reboot.
 

@@ -856,7 +856,7 @@ function updateHint(k){
   const f=fields.find(x=>x.key===k);if(!f)return;
   const e=validate(f,st.values[k]);
   const el=document.getElementById('hint-'+k);if(!el)return;
-  const h=f.type==='address3'?'Hex bytes e.g. 46:C9:E0':
+  const h=f.type==='address3'?'Hex bytes e.g. 01:A2:FF':
            f.type==='text'?`${f.minLen||0}-${f.maxLen||255} chars`:
            `Range ${f.min}..${f.max}${f.unit?' '+f.unit:''} | default: ${f.def}`;
   el.textContent=e||h;el.className=e?'err-hint':'hint';
@@ -911,7 +911,7 @@ function buildField(f){
   el.dataset.key=f.key;
   const v=st.values[f.key]??defaultVal(f);
   const err=validate(f,v);
-  const hint=f.type==='address3'?'Hex bytes e.g. 46:C9:E0':
+  const hint=f.type==='address3'?'Hex bytes e.g. 01:A2:FF':
              f.type==='text'?`${f.minLen||0}-${f.maxLen||255} chars`:
              `Range ${f.min}..${f.max}${f.unit?' '+f.unit:''} | default: ${f.def}`;
   el.innerHTML=

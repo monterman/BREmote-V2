@@ -10,6 +10,7 @@
 // V2.5-Evo - 2026-04-29 - Bundle A: radio_preset max clamped to 2; dead foil_speed != 99 sentinel removed
 // V2.5-Evo - 2026-05-08 - Bundle 1: dummy_delete_me → rtm_steer_response (0-4 preset index)
 // V2.5-Evo - 2026-05-06 - D4: Added rtm_use_compass + rtm_cog_min_speed_kmh fields to ConfigService table
+// V2.5-Evo - 2026-07-20 - SW34: Added 3 reserved fields to kCfgFields (validation-only; not read by v1): fm_engage_dist_m (0-50, 0=auto), auton_runtime_cap_s (0-3600, 0=disabled), fm_steer_reposition_en (0-1, 0=off)
 
 #include <stddef.h>
 
@@ -79,7 +80,22 @@ const CfgFieldSpec kCfgFields[] = {
   {"own_address", CFG_ADDR3, offsetof(confStruct, own_address), true, false, false, 0.0f, 0.0f, 0, false},
   {"dest_address", CFG_ADDR3, offsetof(confStruct, dest_address), true, false, false, 0.0f, 0.0f, 0, false},
   {"wifi_password", CFG_STR8, offsetof(confStruct, wifi_password), true, false, false, 0.0f, 0.0f, 8, false},
-  {"motor_ramp_s", CFG_FLOAT, offsetof(confStruct, motor_ramp_s), true, false, true, 0.0f, 4.0f, 2, false}
+  {"motor_ramp_s", CFG_FLOAT, offsetof(confStruct, motor_ramp_s), true, false, true, 0.0f, 4.0f, 2, false},
+  // V2.5-Evo - 2026-07-21 - SW44 intent completed: wire the 4 compass-cal fields into kCfgFields so the
+  // WebUI/serial config can READ and WRITE them. They were added to confStruct (2026-04-22) and to the
+  // WebUI fields[] (SW44, 2026-05-13) but were never added here — orphaning them: /api/config never
+  // returned them, so the RX web "Save All" validated them as undefined→"Required" and blocked every edit.
+  // These fields already exist in confStruct — this adds METADATA ROWS ONLY: no struct change, no size
+  // change (stays 184), no SW_VERSION bump. mag_offset_x/y = int16 (CFG_I16); mag_scale_x/y = float
+  // (CFG_FLOAT, 0.1-10.0, 2 dp). Set automatically by ?compasscal; also hand-editable to restore a backup.
+  {"mag_offset_x", CFG_I16,   offsetof(confStruct, mag_offset_x), true, false, true, -32768.0f, 32767.0f, 0, false},
+  {"mag_offset_y", CFG_I16,   offsetof(confStruct, mag_offset_y), true, false, true, -32768.0f, 32767.0f, 0, false},
+  {"mag_scale_x",  CFG_FLOAT, offsetof(confStruct, mag_scale_x),  true, false, true, 0.1f,      10.0f,    2, false},
+  {"mag_scale_y",  CFG_FLOAT, offsetof(confStruct, mag_scale_y),  true, false, true, 0.1f,      10.0f,    2, false},
+  // V2.5-Evo - 2026-07-20 - SW34 reserved fields (validation only; not read by v1 control law)
+  {"fm_engage_dist_m",       CFG_FLOAT, offsetof(confStruct, fm_engage_dist_m),       true, false, true, 0.0f,  50.0f,   1, false},
+  {"auton_runtime_cap_s",    CFG_U16,   offsetof(confStruct, auton_runtime_cap_s),    true, false, true, 0.0f, 3600.0f,  0, false},
+  {"fm_steer_reposition_en", CFG_U16,   offsetof(confStruct, fm_steer_reposition_en), true, false, true, 0.0f,  1.0f,    0, false}
 };
 
 const size_t kCfgFieldCount = sizeof(kCfgFields) / sizeof(kCfgFields[0]);

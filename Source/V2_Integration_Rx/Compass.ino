@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-07-22 - runCompassCalibration() now clamps mag_scale_x/y to [0.1, 10.0] (the kCfgFields validator range) before cmdSave(), so a pathological high-asymmetry cal can never save a scale that fails config-load validation and wipes config+pairing on next boot. Value-clamp only — no confStruct/SW_VERSION change.
+// V2.5-Evo - 2026-07-21 - Compass hardening: (1) getCompassHeading()/updateCompassSnapshot() now reject the UNCALIBRATED degenerate default (offset 0/0 + scale 1/1), not just scale==0, so FM/RTM never steer on a garbage heading; (2) runCompassCalibration() requires compass at entry and aborts on a no-sample collection (maxX<=minX) WITHOUT saving, so a botched cal can never overwrite a good one. Pure code checks — no confStruct field added, no SW_VERSION bump.
 // V2.5-Evo - 2026-05-06 - D2: Add updateCompassSnapshot() and snapshot globals (clean heading captured during motor-idle for future RTM heading source)
 // V2.5-Evo - 2026-04-25 - P7: Added getCompassHeading() function
 #include <Wire.h>
@@ -93,9 +95,19 @@ void serPrintCompass() {
 }
 
 void runCompassCalibration() {
+  // V2.5-Evo - 2026-07-21 - Require the compass hardware at entry. Without this, a cal started
+  // with no sensor present (loose wire, wrong hardware, BIND pressed by mistake) collects zero
+  // samples and — via the min/max init values below — silently bakes a garbage 0/0/1/1 cal over
+  // a known-good one. Abort loudly and keep the existing calibration.
+  if (!compass_detected) {
+    Serial.println("\nERROR: Compass not detected. Calibration aborted (existing cal kept).");
+    blinkBind(10);
+    return;
+  }
+
   int16_t minX = 32767, maxX = -32768;
   int16_t minY = 32767, maxY = -32768;
-  
+
   uint32_t startTime = millis();
   uint32_t duration = 45000; // 45 seconds
   uint32_t lastPrintTime = 0;
@@ -133,6 +145,18 @@ void runCompassCalibration() {
     vTaskDelay(pdMS_TO_TICKS(20)); 
   }
 
+  // V2.5-Evo - 2026-07-21 - Abort if NO valid samples were captured. If readCompassRaw() never
+  // succeeded during the 45s window, min/max stay at their init values (min=32767, max=-32768),
+  // so max<=min. The old avgDeltaX==0 guard below NEVER fired in this case because
+  // avgDeltaX=(maxX-minX)/2=-32767.5, not 0 — so a no-sample cal computed offset 0/0 + scale
+  // 1.0/1.0 and cmdSave() clobbered the good calibration. Detect the degenerate range HERE and
+  // abort BEFORE writing usrConf, so a botched cal can never overwrite a good one.
+  if (maxX <= minX || maxY <= minY) {
+    Serial.println("\nERROR: No valid compass samples captured. Calibration aborted (existing cal kept).");
+    blinkBind(10);
+    return;
+  }
+
   // Phase 1: Calculate Hard Iron Offsets (The Center)
   usrConf.mag_offset_x = (maxX + minX) / 2;
   usrConf.mag_offset_y = (maxY + minY) / 2;
@@ -149,6 +173,17 @@ void runCompassCalibration() {
 
   usrConf.mag_scale_x = avgDelta / avgDeltaX;
   usrConf.mag_scale_y = avgDelta / avgDeltaY;
+
+  // V2.5-Evo - 2026-07-22 - Clamp mag_scale to the kCfgFields validation range [0.1, 10.0] BEFORE
+  // saving. A pathological cal (extreme axis asymmetry, ~19:1) can compute a scale > 10.0, which
+  // would then FAIL validateConfig() on the next boot → readConfFromSPIFFS() rejects the blob →
+  // full config + pairing wipe. Clamping at the writer keeps the cal output inside the validator's
+  // domain so a valid cal can never self-wipe the config. Clamp before the print below so the
+  // reported scales match what is actually saved.
+  if (usrConf.mag_scale_x < 0.1f)  usrConf.mag_scale_x = 0.1f;
+  if (usrConf.mag_scale_x > 10.0f) usrConf.mag_scale_x = 10.0f;
+  if (usrConf.mag_scale_y < 0.1f)  usrConf.mag_scale_y = 0.1f;
+  if (usrConf.mag_scale_y > 10.0f) usrConf.mag_scale_y = 10.0f;
 
   Serial.println("\n--- CALIBRATION COMPLETE ---");
   Serial.printf("Saved Center Offsets: X=%d, Y=%d\n", usrConf.mag_offset_x, usrConf.mag_offset_y);
@@ -177,8 +212,15 @@ float getCompassHeading()
 {
   if (!compass_detected) return -1.0f;
 
-  // Reject uncalibrated scale (default 1.0f after runcal is fine; 0.0f = never set)
+  // V2.5-Evo - 2026-07-21 - Reject an UNCALIBRATED compass, not just scale==0.
+  // Bug: a never-calibrated (or botched-cal) compass carries the degenerate default
+  // offset 0/0 + scale 1/1 — the scale is 1, NOT 0 — so the old scale==0 check passed it
+  // and returned atan2(magY*1, magX*1) with the hard-iron offset (0) never subtracted: a
+  // biased/garbage heading that FM/RTM then steered on. Treat offset 0/0 + scale ~1/1 as
+  // uncalibrated. Keep the scale==0 reject too (means the field was never written at all).
   if (usrConf.mag_scale_x == 0.0f || usrConf.mag_scale_y == 0.0f) return -1.0f;
+  if (usrConf.mag_offset_x == 0 && usrConf.mag_offset_y == 0 &&
+      fabsf(usrConf.mag_scale_x - 1.0f) < 1e-4f && fabsf(usrConf.mag_scale_y - 1.0f) < 1e-4f) return -1.0f;
 
   // Return -1 on I2C failure — stale magX/magY from a previous read would give a wrong heading.
   if (!readCompassRaw()) return -1.0f;
@@ -222,8 +264,12 @@ void updateCompassSnapshot()
   // Gate 1: compass hardware must be present
   if (!compass_detected) return;
 
-  // Gate 2: compass must be calibrated (default 0.0f means runcal was never run)
+  // V2.5-Evo - 2026-07-21 - Gate 2: compass must be calibrated. UNCALIBRATED = the degenerate
+  // default offset 0/0 + scale 1/1 (scale is 1, NOT 0) — the old scale==0 check missed it and let
+  // a biased/garbage heading become the RTM snapshot. Reject scale==0 AND the 0/0 + ~1/1 default.
   if (usrConf.mag_scale_x == 0.0f || usrConf.mag_scale_y == 0.0f) return;
+  if (usrConf.mag_offset_x == 0 && usrConf.mag_offset_y == 0 &&
+      fabsf(usrConf.mag_scale_x - 1.0f) < 1e-4f && fabsf(usrConf.mag_scale_y - 1.0f) < 1e-4f) return;
 
   // Gate 3: motor must be idle. thr_received < 25 means the user is not pressing
   // the throttle trigger enough to spin the motor. Threshold matches RTM Gate 1

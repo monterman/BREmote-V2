@@ -1,6 +1,7 @@
 #ifndef SPIFFS_ENGINE_H
 #define SPIFFS_ENGINE_H
 
+// V2.5-Evo - 2026-07-21 - Stale-config trap fix (shared TX/RX): getConfFromSPIFFS() now re-bakes defaults on a SAME-SIZE SW_VERSION mismatch instead of running on stale config bytes. Dormant when versions match — no wipe on a same-version reflash.
 // V2.5-Evo - 2026-04-30 - WebUI auto-reinstall via FNV1a content hash; removed WEB_UI_VERSION date string
 // Shared SPIFFS config persistence and WebUI embedding for BREmote V2 TX and RX.
 // Requirements before #include:
@@ -303,22 +304,38 @@ void getConfFromSPIFFS()
   #endif
 
   Serial.println("Getting usr conf from SPIFFS...");
+
+  // needDefaults = we must (re)bake defaultConf into SPIFFS. Set true when there is NO stored
+  // config at all, OR when the stored config is a different SW_VERSION than this firmware.
+  bool needDefaults = false;
+
   if (readConfFromSPIFFS(usrConf))
   {
     if(SW_VERSION != usrConf.version)
     {
-      Serial.println("Config version mismatch!");
+      // V2.5-Evo - 2026-07-21 - Stale-config trap fix (Rex MEDIUM). On a SAME-SIZE version bump the
+      // size guard in readConfFromSPIFFS() passes, so usrConf now holds STALE bytes from the previous
+      // firmware — a field repurposed at the same offset would be silently misread. Previously we only
+      // set config_version_error and RAN ON the stale config. Instead, take the same default re-bake
+      // path a struct-size change already takes, so we never operate on mismatched config bytes.
+      // Shared TX/RX code — symmetric for both boards. Dormant when versions match (no wipe on a
+      // same-version reflash), which is the case for the current SW34->SW34 RX flash.
+      Serial.println("Config version mismatch! Re-baking defaults.");
       Serial.print("Config version: "); Serial.print(usrConf.version);
       Serial.print(", firmware version: "); Serial.println(SW_VERSION);
-      Serial.println("Run ?clearspiffs + ?reboot to load defaults.");
       config_version_error = true;
+      needDefaults = true;
     }
   }
   else
   {
     Serial.println("No conf in SPIFFS, writing default...");
-    //Generate Device Address
+    needDefaults = true;
+  }
 
+  if (needDefaults)
+  {
+    //Generate Device Address
     uint64_t mac = ESP.getEfuseMac(); // Get MAC from ESP32 eFuse
     uint8_t mac_address[6];
     for (int i = 0; i < 6; i++) {
@@ -336,6 +353,7 @@ void getConfFromSPIFFS()
       spiffsErrorHalt(2);
     }
   }
+
   Serial.println("... Done");
 }
 

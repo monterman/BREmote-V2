@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-07-21 - FIX-WEB-1 (ported from TX): saveAll() now validates and sends only DIRTY fields (was: all fields every save). Unblocks RX web "Save All" — the orphaned compass mag_* fields could never be dirty, so they can no longer block a legitimate save with a false "Required" alert. No struct/SW_VERSION change.
+// V2.5-Evo - 2026-07-20 - SW34 RX: added 3 reserved config fields to the web UI (fm_engage_dist_m 0=auto, auton_runtime_cap_s 0=disabled, fm_steer_reposition_en RESERVED Option C disabled-until-v2); param-count comment 57→63. Labels flag all three as RESERVED so the owner does not enable them.
 // V2.5-Evo - 2026-07-18 - FM mode labels canonicalized to TX convention (1=Near-Right, 2=Behind, 3=Near-Left); followme_mode def 0→1; foiler_low_speed default text 5→8 km/h (matches defaultConf). Cosmetic — no struct/firmware change.
 // V2.5-Evo - 2026-05-13 - SW44 RX: mag_offset_x/y + mag_scale_x/y added to WebUI GPS group (were in confStruct but invisible to UI)
 // V2.5-Evo - 2026-05-13 - SW42 RX: Del All button in log modal header (red, small); fixed btn danger→btn warn on list body buttons
@@ -133,7 +135,7 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
   </div>
 
 <script>
-// 57 Parameters for RX
+// 63 Parameters for RX (was 57 in this comment but actual array was already 60; +3 SW34 reserved fields = 63)
 const groupOrder=["Radio","Steering","PWM","Motor & Safety","VESC","Sensors","Battery","GPS","RTM","Follow-Me","Logging","System"];
 const fields=[
 {key:"radio_preset",label:"Radio Preset",description:"Radio frequency band. 1=EU 868 MHz, 2=US/AU 915 MHz. Only these two bands exist. Must match the TX setting. (Any invalid value now safely defaults to EU868 instead of halting boot.)",group:"Radio",type:"enum",def:1,min:1,max:2,options:[{v:1,l:"EU868"},{v:2,l:"US/AU915"}]},
@@ -193,6 +195,9 @@ const fields=[
 {key:"zone_angle_enter_deg",label:"Zone Angle Enter",description:"Half-angle of the acceptable follow zone behind the foiler. Follow-Me steering activates only when buggy is within ±this angle of directly behind. 0=very narrow corridor, 180=full circle. Default 35°.",group:"Follow-Me",type:"float",def:35.0,min:0,max:180,step:0.1,unit:"deg"},
 {key:"zone_angle_exit_deg",label:"Zone Angle Exit",description:"Half-angle at which Follow-Me zone steering disengages (hysteresis). Must be ≥ zone_angle_enter_deg to avoid oscillation — typically set 5-15° wider. Default 45°.",group:"Follow-Me",type:"float",def:45.0,min:0,max:180,step:0.1,unit:"deg"},
 {key:"near_diag_offset_deg",label:"Near Diag Offset",description:"Target bearing offset from directly-behind for Near Right and Near Left Follow-Me modes. 0=directly behind foiler, 90=beside foiler. Applied as +offset for Near Right, -offset for Near Left. Default 45°.",group:"Follow-Me",type:"float",def:45.0,min:0,max:180,step:0.1,unit:"deg"},
+{key:"fm_engage_dist_m",label:"FM Engage Distance (RESERVED)",description:"RESERVED — not read by the current firmware (reserved for a v2 feature). Fixed engage-distance override for the Follow-Me separation latch. 0 = auto (firmware computes the engage distance live from Min Distance + Smoothing Band). Range 0-50 m. Leave at 0 unless instructed.",group:"Follow-Me",type:"float",def:0,min:0,max:50,step:0.5,unit:"m"},
+{key:"auton_runtime_cap_s",label:"Autonomous Runtime Cap (RESERVED)",description:"RESERVED — not read by the current firmware (reserved for a v2 feature). Shared RTM/Follow-Me autonomous-runtime cap. 0 = disabled (no time limit). Range 0-3600 s. Leave at 0 unless instructed.",group:"RTM",type:"int",def:0,min:0,max:3600,unit:"s"},
+{key:"fm_steer_reposition_en",label:"FM Steer Reposition (RESERVED — Option C, disabled until v2)",description:"RESERVED — Option C, disabled until v2. Continuous steer-driven repositioning of the follow ANGLE around the rider's radius. NOT read by the current firmware — enabling has no effect until v2. Leave Disabled.",group:"Follow-Me",type:"bool",def:0,min:0,max:1},
 {key:"logger_en",label:"Logger Enabled",description:"0=data logger disabled (no CSV files written to SPIFFS), 1=logger enabled (records speed, GPS, VESC, and control data to SPIFFS at 10Hz). Disable if storage is full or to extend SPIFFS lifetime. Default 1.",group:"Logging",type:"bool",def:1,min:0,max:1},
 {key:"wifi_password",label:"WiFi Password",description:"AP password (exactly 8 characters)",group:"System",type:"text",def:"12345678",minLen:8,maxLen:8},
 {key:"version",label:"Config Version",description:"Must match firmware SW_VERSION",group:"System",type:"int",def:32,min:0,max:65535}
@@ -308,15 +313,46 @@ function loadFromJsonText() {
 async function saveAll(){
     const btn = document.getElementById('saveBtn');
     btn.innerText = 'Saving...';
-    
-    for(const f of fields){const e=validate(f,state.values[f.key]);if(e){alert(`${f.label}: ${e}`); checkDirtyUI(); return;}}
-    for(const f of fields){const body=`key=${encodeURIComponent(f.key)}&value=${encodeURIComponent(valueForSend(f,state.values[f.key]))}`;const r=await api('/api/set','POST',body);if(!r.ok){alert(`SET ${f.key} failed: ${r.err||'ERR'}`); checkDirtyUI(); return;}}
-    const s=await api('/api/save','POST');if(!s.ok){alert(s.err||'SAVE failed'); checkDirtyUI(); return;}
+
+    // V2.5-Evo - 2026-07-21 - FIX-WEB-1 (ported from TX): only validate and send DIRTY fields.
+    // Previous behavior validated and sent ALL fields on every save. Any field with a stale or
+    // unreadable value in state.values — notably the compass mag_* fields, which were orphaned
+    // from /api/config until this build — failed validate() with "Required" and blocked the
+    // entire save with a misleading alert (the owner's "compass deviation 0"). Restrict the loop
+    // to fields the user actually changed since the last refresh (canonValue matches checkDirtyUI),
+    // so untouched/edge-case fields can never block a legitimate save.
+    const dirty = fields.filter(f => canonValue(f, state.values[f.key]) !== canonValue(f, state.saved[f.key]));
+
+    if (dirty.length === 0) {
+        // Nothing to save — surface this instead of silently doing nothing.
+        btn.classList.add('success');
+        btn.innerText = 'Nothing to save';
+        setTimeout(() => { btn.classList.remove('success'); btn.innerText = 'Save All'; checkDirtyUI(); }, 1500);
+        return;
+    }
+
+    // Validate dirty fields only.
+    for(const f of dirty){
+        const e = validate(f, state.values[f.key]);
+        if(e){ alert(`${f.label}: ${e}`); checkDirtyUI(); btn.innerText='Save All'; return; }
+    }
+
+    // Send dirty fields only.
+    for(const f of dirty){
+        const body = `key=${encodeURIComponent(f.key)}&value=${encodeURIComponent(valueForSend(f, state.values[f.key]))}`;
+        const r = await api('/api/set','POST', body);
+        if(!r.ok){ alert(`SET ${f.key} failed: ${r.err||'ERR'}`); checkDirtyUI(); btn.innerText='Save All'; return; }
+    }
+
+    // Final commit to SPIFFS.
+    const s = await api('/api/save','POST');
+    if(!s.ok){ alert(s.err||'SAVE failed'); checkDirtyUI(); btn.innerText='Save All'; return; }
+
     await refreshAll();
-    
+
     btn.classList.add('success');
-    btn.innerText = 'Saved OK';
-    setTimeout(() => { btn.classList.remove('success'); checkDirtyUI(); }, 1500);
+    btn.innerText = `Saved OK (${dirty.length})`;
+    setTimeout(() => { btn.classList.remove('success'); btn.innerText = 'Save All'; checkDirtyUI(); }, 1500);
 }
 
 async function loadCfg(){

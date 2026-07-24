@@ -190,14 +190,12 @@ Unavailable modes (no VESC lock or no GPS fix) are skipped automatically. `MA` r
 | Boot + hold RIGHT toggle | Pairing mode |
 | Boot + THR + LEFT toggle | Force BLE for session — activates BLE regardless of `bt_enabled` setting; display shows `bt`; persists until reboot |
 | Boot + THR + RIGHT toggle | Delete SPIFFS config (factory reset) |
-| LEFT tap (quick) | Arm combo window — next RIGHT hold within 3 s triggers FM |
-| RIGHT tap (quick) | Arm combo window — next LEFT hold within 3 s triggers RTM |
-| LEFT hold 2 s | Cycle telemetry display mode |
-| RIGHT hold 2 s | Reserved — no action |
+| LEFT hold 2 s | Lock the Remote |
+| RIGHT hold 2 s | Cycle telemetry display mode |
 | RIGHT tap → LEFT hold (default 5 s, tunable 4–10 s) | Arm **Return-to-Me** (RTM) — display shows `rn` |
 | LEFT tap → RIGHT hold (default 5 s, tunable 4–10 s) | Cycle **Follow-Me** override mode (F0/F1/F2/F3) |
 
-> **Note:** The lock feature has been removed in V2.5-Evo. The system always boots unlocked. Throttle must be at 0 for long-press actions to fire.
+> 
 
 ---
 

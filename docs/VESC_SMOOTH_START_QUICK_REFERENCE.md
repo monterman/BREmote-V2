@@ -202,4 +202,110 @@ For when you're staring at these in the app and wondering what they're for:
 
 ---
 
+## 10. VESC2 / WHITE MOTOR — the second-motor tuning (added 2026-07-21)
+
+> **✅ CONFIRMED ON BENCH (2026-07-21) — trust these final values over the narrative below:**
+> - VESC2 starts smooth at **Open loop current boost = 4**, **Motor Current Max = 65 A**, **phase filter OFF**. Final file: `docs/vesc_configs/vesc2_MOTORconf_v6.xml`.
+> - **The 0.00245 flux in the narrative below was a BAD detection.** A clean re-detection gave **flux 0.004984 — nearly identical to VESC1 (0.004922)**. The white motor is NOT half-flux; it's basically the same motor class as VESC1. So it needed boost **4** (VESC1 uses 3), not the "5-8" the bad-detection math implied.
+> - **⚠️ PHASE FILTER GOTCHA (this FSESC HW):** `foc_phase_filter_enable = 1` throws a **"config not compatible with your VESC HW" warning on load** — keep it **OFF (0)**. A FOC detection can flip it back on; re-check after every detection.
+> - **VESC identity:** VESC1 = controller_id **1**, VESC2 = **2** (unique CAN IDs — a duplicate ID conflicts the bus). Tell them apart by flux linkage or ID, NOT the CAN "local/2" label.
+> - **A "dead" VESC1 turned out to be a LOOSE PWM CABLE, not config** — reseating the RX→VESC signal cables fixed it. Check wiring first (this buggy has a history of the PWM signal wire failing).
+
+
+
+VESC1 (black motor) was tuned smooth long ago (§2). VESC2 later got a **different, second motor (the white one)** that would **not start when feathered** — it needed a blunt >10 % shove or it stalled and stayed off.
+
+### Root cause (found by diffing the two exported motor configs)
+- The startup tuning was **not** missing by accident — running **FOC Motor Detection on VESC2 had reset `Open loop current boost` back to 0.** Detection **always wipes** the open-loop/sensorless tuning back to defaults.
+- The two motors are genuinely different, and **flux linkage is the fingerprint:** VESC1 = `0.004922`, VESC2 (white) = **`0.00245` (half).** Half the flux ⇒ ~half the torque per amp ⇒ it needs **more** startup boost than VESC1, not the same.
+- Bonus find: VESC2 still had **FOC-wizard 3S battery defaults** (cutoff 10 V / 8 V) on a **10S pack** → its low-voltage protection could **never fire**.
+
+### The v5 fix — baked into `docs/vesc_configs/vesc2_MOTORconf_v5.xml`
+**Startup** (Motor Settings → FOC → Sensorless tab):
+| App field | VESC1 | VESC2 v5 | note |
+|---|---|---|---|
+| **Open loop current boost** | 3 | **5** | doubled for the half-flux motor; bump 5→6→8 if it still stalls (cap 10 A) |
+| Open loop lock time | 0.05 | **0.05** | pre-aligns the rotor — helps break-free |
+| Open loop ramp time | 0.2 | **0.2** | gentler ramp into open-loop |
+| Open loop ERPM | 1000 | **1500 (LEAVE)** | ⚠️ do NOT copy VESC1's 1000 — low-flux = weak back-EMF, needs the higher observer threshold or it gets *rougher* |
+
+**Battery / safety** (General → Voltage / Current / Additional Info):
+| App field | was (3S default) | v5 |
+|---|---|---|
+| Battery Voltage Cutoff Start / End | 10 / 8 | **32 / 29** |
+| Min input voltage | 12 | **23** |
+| Battery Cells (Series) / Ah | 3 / 6 | **10 / 30** |
+| Battery Current Max | 250 | **100** |
+| Absolute Maximum Current | 420 | **250** |
+
+Motor detection (R `0.015` / L `7 µH` / λ `0.00245`) left **untouched** — it's the real white-motor fingerprint.
+**Still open:** `Motor Current Max` left at **60** (VESC1 is 95) pending the white motor's rating.
+
+### ⭐ TWO GOTCHAS — remember these
+1. **Re-running FOC detection wipes `boost_q` AND the battery settings back to defaults.** After ANY detection, re-apply the v5 values — or just re-load `vesc2_MOTORconf_v5.xml`.
+2. **Tell the two VESCs/motors apart by flux linkage, not the CAN label** (which flips between "local" and "2" and is confusing): VESC1 = `0.004922`, VESC2 = `0.00245`.
+
+### Reference configs saved (2026-07-21)
+- `docs/vesc_configs/vesc1_MOTORconf_v5.xml` — VESC1 known-good (unchanged).
+- `docs/vesc_configs/vesc2_MOTORconf_v5.xml` — VESC2 with the smooth-start + 10S-battery fix.
+
+---
+
+## ⭐ VESC1 + VESC2 — FINAL PPM INPUT MAPPING (matched twins, 2026-07-23)
+
+Calibrated to the RX PPM pulse **after** bypassing the broken inter-enclosure Ethernet cable (dead 5V/ground had starved VESC2's opto output → floating 4–13 ms garbage; see session-log 2026-07-22/23). Signal clean now; captured via VESC Tool PPM Input setup. **Both VESCs set to the SAME mapping** so the twin motors respond identically.
+
+| Field | VESC1 | VESC2 |
+|---|---|---|
+| Pulselength **start** (min) | **1.251 ms** | **1.240 ms** ⭐ final |
+| Pulselength **end** (max) | ~2.140 ms | **2.140 ms** |
+| Pulselength **center** | 1.700 ms | 1.700 ms |
+| **Deadband** | 0 | 0 |
+
+- **VESC2 start fine-tuned to 1.240 (final):** iterated 1.236 → 1.249 → 1.240 (1.236 crept at rest; 1.390 caused false starts). **1.240 gives a fast low-input start without creep.** VESC1 start ≈ 1.251. If creep returns, nudge VESC2 start up a touch.
+- VESC1 center was 1.482 (irrelevant in no-reverse mode) → set to 1.700 to match. Deadband 0 both. Start capture matches the measured clean RX pulse (~1.247 / 1.70 / 2.155 ms).
+
+### Twin-match result (free-spin, no load) — MATCHED ✅
+| | Start threshold | ~3 % throttle | Full free-spin |
+|---|---|---|---|
+| VESC1 | 1–2 % | ~10–11k ERPM | ~43,000 ERPM |
+| VESC2 | 1–2 % | ~10–11k (up to ~16k on a harder feather) | ~42,000 ERPM |
+
+**~1,000 ERPM apart at full (~2 %) → matched; both feather in at 1–2 %, spin together.** ERPM shown — actual prop RPM = ERPM ÷ pole-pairs.
+
+### VESC2 BAKED CONFIG — full values (backup if the XML is ever lost)
+Primary file: `Downloads\vesc backups\v3 new app\vesc2_MOTORconf_v9_currentloop!.xml` (mirror to `docs/vesc_configs/` on next export). To rebuild by hand — **Motor Settings → FOC** (then **do NOT re-run detection**, it overwrites these):
+
+| Param (XML name) | Value | Notes |
+|---|---|---|
+| `foc_motor_r` | 0.0198 Ω | fresh detect |
+| `foc_motor_l` | 1.855e-05 H | fresh detect |
+| `foc_motor_flux_linkage` | 0.00498 | fresh detect (VESC2 fingerprint) |
+| `foc_observer_gain` | 4.032e+07 | |
+| `foc_current_kp` | 0.0371 | auto (2× VESC1 bw; halve to ~0.0186 only if start rough — it isn't) |
+| `foc_current_ki` | 39.56 | auto |
+| `foc_openloop_rpm` | 1000 | smooth-start |
+| `foc_sl_openloop_time_lock` | 0.05 | |
+| `foc_sl_openloop_time_ramp` | 0.2 | |
+| `foc_sl_openloop_boost_q` | 5 | smooth-start boost |
+| `cc_startup_boost_duty` | 0.03 | |
+| `foc_phase_filter_enable` | **0 (OFF)** | ⚠️ HW-incompat on this FSESC — keep OFF |
+| `m_invert_direction` | 1 | |
+| `l_current_max` (Motor Current Max) | 95 A | matched to VESC1 |
+| App → `controller_id` | 2 | CAN id (App config, not motor) |
+
+**PPM input** (both VESCs): VESC2 start **1.240** / VESC1 start 1.251 · center 1.700 · end 2.140 · deadband 0 (VESC2 start fine-tuned to 1.240; set just above rest to avoid creep).
+
+> **⚠️ LIVE STARTUP — settled 2026-07-23 (phone app; supersedes v9 XML Sensorless values; NOT yet re-exported — read back / export next PC session):**
+> **The real fix was a fresh FOC DETECTION, not tuning.** Heavy startup tuning (ramp 0.4, boost up to 8.5 A, ERPM 1400) still left VESC2 glitchy while VESC1 was flawless on near-defaults → the motor *model* was stale. After a clean re-detection, boost dropped **8.5 → 6.5 → 4.5 A** and it runs better (a correct model needs far less brute boost).
+> **Settled VESC2:** boost **4.5 A** · openloop ramp **0.4** (long — "start as slow as possible") · lock **0.1** · hysteresis **0.15** · openloop ERPM **1400** · openloop-ERPM-at-min-current **0%** · PPM start **1.240**. Fresh R/L/λ from re-detection (exact values NOT captured — read back / export next PC session; should be ≈ VESC1: R~0.02 / λ~0.0049 / L~1.8µH).
+> **VESC1:** boost **3 A**, openloop ERPM raised to **1400** (the only change — still flawless). The **3 A (VESC1) vs 4.5 A (VESC2)** gap is real coil/magnet/cogging tolerance between the twins — matched *behavior* (both start mostly good), not identical numbers.
+> **⚠️ Boost is a WINDOW, not "more is better":** too LOW → won't break away; too HIGH → the excess openloop current **locks/cogs** the rotor instead of spinning it. VESC2's window sits at **4.5 A** (8.5 A was into the locking zone).
+> ⚠️ **After ANY detection, verify: phase filter still OFF + direction (`m_invert_direction`) correct** — detection can flip both.
+> **Lesson:** when one twin is perfect on defaults and the other needs extreme startup tuning to limp along, the fix is **re-detection / hardware**, not more openloop knobs.
+
+> ⚠️ Re-running PPM Input calibration or FOC detection overwrites this. If a VESC reads garbage again, check the inter-enclosure cable (5V/GND continuity) FIRST — that was the root cause, not the mapping.
+
+---
+
 End of quick reference.

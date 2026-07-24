@@ -218,6 +218,7 @@
     <div class="row" style="gap:6px">
       <input id="cmdInput" type="text" placeholder="Type command… (↑↓ history)" style="flex:1;min-width:0" onkeydown="onCmdKey(event)">
       <button class="btn" onclick="sendCmd()" style="flex-shrink:0">Send</button>
+      <button class="btn danger" onclick="sendQuit()" style="flex-shrink:0" title="Send 'quit' to stop a continuously-streaming command (?printinputs, ?printrssi, ?magtest, ?gpsdiag, ?vescping, etc.)">⏹ Quit</button>
     </div>
     <div class="row" style="flex-wrap:wrap;gap:6px" id="quickBtns"></div>
     <select id="cmdDrop" onchange="insertFromDrop(this)">
@@ -415,13 +416,20 @@ const TX_CMD_HTML = `
   <option value="?set  ">?set &lt;key&gt; &lt;val&gt; — set value in RAM</option>
   <option value="?save">?save — persist RAM config to SPIFFS</option>
   <option value="?keys">?keys — list all config key names</option>
-  <option value="?state">?state — subsystem state overview</option>
+  <option value="?state">?state — subsystem + BLE state overview</option>
+  <option value="?applyconf">?applyconf — apply SPIFFS config to RAM</option>
 </optgroup>
 <optgroup label="System">
   <option value="?reboot">?reboot — reboot TX</option>
-  <option value="?exitchg">?exitchg — exit USB charging mode</option>
+  <option value="?exitchg">?exitchg — exit charge screen</option>
   <option value="?printtasks">?printtasks — FreeRTOS task stack usage</option>
   <option value="?">? — list all commands</option>
+</optgroup>
+<optgroup label="Activity (bare = read status; append on|off to toggle)">
+  <option value="?display">?display — display activity status</option>
+  <option value="?radio">?radio — radio activity status</option>
+  <option value="?hall">?hall — hall sampling status</option>
+  <option value="?all">?all — all activity gateways (append on|off)</option>
 </optgroup>
 <optgroup label="Radio &amp; Inputs">
   <option value="?printrssi">?printrssi — live RSSI/SNR (quit to exit)</option>
@@ -436,10 +444,15 @@ const TX_CMD_HTML = `
 </optgroup>
 <optgroup label="WiFi">
   <option value="?wifi">?wifi — print WiFi AP status</option>
+  <option value="?wifistate">?wifistate — WiFi config state/counters</option>
+  <option value="?wifierr">?wifierr — last WiFi config error</option>
+  <option value="?wifiver">?wifiver — web UI version info</option>
+  <option value="?wifidbg">?wifidbg — get/set WiFi debug mode</option>
+  <option value="?wifips">?wifips — get/set AP startup timeout</option>
+  <option value="?wifiupd">?wifiupd — force web UI update to SPIFFS</option>
+  <option value="?wifistop">?wifistop — notify TX unlock, stop AP</option>
 </optgroup>
-<optgroup label="Subsystems">
-  <option value="?printbat">?printbat — battery voltage ADC reading</option>
-</optgroup>`;
+`;
 
 const RX_CMD_HTML = `
 <option value="">— Select command —</option>
@@ -1118,6 +1131,17 @@ async function sendCmd(){
   cmdHist.push(cmd);histIdx=-1;savedCmd='';
   if(swriter){
     try{await swriter.write(new TextEncoder().encode(cmd+'\r\n'));termWrite('> '+cmd+'\n');inp.value='';}
+    catch(e){termWrite('[Send error: '+e.message+']\n');}
+  }else{termWrite('[Not connected]\n');}
+}
+
+// Quit/Stop: breaks the firmware's streaming loops (?printinputs, ?printrssi, ?magtest,
+// ?gpsdiag, ?vescping, etc.). checkSerialQuit() in Source/Common/SystemCommon.h reads a line
+// until '\n', trims it, and stops only when it equals exactly "quit" — so send "quit\r\n"
+// (the \r is trimmed off firmware-side, matching how sendCmd() terminates every command).
+async function sendQuit(){
+  if(swriter){
+    try{await swriter.write(new TextEncoder().encode('quit\r\n'));termWrite('> quit (stop stream)\n');}
     catch(e){termWrite('[Send error: '+e.message+']\n');}
   }else{termWrite('[Not connected]\n');}
 }

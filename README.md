@@ -95,7 +95,7 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 
 > ⚠️ **`master` branch contains monterman's personal calibration values** (throttle ADC, compass soft-iron cal, toggle positions, radio addresses). These are correct for monterman's specific hardware. After flashing, you **must** recalibrate for your own devices: run TX calibration (hold LEFT toggle at boot), run `?compasscal` on RX, and re-pair to set your own radio addresses. If you flash without recalibrating, the remote will not respond correctly to your throttle or compass.
 
-1. **Flash firmware** — use the Flash Download Tool (link below) or Arduino IDE
+1. **Flash firmware** — use the Flash Download Tool (link below) or Arduino IDE. ⚙️ **Compiling it yourself? (advanced)** Follow the per-board guides — the partition settings **differ between TX and RX**, and the wrong one wipes config: **[RX flashing guide →](docs/FLASHING_RX_ARDUINO.md)** · **[TX flashing guide →](docs/FLASHING_TX_ARDUINO.md)**
 2. **Power on both TX and RX** — TX shows `EP` (not paired) on first boot
 3. **Pair** — hold RIGHT toggle on TX at boot; hold BIND on RX at boot simultaneously
 4. **Connect to WiFi AP** — SSID shown on the device; default password `12345678` *(power off the other device first — see WiFi note below)*
@@ -171,7 +171,7 @@ The **SP** (Speed) telemetry display mode can now read speed directly from the T
 
 Display shows `--` when no fix is available or the fix is older than the configured stale timeout. Set `gps_en = 1` and reboot after changing it.
 
-**Telemetry display cycle** (cycle with LEFT toggle hold 2 s):
+**Telemetry display cycle** (cycle with RIGHT toggle hold 2 s):
 
 ```
 TP    → TH       → SP    → PV    → MA           → UB           → BA
@@ -194,6 +194,8 @@ Unavailable modes (no VESC lock or no GPS fix) are skipped automatically. `MA` r
 | RIGHT hold 2 s | Cycle telemetry display mode |
 | RIGHT tap → LEFT hold (default 5 s, tunable 4–10 s) | Arm **Return-to-Me** (RTM) — display shows `rn` |
 | LEFT tap → RIGHT hold (default 5 s, tunable 4–10 s) | Cycle **Follow-Me** override mode (F0/F1/F2/F3) |
+
+> 💡 **Optional — magnet / Hall input for hands-free control.** A DRV5032 Hall sensor on GPIO 9 (P_MAG) lets a magnet gesture activate **BLE** and arm **Follow-Me** without reaching for the toggles (great mid-ride). Wiring + firmware: **[Hall Sensor Expansion guide →](docs/Hall_Sensor_Expansion.md)** · step-by-step fitting (incl. easier-to-solder parts): **[install tutorial →](docs/Hall_Sensor_Install_Tutorial.md)**.
 
 > 
 
@@ -364,7 +366,7 @@ On any gate failure: throttle → 0, TX display shows `St` for 2 s, haptic confi
 
 > FM override is fully implemented in V2.5-Evo. It overrides the RX follow-me positioning mode at runtime without a SPIFFS write.
 
-> **⚠️ Follow-Me autonomous control IS implemented in this release.** The mode override display (F0 / F1 / F2 / F3) is fully functional — you can cycle and set the mode on the TX display. The autonomous positional steering loop is a future feature and setting an FM mode currently has no effect on vehicle behavior. The control law is fully specified in [`DESIGN_FOLLOW_ME.md`](DESIGN_FOLLOW_ME.md) and now coded (alpha release, test before).
+> **⚠️ Follow-Me autonomous control IS implemented in this release (alpha).** The mode override display (F0 / F1 / F2 / F3) is fully functional — you cycle and set the mode on the TX display, and the buggy follows the rider per the selected geometry. The control law is specified in [`DESIGN_FOLLOW_ME.md`](DESIGN_FOLLOW_ME.md) and coded. **Alpha — bench/wheels-up test the steering direction before any in-water use.**
 
 The override is RAM-only — RX returns to its web-configured `followme_mode` on reboot.
 
@@ -427,7 +429,7 @@ If TX-to-RX distance drops below `fm_warn_distance_m` (default 150 m), TX fires 
 | `F1` | Follow-Me override: Near-Right |
 | `F2` | Follow-Me override: Behind (default) |
 | `F3` | Follow-Me override: Near-Left |
-| `St` | Stop — RTM or FM safety gate triggered, or arming blocked *(FM gating is forward-looking; FM logic not yet implemented)* |
+| `St` | Stop — RTM or FM safety gate triggered, or arming blocked |
 | `99` | Full throttle reached (100%) |
 
 ### RX
@@ -687,7 +689,7 @@ The two **bold** columns (`heading_error_dx10`, `d_error_dx10`) were added speci
 ### Compass EMI Bench-Test Tool
 
 BREmote V2.5-Evo ships with a serial diagnostic command, `?magtest`, that lets any builder verify whether motor current is biasing the QMC5883L magnetometer on their specific hardware. The command streams CSV at 10 Hz (millis, mag X/Y/Z, magnitude, heading, VESC ERPM, motor current, throttle) for up to 120 seconds. Recommended use: bench-mount the buggy with motors free-spinning, capture serial output to a `.csv` file, and bring throttle slowly from 0 to maximum while logging. The resulting trace makes magnetic bias from the phase wires visible — magnitude shifts > 5% or heading shifts > 5° at any current point indicate the compass cannot be trusted for steering during active motor operation. This concern was raised by upstream maintainer Jan during the V2.5-Evo review; the test command exists so builders can collect their own measurements rather than rely on assertion.
-I recommend to place the BN-880 as far as possible from the magnetic field of the battery power cables and of the motor phase wires. Jsut 2 inched make a huge difference! 
+I recommend placing the BN-880 as far as possible from the magnetic field of the battery power cables and the motor phase wires. Just 2 inches make a huge difference!
 ---
 
 ## RX Serial Diagnostic Commands
@@ -746,7 +748,7 @@ Connect to the TX at 115200 baud. All commands are prefixed with `?`.
 - [Web Serial Config Tool — open in browser](https://monterman.github.io/BREmote-V2/BREmote_V2.5-Evo_Web_Serial_Config_Tool.html) *(Chrome/Edge — no download needed)*
 - [Web Serial Config Tool — offline download](docs/BREmote_V2.5-Evo_Web_Serial_Config_Tool.html)
 - [RTM Design Document — DESIGN_RETURN_TO_ME.md](DESIGN_RETURN_TO_ME.md)
-- [FM Autonomous-Following Design Document — DESIGN_FOLLOW_ME.md](DESIGN_FOLLOW_ME.md) *(approved design — not yet implemented)*
+- [FM Autonomous-Following Design Document — DESIGN_FOLLOW_ME.md](DESIGN_FOLLOW_ME.md) *(design spec — implemented in this release, alpha)*
 - [Config Tool — lbre.de](https://lbre.de) *(LudwigBre's original web config tool)*
 - [Build Video](https://github.com/Luddi96/BREmote) — see original Luddi96 repository
 - [SW Setup / Config Video](https://github.com/Luddi96/BREmote) — see original Luddi96 repository
@@ -765,7 +767,7 @@ Connect to the TX at 115200 baud. All commands are prefixed with `?`.
 - **In-ride telemetry unfroze (RX):** removed a throttle-skip gate that skipped the VESC poll while throttle ≥ 25. On a continuous-throttle vehicle (tow buggy) that meant `getVescLoop()` never ran once you were on the trigger, freezing telemetry to dashes for the whole ride. Reverted to the SW55 unconditional 2 Hz poll; the MUX-EMI concern the gate targeted is already covered by the read-back-verify in `setUartMux()`.
 - **FM mode mapping canonicalized to `1 = Near-Right, 2 = Behind, 3 = Near-Left` (RX):** RX comments and web-UI labels were relabeled to match the TX convention already used on the display, in the TX web UI, and in this README. Both boards ship `defaultConf.followme_mode = 2` (Behind — the defensive FM geometry); every surface (web UI `def:`, HTML tool, README, guide) now states the default as **2 (Behind)**. The `foiler_low_speed` default text was corrected `5 → 8` km/h to match `defaultConf`. Labels and defaults only — no control-logic change, no confStruct / SW_VERSION change.
 - **TX arm-hold now tunable:** `rtm_hold_duration_s` (RTM LEFT-hold) and `fm_hold_duration_s` (FM RIGHT-hold) are now live SPIFFS fields, configurable 4–10 s. Both were previously hardcoded to 5 s and labeled "reserved" in the web UI. Default stays 5 s. No confStruct / SW_VERSION change.
-- **`DESIGN_FOLLOW_ME.md` added:** the approved design spec for FM autonomous following (state machine, activation gates, target-point math, throttle cap chain). **Design only — FM autonomous following is implemented in this release.** Selecting an FM mode (F0–F3) cycles and stores the mode and makes the buggy follow the rider.
+- **`DESIGN_FOLLOW_ME.md` added:** the design spec for FM autonomous following (state machine, activation gates, target-point math, throttle cap chain). **FM autonomous following is implemented in this release.** Selecting an FM mode (F0–F3) cycles and stores the mode and makes the buggy follow the rider.
 - **No confStruct changes; SW_VERSION unchanged (TX/RX).**
 
 ---
@@ -818,7 +820,7 @@ Compiled clean: TX 39% / RX 40% flash (huge_app). SW_VERSION unchanged: TX=26, R
 
 ### V2.5.08 — April 2026 *(monterman)* — Display, Gesture & UX Overhaul
 
-- **Gesture redesign (breaking):** LEFT hold 2s = cycle display; RIGHT tap→LEFT hold 5s = RTM arm; LEFT tap→RIGHT hold 5s = FM cycle; lock feature removed (always boots unlocked)
+- **Gesture redesign (breaking):** LEFT hold 2s = lock/unlock the remote; RIGHT hold 2s = cycle display; RIGHT tap→LEFT hold 5s = RTM arm; LEFT tap→RIGHT hold 5s = FM cycle. The remote boots **locked** by default (SPIFFS); LEFT-hold 2s locks/unlocks — kept for safety.
 - **RTM arm/disarm display:** static `rn` ×2 (3s total), replaces scrolling `rtn`
 - **FM mode display:** `F0`/`F1`/`F2`/`F3` instead of named abbreviations
 - **RTM/FM active info display:** TX shows distance-to-TX or speed on dot matrix while RTM/FM active; `rtm_display_mode` configures mode (0=distance, 1=speed, 2=alternating 2.5s); distance shown as `X.X` m below 10m with C3 decimal dot, `XX` m above

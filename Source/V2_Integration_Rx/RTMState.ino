@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-07-25 - STAGE 2 (RX heading-source trust guards, RTM + FM): the bench ?diag on the repaired board read "COG : 7.4 timestamp-updates/s vs 0.0 value-changes/s [value frozen 533 s]" — the GPS repeated ONE course seven times a second for nine minutes while gps_last_course_ms kept refreshing, so getRtmHeading()'s 1500 ms freshness gate passed the whole time and the ladder steered on a dead number, then fell back to the EMI-biased compass. That is the Follow-Me veer. GUARD 1: the COG branch now also requires the course VALUE to have moved within kRtmCogFrozenMs (3 s), read from the existing Stage 0 tracker g_diag_cog_change_ms — and it is SPEED-GATED to the same gps_last_speed_kmh >= rtm_cog_min_speed_kmh term the branch already used, so a stationary buggy (whose constant course is correct, not faulty) is never touched. A COG frozen WHILE MOVING additionally suppresses the mode-1 compass promotion: one source is provably dead and the other unverifiable, so we hold straight instead of steering on the survivor. GUARD 2: when a live COG and a simultaneous (< kHeadingCompareSnapMs) compass snapshot are both available in hybrid mode, a shortest-angular-distance gap > kHeadingDisagreeDeg (45) returns NO heading (confidence 0) so updateRtmSteering() holds straight; sustained past kHeadingDisagreeMs (5 s) it sets heading_disagree_fault, which joins the EXISTING FM fault chain alongside A3's diverge_fault (FM_STOPPING -> cap 0 -> ramp -> FM_IDLE, re-arm required) — no new state, no new exit path. Both guards can only REMOVE eligibility: no throttle cap is raised, no engagement extended, the deadman (thr_received < 25) is untouched. Logger.ino's inline getRtmHeading() duplicate is updated in lockstep so rtm_source/rtm_confidence keep telling the truth. All compile-time constants (shared, in BREmote_V2_Rx.h); no confStruct change, sizeof stays 184, SW_VERSION stays 34.
 // V2.5-Evo - 2026-07-25 - F3-c (RX FM): the 8 m engage-distance floor guarded ONLY the manual fm_engage_dist_m value. The AUTO branch — kFmEngageFactor (1.5) x (min_dist_m + followme_smoothing_band_m) — used its product raw, and neither of those two SPIFFS fields has a lower bound, so a small tuning such as min_dist 1 + band 1 produced d_engage = 3 m: BELOW the measured 20 ft / 6.10 m tow rope, letting Follow-Me latch and engage with the rider still ON the rope. Same hazard the floor exists to prevent, reached through the other branch. FIX: each branch now only computes its candidate and ONE kFmEngageDistFloorM clamp is applied to the final d_engage regardless of origin. The clamp can only RAISE d_engage (engage later, never earlier), and it is a no-op at the owner's 4+2 tuning, which yields 9.0 m. Also swept the stale "6.7-7.6 m" tow-rope prose in this file to the measured 6.10 m. No confStruct change, sizeof stays 184, SW_VERSION stays 34.
 // V2.5-Evo - 2026-07-25 - F3-b (RX FM; comment + shared-constant move, no behaviour change): kFmEngageDistFloorM is no longer DEFINED in this file. It now has exactly one definition, in BREmote_V2_Rx.h, raised 5.0 -> 8.0 m — 5.0 m sat below the tow rope it exists to clear (the owner's rope is 20 ft = 6.10 m), so a manual fm_engage_dist_m of 5.0-6.1 m was legal and let FM engage with the rider still ON the rope. ConfigService.ino's duplicate bare 5.0f literal is gone with it; both the validator and the read-site clamp in runFmLoop() now reference the one shared constant. The clamp itself is unchanged in shape — legacy stored values still clamp UP to the floor, now 8.0 m. No confStruct change, sizeof stays 184, SW_VERSION stays 34.
 // V2.5-Evo - 2026-07-25 - Batch A follow-up (Rex A3 NO-GO: F1/F3/F5/F7), RX FM only. (F1) the A3 divergence detector was a BARE THRESHOLD on a 3000 ms dwell while the engage ramp is 3500 ms, so it could fire BEFORE the ramp even finished and aborted ordinary engagements (at engage, dist_m is typically 13-21 m against an 18 m ceiling, and the align cap of 13/255 means the gap GROWS first). It now mirrors runPhaseC()'s actual shape: the distance at dwell start is captured (fm_diverge_start_dist_m) and the fault is raised at dwell expiry ONLY if the buggy is not closing (dist_m >= start - kFmDivergeCloseEpsM 2.0 m); if it has closed by more than that it IS following, just far, so the timer clears and no fault fires. Plus an engage grace: the detector is skipped and its dwell parked for kFmEngageRampMs + kFmDivergeMs (6.5 s) after every engagement so the buggy is allowed to ramp and align before it is judged. (F3) fm_engage_dist_m gained a 5 m floor — a stored value of, say, 3 m IS the engage distance in metres and is SHORTER than the 6.7-7.6 m tow rope, which defeated the separation interlock entirely; cfgValidateCrossField() now accepts only 0 (auto) or >= 5.0 m, and the use site clamps defensively so a pre-existing stored value cannot slip through. (F5) corrected the A2 comment that claimed d_engage feeds the distance Schmitt hysteresis - it does not; the Schmitt uses min_dist / min_dist+band. (F7) the divergence Serial.printf now runs AFTER fm_throttle_cap = 0 so UART backpressure can never defer the hard stop. All compile-time constants; no confStruct change, sizeof stays 184, SW_VERSION stays 34.
@@ -202,6 +203,46 @@ static bool checkRtmSafetyGates()
   return true;
 }
 
+// ============================================================
+// V2.5-Evo - 2026-07-25 - STAGE 2: HEADING-DISAGREEMENT STATE (guard 2)
+//
+// Two module-private timers. They are NOT confStruct fields, NOT telemetry, NOT logged as new
+// columns — a guard firing is already visible in an existing level-4 log through rtm_source,
+// rtm_confidence and cog_frozen_s.
+//
+// heading_disagree_since_ms : millis() when the COG-vs-compass gap first exceeded
+//   kHeadingDisagreeDeg and has held it continuously since; 0 = not currently disagreeing, or no
+//   comparison was possible this tick. Same first-exceed-timestamp shape as fm_sep_over_since_ms
+//   and fm_diverge_since_ms: plain millis() bookkeeping, no delay, no spin.
+//
+// heading_disagree_fault : set once that gap has persisted for kHeadingDisagreeMs. This is the
+//   ESCALATION — a transient disagreement only invalidates the heading for that tick, but a
+//   sustained one means a sensor is genuinely broken. runFmLoop() consumes it in exactly the same
+//   fault chain as A3's diverge_fault. It is cleared in two places and only two: here, the moment
+//   a fresh comparison shows the two sources agreeing again (the evidence is withdrawn), and in
+//   fmEnterIdle() (the re-arm boundary).
+//
+//   WHY THE FLAG IS NEEDED AT ALL, given a disagreement already returns "no heading": the
+//   comparison window is narrow by necessity (see kHeadingCompareSnapMs). The compass snapshot
+//   stops refreshing the moment the rider squeezes the trigger, so a real disagreement can be
+//   measurable on one tick and unmeasurable on the next — at which point COG alone would look
+//   valid again and FM would happily resume steering on the source we just proved suspect. The
+//   flag is what stops a proven fault from being washed out by its own evidence going stale.
+//
+//   WHY RTM DOES NOT CONSUME IT: RTM is field-proven and the owner uses it. In RTM the per-tick
+//   invalidation is enough — it holds steering straight, and with the default
+//   rtm_compass_required = 1 it fails gate 6 and stops the run anyway. Latching a sticky fault
+//   into RTM would risk an un-clearable arming block on the water for no extra safety, since RTM
+//   already carries runPhaseC()'s convergence net that FM never had.
+//
+// CONCURRENCY: every caller of getRtmHeading() (gate 6, checkFmFaultConditions, the fm_status
+// telemetry block, updateRtmSteering) runs in the loop task, so these statics are single-writer.
+// Logger.ino's duplicate of this logic runs in loggerTask and deliberately reads NEITHER of them —
+// it re-derives the per-tick verdict from the same globals and stays side-effect-free.
+// ============================================================
+static unsigned long heading_disagree_since_ms = 0;
+static bool          heading_disagree_fault    = false;
+
 // V2.5-Evo - 2026-05-06 - D5: Layered heading source for RTM steering.
 //
 // Returns the best available heading (deg, 0-360 clockwise from North) based on
@@ -223,7 +264,18 @@ static bool checkRtmSafetyGates()
 //
 // Returns true if heading is valid (any non-zero confidence), false if no source.
 //
-// SAFETY: This function is read-only on globals; it never modifies sensor state.
+// V2.5-Evo - 2026-07-25 - STAGE 2: two trust guards now sit inside the COG branch. Neither can
+// ever make a heading MORE trusted — each can only downgrade a source to "unusable":
+//   GUARD 1 (COG liveness by value change): a COG whose VALUE has not moved for kRtmCogFrozenMs
+//     while the buggy is moving is not a heading, it is a repeated number. Speed-gated, so a
+//     stationary buggy — whose constant course is CORRECT — is never faulted.
+//   GUARD 2 (compass vs COG cross-check): if the two independent sources are more than
+//     kHeadingDisagreeDeg apart, neither is trusted and NO heading is returned.
+//
+// SAFETY: This function still never modifies sensor state, config, telemetry or any control
+//         variable. It does now update two module-private guard-2 timers declared directly above
+//         (heading_disagree_since_ms / heading_disagree_fault) — that is the only state it writes,
+//         and it is single-writer from the loop task.
 //         Caller (updateRtmSteering) must handle confidence=0 as a hold-straight
 //         scenario, not as a steering command.
 static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
@@ -262,11 +314,130 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
 
   // ---- GPS COG (preferred for modes 0 and 1) ----
   // Valid if: course was captured (ms > 0), course is in valid range,
-  //           course age < 1500ms, GPS speed >= cog_min_speed_kmh.
-  bool cog_valid = (gps_last_course_ms > 0) &&
-                   (gps_last_course_deg >= 0.0f) &&
-                   ((now - gps_last_course_ms) < 1500UL) &&
-                   (gps_last_speed_kmh >= (float)cog_min_speed);
+  //           course age < 1500ms, GPS speed >= cog_min_speed_kmh,
+  //           and (STAGE 2 guard 1) the course VALUE is not frozen while moving.
+  bool cog_captured = (gps_last_course_ms > 0) && (gps_last_course_deg >= 0.0f);
+  bool cog_fresh_ts = cog_captured && ((now - gps_last_course_ms) < 1500UL);
+  bool cog_moving   = (gps_last_speed_kmh >= (float)cog_min_speed);
+
+  // ============================================================
+  // GUARD 1 — COG LIVENESS BY VALUE CHANGE, NOT BY TIMESTAMP
+  // V2.5-Evo - 2026-07-25 - STAGE 2
+  //
+  // WHAT THE BUG WAS. The four sub-conditions above ask "is a course present, in range, recent,
+  // and are we fast enough for it to mean anything". None of them asks the only question that
+  // actually matters: IS IT STILL MOVING. gps_last_course_ms is re-stamped by GPS.ino on every
+  // valid course sentence, including a sentence that repeats the previous heading exactly. The
+  // owner's bench ?diag caught precisely that: 7.4 timestamp-updates/s against 0.0
+  // value-changes/s, one heading held for 533 s. Every tick of those nine minutes this branch
+  // returned confidence 3 (HIGH) on a number that had not moved since before the run started,
+  // and the steering controller drove on it. That is the Follow-Me veer.
+  //
+  // WHAT THE FIX DOES. It reuses the Stage 0 tracker rather than duplicating it: GPS.ino already
+  // stamps g_diag_cog_change_ms every time the course VALUE moves by more than kDiagCogChangeDeg
+  // (0.05 deg). If that stamp is older than kRtmCogFrozenMs, the number is frozen and COG is not
+  // a heading source this tick. Nothing in GPS.ino is touched — this is a read.
+  //
+  // WHY IT IS SPEED-GATED, AND WHY THAT IS NOT OPTIONAL. A stationary buggy legitimately reports
+  // the same course forever: that is a correct reading, not a fault, and faulting it would break
+  // the low-speed RTM arm the owner relies on (it is exactly why the compass snapshot fallback
+  // exists). So the freeze verdict is only formed while gps_last_speed_kmh >= cog_min_speed — the
+  // same gate this branch already applies. Below that speed the guard does not exist, and COG is
+  // rejected for being too slow exactly as it always was, falling through to the compass.
+  //
+  // WHY IT ALSO REQUIRES A FRESH TIMESTAMP. The verdict "the value is frozen" is only meaningful
+  // while the module is actively pushing course sentences — that is the measured signature
+  // (timestamp fresh, value stuck). If the timestamp itself has gone stale, that is the ordinary
+  // stale-COG case which already falls through to the compass, and it is left behaving exactly as
+  // it does today. This keeps guard 1 aimed at the one failure it was written for.
+  //
+  // SENTINEL: g_diag_cog_change_ms == 0 means no COG value has EVER been captured this session
+  // (?diagz deliberately does not clear it). That cannot coexist with cog_fresh_ts, but if it
+  // somehow did we form NO freeze verdict — we never suppress a source on the strength of a
+  // contradiction, only on positive evidence.
+  // ============================================================
+  bool cog_frozen_moving = false;
+  if (cog_moving && cog_fresh_ts) {
+    unsigned long cog_change_ms = (unsigned long)g_diag_cog_change_ms;
+    cog_frozen_moving = (cog_change_ms != 0) &&
+                        ((now - cog_change_ms) >= (unsigned long)kRtmCogFrozenMs);
+  }
+
+  bool cog_valid = cog_fresh_ts && cog_moving && !cog_frozen_moving;
+
+  // ============================================================
+  // GUARD 2 — COMPASS vs COG DISAGREEMENT
+  // V2.5-Evo - 2026-07-25 - STAGE 2
+  //
+  // WHAT IT DOES. When both independent heading estimates are available AND simultaneous, it
+  // measures the shortest angular distance between them. Beyond kHeadingDisagreeDeg they cannot
+  // both be describing this buggy, so NEITHER is trusted: the function returns no heading
+  // (confidence 0) and updateRtmSteering() holds straight. It deliberately does NOT pick a winner
+  // — the entire lesson of the veer is that silently preferring the survivor is how you end up
+  // steering on the wrong one.
+  //
+  // WHY ONLY IN MODE 1 (HYBRID). Mode 1 is the only mode in which the ladder can actually PROMOTE
+  // the compass to a steering source, so it is the only mode where a bad compass can take the
+  // buggy anywhere. In mode 0 the operator has declared the compass untrusted and it is excluded
+  // from the ladder entirely — letting that same excluded sensor veto a good COG would invert the
+  // meaning of the setting and import faults into the mode chosen to avoid them (and mode 0 needs
+  // no help here: with COG gone it already returns nothing). Mode 2 returns above this point and
+  // never consults COG at all; it is documented DIAGNOSTIC-ONLY, not for water.
+  //
+  // WHY THE COMPASS SNAPSHOT AND NOT A LIVE READ. getCompassHeading() is an I2C transaction that
+  // takes the shared i2cMutex, and this function is called several times per 10 Hz tick from four
+  // call sites — that is 40-60 extra bus transactions a second inserted into the control loop.
+  // Worse, a live compass read under motor current is exactly the EMI-biased value this hardware
+  // is known for, so it would manufacture disagreements and fault every engagement. The snapshot
+  // is captured motor-idle by Compass.ino, which is the only compass reading this firmware trusts.
+  //
+  // TIMING HONESTY. Because the snapshot only refreshes with the trigger released, the comparison
+  // is live around the moment of the squeeze and goes dormant while the rider holds it (see
+  // kHeadingCompareSnapMs). Dormant means "not measured", never "measured and passed".
+  // ============================================================
+  bool compare_possible = (mode == 1) && cog_valid &&
+                          (compass_snapshot_heading >= 0.0f) && (compass_snapshot_ms > 0) &&
+                          ((now - compass_snapshot_ms) < (unsigned long)kHeadingCompareSnapMs);
+
+  bool disagree_now = false;
+  if (compare_possible) {
+    // Shortest angular distance, wrap-correct across 0/360 (e.g. 359 vs 1 is 2 deg, not 358).
+    // Written out inline rather than calling fmAngleDiff(): that helper is defined ~900 lines
+    // below in this same file, and a safety guard should not depend on the Arduino builder's
+    // auto-prototype ordering to compile.
+    float d = gps_last_course_deg - compass_snapshot_heading;
+    while (d >  180.0f) d -= 360.0f;
+    while (d < -180.0f) d += 360.0f;
+    disagree_now = (fabsf(d) > kHeadingDisagreeDeg);
+  }
+
+  // Persistence bookkeeping. Transient disagreement -> this tick has no heading. Sustained past
+  // kHeadingDisagreeMs -> a genuine fault, escalated through runFmLoop()'s EXISTING fault chain
+  // (the branch A3's diverge_fault enters): FM_STOPPING, cap 0, ramp back to manual, FM_IDLE,
+  // re-arm required. No print here: the message is emitted in that branch AFTER the cap is driven
+  // to 0, so a blocked UART can never defer the hard stop (the F7 rule).
+  if (disagree_now) {
+    if (heading_disagree_since_ms == 0) {
+      heading_disagree_since_ms = now;
+    } else if ((now - heading_disagree_since_ms) >= (unsigned long)kHeadingDisagreeMs) {
+      heading_disagree_fault = true;
+    }
+  } else if (compare_possible) {
+    // Measured, and the two agree: the disagreement evidence is withdrawn in full.
+    heading_disagree_since_ms = 0;
+    heading_disagree_fault    = false;
+  } else {
+    // No comparison possible this tick. Restart the dwell rather than carry a half-finished proof
+    // across a gap (same discipline as fm_diverge_since_ms). A fault already PROVEN is kept — it
+    // is cleared by a fresh agreement above, or at the re-arm boundary in fmEnterIdle().
+    heading_disagree_since_ms = 0;
+  }
+
+  if (disagree_now) {
+    *out_heading = -1.0f;
+    *out_confidence = 0;
+    return false;
+  }
 
   if (cog_valid) {
     *out_heading = gps_last_course_deg;
@@ -275,9 +446,45 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
   }
 
   // ---- Mode 0: GPS COG only — no fallback ----
-  // If COG is invalid (slow speed or stale), return no source.
+  // If COG is invalid (slow speed, stale, or guard-1 frozen), return no source.
   // updateRtmSteering() will hold straight.
   if (mode == 0) {
+    *out_heading = -1.0f;
+    *out_confidence = 0;
+    return false;
+  }
+
+  // ============================================================
+  // GUARD 1, PART 2 — A FROZEN COG DOES NOT PROMOTE THE COMPASS
+  // V2.5-Evo - 2026-07-25 - STAGE 2
+  //
+  // THE SUBTLE PART, AND THE REASON THE VEER HAPPENED. Guard 1 invalidates COG. Left alone, the
+  // ladder below would then do what it has always done and fall through to the compass — which is
+  // EXACTLY the handover that steered the buggy the wrong way. Think about what we actually know
+  // in this state: the GPS is provably dead (a register that stopped moving is not an opinion),
+  // and the compass is unverifiable — the one instrument that could have cross-checked it is the
+  // source we just threw away, and on this hardware the compass is biased 100 deg+ by motor
+  // current at exactly the moment we would be relying on it (the buggy is moving, so the trigger
+  // is held, so the snapshot is not even refreshing).
+  //
+  // One provably dead source plus one unverifiable source is not a heading. HOLDING STRAIGHT IS
+  // SAFER THAN STEERING ON THE SURVIVOR: a buggy that holds its line is predictable and the rider
+  // can see it and let go of the trigger, whereas a buggy steering confidently on a bad compass
+  // goes somewhere nobody chose. So we return NOTHING.
+  //
+  // WHAT EACH MODE DOES WITH "NOTHING" — no new code path is invented for either:
+  //   RTM: gate 6 (with the default rtm_compass_required = 1) stops the run; with it set to 0,
+  //        updateRtmSteering() holds the override at 127 (straight) and RTM continues under the
+  //        throttle governor with runPhaseC()'s convergence check still watching.
+  //   FM : condition 6 in checkFmFaultConditions() fails, which is already classified as a FAULT
+  //        — FM_STOPPING, cap 0, ramp back to manual, FM_IDLE, re-arm required.
+  //
+  // THIS IS SELF-CLEARING AND STRICTLY NARROW. It only exists while the buggy is MOVING and the
+  // GPS is repeating itself; the instant the course value moves again, or the buggy slows below
+  // cog_min_speed, the ordinary ladder (including the compass fallback) returns unchanged. The
+  // stationary/low-speed RTM arm sequence never reaches this line.
+  // ============================================================
+  if (cog_frozen_moving) {
     *out_heading = -1.0f;
     *out_confidence = 0;
     return false;
@@ -1511,6 +1718,15 @@ static void fmEnterIdle()
   // engagement must never be the yardstick for the next one.
   fm_diverge_since_ms     = 0;
   fm_diverge_start_dist_m = -1.0f;
+
+  // V2.5-Evo - 2026-07-25 - STAGE 2 guard 2: the re-arm boundary is where a proven heading-source
+  // disagreement is forgiven. Whatever put us here ends the declaration, and the next arm must be
+  // judged on fresh sensor evidence rather than inheriting a fault from the previous run. This is
+  // the ONLY place the latch is cleared other than a live comparison showing the two sources
+  // agreeing again (in getRtmHeading) — so it can never be washed out simply by the compass
+  // snapshot going stale, which is the hole it exists to close.
+  heading_disagree_since_ms = 0;
+  heading_disagree_fault    = false;
 }
 
 // ------------------------------------------------------------
@@ -1859,7 +2075,12 @@ void runFmLoop()
   // fully manual, no matter how well the other conditions read.
   // V2.5-Evo - 2026-07-25 - A3: !diverge_fault joins the same AND chain. It can only ever REMOVE
   // eligibility, so the worst case of a false positive is FM handing control back to the rider.
-  bool can_be_active = hard_ok && speed_ok && dist_ok && fm_sep_latched && !diverge_fault;
+  // V2.5-Evo - 2026-07-25 - STAGE 2: !heading_disagree_fault joins it on identical terms. It is set
+  // in getRtmHeading() only after the compass and GPS COG have disagreed by more than
+  // kHeadingDisagreeDeg continuously for kHeadingDisagreeMs, and like diverge_fault it can only
+  // ever subtract eligibility — never grant it, never raise a cap, never extend an engagement.
+  bool can_be_active = hard_ok && speed_ok && dist_ok && fm_sep_latched &&
+                       !diverge_fault && !heading_disagree_fault;
 
   if (can_be_active) {
     // ---- Steer-cancel while ACTIVE (A3 PART 2 / R-steering) ----
@@ -1932,7 +2153,7 @@ void runFmLoop()
 
     bool was_engaged = (fm_state == FM_ACTIVE || fm_state == FM_HOLD);
 
-    if ((!fault_ok || diverge_fault) && was_engaged) {
+    if ((!fault_ok || diverge_fault || heading_disagree_fault) && was_engaged) {
       // ---- FAULT (conditions 2-7, plus A3 divergence): something actually broke while FM had control ----
       // End autonomy for the run: enter FM_STOPPING, which ramps the throttle cap 0 -> 255 over the
       // next kFmStopRampMs (handled at the top of runFmLoop), then drops to FM_IDLE — re-arm
@@ -1944,6 +2165,11 @@ void runFmLoop()
       // to manual, the same haptic/St notification, and the same mandatory re-arm. Steering away is
       // exactly as much of a "something broke" event as losing the compass, and a silent auto-resume
       // after it would be the unrequested autonomy this architecture forbids.
+      // V2.5-Evo - 2026-07-25 - STAGE 2: a sustained COG-vs-compass disagreement enters through this
+      // same branch, for the same reason and with no new state or exit path of its own. Note that a
+      // heading which is merely INVALID this tick already arrives here via !fault_ok (condition 6),
+      // so heading_disagree_fault is not a second route to the stop — it is what keeps the stop from
+      // being cancelled by the disagreement becoming unmeasurable a tick later.
       if (thr_held) fm_fault_alarm_ms = now;
       fm_stop_ms      = now;
       fm_state        = FM_STOPPING;
@@ -1956,6 +2182,11 @@ void runFmLoop()
         Serial.printf("FM [RX] DIVERGENCE FAULT: dist=%.1f m (was %.1f m at dwell start, closed <%.1f m) > limit %.1f m sustained %lu ms — not closing\n",
                       (double)dist_m, (double)diverge_start_m, (double)kFmDivergeCloseEpsM,
                       (double)diverge_limit_m, (unsigned long)kFmDivergeMs);
+      }
+      // V2.5-Evo - 2026-07-25 - STAGE 2: same F7 discipline — this prints AFTER fm_throttle_cap = 0.
+      if (heading_disagree_fault) {
+        Serial.printf("FM [RX] HEADING DISAGREE FAULT: GPS COG and compass differed by more than %.0f deg for %lu ms — both sources distrusted\n",
+                      (double)kHeadingDisagreeDeg, (unsigned long)kHeadingDisagreeMs);
       }
       Serial.printf("FM [RX] FAULT -> STOPPING (ramp %lu ms) -> IDLE, re-arm required (thr_held=%d)\n",
                     (unsigned long)kFmStopRampMs, (int)thr_held);

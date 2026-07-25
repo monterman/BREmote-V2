@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-07-25 - STAGE 2 (heading-source trust guards): added the four shared compile-time constants the RTM/FM heading ladder needs — kRtmCogFrozenMs (3000), kHeadingDisagreeDeg (45.0), kHeadingDisagreeMs (5000), kHeadingCompareSnapMs (1000). They live HERE, once, for the same reason kFmEngageDistFloorM does: getRtmHeading() in RTMState.ino and its inline duplicate in Logger.ino both read them, and Logger.ino is concatenated BEFORE RTMState.ino, so a constant defined in RTMState.ino would be invisible to the logger mirror. Constants + comments only: no confStruct field added, moved, renamed or resized; sizeof(confStruct) stays 184, static_assert unchanged, SW_VERSION stays 34, SPIFFS config is NOT reset by this flash.
 // V2.5-Evo - 2026-07-25 - STAGE 1 (GPS repair): defaultConf.gps_update_hz raised 2 -> 10 Hz, because the GPS module is configured for 5 Hz (BN-220/BN-880) or 10 Hz (M10) and, now that STAGE 1 leaves the UART mux parked on GPS, a 500 ms drain interval would leave ~1250 bytes pending per drain. VALUE-ONLY change to an existing field: no field added, moved, renamed or resized, and the 1-10 validation range in ConfigService is untouched — so sizeof(confStruct) stays 184, the static_assert is unchanged, SW_VERSION stays 34 and the owner's SPIFFS config is NOT wiped by this flash. Because it is NOT wiped, a board with a stored gps_update_hz keeps its old value: it must be set on the device with `?set gps_update_hz 10` + `?save`. No control-path field (throttle, steering, PWM, RTM/FM) is touched.
 // V2.5-Evo - 2026-07-25 - STAGE 0 (instrumentation only, ZERO control-behaviour change): (A) the unused RESERVED slot fm_steer_reposition_en is RENAMED IN PLACE to log_level — same offset, same uint16_t, so sizeof(confStruct) stays 184, the static_assert is unchanged, SW_VERSION stays 34 and the owner's SPIFFS config is NOT wiped (same trick as dummy_delete_me -> rtm_steer_response, Bundle 1). 0 = unset (behaves exactly as level 3), 1 = Basic, 2 = VESC, 3 = Developer, 4 = Deep; only 3 and 4 are implemented, 1 and 2 are accepted by the validator and currently log as level 3. (B) added LogFileHeader — every log file now starts with an 8-byte self-describing header (magic/format/level/record size) so a reader can parse a variable record size. (C) added VescLogDataL4 = VescLogData + the 4 level-4 diagnostic fields, and the free-running diagnostic counters the ?diag command and the level-4 record read. Nothing here is read by throttle, steering, PWM, the mux schedule, or any FM/RTM logic.
 // V2.5-Evo - 2026-07-25 - F3-b: kFmEngageDistFloorM (the FM engage-distance floor) now lives HERE, once, and is raised 5.0 -> 8.0 m. It used to be defined in RTMState.ino AND duplicated as a bare 5.0f literal in ConfigService.ino, on the false premise that the Arduino concatenation order stopped the two files sharing a constant — this header is included at the top of V2_Integration_Rx.ino, which is compiled first, so both see it. 5.0 m was below the hazard it names: the owner's tow rope is 20 ft = 6.10 m, so a manual fm_engage_dist_m of 5.0-6.1 m was storable and let FM engage with the rider still ON the rope. 8.0 m clears a 6.10 m rope by ~1.31x. One shared constant + comments only: no field added, moved or resized; sizeof(confStruct) stays 184, static_assert unchanged, SW_VERSION stays 34, SPIFFS config is NOT reset by this flash.
@@ -491,6 +492,76 @@ confStruct defaultConf = {SW_VERSION, 2, 22, 1, 50 /*steering_influence: convent
 // concatenation order prevented sharing and used that to justify a duplicated literal. It was wrong.)
 // ============================================================
 static const float kFmEngageDistFloorM = 8.0f;   // metres; smallest legal non-zero fm_engage_dist_m
+
+// ============================================================
+// V2.5-Evo - 2026-07-25 - STAGE 2: HEADING-SOURCE TRUST CONSTANTS (RTM + FM)
+//
+// WHY THESE EXIST — MEASURED ON THE BENCH, NOT THEORISED
+//   ?diag on the repaired board reported:
+//       COG : 7.4 timestamp-updates/s vs 0.0 value-changes/s   [value frozen 533 s]
+//   The GPS module pushed a course update about seven times a second for nine minutes, and every
+//   single one carried THE SAME NUMBER. getRtmHeading()'s freshness test is
+//   (millis() - gps_last_course_ms) < 1500 ms, and that timestamp was being refreshed by every one
+//   of those repeats — so the heading ladder saw a perfectly fresh, HIGH-confidence COG the whole
+//   time. It was not fresh. It was one heading, repeated. That is the failure that made Follow-Me
+//   steer the wrong way on the water: COG looked alive, was dead, and when it finally dropped out
+//   the ladder handed steering to a compass this hardware is known to bias by 100 deg+ under motor
+//   current. Two independent guards, both consuming these constants, close that hole.
+//
+// WHY THEY LIVE IN THIS HEADER AND NOT IN RTMState.ino
+//   Exactly the kFmEngageDistFloorM story (see the block above). getRtmHeading() in RTMState.ino
+//   and its inline duplicate in Logger.ino (convertToLogData, the block marked CRITICAL
+//   MAINTENANCE) must apply the SAME rule or the log will report a heading source the controller
+//   did not actually use. The Arduino build concatenates .ino files alphabetically after the main
+//   sketch, so Logger.ino is compiled BEFORE RTMState.ino: a constant defined in RTMState.ino is
+//   invisible to the logger mirror. This header is included at the top of V2_Integration_Rx.ino,
+//   so one definition here is visible to both.
+//
+// NONE of these four is a confStruct field. They are deliberately compile-time: no SPIFFS slot,
+// no web-UI row, no SW_VERSION bump, no config wipe.
+// ============================================================
+
+// GUARD 1 — how long the COG VALUE may sit still, WHILE THE BUGGY IS MOVING, before COG stops
+// counting as a trustworthy heading source.
+// WHY 3000 ms. The module emits course several times a second, and real course-over-ground is
+// noisy: at the default rtm_cog_min_speed_kmh of 3 km/h, GPS course scatter is whole degrees, and
+// the value-change tracker in GPS.ino counts any movement above kDiagCogChangeDeg = 0.05 deg. A
+// genuinely live COG therefore re-stamps g_diag_cog_change_ms many times per second, and three
+// full seconds of a bit-identical course while moving is not a quiet trajectory, it is a frozen
+// register. The measured fault held one value for 533 s, so 3 s catches it ~178x over while
+// leaving a wide margin against a false positive. It is also short enough to matter: at the FM
+// speed governor's ceiling the buggy covers only a few metres in 3 s.
+static const uint32_t kRtmCogFrozenMs       = 3000;   // ms of unchanged COG value (while moving) = COG not trusted
+
+// GUARD 2 — how far apart the two independent heading estimates may be before BOTH are distrusted.
+// WHY 45 deg. Below this, disagreement is explainable by things that are not faults: compass
+// mounting offset, magnetic declination, the yaw the buggy accumulates between the compass
+// snapshot and the live COG sample, and ordinary COG scatter at low speed. Beyond 45 deg the two
+// sensors are no longer describing the same vehicle attitude, and at 45 deg of heading error the
+// steering controller is already commanding half of full authority in a direction one of the two
+// sources says is wrong. It is a "these cannot both be right" threshold, not a tuning knob.
+static const float    kHeadingDisagreeDeg   = 45.0f;  // degrees, shortest angular distance
+
+// GUARD 2 — how long that disagreement must persist before it is treated as a genuine FAULT rather
+// than a transient. WHY 5000 ms. A single bad compass sample, one COG glitch or one hard carve can
+// open a >45 deg gap for a moment; a broken sensor holds it. At the 10 Hz ladder cadence 5 s is ~50
+// consecutive confirmations, the same "a spike cannot sustain it" argument kFmSepDwellMs and
+// kFmDivergeMs are built on. It is deliberately LONGER than kRtmCogFrozenMs: guard 1 has hard
+// evidence (a register that stopped moving) and may act fast; guard 2 only knows that one of two
+// sources is lying, so it waits for proof before ending the run.
+static const uint32_t kHeadingDisagreeMs    = 5000;   // ms of sustained disagreement = FAULT
+
+// GUARD 2 — the oldest compass snapshot that may still be compared against a live COG.
+// WHY THIS IS NEEDED AND WHY IT IS 1000 ms. compass_snapshot_heading is a HELD value: Compass.ino
+// only re-captures it while the motor is idle (thr_received < 25), so during an FM/RTM run, with
+// the trigger held, it freezes at the instant of the squeeze and simply ages. Comparing a live COG
+// against a heading captured seconds ago measures how much the buggy has TURNED since, not whether
+// the sensors agree — at a modest 10 deg/s yaw a 5 s-old snapshot is 50 deg out all by itself and
+// would fake a disagreement every corner. 1000 ms is the same window getRtmHeading() already
+// requires before it will call a snapshot MEDIUM confidence, i.e. the only compass data this
+// firmware already treats as simultaneous with now. Outside it, guard 2 simply does not run —
+// no comparison is better than a comparison of two different moments in time.
+static const uint32_t kHeadingCompareSnapMs = 1000;   // ms; max compass-snapshot age for a valid comparison
 
 #include "../Common/ConfigServiceEngine.h"
 

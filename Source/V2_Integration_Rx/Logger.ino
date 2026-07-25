@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-07-25 - STAGE 2 (log mirror only, no new column, no record-size change): the inline getRtmHeading() duplicate in convertToLogData() now applies the same two heading-trust guards RTMState.ino gained — guard 1 (COG rejected when its VALUE has been frozen longer than kRtmCogFrozenMs while gps_last_speed_kmh >= rtm_cog_min_speed_kmh, and no compass promotion in that state) and guard 2 (per-tick COG-vs-compass-snapshot disagreement beyond kHeadingDisagreeDeg = no source at all). Without this, rtm_source/rtm_confidence would keep logging "GPS COG, HIGH" for ticks where the controller was actually holding straight, which is precisely the blindness Stage 0 was built to end. The 5 s escalation latch is deliberately NOT read here: this runs in loggerTask and the mirror stays side-effect-free and per-tick. No confStruct change, no VescLogData change, sizeof stays 184, SW_VERSION stays 34, no control path touched.
 // V2.5-Evo - 2026-07-25 - STAGE 0 PART B+C (instrumentation only): every log file now opens with an 8-byte self-describing header (magic "BRLG", format version, log level, record size) so a reader can parse a VARIABLE record size instead of assuming sizeof(VescLogData); the level is latched once per FILE in createNewLogFile() so changing the setting mid-session cannot corrupt an open file; level 4 writes a 65-byte record (59-byte level-3 record + gps_sent_per_s, cog_frozen_s, mux_err_cnt, loop_max_ms); ?download reads the header, steps by header.record_size, refuses a file with no valid magic in plain English instead of emitting garbage, and formats rows through the single shared logFormatCsvRow() that the WiFi path also calls — so the two CSV outputs cannot drift apart again. No confStruct change, sizeof stays 184, SW_VERSION stays 34, no control path touched.
 // V2.5-Evo - 2026-07-24 - F9: +3 CSV columns (tx_distance_m, rssi_dbm, snr_db); 28→31 columns; VescLogData +6 bytes; distance decoded from telemetry.rtm_distance, RSSI/SNR from Radio.ino cache (g_last_rssi_dbm/g_last_snr_db); appended for parser compat; no confStruct change, SW_VERSION unchanged
 // V2.5-Evo - 2026-07-19 - Rex INFO: corrected stale "ESP32-S3 dual-core / Core 0/Core 1" wording in convertToLogData() vescMutex comment to ESP32-C3 single-core / FreeRTOS-preemption (comment-only)
@@ -261,16 +262,52 @@ VescLogData convertToLogData() {
       }
     } else {
       // Modes 0 and 1: GPS COG primary
-      bool cog_valid = (gps_last_course_ms > 0) &&
-                       (gps_last_course_deg >= 0.0f) &&
-                       ((now_ms - gps_last_course_ms) < 1500UL) &&
-                       (gps_last_speed_kmh >= (float)cog_min_speed);
-      if (cog_valid) {
+      // V2.5-Evo - 2026-07-25 - STAGE 2 mirror of the two heading-trust guards added to
+      // getRtmHeading(). Kept in lockstep on purpose: if the log said "GPS COG, HIGH" on a tick
+      // where the controller had rejected COG and was holding straight, the log would be actively
+      // misleading about the exact failure Stage 0 was built to expose.
+      bool cog_captured = (gps_last_course_ms > 0) && (gps_last_course_deg >= 0.0f);
+      bool cog_fresh_ts = cog_captured && ((now_ms - gps_last_course_ms) < 1500UL);
+      bool cog_moving   = (gps_last_speed_kmh >= (float)cog_min_speed);
+
+      // GUARD 1 mirror: a COG whose VALUE has not moved for kRtmCogFrozenMs while the buggy is
+      // moving is a repeated number, not a heading. Speed-gated, so a stationary buggy reporting a
+      // constant (and correct) course is never flagged.
+      bool cog_frozen_moving = false;
+      if (cog_moving && cog_fresh_ts) {
+        unsigned long cog_change_ms = (unsigned long)g_diag_cog_change_ms;
+        cog_frozen_moving = (cog_change_ms != 0) &&
+                            ((now_ms - cog_change_ms) >= (unsigned long)kRtmCogFrozenMs);
+      }
+
+      bool cog_valid = cog_fresh_ts && cog_moving && !cog_frozen_moving;
+
+      // GUARD 2 mirror (per-tick verdict only). The 5 s escalation latch lives in RTMState.ino and
+      // is NOT read here: this function runs in loggerTask, so the mirror must stay side-effect-free
+      // and must not depend on loop-task timing. A logged NONE therefore reflects the disagreement
+      // that was measurable at this instant, which is what rtm_source/rtm_confidence describe.
+      bool compare_possible = (mode == 1) && cog_valid &&
+                              (compass_snapshot_heading >= 0.0f) && (compass_snapshot_ms > 0) &&
+                              ((now_ms - compass_snapshot_ms) < (unsigned long)kHeadingCompareSnapMs);
+      bool disagree_now = false;
+      if (compare_possible) {
+        float d = gps_last_course_deg - compass_snapshot_heading;   // wrap-correct across 0/360
+        while (d >  180.0f) d -= 360.0f;
+        while (d < -180.0f) d += 360.0f;
+        disagree_now = (fabsf(d) > kHeadingDisagreeDeg);
+      }
+
+      if (disagree_now) {
+        // Both sources distrusted — src/conf stay 0, matching getRtmHeading() returning NONE.
+      } else if (cog_valid) {
         src    = 1;     // GPS_COG
         conf   = 3;     // HIGH
         chosen = gps_last_course_deg;
-      } else if (mode == 1) {
-        // Hybrid: fall back to compass snapshot
+      } else if (mode == 1 && !cog_frozen_moving) {
+        // Hybrid: fall back to compass snapshot — but NOT when guard 1 has just proven the COG
+        // frozen while moving. In that state one source is provably dead and the other cannot be
+        // cross-checked, so the controller holds straight instead of promoting the survivor, and
+        // the log must say the same thing.
         if (compass_snapshot_heading >= 0.0f && compass_snapshot_ms > 0) {
           unsigned long snap_age_ms = now_ms - compass_snapshot_ms;
           if (snap_age_ms < 1000UL) {
@@ -284,7 +321,7 @@ VescLogData convertToLogData() {
           }
         }
       }
-      // Mode 0 with no valid COG: src/conf stay 0 (hold straight)
+      // Mode 0 with no valid COG, or a frozen-while-moving COG in any mode: src/conf stay 0 (hold straight)
     }
 
     // No-fix guard mirror of getRtmHeading() (RTMState.ino, 2026-07-19 FM triage): with no

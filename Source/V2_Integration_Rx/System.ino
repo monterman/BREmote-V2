@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-07-25 - STAGE 0 PART D (instrumentation only): added ?diag (one-shot, non-blocking snapshot of GPS bytes/sentences per second, fix age now/mean/max, COG timestamp-updates vs VALUE-changes, mux switches + read-back failures, VESC poll success rate, and loop min/mean/max) and ?diagz (zero the counters to bracket a run). Unlike ?gpsdiag these do not loop or delay, so they are safe to run with RTM/FM active and need no refusal guard. setUartMux() also gained two counter increments (switches, read-back mismatches) — the corrective re-write itself is unchanged. No control path, no confStruct change, SW_VERSION stays 34.
 // V2.5-Evo - 2026-07-19 - Rex hardening: cmdGpsDiag (?gpsdiag) refuses to run while RTM active — its ≤120s blocking loop would freeze runRtmLoop()/Phase A/B/convergence/Gate 9
 // V2.5-Evo - 2026-07-19 - FM triage: cmdGpsDiag (?gpsdiag) — 2Hz GPS feed + RTM COG-valid sub-condition breakdown to diagnose why GPS COG heading never engages
 // V2.5-Evo - 2026-05-11 - E7 Fix: checkWetness() debounced — requires 2 consecutive confirmed-wet calls to set E7; single clean read clears
@@ -61,6 +62,11 @@ void setUartMux(int channel)
   const bool want_mux0 = (channel == 1);
   const bool want_mux1 = false;
 
+  // V2.5-Evo - 2026-07-25 - STAGE 0: count every mux switch that actually drives the pins.
+  // Diagnostic only — nothing reads this except ?diag. Counted here, outside the mutex, so the
+  // I2C critical section is not made any longer than it already is.
+  g_diag_mux_switches++;
+
   xSemaphoreTake(i2cMutex, portMAX_DELAY);
   aw.digitalWrite(AP_U1_MUX_0, want_mux0);
   aw.digitalWrite(AP_U1_MUX_1, want_mux1);
@@ -68,6 +74,11 @@ void setUartMux(int channel)
   // Bounded verify-and-correct: one read-back, at most one corrective re-write.
   if(aw.digitalRead(AP_U1_MUX_0) != want_mux0 || aw.digitalRead(AP_U1_MUX_1) != want_mux1)
   {
+    // V2.5-Evo - 2026-07-25 - STAGE 0: a read-back mismatch means the write did NOT stick —
+    // the documented motor-EMI-corrupts-I2C failure. Counting it is the whole point: until now
+    // this event corrected itself silently, so a session log could never show how often the
+    // UART was pointed at the wrong peripheral. The corrective re-write below is UNCHANGED.
+    g_diag_mux_errors++;
     aw.digitalWrite(AP_U1_MUX_0, want_mux0);
     aw.digitalWrite(AP_U1_MUX_1, want_mux1);
   }
@@ -759,6 +770,200 @@ void cmdGpsDiag(const String& params) {
   Serial.println("=== GPS diagnostic complete ===");
 }
 
+// ============================================================
+// V2.5-Evo - 2026-07-25 - STAGE 0 PART D: ?diag / ?diagz
+//
+// A snapshot of the previous call, so every rate below can be reported as a delta over a
+// bounded window instead of an ever-growing since-boot average that hides a fault that
+// started ten minutes ago.
+// ============================================================
+struct DiagSnapshot {
+  uint32_t t_ms;
+  uint32_t gps_bytes;
+  uint32_t gps_sentences;
+  uint32_t cog_ts_updates;
+  uint32_t cog_val_changes;
+  uint32_t fix_age_sum_ms;
+  uint32_t fix_age_samples;
+  uint32_t mux_switches;
+  uint32_t mux_errors;
+  uint32_t vesc_polls;
+  uint32_t vesc_ok;
+  uint32_t loop_count;
+  uint32_t loop_us_sum;
+  uint8_t  origin;   // 0 = boot (no previous call), 1 = previous ?diag, 2 = ?diagz
+};
+// Zero-initialised on purpose: the very first ?diag then differences against "boot", which is
+// exactly right — its window is millis() and its deltas are the totals since power-on.
+static DiagSnapshot g_diag_prev = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+
+// ============================================================
+// cmdDiag - one-shot RX instrumentation snapshot (?diag)
+// ============================================================
+//
+// What it does:
+//   Prints ONE report and returns. Every rate is a delta since the previous ?diag call (or
+//   since ?diagz, or since boot on the first call), so two calls bracket a window of interest
+//   without any streaming and without a 'quit' to remember.
+//
+// Why this one is safe to run while RTM or Follow-Me is active:
+//   It has no loop, no vTaskDelay, and touches no shared hardware — no I2C, no radio, no UART
+//   mux, no SPIFFS. It reads plain counters and prints about ten lines. Contrast ?gpsdiag,
+//   which streams for up to 120 s and therefore had to be given a hard refusal guard while RTM
+//   is engaged (it would freeze runRtmLoop/Phase A/B/convergence/Gate 9 for that whole window).
+//   ?diag needs no such guard: the only time it holds the loop task is the few milliseconds it
+//   takes to push its own text out of the UART.
+//
+// What is reset and what is not:
+//   The extremes (worst fix age, shortest/longest loop) are read AND reset by each call,
+//   because the maximum of a running total is meaningless as a delta — resetting is what makes
+//   "max in this window" true. Running totals are never reset here, only differenced.
+//
+// Inputs:  params - unused
+// Outputs: report on Serial
+// Side effects: resets the diagnostic extremes; updates the snapshot used by the next call.
+//   Changes no configuration and no control state whatsoever.
+void cmdDiag(const String& params) {
+  extern unsigned long gps_last_ms;
+
+  const uint32_t now_ms = millis();
+
+  // Snapshot every running total in one go, so all the rates below describe the same instant.
+  DiagSnapshot cur;
+  cur.t_ms            = now_ms;
+  cur.gps_bytes       = g_diag_gps_bytes;
+  cur.gps_sentences   = g_diag_gps_sentences;
+  cur.cog_ts_updates  = g_diag_cog_ts_updates;
+  cur.cog_val_changes = g_diag_cog_val_changes;
+  cur.fix_age_sum_ms  = g_diag_fix_age_sum_ms;
+  cur.fix_age_samples = g_diag_fix_age_samples;
+  cur.mux_switches    = g_diag_mux_switches;
+  cur.mux_errors      = g_diag_mux_errors;
+  cur.vesc_polls      = g_diag_vesc_polls;
+  cur.vesc_ok         = g_diag_vesc_ok;
+  cur.loop_count      = g_diag_loop_count;
+  cur.loop_us_sum     = g_diag_loop_us_sum;
+  cur.origin          = 1;   // this call becomes "the previous ?diag" for the next one
+
+  // Extremes: read then reset, so each report's max belongs to that report's window.
+  const uint32_t fix_age_max = g_diag_fix_age_max_ms; g_diag_fix_age_max_ms = 0;
+  const uint32_t loop_max_us = g_diag_loop_max_us;    g_diag_loop_max_us    = 0;
+  const uint32_t loop_min_us = g_diag_loop_min_us;    g_diag_loop_min_us    = 0xFFFFFFFF;
+
+  // Unsigned subtraction is correct across a counter or millis() wrap.
+  const uint32_t d_ms        = cur.t_ms            - g_diag_prev.t_ms;
+  const uint32_t d_bytes     = cur.gps_bytes       - g_diag_prev.gps_bytes;
+  const uint32_t d_sent      = cur.gps_sentences   - g_diag_prev.gps_sentences;
+  const uint32_t d_cog_ts    = cur.cog_ts_updates  - g_diag_prev.cog_ts_updates;
+  const uint32_t d_cog_val   = cur.cog_val_changes - g_diag_prev.cog_val_changes;
+  const uint32_t d_fix_sum   = cur.fix_age_sum_ms  - g_diag_prev.fix_age_sum_ms;
+  const uint32_t d_fix_n     = cur.fix_age_samples - g_diag_prev.fix_age_samples;
+  const uint32_t d_mux_sw    = cur.mux_switches    - g_diag_prev.mux_switches;
+  const uint32_t d_mux_err   = cur.mux_errors      - g_diag_prev.mux_errors;
+  const uint32_t d_vesc_p    = cur.vesc_polls      - g_diag_prev.vesc_polls;
+  const uint32_t d_vesc_ok   = cur.vesc_ok         - g_diag_prev.vesc_ok;
+  const uint32_t d_loop_n    = cur.loop_count      - g_diag_prev.loop_count;
+  const uint32_t d_loop_us   = cur.loop_us_sum     - g_diag_prev.loop_us_sum;
+
+  // Never divide by zero: two ?diag calls in the same millisecond still produce a finite rate.
+  float win_s = (float)d_ms / 1000.0f;
+  if (win_s < 0.001f) win_s = 0.001f;
+
+  const char* origin_txt = (g_diag_prev.origin == 2) ? "since ?diagz"
+                         : (g_diag_prev.origin == 1) ? "since previous ?diag"
+                                                     : "since boot (first call)";
+
+  const uint8_t lvl = logResolveLevel();
+  const char*   lvl_txt = (lvl >= 4) ? "Deep" : "Developer";
+
+  // "-1" in the lines below always means "no sample in this window", never a real measurement.
+  const long  fix_age_now  = (gps_last_ms != 0) ? (long)(now_ms - (uint32_t)gps_last_ms) : -1L;
+  const long  fix_age_mean = (d_fix_n > 0) ? (long)(d_fix_sum / d_fix_n) : -1L;
+  const float loop_min_ms  = (loop_min_us == 0xFFFFFFFF) ? -1.0f : ((float)loop_min_us / 1000.0f);
+  const float loop_mean_ms = (d_loop_n > 0) ? ((float)d_loop_us / (float)d_loop_n / 1000.0f) : -1.0f;
+  const float loop_max_ms  = (float)loop_max_us / 1000.0f;
+  const float vesc_pct     = (d_vesc_p > 0) ? (100.0f * (float)d_vesc_ok / (float)d_vesc_p) : -1.0f;
+
+  char cog_frozen[40];
+  if (g_diag_cog_change_ms == 0) {
+    snprintf(cog_frozen, sizeof(cog_frozen), "no COG value seen yet");
+  } else {
+    snprintf(cog_frozen, sizeof(cog_frozen), "value frozen %u s",
+             (unsigned)((now_ms - g_diag_cog_change_ms) / 1000UL));
+  }
+
+  Serial.println("=== ?diag - RX instrumentation snapshot ===");
+  Serial.printf("window     : %.2f s %s\n", win_s, origin_txt);
+  Serial.printf("log_level  : cfg %u -> level %u (%s), %u bytes/record\n",
+                (unsigned)usrConf.log_level, (unsigned)lvl, lvl_txt,
+                (unsigned)logRecordSizeForLevel(lvl));
+  Serial.printf("GPS feed   : %.0f bytes/s, %.1f sentences/s   [window %u B, %u sentences]\n",
+                (float)d_bytes / win_s, (float)d_sent / win_s,
+                (unsigned)d_bytes, (unsigned)d_sent);
+  Serial.printf("GPS fix age: now %ld ms, mean %ld ms, max %u ms   [%u samples]\n",
+                fix_age_now, fix_age_mean, (unsigned)fix_age_max, (unsigned)d_fix_n);
+  Serial.printf("COG        : %.1f timestamp-updates/s vs %.1f value-changes/s   [%s]\n",
+                (float)d_cog_ts / win_s, (float)d_cog_val / win_s, cog_frozen);
+  Serial.printf("UART mux   : %.1f switches/s, %u read-back failures   [%u total since boot]\n",
+                (float)d_mux_sw / win_s, (unsigned)d_mux_err, (unsigned)cur.mux_errors);
+  Serial.printf("VESC poll  : %u/%u ok (%.1f%%)\n",
+                (unsigned)d_vesc_ok, (unsigned)d_vesc_p, vesc_pct);
+  Serial.printf("loop()     : min %.2f ms, mean %.2f ms, max %.2f ms   [%u loops]\n",
+                loop_min_ms, loop_mean_ms, loop_max_ms, (unsigned)d_loop_n);
+  Serial.println("HOW TO READ IT:");
+  Serial.println("  timestamp-updates high with value-changes near 0 = GPS is repeating a frozen");
+  Serial.println("  heading. cog_age looks healthy in that state; it is not. Any COG-derived");
+  Serial.println("  heading is stale, and RTM/FM steering built on it is steering on old news.");
+  Serial.println("  -1 anywhere above means no sample in this window, not a real measurement.");
+  Serial.println("  ?diagz zeroes the counters so a run can be bracketed cleanly.");
+  Serial.println("===========================================");
+
+  g_diag_prev = cur;
+}
+
+// ============================================================
+// cmdDiagZ - zero the diagnostic counters (?diagz)
+// ============================================================
+//
+// What it does:
+//   Resets the running totals and the extremes so the next ?diag reports a clean window. Use it
+//   to bracket a run: ?diagz, do the thing, ?diag.
+//
+// What it deliberately does NOT reset, and why:
+//   g_diag_cog_change_ms   - a state timestamp ("when did the heading last actually move"),
+//                            not a counter. Zeroing it would make the log and ?diag both claim
+//                            "no COG value ever seen", which would be a lie.
+//   g_diag_loop_max_us_log - owned by the logger, consumed once per level-4 record. Zeroing it
+//                            here would silently steal a peak from an active session log.
+//   g_diag_gps_sent_per_s  - a derived rate; getGPSLoop() refreshes it within one second.
+//
+// Inputs: params - unused. Outputs: confirmation on Serial. Side effects: as described above.
+void cmdDiagZ(const String& params) {
+  g_diag_gps_bytes       = 0;
+  g_diag_gps_sentences   = 0;
+  g_diag_cog_ts_updates  = 0;
+  g_diag_cog_val_changes = 0;
+  g_diag_fix_age_sum_ms  = 0;
+  g_diag_fix_age_samples = 0;
+  g_diag_fix_age_max_ms  = 0;
+  g_diag_mux_switches    = 0;
+  g_diag_mux_errors      = 0;
+  g_diag_vesc_polls      = 0;
+  g_diag_vesc_ok         = 0;
+  g_diag_loop_count      = 0;
+  g_diag_loop_us_sum     = 0;
+  g_diag_loop_min_us     = 0xFFFFFFFF;
+  g_diag_loop_max_us     = 0;
+
+  DiagSnapshot fresh = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  fresh.t_ms   = millis();
+  fresh.origin = 2;   // so the next ?diag says "since ?diagz"
+  g_diag_prev  = fresh;
+
+  Serial.println("?diagz: diagnostic counters zeroed. Run your test, then ?diag to read the window.");
+  Serial.println("?diagz: the COG frozen-clock and the logger's own loop-peak are intentionally left alone.");
+}
+
 void cmdHelp(const String& params);
 
 static const SerialCommand kCommands[] = {
@@ -803,6 +1008,8 @@ static const SerialCommand kCommands[] = {
   // --- Hardware Diagnostics ---
   {"i2c", "scan I2C bus for compass", cmdScanI2C},
   {"gpsdiag", "2Hz GPS feed + RTM COG-valid breakdown (diagnose why GPS COG heading never engages)", cmdGpsDiag},
+  {"diag", "one-shot snapshot: GPS bytes/sentences, fix age, COG updates vs value-changes, mux errors, VESC poll rate, loop min/mean/max (safe during RTM/FM)", cmdDiag},
+  {"diagz", "zero the ?diag counters so a run can be bracketed", cmdDiagZ},
   {"printcompass", "print raw compass X/Y/Z", cmdPrintCompass},
   {"compasscal", "start 45s automated calibration", cmdCompassCal},
   {"compassheading", "print live compass heading in degrees", cmdPrintCompassHeading},

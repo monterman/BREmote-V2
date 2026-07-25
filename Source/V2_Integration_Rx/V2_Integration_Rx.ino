@@ -1,4 +1,5 @@
-// *** LATEST: V2.5-Evo - 2026-07-19 - P3 FM — runFmLoop() added to loop() after runRtmLoop(); Follow-Me autonomous following (see RTMState.ino). No confStruct change; SW_VERSION stays 33 ***
+// *** LATEST: V2.5-Evo - 2026-07-25 - STAGE 0 (instrumentation only): loop() body wrapped in diagLoopBegin()/diagLoopEnd() so ?diag and the level-4 log record can report loop min/mean/max time. Cycle-counter based (~5 ns), measured before the existing vTaskDelay so the deliberate 10 ms sleep is not counted as work. No control-path statement added, removed or reordered; no confStruct change; SW_VERSION stays 34 ***
+// V2.5-Evo - 2026-07-19 - P3 FM — runFmLoop() added to loop() after runRtmLoop(); Follow-Me autonomous following (see RTMState.ino). No confStruct change; SW_VERSION stays 33
 // V2.5-Evo - 2026-06-04 - D1 — UART-mux read-back verify (setUartMux); skip VESC poll while throttle high; no confStruct change
 // V2.5-Evo - 2026-05-14 - SW55 — GPS yields MUX to VESC on exit; rcv_err removed from receiveFromVESC; boot MUX starts on VESC
 // V2.5-Evo - 2026-05-11 - Telemetry Fix: VESC moved to its own vesc_loop_timer (2Hz); checkButtons() added to loop() for runtime BIND compass cal
@@ -49,6 +50,14 @@ int wetness_counter = 0;
 
 void loop()
 {
+  // V2.5-Evo - 2026-07-25 - STAGE 0 (instrumentation only): stamp the CPU cycle counter on the
+  // first line and close the measurement on the last line of the body, BEFORE the vTaskDelay
+  // below — so what gets recorded is the WORK this pass did, not the 10 ms it deliberately
+  // sleeps afterwards. esp_cpu_get_cycle_count() is a single CSR read (~5 ns); micros() would
+  // cost ~1 us, the same order as the thing being measured. Nothing between these two lines is
+  // changed, reordered, added or removed.
+  const uint32_t diag_loop_c0 = diagLoopBegin();
+
   esp_task_wdt_reset();
 #ifdef WIFI_ENABLED
   webCfgLoop();
@@ -121,6 +130,11 @@ void loop()
       getUbatLoop();
     }
   }
+
+  // STAGE 0: close the loop-body timing measurement started at the top of loop().
+  // Must stay the last statement before the vTaskDelay, otherwise the 10 ms sleep is counted
+  // as work and every loop reads as "10 ms" regardless of what actually happened.
+  diagLoopEnd(diag_loop_c0);
 
   vTaskDelay(pdMS_TO_TICKS(10));
 }

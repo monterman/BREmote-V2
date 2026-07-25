@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-07-25 - STAGE 0 (instrumentation only, ZERO control-behaviour change): (A) the unused RESERVED slot fm_steer_reposition_en is RENAMED IN PLACE to log_level — same offset, same uint16_t, so sizeof(confStruct) stays 184, the static_assert is unchanged, SW_VERSION stays 34 and the owner's SPIFFS config is NOT wiped (same trick as dummy_delete_me -> rtm_steer_response, Bundle 1). 0 = unset (behaves exactly as level 3), 1 = Basic, 2 = VESC, 3 = Developer, 4 = Deep; only 3 and 4 are implemented, 1 and 2 are accepted by the validator and currently log as level 3. (B) added LogFileHeader — every log file now starts with an 8-byte self-describing header (magic/format/level/record size) so a reader can parse a variable record size. (C) added VescLogDataL4 = VescLogData + the 4 level-4 diagnostic fields, and the free-running diagnostic counters the ?diag command and the level-4 record read. Nothing here is read by throttle, steering, PWM, the mux schedule, or any FM/RTM logic.
 // V2.5-Evo - 2026-07-25 - F3-b: kFmEngageDistFloorM (the FM engage-distance floor) now lives HERE, once, and is raised 5.0 -> 8.0 m. It used to be defined in RTMState.ino AND duplicated as a bare 5.0f literal in ConfigService.ino, on the false premise that the Arduino concatenation order stopped the two files sharing a constant — this header is included at the top of V2_Integration_Rx.ino, which is compiled first, so both see it. 5.0 m was below the hazard it names: the owner's tow rope is 20 ft = 6.10 m, so a manual fm_engage_dist_m of 5.0-6.1 m was storable and let FM engage with the rider still ON the rope. 8.0 m clears a 6.10 m rope by ~1.31x. One shared constant + comments only: no field added, moved or resized; sizeof(confStruct) stays 184, static_assert unchanged, SW_VERSION stays 34, SPIFFS config is NOT reset by this flash.
 // V2.5-Evo - 2026-07-25 - A2: fm_engage_dist_m promoted from RESERVED/unread to LIVE — runFmLoop() now reads it as the FM engage distance in METRES (rope length x ~1.15), 0 = auto (unchanged legacy behaviour). Comment/semantics only: no field added, moved or resized; sizeof(confStruct) stays 184, static_assert unchanged, SW_VERSION stays 34, SPIFFS config is NOT reset by this flash.
 // V2.5-Evo - 2026-07-24 - F9: VescLogData +6 bytes (tx_distance_dx10, rssi_dbm, snr_dx10) for owner-requested distance + link-quality CSV columns; sizeof 53->59; old SPIFFS logs misparse after this flash; NO confStruct change, SW_VERSION stays 34
@@ -64,6 +65,9 @@
 #define RMT_TX_GPIO_NUM  GPIO_NUM_9
 #include <Ticker.h>
 #include "esp_task_wdt.h"
+// V2.5-Evo - 2026-07-25 - STAGE 0: esp_cpu_get_cycle_count() for loop() timing. It is a single
+// CSR read (~5 ns) versus ~1 us for micros(), so measuring the loop does not distort the loop.
+#include "esp_cpu.h"
 #include "FS.h"
 #include "SPIFFS.h"
 #include "mbedtls/base64.h"
@@ -82,7 +86,7 @@
 
 #include <TinyGPS++.h> //TinyGPSPlus 1.0.3 Mikal Hart
 
-#define SW_VERSION 34  // V2.5-Evo — 34 = added fm_engage_dist_m / auton_runtime_cap_s / fm_steer_reposition_en reserved slots + defaultConf carries factory default config (compass cal, near_diag_offset 45); first flash resets all RX SPIFFS config to defaults
+#define SW_VERSION 34  // V2.5-Evo — 34 = added fm_engage_dist_m / auton_runtime_cap_s / fm_steer_reposition_en reserved slots + defaultConf carries factory default config (compass cal, near_diag_offset 45); first flash resets all RX SPIFFS config to defaults. NOTE (2026-07-25, STAGE 0 PART A): the third of those slots has since been RENAMED IN PLACE to log_level — same offset, same uint16_t, sizeof(confStruct) still 184 — so this stays 34 and NO further config wipe happens.
 const char* CONF_FILE_PATH = "/data.txt";
 const char* BC_FILE_PATH = "/batconf.txt";
 
@@ -342,7 +346,9 @@ struct confStruct {
     // V2.5-Evo - 2026-07-20 - SW34 reserved slots (added together so only ONE config wipe is needed).
     // They were all storage slots at SW34 so v2 features could be code-only, with no re-wipe.
     // V2.5-Evo - 2026-07-25 - A2 status update: fm_engage_dist_m is now LIVE (read by runFmLoop()).
-    // auton_runtime_cap_s and fm_steer_reposition_en are still RESERVED and still read by nothing.
+    // V2.5-Evo - 2026-07-25 - STAGE 0 PART A status update: the third slot, fm_steer_reposition_en,
+    // has been RENAMED IN PLACE to log_level and is now LIVE (read by the logger). auton_runtime_cap_s
+    // is the only one of the three still RESERVED and still read by nothing.
     // fm_engage_dist_m: LIVE since 2026-07-25 (A2) — no longer RESERVED/unread. Fixed engage-distance
     //   override for the FM separation latch, read in RTMState.ino runFmLoop().
     //   0   = auto: d_engage = kFmEngageFactor (1.5) * (min_dist_m + followme_smoothing_band_m), the
@@ -359,11 +365,43 @@ struct confStruct {
     float    fm_engage_dist_m;         // 0 = auto; >0 = fixed engage distance in metres; 0, or 8-50 m
     // auton_runtime_cap_s: RESERVED shared RTM/FM autonomous-runtime cap. 0 = disabled (matches TX rtm_max_runtime_s default). Not read by v1.
     uint16_t auton_runtime_cap_s;      // 0 = disabled; range 0-3600 s
-    // fm_steer_reposition_en: RESERVED Option C — continuous steer-driven repositioning of the follow ANGLE
-    //   around the rider's radius. Distinct from the rtm_steer_exit_on_input blend. disabled till v2 — v1 must NOT read it.
-    uint16_t fm_steer_reposition_en;   // 0 = off (disabled till v2); range 0-1
+    // ============================================================
+    // V2.5-Evo - 2026-07-25 - STAGE 0 PART A: log_level (IN-PLACE RENAME, NO SPIFFS WIPE)
+    //
+    // This slot used to be fm_steer_reposition_en — a RESERVED Option-C storage slot added at
+    // SW34 that no code ever read and that has therefore been sitting in every stored config as
+    // a plain 0. It is RENAMED IN PLACE here: same position in the struct, same uint16_t type,
+    // so sizeof(confStruct) stays 184, the static_assert below is unchanged, SW_VERSION stays 34
+    // and the owner's saved settings are NOT reset by this flash. There is precedent for exactly
+    // this move: dummy_delete_me -> rtm_steer_response (Bundle 1, 2026-05-08).
+    //
+    // WHY THE RENAME RATHER THAN A NEW FIELD: confStruct is 184 bytes with no tail padding, so
+    // appending anything grows it, which fails the SPIFFS size check on the next boot and wipes
+    // the rider's entire configuration (pairing, calibration, all tuning). Reusing a dead slot
+    // that is already 0 everywhere costs nothing and wipes nothing.
+    //
+    // WHAT THE FM v2 FEATURE DOES NOW: the Option-C "steer reposition" idea has NOT been
+    // implemented and has NOT been abandoned — when FM v2 lands it must claim a FRESH field of
+    // its own (which will be a deliberate, announced config-wipe event), not this slot.
+    //
+    // WHAT THE VALUES MEAN — how much detail each recorded log line carries:
+    //   0 = UNSET. Behaves EXACTLY as level 3. This is what every existing config already
+    //       stores, so nothing changes for anyone who never touches this setting.
+    //   1 = Basic   — RESERVED for a future storage optimisation; CURRENTLY LOGS AS LEVEL 3.
+    //   2 = VESC    — RESERVED for a future storage optimisation; CURRENTLY LOGS AS LEVEL 3.
+    //   3 = Developer — the full 59-byte record this firmware has always written.
+    //   4 = Deep      — Developer plus the 6-byte diagnostic block (GPS sentence rate, COG
+    //       frozen-seconds, mux read-back error count, worst loop() time) = 65 bytes/record.
+    // Levels 1 and 2 are ACCEPTED by the validator (so a rider can set them and a future
+    // firmware will honour them) but are deliberately NOT silently ignored: they are documented
+    // everywhere as falling back to level 3 until the smaller records are implemented.
+    //
+    // The level is latched once per log FILE (createNewLogFile() in Logger.ino) and written into
+    // that file's header, so changing this setting mid-session never corrupts an open file.
+    // ============================================================
+    uint16_t log_level;                // 0 = unset (= level 3); 1 = Basic*, 2 = VESC*, 3 = Developer, 4 = Deep. (*accepted, currently logs as level 3.) Range 0-4.
 };
-static_assert(sizeof(confStruct) == 184, "confStruct size mismatch — expected 184 bytes. Update this assert if you change the struct.");  // 176->184: +fm_engage_dist_m(float 4) +auton_runtime_cap_s(u16 2) +fm_steer_reposition_en(u16 2), all naturally aligned, no tail pad (2026-07-20 SW34)  // 172->176 motor_ramp_s float (2026-06-05 SW33)  // 112->128 Phase A; 128->136 Phase B; 136->152 P7 RTM; 152->156 Bundle B; 156 unchanged BundleE; 156->160 rtm_approach_zone_m (uint16_t + 2-byte tail pad) (2026-04-30); D3 rtm_use_compass + rtm_cog_min_speed_kmh (2x uint8_t) fill the 2-byte tail pad — sizeof stays 160 (2026-05-06); D3-Fix: uint8_t→uint16_t for ConfigService compatibility, sizeof unchanged at 164 (2026-05-06); Bundle 1: dummy_delete_me renamed to rtm_steer_response in-place, sizeof unchanged at 164 (2026-05-08)
+static_assert(sizeof(confStruct) == 184, "confStruct size mismatch — expected 184 bytes. Update this assert if you change the struct.");  // 176->184: +fm_engage_dist_m(float 4) +auton_runtime_cap_s(u16 2) +fm_steer_reposition_en(u16 2), all naturally aligned, no tail pad (2026-07-20 SW34)  // 172->176 motor_ramp_s float (2026-06-05 SW33)  // 112->128 Phase A; 128->136 Phase B; 136->152 P7 RTM; 152->156 Bundle B; 156 unchanged BundleE; 156->160 rtm_approach_zone_m (uint16_t + 2-byte tail pad) (2026-04-30); D3 rtm_use_compass + rtm_cog_min_speed_kmh (2x uint8_t) fill the 2-byte tail pad — sizeof stays 160 (2026-05-06); D3-Fix: uint8_t→uint16_t for ConfigService compatibility, sizeof unchanged at 164 (2026-05-06); Bundle 1: dummy_delete_me renamed to rtm_steer_response in-place, sizeof unchanged at 164 (2026-05-08); STAGE 0 PART A: fm_steer_reposition_en renamed to log_level in-place — same offset, same uint16_t, sizeof STILL 184 and SW_VERSION STILL 34, so this flash does NOT reset SPIFFS config (2026-07-25)
 confStruct usrConf;
   //The orginal confs were:  ##// confStruct defaultConf = {SW_VERSION, 1, 0, 0, 50, 0, 0, 1500, 2000, 1500, 2000, 1000, 10, 0, 1, 0, 0, 0, 0, 0, 25.0f, 10.0f, 10.0f, 5.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0, 1000, 1, 0, {0, 0, 0}, {0, 0, 0}, {'1','2','3','4','5','6','7','8'}};
   // Factory default configuration.
@@ -410,7 +448,10 @@ confStruct defaultConf = {SW_VERSION, 2, 22, 1, 50 /*steering_influence: convent
   // V2.5-Evo - 2026-07-20 - SW34 slots. 2026-07-25 A2: fm_engage_dist_m is now live; the other two stay reserved/unread.
   0.0f,       // fm_engage_dist_m: 0 = auto (RTMState computes d_engage from min_dist + band); >0 = fixed engage distance in metres
   0,          // auton_runtime_cap_s: 0 = disabled
-  0           // fm_steer_reposition_en: 0 = off (Option C, disabled till v2)
+  // V2.5-Evo - 2026-07-25 - STAGE 0 PART A: this slot was fm_steer_reposition_en, renamed in place
+  // to log_level. The default stays 0 on purpose — 0 means "unset" and behaves exactly as level 3
+  // (Developer), which is the behaviour every unit already has, so nothing changes on flash.
+  0           // log_level: 0 = unset -> logs as level 3 (Developer). 1/2 accepted but currently log as 3; 4 = Deep.
 };
 
 // ============================================================
@@ -511,6 +552,123 @@ std::atomic<uint8_t> fm_throttle_cap  {255};
 
 #include "../Common/SPIFFSEngine.h"
 
+// ============================================================
+// V2.5-Evo - 2026-07-25 - STAGE 0 DIAGNOSTIC COUNTERS (instrumentation only)
+//
+// WHAT THIS IS
+//   A set of plain counters that the rest of the firmware bumps at the exact point where the
+//   event happens. They exist so a full on-water session log can explain itself instead of
+//   needing a 60-second bench capture to reproduce a fault that only happens on the water.
+//
+// WHAT READS THEM — exactly two consumers, both read-only:
+//   1. the level-4 log record (fillLevel4Diag() in Logger.ino), and
+//   2. the ?diag / ?diagz serial commands (System.ino).
+//   NOTHING in the control path reads any of these. No throttle, steering, PWM, mux schedule,
+//   FM or RTM decision depends on a single value below. Deleting this whole block would change
+//   how the buggy drives by precisely nothing.
+//
+// WHY PLAIN volatile uint32_t AND NO MUTEX
+//   A 32-bit aligned load or store is a single instruction on this RISC-V core, so a reader can
+//   never observe a half-written value. The increment itself is a read-modify-write, so if two
+//   execution contexts bump the SAME counter and one preempts the other mid-increment, one count
+//   can be lost. That is accepted deliberately: these are diagnostics, one lost count in a
+//   million is invisible in a rate, and taking a mutex inside the GPS byte loop or inside
+//   setUartMux() would perturb the very timing we are trying to measure.
+//
+// COST
+//   One load, one add, one store per event. The only counter that sits in a tight loop is
+//   g_diag_gps_bytes (once per GPS UART byte) and it is a bare increment — no branch, no call,
+//   no formatting. There is no printf anywhere in this instrumentation except inside ?diag,
+//   which is a one-shot operator command.
+// ============================================================
+
+// --- GPS feed health ---
+volatile uint32_t g_diag_gps_bytes      = 0;  // bytes pulled off Serial1 by getGPSLoop() since boot / ?diagz
+volatile uint32_t g_diag_gps_sentences  = 0;  // COMPLETE, checksum-valid NMEA sentences parsed (gps.encode() returned true)
+volatile uint8_t  g_diag_gps_sent_per_s = 0;  // sentences parsed during the last completed 1-second window; recomputed in getGPSLoop(). Saturates at 255.
+
+// --- GPS course-over-ground (COG) ---
+// THE POINT OF THESE TWO COUNTERS: gps_last_course_ms is refreshed on EVERY valid course
+// sentence, even when the module keeps repeating the same heading. The existing cog_age_ms_div10
+// log column is derived from that timestamp, so it read "fresh" straight through the failure that
+// actually cost control — a COG VALUE frozen on one heading while its timestamp kept ticking.
+// g_diag_cog_ts_updates counts the timestamp refreshes; g_diag_cog_val_changes counts only the
+// times the NUMBER genuinely moved. When the first is high and the second is ~0, the GPS is
+// repeating itself and any heading derived from COG is stale even though it looks current.
+volatile uint32_t g_diag_cog_ts_updates  = 0;  // times gps_last_course_ms was refreshed
+volatile uint32_t g_diag_cog_val_changes = 0;  // times the COG VALUE moved by more than kDiagCogChangeDeg
+volatile uint32_t g_diag_cog_change_ms   = 0;  // millis() when the COG VALUE last moved. SENTINEL: 0 = no COG value has EVER been captured this session (never a valid timestamp — the writer substitutes 1 for a literal millis()==0).
+static const float kDiagCogChangeDeg     = 0.05f;  // degrees; smallest COG movement counted as a real change. Below this is GPS quantisation/noise, not motion.
+
+// --- RX GPS fix age (sampled once per GPS poll, so it tracks staleness even when updates stop) ---
+volatile uint32_t g_diag_fix_age_sum_ms = 0;  // running sum of sampled fix ages, for the mean
+volatile uint32_t g_diag_fix_age_samples = 0; // number of samples in that sum
+volatile uint32_t g_diag_fix_age_max_ms = 0;  // worst fix age seen; ?diag reads then resets it
+
+// --- AW9523 UART mux (the suspected EMI failure) ---
+volatile uint32_t g_diag_mux_switches = 0;    // setUartMux() calls that actually drove the select pins
+volatile uint32_t g_diag_mux_errors   = 0;    // read-back mismatches inside setUartMux() (a write that did not stick)
+
+// --- VESC polling ---
+volatile uint32_t g_diag_vesc_polls = 0;      // getVescLoop() query attempts
+volatile uint32_t g_diag_vesc_ok    = 0;      // of those, replies that parsed and validated
+
+// --- loop() timing (microseconds, derived from the CPU cycle counter) ---
+volatile uint32_t g_diag_loop_count      = 0;          // completed loop() bodies
+volatile uint32_t g_diag_loop_us_sum     = 0;          // running sum of loop-body durations, for the mean
+volatile uint32_t g_diag_loop_min_us     = 0xFFFFFFFF; // shortest loop body; 0xFFFFFFFF = no sample yet
+volatile uint32_t g_diag_loop_max_us     = 0;          // longest loop body — owned by ?diag, which reads then resets it
+volatile uint32_t g_diag_loop_max_us_log = 0;          // longest loop body — owned by the LOGGER, which reads then resets it once per level-4 record (kept separate so ?diag and the log never steal each other's peak)
+
+// ============================================================
+// diagCpuMhz - CPU clock in MHz, cached after the first call
+//
+// Inputs:  none. Outputs: MHz (160 on a stock ESP32-C3).
+// Side effects: none after the first call. Used only to turn a cycle delta into microseconds.
+// ============================================================
+static inline uint32_t diagCpuMhz()
+{
+  static uint32_t mhz = 0;
+  if (mhz == 0)
+  {
+    mhz = getCpuFrequencyMhz();
+    if (mhz == 0) mhz = 160;   // defensive: never divide by zero if the call ever returns 0
+  }
+  return mhz;
+}
+
+// ============================================================
+// diagLoopBegin / diagLoopEnd - measure one pass through the loop() body
+//
+// diagLoopBegin() is called on the FIRST line of loop() and returns a raw cycle stamp.
+// diagLoopEnd(stamp) is called on the LAST line of the loop() body, BEFORE its own
+// vTaskDelay(10) — so what is measured is the WORK the loop did, not the 10 ms it then
+// deliberately sleeps. A "loop_max_ms" of 40 therefore means the loop genuinely spent 40 ms
+// doing something, which is what starves GPS drains and RTM/FM ticks.
+//
+// esp_cpu_get_cycle_count() is a single CSR read (~5 ns). micros() is ~1 us, which is the same
+// order as the shortest thing being measured, so it is deliberately NOT used here.
+// The 32-bit cycle counter wraps every ~26.8 s at 160 MHz; the unsigned subtraction below is
+// correct across that wrap for any interval shorter than 26.8 s, and the 3 s watchdog
+// guarantees a loop body is never anywhere near that long.
+//
+// Side effects: updates the loop-timing counters above. Nothing else. No allocation, no I/O.
+// ============================================================
+static inline uint32_t diagLoopBegin()
+{
+  return (uint32_t)esp_cpu_get_cycle_count();
+}
+
+static inline void diagLoopEnd(uint32_t start_cycles)
+{
+  uint32_t us = (uint32_t)((uint32_t)esp_cpu_get_cycle_count() - start_cycles) / diagCpuMhz();
+  g_diag_loop_count++;
+  g_diag_loop_us_sum += us;
+  if (us > g_diag_loop_max_us)     g_diag_loop_max_us     = us;
+  if (us > g_diag_loop_max_us_log) g_diag_loop_max_us_log = us;
+  if (us < g_diag_loop_min_us)     g_diag_loop_min_us     = us;
+}
+
 // --- Global VESC Logger Struct ---
 struct vesc_struct {
   int16_t fetTemp = 0;
@@ -575,6 +733,202 @@ struct __attribute__((packed)) VescLogData {
     int16_t  snr_dx10;            // last control-packet SNR × 10 dB; 0x7FFF = N/A (failsafe — no recent packet)
 };
 static_assert(sizeof(VescLogData) == 59, "VescLogData size mismatch — check binary log compat.");  // 29 base; +18 LOG-EXT-1 (2026-05-06); +4 Bundle 1 tuning fields (2026-05-08); +1 error_code_log E7 fix (2026-05-11); +1 effective_steer_log FM triage (2026-07-19); +6 F9 distance+RSSI+SNR (2026-07-24)
+
+// ============================================================
+// V2.5-Evo - 2026-07-25 - STAGE 0 PART C: LEVEL-4 ("Deep") LOG RECORD
+//
+// Tiers are ADDITIVE: level N is level N-1 plus a block. VescLogDataL4 starts with a complete,
+// byte-identical VescLogData, so the first 59 bytes of a level-4 record decode with exactly the
+// same code that decodes a level-3 record. That is what lets one CSV formatter serve both.
+//
+// The four fields answer the four open theories about the on-water failure:
+//   gps_sent_per_s — is the GPS still delivering sentences at all, or has the feed died?
+//   cog_frozen_s   — how long has the COG VALUE been stuck? (The existing cog_age_ms_div10
+//                    column tracks the TIMESTAMP, which kept refreshing while the value was
+//                    frozen, so it was blind to exactly this failure.)
+//   mux_err_cnt    — how many AW9523 mux writes failed read-back? (motor EMI corrupting I2C)
+//   loop_max_ms    — did the main loop stall long enough to starve the GPS drain / RTM tick?
+// ============================================================
+struct __attribute__((packed)) VescLogDataL4 {
+    VescLogData base;              // the complete level-3 record, unchanged and first — do not reorder
+    uint8_t  gps_sent_per_s;       // complete NMEA sentences parsed in the last full second (saturates at 255)
+    uint8_t  cog_frozen_s;         // seconds since the COG VALUE last changed. SENTINEL 255 = no COG value has ever been seen this session. 254 = 254 s or longer.
+    uint16_t mux_err_cnt;          // running session total of setUartMux() I2C read-back mismatches (saturates at 0xFFFE)
+    uint16_t loop_max_ms;          // worst loop() body duration since the PREVIOUS record, in ms, rounded to nearest; reset to 0 after every record. 0 = no loop completed since the last record, or every loop was under 0.5 ms.
+};
+static_assert(sizeof(VescLogDataL4) == 65, "VescLogDataL4 size mismatch — expected 59 (VescLogData) + 6 (level-4 block).");
+
+// ============================================================
+// V2.5-Evo - 2026-07-25 - STAGE 0 PART B: SELF-DESCRIBING LOG FILE HEADER
+//
+// WHY THIS EXISTS: different log levels write different record sizes, so a log file that does
+// not say what it is cannot be parsed — a reader that assumes sizeof(VescLogData) would walk
+// straight off the record boundary and emit convincing garbage. Every log file now opens with
+// this 8-byte header, and BOTH readers (the serial ?download path in Logger.ino and the WiFi
+// /api/logs/download path in Common/WebConfigEngine.h) read it and parse accordingly.
+//
+// 8 bytes exactly, naturally aligned, no padding: uint32 + uint8 + uint8 + uint16. The first
+// record therefore starts at file offset 8, which is still 4-byte aligned.
+//
+// OLD LOGS: files written before this change have no header. Their first 4 bytes are a millis()
+// timestamp, which will not equal the magic, so both readers detect the missing magic and say so
+// in plain language instead of emitting garbage. Those files were already undecodable after the
+// 53 -> 59 byte record change (F9, 2026-07-24) — this just makes the failure honest.
+// ============================================================
+#define LOG_FILE_MAGIC       0x474C5242UL  // little-endian bytes on disk read "BRLG" (BREmote Log)
+#define LOG_FILE_FORMAT_VER  1             // bump ONLY if the header layout itself changes
+
+struct __attribute__((packed)) LogFileHeader {
+    uint32_t magic;        // LOG_FILE_MAGIC — absent/mismatched means "not a BREmote log of this era"
+    uint8_t  format_ver;   // LOG_FILE_FORMAT_VER — layout of THIS header
+    uint8_t  log_level;    // the level the file was actually recorded at (3 or 4 today)
+    uint16_t record_size;  // bytes per record in this file — the ONLY thing a reader may step by
+};
+static_assert(sizeof(LogFileHeader) == 8, "LogFileHeader must stay 8 bytes — readers step past it by sizeof().");
+
+// ============================================================
+// logResolveLevel - turn the stored config value into the level actually used
+//
+// Inputs:  usrConf.log_level. Outputs: 3 or 4. Side effects: none.
+//
+// 0 (unset), 1 (Basic), 2 (VESC), 3 (Developer) and ANY out-of-range value all resolve to 3.
+// Levels 1 and 2 are reserved for a future storage optimisation (smaller records); they are
+// accepted by the config validator so a rider can select them and a later firmware will honour
+// them, but until those records exist they are documented — here, in the field comment, and in
+// all three config UIs — as logging at level 3 rather than being silently dropped.
+// ============================================================
+static inline uint8_t logResolveLevel()
+{
+  return (usrConf.log_level == 4) ? 4 : 3;
+}
+
+// ============================================================
+// logRecordSizeForLevel - bytes per record for a given level
+// Inputs: level (3 or 4). Outputs: record size in bytes. Side effects: none.
+// ============================================================
+static inline uint16_t logRecordSizeForLevel(uint8_t level)
+{
+  return (level >= 4) ? (uint16_t)sizeof(VescLogDataL4) : (uint16_t)sizeof(VescLogData);
+}
+
+// ============================================================
+// V2.5-Evo - 2026-07-25 - STAGE 0 PART B: ONE CSV DEFINITION, TWO READERS
+//
+// The serial ?download path and the WiFi /api/logs/download path must emit the same columns,
+// the same values, the same scaling and the same N/A sentinels. That parity was only just
+// repaired (F-WEBCSV, 2026-07-25) after the WiFi path silently dropped 5 columns for months.
+// Rather than keep two hand-synchronised copies and a comment asking future editors to be
+// careful, the column list, the row format and the row FORMATTER now exist exactly once and
+// both readers call them. Divergence is now structurally impossible, not merely discouraged.
+//
+// If you add a column: extend LOG_CSV_HEADER_L3 (or _L4), extend the matching format string,
+// and add the argument in logFormatCsvRow(). Both readers pick it up with no further edits.
+// ============================================================
+#define LOG_CSV_HEADER_L3 "timestamp_ms,motor_current_A,battery_current_A,duty_cycle_%,voltage_V,ERPM,temp_mos_C,fault_code,speed_kmh,latitude,longitude,datetime_unix,thr_received,rtm_source,rtm_confidence,rtm_rx_active,gps_phase_b_ok,rtm_steer_override,rtm_heading_chosen_dx10,compass_live_dx10,compass_snap_dx10,snap_age_s,gps_course_dx10,cog_age_ms_div10,heading_error_dx10,d_error_dx10,remote_error,effective_steer,tx_distance_m,rssi_dbm,snr_db"
+#define LOG_CSV_HEADER_L4 LOG_CSV_HEADER_L3 ",gps_sent_per_s,cog_frozen_s,mux_err_cnt,loop_max_ms"
+
+#define LOG_CSV_ROW_FMT_L3 "%u,%.2f,%.2f,%d,%.1f,%d,%u,%u,%.1f,%.6f,%.6f,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%d,%d,%u,%u,%.1f,%d,%.1f"
+#define LOG_CSV_ROW_EXT_L4 ",%u,%u,%u,%u"
+
+// Row buffer size. Sizing arithmetic for the 31 level-3 columns is unchanged from F-WEBCSV:
+//   ~178 field chars + 30 commas + newline + NUL = ~210 bytes for normal data, and a corrupt
+//   latitude/longitude printed via "%.6f" can reach ~282. The 4 level-4 columns add at most
+//   3+3+5+5 chars plus 4 commas = 20. 640 clears the pathological case by ~2.1x. It is a stack
+//   local in the Arduino loop task (8 KB stack), which is where both readers run.
+#define LOG_CSV_ROW_BUF 640
+
+// ============================================================
+// logFormatCsvRow - format ONE binary log record as one CSV line
+//
+// What it does:
+//   Decodes rec_bytes (raw bytes straight off SPIFFS) into the level-3 fields, formats them,
+//   and — when the file is level 4 and the record is big enough to contain it — appends the
+//   4-column level-4 diagnostic block. Always terminates the line with a single '\n' and a NUL.
+//
+// Inputs:
+//   out       - destination buffer (use LOG_CSV_ROW_BUF bytes)
+//   out_len   - size of that buffer
+//   rec_bytes - one raw record as read from the file, at least sizeof(VescLogData) bytes
+//   rec_size  - bytes actually read for this record, taken from the FILE HEADER, never sizeof()
+//   level     - log level from the file header (3 or 4)
+//
+// Outputs: number of characters written (excluding the NUL); 0 on a bad argument.
+// Side effects: none — reads nothing global, writes only into out.
+//
+// The record is copied with memcpy rather than cast in place: the caller's buffer is a byte
+// array with no guaranteed alignment, and these structs are packed.
+// ============================================================
+static int logFormatCsvRow(char* out, size_t out_len, const uint8_t* rec_bytes, uint16_t rec_size, uint8_t level)
+{
+  if (out == NULL || out_len < 2) return 0;
+  if (rec_bytes == NULL || rec_size < (uint16_t)sizeof(VescLogData)) { out[0] = '\0'; return 0; }
+
+  VescLogData d;
+  memcpy(&d, rec_bytes, sizeof(VescLogData));
+
+  int n = snprintf(out, out_len, LOG_CSV_ROW_FMT_L3,
+                   d.timestamp,
+                   d.current_motor / 100.0f,
+                   d.current_battery / 100.0f,
+                   (int16_t)d.duty_cycle,
+                   d.voltage / 10.0f,
+                   (int32_t)d.ERPM * 10,
+                   d.temp_mos,
+                   d.fault_code,
+                   d.speed / 10.0f,
+                   d.latitude,
+                   d.longitude,
+                   d.datetime,
+                   (unsigned)d.thr_received_log,
+                   (unsigned)d.rtm_source,
+                   (unsigned)d.rtm_confidence,
+                   (unsigned)d.rtm_rx_active_log,
+                   (unsigned)d.gps_phase_b_ok_log,
+                   (unsigned)d.rtm_steer_override_log,
+                   (int)d.rtm_heading_chosen_dx10,
+                   (unsigned)d.compass_live_dx10,
+                   (unsigned)d.compass_snap_dx10,
+                   (unsigned)d.snap_age_s,
+                   (unsigned)d.gps_course_dx10,
+                   (unsigned)d.cog_age_ms_div10,
+                   // Bundle 1: heading controller tuning columns (0x7FFF = no data sentinel)
+                   (int)d.heading_error_dx10,
+                   (int)d.d_error_dx10,
+                   // E7 Fix: BREmote remote_error code (0 = none, 71 = E71 water ingress)
+                   (unsigned)d.error_code_log,
+                   // FM triage: steering byte actually applied by calcPWM() (vs commanded rtm_steer_override)
+                   (unsigned)d.effective_steer_log,
+                   // F9: distance (m) + link quality. N/A → distance -1.0, rssi -999, snr -99.0
+                   (d.tx_distance_dx10 == 0xFFFF) ? -1.0f : (d.tx_distance_dx10 / 10.0f),
+                   (d.rssi_dbm == 0x7FFF) ? -999 : (int)d.rssi_dbm,
+                   (d.snr_dx10 == 0x7FFF) ? -99.0f : (d.snr_dx10 / 10.0f));
+
+  if (n < 0) { out[0] = '\0'; return 0; }
+  if ((size_t)n >= out_len) n = (int)out_len - 1;   // snprintf truncated — keep the index inside the buffer
+
+  // Level-4 block. Guarded on the RECORD SIZE as well as the level so a truncated or
+  // mislabelled file can never make us read past the bytes we actually have.
+  if (level >= 4 && rec_size >= (uint16_t)sizeof(VescLogDataL4) && (size_t)n < (out_len - 1))
+  {
+    VescLogDataL4 d4;
+    memcpy(&d4, rec_bytes, sizeof(VescLogDataL4));
+    int m = snprintf(out + n, out_len - (size_t)n, LOG_CSV_ROW_EXT_L4,
+                     (unsigned)d4.gps_sent_per_s,
+                     (unsigned)d4.cog_frozen_s,
+                     (unsigned)d4.mux_err_cnt,
+                     (unsigned)d4.loop_max_ms);
+    if (m > 0)
+    {
+      n += m;
+      if ((size_t)n >= out_len) n = (int)out_len - 1;
+    }
+  }
+
+  if ((size_t)n < (out_len - 1)) out[n++] = '\n';
+  out[n] = '\0';
+  return n;
+}
+
 #define ENABLE_WEB_LOG_DOWNLOAD // Enable log download endpoints
 
 #ifdef WIFI_ENABLED

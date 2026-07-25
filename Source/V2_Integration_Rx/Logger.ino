@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-07-25 - STAGE 0 PART B+C (instrumentation only): every log file now opens with an 8-byte self-describing header (magic "BRLG", format version, log level, record size) so a reader can parse a VARIABLE record size instead of assuming sizeof(VescLogData); the level is latched once per FILE in createNewLogFile() so changing the setting mid-session cannot corrupt an open file; level 4 writes a 65-byte record (59-byte level-3 record + gps_sent_per_s, cog_frozen_s, mux_err_cnt, loop_max_ms); ?download reads the header, steps by header.record_size, refuses a file with no valid magic in plain English instead of emitting garbage, and formats rows through the single shared logFormatCsvRow() that the WiFi path also calls — so the two CSV outputs cannot drift apart again. No confStruct change, sizeof stays 184, SW_VERSION stays 34, no control path touched.
 // V2.5-Evo - 2026-07-24 - F9: +3 CSV columns (tx_distance_m, rssi_dbm, snr_db); 28→31 columns; VescLogData +6 bytes; distance decoded from telemetry.rtm_distance, RSSI/SNR from Radio.ino cache (g_last_rssi_dbm/g_last_snr_db); appended for parser compat; no confStruct change, SW_VERSION unchanged
 // V2.5-Evo - 2026-07-19 - Rex INFO: corrected stale "ESP32-S3 dual-core / Core 0/Core 1" wording in convertToLogData() vescMutex comment to ESP32-C3 single-core / FreeRTOS-preemption (comment-only)
 // V2.5-Evo - 2026-07-19 - FM triage: +1 CSV column (effective_steer, the steering byte calcPWM actually applied); 27→28 columns; VescLogData +1 byte; no-fix guard mirrored into inline getRtmHeading() duplicate (src/conf forced NONE without a fresh RX GPS fix, matching RTMState.ino)
@@ -48,6 +49,13 @@ static uint32_t      log_heartbeat_ms  = 0;   // last heartbeat blink while pend
 static uint32_t log_interval_ms = 333; // Default 3 Hz =333 (was 5 Hz =200; 1 Hz =1000)
 static File currentLogFile;
 static String currentLogFileName = "";
+// V2.5-Evo - 2026-07-25 - STAGE 0 PART B: the log level and record size in force for the file
+// currently open. Latched ONCE in createNewLogFile() from usrConf.log_level and written into
+// that file's header, so a rider changing the setting over WiFi mid-session cannot produce a
+// file whose records stop matching its own header. Defaults describe a level-3 file so these
+// are never nonsense even before the first file is created.
+static uint8_t  active_log_level   = 3;
+static uint16_t active_record_size = (uint16_t)sizeof(VescLogData);
 static uint32_t last_space_check = 0;
 static const uint32_t SPACE_CHECK_INTERVAL = 60000; 
 
@@ -337,6 +345,54 @@ VescLogData convertToLogData() {
   return data;
 }
 
+// ============================================================
+// V2.5-Evo - 2026-07-25 - STAGE 0 PART C
+// fillLevel4Diag - add the level-4 ("Deep") diagnostic block to a log record
+// ============================================================
+//
+// What it does:
+//   Fills the four extra fields that level 4 appends to the standard level-3 record. It reads
+//   the free-running diagnostic counters declared in BREmote_V2_Rx.h and does no I/O.
+//
+// Inputs:  rec - a VescLogDataL4 whose .base has already been filled by convertToLogData()
+// Outputs: none (rec is filled in place)
+// Side effects: resets g_diag_loop_max_us_log to 0 — that field is defined as "worst loop since
+//   the PREVIOUS record", so consuming it here is what makes consecutive records comparable.
+//   ?diag keeps its own separate peak (g_diag_loop_max_us) so the two never steal from each other.
+//
+// Sentinels: cog_frozen_s == 255 means no COG value has ever been captured this session (NOT
+//   "0 seconds"); 254 means 254 seconds or longer. mux_err_cnt saturates at 0xFFFE.
+static void fillLevel4Diag(VescLogDataL4 &rec)
+{
+  uint32_t now_ms = millis();
+
+  // Sentences parsed in the last completed 1-second window (maintained by getGPSLoop()).
+  rec.gps_sent_per_s = g_diag_gps_sent_per_s;
+
+  // Seconds since the COG VALUE last moved. THE important field: cog_age_ms_div10 (already in
+  // the level-3 record) is derived from gps_last_course_ms, which refreshes on every course
+  // sentence even when the heading number never changes — so it read healthy right through the
+  // frozen-COG failure. This one only advances when the value itself has genuinely stopped moving.
+  if (g_diag_cog_change_ms == 0) {
+    rec.cog_frozen_s = 255;                       // no COG value has EVER been seen this session
+  } else {
+    uint32_t frozen_s = (uint32_t)(now_ms - g_diag_cog_change_ms) / 1000UL;
+    rec.cog_frozen_s = (frozen_s > 254UL) ? 254 : (uint8_t)frozen_s;
+  }
+
+  // Running session total of AW9523 UART-mux read-back mismatches (motor EMI corrupting I2C).
+  // Logged as a running total rather than a delta so any single record answers "how bad is it
+  // by now", and any two records answer "how many happened between these two".
+  uint32_t mux_err = g_diag_mux_errors;
+  rec.mux_err_cnt = (mux_err > 0xFFFEUL) ? 0xFFFE : (uint16_t)mux_err;
+
+  // Worst loop() body since the previous record, in ms, rounded to nearest, then reset.
+  uint32_t max_us = g_diag_loop_max_us_log;
+  g_diag_loop_max_us_log = 0;
+  uint32_t max_ms = (max_us + 500UL) / 1000UL;
+  rec.loop_max_ms = (max_ms > 0xFFFEUL) ? 0xFFFE : (uint16_t)max_ms;
+}
+
 // Check and manage SPIFFS space
 bool ensureFreeSpace() {
   size_t totalBytes = SPIFFS.totalBytes();
@@ -416,10 +472,37 @@ bool createNewLogFile() {
   
   if (xSemaphoreTake(fileMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
     currentLogFile = SPIFFS.open(currentLogFileName, FILE_WRITE);
+
+    // ============================================================
+    // V2.5-Evo - 2026-07-25 - STAGE 0 PART B: latch the level and stamp the file header.
+    //
+    // The level is read from config exactly ONCE, here, and immediately written into the file.
+    // Every record appended afterwards is built to match. That is what makes a file
+    // self-describing: whatever the rider does to the setting later, this file's header and
+    // this file's records always agree with each other.
+    //
+    // The header is written only on creation. The periodic close+reopen in loggerTask() uses
+    // FILE_APPEND, so it never rewrites or duplicates it.
+    // ============================================================
+    if (currentLogFile) {
+      active_log_level   = logResolveLevel();
+      active_record_size = logRecordSizeForLevel(active_log_level);
+
+      LogFileHeader hdr;
+      hdr.magic       = LOG_FILE_MAGIC;
+      hdr.format_ver  = LOG_FILE_FORMAT_VER;
+      hdr.log_level   = active_log_level;
+      hdr.record_size = active_record_size;
+      currentLogFile.write((uint8_t*)&hdr, sizeof(hdr));
+      currentLogFile.flush();
+    }
     xSemaphoreGive(fileMutex);
-    
+
     if (!currentLogFile) return false;
-    Serial.printf("Created log file: %s\n", currentLogFileName.c_str());
+    Serial.printf("Created log file: %s (log_level %u, %u bytes/record)\n",
+                  currentLogFileName.c_str(),
+                  (unsigned)active_log_level,
+                  (unsigned)active_record_size);
     return true;
   }
   return false;
@@ -457,11 +540,30 @@ void loggerTask(void* parameter) {
         }
       }
 
-      VescLogData logData = convertToLogData();
+      // ============================================================
+      // V2.5-Evo - 2026-07-25 - STAGE 0 PART C: build the record for the level this FILE was
+      // created at (active_log_level), not for whatever the config says right now. Both tiers
+      // are assembled into one byte buffer so there is still exactly ONE write path holding
+      // fileMutex — the mutex block below is unchanged apart from taking a length instead of
+      // a hardcoded sizeof().
+      // ============================================================
+      uint8_t  rec_buf[sizeof(VescLogDataL4)];
+      uint16_t rec_len;
+      if (active_log_level >= 4) {
+        VescLogDataL4 logData4;
+        logData4.base = convertToLogData();
+        fillLevel4Diag(logData4);
+        memcpy(rec_buf, &logData4, sizeof(logData4));
+        rec_len = (uint16_t)sizeof(logData4);
+      } else {
+        VescLogData logData = convertToLogData();
+        memcpy(rec_buf, &logData, sizeof(logData));
+        rec_len = (uint16_t)sizeof(logData);
+      }
 
       if (xSemaphoreTake(fileMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
         if (currentLogFile) {
-          currentLogFile.write((uint8_t*)&logData, sizeof(VescLogData));
+          currentLogFile.write(rec_buf, rec_len);
           currentLogFile.flush();
         }
         xSemaphoreGive(fileMutex);
@@ -576,12 +678,53 @@ void downloadLogFile(const char* filename) {
   File file = SPIFFS.open(fullPath, FILE_READ);
   if (!file) return;
 
+  // ============================================================
+  // V2.5-Evo - 2026-07-25 - STAGE 0 PART B: read the self-describing file header FIRST.
+  //
+  // Records are no longer a fixed size — a level-4 file writes 65-byte records where a level-3
+  // file writes 59 — so the reader must be told the size by the file rather than assuming
+  // sizeof(VescLogData). Stepping by the wrong size does not fail loudly; it walks off the
+  // record boundary and prints thousands of lines of plausible-looking nonsense, which is worse
+  // than no data at all. Hence: no valid header, no output.
+  //
+  // Files written before this change have no header (their first 4 bytes are a millis()
+  // timestamp), so the magic test rejects them with a plain-English explanation. Those files
+  // were ALREADY undecodable after the 53 -> 59 byte record change (F9, 2026-07-24); this only
+  // makes the failure visible instead of silent.
+  // ============================================================
+  LogFileHeader hdr;
+  if (file.size() < sizeof(LogFileHeader) ||
+      file.read((uint8_t*)&hdr, sizeof(hdr)) != sizeof(hdr) ||
+      hdr.magic != LOG_FILE_MAGIC) {
+    file.close();
+    Serial.println("LOG: this file has no BRLG header, so its record layout is unknown.");
+    Serial.println("LOG: it was written before the self-describing log format (or is corrupt).");
+    Serial.println("LOG: nothing printed — a wrong record size produces convincing garbage. Delete it with ?deletelog.");
+    return;
+  }
+  if (hdr.format_ver != LOG_FILE_FORMAT_VER ||
+      hdr.record_size < (uint16_t)sizeof(VescLogData) ||
+      hdr.record_size > (uint16_t)sizeof(VescLogDataL4)) {
+    file.close();
+    Serial.printf("LOG: unsupported log format (header version %u, %u bytes/record).\n",
+                  (unsigned)hdr.format_ver, (unsigned)hdr.record_size);
+    Serial.printf("LOG: this firmware reads header version %u with %u-%u bytes/record. Nothing printed.\n",
+                  (unsigned)LOG_FILE_FORMAT_VER,
+                  (unsigned)sizeof(VescLogData), (unsigned)sizeof(VescLogDataL4));
+    return;
+  }
+
   Serial.println("\n=== BEGIN CSV DATA ===");
   // V2.5-Evo - 2026-07-19 - FM triage: header updated to 28 fields (+effective_steer)
   // V2.5-Evo - 2026-07-24 - F9: header updated to 31 fields (+tx_distance_m, +rssi_dbm, +snr_db). N/A sentinels: distance -1.0, rssi -999, snr -99.0
-  Serial.println("timestamp_ms,motor_current_A,battery_current_A,duty_cycle_%,voltage_V,ERPM,temp_mos_C,fault_code,speed_kmh,latitude,longitude,datetime_unix,thr_received,rtm_source,rtm_confidence,rtm_rx_active,gps_phase_b_ok,rtm_steer_override,rtm_heading_chosen_dx10,compass_live_dx10,compass_snap_dx10,snap_age_s,gps_course_dx10,cog_age_ms_div10,heading_error_dx10,d_error_dx10,remote_error,effective_steer,tx_distance_m,rssi_dbm,snr_db");
+  // V2.5-Evo - 2026-07-25 - STAGE 0: the column list lives ONCE in BREmote_V2_Rx.h and the WiFi
+  // download path emits the same macro, so the two can no longer drift. The header printed must
+  // match the level the file was actually RECORDED at (from its own header), not the level the
+  // config happens to be set to now.
+  Serial.println((hdr.log_level >= 4) ? LOG_CSV_HEADER_L4 : LOG_CSV_HEADER_L3);
 
-  VescLogData logData;
+  uint8_t  rec_buf[sizeof(VescLogDataL4)];
+  char     row[LOG_CSV_ROW_BUF];
   uint16_t recordCount = 0;
   while (file.available()) {
     // V2.5-Evo - 2026-05-06 - FIX-LOGDL-2: feed WDT inside loop and yield to FreeRTOS.
@@ -589,45 +732,13 @@ void downloadLogFile(const char* filename) {
     // confirmed crash at ~3 min / ~350KB on 050626_204204.log).
     esp_task_wdt_reset();
 
-    size_t bytesRead = file.read((uint8_t*)&logData, sizeof(VescLogData));
+    // Step by the size THIS file declares. A short read means the tail is truncated (power cut
+    // mid-write): stop cleanly rather than formatting a partial record.
+    size_t bytesRead = file.read(rec_buf, (size_t)hdr.record_size);
 
-    if (bytesRead == sizeof(VescLogData)) {
-      Serial.printf("%u,%.2f,%.2f,%d,%.1f,%d,%u,%u,%.1f,%.6f,%.6f,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%d,%d,%u,%u,%.1f,%d,%.1f\n",
-                    logData.timestamp,
-                    logData.current_motor / 100.0f,
-                    logData.current_battery / 100.0f,
-                    (int16_t)logData.duty_cycle,
-                    logData.voltage / 10.0f,
-                    (int32_t)logData.ERPM * 10,
-                    logData.temp_mos,
-                    logData.fault_code,
-                    logData.speed / 10.0f,
-                    logData.latitude,
-                    logData.longitude,
-                    logData.datetime,
-                    (unsigned)logData.thr_received_log,
-                    (unsigned)logData.rtm_source,
-                    (unsigned)logData.rtm_confidence,
-                    (unsigned)logData.rtm_rx_active_log,
-                    (unsigned)logData.gps_phase_b_ok_log,
-                    (unsigned)logData.rtm_steer_override_log,
-                    (int)logData.rtm_heading_chosen_dx10,
-                    (unsigned)logData.compass_live_dx10,
-                    (unsigned)logData.compass_snap_dx10,
-                    (unsigned)logData.snap_age_s,
-                    (unsigned)logData.gps_course_dx10,
-                    (unsigned)logData.cog_age_ms_div10,
-                    // Bundle 1: heading controller tuning columns (0x7FFF = no data sentinel)
-                    (int)logData.heading_error_dx10,
-                    (int)logData.d_error_dx10,
-                    // E7 Fix: BREmote remote_error code (0 = none, 7 = E7 water ingress)
-                    (unsigned)logData.error_code_log,
-                    // FM triage: steering byte actually applied by calcPWM() (vs commanded rtm_steer_override)
-                    (unsigned)logData.effective_steer_log,
-                    // V2.5-Evo - 2026-07-24 - F9: distance (m) + link quality. N/A → distance -1.0, rssi -999, snr -99.0
-                    (logData.tx_distance_dx10 == 0xFFFF) ? -1.0f : (logData.tx_distance_dx10 / 10.0f),
-                    (logData.rssi_dbm == 0x7FFF) ? -999 : (int)logData.rssi_dbm,
-                    (logData.snr_dx10 == 0x7FFF) ? -99.0f : (logData.snr_dx10 / 10.0f));
+    if (bytesRead == (size_t)hdr.record_size) {
+      logFormatCsvRow(row, sizeof(row), rec_buf, hdr.record_size, hdr.log_level);
+      Serial.print(row);
 
       // Yield to FreeRTOS every 50 records to keep other tasks responsive.
       if ((++recordCount % 50) == 0) {

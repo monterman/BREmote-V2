@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-07-25 - STAGE 0 (instrumentation only): getGPSLoop() now counts GPS bytes and complete NMEA sentences, tracks when the COG VALUE actually changes (separately from gps_last_course_ms, which only tracks the TIMESTAMP and therefore stayed "fresh" straight through a frozen-heading failure), and samples the RX fix age once per poll. gps_last_course_deg / gps_last_course_ms and every heading decision are untouched — the new state is written alongside them and read only by the level-4 log record and ?diag.
 // V2.5-Evo - 2026-05-14 - SW55: setUartMux(0) at end of getGPSLoop() and configureGPS() — GPS resets MUX to VESC on exit; GPS always has priority
 // V2.5-Evo - 2026-05-06 - D1: Capture GPS course-over-ground (gps_last_course_deg/ms) for future RTM heading source
 // V2.5-Evo - 2026-04-30 - Rename: gps_max_jump_kmh → gps_max_teleport_kmh (clarity)
@@ -325,7 +326,37 @@ void getGPSLoop()
   while (Serial1.available())
   {
     char c = Serial1.read();
-    if (gps.encode(c)) newData = true;
+    // STAGE 0: bare increment, nothing else added to this tight loop — one load/add/store per byte.
+    g_diag_gps_bytes++;
+    // gps.encode() returns true only when a COMPLETE, checksum-valid sentence has been assembled,
+    // so this counter is "sentences parsed", not "sentences seen".
+    if (gps.encode(c)) { newData = true; g_diag_gps_sentences++; }
+  }
+
+  // ============================================================
+  // STAGE 0: collapse the raw sentence counter into "sentences parsed in the last full second"
+  // for the level-4 log record. Updated at most once per second; getGPSLoop() runs at
+  // gps_update_hz (1-10 Hz) so the window always closes on time. A value of 0 here while the
+  // buggy is powered and outdoors is the signature of a dead GPS feed.
+  // The (cur >= base) test keeps this correct after ?diagz zeroes the underlying counter mid-window.
+  // ============================================================
+  {
+    static uint32_t diag_sent_win_ms   = 0;
+    static uint32_t diag_sent_win_base = 0;
+    uint32_t diag_now_ms = millis();
+    uint32_t diag_cur    = g_diag_gps_sentences;
+    if (diag_sent_win_ms == 0)
+    {
+      diag_sent_win_ms   = diag_now_ms;
+      diag_sent_win_base = diag_cur;
+    }
+    else if ((diag_now_ms - diag_sent_win_ms) >= 1000UL)
+    {
+      uint32_t diag_d = (diag_cur >= diag_sent_win_base) ? (diag_cur - diag_sent_win_base) : diag_cur;
+      g_diag_gps_sent_per_s = (diag_d > 255UL) ? 255 : (uint8_t)diag_d;
+      diag_sent_win_ms   = diag_now_ms;
+      diag_sent_win_base = diag_cur;
+    }
   }
 
   // V2.5-Evo - 2026-04-25 - Fix: use isValid() not isUpdated() for speed check — isUpdated() fails when stationary blocking Phase B
@@ -356,6 +387,44 @@ void getGPSLoop()
       if (gps.course.isValid()) {
         gps_last_course_deg = (float)gps.course.deg();
         gps_last_course_ms  = millis();
+
+        // ============================================================
+        // V2.5-Evo - 2026-07-25 - STAGE 0 PART C: COG VALUE-CHANGE TRACKING
+        //
+        // The two lines above are UNCHANGED and remain the only thing the heading path reads.
+        // Everything below writes separate diagnostic state that no control code touches.
+        //
+        // WHY IT IS HERE: gps_last_course_ms is refreshed on every valid course sentence, even
+        // when the module keeps repeating the same heading. The existing cog_age_ms_div10 log
+        // column is derived from that timestamp, so it reported a healthy, fresh COG straight
+        // through the exact failure that cost the owner control — the VALUE was frozen on one
+        // heading while its timestamp kept ticking. Tracking the value separately is the only
+        // way a session log can tell "GPS is updating" from "GPS is repeating itself".
+        // ============================================================
+        {
+          static float diag_cog_prev_deg = -1.0f;   // -1.0f = no COG value captured yet this session
+          float diag_cog_now = (float)gps.course.deg();
+          uint32_t diag_t = millis();
+          if (diag_t == 0) diag_t = 1;              // 0 is the "never captured" sentinel — never store a literal 0
+
+          if (diag_cog_prev_deg < 0.0f)
+          {
+            // First COG ever seen: this is the BASELINE, not a change. Start the frozen-clock
+            // here so "frozen for N s" is measured from first sighting rather than from boot.
+            diag_cog_prev_deg    = diag_cog_now;
+            g_diag_cog_change_ms = diag_t;
+          }
+          else if (fabsf(diag_cog_now - diag_cog_prev_deg) > kDiagCogChangeDeg)
+          {
+            // A plain absolute difference is the right test for "did the number move": a
+            // 359.9 -> 0.1 wrap is a genuine 0.2 degree turn AND a genuine value change, and
+            // either way it is not a frozen reading. No angle normalisation needed.
+            diag_cog_prev_deg    = diag_cog_now;
+            g_diag_cog_change_ms = diag_t;
+            g_diag_cog_val_changes++;
+          }
+        }
+        g_diag_cog_ts_updates++;
       }
 
       // Cap at 254: 0xFF (255) is the reserved "no data" sentinel.
@@ -371,6 +440,20 @@ void getGPSLoop()
       // Do not expose spoofed/suspicious data via telemetry.
       telemetry.foil_speed = 0xFF;
     }
+  }
+
+  // ============================================================
+  // STAGE 0: sample the RX fix age once per GPS poll. Sampling here rather than only on a
+  // successful update is what makes staleness visible: if readings stop arriving, gps_last_ms
+  // stops advancing and successive samples grow, so the mean and max in ?diag climb.
+  // gps_last_ms == 0 means no reading has ever been accepted — skipped, not counted as age 0.
+  // ============================================================
+  if (gps_last_ms != 0)
+  {
+    uint32_t diag_fix_age = (uint32_t)(millis() - gps_last_ms);
+    g_diag_fix_age_sum_ms += diag_fix_age;
+    g_diag_fix_age_samples++;
+    if (diag_fix_age > g_diag_fix_age_max_ms) g_diag_fix_age_max_ms = diag_fix_age;
   }
 
   // SW55: release MUX back to VESC — GPS always runs first and always yields when done.

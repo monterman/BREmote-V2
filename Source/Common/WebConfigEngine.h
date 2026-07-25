@@ -4,6 +4,7 @@
 #ifdef WIFI_ENABLED
 
 // Shared web config AP and HTTP API for BREmote V2 TX and RX.
+// V2.5-Evo - 2026-07-25 - STAGE 0 PART B (RX only, inside ENABLE_WEB_LOG_DOWNLOAD — TX never compiles this block): the WiFi log download now reads the 8-byte self-describing log header before sending anything, steps records by header.record_size instead of sizeof(VescLogData), emits the CSV column header matching the level the file was actually recorded at, and rejects a header-less/old/corrupt file with a JSON error rather than a half-sent body. Row formatting moved to the single shared logFormatCsvRow() in BREmote_V2_Rx.h that the serial ?download path also calls, so the two CSV outputs can no longer drift apart. No TX impact, no confStruct change.
 // V2.5-Evo - 2026-07-25 - F-WEBCSV: WiFi log download resynced to the serial ?download CSV (26->31 columns); ERPM x10 scaling and duty_cycle cast now match Logger.ino; row buffer 400->512
 // V2.5-Evo - 2026-05-03 - Content-Disposition header on export (iPhone filename fix)
 // V2.5-Evo - 2026-05-08 - Bundle 1: HTTP log download updated for 26-column CSV (+heading_error_dx10, d_error_dx10)
@@ -481,37 +482,62 @@ static void webCfgHandleDownloadLog()
     return;
   }
 
+  // ============================================================
+  // V2.5-Evo - 2026-07-25 - STAGE 0 PART B: read the self-describing file header FIRST.
+  //
+  // Records are no longer a fixed size — a level-4 file writes 65-byte records where a level-3
+  // file writes 59 — so the reader must take the size from the FILE rather than assume
+  // sizeof(VescLogData). This runs BEFORE the chunked 200 response is opened, so an unreadable
+  // file can still be answered with a proper JSON error instead of a half-sent CSV body.
+  //
+  // Files written before this change have no header (their first 4 bytes are a millis()
+  // timestamp), so the magic test rejects them cleanly. Those files were already undecodable
+  // after the 53 -> 59 byte record change (F9, 2026-07-24).
+  // ============================================================
+  LogFileHeader hdr;
+  bool hdrOk = (file.size() >= sizeof(LogFileHeader)) &&
+               (file.read((uint8_t*)&hdr, sizeof(hdr)) == sizeof(hdr)) &&
+               (hdr.magic == LOG_FILE_MAGIC) &&
+               (hdr.format_ver == LOG_FILE_FORMAT_VER) &&
+               (hdr.record_size >= (uint16_t)sizeof(VescLogData)) &&
+               (hdr.record_size <= (uint16_t)sizeof(VescLogDataL4));
+  if(!hdrOk)
+  {
+    file.close();
+    webCfgMarkErr("ERR_LOG_FORMAT");
+    webCfgSendJson(400, "{\"ok\":0,\"err\":\"ERR_LOG_FORMAT\",\"detail\":\"missing or unsupported BRLG log header - this file predates the self-describing log format or is corrupt\"}");
+    return;
+  }
+
   // Use Chunked transfer so we don't run out of memory converting the binary to text!
   webCfgServer.setContentLength(CONTENT_LENGTH_UNKNOWN);
   webCfgServer.sendHeader("Content-Disposition", "attachment; filename=\"" + fname.substring(1) + ".csv\"");
   webCfgServer.send(200, "text/csv", "");
 
-  // V2.5-Evo - 2026-07-25 - F-WEBCSV: header resynced to the serial ?download header (Logger.ino:582).
+  // V2.5-Evo - 2026-07-25 - F-WEBCSV: header resynced to the serial ?download header.
   // The bug: this WiFi path was left on the 2026-05-08 Bundle-1 26-column format. It never picked up
   // the 2026-07-19 FM-triage columns (remote_error, effective_steer) nor the 2026-07-24 F9 columns
   // (tx_distance_m, rssi_dbm, snr_db), so every CSV pulled over WiFi silently dropped 5 columns even
   // though those fields ARE written into the binary records on SPIFFS. Anyone who downloads logs over
   // WiFi (the normal workflow) lost the distance and LoRa link-quality data entirely.
-  // The fix: this string is a byte-for-byte copy of the serial header, plus the trailing "\n" that the
-  // chunked HTTP path needs (Serial.println() supplies its own newline). Keep the two in lockstep —
-  // if you add a column in Logger.ino, copy the string here again rather than retyping it.
-  String header = "timestamp_ms,motor_current_A,battery_current_A,duty_cycle_%,voltage_V,ERPM,temp_mos_C,fault_code,speed_kmh,latitude,longitude,datetime_unix,thr_received,rtm_source,rtm_confidence,rtm_rx_active,gps_phase_b_ok,rtm_steer_override,rtm_heading_chosen_dx10,compass_live_dx10,compass_snap_dx10,snap_age_s,gps_course_dx10,cog_age_ms_div10,heading_error_dx10,d_error_dx10,remote_error,effective_steer,tx_distance_m,rssi_dbm,snr_db\n";
+  // V2.5-Evo - 2026-07-25 - STAGE 0: that resync was a hand-copied duplicate of the serial string,
+  // which is exactly how the drift happened in the first place. The column list now lives ONCE, as
+  // LOG_CSV_HEADER_L3 / _L4 in BREmote_V2_Rx.h, and both readers emit the same macro — so they
+  // cannot diverge again. The only difference is the trailing "\n" this chunked path must add
+  // because Serial.println() supplies its own line ending.
+  // The header emitted matches the level the file was RECORDED at (from its own header), not the
+  // level the config happens to be set to now.
+  String header = String((hdr.log_level >= 4) ? LOG_CSV_HEADER_L4 : LOG_CSV_HEADER_L3) + "\n";
   webCfgServer.sendContent(header);
 
-  VescLogData logData;
+  // V2.5-Evo - 2026-07-25 - STAGE 0: raw record buffer, sized for the largest record this
+  // firmware understands (level 4). The file header guarantees hdr.record_size fits in it.
+  uint8_t rec_buf[sizeof(VescLogDataL4)];
   // V2.5-Evo - 2026-07-25 - F-WEBCSV: row buffer resized 400 -> 512 for the 31-column CSV.
-  // Sizing arithmetic (worst-case printed width per field, in the field order below):
-  //   timestamp %u 10, motor %.2f 7, batt %.2f 7, duty %d 4, volt %.1f 6, ERPM %d 7, temp %u 10,
-  //   fault %u 3, speed %.1f 6, lat %.6f 11, lon %.6f 11, datetime %u 10, then 6x uint8 %u 3 = 18,
-  //   heading_chosen %d 6, 5x uint16 %u 5 = 25, heading_err %d 6, d_err %d 6, remote_error %u 3,
-  //   effective_steer %u 3, tx_distance %.1f 6, rssi %d 6, snr %.1f 7
-  //   = 178 field chars + 30 commas + 1 newline + 1 NUL = 210 bytes for normal data.
-  // Pathological guard: latitude/longitude are raw floats. If a record is corrupt, "%.6f" on a
-  // full-range float prints ~47 chars instead of 11, pushing the row to ~282 bytes. 512 clears that
-  // by 1.8x and clears the normal case by 2.4x. The five new columns alone add ~30 chars, so the old
-  // 400 would NOT have overflowed - but snprintf truncation is silent and corrupts a row mid-field,
-  // so this is deliberately over-sized. Cost is +112 bytes of stack in the Arduino loop task (8 KB).
-  char row[512];
+  // V2.5-Evo - 2026-07-25 - STAGE 0: the buffer size and the sizing arithmetic behind it now live
+  // once, as LOG_CSV_ROW_BUF in BREmote_V2_Rx.h (640 B: the ~282 B pathological level-3 row plus
+  // the ~20 B level-4 block, with margin). It is a stack local in the Arduino loop task (8 KB).
+  char row[LOG_CSV_ROW_BUF];
   uint16_t recordCount = 0;
   while (file.available())
   {
@@ -521,53 +547,17 @@ static void webCfgHandleDownloadLog()
     // Andres confirmed crash on 58.6KB log without these fixes.
     esp_task_wdt_reset();
 
-    size_t bytesRead = file.read((uint8_t*)&logData, sizeof(VescLogData));
-    if (bytesRead == sizeof(VescLogData))
+    // Step by the size THIS file declares. A short read means the tail is truncated (power cut
+    // mid-write): stop cleanly rather than formatting a partial record.
+    size_t bytesRead = file.read(rec_buf, (size_t)hdr.record_size);
+    if (bytesRead == (size_t)hdr.record_size)
     {
-      // V2.5-Evo - 2026-07-25 - F-WEBCSV: row formatter resynced to the serial ?download formatter
-      // (Logger.ino downloadLogFile()). Same 31 fields, same order, same specifiers, same scaling,
-      // same N/A sentinels — the two outputs must be indistinguishable. Two silent divergences that
-      // predate the missing columns are also corrected here:
-      //   - ERPM: VescLogData.ERPM stores ERPM/10, so it must be multiplied back by 10. This path was
-      //     emitting the raw stored value, i.e. every WiFi CSV reported ERPM 10x too low.
-      //   - duty_cycle: cast to int16_t to match the serial call exactly (no behavior change — int8_t
-      //     already promotes to int for "%d" — but it keeps the two blocks diffable line for line).
-      snprintf(row, sizeof(row), "%u,%.2f,%.2f,%d,%.1f,%d,%u,%u,%.1f,%.6f,%.6f,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%d,%d,%u,%u,%.1f,%d,%.1f\n",
-                    logData.timestamp,
-                    logData.current_motor / 100.0f,
-                    logData.current_battery / 100.0f,
-                    (int16_t)logData.duty_cycle,
-                    logData.voltage / 10.0f,
-                    (int32_t)logData.ERPM * 10,
-                    logData.temp_mos,
-                    logData.fault_code,
-                    logData.speed / 10.0f,
-                    logData.latitude,
-                    logData.longitude,
-                    logData.datetime,
-                    (unsigned)logData.thr_received_log,
-                    (unsigned)logData.rtm_source,
-                    (unsigned)logData.rtm_confidence,
-                    (unsigned)logData.rtm_rx_active_log,
-                    (unsigned)logData.gps_phase_b_ok_log,
-                    (unsigned)logData.rtm_steer_override_log,
-                    (int)logData.rtm_heading_chosen_dx10,
-                    (unsigned)logData.compass_live_dx10,
-                    (unsigned)logData.compass_snap_dx10,
-                    (unsigned)logData.snap_age_s,
-                    (unsigned)logData.gps_course_dx10,
-                    (unsigned)logData.cog_age_ms_div10,
-                    // Bundle 1: heading controller tuning columns (0x7FFF = no data sentinel)
-                    (int)logData.heading_error_dx10,
-                    (int)logData.d_error_dx10,
-                    // E7 Fix: BREmote remote_error code (0 = none, 7 = E7 water ingress)
-                    (unsigned)logData.error_code_log,
-                    // FM triage: steering byte actually applied by calcPWM() (vs commanded rtm_steer_override)
-                    (unsigned)logData.effective_steer_log,
-                    // V2.5-Evo - 2026-07-24 - F9: distance (m) + link quality. N/A → distance -1.0, rssi -999, snr -99.0
-                    (logData.tx_distance_dx10 == 0xFFFF) ? -1.0f : (logData.tx_distance_dx10 / 10.0f),
-                    (logData.rssi_dbm == 0x7FFF) ? -999 : (int)logData.rssi_dbm,
-                    (logData.snr_dx10 == 0x7FFF) ? -99.0f : (logData.snr_dx10 / 10.0f));
+      // V2.5-Evo - 2026-07-25 - STAGE 0: one shared formatter, called by the serial ?download
+      // path too (Logger.ino). Same fields, same order, same specifiers, same scaling, same N/A
+      // sentinels — by construction rather than by careful copying. The two earlier silent
+      // divergences this path had (ERPM emitted 10x too low because VescLogData.ERPM stores
+      // ERPM/10, and an inconsistent duty_cycle cast) are gone with the duplicate code.
+      logFormatCsvRow(row, sizeof(row), rec_buf, hdr.record_size, hdr.log_level);
       webCfgServer.sendContent(row);
 
       // Yield to FreeRTOS every 50 records to keep the WiFi stack and other tasks responsive.

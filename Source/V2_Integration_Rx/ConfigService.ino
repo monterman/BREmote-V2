@@ -16,6 +16,7 @@
 // V2.5-Evo - 2026-07-24 - F1 fix: added the two orphaned SW32 fields (rtm_target_speed_kmh, rtm_align_threshold_deg) to kCfgFields so ?set/?get/web-save can reach them; metadata rows only, no confStruct change, sizeof stays 184, SW_VERSION stays 34
 // V2.5-Evo - 2026-07-25 - F3-b: the fm_engage_dist_m floor is raised 5.0 -> 8.0 m AND is no longer a bare literal in this file — cfgValidateCrossField() now reads the single shared kFmEngageDistFloorM from BREmote_V2_Rx.h (the old "Arduino concatenation order stops this file seeing it" note was wrong: that header is included at the top of V2_Integration_Rx.ino, which is compiled first). 5.0 m was below the hazard the error message itself names — the owner's tow rope is 20 ft = 6.10 m, so 5.0-6.1 m was storable and still on-rope. Legal values are now 0 (auto) or 8.0-50.0 m. Threshold + message text only — no kCfgFields row changed, no confStruct change, sizeof stays 184, SW_VERSION stays 34.
 
+// V2.5-Evo - 2026-07-25 - STAGE 0 PART A: kCfgFields row "fm_steer_reposition_en" (u16, 0-1, RESERVED and never read by anything) is replaced by "log_level" (u16, 0-4). The confStruct slot is the SAME slot renamed in place, so sizeof stays 184 and SW_VERSION stays 34 — no config wipe. 0 = unset (behaves as 3), 1 = Basic and 2 = VESC are accepted but currently log as level 3 (reserved for a future storage optimisation), 3 = Developer, 4 = Deep. NOTE FOR CONFIG BACKUPS: a JSON export taken before this change contains the key "fm_steer_reposition_en", which this firmware will reject as unknown on JSON import; the base64 export path is unaffected (it is a raw struct copy of the same size and version). Metadata row only — no struct change, no size change, no SW_VERSION bump.
 // V2.5-Evo - 2026-07-25 - F3-c: the fm_engage_dist_m rejection message is rewritten in plain English (owner request) — it now names the setting the way the web UI labels it ("Follow-Me Engage Distance") instead of leading with the raw struct key, states the minimum, gives the REASON (it is the tow-rope safety floor; Follow-Me must never be able to engage while the rider is still on the rope), tells the rider how to choose (measure your rope, add at least a metre), and states that 0/automatic is floored at the same minimum. The threshold is still read from the shared kFmEngageDistFloorM constant, never a bare literal. Message text only — no threshold change, no kCfgFields row changed, no confStruct change, sizeof stays 184, SW_VERSION stays 34.
 #include <stddef.h>
 
@@ -118,10 +119,27 @@ const CfgFieldSpec kCfgFields[] = {
   // V2.5-Evo - 2026-07-25 - F3-c: setting 0 does not bypass that minimum. runFmLoop() applies the
   // same kFmEngageDistFloorM clamp to the AUTO-computed engage distance too, so a small min_dist_m /
   // smoothing-band tuning can no longer produce an on-rope engage distance down the automatic path.
-  // auton_runtime_cap_s and fm_steer_reposition_en remain RESERVED and unread.
+  // auton_runtime_cap_s remains RESERVED and unread.
   {"fm_engage_dist_m",       CFG_FLOAT, offsetof(confStruct, fm_engage_dist_m),       true, false, true, 0.0f,  50.0f,   1, false},
   {"auton_runtime_cap_s",    CFG_U16,   offsetof(confStruct, auton_runtime_cap_s),    true, false, true, 0.0f, 3600.0f,  0, false},
-  {"fm_steer_reposition_en", CFG_U16,   offsetof(confStruct, fm_steer_reposition_en), true, false, true, 0.0f,  1.0f,    0, false}
+  // V2.5-Evo - 2026-07-25 - STAGE 0 PART A: this row was fm_steer_reposition_en. The slot has been
+  // RENAMED IN PLACE in confStruct to log_level — same offset, same uint16_t — so sizeof stays 184,
+  // SW_VERSION stays 34 and no config is wiped. Only the key, the range and the meaning change here.
+  //
+  // ACCEPTED RANGE 0-4, and every value in it is stored:
+  //   0 = unset. Behaves EXACTLY as level 3. This is what every existing config already holds.
+  //   1 = Basic  RESERVED for a future storage optimisation (smaller records) — CURRENTLY LOGS AS 3.
+  //   2 = VESC   RESERVED for a future storage optimisation (smaller records) — CURRENTLY LOGS AS 3.
+  //   3 = Developer, the full 59-byte record this firmware has always written.
+  //   4 = Deep, Developer plus the 6-byte diagnostic block (65 bytes/record).
+  // 1 and 2 are deliberately ACCEPTED rather than rejected: a rider can select them now and a later
+  // firmware will honour them without another config migration. They are NOT silently ignored —
+  // the fallback to level 3 is stated in the field comment, in both web UIs and in the standalone
+  // config tool, so the setting never lies about what it is doing.
+  //
+  // The FM v2 "steer reposition" feature that owned this slot is NOT cancelled; when it lands it
+  // will claim a FRESH confStruct field (a deliberate, announced config-wipe event), not this one.
+  {"log_level",              CFG_U16,   offsetof(confStruct, log_level),              true, false, true, 0.0f,  4.0f,    0, false}
 };
 
 const size_t kCfgFieldCount = sizeof(kCfgFields) / sizeof(kCfgFields[0]);

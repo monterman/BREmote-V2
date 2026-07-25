@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-07-25 - STAGE 0 (instrumentation only): getVescLoop() bumps g_diag_vesc_polls / g_diag_vesc_ok so ?diag can report a VESC poll success rate. Two counter increments; no protocol, timing, mux, mutex or telemetry change.
 // V2.5-Evo - 2026-07-19 - SW56 F1+F2 (Rex CRITICAL + HIGH / Fable F1+F2, applied post-audit): (F1) clamp the vescRelayBuffer relay memcpy to sizeof(vescRelayBuffer) — SW56 raised the guard ceiling 30→48 but vescRelayBuffer is still 34, so a valid-CRC 35–48 B frame (which fa99429 is designed to ACCEPT from newer VESC FW) overflowed a global by up to 14 B into the adjacent volatile motor-command state (thr_received/PWM_active/PWM0_time/PWM1_time) = motor-safety class, NO-GO for field until fixed. (F2, pre-existing) validate the RAW length byte before the uint8_t `eom = raw_message[1]+5` addition — len 251–255 wrapped eom to 0–4, bypassed the guard, and let the payload copy (which uses raw_message[1], not eom) write up to 255 B into the caller's 48 B buffer. Both fixes are bounds-only; no protocol/offset/CRC/mutex change; confStruct/SW_VERSION unchanged
 // V2.5-Evo - 2026-07-19 - SW56: receiveFromVESC()/getValuesSelective() RX buffers 30→48 — with VESC_MORE_VALUES the COMM_GET_VALUES_SELECTIVE reply is a 32-byte UART frame (27-byte payload +5 framing), but eom=raw_message[1]+5=32 tripped the 30-byte overflow guard (32>30) and returned 0, rejecting every telemetry reply (latent since the extended mask was enabled; single-value mode's 14-byte frame still fit). 48 comfortably holds it (48 > VESC_PACK_LEN+5=32). Buffer size only; mask/offsets/CRC/echo-validation/mutex unchanged; confStruct/SW_VERSION unchanged
 // V2.5-Evo - 2026-05-14 - SW55: rcv_err removed from receiveFromVESC() — flag was never cleared within 200ms window, any stray byte poisoned entire receive attempt; CRC handles frame validation
@@ -35,8 +36,13 @@ void getVescLoop()
   // bytes already in the buffer, never blocks waiting for new ones.
   while (Serial1.available()) Serial1.read();
 
+  // V2.5-Evo - 2026-07-25 - STAGE 0: count poll attempts and successes so ?diag can report a
+  // VESC poll success rate. Diagnostic only — the poll itself and everything it does are
+  // unchanged, and nothing reads these two counters except ?diag.
+  g_diag_vesc_polls++;
   if( getValuesSelective(&Serial1) )
   {
+    g_diag_vesc_ok++;
     last_uart_packet = millis();
     vesc.last_packet = last_uart_packet;
   }

@@ -11,7 +11,10 @@
 // V2.5-Evo - 2026-05-08 - Bundle 1: dummy_delete_me → rtm_steer_response (0-4 preset index)
 // V2.5-Evo - 2026-05-06 - D4: Added rtm_use_compass + rtm_cog_min_speed_kmh fields to ConfigService table
 // V2.5-Evo - 2026-07-20 - SW34: Added 3 reserved fields to kCfgFields (validation-only; not read by v1): fm_engage_dist_m (0-50, 0=auto), auton_runtime_cap_s (0-3600, 0=disabled), fm_steer_reposition_en (0-1, 0=off)
+// V2.5-Evo - 2026-07-25 - A2: fm_engage_dist_m is no longer RESERVED — it is read live by runFmLoop(). Comment/semantics update only; the metadata row (CFG_FLOAT, 0-50, 1 dp) is unchanged. No confStruct change, sizeof stays 184, SW_VERSION stays 34.
+// V2.5-Evo - 2026-07-25 - F3: cfgValidateCrossField() gained an fm_engage_dist_m floor — the field is now LIVE (A2) and IS the FM engage distance in metres, so a stored value below the 6.7-7.6 m tow rope defeated the separation interlock outright. Legal values are 0 (auto) or 5.0-50.0 m; anything in between is rejected. Cross-field rule only — no kCfgFields row changed, no confStruct change, sizeof stays 184, SW_VERSION stays 34.
 // V2.5-Evo - 2026-07-24 - F1 fix: added the two orphaned SW32 fields (rtm_target_speed_kmh, rtm_align_threshold_deg) to kCfgFields so ?set/?get/web-save can reach them; metadata rows only, no confStruct change, sizeof stays 184, SW_VERSION stays 34
+// V2.5-Evo - 2026-07-25 - F3-b: the fm_engage_dist_m floor is raised 5.0 -> 8.0 m AND is no longer a bare literal in this file — cfgValidateCrossField() now reads the single shared kFmEngageDistFloorM from BREmote_V2_Rx.h (the old "Arduino concatenation order stops this file seeing it" note was wrong: that header is included at the top of V2_Integration_Rx.ino, which is compiled first). 5.0 m was below the hazard the error message itself names — the owner's tow rope is 20 ft = 6.10 m, so 5.0-6.1 m was storable and still on-rope. Legal values are now 0 (auto) or 8.0-50.0 m. Threshold + message text only — no kCfgFields row changed, no confStruct change, sizeof stays 184, SW_VERSION stays 34.
 
 #include <stddef.h>
 
@@ -103,6 +106,15 @@ const CfgFieldSpec kCfgFields[] = {
   {"mag_scale_x",  CFG_FLOAT, offsetof(confStruct, mag_scale_x),  true, false, true, 0.1f,      10.0f,    2, false},
   {"mag_scale_y",  CFG_FLOAT, offsetof(confStruct, mag_scale_y),  true, false, true, 0.1f,      10.0f,    2, false},
   // V2.5-Evo - 2026-07-20 - SW34 reserved fields (validation only; not read by v1 control law)
+  // V2.5-Evo - 2026-07-25 - A2: fm_engage_dist_m is NO LONGER RESERVED — it is now read live by
+  // runFmLoop() in RTMState.ino. 0 = auto (engage distance computed from min_dist_m + smoothing band);
+  // >0 = the FM engage distance itself, in metres. Range unchanged at 0-50 m; cfgValidateCrossField()
+  // below additionally rejects (0, 8) m. Metadata row is unchanged — comment/semantics only.
+  // HOW THE RIDER PICKS THIS VALUE: measure your own tow rope and set this to AT LEAST one metre more
+  // than the rope length, so Follow-Me only engages once you have genuinely let go and separated.
+  // Example: a 20 ft (6.1 m) rope -> set 8 m or more. Setting it at or below your rope length lets FM
+  // engage while you are still on the rope. 8.0 m is the enforced minimum, not a recommendation.
+  // auton_runtime_cap_s and fm_steer_reposition_en remain RESERVED and unread.
   {"fm_engage_dist_m",       CFG_FLOAT, offsetof(confStruct, fm_engage_dist_m),       true, false, true, 0.0f,  50.0f,   1, false},
   {"auton_runtime_cap_s",    CFG_U16,   offsetof(confStruct, auton_runtime_cap_s),    true, false, true, 0.0f, 3600.0f,  0, false},
   {"fm_steer_reposition_en", CFG_U16,   offsetof(confStruct, fm_steer_reposition_en), true, false, true, 0.0f,  1.0f,    0, false}
@@ -125,6 +137,30 @@ bool cfgValidateCrossField(confStruct &candidate, String &err)
   if (candidate.failsafe_time < 100 || candidate.failsafe_time > 10000)
   {
     err = "ERR_CROSS:failsafe_time out of range (100-10000)";
+    return false;
+  }
+  // V2.5-Evo - 2026-07-25 - F3: floor on the manual FM engage-distance override.
+  // WHAT THE BUG WAS: the kCfgFields row above range-checks fm_engage_dist_m as 0-50 m and nothing
+  // else, so a value like 3 m was accepted and stored. Since A2 that value IS the FM engage distance
+  // in METRES — the distance the rider must be beyond before Follow-Me may engage for the first time.
+  // An engage distance shorter than the tow rope therefore does not tune the separation interlock,
+  // it DEFEATS it: FM would be allowed to engage with the rider still on the rope, which is
+  // precisely the situation the latch was added to prevent.
+  // V2.5-Evo - 2026-07-25 - F3-b: the floor used to be a bare 5.0f literal here, and 5.0 m was itself
+  // BELOW the hazard this message names — the owner's tow rope is 20 ft = 6.10 m, so 5.0-6.1 m was a
+  // storable, still-on-rope setting. The floor is now kFmEngageDistFloorM = 8.0 m, defined ONCE in
+  // BREmote_V2_Rx.h and shared with the RTMState.ino read-site clamp; the duplicate literal is gone.
+  // (The note that used to sit here claimed the Arduino concatenation order stopped this file seeing
+  // that constant — wrong: BREmote_V2_Rx.h is included at the top of V2_Integration_Rx.ino, which is
+  // concatenated first, so the constant is in scope here.)
+  // WHAT THE FIX DOES: only two shapes are legal — exactly 0, meaning auto (the firmware derives the
+  // engage distance from Min Distance + Smoothing Band), or at least kFmEngageDistFloorM. Anything in
+  // between is rejected with a message that says why. The 0.1f lower compare is the same float "is
+  // this really zero" guard RTMState.ino uses at the read site, so the two agree on what is auto.
+  if (candidate.fm_engage_dist_m > 0.1f && candidate.fm_engage_dist_m < kFmEngageDistFloorM)
+  {
+    err = "ERR_CROSS:fm_engage_dist_m must be 0 (auto) or " + String(kFmEngageDistFloorM, 1) +
+          "-50.0 m — it must clear the tow rope (a 20 ft / 6.1 m rope needs the engage distance well beyond it)";
     return false;
   }
   return true;

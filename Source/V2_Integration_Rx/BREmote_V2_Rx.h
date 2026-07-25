@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-07-25 - F3-b: kFmEngageDistFloorM (the FM engage-distance floor) now lives HERE, once, and is raised 5.0 -> 8.0 m. It used to be defined in RTMState.ino AND duplicated as a bare 5.0f literal in ConfigService.ino, on the false premise that the Arduino concatenation order stopped the two files sharing a constant — this header is included at the top of V2_Integration_Rx.ino, which is compiled first, so both see it. 5.0 m was below the hazard it names: the owner's tow rope is 20 ft = 6.10 m, so a manual fm_engage_dist_m of 5.0-6.1 m was storable and let FM engage with the rider still ON the rope. 8.0 m clears a 6.10 m rope by ~1.31x. One shared constant + comments only: no field added, moved or resized; sizeof(confStruct) stays 184, static_assert unchanged, SW_VERSION stays 34, SPIFFS config is NOT reset by this flash.
+// V2.5-Evo - 2026-07-25 - A2: fm_engage_dist_m promoted from RESERVED/unread to LIVE — runFmLoop() now reads it as the FM engage distance in METRES (rope length x ~1.15), 0 = auto (unchanged legacy behaviour). Comment/semantics only: no field added, moved or resized; sizeof(confStruct) stays 184, static_assert unchanged, SW_VERSION stays 34, SPIFFS config is NOT reset by this flash.
 // V2.5-Evo - 2026-07-24 - F9: VescLogData +6 bytes (tx_distance_dx10, rssi_dbm, snr_dx10) for owner-requested distance + link-quality CSV columns; sizeof 53->59; old SPIFFS logs misparse after this flash; NO confStruct change, SW_VERSION stays 34
 // V2.5-Evo - 2026-07-20 - SW33->34 config bump + defaultConf bake: appended THREE reserved confStruct slots — fm_engage_dist_m (float, 0=auto), auton_runtime_cap_s (uint16_t, 0=disabled), fm_steer_reposition_en (uint16_t, 0=off). All three are default-off storage slots and are NOT read by v1 control law — bundled together so the v2 features that will read them need NO second config wipe. sizeof(confStruct) 176->184 (float+u16+u16, naturally aligned, no tail pad); static_assert updated to 184. defaultConf carries the factory default configuration (compass cal fields made explicit, neutral). Behavior-IDENTICAL control law — config-layer only, no FM/RTM logic change. SPIFFS config IS reset by this flash (struct size changed); this is the one intended config-wipe event.
 // V2.5-Evo - 2026-07-20 - FM control brain (Fable v1.4): repurposed the unused reserved_tx_imu telemetry byte (index 16) as fm_flags — the coherent FM engagement sub-state the TX display consumes ([0]armed [1]engaged [2]armed-not-ready [3]fault-stop-sticky). No confStruct change, no telemetry-packet size change (byte was already present) — SW_VERSION stays 33, sizeof(confStruct) stays 176, SPIFFS config is NOT reset by this flash.
@@ -338,11 +340,23 @@ struct confStruct {
     float    motor_ramp_s;              // 0=off/instant, 0-4 s; default 0.75
 
     // V2.5-Evo - 2026-07-20 - SW34 reserved slots (added together so only ONE config wipe is needed).
-    // NONE of these three are read by v1 code — they are storage slots so v2 features are code-only, no re-wipe.
-    // fm_engage_dist_m: RESERVED fixed engage-distance override for the FM separation latch. 0 = auto
-    //   (current behavior: d_engage = kFmEngageFactor * (min_dist_m + band), computed live in RTMState.ino).
-    //   v1 does NOT read this; wiring it live (with 0=auto sentinel) is a later, separately-audited commit.
-    float    fm_engage_dist_m;         // 0 = auto (do not read in v1); range 0-50 m
+    // They were all storage slots at SW34 so v2 features could be code-only, with no re-wipe.
+    // V2.5-Evo - 2026-07-25 - A2 status update: fm_engage_dist_m is now LIVE (read by runFmLoop()).
+    // auton_runtime_cap_s and fm_steer_reposition_en are still RESERVED and still read by nothing.
+    // fm_engage_dist_m: LIVE since 2026-07-25 (A2) — no longer RESERVED/unread. Fixed engage-distance
+    //   override for the FM separation latch, read in RTMState.ino runFmLoop().
+    //   0   = auto: d_engage = kFmEngageFactor (1.5) * (min_dist_m + followme_smoothing_band_m), the
+    //         original behaviour, reproduced exactly.
+    //   >0  = the engage distance itself, in METRES. This is NOT the rope length — set it to rope
+    //         length x ~1.3 so the buggy clears the rope with margin (a 20 ft / 6.10 m rope -> 8.0).
+    //         V2.5-Evo - 2026-07-25 - F3-b: legal non-zero values start at kFmEngageDistFloorM
+    //         (8.0 m, defined below this struct); (0, 8) m is rejected by cfgValidateCrossField().
+    //   HOW THE RIDER PICKS THIS VALUE: measure your own tow rope and set this to AT LEAST one metre
+    //   more than the rope length, so Follow-Me only engages once you have genuinely let go and
+    //   separated. Example: a 20 ft (6.1 m) rope -> set 8 m or more. Setting it at or below your rope
+    //   length lets FM engage while you are still on the rope. 8.0 m is the enforced minimum, not a
+    //   recommendation — a longer rope needs a bigger number.
+    float    fm_engage_dist_m;         // 0 = auto; >0 = fixed engage distance in metres; 0, or 8-50 m
     // auton_runtime_cap_s: RESERVED shared RTM/FM autonomous-runtime cap. 0 = disabled (matches TX rtm_max_runtime_s default). Not read by v1.
     uint16_t auton_runtime_cap_s;      // 0 = disabled; range 0-3600 s
     // fm_steer_reposition_en: RESERVED Option C — continuous steer-driven repositioning of the follow ANGLE
@@ -393,11 +407,39 @@ confStruct defaultConf = {SW_VERSION, 2, 22, 1, 50 /*steering_influence: convent
   45,         // rtm_align_threshold_deg: heading error threshold for Phase 1→2 transition; 45° default
   // V2.5-Evo - 2026-06-05 - SW33: motor ramping (secs) default
   0.75f,      // motor_ramp_s: motors ramp 0->full over 0.75s (0=instant/off, 0-4s); also ramps steering
-  // V2.5-Evo - 2026-07-20 - SW34 reserved slots (not read by v1)
-  0.0f,       // fm_engage_dist_m: 0 = auto (RTMState computes d_engage live; reserved for v2)
+  // V2.5-Evo - 2026-07-20 - SW34 slots. 2026-07-25 A2: fm_engage_dist_m is now live; the other two stay reserved/unread.
+  0.0f,       // fm_engage_dist_m: 0 = auto (RTMState computes d_engage from min_dist + band); >0 = fixed engage distance in metres
   0,          // auton_runtime_cap_s: 0 = disabled
   0           // fm_steer_reposition_en: 0 = off (Option C, disabled till v2)
 };
+
+// ============================================================
+// V2.5-Evo - 2026-07-25 - F3-b: FM ENGAGE-DISTANCE FLOOR (one shared definition)
+//
+// Hard floor for a MANUAL fm_engage_dist_m override, in metres. 0 (auto) bypasses it entirely,
+// because auto derives the engage distance from min_dist_m + followme_smoothing_band_m instead.
+//
+// WHAT THIS NUMBER GUARDS: since A2, fm_engage_dist_m IS the Follow-Me engage distance in metres —
+// how far the rider must be from the buggy before FM may engage for the first time. The whole point
+// of the separation latch is that the rider must be OFF the tow rope before FM engages.
+//
+// WHAT THE BUG WAS: the kCfgFields row for the field only range-checks 0-50 m, so a small value such
+// as 3 m was accepted and stored. An engage distance shorter than the rope does not tune the
+// interlock, it DEFEATS it — FM engages with the rider still on the rope, i.e. autonomous steering
+// mid-tow. The first fix (F3) set this floor to 5.0 m, which was still BELOW the hazard it named:
+// the owner's tow rope is 20 ft = 6.10 m, so 5.0-6.1 m was still storable and still on-rope.
+// 8.0 m clears a 6.10 m rope by ~1.31x, and it also sits above the owner's own follow geometry
+// (min_dist 4 m + smoothing band 2 m = 6 m), so the interlock is a real gate rather than a no-op.
+//
+// WHERE IT IS USED — exactly two places, both reading THIS definition; there is no second copy:
+//   1. cfgValidateCrossField() in ConfigService.ino — refuses to STORE anything in (0, 8) m.
+//   2. runFmLoop() in RTMState.ino — defensive clamp UP to this floor for a value already sitting in
+//      SPIFFS from before the rule existed (a stored config is never re-validated when it is loaded).
+// Both are .ino files, and this header is included at the top of V2_Integration_Rx.ino, which the
+// Arduino build concatenates first — so the constant is visible to both. (An earlier comment claimed
+// concatenation order prevented sharing and used that to justify a duplicated literal. It was wrong.)
+// ============================================================
+static const float kFmEngageDistFloorM = 8.0f;   // metres; smallest legal non-zero fm_engage_dist_m
 
 #include "../Common/ConfigServiceEngine.h"
 

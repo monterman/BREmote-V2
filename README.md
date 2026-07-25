@@ -390,6 +390,20 @@ The override is RAM-only — RX returns to its web-configured `followme_mode` on
 
 If TX-to-RX distance drops below `fm_warn_distance_m` (default 150 m), TX fires a 2×Pattern-2 vibration burst warning (2 short × 2, with 300 ms gap).
 
+### FM Engage Distance — measure your rope first (RX)
+
+> **⚠️ Set this before your first Follow-Me session.**
+
+`fm_engage_dist_m` (RX web UI: **Follow-Me → FM Engage Distance**) is how far you have to get from the buggy before Follow-Me is allowed to engage for the first time. It is the tow-rope interlock: it exists so FM can never take over while you are still on the rope.
+
+**Measure your own tow rope, then set this to at least one metre more than the rope length.** Example: a 20 ft (6.1 m) rope → set **8 m or more**. A longer rope needs a bigger number.
+
+- Valid entries are `0` = auto, or **8–50 m**. The firmware rejects anything between 0 and 8, and clamps an older stored value up to 8 m.
+- **8 m is the enforced minimum, not a recommendation** — it is only enough for a rope of about 7 m or shorter.
+- Setting it at or below your rope length would let Follow-Me engage while you are still **on** the rope, which is exactly what the interlock prevents.
+- `0` = auto: the firmware works it out as 1.5 × (Min Distance + Smoothing Band). Use a measured value if you know your rope.
+- You have to stay beyond this distance for 2 seconds before Follow-Me can engage.
+
 ### SPIFFS Configuration (TX)
 
 <details>

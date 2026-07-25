@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-07-25 - F3-b (RX FM; comment + shared-constant move, no behaviour change): kFmEngageDistFloorM is no longer DEFINED in this file. It now has exactly one definition, in BREmote_V2_Rx.h, raised 5.0 -> 8.0 m — 5.0 m sat below the tow rope it exists to clear (the owner's rope is 20 ft = 6.10 m), so a manual fm_engage_dist_m of 5.0-6.1 m was legal and let FM engage with the rider still ON the rope. ConfigService.ino's duplicate bare 5.0f literal is gone with it; both the validator and the read-site clamp in runFmLoop() now reference the one shared constant. The clamp itself is unchanged in shape — legacy stored values still clamp UP to the floor, now 8.0 m. No confStruct change, sizeof stays 184, SW_VERSION stays 34.
+// V2.5-Evo - 2026-07-25 - Batch A follow-up (Rex A3 NO-GO: F1/F3/F5/F7), RX FM only. (F1) the A3 divergence detector was a BARE THRESHOLD on a 3000 ms dwell while the engage ramp is 3500 ms, so it could fire BEFORE the ramp even finished and aborted ordinary engagements (at engage, dist_m is typically 13-21 m against an 18 m ceiling, and the align cap of 13/255 means the gap GROWS first). It now mirrors runPhaseC()'s actual shape: the distance at dwell start is captured (fm_diverge_start_dist_m) and the fault is raised at dwell expiry ONLY if the buggy is not closing (dist_m >= start - kFmDivergeCloseEpsM 2.0 m); if it has closed by more than that it IS following, just far, so the timer clears and no fault fires. Plus an engage grace: the detector is skipped and its dwell parked for kFmEngageRampMs + kFmDivergeMs (6.5 s) after every engagement so the buggy is allowed to ramp and align before it is judged. (F3) fm_engage_dist_m gained a 5 m floor — a stored value of, say, 3 m IS the engage distance in metres and is SHORTER than the 6.7-7.6 m tow rope, which defeated the separation interlock entirely; cfgValidateCrossField() now accepts only 0 (auto) or >= 5.0 m, and the use site clamps defensively so a pre-existing stored value cannot slip through. (F5) corrected the A2 comment that claimed d_engage feeds the distance Schmitt hysteresis - it does not; the Schmitt uses min_dist / min_dist+band. (F7) the divergence Serial.printf now runs AFTER fm_throttle_cap = 0 so UART backpressure can never defer the hard stop. All compile-time constants; no confStruct change, sizeof stays 184, SW_VERSION stays 34.
+// V2.5-Evo - 2026-07-25 - Batch A (A2+A3), RX FM only. (A2) fm_engage_dist_m is now READ: >0 sets the FM engage distance directly in metres (rope x ~1.15), 0 keeps the previous auto behaviour (kFmEngageFactor x d_follow) bit-for-bit; latch, dwell and Schmitt hysteresis untouched. (A3) FM divergence FAULT — runFmLoop() gained the upper distance bound it never had: condition 8 is a lower bound only, and runPhaseC()'s convergence check is RTM-only (called from runRtmLoop, never runFmLoop), so a wrong heading let FM steer away indefinitely. dist_m > kFmDivergeFactor(2.0) x D_engage sustained kFmDivergeMs(3000) while FM_ACTIVE now routes through the EXISTING fault path (FM_STOPPING ramp -> FM_IDLE, re-arm required, same haptic/St semantics as conditions 2-7). Non-blocking first-exceed timestamp, cleared on any condition/state/data-trust change. Subtract-only: adds no throttle, extends no engagement, does not touch the deadman. All compile-time constants; no confStruct change; SW_VERSION stays 34.
 // V2.5-Evo - 2026-07-19 - P3 FM (DESIGN_FOLLOW_ME.md sections 4-7): Follow-Me autonomous following. Adds runFmLoop() 10Hz state machine (IDLE/ARMED/ACTIVE/DEMOTED incl. the missing 0xFF->usrConf.followme_mode fallback — SUPERSEDED 2026-07-20, see R0 below), all 9 activation/hold conditions with Schmitt hysteresis on distance and side-zone, the lag-anchor trailing target-point geometry, and the 5-stage subtract-only throttle cap chain. Reuses the existing EMA filter / P+D / heading ladder / authority / wrap pipeline unchanged - updateRtmSteering() only gains a target selector (RTM = rider position, FM = trailing point). telemetry.fm_status bit0 now reports FM engaged rather than FM mode selected. No confStruct change; SW_VERSION stays 33.
 // V2.5-Evo - 2026-07-20 - FM engagement semantics (R0/R1/R2): (R0) BOTH 0xFF->usrConf.followme_mode fallbacks removed — 0xFF now means FM_IDLE always, killing the latently-armed factory boot; usrConf.followme_mode is the TX arm-gesture seed only. (R1) separation latch: FM's FIRST entry into ACTIVE now also requires dist > kFmEngageFactor(1.5) x d_follow sustained kFmSepDwellMs(2000) — the tow rope (6.7-7.6 m) is longer than the old engage distance, so FM could engage mid-tow; existing Schmitt hysteresis governs after the latch sets. (R2) two clears: thr_received<25 for kFmThrReleaseClearMs(10 s) clears the latch (ARMED-unlatched, mode memory kept); no 0xF2 refresh for kFmModeAgeMs(95 s) -> FM_IDLE. P3 geometry/cap/steering untouched. No confStruct change; SW_VERSION stays 33.
 // V2.5-Evo - 2026-07-20 - FM control "brain" (Fable v1.4): (A) holds-vs-faults — condition 1=DEADMAN (throttle, never a fault), 8/9=HOLD (cap 0, stays ARMED, auto-resume, +kFmSpeedHystKmh speed hysteresis), 2-7=FAULT (FM_STOPPING ramp 0->255 over kFmStopRampMs -> FM_IDLE, re-arm required); heading loss (cond 6) is now ALWAYS a fault regardless of rtm_compass_required. (C) steer-cancel while ACTIVE -> ARMED-UNLATCHED (latch cleared, no alarm) guarded by kFmEngageGraceMs grace + kFmSteerPersistMs persistence; ARMED has no steer-cancel by construction. (D) fm_flags telemetry byte (repurposed reserved_tx_imu): armed/engaged/armed-not-ready/fault-stop-sticky(kFmFaultStickyMs). FM_DEMOTED renamed FM_HOLD; FM_STOPPING added. All compile-time constants; no confStruct change; SW_VERSION stays 33.
@@ -419,6 +422,64 @@ static const uint32_t kFmSteerPersistMs      = 500;    // ms
 // deflection smaller than this is treated as centred and never counts toward steer-cancel.
 static const uint8_t  kFmSteerCancelDeadband = 40;     // counts from 127
 
+// ---- FM divergence-fault constants (V2.5-Evo - 2026-07-25 - A3) ----
+// Compile-time only, like every other kFm* above: no confStruct fields, no SW_VERSION bump, no
+// SPIFFS reset.
+//
+// WHAT WAS MISSING. While FM is ACTIVE the distance condition (condition 8, in runFmLoop) is
+// "dist_m >= min_dist" — a LOWER bound only. It answers "is the buggy far enough away to be safe?"
+// and nothing else. If the steering is wrong — a mirrored steering_inverted, a compass 180 out, a
+// bad course estimate — the buggy drives AWAY from the rider and that condition keeps passing more
+// and more comfortably the further it gets. RTM does have a divergence net (runPhaseC's convergence
+// check, "distance must be decreasing"), but runPhaseC() is only ever called from runRtmLoop() and
+// never from runFmLoop(), so FM had no upper bound at all and would steer away indefinitely for as
+// long as the rider held the trigger. These two numbers add that bound.
+//
+// WHY A CEILING AND NOT runPhaseC's "must be decreasing". RTM's rule is right for RTM: the buggy is
+// commanded to close on a stationary rider, so any non-decreasing distance is wrong. FM is not
+// closing — it deliberately holds station d_follow behind a MOVING rider, so distance legitimately
+// rises and falls every wave and "must be decreasing" would fire constantly. What is never
+// legitimate in FM is being far outside the follow geometry. So we keep runPhaseC's bookkeeping
+// shape (a single sustained-condition timer, cleared the instant the condition stops holding) and
+// change only the test itself.
+
+// Multiple of D_engage beyond which the buggy is running away rather than following. 2x D_engage is
+// ~18 m at the owner's 9 m engage setting: far outside any legitimate follow geometry (the target
+// point sits d_follow, ~6 m, behind the rider) yet far enough out that a normal catch-up transient
+// or ordinary GPS scatter never reaches it. Scales automatically with fm_engage_dist_m (A2).
+static const float    kFmDivergeFactor       = 2.0f;   // multiplier on D_engage
+
+// How long the distance must stay beyond that limit before it counts as divergence. Rider position
+// arrives at 2 Hz, so 3000 ms is ~6 consecutive independent fixes — the same spike-proofing argument
+// as kFmSepDwellMs. A single bad fix cannot trip it; a genuinely diverging buggy trips it in 3 s.
+static const uint32_t kFmDivergeMs           = 3000;   // ms
+
+// V2.5-Evo - 2026-07-25 - F1: how much closer the buggy must have got over the dwell window to be
+// judged "following, just far" rather than "running away".
+// WHY THIS EXISTS AT ALL. The first cut of this detector was a BARE THRESHOLD: beyond the ceiling for
+// kFmDivergeMs = a fault, full stop. That is wrong for two reasons that together aborted ordinary
+// engagements. (1) The engage ramp is kFmEngageRampMs = 3500 ms, LONGER than the 3000 ms dwell, so the
+// fault could fire before the buggy had even been given full throttle. (2) During align the cap is
+// kFmAlignCap = 13/255 (~5%), so the buggy pivots on the spot and the distance GROWS before it starts
+// to shrink — while at the engagement instant dist_m is typically 13-21 m against an 18 m ceiling
+// (2 x 9 m). The result was FM aborting ~3 s into most real engagements and forcing a mid-session
+// re-arm. THE FIX: judge the DERIVATIVE, not the level — exactly what runPhaseC()'s convergence check
+// does ("dist_m >= rtm_prev_dist_m" -> not closing -> fail). We snapshot the distance when the dwell
+// starts and, at dwell expiry, only fault if the buggy has NOT closed by more than this epsilon.
+// WHY 2.0 m. The buggy's closing speed is capped by cap 3, the speed governor, at rider speed +
+// kFmClosingMarginKmh = 5 km/h = 1.39 m/s, so over the 3 s dwell a genuinely closing buggy recovers
+// up to ~4.2 m — comfortably more than 2 m. 2 m is meanwhile larger than ordinary GPS scatter at these
+// distances, so noise alone cannot fake "closing" and cancel a real divergence.
+static const float    kFmDivergeCloseEpsM    = 2.0f;   // metres of closure over the dwell
+
+// V2.5-Evo - 2026-07-25 - F3-b: the hard floor for the MANUAL fm_engage_dist_m override,
+// kFmEngageDistFloorM, is NOT defined here any more. It used to sit in this block as 5.0f while
+// ConfigService.ino carried a SECOND bare 5.0f literal, on the false premise that the Arduino
+// concatenation order stopped the two files sharing a constant. It now has exactly one definition,
+// in BREmote_V2_Rx.h — raised there to 8.0 m, because 5.0 m was below the tow rope it exists to
+// clear (the owner's rope is 20 ft = 6.10 m). Both the config validator and the read-site clamp in
+// runFmLoop() below reference that one constant. See BREmote_V2_Rx.h for the full rationale.
+
 // ---- FM state machine (DESIGN_FOLLOW_ME.md section 4) ----
 //   FM_IDLE    : FM off (mode 0), RTM owns the buggy, or GPS/FM disabled.
 //                No throttle cap (255) and no steering override - fully manual buggy.
@@ -502,6 +563,23 @@ static unsigned long fm_fault_alarm_ms   = 0;
 // millis() when the rider's steering first exceeded kFmSteerCancelDeadband while FM was ACTIVE;
 // 0 = steering currently centred. Counts the kFmSteerPersistMs persistence filter for steer-cancel.
 static unsigned long fm_steer_input_since_ms = 0;
+
+// V2.5-Evo - 2026-07-25 - A3: millis() when dist_m first exceeded kFmDivergeFactor x D_engage while
+// FM was ACTIVE; 0 = not currently beyond it. Counts the kFmDivergeMs dwell for the divergence fault.
+// Reset discipline is copied from runPhaseC's rtm_prev_dist_m and from fm_sep_over_since_ms: cleared
+// the moment the condition stops holding, whenever the distance is untrustworthy (trigger released,
+// GPS stale/rejected, link down), whenever FM is not ACTIVE, and on entry to FM_IDLE. A half-finished
+// proof is never carried across a data gap or a state change.
+static unsigned long fm_diverge_since_ms = 0;
+
+// V2.5-Evo - 2026-07-25 - F1: the buggy-to-rider distance in metres captured at the instant
+// fm_diverge_since_ms started, i.e. the baseline the closure test compares against at dwell expiry.
+// -1.0f = no dwell running / no baseline. This is the FM twin of runPhaseC's rtm_prev_dist_m: it turns
+// the detector from "are you far?" (a level) into "are you failing to close?" (a derivative), which is
+// what actually distinguishes a buggy running away from one that is following from further back than
+// we would like. Cleared in lockstep with fm_diverge_since_ms everywhere, so a baseline can never
+// outlive its own dwell or be compared against a distance from a different engagement.
+static float         fm_diverge_start_dist_m = -1.0f;
 
 // The computed trailing target point FM steers toward. Written by computeFmTarget() and
 // read by updateRtmSteering() when fm_rx_active is set.
@@ -1417,6 +1495,13 @@ static void fmEnterIdle()
   // stay sticky for kFmFaultStickyMs even after FM has dropped into FM_IDLE.
   fm_steer_input_since_ms = 0;
   fm_stop_ms              = 0;
+
+  // V2.5-Evo - 2026-07-25 - A3: leaving FM drops any part-accumulated divergence proof with it, so
+  // the next engagement starts its 3 s window from scratch rather than inheriting a stale timer.
+  // F1: the closure baseline is cleared in the same breath — a distance measured during the previous
+  // engagement must never be the yardstick for the next one.
+  fm_diverge_since_ms     = 0;
+  fm_diverge_start_dist_m = -1.0f;
 }
 
 // ------------------------------------------------------------
@@ -1546,6 +1631,16 @@ void runFmLoop()
   bool  speed_ok = false;                      // condition 9 (HOLD — rider moving)
   bool  dist_ok  = false;                      // condition 8 (HOLD — follow geometry)
   float dist_m   = 0.0f;
+  // V2.5-Evo - 2026-07-25 - A3: sustained divergence while ACTIVE. Classed as a FAULT (same family
+  // as conditions 2-7), so it is routed through the SAME FM_STOPPING path below — never its own.
+  bool  diverge_fault = false;
+  // V2.5-Evo - 2026-07-25 - F7: the numbers the divergence message prints, captured at detection but
+  // PRINTED LATER — in the fault branch, after fm_throttle_cap = 0. WHAT THE BUG WAS: the message was
+  // printed at the moment of detection, which is upstream of the cap write, so a full UART TX buffer
+  // could block inside Serial.printf() and delay the hard stop by however long the host took to drain
+  // it. The motor must reach 0 first and the explanation can wait; nothing else reads these.
+  float diverge_limit_m = 0.0f;   // the ceiling (kFmDivergeFactor x D_engage) that was exceeded, m
+  float diverge_start_m = 0.0f;   // the distance captured when the dwell started, m
 
   if (hard_ok) {
     // Both GPS sources are guaranteed fresh here by conditions 4 and 5.
@@ -1584,7 +1679,44 @@ void runFmLoop()
     // silently disabling the whole interlock.
     float d_follow_e = min_dist + band;
     if (d_follow_e < 0.5f) d_follow_e = 0.5f;
-    float d_engage = kFmEngageFactor * d_follow_e;
+
+    // V2.5-Evo - 2026-07-25 - A2: honour the fm_engage_dist_m override.
+    // WHAT WAS WRONG: the field has existed in confStruct since SW34 and ConfigService validates it
+    // (0-50 m), and the web UI shows a row for it — but no code anywhere ever READ it, so turning the
+    // knob changed nothing. WHAT THIS DOES: when set above zero, the stored value IS the engage
+    // distance, in METRES. It is NOT the rope length — set it to rope length x ~1.15 so the buggy
+    // clears the rope with margin (a 7.6 m rope -> 9.0). 0 = auto and reproduces the previous
+    // behaviour exactly: D_engage = kFmEngageFactor (1.5) x d_follow. The 0.1f compare is the
+    // float "is this really zero" guard, not a second threshold — ConfigService already clamps the
+    // range to 0-50 m.
+    //
+    // V2.5-Evo - 2026-07-25 - F5 comment correction. The A2 note here used to claim D_engage feeds
+    // "the distance Schmitt hysteresis". IT DOES NOT, and saying so was misleading about what this
+    // knob actually moves. The condition-8 Schmitt a dozen lines above works purely off min_dist and
+    // min_dist + band; it never looks at D_engage. The two things that DO consume D_engage are: (1)
+    // the separation latch immediately below, together with its kFmSepDwellMs dwell, and (2) the A3
+    // divergence ceiling further down, which is kFmDivergeFactor x D_engage. Nothing else reads it.
+    //
+    // V2.5-Evo - 2026-07-25 - F3 defensive floor. WHAT THE BUG WAS: ConfigService accepted any value
+    // in 0-50 m with no lower bound above zero, so a stored 3 m was legal — and 3 m is SHORTER than
+    // the tow rope. Since this value IS the engage distance, that setting let FM engage while the
+    // rider was still on the rope: the exact scenario the separation latch exists to prevent.
+    // V2.5-Evo - 2026-07-25 - F3-b: that floor was 5.0 m, which was itself below the rope it exists
+    // to clear (the owner's rope is 20 ft = 6.10 m), so 5.0-6.1 m stayed legal and stayed on-rope.
+    // It is now kFmEngageDistFloorM = 8.0 m, defined once in BREmote_V2_Rx.h and shared with the
+    // validator — no duplicated literal.
+    // WHAT THE FIX DOES: cfgValidateCrossField() refuses to STORE anything in (0, kFmEngageDistFloorM),
+    // and this clamp is the belt-and-braces companion for a value already sitting in SPIFFS from
+    // before that rule existed — such a config is never re-validated, so without this clamp it would
+    // still reach the latch. Behaviour is unchanged: a legacy stored value clamps UP to the floor.
+    // 0 (auto) is untouched and still takes the auto branch.
+    float d_engage;
+    if (usrConf.fm_engage_dist_m > 0.1f) {
+      d_engage = usrConf.fm_engage_dist_m;
+      if (d_engage < kFmEngageDistFloorM) d_engage = kFmEngageDistFloorM;
+    } else {
+      d_engage = kFmEngageFactor * d_follow_e;
+    }
     if (dist_m > d_engage) {
       if (fm_sep_over_since_ms == 0) {
         fm_sep_over_since_ms = now;
@@ -1596,15 +1728,103 @@ void runFmLoop()
     } else {
       fm_sep_over_since_ms = 0;   // fell back inside D_engage - the dwell restarts from scratch
     }
+
+    // ---- A3: DIVERGENCE FAULT — the upper bound FM never had ----
+    // V2.5-Evo - 2026-07-25. Condition 8 above is a lower bound only, so a buggy steering the WRONG
+    // WAY satisfies it more and more comfortably the further it runs. This adds the missing ceiling:
+    // while FM is ACTIVE, being further than kFmDivergeFactor x D_engage from the rider AND FAILING
+    // TO CLOSE for kFmDivergeMs is not "following badly", it is "not following", and it is a FAULT.
+    //
+    // V2.5-Evo - 2026-07-25 - F1: this used to be a BARE THRESHOLD (beyond the ceiling for the dwell
+    // = fault) and that aborted legitimate engagements. Two reasons, and they compound. First, the
+    // engage ramp is kFmEngageRampMs = 3500 ms but the dwell is only kFmDivergeMs = 3000 ms, so the
+    // fault could fire BEFORE the buggy had finished being given throttle. Second, while the heading
+    // error is still large, cap 4 pins the throttle at kFmAlignCap = 13/255 (~5%) so the buggy pivots
+    // in place and the gap GROWS before it starts to shrink — and at the engagement instant dist_m is
+    // typically 13-21 m against an 18 m ceiling (2 x a 9 m D_engage). Net effect: FM aborted ~3 s into
+    // most real engagements and forced a re-arm mid-session.
+    //
+    // THE FIX IS IN TWO PARTS, and both are needed:
+    //
+    //   1. TEST THE DERIVATIVE, NOT THE LEVEL. This is what runPhaseC() actually does — its
+    //      convergence check fails on "dist_m >= rtm_prev_dist_m", i.e. on NOT CLOSING, never on being
+    //      far. We do the same in FM's own terms: snapshot the distance when the dwell starts
+    //      (fm_diverge_start_dist_m) and, at dwell expiry, fault only if the buggy has failed to close
+    //      by more than kFmDivergeCloseEpsM. If it HAS closed by more than that, it is following — just
+    //      from further back than we would like — so the timer is cleared and no fault fires. The next
+    //      tick starts a fresh window, so a buggy that is beyond the ceiling and genuinely closing is
+    //      re-tested every 3 s and keeps passing for exactly as long as it keeps closing.
+    //      (Why "must be DECREASING" from runPhaseC is not copied verbatim: RTM closes on a stationary
+    //      rider so any non-decrease is wrong, whereas FM holds station behind a MOVING rider and the
+    //      distance legitimately rises and falls every wave. The epsilon is what carries that across.)
+    //
+    //   2. ENGAGE GRACE. The detector is skipped entirely, and its dwell parked, for
+    //      kFmEngageRampMs + kFmDivergeMs (3500 + 3000 = 6500 ms) after every entry into FM_ACTIVE.
+    //      The buggy must be allowed to finish ramping AND aligning before its geometry is judged;
+    //      judging it mid-ramp measures the ramp, not the steering. Parking the dwell (rather than
+    //      letting it run) guarantees the first post-grace window is a full, clean kFmDivergeMs.
+    //      NOTE: this is deliberately NOT kFmEngageGraceMs (2000 ms) — that constant is the
+    //      steer-cancel grace and is a different, shorter window for a different purpose.
+    //
+    // Bookkeeping is otherwise the same shape runPhaseC() uses: one timer plus one baseline, evaluated
+    // every tick, both cleared the instant the condition stops holding, so nothing can accumulate
+    // across a gap. The dwell is a plain first-exceed timestamp compared against millis() — no delay(),
+    // no blocking, no extra loop.
+    //
+    // Only evaluated while fm_state == FM_ACTIVE (FM actually has control this tick). ARMED, HOLD and
+    // STOPPING are all states in which FM is not steering, so distance says nothing about divergence.
+    //
+    // SAFETY: this branch only ever sets a flag that REMOVES eligibility. It cannot raise the
+    // throttle cap, cannot extend engagement, and does not touch the deadman. Both parts of the fix
+    // make the detector STRICTLY LESS likely to fire, never more — a missed divergence still leaves
+    // every other fault condition and the deadman in place, and the rider can always let go.
+    bool in_engage_grace = (fm_engage_ms != 0) &&
+                           ((now - fm_engage_ms) < (kFmEngageRampMs + kFmDivergeMs));
+
+    if (in_engage_grace) {
+      // Ramping and/or aligning — not judgeable yet. Park the window so it starts fresh afterwards.
+      fm_diverge_since_ms     = 0;
+      fm_diverge_start_dist_m = -1.0f;
+    }
+    else if (fm_state == FM_ACTIVE && dist_m > (kFmDivergeFactor * d_engage)) {
+      if (fm_diverge_since_ms == 0) {
+        // First tick beyond the ceiling: start the dwell and record what we are closing FROM.
+        fm_diverge_since_ms     = now;
+        fm_diverge_start_dist_m = dist_m;
+      } else if ((now - fm_diverge_since_ms) >= kFmDivergeMs) {
+        if (dist_m >= (fm_diverge_start_dist_m - kFmDivergeCloseEpsM)) {
+          // Beyond the ceiling for the full dwell and NOT closing — this is divergence.
+          // F7: the numbers are stashed and printed later, after fm_throttle_cap = 0.
+          diverge_fault   = true;
+          diverge_limit_m = kFmDivergeFactor * d_engage;
+          diverge_start_m = fm_diverge_start_dist_m;
+        } else {
+          // It has closed by more than the epsilon: the buggy IS following, just far. No fault —
+          // clear the window so the next tick opens a fresh one from the current distance.
+          fm_diverge_since_ms     = 0;
+          fm_diverge_start_dist_m = -1.0f;
+        }
+      }
+    } else {
+      // Back inside the limit, or FM is not ACTIVE — the dwell restarts from scratch.
+      fm_diverge_since_ms     = 0;
+      fm_diverge_start_dist_m = -1.0f;
+    }
   } else {
     // No trustworthy distance this tick (trigger released, GPS stale/rejected, link down).
     // Restart the dwell rather than carrying a half-finished proof across a data gap.
     fm_sep_over_since_ms = 0;
+    // A3: same discipline for the divergence dwell — never judge divergence on data we do not trust.
+    // F1: the closure baseline goes with it; a baseline must never outlive the dwell that set it.
+    fm_diverge_since_ms     = 0;
+    fm_diverge_start_dist_m = -1.0f;
   }
 
   // The separation latch gates eligibility. Without it FM stays ARMED and the buggy stays
   // fully manual, no matter how well the other conditions read.
-  bool can_be_active = hard_ok && speed_ok && dist_ok && fm_sep_latched;
+  // V2.5-Evo - 2026-07-25 - A3: !diverge_fault joins the same AND chain. It can only ever REMOVE
+  // eligibility, so the worst case of a false positive is FM handing control back to the rider.
+  bool can_be_active = hard_ok && speed_ok && dist_ok && fm_sep_latched && !diverge_fault;
 
   if (can_be_active) {
     // ---- Steer-cancel while ACTIVE (A3 PART 2 / R-steering) ----
@@ -1677,17 +1897,31 @@ void runFmLoop()
 
     bool was_engaged = (fm_state == FM_ACTIVE || fm_state == FM_HOLD);
 
-    if (!fault_ok && was_engaged) {
-      // ---- FAULT (conditions 2-7): something actually broke while FM had control ----
+    if ((!fault_ok || diverge_fault) && was_engaged) {
+      // ---- FAULT (conditions 2-7, plus A3 divergence): something actually broke while FM had control ----
       // End autonomy for the run: enter FM_STOPPING, which ramps the throttle cap 0 -> 255 over the
       // next kFmStopRampMs (handled at the top of runFmLoop), then drops to FM_IDLE — re-arm
       // required. Fire the stop notification (sticky fm_flags bit 3, drives St + stop buzz on the
       // TX) ONLY if the trigger was held at this instant: a fault after release is not surprising,
       // and the bar going dark carries it. R4: heading loss is one of these faults now.
+      // V2.5-Evo - 2026-07-25 - A3: sustained divergence enters through THIS branch and no other, so
+      // it inherits the proven fault semantics unchanged — hard stop to cap 0 now, the same ramp back
+      // to manual, the same haptic/St notification, and the same mandatory re-arm. Steering away is
+      // exactly as much of a "something broke" event as losing the compass, and a silent auto-resume
+      // after it would be the unrequested autonomy this architecture forbids.
       if (thr_held) fm_fault_alarm_ms = now;
       fm_stop_ms      = now;
       fm_state        = FM_STOPPING;
       fm_throttle_cap = 0;         // subtract-only hard stop; the ramp begins next tick
+      // V2.5-Evo - 2026-07-25 - F7: ALL fault logging happens BELOW this line, never above it. The
+      // divergence detail used to print at the point of detection, which is upstream of the cap write
+      // — so if the USB CDC TX buffer was full (host not draining) Serial.printf() could block and
+      // defer the hard stop for as long as the host took. Motor to 0 first, explain afterwards.
+      if (diverge_fault) {
+        Serial.printf("FM [RX] DIVERGENCE FAULT: dist=%.1f m (was %.1f m at dwell start, closed <%.1f m) > limit %.1f m sustained %lu ms — not closing\n",
+                      (double)dist_m, (double)diverge_start_m, (double)kFmDivergeCloseEpsM,
+                      (double)diverge_limit_m, (unsigned long)kFmDivergeMs);
+      }
       Serial.printf("FM [RX] FAULT -> STOPPING (ramp %lu ms) -> IDLE, re-arm required (thr_held=%d)\n",
                     (unsigned long)kFmStopRampMs, (int)thr_held);
     } else if (was_engaged) {

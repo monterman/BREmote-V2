@@ -1143,7 +1143,7 @@ static void displayDistanceInUnits(float dist_m)
     scrollFarReset();
     if (dist_m < 10.0f)
     {
-      // 0-9.9 m: "X.X" with the C3 R4 dot meaning a TRUE decimal (1.7 = 1.7 m). Same dot
+      // 0-9.9 m: "X.X" with the C3 R3 dot meaning a TRUE decimal (1.7 = 1.7 m). Same dot
       // mechanism the kW readout uses. Work in integer tenths to avoid float-rounding glitches.
       uint16_t tenths = (uint16_t)(dist_m * 10.0f + 0.5f);  // 10..99 for 1.0-9.9 m
       if (tenths > 99) tenths = 99;                         // guard 9.95-9.99 rounding to 10.0

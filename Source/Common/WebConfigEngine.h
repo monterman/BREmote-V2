@@ -4,6 +4,7 @@
 #ifdef WIFI_ENABLED
 
 // Shared web config AP and HTTP API for BREmote V2 TX and RX.
+// V2.5-Evo - 2026-07-25 - F-WEBCSV: WiFi log download resynced to the serial ?download CSV (26->31 columns); ERPM x10 scaling and duty_cycle cast now match Logger.ino; row buffer 400->512
 // V2.5-Evo - 2026-05-03 - Content-Disposition header on export (iPhone filename fix)
 // V2.5-Evo - 2026-05-08 - Bundle 1: HTTP log download updated for 26-column CSV (+heading_error_dx10, d_error_dx10)
 // V2.5-Evo - 2026-05-06 - FIX-LOGDL-1: log download CSV updated for LOG-EXT-1 fields (24 columns); WDT reset + FreeRTOS yield added inside read loop to support files >40KB without AP reboot
@@ -485,12 +486,32 @@ static void webCfgHandleDownloadLog()
   webCfgServer.sendHeader("Content-Disposition", "attachment; filename=\"" + fname.substring(1) + ".csv\"");
   webCfgServer.send(200, "text/csv", "");
 
-  // V2.5-Evo - 2026-05-08 - Bundle 1: 26-column header (+heading_error_dx10, d_error_dx10)
-  String header = "timestamp_ms,motor_current_A,battery_current_A,duty_cycle_%,voltage_V,ERPM,temp_mos_C,fault_code,speed_kmh,latitude,longitude,datetime_unix,thr_received,rtm_source,rtm_confidence,rtm_rx_active,gps_phase_b_ok,rtm_steer_override,rtm_heading_chosen_dx10,compass_live_dx10,compass_snap_dx10,snap_age_s,gps_course_dx10,cog_age_ms_div10,heading_error_dx10,d_error_dx10\n";
+  // V2.5-Evo - 2026-07-25 - F-WEBCSV: header resynced to the serial ?download header (Logger.ino:582).
+  // The bug: this WiFi path was left on the 2026-05-08 Bundle-1 26-column format. It never picked up
+  // the 2026-07-19 FM-triage columns (remote_error, effective_steer) nor the 2026-07-24 F9 columns
+  // (tx_distance_m, rssi_dbm, snr_db), so every CSV pulled over WiFi silently dropped 5 columns even
+  // though those fields ARE written into the binary records on SPIFFS. Anyone who downloads logs over
+  // WiFi (the normal workflow) lost the distance and LoRa link-quality data entirely.
+  // The fix: this string is a byte-for-byte copy of the serial header, plus the trailing "\n" that the
+  // chunked HTTP path needs (Serial.println() supplies its own newline). Keep the two in lockstep —
+  // if you add a column in Logger.ino, copy the string here again rather than retyping it.
+  String header = "timestamp_ms,motor_current_A,battery_current_A,duty_cycle_%,voltage_V,ERPM,temp_mos_C,fault_code,speed_kmh,latitude,longitude,datetime_unix,thr_received,rtm_source,rtm_confidence,rtm_rx_active,gps_phase_b_ok,rtm_steer_override,rtm_heading_chosen_dx10,compass_live_dx10,compass_snap_dx10,snap_age_s,gps_course_dx10,cog_age_ms_div10,heading_error_dx10,d_error_dx10,remote_error,effective_steer,tx_distance_m,rssi_dbm,snr_db\n";
   webCfgServer.sendContent(header);
 
   VescLogData logData;
-  char row[400];  // Bundle 1: bumped from 384 to 400 for 26-column CSV (+14 bytes max for 2 new int16 fields)
+  // V2.5-Evo - 2026-07-25 - F-WEBCSV: row buffer resized 400 -> 512 for the 31-column CSV.
+  // Sizing arithmetic (worst-case printed width per field, in the field order below):
+  //   timestamp %u 10, motor %.2f 7, batt %.2f 7, duty %d 4, volt %.1f 6, ERPM %d 7, temp %u 10,
+  //   fault %u 3, speed %.1f 6, lat %.6f 11, lon %.6f 11, datetime %u 10, then 6x uint8 %u 3 = 18,
+  //   heading_chosen %d 6, 5x uint16 %u 5 = 25, heading_err %d 6, d_err %d 6, remote_error %u 3,
+  //   effective_steer %u 3, tx_distance %.1f 6, rssi %d 6, snr %.1f 7
+  //   = 178 field chars + 30 commas + 1 newline + 1 NUL = 210 bytes for normal data.
+  // Pathological guard: latitude/longitude are raw floats. If a record is corrupt, "%.6f" on a
+  // full-range float prints ~47 chars instead of 11, pushing the row to ~282 bytes. 512 clears that
+  // by 1.8x and clears the normal case by 2.4x. The five new columns alone add ~30 chars, so the old
+  // 400 would NOT have overflowed - but snprintf truncation is silent and corrupts a row mid-field,
+  // so this is deliberately over-sized. Cost is +112 bytes of stack in the Arduino loop task (8 KB).
+  char row[512];
   uint16_t recordCount = 0;
   while (file.available())
   {
@@ -503,13 +524,21 @@ static void webCfgHandleDownloadLog()
     size_t bytesRead = file.read((uint8_t*)&logData, sizeof(VescLogData));
     if (bytesRead == sizeof(VescLogData))
     {
-      snprintf(row, sizeof(row), "%u,%.2f,%.2f,%d,%.1f,%d,%u,%u,%.1f,%.6f,%.6f,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%d,%d\n",
+      // V2.5-Evo - 2026-07-25 - F-WEBCSV: row formatter resynced to the serial ?download formatter
+      // (Logger.ino downloadLogFile()). Same 31 fields, same order, same specifiers, same scaling,
+      // same N/A sentinels — the two outputs must be indistinguishable. Two silent divergences that
+      // predate the missing columns are also corrected here:
+      //   - ERPM: VescLogData.ERPM stores ERPM/10, so it must be multiplied back by 10. This path was
+      //     emitting the raw stored value, i.e. every WiFi CSV reported ERPM 10x too low.
+      //   - duty_cycle: cast to int16_t to match the serial call exactly (no behavior change — int8_t
+      //     already promotes to int for "%d" — but it keeps the two blocks diffable line for line).
+      snprintf(row, sizeof(row), "%u,%.2f,%.2f,%d,%.1f,%d,%u,%u,%.1f,%.6f,%.6f,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%d,%d,%u,%u,%.1f,%d,%.1f\n",
                     logData.timestamp,
                     logData.current_motor / 100.0f,
                     logData.current_battery / 100.0f,
-                    logData.duty_cycle,
+                    (int16_t)logData.duty_cycle,
                     logData.voltage / 10.0f,
-                    logData.ERPM,
+                    (int32_t)logData.ERPM * 10,
                     logData.temp_mos,
                     logData.fault_code,
                     logData.speed / 10.0f,
@@ -530,7 +559,15 @@ static void webCfgHandleDownloadLog()
                     (unsigned)logData.cog_age_ms_div10,
                     // Bundle 1: heading controller tuning columns (0x7FFF = no data sentinel)
                     (int)logData.heading_error_dx10,
-                    (int)logData.d_error_dx10);
+                    (int)logData.d_error_dx10,
+                    // E7 Fix: BREmote remote_error code (0 = none, 7 = E7 water ingress)
+                    (unsigned)logData.error_code_log,
+                    // FM triage: steering byte actually applied by calcPWM() (vs commanded rtm_steer_override)
+                    (unsigned)logData.effective_steer_log,
+                    // V2.5-Evo - 2026-07-24 - F9: distance (m) + link quality. N/A → distance -1.0, rssi -999, snr -99.0
+                    (logData.tx_distance_dx10 == 0xFFFF) ? -1.0f : (logData.tx_distance_dx10 / 10.0f),
+                    (logData.rssi_dbm == 0x7FFF) ? -999 : (int)logData.rssi_dbm,
+                    (logData.snr_dx10 == 0x7FFF) ? -99.0f : (logData.snr_dx10 / 10.0f));
       webCfgServer.sendContent(row);
 
       // Yield to FreeRTOS every 50 records to keep the WiFi stack and other tasks responsive.

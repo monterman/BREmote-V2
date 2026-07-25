@@ -638,7 +638,9 @@ The data logger is the primary tool for validating and tuning the RTM/FM steerin
 
 **Storage note:** if SPIFFS fills too quickly during long sessions, lower the rate with `?lograte`, **don't trim columns** — every diagnostic field is there to make the controller observable when something goes wrong, and the cost of dropping them is much greater than the storage savings.
 
-**Key columns for steering tuning (full set is 26 columns):**
+**Key columns for steering tuning (full set is 31 columns):**
+
+> The last five — `remote_error`, `effective_steer`, `tx_distance_m`, `rssi_dbm`, `snr_db` — were added in the 2026-07-19 and 2026-07-24 updates. `rssi_dbm` / `snr_db` are the LoRa link quality measured **at the RX for the packets the TX sent**, i.e. the *command* link, which is the direction that matters for control. `-999` / `-99.0` / `-1.0` are the "no data" sentinels.
 
 <details>
 <summary><strong>Click to expand: Full log column reference (14 fields with tuning relevance)</strong></summary>

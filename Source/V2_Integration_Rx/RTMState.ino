@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-07-25 - F3-c (RX FM): the 8 m engage-distance floor guarded ONLY the manual fm_engage_dist_m value. The AUTO branch — kFmEngageFactor (1.5) x (min_dist_m + followme_smoothing_band_m) — used its product raw, and neither of those two SPIFFS fields has a lower bound, so a small tuning such as min_dist 1 + band 1 produced d_engage = 3 m: BELOW the measured 20 ft / 6.10 m tow rope, letting Follow-Me latch and engage with the rider still ON the rope. Same hazard the floor exists to prevent, reached through the other branch. FIX: each branch now only computes its candidate and ONE kFmEngageDistFloorM clamp is applied to the final d_engage regardless of origin. The clamp can only RAISE d_engage (engage later, never earlier), and it is a no-op at the owner's 4+2 tuning, which yields 9.0 m. Also swept the stale "6.7-7.6 m" tow-rope prose in this file to the measured 6.10 m. No confStruct change, sizeof stays 184, SW_VERSION stays 34.
 // V2.5-Evo - 2026-07-25 - F3-b (RX FM; comment + shared-constant move, no behaviour change): kFmEngageDistFloorM is no longer DEFINED in this file. It now has exactly one definition, in BREmote_V2_Rx.h, raised 5.0 -> 8.0 m — 5.0 m sat below the tow rope it exists to clear (the owner's rope is 20 ft = 6.10 m), so a manual fm_engage_dist_m of 5.0-6.1 m was legal and let FM engage with the rider still ON the rope. ConfigService.ino's duplicate bare 5.0f literal is gone with it; both the validator and the read-site clamp in runFmLoop() now reference the one shared constant. The clamp itself is unchanged in shape — legacy stored values still clamp UP to the floor, now 8.0 m. No confStruct change, sizeof stays 184, SW_VERSION stays 34.
 // V2.5-Evo - 2026-07-25 - Batch A follow-up (Rex A3 NO-GO: F1/F3/F5/F7), RX FM only. (F1) the A3 divergence detector was a BARE THRESHOLD on a 3000 ms dwell while the engage ramp is 3500 ms, so it could fire BEFORE the ramp even finished and aborted ordinary engagements (at engage, dist_m is typically 13-21 m against an 18 m ceiling, and the align cap of 13/255 means the gap GROWS first). It now mirrors runPhaseC()'s actual shape: the distance at dwell start is captured (fm_diverge_start_dist_m) and the fault is raised at dwell expiry ONLY if the buggy is not closing (dist_m >= start - kFmDivergeCloseEpsM 2.0 m); if it has closed by more than that it IS following, just far, so the timer clears and no fault fires. Plus an engage grace: the detector is skipped and its dwell parked for kFmEngageRampMs + kFmDivergeMs (6.5 s) after every engagement so the buggy is allowed to ramp and align before it is judged. (F3) fm_engage_dist_m gained a 5 m floor — a stored value of, say, 3 m IS the engage distance in metres and is SHORTER than the 6.7-7.6 m tow rope, which defeated the separation interlock entirely; cfgValidateCrossField() now accepts only 0 (auto) or >= 5.0 m, and the use site clamps defensively so a pre-existing stored value cannot slip through. (F5) corrected the A2 comment that claimed d_engage feeds the distance Schmitt hysteresis - it does not; the Schmitt uses min_dist / min_dist+band. (F7) the divergence Serial.printf now runs AFTER fm_throttle_cap = 0 so UART backpressure can never defer the hard stop. All compile-time constants; no confStruct change, sizeof stays 184, SW_VERSION stays 34.
 // V2.5-Evo - 2026-07-25 - Batch A (A2+A3), RX FM only. (A2) fm_engage_dist_m is now READ: >0 sets the FM engage distance directly in metres (rope x ~1.15), 0 keeps the previous auto behaviour (kFmEngageFactor x d_follow) bit-for-bit; latch, dwell and Schmitt hysteresis untouched. (A3) FM divergence FAULT — runFmLoop() gained the upper distance bound it never had: condition 8 is a lower bound only, and runPhaseC()'s convergence check is RTM-only (called from runRtmLoop, never runFmLoop), so a wrong heading let FM steer away indefinitely. dist_m > kFmDivergeFactor(2.0) x D_engage sustained kFmDivergeMs(3000) while FM_ACTIVE now routes through the EXISTING fault path (FM_STOPPING ramp -> FM_IDLE, re-arm required, same haptic/St semantics as conditions 2-7). Non-blocking first-exceed timestamp, cleared on any condition/state/data-trust change. Subtract-only: adds no throttle, extends no engagement, does not touch the deadman. All compile-time constants; no confStruct change; SW_VERSION stays 34.
@@ -361,10 +362,18 @@ static const float    kFmMotionBaselineS     = 0.4f;   // seconds
 // How much further than the steady-state follow distance the rider must get before FM is
 // allowed to engage for the first time. D_engage = kFmEngageFactor * d_follow.
 // WHY THIS EXISTS: before this change the engage distance EQUALLED the follow distance
-// (d_follow = min_dist_m + band). The tow rope is 6.7-7.6 m long, which is LONGER than
+// (d_follow = min_dist_m + band). The tow rope MEASURES 20 ft = 6.10 m, which is LONGER than
 // d_follow at the intended 4+2 = 6 m tuning — so FM could engage while the rider was still
 // on the rope, i.e. autonomous steering mid-tow. 1.5x gives 9 m at 4+2 tuning: 9 m clears
-// the 7.6 m maximum rope with ~18% margin.
+// the measured 6.10 m rope by ~1.48x.
+// V2.5-Evo - 2026-07-25 - F3-c prose fix: this comment used to quote a "6.7-7.6 m" tow rope.
+// That number was an early estimate and it contradicted the MEASURED 6.10 m figure that
+// BREmote_V2_Rx.h, ConfigService.ino and the web UI text all use. There is one rope length in
+// this project and it is 6.10 m; the estimate is gone so the documentation stops arguing with itself.
+// IMPORTANT: this factor is NOT the only thing protecting the engage distance. min_dist_m and
+// followme_smoothing_band_m have no lower bound of their own, so a small tuning can make this
+// product tiny — which is why kFmEngageDistFloorM is applied to the RESULT of this multiplication
+// as well, not just to a manually typed fm_engage_dist_m. See the F3-c clamp in runFmLoop().
 static const float    kFmEngageFactor        = 1.5f;   // multiplier on d_follow
 
 // How long the rider must stay beyond D_engage before the separation latch sets.
@@ -1668,8 +1677,8 @@ void runFmLoop()
 
     // ---- R1: separation latch (the tow interlock) ----
     // Before FM may engage for the first time this run, the rider must be proven genuinely
-    // OFF THE ROPE: beyond D_engage = 1.5 x d_follow (9 m at the 4+2 tuning, clearing the
-    // 7.6 m rope) continuously for kFmSepDwellMs. The dwell is what makes this spike-proof:
+    // OFF THE ROPE: beyond D_engage (9 m at the 4+2 tuning, clearing the measured 20 ft /
+    // 6.10 m rope) continuously for kFmSepDwellMs. The dwell is what makes this spike-proof:
     // a one-fix GPS glitch cannot hold the distance high across 4 consecutive 2 Hz fixes.
     // Once latched it STAYS latched until a §R2 clear, so the buggy may close back to its
     // normal 6 m station and re-engage on the ordinary Schmitt hysteresis without ever having
@@ -1684,11 +1693,14 @@ void runFmLoop()
     // WHAT WAS WRONG: the field has existed in confStruct since SW34 and ConfigService validates it
     // (0-50 m), and the web UI shows a row for it — but no code anywhere ever READ it, so turning the
     // knob changed nothing. WHAT THIS DOES: when set above zero, the stored value IS the engage
-    // distance, in METRES. It is NOT the rope length — set it to rope length x ~1.15 so the buggy
-    // clears the rope with margin (a 7.6 m rope -> 9.0). 0 = auto and reproduces the previous
-    // behaviour exactly: D_engage = kFmEngageFactor (1.5) x d_follow. The 0.1f compare is the
+    // distance, in METRES. It is NOT the rope length — MEASURE the rope and set at least a metre
+    // beyond it (the measured 20 ft / 6.10 m rope -> 8 m, which is also the enforced floor).
+    // 0 = auto: D_engage = kFmEngageFactor (1.5) x d_follow. The 0.1f compare is the
     // float "is this really zero" guard, not a second threshold — ConfigService already clamps the
     // range to 0-50 m.
+    // V2.5-Evo - 2026-07-25 - F3-c amendment: the auto branch is no longer bit-for-bit the pre-A2
+    // behaviour — it is now floored at kFmEngageDistFloorM as well (see the F3-c block below). At
+    // the 4+2 tuning auto yields 9.0 m, above the floor, so nothing changes at the shipped setting.
     //
     // V2.5-Evo - 2026-07-25 - F5 comment correction. The A2 note here used to claim D_engage feeds
     // "the distance Schmitt hysteresis". IT DOES NOT, and saying so was misleading about what this
@@ -1706,17 +1718,40 @@ void runFmLoop()
     // It is now kFmEngageDistFloorM = 8.0 m, defined once in BREmote_V2_Rx.h and shared with the
     // validator — no duplicated literal.
     // WHAT THE FIX DOES: cfgValidateCrossField() refuses to STORE anything in (0, kFmEngageDistFloorM),
-    // and this clamp is the belt-and-braces companion for a value already sitting in SPIFFS from
-    // before that rule existed — such a config is never re-validated, so without this clamp it would
+    // and the clamp below is the belt-and-braces companion for a value already sitting in SPIFFS from
+    // before that rule existed — such a config is never re-validated, so without the clamp it would
     // still reach the latch. Behaviour is unchanged: a legacy stored value clamps UP to the floor.
-    // 0 (auto) is untouched and still takes the auto branch.
+    // 0 (auto) is still accepted by the validator and still takes the auto branch below.
+    //
+    // V2.5-Evo - 2026-07-25 - F3-c: THE FLOOR NOW GUARDS BOTH BRANCHES, NOT JUST THE TYPED VALUE.
+    // WHAT THE BUG WAS: kFmEngageDistFloorM used to be applied INSIDE the manual branch only. The
+    // auto branch (fm_engage_dist_m = 0) computed kFmEngageFactor (1.5) x (min_dist_m +
+    // followme_smoothing_band_m) and used that product RAW. Those two SPIFFS values have no lower
+    // bound of their own — min_dist_m 1 m with a 1 m smoothing band is a perfectly storable tuning,
+    // and it yields d_engage = 1.5 x 2 = 3 m. Three metres is BELOW the measured 20 ft / 6.10 m tow
+    // rope, so Follow-Me could set the separation latch and engage with the rider still ON the rope:
+    // the exact hazard the floor exists to prevent, simply reached down the other branch. The floor
+    // was guarding the number the rider TYPES while leaving the number the firmware COMPUTES open.
+    // WHAT THE FIX DOES: each branch now only computes its candidate, and ONE clamp is applied to the
+    // final d_engage regardless of which branch produced it. The tow rope is a physical fact about
+    // this buggy, not a property of the config path, so the safety limit belongs on the result.
+    // WHY IT IS SAFE IN BOTH DIRECTIONS: the clamp can only ever RAISE d_engage, never lower it. A
+    // larger d_engage means the rider must separate FURTHER before FM may engage — it can only make
+    // engagement later and harder, never earlier or easier.
+    // NO-OP AT THE OWNER'S TUNING: min_dist_m 4 + followme_smoothing_band_m 2 = 6 m, x 1.5 = 9.0 m,
+    // already above the 8.0 m floor. Nothing changes at the shipped setting; the clamp only bites on
+    // a small-geometry tuning that would otherwise have produced an on-rope engage distance.
+    // KNOCK-ON, CHECKED: the A3 divergence ceiling further down is kFmDivergeFactor x d_engage, so a
+    // floored d_engage raises that ceiling in the same proportion — the detector becomes MORE
+    // permissive, never less, and cannot be made to fire spuriously by this change.
     float d_engage;
     if (usrConf.fm_engage_dist_m > 0.1f) {
-      d_engage = usrConf.fm_engage_dist_m;
-      if (d_engage < kFmEngageDistFloorM) d_engage = kFmEngageDistFloorM;
+      d_engage = usrConf.fm_engage_dist_m;      // manual: the stored value IS the engage distance, in metres
     } else {
-      d_engage = kFmEngageFactor * d_follow_e;
+      d_engage = kFmEngageFactor * d_follow_e;  // auto: derived from the follow geometry
     }
+    // F3-c: single tow-rope safety floor, applied to the COMPUTED value as well as the typed one.
+    if (d_engage < kFmEngageDistFloorM) d_engage = kFmEngageDistFloorM;
     if (dist_m > d_engage) {
       if (fm_sep_over_since_ms == 0) {
         fm_sep_over_since_ms = now;

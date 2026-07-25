@@ -16,6 +16,7 @@
 // V2.5-Evo - 2026-07-24 - F1 fix: added the two orphaned SW32 fields (rtm_target_speed_kmh, rtm_align_threshold_deg) to kCfgFields so ?set/?get/web-save can reach them; metadata rows only, no confStruct change, sizeof stays 184, SW_VERSION stays 34
 // V2.5-Evo - 2026-07-25 - F3-b: the fm_engage_dist_m floor is raised 5.0 -> 8.0 m AND is no longer a bare literal in this file — cfgValidateCrossField() now reads the single shared kFmEngageDistFloorM from BREmote_V2_Rx.h (the old "Arduino concatenation order stops this file seeing it" note was wrong: that header is included at the top of V2_Integration_Rx.ino, which is compiled first). 5.0 m was below the hazard the error message itself names — the owner's tow rope is 20 ft = 6.10 m, so 5.0-6.1 m was storable and still on-rope. Legal values are now 0 (auto) or 8.0-50.0 m. Threshold + message text only — no kCfgFields row changed, no confStruct change, sizeof stays 184, SW_VERSION stays 34.
 
+// V2.5-Evo - 2026-07-25 - F3-c: the fm_engage_dist_m rejection message is rewritten in plain English (owner request) — it now names the setting the way the web UI labels it ("Follow-Me Engage Distance") instead of leading with the raw struct key, states the minimum, gives the REASON (it is the tow-rope safety floor; Follow-Me must never be able to engage while the rider is still on the rope), tells the rider how to choose (measure your rope, add at least a metre), and states that 0/automatic is floored at the same minimum. The threshold is still read from the shared kFmEngageDistFloorM constant, never a bare literal. Message text only — no threshold change, no kCfgFields row changed, no confStruct change, sizeof stays 184, SW_VERSION stays 34.
 #include <stddef.h>
 
 const CfgFieldSpec kCfgFields[] = {
@@ -114,6 +115,9 @@ const CfgFieldSpec kCfgFields[] = {
   // than the rope length, so Follow-Me only engages once you have genuinely let go and separated.
   // Example: a 20 ft (6.1 m) rope -> set 8 m or more. Setting it at or below your rope length lets FM
   // engage while you are still on the rope. 8.0 m is the enforced minimum, not a recommendation.
+  // V2.5-Evo - 2026-07-25 - F3-c: setting 0 does not bypass that minimum. runFmLoop() applies the
+  // same kFmEngageDistFloorM clamp to the AUTO-computed engage distance too, so a small min_dist_m /
+  // smoothing-band tuning can no longer produce an on-rope engage distance down the automatic path.
   // auton_runtime_cap_s and fm_steer_reposition_en remain RESERVED and unread.
   {"fm_engage_dist_m",       CFG_FLOAT, offsetof(confStruct, fm_engage_dist_m),       true, false, true, 0.0f,  50.0f,   1, false},
   {"auton_runtime_cap_s",    CFG_U16,   offsetof(confStruct, auton_runtime_cap_s),    true, false, true, 0.0f, 3600.0f,  0, false},
@@ -157,10 +161,27 @@ bool cfgValidateCrossField(confStruct &candidate, String &err)
   // engage distance from Min Distance + Smoothing Band), or at least kFmEngageDistFloorM. Anything in
   // between is rejected with a message that says why. The 0.1f lower compare is the same float "is
   // this really zero" guard RTMState.ino uses at the read site, so the two agree on what is auto.
+  // V2.5-Evo - 2026-07-25 - F3-c: the rejection message is rewritten in plain English at the owner's
+  // request. WHAT WAS WRONG WITH IT: it opened with the raw struct key (fm_engage_dist_m), which
+  // means nothing to a rider looking at a web form labelled "FM Engage Distance", and it explained
+  // the limit as "it must clear the tow rope" without ever saying that the 8 m IS the tow-rope
+  // safety floor or what the rider should do about it. A safety refusal the rider cannot act on is a
+  // refusal they will work around. The message now names the setting the way the UI labels it,
+  // states the minimum, gives the reason (Follow-Me must never be able to engage while the rider is
+  // still on the rope), and tells them how to pick a value (measure the rope, add a metre). The
+  // number is still built from the shared kFmEngageDistFloorM constant — never a bare literal — so
+  // the message can never drift away from the threshold it is describing.
+  // NOTE for anyone editing this string: it is interpolated raw into a JSON body by
+  // webCfgHandleSet()/webCfgHandleSetBatch() in Common/WebConfigEngine.h with no escaping, so it must
+  // never contain a double quote or a backslash.
   if (candidate.fm_engage_dist_m > 0.1f && candidate.fm_engage_dist_m < kFmEngageDistFloorM)
   {
-    err = "ERR_CROSS:fm_engage_dist_m must be 0 (auto) or " + String(kFmEngageDistFloorM, 1) +
-          "-50.0 m — it must clear the tow rope (a 20 ft / 6.1 m rope needs the engage distance well beyond it)";
+    err = String("ERR_CROSS:Follow-Me Engage Distance must be 0 (automatic) or at least ") +
+          String(kFmEngageDistFloorM, 1) + " m. This " + String(kFmEngageDistFloorM, 1) +
+          " m minimum is the tow-rope safety floor: Follow-Me must never be able to engage while you " +
+          "are still on the rope. Measure your rope and set at least a metre beyond it (a 20 ft / " +
+          "6.1 m rope needs " + String(kFmEngageDistFloorM, 1) + " m or more). Setting 0 does not " +
+          "bypass this — automatic is floored at the same " + String(kFmEngageDistFloorM, 1) + " m.";
     return false;
   }
   return true;

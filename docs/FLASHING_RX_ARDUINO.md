@@ -11,8 +11,8 @@
 
 | Setting | Value | Why it matters |
 |---|---|---|
-| Board FQBN | `esp32:esp32:esp32c3:CDCOnBoot=default` | ESP32-C3, CDC off (below) |
-| **Partition Scheme** | **DO NOT SET — leave it alone** | The RX sketch ships its **own `partitions.csv`** and the build picks it up automatically. ⚠️ **NEVER select "Huge App"** (or pass any `PartitionScheme`) — it *overrides* the custom table, **halves SPIFFS, relocates it, and WIPES config + logs.** |
+| Board FQBN | `esp32:esp32:esp32c3:CDCOnBoot=default,PartitionScheme=custom` | ESP32-C3, CDC off (below), **Custom** partition scheme (below) |
+| **Partition Scheme** | **`custom`** — Arduino IDE: **"Custom"** | The RX sketch ships its **own `partitions.csv`**. **"Custom" means "use the sketch's own table"** — it does **not** invent a new one, so the flashed layout is *byte-identical* to leaving it unset (verified by hashing the generated table). What it fixes is the **size check** — see the size note below. ⚠️ **NEVER select "Huge App"** or any other named scheme — those *replace* your table, **halve SPIFFS, relocate it, and WIPE config + logs.** |
 | **USB CDC On Boot** | **Disabled** (`CDCOnBoot=default`) | GPIO 18/19 are the USB D-/D+ pins **and** the GPS UART (Serial1). Enabling CDC makes USB claim those pins → **GPS silently dies.** |
 | Flash Size | 4 MB | |
 | Flash Mode / Freq | QIO / 80 MHz (defaults) | |
@@ -24,18 +24,36 @@
 
 ## Compile + flash (arduino-cli)
 ```
-# COMPILE — note: NO PartitionScheme flag on the RX
-arduino-cli compile --fqbn esp32:esp32:esp32c3:CDCOnBoot=default  <path>/Source/V2_Integration_Rx
+# COMPILE
+arduino-cli compile --fqbn esp32:esp32:esp32c3:CDCOnBoot=default,PartitionScheme=custom  <path>/Source/V2_Integration_Rx
 
 # UPLOAD
-arduino-cli upload  --fqbn esp32:esp32:esp32c3:CDCOnBoot=default  --port <COMx>  <path>/Source/V2_Integration_Rx
+arduino-cli upload  --fqbn esp32:esp32:esp32c3:CDCOnBoot=default,PartitionScheme=custom  --port <COMx>  <path>/Source/V2_Integration_Rx
 ```
-(Arduino IDE equivalent: Board = "ESP32C3 Dev Module", **USB CDC On Boot = Disabled**, **Partition Scheme = leave default / do not change**.)
+(Arduino IDE equivalent: Board = "ESP32C3 Dev Module", **USB CDC On Boot = Disabled**, **Partition Scheme = "Custom"**.)
+
+---
+
+## About the reported program size (this trips everyone up)
+
+The RX's real app slot is **2.0 MB**, set by the sketch's own `partitions.csv`. But arduino-cli doesn't read the size limit from that file — it reads it from whichever **Partition Scheme** you selected.
+
+| Partition Scheme | Flashed layout | Size limit the tool checks against | Reported usage |
+|---|---|---|---|
+| *(not set)* | your `partitions.csv` ✅ | **1.25 MB — wrong** | **~97% (false alarm)** |
+| **`custom`** ✅ | your `partitions.csv` ✅ (identical) | 16 MB | ~7% |
+| `huge_app` ❌ | **replaced — WIPES config + logs** | 3 MB | — |
+
+**Why this matters:** with the scheme unset, the tool **refuses to compile once the firmware passes 1,310,720 bytes** — even though the chip still has ~800 KB free. The build simply starts failing with "sketch too big" for no real reason.
+
+**`PartitionScheme=custom` fixes it.** Its partitions field is empty, so the build still falls back to *your* `partitions.csv` — the generated table is byte-for-byte identical (verified by hash). Only the limit the tool measures against changes.
+
+> **Read this twice: "Custom" is safe. "Huge App" is the wipe trap.** They sound similar and do opposite things.
 
 ---
 
 ## Gotchas (read before you panic)
-- **"97% of program storage" is a FALSE reading.** arduino-cli size-checks against the default 1.25 MB app slot, but the real slot is **2.0 MB (≈61% used)**. **Do NOT "fix" it by selecting Huge App** — that IS the wipe trap.
+- **If you compile without `PartitionScheme=custom` and see "97% of program storage" — that is a FALSE reading.** See the size section above. **Do NOT "fix" it by selecting Huge App** — that IS the wipe trap. Select **Custom** instead.
 - **Verify the board by its MAC before flashing** (RX vs TX vs any other ESP32-C3) — flashing the wrong board is on you.
 - **Any partition-scheme change wipes SPIFFS** → you must re-pair, re-enter settings, and re-run compass calibration afterward.
 - **Libraries** (install via Library Manager): RadioLib, TinyGPS++, Adafruit AW9523 + the QMC5883L compass lib. See the `#include`s at the top of the sketch for the exact set.

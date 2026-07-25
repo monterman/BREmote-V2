@@ -8,7 +8,7 @@ Driver: HT16K33 at I2C address 0x70
 | Zone | Location | Description |
 |---|---|---|
 | Digits | C0-C2 (left) + C4-C6 (right), R0-R4 | Two character display |
-| Gap | C3, R0-R4 | Normally dark — separates digits; R4 used as decimal dot during RTM distance display |
+| Gap | C3, R0-R4 | Normally dark — separates digits; **R3** used as decimal dot during RTM/FM distance display (raised from R4 2026-07-25 for legibility) |
 | GPS status | C7 R0 only | V2.5-Evo — see below |
 | BLE status | C7 R1 only | V2.5-Evo SW55 — see below |
 | Temperature | C8, R0-R4 | VESC temp, fills bottom→top |
@@ -37,11 +37,21 @@ Controlled by `bt_dot_state`, driven by the DRV5032 Hall sensor on P_MAG (GPIO 9
 
 Releasing the magnet while `BT_DOT_FAST` → returns to `BT_DOT_OFF`. Short hold while `BT_DOT_SLOW` → toggles back to `BT_DOT_OFF`. BLE NUS + VESC Tool binary protocol released in master — field-confirmed 2026-05-16. Connect with VESC Tool (iOS/Android, free): scan for `BRemote-TX-XX`, connect, live gauges appear immediately.
 
-## Decimal Dot (C3 R4) — Distance Display
-When `rtm_display_mode = 0` (distance) and the value is ≥100m (metric) or ≥100ft (imperial), the gap column pixel at R4 lights as a decimal point for fractional km or miles:
-- `3.5` → left digit "3", decimal dot at C3 R4, right digit "5" (e.g. 3.5 km or 3.5 mi)
-- `12` → left digit "1", no decimal dot, right digit "2" (e.g. 12 m or 12 ft — whole value)
-- Set via `displayBuffer[5] |= (1u << 3)` **after** calling `displayDigits()` (displayDigits clears R4)
+## Decimal Dot (C3 R3) — Distance Display
+
+**Changed 2026-07-25.** The dot is now a **true decimal point, always** — it no longer means "×100". Distance is shown in **metres only** this version (`dist_unit` is retained in SPIFFS; feet is parked and not rendered).
+
+| Distance | Shows | Dot |
+|---|---|---|
+| < 1 m | `00` | no |
+| 0–9.9 m | `X.X` — e.g. `1.7` = **1.7 m** | **yes**, C3 R3 |
+| 10–99 m | `XX` whole metres — e.g. `17` = 17 m | no |
+| ≥ 100 m | scrolling **`FAR`** | no |
+
+- **Why it changed:** the dot previously meant ×100 above 100 m, so 170 m rendered as `1.7` and read as 1.7 m. That misread cost a rider control authority in the field. One meaning now: a dot is a decimal point.
+- **Why `FAR` instead of a number:** the digit zone is two characters, so 100 m+ cannot render literally. A scrolling word is unmistakable against every static state (`L#`, `E#`, `F1/2/3`, `99`, `XX`, `--`). It scrolls in the digit zone only — the R5 proximity bar, C7 status dots and C8/C9 bars are untouched, and it does not flash.
+- **Row position:** the dot sits at **R3** (raised one row from R4 on 2026-07-25 — on the bottom row it was hard to read). C3 is never written by `displayDigits()`, so the dot cannot collide with a digit at any row.
+- Set via `displayBuffer[4] |= (1u << 3)` **after** calling `displayDigits()` (which clears R0–R5, R3 included). The kW readout uses the same row so the decimal point is at a consistent height everywhere.
 
 ## Vibration Feedback Patterns — V2.5-Evo P8
 | Pattern | Feel | Trigger |
@@ -124,16 +134,23 @@ Distance is computed on RX side and sent via `telemetry.rtm_distance` (index 5).
 Encoding: 0-99 = tenths of meter (0.0–9.9m); 100-254 = value-90 meters (100=10m, 199=109m).
 TX decodes this value then routes it through `displayDistanceInUnits()` for unit conversion.
 
-## Distance Unit Display (P9 New — dist_unit SPIFFS field)
-All distance values on the TX display (RTM mode 0) are converted using `dist_unit`:
+## Distance Unit Display (`dist_unit` SPIFFS field) — **superseded 2026-07-25**
+
+> ⚠️ **The table below describes the OLD behaviour and no longer matches the firmware.** The ×100 dot was removed — see [Decimal Dot (C3 R3)](#decimal-dot-c3-r3--distance-display) above for what the display actually does now. Kept for historical reference only.
+>
+> **Current behaviour:** metres only for both `dist_unit` values (feet is parked, the field is retained in SPIFFS so a future version can implement it). `<1 m` → `00` · `0–9.9 m` → `X.X` with a **true decimal** dot at C3 R3 · `10–99 m` → whole metres · `≥100 m` → scrolling `FAR`.
+
+<details><summary>Historical: the original P9 dist_unit ranges (removed)</summary>
 
 | dist_unit | Unit | Range A | Range B (decimal dot active) | Minimum |
 |---|---|---|---|---|
 | 0 (default) | Metres / km | 1–99 m → whole metres ("01"–"99") | 100+ m → X.X km ("1.0"–"9.9") | <1 m → "00" |
 | 1 | Feet / miles | 4–99 ft → whole feet ("04"–"99") | 100+ ft → X.X mi ("0.1"–"9.9") | <4 ft → "00" |
 
+The dot lit only in Range B and meant ×100 — that is the ambiguity that was removed.
+</details>
+
 - Internal math is always metres. Unit conversion is display-layer only.
-- Decimal dot (C3 R4) lights only in Range B (fractional km or miles).
 - `displayDistanceInUnits(float dist_m)` in Display.ino handles all cases.
 
 ## Full-Screen Confirmation Messages (P9 New — fontCompact3x7)

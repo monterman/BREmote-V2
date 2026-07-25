@@ -582,7 +582,9 @@ void renderOperationalDisplay()
           } else {
             uint8_t pv_x10 = min((uint8_t)(telemetry.foil_power / 2), (uint8_t)99);
             displayDigits(pv_x10 / 10, pv_x10 % 10);              // leading zero shown: 0.4 kW → "0.4"
-            displayBuffer[5] |= (1u << 3);                         // decimal dot C3 R4; auto-cleared by next displayDigits() call
+            // V2.5-Evo - 2026-07-25 - Dot raised R4 -> R3, in step with the distance readout so the
+            // decimal point sits at the same height everywhere. C3 is the never-written separator column.
+            displayBuffer[4] |= (1u << 3);                         // decimal dot C3 R3; auto-cleared by next displayDigits() call
           }
           break;
         case DISPLAY_MODE_BAT:    displayShowTwoDigitOrDash(getEffectiveFoilBat()); break;
@@ -1068,10 +1070,10 @@ void updateBargraphs(void *parameter)
 // Inputs: dist_m in metres (float). Metres are rendered for BOTH unit settings this version.
 // Rules (metres):
 //   <1 m     → "00"
-//   0-9.9 m  → "X.X" with the true-decimal dot at C3 R4   (1.7 = 1.7 m)
+//   0-9.9 m  → "X.X" with the true-decimal dot at C3 R3   (1.7 = 1.7 m)
 //   10-99 m  → "XX" whole metres, no dot
 //   >=100 m  → scrolling "FAR"
-// displayDigits() must be called before setting the decimal dot (it clears R4).
+// displayDigits() must be called before setting the decimal dot (it clears R0-R5, R3 included).
 // ============================================================
 static uint8_t       far_scroll_pos = 0;   // current left-edge column offset into the FAR buffer
 static unsigned long far_scroll_ms  = 0;   // millis() of last scroll step (0 = freshly reset)
@@ -1146,7 +1148,14 @@ static void displayDistanceInUnits(float dist_m)
       uint16_t tenths = (uint16_t)(dist_m * 10.0f + 0.5f);  // 10..99 for 1.0-9.9 m
       if (tenths > 99) tenths = 99;                         // guard 9.95-9.99 rounding to 10.0
       displayDigits(tenths / 10, tenths % 10);
-      displayBuffer[5] |= (1u << 3);                        // true decimal dot at C3 R4
+      // V2.5-Evo - 2026-07-25 - Decimal dot raised R4 -> R3 (owner: one row up off the bottom of the
+      // digit zone, where it was hard to read). Row naming is this file's existing R0-R6, R0 = top:
+      // R3 is the 4th row down. C3 is the separator column between the two digits and is NEVER written
+      // by displayDigits() (digitBuffer[3] is left zero while [0..2] and [4..6] carry the glyphs), so
+      // the dot cannot collide with a digit at any row. displayDigits() clears displayBuffer[1..6], so
+      // R3 is blanked before the dot is set, exactly as R4 was. Keep in step with the kW readout dot so
+      // the decimal point sits at the same height everywhere on the display.
+      displayBuffer[4] |= (1u << 3);                        // true decimal dot at C3 R3
     }
     else
     {

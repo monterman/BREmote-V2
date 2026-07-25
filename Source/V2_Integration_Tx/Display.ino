@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-07-25 - displayDistanceInUnits(): decimal dot = TRUE decimal always; >=100 m scrolls non-blocking "FAR" (old ×100-dot far branch deleted); metres rendered for both dist_unit settings (feet parked)
 // V2.5-Evo - 2026-07-20 - Rex §4.6 (H4): every HT16K33 (0x70) Wire transaction below now takes i2cMutex (I2C_LOCK/UNLOCK) so it can't tear against the ADS1115 ADC read on the shared bus. displayMutex still guards displayBuffer; i2cMutex is the inner bus lock. No leaf-lock function calls another leaf-lock function, so there is no re-entrant deadlock.
 // V2.5-Evo - 2026-07-20 - GPS dot: solid only on FM-grade fix (adds HDOP + speed-valid to match the publish gate); solid branch now calls shared txGpsGoodFix() (GPS.ino).
 // V2.5-Evo - 2026-07-20 - BT dot: SOLID when a BLE device is actually connected (e.g. Waveshare); blink (SLOW/FAST) still means advertising-only. Display-layer override in updateBargraphs(), guarded by BLE_ENABLED; does not touch bt_dot_state.
@@ -1048,76 +1049,118 @@ void updateBargraphs(void *parameter)
 }
 
 // ============================================================
-// V2.5-Evo - 2026-04-28 - P9 S3: Distance unit conversion for TX display.
-// Inputs: dist_m in metres (float). Outputs: displayDigits() call + optional
-// decimal dot at C3 R4 (displayBuffer[5] bit 3) for fractional values.
-// Rules:
-//   Metric (0):   <1 m → "00"; 1-99 m → whole metres; 100+ m → X.X ×100m (dot)
-//   Imperial (1): <4 ft → "00"; 4-99 ft → whole feet; 100-999 ft → X.X ×100ft (dot); ≥1000 ft → X.X mi (dot)
-// displayDigits() must be called before setting decimal dot (it clears R4).
+// V2.5-Evo - 2026-07-25 - FM/RTM distance readout: dot = TRUE decimal always; far case scrolls "FAR".
+// BUG: the old metric branch used the C3 R4 decimal dot to mean "×100 m" at >=100 m
+// (e.g. "1.7·" = 170 m). Riders read the dot as a real decimal, so 170 m looked like
+// 1.7 m in the field and burned the user in FM. FIX: the dot now ALWAYS means a true
+// decimal, and the far case (>=100 m) is shown as a scrolling word "FAR" instead of an
+// ambiguous dotted number. The old ×100 dist_100m branch is deleted entirely.
+//
+// scrollFarStep() is a NON-BLOCKING version of the boot scroll (scroll4Digits): the boot
+// scroll uses a blocking delay() per frame, which is unusable here because this renders on
+// every loop tick during active FM/RTM — a blocking delay would stall throttle/telemetry on
+// the single-core TX. Instead a static column offset is advanced by a millis() timer at the
+// same ~100 ms cadence the boot scroll uses (del=100), rendering exactly one frame per call.
+// It writes ONLY the digit zone rows R0-R4 (displayBuffer[1..5], cols C0-C6); it never touches
+// the R5 proximity bar (displayBuffer[6]), R6 battery (displayBuffer[7]), C7 GPS dot or C8/C9
+// bargraphs (bits 7-9 preserved by the 0xFF80 mask), so the FM/RTM proximity bar stays visible.
+//
+// Inputs: dist_m in metres (float). Metres are rendered for BOTH unit settings this version.
+// Rules (metres):
+//   <1 m     → "00"
+//   0-9.9 m  → "X.X" with the true-decimal dot at C3 R4   (1.7 = 1.7 m)
+//   10-99 m  → "XX" whole metres, no dot
+//   >=100 m  → scrolling "FAR"
+// displayDigits() must be called before setting the decimal dot (it clears R4).
 // ============================================================
+static uint8_t       far_scroll_pos = 0;   // current left-edge column offset into the FAR buffer
+static unsigned long far_scroll_ms  = 0;   // millis() of last scroll step (0 = freshly reset)
+
+// Reset the "FAR" scroll so it re-enters from the start next time >=100 m is shown.
+// Called on every non-far metric path so leaving the far range clears the scroll state cleanly.
+static inline void scrollFarReset()
+{
+  far_scroll_pos = 0;
+  far_scroll_ms  = 0;
+}
+
+// Render exactly ONE non-blocking frame of the scrolling word "FAR" into the digit zone.
+// Uses the large num0[] glyphs (same font / visual style as the boot scroll). Advances one
+// column per ~100 ms via a millis() timer — no delay(), so loop() keeps servicing throttle
+// and telemetry on the single-core TX.
+static void scrollFarStep()
+{
+  // "FAR" column buffer: F(3) + gap(1) + A(3) + gap(1) + R(3) + trailing gap(4) = 15 cols.
+  // The trailing gap separates repeats so it reads as a repeating scrolling word, not "FARFAR".
+  const uint8_t FAR_LEN = 15;
+  uint8_t buf[FAR_LEN];
+  uint8_t p = 0;
+  buf[p++] = num0[LET_F][0]; buf[p++] = num0[LET_F][1]; buf[p++] = num0[LET_F][2];
+  buf[p++] = 0x00;
+  buf[p++] = num0[LET_A][0]; buf[p++] = num0[LET_A][1]; buf[p++] = num0[LET_A][2];
+  buf[p++] = 0x00;
+  buf[p++] = num0[LET_R][0]; buf[p++] = num0[LET_R][1]; buf[p++] = num0[LET_R][2];
+  buf[p++] = 0x00; buf[p++] = 0x00; buf[p++] = 0x00; buf[p++] = 0x00;
+
+  // Non-blocking step: first frame after a reset shows offset 0; then +1 column per 100 ms.
+  unsigned long now = millis();
+  if (far_scroll_ms == 0)
+    far_scroll_ms = now;
+  else if (now - far_scroll_ms >= 100UL)
+  {
+    far_scroll_ms  = now;
+    far_scroll_pos = (uint8_t)((far_scroll_pos + 1) % FAR_LEN);
+  }
+
+  // Clear digit zone rows R0-R4 (displayBuffer[1..5]), cols C0-C6 only. 0xFF80 preserves
+  // C7 (GPS dot) + C8/C9 (bargraphs). R5 (displayBuffer[6]) and R6 (displayBuffer[7]) are
+  // deliberately left untouched here — the caller's updateR5ProximityBar() rebuilds R5 after.
+  for (int i = 1; i <= 5; i++) displayBuffer[i] &= 0xFF80;
+
+  // Render the 7 visible columns C0-C6 at the current offset. Bit math matches scroll4Digits:
+  // displayBuffer[j] is display row R(j-1); num0 bit (5-j) is that row's pixel for column i.
+  // (j runs 5..1 only; j=0 would target the unused displayBuffer[0] with num0 bit 5, always 0.)
+  for (int j = 5; j >= 1; j--)
+    for (int i = 0; i < 7; i++)
+      displayBuffer[j] |= ((buf[(i + far_scroll_pos) % FAR_LEN] >> (5 - j)) & 0x01) << i;
+}
+
 static void displayDistanceInUnits(float dist_m)
 {
-  if (usrConf.dist_unit == 1)
+  // FEET NOT IMPLEMENTED on TX display this version — renders metres. Parked: full feet/yards
+  // far-range solution. usrConf.dist_unit is retained in confStruct/SPIFFS (no schema change,
+  // no config wipe); a future version can branch here on dist_unit==1. Metres are rendered for
+  // both settings for now.
+  if (dist_m < 1.0f)
   {
-    // Imperial
-    float dist_ft = dist_m * 3.28084f;
-    if (dist_ft < 4.0f)
+    scrollFarReset();
+    displayDigits(0, 0);
+  }
+  else if (dist_m < 100.0f)
+  {
+    scrollFarReset();
+    if (dist_m < 10.0f)
     {
-      displayDigits(0, 0);
-    }
-    else if (dist_ft < 100.0f)
-    {
-      uint8_t ft = (uint8_t)dist_ft;
-      if (ft > 99) ft = 99;
-      displayDigits(ft / 10, ft % 10);
-    }
-    else if (dist_ft < 1000.0f)
-    {
-      // 100-999 ft: tenths of ×100ft (e.g., 1.5 = 150 ft). Covers full RTM op range (100-538 ft).
-      // BUG FIX (2026-04-28 audit): old threshold was 100ft — all RTM distances showed 0.0-0.1 mi.
-      float dist_100ft = dist_ft / 100.0f;
-      uint8_t whole = (uint8_t)dist_100ft;
-      uint8_t frac  = (uint8_t)((dist_100ft - whole) * 10.0f + 0.5f);
-      if (whole > 9) { whole = 9; frac = 9; }
-      displayDigits(whole, frac);
-      displayBuffer[5] |= (1u << 3);  // decimal dot C3 R4
+      // 0-9.9 m: "X.X" with the C3 R4 dot meaning a TRUE decimal (1.7 = 1.7 m). Same dot
+      // mechanism the kW readout uses. Work in integer tenths to avoid float-rounding glitches.
+      uint16_t tenths = (uint16_t)(dist_m * 10.0f + 0.5f);  // 10..99 for 1.0-9.9 m
+      if (tenths > 99) tenths = 99;                         // guard 9.95-9.99 rounding to 10.0
+      displayDigits(tenths / 10, tenths % 10);
+      displayBuffer[5] |= (1u << 3);                        // true decimal dot at C3 R4
     }
     else
     {
-      // ≥1000 ft: tenths of miles (528 ft = 0.1 mi), cap at 9.9 mi
-      float miles = dist_ft / 5280.0f;
-      uint8_t whole = (uint8_t)miles;
-      uint8_t frac  = (uint8_t)((miles - whole) * 10.0f + 0.5f);
-      if (whole > 9) { whole = 9; frac = 9; }
-      displayDigits(whole, frac);
-      displayBuffer[5] |= (1u << 3);  // decimal dot C3 R4
+      // 10-99 m: whole metres, no dot.
+      uint8_t m = (uint8_t)(dist_m + 0.5f);
+      if (m > 99) m = 99;
+      displayDigits(m / 10, m % 10);
     }
   }
   else
   {
-    // Metric (default: dist_unit == 0)
-    if (dist_m < 1.0f)
-    {
-      displayDigits(0, 0);
-    }
-    else if (dist_m < 100.0f)
-    {
-      uint8_t m = (uint8_t)dist_m;
-      if (m > 99) m = 99;
-      displayDigits(m / 10, m % 10);
-    }
-    else
-    {
-      // 100 m+: tenths of ×100m (e.g., 1.0=100m, 5.0=500m, 9.9=990m). Cap at 9.9.
-      // BUG FIX (2026-04-28 audit): variable was named 'km' but formula is dist_m/100 (hectometres, not km).
-      float dist_100m = dist_m / 100.0f;
-      uint8_t whole = (uint8_t)dist_100m;
-      uint8_t frac  = (uint8_t)((dist_100m - whole) * 10.0f + 0.5f);
-      if (whole > 9) { whole = 9; frac = 9; }
-      displayDigits(whole, frac);
-      displayBuffer[5] |= (1u << 3);  // decimal dot C3 R4
-    }
+    // >=100 m: scrolling "FAR" (non-blocking). The old ×100-with-dot branch is deleted — the
+    // dot now always means a true decimal, so a dotted far distance would misread as ones of m.
+    scrollFarStep();
   }
 }
 

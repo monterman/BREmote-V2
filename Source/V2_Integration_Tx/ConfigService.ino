@@ -2,6 +2,8 @@
 // Shared engine is in ../Common/ConfigServiceEngine.h (included via BREmote_V2_Tx.h).
 // V2.5-Evo - 2026-04-27 - P8: Added rtm_display_mode, fm_warn_distance_m, rtm_steer_exit_on_input; rtm_max_runtime_s min changed 30→0
 // V2.5-Evo - 2026-04-28 - P9: Added dist_unit (0=Metres, 1=Feet; range 0-1)
+// V2.5-Evo - 2026-07-25 - dist_unit: Feet (1) is NOT yet rendered on the TX display this version — the
+//   display always shows metres regardless of this value. Key retained (no schema change) for a future version.
 // V2.5-Evo - 2026-04-28 - ChangeA: fm_arm_window_s max raised 60→120s (no struct change, no SPIFFS reset)
 // V2.5-Evo - 2026-04-29 - Sleep: added sleep_timeout_s to ConfigService validation table
 // V2.5-Evo - 2026-07-20 - MagGesture: added mag_mode (0=off/not fitted, 1=FM, 2=RTM, 3=FM+RTM). bt_enabled unchanged.
@@ -76,6 +78,8 @@ const CfgFieldSpec kCfgFields[] = {
   // V2.5-Evo - 2026-04-27 - Priority 8.1 FM UX redesign parameter
   {"fm_arm_window_s",          CFG_U16, offsetof(confStruct, fm_arm_window_s),          true, false, true, 10.0f, 600.0f,    0, false},  // FM auto-disarm after N seconds of no throttle input
   // V2.5-Evo - 2026-04-28 - P9: Distance unit selector. 0=Metres, 1=Feet.
+  // NOTE (2026-07-25): Feet (1) is not yet rendered on the TX display this version — metres are shown
+  // regardless. Value is still stored/validated so a future version can implement feet without a wipe.
   {"dist_unit",                CFG_U16, offsetof(confStruct, dist_unit),                true, false, true,  0.0f,   1.0f,    0, false},
   // V2.5-Evo - 2026-04-29 - Sleep timeout. 0=disabled, 60-3600 s; default 300 (5 minutes).
   // Controls how long TX waits with no LoRa packet from RX before deep sleeping.

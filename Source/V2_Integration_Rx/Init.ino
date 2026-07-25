@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-07-25 - STAGE 1 (GPS repair): Serial1.setRxBufferSize(2048) added in runBootSequence() immediately BEFORE the first Serial1.begin(). The old setRxBufferSize(512) lived in configureGPS() (GPS.ino), which runs AFTER this begin() — and arduino-esp32 refuses a resize once the UART driver is installed, so the ring has always silently been the 256-byte default. No confStruct change, SW_VERSION stays 34.
+
 // ===== Hardware Initialization =====
 
 void initHardware()
@@ -88,6 +90,28 @@ void runBootSequence()
   radio.startReceive();
 
   initRMT();
+
+  // ============================================================
+  // V2.5-Evo - 2026-07-25 - STAGE 1: size the Serial1 RX ring BEFORE the first begin().
+  //
+  // WHAT THE BUG WAS: configureGPS() (GPS.ino) called Serial1.setRxBufferSize(512), but it runs
+  // AFTER the begin() on the next line. arduino-esp32 rejects a resize once the UART driver is
+  // installed — it logs "RX Buffer can't be resized when Serial is already running" and returns
+  // 0 — so the ring has always been the 256-byte default, not 512. That was harmless only
+  // because the UART mux was parked on the VESC and almost no GPS bytes were ever captured;
+  // the moment STAGE 1 lets the GPS stream continuously it becomes the binding failure.
+  //
+  // WHY 2048: at 115200 baud a 256-byte ring holds only ~22 ms of airtime. checkWetness()
+  // blocks loop() for ~300 ms every 10 s, and at 115200 roughly 750 bytes arrive in that
+  // window — the ring would overflow and drop whole NMEA sentences on every wetness check.
+  // 2048 bytes is ~178 ms of airtime, which rides out that stall with margin, and costs 1.75 kB
+  // of heap once at boot.
+  //
+  // This value persists across the Serial1.end()/begin() baud-switch cycle that configureGPS()
+  // performs for the BN-220/BN-880: the core keeps _rxBufferSize across end() and passes it to
+  // every subsequent begin().
+  // ============================================================
+  Serial1.setRxBufferSize(2048);
   Serial1.begin(115200, SERIAL_8N1, P_U1_RX, P_U1_TX);
 
   aw.digitalWrite(AP_EN_PWM0, 1);

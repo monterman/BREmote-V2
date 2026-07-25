@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-07-25 - STAGE 1 (GPS repair): defaultConf.gps_update_hz raised 2 -> 10 Hz, because the GPS module is configured for 5 Hz (BN-220/BN-880) or 10 Hz (M10) and, now that STAGE 1 leaves the UART mux parked on GPS, a 500 ms drain interval would leave ~1250 bytes pending per drain. VALUE-ONLY change to an existing field: no field added, moved, renamed or resized, and the 1-10 validation range in ConfigService is untouched — so sizeof(confStruct) stays 184, the static_assert is unchanged, SW_VERSION stays 34 and the owner's SPIFFS config is NOT wiped by this flash. Because it is NOT wiped, a board with a stored gps_update_hz keeps its old value: it must be set on the device with `?set gps_update_hz 10` + `?save`. No control-path field (throttle, steering, PWM, RTM/FM) is touched.
 // V2.5-Evo - 2026-07-25 - STAGE 0 (instrumentation only, ZERO control-behaviour change): (A) the unused RESERVED slot fm_steer_reposition_en is RENAMED IN PLACE to log_level — same offset, same uint16_t, so sizeof(confStruct) stays 184, the static_assert is unchanged, SW_VERSION stays 34 and the owner's SPIFFS config is NOT wiped (same trick as dummy_delete_me -> rtm_steer_response, Bundle 1). 0 = unset (behaves exactly as level 3), 1 = Basic, 2 = VESC, 3 = Developer, 4 = Deep; only 3 and 4 are implemented, 1 and 2 are accepted by the validator and currently log as level 3. (B) added LogFileHeader — every log file now starts with an 8-byte self-describing header (magic/format/level/record size) so a reader can parse a variable record size. (C) added VescLogDataL4 = VescLogData + the 4 level-4 diagnostic fields, and the free-running diagnostic counters the ?diag command and the level-4 record read. Nothing here is read by throttle, steering, PWM, the mux schedule, or any FM/RTM logic.
 // V2.5-Evo - 2026-07-25 - F3-b: kFmEngageDistFloorM (the FM engage-distance floor) now lives HERE, once, and is raised 5.0 -> 8.0 m. It used to be defined in RTMState.ino AND duplicated as a bare 5.0f literal in ConfigService.ino, on the false premise that the Arduino concatenation order stopped the two files sharing a constant — this header is included at the top of V2_Integration_Rx.ino, which is compiled first, so both see it. 5.0 m was below the hazard it names: the owner's tow rope is 20 ft = 6.10 m, so a manual fm_engage_dist_m of 5.0-6.1 m was storable and let FM engage with the rider still ON the rope. 8.0 m clears a 6.10 m rope by ~1.31x. One shared constant + comments only: no field added, moved or resized; sizeof(confStruct) stays 184, static_assert unchanged, SW_VERSION stays 34, SPIFFS config is NOT reset by this flash.
 // V2.5-Evo - 2026-07-25 - A2: fm_engage_dist_m promoted from RESERVED/unread to LIVE — runFmLoop() now reads it as the FM engage distance in METRES (rope length x ~1.15), 0 = auto (unchanged legacy behaviour). Comment/semantics only: no field added, moved or resized; sizeof(confStruct) stays 184, static_assert unchanged, SW_VERSION stays 34, SPIFFS config is NOT reset by this flash.
@@ -278,7 +279,8 @@ struct confStruct {
     uint16_t vesc_timeout_s;  // 5-60 s; default 6; how long without a VESC UART packet before bat/temp shown as N/A
 
     // V2.5-Evo - 2026-04-30 - BUNDLE E: GPS POLLING RATE
-    uint16_t gps_update_hz;   // 1-10 Hz; default 2; how often per second to drain the GPS UART (2=500ms, 5=200ms)
+    // V2.5-Evo - 2026-07-25 - STAGE 1: factory default raised 2 -> 10 Hz (see defaultConf below).
+    uint16_t gps_update_hz;   // 1-10 Hz; default 10; how often per second to drain the GPS UART (10=100ms, 5=200ms, 2=500ms)
 
     // V2.5-Evo - 2026-04-30 - RTM APPROACH DECEL ZONE
     // Distance from TX at which the approach throttle ramp begins during active RTM.
@@ -434,7 +436,15 @@ confStruct defaultConf = {SW_VERSION, 2, 22, 1, 50 /*steering_influence: convent
   // V2.5-Evo - 2026-04-29 - Bundle B: vesc_timeout_s replaces hardcoded 20s VESC connection timeout
   6,          // vesc_timeout_s: seconds without VESC UART packet before bat/temp shown as N/A (range 5-60s; default 6s)
   // V2.5-Evo - 2026-04-30 - Bundle E: gps_update_hz replaces hardcoded 1Hz GPS poll cadence
-  2,          // gps_update_hz: GPS NMEA polling rate in Hz (range 1-10 Hz; default 2 Hz = 500ms interval)
+  // V2.5-Evo - 2026-07-25 - STAGE 1: default raised 2 -> 10 Hz. The GPS module is configured for
+  // 5 Hz (BN-220/BN-880) or 10 Hz (M10), so draining twice a second left ~1250 bytes pending per
+  // drain now that STAGE 1 lets the module stream continuously into the ring. 10 Hz drains every
+  // ~100 ms, keeping the ring occupancy far below its 2048-byte capacity at all times.
+  // VALUE-ONLY change: no field added, moved or resized; the 1-10 range already in kCfgFields is
+  // unchanged, sizeof(confStruct) stays 184, SW_VERSION stays 34, SPIFFS config is NOT reset.
+  // NOTE: defaultConf only applies to units whose config is reset. A board with a STORED
+  // gps_update_hz keeps its old value (2) after this flash — set it explicitly on the device.
+  10,         // gps_update_hz: GPS NMEA polling rate in Hz (range 1-10 Hz; default 10 Hz = 100ms interval)
   // V2.5-Evo - 2026-04-30 - RTM approach decel zone default
   12,         // rtm_approach_zone_m: outer edge of RTM throttle decel zone (0=disabled, 5-100 m)
   // V2.5-Evo - 2026-05-06 - D3: RTM heading source selection defaults

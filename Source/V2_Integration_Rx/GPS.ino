@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-07-25 - STAGE 1 (GPS repair, invert the UART parking): the UART mux now RESTS on GPS instead of on the VESC. getGPSLoop() no longer switches the mux at all — it is a pure drain, because the line is already pointed at the GPS when it is called; the 10 ms vTaskDelay it used to wait after switching is DELETED (it was the settle for a Serial1.end()/begin() cycle that has been commented out three lines below it since SW55 — the 74HC4052 analog mux settles in under 3 us and setUartMux() is synchronous, so the correct post-switch delay is zero). configureGPS() now ends on setUartMux(1) so the board BOOTS parked on GPS. WHY: the old scheme parked on VESC and gave GPS a ~10 ms listening window every 500 ms against a module that bursts ~500 B every 200 ms, so ~73% of windows landed entirely in the silence between bursts — measured on the owner's board at 7 GPS bytes/s and 0.1 sentences/s against an expected ~2500 B/s and ~28 sentences/s. That starved GPS course-over-ground, which is what made Follow-Me fall back to the EMI-biased compass and steer the wrong way. Mux switches DROP from 6/s to 4/s (only getVescLoop() switches now). setUartMux() itself, the VESC receive timeout and the 20 ms VESC settle are all UNTOUCHED. No confStruct change, sizeof stays 184, SW_VERSION stays 34, SPIFFS config is NOT reset by this flash.
+// V2.5-Evo - 2026-07-25 - STAGE 1: the Serial1 RX ring is now sized in Init.ino BEFORE the first Serial1.begin() and raised 512 -> 2048. The setRxBufferSize(512) that used to live in configureGPS() ran AFTER Init.ino had already begun the port, and arduino-esp32 REFUSES a resize once the driver is installed (logs an error, returns 0) — so the real ring has always been the 256 B default. Harmless while nothing was being captured; a guaranteed data-loss bug the moment GPS actually flows.
 // V2.5-Evo - 2026-07-25 - STAGE 0 (instrumentation only): getGPSLoop() now counts GPS bytes and complete NMEA sentences, tracks when the COG VALUE actually changes (separately from gps_last_course_ms, which only tracks the TIMESTAMP and therefore stayed "fresh" straight through a frozen-heading failure), and samples the RX fix age once per poll. gps_last_course_deg / gps_last_course_ms and every heading decision are untouched — the new state is written alongside them and read only by the level-4 log record and ?diag.
 // V2.5-Evo - 2026-05-14 - SW55: setUartMux(0) at end of getGPSLoop() and configureGPS() — GPS resets MUX to VESC on exit; GPS always has priority
 // V2.5-Evo - 2026-05-06 - D1: Capture GPS course-over-ground (gps_last_course_deg/ms) for future RTM heading source
@@ -163,7 +165,8 @@ static bool gpsPhaseACheck(double cur_lat, double cur_lng, float cur_speed_kmh) 
 //   None. Side effect: Serial1 is configured and left open.
 //
 // Side effects:
-//   - Calls setUartMux(1) to switch UART mux to GPS path.
+//   - Calls setUartMux(1) to switch UART mux to GPS path, and LEAVES it there
+//     (V2.5-Evo 2026-07-25 STAGE 1: GPS is now the mux's resting position).
 //   - Calls Serial1.begin()/end()/begin() for BN-220/BN-880.
 //   - Blocks ~450 ms for BN-220/BN-880; ~250 ms for M10.
 // ============================================================
@@ -172,11 +175,21 @@ void configureGPS() {
   // This must happen before any Serial1 traffic regardless of chip type.
   setUartMux(1);
 
-  // V2.5-Evo fix (I-2): Increase RX buffer to 512 bytes before any Serial1.begin().
-  // At 10Hz (M10) the GPS emits multiple NMEA sentences per cycle; the default
-  // 256-byte buffer can overflow between loop ticks, causing sentence fragments
-  // that confuse TinyGPS++. setRxBufferSize() MUST be called before begin().
-  Serial1.setRxBufferSize(512);
+  // V2.5-Evo - 2026-07-25 - STAGE 1: the Serial1 RX ring buffer is NO LONGER sized here.
+  //
+  // WHAT THE BUG WAS: this function used to call Serial1.setRxBufferSize(512) on this line,
+  // but runBootSequence() (Init.ino) has already called Serial1.begin() by the time we get
+  // here. arduino-esp32 rejects a resize once the UART driver is installed — it logs
+  // "RX Buffer can't be resized when Serial is already running" and returns 0 — so the ring
+  // has silently stayed at the 256-byte default ever since. 256 bytes is only ~22 ms of
+  // airtime at 115200 baud, and checkWetness() blocks loop() for ~300 ms every 10 s, during
+  // which ~750 bytes arrive: guaranteed silent loss of whole NMEA sentences.
+  //
+  // WHAT THE FIX DOES: the size is now set in Init.ino immediately BEFORE the first
+  // Serial1.begin(), and raised to 2048 bytes (~178 ms of airtime, enough to ride out the
+  // wetness stall). The value survives the Serial1.end()/begin() cycle used by the
+  // BN-220/BN-880 baud switch below, because the core keeps _rxBufferSize across end()
+  // and passes it to every subsequent begin().
 
   // V2.5-Evo - 2026-04-22 - Branch on GPS chip type. Each chip type has a
   // different factory baud rate and supported feature set.
@@ -305,19 +318,38 @@ void configureGPS() {
       break;
   }
 
-  // SW55: leave MUX in VESC state after GPS init — boot starts with MUX on VESC (channel 0).
-  setUartMux(0);
+  // V2.5-Evo - 2026-07-25 - STAGE 1: leave the MUX on GPS (channel 1) after init — the board
+  // now BOOTS parked on GPS. This replaces the SW55 setUartMux(0) that parked on the VESC.
+  // GPS is the peripheral that streams continuously and cannot be asked to repeat itself;
+  // the VESC is polled and answers on demand, so the VESC is the visitor (getVescLoop()
+  // switches to channel 0 for its poll and hands the line straight back).
+  setUartMux(1);
 }
 
-// Task for GPS reading
+// ============================================================
+// getGPSLoop - Drain the GPS UART and update GPS state
+// ============================================================
+//
+// V2.5-Evo - 2026-07-25 - STAGE 1: this function no longer touches the UART mux at all.
+//
+// WHAT THE BUG WAS: it used to call setUartMux(1), wait 10 ms, drain whatever had arrived in
+// those 10 ms, and then hand the line back to the VESC with setUartMux(0). Polled every 500 ms
+// against a GPS that transmits ~500 bytes every 200 ms (43 ms of actual transmission), that
+// listening window caught about 2% of the stream, and ~73% of the windows opened and closed
+// entirely inside the silence between bursts. Measured on the owner's board: 7 GPS bytes/s and
+// 0.1 complete sentences/s, against an expected ~2500 bytes/s and ~28 sentences/s.
+//
+// WHY THE 10 ms IS GONE: it was the settle for the Serial1.end()/begin() cycle that was
+// commented out immediately below it — dead code guarding dead code. The 74HC4052 analog mux
+// settles in under 3 microseconds and setUartMux() is synchronous (it returns only after the
+// I2C write and its read-back verify), so by the time it returns the switch has already
+// happened. The correct post-switch delay is zero.
+//
+// WHAT IT IS NOW: a pure drain. The mux already rests on GPS, so every byte the module sends
+// lands in the Serial1 ring buffer continuously and this function just empties it.
+// ============================================================
 void getGPSLoop()
 {
-  setUartMux(1);
-  vTaskDelay(pdMS_TO_TICKS(10));  
-  //Serial1.end();
-  //Serial1.begin(115200, SERIAL_8N1, P_U1_RX, P_U1_TX);
-  //while(!Serial1) vTaskDelay(pdMS_TO_TICKS(10));
-  
   // Non-blocking drain: read all bytes currently in the UART buffer and return immediately.
   // The GPS module sends NMEA sentences at its configured rate (5-10Hz); calling getGPSLoop()
   // on its own timer (V2_Integration_Rx.ino gps_loop_timer) ensures each call arrives after
@@ -456,9 +488,10 @@ void getGPSLoop()
     if (diag_fix_age > g_diag_fix_age_max_ms) g_diag_fix_age_max_ms = diag_fix_age;
   }
 
-  // SW55: release MUX back to VESC — GPS always runs first and always yields when done.
-  // VESC defers; GPS never holds the MUX after its read is complete.
-  setUartMux(0);
+  // V2.5-Evo - 2026-07-25 - STAGE 1: the trailing setUartMux(0) that used to be here is DELETED.
+  // Handing the line back to the VESC on the way out is exactly what starved the GPS: the module
+  // kept transmitting into a mux that was pointed somewhere else for ~98% of every second.
+  // The mux now rests on GPS between polls and only getVescLoop() ever moves it.
 }
 
 // Function to print satellite information

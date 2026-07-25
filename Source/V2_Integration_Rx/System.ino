@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-07-25 - STAGE 1 (GPS repair): cmdVescRaw() (?vescraw) now restores the UART mux to channel 1 (GPS) at the end of every iteration and again on function exit. Since STAGE 1 the mux RESTS on GPS and getGPSLoop() no longer switches it, so a command that calls setUartMux(0) and never restores would leave the GPS dark for the remainder of the session. Diagnostic command only — setUartMux() itself, the VESC query, the 200 ms listen window and every control path are unchanged. No confStruct change, SW_VERSION stays 34.
 // V2.5-Evo - 2026-07-25 - STAGE 0 PART D (instrumentation only): added ?diag (one-shot, non-blocking snapshot of GPS bytes/sentences per second, fix age now/mean/max, COG timestamp-updates vs VALUE-changes, mux switches + read-back failures, VESC poll success rate, and loop min/mean/max) and ?diagz (zero the counters to bracket a run). Unlike ?gpsdiag these do not loop or delay, so they are safe to run with RTM/FM active and need no refusal guard. setUartMux() also gained two counter increments (switches, read-back mismatches) — the corrective re-write itself is unchanged. No control path, no confStruct change, SW_VERSION stays 34.
 // V2.5-Evo - 2026-07-19 - Rex hardening: cmdGpsDiag (?gpsdiag) refuses to run while RTM active — its ≤120s blocking loop would freeze runRtmLoop()/Phase A/B/convergence/Gate 9
 // V2.5-Evo - 2026-07-19 - FM triage: cmdGpsDiag (?gpsdiag) — 2Hz GPS feed + RTM COG-valid sub-condition breakdown to diagnose why GPS COG heading never engages
@@ -579,7 +580,8 @@ void cmdVescPing(const String& params) {
 //
 // Inputs:  params - unused
 // Outputs: hex dump to Serial; no struct writes; no global state changes
-// Side effects: switches UART mux to channel 0 each iteration (same as normal VESC operation)
+// Side effects: switches UART mux to channel 0 each iteration (same as normal VESC operation),
+//               then returns it to channel 1 (GPS) — see the STAGE 1 note at each call site.
 //
 // How to interpret output:
 //   Zero bytes every iteration    -> VESC unreachable. Check mux IC channel 0,
@@ -655,9 +657,20 @@ void cmdVescRaw(const String& params) {
       Serial.println();
     }
 
+    // V2.5-Evo - 2026-07-25 - STAGE 1: return the UART line to the GPS before idling.
+    // Since STAGE 1 the mux RESTS on GPS (channel 1) and getGPSLoop() no longer switches it,
+    // so any command that moves the mux must put it back itself. Without this the ~1.7 s idle
+    // below — and, if the loop exits early, the rest of the session — would leave the GPS dark.
+    setUartMux(1);
+
     // Wait the remainder of the 2s cycle (~1700ms after 10ms mux + 200ms listen)
     vTaskDelay(pdMS_TO_TICKS(1700));
   }
+
+  // V2.5-Evo - 2026-07-25 - STAGE 1: unconditional restore on function exit, so that every path
+  // out of this command (normal completion or an early 'quit' break) provably ends with the mux
+  // back on the GPS. Cheap insurance on a diagnostic command whose whole job is to move the mux.
+  setUartMux(1);
 
   Serial.println();
   Serial.println("=== Probe complete. ===");

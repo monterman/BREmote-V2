@@ -102,17 +102,39 @@ Bucket test, both motors at the same throttle, derived via the `_setup` columns:
 | 60–80% | 37.6 A | 38.2 A | 1.02 | 26,656 |
 | 80–99% | 38.3 A | 36.6 A | 0.96 | 35,526 |
 
-**Overall: M1 19.4 A mean / 62.5 A peak · M2 19.8 A mean / 64.5 A peak — 2% apart.**
+**Overall: M1 19.4 A mean / 62.5 A peak · derived M2 19.8 A mean / 64.5 A peak.**
 
-**Verdict: the 0.1° pitch difference is invisible in current draw.** The two track within 2–6% across the working range and *converge* under load — at high duty they cross over. A genuine pitch difference should produce a **consistent, widening** current offset (more pitch = more bite = more amps). That is not present, and the *lower*-pitch prop draws marginally more, which is backwards from what pitch alone predicts.
+### ⚠️ RETRACTED: "the props differ by 2% and are interchangeable"
+**That conclusion was wrong and is withdrawn.** It claimed a resolution this method does not have.
 
-**These props are functionally interchangeable at these loads.** The 2% sits inside motor-to-motor variation, per-ESC calibration, and mirror-handedness.
+**M2 was NEVER directly logged.** Both available logs are `vesc_id = 1`. The M2 column above is *derived* by subtracting the local VESC from the CAN-aggregated `_setup` value — an estimate, not a measurement.
+
+Quantifying that estimate's error on the 2026-07-25 log (626 rows under load):
+
+| Check | Result | Reading |
+|---|---|---|
+| Derived M2 negative | 0.6% of rows | not garbage — the signal is real |
+| `setup`/`local` ratio | mean 2.02, p5–p95 **1.76–2.25** | broadly consistent with a second motor |
+| **mean \|setup − 2×local\|** | **2.15 A** | **the noise floor of the method** |
+
+**±2.15 A of scatter on a ~19 A mean is roughly ±10%. The claimed 2% difference (≈0.4 A) is five times smaller than the method's own noise.** It was never measurable.
+
+**Why the scatter exists:** `_setup` values are assembled from **CAN status messages arriving on a different cadence** than the local VESC's instantaneous readings. Subtracting two quantities sampled at different instants — during throttle transients, on a rig with a **documented history of a flaky inter-enclosure CAN link** — produces an estimate with a wide error bar, not a measurement.
+
+**What IS supportable:** no *gross* difference between the two motors is evident. Anything below roughly **10–15%** is invisible to this technique, and a 0.1° pitch effect would sit well inside that.
+
+**To actually compare props, log VESC 2 directly** — connect VESC Tool to the `…56` unit and record it, rather than deriving it. Better still, run both props on the *same* motor in back-to-back tests, which removes motor-to-motor and ESC-calibration differences from the comparison entirely.
 
 - ⚠️ **Ignore the 5–15% band.** At 2–3 A you are in cogging/startup territory where small absolute differences look enormous proportionally.
 - **Peak combined battery draw: 109.8 A** (`current_in_setup`) — a serious load for a 10S4P pack; relevant to pack-health decisions.
 
-### Method for testing the 1.1° prop
-Same bucket test, 1.1 on one motor and 1.0 on the other, VESC Tool RT log on VESC 1, then the identical `_setup` subtraction. **If 1.1 vs 1.0 also lands near 2%, the three props are not meaningfully different — worth knowing before printing more.**
+### Method for testing the other props — do NOT repeat the mistake above
+The `_setup` subtraction is too coarse (±10%) to compare props. Two better methods, in order:
+
+1. **⭐ Back-to-back on the SAME motor.** Run prop A on M1, log it, swap to prop B on M1, log again. This removes motor-to-motor variation, ESC calibration, and CAN estimation entirely — the only thing that changed is the prop. **Highest confidence, and it needs nothing but the RX log.**
+2. **Log both VESCs directly.** Record VESC 1 (`…d6`) and VESC 2 (`…56`) as separate VESC Tool sessions rather than deriving one from the other.
+
+**And remember what a bucket can and cannot show.** A static test measures *load* (amps at a given RPM) — useful for sizing. It cannot measure **efficiency**, because nothing is moving and no useful work is being done. **A prop that is poor on the water can look identical to a good one in a bucket.** Efficiency only comes from on-water data: speed against power (see §6).
 
 ---
 

@@ -16,7 +16,7 @@
 
 ## 2 · ✅ The RX telemetry is validated against VESC Tool
 
-Two **independent instruments**, two **separate sessions** (VESC RT 18:51 · RX bucket log 23:51), same motor:
+**Two independent instruments recording the SAME RUN simultaneously.** (The VESC Tool filename says `185150` — local Chicago time — but its internal `ms_today` reads 23:51:50, the same UTC clock the RX uses. The windows overlap: RX 23:51:03→23:55:08, VESC 23:51:50→23:56:57.) Same motor, same physical event, measured twice:
 
 | | VESC Tool RT (M1) | RX log | Agreement |
 |---|---|---|---|
@@ -35,6 +35,13 @@ Two **independent instruments**, two **separate sessions** (VESC RT 18:51 · RX 
 | 60–80% | 1.42 | 1.34 |
 
 The characteristic **roll-off above 60% duty** (pack sagging, not prop behaviour) appears in both.
+
+### Row-by-row check — and its honest limit
+Because the runs are simultaneous, the samples can also be time-aligned directly. Sweeping the clock offset, ERPM correlation **peaks sharply at +2.5 s (r = 0.773)** and decays either side (r = 0.11 at −10 s, 0.32 at +10 s). **That peak is the signature of genuinely correlated data**, with a real ~2.5 s offset between the RX's GPS-UTC stamp and VESC Tool's own clock.
+
+**Why r = 0.77 rather than ~0.95, and why that is NOT instrument disagreement:** the RX timestamp resolution is **1 second** (GPS updates at 1 Hz, so several RX rows share a stamp) while ERPM slews at **>2,100/s at the 90th percentile**. During a throttle ramp, one second of quantisation alone accounts for thousands of ERPM. The row-by-row test is **resolution-limited, not accuracy-limited**.
+
+> **Use the peak/sag/curve-shape agreement as the evidence of accuracy** — those are insensitive to timebase. Do not read the 0.77 as a defect.
 
 > **Conclusion: RX telemetry reports what the VESC reports.** This matters far beyond props — it underwrites the TX display, the CSV logs, and every analysis built on them.
 >

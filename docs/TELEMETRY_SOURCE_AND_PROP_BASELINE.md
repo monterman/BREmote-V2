@@ -1,0 +1,98 @@
+# Telemetry Source, RX-vs-VESC Validation, and Prop Baseline
+
+**Established 2026-07-26.** Owner-confirmed wiring fact + a cross-instrument validation of the RX telemetry + the first propeller current baseline.
+
+---
+
+## 1 · 🔒 WIRING FACT — the RX UART is always on VESC 1 (M1, black motor)
+
+> **Owner-confirmed:** *"the RX is always connected via UART to VESC 1, black motor, M1."*
+
+**Every number in an RX log is motor 1 only.** The RX queries one VESC with `COMM_GET_VALUES_SELECTIVE` over UART. There is **no CAN forwarding in the RX firmware**, and a VESC's `GET_VALUES` reports its own motor — never the CAN slave's. That is why the log columns are singular: one `motor_current_A`, one `ERPM`, one `duty_cycle_%`.
+
+**Consequence:** an RX log can characterise **M1 only**. To compare both motors you need a VESC Tool RT log (see §3).
+
+---
+
+## 2 · ✅ The RX telemetry is validated against VESC Tool
+
+Two **independent instruments**, two **separate sessions** (VESC RT 18:51 · RX bucket log 23:51), same motor:
+
+| | VESC Tool RT (M1) | RX log | Agreement |
+|---|---|---|---|
+| Peak motor current | 62.5 A | 59.9 A | 4% |
+| Peak ERPM | 37,852 | 37,630 | **0.6%** |
+| Max duty | 96% | 96% | exact |
+| Min voltage (sag) | 34.7 V | 34.8 V | **0.1 V** |
+
+**Prop signature — amps per 1000 ERPM (the curve *shape* must match, not just the peaks):**
+
+| Duty band | VESC RT | RX log |
+|---|---|---|
+| 15–25% | 1.81 | 1.77 |
+| 25–40% | 1.77 | 1.66 |
+| 40–60% | 1.74 | 1.74 |
+| 60–80% | 1.42 | 1.34 |
+
+The characteristic **roll-off above 60% duty** (pack sagging, not prop behaviour) appears in both.
+
+> **Conclusion: RX telemetry reports what the VESC reports.** This matters far beyond props — it underwrites the TX display, the CSV logs, and every analysis built on them.
+>
+> **Practical upshot: props can be characterised from an RX log alone** — aux button, no laptop, no VESC Tool. Reach for the RT log only when you need *both* motors.
+
+---
+
+## 3 · How to compare BOTH motors — the `_setup` columns
+
+A VESC Tool RT log carries `vesc_id`, `num_vescs`, and the **`_setup` columns which aggregate across CAN**:
+
+```
+M2 current = current_motor_setup − current_motor
+M2 input   = current_in_setup    − current_in
+```
+
+Confirmed on the 2026-07-25 log: `vesc_id = 1`, `num_vescs = 2`, `current_motor` peak 62.5 A vs `current_motor_setup` peak 123.6 A.
+
+**Note:** ERPM has no `_setup` equivalent — **RPM is available for the logged VESC only.** Current is derivable for both; RPM is not.
+
+---
+
+## 4 · Propeller baseline — 3D-printed 2-blade set
+
+All props are 2-blade, 3D-printed, differing only in pitch and handedness (left/right mirror). Labels are the **pitch degree difference** between the three.
+
+| Prop | Pitch label | Motor (2026-07-25 test) | Notes |
+|---|---|---|---|
+| Black | **1.0** | M1 | The original — used in every previously logged run |
+| White | **0.9** | M2 | Replacement after the original white prop broke (harbour session) |
+| — | **1.1** | not yet tested | |
+
+### Measured: 1.0 vs 0.9 — the difference is negligible
+
+Bucket test, both motors at the same throttle, derived via the `_setup` columns:
+
+| Duty band | M1 (1.0) | M2 (0.9) | M2/M1 | ERPM |
+|---|---|---|---|---|
+| 5–15% | 2.6 A | 3.6 A | 1.40 ⚠️ | 2,237 |
+| 15–25% | 14.0 A | 14.8 A | 1.06 | 7,869 |
+| 25–40% | 20.4 A | 21.2 A | 1.04 | 11,764 |
+| 40–60% | 33.0 A | 34.0 A | 1.03 | 19,409 |
+| 60–80% | 37.6 A | 38.2 A | 1.02 | 26,656 |
+| 80–99% | 38.3 A | 36.6 A | 0.96 | 35,526 |
+
+**Overall: M1 19.4 A mean / 62.5 A peak · M2 19.8 A mean / 64.5 A peak — 2% apart.**
+
+**Verdict: the 0.1° pitch difference is invisible in current draw.** The two track within 2–6% across the working range and *converge* under load — at high duty they cross over. A genuine pitch difference should produce a **consistent, widening** current offset (more pitch = more bite = more amps). That is not present, and the *lower*-pitch prop draws marginally more, which is backwards from what pitch alone predicts.
+
+**These props are functionally interchangeable at these loads.** The 2% sits inside motor-to-motor variation, per-ESC calibration, and mirror-handedness.
+
+- ⚠️ **Ignore the 5–15% band.** At 2–3 A you are in cogging/startup territory where small absolute differences look enormous proportionally.
+- **Peak combined battery draw: 109.8 A** (`current_in_setup`) — a serious load for a 10S4P pack; relevant to pack-health decisions.
+
+### Method for testing the 1.1° prop
+Same bucket test, 1.1 on one motor and 1.0 on the other, VESC Tool RT log on VESC 1, then the identical `_setup` subtraction. **If 1.1 vs 1.0 also lands near 2%, the three props are not meaningfully different — worth knowing before printing more.**
+
+---
+
+## 5 · Reading the "amps per 1000 ERPM" signature
+This is the prop's fingerprint: roughly how hard it bites the water, independent of throttle position. **Higher = more load per unit RPM.** It held flat at **~1.77 from 15–60% duty** for the 1.0 prop, which is the number to compare future props against. Values above ~60% duty are contaminated by pack sag and should not be used for comparison.

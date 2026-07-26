@@ -4,6 +4,21 @@
 
 ---
 
+## 0 · 🔒 MOTOR / VESC IDENTITY MAP — owner-set, do not re-derive
+
+> Owner set the CAN IDs deliberately so they match the motor numbers. **Confirmed 2026-07-26.**
+
+| Motor | VESC | **CAN ID** | BLE MAC (last 2) | Prop as of 2026-07-25 |
+|---|---|---|---|---|
+| **M1** | VESC 1 | **1** | `…d6` | Black, **1.0** pitch — the original, in every prior logged run |
+| **M2** | VESC 2 | **2** | `…56` | White, **0.9** pitch — replaced the broken original |
+
+**How to identify a log without asking anyone:**
+- **VESC Tool RT log** → the `vesc_id` column *is* the CAN ID, so `vesc_id = 1` means **M1**. (⚠️ The BLE MAC is **not** written into the RT log — only `vesc_id`. Searched all 55 columns of the 2026-07-25 log: no MAC, no UUID, no serial.)
+- **RX log** → always M1, by wiring (§1).
+
+---
+
 ## 1 · 🔒 WIRING FACT — the RX UART is always on VESC 1 (M1, black motor)
 
 > **Owner-confirmed:** *"the RX is always connected via UART to VESC 1, black motor, M1."*

@@ -8,7 +8,9 @@
 
 ESP32 LoRa wireless remote for efoil and RC tow buggy — 868/915 MHz, 10 Hz control cycle, VESC UART telemetry, GPS speed display, integrated data logger.
 
-**Status: Alpha (soon Beta) — BLE + VESC Tool field-confirmed ✅ (2026-05-16). RTM encoded + working, FM coded; on-water testing in progress. See Alpha Testing Notes below before any in-water use.**
+**Status: Alpha — BLE + VESC Tool field-confirmed ✅ (2026-05-16). RTM encoded + working, FM coded.**
+
+> **⚠️ 2026-07-25 — important fix, please reflash both boards.** A bug was found in on-water testing: the shared serial line was prioritising the VESC over the GPS, so the receiver was catching only ~2% of the GPS feed and Follow-Me could steer on a dead heading. Priority is now swapped and the GPS course works. **Fixed but not yet proven on the water** — see [CHANGELOG.md](CHANGELOG.md). Read the Alpha Testing Notes below before any in-water use.**
 
 ---
 

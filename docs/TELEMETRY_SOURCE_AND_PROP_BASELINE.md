@@ -109,19 +109,21 @@ Bucket test, both motors at the same throttle, derived via the `_setup` columns:
 
 **M2 was NEVER directly logged.** Both available logs are `vesc_id = 1`. The M2 column above is *derived* by subtracting the local VESC from the CAN-aggregated `_setup` value — an estimate, not a measurement.
 
-Quantifying that estimate's error on the 2026-07-25 log (626 rows under load):
+Quantifying the estimate's error on the 2026-07-25 log, split by how fast the current was changing:
 
-| Check | Result | Reading |
-|---|---|---|
-| Derived M2 negative | 0.6% of rows | not garbage — the signal is real |
-| `setup`/`local` ratio | mean 2.02, p5–p95 **1.76–2.25** | broadly consistent with a second motor |
-| **mean \|setup − 2×local\|** | **2.15 A** | **the noise floor of the method** |
+| Filter | n | M1 | M2 (derived) | M2/M1 | **noise: mean \|setup − 2×local\|** |
+|---|---|---|---|---|---|
+| All under load | 626 | 23.9 A | 23.9 A | 0.998 | 2.15 A (**9.0%**) |
+| Steady < 5 A/s | 370 | 21.2 A | 21.7 A | 1.023 | 1.32 A (**6.2%**) |
+| Very steady < 2 A/s | 246 | 18.9 A | 19.5 A | 1.033 | 1.15 A (**6.1%**) |
 
-**±2.15 A of scatter on a ~19 A mean is roughly ±10%. The claimed 2% difference (≈0.4 A) is five times smaller than the method's own noise.** It was never measurable.
+Only 0.6% of derived M2 values go negative, so the signal is real — but **the method's resolution is ~6% at best.**
 
-**Why the scatter exists:** `_setup` values are assembled from **CAN status messages arriving on a different cadence** than the local VESC's instantaneous readings. Subtracting two quantities sampled at different instants — during throttle transients, on a rig with a **documented history of a flaky inter-enclosure CAN link** — produces an estimate with a wide error bar, not a measurement.
+**The claimed 2% difference was a fifth of the method's own noise. It was never measurable.** Best steady-state estimate is M2 ≈ **3% above** M1 — still comfortably inside ±6%, so **not significant**.
 
-**What IS supportable:** no *gross* difference between the two motors is evident. Anything below roughly **10–15%** is invisible to this technique, and a 0.1° pitch effect would sit well inside that.
+**Why the scatter exists — and what it is NOT.** ⚠️ *An earlier version of this note blamed a flaky inter-enclosure CAN link. That is wrong and withdrawn: the owner resoldered that connection and it is solid.* The data agrees — **excluding transients cuts the noise from 9% to 6%, then it plateaus.** That is the signature of **sampling skew**: `_setup` values are assembled from CAN status messages arriving on a different cadence than the local VESC's instantaneous reading, so subtracting the two during any change produces error. The residual ~6% is the irreducible cadence mismatch, **inherent to the method, not a fault in the wiring.**
+
+**What IS supportable:** no difference greater than roughly **6%** between the two motors is detectable here. A difference *larger* than that would show up — so this technique is usable as a coarse screen, just not for a 0.1° pitch effect.
 
 **To actually compare props, log VESC 2 directly** — connect VESC Tool to the `…56` unit and record it, rather than deriving it. Better still, run both props on the *same* motor in back-to-back tests, which removes motor-to-motor and ESC-calibration differences from the comparison entirely.
 

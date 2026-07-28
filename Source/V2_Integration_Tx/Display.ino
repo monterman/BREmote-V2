@@ -89,20 +89,194 @@ bool isDisplayActivityEnabled()
   return display_activity_enabled;
 }
 
+// V2.5-Evo - 2026-07-27 - TX-DISPLAY-1. False means the HT16K33 never answered at boot.
+// The remote now stays fully alive in that state instead of hanging in setup().
+bool g_display_ok = false;
+
+// ============================================================
+// i2cBusRecover - free a slave that is holding SDA low
+//
+// An I2C slave interrupted mid-byte (power glitch, brownout, reset during a transfer) can
+// keep SDA pulled LOW indefinitely, waiting to finish clocking out the byte it was sending.
+// It survives an MCU reset because the SLAVE is the one stuck, not the master. The bus then
+// looks permanently dead and no device will ACK.
+//
+// The cure is the standard one from the I2C spec / NXP AN10216: take the pins away from the
+// peripheral, manually pulse SCL up to 9 times (one full byte + ACK) so the slave finishes
+// its transfer and releases SDA, then generate a STOP so every device returns to idle.
+//
+// P_I2C_SDA is GPIO 2 — an ESP32-C3 strapping pin — so it is left as INPUT afterwards and
+// the Wire driver is re-initialised with exactly the parameters Init.ino:17-18 uses
+// (400 kHz), so bus speed is unchanged.
+// ============================================================
+// ============================================================
+// i2cLineDiag - what is physically on SDA/SCL, before Wire ever runs
+//
+// V2.5-Evo - 2026-07-28. Five consecutive boots on 2026-07-27 showed neither the HT16K33
+// (0x70) nor the ADS1115 (0x48) answering, with six bus-recovery attempts each time. That
+// proves the bus is dead but NOT WHY, and the two causes need different repairs — which
+// matters because this unit is heavily potted and cannot be inspected.
+//
+// HOW IT TELLS THEM APART: I2C idles high only because external pull-up resistors tie both
+// lines to the peripherals' supply rail. So probe each line twice, before Wire.begin():
+//
+//   internal PULL-UP reads LOW   -> something is actively HOLDING the line down.
+//                                   Short to ground, a latched-up device, or a dead pin.
+//   internal PULL-DOWN reads HIGH-> an external pull-up is winning against the ~45k internal
+//                                   pull-down. The resistors ARE powered: rail and wiring
+//                                   are good, so the CHIPS are the problem.
+//   pull-up HIGH + pull-down LOW -> nothing external is driving the line at all. FLOATING:
+//                                   the pull-ups have lost their supply, or the line is open.
+//
+// Run BEFORE Wire.begin() so the pins are still plain GPIO and nothing we do can mask the
+// real state. Cost is ~1 ms and it runs every boot.
+// ============================================================
+void i2cLineDiag()
+{
+  Serial.println("I2C line state (probed before Wire init):");
+
+  const uint8_t pins[2]  = { (uint8_t)P_I2C_SDA, (uint8_t)P_I2C_SCL };
+  const char   *names[2] = { "SDA (GPIO2)", "SCL (GPIO1)" };
+
+  for (uint8_t i = 0; i < 2; i++)
+  {
+    pinMode(pins[i], INPUT_PULLUP);
+    delayMicroseconds(500);
+    bool up = digitalRead(pins[i]);
+
+    pinMode(pins[i], INPUT_PULLDOWN);
+    delayMicroseconds(500);
+    bool dn = digitalRead(pins[i]);
+
+    pinMode(pins[i], INPUT);   // leave floating for Wire.begin()
+
+    const char *verdict;
+    if (!up)     verdict = "HELD LOW  -> short to GND / latched device / damaged pin";
+    else if (dn) verdict = "EXTERNAL PULL-UP PRESENT  -> rail + wiring OK, chips are at fault";
+    else         verdict = "FLOATING  -> pull-ups unpowered or line OPEN (supply or broken trace)";
+
+    Serial.printf("  %-12s  pullup=%d  pulldown=%d   %s\n",
+                  names[i], (int)up, (int)dn, verdict);
+  }
+
+  Serial.println("  (both lines EXTERNAL PULL-UP = bus healthy, chips dead/unpowered)");
+  Serial.println("  (both lines FLOATING        = the 3V3 rail feeding 0x70+0x48 is gone)");
+}
+
+// NOT static: Analog.ino calls this too, for the ADS1115 half of the same shared bus.
+void i2cBusRecover()
+{
+  Wire.end();
+
+  pinMode(P_I2C_SCL, OUTPUT);
+  pinMode(P_I2C_SDA, INPUT_PULLUP);
+  digitalWrite(P_I2C_SCL, HIGH);
+  delayMicroseconds(10);
+
+  // Up to 9 clocks, stopping as soon as the slave lets SDA go high.
+  for (uint8_t i = 0; i < 9 && digitalRead(P_I2C_SDA) == LOW; i++) {
+    digitalWrite(P_I2C_SCL, LOW);
+    delayMicroseconds(10);
+    digitalWrite(P_I2C_SCL, HIGH);
+    delayMicroseconds(10);
+  }
+
+  // STOP condition: SDA rises while SCL is high.
+  pinMode(P_I2C_SDA, OUTPUT);
+  digitalWrite(P_I2C_SDA, LOW);
+  delayMicroseconds(10);
+  digitalWrite(P_I2C_SCL, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(P_I2C_SDA, HIGH);
+  delayMicroseconds(10);
+
+  pinMode(P_I2C_SDA, INPUT);
+  pinMode(P_I2C_SCL, INPUT);
+
+  Wire.begin(P_I2C_SDA, P_I2C_SCL);
+  Wire.setClock(400000);
+}
+
+// Print every address that ACKs. Called when the display never answers, so a dark remote
+// reports WHAT is on the bus rather than just dying. 0x70 = HT16K33, 0x48 = ADS1115.
+void txI2cScan()
+{
+  Serial.println("  I2C scan:");
+  uint8_t n = 0;
+  for (uint8_t addr = 1; addr < 127; addr++) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0) {
+      Serial.printf("    0x%02X ACK%s\n", addr,
+                    addr == 0x70 ? "  <- HT16K33 display" :
+                    addr == 0x48 ? "  <- ADS1115"         : "");
+      n++;
+    }
+  }
+  if (!n) Serial.println("    NOTHING responded — bus is dead or held low, not a chip fault.");
+}
+
 void startupDisplay()
 {
   Serial.print("Starting Display...");
   // HT16K33 tPOR ≤ 1ms but PCB power-rail settle can take longer.
   // Retry for up to 100ms before declaring failure — prevents boot hang
   // on first power cycle when the display chip isn't ready yet.
+  // ============================================================
+  // V2.5-Evo - 2026-07-27 - TX-DISPLAY-1: BUS RECOVERY + NEVER BRICK ON A DARK SCREEN.
+  //
+  // FIELD FAILURE 2026-07-27: the TX died at the dock and would not boot afterwards.
+  // Serial showed a CLEAN power-on (rst:0x1 POWERON, SW 27) reaching exactly:
+  //     Starting Display... Failed
+  // and then nothing. The radio, buttons, throttle and serial command handler never
+  // started, because the old code ended in `while(1) delay(100)`. The battery was 4.0 V —
+  // never the problem. Owner reported the screen DID come on a few times at home and then
+  // stopped, which rules out a dead chip: this is intermittent, so it is timing or bus state.
+  //
+  // TWO DEFECTS, BOTH FIXED HERE:
+  //
+  // 1) THE RETRY WINDOW WAS FAR TOO SHORT. 20 tries x 5 ms = 100 ms total. The comment
+  //    above openly admits "PCB power-rail settle can take longer" and then allows 100 ms
+  //    anyway. Coming off the charger the rail ramps differently than on a cold battery
+  //    boot, so the HT16K33 sometimes is not ready inside that window. Now ~3 s.
+  //
+  // 2) A STUCK BUS COULD NEVER CLEAR ITSELF. If power is interrupted mid-transaction — which
+  //    is exactly what "it died while I was using it" means — an I2C slave can be left
+  //    holding SDA LOW, and it keeps holding it ACROSS A RESET. Every subsequent probe then
+  //    fails forever and no amount of replugging helps, which matches what the owner saw.
+  //    The standard cure is to clock the stuck slave out by hand: pulse SCL up to 9 times
+  //    with SDA released, then issue a STOP. That is i2cBusRecover() below, and it now runs
+  //    between retry rounds.
+  //
+  // 3) AND THE REAL BUG: `while(1)` on a failed peripheral. A remote control must not brick
+  //    itself because a display driver did not ACK. It now continues, records the failure in
+  //    g_display_ok, and prints an I2C bus scan so the fault is DIAGNOSABLE over serial
+  //    instead of presenting as a dead remote. Every display write already goes through
+  //    beginDisplay()/I2C_LOCK paths that tolerate a missing device.
+  //
+  // NOTE: P_I2C_SDA is GPIO 2, an ESP32-C3 strapping pin. A slave holding it low at reset is
+  // therefore doubly bad. Recovery releases it as INPUT before Wire is restarted.
+  // ============================================================
   bool found = false;
-  for (int i = 0; i < 20 && !found; i++) {
-    found = beginDisplay();
-    if (!found) delay(5);
+  for (uint8_t round = 0; round < 6 && !found; round++)
+  {
+    for (int i = 0; i < 20 && !found; i++) {
+      found = beginDisplay();
+      if (!found) delay(25);
+    }
+    if (!found) {
+      Serial.printf(" [try %u: no ACK at 0x%02X, recovering bus]", round + 1, DISPLAY_ADDRESS);
+      i2cBusRecover();
+    }
   }
+
+  g_display_ok = found;
+
   if (!found) {
-    Serial.println(" Failed");
-    while(1) delay(100);
+    Serial.println(" FAILED after ~3s + bus recovery.");
+    Serial.println("  >> Continuing WITHOUT display (old firmware hung here forever).");
+    Serial.println("  >> Radio, buttons and serial commands are UP. Use ?i2c to inspect the bus.");
+    txI2cScan();
+    return;
   }
 
   clearDisplayBuffer();

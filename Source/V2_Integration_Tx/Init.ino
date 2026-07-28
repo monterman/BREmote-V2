@@ -14,6 +14,9 @@
 void initHardware()
 {
   pinMode(P_MAG, INPUT);
+  // V2.5-Evo - 2026-07-28 - probe the raw SDA/SCL line state BEFORE Wire takes the pins,
+  // so a dead bus reports WHY (held low / floating / healthy) and not just "no ACK".
+  i2cLineDiag();
   Wire.begin(P_I2C_SDA, P_I2C_SCL);
   Wire.setClock(400000);
   startupDisplay();

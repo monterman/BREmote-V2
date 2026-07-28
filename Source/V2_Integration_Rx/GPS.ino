@@ -318,6 +318,85 @@ void configureGPS() {
       break;
   }
 
+  // ============================================================
+  // V2.5-Evo - 2026-07-27 - GPS-CFG-1: DYNAMIC MODEL + NMEA SENTENCE FILTER
+  //
+  // Applied to EVERY chip type (including the default fallback) because both changes are
+  // chip-agnostic: the BN-220 and BN-880 are u-blox M8, the M10 accepts the same legacy
+  // UBX-CFG-* messages, and this is placed after the switch so no path can miss it.
+  // Serial1 is at 115200 in all branches by the time we get here.
+  //
+  // --- WHY dynModel ---
+  // Every one of these modules ships in dynModel 0 (Portable), which tells the receiver's
+  // own Kalman filter to accept solutions up to 310 m/s horizontal and 50 m/s VERTICAL,
+  // because a "portable" device might be in an aircraft. Nothing here ever leaves the
+  // surface of a lake. The cost of that permissiveness is not theoretical: the foilIQ
+  // logger (same u-blox family, sitting on the same buggy) recorded bogus 254 km/h speeds
+  // and 4800 m altitudes emitted as HIGH-CONFIDENCE fixes — 5-7 satellites, HDOP < 3 — on
+  // 2026-07-24, one day before the tow-buggy session where FM veered and RTM would not arm.
+  //
+  // dynModel 5 (Sea) constrains the filter to ~25 m/s horizontal and ~0 m/s vertical and
+  // pins altitude near the surface. That kills those solutions AT THE SOURCE rather than
+  // relying on gpsPhaseACheck() to catch them downstream — which matters because Phase A
+  // does not merely discard a bad reading, it increments gps_suspect_count, and at
+  // gps_suspect_threshold it sets gps_rejected, which BLOCKS RTM ARMING. A module inventing
+  // occasional 254 km/h fixes is therefore not just noise; it is a plausible mechanism for
+  // RTM refusing to arm in the field.
+  //
+  // Removing the vertical degree of freedom also improves the horizontal solution, and
+  // course-over-ground is derived from the horizontal velocity solution — which is exactly
+  // what runFmLoop() steers on.
+  //
+  // ⚠️ ALTITUDE CEILING: dynModel 5 is valid to 500 m. The Great Lakes sit at 75-183 m
+  // (Michigan 176 m), so there is ~3x margin. If this buggy is ever run on a mountain lake
+  // above 500 m, this MUST change to dynModel 4 (Automotive) or fixes will degrade.
+  // Owner confirmed 2026-07-27 that it will not be: hard-coded deliberately, not configurable.
+  //
+  // Payload is the u-blox DEFAULT field set with only dynModel changed, copied verbatim from
+  // the foilIQ WaveShare firmware where it is field-proven. mask=0x0001 means only dynModel
+  // is applied, but carrying real defaults rather than zeros is the safer form. Checksum
+  // 0x86/0x51 independently recomputed and verified 2026-07-27.
+  // ============================================================
+  static const byte setNav5Sea[] = {
+    0xB5,0x62,0x06,0x24,0x24,0x00,0x01,0x00,0x05,0x03,
+    0x00,0x00,0x00,0x00,0x10,0x27,0x00,0x00,0x05,0x00,
+    0xFA,0x00,0xFA,0x00,0x64,0x00,0x5E,0x01,0x00,0x3C,
+    0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+    0x00,0x00,0x86,0x51
+  };
+  Serial1.write(setNav5Sea, sizeof(setNav5Sea));
+  Serial1.flush();
+  delay(20);
+
+  // ============================================================
+  // --- WHY the NMEA filter ---
+  // TinyGPS++ reads GGA and RMC. It does not parse GSV, GLL or VTG at all — those sentences
+  // are clocked across the wire, buffered, parsed to a dead end and discarded. GSV is the
+  // worst: with multiple constellations it is 6-10 sentences per epoch on its own.
+  //
+  // On THIS board that waste is not free. Serial1 is time-shared with the VESC through the
+  // 74HC4052 mux, and the GPS competes for both the line and the 2048-byte ring buffer —
+  // the exact resource whose scarcity caused the STAGE 1 starvation above.
+  //
+  // This is not a speculative optimisation. The TX has shipped this identical filter since
+  // 2026-06-05 (V2_Integration_Tx/GPS.ino, "L-2"), where it is recorded as resolving
+  // "Audit #5 (GPS chatter choking the link)". The RX simply never received the same fix.
+  //
+  // GSA is deliberately left ENABLED to match the TX's proven configuration exactly rather
+  // than diverge; it is one sentence per epoch and is available as further headroom if the
+  // ?diag byte counters show it is worth trimming.
+  //
+  // Verify the effect with ?diag: g_diag_gps_bytes should fall sharply while
+  // g_diag_gps_sent_per_s (complete PARSED sentences) holds steady.
+  // ============================================================
+  static const byte disableGLL[] = { 0xB5,0x62,0x06,0x01,0x08,0x00,0xF0,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x2A };
+  static const byte disableGSV[] = { 0xB5,0x62,0x06,0x01,0x08,0x00,0xF0,0x03,0x00,0x00,0x00,0x00,0x00,0x00,0x02,0x38 };
+  static const byte disableVTG[] = { 0xB5,0x62,0x06,0x01,0x08,0x00,0xF0,0x05,0x00,0x00,0x00,0x00,0x00,0x00,0x04,0x46 };
+  Serial1.write(disableGLL, sizeof(disableGLL)); Serial1.flush(); delay(20);
+  Serial1.write(disableGSV, sizeof(disableGSV)); Serial1.flush(); delay(20);
+  Serial1.write(disableVTG, sizeof(disableVTG)); Serial1.flush(); delay(20);
+  Serial.println("GPS: dynModel=Sea(5) + GSV/GLL/VTG disabled");
+
   // V2.5-Evo - 2026-07-25 - STAGE 1: leave the MUX on GPS (channel 1) after init — the board
   // now BOOTS parked on GPS. This replaces the SW55 setUartMux(0) that parked on the VESC.
   // GPS is the peripheral that streams continuously and cannot be asked to repeat itself;

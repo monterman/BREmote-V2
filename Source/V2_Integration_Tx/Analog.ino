@@ -6,6 +6,10 @@
 // lock-ordering cycle with displayMutex.
 // V2.5-Evo - 2026-07-20 - Rex M1 (re-audit): closed the one missed leaf-lock site — the ADS
 // startADCReading in setHallActivityEnabled() is now I2C_LOCK/I2C_UNLOCK wrapped too.
+// V2.5-Evo - 2026-07-27 - false means the ADS1115 never answered at boot. Diagnostic only;
+// a missing ADS reads as zero throttle, which is the safe direction.
+bool g_ads_ok = false;
+
 void startupADS()
 {
   Serial.print("Starting ADS1115...");
@@ -13,10 +17,36 @@ void startupADS()
   bool ok = ads.begin(ADS1115_ADDRESS);
   if(ok) ads.setGain(GAIN_ONE);
   I2C_UNLOCK();
+  // V2.5-Evo - 2026-07-27 - TX-DISPLAY-1 (same class of defect as Display.ino).
+  // This used to be `while (true) delay(100);` — an infinite hang in setup() on a failed
+  // peripheral, which is what left the remote completely dead on 2026-07-27 (the display
+  // hit its copy of this pattern first). One un-ACKed I2C device must not brick a remote
+  // control: the radio, buttons and serial command handler all live downstream of here, and
+  // without them the fault cannot even be diagnosed.
+  //
+  // The ADS1115 shares the bus with the HT16K33, so a stuck slave takes out BOTH. One bus
+  // recovery + retry is attempted before giving up.
+  //
+  // SAFETY: the ADS reads the hall throttle. If it is genuinely absent, conversions return
+  // zero, which is zero throttle — the safe direction. g_ads_ok records the state for
+  // diagnostics; nothing here can command more throttle than the trigger asks for.
   if(!ok)
   {
-    Serial.println(" Failed");
-    while (true) delay(100);
+    Serial.print(" no ACK, recovering bus...");
+    i2cBusRecover();
+    I2C_LOCK();
+    ok = ads.begin(ADS1115_ADDRESS);
+    if(ok) ads.setGain(GAIN_ONE);
+    I2C_UNLOCK();
+  }
+
+  g_ads_ok = ok;
+
+  if(!ok)
+  {
+    Serial.println(" FAILED — continuing anyway (old firmware hung here forever).");
+    Serial.println("  >> Throttle will read ZERO until the ADS1115 answers. Use ?i2c.");
+    return;
   }
   Serial.println(" Done");
 }

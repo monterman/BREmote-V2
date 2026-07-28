@@ -294,6 +294,49 @@ void initTxGPS()
       // tx_gps_initialized stays false; getTxGPSLoop() will safely do nothing.
       break;
   }
+
+  // ============================================================
+  // V2.5-Evo - 2026-07-27 - GPS-CFG-1: DYNAMIC PLATFORM MODEL = 5 (Sea)
+  //
+  // Applies to BOTH supported TX chip types. Placed after the switch so neither path can
+  // miss it, and gated on tx_gps_initialized so the unknown-chip-type branch — which
+  // deliberately leaves Serial1 unconfigured — is skipped rather than written into.
+  //
+  // WHY: these modules ship in dynModel 0 (Portable), which permits the receiver's own
+  // navigation filter to accept solutions up to 310 m/s horizontal and 50 m/s VERTICAL,
+  // on the assumption the device might be aboard an aircraft. This TX never leaves the
+  // surface of a lake. That permissiveness has a measured cost — the foilIQ logger, same
+  // u-blox family on the same buggy, emitted bogus 254 km/h speeds and 4800 m altitudes as
+  // HIGH-CONFIDENCE fixes (5-7 satellites, HDOP < 3) on 2026-07-24.
+  //
+  // On TX the GPS feeds the speed display and Phase B anti-spoofing, so a module inventing
+  // 254 km/h corrupts both. dynModel 5 (Sea) constrains the filter to ~25 m/s horizontal
+  // and ~0 m/s vertical and pins altitude near the surface, killing those solutions inside
+  // the receiver instead of downstream of it.
+  //
+  // ⚠️ ALTITUDE CEILING: dynModel 5 is valid to 500 m. The Great Lakes sit at 75-183 m
+  // (Michigan 176 m) — roughly 3x margin. On a mountain lake above 500 m this MUST become
+  // dynModel 4 (Automotive). Owner confirmed 2026-07-27 that will not happen, so this is
+  // hard-coded on purpose and is NOT a config field: no confStruct change, no size change,
+  // SW_VERSION unchanged, and no SPIFFS settings wipe on this flash.
+  //
+  // Payload carries the u-blox DEFAULT field set with only dynModel altered — copied from
+  // the foilIQ WaveShare firmware where it is field-proven. mask=0x0001 applies dynModel
+  // alone, but shipping real defaults rather than zeros is the safer form. Checksum
+  // 0x86/0x51 independently recomputed and verified 2026-07-27.
+  // ============================================================
+  if (tx_gps_initialized) {
+    static const byte setNav5Sea[] = {
+      0xB5,0x62,0x06,0x24,0x24,0x00,0x01,0x00,0x05,0x03,
+      0x00,0x00,0x00,0x00,0x10,0x27,0x00,0x00,0x05,0x00,
+      0xFA,0x00,0xFA,0x00,0x64,0x00,0x5E,0x01,0x00,0x3C,
+      0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+      0x00,0x00,0x86,0x51
+    };
+    Serial1.write(setNav5Sea, sizeof(setNav5Sea));
+    Serial1.flush();
+    Serial.println("TX GPS: dynModel=Sea(5) applied");
+  }
 }
 
 // ============================================================

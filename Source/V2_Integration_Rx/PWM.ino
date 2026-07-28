@@ -173,6 +173,51 @@ void calcPWM()
     PWM0_time = pwm0_ramp;
     PWM1_time = pwm1_ramp;
   }
+
+  // ============================================================
+  // V2.5-Evo - 2026-07-27 - SAFETY-NEUTRAL-1: RELEASED THROTTLE == ABSOLUTE MINIMUM.
+  //
+  // THIS RUNS LAST, AFTER EVERY OTHER CALCULATION, ON PURPOSE. It is a structural
+  // guarantee, not a correction of any one contributor: with the trigger released, both
+  // outputs are the configured minimum and NOTHING is permitted to lift them.
+  //
+  // WHAT WAS WRONG — confirmed by arithmetic, not inference:
+  //   throttle_0 = map(0, 0,255, PWM0_min, PWM0_max)  ->  PWM0_min
+  //   PWM0_time  = constrain(throttle_0 + usrConf.trim - steering_offset_0, min, max)
+  // so at ZERO throttle the output was PWM0_min + trim. Any non-zero trim parked a motor
+  // above its minimum forever — trigger released, radio idle, buggy on the dock. The
+  // asymmetry matches the field report exactly: POSITIVE trim lifts motor 0, NEGATIVE trim
+  // lifts motor 1, so exactly ONE motor creeps. Owner observed one motor starting on its
+  // own at the dock, 2026-07-27, and had been compensating by widening the VESC's own
+  // deadband — i.e. masking an RX bug inside the ESC.
+  //
+  // AND THE ONE I DID NOT PROVE: trim is a CONSTANT offset, but the owner described the
+  // behaviour as DRIFTING. Steering neutral is the mechanism that actually drifts —
+  // steering_offset_0/1 recentre to exactly 0 ONLY when steering_received == 127 exactly,
+  // and the H-1 comment above openly delegates that to the TX tog_deadzone. A TX whose
+  // battery rail is sagging (the TX died at the dock the same day) shifts its ADC reference
+  // and therefore its apparent stick centre. That lifts a motor and it drifts.
+  //
+  // WHY IT IS WRITTEN THIS WAY: patching trim alone would have fixed the cause I proved and
+  // left the cause I suspect — plus ramp residue and whatever is added next — still able to
+  // put throttle on a motor the rider is not asking for. Enforcing the invariant ONCE, at
+  // the end, makes it independent of every upstream term. The creator safety philosophy
+  // already written throughout this file ("the human trigger remains the sole throttle
+  // source") is now enforced instead of merely assumed.
+  //
+  // The test is effective_thr, not thr_received: RTM e-stop and the FM/RTM caps all drive
+  // effective_thr to 0, so an autonomous stop lands on true minimum too rather than on
+  // minimum-plus-trim.
+  //
+  // NOTE: this is deliberately == 0 and NOT a deadband. If the TX ever sends a non-zero
+  // throttle with the trigger released, that is a TX fault that must be found and fixed at
+  // source, and swallowing it in a deadband here would hide it.
+  // ============================================================
+  if (effective_thr == 0)
+  {
+    PWM0_time = usrConf.PWM0_min;
+    PWM1_time = usrConf.PWM1_min;
+  }
 }
 
 void initRMT()

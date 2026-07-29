@@ -449,6 +449,9 @@ const TX_CMD_HTML = `
 <optgroup label="GPS">
   <option value="?printgps">?printgps — GPS fix state and coordinates</option>
   <option value="?gpsraw 5">?gpsraw 5 — dump raw NMEA for 5s</option>
+  <option value="?gpscfg">?gpscfg — read GPS config back OUT of the module (dynModel; verifies initTxGPS actually took; ~3s block, bench only)</option>
+  <option value="?gpsbaud">?gpsbaud — scan every baud and report which one the module answers on (read-only)</option>
+  <option value="?gpsbaud set 115200">?gpsbaud set 115200 — move the module to 115200 and persist it to the module's own flash</option>
   <option value="?gpsreinit">?gpsreinit — reinitialize GPS module</option>
   <option value="?gpscoldreset">?gpscoldreset — UBX cold reset (clears satellite cache)</option>
 </optgroup>

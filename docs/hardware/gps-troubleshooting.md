@@ -267,7 +267,7 @@ Once `?gpsraw` shows clean sentences, the wiring is correct. Now get a satellite
 | Module | Voltage | Works on TX? | Notes |
 |---|---|---|---|
 | **BN-220** | 3.3V | ✅ Confirmed | Recommended for TX. Set `gps_chip_type=0` |
-| **[HGLRC M100 Micro](https://www.hglrc.com/products/hglrc-m100_mini-gps)** | 3.3–5V | ✅ Expected | M10 chip, no compass. Set `gps_chip_type=2` |
+| **[HGLRC M100 Micro](https://www.hglrc.com/products/hglrc-m100_mini-gps)** | 3.3–5V | ⚠️ **Untested** | M10 chip, no compass. Set `gps_chip_type=2`. 🚨 **Do not assume this works yet.** The M10 removed the legacy UBX config messages, so the TX cannot change its baud (`CFG-PRT` does not exist on M10 — see [u-blox M10 SPG 5.10 interface description](https://content.u-blox.com/sites/default/files/u-blox-M10-SPG-5.10_InterfaceDescription_UBX-21035062.pdf) §3.10). If the module does not already ship at 115200 the TX will open the UART at the wrong speed and show **no NMEA at all**. Also note 9600 cannot physically carry 10 Hz (GGA+RMC ≈ 1400 B/s ≈ 14000 baud needed) — 38400 minimum. Verify with `?gpsbaud` before trusting this row. |
 | [HGLRC M100 Pro](https://www.hglrc.com/products/m100-pro-gps) | 3.6–5.5V | ❌ No | Needs >3.3V — UART corrupted at ESP32-C3 3.3V supply |
 | M101Q / M10Q | 5V | ❌ No | Needs 5V — TX only provides 3.3V |
 

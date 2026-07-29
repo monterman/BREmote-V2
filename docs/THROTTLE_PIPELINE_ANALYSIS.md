@@ -56,6 +56,27 @@ LoRa RX → [Stage 1: unpack] → [Stage 2: RTM safety gates → emergency stop 
 | 4. Failsafe gate | `PWM.ino:13` | If `millis() - last_packet >= failsafe_time` → skip the entire pulse generation block | `failsafe_time` (100–10000ms, default 1000) | Always evaluated |
 | 5. Linear µs map | `PWM.ino:63–64`, `:70–71`, `:94` | `map(effective_thr, 0, 255, PWM_min, PWM_max)` (with `+/- trim` per channel) | `PWM0_min/max`, `PWM1_min/max`, `trim`, `steering_type`, `steering_inverted`, `steering_influence` | Always |
 | 6. RMT output | `PWM.ino:131–145` (`generate_pulse`) | RMT clock = 1 MHz → 1 tick = 1 µs; high pulse of `pulse_width_us`, then 1µs low | — | Only when failsafe gate passes |
+| **7. Hard neutral clamp** ⭐ | `PWM.ino`, end of `calcPWM()` | **`effective_thr == 0` → both outputs forced to `PWM_min`.** Runs LAST, after trim, steering, and ramp | — | **Always** |
+
+### ⭐ Gate 7 — released throttle is an absolute, added 2026-07-28
+
+**Field failure 2026-07-27:** a motor crept with the trigger released. At zero throttle the output was `PWM_min + trim − steering_offset`, so **anything non-zero in those terms parked a motor above minimum indefinitely.**
+
+The live contributor was **not** trim (`trim: 0` on this unit) but the **steering offset**, which is applied even at zero throttle. With `steering_influence: 55` over a 1000–2000 µs range the differential authority is **±550 µs — 55 % of the throttle range, live at idle.** `steering_offset` is zero only when the steering byte is *exactly* 127; at ~4.3 µs per count, **ten counts off centre puts roughly 5 % throttle on one motor.** Unlike trim, this *drifts*, because it tracks the TX's live stick ADC.
+
+```c
+if (effective_thr == 0) { PWM0_time = usrConf.PWM0_min; PWM1_time = usrConf.PWM1_min; }
+```
+
+**Deliberately structural, not a patch on trim.** The first diagnosis was wrong and the fix still held — trim, steering, ramp residue and anything added later are all covered by one invariant enforced at the end.
+
+**Deliberately `== 0` with no deadband.** If the TX ever sends non-zero on a released trigger, that is a TX fault to be *found*, not absorbed here.
+
+**Tests on `effective_thr`, not `thr_received`**, so RTM e-stop and the FM/RTM caps also land on true minimum rather than minimum-plus-trim.
+
+> ✅ Verified on hardware 2026-07-28 — throttle released, props off, both motors completely still.
+>
+> ⚠️ **If a VESC deadband was widened to mask this, restore it.** Compensating for an RX bug inside the ESC will mask a real fault later.
 
 ### 1.3 Direct answers to your questions
 

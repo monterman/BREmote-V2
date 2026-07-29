@@ -296,6 +296,46 @@ The QMC5883L compass connects via I2C. The BN-880 GPS module includes an integra
 | RX ESP32-C3 Pin | Compass / BN-880 | Signal |
 |---|---|---|
 | **GPIO 2** | SDA | I2C Data |
+<!-- V2.5-Evo 2026-07-28 — see "Dynamic platform model" section below for dynModel=Sea + NMEA filter -->
+
+> ## ⭐ Dynamic platform model — `dynModel = 5 (Sea)`, all boards (2026-07-28)
+>
+> **Every u-blox module ships in `dynModel 0` (Portable)**, which permits the receiver's own navigation filter to accept solutions up to **310 m/s horizontal and 50 m/s vertical** — because a "portable" device might be aboard an aircraft. Nothing in this project leaves the surface of a lake.
+>
+> **That permissiveness has a measured cost.** The foilIQ logger — same u-blox family, same buggy — emitted **bogus 254 km/h speeds and 4800 m altitudes as HIGH-confidence fixes (5–7 satellites, HDOP < 3)** on 2026-07-24, one day before a session where FM veered and RTM would not arm.
+>
+> On the RX such readings feed `gpsPhaseACheck()`, which increments `gps_suspect_count` and at threshold sets **`gps_rejected` — and that blocks RTM arming.** Killing the solutions inside the receiver is far better than filtering them downstream.
+>
+> `dynModel 5 (Sea)` constrains the filter to ~25 m/s horizontal and ~0 m/s vertical and pins altitude near the surface. Removing the vertical degree of freedom also sharpens the horizontal solution — and **course-over-ground is derived from horizontal velocity**, which is exactly what FM steers on.
+>
+> **Applied to:** BREmote RX (all `gps_chip_type`), BREmote TX (types 0 and 2), foilIQ WaveShare.
+> **Re-sent on every boot** by `configureGPS()` / `initTxGPS()` — not stored in the module, so it survives a backup-battery death, a module swap, or a factory reset.
+>
+> ⚠️ **500 m altitude ceiling.** The Great Lakes sit at 75–183 m (Michigan 176 m), roughly 3× margin. **On a lake above 500 m this MUST become `dynModel 4` (Automotive)** or fixes will degrade. Hard-coded deliberately, not a config field.
+>
+> **Payload:** u-blox defaults with only `dynModel` altered, `mask = 0x0001`. Checksum `0x86 / 0x51`, independently recomputed and verified.
+>
+> ### NMEA sentence filter — GSV / GLL / VTG disabled
+>
+> **TinyGPS++ parses only GGA and RMC.** `GSV`, `GLL` and `VTG` are clocked across the wire, buffered, parsed to a dead end and discarded. GSV is the worst — with multiple constellations it is 6–10 sentences per epoch alone.
+>
+> On the **RX** that waste is not free: Serial1 is time-shared with the VESC through the 74HC4052 mux, so the GPS competes for both the line and the 2048-byte ring — the exact resource whose scarcity caused the STAGE 1 starvation. **The TX has shipped this identical filter since 2026-06-05**, recorded there as resolving *"Audit #5, GPS chatter choking the link."* The RX only received it on 2026-07-28.
+>
+> **Verify with `?diag`:** `g_diag_gps_bytes` should fall sharply while `g_diag_gps_sent_per_s` (complete *parsed* sentences) holds steady.
+>
+> ### ✅ Confirming it actually took — `?gpscfg`
+>
+> **No UBX ACK is checked anywhere in this firmware**, so "we sent dynModel=Sea" and "the module is in Sea" were indistinguishable until now. `?gpscfg` **polls the module** and prints what it reports:
+>
+> ```
+> ----- GPS live config (polled from the module) -----
+>   dynModel : 5  (Sea  <-- CORRECT for this buggy)
+>   fixMode  : 3  (1=2D 2=3D 3=auto)
+>   GSV      : disabled (good)   rates: 0 0 0 0 0 0
+>   chip_type: 1 (0=BN-220 1=BN-880 2/3=M10)
+> ```
+>
+> Bounded at ~3 s, safe on the bench. **`dynModel : 0` or `GSV : STILL ENABLED` means the write was silently rejected** — wrong checksum, unsupported on that chip, or the module still at the old baud. Also available from the web-UI quick-commands dropdown.
 | **GPIO 1** | SCL | I2C Clock |
 | 3.3V | VCC | Power |
 | GND | GND | Ground |

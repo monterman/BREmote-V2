@@ -1021,6 +1021,9 @@ static const SerialCommand kCommands[] = {
   // --- Hardware Diagnostics ---
   {"i2c", "scan I2C bus for compass", cmdScanI2C},
   {"gpsdiag", "2Hz GPS feed + RTM COG-valid breakdown (diagnose why GPS COG heading never engages)", cmdGpsDiag},
+  // V2.5-Evo - 2026-07-28 - reads dynModel + GSV state back OUT of the module. configureGPS()
+  // never checks a UBX ACK, so until now "sent" and "applied" were indistinguishable.
+  {"gpscfg", "read back live GPS config (dynModel, GSV filter) - verifies configureGPS() actually took", cmdGpsCfg},
   {"diag", "one-shot snapshot: GPS bytes/sentences, fix age, COG updates vs value-changes, mux errors, VESC poll rate, loop min/mean/max (safe during RTM/FM)", cmdDiag},
   {"diagz", "zero the ?diag counters so a run can be bracketed", cmdDiagZ},
   {"printcompass", "print raw compass X/Y/Z", cmdPrintCompass},

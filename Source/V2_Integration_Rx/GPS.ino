@@ -406,6 +406,128 @@ void configureGPS() {
 }
 
 // ============================================================
+// cmdGpsCfg (?gpscfg) - READ BACK what the GPS module actually has
+//
+// V2.5-Evo - 2026-07-28. configureGPS() writes UBX config and NEVER checks the ACK — that
+// is true of every UBX write in this firmware and of upstream. So "we sent dynModel=Sea"
+// and "the module is in Sea" have been indistinguishable. This command closes that gap by
+// POLLING the module and printing what it reports.
+//
+// Worth having beyond this one setting: any future UBX change (rate, constellations, an
+// NMEA filter) can be silently rejected — wrong checksum, unsupported on that chip, or the
+// module still at the old baud — and nothing anywhere would say so.
+//
+// Polls two things:
+//   UBX-CFG-NAV5 (0x06 0x24) -> dynModel, byte 2 of the payload
+//   UBX-CFG-MSG  (0x06 0x01) for NMEA GSV (class 0xF0 id 0x03) -> its per-port rates,
+//                             which is the direct check that the GSV filter took
+//
+// Blocking, but bounded: 1.5 s per poll, so ~3 s worst case. Same shape as ?gpsdiag, and
+// safe to run on the bench. Leaves the mux on GPS, which is its resting position anyway.
+// ============================================================
+static const char *dynModelName(uint8_t m)
+{
+  switch (m) {
+    case 0:  return "Portable  <-- FACTORY DEFAULT, not what we want";
+    case 2:  return "Stationary";
+    case 3:  return "Pedestrian";
+    case 4:  return "Automotive";
+    case 5:  return "Sea  <-- CORRECT for this buggy";
+    case 6:  return "Airborne <1g";
+    case 7:  return "Airborne <2g";
+    case 8:  return "Airborne <4g";
+    case 9:  return "Wrist";
+    case 10: return "Bike";
+    default: return "unknown";
+  }
+}
+
+// Send a UBX frame, then wait for a reply of the given class/id. Returns payload length,
+// or 0 on timeout. Payload is copied into out[] up to outMax.
+static uint16_t ubxPoll(const byte *req, size_t reqLen,
+                        byte wantCls, byte wantId,
+                        byte *out, uint16_t outMax)
+{
+  while (Serial1.available()) Serial1.read();   // discard stale NMEA
+  Serial1.write(req, reqLen);
+  Serial1.flush();
+
+  uint32_t deadline = millis() + 1500;
+  uint8_t  state = 0;
+  byte     cls = 0, id = 0;
+  uint16_t len = 0, idx = 0;
+
+  while ((int32_t)(millis() - deadline) < 0)
+  {
+    if (!Serial1.available()) { delay(1); continue; }
+    byte c = Serial1.read();
+
+    switch (state) {
+      case 0: state = (c == 0xB5) ? 1 : 0; break;
+      case 1: state = (c == 0x62) ? 2 : 0; break;
+      case 2: cls = c; state = 3; break;
+      case 3: id  = c; state = 4; break;
+      case 4: len = c;              state = 5; break;
+      case 5: len |= ((uint16_t)c << 8); idx = 0;
+              // Not the frame we asked for (an ACK, or unrelated) — resync.
+              state = (cls == wantCls && id == wantId && len <= outMax) ? 6 : 0;
+              if (state == 6 && len == 0) return 0;
+              break;
+      case 6:
+        out[idx++] = c;
+        if (idx >= len) return len;   // checksum bytes follow; we do not need them
+        break;
+    }
+  }
+  return 0;
+}
+
+void cmdGpsCfg(const String &args)
+{
+  (void)args;   // no arguments — signature matches the command-table dispatcher
+  setUartMux(1);
+  delay(5);
+
+  Serial.println("----- GPS live config (polled from the module) -----");
+
+  // UBX-CFG-NAV5 poll. Checksum 0x2A/0x84 over class,id,len.
+  static const byte pollNav5[] = { 0xB5,0x62,0x06,0x24,0x00,0x00,0x2A,0x84 };
+  byte pl[40];
+  uint16_t n = ubxPoll(pollNav5, sizeof(pollNav5), 0x06, 0x24, pl, sizeof(pl));
+
+  if (n >= 3) {
+    Serial.printf("  dynModel : %u  (%s)\n", pl[2], dynModelName(pl[2]));
+    Serial.printf("  fixMode  : %u  (1=2D 2=3D 3=auto)\n", pl[3]);
+  } else {
+    Serial.println("  dynModel : NO REPLY");
+    Serial.println("             module silent, wrong baud, or does not support CFG-NAV5.");
+    Serial.println("             If ?diag shows GPS bytes flowing, the config write is being");
+    Serial.println("             rejected rather than the module being dead.");
+  }
+
+  // UBX-CFG-MSG poll for NMEA-GSV. Checksum 0xFC/0x14.
+  static const byte pollGsv[] = { 0xB5,0x62,0x06,0x01,0x02,0x00,0xF0,0x03,0xFC,0x14 };
+  n = ubxPoll(pollGsv, sizeof(pollGsv), 0x06, 0x01, pl, sizeof(pl));
+
+  if (n >= 3) {
+    // payload: msgClass, msgID, then one rate per port. Any non-zero = still emitting.
+    bool on = false;
+    for (uint16_t i = 2; i < n; i++) if (pl[i]) on = true;
+    Serial.printf("  GSV      : %s", on ? "STILL ENABLED  <-- filter did NOT take" : "disabled (good)");
+    Serial.print("   rates:");
+    for (uint16_t i = 2; i < n; i++) Serial.printf(" %u", pl[i]);
+    Serial.println();
+  } else {
+    Serial.println("  GSV      : NO REPLY");
+  }
+
+  Serial.printf("  chip_type: %u (0=BN-220 1=BN-880 2/3=M10)\n", usrConf.gps_chip_type);
+  Serial.println("  Expect dynModel=5 (Sea) and GSV disabled. Anything else means the");
+  Serial.println("  configureGPS() write did not stick — see ?diag for byte/sentence flow.");
+  Serial.println("---------------------------------------------------");
+}
+
+// ============================================================
 // getGPSLoop - Drain the GPS UART and update GPS state
 // ============================================================
 //

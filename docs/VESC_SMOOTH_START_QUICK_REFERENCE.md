@@ -308,4 +308,51 @@ Primary file: `Downloads\vesc backups\v3 new app\vesc2_MOTORconf_v9_currentloop!
 
 ---
 
+## 🔴 PPM2 dead / mapping bar flat at zero — read this before touching anything else
+
+**This has now caused two lost sessions (2026-07-22 and 2026-07-27). It is always the 5 V, and it is never the firmware.**
+
+### The mechanism, proven from `Rx_V2-2.sch`
+
+The RX's PPM outputs are **optocouplers** (`IC5` = channel 0, `IC3` = channel 1). An opto's output transistor can only pull the line **down** — it needs a pull-up to produce a high. That pull-up is the 5 V on the corresponding servo connector:
+
+| Net | Goes to | Also feeds |
+|---|---|---|
+| `ESC0_5V` | `JP1.2` · `IC5.C` | **`D8.VIN` → the board's +5 V rail** |
+| `ESC1_5V` | `JP4.2` · `IC3.C` | **nothing else** |
+
+**No 5 V on `ESC1_5V` → `IC3` has no pull-up → the PPM2 line can never go high → VESC 2 sees nothing.** Not a weak signal. **Zero.** The mapping bar sits flat while you sweep the throttle.
+
+### ⭐ Why it is invisible, and why it keeps recurring
+
+`ESC0_5V` also powers the whole RX through `D8`, so **losing channel 0's 5 V stops the board booting — impossible to miss.** `ESC1_5V` powers *only* the opto pull-up, so losing it produces **no symptom anywhere except a dead second motor**. Nothing in the firmware reports it. Nothing on the display shows it. The RX looks perfectly healthy.
+
+### Connector pinout — from the netlist, not the silkscreen
+
+```
+JP4.1 = ESC1_SIG → R8        JP4.2 = ESC1_5V → IC3.C        JP4.3 = ESC1_GND
+JP1.1 = ESC0_SIG → R7        JP1.2 = ESC0_5V                JP1.3 = GND (board)
+```
+
+**Pin 1 is SIGNAL. Pin 3 is GND.** An inverted signal/ground cable has already caused a false diagnosis on this build once — confirm pin 1 by ringing it out to `R8` (channel 1) or `R7` (channel 0).
+
+### Diagnostic order
+
+1. **Continuity, 5 V conductor, VESC 2 → `JP4.2`.** This is the failure, twice running.
+2. **~5 V present at `JP4.2`** with the system powered.
+3. Probe **VESC 2's own servo pin 2**: reads ~5 V → the cable is broken, repair it. Reads 0 V → VESC 2's BEC is off, feed `JP3.2` (BEC1) instead, which enters through ideal-diode `D7`.
+4. Only then look at mapping or firmware.
+
+### Ground
+
+`ESC1_GND` is a separate net from board GND (the opto is nominally isolated), **but VESC 1 and VESC 2 already share ground through the CAN connector and battery negative** — heavy gauge, low impedance. Common ground is correct in this topology and a dedicated ground wire to `JP4.3` is optional. Confirm continuity rather than assuming.
+
+### ❌ Do not bridge PPM1 5 V → PPM2 5 V
+
+That ties VESC 1's BEC directly to VESC 2's with no diode between them — two regulators in parallel. **It is what failed both times.** `JP3` (BEC1) exists precisely so an external 5 V can be injected properly, through `D7`.
+
+**Fixed 2026-07-28** by running VESC 2's own signal and 5 V into `JP4` pins 1 and 2. Both VESCs then showed stable PPM with near-identical mapping.
+
+---
+
 End of quick reference.

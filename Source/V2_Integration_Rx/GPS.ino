@@ -170,6 +170,87 @@ static bool gpsPhaseACheck(double cur_lat, double cur_lng, float cur_speed_kmh) 
 //   - Calls Serial1.begin()/end()/begin() for BN-220/BN-880.
 //   - Blocks ~450 ms for BN-220/BN-880; ~250 ms for M10.
 // ============================================================
+// ============================================================
+// ubxSendAcked - send a UBX config message and CONFIRM the module accepted it
+//
+// V2.5-Evo - 2026-07-28 - GPS-ACK-1.
+//
+// WHAT WAS WRONG: every UBX write in this firmware was fire-and-forget. Nothing read the
+// ACK, so a dropped or rejected frame was indistinguishable from a successful one. That is
+// not theoretical — on 2026-07-28 the newly-added ?gpscfg readback showed the RX still in
+// dynModel 0 (Portable) after a flash that "sent" dynModel 5 (Sea). The GSV/GLL/VTG filters
+// in the SAME block had landed. The NAV5 frame is 44 bytes and was being fired immediately
+// after CFG-RATE with no gap; CFG-RATE retimes the module's whole output engine, and the
+// larger frame arriving mid-reconfiguration was simply dropped.
+//
+// WHY NOT JUST ADD A DELAY: a delay would have fixed this one write and left every other
+// config write in the firmware — rate, GNSS, the NMEA filters, and anything added later —
+// still unverified. The defect is not "NAV5 needs 20 ms", it is "we configure blind".
+//
+// WHAT THIS DOES: u-blox answers every CFG message with UBX-ACK-ACK (0x05 0x01) or
+// UBX-ACK-NAK (0x05 0x00), carrying the class and id of the message being answered. This
+// sends, waits for that ACK, and retries on NAK or timeout. Ordering and inter-frame timing
+// stop mattering because a dropped frame is simply re-sent until confirmed.
+//
+// Returns true if the module ACKed. Bounded: tries x (300 ms + 50 ms) worst case.
+// ============================================================
+static bool ubxSendAcked(const byte *msg, size_t len, uint8_t tries)
+{
+  const byte wantCls = msg[2];   // class of the message we are sending
+  const byte wantId  = msg[3];   // id    of the message we are sending
+
+  for (uint8_t t = 0; t < tries; t++)
+  {
+    while (Serial1.available()) Serial1.read();   // clear stale NMEA so the parser starts clean
+    Serial1.write(msg, len);
+    Serial1.flush();
+
+    uint32_t deadline = millis() + 300;
+    uint8_t  state = 0;
+    byte     cls = 0, id = 0, ackCls = 0, ackId = 0;
+    uint16_t len_ = 0, idx = 0;
+
+    while ((int32_t)(millis() - deadline) < 0)
+    {
+      if (!Serial1.available()) { delay(1); continue; }
+      byte c = Serial1.read();
+
+      switch (state)
+      {
+        case 0: state = (c == 0xB5) ? 1 : 0; break;
+        case 1: state = (c == 0x62) ? 2 : 0; break;
+        case 2: cls = c; state = 3; break;
+        case 3: id  = c; state = 4; break;
+        case 4: len_ = c; state = 5; break;
+        case 5:
+          len_ |= ((uint16_t)c << 8);
+          idx = 0;
+          // ACK-ACK = 0x05/0x01, ACK-NAK = 0x05/0x00, payload is always 2 bytes.
+          state = (cls == 0x05 && len_ == 2) ? 6 : 0;
+          break;
+        case 6:
+          if (idx == 0) { ackCls = c; idx = 1; }
+          else
+          {
+            ackId = c;
+            // Only trust an ACK that names the message we actually sent — the module may
+            // be ACKing something else queued ahead of us.
+            if (ackCls == wantCls && ackId == wantId)
+            {
+              if (id == 0x01) return true;    // ACK-ACK
+              break;                          // ACK-NAK: stop reading, fall through to retry
+            }
+            state = 0;                        // an ACK for a different message; keep looking
+          }
+          break;
+      }
+      if (state == 6 && idx == 1 && ackCls == wantCls && ackId == wantId && id == 0x00) break;
+    }
+    delay(50);   // brief settle before re-sending
+  }
+  return false;
+}
+
 void configureGPS() {
   // Route UART1 to the GPS connector (MUX position 1).
   // This must happen before any Serial1 traffic regardless of chip type.
@@ -364,9 +445,10 @@ void configureGPS() {
     0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
     0x00,0x00,0x86,0x51
   };
-  Serial1.write(setNav5Sea, sizeof(setNav5Sea));
-  Serial1.flush();
-  delay(20);
+  // V2.5-Evo - 2026-07-28 - GPS-ACK-1: sent through ubxSendAcked() and RETRIED until the
+  // module confirms. This exact write was being silently dropped when it followed CFG-RATE
+  // with no gap — ?gpscfg reported dynModel 0 (Portable) after a flash that "sent" Sea.
+  bool nav5_ok = ubxSendAcked(setNav5Sea, sizeof(setNav5Sea), 4);
 
   // ============================================================
   // --- WHY the NMEA filter ---
@@ -392,10 +474,19 @@ void configureGPS() {
   static const byte disableGLL[] = { 0xB5,0x62,0x06,0x01,0x08,0x00,0xF0,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x2A };
   static const byte disableGSV[] = { 0xB5,0x62,0x06,0x01,0x08,0x00,0xF0,0x03,0x00,0x00,0x00,0x00,0x00,0x00,0x02,0x38 };
   static const byte disableVTG[] = { 0xB5,0x62,0x06,0x01,0x08,0x00,0xF0,0x05,0x00,0x00,0x00,0x00,0x00,0x00,0x04,0x46 };
-  Serial1.write(disableGLL, sizeof(disableGLL)); Serial1.flush(); delay(20);
-  Serial1.write(disableGSV, sizeof(disableGSV)); Serial1.flush(); delay(20);
-  Serial1.write(disableVTG, sizeof(disableVTG)); Serial1.flush(); delay(20);
-  Serial.println("GPS: dynModel=Sea(5) + GSV/GLL/VTG disabled");
+  bool gll_ok = ubxSendAcked(disableGLL, sizeof(disableGLL), 3);
+  bool gsv_ok = ubxSendAcked(disableGSV, sizeof(disableGSV), 3);
+  bool vtg_ok = ubxSendAcked(disableVTG, sizeof(disableVTG), 3);
+
+  // Report per-write, so a rejected config is visible at boot instead of silently shipping.
+  Serial.printf("GPS config: dynModel=Sea %s | GLL %s | GSV %s | VTG %s\n",
+                nav5_ok ? "OK" : "FAILED",
+                gll_ok  ? "OK" : "FAILED",
+                gsv_ok  ? "OK" : "FAILED",
+                vtg_ok  ? "OK" : "FAILED");
+  if (!nav5_ok)
+    Serial.println("GPS: !! dynModel NOT applied — module stays in Portable, which permits "
+                   "310 m/s / 50 m/s solutions. Run ?gpscfg to confirm.");
 
   // V2.5-Evo - 2026-07-25 - STAGE 1: leave the MUX on GPS (channel 1) after init — the board
   // now BOOTS parked on GPS. This replaces the SW55 setUartMux(0) that parked on the VESC.

@@ -173,6 +173,43 @@ The **SP** (Speed) telemetry display mode can now read speed directly from the T
 
 Display shows `--` when no fix is available or the fix is older than the configured stale timeout. Set `gps_en = 1` and reboot after changing it.
 
+#### GPS setup, verification and recovery — V2.5-Evo (2026-07-30)
+
+📖 **Full guide: [`docs/hardware/gps-troubleshooting.md`](docs/hardware/gps-troubleshooting.md)**
+
+**Fitting a new GPS?** Plug it in, power on, then run `?gpscfg` and check it reads
+`dynModel : 5 (Sea)`. The firmware finds the module at whatever baud it ships on and
+configures it — BN-220, BN-880, NEO-M8N, NEO-M9N and MAX-M10S all work from the same image,
+with no chip-specific setting to declare.
+
+Optionally run **`?gpssetup` once** per remote. It raises the module to 115200, applies every
+setting with the acknowledgement checked, and writes the result to the **module's own flash**
+so it survives a power cycle.
+
+**Every UBX configuration write is now acknowledgement-verified.** Previously the firmware
+sent configuration blind and could not tell a successful write from an ignored one — which is
+how a receiver ended up running `dynModel 0 (Portable)` while the logs said `Sea`. Portable
+permits 310 m/s horizontal and 50 m/s vertical solutions, and has been observed producing
+254 km/h and 4800 m readings as *high-confidence* fixes. Boot now prints the outcome of each
+write, and `?gpscfg` reads the setting back **out of the module** as an independent check.
+
+🚨 **If the GPS reports position but rejects all configuration** — boot showing `no-ACK` on
+every line, or `?gpsbaud` showing NMEA present but *"UBX input: DEAD"* — the module has
+disabled its own UART receiver after accumulated framing errors.
+
+> **Fix: switch the TX fully OFF and back ON.** A reboot, a reset or a re-flash will not clear
+> it; the module needs its power physically removed. No re-flashing is required.
+
+| Command | Purpose |
+|---|---|
+| `?gpscfg` | Read `dynModel` back out of the module — proves what it is actually running |
+| `?gpsbaud` | Listen-only baud scan; reports whether UBX input is alive |
+| `?gpssetup` | One-time full setup, saved permanently into the module |
+| `?gpsraw` | Raw NMEA dump when nothing else responds |
+
+All are USB-only bench commands (the TX disables serial on a battery boot) and none affect the
+LoRa link.
+
 **Telemetry display cycle** (cycle with RIGHT toggle hold 2 s):
 
 ```

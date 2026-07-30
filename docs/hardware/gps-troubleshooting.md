@@ -273,6 +273,155 @@ Once `?gpsraw` shows clean sentences, the wiring is correct. Now get a satellite
 
 ---
 
+---
+
+# GPS configuration — how it works, and how to fix it (V2.5-Evo, 2026-07-30)
+
+> **Read this section first if the GPS "stops working" for no obvious reason.**
+> Everything here is recoverable. Nothing requires re-flashing.
+
+## Installing a NEW GPS module on the TX
+
+Plug it in and power on. That is the whole procedure — the firmware finds the module wherever
+it is and configures it. Then confirm:
+
+```
+?gpscfg
+```
+
+You want to see `dynModel : 5 (Sea)`. If you do, you are done.
+
+**Optional but recommended once per remote** — make the settings permanent inside the module
+so boot only has to verify them rather than re-apply them:
+
+```
+?gpssetup
+```
+
+This finds the module, raises it to 115200, applies every setting with the acknowledgement
+checked, writes the result to the **module's own flash**, and reads it back to prove it.
+Run it once on the bench when you assemble a remote or swap a GPS. Takes ~15 s.
+
+> The baud is stored **in the GPS module**, not in the TX config. That is deliberate: adding a
+> field to the TX config struct would force a `SW_VERSION` bump, which **wipes TX SPIFFS** —
+> pairing, calibration, every setting. The module has its own non-volatile memory, so the
+> setting lives there for free and follows the module if you move it to another remote.
+
+## What the firmware does at boot
+
+1. **Listens** for NMEA across 115200 / 38400 / 9600 / 57600 / 19200. It transmits nothing
+   while the baud is unknown — see the warning below for why that matters.
+2. If the module is heard below 115200, moves it up **at the module's own baud**, so the
+   command is understood rather than sprayed at a guess.
+3. Detects which configuration dialect the module speaks — legacy `UBX-CFG` (u-blox 6/7/8) or
+   `CFG-VALSET` (u-blox M9/M10) — by sending `CFG-NAV5` and reading the answer.
+4. Applies `dynModel=Sea`, silences GSV/GLL/VTG, then sets the measurement rate — **in that
+   order**, because silencing the chatter first makes every later acknowledgement arrive
+   promptly.
+5. **Checks the acknowledgement on every single write** and prints the result:
+
+```
+TX GPS [BN-220]: heard the module at 115200 — skipping the dual-baud dance
+TX GPS config [legacy CFG (u-blox 6/7/8)]: dynModel=Sea OK | rate=200ms OK | GLL OK | GSV OK | VTG OK
+```
+
+Nothing here can block boot or disable the GPS. If a module is unfamiliar or silent, the
+settings are sent anyway and the outcome is **reported**, not enforced.
+
+## 🚨 The one failure worth knowing: "UART RX disabled"
+
+**Symptom.** The GPS still streams position, but every configuration write fails:
+
+```
+TX GPS config [UNVERIFIED - module sends no ACK]: dynModel=Sea no-ACK | rate no-ACK | GLL no-ACK ...
+```
+
+and `?gpsbaud` shows the signature — **NMEA present, UBX dead**:
+
+```
+  baud     NMEA
+  9600     yes
+  -> UBX input: DEAD — module is NOT accepting UBX
+```
+
+**Cause.** u-blox counts UART framing errors. Past roughly **100**, the module **switches off
+its own receiver** and ignores all input until it loses power. Framing errors come from
+sending data at a baud the module is not using.
+
+**Critical detail:** the error count does **not** reset when the ESP32 reboots. It resets only
+when the **GPS module loses power**. So a bench session of reflashes and reboots can
+accumulate errors across many boots and trip it mid-session.
+
+### ✅ Recovery — 10 seconds, no reflash
+
+**Switch the TX fully OFF and back ON.**
+
+That is the entire fix. A reboot, a reset, or re-flashing will **not** clear it — the module
+needs its power physically removed, which the TX power switch does.
+
+Then confirm:
+
+```
+?gpsbaud     ->  should read "UBX input: alive"
+?gpscfg      ->  should read "dynModel : 5 (Sea)"
+```
+
+If `?gpsbaud` still reports UBX dead after a full power cycle, the problem is not this — check
+wiring and the 3.3 V supply.
+
+### How the current firmware avoids causing it
+
+- Baud detection is **listen-only**. It never transmits at an unconfirmed baud.
+- The dual-baud "dance" — which does transmit blind — now runs **only as a last resort**, when
+  listening hears nothing at all. On a working module it is skipped entirely, so a normal boot
+  produces **zero** wrong-baud bytes.
+- `?gpsbaud` scans by listening, and checks UBX **once**, at the baud that answered.
+
+## GPS serial commands
+
+| Command | What it does | Blocks |
+|---|---|---|
+| `?gpscfg` | Reads `dynModel` back **out of the module** — proves what it is actually running, not what we asked for | ~3 s |
+| `?gpsbaud` | Listen-only scan; reports which baud has NMEA and whether UBX input is alive | ~2 s |
+| `?gpsbaud <rate>` | Moves **our UART only**, module untouched. Reverts on reboot | <1 s |
+| `?gpsbaud set <rate>` | Moves **the module** and writes it to the module's flash | ~6 s |
+| `?gpssetup` | **One-time full setup**: find, raise to 115200, configure, save permanently, verify | ~15 s |
+| `?gpsraw [sec]` | Dumps raw NMEA — use when nothing else responds | 5 s |
+| `?gpsreinit` | Re-runs GPS init without rebooting | ~2 s |
+| `?gpscoldreset` | Clears the module's satellite cache; forces fresh acquisition | instant |
+
+All of these are **USB only** — the TX disables its serial port on a normal battery boot.
+They block the main loop (display, RTM/FM), so they are **bench commands**. Type `quit` to
+abort a long one. They do **not** stall the LoRa link or trip the RX failsafe.
+
+## Baud vs update rate — why 9600 is not enough
+
+At 8N1 each byte costs 10 bits. GGA + RMC is roughly 142 bytes per fix:
+
+| Rate | Needs | 9600 gives | 115200 gives |
+|---|---|---|---|
+| 1 Hz | ~1,420 bit/s | ✅ 15 % | ✅ 1 % |
+| 5 Hz | ~7,100 bit/s | ⚠️ **74 %** — no headroom, drops sentences | ✅ 6 % |
+| 10 Hz | ~14,200 bit/s | ❌ **impossible** | ✅ 12 % |
+
+The firmware warns at boot if the configured rate does not fit the link:
+
+```
+TX GPS: !! 9600 baud is only 27% clear of what 5 Hz needs — sentences WILL drop.
+        Run '?gpssetup' to move the module to 115200 permanently.
+```
+
+## u-blox M10 modules (HGLRC M100 Micro and similar)
+
+M10 **removed** the legacy configuration messages. Its entire `UBX-CFG` class is `CFG-CFG`,
+`CFG-RST`, `CFG-VALDEL`, `CFG-VALGET`, `CFG-VALSET` — `CFG-PRT`, `CFG-MSG`, `CFG-RATE`,
+`CFG-NAV5` and `CFG-GNSS` do not exist and are rejected.
+
+The firmware handles this automatically: a rejection means "wrong dialect", not "bad
+hardware", so it re-sends the same setting through `CFG-VALSET`. You do not need to declare
+which chip you fitted. A BN-220, BN-880, NEO-M8N, NEO-M9N or MAX-M10S all self-configure from
+the same firmware image.
+
 ## **Serial commands quick reference**
 
 | Command | What it does |

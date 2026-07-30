@@ -394,6 +394,10 @@ const CmdEntry cmdTable[] = {
   // "set <rate>" = move the module and persist to ITS flash (not usrConf — a confStruct
   // change would bump SW_VERSION and wipe the TX SPIFFS config).
   { "gpsbaud",     cmdGpsBaud,      "[set] [<rate>]",  "scan / set GPS baud; 'set' persists into the module's own flash; ~2s main-loop block, quit aborts" },
+  // V2.5-Evo - 2026-07-30 - GPS-SETUP-1. Run ONCE per assembled remote. Finds the module,
+  // raises it to 115200, applies every setting ACK-verified, commits to the MODULE's own
+  // non-volatile memory, then reads it back to prove it. Boot then only has to verify.
+  { "gpssetup",    cmdGpsSetup,     "",                "ONE-TIME full GPS setup: find, raise to 115200, configure, save to the module permanently, verify (~15s, bench only)" },
 };
 const size_t cmdTableSize = sizeof(cmdTable) / sizeof(cmdTable[0]);
 

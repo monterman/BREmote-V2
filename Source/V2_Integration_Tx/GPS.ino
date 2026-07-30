@@ -295,6 +295,22 @@ static const uint8_t GPS_SAW_UBX  = 0x01;
 static const uint8_t GPS_SAW_NMEA = 0x02;
 
 // ------------------------------------------------------------
+// gpsOpenAt - reopen Serial1 at a known baud, no probing, buffer clean.
+//
+// V2.5-Evo - 2026-07-30 - GPS-BAUD-2. Extracted so that "put the UART somewhere known" is a
+// single named operation rather than an end/begin/flush sequence copied around. Every path
+// that can END a scan without finding anything must call this — see gpsDetectBaud().
+// ------------------------------------------------------------
+static void gpsOpenAt(uint32_t baud)
+{
+  Serial1.end();
+  delay(10);
+  Serial1.begin(baud, SERIAL_8N1, P_U1_RX, P_U1_TX);
+  delay(60);                                     // let the UART settle before trusting a byte
+  while (Serial1.available()) Serial1.read();
+}
+
+// ------------------------------------------------------------
 // gpsProbeAt - is anything talking at this baud? Leaves Serial1 OPEN at it either way.
 //
 // Checks for both answers because they fail independently: a module with UBX input
@@ -303,11 +319,7 @@ static const uint8_t GPS_SAW_NMEA = 0x02;
 // ------------------------------------------------------------
 static uint8_t gpsProbeAt(uint32_t baud, uint16_t window_ms)
 {
-  Serial1.end();
-  delay(10);
-  Serial1.begin(baud, SERIAL_8N1, P_U1_RX, P_U1_TX);
-  delay(60);                                     // let the UART settle before trusting a byte
-  while (Serial1.available()) Serial1.read();
+  gpsOpenAt(baud);
 
   // UBX-MON-VER poll — supported on every u-blox generation from 6 through M10, and it only
   // READS. Nothing here can alter a setting while the baud is still unknown.
@@ -341,13 +353,32 @@ static uint8_t gpsProbeAt(uint32_t baud, uint16_t window_ms)
 }
 
 // ------------------------------------------------------------
-// gpsDetectBaud - hunt the candidate list. Returns the baud that answered, or 0.
-// On success Serial1 is left open at that baud.
+// gpsDetectBaud - hunt the candidate list.
+//
+// Returns the baud that answered, or 0. Serial1 is ALWAYS left open at a known speed: the
+// one that answered on success, or fallback_baud on failure.
+//
+// ⚠️ V2.5-Evo - 2026-07-30 - GPS-BAUD-2, defect found in the 2026-07-30 audit of 2a33fe9.
+// The first version of this function just returned 0, which left Serial1 parked wherever
+// gpsProbeAt() had last looked — the FINAL entry of kGpsBauds, i.e. 19200. Nothing any
+// module was using.
+//
+// That is worse than it sounds. It does not merely fail to find the GPS; it converts a
+// TRANSIENT fault into a PERMANENT one. A module slow to wake, or a connector momentarily
+// loose at boot, would leave the UART at 19200 for the entire session — getTxGPSLoop()
+// feeding garbage into TinyGPS++ with no recovery short of a reboot, even after the module
+// came good. Three of the four call sites did not restore the baud themselves.
+//
+// The restore belongs HERE, not at the call sites: a helper that can strand the UART is a
+// trap for every future caller, and the audit found the trap had already been stepped in
+// three times out of four.
 // ------------------------------------------------------------
-static uint32_t gpsDetectBaud(uint16_t window_ms)
+static uint32_t gpsDetectBaud(uint16_t window_ms, uint32_t fallback_baud)
 {
   for (uint8_t i = 0; i < kGpsBaudCount; i++)
     if (gpsProbeAt(kGpsBauds[i], window_ms)) return kGpsBauds[i];
+
+  gpsOpenAt(fallback_baud);   // never leave the port on the last baud we happened to try
   return 0;
 }
 
@@ -591,12 +622,11 @@ void initTxGPS()
       // seen, which hard-coding a per-module baud cannot.
       // ============================================================
       Serial.println("TX GPS [M10]: probing for the module...");
-      uint32_t found = gpsDetectBaud(300);
+      // gpsDetectBaud() guarantees the port is left at GPS_BAUD_PREFERRED if nothing answers,
+      // so the config block below still runs and reports honestly instead of failing silently.
+      uint32_t found = gpsDetectBaud(300, GPS_BAUD_PREFERRED);
 
       if (found == 0) {
-        // Nothing anywhere. Open at the preferred rate so the config block below still runs
-        // and reports honestly, rather than failing silently here.
-        Serial1.begin(GPS_BAUD_PREFERRED, SERIAL_8N1, P_U1_RX, P_U1_TX);
         Serial.println("TX GPS [M10]: !! no reply at any baud. Check 3.3V, GND, and that "
                        "TX/RX are not swapped. Run ?gpsbaud to scan, ?gpsraw to see bytes.");
       } else {
@@ -731,7 +761,10 @@ void initTxGPS()
     // rescues the case that previously looked like dead hardware.
     if (probe == UBX_NOREPLY) {
       Serial.println("TX GPS: no answer at the current baud — scanning...");
-      uint32_t found = gpsDetectBaud(300);
+      // On failure this restores GPS_BAUD_PREFERRED rather than stranding the port on the
+      // last baud tried — the defect this file used to have. A GPS that wakes late then
+      // still works for the rest of the session instead of being lost until reboot.
+      uint32_t found = gpsDetectBaud(300, GPS_BAUD_PREFERRED);
       if (found) {
         Serial.printf("TX GPS: found the module at %lu baud; re-applying config there\n",
                       (unsigned long)found);
@@ -1020,9 +1053,15 @@ void cmdGpsBaud(const String &args)
         Serial.printf("     Run '?gpsbaud set %lu' to make that permanent in the module.\n",
                       (unsigned long)GPS_BAUD_PREFERRED);
     } else {
+      // The scan above walked the whole list, so the port is sitting on the LAST baud tried.
+      // Put it back somewhere sane before returning — otherwise a scan that finds nothing
+      // would leave the GPS unusable for the rest of the session as a side effect of merely
+      // having LOOKED at it. A read-only diagnostic must not change the machine.
+      gpsOpenAt(GPS_BAUD_PREFERRED);
       Serial.println("  -> NOTHING answered at any baud.");
       Serial.println("     That points at wiring or power, not configuration: check 3.3V,");
       Serial.println("     GND, and that TX/RX are not swapped. ?gpsraw shows raw bytes.");
+      Serial.printf("     Serial1 restored to %lu.\n", (unsigned long)GPS_BAUD_PREFERRED);
     }
     Serial.println("-------------------------");
     return;
@@ -1050,10 +1089,11 @@ void cmdGpsBaud(const String &args)
   }
 
   Serial.printf("Locating the module before moving it to %lu...\n", (unsigned long)rate);
-  uint32_t cur = gpsDetectBaud(350);
+  uint32_t cur = gpsDetectBaud(350, GPS_BAUD_PREFERRED);
   if (!cur) {
     Serial.println("  No module found at any baud — aborting rather than writing blind.");
     Serial.println("  Run ?gpsbaud to scan, and check power/wiring first.");
+    Serial.printf("  Serial1 restored to %lu.\n", (unsigned long)GPS_BAUD_PREFERRED);
     return;
   }
   Serial.printf("  found at %lu\n", (unsigned long)cur);

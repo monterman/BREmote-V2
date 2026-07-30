@@ -385,13 +385,15 @@ const CmdEntry cmdTable[] = {
   { "gpscoldreset", cmdGpsColdReset, "",              "send UBX-CFG-RST cold-restart to GPS (clear all cached data)" },
   // V2.5-Evo - 2026-07-29 - reads dynModel back OUT of the module. initTxGPS() checks the
   // UBX ACK, which proves the module accepted the write; this proves what it is running.
-  // Blocks ~3s and stalls the LoRa cycle — bench only, like ?gpsraw.
-  { "gpscfg",      cmdGpsCfg,       "",                "read back live GPS config (dynModel) - verifies initTxGPS() actually took; ~3s block, bench only" },
+  // V2.5-Evo - 2026-07-30 - blocks the MAIN LOOP ~3s (display, RTM/FM, GPS parsing). It does
+  // NOT stall the LoRa task — that runs at priority 5 on core 0 — so the RX failsafe is not
+  // tripped. The earlier "stalls the LoRa cycle" note was wrong. 'quit' aborts.
+  { "gpscfg",      cmdGpsCfg,       "",                "read back live GPS config (dynModel) - verifies initTxGPS() actually took; ~3s main-loop block, quit aborts" },
   // V2.5-Evo - 2026-07-29 - GPS-BAUD-1. M9/M10 dropped UBX-CFG-PRT, so the firmware cannot
   // always move a module's baud on its own. Bare = scan, <rate> = our uart only,
   // "set <rate>" = move the module and persist to ITS flash (not usrConf — a confStruct
   // change would bump SW_VERSION and wipe the TX SPIFFS config).
-  { "gpsbaud",     cmdGpsBaud,      "[set] [<rate>]",  "scan / set GPS baud; 'set' persists into the module's own flash; ~2s block, bench only" },
+  { "gpsbaud",     cmdGpsBaud,      "[set] [<rate>]",  "scan / set GPS baud; 'set' persists into the module's own flash; ~2s main-loop block, quit aborts" },
 };
 const size_t cmdTableSize = sizeof(cmdTable) / sizeof(cmdTable[0]);
 

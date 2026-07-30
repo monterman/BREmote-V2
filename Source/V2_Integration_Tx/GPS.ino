@@ -861,9 +861,22 @@ void initTxGPS()
 //   legacy  UBX-CFG-NAV5  (0x06 0x24) -> dynModel is byte 2 of the payload
 //   modern  UBX-CFG-VALGET(0x06 0x8B) -> CFG-NAVSPG-DYNMODEL, value after the 4-byte key
 //
-// ⚠️ WARNING: this blocks for up to ~3 s and therefore stalls the 10 Hz LoRa TX cycle,
-// which will trip the RX failsafe. Bench use only — same caveat as ?gpsraw. Do NOT run it
-// while RTM or FM is engaged.
+// ⚠️ WARNING: blocks the main loop for up to ~3 s. Bench use only. Type 'quit' to abort.
+//
+// V2.5-Evo - 2026-07-30 - the earlier version of this warning said the block "stalls the
+// 10 Hz LoRa TX cycle, which will trip the RX failsafe". That is WRONG and was corrected in
+// the 2026-07-30 audit. sendData runs at FreeRTOS priority 5 on core 0 while loop() runs at
+// priority 1, and every wait in here yields, so a blocked loop() cannot delay the LoRa task.
+// The RX failsafe is NOT tripped.
+//
+// What actually freezes: getTxGPSLoop(), runRtmLoop(), runFmLoop(), the display render, the
+// menu, mag gestures and the auto-sleep check. That is still a real reason to keep it off
+// the water — but it fails SAFE, because the GPS fix simply ages past
+// tx_gps_stale_timeout_ms and the 0xF3 GPS meta-packet stops being sent, which BLOCKS
+// RTM/FM rather than feeding them stale position.
+//
+// Keeping the wrong mechanism in a warning is its own hazard: the next person to read it
+// would mis-scope the risk in both directions.
 // ============================================================
 static const char *dynModelName(uint8_t m)
 {
@@ -961,6 +974,9 @@ void cmdGpsCfg(const String &args)
     Serial.println("  dialect  : legacy UBX-CFG (u-blox 6/7/8)");
     Serial.printf("  dynModel : %u  (%s)\n", pl[2], dynModelName(pl[2]));
     Serial.printf("  fixMode  : %u  (1=2D 2=3D 3=auto)\n", pl[3]);
+  } else if (checkSerialQuit()) {
+    // The legacy poll already cost 1.5 s; let the operator skip the second one.
+    Serial.println("  aborted after the legacy poll (no reply).");
   } else {
     // --- No legacy answer. Try the modern configuration interface (M9/M10). ---
     byte pollDyn[16];
@@ -1005,8 +1021,17 @@ void cmdGpsCfg(const String &args)
 // already has non-volatile memory of its own, so the setting lives there instead and costs
 // nothing. It also means the module keeps its baud if it is moved to another remote.
 //
-// ⚠️ Blocks for up to ~2 s while scanning, which stalls the 10 Hz LoRa cycle and will trip
-// the RX failsafe. Bench use only — same caveat as ?gpsraw.
+// ⚠️ Blocks the main loop for up to ~2 s scanning (~6 s for `set` in the worst case).
+// Bench use only. Type 'quit' between probes to abort.
+//
+// It does NOT stall the LoRa TX cycle or trip the RX failsafe — an earlier version of this
+// comment claimed it did, and the 2026-07-30 audit disproved it: sendData is priority 5 on
+// core 0, loop() is priority 1, and every wait here yields. What freezes is the main loop
+// (GPS parsing, RTM/FM, display), and that fails safe by ageing the fix out and stopping the
+// 0xF3 packet, which blocks RTM/FM rather than corrupting them.
+//
+// Note also that both this and ?gpscfg are unreachable on a normal battery boot: checkCharger()
+// sets serialOff, after which setup() calls Serial.end(). They exist only over USB.
 // ============================================================
 // Which dialect does the module speak? Decided by which POLL it answers — read-only, so it
 // is safe to call before we have earned the right to change anything.
@@ -1043,6 +1068,16 @@ void cmdGpsBaud(const String &args)
                     (s & GPS_SAW_UBX)  ? "yes" : "-",
                     (s & GPS_SAW_NMEA) ? "yes" : "-");
       if (s && !found) found = kGpsBauds[i];
+
+      // Abort between probes, matching ?gpsraw / ?printrssi. Checked HERE rather than inside
+      // gpsProbeAt() because that helper also runs during boot, where reading Serial would
+      // swallow input nobody is there to type.
+      if (checkSerialQuit()) {
+        gpsOpenAt(found ? found : GPS_BAUD_PREFERRED);
+        Serial.printf("  aborted — Serial1 left at %lu.\n",
+                      (unsigned long)(found ? found : GPS_BAUD_PREFERRED));
+        return;
+      }
     }
 
     if (found) {
@@ -1100,6 +1135,14 @@ void cmdGpsBaud(const String &args)
 
   if (cur == rate) {
     Serial.println("  Already there. Nothing to do.");
+    return;
+  }
+
+  // Last chance to bail before anything is WRITTEN to the module. Everything above this
+  // line was read-only.
+  if (checkSerialQuit()) {
+    Serial.printf("  aborted before any write — module untouched, Serial1 left at %lu.\n",
+                  (unsigned long)cur);
     return;
   }
 

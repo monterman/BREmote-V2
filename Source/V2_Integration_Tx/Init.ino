@@ -185,13 +185,19 @@ void applyConfigSettings()
 
   throttleInit();
 
-  // V2.5-Evo - 2026-04-21 - Initialize TX GPS (BN-220 on Serial1) if GPS is enabled.
-  // V2.5-Evo - 2026-04-22 - speed_src guard removed from here; it now lives inside
-  // initTxGPS() itself so all callers get consistent behavior automatically.
-  // Called here because usrConf is fully loaded and this runs before
-  // initWatchdog(), giving initTxGPS() ample margin for its ~450ms of delays.
-  if (usrConf.gps_en)
-  {
-    initTxGPS();
-  }
+  // V2.5-Evo - 2026-07-30 - GPS-BAUD-3: the initTxGPS() call that used to sit here has been
+  // REMOVED. setup() calls initTxGPS() on the very next line after applyConfigSettings()
+  // returns (V2_Integration_Tx.ino), so GPS init was running TWICE on every boot — the full
+  // dual-baud dance and every config write, start to finish, twice. Nothing guarded against
+  // it: initTxGPS() checks usrConf.gps_en but has no re-entry guard.
+  //
+  // Cost was ~0.9 s of pure waste per boot before 2026-07-29, and ~3.9 s after, because the
+  // ACK-verified path spends real time when a module does not answer. Found in the
+  // 2026-07-30 safety audit.
+  //
+  // The surviving call is the one in setup(), where it sits with initHardware()/initStorage()
+  // /initTasks()/initWatchdog(). Hardware bring-up belongs in that sequence, not as a side
+  // effect of a function named "apply config settings". Ordering is unchanged: usrConf is
+  // fully applied before initTxGPS() reads it either way, and both still run before
+  // initWatchdog().
 }

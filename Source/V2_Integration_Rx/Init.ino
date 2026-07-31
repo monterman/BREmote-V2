@@ -75,6 +75,12 @@ void initWatchdog()
     esp_task_wdt_add(generatePWMHandle);
     esp_task_wdt_add(checkConnStatusHandle);
     esp_task_wdt_add(triggeredReceiveHandle);
+    // V2.5-Evo - 2026-07-31 - RX-WDT-1: publish the fact that the loop task is now SUBSCRIBED.
+    // esp_task_wdt_reset() logs "task not found" at error level on every call from a task that
+    // is not registered, and configureGPS() runs in runBootSequence() — BEFORE this function.
+    // Without this flag the GPS code's feeds emitted hundreds of error lines during boot,
+    // which is not merely ugly: that volume of spurious errors buries real ones.
+    g_wdt_active = true;
     Serial.println("WDT: initialized");
   } else {
     Serial.println("WDT: init failed");

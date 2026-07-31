@@ -227,6 +227,17 @@ static const uint8_t UBX_DIALECT_MUTE   = 2;
 
 static const uint8_t GPS_SAW_NMEA = 0x02;
 
+// Set true by initWatchdog() once the loop task is actually SUBSCRIBED to the task WDT.
+// esp_task_wdt_reset() logs an error on every call from an unregistered task, and
+// configureGPS() runs BEFORE initWatchdog(), so the feeds below must be gated on this.
+volatile bool g_wdt_active = false;
+
+// Feed the watchdog, but only when there is one watching us. Used in every wait loop here.
+static inline void gpsFeedWdt()
+{
+  if (g_wdt_active) esp_task_wdt_reset();
+}
+
 // Configuration-interface key IDs (u-blox M9/M10), verified against the M10 SPG 5.10
 // interface description §4.9. Needed because M10 REMOVED the legacy CFG messages: its whole
 // UBX-CFG class is CFG-CFG, CFG-RST, CFG-VALDEL, CFG-VALGET, CFG-VALSET. An M100 Pro or
@@ -282,7 +293,7 @@ static uint8_t gpsProbeAt(uint32_t baud, uint16_t window_ms)
 
   while ((int32_t)(millis() - deadline) < 0)
   {
-    esp_task_wdt_reset();
+    gpsFeedWdt();
     if (!Serial1.available()) { delay(1); continue; }
     byte c = Serial1.read();
     if (prev == '$' && c == 'G') { seen |= GPS_SAW_NMEA; break; }
@@ -458,7 +469,7 @@ static uint8_t ubxSendAckedT(const byte *msg, size_t len, uint8_t tries)
 
     while ((int32_t)(millis() - deadline) < 0)
     {
-      esp_task_wdt_reset();
+      gpsFeedWdt();
       if (!Serial1.available()) { delay(1); continue; }
       byte c = Serial1.read();
 

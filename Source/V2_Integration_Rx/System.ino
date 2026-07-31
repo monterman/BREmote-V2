@@ -1023,7 +1023,13 @@ static const SerialCommand kCommands[] = {
   {"gpsdiag", "2Hz GPS feed + RTM COG-valid breakdown (diagnose why GPS COG heading never engages)", cmdGpsDiag},
   // V2.5-Evo - 2026-07-28 - reads dynModel + GSV state back OUT of the module. configureGPS()
   // never checks a UBX ACK, so until now "sent" and "applied" were indistinguishable.
-  {"gpscfg", "read back live GPS config (dynModel, GSV filter) - verifies configureGPS() actually took", cmdGpsCfg},
+  {"gpscfg", "read back live GPS config (dynModel, GSV filter) - verifies configureGPS() actually took; now reads M9/M10 via CFG-VALGET too", cmdGpsCfg},
+  // V2.5-Evo - 2026-07-30 - RX port of the TX GPS work. Listen-only scan: never transmits at
+  // an unconfirmed baud, which is what disabled the TX's GPS receiver on 2026-07-30.
+  {"gpsbaud", "listen-only baud scan + UBX-alive check (spots the u-blox UART-RX-disable state) - ~6s block, bench only", cmdGpsBaud},
+  // One-time full setup, saved into the MODULE's own memory (not usrConf - a confStruct change
+  // would bump SW_VERSION and wipe RX SPIFFS config, compass cal and logs).
+  {"gpssetup", "ONE-TIME full GPS setup: find, configure ACK-verified, save permanently, verify - ~20s, bench only", cmdGpsSetup},
   {"diag", "one-shot snapshot: GPS bytes/sentences, fix age, COG updates vs value-changes, mux errors, VESC poll rate, loop min/mean/max (safe during RTM/FM)", cmdDiag},
   {"diagz", "zero the ?diag counters so a run can be bracketed", cmdDiagZ},
   {"printcompass", "print raw compass X/Y/Z", cmdPrintCompass},

@@ -1486,7 +1486,11 @@ void checkConnStatus(void *parameter)
   const TickType_t xFrequency = pdMS_TO_TICKS(200);
   while (1)
   {
-    esp_task_wdt_reset();
+    // V2.5-Evo - 2026-07-31 - RX-WDT-2: gated, same as PWM.ino and Radio.ino. initTasks()
+    // creates this task before initWatchdog() subscribes it, so the first iterations were
+    // feeding a watchdog that did not yet know about them and logging an error each time.
+    // Feed behaviour after subscription is unchanged; the failsafe logic below is untouched.
+    if (g_wdt_active) esp_task_wdt_reset();
     if(usrConf.paired)
     {
       if(millis() - last_packet < usrConf.failsafe_time)

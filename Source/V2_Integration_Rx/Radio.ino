@@ -394,7 +394,9 @@ void triggeredReceive(void *parameter) {
     // portMAX_DELAY would block indefinitely when TX is off, preventing WDT reset.
     // 2000ms timeout: short enough to feed the 3000ms WDT, long enough to avoid
     // busy-looping when the radio is quiet.
-    esp_task_wdt_reset();
+    // V2.5-Evo - 2026-07-31 - RX-WDT-2: gated, same reason as PWM.ino — this task starts
+    // before initWatchdog() subscribes it. Feed behaviour after subscription is unchanged.
+    if (g_wdt_active) esp_task_wdt_reset();
     if (xSemaphoreTake(triggerReceiveSemaphore, pdMS_TO_TICKS(2000)) == pdTRUE)
     {
       if (gps_meta_pending)

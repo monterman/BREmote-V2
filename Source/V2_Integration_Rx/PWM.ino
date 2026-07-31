@@ -7,9 +7,16 @@ void generatePWM(void *parameter) {
   TickType_t xLastWakeTime = xTaskGetTickCount();
   const TickType_t xFrequency = pdMS_TO_TICKS(10);
 
-  while (1) 
+  while (1)
   {
-    esp_task_wdt_reset();
+    // V2.5-Evo - 2026-07-31 - RX-WDT-2: gated. initTasks() creates this task BEFORE
+    // initWatchdog() subscribes it, so the first few iterations were calling
+    // esp_task_wdt_reset() unregistered — which logs "task not found" at ERROR level and put
+    // five spurious errors in every boot log. Control flow is untouched: once g_wdt_active is
+    // set the feed happens exactly as before, and before that there is no watchdog to feed.
+    // The RX has no display and no LED, so the boot log is the only diagnostic surface it has;
+    // fake errors in it are not free.
+    if (g_wdt_active) esp_task_wdt_reset();
     calcPWM();
 
     if(PWM_active && millis()-last_packet < usrConf.failsafe_time)

@@ -568,9 +568,57 @@ void configureGPS() {
         0x01, 0x00, 0xDE, 0x6A
       };
 
+      // ============================================================
+      // V2.5-Evo - 2026-07-31 - RX GPS-BAUD-2: LISTEN BEFORE DANCING.
+      //
+      // The dance below is now the FALLBACK, not the opening move. It is effective, but it
+      // always transmits ~28 bytes at a baud the module is NOT using, and u-blox counts
+      // framing errors: past roughly 100 it DISABLES its receiver until the module loses
+      // power. 28 per boot looks safe in isolation — but the counter does NOT reset when the
+      // ESP32 reboots, only when the GPS itself is depowered. A bench session of reflashes and
+      // ?reboot cycles therefore ACCUMULATES, and on 2026-07-30 that is exactly what disabled
+      // the TX's GPS receiver mid-session: NMEA still streaming, every UBX write ignored.
+      //
+      // Listening costs nothing and skips the dance entirely whenever the module is already
+      // talking — which is every boot after the first. If it is heard below 115200, CFG-PRT is
+      // sent AT THE MODULE'S OWN BAUD, so it is parsed correctly and produces ZERO framing
+      // errors instead of being sprayed blind at a guess.
+      //
+      // This matters more here than on the TX: the RX GPS feeds RTM and Follow-Me, the modes
+      // that drive the buggy.
+      // ============================================================
+      {
+        uint32_t seen = gpsDetectBaud(1100, 115200);
+        if (seen) {
+          Serial.printf("GPS [BN-220/880]: heard the module at %lu — skipping the dance\n",
+                        (unsigned long)seen);
+          if (seen != GPS_BAUD_PREFERRED) {
+            Serial.printf("GPS [BN-220/880]: moving %lu -> %lu ... ",
+                          (unsigned long)seen, (unsigned long)GPS_BAUD_PREFERRED);
+            // CFG-PRT at the module's ACTUAL baud, so it is understood rather than guessed at.
+            Serial1.write(setBaud, sizeof(setBaud));
+            Serial1.flush();
+            delay(100);
+            gpsOpenAt(GPS_BAUD_PREFERRED);
+            Serial.println(gpsProbeAt(GPS_BAUD_PREFERRED, 1100) ? "OK" : "failed, rescanning");
+          }
+          // The rate write lives in the dance we just skipped, so send it here. Blind, but at
+          // a baud we have CONFIRMED by listening — which is the whole distinction that makes
+          // it safe. dynModel and the NMEA filter are handled after the switch.
+          delay(100);
+          Serial1.write(setRate5Hz, sizeof(setRate5Hz));
+          Serial1.flush();
+          delay(50);
+          Serial.println("GPS [BN-220/880]: Config complete (115200, 5Hz)");
+          break;
+        }
+        Serial.println("GPS [BN-220/880]: nothing heard — falling back to the dual-baud dance");
+      }
+
       // Step 1: open at factory default baud so the GPS hears the baud command.
       Serial.println("GPS [BN-220/880]: Connecting at 9600...");
       Serial1.begin(9600, SERIAL_8N1, P_U1_RX, P_U1_TX);
+      gps_current_baud = 9600;
       delay(200);
 
       // Step 2: send baud-change command; short delay lets UART finish shifting.
@@ -753,7 +801,34 @@ void configureGPS() {
 
   uint8_t     dialect;
   const char *nav5_status;
-  uint8_t     probe = ubxSendAckedT(setNav5Sea, sizeof(setNav5Sea), 3);
+
+  // ============================================================
+  // V2.5-Evo - 2026-07-31 - RX GPS-ACK-2: SETTLE, THEN ASK TWICE.
+  //
+  // Observed on hardware: a boot immediately after a reset reported
+  //   dynModel=Sea no-ACK | GSV no-ACK | GLL no-ACK | VTG no-ACK
+  // while ?gpscfg moments later read back dynModel : 5 (Sea) and ?gpsbaud reported UBX alive.
+  // So the module was healthy and correctly configured the whole time — it simply was not
+  // ready to ANSWER yet when we asked.
+  //
+  // The cause is that listening succeeds too early to be a good readiness signal. A u-blox
+  // module starts streaming NMEA within milliseconds of power-up, long before its UBX command
+  // handler is serving requests, and gpsProbeAt() returns on the FIRST sentence — so hearing
+  // NMEA proves the baud, not that the module is listening back.
+  //
+  // Two changes, because either alone is a guess: settle first, then ask a second time if the
+  // first round hears nothing. Cheap in the healthy case (the first probe answers and neither
+  // path is taken) and it removes a false "Portable!" warning that would otherwise send
+  // someone chasing a fault that does not exist.
+  // ============================================================
+  delay(300);
+  uint8_t probe = ubxSendAckedT(setNav5Sea, sizeof(setNav5Sea), 3);
+
+  if (probe == UBX_NOREPLY) {
+    Serial.println("GPS: no answer on the first round — settling and asking again...");
+    delay(700);
+    probe = ubxSendAckedT(setNav5Sea, sizeof(setNav5Sea), 3);
+  }
 
   if (probe == UBX_ACK) {
     dialect     = UBX_DIALECT_LEGACY;

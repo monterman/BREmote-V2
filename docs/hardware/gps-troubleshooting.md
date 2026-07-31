@@ -354,10 +354,18 @@ accumulate errors across many boots and trip it mid-session.
 
 ### ✅ Recovery — 10 seconds, no reflash
 
-**Switch the TX fully OFF and back ON.**
+**Unplug USB, then flip the power switch off. Wait a couple of seconds. Power back on.**
 
-That is the entire fix. A reboot, a reset, or re-flashing will **not** clear it — the module
-needs its power physically removed, which the TX power switch does.
+That is the entire fix, and the order matters:
+
+- **Unplugging USB cuts power fully** on both the TX and the RX (owner-confirmed 2026-07-30).
+- On the TX, **flipping the switch off as well** guarantees the remote — and therefore the GPS
+  module hanging off it — is completely dead rather than running on the internal cell.
+- On the RX, unplugging USB is sufficient.
+
+A reboot, an ESP32 reset, or a re-flash will **not** clear it. The GPS module has to actually
+lose power. That is also why this cannot be fixed over the wire: the module has stopped
+listening, so no command can reach it.
 
 Then confirm:
 

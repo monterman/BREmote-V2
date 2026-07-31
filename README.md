@@ -197,8 +197,11 @@ write, and `?gpscfg` reads the setting back **out of the module** as an independ
 every line, or `?gpsbaud` showing NMEA present but *"UBX input: DEAD"* — the module has
 disabled its own UART receiver after accumulated framing errors.
 
-> **Fix: switch the TX fully OFF and back ON.** A reboot, a reset or a re-flash will not clear
-> it; the module needs its power physically removed. No re-flashing is required.
+> **Fix: unplug USB, then flip the power switch off. Wait 2 s, power back on.**
+> Unplugging USB cuts power fully on both TX and RX; on the TX the switch also guarantees the
+> internal cell is not still running the module. A reboot, a reset or a re-flash will **not**
+> clear it — the GPS has to actually lose power, which is also why no serial command can fix
+> it (the module has stopped listening). No re-flashing is required.
 
 | Command | Purpose |
 |---|---|

@@ -791,7 +791,20 @@ void checkCharger()
       serialOff = true;
       break;
     }
-    else if(chgstat > 6000 && chgstat < 10000)
+    // V2.5-Evo - 2026-07-30 - PH-4: lower bound moved 6000 -> 1000, closing the dead band.
+    //
+    // USB is the ONLY way this remote charges, so USB present means charging. There is no
+    // "plugged in but idle" state to distinguish. The band therefore only needs one boundary:
+    // below 1000 is no external power, anything above it is charging.
+    //
+    // The old 6000 floor left 1000-6000 meaning nothing, and the owner's TX sits at ~2154 -
+    // stably, across every sample (2153-2157). So a perfectly normal charging remote was
+    // counted as eleven errors, shown "ECH", and had its serial port disabled. The reading was
+    // never wrong; the threshold was.
+    //
+    // The 10000-18000 branch below is left alone - it is a distinct display state, not a
+    // different verdict about whether power is present.
+    else if(chgstat >= 1000 && chgstat < 10000)
     {
       setBrightness(0x01);
       advanceChargeAnimation();

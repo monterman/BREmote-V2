@@ -201,7 +201,7 @@ static bool gpsPhaseACheck(double cur_lat, double cur_lng, float cur_speed_kmh) 
 //
 //   1. THE RX HAS A WATCHDOG AND THE TX DOES NOT. Init.ino arms a 3000 ms task WDT with
 //      trigger_panic = true and subscribes four tasks including the loop task. Every wait
-//      loop below therefore calls esp_task_wdt_reset(), following the convention already used
+//      loop below therefore calls gpsFeedWdt(), following the convention already used
 //      throughout this firmware (Compass.ino, Logger.ino, System.ino). A verbatim copy of the
 //      TX code would panic-reboot the buggy in the middle of a GPS command.
 //      configureGPS() itself is safe unfed: setup() runs runBootSequence() -> configureGPS()
@@ -376,62 +376,11 @@ static const char *gpsApplyCfg(uint8_t dialect,
   return "no-ACK";
 }
 
-static bool ubxSendAcked(const byte *msg, size_t len, uint8_t tries)
-{
-  const byte wantCls = msg[2];   // class of the message we are sending
-  const byte wantId  = msg[3];   // id    of the message we are sending
-
-  for (uint8_t t = 0; t < tries; t++)
-  {
-    while (Serial1.available()) Serial1.read();   // clear stale NMEA so the parser starts clean
-    Serial1.write(msg, len);
-    Serial1.flush();
-
-    uint32_t deadline = millis() + 300;
-    uint8_t  state = 0;
-    byte     cls = 0, id = 0, ackCls = 0, ackId = 0;
-    uint16_t len_ = 0, idx = 0;
-
-    while ((int32_t)(millis() - deadline) < 0)
-    {
-      if (!Serial1.available()) { delay(1); continue; }
-      byte c = Serial1.read();
-
-      switch (state)
-      {
-        case 0: state = (c == 0xB5) ? 1 : 0; break;
-        case 1: state = (c == 0x62) ? 2 : 0; break;
-        case 2: cls = c; state = 3; break;
-        case 3: id  = c; state = 4; break;
-        case 4: len_ = c; state = 5; break;
-        case 5:
-          len_ |= ((uint16_t)c << 8);
-          idx = 0;
-          // ACK-ACK = 0x05/0x01, ACK-NAK = 0x05/0x00, payload is always 2 bytes.
-          state = (cls == 0x05 && len_ == 2) ? 6 : 0;
-          break;
-        case 6:
-          if (idx == 0) { ackCls = c; idx = 1; }
-          else
-          {
-            ackId = c;
-            // Only trust an ACK that names the message we actually sent — the module may
-            // be ACKing something else queued ahead of us.
-            if (ackCls == wantCls && ackId == wantId)
-            {
-              if (id == 0x01) return true;    // ACK-ACK
-              break;                          // ACK-NAK: stop reading, fall through to retry
-            }
-            state = 0;                        // an ACK for a different message; keep looking
-          }
-          break;
-      }
-      if (state == 6 && idx == 1 && ackCls == wantCls && ackId == wantId && id == 0x00) break;
-    }
-    delay(50);   // brief settle before re-sending
-  }
-  return false;
-}
+// V2.5-Evo - 2026-07-31 - RX-WDT-3: the bool ubxSendAcked() that shipped in f7fbcbd was
+// REMOVED here, not merely superseded. Every call site now uses ubxSendAckedT(), so it was
+// provably unreachable — and it still carried a 300 ms wait loop with NO watchdog feed. Dead
+// code containing a landmine is worse than no code: the next person to revive it would
+// inherit a panic reboot with no warning. Its tri-state successor is below.
 
 // ------------------------------------------------------------
 // ubxSendAckedT - the tri-state successor to ubxSendAcked() above.
@@ -447,8 +396,11 @@ static bool ubxSendAcked(const byte *msg, size_t len, uint8_t tries)
 //      an M10 — where five separate messages are all refused — wasted seconds of boot.
 //   3. The deadline SCALES WITH BAUD and every wait feeds the watchdog.
 //
-// The original ubxSendAcked() is left in place and untouched: it is what shipped in f7fbcbd
-// and is still referenced by the legacy call sites below until they are migrated.
+// The original bool ubxSendAcked() has been DELETED — see the note above. The claim that used
+// to sit on this line, that it was "still referenced by the legacy call sites below until they
+// are migrated", was already false when written: every call site had been migrated in the same
+// commit. Two audits in a row have found comments asserting things the code does not do, so
+// this one is corrected rather than quietly dropped.
 // ------------------------------------------------------------
 static uint8_t ubxSendAckedT(const byte *msg, size_t len, uint8_t tries)
 {
@@ -959,6 +911,23 @@ static uint16_t ubxPoll(const byte *req, size_t reqLen,
 
   while ((int32_t)(millis() - deadline) < 0)
   {
+    // 🚨 V2.5-Evo - 2026-07-31 - RX-WDT-3. THIS FEED WAS MISSING, and it is the one that
+    // mattered most. ubxPoll() waits 1500 ms per call and is the only wait loop in the ported
+    // GPS code that never fed the 3000 ms panic watchdog:
+    //
+    //   cmdGpsCfg()        - up to THREE polls = 4500 ms unfed -> guaranteed panic reboot
+    //   gpsDetectDialect() - up to TWO polls   = 3000 ms unfed -> right on the threshold
+    //
+    // and gpsDetectDialect() is reached from both ?gpsbaud and ?gpssetup. The cruellest case
+    // is a HEALTHY u-blox M10 — the exact hardware this port exists to support: its legacy
+    // CFG-NAV5 and CFG-MSG polls correctly go unanswered because M10 removed those messages,
+    // so ?gpscfg would spend 3000 ms waiting and panic-reboot the RX, including at the final
+    // verification step of an otherwise successful ?gpssetup.
+    //
+    // Found by two independent auditors, and the comment at the top of this file claimed
+    // "every wait loop below therefore calls esp_task_wdt_reset()" while this one did not.
+    // A stated invariant that is not actually enforced is worse than no invariant.
+    gpsFeedWdt();
     if (!Serial1.available()) { delay(1); continue; }
     byte c = Serial1.read();
 
@@ -1148,7 +1117,7 @@ void cmdGpsSetup(const String &args)
   (void)args;
   Serial.println("===== RX GPS one-time setup =====");
 
-  Serial.println("[1/5] locating module...");
+  Serial.println("[1/6] locating module...");
   uint32_t cur = gpsDetectBaud(1100, GPS_BAUD_PREFERRED);
   if (!cur) {
     Serial.println("  FAILED: nothing answered at any baud. Check wiring and 3.3V.");
@@ -1159,7 +1128,7 @@ void cmdGpsSetup(const String &args)
 
   delay(250);
   uint8_t dialect = gpsDetectDialect();
-  Serial.printf("[2/5] dialect: %s\n",
+  Serial.printf("[2/6] dialect: %s\n",
                 dialect == UBX_DIALECT_LEGACY ? "legacy UBX-CFG (u-blox 6/7/8)"
               : dialect == UBX_DIALECT_VALSET ? "CFG-VALSET (u-blox M9/M10)"
                                               : "UNKNOWN — answers no config poll");
@@ -1170,7 +1139,49 @@ void cmdGpsSetup(const String &args)
     return;
   }
 
-  Serial.println("[3/5] applying config (persisted)...");
+  // ============================================================
+  // V2.5-Evo - 2026-07-31 - RX-BAUD-3: RAISE THE BAUD. This step was MISSING.
+  //
+  // The audit found that NO path on the RX could move a module off 9600: ?gpsbaud is
+  // scan-only here (unlike the TX, which has a `set` form), and ?gpssetup went straight from
+  // detection to configuration without ever raising the link. A module that ships at 9600 —
+  // the factory default for a BN-220/BN-880, and common on M10 breakouts — would have stayed
+  // there permanently, with no operator route out.
+  //
+  // That is not merely untidy. At 9600, GGA+RMC at 5 Hz is ~710 of 960 bytes/s — 74%
+  // utilisation with no headroom — so the link drops sentences under any extra load, and the
+  // RX GPS feeds RTM and Follow-Me.
+  //
+  // CFG-PRT is sent at the module's OWN baud, so it is parsed correctly and produces zero
+  // framing errors. The move is then PROVEN by listening at the new speed, and reverted if
+  // unproven, so a failed raise cannot strand the module somewhere nothing is listening.
+  // ============================================================
+  if (cur != GPS_BAUD_PREFERRED) {
+    Serial.printf("[3/6] baud: %lu -> %lu ... ", (unsigned long)cur,
+                  (unsigned long)GPS_BAUD_PREFERRED);
+    static const byte setBaud115200[] = {
+      0xB5, 0x62, 0x06, 0x00, 0x14, 0x00, 0x01, 0x00, 0x00, 0x00,
+      0xD0, 0x08, 0x00, 0x00, 0x00, 0xC2, 0x01, 0x00, 0x07, 0x00,
+      0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x7E
+    };
+    Serial1.write(setBaud115200, sizeof(setBaud115200));
+    Serial1.flush();
+    delay(100);
+
+    if (gpsProbeAt(GPS_BAUD_PREFERRED, 1100)) {
+      Serial.println("OK");
+      cur = GPS_BAUD_PREFERRED;
+      delay(250);
+      dialect = gpsDetectDialect();          // the link just changed under us; re-confirm
+    } else {
+      gpsProbeAt(cur, 1100);                 // prove-then-revert: follow it back
+      Serial.printf("failed, staying at %lu\n", (unsigned long)cur);
+    }
+  } else {
+    Serial.printf("[3/6] baud: already %lu\n", (unsigned long)GPS_BAUD_PREFERRED);
+  }
+
+  Serial.println("[4/6] applying config (persisted)...");
   static const byte setNav5Sea[] = {
     0xB5,0x62,0x06,0x24,0x24,0x00,0x01,0x00,0x05,0x03,
     0x00,0x00,0x00,0x00,0x10,0x27,0x00,0x00,0x05,0x00,
@@ -1195,10 +1206,10 @@ void cmdGpsSetup(const String &args)
   Serial.printf("  dynModel=Sea %s | GSV %s | GLL %s | VTG %s\n",
                 s_nav5, s_gsv, s_gll, s_vtg);
 
-  Serial.print("[4/5] asking the module to save (BBR, plus flash if fitted)... ");
+  Serial.print("[5/6] asking the module to save (BBR, plus flash if fitted)... ");
   Serial.println(gpsSaveConfig() ? "OK" : "NOT CONFIRMED");
 
-  Serial.println("[5/5] verifying by readback:");
+  Serial.println("[6/6] verifying by readback:");
   cmdGpsCfg("");
   Serial.println("Reboot the RX so configureGPS() runs against the saved config.");
   Serial.println("=================================");

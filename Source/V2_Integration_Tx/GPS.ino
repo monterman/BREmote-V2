@@ -569,12 +569,25 @@ static bool gpsSetModuleBaud(uint8_t dialect, uint32_t from_baud, uint32_t to_ba
 //   None (no return value).
 //
 // Side effects:
-//   - Calls Serial1.setRxBufferSize(512) before any begin().
-//   - For type 0: dual-baud: begin(115200)/end()/begin(9600)/end()/begin(115200).
-//     Blocks ~750ms across five delays.
-//   - For type 2: same dual-baud sequence. Blocks ~750ms.
-//   - Sets tx_gps_initialized = true on success. No UBX ACK is
-//     verified — the flag means "init attempted".
+//   V2.5-Evo - 2026-07-31 - this block was REWRITTEN. Every one of its five claims had become
+//   false across the 2026-07-29/30 GPS work, and two consecutive audits flagged it. A stale
+//   header on a safety-relevant function is not a cosmetic problem: the next person reasons
+//   from it, and here it described a firmware that no longer exists.
+//
+//   - Calls Serial1.setRxBufferSize(512) before the first begin(). Note this is a no-op on any
+//     later call — the core refuses a resize once the driver is installed — but the value
+//     persists across end()/begin(), so 512 holds for the session.
+//   - LISTENS FIRST. Both chip types now probe for NMEA (listen-only, no transmission) before
+//     sending anything. Typical cost ~200 ms when the module answers on the first baud tried.
+//   - The dual-baud dance is now a FALLBACK, reached only when listening hears nothing at any
+//     baud. It is the sole remaining path that transmits at an unconfirmed baud.
+//   - Blocking time is therefore variable, not the old fixed ~750 ms: roughly 300 ms in the
+//     normal case, and several seconds in the module-absent case, which is bounded and
+//     reported rather than silent.
+//   - EVERY UBX config write is ACK-VERIFIED, and a NAK triggers an automatic retry through
+//     the CFG-VALSET interface for u-blox M9/M10. tx_gps_initialized = true means "the UART is
+//     configured", NOT "the module accepted the settings" — that question is answered by the
+//     per-write boot report and, independently, by ?gpscfg.
 //
 // Reboot-required behavior (documented for the user):
 //   Changing gps_en or gps_chip_type via the web config at runtime
@@ -1289,8 +1302,16 @@ void cmdGpsBaud(const String &args)
                   : d == UBX_DIALECT_VALSET ? "alive — CFG-VALSET (u-blox M9/M10)"
                                             : "DEAD — module is NOT accepting UBX");
       if (!ubx) {
-        Serial.println("     u-blox disables its UART receiver after ~100 framing errors and");
-        Serial.println("     stays that way until POWER-CYCLED. Switch the TX off and on —");
+        // V2.5-Evo - 2026-07-31 - wording corrected after the 2026-07-31 audit. This used to
+        // assert that the receiver "stays that way until POWER-CYCLED" as though it were
+        // vendor-documented. It is not: u-blox documents an automatic re-enable after about a
+        // second. What we actually OBSERVED on 2026-07-30 is that the module stayed
+        // unresponsive until it lost power. Both may be true — a module still being sprayed
+        // with wrong-baud traffic would re-disable as fast as it recovers — but the honest
+        // statement separates what was measured from what is claimed. The recommended action
+        // is unchanged and correct under either model.
+        Serial.println("     u-blox disables its UART receiver after ~100 framing errors.");
+        Serial.println("     OBSERVED here: it stayed dead until power was removed. Switch off —");
         Serial.println("     a reboot alone will not clear it, the module needs its power removed.");
       } else if (found != GPS_BAUD_PREFERRED) {
         Serial.printf("     Run '?gpssetup' to move it to %lu and make it permanent.\n",

@@ -391,9 +391,9 @@ const CmdEntry cmdTable[] = {
   { "gpscfg",      cmdGpsCfg,       "",                "read back live GPS config (dynModel) - verifies initTxGPS() actually took; ~3s main-loop block, quit aborts" },
   // V2.5-Evo - 2026-07-29 - GPS-BAUD-1. M9/M10 dropped UBX-CFG-PRT, so the firmware cannot
   // always move a module's baud on its own. Bare = scan, <rate> = our uart only,
-  // "set <rate>" = move the module and persist to ITS flash (not usrConf — a confStruct
+  // "set <rate>" = move the module and ask IT to save it (not usrConf — a confStruct
   // change would bump SW_VERSION and wipe the TX SPIFFS config).
-  { "gpsbaud",     cmdGpsBaud,      "[set] [<rate>]",  "scan / set GPS baud; 'set' persists into the module's own flash; ~2s main-loop block, quit aborts" },
+  { "gpsbaud",     cmdGpsBaud,      "[set] [<rate>]",  "scan / set GPS baud; 'set' asks the module to save it (BBR always, flash only if fitted); ~2s block, quit aborts" },
   // V2.5-Evo - 2026-07-30 - GPS-SETUP-1. Run ONCE per assembled remote. Finds the module,
   // raises it to 115200, applies every setting ACK-verified, commits to the MODULE's own
   // non-volatile memory, then reads it back to prove it. Boot then only has to verify.
@@ -698,6 +698,42 @@ void serPrintStatus(bool json)
   }
 }
 
+// ============================================================
+// adsReadGuarded - read one ADS1115 channel with a DEADLINE and a health check.
+//
+// 🚨 V2.5-Evo - 2026-07-30 - PH-1. checkCharger() used to spin on
+// `while(!ads.conversionComplete()) delay(1);` with no timeout and no check of g_ads_ok.
+// If the ADS1115 does not answer — I2C damage, a loose connector, water on the bus, which
+// this board has already had (SDA HELD LOW, 2026-07-28) — conversionComplete() never becomes
+// true and the remote HANGS AT BOOT, FOREVER. Not degraded: frozen, before the radio task is
+// even created, with a blank screen and no serial output past "Checking if charging...".
+//
+// g_ads_ok already existed (Analog.ino) and already recorded whether the chip came up. It
+// simply was not consulted here. A conversion at the default data rate takes ~8 ms, so a
+// 200 ms deadline is ~25x margin and cannot false-trip on a healthy part.
+//
+// Returns false if the ADC is known-bad or does not answer in time. Callers must decide what
+// a missing reading MEANS — never treat it as a valid zero.
+// ============================================================
+static bool adsReadGuarded(uint8_t muxChannel, uint16_t &out)
+{
+  if (!g_ads_ok) return false;
+
+  ads.startADCReading(muxChannel, false);
+  uint32_t deadline = millis() + 200;
+
+  while (!ads.conversionComplete())
+  {
+#ifdef WIFI_ENABLED
+    webCfgLoop();
+#endif
+    if ((int32_t)(millis() - deadline) >= 0) return false;
+    delay(1);
+  }
+  out = ads.getLastConversionResults();
+  return true;
+}
+
 void checkCharger()
 {
   uint8_t chg_err_cnt = 0;
@@ -708,25 +744,43 @@ void checkCharger()
 #ifdef WIFI_ENABLED
     webCfgLoop();
 #endif
-    ads.startADCReading(MUX_BY_CHANNEL[P_CHGSTAT],false);
-    while(!ads.conversionComplete())
+    uint16_t chgstat = 0;
+    if (!adsReadGuarded(MUX_BY_CHANNEL[P_CHGSTAT], chgstat))
     {
-#ifdef WIFI_ENABLED
-      webCfgLoop();
-#endif
-      delay(1);
+      // ============================================================
+      // V2.5-Evo - 2026-07-30 - PH-1 + PH-2. The ADC is dead or mute, so we CANNOT know
+      // whether we are charging. Two things must not happen here:
+      //
+      //   1. We must not wait on it — that is the boot hang described above.
+      //   2. We must not fall through to the "not charging" branch, because that sets
+      //      serialOff, and setup() then calls Serial.end() AND drives GPIO20/21
+      //      (U0RXD/U0TXD) LOW as outputs. A broken ADC would therefore disable the one
+      //      channel available to diagnose the broken ADC. That is precisely backwards:
+      //      the failure would silence the tool needed to investigate it.
+      //
+      // So: leave the charge screen, boot normally, and KEEP SERIAL ON. Throttle is
+      // unaffected by this decision — Analog.ino already fails throttle to zero when
+      // g_ads_ok is false, which is the safe direction.
+      // ============================================================
+      Serial.println(" ADC NOT RESPONDING");
+      Serial.println("CHG: !! ADS1115 did not answer. Cannot tell charging from not charging.");
+      Serial.println("CHG: !! Skipping the charge screen and KEEPING SERIAL ON so this is");
+      Serial.println("CHG: !! diagnosable. Check the I2C bus — run ?i2c. Throttle reads as");
+      Serial.println("CHG: !! zero while the ADC is down, which is the safe direction.");
+      serialOff = false;
+      exitChargeScreen = 1;
+      break;
     }
-    uint16_t chgstat = ads.getLastConversionResults();
 
-    ads.startADCReading(MUX_BY_CHANNEL[P_UBAT_MEAS],false);
-    while(!ads.conversionComplete())
+    uint16_t bat_volt = 0;
+    if (!adsReadGuarded(MUX_BY_CHANNEL[P_UBAT_MEAS], bat_volt))
     {
-#ifdef WIFI_ENABLED
-      webCfgLoop();
-#endif
-      delay(1);
+      Serial.println("CHG: !! ADS1115 stopped answering mid-read — leaving charge screen, "
+                     "serial KEPT ON.");
+      serialOff = false;
+      exitChargeScreen = 1;
+      break;
     }
-    uint16_t bat_volt = ads.getLastConversionResults();
     uint16_t c_bat_volt = (uint16_t)((float)bat_volt * usrConf.ubat_cal * 100.0);
 
 

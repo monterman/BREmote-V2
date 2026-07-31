@@ -607,6 +607,12 @@ void initTxGPS()
   // being written blind as CFG-RATE — a message that does not exist on M9/M10.
   uint16_t meas_ms = 0;
 
+  // V2.5-Evo - 2026-07-30 - M-1. True once NMEA has actually been HEARD, which is the only
+  // thing that proves the baud. Everything that transmits is gated on this: at an unconfirmed
+  // baud, every byte we send is a framing error, and ~100 of those make the module disable
+  // its receiver until it loses power. Silence is the one state in which we must not talk.
+  bool baud_confirmed = false;
+
   // V2.5-Evo - 2026-04-22 - Branch on GPS chip type. Each chip type requires a
   // different init sequence (factory baud, rate, constellation config).
   // TX hardware has no compass, so types 1/3 are blocked by ConfigService.
@@ -669,6 +675,7 @@ void initTxGPS()
           Serial.println(gpsSetModuleBaud(UBX_DIALECT_LEGACY, seen_baud, GPS_BAUD_PREFERRED, false)
                          ? "OK" : "failed, staying put");
         }
+        baud_confirmed = true;         // we HEARD it; transmitting is now safe
         tx_gps_initialized = true;
         break;   // configuration happens after the switch, as usual
       }
@@ -760,6 +767,7 @@ void initTxGPS()
                        "TX/RX are not swapped. Run ?gpsbaud to scan, ?gpsraw to see bytes.");
       } else {
         Serial.printf("TX GPS [M10]: module answers at %lu baud\n", (unsigned long)found);
+        baud_confirmed = true;         // heard it; transmitting is now safe
 
         // 9600 physically cannot carry 10 Hz: GGA+RMC is ~1400 B/s, and at 8N1 that is
         // ~14000 bits/s of payload. Raise anything below 38400 before configuring the rate,
@@ -809,13 +817,19 @@ void initTxGPS()
       // already enable multiple constellations by default — unlike dynModel, rate and the
       // NMEA filter, a NAK here costs accuracy at worst, not safety. Reported at boot so it
       // is visible rather than assumed.
-      uint8_t gnss_r = ubxSendAcked(setGNSS, sizeof(setGNSS), 2);
+      // V2.5-Evo - 2026-07-30 - M-1: gated on `found`. If nothing was heard, the baud is a
+      // GUESS, and pushing 44 more bytes at a guessed baud is exactly the framing-error spray
+      // that disabled the module's receiver on 2026-07-30. Silence is the one state in which
+      // we must not talk.
+      if (found) {
+        uint8_t gnss_r = ubxSendAcked(setGNSS, sizeof(setGNSS), 2);
+        Serial.printf("TX GPS [M10]: constellations %s\n",
+                      gnss_r == UBX_ACK ? "GPS+Galileo+BDS+GLONASS OK"
+                    : gnss_r == UBX_NAK ? "left at module defaults (CFG-GNSS not supported — normal on M10)"
+                                        : "no ACK (unverified)");
+      }
 
       tx_gps_initialized = true;
-      Serial.printf("TX GPS [M10]: constellations %s\n",
-                    gnss_r == UBX_ACK ? "GPS+Galileo+BDS+GLONASS OK"
-                  : gnss_r == UBX_NAK ? "left at module defaults (CFG-GNSS not supported — normal on M10)"
-                                      : "no ACK (unverified)");
       break;
     }
 
@@ -883,23 +897,40 @@ void initTxGPS()
     uint8_t dialect;
     const char *nav5_status;
 
-    uint8_t probe = ubxSendAcked(setNav5Sea, sizeof(setNav5Sea), 3);
-
-    // V2.5-Evo - 2026-07-29 - GPS-BAUD-1: silence here means we may simply be on the wrong
-    // baud. Costs nothing in the normal case (the probe above already succeeded) and
-    // rescues the case that previously looked like dead hardware.
-    if (probe == UBX_NOREPLY) {
-      Serial.println("TX GPS: no answer at the current baud — scanning...");
-      // On failure this restores GPS_BAUD_PREFERRED rather than stranding the port on the
-      // last baud tried — the defect this file used to have. A GPS that wakes late then
-      // still works for the rest of the session instead of being lost until reboot.
+    // ============================================================
+    // V2.5-Evo - 2026-07-30 - M-1: LISTEN BEFORE THE PROBE, NOT AFTER.
+    //
+    // This block used to fire the 44-byte NAV5 probe (x3 tries = 132 bytes) FIRST and only
+    // scan if it went unanswered. On the not-heard path that meant the probe, and then the
+    // MUTE blind writes, all went out at a GUESSED baud — roughly 279 wrong-baud bytes per
+    // boot, against the ~28 this file's own comments claimed. That is the framing-error
+    // spray that disabled the module's receiver on 2026-07-30, arriving by a different door
+    // than the one GPS-BAUD-4 closed.
+    //
+    // Now: if the chip branch did not already hear the module, listen (silently) first. Only
+    // a confirmed baud earns the right to transmit.
+    // ============================================================
+    if (!baud_confirmed) {
+      Serial.println("TX GPS: baud not confirmed yet — listening before sending anything...");
       uint32_t found = gpsDetectBaud(1100, GPS_BAUD_PREFERRED);
       if (found) {
-        Serial.printf("TX GPS: found the module at %lu baud; re-applying config there\n",
-                      (unsigned long)found);
-        probe = ubxSendAcked(setNav5Sea, sizeof(setNav5Sea), 3);
+        Serial.printf("TX GPS: heard the module at %lu baud\n", (unsigned long)found);
+        baud_confirmed = true;
       }
     }
+
+    if (!baud_confirmed) {
+      // Nothing anywhere. Say so and send NOTHING. Blind writes here would be aimed at a
+      // baud we have no evidence for, and the only thing they can reliably achieve is
+      // framing errors on a module that may be perfectly healthy but slow to wake.
+      Serial.println("TX GPS: !! no NMEA at any baud — GPS not detected.");
+      Serial.println("TX GPS: !! NOTHING was sent. Transmitting at an unconfirmed baud is what");
+      Serial.println("TX GPS: !! disables a u-blox receiver, so silence is the safe response.");
+      Serial.println("TX GPS: !! Check 3.3V, GND and that TX/RX are not swapped, then ?gpsbaud.");
+      return;
+    }
+
+    uint8_t probe = ubxSendAcked(setNav5Sea, sizeof(setNav5Sea), 3);
 
     if (probe == UBX_ACK) {
       dialect     = UBX_DIALECT_LEGACY;
@@ -1170,7 +1201,7 @@ void cmdGpsCfg(const String &args)
 //   ?gpsbaud             scan every candidate baud and report what answered. READ-ONLY.
 //   ?gpsbaud <rate>      move OUR uart only, module untouched. Reverts on reboot.
 //                        Pair with ?gpsraw to eyeball the output before committing.
-//   ?gpsbaud set <rate>  move the MODULE and write it to the module's own flash, so it
+//   ?gpsbaud set <rate>  move the MODULE and ask it to save the setting to its own
 //                        survives a power cycle.
 //
 // WHY THE BAUD IS STORED IN THE MODULE AND NOT IN usrConf: adding a field to confStruct
@@ -1288,17 +1319,46 @@ void cmdGpsBaud(const String &args)
   if (rate < 4800 || rate > 921600) {
     Serial.println("Usage: ?gpsbaud            scan every baud (read-only)");
     Serial.println("       ?gpsbaud <rate>     move OUR uart only (reverts on reboot)");
-    Serial.println("       ?gpsbaud set <rate> move the MODULE and persist it to its flash");
+    Serial.println("       ?gpsbaud set <rate> move the MODULE and ask it to save that permanently");
     return;
   }
 
   if (!persist) {
-    uint8_t s = gpsProbeAt(rate, 400);
-    Serial.printf("Serial1 reopened at %lu — UBX %s, NMEA %s.\n", (unsigned long)rate,
-                  (s & GPS_SAW_UBX)  ? "yes" : "no",
+    // V2.5-Evo - 2026-07-30 - M-4: this used to report "UBX yes/no" from the probe bitmask.
+    // gpsProbeAt() has been listen-only since GPS-BAUD-4, so GPS_SAW_UBX is never set and the
+    // line printed "UBX no" on every module, healthy or not — a diagnostic that always lies is
+    // worse than no diagnostic, because it invites a pointless power-cycle hunt. UBX liveness
+    // is now asked properly, with a poll, once the baud is confirmed.
+    uint8_t s = gpsProbeAt(rate, 1100);
+    Serial.printf("Serial1 reopened at %lu — NMEA %s.\n", (unsigned long)rate,
                   (s & GPS_SAW_NMEA) ? "yes" : "no");
+    if (s & GPS_SAW_NMEA) {
+      delay(250);                       // settle after the reopen before polling
+      uint8_t d = gpsDetectDialect();
+      Serial.printf("  UBX input: %s\n",
+                    d == UBX_DIALECT_LEGACY ? "alive — legacy UBX-CFG (u-blox 6/7/8)"
+                  : d == UBX_DIALECT_VALSET ? "alive — CFG-VALSET (u-blox M9/M10)"
+                                            : "DEAD — module is NOT accepting UBX");
+    }
     Serial.println("Module NOT changed. This reverts on reboot. ?gpsraw to see the bytes.");
     return;
+  }
+
+  // V2.5-Evo - 2026-07-30 - M-2: refuse a baud the scanner cannot rediscover. Moving the
+  // module somewhere kGpsBauds does not list would strand it permanently: every future boot
+  // would fail to hear it, fall back to the blind dance, and there would be no automatic way
+  // home. A command that can put the GPS beyond the firmware's own reach is a foot-gun.
+  {
+    bool known = false;
+    for (uint8_t i = 0; i < kGpsBaudCount; i++) if (kGpsBauds[i] == rate) known = true;
+    if (!known) {
+      Serial.printf("Refusing: %lu is not in the scan list, so boot could never find the\n",
+                    (unsigned long)rate);
+      Serial.print("module again. Supported:");
+      for (uint8_t i = 0; i < kGpsBaudCount; i++) Serial.printf(" %lu", (unsigned long)kGpsBauds[i]);
+      Serial.println();
+      return;
+    }
   }
 
   Serial.printf("Locating the module before moving it to %lu...\n", (unsigned long)rate);
@@ -1462,7 +1522,13 @@ void cmdGpsSetup(const String &args)
                 s_nav5, s_gsv, s_gll, s_vtg, meas_ms, s_rate);
 
   // --- 5. Commit to the module's own non-volatile memory ---
-  Serial.print("[5/6] saving to module flash... ");
+  // V2.5-Evo - 2026-07-30 - M-3: say what actually happens. CFG-CFG asks the module to save to
+  // whatever non-volatile memory it HAS. Many BN-220 boards — including the owner's — carry
+  // only battery-backed RAM, kept alive by a small backup cell, with no config flash at all.
+  // An ACK means "saved to what I have", not "saved to flash". Claiming flash outright was
+  // false on this hardware, and a false persistence promise is how a setting silently reverts
+  // after the remote sits in a drawer.
+  Serial.print("[5/6] asking the module to save (BBR, plus flash if fitted)... ");
   bool saved = gpsSaveConfig();
   Serial.println(saved ? "OK" : "NOT CONFIRMED");
   if (!saved) {

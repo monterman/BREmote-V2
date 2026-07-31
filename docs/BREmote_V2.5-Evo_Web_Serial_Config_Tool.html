@@ -452,7 +452,7 @@ const TX_CMD_HTML = `
   <option value="?gpscfg">?gpscfg — read GPS config back OUT of the module (dynModel; verifies initTxGPS actually took; ~3s block, bench only)</option>
   <option value="?gpssetup">?gpssetup — ONE-TIME full GPS setup: find module, raise to 115200, configure, save permanently into the module, verify (~15s)</option>
   <option value="?gpsbaud">?gpsbaud — scan every baud and report which one the module answers on (read-only)</option>
-  <option value="?gpsbaud set 115200">?gpsbaud set 115200 — move the module to 115200 and persist it to the module's own flash</option>
+  <option value="?gpsbaud set 115200">?gpsbaud set 115200 — move the module to 115200 and ask it to save that permanently (BBR always; flash only on modules that have it)</option>
   <option value="?gpsreinit">?gpsreinit — reinitialize GPS module</option>
   <option value="?gpscoldreset">?gpscoldreset — UBX cold reset (clears satellite cache)</option>
 </optgroup>

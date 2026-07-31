@@ -832,18 +832,40 @@ void checkCharger()
       delay(10);
       if(chg_err_cnt > 10)
       {
+        // ============================================================
+        // V2.5-Evo - 2026-07-30 - PH-3. Observed live on the owner's TX: chgstat reads ~2058,
+        // which lands in an UNHANDLED GAP. The branches above cover <1000 (not charging),
+        // 6000-10000 and 10000-18000 (charging), leaving 1000-6000 and >18000 with no meaning
+        // at all — so a reading in the gap is counted as an error eleven times and then
+        // declared a fault.
+        //
+        // Two things were wrong with what happened next, and both are fixed here:
+        //
+        //   1. serialOff = true. setup() then calls Serial.end() AND drives GPIO20/21
+        //      (U0RXD/U0TXD) low. So an unexplained charge reading DISABLED the only channel
+        //      available to explain it — the same inversion PH-2 fixed for a mute ADC,
+        //      arriving through a different branch. Serial now stays ON.
+        //
+        //   2. Three full "ECH" scroll passes at 14 frames x 100 ms is ~4.2 s of boot spent
+        //      animating a condition the serial log already states precisely. Reduced to one
+        //      pass (~1.4 s) — still unmistakable on the display, without dominating startup.
+        //
+        // ⚠️ NOT FIXED HERE, because it is a hardware question and guessing would be worse:
+        // what a chgstat of ~2058 actually MEANS on this board. It may be a healthy
+        // battery-full state, a weak USB supply, or a genuine charger fault. The thresholds
+        // need widening or re-centring against measured values, not invented ones. The raw
+        // number is printed above so it can be characterised.
+        // ============================================================
         setBrightness(0x01);
         Serial.println("CHG ERR!");
         Serial.print("Stat: ");
         Serial.println(chgstat);
-        int timeout = 0;
-        while(timeout < 3)
-        {
-          timeout++;
-          scroll3Digits(LET_E, LET_C, LET_H, 100);
-        }
+        Serial.println("CHG: !! that reading is in an UNMAPPED range (not <1000, not");
+        Serial.println("CHG: !! 6000-10000, not 10000-18000). Booting normally and KEEPING");
+        Serial.println("CHG: !! SERIAL ON so this stays diagnosable. Charging state unknown.");
+        scroll3Digits(LET_E, LET_C, LET_H, 100);
         exitChargeScreen = 1;
-        serialOff = true;
+        serialOff = false;   // never silence the diagnostic channel over a charge reading
       }
     }
   }

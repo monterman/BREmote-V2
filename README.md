@@ -173,9 +173,18 @@ The **SP** (Speed) telemetry display mode can now read speed directly from the T
 
 Display shows `--` when no fix is available or the fix is older than the configured stale timeout. Set `gps_en = 1` and reboot after changing it.
 
-#### GPS setup, verification and recovery — V2.5-Evo (2026-07-30)
+#### GPS — V2.5-Evo (2026-07-31)
 
-📖 **Full guide: [`docs/hardware/gps-troubleshooting.md`](docs/hardware/gps-troubleshooting.md)**
+Every GPS config write is now acknowledgement-verified, and the firmware auto-detects whether
+your module speaks the u-blox 6/7/8 or the M9/M10 dialect — so a BN-220, BN-880 or M10 all
+self-configure from one image. 📖 **[`docs/GPS.md`](docs/GPS.md)** explains the design, why
+`dynModel=Sea` matters (and the ⚠️ 500 m altitude caveat), and how to recover a GPS that has
+stopped accepting commands.
+
+<details>
+<summary>Older detail — wiring, commands and recovery steps</summary>
+
+📖 **Wiring & troubleshooting: [`docs/hardware/gps-troubleshooting.md`](docs/hardware/gps-troubleshooting.md)**
 
 **Fitting a new GPS?** Plug it in, power on, then run `?gpscfg` and check it reads
 `dynModel : 5 (Sea)`. The firmware finds the module at whatever baud it ships on and
@@ -212,6 +221,8 @@ disabled its own UART receiver after accumulated framing errors.
 
 All are USB-only bench commands (the TX disables serial on a battery boot) and none affect the
 LoRa link.
+
+</details>
 
 **Telemetry display cycle** (cycle with RIGHT toggle hold 2 s):
 

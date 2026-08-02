@@ -275,7 +275,17 @@ Follow-Me fault.
 
 Recorded 2026-08-02 after this cost real time.
 
-**Do not judge BLE state while the unit is USB-tethered and being reset over serial.** A
+**On the TX, BLE cannot come up at all while it sits on the charge screen — and USB puts it
+there.** `setup()` calls `checkCharger()` *before* `initTasks()`, and `checkCharger()` loops for
+as long as USB is supplying power. The BLE task is created by `initTasks()`, so until you send
+`?exitchg` (or unplug), that task does not exist yet and `?state` will correctly report
+`BLE: OFF`. A scanning central will meanwhile keep finding the *cached* advertisement and
+reporting `connect failed`.
+
+That is not a fault and not a configuration problem — the remote simply has not reached that
+point in boot. Nothing about `bt_enabled` is involved.
+
+**So: do not judge BLE state while the unit is USB-tethered and being reset over serial.** A
 `?state` query taken during that window can report `BLE: OFF` on a remote whose BLE is enabled
 and working: init is deferred (`bleInitTask`), a serial reset drops the stack mid-negotiation,
 and a scanning central will meanwhile keep finding the *cached* advertisement and reporting

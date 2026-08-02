@@ -67,3 +67,6 @@ Deliverables/
 
 # built firmware binaries (distribute via Releases, not tree)
 firmware/
+
+# Rotated patron UUIDs — owner reference only, never commit
+Source/V2_Integration_Tx/PATRON_UUIDS_NEW.txt

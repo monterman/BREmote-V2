@@ -908,6 +908,9 @@ static uint16_t ubxPoll(const byte *req, size_t reqLen,
   uint8_t  state = 0;
   byte     cls = 0, id = 0;
   uint16_t len = 0, idx = 0;
+  // V2.5-Evo - 2026-08-02 - RX-POLL-1: running Fletcher-8 over class..payload, so the frame
+  // can be CHECKSUM-VERIFIED before it is believed. See the note at case 7.
+  byte     ckA = 0, ckB = 0;
 
   while ((int32_t)(millis() - deadline) < 0)
   {
@@ -934,17 +937,45 @@ static uint16_t ubxPoll(const byte *req, size_t reqLen,
     switch (state) {
       case 0: state = (c == 0xB5) ? 1 : 0; break;
       case 1: state = (c == 0x62) ? 2 : 0; break;
-      case 2: cls = c; state = 3; break;
-      case 3: id  = c; state = 4; break;
-      case 4: len = c;              state = 5; break;
-      case 5: len |= ((uint16_t)c << 8); idx = 0;
+      case 2: cls = c; ckA = c; ckB = ckA; state = 3; break;
+      case 3: id  = c; ckA += c; ckB += ckA; state = 4; break;
+      case 4: len = c;              ckA += c; ckB += ckA; state = 5; break;
+      case 5: len |= ((uint16_t)c << 8); ckA += c; ckB += ckA; idx = 0;
               // Not the frame we asked for (an ACK, or unrelated) — resync.
               state = (cls == wantCls && id == wantId && len <= outMax) ? 6 : 0;
-              if (state == 6 && len == 0) return 0;
+              if (state == 6 && len == 0) { state = 7; }
               break;
       case 6:
         out[idx++] = c;
-        if (idx >= len) return len;   // checksum bytes follow; we do not need them
+        ckA += c; ckB += ckA;
+        if (idx >= len) state = 7;    // payload complete — now PROVE it with the checksum
+        break;
+
+      // ============================================================
+      // V2.5-Evo - 2026-08-02 - RX-POLL-1: VERIFY THE CHECKSUM BEFORE BELIEVING THE FRAME.
+      //
+      // This function used to `return len` the instant it had collected len payload bytes,
+      // never reading the two checksum bytes at all. So ANY byte sequence in the stream that
+      // merely LOOKED like a header — 0xB5 0x62 followed by the class/id being waited for —
+      // was accepted as a genuine reply, payload and all.
+      //
+      // That is not hypothetical. On a BN-880 (u-blox M8, which has no CFG-VALGET at all)
+      // gpsDetectDialect() reported "CFG-VALSET (u-blox M9/M10)" on three consecutive runs,
+      // while ?gpscfg correctly reported legacy seconds either side of it. A false VALSET
+      // verdict is not cosmetic: ?gpssetup uses the same function to choose which dialect to
+      // WRITE in, so an M8 would have been sent CFG-VALSET frames it cannot understand.
+      //
+      // The stream this parser runs on is full of NMEA and UBX at 5 Hz, so a chance match on
+      // four header bytes is entirely plausible. Two bytes of Fletcher-8 make it ~1 in 65536
+      // instead, and cost nothing.
+      // ============================================================
+      case 7:
+        if (c != ckA) { state = 0; break; }          // bad CK_A — not our frame, resync
+        state = 8;
+        break;
+      case 8:
+        if (c == ckB) return len;                    // verified
+        state = 0;                                   // bad CK_B — resync and keep looking
         break;
     }
   }
@@ -985,8 +1016,9 @@ void cmdGpsCfg(const String &args)
     ubxAppendChecksum(pollDyn, sizeof(pollDyn));
     n = ubxPoll(pollDyn, sizeof(pollDyn), 0x06, 0x8B, pl, sizeof(pl));
 
-    if (n >= 9) {
+    if (gpsValgetOk(pl, n, KEY_NAVSPG_DYNMODEL)) {
       // CFG-VALGET response: version | layer | position(2) | key(4) | value(...)
+      // Key echo verified - see RX-POLL-1.
       Serial.println("  dialect  : CFG-VALSET/VALGET (u-blox M9/M10)");
       Serial.printf("  dynModel : %u  (%s)\n", pl[8], dynModelName(pl[8]));
     } else {
@@ -1023,11 +1055,40 @@ void cmdGpsCfg(const String &args)
 // Which dialect does the module speak? Decided by which POLL it answers — read-only, so safe
 // to call before we have earned the right to change anything.
 // ============================================================
+// ============================================================
+// gpsValgetOk - is this a GENUINE CFG-VALGET response for the key we asked for?
+//
+// V2.5-Evo - 2026-08-02 - RX-POLL-1, second layer. The checksum in ubxPoll() proves the frame
+// is intact; this proves it is the ANSWER TO OUR QUESTION. A CFG-VALGET response carries
+// version | layer | position(2) | key(4) | value(...), so the key we sent must come back
+// echoed at bytes 4-7. Anything else - a reply about a different key, or a frame that merely
+// happens to be class 0x06 id 0x8B - is rejected.
+//
+// Belt and braces on purpose: a wrong dialect verdict makes ?gpssetup write CFG-VALSET frames
+// to a module that cannot parse them, and this is the function that decides.
+// ============================================================
+static bool gpsValgetOk(const byte *pl, uint16_t n, uint32_t key)
+{
+  if (n < 9) return false;
+  return pl[4] == (byte)( key        & 0xFF)
+      && pl[5] == (byte)((key >>  8) & 0xFF)
+      && pl[6] == (byte)((key >> 16) & 0xFF)
+      && pl[7] == (byte)((key >> 24) & 0xFF);
+}
+
 static uint8_t gpsDetectDialect()
 {
   byte pl[64];
 
   static const byte pollNav5[] = { 0xB5,0x62,0x06,0x24,0x00,0x00,0x2A,0x84 };
+  if (ubxPoll(pollNav5, sizeof(pollNav5), 0x06, 0x24, pl, sizeof(pl)) >= 3)
+    return UBX_DIALECT_LEGACY;
+
+  // V2.5-Evo - 2026-08-02 - ask legacy TWICE before concluding it is not legacy. Callers reach
+  // here right after gpsOpenAt() has cycled the port, and a module streaming NMEA is not
+  // necessarily serving UBX requests yet. Concluding "not legacy" from ONE unanswered poll is
+  // what let an M8 fall through to the VALGET branch and be misreported as M9/M10.
+  delay(250);
   if (ubxPoll(pollNav5, sizeof(pollNav5), 0x06, 0x24, pl, sizeof(pl)) >= 3)
     return UBX_DIALECT_LEGACY;
 
@@ -1041,7 +1102,8 @@ static uint8_t gpsDetectDialect()
     0x00, 0x00
   };
   ubxAppendChecksum(pollDyn, sizeof(pollDyn));
-  if (ubxPoll(pollDyn, sizeof(pollDyn), 0x06, 0x8B, pl, sizeof(pl)) >= 9)
+  uint16_t n = ubxPoll(pollDyn, sizeof(pollDyn), 0x06, 0x8B, pl, sizeof(pl));
+  if (gpsValgetOk(pl, n, KEY_NAVSPG_DYNMODEL))
     return UBX_DIALECT_VALSET;
 
   return UBX_DIALECT_MUTE;

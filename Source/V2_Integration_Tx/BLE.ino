@@ -231,7 +231,9 @@ class BLEServerCB : public NimBLEServerCallbacks {
   }
   void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int) override {
     vescProtoMode = false;
+#ifdef PATRON_ENABLED
     patronClearSubscriber();          // Rex §4.4 — reset stream selection for the next central
+#endif
     NimBLEDevice::startAdvertising();
   }
 };
@@ -269,7 +271,9 @@ void initBLE() {
   nusRxChar->setCallbacks(new NusRxCB());
 
   nus->start();
-  initPatronService(bleServer);
+#ifdef PATRON_ENABLED
+  initPatronService(bleServer);   // absent in the public build — see PATRON-1 in the main .ino
+#endif
 
   NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
 
@@ -356,7 +360,13 @@ void bleServiceNotify() {
   last_ms = millis();
 
   // Exactly ONE stream per tick (Rex §4.4).
+#ifdef PATRON_ENABLED
   bool ok = patronHasSubscriber() ? sendPatronTelemetry() : sendCSVTelemetry();
+#else
+  // Public build: no patron channel exists, so CSV/NUS is the only stream. Same one-stream-
+  // per-tick contract, same backpressure handling below.
+  bool ok = sendCSVTelemetry();
+#endif
 
   // Backpressure: on a failed notify (congestion / no free mbuf) don't hammer — hold off one extra
   // interval so the controller can drain before the next attempt.

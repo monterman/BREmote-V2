@@ -46,8 +46,11 @@ Source(JanRush V2)/
 docs/superpowers/
 docs/CLI_compile_export.md
 
-# foilIQ patron channel — private UUID, lives in foiliq private repo
+# foilIQ patron channel — private UUIDs, lives in the foiliq private repo.
+# Presence of the .h is what enables the channel (see PATRON-1 in V2_Integration_Tx.ino);
+# with both absent, the public repo builds clean and VESC/NUS BLE is unaffected.
 Source/V2_Integration_Tx/BLE_Patron.ino
+Source/V2_Integration_Tx/BLE_Patron.h
 
 # Unknown artifact files — origin unclear, excluded until identified
 ed SVG, update README tables, P5 plan doc added

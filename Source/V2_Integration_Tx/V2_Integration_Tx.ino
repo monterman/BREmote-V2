@@ -66,18 +66,50 @@ void renderRtmInfoDisplay();
 // BLE Functions (defined in BLE.ino / BLE_Patron.ino)
 // V2.5-Evo - 2026-06-04 - Guarded by BLE_ENABLED (BREmote_V2_Tx.h). When undefined, the
 // NimBLE header is excluded, so these decls (one uses NimBLEServer*) must be excluded too.
+// ============================================================
+// V2.5-Evo - 2026-08-02 - PATRON-1: OPTIONAL foilIQ patron channel, auto-detected.
+//
+// WHAT THIS FIXES: BLE_Patron.ino is deliberately gitignored — it carries private foilIQ
+// UUIDs and belongs in the foiliq repo. But BLE.ino called its functions UNCONDITIONALLY, so
+// the PUBLIC repo did not link: four undefined references to initPatronService(),
+// sendPatronTelemetry(), patronHasSubscriber() and patronClearSubscriber(). It built only on
+// a machine that happened to have the private file. Anyone cloning BREmote and pressing
+// Compile got a linker error and no explanation.
+//
+// HOW IT WORKS: presence of the private header IS the switch. No flag to set, no build
+// variant to pick, nothing to forget — the same "detect, don't declare" principle the GPS
+// code uses to tell a BN-220 from an M10.
+//
+//   private build : BLE_Patron.h present -> PATRON_ENABLED -> patron channel compiled in
+//   public  build : header absent        -> calls compiled out -> links clean, full function
+//
+// The public firmware loses NOTHING a rider uses: VESC/NUS BLE is untouched, so VESC Tool and
+// Floaty behave identically. Only the private foilIQ telemetry channel is absent.
+//
+// This keeps the decision REVERSIBLE. Publishing BLE_Patron.ino later is always possible;
+// un-publishing it is not. Until that call is made deliberately, this ships open source that
+// builds for everyone without spending an option that cannot be bought back.
+// ============================================================
+#if defined(__has_include)
+  #if __has_include("BLE_Patron.h")
+    #include "BLE_Patron.h"
+  #endif
+#endif
+
 #ifdef BLE_ENABLED
 void initBLE();
 // V2.5-Evo - 2026-07-20 - true on a live BLE connection; Display.ino uses it to make the BT dot SOLID (defined in BLE.ino).
 bool bleIsConnected();
-void initPatronService(NimBLEServer* srv);
 // V2.5-Evo - 2026-07-20 - BLE re-enable deep-fix (Rex §4.4/§4.5): consolidated back-pressured push
 // (bleServiceNotify), the dedicated Core-0 push task (bleNotifyTask), and the patron stream helpers.
 void bleServiceNotify();
 void bleNotifyTask(void* param);
+#ifdef PATRON_ENABLED
+void initPatronService(NimBLEServer* srv);
 bool sendPatronTelemetry();
 bool patronHasSubscriber();
 void patronClearSubscriber();
+#endif
 #endif
 // Aux control command (defined in Radio.ino — queues 0xF4 meta-packet burst to RX)
 void sendAuxCommand(uint8_t flags);

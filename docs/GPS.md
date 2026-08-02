@@ -268,3 +268,22 @@ does not. If you swap modules, the RX driver speaks **QMC5883L at address 0x0D**
 **re-run `?compasscal`** afterwards — different module, different mounting, different hard/soft
 iron offsets. A stored calibration does not carry over, and on the RX a bad heading is a
 Follow-Me fault.
+
+---
+
+## Appendix — testing BLE: use a clean battery boot
+
+Recorded 2026-08-02 after this cost real time.
+
+**Do not judge BLE state while the unit is USB-tethered and being reset over serial.** A
+`?state` query taken during that window can report `BLE: OFF` on a remote whose BLE is enabled
+and working: init is deferred (`bleInitTask`), a serial reset drops the stack mid-negotiation,
+and a scanning central will meanwhile keep finding the *cached* advertisement and reporting
+`connect failed`. Every one of those symptoms is an artefact of the test setup, not a fault.
+
+**Valid test:** power both units on battery, USB disconnected, and leave them alone. Expect the
+BLE dots to flash on both, connect within roughly ten seconds, then telemetry to flow.
+
+The same caution applies to the GPS commands — `?gpscfg`, `?gpsbaud` and `?gpssetup` are
+USB-only by design, and repeatedly resetting a unit to re-read them changes the thing being
+measured.

@@ -7,9 +7,23 @@
 *.bootloader.bin
 *.partitions.bin
 
-# Allow versioned firmware release binaries
-!firmware/**/*.bin
-!firmware/**/*.merged.bin
+# --- Published firmware binaries -------------------------------------------
+# These three negations are the ONLY .bin files that reach GitHub. Everything else
+# stays local.
+#
+# ⚠️ The rules below work ONLY because their parent directories are not themselves
+# excluded. Git cannot re-include a file whose parent DIRECTORY is ignored — it never
+# descends far enough to see the negation. That is exactly why the old
+# "!firmware/**/*.bin" pair here did nothing at all: line ~60 ignores "firmware/"
+# wholesale, so those negations were dead the day they were written, and the repo
+# silently shipped no binaries for months.
+#
+# Curated releases live beside their source, ~1.3 MB each, no .merged.bin (4 MB each,
+# and a full-flash image is the wrong thing to hand a user who just wants to update).
+!Source/V2_Integration_Rx/RX firmware/
+!Source/V2_Integration_Rx/RX firmware/*.bin
+!Source/V2_Integration_Tx/TX firmware/
+!Source/V2_Integration_Tx/TX firmware/*.bin
 
 # VS Code
 .vscode/

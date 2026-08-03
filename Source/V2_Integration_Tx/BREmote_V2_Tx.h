@@ -107,9 +107,9 @@
 // exclude the NimBLE stack again exactly as during the 2026-06-04 → 2026-07-20 water-test kill.
 #define BLE_ENABLED
 
-// NimBLE-Arduino: required for Patron BLE GATT service (BLE_Patron.ino).
+// NimBLE-Arduino: required for ExtTelem BLE GATT service (BLE_Ext.ino).
 // NimBLEServer type must be visible here so the forward declaration in
-// V2_Integration_Tx.ino can compile before BLE_Patron.ino is concatenated.
+// V2_Integration_Tx.ino can compile before BLE_Ext.ino is concatenated.
 #ifdef BLE_ENABLED
 #include <NimBLEDevice.h>
 
@@ -151,7 +151,7 @@
 #define BLE_CONN_LATENCY      0u      // no slave latency — keep telemetry timely
 #define BLE_CONN_TIMEOUT      200u    // 200 * 10 ms = 2000 ms supervision timeout
 // -- Consolidated notify cadence (Rex §4.4 / §4.5) --
-// One telemetry stream is pushed every BLE_TELEM_INTERVAL_MS (was: patron 200 ms + CSV 500 ms running
+// One telemetry stream is pushed every BLE_TELEM_INTERVAL_MS (was: ext-telem 200 ms + CSV 500 ms running
 // concurrently). The dedicated notify task wakes every BLE_NOTIFY_TICK_MS; the finer tick lets the
 // backpressure hold-off react promptly when the stack reports congestion.
 #define BLE_TELEM_INTERVAL_MS 250u

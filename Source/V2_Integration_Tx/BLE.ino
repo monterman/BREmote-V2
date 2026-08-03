@@ -231,8 +231,8 @@ class BLEServerCB : public NimBLEServerCallbacks {
   }
   void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int) override {
     vescProtoMode = false;
-#ifdef PATRON_ENABLED
-    patronClearSubscriber();          // Rex §4.4 — reset stream selection for the next central
+#ifdef EXT_TELEM_ENABLED
+    extTelemClearSubscriber();
 #endif
     NimBLEDevice::startAdvertising();
   }
@@ -271,8 +271,8 @@ void initBLE() {
   nusRxChar->setCallbacks(new NusRxCB());
 
   nus->start();
-#ifdef PATRON_ENABLED
-  initPatronService(bleServer);   // absent in the public build — see PATRON-1 in the main .ino
+#ifdef EXT_TELEM_ENABLED
+  initExtTelem(bleServer);
 #endif
 
   NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
@@ -304,9 +304,9 @@ bool bleIsConnected() {
 
 // V2.5-Evo - 2026-07-20 - Rex §4.4 + §4.5 — consolidated, back-pressured telemetry push. ONE stream
 // at a time, driven by bleNotifyTask() (below), NEVER from loop(). This replaces the old pair of
-// concurrent pushers (bleTelemetryLoop CSV @500ms + patronNotifyLoop @200ms):
+// concurrent pushers (bleTelemetryLoop CSV @500ms + ext-telemNotifyLoop @200ms):
 //   - VESC-Tool mode → stay silent; the app drives its own request/response cycle (NusRxCB::onWrite).
-//   - patron client  → push the 28-byte foilIQ patron packet (its private UUID has a subscriber).
+//   - ext-telem client  → push the 28-byte foilIQ ext-telem packet (its private UUID has a subscriber).
 //   - otherwise      → push the CSV line for a generic Serial-BT-Terminal central.
 // The notify() return is checked: on stack congestion (mbuf/ENOMEM) we skip and let the next tick
 // retry instead of piling allocations onto the tight, no-PSRAM C3 heap (a direct H2/H3 mitigation).
@@ -360,11 +360,10 @@ void bleServiceNotify() {
   last_ms = millis();
 
   // Exactly ONE stream per tick (Rex §4.4).
-#ifdef PATRON_ENABLED
-  bool ok = patronHasSubscriber() ? sendPatronTelemetry() : sendCSVTelemetry();
+#ifdef EXT_TELEM_ENABLED
+  bool ok = extTelemHasSubscriber() ? sendExtTelem() : sendCSVTelemetry();
 #else
-  // Public build: no patron channel exists, so CSV/NUS is the only stream. Same one-stream-
-  // per-tick contract, same backpressure handling below.
+  // Module absent: CSV/NUS is the only stream. Same one-stream-per-tick contract.
   bool ok = sendCSVTelemetry();
 #endif
 

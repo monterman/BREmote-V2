@@ -1,4 +1,4 @@
-// V2.5-Evo - 2026-07-20 - BLE re-enable deep-fix (Rex): the per-loop bleTelemetryLoop()/patronNotifyLoop() pushes are REMOVED from loop(); the periodic BLE telemetry push now lives in the dedicated Core-0 bleNotifyTask (see Init.ino/BLE.ino) so BLE cadence can't couple to display-render timing.
+// V2.5-Evo - 2026-07-20 - BLE re-enable deep-fix (Rex): the per-loop bleTelemetryLoop()/extTelemNotify() pushes are REMOVED from loop(); the periodic BLE telemetry push now lives in the dedicated Core-0 bleNotifyTask (see Init.ino/BLE.ino) so BLE cadence can't couple to display-render timing.
 // V2.5-Evo - 2026-07-20 - MagGesture FIX1: with mag_mode>0 the Hall is EXCLUSIVELY the FM/RTM gesture input — the SW33b tap→bt_dot_state (BLE-session) toggle is gated OFF and the BT dot is instead driven from BLE state (bt_enabled==2/boot-gesture). mag_mode==0 SW33b behaviour is byte-identical to baseline.
 // V2.5-Evo - 2026-07-20 - MagGesture: runMagGesture() called from loop() after the SW33b Hall block; prototype added
 // *** LATEST: V2.5-Evo - 2026-05-15 - feature/bluetooth Tier 1: NUS skeleton (BLE.ino); bt_enabled SPIFFS field; boot gesture; bleInitTask 5s delayed ***
@@ -63,36 +63,14 @@ bool fmFundamentalReject(); // true when a fresh FM arm must be refused (unpaire
 uint8_t calcRtmThrottleCap();
 // RTM/FM Active Display (defined in Display.ino)
 void renderRtmInfoDisplay();
-// BLE Functions (defined in BLE.ino / BLE_Patron.ino)
+// BLE Functions (defined in BLE.ino)
 // V2.5-Evo - 2026-06-04 - Guarded by BLE_ENABLED (BREmote_V2_Tx.h). When undefined, the
 // NimBLE header is excluded, so these decls (one uses NimBLEServer*) must be excluded too.
-// ============================================================
-// V2.5-Evo - 2026-08-02 - PATRON-1: OPTIONAL foilIQ patron channel, auto-detected.
-//
-// WHAT THIS FIXES: BLE_Patron.ino is deliberately gitignored — it carries private foilIQ
-// UUIDs and belongs in the foiliq repo. But BLE.ino called its functions UNCONDITIONALLY, so
-// the PUBLIC repo did not link: four undefined references to initPatronService(),
-// sendPatronTelemetry(), patronHasSubscriber() and patronClearSubscriber(). It built only on
-// a machine that happened to have the private file. Anyone cloning BREmote and pressing
-// Compile got a linker error and no explanation.
-//
-// HOW IT WORKS: presence of the private header IS the switch. No flag to set, no build
-// variant to pick, nothing to forget — the same "detect, don't declare" principle the GPS
-// code uses to tell a BN-220 from an M10.
-//
-//   private build : BLE_Patron.h present -> PATRON_ENABLED -> patron channel compiled in
-//   public  build : header absent        -> calls compiled out -> links clean, full function
-//
-// The public firmware loses NOTHING a rider uses: VESC/NUS BLE is untouched, so VESC Tool and
-// Floaty behave identically. Only the private foilIQ telemetry channel is absent.
-//
-// This keeps the decision REVERSIBLE. Publishing BLE_Patron.ino later is always possible;
-// un-publishing it is not. Until that call is made deliberately, this ships open source that
-// builds for everyone without spending an option that cannot be bought back.
-// ============================================================
+// Optional extended-telemetry module. Present in some builds, absent in others; the build
+// adapts either way with no flag to set. Core BLE (NUS / VESC) is unaffected in both cases.
 #if defined(__has_include)
-  #if __has_include("BLE_Patron.h")
-    #include "BLE_Patron.h"
+  #if __has_include("BLE_Ext.h")
+    #include "BLE_Ext.h"
   #endif
 #endif
 
@@ -101,14 +79,14 @@ void initBLE();
 // V2.5-Evo - 2026-07-20 - true on a live BLE connection; Display.ino uses it to make the BT dot SOLID (defined in BLE.ino).
 bool bleIsConnected();
 // V2.5-Evo - 2026-07-20 - BLE re-enable deep-fix (Rex §4.4/§4.5): consolidated back-pressured push
-// (bleServiceNotify), the dedicated Core-0 push task (bleNotifyTask), and the patron stream helpers.
+// (bleServiceNotify), the dedicated Core-0 push task (bleNotifyTask), and the optional-module stream helpers.
 void bleServiceNotify();
 void bleNotifyTask(void* param);
-#ifdef PATRON_ENABLED
-void initPatronService(NimBLEServer* srv);
-bool sendPatronTelemetry();
-bool patronHasSubscriber();
-void patronClearSubscriber();
+#ifdef EXT_TELEM_ENABLED
+void initExtTelem(NimBLEServer* srv);
+bool sendExtTelem();
+bool extTelemHasSubscriber();
+void extTelemClearSubscriber();
 #endif
 #endif
 // Aux control command (defined in Radio.ino — queues 0xF4 meta-packet burst to RX)

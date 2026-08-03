@@ -97,7 +97,36 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 
 > ⚠️ **`master` ships SAFE factory defaults — unbound and uncalibrated** (no pairing, neutral compass/throttle calibration). After flashing you **must** set up your own devices: pair TX↔RX, run TX calibration (hold LEFT toggle at boot), and run `?compasscal` on RX. Until you do, the remote won't respond correctly to your throttle or compass.
 
-1. **Flash firmware** — use the Flash Download Tool (link below) or Arduino IDE. ⚙️ **Compiling it yourself? (advanced)** Follow the per-board guides — the partition settings **differ between TX and RX**, and the wrong one wipes config: **[RX flashing guide →](docs/FLASHING_RX_ARDUINO.md)** · **[TX flashing guide →](docs/FLASHING_TX_ARDUINO.md)**
+1. **Flash firmware** — easiest is a prebuilt `.bin`, no toolchain needed (see below).
+
+   **🟢 Simple — flash a prebuilt `.bin` (recommended, no compiling)**
+
+   Ready-to-flash binaries live next to their source, with a README in each folder explaining
+   which build is which:
+
+   | Board | Folder |
+   |---|---|
+   | TX | **[`Source/V2_Integration_Tx/TX firmware/`](Source/V2_Integration_Tx/TX%20firmware/)** |
+   | RX | **[`Source/V2_Integration_Rx/RX firmware/`](Source/V2_Integration_Rx/RX%20firmware/)** |
+
+   Download the `.bin` you want, then use **either**:
+
+   - **[Flash Download Tool](https://github.com/Luddi96/BREmote)** (Windows GUI, what Ludwig
+     demonstrates in his video) — load the `.bin`, set the address to **`0x10000`**, chip
+     **ESP32-C3**, and flash.
+   - **esptool** (any OS, one line):
+     ```bash
+     esptool --chip esp32c3 --port COM<N> write-flash 0x10000 <the-file>.bin
+     ```
+
+   > **`0x10000` is the address that matters.** These are app-only images, so they do not touch
+   > the partition table or SPIFFS — your pairing, calibration and settings survive. Identify the
+   > board by MAC (`esptool --chip esp32c3 --port COM<N> read-mac`) rather than by COM number:
+   > TX and RX are the same chip and COM numbers move between reboots.
+
+   ⚙️ **Compiling it yourself? (advanced)** Follow the per-board guides — the partition settings
+   **differ between TX and RX**, and the wrong one wipes config:
+   **[RX flashing guide →](docs/FLASHING_RX_ARDUINO.md)** · **[TX flashing guide →](docs/FLASHING_TX_ARDUINO.md)**
 2. **Power on both TX and RX** — TX shows `EP` (not paired) on first boot
 3. **Pair** — hold RIGHT toggle on TX at boot; hold BIND on RX at boot simultaneously
 4. **Connect to WiFi AP** — SSID shown on the device; default password `12345678` *(power off the other device first — see WiFi note below)*

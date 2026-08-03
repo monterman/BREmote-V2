@@ -306,7 +306,7 @@ bool bleIsConnected() {
 // at a time, driven by bleNotifyTask() (below), NEVER from loop(). This replaces the old pair of
 // concurrent pushers (bleTelemetryLoop CSV @500ms + ext-telemNotifyLoop @200ms):
 //   - VESC-Tool mode → stay silent; the app drives its own request/response cycle (NusRxCB::onWrite).
-//   - ext-telem client  → push the 28-byte foilIQ ext-telem packet (its private UUID has a subscriber).
+//   - ext-telem client  → push the 28-byte ext-telem packet (that characteristic has a subscriber).
 //   - otherwise      → push the CSV line for a generic Serial-BT-Terminal central.
 // The notify() return is checked: on stack congestion (mbuf/ENOMEM) we skip and let the next tick
 // retry instead of piling allocations onto the tight, no-PSRAM C3 heap (a direct H2/H3 mitigation).

@@ -66,4 +66,4 @@ Deliverables/
 # built firmware binaries (distribute via Releases, not tree)
 firmware/
 
-Source/V2_Integration_Tx/PATRON_UUIDS_NEW.txt
+Source/V2_Integration_Tx/EXT_KEYS.txt

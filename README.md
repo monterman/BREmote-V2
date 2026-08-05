@@ -26,6 +26,19 @@ BREmote is a collaborative open-source project built by the efoil and esk8 commu
 
 This fork exists because LudwigBre published open hardware and firmware under GPL 3.0. V2.5-Evo enhancements are released under the same license and dedicated back to the community.
 
+### Branches — read this before you clone
+
+| Branch | What it is |
+|---|---|
+| **`master`** | **V2.5-Evo. The default branch, and what you want.** Hardware-verified on both boards. |
+| `ludwig-upstream-main` | **LudwigBre's original line, not mine.** Kept so upstream changes can be tracked and merged. Do not flash it expecting V2.5-Evo behaviour — it is a different firmware. |
+| `multi-tx` | Work in progress: multiple remotes sharing one buggy. **Nothing here has been flashed to hardware.** |
+
+`ludwig-upstream-main` was called `main` until 2026-08-05. It was renamed because "main" reads
+like the primary branch of *this* repo, which it is not — it is a mirror of
+[Luddi96/BREmote](https://github.com/Luddi96/BREmote), whose own default branch is `main`. The
+old name caused exactly the confusion the new one avoids.
+
 ---
 
 ## What Is This?

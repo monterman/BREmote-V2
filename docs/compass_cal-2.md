@@ -106,7 +106,7 @@ bind_last_state = bind_current;
   safe to reuse at runtime, and that it does not affect boot-time pairing.
 - Inline comment explaining the `compass_detected` extern and why it's used for
   success/error detection instead of a return value.
-- Version tag on the file: `// V3 - [today's date] - Added runtime BIND press →
+- Version tag on the file: `// V2.5-Evo - [today's date] - Added runtime BIND press →
   compass calibration with LED feedback`
 
 ---

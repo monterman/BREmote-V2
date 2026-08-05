@@ -160,7 +160,12 @@ Meta-packets share the same 6-byte format but use a different type byte in posit
 | 0xBA | Pairing response | ... | Rare |
 | 0xAC | Pairing confirm | ... | Rare |
 
-### 5c. New meta-packet types reserved (for V3 and beyond)
+### 5c. Meta-packet types
+
+> ⚠️ **No longer "reserved" — 0xF1–0xF4 are implemented and live.** This section was written
+> when they were a proposal for a "V3" that was never built; the current version is V2.5-Evo.
+> **`docs/MULTI_TX_DESIGN.md` holds the authoritative byte-3 allocation table**, verified against
+> the code. Check it — not this table — before allocating a new meta-packet type.
 
 | Byte[3] | Type | Payload [4][5] | Frequency | Purpose |
 |---|---|---|---|---|

@@ -43,7 +43,21 @@ On the RX the expensive fields are the **compass calibration** (`mag_offset_*`, 
 losing those means re-running `?compasscal` physically — plus pairing.
 
 These are **app-only** images (`0x10000`), so they do not touch the partition table or SPIFFS.
-`SW_VERSION` is 34 across all three, so moving between them does not reset settings.
+The flash itself never erases your settings, and the two **SW34** builds are interchangeable —
+move between `gps-verified` and `pre-gpsbaud` freely.
+
+> ⚠️ **`SW32-rtm-working` is the exception, and on the RX it is expensive.** The firmware
+> compares the stored `SW_VERSION` against its own on boot and rewrites the config to defaults
+> when they differ. That build is version **32**, the current one is **34**, so rolling back to
+> it **wipes the compass calibration** — which you can only restore by physically re-running
+> `?compasscal`, walking the buggy through two full circles — **plus pairing and every setting.**
+> Coming forward again wipes it a second time.
+>
+> **Back it up before you roll back**, and only roll back if you actually need to.
+>
+> *(This paragraph previously claimed `SW_VERSION` was 34 across all three builds and that
+> switching between them was safe. It was wrong, and on this board being wrong costs you a
+> calibration you have to redo on your feet.)*
 
 ## After flashing
 

@@ -9,8 +9,10 @@ Board: **HT-CT62 (ESP32-C3)** · partition scheme `huge_app` · app offset **`0x
 | File | SW | What it is |
 |---|---|---|
 | `BREmote-TX-SW27-gps-verified.bin` | 27 | **Start here.** Current. Every GPS config write is ACK-verified, auto-detects u-blox M8 vs M9/M10, and never transmits at an unconfirmed baud. Adds `?gpscfg`, `?gpsbaud`, `?gpssetup`. |
-| `BREmote-TX-SW27-pre-gpsbaud.bin` | 27 | The build immediately **before** the baud work. Same features otherwise. Use this to isolate whether a problem is GPS-related. |
-| `BREmote-TX-SW26R2-rtm-working.bin` | 26R2 | Known-good historical build from 2026-06-05. RTM working; Follow-Me not yet matured. Fallback if something newer misbehaves. |
+| `BREmote-TX-SW26R2-rtm-working.bin` | **26R2** | Known-good historical build from 2026-06-05. RTM working; Follow-Me not yet matured. Fallback if something newer misbehaves. ⚠️ **Different `SW_VERSION` — see below.** |
+
+> The RX folder has a third, intermediate `pre-gpsbaud` build. The TX equivalent was withdrawn
+> and is deliberately not published.
 
 ## Flash it
 
@@ -37,8 +39,19 @@ esptool --chip esp32c3 --port COM<N> verify-flash 0x8000 <build>.partitions.bin
 ```
 
 These are **app-only** images (`0x10000`). They do not touch the partition table or SPIFFS, so
-config, calibration and pairing are preserved. `SW_VERSION` is 27 across all three, so moving
-between them does not reset settings.
+the flash itself never erases your settings.
+
+> ⚠️ **But rolling back to `SW26R2` DOES reset your config, and that is not the flash's doing.**
+> The firmware compares the stored `SW_VERSION` against its own on boot; when they differ it
+> rewrites the config to defaults. `SW26R2` is version **26**, the current build is **27**, so
+> going backwards **wipes throttle calibration, pairing and every setting**.
+>
+> **Back up first — `?conf` — and expect to restore with `?setconf <blob>` + `?applyconf` and
+> re-pair.** Moving *forward* again from 26R2 to 27 wipes it a second time, for the same reason.
+>
+> *(This paragraph previously claimed `SW_VERSION` was 27 across all builds and that switching
+> between them was safe. It was wrong, and it was wrong in the direction that costs you a
+> calibration.)*
 
 ## After flashing
 

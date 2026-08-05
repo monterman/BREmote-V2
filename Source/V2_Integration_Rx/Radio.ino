@@ -45,6 +45,46 @@ void ICACHE_RAM_ATTR packetReceived(void)
   }
 }
 
+// ============================================================
+// V2.5-Evo - 2026-08-05 - SAFETY: may this RX obey a control packet at all?
+// ============================================================
+// THE BUG THIS CLOSES: the only gate on an inbound control packet was the
+// 3-byte destination-address compare in triggeredReceive(). usrConf.paired was
+// never consulted anywhere in the control path.
+//
+// Why that mattered: unpairing ZEROES own_address (Common/WebConfigEngine.h), so
+// an unpaired RX listens on 00:00:00 — the one address every unbound unit in the
+// world shares. An unpaired TX transmits to 00:00:00 for the same reason. So two
+// unpaired units in radio range would match, pass CRC, and drive the motor,
+// with nothing in between. No pairing, no consent, no gesture.
+//
+// TWO conditions, because either one alone still leaves the hole open:
+//   !paired             - never bound, or deliberately unpaired
+//   own_address all 00  - the factory/unpaired address. Even if `paired` were
+//                         somehow true (corrupt config, a half-finished bind),
+//                         00:00:00 must never be commandable.
+//
+// Deliberately placed so it gates the WHOLE control path, not just throttle:
+// every writer of thr_received AND every writer of last_packet (the failsafe
+// feed) lives inside that address block, including the 0xF1/0xF2/0xF4 meta
+// packets. Gating only the throttle would still have let a stranger hold the
+// failsafe open, which is the more dangerous half.
+//
+// Costs nothing on the wire, changes nothing for a paired board.
+//
+// NOTE ON PAIRING: waitForPairing() sets usrConf.paired = false while it runs,
+// and the receive task IS live at that point (initTasks() is called in setup(),
+// checkButtons() first runs from loop()). That is correct and intended — during
+// a bind the board must not also be drivable.
+static bool rxMayAcceptControl()
+{
+  if (!usrConf.paired) return false;
+  if (usrConf.own_address[0] == 0 &&
+      usrConf.own_address[1] == 0 &&
+      usrConf.own_address[2] == 0) return false;
+  return true;
+}
+
 // Function for waiting node to pair
 bool waitForPairing()
 {
@@ -429,7 +469,14 @@ void triggeredReceive(void *parameter) {
           printHexArray(rcvArray, 6);
           #endif
 
-          if (memcmp(rcvArray, usrConf.own_address, 3) == 0)
+          // V2.5-Evo - 2026-08-05 - SAFETY GATE. Checked BEFORE the address compare,
+          // because on an unpaired board the address IS 00:00:00 and would match a
+          // stranger. See rxMayAcceptControl() above for the full reasoning.
+          if (!rxMayAcceptControl())
+          {
+            rxprintln("Ignored: RX is not paired — hold BIND at boot to pair");
+          }
+          else if (memcmp(rcvArray, usrConf.own_address, 3) == 0)
           {
             rxprintln("Address matches");
 

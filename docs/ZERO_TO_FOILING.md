@@ -69,6 +69,27 @@ Every published build, with notes on each: **[TX firmware →](../Source/V2_Inte
 **[RX firmware →](../Source/V2_Integration_Rx/RX%20firmware/)**. Older builds are kept for rollback
 and carry known issues — use the `-gps-verified` ones above.
 
+> ### 🚨 Download the RAW file — this is where people go wrong
+>
+> **If you save the GitHub page instead of the file, you get an HTML web page with a `.bin` name.**
+> It is not firmware. It will not flash, or it will fail in a way that looks like a dead board.
+>
+> Two ways to get the real bytes:
+>
+> **1. From the GitHub page** — click the `.bin` file to open it, then use the **Download raw file**
+> button (the ⤓ download icon, top-right of the file view). GitHub cannot preview a binary, so the
+> page shows *"View raw"* or a download button — **that button is the one you want.** Do not use
+> your browser's *File → Save Page As*.
+>
+> **2. Clone the whole repo** — simplest, and you get every build plus the config tool at once:
+> ```
+> git clone https://github.com/monterman/BREmote-V2.git
+> ```
+>
+> **Sanity check before flashing:** the RX and TX `.bin` files are a few hundred KB. If the file you
+> downloaded is only a few KB, or opens as a web page in a text editor, you saved the HTML — go back
+> and use the raw download.
+
 ⚠️ **Flash at `0x10000`, not `0x0`**, and ignore any reference to `.merged.bin` — merged images are
 deliberately not published; flashing one at `0x0` wipes your SPIFFS config.
 

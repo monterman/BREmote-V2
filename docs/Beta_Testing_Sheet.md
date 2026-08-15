@@ -31,6 +31,13 @@ No Arduino, no compiling. Download the prebuilt `.bin` for each board and flash 
 
 Browse all published builds, with notes on what each one is:
 **[TX firmware →](../Source/V2_Integration_Tx/TX%20firmware/)** · **[RX firmware →](../Source/V2_Integration_Rx/RX%20firmware/)**
+
+> 🚨 **Download the RAW file.** Click the `.bin` on GitHub, then use the **Download raw file** button
+> (⤓, top-right of the file view) — *not* your browser's *Save Page As*, which saves an HTML page
+> with a `.bin` name and will not flash. Or just
+> `git clone https://github.com/monterman/BREmote-V2.git` and take it from the folder. **Check the
+> size:** a real image is a few hundred KB; a few KB means you saved the web page.
+
 Each folder has a `README.md` saying which build to start with and what changed. **The
 `-gps-verified` builds above are the ones to use** — older builds in those folders are kept for
 rollback and carry known issues.

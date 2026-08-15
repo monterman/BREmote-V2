@@ -175,6 +175,15 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
    | TX | **[`Source/V2_Integration_Tx/TX firmware/`](Source/V2_Integration_Tx/TX%20firmware/)** |
    | RX | **[`Source/V2_Integration_Rx/RX firmware/`](Source/V2_Integration_Rx/RX%20firmware/)** |
 
+   > 🚨 **Download the RAW file — this is where people go wrong.** Click the `.bin` on GitHub, then
+   > use the **Download raw file** button (⤓, top-right of the file view). Do **not** use your
+   > browser's *Save Page As* — that saves an HTML page with a `.bin` name, which will not flash and
+   > looks like a dead board. Or clone the repo and take it from the folder:
+   > `git clone https://github.com/monterman/BREmote-V2.git`
+   >
+   > **Sanity check:** a real image is a few hundred KB. A few KB, or something that opens as a web
+   > page in a text editor, means you saved the HTML.
+
    Download the `.bin` you want, then use **either**:
 
    - **[Flash Download Tool](https://github.com/Luddi96/BREmote)** (Windows GUI, what Ludwig

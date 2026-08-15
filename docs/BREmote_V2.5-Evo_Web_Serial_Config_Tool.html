@@ -425,6 +425,7 @@ const TX_CMD_HTML = `
   <option value="?get ">?get &lt;key&gt; — read one value</option>
   <option value="?set  ">?set &lt;key&gt; &lt;val&gt; — set value in RAM</option>
   <option value="?save">?save — persist RAM config to SPIFFS</option>
+  <option value="?setconf ">?setconf &lt;b64&gt; — write a backed-up config to SPIFFS</option>
   <option value="?keys">?keys — list all config key names</option>
   <option value="?state">?state — subsystem + BLE state overview</option>
   <option value="?applyconf">?applyconf — apply SPIFFS config to RAM</option>
@@ -477,6 +478,9 @@ const RX_CMD_HTML = `
   <option value="?set  ">?set &lt;key&gt; &lt;val&gt; — set value in RAM</option>
   <option value="?save">?save — persist RAM config to SPIFFS</option>
   <option value="?keys">?keys — list all config key names</option>
+  <option value="?setconf ">?setconf &lt;b64&gt; — write a backed-up config to SPIFFS</option>
+  <option value="?applyconf">?applyconf — reload config from SPIFFS (run after ?setconf)</option>
+  <option value="?clearconf">?clearconf — delete stored config (factory defaults on next boot)</option>
 </optgroup>
 <optgroup label="System">
   <option value="?reboot">?reboot — reboot RX</option>
@@ -492,6 +496,8 @@ const RX_CMD_HTML = `
   <option value="?diagz">?diagz — zero the ?diag counters so a run can be bracketed</option>
 </optgroup>
 <optgroup label="GPS &amp; Compass">
+  <option value="?gpsbaud">?gpsbaud — listen-only baud scan; are ANY bytes arriving? (~6 s, bench only)</option>
+  <option value="?gpssetup">?gpssetup — ONE-TIME full GPS setup: find, configure, save, verify (~20 s, bench only)</option>
   <option value="?printgps">?printgps — GPS fix state and coordinates</option>
   <option value="?gpsdiag">?gpsdiag — 2Hz GPS feed + RTM COG-valid breakdown (why COG never engages; quit to exit)</option>
   <option value="?gpscfg">?gpscfg — read GPS config back OUT of the module (dynModel + GSV filter; verifies configureGPS actually took)</option>

@@ -39,7 +39,8 @@ Every section of this README has a longer document behind it. Start here when yo
 | If you want to… | Read |
 |---|---|
 | **Set up from scratch, in order** | **[Zero → Foiling](docs/ZERO_TO_FOILING.md)** ⭐ start here |
-| Flash the boards | [Flashing the RX](docs/FLASHING_RX_ARDUINO.md) · [Flashing the TX](docs/FLASHING_TX_ARDUINO.md) |
+| **Flash the boards** | **[Flashing with the Flash Download Tool](docs/FLASHING_WITH_DOWNLOAD_TOOL.md)** ⭐ the normal way — no Arduino |
+| Compile it yourself *(advanced)* | [RX via Arduino](docs/FLASHING_RX_ARDUINO.md) · [TX via Arduino](docs/FLASHING_TX_ARDUINO.md) |
 | Wire the GPS + compass to the RX | [BN-880 → RX wiring](docs/GPS_Wiring_BN880_RX.md) |
 | Understand or fix GPS | [GPS configuration](docs/GPS.md) · [GPS troubleshooting](docs/hardware/gps-troubleshooting.md) |
 | Calibrate the compass | **[Zero → Foiling § 2.4](docs/ZERO_TO_FOILING.md#24-compass-calibration-rx--bind-short-press-two-full-360-circles)** — the procedure |
@@ -186,9 +187,10 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 
    Download the `.bin` you want, then use **either**:
 
-   - **[Flash Download Tool](https://github.com/Luddi96/BREmote)** (Windows GUI, what Ludwig
-     demonstrates in his video) — load the `.bin`, set the address to **`0x10000`**, chip
-     **ESP32-C3**, and flash.
+   - ⭐ **[Flash Download Tool](https://www.espressif.com/en/support/download/other-tools)**
+     (Espressif's Windows GUI — also called the ESP Download Tool) — **the recommended way.**
+     Chip `ESP32-C3`, load the `.bin` at address **`0x10000`**, press START.
+     **[Full step-by-step guide →](docs/FLASHING_WITH_DOWNLOAD_TOOL.md)**
    - **esptool** (any OS, one line):
      ```bash
      esptool --chip esp32c3 --port COM<N> write-flash 0x10000 <the-file>.bin

@@ -43,13 +43,18 @@ Steps are tagged **[DESK]** · **[BENCH]** · **[WEB PORTAL]** · **[WATER]**. A
      cable but no signal. That is exactly when you need it.
 3. **Get a flashing tool — you do not need Arduino.** Prebuilt `.bin` files are published for both
    boards; flashing one takes a minute and is far less error-prone than compiling.
-   - **[Flash Download Tool](https://www.espressif.com/en/support/download/other-tools)** (Espressif,
-     Windows GUI) — the method Ludwig recommends and the easiest way in.
-   - **esptool** (any OS, one line) — `esptool --chip esp32c3 --port COM<N> write-flash 0x10000 <file>.bin`
+   - ⭐ **[Flash Download Tool](https://www.espressif.com/en/support/download/other-tools)** —
+     Espressif's Windows GUI (also called the ESP Download Tool). **This is the recommended way**,
+     and the one Ludwig demonstrates. Unzip, pick the `.bin`, press START.
+     **[Step-by-step guide →](FLASHING_WITH_DOWNLOAD_TOOL.md)**
+   - **esptool** — same job from a command line on any OS, if you prefer:
+     `esptool --chip esp32c3 --port COM<N> write-flash 0x10000 <file>.bin`
 
-   *Compiling from source with arduino-cli is the **advanced** path — you only need it if you are
-   changing the firmware. See [Flashing the RX](FLASHING_RX_ARDUINO.md) and
-   [Flashing the TX](FLASHING_TX_ARDUINO.md).*
+   > **You do not need Arduino, and you should not start there.** Compiling from source depends on
+   > your library versions and board settings being exactly right, and getting one partition setting
+   > wrong on the RX wipes its config. The published `.bin` is the image that was actually built and
+   > tested. Compile only if you are changing the firmware —
+   > [RX](FLASHING_RX_ARDUINO.md) · [TX](FLASHING_TX_ARDUINO.md), both advanced.
 4. **Read, in this order:** this guide → [`docs/FOLLOW_ME_GUIDE.md`](FOLLOW_ME_GUIDE.md) (rider flow) → [`BUGGY_FOIL_DOMAIN.md`](../BUGGY_FOIL_DOMAIN.md) (safety model) → [`docs/VESC_SMOOTH_START_QUICK_REFERENCE.md`](VESC_SMOOTH_START_QUICK_REFERENCE.md) (PPM and smooth-start).
 
 ---
@@ -89,6 +94,9 @@ and carry known issues — use the `-gps-verified` ones above.
 > **Sanity check before flashing:** the RX and TX `.bin` files are a few hundred KB. If the file you
 > downloaded is only a few KB, or opens as a web page in a text editor, you saved the HTML — go back
 > and use the raw download.
+
+**→ [Full flashing walkthrough with the Flash Download Tool](FLASHING_WITH_DOWNLOAD_TOOL.md)** —
+every setting spelled out, including the checkbox people forget to tick.
 
 ⚠️ **Flash at `0x10000`, not `0x0`**, and ignore any reference to `.merged.bin` — merged images are
 deliberately not published; flashing one at `0x0` wipes your SPIFFS config.

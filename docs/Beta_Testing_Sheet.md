@@ -44,14 +44,17 @@ rollback and carry known issues.
 
 ### How to flash
 
-Flash at offset **`0x10000`**:
+⭐ **Use Espressif's [Flash Download Tool](https://www.espressif.com/en/support/download/other-tools)**
+— the Windows GUI, and the method Ludwig demonstrates. Chip `ESP32-C3`, your `.bin` at address
+**`0x10000`**, press START. No Arduino, no compiling.
+
+**[→ Full step-by-step walkthrough](FLASHING_WITH_DOWNLOAD_TOOL.md)**
+
+Prefer a command line? Same result:
 
 ```
 esptool --chip esp32c3 --port COM<N> write-flash 0x10000 <the-file>.bin
 ```
-
-Or use Espressif's **Flash Download Tool** (Windows GUI) — the method Ludwig recommends. Full
-instructions: [Flashing the RX](FLASHING_RX_ARDUINO.md) · [Flashing the TX](FLASHING_TX_ARDUINO.md).
 
 > ⚠️ **Do not flash at `0x0`, and do not look for `.merged.bin`.** Merged images are deliberately
 > not published: flashing one at `0x0` rewrites the whole chip and **wipes your SPIFFS config** —

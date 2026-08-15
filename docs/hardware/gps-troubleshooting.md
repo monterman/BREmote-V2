@@ -267,6 +267,7 @@ Once `?gpsraw` shows clean sentences, the wiring is correct. Now get a satellite
 | Module | Voltage | Works on TX? | Notes |
 |---|---|---|---|
 | **BN-220** | 3.3V | ✅ Confirmed | Recommended for TX. Set `gps_chip_type=0` |
+| **BN-880** | **5V** | ❌ No | **The RX module** — the only one in this table with a compass, which RTM and Follow-Me need. Set `gps_chip_type=1`. Take 5 V from the VESC and put the UART header's selector on `5V`; the TX supplies 3.3 V only, so this is not a TX option. [Wiring guide →](../GPS_Wiring_BN880_RX.md) |
 | **[HGLRC M100 Micro](https://www.hglrc.com/products/hglrc-m100_mini-gps)** | 3.3–5V | ⚠️ **Untested** | M10 chip, no compass. Set `gps_chip_type=2`. 🚨 **Do not assume this works yet.** The M10 removed the legacy UBX config messages, so the TX cannot change its baud (`CFG-PRT` does not exist on M10 — see [u-blox M10 SPG 5.10 interface description](https://content.u-blox.com/sites/default/files/u-blox-M10-SPG-5.10_InterfaceDescription_UBX-21035062.pdf) §3.10). If the module does not already ship at 115200 the TX will open the UART at the wrong speed and show **no NMEA at all**. Also note 9600 cannot physically carry 10 Hz (GGA+RMC ≈ 1400 B/s ≈ 14000 baud needed) — 38400 minimum. Verify with `?gpsbaud` before trusting this row. |
 | [HGLRC M100 Pro](https://www.hglrc.com/products/m100-pro-gps) | 3.6–5.5V | ❌ No | Needs >3.3V — UART corrupted at ESP32-C3 3.3V supply |
 | M101Q / M10Q | 5V | ❌ No | Needs 5V — TX only provides 3.3V |
@@ -375,7 +376,13 @@ Then confirm:
 ```
 
 If `?gpsbaud` still reports UBX dead after a full power cycle, the problem is not this — check
-wiring and the 3.3 V supply.
+wiring and the module's supply rail (5 V for a BN-880, 3.3 V for a BN-220).
+
+**On the RX, also confirm you are on the right connector.** The two UART headers are one hardware
+UART shared by a 74HC4052 mux: **`UART 1.0` is the VESC channel, `UART 1.1` is the GPS channel**
+(`setUartMux()` in `System.ino` — channel 0 = VESC, channel 1 = GPS). A GPS wired into `UART 1.0` is
+switched away from the UART and reports exactly this symptom — dead at every baud — with perfectly
+correct wiring.
 
 ### How the current firmware avoids causing it
 
@@ -494,8 +501,14 @@ The QMC5883L compass connects via I2C. The BN-880 GPS module includes an integra
 >
 > Bounded at ~3 s, safe on the bench. **`dynModel : 0` or `GSV : STILL ENABLED` means the write was silently rejected** — wrong checksum, unsupported on that chip, or the module still at the old baud. Also available from the web-UI quick-commands dropdown.
 | **GPIO 1** | SCL | I2C Clock |
-| 3.3V | VCC | Power |
+| `V+` on **`UART 1.1`** (selector on **5V**) | VCC | Power — see note |
 | GND | GND | Ground |
+
+> **Supply: a BN-880 runs on 5 V, not 3.3 V.** It regulates down to 3.3 V on-module. Fed from the
+> 3.3 V rail it sits at its regulator's dropout and browns out under acquisition current — which
+> presents as flaky GPS or an intermittent compass, not as a power fault. Put the UART header's
+> `5V` / `3V3` selector on **`5V`**. A bare QMC5883L breakout (no BN-880) is a 3.3 V part and does
+> use the 3.3 V rail. Either way the SDA/SCL lines are 3.3 V logic.
 
 > The I2C bus is shared — AW9523 I/O expander (0x58) and compass (QMC5883L at 0x0D) both use the same SDA/SCL lines. Pull-up resistors are on the PCB; do not add external ones.
 
@@ -512,7 +525,8 @@ Scan complete.
 
 If `QMC5883L Compass` is **missing** from the output:
 - Check SDA (GPIO 2) and SCL (GPIO 1) wires match the table above
-- Verify VCC = 3.3V and GND connected
+- Verify the supply is correct for your module — **5 V for a BN-880**, 3.3 V for a bare QMC5883L
+  breakout — and that GND is connected
 - If AW9523 is also missing, the entire I2C bus is open — check PCB solder joints
 
 ### Step 2 — Check Raw Compass Data with `?printcompass`

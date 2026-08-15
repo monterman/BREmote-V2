@@ -95,14 +95,17 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 | Module | HT-CT62 (ESP32-C3 + SX1262 + WiFi + **BLE** integrated) | HT-CT62 |
 | Radio | SX1262 LoRa | SX1262 LoRa |
 | BLE | Built-in (ESP32-C3) — NUS + VESC Tool protocol ✅ in master; `bt_enabled` SPIFFS config (0=off, 1=Hall-mode, 2=always-on) | Built-in (ESP32-C3) — RX BLE planned |
-| GPS | BN-220 or [HGLRC M100 Micro](https://www.hglrc.com/products/hglrc-m100_mini-gps) (M10 chip, no compass, 3.3V–5V) | BN-880 or [HGLRC M100-5883](https://www.hglrc.com/products/m100-5883-gps) (M10 chip + compass) |
+| GPS | BN-220 or [HGLRC M100 Mini](https://www.hglrc.com/products/hglrc-m100_mini-gps) (M10 chip, no compass, 3.3V–5V) | BN-880 or [HGLRC M100-5883](https://www.hglrc.com/products/m100-5883-gps) (M10 chip + compass) |
 | Compass | None | QMC5883L (I2C) |
 | Display | HT16K33 dot matrix (I2C 0x70) | None |
 | ADC | ADS1115 (I2C 0x48) | None |
 | I/O Expander | None | AW9523 (I2C) |
 | ESC / VESC | None | VESC UART or PWM (RMT GPIO 9) |
 
-> ⚠️ **TX GPS must be 3.3V tolerant** — the ESP32-C3 supplies 3.3V only. Both the BN-220 and HGLRC M100 Micro meet this requirement.
+> ⚠️ **TX GPS must be 3.3V tolerant** — the ESP32-C3 supplies 3.3V only. Both the BN-220 and HGLRC M100 Mini meet this requirement.
+
+> 🔌 **Wiring the RX GPS + compass:** **[BN-880 → RX wiring guide →](docs/GPS_Wiring_BN880_RX.md)** — six wires,
+> pin map, and the two settings that bite (UART is **crossed**, and `gps_chip_type` must be set to your module).
 
 ---
 
@@ -179,6 +182,31 @@ The most capable interface. Connects to TX or RX via USB serial (requires Chrome
 - Log file download and management
 - Dirty-state highlighting — changed fields highlighted until saved
 - Works fully offline after download
+
+### 💾 Backing up your settings — read this before you flash
+
+Flashing a build with a different config version **resets every setting to defaults**. Back up first,
+and know which format to use:
+
+| Format | Use it for | Survives a firmware update? |
+|---|---|---|
+| **Base64** ✅ | **Backup / restore across firmware versions** | **Yes** — raw copy of the config block, restores as-is |
+| **JSON** | Reading, editing, diffing, sharing settings with someone | **Not always** — see below |
+
+> ⚠️ **Use Base64 for backups.** JSON is keyed by field *name*, so if a setting was renamed or
+> replaced between versions, the import is **rejected as an unknown field** and you lose the restore.
+> Base64 is a straight copy of the config block and does not care what the fields are called.
+>
+> JSON is still the better format when you want to *read* your settings, compare two boards, or send
+> a config to someone for troubleshooting — just don't rely on it as your only backup.
+
+**Recommended before any flash:**
+1. Connect the board in the Web Serial Config Tool
+2. Export **Base64** — keep it (this is the restore file)
+3. Export **JSON** as well — human-readable reference if you ever need to rebuild by hand
+4. Flash, then paste the Base64 back and **`?save`**
+5. **Re-run calibration anyway** — `?compasscal` on RX, LEFT-toggle calibration on TX. Stored
+   calibration is only as good as the mounting it was taken in.
 
 ---
 
@@ -672,35 +700,35 @@ Full bar (10 pixels) = buggy at arm distance. Shrinks from the right as the bugg
 <details>
 <summary>VESC with UART — click to expand</summary>
 
-![VESC with UART](https://github.com/Luddi96/BREmote-V2/raw/main/img/conn_vesc.PNG)
+![VESC with UART](img/conn_vesc.PNG)
 
 </details>
 
 <details>
 <summary>ESC with BREmote BEC — click to expand</summary>
 
-![ESC with BREmote BEC](https://github.com/Luddi96/BREmote-V2/raw/main/img/conn_esc_bbec.PNG)
+![ESC with BREmote BEC](img/conn_esc_bbec.PNG)
 
 </details>
 
 <details>
 <summary>ESC with own BEC — click to expand</summary>
 
-![ESC with own BEC](https://github.com/Luddi96/BREmote-V2/raw/main/img/conn_esc_obec.PNG)
+![ESC with own BEC](img/conn_esc_obec.PNG)
 
 </details>
 
 <details>
 <summary>VESC + Servo — click to expand</summary>
 
-![VESC + Servo](https://github.com/Luddi96/BREmote-V2/raw/main/img/conn_vesc_servo.PNG)
+![VESC + Servo](img/conn_vesc_servo.PNG)
 
 </details>
 
 <details>
 <summary>ESC + Servo — click to expand</summary>
 
-![ESC + Servo](https://github.com/Luddi96/BREmote-V2/raw/main/img/conn_esc_servo.PNG)
+![ESC + Servo](img/conn_esc_servo.PNG)
 
 </details>
 

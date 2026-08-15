@@ -63,6 +63,19 @@ Steps are tagged **[DESK]** · **[BENCH]** · **[WEB PORTAL]** · **[WATER]**. A
 
 ### 2.1 Flash both boards — prebuilt `.bin`, no compiling
 
+> ## 🎥 Watch it done first
+>
+> ### **[Ludwig's flashing walkthrough → starts at 40:00](https://youtu.be/r6JIZEq3aTU?t=2400)**
+>
+> He flashes a BREmote with the **Flash Download Tool**, step by step. **Nothing about the process
+> has changed** — the only difference is that you pick **your** `.bin` from the table below instead
+> of his.
+>
+> Watch that once and this whole section will make sense. Then follow along here for the exact
+> files, the address, and the settings.
+>
+> **[→ Written step-by-step, every setting](FLASHING_WITH_DOWNLOAD_TOOL.md)**
+
 **Download the current build for each board and flash it at offset `0x10000`.**
 
 | Board | File | Version |
@@ -94,9 +107,6 @@ and carry known issues — use the `-gps-verified` ones above.
 > **Sanity check before flashing:** the RX and TX `.bin` files are a few hundred KB. If the file you
 > downloaded is only a few KB, or opens as a web page in a text editor, you saved the HTML — go back
 > and use the raw download.
-
-**→ [Full flashing walkthrough with the Flash Download Tool](FLASHING_WITH_DOWNLOAD_TOOL.md)** —
-every setting spelled out, including the checkbox people forget to tick.
 
 ⚠️ **Flash at `0x10000`, not `0x0`**, and ignore any reference to `.merged.bin` — merged images are
 deliberately not published; flashing one at `0x0` wipes your SPIFFS config.

@@ -46,7 +46,7 @@ Steps are tagged **[DESK]** · **[BENCH]** · **[WEB PORTAL]** · **[WATER]**. A
    - ⭐ **[Flash Download Tool](https://www.espressif.com/en/support/download/other-tools)** —
      Espressif's Windows GUI (also called the ESP Download Tool). **This is the recommended way**,
      and the one Ludwig demonstrates. Unzip, pick the `.bin`, press START.
-     **[Step-by-step guide →](FLASHING_WITH_DOWNLOAD_TOOL.md)**
+     **[Step-by-step guide →](FLASHING_WITH_DOWNLOAD_TOOL.md)** · 🎥 **[Ludwig's walkthrough from 40:00 →](https://youtu.be/r6JIZEq3aTU?t=2400)**
    - **esptool** — same job from a command line on any OS, if you prefer:
      `esptool --chip esp32c3 --port COM<N> write-flash 0x10000 <file>.bin`
 

@@ -48,7 +48,7 @@ rollback and carry known issues.
 — the Windows GUI, and the method Ludwig demonstrates. Chip `ESP32-C3`, your `.bin` at address
 **`0x10000`**, press START. No Arduino, no compiling.
 
-**[→ Full step-by-step walkthrough](FLASHING_WITH_DOWNLOAD_TOOL.md)**
+**[→ Full step-by-step walkthrough](FLASHING_WITH_DOWNLOAD_TOOL.md)** · 🎥 **[Ludwig's video, from 40:00](https://youtu.be/r6JIZEq3aTU?t=2400)**
 
 Prefer a command line? Same result:
 

@@ -18,6 +18,7 @@ than a fresh compile that depends on your library versions and board settings be
 | | |
 |---|---|
 | **The tool** | **[Flash Download Tool](https://www.espressif.com/en/support/download/other-tools)** — Espressif's official Windows utility. Also called the *ESP Download Tool* or *ESP32 Download Tool*; all the same program. Free, no install — unzip and run the `.exe`. |
+| **Prefer to watch it?** | **[Ludwig's walkthrough, from 40:00 →](https://youtu.be/r6JIZEq3aTU?t=2400)** — he flashes a BREmote with this exact tool. Nothing has changed since; just use **your** `.bin` from the table below. |
 | **The firmware** | The current `.bin` for your board — see the table below |
 | **A USB cable** | A **data** cable. Charge-only cables are the single most common "my board won't connect" cause. |
 
@@ -74,6 +75,9 @@ unplug it, then connect the other.** Never have both plugged in while flashing.
 ---
 
 ## Step 3 — Flash it
+
+> 🎥 **[Watch Ludwig do exactly this, from 40:00 →](https://youtu.be/r6JIZEq3aTU?t=2400)** — same tool, same
+> steps. Follow along with your own `.bin` and the settings below.
 
 1. **Unzip and run** `flash_download_tool_x.x.x.exe`.
 2. In the first small window, choose:

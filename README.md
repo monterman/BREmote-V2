@@ -39,7 +39,7 @@ Every section of this README has a longer document behind it. Start here when yo
 | If you want to… | Read |
 |---|---|
 | **Set up from scratch, in order** | **[Zero → Foiling](docs/ZERO_TO_FOILING.md)** ⭐ start here |
-| **Flash the boards** | **[Flashing with the Flash Download Tool](docs/FLASHING_WITH_DOWNLOAD_TOOL.md)** ⭐ the normal way — no Arduino |
+| **Flash the boards** | **[Flashing with the Flash Download Tool](docs/FLASHING_WITH_DOWNLOAD_TOOL.md)** ⭐ the normal way — no Arduino · 🎥 [video from 40:00](https://youtu.be/r6JIZEq3aTU?t=2400) |
 | Compile it yourself *(advanced)* | [RX via Arduino](docs/FLASHING_RX_ARDUINO.md) · [TX via Arduino](docs/FLASHING_TX_ARDUINO.md) |
 | Wire the GPS + compass to the RX | [BN-880 → RX wiring](docs/GPS_Wiring_BN880_RX.md) |
 | Understand or fix GPS | [GPS configuration](docs/GPS.md) · [GPS troubleshooting](docs/hardware/gps-troubleshooting.md) |
@@ -189,6 +189,7 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 
    - ⭐ **[Flash Download Tool](https://www.espressif.com/en/support/download/other-tools)**
      (Espressif's Windows GUI — also called the ESP Download Tool) — **the recommended way.**
+     🎥 **[Ludwig demonstrates it from 40:00](https://youtu.be/r6JIZEq3aTU?t=2400)**.
      Chip `ESP32-C3`, load the `.bin` at address **`0x10000`**, press START.
      **[Full step-by-step guide →](docs/FLASHING_WITH_DOWNLOAD_TOOL.md)**
    - **esptool** (any OS, one line):

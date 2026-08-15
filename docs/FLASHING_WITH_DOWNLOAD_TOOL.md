@@ -79,26 +79,44 @@ unplug it, then connect the other.** Never have both plugged in while flashing.
 > 🎥 **[Watch Ludwig do exactly this, from 40:00 →](https://youtu.be/r6JIZEq3aTU?t=2400)** — same tool, same
 > steps. Follow along with your own `.bin` and the settings below.
 
-1. **Unzip and run** `flash_download_tool_x.x.x.exe`.
+> **"Download" means upload.** The tool is writing *into* the board over the COM port. There is
+> nothing being downloaded from the internet — ignore the name, it trips everyone up once.
+
+1. **Unzip and run** `flash_download_tool_x.x.x.exe` (Ludwig's video shows **V3.9.8**).
 2. In the first small window, choose:
    - **ChipType:** `ESP32-C3`
    - **WorkMode:** `Develop`
    - **LoadMode:** `UART`
 
-   Press **OK**.
-3. In the main window, on the **first file row**:
-   - Click the **`…`** button and select your `.bin`.
-   - In the **`@`** address box to the right of it, type **`0x10000`**.
-   - **Tick the checkbox** at the far left of that row — an unticked row is skipped, and the tool
-     will happily report success having flashed nothing.
+   Press **OK**. The title bar should then read **ESP32C3 FLASH DOWNLOAD TOOL**.
+3. Stay on the **SPIDownload** tab. On the **first file row**:
+   - Click **`…`** and select your `.bin`.
+   - **In the `@` box to its right, type `0x10000`.** ⚠️ **This is the one setting people get wrong.**
+     The box is blank by default. A blank or wrong address is how boards end up bricked-looking.
+   - **Tick the checkbox** at the far left of that row. An unticked row is silently skipped — the
+     tool will run, go green, and say FINISH having flashed nothing at all.
    - Leave every other file row empty and unticked.
-4. Leave **SPI SPEED**, **SPI MODE** and the `DoNotChgBin` box at their defaults.
-5. At the bottom:
-   - **COM:** the port your board appears on
-   - **BAUD:** `921600` (drop to `115200` if it fails to connect)
+4. **SPIFlashConfig** — these are the values in Ludwig's video, and they work:
+
+   | | |
+   |---|---|
+   | **SPI SPEED** | `40MHz` |
+   | **SPI MODE** | `DIO` |
+   | **DoNotChgBin** | ☑ **ticked** |
+   | LockSettings | unticked |
+
+5. At the bottom of **DownloadPanel 1**:
+   - **COM:** the port your board is on
+   - **BAUD:** `115200` — what the video uses, and the one that always works. You can try `921600`
+     for a faster write, but drop back to `115200` the moment it misbehaves.
 6. Press **START**.
 
-Wait for the green **FINISH** / **完成** box. Unplug and replug the board to boot the new firmware.
+The **DetectedInfo** panel fills in as it connects — flash vendor, device ID, `QUAD;4MB`, crystal
+`40 Mhz` — and the panel prints the board's MAC addresses. Seeing those means it is talking to the
+chip properly.
+
+Wait for the cyan **FINISH / 完成** box and a full green progress bar. Unplug and replug the board to
+boot the new firmware.
 
 > ### ⚠️ `0x10000` is the setting that matters
 >
@@ -137,9 +155,9 @@ re-running `?compasscal` and turning the buggy through two full circles. Back it
 | Symptom | Cause |
 |---|---|
 | Tool cannot find the port / no COM appears | **Charge-only USB cable**, or missing USB-serial driver |
-| Connect fails, or fails partway | Lower **BAUD** to `115200`; try a different USB port; avoid hubs |
+| Connect fails, or fails partway | Use **BAUD `115200`**; try a different USB port; avoid hubs |
 | Flashes fine, board does nothing | Check the **address was `0x10000`**, and that you flashed the right image for the board |
-| "Success" but nothing changed | The **file row checkbox was not ticked** |
+| "Success" / FINISH but nothing changed | The **file row checkbox was not ticked**, or the **`@` address box was blank** — both let it "succeed" having written nothing |
 | Board behaves oddly after flashing | You may have cross-flashed TX firmware to the RX or vice versa — confirm by MAC and reflash |
 | Downloaded file is only a few KB | You saved the GitHub **web page**, not the raw file — see Step 1 |
 

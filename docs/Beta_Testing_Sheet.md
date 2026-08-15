@@ -26,7 +26,7 @@ No Arduino, no compiling. Download the prebuilt `.bin` for each board and flash 
 
 | Board | File | Version |
 |---|---|---|
-| **TX** | [`BREmote-TX-SW27-gps-verified.bin`](../Source/V2_Integration_Tx/TX%20firmware/BREmote-TX-SW27-gps-verified.bin) | **SW27** — current |
+| **TX** | [`BREmote-TX-SW27-ubx-checksum.bin`](../Source/V2_Integration_Tx/TX%20firmware/BREmote-TX-SW27-ubx-checksum.bin) | **SW27** — current |
 | **RX** | [`BREmote-RX-SW34-gps-verified.bin`](../Source/V2_Integration_Rx/RX%20firmware/BREmote-RX-SW34-gps-verified.bin) | **SW34** — current |
 
 Browse all published builds, with notes on what each one is:
@@ -38,9 +38,8 @@ Browse all published builds, with notes on what each one is:
 > `git clone https://github.com/monterman/BREmote-V2.git` and take it from the folder. **Check the
 > size:** a real image is a few hundred KB; a few KB means you saved the web page.
 
-Each folder has a `README.md` saying which build to start with and what changed. **The
-`-gps-verified` builds above are the ones to use** — older builds in those folders are kept for
-rollback and carry known issues.
+Each folder has a `README.md` saying which build to start with and what changed. **Use the two in
+the table above** — older builds in those folders are kept for rollback.
 
 ### How to flash
 

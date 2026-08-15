@@ -80,12 +80,12 @@ Steps are tagged **[DESK]** · **[BENCH]** · **[WEB PORTAL]** · **[WATER]**. A
 
 | Board | File | Version |
 |---|---|---|
-| **TX** | [`BREmote-TX-SW27-gps-verified.bin`](../Source/V2_Integration_Tx/TX%20firmware/BREmote-TX-SW27-gps-verified.bin) | **SW27** — current |
+| **TX** | [`BREmote-TX-SW27-ubx-checksum.bin`](../Source/V2_Integration_Tx/TX%20firmware/BREmote-TX-SW27-ubx-checksum.bin) | **SW27** — current |
 | **RX** | [`BREmote-RX-SW34-gps-verified.bin`](../Source/V2_Integration_Rx/RX%20firmware/BREmote-RX-SW34-gps-verified.bin) | **SW34** — current |
 
 Every published build, with notes on each: **[TX firmware →](../Source/V2_Integration_Tx/TX%20firmware/)** ·
-**[RX firmware →](../Source/V2_Integration_Rx/RX%20firmware/)**. Older builds are kept for rollback
-and carry known issues — use the `-gps-verified` ones above.
+**[RX firmware →](../Source/V2_Integration_Rx/RX%20firmware/)**. Older builds are kept for rollback —
+**use the two in the table above.**
 
 > ### 🚨 Download the RAW file — this is where people go wrong
 >

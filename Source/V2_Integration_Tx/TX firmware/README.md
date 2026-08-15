@@ -8,8 +8,31 @@ Board: **HT-CT62 (ESP32-C3)** · partition scheme `huge_app` · app offset **`0x
 
 | File | SW | What it is |
 |---|---|---|
-| `BREmote-TX-SW27-gps-verified.bin` | 27 | **Start here.** Current. Every GPS config write is ACK-verified, auto-detects u-blox M8 vs M9/M10, and never transmits at an unconfirmed baud. Adds `?gpscfg`, `?gpsbaud`, `?gpssetup`. |
+| `BREmote-TX-SW27-ubx-checksum.bin` | 27 | **Start here.** Current. Everything in `gps-verified` **plus** the UBX checksum fix below. |
+| `BREmote-TX-SW27-gps-verified.bin` | 27 | The previous build, **kept deliberately**. Field-proven — this is the one that has actually been ridden. Every GPS config write is ACK-verified, auto-detects u-blox M8 vs M9/M10, never transmits at an unconfirmed baud. Adds `?gpscfg`, `?gpsbaud`, `?gpssetup`. |
 | `BREmote-TX-SW26R2-rtm-working.bin` | **26R2** | Known-good historical build from 2026-06-05. RTM working; Follow-Me not yet matured. Fallback if something newer misbehaves. ⚠️ **Different `SW_VERSION` — see below.** |
+
+### What changed in `ubx-checksum` (2026-08-15)
+
+`ubxPoll()` was accepting a GPS config reply as soon as it had the payload, **without ever reading
+the two checksum bytes**. Any byte sequence in the stream that looked like a valid UBX header was
+believed. That function decides whether your module speaks the legacy u-blox 6/7/8 dialect or the
+M9/M10 one, and `?gpssetup` writes in whichever dialect it reports — so a false verdict means the
+module is sent commands it cannot parse and **configuration fails silently**.
+
+Not theoretical: the RX had the identical bug and reported a BN-880 (an M8) as "M9/M10" on three
+consecutive runs. Fixed on the RX in `1f2ba8c` (2026-08-02); this is the same fix applied to the TX.
+
+**Both SW27 builds are `SW_VERSION` 27, so moving between them does NOT touch your settings.**
+Flash either way freely — no re-pairing, no re-calibration.
+
+> ⚠️ **`ubx-checksum` has not been bench-tested yet.** It compiles clean and the change is confined
+> to the GPS config path — nothing in throttle, steering, PWM or failsafe is touched — but no one has
+> run it on hardware. `gps-verified` remains the field-proven build. If anything looks off, drop back
+> to it; the two are interchangeable.
+>
+> Verifying it takes a minute: `?gpscfg` should name the correct dialect for your module, and
+> `?gpssetup` should complete.
 
 > The RX folder has a third, intermediate `pre-gpsbaud` build. The TX equivalent was withdrawn
 > and is deliberately not published.

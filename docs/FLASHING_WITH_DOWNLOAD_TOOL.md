@@ -89,27 +89,36 @@ unplug it, then connect the other.** Never have both plugged in while flashing.
    - **LoadMode:** `UART`
 
    Press **OK**. The title bar should then read **ESP32C3 FLASH DOWNLOAD TOOL**.
-3. Stay on the **SPIDownload** tab. On the **first file row**:
-   - Click **`…`** and select your `.bin`.
-   - **In the `@` box to its right, type `0x10000`.** ⚠️ **This is the one setting people get wrong.**
-     The box is blank by default. A blank or wrong address is how boards end up bricked-looking.
-   - **Tick the checkbox** at the far left of that row. An unticked row is silently skipped — the
-     tool will run, go green, and say FINISH having flashed nothing at all.
-   - Leave every other file row empty and unticked.
-4. **SPIFlashConfig** — these are the values in Ludwig's video, and they work:
+3. Stay on the **SPIDownload** tab. Work along the **first file row, left to right** — the row reads
+   `☐ [file path] … @ [address]`:
 
-   | | |
-   |---|---|
-   | **SPI SPEED** | `40MHz` |
-   | **SPI MODE** | `DIO` |
-   | **DoNotChgBin** | ☑ **ticked** |
-   | LockSettings | unticked |
+   | Order | Control | Set it to |
+   |---|---|---|
+   | 1 | **☐ checkbox** (far left) | **☑ ticked.** An unticked row is silently skipped — the tool runs, goes green, says FINISH, and writes nothing |
+   | 2 | **file path** (via the `…` button) | your `.bin` |
+   | 3 | **`@` address box** (far right) | **`0x10000`** ⚠️ blank by default — **this is the one people get wrong** |
 
-5. At the bottom of **DownloadPanel 1**:
-   - **COM:** the port your board is on
-   - **BAUD:** `115200` — what the video uses, and the one that always works. You can try `921600`
-     for a faster write, but drop back to `115200` the moment it misbehaves.
-6. Press **START**.
+   Leave every other file row empty and unticked.
+
+4. Below that, in **SPIFlashConfig** — again in the order they sit on screen, left to right:
+
+   | Order | Control | Set it to |
+   |---|---|---|
+   | 1 | **SPI SPEED** | `40MHz` |
+   | 2 | **SPI MODE** | `DIO` |
+   | 3 | **DoNotChgBin** | ☑ **ticked** |
+   | 4 | **LockSettings** | unticked (greyed out) |
+
+   Ignore **CombineBin** and **Default** — you do not need either.
+
+5. Bottom of the window, in **DownloadPanel 1**, left to right:
+
+   | Order | Control | Set it to |
+   |---|---|---|
+   | 1 | **COM** | the port your board is on |
+   | 2 | **BAUD** | `115200` — what the video uses and the one that always works. `921600` writes faster; drop back the moment it misbehaves |
+
+6. Press **START** (bottom-left, beside STOP and ERASE).
 
 The **DetectedInfo** panel fills in as it connects — flash vendor, device ID, `QUAD;4MB`, crystal
 `40 Mhz` — and the panel prints the board's MAC addresses. Seeing those means it is talking to the

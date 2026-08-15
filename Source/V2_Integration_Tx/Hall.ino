@@ -726,7 +726,7 @@ void runMenu()
             setHallActivityEnabled(true);
             setRadioActivityEnabled(true);
 #ifdef WIFI_ENABLED
-            webCfgNotifyTxUnlocked();  // stop WiFi AP before animation — eliminates Core 0 preemption during frames
+            webCfgNotifyTxUnlocked();  // stop WiFi AP before animation — eliminates WiFi-task preemption during frames
 #endif
             unlockAnimation();
             delay(250);

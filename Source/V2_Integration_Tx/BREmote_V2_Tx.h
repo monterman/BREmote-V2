@@ -41,7 +41,13 @@
 // V2.5-Evo - 2026-04-29 - Sleep: added sleep_timeout_s to confStruct; SW_VERSION 25→26
 // V2.5-Evo - 2026-05-01 - Release: DEBUG_RX commented out for production build
 // V2.5-Evo - 2026-05-01 - thr_expo1 repurposed as fm_display_mode (FM digit zone data selector, 1-4)
-// V2.5-Evo - 2026-05-02 - Added displayMutex SemaphoreHandle_t (Core 0/Core 1 displayBuffer race fix)
+// V2.5-Evo - 2026-08-15 - Comments in this firmware no longer say "Core 0" / "Core 1". The ESP32-C3 is SINGLE-CORE:
+//                          every xTaskCreatePinnedToCore() call here passes core 0, and there is no core 1 to pin to.
+//                          The races these mutexes and atomics guard are TASK PREEMPTION on one core, not parallel
+//                          execution on two — same hazard, different mechanism, and the old wording taught the wrong
+//                          model. Actors are now named by task ("the loop task", "the sendData task") instead. The RX
+//                          was corrected this way on 2026-05-12; the TX kept the stale wording until now.
+// V2.5-Evo - 2026-05-02 - Added displayMutex SemaphoreHandle_t (displayBuffer race between the loop task and the bargraph task)
 // V2.5-Evo - 2026-05-13 - SW32 M3: rtm_meta_type/value/count + rtm_thr_cap_tx + rtm_tx_active changed volatile→std::atomic<T>; release/acquire ordering in queue/consumer
 // V2.5-Evo - 2026-05-13 - SW32: default display_mode changed 0→DISPLAY_MODE_THR (throttle % as boot display; field test feedback)
 // V2.5-Evo - 2026-05-09 - Bundle 9-Final: Added USB CDC On Boot compile-time guard
@@ -637,18 +643,18 @@ volatile uint8_t steer_sent = 0; // Steering value actually sent over radio
 
 // V2.5-Evo - 2026-04-25 - P7 RTM meta-packet burst queue.
 // V2.5-Evo - 2026-05-13 - SW32 M3: changed volatile→std::atomic<T>.
-// Loop task (Core 1) writes type/value with memory_order_relaxed, then stores count
-// with memory_order_release. sendData task (Core 0) loads count with memory_order_acquire
+// Loop task writes type/value with memory_order_relaxed, then stores count
+// with memory_order_release. The sendData task loads count with memory_order_acquire
 // before reading type/value. volatile prevented compiler caching but not CPU store-buffer
-// reordering; std::atomic release/acquire prevents Core 0 from observing count>0
-// while type/value are still stale in Core 1's store buffer.
+// reordering; std::atomic release/acquire prevents sendData from observing count>0
+// while type/value are still stale in the loop task's store buffer.
 std::atomic<uint8_t> rtm_meta_type  {0};    // 0xF1=RTM state, 0xF2=FM override
 std::atomic<uint8_t> rtm_meta_value {0};    // for 0xF1: 0=inactive 1=active; for 0xF2: 0-3 FM mode
 std::atomic<uint8_t> rtm_meta_count {0};    // bursts remaining; 0 = idle (value is always 0 or 3)
 
 // V2.5-Evo - 2026-04-25 - P7 RTM throttle cap.
 // V2.5-Evo - 2026-05-13 - SW32 M3: changed volatile→std::atomic<T>.
-// Written by loop task (Core 1) via RTMState.ino; read by sendData (Core 0) via calcFinalThrottle().
+// Written by the loop task via RTMState.ino; read by sendData via calcFinalThrottle().
 // 255 = no cap (RTM not active). During RTM ACTIVE, set to the ramped cap value
 // (30-70% of 255). Applied in calcFinalThrottle(). RTM can only subtract from
 // user throttle — never add. Creator safety philosophy enforced here.

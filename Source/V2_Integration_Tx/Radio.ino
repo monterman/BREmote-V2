@@ -579,7 +579,7 @@ void waitForTelemetry(void *parameter)
 
 // V2.5-Evo - 2026-04-25 - P7: Queue a 3-burst meta-packet transmission.
 // V2.5-Evo - 2026-05-13 - SW32 M3: explicit memory ordering — type/value stored relaxed
-// (count is the guard), count stored with memory_order_release so the Core 0 acquire load
+// (count is the guard), count stored with memory_order_release so the sendData-task acquire load
 // in sendData() is guaranteed to observe the correct type/value before acting on count>0.
 // Called from loop task (RTM/FM state machines in RTMState.ino).
 // sendData() FreeRTOS task consumes the queue.

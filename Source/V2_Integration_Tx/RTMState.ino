@@ -21,7 +21,7 @@
 // V2.5-Evo - 2026-04-29 - Fix 1-4: setRtmArmed() calls fmSilentDisarm() so RX
 //   receives 0xF2/0 when RTM preempts FM — prevents stale fm_mode_runtime on RX
 //   TODO: remove when runDoubleSqueezeArm() is refactored to non-blocking.
-// V2.5-Evo - 2026-04-29 - Fix 4-3: fm_armed declared volatile (read core 0 / write core 1)
+// V2.5-Evo - 2026-04-29 - Fix 4-3: fm_armed declared volatile (read by a task / written by loop())
 // V2.5-Evo - 2026-04-29 - Fix 2-1: pre-arm rejection path now clears rtm_arm_gps_timeout_override
 // V2.5-Evo - 2026-04-29 - F0: FM cycle extended to 1→2→3→0; landing on 0 disarms FM (RAM-only hand-off mode)
 // V2.5-Evo - 2026-04-29 - Display: F0-F3 confirms and FM arm confirm now use large-font
@@ -52,7 +52,7 @@ extern float rtm_arm_dist_m;  // defined in BREmote_V2_Tx.h — captured at RTM 
 // Replaces bare delay() calls in the arm ceremony and mode confirms.
 // Drains Serial1 in 10ms chunks so gps_tx.location.age() stays fresh.
 // Prevents the GPS dot from blinking during blocking display animations.
-// Safe to call from loop() only (core 1) — gps_tx.encode() must not be
+// Safe to call from loop() only — gps_tx.encode() must not be
 // called concurrently from core 0.
 static void gpsKeepAliveDelay(uint32_t ms)
 {
@@ -445,7 +445,7 @@ void runRtmLoop()
 static const unsigned long kFmGate1ReleaseMs = 30000UL;
 
 volatile bool        fm_armed         = false;  // FM arm state; RAM only, cleared on power cycle. Not static — extern'd by Display.ino (R5 bar)
-                                                 // volatile: read by updateBargraphs() on core 0, written by loop() on core 1
+                                                 // volatile: read by updateBargraphs() (task), written by loop()
 static uint8_t       last_fm_mode     = 1;      // last active FM mode (1-3); defaults F1; RAM only
 static unsigned long fm_arm_ms        = 0;      // time of arm, or time of last throttle >10 while armed
 static bool          fm_throttle_seen = false;  // becomes true once thr_scaled>10 after arming
@@ -462,8 +462,8 @@ static uint8_t fm_flags_prev = 0;
 // V2.5-Evo - 2026-07-20 - Batch T (Fable FM v1.4): FM arm-time and display readiness gating.
 // All inputs are TX-LOCAL (paired flag, own GPS fix/age, last-reply age) plus the RX's own
 // armed-not-ready bit — instant, zero telemetry dependency, no new confStruct field. Called
-// only from the loop task (core 1): fmFundamentalReject() from cycleFmMode(), fmArmedNotReady()
-// from updateR5ProximityBar() via the render path. gps_tx access stays on core 1 (invariant).
+// only from the loop task: fmFundamentalReject() from cycleFmMode(), fmArmedNotReady()
+// from updateR5ProximityBar() via the render path. gps_tx access stays on the loop task (invariant).
 // ============================================================
 
 // FUNDAMENTAL arm-time reject — the three conditions under which arming would be a lie AND a

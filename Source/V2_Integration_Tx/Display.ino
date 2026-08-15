@@ -30,9 +30,9 @@
 // V2.5-Evo - 2026-04-29 - Fix 4-3: extern fm_armed updated to volatile to match RTMState.ino
 // V2.5-Evo - 2026-04-29 - Display: fc3x7_F middle bar R3→R2 for visual consistency
 // V2.5-Evo - 2026-05-01 - FM digit zone shows fm_display_mode data (1=TX speed, 2=dist, 3=buggy spd, 4=thr%)
-// V2.5-Evo - 2026-05-02 - displayMutex applied to updateBargraphs (Core 0) and main loop render path (Core 1)
+// V2.5-Evo - 2026-05-02 - displayMutex applied to updateBargraphs (bargraph task) and the main loop render path
 
-extern volatile bool fm_armed;  // defined in RTMState.ino — volatile: written by loop() core 1,
+extern volatile bool fm_armed;  // defined in RTMState.ino — volatile: written by loop(),
                                  // read by updateBargraphs() core 0; must match definition
 
 // ============================================================
@@ -675,7 +675,7 @@ uint8_t getEffectiveFoilBat() {
 void renderOperationalDisplay()
 {
   updateFoilDataCache();  // refresh digit cache once per render cycle, before mutex and switch
-  xSemaphoreTake(displayMutex, portMAX_DELAY);  // Core 1 render — waits for Core 0 updateBargraphs to release
+  xSemaphoreTake(displayMutex, portMAX_DELAY);  // loop-task render — waits for the bargraph task to release
   // V2.5-Evo - 2026-04-28 - ChgDZ: Persistent "FM" while Follow-Me armed, RTM not active.
   // displayDigitZone() preserves R5 proximity bar, R6 battery bar, C7 GPS dot, C8/C9 bargraphs.
   // Previous hand-written render wrote through all 7 rows, destructively clearing R5/R6.
@@ -1037,7 +1037,7 @@ void displayLock()
 }
 
 // V2.5-Evo - 2026-05-13 - SW47: ANIMATION_DELAY 40→60ms; per-frame buffer clear added (was |=-only → smeared square)
-// V2.5-Evo - 2026-05-13 - SW48: holds displayMutex for entire animation (300ms) — Core 0 skips one bargraph cycle, which is fine
+// V2.5-Evo - 2026-05-13 - SW48: holds displayMutex for entire animation (300ms) — the bargraph task skips one cycle, which is fine
 #define ANIMATION_DELAY 60
 // Helper: clear digit zone preserving C7 GPS dot and C8/C9 bargraphs (bit 7 = C7)
 #define ANIM_CLEAR() for(int _i = 0; _i < 7; _i++) displayBuffer[_i] &= 0xFF80
@@ -1094,7 +1094,7 @@ void updateBargraphs(void *parameter)
   const TickType_t xFrequency = pdMS_TO_TICKS(200);
   while (1)
   {
-    // Take mutex before writing displayBuffer. Timeout 50ms — if Core 1 is mid-render,
+    // Take mutex before writing displayBuffer. Timeout 50ms — if the loop task is mid-render,
     // skip this 200ms cycle entirely (vTaskDelayUntil keeps timing aligned).
     // Note: 'continue' used here, NOT 'return' — returning from a FreeRTOS task function
     // permanently terminates the task; continue skips just this cycle and loops back.
@@ -1358,7 +1358,7 @@ static void displayDistanceInUnits(float dist_m)
 // ============================================================
 void renderRtmInfoDisplay()
 {
-  xSemaphoreTake(displayMutex, portMAX_DELAY);  // Core 1 render — waits for Core 0 updateBargraphs to release
+  xSemaphoreTake(displayMutex, portMAX_DELAY);  // loop-task render — waits for the bargraph task to release
   static unsigned long alt_last_switch_ms = 0;
   static uint8_t       alt_showing        = 0;  // 0=distance, 1=speed (used in mode 2)
 

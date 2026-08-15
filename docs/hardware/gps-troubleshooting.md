@@ -510,6 +510,12 @@ The QMC5883L compass connects via I2C. The BN-880 GPS module includes an integra
 > `5V` / `3V3` selector on **`5V`**. A bare QMC5883L breakout (no BN-880) is a 3.3 V part and does
 > use the 3.3 V rail. Either way the SDA/SCL lines are 3.3 V logic.
 
+> **The `SDA` and `SCL` pads are on the UNDERSIDE of the RX board** — two bare 1.6 mm pads, 2.2 mm
+> apart, just north of the ESP32-C3 module, immediately above its 2.4 GHz antenna castellations and
+> under the `(c) Ludwig Bre` silkscreen. They are labelled there. Nothing is exposed on the top side.
+> Added in board revision **V2.2** (`Electronics/.../Rx/Changelog.txt`) — **a V2.1 board does not
+> have them.** See the [BN-880 → RX wiring guide](../GPS_Wiring_BN880_RX.md) for a render.
+
 > The I2C bus is shared — AW9523 I/O expander (0x58) and compass (QMC5883L at 0x0D) both use the same SDA/SCL lines. Pull-up resistors are on the PCB; do not add external ones.
 
 ### Step 1 — Verify Compass Detection with `?i2c`

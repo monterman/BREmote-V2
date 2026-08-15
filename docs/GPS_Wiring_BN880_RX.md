@@ -15,8 +15,8 @@
 The RX board's pads are labelled on the silkscreen — **wire label to label**. The GPIO numbers below
 are only for reference when you need them; they are not what you wire to.
 
-All six wires go to the **`UART 1.1` header** (the right-hand one — see below) except SDA/SCL,
-which are separate I2C pads.
+Four wires go to the **`UART 1.1` header** (the right-hand one — see below). The other two, `SDA` and
+`SCL`, go to bare pads on the **underside** of the board.
 
 | BN-880 pad | RX board pad | GPIO behind it | Notes |
 |---|---|---|---|
@@ -24,8 +24,13 @@ which are separate I2C pads.
 | **GND** | `GD` on `UART 1.1` | — | Common ground with the RX |
 | **TX** | **`TX`** on `UART 1.1` | 19 | **straight** — label to label |
 | **RX** | **`RX`** on `UART 1.1` | 18 | **straight** — label to label |
-| **SCL** | `SCL` | 1 · `P_I2C_SCL` | straight |
-| **SDA** | `SDA` | 2 · `P_I2C_SDA` | straight |
+| **SCL** | `SCL` pad — **underside** | 1 | straight |
+| **SDA** | `SDA` pad — **underside** | 2 | straight |
+
+> **The `SDA` and `SCL` pads are on the BOTTOM of the board**, just north of the ESP32-C3 module —
+> two bare round pads sitting immediately above its antenna castellations, under the
+> `(c) Ludwig Bre` silkscreen. They are labelled `SDA` and `SCL` on the bottom silkscreen. Flip the
+> board over to find them; there is nothing to see on the top side.
 
 ## Nothing crosses. Wire label to label.
 
@@ -145,11 +150,14 @@ ESP32-C3, and nothing on the board sees 5 V on a signal pin.
    │  TX   ───────────────┼─── straight ───►│  TX    (GPIO 19)      UART   │
    │  RX   ◄──────────────┼─── straight ────┤  RX    (GPIO 18)      UART   │
    │                      │                 │                              │
-   │  SCL  ───────────────┼─── straight ───►│  SCL   (GPIO 1)       I2C    │
-   │  SDA  ───────────────┼─── straight ───►│  SDA   (GPIO 2)       I2C    │
+   │  SCL  ───────────────┼─── straight ───►│  SCL   pad, underside        │
+   │  SDA  ───────────────┼─── straight ───►│  SDA   pad, underside        │
    │                      │                 │                              │
    └──────────────────────┘                 └──────────────────────────────┘
        GPS + QMC5883L                         compass answers at 0x0D
+
+        SDA and SCL are bare pads on the BOTTOM of the board, north of
+        the ESP32-C3 — not on the UART header. Flip it over.
 
               every wire goes label to label — nothing crosses
              (the board does the UART crossover internally)
@@ -157,31 +165,55 @@ ESP32-C3, and nothing on the board sees 5 V on a signal pin.
 
 Wire colours vary between vendors — **go by the silkscreen labels on the module**, not by colour.
 
-> ### ⚠️ Where are SDA / SCL on the RX? — unresolved, read this before you order parts
->
-> **They are not on either UART header, and we have not been able to locate them.** This is an open
-> gap in the documentation, stated plainly rather than guessed at.
->
-> What we do know, from the board files in `Electronics/github_public/Rx/`:
->
-> - The GPIO numbers are certain: **`1` = SCL, `2` = SDA**. The firmware uses them, and the
->   schematic confirms they land on the module's `32K_XN` (GPIO 1) and `FSPIQ` (GPIO 2) pins.
-> - On the `Rx_V2-2` schematic the `SDA` and `SCL` nets reach **only** three things: `IC1` (the
->   AW9523 I/O expander), their pull-up resistors `R24` / `R28`, and the ESP32-C3 module.
->   **No connector or header sits on those nets.** Every 1×4 and 1×3 header on that sheet carries
->   UART, ESC or power — none carries I2C.
->
-> The straightforward reading is that **this board revision does not break I2C out to a labelled
-> connector**, and that a compass has to be tapped from a via or test point. We are not asserting
-> that as fact: the `Electronics/` folder may not match every board in the wild, and a later
-> revision may well have added a connector.
->
-> **Before you solder, check your own board** — both sides — for pads marked `SDA` / `SCL`, and
-> confirm with a meter against GPIO 1 and GPIO 2. If you find them, please open an issue with a
-> photo; it closes this gap for everyone.
->
-> Note that the GPS half of the BN-880 works fine over the UART alone. Only the **compass** needs
-> I2C — and without a compass the RX cannot do Return-to-Me or Follow-Me heading.
+### Where the `SDA` / `SCL` pads are — on the underside
+
+**Flip the board over.** They are two bare round pads on the **bottom** side, just **north of the
+ESP32-C3 module** — immediately above its 2.4 GHz antenna castellations, directly under the
+`(c) Ludwig Bre 03/2025` silkscreen. Both are labelled on the bottom silkscreen.
+
+![RX V2.2 bottom silkscreen — SDA and SCL pads above the 2G4 castellations](img/rx-v2-2-bottom-silkscreen.png)
+
+*Bottom silkscreen and soldermask, rendered from `Rx_V2-2_Gerber.zip` and mirrored so it reads the
+way it does with the board flipped over in your hand.*
+
+```
+                 bottom side, as you look at it
+        ┌───────────────────────────────────────────┐
+        │        BREmote Rx V2.2                    │
+        │        (c) Ludwig Bre 03/2025             │
+        │                                           │
+        │            SDA ●     ● SCL                │  <- the two pads
+        │        ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄              │
+        │            2G4  (antenna castellations)   │
+        │                                           │
+        │        U1.3T ●   U1.2T ●                  │  <- spare UART pads
+        │        U1.3R ●   U1.2R ●                  │     (mux ch 2 and 3)
+        └───────────────────────────────────────────┘
+```
+
+| Pad | Diameter | Position from the board's top-left corner |
+|---|---|---|
+| `SDA` | 1.6 mm | 11.5 mm in, 19.3 mm down |
+| `SCL` | 1.6 mm | 9.3 mm in, 18.9 mm down |
+
+They are 2.2 mm apart, so use a fine tip. **Nothing is exposed on the top side** — do not go looking
+for them there.
+
+**Why they are not in the schematic.** They are bare pads dropped onto an existing signal in the
+*layout*, not a component, so no device appears on the `.sch` sheet — tracing nets there finds only
+the AW9523 expander, the pull-ups and the module, and no connector. Ludwig's own changelog records
+when they were added:
+
+```
+Changelog Rx
+V2.2:
+- Change supply for CH340K to before USB diode
+- Add SDA and SCL pads
+```
+
+So **a V2.1 board does not have them and a V2.2 does.** Check which revision you have — it is printed
+on the bottom silkscreen. Positions above were read from `Rx_V2-2_Gerber.zip` (bottom silkscreen and
+soldermask layers), which is the authority for anything that exists only in the layout.
 
 ---
 

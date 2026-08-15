@@ -14,6 +14,51 @@ ESP32 LoRa wireless remote for efoil and RC tow buggy — 868/915 MHz, 10 Hz con
 
 ---
 
+## 🚀 New here? Start with the setup guide
+
+### **[→ Zero → Foiling — the complete setup walkthrough](docs/ZERO_TO_FOILING.md)**
+
+**Out of the box to on the water, in one linear path.** Flashing, TX calibration, pairing, compass
+calibration, VESC/PPM wiring and setup, the wheels-up safety check, web-portal configuration, the dry
+arming test, and your first Follow-Me session. If you are setting up a BREmote for the first time,
+**read that guide, not this page.**
+
+This README is the reference: what the hardware is, what changed in each version, what every setting
+and status code means, and what is still broken. Come back to it once you are running.
+
+📁 **[Browse all the detailed guides in `docs/` →](docs/)** — wiring, flashing, GPS, compass, VESC
+tuning, display reference and more. The [index below](#-detailed-guides--where-to-go-deeper) says
+which one you want.
+
+---
+
+## 📚 Detailed guides — where to go deeper
+
+Every section of this README has a longer document behind it. Start here when you need the detail:
+
+| If you want to… | Read |
+|---|---|
+| **Set up from scratch, in order** | **[Zero → Foiling](docs/ZERO_TO_FOILING.md)** ⭐ start here |
+| Flash the boards | [Flashing the RX](docs/FLASHING_RX_ARDUINO.md) · [Flashing the TX](docs/FLASHING_TX_ARDUINO.md) |
+| Wire the GPS + compass to the RX | [BN-880 → RX wiring](docs/GPS_Wiring_BN880_RX.md) |
+| Understand or fix GPS | [GPS configuration](docs/GPS.md) · [GPS troubleshooting](docs/hardware/gps-troubleshooting.md) |
+| Calibrate the compass | **[Zero → Foiling § 2.4](docs/ZERO_TO_FOILING.md#24-compass-calibration-rx--bind-short-press-two-full-360-circles)** — the procedure |
+| Chase compass EMI / understand the field data | [Compass calibration & EMI field analysis](docs/Compass_Cal_Analysis.md) *(reference, not a how-to)* |
+| Read the TX screen | [Display reference](docs/display-reference.md) |
+| Ride with Follow-Me | [Follow-Me guide](docs/FOLLOW_ME_GUIDE.md) · [design notes](DESIGN_FOLLOW_ME.md) |
+| Use Return-to-Me | [RTM design notes](DESIGN_RETURN_TO_ME.md) |
+| Set up or tune the VESCs | [Smooth-start quick reference](docs/VESC_SMOOTH_START_QUICK_REFERENCE.md) · [tuning process](docs/VESC_TUNING_PROCESS.md) · [FOC notes](docs/VESC_FOC_TUNING_NOTES.md) |
+| Fix VESC telemetry | [VESC telemetry fix](docs/VESC_Telemetry_Fix.md) · [telemetry sources & prop baseline](docs/TELEMETRY_SOURCE_AND_PROP_BASELINE.md) |
+| Use Bluetooth / BLE | [BLE implementation](docs/BLE_Implementation.md) · [app brief](docs/BLE_App_Brief.md) |
+| Pull and read logs | [Logger notes](docs/LOGGER_NOTES.md) |
+| Fit the magnet / Hall sensor | [Install tutorial](docs/Hall_Sensor_Install_Tutorial.md) · [expansion notes](docs/Hall_Sensor_Expansion.md) |
+| Tune heading control | [Heading control tuning](docs/Heading_Control_Tuning.md) |
+| Understand the throttle path | [Throttle pipeline analysis](docs/THROTTLE_PIPELINE_ANALYSIS.md) |
+| Help test, and report properly | [Beta testing sheet](docs/Beta_Testing_Sheet.md) |
+| Understand the safety model | [Buggy foil domain](BUGGY_FOIL_DOMAIN.md) |
+
+---
+
 ## Credits
 
 BREmote is a collaborative open-source project built by the efoil and esk8 community:
@@ -89,6 +134,8 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 
 ## Hardware Requirements
 
+> 📖 Wiring the GPS + compass: [BN-880 → RX guide](docs/GPS_Wiring_BN880_RX.md). Fitting the magnet: [Hall sensor tutorial](docs/Hall_Sensor_Install_Tutorial.md).
+
 | Component | TX (Handheld) | RX (Board Unit) |
 |---|---|---|
 | MCU | ESP32-C3 | ESP32-C3 |
@@ -111,6 +158,8 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 ---
 
 ## Quick Start
+
+> 🚀 **Setting up for the first time? Follow [Zero → Foiling](docs/ZERO_TO_FOILING.md) instead** — it covers the same ground in order, with the VESC/PPM and safety steps this summary skips.
 
 > ⚠️ **`master` ships SAFE factory defaults — unbound and uncalibrated** (no pairing, neutral compass/throttle calibration). After flashing you **must** set up your own devices: pair TX↔RX, run TX calibration (hold LEFT toggle at boot), and run `?compasscal` on RX. Until you do, the remote won't respond correctly to your throttle or compass.
 
@@ -136,10 +185,18 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
      esptool --chip esp32c3 --port COM<N> write-flash 0x10000 <the-file>.bin
      ```
 
-   > **`0x10000` is the address that matters.** These are app-only images, so they do not touch
-   > the partition table or SPIFFS — your pairing, calibration and settings survive. Identify the
-   > board by MAC (`esptool --chip esp32c3 --port COM<N> read-mac`) rather than by COM number:
-   > TX and RX are the same chip and COM numbers move between reboots.
+   > **`0x10000` is the address that matters.** These are app-only images, so the *flash itself*
+   > never touches the partition table or SPIFFS.
+   >
+   > ⚠️ **That does not mean your settings always survive.** On boot the firmware compares the
+   > stored config version against its own and **rewrites config to defaults when they differ**
+   > (`Common/SPIFFSEngine.h`). So flashing a build with a **different `SW_VERSION`** wipes your
+   > pairing, calibration and settings even though the flash left SPIFFS alone — and rolling back,
+   > then coming forward again, wipes it twice. Same version in, same version out = settings kept.
+   > **[Back up first →](#-backing-up-your-settings--read-this-before-you-flash)**
+   >
+   > Identify the board by MAC (`esptool --chip esp32c3 --port COM<N> read-mac`) rather than by
+   > COM number: TX and RX are the same chip and COM numbers move between reboots.
 
    ⚙️ **Compiling it yourself? (advanced)** Follow the per-board guides — the partition settings
    **differ between TX and RX**, and the wrong one wipes config:
@@ -227,7 +284,7 @@ and know which format to use:
 - USB charging detection and display
 - Pairing with address-based authentication
 - WiFi AP for web configuration
-- Serial USB configuration interface (`?conf`, `?conf json`, `?tasks`, etc.) — also configurable via the [BREmote V2.5-Evo Web Serial Config Tool](https://monterman.github.io/BREmote-V2/BREmote_V2.5-Evo_Web_Serial_Config_Tool.html), which is easier than raw serial and includes plain-English descriptions for every parameter
+- Serial USB configuration interface (`?conf`, `?conf json`, `?printtasks`, etc.) — also configurable via the [BREmote V2.5-Evo Web Serial Config Tool](https://monterman.github.io/BREmote-V2/BREmote_V2.5-Evo_Web_Serial_Config_Tool.html), which is easier than raw serial and includes plain-English descriptions for every parameter
 
 ### V2.5-Evo: TX GPS Speed Display
 
@@ -316,8 +373,8 @@ Unavailable modes (no VESC lock or no GPS fix) are skipped automatically. `MA` r
 | Boot + THR + RIGHT toggle | Delete SPIFFS config (factory reset) |
 | LEFT hold 2 s | Lock the Remote |
 | RIGHT hold 2 s | Cycle telemetry display mode |
-| RIGHT tap → LEFT hold (default 5 s, tunable 4–10 s) | Arm **Return-to-Me** (RTM) — display shows `rn` |
-| LEFT tap → RIGHT hold (default 5 s, tunable 4–10 s) | Cycle **Follow-Me** override mode (F0/F1/F2/F3) |
+| RIGHT tap → LEFT hold (default 5 s, tunable 3–10 s) | Arm **Return-to-Me** (RTM) — display shows `rn` |
+| LEFT tap → RIGHT hold (default 5 s, tunable 3–10 s) | Cycle **Follow-Me** override mode (F0/F1/F2/F3) |
 
 > 💡 **Optional — magnet / Hall input for hands-free control.** A DRV5032 Hall sensor on GPIO 9 (P_MAG) lets a magnet gesture activate **BLE** and arm **Follow-Me** without reaching for the toggles (great mid-ride). Wiring + firmware: **[Hall Sensor Expansion guide →](docs/Hall_Sensor_Expansion.md)** · step-by-step fitting (incl. easier-to-solder parts): **[install tutorial →](docs/Hall_Sensor_Install_Tutorial.md)**.
 
@@ -344,6 +401,12 @@ Unavailable modes (no VESC lock or no GPS fix) are skipped automatically. `MA` r
 
 ### V2.5-Evo: Data Logger *(framework by LudwigBre — AUX toggle by monterman)*
 
+> **Leave `logger_en` at 0 — that is the recommended setting.** The RX then boots with logging off and
+> never fills SPIFFS while parked or on the bench. **Short-press AUX whenever the RX is running to
+> start logging (AUX LED blinks 5×), and short-press again to stop (2 blinks)** — logging per session,
+> on demand. `logger_en=1` only means it starts recording the instant it powers up, moving or not.
+> Seeing `logger_en=0` at boot is correct behaviour, not a fault.
+
 The RX board logs GPS position, VESC telemetry, voltage, speed, and timestamps to on-board flash storage.
 
 > **Keep `logger_en = 0` (the default).** Use the AUX button to start and stop individual logging sessions. If you set `logger_en = 1`, the logger starts automatically on every boot and logs continuously — not recommended, as it fills flash quickly and runs without GPS-lock confirmation.
@@ -369,6 +432,8 @@ The RX board logs GPS position, VESC telemetry, voltage, speed, and timestamps t
 
 ## 🛡️ Safety Philosophy
 
+> 📖 The full model, and why it is built this way: [BUGGY_FOIL_DOMAIN.md](BUGGY_FOIL_DOMAIN.md)
+
 > **The Tow Buggy ONLY moves when the user physically holds the throttle trigger.**
 
 This rule is non-negotiable and is enforced at the firmware level — it cannot be configured away:
@@ -383,6 +448,8 @@ This rule is non-negotiable and is enforced at the firmware level — it cannot 
 
 ## Return-to-Me (RTM) — Full Guide
 
+> 📖 Design and rationale: [DESIGN_RETURN_TO_ME.md](DESIGN_RETURN_TO_ME.md). Setup in order: [Zero → Foiling](docs/ZERO_TO_FOILING.md).
+
 > RTM is fully implemented in V2.5-Evo. Hardware: GPS on both TX and RX, compass on RX.
 
 > **Display note:** The TX dot matrix shows lowercase **`rn`** while Return-to-Me is active. `rn` = Return to Me = RTM. All SPIFFS parameters and code use the `rtm_` prefix — RTM is the canonical name for this mode.
@@ -391,7 +458,7 @@ For when you are in the water and want the buggy to drive itself toward you. **Y
 
 ### Arming
 
-1. **Combo gesture:** Quick-tap RIGHT toggle, then within 3 seconds hold LEFT toggle for the arm-hold duration (`rtm_hold_duration_s`, default 5 s, tunable 4–10 s)
+1. **Combo gesture:** Quick-tap RIGHT toggle, then within 3 seconds hold LEFT toggle for the arm-hold duration (`rtm_hold_duration_s`, default 5 s, tunable 3–10 s)
 2. TX display shows `rn` for 3 s (two 1.5 s static passes) — armed
 3. Haptic: 2 fast short pulses confirm arm
 
@@ -427,7 +494,7 @@ RTM stops automatically when **any** of these conditions occur:
 | Safety Gate | Condition |
 |---|---|
 | Throttle release | User releases trigger → buggy stops (Gate 1, unconfigurable) |
-| Hard stop distance | Buggy within `rtm_stop_distance_m` of TX (default 3 m) |
+| Hard stop distance | Buggy within `rtm_stop_distance_m` of TX (**default 10 m**) |
 | GPS lost — TX | TX GPS older than `rtm_gps_timeout_ms` (default 2000 ms) |
 | GPS lost — RX | RX GPS older than 6 s |
 | GPS rejected | Phase A anti-spoofing failure on RX |
@@ -478,7 +545,7 @@ On any gate failure: throttle → 0, TX display shows `St` for 2 s, haptic confi
 | `rtm_compass_required` | 1 | Require at least one valid heading source before RTM runs; 0=bypass (advanced only) |
 | `rtm_use_compass` | 1 | Heading source mode: 0=GPS COG only, 1=Hybrid GPS+snapshot (default), 2=Compass only (diagnostic) |
 | `rtm_cog_min_speed_kmh` | 3 | Minimum speed (km/h) for GPS COG to be considered reliable. Below this, falls back to compass snapshot. |
-| `rtm_stop_distance_m` | 3 | RX-side hard stop distance |
+| `rtm_stop_distance_m` | **10** | RX-side hard stop distance — do not go below 10; under ~10 m is inside GPS error |
 | `rtm_vesc_speed_diff_kmh` | 20 | Max VESC vs GPS speed diff (Phase C) |
 | `vesc_erpm_per_kmh` | 0 | VESC ERPM per km/h for speed check (0=disabled) |
 
@@ -488,6 +555,8 @@ On any gate failure: throttle → 0, TX display shows `St` for 2 s, haptic confi
 
 ## Follow-Me Mode Override (FM) — Full Guide
 
+> 📖 Rider-facing guide: [FOLLOW_ME_GUIDE.md](docs/FOLLOW_ME_GUIDE.md) · design notes: [DESIGN_FOLLOW_ME.md](DESIGN_FOLLOW_ME.md)
+
 > FM override is fully implemented in V2.5-Evo. It overrides the RX follow-me positioning mode at runtime without a SPIFFS write.
 
 > **⚠️ Follow-Me autonomous control IS implemented in this release (alpha).** The mode override display (F0 / F1 / F2 / F3) is fully functional — you cycle and set the mode on the TX display, and the buggy follows the rider per the selected geometry. The control law is specified in [`DESIGN_FOLLOW_ME.md`](DESIGN_FOLLOW_ME.md) and coded. **Alpha — bench/wheels-up test the steering direction before any in-water use.**
@@ -496,7 +565,7 @@ The override is RAM-only — RX returns to its web-configured `followme_mode` on
 
 ### Activation
 
-1. **Combo gesture:** Quick-tap LEFT toggle, then within 3 seconds hold RIGHT toggle for the hold duration (`fm_hold_duration_s`, default 5 s, tunable 4–10 s)
+1. **Combo gesture:** Quick-tap LEFT toggle, then within 3 seconds hold RIGHT toggle for the hold duration (`fm_hold_duration_s`, default 5 s, tunable 3–10 s)
 2. TX display shows `F` + mode number (e.g. `F0`, `F1`, `F2`, `F3`)
 3. Continue holding RIGHT or re-hold within 2 s to keep cycling modes
 4. Release and wait 2 s — TX sends the selected mode to RX via 0xF2 meta-packet
@@ -609,6 +678,8 @@ To disable wetness detection: set `wet_det_active = 0` in the web configurator.
 
 ## Display Layout
 
+> 📖 **Full screen-by-screen walkthrough: [Display reference →](docs/display-reference.md)** — every cell, every icon, every state.
+
 The TX uses a 10×7 LED dot matrix (two 5×7 matrices side by side, driven by HT16K33 at I2C 0x70).
 
 ![BREmote V2.5-Evo Display Reference](docs/display-reference.png)
@@ -617,16 +688,27 @@ The TX uses a 10×7 LED dot matrix (two 5×7 matrices side by side, driven by HT
 
 ### GPS Status Dot (C7 R0)
 
+> 📖 Deeper: [GPS configuration](docs/GPS.md) · [wiring the BN-880](docs/GPS_Wiring_BN880_RX.md) · [troubleshooting](docs/hardware/gps-troubleshooting.md)
+
 Visible only when `gps_en = 1`. Located at the top-right corner of the digit area.
 
 | State | Meaning |
 |---|---|
-| Solid | Valid GPS fix — RTM and Follow-Me ready |
-| Slow blink (1 s) | Acquiring fix — waiting for satellites |
+| Solid | **FM-grade fix** — RTM and Follow-Me ready |
+| Slow blink (1 s) | Acquiring fix — not yet good enough to steer on |
 | Fast blink (250 ms) | GPS rejected — spoofing check failed or signal too poor |
 | Off | GPS disabled (`gps_en = 0`) |
 
+> **Solid is a quality gate, not a satellite count.** `txGpsGoodFix()` (`Source/V2_Integration_Tx/GPS.ino`)
+> requires **all four**: valid position, valid speed, age under `tx_gps_stale_timeout_ms`, and
+> **HDOP ≤ `gps_max_hdop`** (default `200` = HDOP 2.0). Tightened 2026-07-20 so the dot matches the
+> gate FM actually publishes on — before that it went solid on a fix FM would still refuse.
+> Satellite count is deliberately *not* used: a u-blox module has reported 254 km/h and 4800 m as a
+> high-confidence fix on **5–7 satellites at HDOP < 3**.
+
 ### BT Status Dot (C7 R1)
+
+> 📖 Deeper: [BLE implementation](docs/BLE_Implementation.md) · [phone-app brief](docs/BLE_App_Brief.md)
 
 Located just below the GPS dot. Driven by `bt_dot_state`, controlled by the DRV5032 Hall sensor hold duration on P_MAG (GPIO 9). BREmote already uses Hall-effect sensors for throttle, toggle, and power switch — this adds a fourth on a free GPIO for magnet-based BLE activation. See the [Hall Sensor Expansion guide](docs/Hall_Sensor_Expansion.md) for wiring and firmware details, or the [install tutorial](docs/Hall_Sensor_Install_Tutorial.md) for step-by-step fitting instructions and hardware options (including easier-to-solder alternatives to the SOT-23 package).
 
@@ -737,6 +819,8 @@ Full bar (10 pixels) = buggy at arm distance. Shrinks from the right as the bugg
 
 ## Alpha Testing Notes
 
+> 📖 Reporting a problem? Use the [Beta testing sheet](docs/Beta_Testing_Sheet.md) so the report is actionable.
+
 BREmote V2.5-Evo is in Alpha. The firmware compiles, has been water tested for control flow and safety gates, and includes anti-spoofing and RTM/FM features. Currently running more water tests to graduate to Beta release.  If you are an alpha tester building on this fork, the project recommends:
 
 - Test in a controlled environment (shallow water, short range, motors disconnected for first dry run, second run with motors on a leashed test stand) before any open-water use.
@@ -758,7 +842,7 @@ The data logger is the primary tool for validating and tuning the RTM/FM steerin
 - Press AUX again → green LED flashes 2× → logging stops.
 - Pull the file via the embedded WebUI Logs panel or via `?download <filename>` over serial.
 
-**Default logging rate:** 5 Hz (200 ms per sample), set in firmware. Override per session with `?lograte <ms>` over serial — typical values 100 ms (10 Hz) to 1000 ms (1 Hz). Lower Hz = smaller files = longer sessions; higher Hz = better resolution for tuning fast oscillation.
+**Default logging rate:** 5 Hz (200 ms per sample), set in firmware. Override per session with `?lograte <Hz>` over serial — the argument is **Hz, not milliseconds**. Typical values 10 (10 Hz) down to 1 (1 Hz); fractions work, e.g. `?lograte 0.1`. Lower Hz = smaller files = longer sessions; higher Hz = better resolution for tuning fast oscillation.
 
 **Storage note:** if SPIFFS fills too quickly during long sessions, lower the rate with `?lograte`, **don't trim columns** — every diagnostic field is there to make the controller observable when something goes wrong, and the cost of dropping them is much greater than the storage savings.
 
@@ -842,7 +926,7 @@ Connect to the RX at 115200 baud. All commands are prefixed with `?`.
 | `?vescping` | Send a single VESC status request and print the parsed response — confirms the UART link is alive |
 | `?vescraw` | Send a correctly-framed `COMM_GET_VALUES` probe (`02 01 04 40 84 03`) and dump the raw reply bytes — use when `?vescping` returns no data to diagnose framing issues. *(The probe CRC was fixed in V2.5.12; before that this command hardcoded a bad CRC and always printed "NO BYTES" even against a healthy VESC.)* |
 | `?logstat` | Print SPIFFS log storage statistics — file count, total bytes used, bytes free |
-| `?lograte <ms>` | Override logging rate per session (default 200 ms / 5 Hz). Example: `?lograte 100` = 10 Hz. Change is RAM-only; resets on reboot. |
+| `?lograte <Hz>` | Override logging rate per session. **Argument is Hz.** Example: `?lograte 10` = 10 Hz, `?lograte 0.1` = one sample per 10 s. Change is RAM-only; resets on reboot. |
 | `?deletelog <filename>` | Delete a specific log file from SPIFFS. Use `?list` to see filenames first. |
 | `?deleteallogs` | Delete all log files from SPIFFS (skips the currently active log if logging is running) |
 | `?list` | List all log files on SPIFFS with sizes |

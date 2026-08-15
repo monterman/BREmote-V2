@@ -20,12 +20,41 @@ Welcome, and thanks for testing. Read the hardware section first — the setting
 
 ## 1. Flashing (no Arduino needed)
 
-Pre-built binaries are in the repo `firmware/` folder. Flash the **`.merged.bin`** at offset `0x0` with esptool or an ESP web-flasher — no IDE required.
+No Arduino, no compiling. Download the prebuilt `.bin` for each board and flash it.
 
-- **TX:** `firmware/TX/V2_Integration_Tx.ino.V2.5-Evo.SW26R2.merged.bin`
-- **RX:** `firmware/RX/V2_Integration_Rx.ino.V2.5-Evo.SW32.merged.bin`
+### ⭐ Flash these — the current builds
 
-> **Config note:** flashing a **different SW version** than your board currently runs resets all SPIFFS settings to defaults (you'll re-calibrate + reconfigure). Flashing the **same SW version** keeps your settings. The filenames carry the version.
+| Board | File | Version |
+|---|---|---|
+| **TX** | [`BREmote-TX-SW27-gps-verified.bin`](../Source/V2_Integration_Tx/TX%20firmware/BREmote-TX-SW27-gps-verified.bin) | **SW27** — current |
+| **RX** | [`BREmote-RX-SW34-gps-verified.bin`](../Source/V2_Integration_Rx/RX%20firmware/BREmote-RX-SW34-gps-verified.bin) | **SW34** — current |
+
+Browse all published builds, with notes on what each one is:
+**[TX firmware →](../Source/V2_Integration_Tx/TX%20firmware/)** · **[RX firmware →](../Source/V2_Integration_Rx/RX%20firmware/)**
+Each folder has a `README.md` saying which build to start with and what changed. **The
+`-gps-verified` builds above are the ones to use** — older builds in those folders are kept for
+rollback and carry known issues.
+
+### How to flash
+
+Flash at offset **`0x10000`**:
+
+```
+esptool --chip esp32c3 --port COM<N> write-flash 0x10000 <the-file>.bin
+```
+
+Or use Espressif's **Flash Download Tool** (Windows GUI) — the method Ludwig recommends. Full
+instructions: [Flashing the RX](FLASHING_RX_ARDUINO.md) · [Flashing the TX](FLASHING_TX_ARDUINO.md).
+
+> ⚠️ **Do not flash at `0x0`, and do not look for `.merged.bin`.** Merged images are deliberately
+> not published: flashing one at `0x0` rewrites the whole chip and **wipes your SPIFFS config** —
+> pairing, calibration and every setting. Use the plain `.bin` at `0x10000`.
+
+> **Config note:** flashing a **different SW version** than your board currently runs resets all
+> SPIFFS settings to defaults (you will re-calibrate and reconfigure). Flashing the **same SW
+> version** keeps your settings. The filenames carry the version — check what your board is running
+> with **`?conf`** before you flash, and **back up your config first**
+> (see the README's *Backing up your settings*).
 
 ### Motor ramping (RX safety, SW33+)
 `motor_ramp_s` (RX setting, in **seconds**) limits how fast the motors spin up — smooths the throttle **and** prevents a single motor from taking off at power-on or on a glitch. **Default 0.75 s**, range 0–4 s (`0` = instant/off). It's like the VESC ramp time, but on the remote, so it protects every motor even without a tuned VESC.

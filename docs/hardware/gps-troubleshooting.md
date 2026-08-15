@@ -18,22 +18,43 @@
 
 You need **4 wires** between the ESP32-C3 board and the GPS module.
 
-| Wire color | From ESP32-C3 | To BN-220 |
+**This section is the TX board** (BN-220 on `Serial1`). For the RX, see the
+[BN-880 → RX wiring guide](../GPS_Wiring_BN880_RX.md) — the RX has a UART mux and different pin roles.
+
+| Wire color | On the TX board | To BN-220 |
 | :---- | :---- | :---- |
 | 🔴 Red | **3.3V** | **VCC** |
-| 🟡 Yellow | **UART G18** (Transmit Pin) | **GPS RX** |
-| ⬜ White | **UART G19** (Receive Pin) | **GPS TX** |
+| 🟡 Yellow | **G18** — the TX's **receive** pin (`P_U1_RX`) | **GPS TX** |
+| ⬜ White | **G19** — the TX's **transmit** pin (`P_U1_TX`) | **GPS RX** |
 | ⬛ Black | **GND** | **GND** |
 
-### **All 4 wires run straight across — no crossing needed**
+> ⚠️ **TX and RX are NOT the same — the pin roles are inverted between the two boards:**
+>
+> | Board | GPIO 18 | GPIO 19 |
+> |---|---|---|
+> | **TX** | `P_U1_RX` — receive | `P_U1_TX` — transmit |
+> | **RX** | `P_U1_TX` — transmit | `P_U1_RX` — receive |
+>
+> Read from `BREmote_V2_Tx.h:758-759` and `BREmote_V2_Rx.h:1142-1143`. **The comment above the TX
+> defines says the assignment matches the RX — it does not.** Do not carry an RX pinout over to a TX.
 
-The BREmote PCB designer routed the UART crossover on the board itself. This means:
+### Which way do the wires go?
 
-- GPIO19 (TX) connects to GPS TX — same label to same label  
-- GPIO18 (RX) connects to GPS RX — same label to same label  
-- All wires run in parallel
+**On the RX, nothing crosses** — wire label to label. That is proven from the board files: the RX pad
+silkscreened `RX` is driven by the board's transmitter, because the crossover is routed on the PCB.
+See the [BN-880 → RX wiring guide](../GPS_Wiring_BN880_RX.md) for the full trace.
 
-**Note for experienced builders:** This is the opposite of the usual UART convention where TX crosses to RX. The BREmote hardware handles this internally on the PCB traces — do not cross these wires.
+**On the TX this has not been verified.** There is no mux to trace, and the repo does not settle
+whether the TX's board artwork pre-crosses the UART the way the RX's does. So **test it — it takes
+two minutes and cannot damage anything** (both ends are 3.3 V logic):
+
+1. Wire it, power up, run **`?gpsbaud`** — a listen-only scan that reports whether any bytes arrive.
+   It needs no fix and no sky, so it answers the wiring question by itself.
+2. **Bytes at some baud → correct.** Confirm outdoors with `?printgps`.
+3. **Nothing at any baud →** swap the two data wires and run `?gpsbaud` again.
+
+Whichever returns bytes is right for your board. If you settle it either way, please open an issue —
+it closes this gap for everyone.
 
 ---
 

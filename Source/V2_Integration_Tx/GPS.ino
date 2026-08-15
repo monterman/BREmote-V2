@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-08-15 - ubxPoll() now verifies CK_A/CK_B before accepting a frame. Was returning as soon as the payload was complete, never reading the checksum, so any B5 62 <cls> <id> <len> lookalike in the NMEA/UBX stream was believed. Same defect the RX had (fixed 1f2ba8c, after it reported an M8 as M9/M10 three times running) - it survived here because the parser exists twice instead of in Common/. Code only: no confStruct change, sizeof unchanged, SW_VERSION stays 27, SPIFFS config NOT reset by this flash.
 // V2.5-Evo - 2026-07-29 - GPS-ACK-1: every UBX config write is ACK-verified, and a NAK auto-switches the module to the modern CFG-VALSET interface (u-blox M9/M10 removed the legacy CFG messages). Adds ?gpscfg readback.
 // V2.5-Evo - 2026-06-05 - L-2: GSV/GLL/VTG NMEA filter RE-ENABLED in BOTH paths (BN-220 + M10) after the 05-06 fix-acquisition diagnostics; txGpsColdReset() retained. Audit #5 (GPS chatter choking the link) = RESOLVED.
 // V2.5-Evo - 2026-05-06 - FIX-GPS-1: dual-baud init in initTxGPS() to prevent UART RX lockout from retained-config baud mismatch
@@ -1129,6 +1130,10 @@ static uint16_t ubxPoll(const byte *req, size_t reqLen,
   byte     cls = 0, id = 0;
   uint16_t len = 0, idx = 0;
 
+  // Running Fletcher-8 over class..payload, so the frame can be CHECKSUM-VERIFIED
+  // before it is believed. See the note at case 7.
+  byte     ckA = 0, ckB = 0;
+
   while ((int32_t)(millis() - deadline) < 0)
   {
     if (!Serial1.available()) { delay(1); continue; }
@@ -1137,17 +1142,53 @@ static uint16_t ubxPoll(const byte *req, size_t reqLen,
     switch (state) {
       case 0: state = (c == 0xB5) ? 1 : 0; break;
       case 1: state = (c == 0x62) ? 2 : 0; break;
-      case 2: cls = c; state = 3; break;
-      case 3: id  = c; state = 4; break;
-      case 4: len = c;                   state = 5; break;
-      case 5: len |= ((uint16_t)c << 8); idx = 0;
+      case 2: cls = c; ckA = c;  ckB = ckA;          state = 3; break;
+      case 3: id  = c; ckA += c; ckB += ckA;         state = 4; break;
+      case 4: len = c;                   ckA += c; ckB += ckA; state = 5; break;
+      case 5: len |= ((uint16_t)c << 8); ckA += c; ckB += ckA; idx = 0;
               // Not the frame we asked for (an ACK, or unrelated) — resync.
               state = (cls == wantCls && id == wantId && len <= outMax) ? 6 : 0;
-              if (state == 6 && len == 0) return 0;
+              if (state == 6 && len == 0) { state = 7; }
               break;
       case 6:
         out[idx++] = c;
-        if (idx >= len) return len;   // checksum bytes follow; we do not need them
+        ckA += c; ckB += ckA;
+        if (idx >= len) state = 7;    // payload complete — now PROVE it with the checksum
+        break;
+
+      // ============================================================
+      // V2.5-Evo - 2026-08-15 - Verify CK_A/CK_B before trusting the frame.
+      //
+      // This function used to `return len` the instant it had collected len payload
+      // bytes, never reading the two checksum bytes at all. So ANY byte sequence in
+      // the stream that happened to look like B5 62 <wantCls> <wantId> <plausible len>
+      // was accepted as a real reply.
+      //
+      // That is not hypothetical, and it was not caught here first: the RX carried the
+      // identical defect and reported a BN-880 (u-blox M8, which has no CFG-VALGET at
+      // all) as "CFG-VALSET (u-blox M9/M10)" on three consecutive runs. Fixed on the RX
+      // in 1f2ba8c (2026-08-02); the TX was left with the same bug because the parser
+      // exists twice instead of once — the cost of Common/GpsUbx.h never being extracted.
+      //
+      // A false verdict is not cosmetic on either board: gpsDetectDialect() feeds
+      // ?gpssetup, which uses it to choose which dialect to WRITE in, so an M8 would be
+      // sent CFG-VALSET frames it cannot understand and the configuration silently
+      // fails.
+      //
+      // The stream this parser runs on is full of NMEA and UBX at 5 Hz, so a chance
+      // match on four header bytes is entirely plausible. Two bytes of Fletcher-8 make
+      // it ~1 in 65536 instead, and cost nothing.
+      //
+      // No watchdog feed here, unlike the RX: the TX never arms esp_task_wdt, so there
+      // is nothing to reset. Bounded by the same 1500 ms deadline as before.
+      // ============================================================
+      case 7:
+        if (c != ckA) { state = 0; break; }          // bad CK_A — not our frame, resync
+        state = 8;
+        break;
+      case 8:
+        if (c == ckB) return len;                    // verified
+        state = 0;                                   // bad CK_B — resync and keep looking
         break;
     }
   }

@@ -12,23 +12,54 @@
 
 ## Pin map — the six wires
 
-The RX board's pads are labelled on the silkscreen — **wire label-to-label**, and the GPIO numbers
-below are only for reference when you need them.
+The RX board's pads are labelled on the silkscreen — **wire label to label**. The GPIO numbers below
+are only for reference when you need them; they are not what you wire to.
 
 All six wires go to the **`UART 1.1` header** (the right-hand one — see below) except SDA/SCL,
 which are separate I2C pads.
 
-| BN-880 pad | RX board pad | GPIO | Notes |
+| BN-880 pad | RX board pad | GPIO behind it | Notes |
 |---|---|---|---|
 | **VCC** | `V+` on `UART 1.1` | — | **5 V** — put that header's selector on `5V`, not `3V3` |
 | **GND** | `GD` on `UART 1.1` | — | Common ground with the RX |
-| **TX** | **`RX`** on `UART 1.1` | 19 · `P_U1_RX` | **crossed** |
-| **RX** | **`TX`** on `UART 1.1` | 18 · `P_U1_TX` | **crossed** |
+| **TX** | **`TX`** on `UART 1.1` | 19 | **straight** — label to label |
+| **RX** | **`RX`** on `UART 1.1` | 18 | **straight** — label to label |
 | **SCL** | `SCL` | 1 · `P_I2C_SCL` | straight |
 | **SDA** | `SDA` | 2 · `P_I2C_SDA` | straight |
 
-**The UART crosses; I2C does not.** Module **TX → board RX**, module **RX → board TX**. The compass
-lines go straight across: SCL→SCL, SDA→SDA.
+## Nothing crosses. Wire label to label.
+
+`TX`→`TX`, `RX`→`RX`, `SCL`→`SCL`, `SDA`→`SDA`. **The board already does the crossover for you.**
+
+This is the opposite of the usual serial convention, so it is worth knowing *why*, and the board
+files prove it rather than asserting it. Tracing the `UART 1.1` header back through the mux to the
+ESP32-C3 in `Rx_V2-2.sch`:
+
+```
+pad `RX` (JP9.2) ── Q2 ── U1_1_RX ── IC6 mux 1Y1→1Z ── HT-CT62 pin G18   = GPIO 18
+pad `TX` (JP9.3) ── Q5 ── U1_1_TX ── IC6 mux 2Y1→2Z ── HT-CT62 pin G19   = GPIO 19
+```
+
+and the firmware opens the port as:
+
+```c
+Serial1.begin(baud, SERIAL_8N1, P_U1_RX, P_U1_TX);   // GPS.ino
+#define P_U1_TX 18                                   // BREmote_V2_Rx.h
+#define P_U1_RX 19
+```
+
+So the ESP32 **transmits on GPIO 18 and receives on GPIO 19** — which means the pad silkscreened
+**`RX` is driven by the board's transmitter**, and the pad silkscreened **`TX` is the board's
+receiver input**.
+
+The silkscreen is therefore naming **what you connect there**, not the signal the pin carries. Pad
+`RX` wants the module's `RX`. That is why Ludwig's original diagrams show a direct connection: the
+crossover is designed into the PCB, so doing it again in the cable un-does it.
+
+> **A naming trap, if you ever read the schematic yourself.** The schematic net called `P_U1_RX`
+> lands on GPIO 18, while the firmware's `#define P_U1_RX` is 19 — the same name means opposite
+> things in the two files, because the schematic names nets from the *peripheral's* point of view.
+> The physical trace above is what settles it.
 
 ### Which header — `UART 1.1`, the right-hand one
 
@@ -88,40 +119,40 @@ ESP32-C3, and nothing on the board sees 5 V on a signal pin.
 > The `3V3` position on the selector exists for modules that want 3.3 V — the HGLRC M100 series,
 > for example, accepts 3.3–5 V. It is not the right setting for a BN-880.
 
-> ⚠️ **Crossed or straight? Test it — don't assume.** The pads are silkscreened `RX` and `TX`, but
-> boards differ in what those labels mean: some name the **signal the pin carries** (so you cross),
-> others name **what you connect there** (so you wire straight, because the swap was already done on
-> the board). The original BREmote wiring notes describe a **direct RX→RX / TX→TX** connection.
+> ### Bench-check it before you seal anything up
 >
-> Resolve it in two minutes, with no risk — swapping UART data lines cannot damage anything, they are
-> both 3.3 V logic:
+> Straight is what the board files, the firmware and Ludwig's own diagrams all say — but confirm it
+> on your unit before it goes anywhere near water. Board revisions vary, and this costs two minutes:
 >
-> 1. Wire it **crossed** first, on the **`UART 1.1`** header (module `TX` → board `RX`). That is the
->    standard convention.
-> 2. Power up and run **`?gpsbaud`** — a listen-only scan that reports whether *any* bytes are
->    arriving. It needs no sky and no fix, so it answers the wiring question on its own.
-> 3. **Bytes at some baud → the orientation is right.** Now run `?printgps` outdoors to confirm sats.
-> 4. **Nothing at any baud → swap just the two data wires** (`RX`→`RX`, `TX`→`TX`) and run
->    **`?gpsbaud`** again.
-> 5. Whichever way returns bytes is correct. Note it down — the same rule applies to the VESC UART on
->    the other header (test that one with `?vescraw`, the raw byte-dump probe, then `?vescping`).
+> 1. Wire it **straight** on the **`UART 1.1`** header — `TX`→`TX`, `RX`→`RX`.
+> 2. Power up and run **`?gpsbaud`** — a listen-only baud scan that reports whether *any* bytes are
+>    arriving. No sky and no fix needed, so it answers the wiring question on its own.
+> 3. **Bytes at some baud → correct.** Confirm outdoors with `?printgps` for sats and a position.
+> 4. **Nothing at any baud →** swap just the two data wires and run `?gpsbaud` again. Swapping UART
+>    data lines cannot damage anything — both ends are 3.3 V logic — so this is a free test.
+> 5. Whichever way returns bytes is correct for your board. If it turns out to be the swapped one,
+>    please open an issue saying so; that would mean a revision differs from the files.
+>
+> The same applies to the VESC on `UART 1.0` — probe that one with `?vescraw`, then `?vescping`.
 
 ```
         BN-880 module                    RX board — UART 1.1 header (GPS)
    ┌──────────────────────┐                 ┌──────────────────────────────┐
    │                      │                 │                              │
-   │  VCC  ───────────────┼─── red ────────►│  V+   selector on 5V         │
+   │  VCC  ───────────────┼─── red ────────►│  V+    selector on 5V        │
    │  GND  ───────────────┼─── black ──────►│  GD                          │
    │                      │                 │                              │
-   │  TX   ───────────────┼─────────╲       │                              │
-   │                      │          ╳──────┤  RX    (GPIO 19)      UART   │
-   │  RX   ◄──────────────┼─────────╱       │  TX    (GPIO 18)      UART   │
-   │                      │  TX→RX, RX→TX   │                              │
+   │  TX   ───────────────┼─── straight ───►│  TX    (GPIO 19)      UART   │
+   │  RX   ◄──────────────┼─── straight ────┤  RX    (GPIO 18)      UART   │
+   │                      │                 │                              │
    │  SCL  ───────────────┼─── straight ───►│  SCL   (GPIO 1)       I2C    │
    │  SDA  ───────────────┼─── straight ───►│  SDA   (GPIO 2)       I2C    │
    │                      │                 │                              │
    └──────────────────────┘                 └──────────────────────────────┘
        GPS + QMC5883L                         compass answers at 0x0D
+
+              every wire goes label to label — nothing crosses
+             (the board does the UART crossover internally)
 ```
 
 Wire colours vary between vendors — **go by the silkscreen labels on the module**, not by colour.

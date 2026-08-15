@@ -105,7 +105,8 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 > ⚠️ **TX GPS must be 3.3V tolerant** — the ESP32-C3 supplies 3.3V only. Both the BN-220 and HGLRC M100 Mini meet this requirement.
 
 > 🔌 **Wiring the RX GPS + compass:** **[BN-880 → RX wiring guide →](docs/GPS_Wiring_BN880_RX.md)** — six wires,
-> pin map, and the two settings that bite (UART is **crossed**, and `gps_chip_type` must be set to your module).
+> pin map, and the three things that bite: every wire runs **straight, label to label** (the PCB does the UART
+> crossover for you), the BN-880 needs **5 V**, and `gps_chip_type` must be set to your module.
 
 ---
 

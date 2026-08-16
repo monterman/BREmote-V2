@@ -367,18 +367,30 @@ void runCompassCalibration() {
   // full config + pairing wipe. Clamping at the writer keeps the cal output inside the validator's
   // domain so a valid cal can never self-wipe the config. Clamp before the print below so the
   // reported scales match what is actually saved.
-  // V2.5-Evo - 2026-08-16 - Clamp MAGNITUDE, preserve SIGN. A negative mag_scale_y now carries
-  // meaning - it encodes a mirrored sensor frame - so the old positive-only clamp would have
-  // silently discarded the handedness correction. Validator range widened to match.
-  auto clampMag = [](float v) {
-    float s = (v < 0.0f) ? -1.0f : 1.0f;
-    float m = fabsf(v);
-    if (m < 0.1f)  m = 0.1f;
-    if (m > 10.0f) m = 10.0f;
-    return s * m;
-  };
-  usrConf.mag_scale_x = clampMag(usrConf.mag_scale_x);
-  usrConf.mag_scale_y = clampMag(usrConf.mag_scale_y);
+  // V2.5-Evo - 2026-08-16 - Clamp MAGNITUDE, preserve SIGN. A negative mag_scale_y now carries
+
+  // meaning - it encodes a mirrored sensor frame - so the old positive-only clamp would have
+
+  // silently discarded the handedness correction. Validator range widened to match.
+
+  auto clampMag = [](float v) {
+
+    float s = (v < 0.0f) ? -1.0f : 1.0f;
+
+    float m = fabsf(v);
+
+    if (m < 0.1f)  m = 0.1f;
+
+    if (m > 10.0f) m = 10.0f;
+
+    return s * m;
+
+  };
+
+  usrConf.mag_scale_x = clampMag(usrConf.mag_scale_x);
+
+  usrConf.mag_scale_y = clampMag(usrConf.mag_scale_y);
+
 
 
 
@@ -509,8 +521,10 @@ void runCompassCalibration() {
   Serial.println("\n--- CALIBRATION COMPLETE ---");
   Serial.printf("Saved Center Offsets: X=%d, Y=%d\n", usrConf.mag_offset_x, usrConf.mag_offset_y);
   Serial.printf("Saved Shape Scales:   X=%.2f, Y=%.2f\n", usrConf.mag_scale_x, usrConf.mag_scale_y);
-  Serial.printf("Mounting Orientation: %u deg%s\n", usrConf.mag_orientation,
-                usrConf.mag_scale_y < 0.0f ? "  (frame MIRRORED)" : "");
+  Serial.printf("Mounting Orientation: %u deg%s\n", usrConf.mag_orientation,
+
+                usrConf.mag_scale_y < 0.0f ? "  (frame MIRRORED)" : "");
+
   
   // Automate the save command to SPIFFS
   cmdSave("");
@@ -553,16 +567,26 @@ float getCompassHeading()
 
   float heading = atan2f(cal_y, cal_x) * (180.0f / M_PI);
   if (heading < 0.0f) heading += 360.0f;
-
-  // V2.5-Evo - 2026-08-16 - Apply the stored mounting rotation. The module can be glued in any
-  // of four orientations; mag_orientation records which, measured by ?compasscal starting and
-  // ending on north. A MIRRORED frame is NOT handled here - a negative mag_scale_y already
-  // flipped cal_y before the atan2 above.
-  if (usrConf.mag_orientation) {
-    heading -= (float)usrConf.mag_orientation;
-    if (heading < 0.0f)    heading += 360.0f;
-    if (heading >= 360.0f) heading -= 360.0f;
-  }
+
+
+  // V2.5-Evo - 2026-08-16 - Apply the stored mounting rotation. The module can be glued in any
+
+  // of four orientations; mag_orientation records which, measured by ?compasscal starting and
+
+  // ending on north. A MIRRORED frame is NOT handled here - a negative mag_scale_y already
+
+  // flipped cal_y before the atan2 above.
+
+  if (usrConf.mag_orientation) {
+
+    heading -= (float)usrConf.mag_orientation;
+
+    if (heading < 0.0f)    heading += 360.0f;
+
+    if (heading >= 360.0f) heading -= 360.0f;
+
+  }
+
 
   return heading;
 }
@@ -616,4 +640,100 @@ void updateCompassSnapshot()
 
   compass_snapshot_heading = h;
   compass_snapshot_ms      = millis();
-}
+}
+// ============================================================
+// runMagAlign - set the compass mounting orientation on its own
+// ============================================================
+// V2.5-Evo - 2026-08-16 - ?magalign. The same orientation ?compasscal derives, but as a
+// standalone step so it can be re-checked or corrected WITHOUT redoing the two-circle iron
+// calibration - which is the slow, physical part.
+//
+// Point the nose of the buggy at magnetic north and run it. The buggy IS at heading 0, so
+// whatever the compass reports IS the mounting rotation. Snapped to the nearest cardinal.
+//
+// Requires an existing iron calibration: mag_offset/mag_scale must already be real, because
+// the reading is taken THROUGH them. Running this on an uncalibrated compass would measure
+// the hard-iron bias and call it a mounting angle.
+//
+// This CANNOT detect a mirrored frame - a single heading tells you where zero is, not which
+// way the numbers run. Mirroring is set by ?compasscal, from the direction of the turn.
+void runMagAlign() {
+  if (!compass_detected) {
+    Serial.println("\nERROR: no compass detected. Nothing to align.");
+    blinkBind(10);
+    return;
+  }
+
+  // Same uncalibrated-default reject that getCompassHeading() uses.
+  if (usrConf.mag_scale_x == 0.0f || usrConf.mag_scale_y == 0.0f ||
+      (usrConf.mag_offset_x == 0 && usrConf.mag_offset_y == 0 &&
+       fabsf(fabsf(usrConf.mag_scale_x) - 1.0f) < 1e-4f &&
+       fabsf(fabsf(usrConf.mag_scale_y) - 1.0f) < 1e-4f)) {
+    Serial.println("\nERROR: compass is not calibrated yet.");
+    Serial.println("       Run ?compasscal first - it sets the iron calibration AND the");
+    Serial.println("       orientation in one go. Use ?magalign only to re-check afterwards.");
+    blinkBind(10);
+    return;
+  }
+
+  Serial.println("\n--- COMPASS ORIENTATION (?magalign) ---");
+  Serial.println(">>> POINT THE FRONT OF THE BUGGY AT MAGNETIC NORTH <<<");
+  Serial.println("Hold it steady. Sampling for 5 seconds, starting now.");
+  Serial.println("Motor OFF - motor current swamps the compass entirely.");
+
+  while (Serial.available()) Serial.read();
+
+  // Average over 5 s. Idle noise here is ~3.2 deg spread, so averaging costs nothing and
+  // removes the odd outlier.
+  float sum_sin = 0.0f, sum_cos = 0.0f;
+  int   n = 0;
+  uint32_t t0 = millis();
+  while (millis() - t0 < 5000) {
+    esp_task_wdt_reset();
+    if (readCompassRaw()) {
+      float cx = ((float)magX - (float)usrConf.mag_offset_x) * usrConf.mag_scale_x;
+      float cy = ((float)magY - (float)usrConf.mag_offset_y) * usrConf.mag_scale_y;
+      float h  = atan2f(cy, cx);
+      sum_sin += sinf(h);   // circular mean - a plain average breaks across the 0/360 wrap
+      sum_cos += cosf(h);
+      n++;
+    }
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
+
+  if (n < 20) {
+    Serial.printf("\nERROR: only %d samples read. Orientation unchanged.\n", n);
+    blinkBind(10);
+    return;
+  }
+
+  float measured = atan2f(sum_sin / n, sum_cos / n) * (180.0f / M_PI);
+  if (measured < 0.0f) measured += 360.0f;
+
+  int snapped = ((int)((measured + 45.0f) / 90.0f)) * 90;
+  if (snapped >= 360) snapped -= 360;
+
+  // How far off the nearest cardinal was the reading? Large means the buggy was not
+  // actually pointing north, or the module is mounted at an odd angle - either way the
+  // rider should know rather than get a silent snap.
+  float residual = measured - (float)snapped;
+  while (residual > 180.0f)  residual -= 360.0f;
+  while (residual < -180.0f) residual += 360.0f;
+
+  uint16_t previous = usrConf.mag_orientation;
+  usrConf.mag_orientation = (uint16_t)snapped;
+
+  Serial.printf("\nMeasured heading while pointing north: %.1f deg (%d samples)\n", measured, n);
+  Serial.printf("Mounting orientation stored: %u deg (was %u)\n", usrConf.mag_orientation, previous);
+  if (fabsf(residual) > 25.0f) {
+    Serial.printf("WARNING: reading was %.0f deg off the nearest cardinal.\n", residual);
+    Serial.println("         Either the buggy was not really pointing north, or the module is");
+    Serial.println("         mounted at an odd angle. Re-check before trusting Follow-Me.");
+  }
+  Serial.println("Note: ?magalign cannot detect a MIRRORED module - only ?compasscal can,");
+  Serial.println("      from the direction of the turn.");
+
+  cmdSave("");
+  Serial.println("Saved.");
+  blinkBind(2);
+}

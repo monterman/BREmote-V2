@@ -398,6 +398,7 @@ void cmdLogStat(const String& params) {
 void cmdScanI2C(const String& params) { scanI2C(); }
 void cmdPrintCompass(const String& params) { serPrintCompass(); }
 void cmdCompassCal(const String& params) { runCompassCalibration(); }
+void cmdMagAlign(const String& params)   { runMagAlign(); }
 void cmdPrintCompassHeading(const String& params) {
   Serial.println("Printing compass heading. Type 'quit' to exit.");
   while (true) {
@@ -1035,6 +1036,7 @@ static const SerialCommand kCommands[] = {
   {"diagz", "zero the ?diag counters so a run can be bracketed", cmdDiagZ},
   {"printcompass", "print raw compass X/Y/Z", cmdPrintCompass},
   {"compasscal", "start 45s automated calibration", cmdCompassCal},
+  {"magalign", "set compass mounting orientation: point the nose NORTH, then run this", cmdMagAlign},
   {"compassheading", "print live compass heading in degrees", cmdPrintCompassHeading},
   {"magtest", "120s CSV log: compass X/Y/Z + VESC current vs throttle (bench EMI test)", cmdMagTest},
   {"vescping", "stream VESC fields + UART packet age (2Hz, up to 30s; verify VESC UART)", cmdVescPing},

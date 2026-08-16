@@ -88,7 +88,7 @@
 
 #include <TinyGPS++.h> //TinyGPSPlus 1.0.3 Mikal Hart
 
-#define SW_VERSION 35  // V2.5-Evo — 35 = mag_orientation appended (compass mounting rotation); sizeof 184->188 (uint16 + 2 bytes alignment padding), config IS reset by this flash. 34 = added fm_engage_dist_m / auton_runtime_cap_s / fm_steer_reposition_en reserved slots + defaultConf carries factory default config (compass cal, near_diag_offset 45); first flash resets all RX SPIFFS config to defaults. NOTE (2026-07-25, STAGE 0 PART A): the third of those slots has since been RENAMED IN PLACE to log_level — same offset, same uint16_t, sizeof(confStruct) still 184 — so this stays 34 and NO further config wipe happens.
+#define SW_VERSION 35  // V2.5-Evo — 35 = mag_orientation appended (compass mounting rotation); sizeof 184->192 (mag_orientation + 2 reserved slots banked for future no-bump features), config IS reset by this flash. 34 = added fm_engage_dist_m / auton_runtime_cap_s / fm_steer_reposition_en reserved slots + defaultConf carries factory default config (compass cal, near_diag_offset 45); first flash resets all RX SPIFFS config to defaults. NOTE (2026-07-25, STAGE 0 PART A): the third of those slots has since been RENAMED IN PLACE to log_level — same offset, same uint16_t, sizeof(confStruct) still 184 — so this stays 34 and NO further config wipe happens.
 const char* CONF_FILE_PATH = "/data.txt";
 const char* BC_FILE_PATH = "/batconf.txt";
 
@@ -431,8 +431,68 @@ struct confStruct {
     // MIRRORING is NOT stored here - a mirrored sensor frame is stored as a NEGATIVE mag_scale_y,
     // because negating cal_y is exactly the mirror fix and that field already exists.
     uint16_t mag_orientation;          // 0 | 90 | 180 | 270 degrees
+
+
+    // ============================================================
+
+    // V2.5-Evo - 2026-08-16 - RESERVED SLOTS, banked deliberately.
+
+    //
+
+    // SW34 banked three of these and TWO have already paid for themselves without costing
+
+    // anyone a config reset: fm_steer_reposition_en became log_level (2026-07-25), and
+
+    // auton_runtime_cap_s became gps_dyn_model (2026-08-16). The pattern works, so since
+
+    // SW35 is spending a reset anyway, bank more now rather than charge riders again for
+
+    // the next small setting.
+
+    //
+
+    // RULES for reusing one - the same ones that made the last two free:
+
+    //   1. RENAME IN PLACE. Same offset, same type. Never insert, never reorder.
+
+    //   2. sizeof(confStruct) must not change, so the static_assert stays untouched.
+
+    //   3. SW_VERSION must NOT be bumped - that is the whole point.
+
+    //   4. 0 must remain a safe, behaviour-preserving default, because that is what every
+
+    //      board in the field already holds here.
+
+    //   5. Update the kCfgFields row and both web UIs in the same commit.
+
+    //
+
+    // WHAT THESE CANNOT DO: anything needing an ARRAY. Multi-TX needs a table of paired
+
+    // addresses, not a scalar, so it will need a real struct change and its own bump. These
+
+    // slots are for scalars - a threshold, a mode, an enable flag, a coefficient.
+
+    //
+
+    // Candidates already visible: magnetic declination (compass reads magnetic, GPS COG is
+
+    // true-referenced); a motor-EMI compass compensation coefficient; the autonomous-runtime
+
+    // cap that gps_dyn_model displaced; further GPS or FM tuning values.
+
+    // ============================================================
+
+    uint16_t rsvd_u16_1;               // RESERVED. 0 = unused. Rename in place; do NOT bump.
+
+
+
+
+    float    rsvd_f32_1;               // RESERVED. 0 = unused. For a threshold or coefficient.
+
+
 };
-static_assert(sizeof(confStruct) == 188, "confStruct size mismatch — expected 188 bytes. Update this assert if you change the struct.");  // 176->184: +fm_engage_dist_m(float 4) +auton_runtime_cap_s(u16 2) +fm_steer_reposition_en(u16 2), all naturally aligned, no tail pad (2026-07-20 SW34)  // 172->176 motor_ramp_s float (2026-06-05 SW33)  // 112->128 Phase A; 128->136 Phase B; 136->152 P7 RTM; 152->156 Bundle B; 156 unchanged BundleE; 156->160 rtm_approach_zone_m (uint16_t + 2-byte tail pad) (2026-04-30); D3 rtm_use_compass + rtm_cog_min_speed_kmh (2x uint8_t) fill the 2-byte tail pad — sizeof stays 160 (2026-05-06); D3-Fix: uint8_t→uint16_t for ConfigService compatibility, sizeof unchanged at 164 (2026-05-06); Bundle 1: dummy_delete_me renamed to rtm_steer_response in-place, sizeof unchanged at 164 (2026-05-08); STAGE 0 PART A: fm_steer_reposition_en renamed to log_level in-place — same offset, same uint16_t, sizeof STILL 184 and SW_VERSION STILL 34, so this flash does NOT reset SPIFFS config (2026-07-25)
+static_assert(sizeof(confStruct) == 192, "confStruct size mismatch — expected 192 bytes. Update this assert if you change the struct.");  // 176->184: +fm_engage_dist_m(float 4) +auton_runtime_cap_s(u16 2) +fm_steer_reposition_en(u16 2), all naturally aligned, no tail pad (2026-07-20 SW34)  // 172->176 motor_ramp_s float (2026-06-05 SW33)  // 112->128 Phase A; 128->136 Phase B; 136->152 P7 RTM; 152->156 Bundle B; 156 unchanged BundleE; 156->160 rtm_approach_zone_m (uint16_t + 2-byte tail pad) (2026-04-30); D3 rtm_use_compass + rtm_cog_min_speed_kmh (2x uint8_t) fill the 2-byte tail pad — sizeof stays 160 (2026-05-06); D3-Fix: uint8_t→uint16_t for ConfigService compatibility, sizeof unchanged at 164 (2026-05-06); Bundle 1: dummy_delete_me renamed to rtm_steer_response in-place, sizeof unchanged at 164 (2026-05-08); STAGE 0 PART A: fm_steer_reposition_en renamed to log_level in-place — same offset, same uint16_t, sizeof STILL 184 and SW_VERSION STILL 34, so this flash does NOT reset SPIFFS config (2026-07-25)
 confStruct usrConf;
   //The orginal confs were:  ##// confStruct defaultConf = {SW_VERSION, 1, 0, 0, 50, 0, 0, 1500, 2000, 1500, 2000, 1000, 10, 0, 1, 0, 0, 0, 0, 0, 25.0f, 10.0f, 10.0f, 5.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0, 1000, 1, 0, {0, 0, 0}, {0, 0, 0}, {'1','2','3','4','5','6','7','8'}};
   // Factory default configuration.
@@ -492,7 +552,11 @@ confStruct defaultConf = {SW_VERSION, 2, 22, 1, 50 /*steering_influence: convent
   // to log_level. The default stays 0 on purpose — 0 means "unset" and behaves exactly as level 3
   // (Developer), which is the behaviour every unit already has, so nothing changes on flash.
   0,          // log_level: 0 = unset -> logs as level 3 (Developer). 1/2 accepted but currently log as 3; 4 = Deep.
-  0           // mag_orientation: 0 deg. Set by ?compasscal (north-to-north) or ?magalign.
+  0,          // mag_orientation: 0 deg. Set by ?compasscal (north-to-north) or ?magalign.
+  0,            // rsvd_u16_1  RESERVED - 0 = unused
+
+  0.0f          // rsvd_f32_1  RESERVED - 0 = unused
+
 
 };
 

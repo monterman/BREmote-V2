@@ -121,6 +121,24 @@ const CfgFieldSpec kCfgFields[] = {
   // starts and ends pointing north) or ?magalign. Snapped to cardinals - the 3.2 deg idle
   // noise floor cannot justify finer resolution.
   {"mag_orientation", CFG_U16, offsetof(confStruct, mag_orientation), true, false, true, 0.0f, 270.0f, 0, false},
+  // V2.5-Evo - 2026-08-16 - RESERVED slots, validated but unread. They are listed here so a
+
+  // config blob containing them round-trips through ?conf / ?setconf and JSON import without
+
+  // being rejected as unknown. Ranges are wide on purpose - the eventual meaning is unknown,
+
+  // and a slot that rejects its own future value is worse than useless. When one is claimed,
+
+  // RENAME IT IN PLACE here and in confStruct, tighten the range, and do NOT bump SW_VERSION.
+
+  {"rsvd_u16_1", CFG_U16,   offsetof(confStruct, rsvd_u16_1), true, false, true, 0.0f, 65535.0f, 0, false},
+
+
+
+
+  {"rsvd_f32_1", CFG_FLOAT, offsetof(confStruct, rsvd_f32_1), true, false, true, -1e6f, 1e6f,    3, false},
+
+
   // V2.5-Evo - 2026-07-20 - SW34 reserved fields (validation only; not read by v1 control law)
   // V2.5-Evo - 2026-07-25 - A2: fm_engage_dist_m is NO LONGER RESERVED — it is now read live by
   // runFmLoop() in RTMState.ino. 0 = auto (engage distance computed from min_dist_m + smoothing band);

@@ -60,6 +60,17 @@ Every section of this README has a longer document behind it. Start here when yo
 
 ---
 
+## Contributors
+
+People who have tested, reported, or contributed code to **this fork** specifically. Upstream credit
+for the original hardware and firmware is in [Credits](#credits) below.
+
+| | |
+|---|---|
+| **[robertzach](https://github.com/robertzach)** *(heiguga)* | First outside contributor. Brought **HGLRC M100-5883** support — his [PR #1](https://github.com/monterman/BREmote-V2/pull/1) identified that the module carries a **QMC5883P at 0x2C**, not the QMC5883L the firmware assumed, and his working implementation read from register `0x01`. That independently confirmed the QST datasheet against ArduPilot's driver, which has that init write transposed — so his code was the tiebreaker on a real ambiguity. Also field-tested the dual-compass build within hours of release, and hit the Sea-model altitude ceiling at 550 m, which is why `gps_dyn_model` exists. |
+
+---
+
 ## Credits
 
 BREmote is a collaborative open-source project built by the efoil and esk8 community:

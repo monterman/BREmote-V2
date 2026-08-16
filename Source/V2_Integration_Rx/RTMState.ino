@@ -243,6 +243,28 @@ static bool checkRtmSafetyGates()
 static unsigned long heading_disagree_since_ms = 0;
 static bool          heading_disagree_fault    = false;
 
+
+// V2.5-Evo - 2026-08-16 - Last-good COG, held briefly across a dropout.
+
+// RTM governs the craft to rtm_target_speed_kmh (default 4.0 km/h) while COG is abandoned
+
+// below rtm_cog_min_speed_kmh (default 3). That 1 km/h margin is 0.278 m/s, which is inside
+
+// the speed signal's OWN noise - so the heading source flips on sensor noise alone, before any
+
+// wave or gust. Every flip on a rotated compass injects a large heading error.
+
+// Holding the last good COG across a short dip removes the flapping without changing either
+
+// threshold, and without inventing a heading: a course from 2 seconds ago on a craft doing
+
+// 4 km/h is a far better estimate than a compass that is 87-100 deg wrong under motor load.
+
+static float         cog_last_good_deg = -1.0f;
+
+static unsigned long cog_last_good_ms  = 0;
+
+
 // V2.5-Evo - 2026-05-06 - D5: Layered heading source for RTM steering.
 //
 // Returns the best available heading (deg, 0-360 clockwise from North) based on
@@ -430,13 +452,20 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
     // No comparison possible this tick. Restart the dwell rather than carry a half-finished proof
     // across a gap (same discipline as fm_diverge_since_ms). A fault already PROVEN is kept — it
     // is cleared by a fresh agreement above, or at the re-arm boundary in fmEnterIdle().
-    // V2.5-Evo - 2026-08-16 - FREEZE, do not clear. This branch runs when the comparison is
-    // IMPOSSIBLE (COG invalid), not when the sources agreed. Zeroing here discarded partial
-    // evidence at precisely the handover the tester's failure happened on: a disagreement that
-    // had been building for 4 of the required 5 seconds was wiped the moment COG dropped out,
-    // so the escalation could never fire on the way into the slow zone. Leaving the timestamp
-    // in place is safe - the fault only escalates inside if(disagree_now), which still requires
-    // a live comparison, so a stale clock cannot fault anything on its own.
+    // V2.5-Evo - 2026-08-16 - FREEZE, do not clear. This branch runs when the comparison is
+
+    // IMPOSSIBLE (COG invalid), not when the sources agreed. Zeroing here discarded partial
+
+    // evidence at precisely the handover the tester's failure happened on: a disagreement that
+
+    // had been building for 4 of the required 5 seconds was wiped the moment COG dropped out,
+
+    // so the escalation could never fire on the way into the slow zone. Leaving the timestamp
+
+    // in place is safe - the fault only escalates inside if(disagree_now), which still requires
+
+    // a live comparison, so a stale clock cannot fault anything on its own.
+
   }
 
   if (disagree_now) {
@@ -446,6 +475,10 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
   }
 
   if (cog_valid) {
+    cog_last_good_deg = gps_last_course_deg;
+
+    cog_last_good_ms  = now;
+
     *out_heading = gps_last_course_deg;
     *out_confidence = 3;  // HIGH
     return true;
@@ -502,42 +535,103 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
   //   < 1000ms : MEDIUM (likely still fresh)
   //   1000-8000ms : LOW (degraded; reduce steering authority) — SW45: extended from 3000ms for stationary RTM arm
   //   > 8000ms : NONE (too stale)
+  // ============================================================
+
+  // V2.5-Evo - 2026-08-16 - FIELD BUG: RTM veered at close range.
+
+  //
+
+  // Reported by a beta tester: RTM tracked straight toward him, then turned hard at ~5-7 m.
+
+  // The cause is a HANDOVER. RTM decelerates inside rtm_approach_zone_m, speed falls below
+
+  // rtm_cog_min_speed_kmh, cog_valid goes false, and the heading source switches from GPS COG
+
+  // to the compass snapshot. If the compass is mounted rotated - and before SW35 there was no
+
+  // mag_orientation to correct it - the heading STEPS by the mounting angle at that instant and
+
+  // the steering obeys it.
+
+  //
+
+  // Two guards should have caught that and neither did:
+
+  //
+
+  //   1. The per-tick cross-check needs compare_possible, which requires cog_valid. It can only
+
+  //      run while COG is trustworthy - which is exactly NOT the moment the compass takes over.
+
+  //      The check protects you while you do not need it and stands down when you do.
+
+  //
+
+  //   2. The sticky escalation heading_disagree_fault DID survive, but it was consumed only by
+
+  //      runFmLoop(). Follow-Me was protected against a lying compass; Return-to-Me was not -
+
+  //      runRtmLoop() never read it. An asymmetry between two loops sharing one sensor stack.
+
+  //
+
+  // Fixed at the SOURCE rather than in either loop: if the compass has been caught disagreeing
+
+  // with COG by more than kHeadingDisagreeDeg for kHeadingDisagreeMs, it is not a heading and
+
+  // this function will not hand one out - to RTM, to FM, or to any future consumer. Both
+
+  // callers already treat 'no heading' correctly: updateRtmSteering() sets rtm_steer_override
+
+  // = 127 and holds straight, which at close range is the safe outcome and is what the buggy
+
+  // should have done here.
+
+  //
+
+  // Note this can only ever SUBTRACT trust, matching the stated rule for both guards: it never
+
+  // grants a heading, never raises confidence, never extends an engagement.
+
+  // ============================================================
+
   // ============================================================
-  // V2.5-Evo - 2026-08-16 - FIELD BUG: RTM veered at close range.
+  // V2.5-Evo - 2026-08-16 - HOLD the last good COG across a short dropout.
   //
-  // Reported by a beta tester: RTM tracked straight toward him, then turned hard at ~5-7 m.
-  // The cause is a HANDOVER. RTM decelerates inside rtm_approach_zone_m, speed falls below
-  // rtm_cog_min_speed_kmh, cog_valid goes false, and the heading source switches from GPS COG
-  // to the compass snapshot. If the compass is mounted rotated - and before SW35 there was no
-  // mag_orientation to correct it - the heading STEPS by the mounting angle at that instant and
-  // the steering obeys it.
+  // Before falling back to the compass, prefer a COG that was valid moments ago. RTM drives at
+  // 4.0 km/h with the COG floor at 3 - a 0.278 m/s margin, inside the speed signal's own noise -
+  // so cog_valid flickers on noise alone. Each flicker previously handed steering to a compass
+  // that is 87-100 deg wrong under motor load, and the resulting hard turn SLOWED the craft,
+  // which kept COG invalid, which kept the bad compass in charge. A closed loop with no exit:
+  // that is the 'veers off and never recovers' a tester filmed.
   //
-  // Two guards should have caught that and neither did:
+  // Four independent codebases - Betaflight, iNav, Ardumower, ArduPilot/PX4 - blend COG and
+  // magnetometer continuously rather than switching between them. A full blend is a bigger
+  // change than this craft needs today; holding the last good COG gets most of the benefit for
+  // a fraction of the risk, and changes NEITHER threshold.
   //
-  //   1. The per-tick cross-check needs compare_possible, which requires cog_valid. It can only
-  //      run while COG is trustworthy - which is exactly NOT the moment the compass takes over.
-  //      The check protects you while you do not need it and stands down when you do.
-  //
-  //   2. The sticky escalation heading_disagree_fault DID survive, but it was consumed only by
-  //      runFmLoop(). Follow-Me was protected against a lying compass; Return-to-Me was not -
-  //      runRtmLoop() never read it. An asymmetry between two loops sharing one sensor stack.
-  //
-  // Fixed at the SOURCE rather than in either loop: if the compass has been caught disagreeing
-  // with COG by more than kHeadingDisagreeDeg for kHeadingDisagreeMs, it is not a heading and
-  // this function will not hand one out - to RTM, to FM, or to any future consumer. Both
-  // callers already treat 'no heading' correctly: updateRtmSteering() sets rtm_steer_override
-  // = 127 and holds straight, which at close range is the safe outcome and is what the buggy
-  // should have done here.
-  //
-  // Note this can only ever SUBTRACT trust, matching the stated rule for both guards: it never
-  // grants a heading, never raises confidence, never extends an engagement.
+  // Confidence is deliberately dropped to 2 (MEDIUM): a 2-second-old course is still a real
+  // measurement, but it is stale and the caller should not treat it like a live one.
   // ============================================================
-  if (heading_disagree_fault) {
-    *out_heading = -1.0f;
-    *out_confidence = 0;
-    return false;
+  if (cog_last_good_deg >= 0.0f && cog_last_good_ms > 0 &&
+      (now - cog_last_good_ms) < (unsigned long)kCogHoldMs) {
+    *out_heading = cog_last_good_deg;
+    *out_confidence = 2;   // MEDIUM - real course, but stale
+    return true;
   }
 
+  if (heading_disagree_fault) {
+
+    *out_heading = -1.0f;
+
+    *out_confidence = 0;
+
+    return false;
+
+  }
+
+
+
   if (compass_snapshot_heading >= 0.0f && compass_snapshot_ms > 0) {
     unsigned long age_ms = now - compass_snapshot_ms;
     if (age_ms < 1000UL) {

@@ -553,9 +553,11 @@ confStruct defaultConf = {SW_VERSION, 2, 22, 1, 50 /*steering_influence: convent
   // (Developer), which is the behaviour every unit already has, so nothing changes on flash.
   0,          // log_level: 0 = unset -> logs as level 3 (Developer). 1/2 accepted but currently log as 3; 4 = Deep.
   0,          // mag_orientation: 0 deg. Set by ?compasscal (north-to-north) or ?magalign.
-  0,            // rsvd_u16_1  RESERVED - 0 = unused
+  0,            // rsvd_u16_1  RESERVED - 0 = unused
 
-  0.0f          // rsvd_f32_1  RESERVED - 0 = unused
+
+  0.0f          // rsvd_f32_1  RESERVED - 0 = unused
+
 
 
 };
@@ -656,6 +658,11 @@ static const uint32_t kHeadingDisagreeMs    = 5000;   // ms of sustained disagre
 // requires before it will call a snapshot MEDIUM confidence, i.e. the only compass data this
 // firmware already treats as simultaneous with now. Outside it, guard 2 simply does not run —
 // no comparison is better than a comparison of two different moments in time.
+// V2.5-Evo - 2026-08-16 - How long a COG stays usable after cog_valid goes false. Bridges the
+// noise-driven flicker between GPS course and compass that RTM's 4.0 km/h target creates
+// against a 3 km/h COG floor. 3 s is ~3.3 m of travel at that speed - short enough that the
+// held course is still true, long enough to cover the dips that caused the flapping.
+static const uint32_t kCogHoldMs           = 3000;   // ms; hold last-good COG across a dropout
 static const uint32_t kHeadingCompareSnapMs = 1000;   // ms; max compass-snapshot age for a valid comparison
 
 #include "../Common/ConfigServiceEngine.h"

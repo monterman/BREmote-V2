@@ -129,7 +129,7 @@ void setRtmArmed()
   // success path leaves it at 0 so calcRtmThrottleCap() ramp takes over on first RTM_ACTIVE tick.
   rtm_thr_cap_tx   = 0;
   queueMetaPacketBurst(0xF1, 0);   // tell RX: RTM armed but not yet active
-  current_vib_pattern = 4;         // Pattern 4: 2 fast short = RTM arm confirm
+  if (current_vib_pattern == 0) current_vib_pattern = 4;         // Pattern 4: 2 fast short = RTM arm confirm
   runDoubleSqueezeArm();            // Bug4: handles both single and double squeeze
 }
 
@@ -156,7 +156,14 @@ static void rtmDisengage()
   queueMetaPacketBurst(0xF1, 0);  // tell RX: RTM inactive
 
   // Fire the STOP confirm BEFORE the blocking display so vibration runs during the 2s flash
-  current_vib_pattern = 7;  // Pattern 7: one 400ms long buzz = RTM disengage/STOP confirm
+  // V2.5-Evo - 2026-08-16 - HAPTIC CUT: silent on a DELIBERATE disarm. You just did it, and
+
+  // the display already says so - RTM/FM stops being shown and the stop confirm appears. A buzz
+
+  // confirming your own action is noise, and it was the single most frequent buzz in the system.
+
+  // Pattern 7 now means ONE thing: the system stopped, and you did not ask it to.
+
 
   // Large-font stop confirm: LET_S(32) renders as "5", LET_T(20) renders as "t".
   // "5t" appearance is intentional — matches large-font style of F0-F3 confirms.
@@ -232,7 +239,7 @@ static void runDoubleSqueezeArm()
     // Single-squeeze: unlock, pause, then Pattern 4 + "r n" arm confirm
     unlockAnimation();
     gpsKeepAliveDelay(750);   // V2.5-Evo - 2026-06-05: was 250 — +500ms so the "armed" buzz is clearly separated from the squeeze
-    current_vib_pattern = 4;   // Pattern 4 after visual unlock completes
+    if (current_vib_pattern == 0) current_vib_pattern = 4;   // Pattern 4 after visual unlock completes
     DISP_LOCK(); displayDigitZone("r n"); updateDisplay(); DISP_UNLOCK();
     gpsKeepAliveDelay(2000);
   }
@@ -271,7 +278,7 @@ static void runDoubleSqueezeArm()
     // Second squeeze confirmed: unlock, pause, then Pattern 4 + "r n" arm confirm
     unlockAnimation();
     gpsKeepAliveDelay(750);   // V2.5-Evo - 2026-06-05: was 250 — +500ms so the "armed" buzz is clearly separated from the squeeze
-    current_vib_pattern = 4;   // Pattern 4 after visual unlock completes
+    if (current_vib_pattern == 0) current_vib_pattern = 4;   // Pattern 4 after visual unlock completes
     DISP_LOCK(); displayDigitZone("r n"); updateDisplay(); DISP_UNLOCK();
     gpsKeepAliveDelay(2000);
   }
@@ -510,7 +517,14 @@ static void fmDisarm()
   fm_throttle_seen = false;
   fm_last_sync_ms  = 0;            // Change E: clear keepalive timer
   queueMetaPacketBurst(0xF2, 0);   // mode 0 = FM disabled on RX (followme_mode=0)
-  current_vib_pattern = 7;         // Pattern 7: one 400ms long buzz = FM STOP/disarm confirm
+  // V2.5-Evo - 2026-08-16 - HAPTIC CUT: silent on a DELIBERATE disarm. You just did it, and
+
+  // the display already says so - RTM/FM stops being shown and the stop confirm appears. A buzz
+
+  // confirming your own action is noise, and it was the single most frequent buzz in the system.
+
+  // Pattern 7 now means ONE thing: the system stopped, and you did not ask it to.
+
   // Large-font stop confirm on FM disarm.
   DISP_LOCK(); displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
   gpsKeepAliveDelay(2000);
@@ -540,7 +554,14 @@ void cycleFmMode()
         // F0: FM disabled — disarm with brief visual confirm and return to normal display.
         // Sends 0xF2/0 to RX (FM off), fires Pattern 7 (STOP confirm), resets mode to SPIFFS default.
         // This is RAM-only; power cycle restores usrConf.followme_mode.
-        current_vib_pattern = 7;         // Pattern 7: one 400ms long buzz = FM STOP/disarm confirm
+        // V2.5-Evo - 2026-08-16 - HAPTIC CUT: silent on a DELIBERATE disarm. You just did it, and
+
+        // the display already says so - RTM/FM stops being shown and the stop confirm appears. A buzz
+
+        // confirming your own action is noise, and it was the single most frequent buzz in the system.
+
+        // Pattern 7 now means ONE thing: the system stopped, and you did not ask it to.
+
         // Large-font F0 disarm confirm: LET_F + 0. Shorter hold (1s) — this is a disarm, not a mode select.
         DISP_LOCK();
         displayDigits(LET_F, 0);
@@ -598,7 +619,7 @@ void cycleFmMode()
   fm_armed         = true;
   fm_arm_ms        = millis();
   fm_throttle_seen = false;
-  current_vib_pattern = 4;         // Pattern 4: 2 fast buzzes = arm confirm
+  if (current_vib_pattern == 0) current_vib_pattern = 4;         // Pattern 4: 2 fast buzzes = arm confirm
   fm_last_sync_ms  = millis();     // Change E: start keepalive timer from now (avoids immediate re-sync)
 
   // V2.5-Evo - 2026-04-29 - Display: show actual mode being armed (F1/F2/F3) in large font
@@ -625,7 +646,12 @@ void cycleFmModeArmed()
     // F0: FM disabled — disarm with brief visual confirm and return to normal display.
     // Sends 0xF2/0 to RX (FM off), fires Pattern 4, resets mode to SPIFFS default.
     // This is RAM-only; power cycle restores usrConf.followme_mode.
-    current_vib_pattern = 4;
+    // V2.5-Evo - 2026-08-16 - HAPTIC CUT: no buzz on a mode CYCLE. You are actively
+
+    // pressing through modes and watching the display change; the arm buzz already fired
+
+    // once when you armed. Repeating it per mode is what made the patterns unreadable.
+
     // Large-font F0 disarm confirm: LET_F + 0. Shorter hold (1s) — this is a disarm, not a mode select.
     DISP_LOCK();
     displayDigits(LET_F, 0);
@@ -692,7 +718,7 @@ void runFmLoop()
       // buzz (Pattern 7). Placed at the call site (not inside fmSilentDisarm) so it fires ONLY on
       // arm-window expiry, never on the RTM-preemption path that also calls fmSilentDisarm().
       fmSilentDisarm();   // arm window expired before first throttle — no blocking confirm
-      current_vib_pattern = 5;   // nudge: one short blip
+      if (current_vib_pattern == 0) current_vib_pattern = 5;   // nudge: one short blip
       return;
     }
   }

@@ -55,6 +55,12 @@ const CfgFieldSpec kCfgFields[] = {
   {"tx_gps_stale_timeout_ms", CFG_U16, offsetof(confStruct, tx_gps_stale_timeout_ms), true, false, true, 0.0f, 65535.0f, 0, false},
   // V2.5-Evo - 2026-04-22 - GPS chip type: 0=BN-220, 1=BN-880+compass (RX default), 2=M10, 3=M10+compass
   {"gps_chip_type", CFG_U16, offsetof(confStruct, gps_chip_type), true, false, true, 0.0f, 3.0f, 0, false},
+  // V2.5-Evo - 2026-08-16 - gps_dyn_model: u-blox NAV5 dynamic platform model.
+  // 0 = default (Sea) | 4 = Automotive | 5 = Sea. Range 0-5 with 1/2/3 rejected by
+  // gpsBuildNav5(), which resolves anything that is not an explicit 4 to Sea — so an
+  // out-of-range or corrupt value fails toward the conservative model, never toward
+  // dynModel 0 (Portable). Sea has a 500 m altitude ceiling; above that use 4.
+  {"gps_dyn_model",  CFG_U16, offsetof(confStruct, gps_dyn_model),  true, false, true, 0.0f, 5.0f, 0, false},
   // V2.5-Evo - 2026-04-22 - Phase A GPS anti-spoofing parameters
   {"gps_max_hdop",           CFG_FLOAT, offsetof(confStruct, gps_max_hdop),           true, false, true,  0.5f,  5.0f, 1, false},
   {"gps_max_accel_g",        CFG_FLOAT, offsetof(confStruct, gps_max_accel_g),        true, false, true,  1.0f, 10.0f, 1, false},
@@ -119,9 +125,11 @@ const CfgFieldSpec kCfgFields[] = {
   // V2.5-Evo - 2026-07-25 - F3-c: setting 0 does not bypass that minimum. runFmLoop() applies the
   // same kFmEngageDistFloorM clamp to the AUTO-computed engage distance too, so a small min_dist_m /
   // smoothing-band tuning can no longer produce an on-rope engage distance down the automatic path.
-  // auton_runtime_cap_s remains RESERVED and unread.
+  // V2.5-Evo - 2026-08-16 - auton_runtime_cap_s was RENAMED IN PLACE to gps_dyn_model
+  // (registered above, next to gps_chip_type). Same offset, same uint16_t, sizeof stays
+  // 184 and SW_VERSION stays 34 - no config wipe. The old key was RESERVED and never read
+  // by any logic, so nothing is displaced; a board that had it set simply reads 0 = Sea.
   {"fm_engage_dist_m",       CFG_FLOAT, offsetof(confStruct, fm_engage_dist_m),       true, false, true, 0.0f,  50.0f,   1, false},
-  {"auton_runtime_cap_s",    CFG_U16,   offsetof(confStruct, auton_runtime_cap_s),    true, false, true, 0.0f, 3600.0f,  0, false},
   // V2.5-Evo - 2026-07-25 - STAGE 0 PART A: this row was fm_steer_reposition_en. The slot has been
   // RENAMED IN PLACE in confStruct to log_level — same offset, same uint16_t — so sizeof stays 184,
   // SW_VERSION stays 34 and no config is wiped. Only the key, the range and the meaning change here.

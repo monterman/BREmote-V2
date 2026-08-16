@@ -322,6 +322,55 @@ static void ubxAppendChecksum(byte *frame, size_t frameLen)
   frame[frameLen - 1] = ckB;
 }
 
+// ============================================================
+// gpsBuildNav5 - CFG-NAV5 frame carrying the CONFIGURED dynamic model
+// ============================================================
+// V2.5-Evo - 2026-08-16 - dynModel became selectable (usrConf.gps_dyn_model) because Sea's
+// 500 m altitude ceiling is a real limit for real users — the first beta tester to fit an
+// M100-5883 lives at 550 m, already above it. Sea stays the default and stays correct at
+// sea level.
+//
+// ONE builder, called from both configureGPS() and cmdGpsSetup(). The payload used to be a
+// pre-checksummed literal duplicated in both, which is precisely the shape that let the UBX
+// checksum bug live on the TX for thirteen days after the RX was fixed. Build it once.
+//
+// The checksum is COMPUTED, never selected from a table of pre-calculated pairs: two
+// hard-coded checksums is two chances to ship a wrong one, and a bad checksum fails SILENTLY
+// — the module ignores the write and stays in whatever model it had, which on a fresh module
+// is dynModel 0 (Portable), the exact setting this mechanism exists to escape.
+//
+// Layout: [0..1] sync · [2..3] class/id 0x06/0x24 CFG-NAV5 · [4..5] len 0x0024
+//         [6..7] mask 0x0001 (apply dynModel only) · [8] dynModel · [9] fixMode
+//         ...u-blox default field values... · [42..43] checksum, filled here.
+// mask=0x0001 applies dynModel alone, but the frame carries real defaults rather than zeros,
+// which is the safer form.
+#define GPS_NAV5_FRAME_LEN 44
+
+static uint8_t gpsBuildNav5(byte out[GPS_NAV5_FRAME_LEN])
+{
+  static const byte kNav5Template[GPS_NAV5_FRAME_LEN] = {
+    0xB5,0x62,0x06,0x24,0x24,0x00,0x01,0x00,0x05,0x03,
+    0x00,0x00,0x00,0x00,0x10,0x27,0x00,0x00,0x05,0x00,
+    0xFA,0x00,0xFA,0x00,0x64,0x00,0x5E,0x01,0x00,0x3C,
+    0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+    0x00,0x00,0x00,0x00
+  };
+  memcpy(out, kNav5Template, GPS_NAV5_FRAME_LEN);
+
+  // 0 must mean exactly the pre-existing hard-coded behaviour (Sea): after the in-place
+  // rename of the reserved slot, every board already in the field holds 0 here. Anything
+  // other than an explicit 4 resolves to Sea — so a corrupt or out-of-range value fails
+  // toward the conservative model rather than toward Portable.
+  const uint8_t dyn = (usrConf.gps_dyn_model == 4) ? 4 : 5;
+  out[8] = dyn;
+  ubxAppendChecksum(out, GPS_NAV5_FRAME_LEN);
+  return dyn;
+}
+
+static inline const char* gpsDynModelName(uint8_t dyn) {
+  return (dyn == 4) ? "Automotive" : "Sea";
+}
+
 static uint8_t ubxSendAckedT(const byte *msg, size_t len, uint8_t tries);
 
 // Set ONE config item via UBX-CFG-VALSET (0x06 0x8A) — the modern interface M9/M10 require.
@@ -707,13 +756,9 @@ void configureGPS() {
   // is applied, but carrying real defaults rather than zeros is the safer form. Checksum
   // 0x86/0x51 independently recomputed and verified 2026-07-27.
   // ============================================================
-  static const byte setNav5Sea[] = {
-    0xB5,0x62,0x06,0x24,0x24,0x00,0x01,0x00,0x05,0x03,
-    0x00,0x00,0x00,0x00,0x10,0x27,0x00,0x00,0x05,0x00,
-    0xFA,0x00,0xFA,0x00,0x64,0x00,0x5E,0x01,0x00,0x3C,
-    0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
-    0x00,0x00,0x86,0x51
-  };
+  byte setNav5Sea[GPS_NAV5_FRAME_LEN];
+  const uint8_t dyn_sel  = gpsBuildNav5(setNav5Sea);
+  const char   *dyn_name = gpsDynModelName(dyn_sel);
   // ============================================================
   // V2.5-Evo - 2026-07-30 - RX GPS-BAUD-1: LISTEN, THEN DECIDE THE DIALECT.
   //
@@ -835,10 +880,11 @@ void configureGPS() {
                                        KEY_MSGOUT_NMEA_VTG_U1, &off, 1);
 
   // Report per-write, so a rejected config is visible at boot instead of silently shipping.
-  Serial.printf("GPS config [%s]: dynModel=Sea %s | GSV %s | GLL %s | VTG %s\n",
+  Serial.printf("GPS config [%s]: dynModel=%s %s | GSV %s | GLL %s | VTG %s\n",
                 dialect == UBX_DIALECT_LEGACY ? "legacy CFG (u-blox 6/7/8)"
               : dialect == UBX_DIALECT_VALSET ? "CFG-VALSET (u-blox M9/M10)"
                                               : "UNVERIFIED - module sends no ACK",
+                dyn_name,
                 nav5_status, gsv_status, gll_status, vtg_status);
 
   if (dialect == UBX_DIALECT_MUTE)
@@ -1244,13 +1290,9 @@ void cmdGpsSetup(const String &args)
   }
 
   Serial.println("[4/6] applying config (persisted)...");
-  static const byte setNav5Sea[] = {
-    0xB5,0x62,0x06,0x24,0x24,0x00,0x01,0x00,0x05,0x03,
-    0x00,0x00,0x00,0x00,0x10,0x27,0x00,0x00,0x05,0x00,
-    0xFA,0x00,0xFA,0x00,0x64,0x00,0x5E,0x01,0x00,0x3C,
-    0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
-    0x00,0x00,0x86,0x51
-  };
+  byte setNav5Sea[GPS_NAV5_FRAME_LEN];
+  const uint8_t dyn_sel  = gpsBuildNav5(setNav5Sea);
+  const char   *dyn_name = gpsDynModelName(dyn_sel);
   static const byte disableGSV[] = { 0xB5,0x62,0x06,0x01,0x08,0x00,0xF0,0x03,0x00,0x00,0x00,0x00,0x00,0x00,0x02,0x38 };
   static const byte disableGLL[] = { 0xB5,0x62,0x06,0x01,0x08,0x00,0xF0,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x2A };
   static const byte disableVTG[] = { 0xB5,0x62,0x06,0x01,0x08,0x00,0xF0,0x05,0x00,0x00,0x00,0x00,0x00,0x00,0x04,0x46 };
@@ -1265,8 +1307,8 @@ void cmdGpsSetup(const String &args)
                                    KEY_MSGOUT_NMEA_GLL_U1, &off, 1, true);
   const char *s_vtg  = gpsApplyCfg(dialect, disableVTG, sizeof(disableVTG),
                                    KEY_MSGOUT_NMEA_VTG_U1, &off, 1, true);
-  Serial.printf("  dynModel=Sea %s | GSV %s | GLL %s | VTG %s\n",
-                s_nav5, s_gsv, s_gll, s_vtg);
+  Serial.printf("  dynModel=%s %s | GSV %s | GLL %s | VTG %s\n",
+                dyn_name, s_nav5, s_gsv, s_gll, s_vtg);
 
   Serial.print("[5/6] asking the module to save (BBR, plus flash if fitted)... ");
   Serial.println(gpsSaveConfig() ? "OK" : "NOT CONFIRMED");

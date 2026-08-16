@@ -9,7 +9,8 @@ folder) · app offset **`0x10000`**
 
 | File | SW | What it is |
 |---|---|---|
-| `BREmote-RX-SW34-dual-compass.bin` | 34 | **Start here.** Current. Everything in `gps-verified` **plus automatic compass detection** — drives the **QMC5883L** (BN-880) *or* the **QMC5883P** (HGLRC M100-5883) from one image, chosen at boot by I²C address. See below. |
+| `BREmote-RX-SW34-dyn-model.bin` | 34 | **Start here.** Current. Everything in `dual-compass` **plus a selectable GPS dynamic model** — set `gps_dyn_model 4` if you ride above ~500 m altitude. See below. |
+| `BREmote-RX-SW34-dual-compass.bin` | 34 | **Field-verified by a beta tester** on an HGLRC M100-5883 (2026-08-16). Everything in `gps-verified` **plus automatic compass detection** — drives the **QMC5883L** (BN-880) *or* the **QMC5883P** (HGLRC M100-5883) from one image, chosen at boot by I²C address. See below. |
 | `BREmote-RX-SW34-gps-verified.bin` | 34 | The previous build, **kept deliberately** — the field-proven one. QMC5883L only. ACK-verified GPS config with automatic `CFG-VALSET` fallback, so it works with a BN-880 *and* with an M10. Adds `?gpsbaud`, `?gpssetup`. |
 | `BREmote-RX-SW34-pre-gpsbaud.bin` | 34 | The build immediately **before** the baud work. Use this to isolate whether a problem is GPS-related. |
 | `BREmote-RX-SW32-rtm-working.bin` | 32 | Known-good historical build from 2026-06-05. RTM working; Follow-Me not yet matured. Fallback if something newer misbehaves. |
@@ -48,6 +49,36 @@ They also differ in sensitivity at 8 G (3000 vs 3750 LSB/G) and in axis frame.
 >
 > **Both builds are `SW_VERSION` 34, so moving between them does NOT touch your settings** — flash
 > either way freely, no re-pairing, no re-calibration.
+
+### What `dyn-model` adds (2026-08-16)
+
+**`gps_dyn_model` — the u-blox navigation filter's platform model, now a setting.**
+
+| Value | Model | Use it when |
+|---|---|---|
+| **0** | default → Sea | **Leave it here.** What every board already does. |
+| **4** | Automotive | **You ride above ~500 m altitude.** Sea has a 500 m ceiling and fixes degrade above it. |
+| **5** | Sea (explicit) | Same as 0, stated outright. |
+
+```
+?set gps_dyn_model 4
+?save
+```
+Reboot. The boot log then reads `dynModel=Automotive` instead of `dynModel=Sea`.
+
+**Why Sea remains the default.** Below 500 m it is the better model: it constrains the filter to
+~25 m/s and pins altitude near the surface, which removes a degree of freedom and sharpens
+course-over-ground — and COG is what Follow-Me actually steers on. Switching everyone to Automotive
+would cost every sea-level rider that sharpening to fix a problem they do not have.
+
+**Why Portable is not offered.** u-blox's dynModel 0 permits 310 m/s. It is what produced the bogus
+254 km/h / 4800 m *high-confidence* fixes that started this whole line of work. Anything that is not
+an explicit `4` resolves to Sea, so a corrupt or out-of-range value fails toward the conservative
+model — never toward Portable.
+
+> **No config wipe.** This reuses a reserved `uint16_t` slot renamed in place, so
+> `sizeof(confStruct)` stays 184 and `SW_VERSION` stays 34. Every existing board reads `0` there,
+> which means Sea — exactly what it did before. Nothing to re-pair, nothing to re-calibrate.
 
 ## Flash it
 

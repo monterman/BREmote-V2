@@ -366,8 +366,22 @@ struct confStruct {
     //   length lets FM engage while you are still on the rope. 8.0 m is the enforced minimum, not a
     //   recommendation — a longer rope needs a bigger number.
     float    fm_engage_dist_m;         // 0 = auto; >0 = fixed engage distance in metres; 0, or 8-50 m
-    // auton_runtime_cap_s: RESERVED shared RTM/FM autonomous-runtime cap. 0 = disabled (matches TX rtm_max_runtime_s default). Not read by v1.
-    uint16_t auton_runtime_cap_s;      // 0 = disabled; range 0-3600 s
+    // V2.5-Evo - 2026-08-16 - RENAMED IN PLACE: auton_runtime_cap_s -> gps_dyn_model.
+    // Same offset, same uint16_t, so sizeof(confStruct) stays 184, the static_assert is
+    // unchanged, SW_VERSION stays 34 and NOBODY'S CONFIG IS WIPED. Same trick as
+    // fm_steer_reposition_en -> log_level (2026-07-25) and dummy_delete_me ->
+    // rtm_steer_response (Bundle 1). The old field was RESERVED and never read by v1, so
+    // no behaviour is displaced. Every board in the field currently holds 0 here — which is
+    // why 0 MUST mean "the previous hard-coded behaviour", i.e. Sea.
+    //
+    // u-blox NAV5 dynamic platform model, applied by configureGPS().
+    //   0 = default -> Sea (5). What every existing board already does.
+    //   4 = Automotive — REQUIRED above ~500 m; Sea's altitude ceiling is 500 m.
+    //   5 = Sea (explicit) — best below 500 m: constrains the filter to ~25 m/s and pins
+    //       altitude, which sharpens course-over-ground, and COG is what Follow-Me steers on.
+    // Deliberately NOT offering dynModel 0 (Portable): it permits 310 m/s and is what produced
+    // the bogus 254 km/h / 4800 m HIGH-CONFIDENCE fixes. No reason to expose it.
+    uint16_t gps_dyn_model;            // 0 = default (Sea) | 4 = Automotive | 5 = Sea
     // ============================================================
     // V2.5-Evo - 2026-07-25 - STAGE 0 PART A: log_level (IN-PLACE RENAME, NO SPIFFS WIPE)
     //
@@ -458,7 +472,7 @@ confStruct defaultConf = {SW_VERSION, 2, 22, 1, 50 /*steering_influence: convent
   0.75f,      // motor_ramp_s: motors ramp 0->full over 0.75s (0=instant/off, 0-4s); also ramps steering
   // V2.5-Evo - 2026-07-20 - SW34 slots. 2026-07-25 A2: fm_engage_dist_m is now live; the other two stay reserved/unread.
   0.0f,       // fm_engage_dist_m: 0 = auto (RTMState computes d_engage from min_dist + band); >0 = fixed engage distance in metres
-  0,          // auton_runtime_cap_s: 0 = disabled
+  0,          // gps_dyn_model: 0 = default -> Sea (was auton_runtime_cap_s, renamed in place 2026-08-16)
   // V2.5-Evo - 2026-07-25 - STAGE 0 PART A: this slot was fm_steer_reposition_en, renamed in place
   // to log_level. The default stays 0 on purpose — 0 means "unset" and behaves exactly as level 3
   // (Developer), which is the behaviour every unit already has, so nothing changes on flash.

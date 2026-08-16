@@ -5,10 +5,79 @@
 #include <Wire.h>
 #include <esp_task_wdt.h> // <-- Added to feed the Watchdog
 
+// ============================================================
+// Supported magnetometers — detected at boot by I2C address
+// ============================================================
+// The I2C address IS the part identification, so no config field is needed and
+// no confStruct/SW_VERSION change is required: one image drives either module.
+//
+//   0x0D = QMC5883L  — Beitian BN-880, HGLRC M100 Pro
+//   0x2C = QMC5883P  — HGLRC M100-5883
+//   0x1E = HMC5883L  — very old BN-880 stock. NOT supported; reported, not driven.
+//
+// ⚠ These are different silicon, not a revision. The data block starts at a
+// DIFFERENT register (L: 0x00, P: 0x01), so pointing the L driver at a P returns
+// CHIPID,XL,XH,YL,YH,ZL — every axis shifted one byte. That yields a smoothly
+// varying, entirely wrong heading with no error anywhere. On a Follow-Me buggy
+// that is a safety-grade failure, which is why the read path branches on the part
+// rather than just on the address.
 #define QMC5883L_ADDR 0x0D
+#define QMC5883P_ADDR 0x2C
+#define HMC5883L_ADDR 0x1E
+
+enum CompassChip : uint8_t {
+  COMPASS_NONE     = 0,
+  COMPASS_QMC5883L = 1,
+  COMPASS_QMC5883P = 2
+};
 
 int16_t magX = 0, magY = 0, magZ = 0;
 bool compass_detected = false;
+
+CompassChip compass_chip     = COMPASS_NONE;  // which part answered at boot
+uint8_t     compass_addr     = QMC5883L_ADDR; // its I2C address
+uint8_t     compass_data_reg = 0x00;          // first data register: L=0x00, P=0x01
+
+// Human-readable part name for ?i2c / ?magtest / boot log.
+const char* compassChipName() {
+  switch (compass_chip) {
+    case COMPASS_QMC5883L: return "QMC5883L";
+    case COMPASS_QMC5883P: return "QMC5883P";
+    default:               return "none";
+  }
+}
+
+// Single-register write. Takes the I2C mutex itself, matching the style below.
+static bool compassWriteReg(uint8_t addr, uint8_t reg, uint8_t val) {
+  xSemaphoreTake(i2cMutex, portMAX_DELAY);
+  Wire.beginTransmission(addr);
+  Wire.write(reg);
+  Wire.write(val);
+  bool ok = (Wire.endTransmission() == 0);
+  xSemaphoreGive(i2cMutex);
+  return ok;
+}
+
+// Single-register read. Returns false on any bus error; value in *out.
+static bool compassReadReg(uint8_t addr, uint8_t reg, uint8_t *out) {
+  xSemaphoreTake(i2cMutex, portMAX_DELAY);
+  Wire.beginTransmission(addr);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) { xSemaphoreGive(i2cMutex); return false; }
+  bool ok = (Wire.requestFrom((uint8_t)addr, (uint8_t)1, (uint8_t)true) == 1);
+  if (ok) *out = Wire.read();
+  xSemaphoreGive(i2cMutex);
+  return ok;
+}
+
+// Does anything ACK at this address?
+static bool compassProbe(uint8_t addr) {
+  xSemaphoreTake(i2cMutex, portMAX_DELAY);
+  Wire.beginTransmission(addr);
+  bool ack = (Wire.endTransmission() == 0);
+  xSemaphoreGive(i2cMutex);
+  return ack;
+}
 float         compass_snapshot_heading = -1.0f; // Last "clean" compass heading captured while motor was idle (degrees, 0–360 clockwise from North). -1.0f = no valid snapshot yet.
 unsigned long compass_snapshot_ms      = 0;     // millis() timestamp of last snapshot capture. 0 = no snapshot yet.
 
@@ -18,55 +87,103 @@ extern void cmdSave(const String& params);
 void initCompass() {
   Wire.setTimeOut(20);
 
-  xSemaphoreTake(i2cMutex, portMAX_DELAY);
-  Wire.beginTransmission(QMC5883L_ADDR);
-  bool found = (Wire.endTransmission() == 0);
-  xSemaphoreGive(i2cMutex);
+  compass_detected = false;
+  compass_chip     = COMPASS_NONE;
 
-  if (found) {
-    compass_detected = true;
-    Serial.println("QMC5883L Compass detected. Initializing...");
-
-    xSemaphoreTake(i2cMutex, portMAX_DELAY);
-    Wire.beginTransmission(QMC5883L_ADDR);
-    Wire.write(0x0B);
-    Wire.write(0x01);
-    Wire.endTransmission();
-    xSemaphoreGive(i2cMutex);
-
-    // 50Hz Data Rate for stability
-    xSemaphoreTake(i2cMutex, portMAX_DELAY);
-    Wire.beginTransmission(QMC5883L_ADDR);
-    Wire.write(0x09);
-    Wire.write(0x15);
-    Wire.endTransmission();
-    xSemaphoreGive(i2cMutex);
-
-    Serial.println("Compass Init OK (50Hz Mode).");
-  } else {
-    compass_detected = false;
-    Serial.println("WARNING: QMC5883L Compass not found during init.");
+  // ---- Detect which part is fitted -------------------------------------
+  // The ACK is the primary evidence; the chip-ID register only confirms it.
+  // Deliberately that way round: the L's ID value is 0xFF, which is also what an
+  // idle-high bus reads, so ID-first would be a weak signature. The P's 0x80 is
+  // unambiguous, so 0x2C is probed first.
+  if (compassProbe(QMC5883P_ADDR)) {
+    uint8_t id = 0;
+    if (compassReadReg(QMC5883P_ADDR, 0x00, &id) && id == 0x80) {
+      compass_chip = COMPASS_QMC5883P;
+    } else {
+      // ACKed at 0x2C but the ID did not read back as expected. Trust the ACK —
+      // nothing else in this system lives at 0x2C — and say so.
+      compass_chip = COMPASS_QMC5883P;
+      Serial.printf("Compass: 0x2C ACKed but chip ID read 0x%02X (expected 0x80) — driving as QMC5883P anyway.\n", id);
+    }
+    compass_addr     = QMC5883P_ADDR;
+    compass_data_reg = 0x01;                 // P data block starts at 0x01
   }
+  else if (compassProbe(QMC5883L_ADDR)) {
+    compass_chip     = COMPASS_QMC5883L;
+    compass_addr     = QMC5883L_ADDR;
+    compass_data_reg = 0x00;                 // L data block starts at 0x00
+  }
+  else if (compassProbe(HMC5883L_ADDR)) {
+    // Old Honeywell part on very early BN-880 stock. Different register map
+    // again; not driven here. Report it clearly rather than failing silently,
+    // so the owner knows the module is alive and simply unsupported.
+    Serial.println("WARNING: HMC5883L found at 0x1E — NOT supported. Fit a BN-880 (QMC5883L) or M100-5883 (QMC5883P).");
+    return;
+  }
+  else {
+    Serial.println("WARNING: no compass found at 0x2C / 0x0D / 0x1E.");
+    Serial.println("         Check gps_chip_type is 1 or 3 (a compass-equipped module) and the I2C wiring.");
+    return;
+  }
+
+  // ---- Configure it ----------------------------------------------------
+  if (compass_chip == COMPASS_QMC5883P) {
+    // QST QMC5883P datasheet §7.2 continuous-mode example. Matches iNav.
+    // NOTE: 0x29 = 0x06 sets the axis signs and is MANDATORY. It appears only in
+    // the application examples, not in the register-map table. ArduPilot's driver
+    // has this transposed (writes 0x29 into register 0x06, a read-only data
+    // register) — do not copy it.
+    compassWriteReg(QMC5883P_ADDR, 0x0B, 0x80);  // soft reset
+    delay(30);
+    compassWriteReg(QMC5883P_ADDR, 0x29, 0x06);  // axis sign — mandatory
+    compassWriteReg(QMC5883P_ADDR, 0x0B, 0x08);  // CR2: set/reset on, range 8 G
+    compassWriteReg(QMC5883P_ADDR, 0x0A, 0xC7);  // CR1: OSR2/OSR1 max, ODR 50 Hz, MODE continuous (11)
+    compass_detected = true;
+    Serial.println("QMC5883P compass detected at 0x2C. Init OK (8 G, 50 Hz, continuous).");
+  }
+  else {
+    // QMC5883L — unchanged from the long-standing BN-880 path. 0x15 =
+    // OSR 512, range 8 G, ODR 50 Hz, MODE continuous (01).
+    compassWriteReg(QMC5883L_ADDR, 0x0B, 0x01);  // SET/RESET period FBR
+    compassWriteReg(QMC5883L_ADDR, 0x09, 0x15);  // CR1
+    compass_detected = true;
+    Serial.println("QMC5883L compass detected at 0x0D. Init OK (8 G, 50 Hz, continuous).");
+  }
+
+  // A stored calibration cannot cross a part change: mag_offset_* are raw counts,
+  // and the two parts differ in sensitivity at 8 G (L 3000 vs P 3750 LSB/G) and in
+  // axis frame. Heading itself is atan2(y,x) so a uniform scale error cancels — the
+  // offsets do not. Re-run ?compasscal after swapping modules.
+  Serial.println("If you have just changed GPS/compass module, run ?compasscal before trusting FM/RTM heading.");
 }
 
 bool readCompassRaw() {
   if (!compass_detected) return false;
 
+  // compass_addr and compass_data_reg were set by initCompass() from the detected
+  // part. The data-register base is the difference that matters: QMC5883L starts
+  // at 0x00, QMC5883P at 0x01. Reading from the wrong base does not error — it
+  // shifts every axis by one byte and returns a plausible, wrong heading.
   xSemaphoreTake(i2cMutex, portMAX_DELAY);
-  Wire.beginTransmission(QMC5883L_ADDR);
-  Wire.write(0x00);
+  Wire.beginTransmission(compass_addr);
+  Wire.write(compass_data_reg);
   if (Wire.endTransmission(false) != 0) {
     xSemaphoreGive(i2cMutex);
     return false;
   }
 
-  uint8_t bytesReceived = Wire.requestFrom((uint8_t)QMC5883L_ADDR, (uint8_t)6, (uint8_t)true);
+  uint8_t bytesReceived = Wire.requestFrom(compass_addr, (uint8_t)6, (uint8_t)true);
 
   if (bytesReceived == 6) {
-    magX = (int16_t)(Wire.read() | (Wire.read() << 8));
-    magY = (int16_t)(Wire.read() | (Wire.read() << 8));
-    magZ = (int16_t)(Wire.read() | (Wire.read() << 8));
+    // Both parts: X,Y,Z, LSB first, 16-bit two's complement. Read into locals
+    // first so a partial/torn read can never leave magX updated and magY stale.
+    uint8_t b[6];
+    for (uint8_t i = 0; i < 6; i++) b[i] = Wire.read();
     xSemaphoreGive(i2cMutex);
+
+    magX = (int16_t)((uint16_t)b[0] | ((uint16_t)b[1] << 8));
+    magY = (int16_t)((uint16_t)b[2] | ((uint16_t)b[3] << 8));
+    magZ = (int16_t)((uint16_t)b[4] | ((uint16_t)b[5] << 8));
     return true;
   }
 

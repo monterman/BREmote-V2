@@ -27,7 +27,7 @@ No Arduino, no compiling. Download the prebuilt `.bin` for each board and flash 
 | Board | File | Version |
 |---|---|---|
 | **TX** | [`BREmote-TX-SW27-ubx-checksum.bin`](../Source/V2_Integration_Tx/TX%20firmware/BREmote-TX-SW27-ubx-checksum.bin) | **SW27** — current |
-| **RX** | [`BREmote-RX-SW34-gps-verified.bin`](../Source/V2_Integration_Rx/RX%20firmware/BREmote-RX-SW34-gps-verified.bin) | **SW34** — current |
+| **RX** | [`BREmote-RX-SW34-dual-compass.bin`](../Source/V2_Integration_Rx/RX%20firmware/BREmote-RX-SW34-dual-compass.bin) | **SW34** — current |
 
 Browse all published builds, with notes on what each one is:
 **[TX firmware →](../Source/V2_Integration_Tx/TX%20firmware/)** · **[RX firmware →](../Source/V2_Integration_Rx/RX%20firmware/)**

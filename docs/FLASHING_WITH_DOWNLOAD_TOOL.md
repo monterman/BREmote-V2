@@ -29,7 +29,7 @@ than a fresh compile that depends on your library versions and board settings be
 | Board | File | Version |
 |---|---|---|
 | **TX** (handheld remote) | [`BREmote-TX-SW27-ubx-checksum.bin`](../Source/V2_Integration_Tx/TX%20firmware/BREmote-TX-SW27-ubx-checksum.bin) | **SW27** — current |
-| **RX** (in the buggy) | [`BREmote-RX-SW34-gps-verified.bin`](../Source/V2_Integration_Rx/RX%20firmware/BREmote-RX-SW34-gps-verified.bin) | **SW34** — current |
+| **RX** (in the buggy) | [`BREmote-RX-SW34-dual-compass.bin`](../Source/V2_Integration_Rx/RX%20firmware/BREmote-RX-SW34-dual-compass.bin) | **SW34** — current |
 
 Every published build: **[TX firmware →](../Source/V2_Integration_Tx/TX%20firmware/)** ·
 **[RX firmware →](../Source/V2_Integration_Rx/RX%20firmware/)**. Each folder has a `README.md`

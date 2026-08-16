@@ -276,8 +276,9 @@ void scanI2C() {
       
       // Give a helpful label if it matches known devices
       if (address == 0x58) Serial.print(" (AW9523 Expander)");
-      if (address == 0x1E) Serial.print(" (HMC5883L Compass)");
-      if (address == 0x0D) Serial.print(" (QMC5883L Compass)");
+      if (address == 0x1E) Serial.print(" (HMC5883L Compass - NOT supported)");
+      if (address == 0x0D) Serial.print(" (QMC5883L Compass - BN-880)");
+      if (address == 0x2C) Serial.print(" (QMC5883P Compass - M100-5883)");
       
       Serial.println(" !");
       nDevices++;

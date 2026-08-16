@@ -111,8 +111,16 @@ const CfgFieldSpec kCfgFields[] = {
   // (CFG_FLOAT, 0.1-10.0, 2 dp). Set automatically by ?compasscal; also hand-editable to restore a backup.
   {"mag_offset_x", CFG_I16,   offsetof(confStruct, mag_offset_x), true, false, true, -32768.0f, 32767.0f, 0, false},
   {"mag_offset_y", CFG_I16,   offsetof(confStruct, mag_offset_y), true, false, true, -32768.0f, 32767.0f, 0, false},
-  {"mag_scale_x",  CFG_FLOAT, offsetof(confStruct, mag_scale_x),  true, false, true, 0.1f,      10.0f,    2, false},
-  {"mag_scale_y",  CFG_FLOAT, offsetof(confStruct, mag_scale_y),  true, false, true, 0.1f,      10.0f,    2, false},
+  {"mag_scale_x",  CFG_FLOAT, offsetof(confStruct, mag_scale_x),  true, false, true, -10.0f, 10.0f,    2, false},
+  {"mag_scale_y",  CFG_FLOAT, offsetof(confStruct, mag_scale_y),  true, false, true, -10.0f, 10.0f,    2, false},
+  // V2.5-Evo - 2026-08-16 - mag_scale_x/y range widened to allow NEGATIVE values. A negative
+  // mag_scale_y encodes a MIRRORED sensor frame (negating cal_y is exactly the mirror fix),
+  // so the sign now carries meaning and a positive-only validator would reject a correct cal.
+  // Magnitude is still clamped to [0.1, 10.0] by runCompassCalibration().
+  // mag_orientation: compass mounting rotation, 0/90/180/270 deg. Set by ?compasscal (which
+  // starts and ends pointing north) or ?magalign. Snapped to cardinals - the 3.2 deg idle
+  // noise floor cannot justify finer resolution.
+  {"mag_orientation", CFG_U16, offsetof(confStruct, mag_orientation), true, false, true, 0.0f, 270.0f, 0, false},
   // V2.5-Evo - 2026-07-20 - SW34 reserved fields (validation only; not read by v1 control law)
   // V2.5-Evo - 2026-07-25 - A2: fm_engage_dist_m is NO LONGER RESERVED — it is now read live by
   // runFmLoop() in RTMState.ino. 0 = auto (engage distance computed from min_dist_m + smoothing band);

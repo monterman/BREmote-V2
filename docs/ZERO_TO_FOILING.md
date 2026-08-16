@@ -81,7 +81,7 @@ Steps are tagged **[DESK]** · **[BENCH]** · **[WEB PORTAL]** · **[WATER]**. A
 | Board | File | Version |
 |---|---|---|
 | **TX** | [`BREmote-TX-SW27-ubx-checksum.bin`](../Source/V2_Integration_Tx/TX%20firmware/BREmote-TX-SW27-ubx-checksum.bin) | **SW27** — current |
-| **RX** | [`BREmote-RX-SW34-dyn-model.bin`](../Source/V2_Integration_Rx/RX%20firmware/BREmote-RX-SW34-dyn-model.bin) | **SW34** — current |
+| **RX** | [`BREmote-RX-SW35-compass-orientation.bin`](../Source/V2_Integration_Rx/RX%20firmware/BREmote-RX-SW35-compass-orientation.bin) | **SW35** — current |
 
 Every published build, with notes on each: **[TX firmware →](../Source/V2_Integration_Tx/TX%20firmware/)** ·
 **[RX firmware →](../Source/V2_Integration_Rx/RX%20firmware/)**. Older builds are kept for rollback —

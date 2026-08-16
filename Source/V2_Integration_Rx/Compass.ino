@@ -225,13 +225,51 @@ void runCompassCalibration() {
   int16_t minX = 32767, maxX = -32768;
   int16_t minY = 32767, maxY = -32768;
 
+
+  // V2.5-Evo - 2026-08-16 - North-to-north calibration. One run, three results:
+
+  //   1. hard/soft iron cal  - as before, from the min/max sweep
+
+  //   2. mounting HANDEDNESS - from the SIGN of accumulated rotation. The rider is told to
+
+  //                            turn clockwise, so a mirrored frame counts backwards.
+
+  //   3. mounting ROTATION   - from the FIRST sample, taken while pointing north.
+
+  //
+
+  // The first sample is kept RAW and converted to a heading only AFTER the new offsets and
+
+  // scales exist, so orientation comes from calibrated numbers, not the biased pre-cal frame.
+
+  bool    have_first = false;
+
+  int16_t firstX = 0, firstY = 0, lastX = 0, lastY = 0;
+
+  float   prev_raw_hdg = 0.0f;
+
+  bool    have_prev    = false;
+
+  float   rot_accum    = 0.0f;   // signed degrees turned; +ve = heading rising
+
+
   uint32_t startTime = millis();
   uint32_t duration = 45000; // 45 seconds
   uint32_t lastPrintTime = 0;
 
   Serial.println("\n--- COMPASS CALIBRATION STARTED ---");
-  Serial.println(">>> ROTATE BUGGY SLOWLY 360 DEGREES (2 FULL CIRCLES) <<<");
-  Serial.println("You have 45 seconds. Type 'quit' to abort.");
+  Serial.println(">>> POINT THE FRONT OF THE BUGGY AT NORTH BEFORE YOU START <<<");
+
+  Serial.println(">>> Then rotate it SLOWLY CLOCKWISE, TWO FULL CIRCLES        <<<");
+
+  Serial.println(">>> and FINISH POINTING NORTH AGAIN.                        <<<");
+
+  Serial.println("Clockwise matters: the turn direction is how mounting handedness");
+
+  Serial.println("is detected. Ending on north is how the result is checked.");
+
+  Serial.println("You have 45 seconds. Type \'quit\' to abort.");
+
 
   // Clear any stale serial inputs
   while(Serial.available()) Serial.read();
@@ -250,6 +288,38 @@ void runCompassCalibration() {
       if (magX > maxX) maxX = magX;
       if (magY < minY) minY = magY;
       if (magY > maxY) maxY = magY;
+
+
+      if (!have_first) { firstX = magX; firstY = magY; have_first = true; }
+
+      lastX = magX; lastY = magY;
+
+
+
+      // Signed rotation from the RAW frame. A hard-iron bias makes a turn non-uniform but
+
+      // not non-monotonic, so the SIGN of the total stays trustworthy.
+
+      float raw_hdg = atan2f((float)magY, (float)magX) * (180.0f / M_PI);
+
+      if (raw_hdg < 0.0f) raw_hdg += 360.0f;
+
+      if (have_prev) {
+
+        float d = raw_hdg - prev_raw_hdg;
+
+        while (d > 180.0f)  d -= 360.0f;      // shortest-path wrap
+
+        while (d < -180.0f) d += 360.0f;
+
+        rot_accum += d;
+
+      }
+
+      prev_raw_hdg = raw_hdg;
+
+      have_prev    = true;
+
     }
     
     // Print a countdown every 5 seconds
@@ -297,14 +367,150 @@ void runCompassCalibration() {
   // full config + pairing wipe. Clamping at the writer keeps the cal output inside the validator's
   // domain so a valid cal can never self-wipe the config. Clamp before the print below so the
   // reported scales match what is actually saved.
-  if (usrConf.mag_scale_x < 0.1f)  usrConf.mag_scale_x = 0.1f;
-  if (usrConf.mag_scale_x > 10.0f) usrConf.mag_scale_x = 10.0f;
-  if (usrConf.mag_scale_y < 0.1f)  usrConf.mag_scale_y = 0.1f;
-  if (usrConf.mag_scale_y > 10.0f) usrConf.mag_scale_y = 10.0f;
+  // V2.5-Evo - 2026-08-16 - Clamp MAGNITUDE, preserve SIGN. A negative mag_scale_y now carries
+  // meaning - it encodes a mirrored sensor frame - so the old positive-only clamp would have
+  // silently discarded the handedness correction. Validator range widened to match.
+  auto clampMag = [](float v) {
+    float s = (v < 0.0f) ? -1.0f : 1.0f;
+    float m = fabsf(v);
+    if (m < 0.1f)  m = 0.1f;
+    if (m > 10.0f) m = 10.0f;
+    return s * m;
+  };
+  usrConf.mag_scale_x = clampMag(usrConf.mag_scale_x);
+  usrConf.mag_scale_y = clampMag(usrConf.mag_scale_y);
+
+
+
+  // ============================================================
+
+  // V2.5-Evo - 2026-08-16 - Derive HANDEDNESS and ROTATION from the same run.
+
+  //
+
+  // Tolerances are deliberately forgiving. A rejected calibration costs the rider a physical
+
+  // re-run on their feet, so the bar is 'clearly wrong', not 'imperfect'. Idle noise on this
+
+  // hardware is ~3.2 deg and a human aiming a buggy at north by eye is worth 15-20 deg, so
+
+  // anything inside +/-40 deg is accepted. A bad run keeps the PREVIOUS orientation rather
+
+  // than storing a guess - the hard/soft-iron cal is still saved either way.
+
+  // ============================================================
+
+  const float kMinTurnDeg  = 400.0f;  // want ~720; accept one sloppy turn plus margin
+
+  const float kNorthTolDeg = 40.0f;   // start-vs-end closure, and aim slop at north
+
+
+
+  bool orient_ok = true;
+
+
+
+  if (fabsf(rot_accum) < kMinTurnDeg) {
+
+    Serial.printf("\nNOTE: only %.0f deg of rotation seen (wanted ~720).\n", fabsf(rot_accum));
+
+    Serial.println("      Iron calibration saved. Handedness and orientation NOT updated.");
+
+    Serial.println("      Re-run and turn through two full circles to set them.");
+
+    orient_ok = false;
+
+  }
+
+
+
+  if (orient_ok) {
+
+    // Turning CLOCKWISE, a correctly-handed sensor makes the heading RISE. If it fell, the
+
+    // frame is mirrored - stored as a NEGATIVE mag_scale_y, because negating cal_y IS the
+
+    // mirror correction and that field already exists. No extra storage needed.
+
+    if (rot_accum < 0.0f) {
+
+      usrConf.mag_scale_y = -usrConf.mag_scale_y;
+
+      Serial.println("\nCompass frame is MIRRORED - corrected (mag_scale_y stored negative).");
+
+    }
+
+
+
+    // The first sample was taken pointing north. Convert it NOW, with the offsets and scales
+
+    // just computed, so the answer comes from calibrated numbers.
+
+    float fx = ((float)firstX - (float)usrConf.mag_offset_x) * usrConf.mag_scale_x;
+
+    float fy = ((float)firstY - (float)usrConf.mag_offset_y) * usrConf.mag_scale_y;
+
+    float h_start = atan2f(fy, fx) * (180.0f / M_PI);
+
+    if (h_start < 0.0f) h_start += 360.0f;
+
+
+
+    float lx = ((float)lastX - (float)usrConf.mag_offset_x) * usrConf.mag_scale_x;
+
+    float ly = ((float)lastY - (float)usrConf.mag_offset_y) * usrConf.mag_scale_y;
+
+    float h_end = atan2f(ly, lx) * (180.0f / M_PI);
+
+    if (h_end < 0.0f) h_end += 360.0f;
+
+
+
+    // Did the rider finish where they started? This is what stops a sloppy run baking in a
+
+    // wrong orientation - the failure ArduPilot warns about, where a calibration 'appears to
+
+    // succeed while leaving the compass in a very bad state'.
+
+    float closure = h_end - h_start;
+
+    while (closure > 180.0f)  closure -= 360.0f;
+
+    while (closure < -180.0f) closure += 360.0f;
+
+
+
+    if (fabsf(closure) > kNorthTolDeg) {
+
+      Serial.printf("\nNOTE: finished %.0f deg from where it started.\n", closure);
+
+      Serial.println("      Iron calibration saved. Orientation NOT updated (previous kept).");
+
+      Serial.println("      Re-run, finishing with the nose back on north.");
+
+    } else {
+
+      // Pointing north when h_start was taken, so h_start IS the mounting rotation. Snap to
+
+      // the nearest cardinal: a 3.2 deg noise floor cannot justify finer resolution.
+
+      int snapped = ((int)((h_start + 45.0f) / 90.0f)) * 90;
+
+      if (snapped >= 360) snapped -= 360;
+
+      usrConf.mag_orientation = (uint16_t)snapped;
+
+      Serial.printf("\nMounting orientation: measured %.0f deg, stored %d deg.\n", h_start, snapped);
+
+    }
+
+  }
 
   Serial.println("\n--- CALIBRATION COMPLETE ---");
   Serial.printf("Saved Center Offsets: X=%d, Y=%d\n", usrConf.mag_offset_x, usrConf.mag_offset_y);
   Serial.printf("Saved Shape Scales:   X=%.2f, Y=%.2f\n", usrConf.mag_scale_x, usrConf.mag_scale_y);
+  Serial.printf("Mounting Orientation: %u deg%s\n", usrConf.mag_orientation,
+                usrConf.mag_scale_y < 0.0f ? "  (frame MIRRORED)" : "");
   
   // Automate the save command to SPIFFS
   cmdSave("");
@@ -347,6 +553,16 @@ float getCompassHeading()
 
   float heading = atan2f(cal_y, cal_x) * (180.0f / M_PI);
   if (heading < 0.0f) heading += 360.0f;
+
+  // V2.5-Evo - 2026-08-16 - Apply the stored mounting rotation. The module can be glued in any
+  // of four orientations; mag_orientation records which, measured by ?compasscal starting and
+  // ending on north. A MIRRORED frame is NOT handled here - a negative mag_scale_y already
+  // flipped cal_y before the atan2 above.
+  if (usrConf.mag_orientation) {
+    heading -= (float)usrConf.mag_orientation;
+    if (heading < 0.0f)    heading += 360.0f;
+    if (heading >= 360.0f) heading -= 360.0f;
+  }
 
   return heading;
 }

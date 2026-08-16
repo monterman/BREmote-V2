@@ -9,7 +9,8 @@ folder) · app offset **`0x10000`**
 
 | File | SW | What it is |
 |---|---|---|
-| `BREmote-RX-SW34-dyn-model.bin` | 34 | **Start here.** Current. Everything in `dual-compass` **plus a selectable GPS dynamic model** — set `gps_dyn_model 4` if you ride above ~500 m altitude. See below. |
+| `BREmote-RX-SW35-compass-orientation.bin` | **35** | **Start here.** Current. Everything below, **plus compass mounting orientation** — `?compasscal` now measures it for you. ⚠️ **SW35 resets your config once.** See below. |
+| `BREmote-RX-SW34-dyn-model.bin` | 34 | The last SW34 build. Everything in `dual-compass` **plus a selectable GPS dynamic model** — set `gps_dyn_model 4` if you ride above ~500 m altitude. See below. |
 | `BREmote-RX-SW34-dual-compass.bin` | 34 | **Field-verified by a beta tester** on an HGLRC M100-5883 (2026-08-16). Everything in `gps-verified` **plus automatic compass detection** — drives the **QMC5883L** (BN-880) *or* the **QMC5883P** (HGLRC M100-5883) from one image, chosen at boot by I²C address. See below. |
 | `BREmote-RX-SW34-gps-verified.bin` | 34 | The previous build, **kept deliberately** — the field-proven one. QMC5883L only. ACK-verified GPS config with automatic `CFG-VALSET` fallback, so it works with a BN-880 *and* with an M10. Adds `?gpsbaud`, `?gpssetup`. |
 | `BREmote-RX-SW34-pre-gpsbaud.bin` | 34 | The build immediately **before** the baud work. Use this to isolate whether a problem is GPS-related. |
@@ -79,6 +80,51 @@ model — never toward Portable.
 > **No config wipe.** This reuses a reserved `uint16_t` slot renamed in place, so
 > `sizeof(confStruct)` stays 184 and `SW_VERSION` stays 34. Every existing board reads `0` there,
 > which means Sea — exactly what it did before. Nothing to re-pair, nothing to re-calibrate.
+
+### What SW35 adds — compass mounting orientation (2026-08-16)
+
+**`?compasscal` now starts and ends pointing north, and measures three things in one run:**
+
+1. Hard/soft-iron calibration — as before
+2. **Mounting handedness** — from which way the heading ran while you turned clockwise
+3. **Mounting rotation** — from the first sample, taken while pointing north
+
+**The new procedure:**
+
+```
+Point the nose of the buggy at NORTH
+Run ?compasscal  (or short-press BIND)
+Rotate SLOWLY CLOCKWISE, two full circles
+Finish with the nose back on NORTH
+```
+
+Clockwise matters — the turn direction is how handedness is detected. Ending on north is how the
+result is checked.
+
+**Why this exists.** Heading is `atan2(y, x)` on the sensor's own axes, so mounting the module
+rotated made every heading wrong by that angle, and the old calibration was mathematically blind to
+it — a rotation leaves the calibration circle centred and round, so nothing looked wrong. Mount it
+however it fits; tell the firmware once.
+
+**Tolerances are deliberately forgiving** — a rejected calibration costs you a re-run on your feet:
+
+| Check | Limit |
+|---|---|
+| Total rotation seen | ≥ 400° (want ~720°) |
+| Finish vs start | within ±40° |
+| Rotation stored | snapped to 0 / 90 / 180 / 270 |
+
+If a run is too sloppy to trust, **the iron calibration is still saved and the previous orientation
+is kept** — it never stores a guess. That is the failure ArduPilot warns about, where a calibration
+*"appears to succeed while leaving the compass in a very bad state."*
+
+**Mirrored modules** (antenna-down, or a chip whose axes are handed the other way) are stored as a
+**negative `mag_scale_y`** — negating that axis *is* the mirror fix, and the field already existed.
+
+> ⚠️ **SW35 resets your configuration once.** `confStruct` grew from 184 to 188 bytes, so the
+> firmware rewrites config to defaults on first boot. **Back up first with `?conf`**, restore after
+> with `?setconf <blob>` + `?applyconf`. You will need to re-pair and re-run `?compasscal` —
+> which you want to do anyway, since that is what sets the new orientation.
 
 ## Flash it
 

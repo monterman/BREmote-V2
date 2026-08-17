@@ -126,6 +126,48 @@ is kept** — it never stores a guess. That is the failure ArduPilot warns about
 > with `?setconf <blob>` + `?applyconf`. You will need to re-pair and re-run `?compasscal` —
 > which you want to do anyway, since that is what sets the new orientation.
 
+### Which heading mode should I run? (`rtm_use_compass`)
+
+RTM needs to know which way the buggy is pointing. There are two real choices:
+
+| Mode | Set | What it does | Run it when |
+|---|---|---|---|
+| **Hybrid** | `1` *(default)* | GPS course while moving; compass when too slow for course to be reliable | Your compass is calibrated and its mounting orientation is set |
+| **GPS COG only** | `0` **+ `rtm_compass_required 0`** | Steers only above ~3 km/h. Below that it holds straight instead of using the compass | You suspect the compass, or you want to prove whether it is the problem |
+| Compass only | `2` | **Bench diagnostic. Never on water.** | Never |
+
+```
+?set rtm_use_compass 0
+?set rtm_compass_required 0
+?save
+```
+
+> ⚠️ **You must set BOTH.** `rtm_compass_required` does not check for a compass despite its name —
+> it requires a valid *heading of any kind* before RTM will arm. With the compass disabled there is
+> no heading while the buggy sits still, and RTM is armed from a standstill, so arming fails every
+> time with `STOP: No valid heading source`. It reads like COG-only mode is broken; it is the gate.
+>
+> **The firmware now refuses to save that combination** and tells you which setting to change.
+
+**What COG-only costs you:** steering at low speed and on the final approach. As RTM decelerates it
+stops steering and coasts in straight — less precise. **What it buys you:** the compass cannot
+contribute an error, because it is never read.
+
+**Worth doing as an A/B.** Run the same spot twice, one mode each, and see which behaves better on
+your build. If COG-only is clean and Hybrid is not, the compass is your problem.
+
+### Also in SW35 — RTM heading trust
+
+Two fixes beyond the compass orientation work:
+
+- **RTM will no longer steer on a compass that has been caught disagreeing with GPS.** That check
+  existed but was only ever applied to Follow-Me — Return-to-Me never read it. RTM now holds
+  straight instead, which at close range is the safe outcome.
+- **A GPS course that was valid moments ago is now held for 3 seconds** before falling back to the
+  compass. RTM drives at 4.0 km/h while GPS course is abandoned below 3 km/h, and that 1 km/h margin
+  is inside the speed signal's own noise — so the heading source was flipping on noise alone, and
+  every flip handed steering to a compass that is badly wrong under motor load.
+
 ## Flash it
 
 ```bash

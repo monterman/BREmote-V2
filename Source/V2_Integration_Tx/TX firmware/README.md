@@ -8,6 +8,7 @@ Board: **HT-CT62 (ESP32-C3)** · partition scheme `huge_app` · app offset **`0x
 
 | File | SW | What it is |
 |---|---|---|
+| `BREmote-TX-SW27-haptics.bin` | 27 | **Try this and tell me what you think.** Everything in `ubx-checksum` plus far fewer vibrations — see below. Not yet the recommended build, because how it feels is a judgement I cannot make from a build log. |
 | `BREmote-TX-SW27-ubx-checksum.bin` | 27 | **Start here.** Current. Everything in `gps-verified` **plus** the UBX checksum fix below. |
 | `BREmote-TX-SW27-gps-verified.bin` | 27 | The previous build, **kept deliberately**. Field-proven — this is the one that has actually been ridden. Every GPS config write is ACK-verified, auto-detects u-blox M8 vs M9/M10, never transmits at an unconfirmed baud. Adds `?gpscfg`, `?gpsbaud`, `?gpssetup`. |
 | `BREmote-TX-SW26R2-rtm-working.bin` | **26R2** | Known-good historical build from 2026-06-05. RTM working; Follow-Me not yet matured. Fallback if something newer misbehaves. ⚠️ **Different `SW_VERSION` — see below.** |
@@ -36,6 +37,28 @@ Flash either way freely — no re-pairing, no re-calibration.
 
 > The RX folder has a third, intermediate `pre-gpsbaud` build. The TX equivalent was withdrawn
 > and is deliberately not published.
+
+### What `haptics` changes (2026-08-16)
+
+A rider holding the remote while concentrating on a wave does not decode vibration patterns — they
+feel *a buzz*. Seventeen trigger sites across seven patterns is not a language, it is noise. Six
+triggers are gone:
+
+**Removed — you get no buzz when YOU do it:**
+- Disarming RTM by steering, disarming FM, or selecting F0. You just did it, and the display already
+  shows the stop. This was the most frequent buzz in the system.
+- Cycling FM modes. You are pressing through them watching the display; the arm buzz already fired.
+
+**Kept — everything that tells you something you did not already know:**
+- Arm confirm. You cannot watch the display while riding.
+- Weak signal, radio failsafe, water ingress (E7). These must cut through and are never suppressed.
+- Magnet "release now" prompts — a blind gesture needs to be told when to let go.
+- Arm window expired — the system changing state without you.
+
+**One long buzz now means exactly one thing: the system stopped and you did not ask it to.**
+
+Informational buzzes now also wait for one already playing to finish, rather than overwriting it —
+two patterns colliding is what made them unreadable. A stop buzz still preempts everything.
 
 ## Flash it
 

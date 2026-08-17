@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-08-17 - ?compasscal and ?magalign are now the rider's way OUT of a heading-disagreement degradation. RTMState.ino's heading_disagree_fault latch stopped being cleared at engagement boundaries (it was forgiveness without evidence — a compass mounted 90 deg out is just as wrong on the next run), so while it stands the whole session runs on GPS course only. The escape routes have to be evidence that the compass was actually FIXED, and there are exactly two here: a FULL ?compasscal, and a completed ?magalign. Both call headingDisagreeClearAfterCal() at the point where the new mounting numbers have been written and saved, which drops the latch and restores hybrid heading immediately — no reboot, and no coasting to re-prove anything. A PARTIAL cal deliberately does NOT clear it: a 300-400 deg run saves the iron calibration but keeps the OLD mag_orientation, which is usually the very thing that caused the disagreement, so promoting it to "fixed" would hand the compass straight back to the steering while it was still wrong. Aborted and failed runs do not clear it either — they write nothing at all. The clear function is a file-scope static in RTMState.ino, forward-declared below in the same way Logger.ino declares headingDisagreeLatched(); Arduino compiles the whole sketch as one translation unit and concatenates Compass.ino ahead of RTMState.ino, so the declaration is what makes the call legal. Both commands run in the loop task (System.ino dispatches them), so the latch keeps its single-writer property. No confStruct field added, no SW_VERSION bump, sizeof stays 192.
 // V2.5-Evo - 2026-08-16 - Two follow-ups. (1) MID-COMMAND SAFETY: ?printcompass, ?compasscal and ?magalign now abort if Return-to-Me or Follow-Me becomes engaged WHILE they are running, not only when one is already engaged at dispatch (see rxAbortIfEngaged() in System.ino). All three abort points sit BEFORE the first usrConf write, so an abandoned run leaves no half-written calibration and the existing one untouched. (2) PARTIAL CREDIT IS NOW REPORTED AS PARTIAL: a ?compasscal run that turned 300-400 deg saves the iron calibration but does NOT re-measure mounting orientation or handedness, and a run that turns far enough but finishes off north saves iron calibration and handedness but still no orientation. Both used to print the identical "--- CALIBRATION COMPLETE --- / Success!" as a full run and blink the identical 2-flash BIND pattern. A rider who had just re-mounted the module and walked a sloppy circle was therefore told it worked while mag_orientation still held the OLD mounting angle - a heading wrong by exactly the mounting delta. runCompassCalibration() now records its outcome in compass_cal_result (FAILED / PARTIAL / FULL) for the BIND LED in System.ino, and prints an explicit PARTIAL report naming what was and was not updated. NEITHER THRESHOLD MOVED - 300 deg still gates the iron save and 400 deg still gates orientation and handedness, exactly as adjudicated; only the reporting changed. No confStruct field added, no SW_VERSION bump.
 // V2.5-Evo - 2026-08-16 - Four ?compasscal / init hardening fixes: (1) an under-rotated re-run no longer silently DESTROYS a stored mirror correction — the previous sign of mag_scale_y is preserved when handedness is not re-derived, and the message now says so; (2) ?compasscal aborts without saving anything unless the buggy was actually turned (a 45 s hold used to bake offsets from a noise blob over a good cal); (3) the QMC5883P init writes — including the MANDATORY axis-sign write — are now checked, and a failed init leaves the compass reported as NOT detected instead of producing systematically wrong headings; (4) the uncalibrated-reject test is now identical in getCompassHeading(), updateCompassSnapshot() and runMagAlign() — magnitude-compared, so a legitimately MIRRORED module (negative mag_scale_y) is never mistaken for uncalibrated. Code checks only — no confStruct field added, no SW_VERSION bump.
 // V2.5-Evo - 2026-07-22 - runCompassCalibration() now clamps mag_scale_x/y to [0.1, 10.0] (the kCfgFields validator range) before cmdSave(), so a pathological high-asymmetry cal can never save a scale that fails config-load validation and wipes config+pairing on next boot. Value-clamp only — no confStruct/SW_VERSION change.
@@ -91,6 +92,17 @@ extern void cmdSave(const String& params);
 // time. Declared here explicitly rather than leaning on the sketch's generated prototypes, so
 // the dependency between these two files is written down where a reader will see it.
 extern bool rxAbortIfEngaged(const char *what);
+
+// V2.5-Evo - 2026-08-17 - clears the heading-disagreement latch in RTMState.ino after the rider has
+// physically re-measured the compass mounting. Defined there, next to the flag it owns, so this
+// file never touches that state directly.
+// NOT 'extern': it is a file-scope 'static' in RTMState.ino (internal linkage), so the declaration
+// that names it here has to be 'static' too. That is enough, because Arduino compiles every .ino in
+// the sketch as ONE translation unit and concatenates this file ahead of RTMState.ino — the same
+// forward-declaration pattern Logger.ino uses for headingDisagreeLatched().
+// CALL IT ONLY FROM A RUN THAT ACTUALLY RE-MEASURED THE MOUNTING: CAL_FULL, or a completed
+// ?magalign. A PARTIAL cal keeps the old mag_orientation and must leave the latch alone.
+static void headingDisagreeClearAfterCal(const char *what);
 
 void initCompass() {
   Wire.setTimeOut(20);
@@ -697,6 +709,17 @@ void runCompassCalibration() {
   if (cal_full) {
     Serial.println("Success! Calibration permanently saved to hardware.");
     compass_cal_result = CAL_FULL;
+
+    // V2.5-Evo - 2026-08-17 - A FULL run is the evidence that clears a heading-disagreement
+    // degradation. Iron calibration, handedness AND mounting orientation have all just been
+    // re-measured and saved, so the compass this session had been refusing is not the same compass
+    // any more — the numbers the verdict was formed against no longer exist. Clearing it here is
+    // what lets a rider fix a mis-mounted module on the beach and get hybrid heading back in the
+    // same session, with no reboot. It is placed AFTER cmdSave() above, so nothing is forgiven
+    // until the new calibration is actually on the flash.
+    // ONLY IN THIS BRANCH: the PARTIAL branch below keeps the OLD mag_orientation, which is the
+    // usual cause of a 45+ deg disagreement, so it must not clear anything.
+    headingDisagreeClearAfterCal("?compasscal");
   } else {
     Serial.println("PARTIAL calibration saved to hardware. This is NOT a full success.");
     Serial.println("IF YOU HAVE JUST RE-MOUNTED OR MOVED THE COMPASS MODULE, RUN ?compasscal AGAIN:");
@@ -936,5 +959,16 @@ void runMagAlign() {
 
   cmdSave("");
   Serial.println("Saved.");
+
+  // V2.5-Evo - 2026-08-17 - a completed ?magalign is the second piece of evidence that clears a
+  // heading-disagreement degradation. Every failure path above returns before this line without
+  // touching usrConf.mag_orientation, so reaching here means the mounting angle has genuinely been
+  // re-measured against north and saved. That is the correction for the most common cause of a
+  // 45+ deg COG-vs-compass gap on this build: a module glued in at 90/180/270 deg. It cannot detect
+  // a MIRRORED frame — only ?compasscal can — so a mirrored module that is still wrong will simply
+  // re-prove the disagreement the next time the rider coasts, which is the guard working as
+  // intended rather than a reason to withhold the clear.
+  headingDisagreeClearAfterCal("?magalign");
+
   blinkBind(2);
 }

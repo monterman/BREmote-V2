@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-08-17 - THREE CORRECTIONS TO THE DEGRADATION PASS BELOW, WHICH ASSUMED THE COMPASS WAS THE LIAR. The cross-check proves only that the compass and the GPS course CANNOT BOTH BE RIGHT. It does not say which one is wrong — the guard says so itself in guard 2's own header: "It deliberately does NOT pick a winner." Degrading the session onto GPS course alone picks one anyway, and it picks the compass as the culprit; if the RX's course is the bad source instead (marina multipath, a wrong dynamic platform model, a lagged COG at low speed) the degradation withdraws the GOOD sensor and operates on the bad one. (1) FOLLOW-ME REFUSES AGAIN — RELEASE BLOCKER. !heading_disagree_fault is back in can_be_active, and back in the FM fault-stop classifier it was deleted with, so a disagreement proven mid-engagement ends the run through the existing FM_STOPPING ramp (back to manual, re-arm required) instead of parking FM in FM_HOLD at cap 0 for the rest of the session. RTM KEEPS DEGRADING, and that part was sound: RTM's degraded behaviour is BOUNDED — with no heading the steering override is pinned at 127 and the align cap holds the throttle at 13/255 on the 180 deg sentinel — and the alternative was a genuinely dangerous half-armed state, buggy dead with the throttle at 0 while the TX still displayed RTM as ACTIVE. FOLLOW-ME IS NOT BOUNDED LIKE THAT: it engages autonomously at rider speed plus a margin, its steering authority is continuous, its only backstops are the divergence fault (about a 6.5 s grace plus a 3 s dwell) and the deadman — and the disagreement is UNMEASURABLE during the engagement, because compare_possible needs a compass snapshot younger than kHeadingCompareSnapMs and the snapshot only refreshes while thr_received < 25, so about a second into the run the comparison goes dormant and COG is served at confidence 3 unchallenged. Refusing to engage is the right answer to "one of my two heading sources is lying and I cannot tell which", and it is the same answer guard 1 already gives a few lines up: HOLDING STRAIGHT IS SAFER THAN STEERING ON THE SURVIVOR. The rider is not left guessing: the one-shot degradation notice still prints, the rate-limited "ARMED, NOT ENGAGING" explanation is restored, fm_flags bit 2 (armed-not-ready) carries the fault again so the TX cannot render "ready" for a Follow-Me that will not engage, and ?diag now reports the latch on demand. (2) THE kCogHoldMs COG HOLD SURVIVES DEGRADATION. The fault term moved back BELOW the hold, to the site it occupied before. The hold serves a last-good GPS COURSE, and the latch is evidence about the COMPASS, so withdrawing a GPS-derived value on compass evidence was outside this guard's charter — and it cost real behaviour twice over: a COG dropout longer than 1.5 s failed FM's condition 6 and forced a stop-and-re-arm the hold would have bridged, and on the RTM side the documented cog_valid flicker in the 3-4 km/h approach band (rtm_target_speed_kmh 4.0 against rtm_cog_min_speed_kmh 3) alternated the steering override between centre and bearing at 10 Hz. Degraded now means precisely "mode 1 minus the compass", which is what the evidence supports. (3) THE CLEAR IS AS STRICT AS THE SET. Setting the fault needs at least four measured samples spanning 5 s of continuity; clearing it took ONE agreeing tick. For a MIRRORED module the reported heading is theta - h_true, so the gap is 2*h_true - theta, which passes below 45 deg in two 45-deg-wide windows per revolution — a rider coasting near one of them cleared the latch instantly with the module still mirrored, and that is exactly the fault ?magalign cannot detect. Agreement must now hold continuously for kHeadingDisagreeMs with measured samples no more than kHeadingDisagreeGapMaxMs apart, mirroring the set. No new config field, no threshold retuned, no confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-08-17 - A HEADING DISAGREEMENT NOW DEGRADES THE SESSION INSTEAD OF REFUSING IT. WHAT SHIPPED BEFORE: a proven heading_disagree_fault withdrew the compass fallback (correct) and then refused to run on what was left (wrong). Gate 6 is enforced whenever usrConf.rtm_compass_required is set, which is the default, so on a stationary arm there was no heading at all, the gate raised rtm_rx_emergency_stop and the buggy sat dead with the throttle pinned at 0 — while gates 2-8 deliberately do NOT clear rtm_rx_active, so the TX went on displaying RTM as ACTIVE. Follow-Me had the twin of it: can_be_active carried !heading_disagree_fault, so FM sat in FM_ARMED for the rest of the session. The rider armed, nothing moved, and the remote said it had. WHAT IT DOES NOW: the COMPASS is the sensor that was caught lying; the GPS course is not, so refusing to run threw away a good source because a different one failed. A standing fault now degrades the session to COG-only — which is exactly usrConf.rtm_use_compass == 0, an existing, documented, supported mode — instead of refusing: getRtmHeading() takes the mode-0 path for heading SELECTION while the fault stands (live GPS course above rtm_cog_min_speed_kmh, nothing below it: no compass fallback and no kCogHoldMs hold, because mode 0 has neither), gate 6 is bypassed exactly as it is for a rider who has set rtm_compass_required = 0, FM's can_be_active and its fault-stop chain no longer carry the flag, and fm_flags bit 2 stops calling it armed-not-ready. The rider's experience becomes the ordinary COG-only one: get the buggy moving and the GPS course takes over. NOTHING IS WRITTEN TO usrConf — rtm_use_compass and rtm_compass_required are untouched, no SPIFFS write, no ?conf change; this is runtime degradation for the session only. THE COMPARISON ITSELF STILL RUNS IN THE CONFIGURED MODE (compare_possible keeps testing the stored mode, not the degraded one), because that measurement is the evidence route that clears the fault. AND BECAUSE THE FLAG NO LONGER BLOCKS ANYTHING, THE LATCH IS NOW STICKY: the disarm-edge clear in runRtmLoop() and the FM-idle clear in fmEnterIdle() are GONE — they forgave a proven fault with no evidence, so a mis-mounted compass had to be re-proven by coasting on every single run. Exactly three clear routes remain: a live measurement showing the two sources agreeing again, a SUCCESSFUL ?compasscal (CAL_FULL only) or ?magalign — the rider actually fixing the mounting, wired in Compass.ino — and a reboot. A PARTIAL or failed calibration does NOT clear it. The rider is told once on serial, the moment the degradation engages, what happened and how to fix it. Subtract-only throughout: the flag grants no heading, raises no cap, extends no engagement, and it now removes strictly MORE heading than before. No threshold retuned, no confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-08-17 - The heading-disagree backstop threw away the only evidence it ever gets. THE EVIDENCE WINDOW: a comparison needs a live COG *and* a compass snapshot less than kHeadingCompareSnapMs (1000 ms) old, and updateCompassSnapshot() only refreshes the snapshot while thr_received < 25, because a snapshot taken under motor current is worthless. RTM and FM both require a HELD trigger. So about one second into any engagement the comparison goes dormant and the kHeadingDisagreeMs (5 s) dwell can never complete inside a run — the ONLY time both inputs exist together is when the rider is coasting with the trigger released above rtm_cog_min_speed_kmh, or during the arm ceremony, where the TX pins the throttle byte to zero. The previous pass then added an ARM-EDGE clear that wiped heading_disagree_fault at exactly that boundary, i.e. it discarded the freshest evidence available anywhere in the sequence and left the guard unable to act on anything it had proven. FIX: the arm edges (rtm_rx_active false -> true in runRtmLoop, and the FM_IDLE -> armed edge in runFmLoop) now clear only the UNFINISHED dwell (heading_disagree_since_ms, heading_disagree_last_seen_ms). A PROVEN fault survives into the engagement, where getRtmHeading() consumes it by withdrawing the compass fallback. The DISARM edges (rtm_rx_active true -> false, and a genuine transition into FM idle via fmEnterIdle) still clear all three, so this is still not a power-cycle latch, and a live measurement showing the two sources agreeing again still clears it outright. Because a surviving fault can now refuse an engagement, both refusals were made to SAY SO instead of being silent: RTM gate 6 prints the real cause (a compass caught disagreeing with GPS course) rather than the misleading generic "No valid heading source", and FM — which would otherwise sit in FM_ARMED with the TX reading "ready" — now raises fm_flags bit 2 (armed-not-ready) and prints a rate-limited explanation. Subtract-only throughout: the flag grants no heading, raises no cap and extends no engagement. No threshold retuned, no confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-08-17 - SAFETY (release blocker): rtm_steer_override could survive an idle period and be applied on the first tick of the NEXT engagement. Only gate 1 (throttle released) and updateRtmSteering() ever wrote the neutral 127, so a GATE 9 HANDOFF WITH THE TRIGGER STILL HELD left the last bearing-derived value — say 210 — parked indefinitely: the inactive path in runRtmLoop() returned without touching it and fmEnterIdle() deliberately does not touch it either. calcPWM() applies the override whenever (rtm_rx_active || fm_rx_active) && rtm_rx_override_steering && thr_received >= 25, so on the next re-arm the 100 Hz generatePWM task could put that stale bearing on the motors as differential steering before runRtmLoop() recomputed it — with no gate 9 and no Phase C in the path. Normally a 100 ms window; UNBOUNDED if the re-arm lands while the loop task is frozen inside a deliberately non-abortable command (?gpssetup, ?wifiupd), since runRtmLoop() is then not running at all. FIX: runRtmLoop() now forces rtm_steer_override = 127 on every tick where BOTH rtm_rx_active and fm_rx_active are false. The !fm_rx_active term is load-bearing, not defensive — runRtmLoop() runs BEFORE runFmLoop() in loop(), so an unconditional reset would publish a neutral 127 for one preemption window per cycle throughout every Follow-Me engagement (RTM is inactive for all of one) and stutter FM steering to centre at 10 Hz; same hazard fm_throttle_cap has its own global to avoid. Subtract-only: writes the neutral value only, never a turn, never throttle. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
@@ -101,8 +102,11 @@ static double        rtm_prev_dist_m = -1.0;   // distance to TX at last Phase C
 static unsigned long rtm_phase_c_ms  = 0;       // last Phase C check time
 
 // V2.5-Evo - 2026-08-17 - Read-only accessor for the heading-disagreement latch, forward-declared
-// here so gate 6 below can ask whether this session has been degraded to GPS-course-only — while it
-// has, that gate stands aside instead of refusing the run (see the note at the gate).
+// here so gate 6 below can ask whether the compass has been withdrawn from the heading ladder —
+// while it has, that gate stands aside instead of refusing the run (see the note at the gate).
+// Two other readers use the same accessor and neither is in the control path: Logger.ino's heading
+// mirror, and (V2.5-Evo - 2026-08-17) the ?diag line in System.ino that lets a rider ask the board
+// whether the latch is standing.
 // WHY AN ACCESSOR AND NOT THE FLAG ITSELF: heading_disagree_fault is a file-scope static declared
 // ~170 lines further down, alongside the long block that documents it. A variable is not visible
 // before its declaration — unlike a function, which the Arduino builder auto-prototypes — and
@@ -196,6 +200,15 @@ static bool checkRtmSafetyGates()
   // downstream can steer on the sensor that was caught lying. No throttle is added: the align cap
   // (~5% of 255) applies for as long as no heading exists, because g_heading_error_dx10 stays at
   // its 0x7FFF sentinel and the align phase treats that as the worst case.
+  // V2.5-Evo - 2026-08-17 - TWO PRECISIONS on the wording above. (1) "COG-only" is now exactly
+  // "mode 1 minus the compass": the kCogHoldMs held-COG bridge is served as well as the live course,
+  // because the hold is a GPS value and this latch is evidence about the compass. RTM's degraded
+  // behaviour is unchanged in kind — it simply has one fewer gap in it. (2) THIS BYPASS IS RTM-ONLY
+  // AND DELIBERATELY SO. Follow-Me does NOT degrade: can_be_active carries the fault, so FM declines
+  // to engage while the latch stands. RTM may run headless because its headless behaviour is bounded
+  // (override pinned at 127, align cap at 13/255, Phase C watching, rider's trigger the only
+  // throttle); FM engages autonomously with continuous steering authority, which is not bounded in
+  // the same way. See can_be_active in runFmLoop() for the full argument.
   if (usrConf.rtm_compass_required && !headingDisagreeLatched())
   {
     float h_unused;
@@ -261,33 +274,59 @@ static bool checkRtmSafetyGates()
 //   sustained one means the COMPASS is genuinely wrong (it is the sensor the ladder can promote,
 //   and the one this hardware biases under motor current).
 //
-//   V2.5-Evo - 2026-08-17 - WHAT IT DOES NOW: IT DEGRADES, IT DOES NOT BLOCK. While it stands, the
-//   whole session runs as though usrConf.rtm_use_compass were 0 — GPS course only. It is NOT a
-//   config change: nothing writes rtm_use_compass or rtm_compass_required, nothing touches SPIFFS,
-//   and the rider's stored settings are exactly as they left them. It is runtime state that dies
-//   with the power cycle. Concretely, while the flag stands:
-//     - getRtmHeading() takes the mode-0 return, so no compass fallback AND no kCogHoldMs held-COG
-//       (mode 0 has neither); above rtm_cog_min_speed_kmh the live GPS course is served unchanged;
+//   V2.5-Evo - 2026-08-17 - WHAT IT DOES NOW: RTM DEGRADES, FOLLOW-ME DECLINES. While it stands the
+//   compass is withdrawn from the ladder, so RTM runs on GPS course alone; it is NOT a config
+//   change (nothing writes rtm_use_compass or rtm_compass_required, nothing touches SPIFFS, the
+//   rider's stored settings are exactly as they left them) and it is runtime state that dies with
+//   the power cycle. Concretely, while the flag stands:
+//     - getRtmHeading() withdraws the COMPASS and nothing else. Above rtm_cog_min_speed_kmh the
+//       live GPS course is served unchanged at confidence 3, and the kCogHoldMs held-COG bridge is
+//       still served at confidence 2 across a short dropout. V2.5-Evo - 2026-08-17: the hold used
+//       to be withdrawn here too, on a consistency argument ("the hold is a mode-1 feature"); it is
+//       back, because the hold serves a GPS COURSE and this latch is evidence about the COMPASS.
+//       Degraded therefore means exactly "mode 1 minus the compass", which is all the evidence
+//       supports — see the check below the hold in getRtmHeading();
 //     - RTM gate 6 stands aside exactly as it does for a rider who set rtm_compass_required = 0,
 //       so an arm can never be refused for lack of a heading — the buggy starts, holds straight,
-//       and picks up a course as soon as it is moving;
-//     - FM's can_be_active does NOT carry it, and neither does the FM fault-stop chain: FM degrades
-//       to the same COG-only heading. FM still requires SOME heading (condition 6), which is
-//       unchanged and is not this flag's doing;
-//     - mode 2 (compass-only, diagnostic) is the one place there is nothing to degrade to, so the
+//       and picks up a course as soon as it is moving. RTM's degraded behaviour is BOUNDED: with no
+//       heading the override is pinned at 127 and the align cap holds the throttle at 13/255;
+//     - FOLLOW-ME IS DIFFERENT AND DOES NOT DEGRADE. can_be_active carries !heading_disagree_fault
+//       and the FM fault-stop classifier carries it too, so FM will not engage while the latch
+//       stands and a latch proven mid-engagement ends the run through FM_STOPPING. FM engages
+//       autonomously at rider speed plus a margin with continuous steering authority, and the
+//       disagreement cannot even be measured during the engagement (the snapshot stops refreshing
+//       the moment the trigger is squeezed), so declining is the only honest answer to "one of my
+//       two sources is lying and I cannot tell which". See can_be_active in runFmLoop();
+//     - mode 2 (compass-only, diagnostic) is the one place there is nothing to fall back to, so the
 //       proven-bad compass is withheld and the function returns no heading at all. See there.
 //
 //   V2.5-Evo - 2026-08-17 - WHERE IT IS CLEARED — EXACTLY THREE ROUTES, and every one of them is
 //   EVIDENCE that the problem is gone. The engagement-boundary clears that used to be routes 2, 3
 //   and 4 (fmEnterIdle(), the RTM disarm edge, the arm edges) are GONE. They existed only because a
-//   standing fault could refuse an arm and would otherwise have been un-clearable on the water;
-//   now that it merely degrades, that reason is gone with them — and forgiving a fault at every
-//   disarm meant a compass mounted 90 deg out had to be re-proven by coasting on every single run,
-//   which is precisely the gap this closes. A mis-mounted compass is wrong on every run.
-//     1. A LIVE MEASUREMENT SHOWING AGREEMENT — here, in the compare branch below. The evidence is
-//        withdrawn, so the verdict goes with it. This still runs while the fault stands, because
-//        compare_possible deliberately tests the CONFIGURED mode, not the degraded one; without
-//        that, degrading to COG-only would have switched off the very measurement that clears it.
+//   standing fault could refuse an RTM arm and would otherwise have been un-clearable on the water;
+//   RTM now degrades instead of refusing, so that reason is gone with them — and forgiving a fault
+//   at every disarm meant a compass mounted 90 deg out had to be re-proven by coasting on every
+//   single run, which is precisely the gap this closes. A mis-mounted compass is wrong every run.
+//     1. A SUSTAINED MEASUREMENT SHOWING AGREEMENT — here, in the compare branch below. The
+//        evidence is withdrawn, so the verdict goes with it. This still runs while the fault
+//        stands, because compare_possible deliberately tests the CONFIGURED mode, not the degraded
+//        one; without that, withdrawing the compass would have switched off the very measurement
+//        that exonerates it.
+//        V2.5-Evo - 2026-08-17 - AND IT NOW TAKES AS MUCH EVIDENCE TO CLEAR AS TO SET. This route
+//        used to fire on the FIRST tick where a comparison was possible and the two agreed: four
+//        samples over five continuous seconds to convict, one sample to acquit. That asymmetry
+//        broke on the case the latch matters most for. A MIRRORED module (an axis sign flipped by
+//        the mounting) reports theta - h_true instead of h_true, so the gap between compass and
+//        course is 2*h_true - theta, which sweeps the whole circle as the craft turns and passes
+//        below kHeadingDisagreeDeg inside two 45-deg-wide windows per revolution. A rider coasting
+//        on a heading near one of those windows cleared the latch instantly with the module still
+//        mirrored — and mirroring is exactly the fault ?magalign cannot detect, so this route was
+//        acquitting the one defect stickiness exists for. Agreement must now be measured
+//        CONTINUOUSLY for kHeadingDisagreeMs, with consecutive measured samples no more than
+//        kHeadingDisagreeGapMaxMs apart (so at least four of them, the same shape as the set), and
+//        that dwell is tracked by heading_agree_since_ms / heading_agree_last_seen_ms below. Any
+//        measured disagreement restarts it from zero. Making a clear HARDER can only ever leave a
+//        proven fault standing for longer, which is the conservative direction for this guard.
 //     2. A SUCCESSFUL ?compasscal (CAL_FULL only) OR ?magalign — the rider physically fixing the
 //        mounting and re-measuring it. Wired in Compass.ino via headingDisagreeClearAfterCal();
 //        a PARTIAL cal (iron saved, orientation NOT re-measured) and any failed/aborted run do NOT
@@ -297,6 +336,14 @@ static bool checkRtmSafetyGates()
 //   kHeadingDisagreeEvidenceMaxMs while no comparison is possible, is restarted from the current
 //   sample if the measured disagreements themselves stop being contiguous (kHeadingDisagreeGapMaxMs),
 //   and is dropped at both edges of an engagement so a half-built proof never spans two situations.
+//   V2.5-Evo - 2026-08-17 - the AGREEMENT dwell added for route 1 obeys the same two bounds, for the
+//   same reasons: it ages out after kHeadingDisagreeEvidenceMaxMs while nothing is being measured,
+//   and a gap longer than kHeadingDisagreeGapMaxMs between agreeing samples restarts it. It is NOT
+//   dropped at engagement edges, and it does not need to be — the gap bound is the tighter test.
+//   The measurement goes dormant about a second into any engagement (the snapshot stops refreshing
+//   under motor current), so an agreement dwell physically cannot straddle an engagement: the next
+//   agreeing sample after the run arrives far more than kHeadingDisagreeGapMaxMs late and opens a
+//   fresh dwell of its own.
 //
 //   V2.5-Evo - 2026-08-17 - WHY THE ENGAGEMENT-BOUNDARY CLEARS WENT, IN FULL, because the argument
 //   that put them there is the argument that now takes them out. They were added when a proven
@@ -307,9 +354,15 @@ static bool checkRtmSafetyGates()
 //   two inputs coexist are a rider COASTING with the trigger released above rtm_cog_min_speed_kmh
 //   and the arm ceremony itself — which meant those boundary clears were throwing away the only
 //   evidence the guard ever gets, and the rider had to re-prove a bad compass by coasting on every
-//   single run. Now that the flag only degrades the session to COG-only and can no longer refuse
-//   anything, there is nothing left for a boundary clear to protect against, and the reason to keep
-//   the verdict is intact: a compass mounted 90 deg out is 90 deg out on the next run too.
+//   single run. The reason to keep the verdict is intact: a compass mounted 90 deg out is 90 deg
+//   out on the next run too.
+//   V2.5-Evo - 2026-08-17 - AND FOLLOW-ME REFUSES ONCE MORE, WHICH DOES NOT BRING THE BOUNDARY
+//   CLEARS BACK. The un-clearable-block worry the clears were built for is answered elsewhere and
+//   better: RTM is not blocked at all (it runs on GPS course, so the buggy always comes home), and
+//   the evidence route is exactly the state an FM rider is in between tows — coasting with the
+//   trigger released, which is when the snapshot refreshes and the comparison is live. Forgiving
+//   the verdict at a state boundary would hand autonomous following a compass the firmware holds
+//   positive evidence against, on the strength of a state change that measured nothing.
 //
 //   WHY THE FLAG IS NEEDED AT ALL, given a disagreement already returns "no heading": the
 //   comparison window is narrow by necessity (see kHeadingCompareSnapMs). The compass snapshot
@@ -323,10 +376,14 @@ static bool checkRtmSafetyGates()
 //   caller inherits it — RTM, FM and anything added later. The original objection was that a sticky
 //   fault could become an un-clearable arming block on the water. V2.5-Evo - 2026-08-17: that
 //   objection is answered at the root instead of by forgetting the evidence — the fault cannot
-//   block an arm any more, because gate 6 stands aside while it stands and the session simply runs
-//   COG-only. The worst case is therefore a session on GPS course alone, not an aborted run and not
-//   a refusal, and the way out is to fix the compass (?compasscal / ?magalign) or to let a live
-//   measurement show the two sources agreeing again.
+//   block an RTM arm any more, because gate 6 stands aside while it stands and RTM simply runs on
+//   GPS course. The worst case for RTM is therefore a session on GPS course alone, not an aborted
+//   run and not a refusal. V2.5-Evo - 2026-08-17: FOLLOW-ME IS THE DELIBERATE EXCEPTION — it
+//   declines to engage while the latch stands (see can_be_active in runFmLoop for why autonomous
+//   steering must not be handed a heading the firmware holds positive evidence against), so for FM
+//   the worst case is a manual buggy, which is the state it starts every session in. The way out is
+//   the same for both: fix the compass (?compasscal / ?magalign), or let a sustained measurement
+//   show the two sources agreeing again.
 //
 // CONCURRENCY: every caller of getRtmHeading() (gate 6, checkFmFaultConditions, the fm_status
 // telemetry block, updateRtmSteering) runs in the loop task, so these statics are single-writer.
@@ -346,6 +403,27 @@ static bool          heading_disagree_fault    = false;
 // so the two can never disagree about whether a dwell is running. See kHeadingDisagreeGapMaxMs
 // below for what it is for and why the dwell needed a second, finer bound than the span cap.
 static unsigned long heading_disagree_last_seen_ms = 0;
+
+// V2.5-Evo - 2026-08-17 - THE MIRROR IMAGE OF THE TWO ABOVE, for clear route 1.
+//
+// heading_agree_since_ms : millis() when the two sources were first measured AGREEING and have
+//   kept agreeing continuously since; 0 = not currently in an agreement dwell.
+// heading_agree_last_seen_ms : millis() of the most recent tick on which agreement was actually
+//   MEASURED. Only meaningful while heading_agree_since_ms is non-zero, and cleared everywhere
+//   that is, so the pair can never disagree about whether a dwell is running — the same invariant
+//   the disagreement pair keeps.
+//
+// WHY THEY EXIST. Convicting the compass needs kHeadingDisagreeMs of continuous measured
+// disagreement, which is at least four samples; acquitting it used to need one agreeing tick. That
+// let a mirrored module walk free every time the craft's heading wandered into one of the two
+// windows per revolution where a mirrored reading happens to land within kHeadingDisagreeDeg of the
+// true course. Symmetric evidence, symmetric bookkeeping: same dwell length, same continuity bound,
+// same ageing rule. No new constant, no confStruct field, no SPIFFS slot, no web-UI row.
+//
+// Single-writer from the loop task, exactly like the pair above: only getRtmHeading() writes them,
+// plus headingDisagreeClearAfterCal() which resets the whole set together.
+static unsigned long heading_agree_since_ms     = 0;
+static unsigned long heading_agree_last_seen_ms = 0;
 
 // ------------------------------------------------------------
 // headingDisagreeLatched - has a heading disagreement been PROVEN and not yet withdrawn?
@@ -383,19 +461,30 @@ static bool heading_degrade_announced = false;
 // is itself called several times per tick, so anything weaker would flood the UART. The flag is
 // re-armed only when the fault is genuinely cleared (agreement, calibration).
 //
+// V2.5-Evo - 2026-08-17 - AND IT WAITS FOR THE TRIGGER TO BE RELEASED. WHY: the flag can once again
+// end a Follow-Me engagement (can_be_active carries it), and this function is reached from
+// checkFmFaultConditions() — i.e. BEFORE fm_throttle_cap = 0 is written on that same tick. Printing
+// four lines there would put a possibly-blocking Serial call between a proven fault and the motor
+// reaching 0, which is exactly what the F7 rule forbids. So while thr_received >= 25 it returns
+// WITHOUT setting its flag, and the notice prints on the first tick after the rider lets go — by
+// which time the deadman already has the motor at 0. The message is not lost, only deferred, and
+// ?diag reports the same state on demand at any moment.
+//
 // It writes NO control variable: not a cap, not a gate, not the override, not usrConf.
 // ------------------------------------------------------------
 static void headingDisagreeAnnounceDegraded()
 {
   if (heading_degrade_announced) return;
+  if (thr_received >= 25) return;   // F7: never print while the motor can be live — retry on release
   heading_degrade_announced = true;
 
   Serial.printf("HEADING [RX] COMPASS WITHDRAWN: the compass disagreed with the GPS course by more than %.0f deg for %lu ms.\n",
                 (double)kHeadingDisagreeDeg, (unsigned long)kHeadingDisagreeMs);
-  Serial.println("        This session now steers on GPS COURSE ONLY (as if rtm_use_compass = 0). Your stored settings are UNCHANGED.");
-  Serial.printf("        Expect NO heading, and straight-ahead steering, until the buggy is moving faster than %u km/h.\n",
+  Serial.println("        Return-to-Me now steers on GPS COURSE ONLY for this session. Your stored settings are UNCHANGED.");
+  Serial.println("        FOLLOW-ME WILL NOT ENGAGE while this stands: one of the two heading sources is wrong and the board cannot tell which, so it will not steer at you on a guess.");
+  Serial.printf("        Expect NO heading, and straight-ahead steering, whenever the buggy is slower than %u km/h and the last good course is more than 3 s old.\n",
                 (unsigned)usrConf.rtm_cog_min_speed_kmh);
-  Serial.println("        To get the compass back: re-run ?compasscal (a full two-circle run) or ?magalign, or reboot. It also clears on its own if the two sources are measured agreeing again.");
+  Serial.println("        To get the compass back: re-run ?compasscal (a full two-circle run) or ?magalign, or reboot. It also clears on its own once the two sources are measured AGREEING for 5 continuous seconds.");
 }
 
 // ------------------------------------------------------------
@@ -428,6 +517,11 @@ static void headingDisagreeClearAfterCal(const char *what)
   heading_disagree_last_seen_ms = 0;
   heading_disagree_fault        = false;
   heading_degrade_announced     = false;
+  // V2.5-Evo - 2026-08-17 - the agreement dwell goes with them. It is bookkeeping toward a clear
+  // that has just happened by another route, so carrying it forward would describe a measurement
+  // of a mounting that no longer exists. Pair cleared together, like every other dwell here.
+  heading_agree_since_ms        = 0;
+  heading_agree_last_seen_ms    = 0;
 
   Serial.printf("HEADING [RX] compass re-measured by %s — the heading-disagreement latch is cleared and hybrid heading is available again.\n",
                 (what != NULL) ? what : "calibration");
@@ -536,20 +630,26 @@ unsigned long        cog_last_good_ms  = 0;
 //   GUARD 2 (compass vs COG cross-check): if the two independent sources are more than
 //     kHeadingDisagreeDeg apart, neither is trusted and NO heading is returned.
 //
-// V2.5-Evo - 2026-08-17 - A FOURTH, TEMPORARY MODE THAT IS NOT A SETTING: while guard 2's latch
-// stands, this function behaves as though the mode were 0 no matter what is stored, so a session
-// whose compass has been caught lying runs on GPS course only. usrConf is READ, never written —
-// the rider's rtm_use_compass and rtm_compass_required survive untouched, and the degradation
-// disappears on the next boot or the moment the compass is re-measured or exonerated. Mode 2 is the
-// exception: it has no COG to fall back on, so a standing fault there returns no heading at all.
+// V2.5-Evo - 2026-08-17 - A TEMPORARY LADDER THAT IS NOT A SETTING: while guard 2's latch stands,
+// the COMPASS is withdrawn from this function — the live GPS course and the kCogHoldMs held course
+// are both still served, so the ladder becomes "mode 1 minus the compass" rather than any stored
+// mode. usrConf is READ, never written — the rider's rtm_use_compass and rtm_compass_required
+// survive untouched, and the withdrawal disappears on the next boot or the moment the compass is
+// re-measured or exonerated. Mode 2 is the exception: it has no COG to fall back on, so a standing
+// fault there returns no heading at all.
+// WHY THE HOLD STAYS (this was the other way round for one pass): the hold serves a last-good GPS
+// COURSE and the latch is evidence about the COMPASS, so withdrawing the hold on that evidence
+// removed something the guard has nothing against — and it cost a real bridge across the ordinary
+// COG dropout. See the check that now sits BELOW the hold.
 //
 // SAFETY: This function still never modifies sensor state, config, telemetry or any control
 //         variable. The only state it writes is the guard-2 bookkeeping declared directly above —
 //         heading_disagree_since_ms, heading_disagree_last_seen_ms and heading_disagree_fault
-//         (V2.5-Evo - 2026-08-16: last_seen added; the list previously named two of them), plus
-//         V2.5-Evo - 2026-08-17 the heading_degrade_announced notification flag it sets through
-//         headingDisagreeAnnounceDegraded() — and the cog_last_good_deg / cog_last_good_ms pair
-//         used by the COG hold. All of it is single-writer from the loop task.
+//         (V2.5-Evo - 2026-08-16: last_seen added; the list previously named two of them),
+//         V2.5-Evo - 2026-08-17 the heading_agree_since_ms / heading_agree_last_seen_ms pair that
+//         measures the agreement dwell for clear route 1, plus the heading_degrade_announced
+//         notification flag it sets through headingDisagreeAnnounceDegraded() — and the
+//         cog_last_good_deg / cog_last_good_ms pair used by the COG hold. All of it is single-writer from the loop task.
 //         Caller (updateRtmSteering) must handle confidence=0 as a hold-straight
 //         scenario, not as a steering command.
 static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
@@ -575,18 +675,18 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
   // Use compass directly; valid only if compass returns non-error.
   // SAFETY: This mode SHOULD NOT be used on water — see field-service note in BREmote_V2_Rx.h.
   //
-  // V2.5-Evo - 2026-08-17 - A LATCHED DISAGREEMENT IS FATAL IN THIS MODE, NOT DEGRADING. Everywhere
-  // else the fault degrades the session to GPS-course-only, because the compass is the sensor that
-  // was caught lying and the GPS course is not. Mode 2 is the one place with nothing to degrade TO:
-  // it never consults COG at all, so the only source it has is the source the guard has already
-  // measured 45+ deg wrong. Handing that out would be steering a towing buggy at a person on an
-  // instrument we have proof against, and "the operator opted in" is not consent to a sensor that
-  // has since been shown to be broken — they opted into a compass they believed was good.
+  // V2.5-Evo - 2026-08-17 - A LATCHED DISAGREEMENT LEAVES THIS MODE WITH NOTHING. Elsewhere the
+  // fault withdraws the COMPASS and leaves the GPS course (live and held) in place. Mode 2 never
+  // consults COG at all, so the only source it has is the one the guard has measured 45+ deg away
+  // from the other. Handing that out would be steering a towing buggy at a person on an instrument
+  // we have evidence against, and "the operator opted in" is not consent to a sensor that has since
+  // been shown to conflict — they opted into a compass they believed was good.
   // SO WE WITHHOLD IT: no heading, confidence 0, and every consumer holds straight. That is
   // conservative in the direction this whole guard runs — it subtracts a source, it never adds one
   // — and it is NOT a refusal to operate: gate 6 stands aside while the latch stands, so RTM still
-  // arms and still runs on the rider's throttle, holding straight. FM will not engage, because FM
-  // has always required a heading (condition 6) and that is unchanged.
+  // arms and still runs on the rider's throttle, holding straight. FM will not engage — for two
+  // independent reasons now: can_be_active carries the fault (V2.5-Evo - 2026-08-17), and FM has
+  // always required a heading to exist at all (condition 6).
   // HOW IT CAN ARISE AT ALL: the comparison that sets the fault only runs in mode 1, so this state
   // needs a rider who latched a fault in hybrid mode and then switched to mode 2 in the same power
   // cycle. HOW TO GET OUT: ?compasscal / ?magalign, or a reboot. Route 1 (a live measurement
@@ -710,16 +810,26 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
 
   // Persistence bookkeeping. Transient disagreement -> this tick has no heading. Sustained past
   // kHeadingDisagreeMs -> a proven fault.
-  // V2.5-Evo - 2026-08-17 - WHAT THE ESCALATION MEANS NOW. It no longer routes into runFmLoop()'s
-  // fault chain and no longer stops anything: it DEGRADES the session to GPS-course-only for as
-  // long as it stands (see the block with the declarations). The one thing it does here besides
-  // setting the flag is TELL THE RIDER, once, on the transition — the degradation is otherwise
-  // invisible from the outside, since the buggy still arms and still runs.
-  // WHY PRINTING HERE IS SAFE. Nothing needs to reach the motor first, which is what the F7 rule
-  // (motor to 0, explain afterwards) exists to protect: this flag drives no cap and no stop. The
-  // print also cannot repeat — headingDisagreeAnnounceDegraded() latches its own flag — so the 10 Hz
-  // ladder cannot flood the UART.
+  // V2.5-Evo - 2026-08-17 - WHAT THE ESCALATION MEANS NOW. It withdraws the COMPASS from the ladder
+  // for the rest of the session, so RTM keeps running on GPS course, and it makes Follow-Me decline
+  // to engage (can_be_active in runFmLoop carries it, and so does the FM fault-stop classifier).
+  // See the block with the declarations. Besides setting the flag it TELLS THE RIDER, once.
+  // WHY PRINTING HERE IS STILL F7-SAFE, now that the flag can end an FM engagement. The F7 rule is
+  // "motor to 0 first, explain afterwards", because a full USB CDC TX buffer can block inside
+  // Serial for as long as the host takes to drain it. This print sits UPSTREAM of the FM stop:
+  // checkFmFaultConditions() calls this function, and fm_throttle_cap = 0 is written further down
+  // the same tick. So headingDisagreeAnnounceDegraded() refuses to print while the trigger is held
+  // (thr_received >= 25) and prints at the next release instead — the notice keeps its one-shot
+  // behaviour, and nothing can sit between a proven fault and the motor reaching 0. The rider can
+  // also ask the board at any time with ?diag, which reports the latch without printing anything
+  // in the control path.
   if (disagree_now) {
+    // V2.5-Evo - 2026-08-17 - a measured disagreement ends any agreement dwell outright. The two
+    // dwells are mutually exclusive by construction: one disagreeing sample is proof that agreement
+    // has NOT held continuously, so the exoneration must start again from the next agreeing sample.
+    heading_agree_since_ms     = 0;
+    heading_agree_last_seen_ms = 0;
+
     if (heading_disagree_since_ms == 0) {
       heading_disagree_since_ms = now;
     } else if ((now - heading_disagree_last_seen_ms) > kHeadingDisagreeGapMaxMs) {
@@ -737,15 +847,53 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
     // Stamped AFTER the continuity test above, which reads the PREVIOUS measurement's time.
     heading_disagree_last_seen_ms = now;
   } else if (compare_possible) {
-    // Measured, and the two agree: the disagreement evidence is withdrawn in full. This is clear
-    // route 1, and V2.5-Evo - 2026-08-17 it is the only one that can fire without the rider doing
-    // anything — which is why compare_possible above deliberately tests the CONFIGURED mode rather
-    // than the degraded one. Degrading to COG-only must not switch off the measurement that
-    // exonerates the compass, or the latch really would need a reboot.
+    // Measured, and the two agree. This is clear route 1, and V2.5-Evo - 2026-08-17 it is the only
+    // one that can fire without the rider doing anything — which is why compare_possible above
+    // deliberately tests the CONFIGURED mode rather than the withdrawn one. Withdrawing the compass
+    // must not switch off the measurement that exonerates it, or the latch really would need a
+    // reboot.
+    //
+    // V2.5-Evo - 2026-08-17 - AN AGREEING SAMPLE IS NO LONGER AN ACQUITTAL ON ITS OWN. Convicting
+    // takes kHeadingDisagreeMs of continuous measured disagreement — at least four samples — and
+    // this branch used to undo all of it on ONE tick. A mirrored module is the case that breaks on:
+    // it reports theta - h_true, so the compass-to-course gap is 2*h_true - theta and dips below
+    // kHeadingDisagreeDeg in two 45-deg-wide windows per revolution. A rider coasting on a heading
+    // in one of those windows produced agreeing samples with the module still mirrored, and the
+    // latch vanished. ?magalign cannot detect mirroring either, so this was the defect the
+    // stickiness existed for. Now agreement has to hold for the SAME dwell, with the SAME
+    // continuity bound, before the verdict is withdrawn — no new constant, no new tuning.
+    //
+    // DIRECTION OF THE CHANGE: strictly harder to clear, never easier. A dwell that restarts can
+    // only leave a proven fault standing for longer.
+    if (heading_agree_since_ms == 0) {
+      heading_agree_since_ms = now;
+    } else if ((now - heading_agree_last_seen_ms) > kHeadingDisagreeGapMaxMs) {
+      // Continuity broken: the previous agreeing sample is too old to be part of this run of
+      // agreement, so this sample opens a fresh dwell instead of completing the old one. Same test,
+      // same constant and same reasoning as the disagreement side above.
+      heading_agree_since_ms = now;
+    }
+    // Stamped AFTER the continuity test, which reads the PREVIOUS measurement's time.
+    heading_agree_last_seen_ms = now;
+
+    // An unfinished DISAGREEMENT proof is dropped immediately, exactly as before: a measured
+    // agreement is positive evidence against a dwell that has not yet convicted anything, and
+    // dropping it can only delay a fault. Only the FAULT itself now waits for the full dwell.
     heading_disagree_since_ms     = 0;
     heading_disagree_last_seen_ms = 0;
-    heading_disagree_fault        = false;
-    heading_degrade_announced     = false;   // re-arm the notice if it ever latches again
+
+    if ((now - heading_agree_since_ms) >= (unsigned long)kHeadingDisagreeMs) {
+      if (heading_disagree_fault) {
+        // Transition only — the flag below re-arms the notice, so this cannot repeat while the
+        // sources keep agreeing. Safe to print here under the F7 rule: this branch only ever
+        // RESTORES capability (the compass comes back, FM becomes eligible again), so there is no
+        // motor-stopping write downstream of it that a blocked UART could defer.
+        Serial.printf("HEADING [RX] COMPASS RESTORED: compass and GPS course measured agreeing continuously for %lu ms — the disagreement latch is cleared and Follow-Me may engage again.\n",
+                      (unsigned long)kHeadingDisagreeMs);
+      }
+      heading_disagree_fault    = false;
+      heading_degrade_announced = false;   // re-arm the notice if it ever latches again
+    }
   } else {
     // No comparison possible this tick. Restart the dwell rather than carry a half-finished proof
     // across a gap (same discipline as fm_diverge_since_ms). A fault already PROVEN is kept — it is
@@ -789,6 +937,19 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
       heading_disagree_since_ms     = 0;
       heading_disagree_last_seen_ms = 0;
     }
+
+    // V2.5-Evo - 2026-08-17 - THE AGREEMENT DWELL AGES OUT ON THE SAME TERMS, and for the same
+    // reason: a part-finished exoneration that has sat unmeasured longer than
+    // kHeadingDisagreeEvidenceMaxMs is measuring the wall clock, not a sustained condition. The
+    // continuity test in the agree branch above already refuses to stitch two distant samples
+    // together; this is its companion, so a stale agreement clock cannot survive a long dormant
+    // stretch and then acquit on the first sample after it. Pair cleared together, as everywhere
+    // else here. Discarding it can only make a clear LATER, never earlier.
+    if (heading_agree_since_ms != 0 &&
+        (now - heading_agree_since_ms) > kHeadingDisagreeEvidenceMaxMs) {
+      heading_agree_since_ms     = 0;
+      heading_agree_last_seen_ms = 0;
+    }
   }
 
   if (disagree_now) {
@@ -812,37 +973,36 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
   // updateRtmSteering() will hold straight.
   //
   // ============================================================
-  // V2.5-Evo - 2026-08-17 - AND THIS IS ALSO WHERE A DEGRADED SESSION LEAVES.
+  // V2.5-Evo - 2026-08-17 - THE HEADING-DISAGREEMENT TERM THAT WAS ADDED TO THIS RETURN IS GONE
+  // AGAIN, AND IS BACK BELOW THE COG HOLD WHERE IT STARTED.
   //
-  // WHAT CHANGED. A proven heading disagreement used to withdraw only the compass fallback further
-  // down, which left the ladder in a state that is not any documented mode: no compass, but still
-  // the mode-1 held-COG window. Worse, the paths that REQUIRE a heading (RTM gate 6, FM's
-  // can_be_active) kept treating the fault as a blocker, so a stationary arm died and the TX still
-  // showed RTM active. The compass is what was caught lying; the GPS course is not. So the whole
-  // session now takes the COG-ONLY path — this one, mode 0 — which is an existing, documented,
-  // supported setting rather than a new half-mode nobody has ridden.
+  // WHAT IT WAS DOING HERE. For one pass a standing heading_disagree_fault left the ladder at this
+  // line, which withdrew the kCogHoldMs held-COG bridge as well as the compass. The stated reason
+  // was consistency: the hold is a mode-1 feature, mode 0 never had it, so a session running as
+  // "mode 0" should not have it either.
   //
-  // WHAT THE RIDER GETS. Exactly what a rider who set rtm_use_compass = 0 gets: a live GPS course
-  // above rtm_cog_min_speed_kmh, and nothing below it. Get the buggy moving and RTM steers
-  // normally; while it is slow or stopped there is no heading, so updateRtmSteering() holds the
-  // override at 127 (straight) and gate 6 stands aside instead of stopping the run.
+  // WHY THAT WAS WRONG. The hold serves a LAST-GOOD GPS COURSE. The latch is evidence about the
+  // COMPASS — and only about the compass; the cross-check cannot even say which of the two sources
+  // is the liar. Withdrawing a GPS-derived value on compass evidence is outside this guard's
+  // charter, and it was the one part of that pass that removed something the latch has no evidence
+  // against. It cost real behaviour in both loops: a COG dropout longer than 1.5 s failed FM's
+  // condition 6 and forced a full stop-and-re-arm the hold would have bridged, and on the RTM side
+  // the documented cog_valid flicker in the 3-4 km/h approach band (rtm_target_speed_kmh 4.0
+  // against rtm_cog_min_speed_kmh 3, a margin inside the speed signal's own noise) alternated the
+  // steering override between centre and bearing at 10 Hz — the exact flapping the hold was written
+  // to stop.
   //
-  // WHY THE HELD COG GOES TOO, deliberately. The kCogHoldMs hold below is a MODE 1 feature: it
-  // exists to stop the ladder flapping to an EMI-biased compass every time the speed dips under the
-  // COG floor, and mode 0 has never had it because mode 0 has no compass to flap to. A degraded
-  // session has no compass either, so the hold has nothing left to protect, and serving it would be
-  // inventing a fourth behaviour. This removes heading rather than adding it, which is the only
-  // direction this guard is ever allowed to move.
+  // WHAT IT MEANS NOW. Withdrawn = "mode 1 minus the compass", which is precisely what the evidence
+  // supports: live COG at confidence 3, held COG at confidence 2 for up to kCogHoldMs, and no
+  // compass. cog_last_good_deg / cog_last_good_ms are maintained in the live-COG branch above this
+  // point, so they keep being refreshed while the latch stands — this is a move of one test, not
+  // new plumbing.
   //
-  // NOT A CONFIG WRITE. usrConf.rtm_use_compass is READ here and never written; the rider's stored
-  // mode is untouched, nothing is saved to SPIFFS, and ?conf still reports what they set. The
-  // degradation lives in RAM and dies with the power cycle.
-  //
-  // ORDER MATTERS: this sits BELOW the live-COG branch, so a degraded session still gets a full
-  // confidence-3 GPS course whenever one exists — the whole point is that the good source keeps
-  // working — and ABOVE the hold and the compass fallback, which are the two things being withdrawn.
+  // NOT A CONFIG WRITE, unchanged: usrConf.rtm_use_compass is READ here and never written; the
+  // rider's stored mode is untouched, nothing is saved to SPIFFS, and ?conf still reports what they
+  // set. The withdrawal lives in RAM and dies with the power cycle.
   // ============================================================
-  if (mode == 0 || heading_disagree_fault) {
+  if (mode == 0) {
     *out_heading = -1.0f;
     *out_confidence = 0;
     return false;
@@ -867,11 +1027,21 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
   // goes somewhere nobody chose. So we return NOTHING.
   //
   // WHAT EACH MODE DOES WITH "NOTHING" — no new code path is invented for either:
-  //   RTM: gate 6 (with the default rtm_compass_required = 1) stops the run; with it set to 0,
-  //        updateRtmSteering() holds the override at 127 (straight) and RTM continues under the
-  //        throttle governor with runPhaseC()'s convergence check still watching.
+  //   RTM: gate 6 stops the run only when rtm_compass_required = 1 AND the heading-disagreement
+  //        latch is NOT standing; otherwise updateRtmSteering() holds the override at 127
+  //        (straight) and RTM continues under the throttle governor with runPhaseC()'s convergence
+  //        check still watching.
+  //        V2.5-Evo - 2026-08-17 - CORRECTION, because this used to say flatly that gate 6 stops
+  //        the run at the default setting. It does not during a session in which the latch stands:
+  //        that gate now stands aside whenever headingDisagreeLatched() is true (see the note at
+  //        the gate), so a frozen COG on such a session behaves like the rtm_compass_required = 0
+  //        case above — hold straight, keep running — rather than stopping. Stating it the old way
+  //        described a stop that does not happen. The bypass is deliberately NOT narrowed here;
+  //        narrowing it is a separate change with its own argument to make.
   //   FM : condition 6 in checkFmFaultConditions() fails, which is already classified as a FAULT
-  //        — FM_STOPPING, cap 0, ramp back to manual, FM_IDLE, re-arm required.
+  //        — FM_STOPPING, cap 0, ramp back to manual, FM_IDLE, re-arm required. (And while the
+  //        latch stands FM does not engage at all — can_be_active carries it — so this path is
+  //        reached only with the compass exonerated or never accused.)
   //
   // THIS IS SELF-CLEARING AND STRICTLY NARROW. It only exists while the buggy is MOVING and the
   // GPS is repeating itself; the instant the course value moves again, or the buggy slows below
@@ -946,13 +1116,13 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
 
   //      edge-triggered, and those two edge clears are now GONE ENTIRELY - the latch is cleared
 
-  //      only by evidence (a live agreement, a successful ?compasscal / ?magalign) or a reboot.
+  //      only by evidence (a sustained measured agreement, a successful ?compasscal / ?magalign)
 
-  //      It therefore survives across engagements, and the withdrawal described below is no longer
+  //      or a reboot. It therefore survives across engagements, and the withdrawal described below
 
-  //      the last word: it is the compass half of a full degradation to COG-only, which happens
+  //      is exactly what a standing fault does: it takes the COMPASS out of the ladder and nothing
 
-  //      at the mode-0 return further up. Nothing below this point runs while the fault stands.
+  //      else. The check is a few lines below, between the COG hold and the compass fallback.
 
   //
 
@@ -968,35 +1138,43 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
 
   //
 
-  // V2.5-Evo - 2026-08-17 - SAY WHAT THE CODE DOES (second pass). The paragraph that used to sit
+  // V2.5-Evo - 2026-08-17 - SAY WHAT THE CODE DOES (third pass, and it is back to the second one).
 
-  // here explained why a HELD COG was still served while the latch stood - the check sat below the
+  // The paragraph that first sat here explained why a HELD COG is still served while the latch
 
-  // hold, and a held COG is a GPS measurement rather than the compass under suspicion. That
+  // stands: the check sits BELOW the hold, and a held COG is a GPS measurement, not the compass
 
-  // reasoning was sound for the shape of the guard at the time, and it is now MOOT: a standing
+  // under suspicion. The pass in between moved the check above the hold and declared that
 
-  // fault returns at the mode-0 branch above, which is ahead of both the hold and the compass
+  // reasoning moot. It was not moot - it was the correct reading of what the latch is evidence
 
-  // fallback, so neither of them is reached at all while the session is degraded. The degraded
+  // about, and the move quietly withdrew a GPS-derived value on compass evidence. The check is
 
-  // ladder is exactly the mode-0 ladder: live GPS course or nothing.
+  // back below the hold, so the original paragraph stands again and is restated here:
 
   //
 
-  // THE DIRECTION OF THAT CHANGE IS SUBTRACTION, which is the only direction this guard is allowed
+  // A STANDING FAULT WITHDRAWS THE COMPASS AND NOTHING ELSE. Above rtm_cog_min_speed_kmh a live
 
-  // to move: a degraded session is served LESS heading than before (no hold, no compass), never
+  // GPS course is served at confidence 3; for up to kCogHoldMs after that it is served held, at
 
-  // more. What it costs is a real, named trade - a brief COG dropout while degraded now yields no
+  // confidence 2; after that there is no heading and every consumer holds straight. The cross-check
 
-  // heading for those ticks, so RTM holds straight and FM's condition 6 stops an engagement that
+  // cannot say WHICH of the two sources is lying, so it may only remove the one it is about.
 
-  // the 3 s hold would previously have bridged. That is precisely what a rider who has set
+  //
 
-  // rtm_use_compass = 0 lives with today, which is the whole point of degrading to a mode that
+  // THE DIRECTION IS STILL SUBTRACTION, which is the only direction this guard is allowed to move:
 
-  // already exists rather than inventing a fourth behaviour with its own untested edges.
+  // the compass leaves the ladder and nothing is added. What the previous pass cost, and what
+
+  // moving the check back recovers, is real in both loops - a COG dropout longer than 1.5 s failed
+
+  // FM's condition 6 and forced a stop-and-re-arm, and the cog_valid flicker in the 3-4 km/h
+
+  // approach band alternated the RTM override between centre and bearing at 10 Hz, which is the
+
+  // exact flapping the hold below was written to stop.
 
   // ============================================================
 
@@ -1025,11 +1203,33 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
     return true;
   }
 
-  // V2.5-Evo - 2026-08-17 - the heading_disagree_fault check that used to sit HERE, between the
-  // COG hold and the compass fallback, is gone. It has not been weakened: it moved UP to the
-  // mode-0 return, where it now withdraws the hold as well as the compass and takes the whole
-  // session down the documented COG-only path. Nothing from this line onwards can be reached while
-  // the fault stands, so a second check here would be dead code pretending to be a safeguard.
+  // ============================================================
+  // V2.5-Evo - 2026-08-17 - GUARD 2's CONSEQUENCE: THE COMPASS FALLBACK IS WITHDRAWN.
+  //
+  // A compass that has been caught disagreeing with the GPS course by more than kHeadingDisagreeDeg
+  // for kHeadingDisagreeMs does not get to steer this craft again until it is exonerated. Every
+  // consumer inherits that from here — RTM, FM and anything added later — so no loop has to
+  // remember to check the flag for itself.
+  //
+  // WHY THE CHECK IS HERE AND NOT HIGHER UP THE LADDER. It sits BELOW the live-COG branch and BELOW
+  // the kCogHoldMs hold, and above the compass fallback, because those are GPS courses and this is
+  // evidence about the COMPASS. For one pass it lived up at the mode-0 return, which also withdrew
+  // the hold; that was consistency reasoning ("the hold is a mode-1 feature") applied to a value
+  // the latch has nothing against, and it cost a COG-dropout bridge that both loops rely on. The
+  // cross-check proves the two sources cannot both be right, not which one is wrong, so it may only
+  // subtract the source it names.
+  //
+  // WHAT THE CALLERS DO WITH THE "NO HEADING" THIS PRODUCES, unchanged: updateRtmSteering() sets
+  // rtm_steer_override = 127 and holds straight, which at close range is the safe outcome and is
+  // what the buggy should have done in the veer this guard was written for; FM's condition 6 treats
+  // it as a fault. And FM will not have engaged at all while the latch stands — can_be_active
+  // carries the flag — so for FM this line is a second line of defence, not the first.
+  // ============================================================
+  if (heading_disagree_fault) {
+    *out_heading = -1.0f;
+    *out_confidence = 0;
+    return false;
+  }
 
   if (compass_snapshot_heading >= 0.0f && compass_snapshot_ms > 0) {
     unsigned long age_ms = now - compass_snapshot_ms;
@@ -1585,15 +1785,20 @@ void runRtmLoop()
   // WHAT THIS BLOCK DOES TODAY, IN ONE SENTENCE: on either edge of an RTM engagement it clears the
   // part-built disagreement dwell — heading_disagree_since_ms and heading_disagree_last_seen_ms —
   // so a half-finished proof can never span two different situations, and it does NOT touch
-  // heading_disagree_fault at either edge. The verdict is cleared by evidence only: a live
+  // heading_disagree_fault at either edge. The verdict is cleared by evidence only: a sustained
   // measurement showing agreement, a successful ?compasscal / ?magalign, or a reboot.
   //
   // EVERYTHING FROM HERE TO "WHAT EACH EDGE DOES NOW" IS HISTORY, kept because it is the reasoning
   // that constrains the answer. It describes a disarm-edge clear of the FAULT that no longer
-  // exists: it was there to stop a sticky latch becoming an un-clearable ARMING BLOCK, and the
-  // block itself is gone — gate 6 now stands aside while the latch stands and the session degrades
-  // to COG-only instead of refusing to run. With nothing left to unblock, forgiving a proven fault
-  // at a boundary bought nothing and cost the rider a fresh proof on every single run.
+  // exists: it was there to stop a sticky latch becoming an un-clearable RTM ARMING BLOCK, and that
+  // block is gone — gate 6 stands aside while the latch stands, so RTM runs on GPS course instead
+  // of refusing. With nothing left to unblock ON THE RTM SIDE, forgiving a proven fault at an RTM
+  // boundary bought nothing and cost the rider a fresh proof on every single run.
+  // V2.5-Evo - 2026-08-17 - AND IT MUST NOT COME BACK NOW THAT FOLLOW-ME REFUSES AGAIN. FM declining
+  // to engage is the intended response to symmetric evidence (see can_be_active in runFmLoop), so an
+  // RTM disarm — which says nothing whatever about a compass — forgiving that verdict would be the
+  // same unearned amnesty in a different place. RTM keeps running throughout, so the rider is never
+  // stranded by it, and the evidence-based clears remain reachable while coasting.
   //
   // WHY THIS EXISTED. The sticky heading_disagree_fault used to be cleared only in fmEnterIdle(),
   // which is a Follow-Me function. That was fine while only FM consumed the fault, but
@@ -1667,26 +1872,27 @@ void runRtmLoop()
   // WHAT EACH EDGE DOES NOW (V2.5-Evo - 2026-08-17 — BOTH EDGES DO THE SAME THING):
   //   DISARM (true -> false) and ARM (false -> true) both drop the UNFINISHED dwell and nothing
   //   else. A half-built proof must not span two different situations, so it restarts; a PROVEN
-  //   fault is untouched at both edges and carries on degrading the session to COG-only until it is
-  //   cleared by evidence.
+  //   fault is untouched at both edges and keeps the compass out of the ladder until it is cleared
+  //   by evidence.
   //
   // WHY THE DISARM CLEAR OF THE FAULT WENT. It was forgiveness without evidence. A compass mounted
   // 90 deg out is exactly as wrong after a disarm as before it, so clearing there meant the rider
   // had to re-prove the fault by coasting with the trigger released on every single run — and the
   // proof takes kHeadingDisagreeMs of continuous measurement in a window that only exists while
   // coasting. In practice that made the guard nearly unreachable, which is the gap this closes.
-  // It was safe to remove only because the fault no longer refuses anything; see the top of this
-  // block and the declarations further up.
   //
-  // WHAT A SURVIVING FAULT ACTUALLY COSTS THE RIDER, TRACED. If COG is live at arm time, nothing:
-  // getRtmHeading() returns COG at confidence 3 above the degradation check, so the run proceeds
-  // normally on the source that is not in doubt. If the buggy is stationary or below
-  // rtm_cog_min_speed_kmh — the ordinary RTM arm — there is no heading, and RTM ARMS ANYWAY: gate 6
-  // stands aside exactly as it does for a rider who set rtm_compass_required = 0, the steering
-  // override holds at 127 (straight) and the align phase caps the throttle at ~5% until a heading
-  // exists. The buggy moves off on the rider's own trigger, passes rtm_cog_min_speed_kmh, and the
-  // GPS course takes over from there. What it never does is steer a towing buggy at a person on a
-  // compass that has been measured 45+ deg wrong.
+  // WHAT A SURVIVING FAULT ACTUALLY COSTS THE RTM RIDER, TRACED. If COG is live at arm time,
+  // nothing: getRtmHeading() returns COG at confidence 3 well above the compass check, so the run
+  // proceeds normally. If the buggy is stationary or below rtm_cog_min_speed_kmh — the ordinary RTM
+  // arm — there is no heading unless the kCogHoldMs bridge still has one, and RTM ARMS ANYWAY:
+  // gate 6 stands aside exactly as it does for a rider who set rtm_compass_required = 0, the
+  // steering override holds at 127 (straight) and the align phase caps the throttle at ~5% until a
+  // heading exists. The buggy moves off on the rider's own trigger, passes rtm_cog_min_speed_kmh,
+  // and the GPS course takes over from there. What it never does is steer a towing buggy at a
+  // person on a compass that has been measured 45+ deg wrong.
+  // V2.5-Evo - 2026-08-17 - FOLLOW-ME PAYS A DIFFERENT PRICE, DELIBERATELY: it does not engage at
+  // all while the latch stands, because autonomous following cannot be run on "one of these two is
+  // lying and I cannot tell which". See can_be_active in runFmLoop().
   // ============================================================
   {
     static bool rtm_prev_active = false;
@@ -1747,7 +1953,8 @@ void runRtmLoop()
   // Bit map (the TX renders these in a later pass):
   //   [0] armed           - a live TX declaration is held (FM_ARMED / FM_ACTIVE / FM_HOLD). Scanner.
   //   [1] engaged         - FM is actively following (FM_ACTIVE). Grow-with-far distance bar.
-  //   [2] armed-not-ready - armed but not yet engage-eligible on RX facts: no separation latch yet.
+  //   [2] armed-not-ready - armed but not yet engage-eligible on RX facts: no separation latch yet,
+  //                         or (V2.5-Evo - 2026-08-17) a standing heading-disagreement latch.
   //                         The TX ORs its own TX-local readiness (own GPS fix/age, pairing, last
   //                         reply age) on top, then renders blink-in-place (not ready) vs sweep (ready).
   //   [3] fault-stop      - a FAULT ended FM while the trigger was held; sticky kFmFaultStickyMs so
@@ -1755,21 +1962,27 @@ void runRtmLoop()
   // The four A3 disarm-ownership facts (armed drops, engaged drops, fault-sticky rises) let the TX
   // detect an RX-side fault and clear its own fm_armed so display and engagement cannot disagree.
   //
-  // V2.5-Evo - 2026-08-17 - BIT 2 NO LONGER RISES ON A HEADING DISAGREEMENT, AND MUST NOT. A
-  // previous pass ORed heading_disagree_fault into this bit because the fault then blocked FM from
-  // engaging, and the TX would otherwise have rendered "ready" for a Follow-Me that was never going
-  // to engage. That term is removed in lockstep with the block it mirrored: can_be_active below no
-  // longer carries the fault, FM degrades to COG-only heading exactly as RTM does, and a degraded
-  // FM engages normally. Leaving the bit set would make the remote report "not ready" for an FM
-  // that is about to engage — the same class of contradiction between display and behaviour that
-  // this bit exists to prevent, merely pointing the other way. Bit 2 is back to reporting exactly
-  // one RX fact: separation has not been proven yet.
+  // V2.5-Evo - 2026-08-17 - BIT 2 RISES ON A HEADING DISAGREEMENT AGAIN, BECAUSE FM IS BLOCKED
+  // AGAIN. The term was ORed in when the fault blocked FM, taken out when the fault stopped
+  // blocking it, and it belongs back now that can_be_active carries !heading_disagree_fault once
+  // more. THE RULE THIS BIT FOLLOWS, and the only one: it reports RX-side facts that make an armed
+  // FM ineligible to engage. A standing latch is precisely such a fact and it outranks the
+  // separation test — separation can latch perfectly well while the fault stands, and if bit 2
+  // reported only separation the TX would drop from blink-in-place to sweep and tell the rider
+  // "ready" for a Follow-Me that cannot engage at all. That is the display-versus-behaviour
+  // contradiction this bit exists to prevent, and it is the one that actually costs the rider
+  // something: they wait for an engagement that is never coming, with no explanation on the water.
+  // The mirror-image objection (reporting "not ready" for an FM that is about to engage) does not
+  // apply here — while the latch stands FM is not about to engage under any conditions.
+  // SCOPE UNCHANGED: still only in the armed-but-not-following states, so FM_ACTIVE never sets it
+  // and bits 0/1/3 are untouched.
   {
     uint8_t f = 0;
     FmState s = fm_state;
     if (s == FM_ARMED || s == FM_ACTIVE || s == FM_HOLD)    f |= (1 << 0);
     if (s == FM_ACTIVE)                                     f |= (1 << 1);
-    if ((s == FM_ARMED || s == FM_HOLD) && !fm_sep_latched) f |= (1 << 2);
+    if ((s == FM_ARMED || s == FM_HOLD) &&
+        (!fm_sep_latched || heading_disagree_fault))        f |= (1 << 2);
     if (fm_fault_alarm_ms != 0 && (now - fm_fault_alarm_ms) < kFmFaultStickyMs) f |= (1 << 3);
     telemetry.fm_flags = f;
   }
@@ -2449,11 +2662,22 @@ static void fmEnterIdle()
 
   // V2.5-Evo - 2026-08-17 - THE FAULT IS NO LONGER FORGIVEN HERE. This site used to clear
   // heading_disagree_fault on a genuine transition into FM idle, on the reasoning that ending a
-  // declaration should let the next arm start from fresh sensor evidence. That reasoning only held
-  // while a standing fault could BLOCK the next arm; it cannot any more — the fault degrades the
-  // session to COG-only and refuses nothing — so clearing it here forgave a proven, physical
-  // compass error for no reason and made the rider re-prove it by coasting before every run. The
-  // verdict now survives, and the three routes that can clear it are all evidence: a live
+  // declaration should let the next arm start from fresh sensor evidence. But an FM declaration
+  // ending is not evidence about a compass: the compass is exactly as wrong after it as before,
+  // and clearing here made the rider re-prove a mis-mounted compass by coasting before every
+  // single run — which, given the proof needs kHeadingDisagreeMs of continuous measurement in a
+  // window that only exists while coasting, made the guard nearly unreachable.
+  //
+  // AND IT STAYS GONE NOW THAT A STANDING FAULT BLOCKS AN FM ENGAGEMENT AGAIN. The original worry
+  // was that a sticky latch would become an un-clearable block on the water. It is not one:
+  // Return-to-Me is NOT blocked (it runs on GPS course, so the rider can always get the buggy
+  // home), and the clear route is exactly the state an FM rider spends time in between tows —
+  // coasting above rtm_cog_min_speed_kmh with the trigger released, which is precisely when the
+  // compass snapshot refreshes and the comparison is live. Five continuous seconds of measured
+  // agreement clears it. Forgiving it at a state boundary instead would hand Follow-Me a compass
+  // the firmware has positive evidence against, on the strength of nothing at all.
+  //
+  // The verdict now survives, and the three routes that can clear it are all evidence: a sustained
   // measurement showing agreement, a successful ?compasscal / ?magalign, and a reboot. See the
   // declarations at the top of this file.
   //
@@ -2588,14 +2812,17 @@ void runFmLoop()
   // thing the guard had to work with. The unfinished dwell is still dropped, because a half-built
   // proof must not span two different situations.
   //
-  // NOT A DEAD END EITHER, AND THIS IS THE PART THAT CHANGED (V2.5-Evo - 2026-08-17). A surviving
-  // fault used to make can_be_active false, so FM sat in FM_ARMED for the rest of the session,
-  // fully manual, cap 255 — silently, because fm_flags bit 2 drops once separation latches. The
-  // answer is no longer to announce that dead end but to remove it: can_be_active below does not
-  // carry the fault any more, so FM degrades to COG-only heading exactly as RTM does and engages
-  // normally as soon as the ordinary conditions hold. FM still requires SOME heading (condition 6),
-  // which is unchanged and is not this flag's doing — while the buggy is following a moving rider
-  // it is itself moving, so a live GPS course is exactly what it has.
+  // WHAT A SURVIVING FAULT COSTS FOLLOW-ME, AND WHY THAT IS THE POINT (V2.5-Evo - 2026-08-17). It
+  // makes can_be_active false, so FM stays in FM_ARMED, fully manual, cap 255, until the compass is
+  // exonerated or re-measured. That is the intended behaviour, not a dead end: FM steers a towing
+  // buggy at a person, and the guard's finding is "one of my two heading sources is lying and I
+  // cannot tell which". Declining is the only answer that does not involve guessing. The real
+  // complaint about the old shape was that it was SILENT — fm_flags bit 2 dropped once separation
+  // latched, so the TX read "ready" while nothing happened. That is fixed where it belongs: bit 2
+  // carries the fault again, the ARMED branch at the bottom of runFmLoop() prints a rate-limited
+  // explanation, headingDisagreeAnnounceDegraded() prints once when the fault latches, and ?diag
+  // reports the latch on demand. RTM, whose degraded behaviour is bounded, keeps running throughout,
+  // so the rider is never stranded — see can_be_active for the full argument.
   // ============================================================
   if (fm_state == FM_IDLE) {
     heading_disagree_since_ms     = 0;
@@ -2883,19 +3110,47 @@ void runFmLoop()
   // V2.5-Evo - 2026-07-25 - A3: !diverge_fault joins the same AND chain. It can only ever REMOVE
   // eligibility, so the worst case of a false positive is FM handing control back to the rider.
   // V2.5-Evo - 2026-07-25 - STAGE 2 added !heading_disagree_fault to this chain on the same terms.
-  // V2.5-Evo - 2026-08-17 - AND IT IS REMOVED AGAIN, DELIBERATELY. Blocking here was the FM half of
-  // a refusal: the flag is evidence against the COMPASS, and FM's heading in this situation is the
-  // buggy's GPS course, which is not in doubt. With the term in place a rider who had provoked one
-  // disagreement while coasting found FM stuck in FM_ARMED for the rest of the session with every
-  // other condition reading perfectly — no engagement, no explanation on the water, and no way back
-  // without a re-declaration. FM now DEGRADES exactly as RTM does: getRtmHeading() serves the live
-  // GPS course only, the compass is withdrawn at source, and FM engages on the ordinary conditions.
-  // NOTHING IS WEAKENED BY THE REMOVAL: the compass cannot reach FM's steering while the fault
-  // stands, because it is withdrawn inside getRtmHeading() rather than here, and FM's condition 6
-  // still requires a heading to exist at all — so an FM with no usable source cannot engage, which
-  // is the outcome this term was really being asked to produce.
+  //
+  // V2.5-Evo - 2026-08-17 - IT WAS REMOVED FOR ONE PASS AND IS RESTORED HERE. RELEASE BLOCKER.
+  //
+  // WHY THE REMOVAL WAS WRONG. It rested on "the flag is evidence against the COMPASS, so FM can
+  // safely run on the GPS course instead". The cross-check does not support that sentence. It
+  // proves only that the compass and the GPS course CANNOT BOTH BE RIGHT — guard 2's own header
+  // says so: "It deliberately does NOT pick a winner." If the RX's course is the bad source
+  // (marina multipath, a wrong dynamic platform model, a lagged COG at low speed), degrading to
+  // course-only withdraws the GOOD sensor and hands Follow-Me the bad one. The evidence is
+  // symmetric; the response must be too.
+  //
+  // WHY FOLLOW-ME DECLINES WHERE RTM DEGRADES — the two are not the same risk, and treating them
+  // alike is what produced this. RTM's degraded behaviour is BOUNDED: with no heading the steering
+  // override is pinned at 127, the align cap holds the throttle at 13/255 on the 180 deg sentinel,
+  // Phase C's convergence check keeps watching, and the alternative was a half-armed buggy sitting
+  // dead with the TX still displaying RTM as ACTIVE. FOLLOW-ME HAS NO SUCH CEILING: it engages
+  // autonomously once the rider is beyond the engage distance at speed, its steering authority is
+  // continuous for the whole engagement, and its only backstops are the divergence fault (about a
+  // 6.5 s engage grace plus a 3 s dwell before it can even fire) and the deadman.
+  //
+  // AND THE DISAGREEMENT CANNOT BE RE-MEASURED DURING THE RUN, which is what makes engaging on it
+  // unrecoverable rather than merely optimistic. compare_possible needs a compass snapshot younger
+  // than kHeadingCompareSnapMs, and Compass.ino only refreshes that snapshot while thr_received <
+  // 25. FM runs under a held trigger, so about a second into the engagement the comparison goes
+  // dormant and the GPS course is served at confidence 3, unchallenged, for the rest of the run.
+  // The firmware would be steering at a person on a source it holds positive evidence against,
+  // with no way left to notice it was the wrong one.
+  //
+  // IT IS ALSO WHAT GUARD 1 ALREADY DOES, one screen up in getRtmHeading(): "One provably dead
+  // source plus one unverifiable source is not a heading. HOLDING STRAIGHT IS SAFER THAN STEERING
+  // ON THE SURVIVOR." Guard 2 has strictly WEAKER evidence than that — it cannot even name the
+  // dead source — so it must not reach a bolder conclusion.
+  //
+  // THE COST, STATED PLAINLY: FM will not engage until the compass is exonerated (five continuous
+  // seconds of measured agreement, which happens while coasting with the trigger released), or
+  // re-measured by ?compasscal / ?magalign, or the board is rebooted. The rider is not left
+  // guessing — fm_flags bit 2 rises, the ARMED branch below prints a rate-limited explanation, the
+  // one-shot degradation notice has already printed, and ?diag answers on demand. And RTM keeps
+  // working throughout, so the buggy can always be brought home.
   bool can_be_active = hard_ok && speed_ok && dist_ok && fm_sep_latched &&
-                       !diverge_fault;
+                       !diverge_fault && !heading_disagree_fault;
 
   if (can_be_active) {
     // ---- Steer-cancel while ACTIVE (A3 PART 2 / R-steering) ----
@@ -2968,14 +3223,19 @@ void runFmLoop()
 
     bool was_engaged = (fm_state == FM_ACTIVE || fm_state == FM_HOLD);
 
-    // V2.5-Evo - 2026-08-17 - heading_disagree_fault is NOT a member of this condition any more.
-    // It used to enter the fault chain here in its own right, which meant a disagreement proven
-    // while FM was engaged hard-stopped the run. It no longer stops anything by itself: it degrades
-    // the heading ladder to GPS-course-only, and if that leaves FM with no heading at all the stop
-    // still happens — through condition 6 inside fault_ok, which is where "FM has no heading" has
-    // always belonged. One route to the stop, not two, and it is the route that measures the thing
-    // that actually matters: whether a usable heading exists right now.
-    if ((!fault_ok || diverge_fault) && was_engaged) {
+    // V2.5-Evo - 2026-08-17 - heading_disagree_fault IS a member of this condition again, restored
+    // in the same breath as the can_be_active term it was deleted with. IT HAS TO BE, and this is
+    // not symmetry for its own sake: restoring only can_be_active would drop an engaged FM into the
+    // HOLD branch below instead of this one, because fault_ok can still be true (a live GPS course
+    // satisfies condition 6). HOLD means cap 0, stay ARMED, auto-resume when the conditions come
+    // back — and a latched fault never comes back on its own, so FM would sit at cap 0 with the
+    // rider holding the trigger and the motor dead, for the rest of the session, with no stop
+    // notification and no ramp back to manual. That is the same silent half-armed state this whole
+    // change set exists to remove, wearing FM's colours.
+    // Entering HERE instead gives it the proven fault semantics: FM_STOPPING, cap 0 now, the
+    // kFmStopRampMs ramp back to full manual throttle, FM_IDLE, re-arm required, and the sticky
+    // fm_flags bit 3 that drives St + the stop buzz on the TX.
+    if ((!fault_ok || diverge_fault || heading_disagree_fault) && was_engaged) {
       // ---- FAULT (conditions 2-7, plus A3 divergence): something actually broke while FM had control ----
       // End autonomy for the run: enter FM_STOPPING, which ramps the throttle cap 0 -> 255 over the
       // next kFmStopRampMs (handled at the top of runFmLoop), then drops to FM_IDLE — re-arm
@@ -2988,9 +3248,11 @@ void runFmLoop()
       // exactly as much of a "something broke" event as losing the compass, and a silent auto-resume
       // after it would be the unrequested autonomy this architecture forbids.
       // V2.5-Evo - 2026-07-25 - STAGE 2 routed a sustained COG-vs-compass disagreement through this
-      // same branch. V2.5-Evo - 2026-08-17: it no longer enters here at all — it degrades the
-      // heading ladder instead of stopping the run, and a degraded FM that genuinely has no heading
-      // still reaches this branch through !fault_ok (condition 6), which is the honest test.
+      // same branch, and V2.5-Evo - 2026-08-17 it does so again after one pass in which it did not.
+      // A disagreement proven while FM has control is a "something broke" event of exactly the same
+      // kind as losing the compass or steering away: two heading sources that cannot both be right,
+      // and no way to tell which, discovered mid-engagement. It ends autonomy for the run and hands
+      // the buggy back to the rider, which is what every other member of this branch does.
       if (thr_held) fm_fault_alarm_ms = now;
       fm_stop_ms      = now;
       fm_state        = FM_STOPPING;
@@ -3004,14 +3266,14 @@ void runFmLoop()
                       (double)dist_m, (double)diverge_start_m, (double)kFmDivergeCloseEpsM,
                       (double)diverge_limit_m, (unsigned long)kFmDivergeMs);
       }
-      // V2.5-Evo - 2026-08-17 - CONTEXT, NOT CAUSE. This line used to announce the disagreement as
-      // the reason for the stop; the disagreement is no longer a reason for anything. It is kept,
-      // reworded, because it answers the question a rider will actually have when FM stops for a
-      // missing heading while degraded — "why did the compass not cover for the GPS?" — and that
-      // answer exists nowhere else at the moment it matters. Same F7 discipline as the line above:
-      // it prints AFTER fm_throttle_cap = 0, so a blocked UART can never defer the hard stop.
+      // V2.5-Evo - 2026-08-17 - CAUSE AGAIN, not just context: with the fault back in the condition
+      // above, this line names the reason the run ended whenever the latch is what ended it. It
+      // still reads correctly in the other case — an FM stopped by condition 6 while the latch
+      // happens to stand — because the missing fallback is then the honest explanation for why the
+      // GPS course had no backup. Same F7 discipline as the line above: it prints AFTER
+      // fm_throttle_cap = 0, so a blocked UART can never defer the hard stop.
       if (heading_disagree_fault) {
-        Serial.printf("FM [RX] note: the compass is withdrawn for this session (it disagreed with the GPS course by more than %.0f deg for %lu ms), so there was no fallback when the GPS course was lost. Re-run ?compasscal or ?magalign.\n",
+        Serial.printf("FM [RX] HEADING DISAGREE FAULT: the compass and the GPS course disagreed by more than %.0f deg for %lu ms, so one of them is wrong and the board cannot tell which. Follow-Me will not steer on a guess — it stays manual until they are measured agreeing again, or you re-run ?compasscal / ?magalign.\n",
                       (double)kHeadingDisagreeDeg, (unsigned long)kHeadingDisagreeMs);
       }
       Serial.printf("FM [RX] FAULT -> STOPPING (ramp %lu ms) -> IDLE, re-arm required (thr_held=%d)\n",
@@ -3030,12 +3292,32 @@ void runFmLoop()
       fm_state        = FM_ARMED;
       fm_throttle_cap = 255;
 
-      // V2.5-Evo - 2026-08-17 - the rate-limited "ARMED, NOT ENGAGING because of a heading
-      // disagreement" message that used to live here is GONE, because the state it described is
-      // gone: can_be_active no longer carries heading_disagree_fault, so the fault cannot hold FM
-      // at ARMED. FM sitting here now means what it has always meant — the follow geometry is not
-      // satisfied yet. The one-off degradation notice is printed once, at the instant the fault
-      // latches, by headingDisagreeAnnounceDegraded().
+      // V2.5-Evo - 2026-08-17 - THE "ARMED, NOT ENGAGING" EXPLANATION IS BACK, because the state it
+      // describes is back: can_be_active carries heading_disagree_fault again, so a proven
+      // disagreement holds FM here indefinitely with every other condition possibly reading
+      // perfectly. Without a word on the wire that is indistinguishable from "the geometry is not
+      // right yet", and the rider stands there waiting for an engagement that is never coming.
+      //
+      // RATE LIMIT. This branch runs at 10 Hz for as long as FM is armed, so the message repeats no
+      // more often than kFmHeadingBlockMsgMs. That is deliberately NOT a one-shot like
+      // headingDisagreeAnnounceDegraded(): that notice fires once at the instant of the latch and
+      // will already have scrolled away by the time the rider gets to the water and arms. This one
+      // has to be there when they are actually looking, which is while they are wondering why
+      // nothing is happening. ?diag reports the same state without waiting for the repeat.
+      //
+      // F7 SAFE: FM is fully manual on this branch (fm_throttle_cap = 255, written above), so there
+      // is no motor-stopping write downstream that a blocked UART could defer.
+      if (heading_disagree_fault) {
+        static const unsigned long kFmHeadingBlockMsgMs = 10000UL;  // ms between repeats
+        static unsigned long fm_heading_block_msg_ms = 0;
+        if (fm_heading_block_msg_ms == 0 ||
+            (now - fm_heading_block_msg_ms) >= kFmHeadingBlockMsgMs) {
+          fm_heading_block_msg_ms = now;
+          Serial.printf("FM [RX] ARMED, NOT ENGAGING: the compass and the GPS course were measured disagreeing by more than %.0f deg for %lu ms, so Follow-Me will not steer on either of them. RTM still works. Clears on %lu ms of measured agreement (coast with the trigger released), or ?compasscal / ?magalign, or a reboot.\n",
+                        (double)kHeadingDisagreeDeg, (unsigned long)kHeadingDisagreeMs,
+                        (unsigned long)kHeadingDisagreeMs);
+        }
+      }
     }
   }
 }

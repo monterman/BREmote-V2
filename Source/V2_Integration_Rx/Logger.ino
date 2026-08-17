@@ -344,16 +344,18 @@ VescLogData convertToLogData() {
         src    = 1;     // GPS_COG
         conf   = 3;     // HIGH
         chosen = gps_last_course_deg;
-      } else if (mode == 1 && !cog_frozen_moving && !headingDisagreeLatched() &&
+      } else if (mode == 1 && !cog_frozen_moving &&
                  cog_last_good_deg >= 0.0f && cog_last_good_ms > 0 &&
                  ((now_ms - cog_last_good_ms) < (unsigned long)kCogHoldMs)) {
-        // V2.5-Evo - 2026-08-17 - ...AND NOT WHILE THE DISAGREEMENT LATCH STANDS. The controller
-        // now leaves the ladder at the mode-0 return whenever the latch is set, which is ABOVE this
-        // hold, so a degraded session is served a live GPS course or nothing at all — never a held
-        // one. The hold is a mode-1 feature (it exists to stop the ladder flapping to the compass,
-        // and a degraded session has no compass), so mirroring the gate here is what keeps
-        // rtm_source / rtm_confidence describing the heading actually used. Without it the CSV
-        // would show src 1 / conf 2 for ticks the controller spent holding straight.
+        // V2.5-Evo - 2026-08-17 - THE LATCH GATE IS DELIBERATELY NOT HERE, and the note that used to
+        // sit here claiming otherwise was written against a controller that has since been corrected.
+        // The disagreement latch is evidence about the COMPASS. This branch serves a last-good GPS
+        // COURSE, which the latch says nothing about — so withdrawing it on compass evidence was
+        // outside the guard's charter, and the controller no longer does it: its fault check sits
+        // BELOW this hold and above the compass fallback. Mirror that exactly. Gating here would log
+        // src 0 / conf 0 for ticks the controller genuinely spent steering on a held course.
+        // The two branches that DO carry the gate — mode 2 and the compass fallback — both consume
+        // the compass, which is the thing the latch has evidence against.
         // COG-HOLD mirror (V2.5-Evo - 2026-08-16). WHAT WAS WRONG: the 2026-08-16 controller change
         // added a step to getRtmHeading() that this duplicate never got — before falling back to the
         // compass it re-serves the LAST GOOD COG for up to kCogHoldMs at confidence 2, which is what

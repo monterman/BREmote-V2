@@ -133,11 +133,7 @@ const CfgFieldSpec kCfgFields[] = {
 
   {"rsvd_u16_1", CFG_U16,   offsetof(confStruct, rsvd_u16_1), true, false, true, 0.0f, 65535.0f, 0, false},
 
-
-
-
   {"rsvd_f32_1", CFG_FLOAT, offsetof(confStruct, rsvd_f32_1), true, false, true, -1e6f, 1e6f,    3, false},
-
 
   // V2.5-Evo - 2026-07-20 - SW34 reserved fields (validation only; not read by v1 control law)
   // V2.5-Evo - 2026-07-25 - A2: fm_engage_dist_m is NO LONGER RESERVED — it is now read live by
@@ -226,17 +222,45 @@ bool cfgValidateCrossField(confStruct &candidate, String &err)
   // NOTE for anyone editing this string: it is interpolated raw into a JSON body by
   // webCfgHandleSet()/webCfgHandleSetBatch() in Common/WebConfigEngine.h with no escaping, so it must
   // never contain a double quote or a backslash.
-  if (candidate.fm_engage_dist_m > 0.1f && candidate.fm_engage_dist_m < kFmEngageDistFloorM)
-  {
-    err = String("ERR_CROSS:Follow-Me Engage Distance must be 0 (automatic) or at least ") +
-          String(kFmEngageDistFloorM, 1) + " m. This " + String(kFmEngageDistFloorM, 1) +
-          " m minimum is the tow-rope safety floor: Follow-Me must never be able to engage while you " +
-          "are still on the rope. Measure your rope and set at least a metre beyond it (a 20 ft / " +
-          "6.1 m rope needs " + String(kFmEngageDistFloorM, 1) + " m or more). Setting 0 does not " +
-          "bypass this — automatic is floored at the same " + String(kFmEngageDistFloorM, 1) + " m.";
-    return false;
-  }
+  // V2.5-Evo - 2026-08-16 - CLAMPED rather than rejected, for consistency with the COG-only
 
+  // rule below and because the correction is always in the SAFE direction. Raising a too-small
+
+  // engage distance UP to the tow-rope floor moves Follow-Me FURTHER from the rider, never
+
+  // closer - so a rider who asks for 5 m gets more margin than they requested, not less. There
+
+  // is no version of this clamp that makes the water more dangerous.
+
+  //
+
+  // The old behaviour refused the save outright. That taught the rule, but it also meant a
+
+  // config blob carrying a too-small value - an old backup, a copied config from someone with a
+
+  // shorter rope - was rejected wholesale at boot, which on the SPIFFS load path costs the
+
+  // rider EVERY setting rather than one. Clamping repairs the single field and keeps the rest.
+
+  //
+
+  // Loud on purpose: the rider must learn WHY, or they will set it back next session.
+
+  if (candidate.fm_engage_dist_m > 0.1f && candidate.fm_engage_dist_m < kFmEngageDistFloorM)
+
+  {
+
+    float asked = candidate.fm_engage_dist_m;
+
+    candidate.fm_engage_dist_m = kFmEngageDistFloorM;
+
+    Serial.printf("NOTE: Follow-Me Engage Distance %.1f m raised to the %.1f m minimum.\n",
+                  asked, kFmEngageDistFloorM);
+    Serial.println("      That minimum is the tow-rope safety floor: Follow-Me must never be able");
+    Serial.println("      to engage while you are still on the rope. Measure your rope and set at");
+    Serial.println("      least a metre beyond it. Setting 0 (automatic) is floored at the same value.");
+
+  }
 
   // ============================================================
 
@@ -286,41 +310,71 @@ bool cfgValidateCrossField(confStruct &candidate, String &err)
 
   // ============================================================
 
-  // ============================================================
-  // V2.5-Evo - 2026-08-16 - COG-ONLY MODE: relax the arm gate automatically.
-  //
-  // rtm_use_compass = 0 turns the compass off for STEERING. rtm_compass_required = 1 then still
-  // demands a valid heading before RTM will arm - and despite its name that gate does not look
-  // for a compass, it calls getRtmHeading() and accepts ANY source. In hybrid the compass
-  // snapshot satisfies it while the craft sits still. With the compass off there is nothing:
-  // COG does not exist below rtm_cog_min_speed_kmh, and RTM is armed from a standstill or a
-  // drift - exactly when there is no course to measure. RTM would refuse to arm every time with
-  // STOP: No valid heading source, which reads as COG-only mode being broken. It is not.
-  //
-  // AUTO-CORRECTED rather than rejected, deliberately. This combination is a UI trap, not a
-  // hazard: it fails CLOSED - RTM refuses to arm rather than doing anything dangerous - so
-  // repairing it cannot create a risk, it only removes a footgun. And COG-only is the mode
-  // riders are being pointed at RIGHT NOW to isolate a suspected compass; the first person to
-  // reach for it should not have to debug the mode itself. Make it impossible to get wrong on
-  // the day it starts being used.
-  //
-  // Announced, never silent - the rider must see that turning the compass off also relaxed the
-  // arm gate, because that IS a real behaviour change. The web portal shows it too: the field
-  // reloads as 0.
-  //
-  // Writing to `candidate` here is intentional despite the function name. It is idempotent, only
-  // ever moves settings toward the working combination, and runs on every save path - ?set, web
-  // portal, ?applyconf and SPIFFS load - so an old config blob carrying the trap is repaired at
-  // boot rather than leaving RTM unarmable until someone works out why.
-  // ============================================================
-  if (candidate.rtm_use_compass == 0 && candidate.rtm_compass_required != 0)
-  {
-    candidate.rtm_compass_required = 0;
-    Serial.println("NOTE: Heading Source is GPS COG only, so RTM Compass Required was set to 0.");
-    Serial.println("      That gate needs a valid heading of ANY kind to arm, and with the compass");
-    Serial.println("      off there is none until the buggy is moving - so RTM could never arm.");
-    Serial.println("      RTM now steers only above the COG minimum speed, and holds straight below.");
-  }
+  // ============================================================
+
+  // V2.5-Evo - 2026-08-16 - COG-ONLY MODE: relax the arm gate automatically.
+
+  //
+
+  // rtm_use_compass = 0 turns the compass off for STEERING. rtm_compass_required = 1 then still
+
+  // demands a valid heading before RTM will arm - and despite its name that gate does not look
+
+  // for a compass, it calls getRtmHeading() and accepts ANY source. In hybrid the compass
+
+  // snapshot satisfies it while the craft sits still. With the compass off there is nothing:
+
+  // COG does not exist below rtm_cog_min_speed_kmh, and RTM is armed from a standstill or a
+
+  // drift - exactly when there is no course to measure. RTM would refuse to arm every time with
+
+  // STOP: No valid heading source, which reads as COG-only mode being broken. It is not.
+
+  //
+
+  // AUTO-CORRECTED rather than rejected, deliberately. This combination is a UI trap, not a
+
+  // hazard: it fails CLOSED - RTM refuses to arm rather than doing anything dangerous - so
+
+  // repairing it cannot create a risk, it only removes a footgun. And COG-only is the mode
+
+  // riders are being pointed at RIGHT NOW to isolate a suspected compass; the first person to
+
+  // reach for it should not have to debug the mode itself. Make it impossible to get wrong on
+
+  // the day it starts being used.
+
+  //
+
+  // Announced, never silent - the rider must see that turning the compass off also relaxed the
+
+  // arm gate, because that IS a real behaviour change. The web portal shows it too: the field
+
+  // reloads as 0.
+
+  //
+
+  // Writing to `candidate` here is intentional despite the function name. It is idempotent, only
+
+  // ever moves settings toward the working combination, and runs on every save path - ?set, web
+
+  // portal, ?applyconf and SPIFFS load - so an old config blob carrying the trap is repaired at
+
+  // boot rather than leaving RTM unarmable until someone works out why.
+
+  // ============================================================
+
+  if (candidate.rtm_use_compass == 0 && candidate.rtm_compass_required != 0)
+
+  {
+
+    candidate.rtm_compass_required = 0;
+    Serial.println("NOTE: Heading Source is GPS COG only, so RTM Compass Required was set to 0.");
+    Serial.println("      That gate needs a valid heading of ANY kind to arm, and with the compass");
+    Serial.println("      off there is none until the buggy is moving - so RTM could never arm.");
+    Serial.println("      RTM now steers only above the COG minimum speed, and holds straight below.");
+
+  }
 
   return true;
 }

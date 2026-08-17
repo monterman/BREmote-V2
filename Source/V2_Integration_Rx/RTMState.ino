@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-08-17 - SAFETY (release blocker): rtm_steer_override could survive an idle period and be applied on the first tick of the NEXT engagement. Only gate 1 (throttle released) and updateRtmSteering() ever wrote the neutral 127, so a GATE 9 HANDOFF WITH THE TRIGGER STILL HELD left the last bearing-derived value — say 210 — parked indefinitely: the inactive path in runRtmLoop() returned without touching it and fmEnterIdle() deliberately does not touch it either. calcPWM() applies the override whenever (rtm_rx_active || fm_rx_active) && rtm_rx_override_steering && thr_received >= 25, so on the next re-arm the 100 Hz generatePWM task could put that stale bearing on the motors as differential steering before runRtmLoop() recomputed it — with no gate 9 and no Phase C in the path. Normally a 100 ms window; UNBOUNDED if the re-arm lands while the loop task is frozen inside a deliberately non-abortable command (?gpssetup, ?wifiupd), since runRtmLoop() is then not running at all. FIX: runRtmLoop() now forces rtm_steer_override = 127 on every tick where BOTH rtm_rx_active and fm_rx_active are false. The !fm_rx_active term is load-bearing, not defensive — runRtmLoop() runs BEFORE runFmLoop() in loop(), so an unconditional reset would publish a neutral 127 for one preemption window per cycle throughout every Follow-Me engagement (RTM is inactive for all of one) and stutter FM steering to centre at 10 Hz; same hazard fm_throttle_cap has its own global to avoid. Subtract-only: writes the neutral value only, never a turn, never throttle. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-08-16 - Follow-up to the edge-clear fix below; three items, all in the heading-disagreement guard. (1) THE LATCH NOW ALSO CLEARS AT THE ARM EDGE, not only at the disarm edge. runRtmLoop() calls getRtmHeading() unconditionally every 100 ms to fill the fm_status telemetry byte, so the disagreement dwell runs during ORDINARY MANUAL RIDING with nothing armed: a rotated or uncalibrated compass plus five seconds of coasting above rtm_cog_min_speed_kmh with the trigger released (snapshot still refreshing, COG live) was enough to latch the fault before the rider had armed anything. Once both clears became edges, nothing forgave that. The rider then declared FM, separation latched, and FM sat in FM_ARMED for the rest of the session - silently, because fm_flags bit 2 (armed-not-ready) DROPS once separation latches so the TX reads "ready", and the HEADING DISAGREE FAULT printf only runs when FM was already engaged. RTM had the same dead end by a different road: gates 2-8 set rtm_rx_emergency_stop WITHOUT clearing rtm_rx_active, so a TX that dies mid-tow leaves rtm_rx_active stuck true, the disarm edge never fires, and the "fresh agreement" clear is unreachable because the emergency stop pins throttle at 0, so the buggy cannot move, so COG never goes valid. Both are answered by clearing at the START of an engagement as well as the end - the rtm_rx_active false -> true edge in runRtmLoop(), and the FM_IDLE -> armed edge in runFmLoop(). This cannot weaken the guard: the flag only ever SUBTRACTS eligibility, and a genuine disagreement re-proves itself within kHeadingDisagreeMs (5 s) of the run starting, so the cost is at most 5 s of protection at the very beginning of an engagement. (2) THE 15 s EVIDENCE CAP BOUNDED THE OTHER DEFECT BUT DID NOT REMOVE IT: it measures the SPAN from the start of the dwell, not the age of the last measurement, so one disagreeing tick at t=0 and one more at t=14 s passed the cap and then satisfied "held continuously for 5 s" immediately - a fault built from two isolated one-tick samples fourteen seconds apart. Persistence is now required to be CONTINUOUS: consecutive measured disagreements no more than kHeadingDisagreeGapMaxMs (2 s) apart, so at least four samples must span the dwell. The freeze-don't-clear behaviour the short COG handover needs is untouched. (3) Comment-only: the prose in front of the COG hold claimed the function hands out no heading at all once the latch sets. It still serves a HELD COG at confidence 2 for up to kCogHoldMs, deliberately - the latch is evidence against the COMPASS, and a held COG is not the compass - so the comment now states what the code does instead of asserting more. No threshold retuned, no ordering changed, no confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-08-16 - The heading-disagree backstop was INERT, and it was inert in the exact mode it was extended to protect. fmEnterIdle() zeroed heading_disagree_since_ms and heading_disagree_fault on every call, and runFmLoop() calls fmEnterIdle() on every 100 ms tick whenever FM is idle — a condition that INCLUDES rtm_rx_active. So for the whole duration of any RTM run the dwell timer and the latch were being wiped ten times a second: the kHeadingDisagreeMs (5 s) dwell could never accumulate, the fault could never be set, and the check that consumes it in getRtmHeading() (in front of the compass fallback) could never see anything. In RTM-only operation — the field case this was built for, a buggy that veered at close range and never came back — the advertised sticky backstop did nothing. FIX 1: the clear in fmEnterIdle() is now EDGE-triggered on a genuine transition into FM idle (a real end of an FM declaration), not re-applied every tick, so the latch survives across ticks WITHIN an engagement. FIX 2: RTM gained its own end-of-engagement clear at the top of runRtmLoop() — an edge on rtm_rx_active going true -> false — so a proven fault is forgiven when the rider disarms and cannot outlive the run that produced it (it is NOT a power-cycle latch). Deliberately an edge there too: clearing it at every tick RTM is inactive would recreate the same bug for Follow-Me, which only ever runs while RTM is inactive. FIX 3 (the freeze-age MEDIUM): the "no comparison possible" branch froze the dwell timestamp indefinitely, so two one-tick disagreements minutes apart escalated as one "sustained 5 s" fault; a part-finished proof older than kHeadingDisagreeEvidenceMaxMs (3x the dwell) is now discarded, while a PROVEN fault is untouched. Nothing here grants a heading, raises a cap or extends an engagement — the guard can still only subtract. cog_last_good_deg/ms are no longer static so Logger.ino can read (never write) them. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-07-25 - STAGE 2 (RX heading-source trust guards, RTM + FM): the bench ?diag on the repaired board read "COG : 7.4 timestamp-updates/s vs 0.0 value-changes/s [value frozen 533 s]" — the GPS repeated ONE course seven times a second for nine minutes while gps_last_course_ms kept refreshing, so getRtmHeading()'s 1500 ms freshness gate passed the whole time and the ladder steered on a dead number, then fell back to the EMI-biased compass. That is the Follow-Me veer. GUARD 1: the COG branch now also requires the course VALUE to have moved within kRtmCogFrozenMs (3 s), read from the existing Stage 0 tracker g_diag_cog_change_ms — and it is SPEED-GATED to the same gps_last_speed_kmh >= rtm_cog_min_speed_kmh term the branch already used, so a stationary buggy (whose constant course is correct, not faulty) is never touched. A COG frozen WHILE MOVING additionally suppresses the mode-1 compass promotion: one source is provably dead and the other unverifiable, so we hold straight instead of steering on the survivor. GUARD 2: when a live COG and a simultaneous (< kHeadingCompareSnapMs) compass snapshot are both available in hybrid mode, a shortest-angular-distance gap > kHeadingDisagreeDeg (45) returns NO heading (confidence 0) so updateRtmSteering() holds straight; sustained past kHeadingDisagreeMs (5 s) it sets heading_disagree_fault, which joins the EXISTING FM fault chain alongside A3's diverge_fault (FM_STOPPING -> cap 0 -> ramp -> FM_IDLE, re-arm required) — no new state, no new exit path. Both guards can only REMOVE eligibility: no throttle cap is raised, no engagement extended, the deadman (thr_received < 25) is untouched. Logger.ino's inline getRtmHeading() duplicate is updated in lockstep so rtm_source/rtm_confidence keep telling the truth. All compile-time constants (shared, in BREmote_V2_Rx.h); no confStruct change, sizeof stays 184, SW_VERSION stays 34.
@@ -1605,6 +1606,54 @@ void runRtmLoop()
     // GPS conditions failed (RTM active or inactive): keep last known distance and cap.
   }
 
+  // ============================================================
+  // V2.5-Evo - 2026-08-17 - STALE STEERING OVERRIDE: NEUTRAL WHENEVER NOTHING IS ENGAGED
+  //
+  // WHAT THE BUG WAS. rtm_steer_override kept its last bearing-derived value indefinitely after an
+  // engagement that ended without passing through the throttle-release path. Only two places ever
+  // wrote the neutral 127: gate 1 in checkRtmSafetyGates() (trigger released) and
+  // updateRtmSteering(). A GATE 9 HANDOFF WITH THE TRIGGER STILL HELD goes through neither —
+  // rtm_rx_active is set false there, the inactive path a few lines below returns without touching
+  // the override, and fmEnterIdle() deliberately leaves it alone as well (its comment says so: if
+  // RTM has just armed, RTM owns it). So a value such as 210 sat there for the rest of the session.
+  // The FM mode-age expiry in runFmLoop() has the same shape: it calls fmEnterIdle() straight out
+  // of FM_ACTIVE, so the last FM steering value is left parked too.
+  //
+  // WHY THAT WAS DANGEROUS. calcPWM() applies the override whenever
+  // (rtm_rx_active || fm_rx_active) && rtm_rx_override_steering && thr_received >= 25. Re-arming RTM
+  // sets rtm_rx_active from the triggeredReceive task, and the rider squeezes the trigger moments
+  // later — so the 100 Hz generatePWM task can apply the stale bearing as differential steering
+  // BEFORE runRtmLoop() next recomputes it, with no gate 9 and no Phase C involved. Ordinarily that
+  // window is one 100 ms tick. It is UNBOUNDED if the loop task happens to be inside a long
+  // deliberately non-abortable serial command (?gpssetup, ?wifiupd) when the re-arm lands, because
+  // then runRtmLoop() is not running at all and nothing recomputes the override.
+  //
+  // WHAT THIS DOES. Drives the override back to straight on every tick where NO steering owner
+  // exists, so a stale bearing can never be left parked for the next engagement to pick up.
+  //
+  // WHY THE !fm_rx_active TERM IS NOT OPTIONAL. runRtmLoop() runs BEFORE runFmLoop() in loop()
+  // (V2_Integration_Rx.ino), and the 100 Hz generatePWM task preempts freely between the two on
+  // this single-core part. An unconditional write here would therefore publish a neutral 127 for one
+  // window per cycle all the way through a FOLLOW-ME engagement — RTM is inactive for the whole of
+  // one — and FM steering would stutter to centre ten times a second. That is precisely the hazard
+  // fm_throttle_cap was given its own separate global to avoid; see the note on that atomic in
+  // BREmote_V2_Rx.h. Gating on BOTH flags means this line can only run on a tick where nobody owns
+  // the steering, and on such a tick the value is already 127 anyway — every FM exit path except
+  // fmEnterIdle() writes 127 itself — so it can never change a value FM or RTM is using.
+  //
+  // WHY HERE AND NOT LOWER DOWN. This sits above the rtm_rx_enabled early return so it also covers
+  // a board with RTM disabled in config, and above the inactive-path return so it covers the
+  // ordinary disarmed case. On the ACTIVE path the condition is false, so a live RTM run reaches
+  // updateRtmSteering() with its override untouched.
+  //
+  // SAFETY DIRECTION: writes the neutral value and nothing else. It cannot command a turn, cannot
+  // add throttle, and does not touch rtm_rx_active, the emergency stop or any cap.
+  // ============================================================
+  if (!rtm_rx_active && !fm_rx_active)
+  {
+    rtm_steer_override = 127;
+  }
+
   if (!usrConf.rtm_rx_enabled)
   {
     rtm_rx_active         = false;
@@ -2079,6 +2128,13 @@ static uint16_t fmComputeThrottleCap(float dist_m, unsigned long now)
 //
 // Deliberately does NOT touch rtm_steer_override or the shared P+D statics - if we are here
 // because RTM just armed, RTM now owns those.
+//
+// V2.5-Evo - 2026-08-17 - AND IF NOBODY OWNS THEM, runRtmLoop() DOES THE CLEANUP. Leaving the
+// override alone here is right (we cannot know whether RTM has just taken it), but on its own it
+// used to mean a value from the run that just ended stayed parked for the next one. The neutral
+// reset for the "nothing engaged at all" case now lives in runRtmLoop(), gated on both
+// rtm_rx_active and fm_rx_active being false - see the block there for why it cannot be gated on
+// RTM alone.
 // ------------------------------------------------------------
 static void fmEnterIdle()
 {

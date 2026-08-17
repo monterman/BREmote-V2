@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-08-17 - COMMENTS ONLY, no code touched: the ?gpsbaud entry_baud restore justified itself with a claim the code does not support - "every path that opens Serial1 after boot goes through gpsOpenAt()". Two paths do not: the BN-220/880 baud switch and the unknown-chip fallback both call Serial1.begin() DIRECTLY and leave gps_current_baud stale for the rest of the function (the first says 9600 while the port runs at 115200; the second never sets it at all). The restore is nevertheless correct today, and the comment now names the reason it is correct: EVERY path through configureGPS(), including the early break that skips the dual-baud dance, reaches the UNCONDITIONAL gpsDetectBaud() rescan, which re-establishes the invariant through gpsProbeAt() -> gpsOpenAt() (or through gpsOpenAt(fallback) when nothing answers). That rescan is the actual guarantor, so it is now documented as one - the restore becomes silently wrong the day someone conditionalises or short-circuits it, and the failure mode is a GPS link left at a scan baud until reboot, i.e. losing the heading source Follow-Me steers on. Short warning notes added at the two direct-begin sites pointing at the same dependency. The restore logic itself, the abort points, the UBX/NMEA detection and every timing value are UNCHANGED. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-08-16 - MID-RUN ABORT for ?gpscfg and ?gpsbaud: both now ask rxAbortIfEngaged() at STAGE BOUNDARIES, so an RTM/FM engagement that begins AFTER the command started stops it instead of buying 4.5 s (?gpscfg) or ~6 s (?gpsbaud) with no safety gate being evaluated. Every check sits before a transaction begins, never between a write and its ACK/reply read, so no module is ever left half-configured — ubxPoll() and ubxSendAckedT() each write and read inside one call and are entered atomically or not at all. NOTHING NEW IS TRANSMITTED on any abort path: the ~100-framing-error receiver lockout that bricked the TX GPS on 2026-07-30 is a transmit hazard, so the exits only reopen our own port and re-assert the mux. ?gpsbaud captures gps_current_baud BEFORE its first probe and restores it with gpsOpenAt() if it stops mid-scan (the scan reopens Serial1 at each candidate in turn, and a link stranded at a scan baud is a silent loss of GPS — the heading source Follow-Me steers on — until reboot); an abort after the module has answered keeps the PROVEN baud instead, which is where the normal path leaves it too. Both exits end with the mux on GPS (channel 1), matching the normal exit exactly. Deliberately NOT pushed down into gpsProbeAt(), gpsDetectDialect() or ubxPoll(): those are shared with configureGPS() and ?gpssetup, and ?gpssetup must not become abortable — interrupting it leaves the module worse than finishing does. Non-aborted timing, output and behaviour are byte-for-byte unchanged. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-08-16 - GPS-NMEA-2: gpsProbeAt() now recognises UBX as well as NMEA, and STILL TRANSMITS NOTHING. A module left UBX-only by a flight controller is not silent — it streams unsolicited UBX frames continuously — but the detector only ever looked for "$G", so "no NMEA" was read as "no module" and every entry point bailed out before the GPS-NMEA-1 repair below could run. The detector was the gate, not the writes. The NMEA test and its early break are unchanged and still run FIRST on every byte, so a module that emits NMEA exits at the same byte after the same elapsed time with the same return value: the BN-220/880 path is untouched. UBX evidence never breaks early — it is recorded and the window runs its full length, so a module emitting BOTH is never misreported as UBX-only, and no window is lengthened. A candidate must be a COMPLETE, CHECKSUM-VALID frame (sync B5 62, class, id, LE length, payload, Fletcher-8 pair over class..payload) — the same parse and running checksum ubxPoll() uses, because a false positive would confirm a WRONG baud and invite exactly the framing-error hazard the listen-only design exists to avoid. gpsDetectBaud() gained an optional out-parameter reporting which protocol answered; the candidate list, its order, the window and the return value are unchanged. ?gpsbaud gets its UBX column back, this time backed by a bit that is really set.
 // V2.5-Evo - 2026-08-16 - GPS-NMEA-1: on the CFG-VALSET (M9/M10) path, configureGPS() and ?gpssetup now RE-ENABLE NMEA OUTPUT on UART1 — CFG-UART1OUTPROT-NMEA and -UBX, plus the GGA and RMC message rates. Nothing in this file has ever written the output-protocol configuration. Betaflight's GPS auto-config switches u-blox modules to UBX-only and saves that to battery-backed RAM and flash, so a module that has been on a flight controller (or was factory-configured for the drone market) arrives permanently mute in NMEA while still answering UBX polls — and TinyGPS++ parses NMEA and nothing else. The legacy BN-220/880 path rescued this incidentally, because its CFG-PRT rewrites the port with the UBX+NMEA protocol mask; the M10 path had no equivalent and simply assumed NMEA had never been turned off. Reported, never enforced: a module that refuses these writes still navigates on its defaults. Persisted to flash on the ?gpssetup path, RAM|BBR at boot. Reaching these writes at all needs GPS-NMEA-2 below — on its own this fix sat behind a detector that could not hear the broken module. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
@@ -852,6 +853,12 @@ void configureGPS() {
       delay(50);
 
       // Step 3: reopen our side at 115200 to match the GPS after it switches.
+      // V2.5-Evo - 2026-08-17 - NOTE (comment only, no behaviour change): this is a DIRECT
+      // Serial1.begin(), not gpsOpenAt(), so gps_current_baud is NOT updated here - it still reads
+      // the 9600 written a few lines up while the port is now running at 115200. It stays stale
+      // until the unconditional gpsDetectBaud() rescan further down this function puts it right.
+      // Nothing in between reads it, so this is harmless today; it is flagged because ?gpsbaud's
+      // entry_baud restore (cmdGpsBaud) depends on that rescan staying unconditional.
       Serial1.end();
       delay(100);
       Serial1.begin(115200, SERIAL_8N1, P_U1_RX, P_U1_TX);
@@ -926,6 +933,12 @@ void configureGPS() {
           0xB5, 0x62, 0x06, 0x08, 0x06, 0x00, 0xC8, 0x00, 0x01, 0x00,
           0x01, 0x00, 0xDE, 0x6A
         };
+        // V2.5-Evo - 2026-08-17 - NOTE (comment only, no behaviour change): both Serial1.begin()
+        // calls in this fallback are DIRECT, not gpsOpenAt(), so gps_current_baud is never updated
+        // in this branch at all - it keeps whatever it held on entry while the port goes 9600 and
+        // then 115200. Same situation as the BN-220/880 branch above: stale until the unconditional
+        // gpsDetectBaud() rescan further down re-establishes the invariant, and flagged for the
+        // same reason - ?gpsbaud's entry_baud restore relies on that rescan staying unconditional.
         Serial1.begin(9600, SERIAL_8N1, P_U1_RX, P_U1_TX);
         delay(200);
         Serial1.write(setBaud, sizeof(setBaud));
@@ -1503,8 +1516,30 @@ void cmdGpsBaud(const String &args)
   // craft means losing the heading source Follow-Me steers on. Restoring this value puts the
   // port back exactly where the rest of the firmware (getGPSLoop()) was reading it.
   //
-  // gps_current_baud is trustworthy here: every path that opens Serial1 after boot goes through
-  // gpsOpenAt(), which sets it, and configureGPS() always ends via gpsDetectBaud() -> gpsOpenAt().
+  // WHY gps_current_baud CAN BE TRUSTED HERE - and what actually guarantees it.
+  //
+  // V2.5-Evo - 2026-08-17 - CORRECTION. This used to say "every path that opens Serial1 after boot
+  // goes through gpsOpenAt(), which sets it". THAT IS NOT TRUE, and stating it invited exactly the
+  // wrong maintenance decision. configureGPS() calls Serial1.begin() DIRECTLY in two places - the
+  // BN-220/880 baud switch (:857) and the unknown-chip fallback (:929) - and neither updates
+  // gps_current_baud, so part-way through that function the variable says one thing and the port is
+  // doing another.
+  //
+  // The restore below is still correct today, but for a different reason, and it is worth knowing
+  // WHICH reason: every path through configureGPS() - including the early break that skips the
+  // dual-baud dance entirely when the module was heard on the first listen - reaches the
+  // UNCONDITIONAL gpsDetectBaud() at :1009, and that call re-establishes the invariant whatever
+  // happened above it. gpsDetectBaud() opens each candidate through gpsProbeAt() -> gpsOpenAt(),
+  // and if nothing answers it ends on gpsOpenAt(fallback_baud). So by the time configureGPS()
+  // returns, gps_current_baud and the port agree again - and ?gpsbaud can only be typed long after
+  // that.
+  //
+  // KEEP THAT LINK IN MIND BEFORE TOUCHING configureGPS(). The day that rescan is made conditional
+  // or short-circuited ("we already know the baud, skip the scan"), this restore silently starts
+  // writing a stale number, and the failure mode is a GPS link left at a SCAN baud until the next
+  // reboot - which on this craft means losing the heading source Follow-Me steers on, with nothing
+  // on the wire to say so. If the rescan ever has to become conditional, make :857 and :929 set
+  // gps_current_baud themselves first.
   // ============================================================
   const uint32_t entry_baud = gps_current_baud;
 

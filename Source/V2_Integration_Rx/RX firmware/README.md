@@ -9,7 +9,8 @@ folder) · app offset **`0x10000`**
 
 | File | SW | What it is |
 |---|---|---|
-| `BREmote-RX-SW35-compass-orientation.bin` | **35** | **Start here.** Current. Everything below, **plus compass mounting orientation** — `?compasscal` now measures it for you. ⚠️ **SW35 resets your config once.** See below. |
+| `BREmote-RX-SW35R2-audit-fixes.bin` | **35** | **Start here.** Everything in `compass-orientation`, plus the fixes from a full pre-publication audit. Most visibly: **the RX's own WiFi config page was dead** in the build below — it rendered no fields and no button worked. Also: blocking bench commands (`?compasscal`, `?magtest`, `?download`, and 19 more) now refuse to run, and abort if started, while RTM or Follow-Me is engaged; `gps_dyn_model` is finally honoured on M9/M10 modules; a GPS left UBX-only by a drone flight controller is now detected and repaired; and a sloppy compass calibration can no longer silently overwrite a good one. Same `SW_VERSION` **35** and same **192-byte** `confStruct` as the build below, so **moving between the two does NOT touch your settings.** |
+| `BREmote-RX-SW35-compass-orientation.bin` | **35** | The previous SW35 build, kept for rollback. ⚠️ **Its WiFi config page does not work** — use the build above. Everything below, **plus compass mounting orientation** — `?compasscal` now measures it for you. ⚠️ **Coming from SW34, this resets your config once.** See below. |
 | `BREmote-RX-SW34-dyn-model.bin` | 34 | The last SW34 build. Everything in `dual-compass` **plus a selectable GPS dynamic model** — set `gps_dyn_model 4` if you ride above ~500 m altitude. See below. |
 | `BREmote-RX-SW34-dual-compass.bin` | 34 | **Field-verified by a beta tester** on an HGLRC M100-5883 (2026-08-16). Everything in `gps-verified` **plus automatic compass detection** — drives the **QMC5883L** (BN-880) *or* the **QMC5883P** (HGLRC M100-5883) from one image, chosen at boot by I²C address. See below. |
 | `BREmote-RX-SW34-gps-verified.bin` | 34 | The previous build, **kept deliberately** — the field-proven one. QMC5883L only. ACK-verified GPS config with automatic `CFG-VALSET` fallback, so it works with a BN-880 *and* with an M10. Adds `?gpsbaud`, `?gpssetup`. |
@@ -121,7 +122,7 @@ is kept** — it never stores a guess. That is the failure ArduPilot warns about
 **Mirrored modules** (antenna-down, or a chip whose axes are handed the other way) are stored as a
 **negative `mag_scale_y`** — negating that axis *is* the mirror fix, and the field already existed.
 
-> ⚠️ **SW35 resets your configuration once.** `confStruct` grew from 184 to 188 bytes, so the
+> ⚠️ **SW35 resets your configuration once.** `confStruct` grew from 184 to 192 bytes, so the
 > firmware rewrites config to defaults on first boot. **Back up first with `?conf`**, restore after
 > with `?setconf <blob>` + `?applyconf`. You will need to re-pair and re-run `?compasscal` —
 > which you want to do anyway, since that is what sets the new orientation.
@@ -172,8 +173,14 @@ Two fixes beyond the compass orientation work:
 ## Flash it
 
 ```bash
-esptool --chip esp32c3 --port COM<N> write-flash 0x10000 BREmote-RX-SW34-dual-compass.bin
+esptool --chip esp32c3 --port COM<N> write-flash 0x10000 BREmote-RX-SW35R2-audit-fixes.bin
 ```
+
+> ⚠️ **Back up first if you are coming from SW34 or SW32** — that flash resets your config and
+> compass calibration once. `?conf`, then `?setconf <blob>` + `?applyconf` afterwards, re-pair,
+> re-run `?compasscal`. Same applies in reverse: substituting an **SW34** filename into that
+> command while you are on SW35 is a rollback and wipes the same things. Moving between two
+> **SW35** builds wipes nothing. Full table under *Read this before flashing an RX*, below.
 
 **Identify the board by MAC, not by COM number.** The TX and RX are the same chip and COM
 numbers move between reboots:
@@ -199,21 +206,36 @@ On the RX the expensive fields are the **compass calibration** (`mag_offset_*`, 
 losing those means re-running `?compasscal` physically — plus pairing.
 
 These are **app-only** images (`0x10000`), so they do not touch the partition table or SPIFFS.
-The flash itself never erases your settings, and **all three SW34 builds are interchangeable** —
-move between `dual-compass`, `gps-verified` and `pre-gpsbaud` freely.
+The flash itself never erases your settings. **The firmware does** — it compares the stored
+`SW_VERSION` against its own on boot and rewrites the config to defaults when they differ. So
+what costs you a calibration is **the SW number in the filename, not the act of flashing**:
 
-> ⚠️ **`SW32-rtm-working` is the exception, and on the RX it is expensive.** The firmware
-> compares the stored `SW_VERSION` against its own on boot and rewrites the config to defaults
-> when they differ. That build is version **32**, the current one is **34**, so rolling back to
-> it **wipes the compass calibration** — which you can only restore by physically re-running
-> `?compasscal`, walking the buggy through two full circles — **plus pairing and every setting.**
-> Coming forward again wipes it a second time.
+| Moving between | Config, pairing | Compass calibration |
+|---|---|---|
+| **SW35 ↔ SW35** — any two SW35 builds | kept | kept |
+| **SW34 ↔ SW34** — any two of the four SW34 builds | kept | kept |
+| **SW34 → SW35** — the recommended upgrade | **reset once** | **reset once** |
+| **SW35 → SW34** — rollback | **reset** | **reset** |
+| **anything ↔ SW32** | **reset** | **reset** |
+
+There are **four** SW34 builds — `dual-compass`, `dyn-model`, `gps-verified` and `pre-gpsbaud` —
+and they are interchangeable with each other; move between them freely. SW35 builds are likewise
+interchangeable with each other: the rebuild listed at the top of this page keeps `SW_VERSION` 35
+and `confStruct` at 192 bytes, so **replacing one SW35 image with another costs you nothing** —
+no re-pairing, no re-calibration. It is only the **34/35 line** that has a price.
+
+> ⚠️ **Crossing the 34/35 line is expensive in both directions, and `SW32` doubly so.**
+> `confStruct` is 184 bytes on SW34 and 192 on SW35, so there is no version of that crossing that
+> can be made painless. It **wipes the compass calibration** — which you can only restore by
+> physically re-running `?compasscal`, walking the buggy through two full circles — **plus pairing
+> and every setting.** Rolling back to `SW32-rtm-working` costs the same, and coming forward again
+> wipes it a second time.
 >
-> **Back it up before you roll back**, and only roll back if you actually need to.
+> **Back it up before you roll back** (`?conf`), and only roll back if you actually need to.
 >
-> *(This paragraph previously claimed `SW_VERSION` was 34 across all published builds and that
-> switching between them was safe. It was wrong, and on this board being wrong costs you a
-> calibration you have to redo on your feet.)*
+> *(This paragraph previously said the current build was **34** and that "all three SW34 builds are
+> interchangeable". The current build is **35**, there are **four** SW34 builds, and every one of
+> them is now a wipe-inducing rollback. Being wrong here costs a calibration you redo on your feet.)*
 
 ## After flashing
 

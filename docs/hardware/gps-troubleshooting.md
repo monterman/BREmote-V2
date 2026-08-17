@@ -690,6 +690,11 @@ or swapping the compass module**:
 ?compasscal
 ```
 
+**Prerequisite — the module must be square to the buggy.** Its own forward axis lined up with the
+nose, or turned exactly 90°, 180° or 270° from it. Not diagonal. The firmware stores the mounting
+rotation only as one of those four values, so a module mounted at, say, 30° is stored as 0° and keeps
+30° of heading error that no calibration can remove. Confirm this before running the procedure below.
+
 **The procedure — the direction and the start/finish point both matter:**
 
 1. **Point the nose of the buggy at NORTH.**
@@ -720,6 +725,21 @@ north. This matters most **right after you re-mount or move the module**: the ir
 matches the new mounting while the stored orientation still describes the old one, so every heading
 is wrong by exactly that difference and Follow-Me veers by the same amount at close range. Serial
 prints the same verdict in words, naming what was and was not updated.
+
+**Diagnosing a residual error the calibration will not remove.** A completed run prints both the
+angle it measured and the angle it stored:
+
+```
+Mounting orientation: measured 251 deg, stored 270 deg.
+```
+
+Those two should agree within a few degrees. **Anything larger is error that survives calibration**,
+and it is the first thing to check when a compass still reads wrong after a clean 2-blink run. One
+tester's four cardinal readings averaged a measured 251.25°, which snapped to a stored 270° — his
+four post-calibration heading errors (−3.4°, −4.7°, −31.9°, −35.0°) then averaged −18.75°, exactly
+the 251.25 − 270 gap, no matter how many times he re-ran the calibration. The fix is mechanical:
+re-mount the module square and run `?compasscal` again. (The spread around that average is a
+separate off-centre iron calibration, which re-running *does* fix.)
 
 **Re-checking the mounting angle on its own — `?magalign`.** If the iron calibration is already good
 and you only want to re-derive (or verify) the mounting orientation, point the nose at magnetic north,

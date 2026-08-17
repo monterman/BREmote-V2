@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-08-17 - REPORT THE ERROR THE CARDINAL SNAP LEAVES BEHIND. mag_orientation can only ever hold 0, 90, 180 or 270, so a module glued in at any other angle keeps the difference between where it actually sits and the cardinal it snapped to as a CONSTANT heading error - up to 45 deg - that no calibration can remove. Both numbers were already printed side by side ("measured 251 deg, stored 270 deg") but nothing anywhere said they were meant to match, so a rider saw two numbers and no reason to care. This is not hypothetical: a tester's published run measured 251.25 deg, snapped to 270, and his four post-correction cardinal errors then averaged exactly -18.75 deg - the residual, showing up as a fixed bias he could not calibrate away and could not have diagnosed from the output. Both ?compasscal and ?magalign now compute that residual as a SHORTEST ANGULAR DISTANCE (so 359 deg snapping to 0 is 1 deg out, not 359) and print a warning naming the remaining error and the physical fix. New file-scope constant kMountSquareTolDeg = 9.6 deg = 3x the ~3.2 deg idle noise this file documents twice, so noise alone can never trip it; deliberately NOT raised to cover the 15-20 deg human aim slop kNorthTolDeg allows for, because that band is exactly where the real failure sat. ?magalign's existing 25 deg warning is REPLACED by this one - at 25 deg it would have said nothing about the tester's 18.75 deg. Reporting only: the snap, the stored value, orientation_stored, the FULL/PARTIAL verdict and the 2/3/10 BIND LED patterns are all untouched, and no threshold that already existed (kNorthTolDeg, kMinTurnDeg, kMinIronTurnDeg) moved. No confStruct field added, no SW_VERSION bump, sizeof stays 192.
 // V2.5-Evo - 2026-08-17 - ?compasscal and ?magalign are now the rider's way OUT of a heading-disagreement degradation. RTMState.ino's heading_disagree_fault latch stopped being cleared at engagement boundaries (it was forgiveness without evidence — a compass mounted 90 deg out is just as wrong on the next run), so while it stands the whole session runs on GPS course only. The escape routes have to be evidence that the compass was actually FIXED, and there are exactly two here: a FULL ?compasscal, and a completed ?magalign. Both call headingDisagreeClearAfterCal() at the point where the new mounting numbers have been written and saved, which drops the latch and restores hybrid heading immediately — no reboot, and no coasting to re-prove anything. A PARTIAL cal deliberately does NOT clear it: a 300-400 deg run saves the iron calibration but keeps the OLD mag_orientation, which is usually the very thing that caused the disagreement, so promoting it to "fixed" would hand the compass straight back to the steering while it was still wrong. Aborted and failed runs do not clear it either — they write nothing at all. The clear function is a file-scope static in RTMState.ino, forward-declared below in the same way Logger.ino declares headingDisagreeLatched(); Arduino compiles the whole sketch as one translation unit and concatenates Compass.ino ahead of RTMState.ino, so the declaration is what makes the call legal. Both commands run in the loop task (System.ino dispatches them), so the latch keeps its single-writer property. No confStruct field added, no SW_VERSION bump, sizeof stays 192.
 // V2.5-Evo - 2026-08-16 - Two follow-ups. (1) MID-COMMAND SAFETY: ?printcompass, ?compasscal and ?magalign now abort if Return-to-Me or Follow-Me becomes engaged WHILE they are running, not only when one is already engaged at dispatch (see rxAbortIfEngaged() in System.ino). All three abort points sit BEFORE the first usrConf write, so an abandoned run leaves no half-written calibration and the existing one untouched. (2) PARTIAL CREDIT IS NOW REPORTED AS PARTIAL: a ?compasscal run that turned 300-400 deg saves the iron calibration but does NOT re-measure mounting orientation or handedness, and a run that turns far enough but finishes off north saves iron calibration and handedness but still no orientation. Both used to print the identical "--- CALIBRATION COMPLETE --- / Success!" as a full run and blink the identical 2-flash BIND pattern. A rider who had just re-mounted the module and walked a sloppy circle was therefore told it worked while mag_orientation still held the OLD mounting angle - a heading wrong by exactly the mounting delta. runCompassCalibration() now records its outcome in compass_cal_result (FAILED / PARTIAL / FULL) for the BIND LED in System.ino, and prints an explicit PARTIAL report naming what was and was not updated. NEITHER THRESHOLD MOVED - 300 deg still gates the iron save and 400 deg still gates orientation and handedness, exactly as adjudicated; only the reporting changed. No confStruct field added, no SW_VERSION bump.
 // V2.5-Evo - 2026-08-16 - Four ?compasscal / init hardening fixes: (1) an under-rotated re-run no longer silently DESTROYS a stored mirror correction — the previous sign of mag_scale_y is preserved when handedness is not re-derived, and the message now says so; (2) ?compasscal aborts without saving anything unless the buggy was actually turned (a 45 s hold used to bake offsets from a noise blob over a good cal); (3) the QMC5883P init writes — including the MANDATORY axis-sign write — are now checked, and a failed init leaves the compass reported as NOT detected instead of producing systematically wrong headings; (4) the uncalibrated-reject test is now identical in getCompassHeading(), updateCompassSnapshot() and runMagAlign() — magnitude-compared, so a legitimately MIRRORED module (negative mag_scale_y) is never mistaken for uncalibrated. Code checks only — no confStruct field added, no SW_VERSION bump.
@@ -284,6 +285,31 @@ enum CompassCalResult : uint8_t {
 };
 
 CompassCalResult compass_cal_result = CAL_FAILED;
+
+// ============================================================
+// kMountSquareTolDeg - how far off a cardinal a mounting angle may sit before it is worth saying so
+// ============================================================
+// V2.5-Evo - 2026-08-17 - mag_orientation is a snapped value: 0, 90, 180 or 270 and nothing in
+// between. Whatever is thrown away by that snap does not average out and does not wash out - it
+// stays as a fixed offset on every heading the compass ever reports. This is the line above which
+// the rider is told about it.
+//
+// Why 9.6 and not a round 10: it is 3x the ~3.2 deg idle noise spread this file documents in two
+// places (the calibration tolerance block below, and the ?magalign averaging note). Three
+// standard-ish deviations means sensor noise ALONE can effectively never push a genuinely square
+// mount over this line, which is the whole requirement - a warning that cries wolf on good runs
+// gets ignored on the bad one. It is deliberately NOT raised to also swallow the 15-20 deg of
+// human aim slop that kNorthTolDeg allows for, because that is precisely the band where the real
+// failure lives (a measured 251.25 deg snapping to 270 = 18.75 deg of permanent error). Hiding
+// everything below 20 deg would hide the exact case this warning exists for. The two causes are
+// separated in words instead: aim error moves between runs, a mounting angle repeats.
+//
+// File scope on purpose, not beside kMinTurnDeg / kNorthTolDeg inside runCompassCalibration():
+// ?magalign snaps the same way and needs the same number, and one threshold in one place is what
+// keeps the two commands from drifting apart.
+//
+// Units: degrees. Range of the residual it is compared against is 0-45 by construction.
+static const float kMountSquareTolDeg = 9.6f;
 
 void runCompassCalibration() {
   // V2.5-Evo - 2026-08-16 - assume nothing was achieved until the epilogue proves otherwise.
@@ -655,6 +681,38 @@ void runCompassCalibration() {
 
       Serial.printf("\nMounting orientation: measured %.0f deg, stored %d deg.\n", h_start, snapped);
 
+      // V2.5-Evo - 2026-08-17 - Say out loud what the snap just threw away.
+      //
+      // The two numbers on the line above are supposed to be the same number. When they are not,
+      // the difference is not rounding - it is a real, permanent heading error, because only the
+      // snapped value gets stored and getCompassHeading() subtracts only that. Nothing anywhere
+      // told the rider to compare them, so a module sitting 18.75 deg off a cardinal read 18.75
+      // deg wrong forever and looked like a perfect calibration.
+      //
+      // SHORTEST ANGULAR DISTANCE, not a raw subtraction: h_start of 359 deg snaps to 0, and the
+      // module is 1 deg off square, not 359. Same wrap normalisation the closure check above uses.
+      float mount_residual = h_start - (float)snapped;
+      while (mount_residual > 180.0f)  mount_residual -= 360.0f;
+      while (mount_residual < -180.0f) mount_residual += 360.0f;
+
+      if (fabsf(mount_residual) > kMountSquareTolDeg) {
+        Serial.println("\nWARNING: the compass module is NOT mounted square to the buggy.");
+        Serial.printf("         It sits %.1f deg from the nearest cardinal, and only 0, 90, 180\n",
+                      fabsf(mount_residual));
+        Serial.println("         or 270 deg can be stored - so that difference was discarded.");
+        Serial.printf("         About %.1f deg of heading error will REMAIN no matter how well the\n",
+                      fabsf(mount_residual));
+        Serial.println("         compass is calibrated. Every heading it reports is wrong by that");
+        Serial.println("         much, all the time, and Follow-Me steers wrong by that much too.");
+        Serial.println("         FIX: re-mount the module SQUARE - its forward axis lined up with");
+        Serial.println("         the nose of the buggy, or turned exactly 90, 180 or 270 deg from");
+        Serial.println("         it - then run ?compasscal again.");
+        Serial.println("         (Aim counts here too: if the nose was not truly on north when this");
+        Serial.println("         run started, that error is included in the figure above. Aim error");
+        Serial.println("         changes between runs, a mounting angle does not - so run it twice");
+        Serial.println("         to tell the two apart.)");
+      }
+
     }
 
   }
@@ -940,6 +998,9 @@ void runMagAlign() {
   // How far off the nearest cardinal was the reading? Large means the buggy was not
   // actually pointing north, or the module is mounted at an odd angle - either way the
   // rider should know rather than get a silent snap.
+  // The two while() loops are what make this a SHORTEST ANGULAR DISTANCE rather than a raw
+  // subtraction: a reading of 359 deg snaps to 0, and 359 - 0 must be read as 1 deg off square,
+  // not 359. Same normalisation runCompassCalibration() uses for its closure and mount checks.
   float residual = measured - (float)snapped;
   while (residual > 180.0f)  residual -= 360.0f;
   while (residual < -180.0f) residual += 360.0f;
@@ -949,10 +1010,32 @@ void runMagAlign() {
 
   Serial.printf("\nMeasured heading while pointing north: %.1f deg (%d samples)\n", measured, n);
   Serial.printf("Mounting orientation stored: %u deg (was %u)\n", usrConf.mag_orientation, previous);
-  if (fabsf(residual) > 25.0f) {
-    Serial.printf("WARNING: reading was %.0f deg off the nearest cardinal.\n", residual);
-    Serial.println("         Either the buggy was not really pointing north, or the module is");
-    Serial.println("         mounted at an odd angle. Re-check before trusting Follow-Me.");
+  // V2.5-Evo - 2026-08-17 - Same warning ?compasscal now prints, on the same threshold, because
+  // this command performs the identical snap and leaves the identical permanent error behind.
+  //
+  // What changed: the trigger was a bare 25.0f and the text blamed the rider's aim. At 25 deg it
+  // said NOTHING about a module sitting 18.75 deg off a cardinal - the real, measured case this
+  // work came from - and even when it did fire, "mounted at an odd angle" never told the rider
+  // that the angle costs them a fixed heading error forever. Threshold is now the shared
+  // kMountSquareTolDeg (3x the ~3.2 deg idle noise averaged out just above) and the text names
+  // the consequence and the physical fix. Aim is still offered as the alternative cause, because
+  // here it genuinely is one: this reading is taken in a single 5 s hold pointing north.
+  if (fabsf(residual) > kMountSquareTolDeg) {
+    Serial.println("\nWARNING: the compass module is NOT mounted square to the buggy.");
+    Serial.printf("         The reading sits %.1f deg from the nearest cardinal, and only 0, 90,\n",
+                  fabsf(residual));
+    Serial.println("         180 or 270 deg can be stored - so that difference was discarded.");
+    Serial.printf("         About %.1f deg of heading error will REMAIN no matter how well the\n",
+                  fabsf(residual));
+    Serial.println("         compass is calibrated. Every heading it reports is wrong by that");
+    Serial.println("         much, all the time, and Follow-Me steers wrong by that much too.");
+    Serial.println("         FIX: re-mount the module SQUARE - its forward axis lined up with");
+    Serial.println("         the nose of the buggy, or turned exactly 90, 180 or 270 deg from");
+    Serial.println("         it - then run ?magalign again.");
+    Serial.println("         (Aim counts here too: if the nose was not truly on magnetic north");
+    Serial.println("         for those 5 seconds, that error is included in the figure above. Aim");
+    Serial.println("         error changes between runs, a mounting angle does not - so run it");
+    Serial.println("         twice to tell the two apart.)");
   }
   Serial.println("Note: ?magalign cannot detect a MIRRORED module - only ?compasscal can,");
   Serial.println("      from the direction of the turn.");

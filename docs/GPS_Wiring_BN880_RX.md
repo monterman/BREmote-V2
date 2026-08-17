@@ -252,6 +252,10 @@ The magnetometer sits in the same module as the GPS, and **motor phase wires and
 throw the heading off by 100°+ at throttle**. On the RX a bad heading is a Follow-Me fault, not a
 cosmetic problem.
 
+- Mount the BN-880 **square to the buggy** — its own forward axis lined up with the nose, or turned
+  exactly 90°, 180° or 270° from it. **Not diagonal.** The firmware stores the mounting rotation only
+  as one of those four values, so a module at, say, 30° gets stored as 0° and keeps 30° of heading
+  error that no calibration can remove.
 - Mount the BN-880 **as far from the battery and phase wires as the build allows**.
 - Keep it away from ferrous hardware and anything carrying high current.
 - Run `?magtest` **in place, on the real build** — not on the bench — to see the actual disturbance.

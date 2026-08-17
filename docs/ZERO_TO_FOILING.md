@@ -146,6 +146,12 @@ Skip this entirely if you are flashing the prebuilt `.bin` above.
 The compass lives on the RX, in the buggy. With the RX running, **short-press BIND** — or send
 `?compasscal` over serial — to start the **45-second** calibration.
 
+**First, before anything else — the module must be mounted square to the buggy.** Its own forward
+axis lined up with the nose, or turned exactly **90°, 180° or 270°** from it. **Not diagonal.** The
+firmware stores the mounting rotation only as one of those four values, so a module glued in at, say,
+30° is stored as 0° and keeps **30° of heading error that no calibration of any kind can remove**.
+Check this before you start — by the time you are walking circles around the buggy it is too late.
+
 **Four things, in this order. The direction and the start/finish point both matter:**
 
 1. **Point the nose of the buggy at NORTH.** Any compass will do — your phone's is fine.
@@ -174,7 +180,8 @@ tool benches, your own phone (put it down once you have found north).
 That last one is the reason this changed. Heading comes from the sensor's own axes, so a module
 mounted rotated makes **every** heading wrong by that angle — and the old calibration was blind to
 it, because a rotation still leaves a perfectly round, perfectly centred calibration circle. Nothing
-looked wrong. Mount the module however it fits; this is how you tell the firmware once.
+looked wrong. Mount the module square, in whichever of the four orientations fits your build; this is
+how you tell the firmware which one it ended up in.
 
 The tolerances are **deliberately forgiving** — at least 400° of turn (you are aiming for 720°) and
 finishing within ±40° of where you started — because a rejected run only costs you another walk
@@ -194,6 +201,17 @@ most **right after you mount or move the module** — the iron calibration then 
 position while the stored orientation still describes the old one, so every heading is out by exactly
 that difference and Follow-Me veers by the same amount at close range. If you are on serial, the same
 verdict is printed in words, naming what was and was not updated.
+
+**On serial, check the two numbers.** A completed run prints both what it saw and what it kept:
+
+```
+Mounting orientation: measured 251 deg, stored 270 deg.
+```
+
+Those two should agree within a few degrees. **The gap between them is heading error you keep** — in
+the example above, 18.75° that stays wrong on every heading no matter how many more circles you walk.
+If they differ by more than a few degrees, the module is not square: re-mount it properly and run
+`?compasscal` again.
 
 If you get **10 blinks**, the RX cannot see a magnetometer. Check that `gps_chip_type` is set to
 **1** or **3** — those are the compass-equipped modules. A BN-220 has no compass and will always give

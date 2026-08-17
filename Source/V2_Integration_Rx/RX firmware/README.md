@@ -90,6 +90,11 @@ model — never toward Portable.
 2. **Mounting handedness** — from which way the heading ran while you turned clockwise
 3. **Mounting rotation** — from the first sample, taken while pointing north
 
+**Prerequisite — mount the module square to the buggy.** Its own forward axis lined up with the nose,
+or turned exactly 90°, 180° or 270° from it. Not diagonal. The rotation is stored only as one of those
+four values, so a module at, say, 30° is stored as 0° and keeps 30° of heading error that **no**
+calibration can remove. Get this right before you calibrate, not after.
+
 **The new procedure:**
 
 ```
@@ -105,7 +110,11 @@ result is checked.
 **Why this exists.** Heading is `atan2(y, x)` on the sensor's own axes, so mounting the module
 rotated made every heading wrong by that angle, and the old calibration was mathematically blind to
 it — a rotation leaves the calibration circle centred and round, so nothing looked wrong. Mount it
-however it fits; tell the firmware once.
+square, in whichever of the four orientations fits; tell the firmware once.
+
+**Check the run against itself.** A completed run prints `Mounting orientation: measured NNN deg,
+stored NNN deg.` If those two differ by more than a few degrees the module is not square, and the
+difference is the heading error left behind — re-mount and re-run.
 
 **Tolerances are deliberately forgiving** — a rejected calibration costs you a re-run on your feet:
 

@@ -356,7 +356,10 @@ wrong heading. `?i2c` names whichever it finds, and so does the boot log.
 
 Whichever you fit, **re-run `?compasscal` after a swap** — different module, different mounting,
 different hard/soft iron offsets. The stored offsets are raw counts and do not carry over, and on
-the RX a bad heading is a Follow-Me fault. The current procedure is *nose on north → two full
+the RX a bad heading is a Follow-Me fault. Fit the replacement **square to the buggy** — lined up with
+the nose or turned exactly 90°, 180° or 270° from it, never diagonal — because the firmware stores the
+mounting rotation only as one of those four values and any odd angle leaves permanent heading error.
+The current procedure is *nose on north → two full
 clockwise circles → finish on north*; see
 [Zero → Foiling § 2.4](ZERO_TO_FOILING.md#24-compass-calibration-rx--nose-on-north-two-clockwise-circles).
 

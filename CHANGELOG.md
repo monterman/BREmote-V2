@@ -18,8 +18,9 @@ rollback) that costs you the config and the compass calibration.
 
 Heading is `atan2(y, x)` on the sensor's own axes. Mount the module rotated and every heading was
 wrong by that angle — and the old calibration was blind to it, because a rotation leaves the
-calibration circle centred and round. Nothing looked wrong. Mount it however it fits; tell the
-firmware once:
+calibration circle centred and round. Nothing looked wrong. Mount it **square** — lined up with the
+nose or turned exactly 90°, 180° or 270° from it, never diagonal, since the rotation is stored only as
+one of those four values — then tell the firmware once:
 
 ```
 Point the nose of the buggy at NORTH

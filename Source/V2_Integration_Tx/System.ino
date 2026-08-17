@@ -1,3 +1,13 @@
+// V2.5-Evo - 2026-08-17 - StopBuzz FIX (vibrationTask): three delivery bugs in the haptics chain.
+//   1. Pattern 7 (STOP) could be silently lost — every executor branch ended with an unconditional
+//      current_vib_pattern = 0, wiping a stop queued while another pattern was mid-play (up to 4s
+//      for Pattern 3). Stop requests now go through vib_stop_pending, are promoted ahead of
+//      everything else each cycle, and cut a multi-pulse pattern short between pulses. Every other
+//      branch now clears only if the pattern it played is still the one queued.
+//   2. The weak-signal warning latched sq_warned even when the collision guard stopped the buzz
+//      from ever being queued, so it was never retried. It now latches only on a real queue.
+//   3. The low-battery warning wrote current_vib_pattern unconditionally, letting the LEAST
+//      important alert overwrite a same-pass failsafe or E71 water-ingress buzz. Now guarded.
 // V2.5-Evo - 2026-07-21 - DIAG: ?state (serPrintStatus) now prints a BLE status row in both the text and
 //   json branches, guarded by BLE_ENABLED (fallback "DISABLED (compiled out)" when built without BLE).
 // V2.5-Evo - 2026-07-20 - StopFeel: vibration Pattern 7 added — one 400ms LONG pulse = the dedicated
@@ -886,7 +896,23 @@ void checkCharger()
   setBrightness(0x0F);
 }
 
-volatile uint8_t current_vib_pattern = 0;  // active haptic pattern: 0=none, 1=2 short, 2=5 short, 3=5 long, 4=2 fast short (RTM/FM ARM confirm), 5=1 short (magnet 2s "release for FM" advisory), 6=3 fast short (magnet 5s "release for RTM" advisory), 7=1 long (RTM/FM STOP/DISARM confirm)
+volatile uint8_t current_vib_pattern = 0;  // active haptic pattern: 0=none, 1=2 short, 2=5 short, 3=5 long, 4=2 fast short (RTM/FM ARM confirm), 5=1 short (magnet 2s "release for FM" advisory), 6=3 fast short (magnet 5s "release for RTM" advisory), 7=1 long (UNCOMMANDED RTM/FM stop, or an arm refusal — request it via vib_stop_pending, never by writing 7 here)
+
+// ============================================================
+// STOP-BUZZ REQUEST FLAG - how Pattern 7 gets to actually play
+// ============================================================
+// Set true (never false) by any code that needs the long STOP buzz; cleared only by vibrationTask
+// when it promotes the request into current_vib_pattern. Writing current_vib_pattern = 7 directly
+// does not work reliably and must not be done:
+//   - the request can arrive while another pattern is mid-play, and that pattern's executor ends by
+//     zeroing current_vib_pattern, so the 7 is wiped before it is ever felt;
+//   - the monitor checks at the top of the task can overwrite a queued 7 with a lower-priority
+//     warning in the same pass.
+// A separate flag cannot be overwritten by either, which is what makes "the stop buzz preempts
+// everything" a true statement instead of an aspiration. Worst case on a lost race is one extra
+// buzz; the failure mode of the old scheme was a MISSING stop buzz, which is the dangerous one.
+// The rider is looking at the water, not the display — a stop he did not ask for must be felt.
+volatile bool vib_stop_pending = false;
 
 void vibrationTask(void *parameter) {
   uint8_t last_error = 0;
@@ -923,13 +949,24 @@ void vibrationTask(void *parameter) {
           // Signal just dropped to 1 bar — fire Pattern A if nothing else is playing
           if (current_vib_pattern == 0) {
             current_vib_pattern = 1; // Pattern A: 2 Short (weak signal warning)
+            // V2.5-Evo - 2026-08-17 - StopBuzz FIX 3: sq_warned used to be set HERE-but-outside,
+            // i.e. also when the guard above had just stopped the buzz from being queued at all.
+            // The warning was then latched as "already given" without ever having been felt, and
+            // could not fire again until the signal first climbed back above 1 bar — so a drop
+            // that happened to collide with any other pattern was swallowed permanently.
+            // Latch only on a real queue.
+            sq_warned = true;
           }
-          sq_warned = true;
         } else if (cur_sq > 1) {
           // Signal recovered — allow warning to fire again on next drop
           sq_warned = false;
         }
-        last_sq = cur_sq;
+        // V2.5-Evo - 2026-08-17 - StopBuzz FIX 3 (second half): hold last_sq at its pre-drop value
+        // while a drop to 1 bar is still un-warned. The fire condition is an EDGE (>1 then ==1);
+        // advancing last_sq to 1 unconditionally consumed that edge, so a deferred warning could
+        // never be retried no matter what sq_warned said. Skipping the update leaves the edge
+        // intact and the next pass (50ms later) tries again.
+        if (!(cur_sq == 1 && !sq_warned)) last_sq = cur_sq;
       } else {
         // In failsafe — reset so warning re-arms on reconnect
         sq_warned = false;
@@ -946,8 +983,15 @@ void vibrationTask(void *parameter) {
     }
 
     // Check for Low VESC Battery (20% or less)
+    // V2.5-Evo - 2026-08-17 - StopBuzz FIX 4: this was an UNCONDITIONAL write, and it is the last
+    // monitor check in the chain — so a failsafe (Pattern 2) or an E71 water-ingress (Pattern 3)
+    // raised earlier in the SAME pass was overwritten by the least important alert in the system.
+    // A priority inversion: "battery at 20%" is not urgent, "you have lost the link" and "water is
+    // inside the remote" are. Guarded like every other informational site, and bat_warning_sent is
+    // latched only when the buzz was really queued so it retries on the next pass instead of being
+    // marked as given.
     if (telemetry.foil_bat != 0xFF && telemetry.foil_bat <= 20) {
-      if (!bat_warning_sent) {
+      if (!bat_warning_sent && current_vib_pattern == 0) {
         current_vib_pattern = 1; // Pattern A: 2 Short (Warning)
         bat_warning_sent = true;
       }
@@ -955,31 +999,47 @@ void vibrationTask(void *parameter) {
       bat_warning_sent = false; // Reset if battery is changed
     }
 
-    // --- 2. EXECUTE THE PATTERNS ---
-    
-    if (current_vib_pattern == 1) { 
-      // PATTERN A: 2 Short
-      for(int i=0; i<2; i++) { 
-        digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(150)); 
-        digitalWrite(P_MOT, LOW);  vTaskDelay(pdMS_TO_TICKS(150)); 
-      }
-      current_vib_pattern = 0;
+    // --- 1b. PROMOTE A PENDING STOP ---
+    // A stop request outranks everything above: it is the only pattern that tells the rider the
+    // system has stopped doing what he believes it is doing. Promoted here, AFTER all the monitor
+    // checks and BEFORE the executor, so nothing in this pass can overwrite it.
+    if (vib_stop_pending) {
+      vib_stop_pending    = false;
+      current_vib_pattern = 7;   // Pattern 7: one long buzz = STOP
     }
-    else if (current_vib_pattern == 2) { 
-      // PATTERN B: 5 Short
-      for(int i=0; i<5; i++) { 
-        digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(150)); 
-        digitalWrite(P_MOT, LOW);  vTaskDelay(pdMS_TO_TICKS(150)); 
+
+    // --- 2. EXECUTE THE PATTERNS ---
+    // Each branch below ends by clearing ONLY the pattern it just played. It used to clear
+    // unconditionally, which threw away anything queued while it was busy — including a stop.
+    // Multi-pulse patterns also break out between pulses when a stop arrives, so the stop is felt
+    // within one pulse rather than up to 4s later (Pattern 3 is five 500ms buzzes).
+
+    if (current_vib_pattern == 1) {
+      // PATTERN A: 2 Short
+      for(int i=0; i<2; i++) {
+        digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(150));
+        digitalWrite(P_MOT, LOW);  vTaskDelay(pdMS_TO_TICKS(150));
+        if (vib_stop_pending) break;   // a stop outranks a warning — cut it short
       }
-      current_vib_pattern = 0;
+      if (current_vib_pattern == 1) current_vib_pattern = 0;
+    }
+    else if (current_vib_pattern == 2) {
+      // PATTERN B: 5 Short
+      for(int i=0; i<5; i++) {
+        digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(150));
+        digitalWrite(P_MOT, LOW);  vTaskDelay(pdMS_TO_TICKS(150));
+        if (vib_stop_pending) break;   // a stop outranks a failsafe alert — cut it short
+      }
+      if (current_vib_pattern == 2) current_vib_pattern = 0;
     }
     else if (current_vib_pattern == 3) {
       // PATTERN C: 5 Long
       for(int i=0; i<5; i++) {
         digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(500));
         digitalWrite(P_MOT, LOW);  vTaskDelay(pdMS_TO_TICKS(300));
+        if (vib_stop_pending) break;   // longest pattern in the system (4s) — must yield to a stop
       }
-      current_vib_pattern = 0;
+      if (current_vib_pattern == 3) current_vib_pattern = 0;
     }
     // V2.5-Evo - 2026-04-27 - P8: Pattern 4 — ARM confirm (FM/RTM).
     // V2.5-Evo - 2026-07-20 - ArmFeel: was two 80ms taps with an 80ms gap — too fast, blurred into
@@ -992,7 +1052,7 @@ void vibrationTask(void *parameter) {
       digitalWrite(P_MOT, LOW);  vTaskDelay(pdMS_TO_TICKS(250));
       digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(130));
       digitalWrite(P_MOT, LOW);
-      current_vib_pattern = 0;
+      if (current_vib_pattern == 4) current_vib_pattern = 0;
     }
     // V2.5-Evo - 2026-07-20 - MagGesture: Pattern 5 — ONE short pulse.
     // Used only as the magnet-gesture 2s advisory ("release the magnet now and FM will arm").
@@ -1002,7 +1062,7 @@ void vibrationTask(void *parameter) {
     else if (current_vib_pattern == 5) {
       digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(150));
       digitalWrite(P_MOT, LOW);
-      current_vib_pattern = 0;
+      if (current_vib_pattern == 5) current_vib_pattern = 0;
     }
     // V2.5-Evo - 2026-07-20 - MagGesture: Pattern 6 — THREE short pulses.
     // Used only as the magnet-gesture 5s advisory ("release the magnet now and RTM will arm").
@@ -1018,12 +1078,16 @@ void vibrationTask(void *parameter) {
       for (int i = 0; i < 3; i++) {
         digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(100));
         digitalWrite(P_MOT, LOW);  vTaskDelay(pdMS_TO_TICKS(150));
+        if (vib_stop_pending) break;   // a stop outranks a magnet advisory — cut it short
       }
-      current_vib_pattern = 0;
+      if (current_vib_pattern == 6) current_vib_pattern = 0;
     }
-    // V2.5-Evo - 2026-07-20 - StopFeel: Pattern 7 — ONE long 750ms pulse = the STOP/DISARM confirm
-    // for every FM and RTM stop/disengage event (fmDisarm, rtmDisengage, FM F0 disarm, RTM pre-arm
-    // reject). Deliberately a single SUSTAINED buzz so the rider can tell "stopped/off" from the arm
+    // V2.5-Evo - 2026-07-20 - StopFeel: Pattern 7 — ONE long 750ms pulse = the STOP confirm.
+    // V2.5-Evo - 2026-08-17 - Trigger list corrected. It fires on the stops the rider did NOT ask
+    // for (RTM Gates 1/2/3, FM Gate 1 release backstop, FM RX fault-stop) and on an arm REFUSAL
+    // (RTM pre-arm distance reject, FM fundamental reject). It does NOT fire on a deliberate
+    // disarm — gesture disarm, magnet-toggle disarm, steer-exit or F0 select are all silent.
+    // Deliberately a single SUSTAINED buzz so the rider can tell "stopped/off" from the arm
     // confirm by feel alone while foiling. Distinct from every other pattern:
     //   - Pattern 4 (arm) is TWO 130ms taps split by a 250ms gap; Pattern 6 is THREE — this is ONE.
     //   - Pattern 5 (magnet advisory) is ONE short 150ms pulse — 750ms is 5× longer, so a
@@ -1033,7 +1097,7 @@ void vibrationTask(void *parameter) {
     else if (current_vib_pattern == 7) {
       digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(750));
       digitalWrite(P_MOT, LOW);
-      current_vib_pattern = 0;
+      if (current_vib_pattern == 7) current_vib_pattern = 0;
     }
 
     // Sleep briefly to prevent hoarding the CPU

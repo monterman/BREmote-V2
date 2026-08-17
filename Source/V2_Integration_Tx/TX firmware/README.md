@@ -8,8 +8,9 @@ Board: **HT-CT62 (ESP32-C3)** · partition scheme `huge_app` · app offset **`0x
 
 | File | SW | What it is |
 |---|---|---|
-| `BREmote-TX-SW27-haptics.bin` | 27 | **Try this and tell me what you think.** Everything in `ubx-checksum` plus far fewer vibrations — see below. Not yet the recommended build, because how it feels is a judgement I cannot make from a build log. |
+| `BREmote-TX-SW27R2-haptics.bin` | 27 | **Try this and tell me what you think.** Everything in `ubx-checksum` plus far fewer vibrations — see below. Not yet the recommended build, because how it feels is a judgement I cannot make from a build log. |
 | `BREmote-TX-SW27-ubx-checksum.bin` | 27 | **Start here.** Current. Everything in `gps-verified` **plus** the UBX checksum fix below. |
+| ~~`BREmote-TX-SW27-haptics.bin`~~ | 27 | ⚠️ **Withdrawn — do not use.** The vibration cull was applied in the wrong place: it silenced the *uncommanded* stops (RTM max-runtime, GPS stale, throttle-release timeout, and the RX fault-stop) as well as the deliberate ones, so the buggy could stop on its own with no buzz at all. `SW27R2-haptics` above replaces it and restores exactly those. |
 | `BREmote-TX-SW27-gps-verified.bin` | 27 | The previous build, **kept deliberately**. Field-proven — this is the one that has actually been ridden. Every GPS config write is ACK-verified, auto-detects u-blox M8 vs M9/M10, never transmits at an unconfirmed baud. Adds `?gpscfg`, `?gpsbaud`, `?gpssetup`. |
 | `BREmote-TX-SW26R2-rtm-working.bin` | **26R2** | Known-good historical build from 2026-06-05. RTM working; Follow-Me not yet matured. Fallback if something newer misbehaves. ⚠️ **Different `SW_VERSION` — see below.** |
 
@@ -24,8 +25,9 @@ module is sent commands it cannot parse and **configuration fails silently**.
 Not theoretical: the RX had the identical bug and reported a BN-880 (an M8) as "M9/M10" on three
 consecutive runs. Fixed on the RX in `1f2ba8c` (2026-08-02); this is the same fix applied to the TX.
 
-**Both SW27 builds are `SW_VERSION` 27, so moving between them does NOT touch your settings.**
-Flash either way freely — no re-pairing, no re-calibration.
+**All three SW27 builds — `haptics`, `ubx-checksum` and `gps-verified` — are `SW_VERSION` 27, so
+moving between them does NOT touch your settings.** Flash any of them either way freely — no
+re-pairing, no re-calibration. Only `SW26R2` is a different version; see below.
 
 > ⚠️ **`ubx-checksum` has not been bench-tested yet.** It compiles clean and the change is confined
 > to the GPS config path — nothing in throttle, steering, PWM or failsafe is touched — but no one has
@@ -35,19 +37,19 @@ Flash either way freely — no re-pairing, no re-calibration.
 > Verifying it takes a minute: `?gpscfg` should name the correct dialect for your module, and
 > `?gpssetup` should complete.
 
-> The RX folder has a third, intermediate `pre-gpsbaud` build. The TX equivalent was withdrawn
+> The RX folder has an intermediate `pre-gpsbaud` build. The TX equivalent was withdrawn
 > and is deliberately not published.
 
-### What `haptics` changes (2026-08-16)
+### What `haptics` changes (2026-08-17)
 
 A rider holding the remote while concentrating on a wave does not decode vibration patterns — they
-feel *a buzz*. Seventeen trigger sites across seven patterns is not a language, it is noise. Six
-triggers are gone:
+feel *a buzz*. Twenty-five buzz events across seven patterns is not a language, it is noise. Six
+events are gone:
 
 **Removed — you get no buzz when YOU do it:**
-- Disarming RTM by steering, disarming FM, or selecting F0. You just did it, and the display already
-  shows the stop. This was the most frequent buzz in the system.
-- Cycling FM modes. You are pressing through them watching the display; the arm buzz already fired.
+- Disarming RTM by steering or by the magnet toggle, disarming FM the same two ways, or selecting F0.
+  You just did it, and the display already shows the stop. This was the most frequent buzz in the
+  system.
 
 **Kept — everything that tells you something you did not already know:**
 - Arm confirm. You cannot watch the display while riding.
@@ -55,15 +57,28 @@ triggers are gone:
 - Magnet "release now" prompts — a blind gesture needs to be told when to let go.
 - Arm window expired — the system changing state without you.
 
-**One long buzz now means exactly one thing: the system stopped and you did not ask it to.**
+**One long buzz means the system stopped without you asking** — RTM hitting its runtime limit, the
+TX losing its GPS fix, the throttle-release timeout expiring, or the RX faulting and stopping
+Follow-Me. It also fires when an **arm is refused**, which is the same class of information: the
+mode you just asked for is not running.
 
-Informational buzzes now also wait for one already playing to finish, rather than overwriting it —
-two patterns colliding is what made them unreadable. A stop buzz still preempts everything.
+> ⚠️ **The first `haptics` build (`SW27-haptics`, withdrawn) got this backwards.** The cull was
+> applied inside the two shared functions that end an engagement — but those serve the automatic
+> stops as well as the deliberate ones, so *every* uncommanded stop went silent while the buzz
+> survived only on arm refusals. `SW27R2-haptics` classifies each of the ten call sites explicitly
+> and restores all five automatic stops.
+
+Two delivery bugs are fixed alongside it. A stop buzz now genuinely preempts: it is raised as a
+pending request that is promoted ahead of every other pattern and cuts a multi-pulse pattern short
+between pulses, instead of being silently overwritten by whatever was already playing (Pattern 3
+runs four seconds — long enough to swallow a stop buzz entirely). And the weak-signal warning no
+longer marks itself as "given" when the collision guard stopped it from ever playing, so a signal
+drop that coincides with another buzz is still reported.
 
 ## Flash it
 
 ```bash
-esptool --chip esp32c3 --port COM<N> write-flash 0x10000 BREmote-TX-SW27-gps-verified.bin
+esptool --chip esp32c3 --port COM<N> write-flash 0x10000 BREmote-TX-SW27-ubx-checksum.bin
 ```
 
 **Find your port by MAC, not by COM number** — COM numbers move between reboots, and the TX and

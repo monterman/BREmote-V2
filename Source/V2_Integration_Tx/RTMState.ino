@@ -44,8 +44,19 @@
 //   rejection, and both F0-disarm paths (cycleFmMode / cycleFmModeArmed). ARM confirms are UNCHANGED and
 //   stay Pattern 4: setRtmArmed(), the two runDoubleSqueezeArm() squeeze confirms, and the cycleFmMode()
 //   arm path. fmSilentDisarm() stays silent (arm-window expiry is not a commanded stop).
+// V2.5-Evo - 2026-08-17 - StopBuzz FIX: the 2026-08-16 haptic cut was applied inside rtmDisengage()
+//   and fmDisarm() — the SHARED sinks — so it also silenced every stop the rider did NOT ask for
+//   (RTM Gate 1 max-runtime, Gate 2 GPS-stale, Gate 3 throttle-release, FM Gate 1 release backstop,
+//   FM RX fault-stop). That is the exact inverse of the intent. Both functions now take a
+//   `commanded` flag: true = the rider asked for it (stay silent), false = a safety gate stopped
+//   the system (fire the long STOP buzz). Every call site is classified explicitly below.
+//   All Pattern 7 requests now go through vib_stop_pending (System.ino) so a stop buzz can never be
+//   swallowed by a pattern that happens to be mid-play.
 
 extern volatile uint8_t current_vib_pattern;
+extern volatile bool    vib_stop_pending;   // set true to REQUEST the Pattern 7 STOP buzz (defined in
+                                            // System.ino). Never write current_vib_pattern = 7 directly:
+                                            // the flag is what makes the stop buzz preempt and survive.
 extern float rtm_arm_dist_m;  // defined in BREmote_V2_Tx.h — captured at RTM engage moment
 
 // ---- GPS-aware blocking delay ----
@@ -129,21 +140,27 @@ void setRtmArmed()
   // success path leaves it at 0 so calcRtmThrottleCap() ramp takes over on first RTM_ACTIVE tick.
   rtm_thr_cap_tx   = 0;
   queueMetaPacketBurst(0xF1, 0);   // tell RX: RTM armed but not yet active
-  if (current_vib_pattern == 0) current_vib_pattern = 4;         // Pattern 4: 2 fast short = RTM arm confirm
+  if (current_vib_pattern == 0) current_vib_pattern = 4;         // Pattern 4: 2 fast short = RTM arm confirm
   runDoubleSqueezeArm();            // Bug4: handles both single and double squeeze
 }
 
 // ---- Called to disengage RTM from the gesture layer (user-initiated) ----
-// STOP confirm (Pattern 7) + "St" now handled inside rtmDisengage().
+// "St" confirm handled inside rtmDisengage().
+// Every caller of THIS wrapper is a deliberate rider action (the magnet toggle in Hall.ino and the
+// Gate 4 steer-exit), so it always passes commanded = true → no STOP buzz.
 static void setRtmDisarmed()
 {
-  rtmDisengage();
+  rtmDisengage(true);
 }
 
 // ---- Disengage RTM: return to COOLDOWN, notify RX, confirm with haptic + display ----
 // V2.5-Evo - 2026-04-28 - P9 Bug1D: Pattern 4 and "St P" moved here so ALL exit paths
 // (steer-exit, GPS stale, max runtime, throttle release) fire the confirm consistently.
-static void rtmDisengage()
+// INPUT: commanded — true when the rider asked for this stop (magnet toggle, steer-exit);
+//        false when a safety gate stopped RTM on its own (max runtime, GPS stale, throttle release).
+// OUTPUT: none. SIDE EFFECTS: state → RTM_COOLDOWN, throttle cap restored to 255, 0xF1/0 sent to RX,
+//        STOP buzz requested when uncommanded, and a BLOCKING 2s "St" display hold.
+static void rtmDisengage(bool commanded)
 {
   rtm_tx_state    = RTM_COOLDOWN;
   rtm_cooldown_ms = millis();
@@ -155,15 +172,18 @@ static void rtmDisengage()
   rtm_arm_gps_timeout_override = 0;  // clear GPS timeout multiplier — ceremony fully over
   queueMetaPacketBurst(0xF1, 0);  // tell RX: RTM inactive
 
-  // Fire the STOP confirm BEFORE the blocking display so vibration runs during the 2s flash
-  // V2.5-Evo - 2026-08-16 - HAPTIC CUT: silent on a DELIBERATE disarm. You just did it, and
-
-  // the display already says so - RTM/FM stops being shown and the stop confirm appears. A buzz
-
-  // confirming your own action is noise, and it was the single most frequent buzz in the system.
-
-  // Pattern 7 now means ONE thing: the system stopped, and you did not ask it to.
-
+  // Request the STOP confirm BEFORE the blocking display so the buzz runs during the 2s flash.
+  // V2.5-Evo - 2026-08-16 - HAPTIC CUT: silent on a DELIBERATE disarm. You just did it, and the
+  // display already says so - the stop confirm appears. A buzz confirming your own action is noise,
+  // and it was the single most frequent buzz in the system.
+  // V2.5-Evo - 2026-08-17 - StopBuzz FIX: that cut was written here, at the shared sink, so it also
+  // silenced the three safety gates that end up in this same function (max runtime, GPS stale,
+  // throttle-release timeout). Those are exactly the stops the rider MUST feel: he is looking at
+  // the water, not at a 2s "St", and rtm_thr_cap_tx has just gone from the RTM cap back to 255, so
+  // a trigger he is already squeezing becomes raw manual throttle in the same instant.
+  // The cut now applies ONLY to the deliberate stops, via the caller's `commanded` flag, and
+  // Pattern 7 means ONE thing again: the system stopped, and you did not ask it to.
+  if (!commanded) vib_stop_pending = true;   // Pattern 7: one long buzz = uncommanded STOP
 
   // Large-font stop confirm: LET_S(32) renders as "5", LET_T(20) renders as "t".
   // "5t" appearance is intentional — matches large-font style of F0-F3 confirms.
@@ -239,7 +259,7 @@ static void runDoubleSqueezeArm()
     // Single-squeeze: unlock, pause, then Pattern 4 + "r n" arm confirm
     unlockAnimation();
     gpsKeepAliveDelay(750);   // V2.5-Evo - 2026-06-05: was 250 — +500ms so the "armed" buzz is clearly separated from the squeeze
-    if (current_vib_pattern == 0) current_vib_pattern = 4;   // Pattern 4 after visual unlock completes
+    if (current_vib_pattern == 0) current_vib_pattern = 4;   // Pattern 4 after visual unlock completes
     DISP_LOCK(); displayDigitZone("r n"); updateDisplay(); DISP_UNLOCK();
     gpsKeepAliveDelay(2000);
   }
@@ -278,7 +298,7 @@ static void runDoubleSqueezeArm()
     // Second squeeze confirmed: unlock, pause, then Pattern 4 + "r n" arm confirm
     unlockAnimation();
     gpsKeepAliveDelay(750);   // V2.5-Evo - 2026-06-05: was 250 — +500ms so the "armed" buzz is clearly separated from the squeeze
-    if (current_vib_pattern == 0) current_vib_pattern = 4;   // Pattern 4 after visual unlock completes
+    if (current_vib_pattern == 0) current_vib_pattern = 4;   // Pattern 4 after visual unlock completes
     DISP_LOCK(); displayDigitZone("r n"); updateDisplay(); DISP_UNLOCK();
     gpsKeepAliveDelay(2000);
   }
@@ -292,7 +312,9 @@ static void runDoubleSqueezeArm()
                                         // the 4× override stale; all other exits
                                         // (timeouts + rtmDisengage) already clear it
     rtm_thr_cap_tx = 255;              // restore throttle passthrough — arm rejected
-    current_vib_pattern = 7;           // Pattern 7: one 400ms long buzz = STOP confirm (arm aborted, no mode armed)
+    // Pattern 7: one long buzz = the arm was REFUSED. Kept (an arm refusal is the rider believing
+    // RTM is running when it is not), and routed through the pending flag like every other stop.
+    vib_stop_pending = true;
     // Large-font stop confirm on arm rejection.
     DISP_LOCK(); displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
     gpsKeepAliveDelay(2000);
@@ -363,7 +385,7 @@ void runRtmLoop()
       if (usrConf.rtm_max_runtime_s > 0 &&
           now - rtm_active_start_ms > (unsigned long)usrConf.rtm_max_runtime_s * 1000UL)
       {
-        rtmDisengage();
+        rtmDisengage(false);   // UNCOMMANDED: a timer expired, the rider asked for nothing → buzz
         break;
       }
 
@@ -376,7 +398,7 @@ void runRtmLoop()
                            : (uint32_t)usrConf.rtm_gps_timeout_ms;
         if (gps_tx.location.age() > gps_thr)
         {
-          rtmDisengage();
+          rtmDisengage(false);   // UNCOMMANDED: TX GPS went stale under RTM → buzz
           break;
         }
       }
@@ -389,7 +411,10 @@ void runRtmLoop()
         if (rtm_release_ms == 0) rtm_release_ms = now;
         if (now - rtm_release_ms > 4000UL)
         {
-          rtmDisengage();
+          // UNCOMMANDED: letting go of the trigger for a moment is not the same as asking RTM to
+          // end. The rider gets no warning that the 4s window has run out, and the next squeeze is
+          // raw manual throttle instead of the RTM cap → buzz.
+          rtmDisengage(false);
           break;
         }
       }
@@ -402,7 +427,7 @@ void runRtmLoop()
       if (usrConf.rtm_steer_exit_on_input && toggle_blocked_by_steer &&
           abs((int)steer_scaled - 127) > 20)
       {
-        setRtmDisarmed();
+        setRtmDisarmed();   // COMMANDED: the rider deliberately steered out (opt-in gate) → silent
         break;
       }
 
@@ -508,22 +533,27 @@ static void fmSilentDisarm()
   queueMetaPacketBurst(0xF2, 0);   // mode 0 = FM disabled on RX
 }
 
-// Internal disarm: clears state, notifies RX, fires haptic, shows "St" full-screen.
+// Internal disarm: clears state, notifies RX, shows "St" full-screen, buzzes only when the stop
+// was NOT asked for.
 // V2.5-Evo - 2026-04-28 - P9 S2: showFmMode() removed; disarm shows blocking stop message.
 // V2.5-Evo - 2026-04-28 - ChgE: fm_last_sync_ms reset to 0 on disarm so keepalive timer clears.
-static void fmDisarm()
+// INPUT: commanded — true when the rider asked for this disarm (toggle combo, magnet toggle);
+//        false when the system disarmed FM on its own (RX fault-stop, Gate 1 release backstop).
+// OUTPUT: none. SIDE EFFECTS: fm_armed cleared, keepalive stopped, 0xF2/0 sent to RX, STOP buzz
+//        requested when uncommanded, and a BLOCKING 2s "St" display hold.
+static void fmDisarm(bool commanded)
 {
   fm_armed         = false;
   fm_throttle_seen = false;
   fm_last_sync_ms  = 0;            // Change E: clear keepalive timer
   queueMetaPacketBurst(0xF2, 0);   // mode 0 = FM disabled on RX (followme_mode=0)
-  // V2.5-Evo - 2026-08-16 - HAPTIC CUT: silent on a DELIBERATE disarm. You just did it, and
-
-  // the display already says so - RTM/FM stops being shown and the stop confirm appears. A buzz
-
-  // confirming your own action is noise, and it was the single most frequent buzz in the system.
-
-  // Pattern 7 now means ONE thing: the system stopped, and you did not ask it to.
+  // V2.5-Evo - 2026-08-16 - HAPTIC CUT: silent on a DELIBERATE disarm. You just did it, and the
+  // display already says so. A buzz confirming your own action is noise.
+  // V2.5-Evo - 2026-08-17 - StopBuzz FIX: the cut was written here, at the shared sink, so it also
+  // silenced the two disarms nobody asked for — the RX fault-stop and the Gate 1 release backstop.
+  // In both of those the RX has stopped steering for the rider and he has no way to know it, so
+  // they buzz. Deliberate disarms stay silent.
+  if (!commanded) vib_stop_pending = true;   // Pattern 7: one long buzz = uncommanded STOP
 
   // Large-font stop confirm on FM disarm.
   DISP_LOCK(); displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
@@ -542,7 +572,7 @@ void cycleFmMode()
     if (fm_throttle_seen)
     {
       // User already rode — treat gesture as disarm toggle
-      fmDisarm();
+      fmDisarm(true);   // COMMANDED: the rider made the disarm gesture → silent
     }
     else
     {
@@ -552,7 +582,9 @@ void cycleFmMode()
       if (last_fm_mode == 0)
       {
         // F0: FM disabled — disarm with brief visual confirm and return to normal display.
-        // Sends 0xF2/0 to RX (FM off), fires Pattern 7 (STOP confirm), resets mode to SPIFFS default.
+        // Sends 0xF2/0 to RX (FM off) and resets mode to SPIFFS default. No buzz — selecting F0 is
+        // a deliberate disarm the rider is watching happen on the display (comment corrected
+        // 2026-08-17: it said "fires Pattern 7", which stopped being true with the 08-16 cut).
         // This is RAM-only; power cycle restores usrConf.followme_mode.
         // V2.5-Evo - 2026-08-16 - HAPTIC CUT: silent on a DELIBERATE disarm. You just did it, and
 
@@ -599,7 +631,9 @@ void cycleFmMode()
   // here — they arm as NOT-READY (fmArmedNotReady()) so the magnet still arms through a glitch.
   if (fmFundamentalReject())
   {
-    current_vib_pattern = 7;         // Pattern 7: one long buzz = STOP/reject (arm refused)
+    // Pattern 7: one long buzz = the arm was REFUSED. Kept (the rider would otherwise walk away
+    // believing FM is armed), and routed through the pending flag like every other stop request.
+    vib_stop_pending = true;
     DISP_LOCK(); displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
     gpsKeepAliveDelay(2000);
     return;                          // arm refused — no fm_armed, no 0xF2, no keepalive
@@ -619,7 +653,7 @@ void cycleFmMode()
   fm_armed         = true;
   fm_arm_ms        = millis();
   fm_throttle_seen = false;
-  if (current_vib_pattern == 0) current_vib_pattern = 4;         // Pattern 4: 2 fast buzzes = arm confirm
+  if (current_vib_pattern == 0) current_vib_pattern = 4;         // Pattern 4: 2 fast buzzes = arm confirm
   fm_last_sync_ms  = millis();     // Change E: start keepalive timer from now (avoids immediate re-sync)
 
   // V2.5-Evo - 2026-04-29 - Display: show actual mode being armed (F1/F2/F3) in large font
@@ -644,7 +678,9 @@ void cycleFmModeArmed()
   if (last_fm_mode == 0)
   {
     // F0: FM disabled — disarm with brief visual confirm and return to normal display.
-    // Sends 0xF2/0 to RX (FM off), fires Pattern 4, resets mode to SPIFFS default.
+    // Sends 0xF2/0 to RX (FM off) and resets mode to SPIFFS default. No buzz — selecting F0 is a
+    // deliberate disarm the rider is watching happen on the display (comment corrected 2026-08-17:
+    // it said "fires Pattern 4", which stopped being true with the 08-16 cut).
     // This is RAM-only; power cycle restores usrConf.followme_mode.
     // V2.5-Evo - 2026-08-16 - HAPTIC CUT: no buzz on a mode CYCLE. You are actively
 
@@ -700,7 +736,10 @@ void runFmLoop()
   fm_flags_prev = fm_flags_now;
   if (fm_armed && fault_rising)
   {
-    fmDisarm();   // clears fm_armed + keepalive, sends 0xF2/0, "St" + Pattern 7 — TX & RX can't disagree
+    // UNCOMMANDED: the RX faulted and stopped FM by itself. This is the single most important
+    // stop in the file to make the rider feel — he asked for nothing and the buggy just stopped
+    // following him. → commanded = false → Pattern 7.
+    fmDisarm(false);   // clears fm_armed + keepalive, sends 0xF2/0, "St" + Pattern 7 — TX & RX can't disagree
     return;
   }
 
@@ -718,7 +757,7 @@ void runFmLoop()
       // buzz (Pattern 7). Placed at the call site (not inside fmSilentDisarm) so it fires ONLY on
       // arm-window expiry, never on the RTM-preemption path that also calls fmSilentDisarm().
       fmSilentDisarm();   // arm window expired before first throttle — no blocking confirm
-      if (current_vib_pattern == 0) current_vib_pattern = 5;   // nudge: one short blip
+      if (current_vib_pattern == 0) current_vib_pattern = 5;   // nudge: one short blip
       return;
     }
   }
@@ -737,7 +776,10 @@ void runFmLoop()
   {
     if (now - fm_arm_ms > kFmGate1ReleaseMs)
     {
-      fmDisarm();
+      // UNCOMMANDED: a 30s backstop timer expired. The rider made no gesture and has no way to
+      // know his FM declaration has just been withdrawn — the next time he squeezes, the RX is
+      // no longer steering for him. Same class as RTM Gate 3. → commanded = false → Pattern 7.
+      fmDisarm(false);
       return;
     }
   }

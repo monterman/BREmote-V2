@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-08-17 - StopBuzz FIX: fmDisarm() takes a `commanded` flag; the magnet toggle's two
+//   disarm paths pass "commanded" (silent) because removing the magnet IS the rider asking. The
+//   magnet ADVISORY buzzes (Patterns 5 and 6) are unchanged. The 2026-07-20 tag below is a dated
+//   record: since the 2026-08-16 cut, a deliberate disarm no longer fires Pattern 7.
 // V2.5-Evo - 2026-07-20 - StopFeel: comment-only sync — every STOP/DISARM confirm now fires Pattern 7
 //   (one 400ms long buzz), not Pattern 4. Arm confirms still Pattern 4. Feel map + disarm-path comments
 //   below updated to match; no code change in this file.
@@ -486,8 +490,13 @@ bool rtmIsArming();
 // fmDisarm() and setRtmDisarmed() are the toggle-combo's own disarm paths (both static in
 // RTMState.ino, concatenated after this file). Declared static here — matching their definitions
 // so the linkage agrees — so the magnet TOGGLE can fire the identical disarm the toggle uses
-// (fmDisarm: 0xF2/0 + Pattern 7 + "St"; setRtmDisarmed→rtmDisengage: 0xF1/0 + Pattern 7 + "St").
-static void fmDisarm();
+// (fmDisarm: 0xF2/0 + "St"; setRtmDisarmed→rtmDisengage: 0xF1/0 + "St" — both silent, because a
+// gesture disarm is a stop the rider asked for).
+// V2.5-Evo - 2026-08-17 - fmDisarm() now takes a `commanded` flag (true = the rider asked for the
+// stop → silent, false = a safety gate stopped it → Pattern 7). The magnet toggle always passes
+// true: removing the magnet IS the rider asking. setRtmDisarmed() is unchanged — it is the
+// deliberate-stop wrapper and passes commanded = true internally.
+static void fmDisarm(bool commanded);
 static void setRtmDisarmed();
 
 // ---- Gesture timing constants (compile-time only — deliberately NOT SPIFFS fields, no confStruct change) ----
@@ -655,7 +664,7 @@ void runMagGesture()
       if (rtm_tx_active || rtmIsArming())
       {
         // RTM already active (or mid arm-ceremony) → DISARM through the toggle's own path.
-        // setRtmDisarmed()→rtmDisengage() sends 0xF1/0, fires Pattern 7 and shows "St" — identical
+        // setRtmDisarmed()→rtmDisengage(true) sends 0xF1/0 and shows "St", no buzz — identical
         // feel and RX effect to a toggle-combo disengage. (Mid-ceremony is only theoretical here:
         // runDoubleSqueezeArm() blocks loop(), so runMagGesture() cannot be entered while arming.)
         setRtmDisarmed();
@@ -676,11 +685,11 @@ void runMagGesture()
       if (!(usrConf.fm_override_enabled && usrConf.gps_en)) return;
       if (isFmArmed())
       {
-        // FM already armed → DISARM via the toggle-combo's own disarm path. fmDisarm() sends 0xF2/0,
-        // fires Pattern 7 and shows "St" — so the magnet disarm feels and behaves exactly like the
+        // FM already armed → DISARM via the toggle-combo's own disarm path. fmDisarm(true) sends
+        // 0xF2/0 and shows "St" with no buzz — so the magnet disarm feels and behaves exactly like the
         // toggle disarm the owner used successfully. (This is a hard disarm, not cycleFmMode()'s
         // arm/cycle/disarm behaviour: the magnet is a pure arm↔disarm toggle.)
-        fmDisarm();
+        fmDisarm(true);   // COMMANDED: the magnet gesture IS the rider asking → silent
       }
       else
       {

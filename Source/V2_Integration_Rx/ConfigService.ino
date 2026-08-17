@@ -236,41 +236,91 @@ bool cfgValidateCrossField(confStruct &candidate, String &err)
           "bypass this — automatic is floored at the same " + String(kFmEngageDistFloorM, 1) + " m.";
     return false;
   }
-
+
+
+  // ============================================================
+
+  // V2.5-Evo - 2026-08-16 - COG-ONLY MODE NEEDS ITS ARM GATE RELAXED TOO.
+
+  //
+
+  // rtm_use_compass = 0 disables the compass for STEERING. rtm_compass_required = 1 then still
+
+  // demands a valid heading at arm time - and despite its name that gate does not look for a
+
+  // compass, it calls getRtmHeading() and requires ANY source. In hybrid the compass snapshot
+
+  // satisfies it while the craft sits still. With the compass switched off there is nothing:
+
+  // COG does not exist below rtm_cog_min_speed_kmh, and RTM is armed from a standstill or a
+
+  // drift, which is exactly when there is no course to measure.
+
+  //
+
+  // The result is a silent, misleading failure - RTM refuses to arm with STOP: No valid heading
+
+  // source, and it reads as COG-only mode being broken. It is not; the gate is.
+
+  //
+
+  // Rejected rather than auto-corrected on purpose. Quietly clearing one safety gate because
+
+  // the rider changed a different setting is the kind of helpfulness that surprises someone
+
+  // later. Making them set both means they SEE that turning the compass off also relaxes the
+
+  // arm gate, which is the thing worth understanding when you deliberately disable a sensor.
+
+  //
+
+  // Enforced on every save path - ?set, the RX web portal, the standalone tool, a restored
+
+  // ?setconf blob and SPIFFS load on boot - because cfgValidateCrossField() is called from all
+
+  // of them. There is no way round it, including an old config backup carrying the trap.
+
+  //
+
+  // NOTE: no double quote or backslash in this string - it is interpolated raw into JSON.
+
+  // ============================================================
+
   // ============================================================
-  // V2.5-Evo - 2026-08-16 - COG-ONLY MODE NEEDS ITS ARM GATE RELAXED TOO.
+  // V2.5-Evo - 2026-08-16 - COG-ONLY MODE: relax the arm gate automatically.
   //
-  // rtm_use_compass = 0 disables the compass for STEERING. rtm_compass_required = 1 then still
-  // demands a valid heading at arm time - and despite its name that gate does not look for a
-  // compass, it calls getRtmHeading() and requires ANY source. In hybrid the compass snapshot
-  // satisfies it while the craft sits still. With the compass switched off there is nothing:
+  // rtm_use_compass = 0 turns the compass off for STEERING. rtm_compass_required = 1 then still
+  // demands a valid heading before RTM will arm - and despite its name that gate does not look
+  // for a compass, it calls getRtmHeading() and accepts ANY source. In hybrid the compass
+  // snapshot satisfies it while the craft sits still. With the compass off there is nothing:
   // COG does not exist below rtm_cog_min_speed_kmh, and RTM is armed from a standstill or a
-  // drift, which is exactly when there is no course to measure.
+  // drift - exactly when there is no course to measure. RTM would refuse to arm every time with
+  // STOP: No valid heading source, which reads as COG-only mode being broken. It is not.
   //
-  // The result is a silent, misleading failure - RTM refuses to arm with STOP: No valid heading
-  // source, and it reads as COG-only mode being broken. It is not; the gate is.
+  // AUTO-CORRECTED rather than rejected, deliberately. This combination is a UI trap, not a
+  // hazard: it fails CLOSED - RTM refuses to arm rather than doing anything dangerous - so
+  // repairing it cannot create a risk, it only removes a footgun. And COG-only is the mode
+  // riders are being pointed at RIGHT NOW to isolate a suspected compass; the first person to
+  // reach for it should not have to debug the mode itself. Make it impossible to get wrong on
+  // the day it starts being used.
   //
-  // Rejected rather than auto-corrected on purpose. Quietly clearing one safety gate because
-  // the rider changed a different setting is the kind of helpfulness that surprises someone
-  // later. Making them set both means they SEE that turning the compass off also relaxes the
-  // arm gate, which is the thing worth understanding when you deliberately disable a sensor.
+  // Announced, never silent - the rider must see that turning the compass off also relaxed the
+  // arm gate, because that IS a real behaviour change. The web portal shows it too: the field
+  // reloads as 0.
   //
-  // Enforced on every save path - ?set, the RX web portal, the standalone tool, a restored
-  // ?setconf blob and SPIFFS load on boot - because cfgValidateCrossField() is called from all
-  // of them. There is no way round it, including an old config backup carrying the trap.
-  //
-  // NOTE: no double quote or backslash in this string - it is interpolated raw into JSON.
+  // Writing to `candidate` here is intentional despite the function name. It is idempotent, only
+  // ever moves settings toward the working combination, and runs on every save path - ?set, web
+  // portal, ?applyconf and SPIFFS load - so an old config blob carrying the trap is repaired at
+  // boot rather than leaving RTM unarmable until someone works out why.
   // ============================================================
   if (candidate.rtm_use_compass == 0 && candidate.rtm_compass_required != 0)
   {
-    err = String("ERR_CROSS:RTM Heading Source is set to GPS COG only, so RTM Compass Required ") +
-          "must also be 0. That setting does not check for a compass - it requires a valid heading " +
-          "of ANY kind before RTM will arm, and with the compass disabled there is none until the " +
-          "buggy is moving above the COG minimum speed. Since RTM is armed while the buggy is " +
-          "still or drifting, arming would fail every time with No valid heading source. Set RTM " +
-          "Compass Required to 0 as well. RTM will then steer only once it is moving fast enough " +
-          "for GPS course, and hold straight below that instead of using the compass.";
-    return false;
+    candidate.rtm_compass_required = 0;
+    Serial.println("NOTE: Heading Source is GPS COG only, so RTM Compass Required was set to 0.");
+    Serial.println("      That gate needs a valid heading of ANY kind to arm, and with the compass");
+    Serial.println("      off there is none until the buggy is moving - so RTM could never arm.");
+    Serial.println("      RTM now steers only above the COG minimum speed, and holds straight below.");
   }
+
   return true;
 }

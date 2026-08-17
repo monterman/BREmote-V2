@@ -133,12 +133,11 @@ RTM needs to know which way the buggy is pointing. There are two real choices:
 | Mode | Set | What it does | Run it when |
 |---|---|---|---|
 | **Hybrid** | `1` *(default)* | GPS course while moving; compass when too slow for course to be reliable | Your compass is calibrated and its mounting orientation is set |
-| **GPS COG only** | `0` **+ `rtm_compass_required 0`** | Steers only above ~3 km/h. Below that it holds straight instead of using the compass | You suspect the compass, or you want to prove whether it is the problem |
+| **GPS COG only** | `0` | Steers only above ~3 km/h. Below that it holds straight instead of using the compass | You suspect the compass, or you want to prove whether it is the problem |
 | Compass only | `2` | **Bench diagnostic. Never on water.** | Never |
 
 ```
 ?set rtm_use_compass 0
-?set rtm_compass_required 0
 ?save
 ```
 
@@ -147,7 +146,9 @@ RTM needs to know which way the buggy is pointing. There are two real choices:
 > no heading while the buggy sits still, and RTM is armed from a standstill, so arming fails every
 > time with `STOP: No valid heading source`. It reads like COG-only mode is broken; it is the gate.
 >
-> **The firmware now refuses to save that combination** and tells you which setting to change.
+> **The firmware now fixes this for you.** Set `rtm_use_compass 0` and it clears `rtm_compass_required`
+> automatically, printing a note on serial explaining what changed and why. You cannot end up with the
+> broken combination — not by hand, and not by restoring an old config backup that contains it.
 
 **What COG-only costs you:** steering at low speed and on the final approach. As RTM decelerates it
 stops steering and coasts in straight — less precise. **What it buys you:** the compass cannot

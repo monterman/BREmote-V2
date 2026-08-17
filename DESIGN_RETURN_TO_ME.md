@@ -27,7 +27,7 @@ In-session override of RX's follow-me behavior without modifying RX SPIFFS. Cycl
 Step 1: User performs gesture: RIGHT tap, then LEFT hold for `rtm_hold_duration_s` seconds (default 5s)  
 Step 2: Dot display shows "rn" blink — mode armed, arm window starts (`rtm_arm_window_s`, configurable)  
 Step 3: User squeezes throttle above 10% — motor engages immediately with ramp cap  
-*(Note: double-squeeze mode was deprecated in P8. The `rtm_double_squeeze_en` SPIFFS field is retained for compatibility but defaults to 0. "Arm" and "rdy" display codes no longer appear in firmware.)*  
+*(Note: this paragraph previously said double-squeeze was deprecated in P8 and defaulted to 0. Both were wrong. `runDoubleSqueezeArm()` handles the double-squeeze ceremony and is live; `rtm_double_squeeze_en` **defaults to 1**, so a factory-reset TX requires the deliberate double squeeze. Set it to 0 for a single squeeze held ~500 ms. The shipped value was 0 until 2026-08-17 while every comment and table said 1 — an arming gesture that was easier to trigger by accident than intended. "Arm" and "rdy" display codes no longer appear in firmware.)*  
 Step 4: Throttle ramps from `rtm_throttle_start_pct` (default 30%) to `rtm_throttle_max_pct` (default 70%) over `rtm_ramp_duration_s` seconds (default 5s)  
 Step 5: Release throttle at any time → buggy stops immediately (normal failsafe)  
 Step 6: If throttle released >10s during active mode → RTM disengages, user must re-activate from Step 1  

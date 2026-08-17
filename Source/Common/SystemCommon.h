@@ -1,6 +1,7 @@
 #ifndef SYSTEM_COMMON_H
 #define SYSTEM_COMMON_H
 
+// V2.5-Evo - 2026-08-16 - serSetConf() now migrates the one older, prefix-compatible backup (RX SW34 onto SW35) instead of refusing it, so an upgrading rider can actually restore the ?conf blob they were told to take. Everything else is refused exactly as before.
 // V2.5-Evo - 2026-08-16 - serApplyConf() now reports an unambiguous pass/fail; serSetConf() pre-checks the pasted blob (length, SW version, validation) before anything is written to flash.
 // Shared system utilities and command handlers for BREmote V2 TX and RX.
 // Requirements before #include:
@@ -153,9 +154,18 @@ static void serClearConf() {
 // the loader applies. Each rejection names the actual mismatch. Nothing is written on rejection —
 // the config already stored on flash is left exactly as it was.
 //
-// STACK COST: one confStruct staging copy (RX 192 bytes, TX 136) plus the heap decode buffer.
-// ?setconf only ever arrives through checkSerial() from loop(), i.e. the Arduino loop task and its
-// 8192-byte stack, never from one of the 2048-4096 byte FreeRTOS tasks.
+// V2.5-Evo - 2026-08-16 - ONE EXCEPTION was added to the version refusal: a backup from the single
+// older SW version whose confStruct is a byte-exact PREFIX of this one is migrated rather than
+// refused, because refusing it made the backup useless at precisely the moment it was needed - the
+// upgrade flash that wipes the config. The exception is gated on an exact size/version pair and
+// fails closed on anything else; the byte-level argument is in SPIFFSEngine.h.
+//
+// STACK COST: one confStruct staging copy (RX 192 bytes, TX 136) plus the heap decode buffer. The
+// legacy-migration branch peaks slightly higher - two confStructs, the caller's 'migrated' plus the
+// helper's own staging copy (RX 384 bytes total) - and returns before the step-4 copy below is ever
+// created, so the two never coexist. ?setconf only ever arrives through checkSerial() from loop(),
+// i.e. the Arduino loop task and its 8192-byte stack, never from one of the 2048-4096 byte
+// FreeRTOS tasks.
 static void serSetConf(String data) {
   Serial.print("Setting configuration to: ");
   Serial.println(data);
@@ -176,6 +186,59 @@ static void serSetConf(String data) {
   const uint16_t blobVersion = (decodedLen >= sizeof(uint16_t))
                                  ? (uint16_t)(decodedData[0] | ((uint16_t)decodedData[1] << 8))
                                  : 0;
+
+  // ---- Legacy backup migration: the ONE older backup this firmware can still read ----
+  // Sits HERE, before the size check below, on purpose: a legacy backup is a different length by
+  // definition, so the size check would refuse it first and the owner would never get this far.
+  // Everything that is NOT exactly the known legacy pair falls straight through and is refused by
+  // the same checks as always - including a blob that is the legacy LENGTH but carries some other
+  // version, which drops to step 2 and is told its size and its version do not match this
+  // firmware. See the LEGACY CONFIG BLOB MIGRATION block in SPIFFSEngine.h for the byte-level
+  // argument for why this one pair, and only this one pair, may be reinterpreted. Inert on the TX.
+  if (cfgBlobIsMigratableLegacy(decodedLen, blobVersion)) {
+    // Value-initialised (all zeros) rather than left as raw stack contents. cfgMigrateLegacyBlob()
+    // only writes it when it returns true, and it is only read when it returns true, so this is
+    // belt-and-braces - but the thing that would be written to flash if that contract ever broke is
+    // a config struct, and PWM0_min lives in it, so it does not get to start life as stack garbage.
+    confStruct migrated = {};
+    String migErr;
+    const bool migOk = cfgMigrateLegacyBlob(decodedData, decodedLen, blobVersion, migrated, migErr);
+    delete[] decodedData;
+
+    // A migrated backup gets no special treatment when it fails: it is refused exactly as any
+    // other bad blob is refused, and nothing reaches flash.
+    if (!migOk) {
+      Serial.print("ERR: this SW");
+      Serial.print(CFG_LEGACY_BLOB_SW);
+      Serial.println(" backup could not be migrated because it failed validation.");
+      Serial.println("ERR: reason: " + migErr);
+      Serial.println("ERR: nothing was written; the config stored in SPIFFS is unchanged.");
+      return;
+    }
+
+    // Store the MIGRATED struct, not the pasted text. The pasted text is the old, shorter shape;
+    // writing it back verbatim would fail the loader's size check at the next boot and wipe the
+    // rider all over again. saveConfToSPIFFS() writes the same Base64-of-confStruct file this
+    // firmware always writes, through the same atomic temp-file rename.
+    saveConfToSPIFFS(migrated);
+
+    Serial.print("OK this backup was taken from SW");
+    Serial.print(CFG_LEGACY_BLOB_SW);
+    Serial.print(" and has been MIGRATED to SW");
+    Serial.print(SW_VERSION);
+    Serial.println(", then stored.");
+    Serial.println("OK your settings came across: throttle calibration, pairing, compass calibration and all the tuning values.");
+    Serial.print("NOTE: exactly one setting could not come from the backup, because SW");
+    Serial.print(CFG_LEGACY_BLOB_SW);
+    Serial.println(" did not have it:");
+    Serial.println("NOTE:   the compass mounting orientation (mag_orientation) is set to 0, meaning no rotation.");
+    Serial.print("NOTE:   0 is exactly how SW");
+    Serial.print(CFG_LEGACY_BLOB_SW);
+    Serial.println(" behaved, so nothing changes unless your compass module is physically mounted turned.");
+    Serial.println("NOTE: if it IS mounted turned, run ?compasscal afterwards (or ?magalign, which sets just this one setting).");
+    Serial.println("OK run ?applyconf (or ?reboot) to make it live.");
+    return;
+  }
 
   // ---- Pre-check step 2: is it the right size for this firmware? ----
   // sizeof(confStruct) grows whenever a config field is added, so a backup from another SW version

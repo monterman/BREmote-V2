@@ -1,6 +1,7 @@
 #ifndef SPIFFS_ENGINE_H
 #define SPIFFS_ENGINE_H
 
+// V2.5-Evo - 2026-08-16 - Legacy config-blob migration: an SW34 (184-byte) RX backup is now accepted and migrated onto the SW35 (192-byte) struct, because SW34 is a byte-exact prefix of SW35. Gated on that exact size/version pair only; inert on the TX.
 // V2.5-Evo - 2026-08-16 - readConfFromSPIFFS() stages the decoded blob in a local copy and only writes it into the caller's struct AFTER validation passes; a rejected config no longer runs the board.
 // V2.5-Evo - 2026-07-21 - Stale-config trap fix (shared TX/RX): getConfFromSPIFFS() now re-bakes defaults on a SAME-SIZE SW_VERSION mismatch instead of running on stale config bytes. Dormant when versions match — no wipe on a same-version reflash.
 // V2.5-Evo - 2026-04-30 - WebUI auto-reinstall via FNV1a content hash; removed WEB_UI_VERSION date string
@@ -296,6 +297,125 @@ bool readConfFromSPIFFS(confStruct& data) {
     data = staged;
 
     Serial.println("Struct successfully read from SPIFFS");
+    return true;
+}
+
+// ============================================================
+// V2.5-Evo - 2026-08-16 - LEGACY CONFIG BLOB MIGRATION (exactly one version back, prefix-only)
+//
+// WHAT PROBLEM THIS SOLVES
+//   Every SW_VERSION bump that changes sizeof(confStruct) re-bakes factory defaults on the first
+//   boot after the flash, so the owner loses throttle calibration, pairing, compass calibration and
+//   every tuning value. The documented remedy is to take a backup with ?conf first and restore it
+//   with ?setconf afterwards. That remedy did not actually work: ?setconf length-checks the pasted
+//   blob against THIS firmware's confStruct, so the backup was refused at exactly the moment it was
+//   needed. This block makes the backup work for the one upgrade step where it provably can.
+//
+// WHY A MIGRATION IS SAFE FOR THIS ONE PAIR, AND ONLY THIS ONE PAIR
+//   The RX SW34 -> SW35 change APPENDED its new fields at the very END of confStruct:
+//     SW34 = 184 bytes, ending with log_level (uint16_t) at offset 182.
+//     SW35 = those same 184 bytes, then mag_orientation (uint16_t, 2) + rsvd_u16_1 (uint16_t, 2)
+//            + rsvd_f32_1 (float, 4) = 192 bytes.
+//   Nothing was inserted, moved, resized or reordered inside the first 184 bytes, so an SW34 blob
+//   is a BYTE-EXACT PREFIX of an SW35 struct: copying it into the front of an SW35 struct puts every
+//   value back at the offset it already belonged to.
+//   Two values are not merely aligned but genuinely correct, which is what makes this a migration
+//   rather than a lucky overlay:
+//     - mag_orientation = 0 means "no rotation", which reproduces SW34 behaviour exactly. SW34 had
+//       no concept of compass mounting orientation at all, so there is no old value to carry.
+//     - gps_dyn_model was RENAMED IN PLACE from a reserved slot, so an SW34 board already stores 0
+//       in it, and 0 resolves to Sea - the SW34 behaviour. Nothing to translate.
+//
+// WHY IT FAILS CLOSED, AND WHEN IT STOPS BEING SAFE
+//   The prefix argument holds ONLY for these four numbers. It is not a general rule, and it is NOT
+//   true of any change that inserts, reorders or resizes a field anywhere in the first 184 bytes.
+//   So the migration is gated on all four at once: the blob must be exactly the legacy size AND
+//   carry exactly the legacy version, and this firmware must be exactly the struct that blob is a
+//   prefix OF. Any future struct change bumps both sizeof(confStruct) and SW_VERSION, both target
+//   terms go false, and the whole path switches itself off - an old blob then gets the ordinary
+//   "not compatible across SW versions" refusal instead of being silently mis-mapped.
+//   That conservatism is the point. A wrong layout assumption here writes misaligned bytes into
+//   PWM0_min, PWM0_max, failsafe_time and steering_type, and at zero throttle the RX output IS
+//   PWM0_min - so a garbage minimum can hold an ESC above idle on a craft sitting in the water.
+//
+//   NEXT PERSON ADDING A FIELD: do not simply bump these numbers. Re-check field by field that the
+//   old struct is still a byte-exact prefix of the new one. If it is not, DELETE the pair rather
+//   than adjusting it; losing the migration is a bad day, mis-mapping the control fields is worse.
+//
+// SHARED TX/RX CODE, AND INERT ON THE TX. The TX confStruct is 136 bytes at SW27, so
+// kCfgLegacyMigrationSupported is false at compile time there, every branch below folds away, and
+// a TX owner sees byte-for-byte the behaviour they see today.
+// ============================================================
+#define CFG_LEGACY_BLOB_BYTES    184   // sizeof(confStruct) on the RX at SW34 - the backup's decoded length
+#define CFG_LEGACY_BLOB_SW        34   // the SW_VERSION stamped in that blob's first two bytes
+#define CFG_LEGACY_TARGET_BYTES  192   // sizeof(confStruct) on the RX at SW35 - the struct it is a prefix OF
+#define CFG_LEGACY_TARGET_SW      35   // the SW_VERSION this pairing was verified against
+
+// True only when THIS build is the exact firmware the legacy blob is a prefix of. Both terms are
+// compile-time constants, so on the TX (136 bytes, SW27) this is false before the optimiser even
+// runs and the migration code is removed from the binary entirely.
+static constexpr bool kCfgLegacyMigrationSupported =
+    (sizeof(confStruct) == CFG_LEGACY_TARGET_BYTES) && (SW_VERSION == CFG_LEGACY_TARGET_SW);
+
+// Reports whether a decoded blob is the ONE (size, version) pair this firmware knows how to
+// migrate. Inputs: the decoded byte count, and the version read from the blob's first two bytes.
+// Returns true only for an exact match on both. Anything else - any other size, any other version,
+// a 184-byte blob stamped SW33 - returns false, and the caller must refuse it with its normal
+// incompatible-backup message. A blob of unknown provenance is never reinterpreted. No side effects.
+bool cfgBlobIsMigratableLegacy(size_t decodedLen, uint16_t blobVersion)
+{
+    return kCfgLegacyMigrationSupported
+        && (decodedLen == (size_t)CFG_LEGACY_BLOB_BYTES)
+        && (blobVersion == (uint16_t)CFG_LEGACY_BLOB_SW);
+}
+
+// Migrates one legacy config blob onto this firmware's confStruct.
+// Inputs:  blob / decodedLen / blobVersion - the already-Base64-decoded bytes, their length, and
+//          the version read from their first two bytes.
+// Outputs: 'out' receives the migrated config ONLY on success and is left untouched on failure.
+//          'err' receives the validator's reason when validation is what failed.
+// Returns: true only if the blob is the known legacy pair AND the migrated result passes the SAME
+//          two checks every other config on this board goes through.
+// Side effects: none. Nothing is written to flash, and the live usrConf is not touched - the caller
+//          decides what to do with the result.
+bool cfgMigrateLegacyBlob(const uint8_t* blob, size_t decodedLen, uint16_t blobVersion,
+                          confStruct& out, String& err)
+{
+    if (blob == nullptr || !cfgBlobIsMigratableLegacy(decodedLen, blobVersion)) {
+        err = "not a migratable legacy config";
+        return false;
+    }
+
+    // Staged, never the live usrConf - the same stage-then-commit rule readConfFromSPIFFS() above
+    // follows, and for the same reason: a config that fails validation must never have run the board.
+    confStruct staged;
+
+    // Zero first, then overlay the legacy prefix. Zeroing the whole struct is what sets the three
+    // fields SW34 never had - mag_orientation, rsvd_u16_1 and rsvd_f32_1 - to 0, and 0 is the
+    // behaviour-preserving default for all three (mag_orientation 0 = no rotation; both reserved
+    // slots are unused and defined as 0 = unused). Doing it with a memset rather than by naming the
+    // three fields means a future appended field cannot be forgotten here and left holding whatever
+    // happened to be on the stack.
+    memset(&staged, 0, sizeof(staged));
+
+    // Clamped to the smaller of the two sizes so the copy is provably in bounds on any board, even
+    // one where the gate above is false and this line is unreachable.
+    const size_t copyLen = (sizeof(confStruct) < (size_t)CFG_LEGACY_BLOB_BYTES)
+                             ? sizeof(confStruct)
+                             : (size_t)CFG_LEGACY_BLOB_BYTES;
+    memcpy(&staged, blob, copyLen);
+
+    // Stamp it as this firmware's config. Without this the loader would see a version mismatch and
+    // re-bake defaults at the next boot - which is the wipe this whole path exists to prevent.
+    staged.version = SW_VERSION;
+
+    // The FULL existing validation, unchanged and unskipped. A migrated blob earns no shortcut:
+    // cfgValidateCrossField() clamps the cross-dependent fields exactly as it does on every other
+    // save path, and validateConfig() range-checks every field, including the three new ones.
+    if (!cfgValidateCrossField(staged, err)) return false;
+    if (!validateConfig(staged, err)) return false;
+
+    out = staged;
     return true;
 }
 

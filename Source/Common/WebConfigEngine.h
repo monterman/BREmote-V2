@@ -4,6 +4,7 @@
 #ifdef WIFI_ENABLED
 
 // Shared web config AP and HTTP API for BREmote V2 TX and RX.
+// V2.5-Evo - 2026-08-17 - the web portal's Base64 config import now accepts a legacy backup on the same terms ?setconf does: a blob that is the one older SW version whose confStruct is a byte-exact prefix of this one is migrated instead of refused with ERR_IMPORT_INVALID_SIZE. It calls the SAME cfgBlobIsMigratableLegacy() / cfgMigrateLegacyBlob() helpers the serial path calls, so the two importers cannot disagree about which bytes go where. Everything that is not that exact (size, version) pair takes the identical path, and gets the identical error, it does today. Inert on the TX (compile-time constant is false there). No confStruct change.
 // V2.5-Evo - 2026-07-25 - STAGE 0 PART B (RX only, inside ENABLE_WEB_LOG_DOWNLOAD — TX never compiles this block): the WiFi log download now reads the 8-byte self-describing log header before sending anything, steps records by header.record_size instead of sizeof(VescLogData), emits the CSV column header matching the level the file was actually recorded at, and rejects a header-less/old/corrupt file with a JSON error rather than a half-sent body. Row formatting moved to the single shared logFormatCsvRow() in BREmote_V2_Rx.h that the serial ?download path also calls, so the two CSV outputs can no longer drift apart. No TX impact, no confStruct change.
 // V2.5-Evo - 2026-07-25 - F-WEBCSV: WiFi log download resynced to the serial ?download CSV (26->31 columns); ERPM x10 scaling and duty_cycle cast now match Logger.ino; row buffer 400->512
 // V2.5-Evo - 2026-05-03 - Content-Disposition header on export (iPhone filename fix)
@@ -357,6 +358,11 @@ static void webCfgHandleImport()
 
   bool doResetCal = (resetCal == "1");
   bool doResetBind = (resetBind == "1");
+  // V2.5-Evo - 2026-08-17 - set when the pasted backup turned out to be the one older SW version
+  // this firmware can still read and had to be migrated. It lives up here with the other two
+  // response flags because the success response at the bottom of this handler is shared with the
+  // JSON branch, which is outside the block that sets it.
+  bool migratedFromLegacy = false;
 
   if (format == "json")
   {
@@ -375,25 +381,108 @@ static void webCfgHandleImport()
     size_t decodedLen = 0;
     mbedtls_base64_decode(NULL, 0, &decodedLen, (const uint8_t*)data.c_str(), data.length());
 
-    if (decodedLen != sizeof(confStruct))
+    // Declared ahead of the legacy branch below so the migrated path and the ordinary path can both
+    // fill it and then share every check that follows. Value-initialised for the same reason the
+    // ?setconf path value-initialises its staging copy: what ends up here is written into usrConf,
+    // PWM0_min lives in it, and it must not start life as whatever was on the stack. The ordinary
+    // path below overwrites all of it anyway.
+    confStruct newConf = {};
+
+    // ============================================================
+    // V2.5-Evo - 2026-08-17 - LEGACY BACKUP IMPORT (the web half of the ?setconf migration)
+    //
+    // WHAT THE BUG WAS: ?setconf learned to accept a backup from the one older SW version whose
+    // confStruct is a byte-exact prefix of this one, but this handler did not. The same rider
+    // restoring the same backup therefore got two different answers depending on whether they pasted
+    // it into the serial console or into the board's own WiFi config page — here it was refused with
+    // ERR_IMPORT_INVALID_SIZE, at exactly the moment the backup was needed: the upgrade flash that
+    // re-bakes defaults and wipes throttle calibration, pairing and compass calibration.
+    //
+    // WHAT THE FIX DOES: nothing except reuse. Both the decision and the byte mapping stay in
+    // cfgBlobIsMigratableLegacy() / cfgMigrateLegacyBlob() in SPIFFSEngine.h — the same two functions
+    // ?setconf calls — so the two importers cannot drift into disagreeing about which bytes go where.
+    // The argument for why this one (size, version) pair and ONLY this one may be reinterpreted is in
+    // the LEGACY CONFIG BLOB MIGRATION block in that file, and is not repeated here.
+    //
+    // WHY IT SITS AHEAD OF THE SIZE CHECK: a legacy backup decodes to a different number of bytes by
+    // definition, so the size check would refuse it first and the rider would never get this far.
+    //
+    // WHY THERE IS A LENGTH PRE-TEST: the authoritative gate is cfgBlobIsMigratableLegacy() below,
+    // which needs the version stamped in the blob and therefore needs the blob decoded first.
+    // Decoding early for EVERY import would change which error a non-legacy import gets — an
+    // unparseable paste leaves decodedLen at 0 and is answered ERR_IMPORT_INVALID_SIZE today, not
+    // ERR_IMPORT_BASE64_FAILED. Entering this block only at the legacy length keeps every other blob
+    // on exactly the path, and exactly the error, it has today.
+    //
+    // INERT ON THE TX: kCfgLegacyMigrationSupported is a compile-time false there (136-byte struct,
+    // SW27), so the whole block folds away and a TX owner sees today's behaviour byte for byte.
+    // ============================================================
+    if (kCfgLegacyMigrationSupported && decodedLen == (size_t)CFG_LEGACY_BLOB_BYTES)
     {
-      webCfgMarkErr("ERR_IMPORT_INVALID_SIZE");
-      webCfgSendJson(400, "{\"ok\":0,\"err\":\"ERR_IMPORT_INVALID_SIZE\"}");
-      return;
+      // Its own length variable: mbedtls_base64_decode() overwrites the one it is handed, and the
+      // unchanged checks further down still need the probed length if we fall through from here.
+      size_t legacyLen = decodedLen;
+      uint8_t* legacyData = new uint8_t[legacyLen];
+      const bool decodeOk = (mbedtls_base64_decode(legacyData, legacyLen, &legacyLen,
+                                                   (const uint8_t*)data.c_str(), data.length()) == 0);
+
+      // 'version' is the first member of confStruct on both boards, stored little-endian, so the SW
+      // version a backup was taken from reads straight off the front of the decoded bytes.
+      const uint16_t blobVersion = (decodeOk && legacyLen >= sizeof(uint16_t))
+                                     ? (uint16_t)(legacyData[0] | ((uint16_t)legacyData[1] << 8))
+                                     : 0;
+
+      if (decodeOk && cfgBlobIsMigratableLegacy(legacyLen, blobVersion))
+      {
+        String migErr;
+        const bool migOk = cfgMigrateLegacyBlob(legacyData, legacyLen, blobVersion, newConf, migErr);
+        delete[] legacyData;
+
+        // A migrated backup earns no shortcut when it fails. cfgMigrateLegacyBlob() runs the same
+        // cross-field and range validation every other config on this board goes through, and leaves
+        // newConf untouched when it fails — so nothing reaches usrConf, nothing is queued for saving,
+        // and the live config is exactly what it was before the request arrived.
+        if (!migOk)
+        {
+          webCfgMarkErr("ERR_IMPORT_VALIDATION_FAILED");
+          webCfgSendJson(400, "{\"ok\":0,\"err\":\"ERR_IMPORT_VALIDATION_FAILED\",\"detail\":\"SW"
+                              + String(CFG_LEGACY_BLOB_SW) + " backup could not be migrated: " + migErr + "\"}");
+          return;
+        }
+
+        migratedFromLegacy = true;
+        webCfgLogReq("config_import", "migrated from SW" + String(CFG_LEGACY_BLOB_SW));
+      }
+      else
+      {
+        // Legacy LENGTH but not the legacy pair — some other version stamped in it — or it does not
+        // decode at all. Not migratable, so nothing here touched it: fall through and let the
+        // unchanged checks below refuse it with exactly the error they give today.
+        delete[] legacyData;
+      }
     }
 
-    uint8_t* decodedData = new uint8_t[decodedLen];
-    if (mbedtls_base64_decode(decodedData, decodedLen, &decodedLen, (const uint8_t*)data.c_str(), data.length()) != 0)
+    if (!migratedFromLegacy)
     {
+      if (decodedLen != sizeof(confStruct))
+      {
+        webCfgMarkErr("ERR_IMPORT_INVALID_SIZE");
+        webCfgSendJson(400, "{\"ok\":0,\"err\":\"ERR_IMPORT_INVALID_SIZE\"}");
+        return;
+      }
+
+      uint8_t* decodedData = new uint8_t[decodedLen];
+      if (mbedtls_base64_decode(decodedData, decodedLen, &decodedLen, (const uint8_t*)data.c_str(), data.length()) != 0)
+      {
+        delete[] decodedData;
+        webCfgMarkErr("ERR_IMPORT_BASE64_FAILED");
+        webCfgSendJson(400, "{\"ok\":0,\"err\":\"ERR_IMPORT_BASE64_FAILED\"}");
+        return;
+      }
+
+      memcpy(&newConf, decodedData, sizeof(confStruct));
       delete[] decodedData;
-      webCfgMarkErr("ERR_IMPORT_BASE64_FAILED");
-      webCfgSendJson(400, "{\"ok\":0,\"err\":\"ERR_IMPORT_BASE64_FAILED\"}");
-      return;
     }
-
-    confStruct newConf;
-    memcpy(&newConf, decodedData, sizeof(confStruct));
-    delete[] decodedData;
 
     if (doResetCal)
     {
@@ -436,6 +525,26 @@ static void webCfgHandleImport()
   String response = "{\"ok\":1,\"imported\":1";
   if (doResetCal) response += ",\"cal_reset\":1";
   if (doResetBind) response += ",\"bind_reset\":1";
+  // V2.5-Evo - 2026-08-17 - say plainly that the backup was migrated, and name the one setting the
+  // old version did not have. Same substance the ?setconf path prints, in this handler's own shape:
+  // flags and numbers as sibling fields (as the version-mismatch error already does with
+  // expected/got), and the human-readable sentence in "detail" (as ERR_IMPORT_VALIDATION_FAILED and
+  // ERR_LOG_FORMAT already do). This handler builds its JSON by concatenation, so the text
+  // deliberately contains no quotes or backslashes that would need escaping.
+  if (migratedFromLegacy)
+  {
+    response += ",\"migrated\":1";
+    response += ",\"migrated_from_sw\":" + String(CFG_LEGACY_BLOB_SW);
+    response += ",\"migrated_to_sw\":" + String(SW_VERSION);
+    response += ",\"detail\":\"This backup was taken from SW" + String(CFG_LEGACY_BLOB_SW);
+    response += " and has been MIGRATED to SW" + String(SW_VERSION);
+    response += ". Your settings came across: throttle calibration, pairing, compass calibration and all the tuning values.";
+    response += " Exactly one setting could not come from the backup, because SW" + String(CFG_LEGACY_BLOB_SW);
+    response += " did not have it: the compass mounting orientation (mag_orientation) is set to 0, meaning no rotation.";
+    response += " 0 is exactly how SW" + String(CFG_LEGACY_BLOB_SW);
+    response += " behaved, so nothing changes unless your compass module is physically mounted turned.";
+    response += " If it IS mounted turned, run ?compasscal afterwards (or ?magalign, which sets just this one setting).\"";
+  }
   response += "}";
   webCfgSendJson(200, response);
 }

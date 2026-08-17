@@ -239,7 +239,24 @@ no re-pairing, no re-calibration. It is only the **34/35 line** that has a price
 
 ## After flashing
 
-The RX has **no display and no LEDs** — serial is its only diagnostic surface. Watch the boot log:
+The RX has **no display**, but it does have two LEDs on the AW9523 expander — **BIND** and **AUX** —
+and on the calibration path the BIND LED is the *only* channel there is: nobody is watching a serial
+terminal while walking a buggy round a car park. After a `?compasscal` run (serial command or a short
+BIND press) it tells you which outcome you actually got:
+
+| BIND LED | Verdict |
+|---|---|
+| **5 flashes** | Calibration starting — begin rotating |
+| **2 flashes** | **Full success** — iron calibration, handedness and mounting orientation all updated |
+| **3 flashes** | **PARTIAL** — iron calibration saved, **mounting orientation NOT re-measured.** Re-run with two full clockwise circles, especially if you have just re-mounted the module |
+| **10 flashes** | **Failed — nothing saved.** No compass detected, too few samples, or the buggy was never really turned |
+| *nothing* | The run was aborted (RTM/FM engaged mid-calibration), or it was refused before it started |
+
+The 3-flash case is the one worth reading twice: a re-mounted module whose orientation was not
+re-measured leaves every heading out by the mounting angle while looking, to the rider, exactly like
+a good run. That is why it now has its own pattern instead of blinking 2 like everything else.
+
+For everything else, serial is the diagnostic surface. Watch the boot log:
 
 ```
 GPS: heard the module at 115200 baud

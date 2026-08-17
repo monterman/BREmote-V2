@@ -1,3 +1,5 @@
+> ⚠️ **HISTORICAL — DO NOT POST. Kept as a snapshot of 2026-07-19, not as current information.** Superseded by the README and CHANGELOG, which are the current sources. Its **Follow-Me** and **RTM** status is out of date as of SW35: Follow-Me autonomous following ships (`runFmLoop()`), and the default FM mode is **2 = Behind**, not Near-Right.
+
 # Forum Post Draft — foil.zone thread #298
 **Status:** Draft — review before posting. DO NOT post until the telemetry fix + robust parser are field-tested and pushed to GitHub.
 **Target:** foil.zone, thread #298 (BREmote / tow buggy remote thread)

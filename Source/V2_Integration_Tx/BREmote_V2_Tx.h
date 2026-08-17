@@ -426,7 +426,8 @@ confStruct defaultConf = {  // V2.5-Evo — factory default configuration
   6,             // max_gears
   0,             // startgear
   1,             // steer_enabled
-  100,           // thr_expo (100 = linear)
+  100,           // thr_expo (50 = linear; 100 = fully exponential — gentle at low throttle, aggressive at high;
+                 //           0 = the opposite curve — aggressive at low throttle. See expoThrCurve() in Hall.ino)
   1,             // fm_display_mode (1 = TX speed; range 1-4)
   50,            // steer_expo
   0,             // steer_expo1

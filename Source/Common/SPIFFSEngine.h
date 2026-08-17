@@ -1,6 +1,7 @@
 #ifndef SPIFFS_ENGINE_H
 #define SPIFFS_ENGINE_H
 
+// V2.5-Evo - 2026-08-16 - readConfFromSPIFFS() stages the decoded blob in a local copy and only writes it into the caller's struct AFTER validation passes; a rejected config no longer runs the board.
 // V2.5-Evo - 2026-07-21 - Stale-config trap fix (shared TX/RX): getConfFromSPIFFS() now re-bakes defaults on a SAME-SIZE SW_VERSION mismatch instead of running on stale config bytes. Dormant when versions match — no wipe on a same-version reflash.
 // V2.5-Evo - 2026-04-30 - WebUI auto-reinstall via FNV1a content hash; removed WEB_UI_VERSION date string
 // Shared SPIFFS config persistence and WebUI embedding for BREmote V2 TX and RX.
@@ -248,22 +249,51 @@ bool readConfFromSPIFFS(confStruct& data) {
         return false;
     }
 
-    memcpy(&data, decodedData, sizeof(confStruct));
+    // V2.5-Evo - 2026-08-16 - Stage-then-commit (shared TX/RX code — same behaviour on both boards).
+    //
+    // WHAT THE BUG WAS: the decoded bytes were copied straight into the caller's struct — and for
+    // every caller that struct is the LIVE usrConf — and only validated afterwards. So when
+    // validation failed, the rejection was a report, not a rejection: the bad bytes were already
+    // running the board. A corrupt blob that still decodes to the right number of bytes (a mangled
+    // Base64 paste, a truncated paste that happens to land on the right length, a blob from another
+    // build) put garbage PWM0_min / PWM0_max / failsafe_time / steering_type into the live control
+    // path until the next reboot. PWM0_min is the one that matters most: at zero throttle the RX
+    // output IS PWM0_min, so a garbage minimum can hold an ESC above idle on a craft sitting in
+    // the water.
+    //
+    // WHAT THE FIX DOES: decode and validate into a local staging copy, and copy into the caller's
+    // struct only once BOTH checks have passed. On any failure the caller's struct is left exactly
+    // as it was — the board keeps running the config it was already running, and the caller's
+    // false return is now the whole truth.
+    //
+    // STACK COST: one confStruct (RX 192 bytes, TX 136). Every call site on both boards runs on the
+    // Arduino loop task and its 8192-byte stack — setup() via getConfFromSPIFFS(), ?applyconf via
+    // checkSerial(), and the WebUI /config/load handler via webCfgLoop(). None of the 2048-4096
+    // byte xTaskCreatePinnedToCore() tasks reach this function. It is also the same shape
+    // ConfigServiceEngine.h already uses on that same stack in cfgSetValueByKey() and cfgSetBatch()
+    // ("confStruct staged = usrConf; ... usrConf = staged;").
+    confStruct staged;
+    memcpy(&staged, decodedData, sizeof(confStruct));
     delete[] decodedData;
 
     // Clamp cross-dependent fields before range validation
     String crossErr;
-    if (!cfgValidateCrossField(data, crossErr)) {
+    if (!cfgValidateCrossField(staged, crossErr)) {
         Serial.println("Config cross-validation failed: " + crossErr);
+        Serial.println("Config REJECTED — live config left untouched.");
         return false;
     }
 
     // Validate config values against their ranges
     String validationErr;
-    if (!validateConfig(data, validationErr)) {
+    if (!validateConfig(staged, validationErr)) {
         Serial.println("Config validation failed: " + validationErr);
+        Serial.println("Config REJECTED — live config left untouched.");
         return false;
     }
+
+    // Both checks passed — only now does the caller's struct (the live usrConf) change.
+    data = staged;
 
     Serial.println("Struct successfully read from SPIFFS");
     return true;

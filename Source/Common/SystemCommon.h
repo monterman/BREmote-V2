@@ -1,6 +1,7 @@
 #ifndef SYSTEM_COMMON_H
 #define SYSTEM_COMMON_H
 
+// V2.5-Evo - 2026-08-16 - serApplyConf() now reports an unambiguous pass/fail; serSetConf() pre-checks the pasted blob (length, SW version, validation) before anything is written to flash.
 // Shared system utilities and command handlers for BREmote V2 TX and RX.
 // Requirements before #include:
 //   - confStruct type defined, usrConf + defaultConf globals declared
@@ -118,9 +119,20 @@ static void printConfStruct(const confStruct &data) {
 
 // ===== Shared Serial Helpers =====
 
+// V2.5-Evo - 2026-08-16 - ?applyconf now checks the loader's return value and says plainly whether
+// the config was applied or rejected. It previously discarded the return value, so a user pasting a
+// bad backup got no clear indication that anything had gone wrong. (The matching half of this fix is
+// in SPIFFSEngine.h: readConfFromSPIFFS() no longer touches usrConf unless validation passes, so a
+// "rejected" message now genuinely means the live config is unchanged.)
 static void serApplyConf() {
-  Serial.print("Reading conf from SPIFFS and applying to usrConf");
-  readConfFromSPIFFS(usrConf);
+  Serial.println("Reading conf from SPIFFS and applying to usrConf");
+  if (readConfFromSPIFFS(usrConf)) {
+    Serial.println("OK config applied — usrConf now holds the config stored in SPIFFS.");
+  } else {
+    Serial.println("ERR: config REJECTED — nothing was applied.");
+    Serial.println("ERR: usrConf is unchanged; the board is still running the config it had before this command.");
+    Serial.println("ERR: the reason is printed above (file missing / Base64 decode failed / too short / validation failed).");
+  }
 }
 
 static void serClearConf() {
@@ -128,9 +140,102 @@ static void serClearConf() {
   deleteConfFromSPIFFS();
 }
 
+// V2.5-Evo - 2026-08-16 - ?setconf pre-check before anything reaches flash.
+//
+// WHAT THE BUG WAS: this wrote whatever string it was handed straight into the config file with no
+// checking at all. A backup taken from a different SW version, or a mangled paste, was accepted
+// silently and only failed much later — at ?applyconf or at the next boot — as "Config data too
+// short, corrupted?". At that point getConfFromSPIFFS() re-bakes defaults, so the owner loses their
+// settings a SECOND time and the serial log never says why.
+//
+// WHAT THE FIX DOES: decode the pasted blob here and refuse to store it unless it is the right size
+// for THIS firmware's confStruct, carries THIS firmware's SW_VERSION, and passes the same two checks
+// the loader applies. Each rejection names the actual mismatch. Nothing is written on rejection —
+// the config already stored on flash is left exactly as it was.
+//
+// STACK COST: one confStruct staging copy (RX 192 bytes, TX 136) plus the heap decode buffer.
+// ?setconf only ever arrives through checkSerial() from loop(), i.e. the Arduino loop task and its
+// 8192-byte stack, never from one of the 2048-4096 byte FreeRTOS tasks.
 static void serSetConf(String data) {
   Serial.print("Setting configuration to: ");
   Serial.println(data);
+
+  // ---- Pre-check step 1: does it decode as Base64 at all? ----
+  size_t decodedLen = 0;
+  mbedtls_base64_decode(NULL, 0, &decodedLen, (const uint8_t*)data.c_str(), data.length());
+  uint8_t* decodedData = new uint8_t[decodedLen];
+  if (mbedtls_base64_decode(decodedData, decodedLen, &decodedLen, (const uint8_t*)data.c_str(), data.length()) != 0) {
+    Serial.println("ERR: that is not valid Base64 — it could not be decoded.");
+    Serial.println("ERR: nothing was written; the config stored in SPIFFS is unchanged.");
+    delete[] decodedData;
+    return;
+  }
+
+  // The 'version' field is the first member of confStruct on both TX and RX, stored little-endian,
+  // so the SW version a blob was taken from can be read straight off the front of the decoded bytes.
+  const uint16_t blobVersion = (decodedLen >= sizeof(uint16_t))
+                                 ? (uint16_t)(decodedData[0] | ((uint16_t)decodedData[1] << 8))
+                                 : 0;
+
+  // ---- Pre-check step 2: is it the right size for this firmware? ----
+  // sizeof(confStruct) grows whenever a config field is added, so a backup from another SW version
+  // decodes to a different number of bytes. Report both numbers so the mismatch is obvious.
+  if (decodedLen != sizeof(confStruct)) {
+    Serial.print("ERR: this backup decodes to ");
+    Serial.print((unsigned)decodedLen);
+    Serial.print(" bytes, but ");
+    Serial.print(SYS_DEVICE_LABEL);
+    Serial.print(" SW");
+    Serial.print(SW_VERSION);
+    Serial.print(" needs exactly ");
+    Serial.print((unsigned)sizeof(confStruct));
+    Serial.println(" bytes.");
+    if (blobVersion != 0) {
+      Serial.print("ERR: the backup says it was taken from SW");
+      Serial.print(blobVersion);
+      Serial.println(".");
+    }
+    Serial.println("ERR: config backups are NOT compatible across SW versions.");
+    Serial.println("ERR: nothing was written; the config stored in SPIFFS is unchanged.");
+    delete[] decodedData;
+    return;
+  }
+
+  // ---- Pre-check step 3: is it from this SW version? ----
+  // A same-size blob from another version would be accepted here and then re-baked to defaults by
+  // getConfFromSPIFFS() at the next boot — i.e. a silent wipe. Refuse it now, with the reason.
+  if (blobVersion != SW_VERSION) {
+    Serial.print("ERR: this backup is from SW");
+    Serial.print(blobVersion);
+    Serial.print("; this ");
+    Serial.print(SYS_DEVICE_LABEL);
+    Serial.print(" is running SW");
+    Serial.print(SW_VERSION);
+    Serial.println(".");
+    Serial.println("ERR: config backups are NOT compatible across SW versions — this one would be discarded and replaced by factory defaults at the next boot.");
+    Serial.println("ERR: nothing was written; the config stored in SPIFFS is unchanged.");
+    delete[] decodedData;
+    return;
+  }
+
+  // ---- Pre-check step 4: the same two checks the loader runs ----
+  // Done on a throwaway staging copy: this is a gate, not a transform. The blob is stored exactly as
+  // pasted, and cfgValidateCrossField() clamps at load time as it always has.
+  confStruct staged;
+  memcpy(&staged, decodedData, sizeof(confStruct));
+  delete[] decodedData;
+
+  String err;
+  if (!cfgValidateCrossField(staged, err)) {
+    Serial.println("ERR: cross-validation failed: " + err);
+    Serial.println("ERR: nothing was written; the config stored in SPIFFS is unchanged.");
+    return;
+  }
+  if (!validateConfig(staged, err)) {
+    Serial.println("ERR: validation failed: " + err);
+    Serial.println("ERR: nothing was written; the config stored in SPIFFS is unchanged.");
+    return;
+  }
 
   uint8_t* encodedData = new uint8_t[data.length()];
   for (size_t i = 0; i < data.length(); i++) {
@@ -149,6 +254,7 @@ static void serSetConf(String data) {
   SPIFFS.remove(CONF_FILE_PATH);
   SPIFFS.rename("/data.tmp", CONF_FILE_PATH);
   Serial.println("Struct saved to SPIFFS as Base64");
+  Serial.println("OK backup accepted and stored — run ?applyconf (or ?reboot) to make it live.");
   delete[] encodedData;
 }
 

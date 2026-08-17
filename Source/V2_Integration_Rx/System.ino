@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-08-16 - SAFETY, three follow-ups to the command-gating work described below. (1) The "not while engaged" rule is now asked a SECOND time, from INSIDE every blocking command, via the new rxAbortIfEngaged(). rtm_rx_active/fm_rx_active are set from the triggeredReceive task, so an arm from the remote can land AFTER a bench command was correctly allowed to start on an idle buggy - and until now that bought the command's whole duration (120 s for ?magtest) with no safety gate evaluated at all, Gate 9 hard stop included, while generatePWM went on applying the last steering override and throttle cap. It is folded into each loop's existing exit condition next to checkSerialQuit(), at a point where abandoning the command leaves nothing half-finished: ?compassheading, ?magtest, ?vescping, ?vescraw, ?gpsdiag, ?i2c, ?printbat, ?printtasks, ?printrssi, ?printpwm, ?printreceived, ?testbg and ?testpercent here, plus ?printcompass, ?compasscal and ?magalign in Compass.ino. NOT reachable from any of them and NOT safely abortable part-way: ?gpscfg, ?gpsbaud, ?gpssetup (GPS.ino), ?download, ?deleteallogs (Logger.ino) and ?wifiupd (Common/SystemCommon.h) - none of those polls anything mid-run, and interrupting ?gpssetup or ?wifiupd half-way through a persist would leave the GPS module or the stored web UI in a worse state than letting it finish. (2) ?i2c is now marked blocks_loop: 126 addresses against a 20 ms Wire timeout is up to ~2.5 s of frozen loop plus 126 i2cMutex acquisitions contending with generatePWM, the same class as ?gpscfg. (3) The BIND-button calibration LED now says WHICH outcome happened - 2 flashes full success, 3 flashes PARTIAL (iron calibration saved, mounting orientation NOT re-measured), nothing extra when the run saved nothing (runCompassCalibration() has already blinked its own 10-flash failure) - instead of blinking "success" whenever the compass chip was merely present. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
+// V2.5-Evo - 2026-08-16 - SAFETY: every BLOCKING bench command now refuses to run while Return-to-Me or Follow-Me is engaged. The rule is stated ONCE — rxRefuseIfEngaged() — and applied at the command-dispatch layer in checkSerial() (via the new blocks_loop flag on each kCommands row) and to the runtime BIND-button compass calibration in checkButtons(). Refused when engaged: ?compasscal, ?magalign, ?magtest, ?printcompass, ?compassheading, ?vescping, ?vescraw, ?gpsdiag, ?gpscfg, ?gpsbaud, ?gpssetup, ?printpwm, ?printrssi, ?printreceived, ?printtasks, ?printbat, ?testbg, ?testpercent, ?download, ?deleteallogs, ?wifiupd. Why: each of those holds the loop task for seconds-to-forever, and a frozen loop stops runRtmLoop()/runFmLoop() from evaluating ANY safety gate (Gate 9 hard stop included) while generatePWM keeps applying the last steering override and throttle cap. One-shot reads (?conf, ?diag, ?diagz, ?logstat, ?list, ?printgps, ?i2c, setters) are deliberately NOT gated — the rider must still be able to see what is happening. ?gpsdiag's own inline RTM-only guard is replaced by the shared gate, which additionally covers Follow-Me. No behaviour change when a command IS allowed to run. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-07-25 - STAGE 1 (GPS repair): cmdVescRaw() (?vescraw) now restores the UART mux to channel 1 (GPS) at the end of every iteration and again on function exit. Since STAGE 1 the mux RESTS on GPS and getGPSLoop() no longer switches it, so a command that calls setUartMux(0) and never restores would leave the GPS dark for the remainder of the session. Diagnostic command only — setUartMux() itself, the VESC query, the 200 ms listen window and every control path are unchanged. No confStruct change, SW_VERSION stays 34.
 // V2.5-Evo - 2026-07-25 - STAGE 0 PART D (instrumentation only): added ?diag (one-shot, non-blocking snapshot of GPS bytes/sentences per second, fix age now/mean/max, COG timestamp-updates vs VALUE-changes, mux switches + read-back failures, VESC poll success rate, and loop min/mean/max) and ?diagz (zero the counters to bracket a run). Unlike ?gpsdiag these do not loop or delay, so they are safe to run with RTM/FM active and need no refusal guard. setUartMux() also gained two counter increments (switches, read-back mismatches) — the corrective re-write itself is unchanged. No control path, no confStruct change, SW_VERSION stays 34.
 // V2.5-Evo - 2026-07-19 - Rex hardening: cmdGpsDiag (?gpsdiag) refuses to run while RTM active — its ≤120s blocking loop would freeze runRtmLoop()/Phase A/B/convergence/Gate 9
@@ -263,6 +265,17 @@ void scanI2C() {
   Serial.printf("Scanning I2C bus (initialized on SDA:%d SCL:%d)...\n", P_I2C_SDA, P_I2C_SCL);
 
   for(address = 1; address < 127; address++ ) {
+    // V2.5-Evo - 2026-08-16 - abandon the scan if RTM/FM engages while it is walking the bus.
+    // Between two addresses is a completely clean place to stop: the mutex is taken and given
+    // once per address, no transaction is left open, and the bus is in exactly the state a
+    // finished scan would leave it in. Returning here rather than breaking, so the "Scan
+    // complete" summary below cannot claim a scan that did not happen.
+    if (rxAbortIfEngaged("?i2c")) {
+      Serial.printf("Scan abandoned at address 0x%02X. %d device(s) found so far.\n",
+                    (int)address, nDevices);
+      return;
+    }
+
     xSemaphoreTake(i2cMutex, portMAX_DELAY);
     Wire.beginTransmission(address);
     error = Wire.endTransmission();
@@ -303,7 +316,98 @@ struct SerialCommand {
   const char* name;
   const char* help;
   void (*handler)(const String& params);
+  // V2.5-Evo - 2026-08-16 - blocks_loop = "this handler holds the loop task for a meaningful
+  // time": it streams until you type 'quit', it runs a fixed multi-second routine, or it does
+  // storage/UART work whose duration grows with what is on the board. checkSerial() refuses
+  // those while RTM or Follow-Me is engaged (see rxRefuseIfEngaged() below).
+  // ADDING A COMMAND: if your handler can hold loop() for roughly a second or more, put a
+  // `true` at the end of its kCommands row. Rows that leave it out are false (C++ value-
+  // initialises the missing member), which is the right default for one-shot reads and setters.
+  bool blocks_loop;
 };
+
+// ============================================================
+// rxRefuseIfEngaged - the single "not while the buggy is engaged" gate
+// ============================================================
+//
+// What it does:
+//   Returns true — and prints a plain-English refusal — when Return-to-Me or Follow-Me is
+//   engaged right now, so the caller can decline to run. Returns false (silently) when the
+//   buggy is idle and the caller may proceed as normal.
+//
+// Why it exists:
+//   Anything that blocks loop() also blocks runRtmLoop() and runFmLoop(). While those are
+//   frozen NOTHING re-evaluates the safety gates: the Gate 9 stop-distance hard stop cannot
+//   fire and Phase C cannot disengage — yet the generatePWM task carries on applying the last
+//   steering override and the last throttle cap for as long as the rider holds the trigger.
+//   Releasing the trigger still stops the buggy (the deadman is untouched by any of this), so
+//   it is not a runaway; but the autonomous stop net is suspended for the whole command, which
+//   for ?magtest or ?gpsdiag is up to 120 seconds. ?gpsdiag has refused for exactly this reason
+//   since 2026-07-19; this is that same rule written once, applied to every blocking command,
+//   and extended to Follow-Me as well as RTM.
+//
+// Inputs:  what - what is being refused, printed verbatim (e.g. "?magtest").
+// Outputs: refusal text on Serial when engaged; nothing at all when idle.
+// Side effects: none. Reads two atomics and prints; changes no config and no control state.
+static bool rxRefuseIfEngaged(const char *what)
+{
+  extern std::atomic<bool> rtm_rx_active;   // true while Return-to-Me is engaged (Radio.ino / RTMState.ino)
+  extern std::atomic<bool> fm_rx_active;    // true while Follow-Me is actively steering (RTMState.ino)
+
+  const bool rtm = rtm_rx_active.load();
+  const bool fm  = fm_rx_active.load();
+  if (!rtm && !fm) return false;            // idle - caller runs normally, nothing printed
+
+  Serial.printf("%s refused: %s is engaged right now.\n", what,
+                rtm ? "Return-to-Me" : "Follow-Me");
+  Serial.println("  This command freezes the control loop while it runs. Frozen means the safety");
+  Serial.println("  gates stop being checked - the Gate 9 stop-distance hard stop included - while");
+  Serial.println("  the last steering override and throttle cap keep being sent to the motor.");
+  Serial.println("  Disarm Return-to-Me / Follow-Me on the remote first, then run this again.");
+  Serial.println("  These are bench and idle commands; none of them is needed during a run.");
+  Serial.println("  (Releasing the throttle trigger always stops the buggy, engaged or not.)");
+  return true;
+}
+
+// ============================================================
+// rxAbortIfEngaged - the same gate, asked again from INSIDE a running command
+// ============================================================
+//
+// What it does:
+//   Exactly the test rxRefuseIfEngaged() makes, meant to be used as a loop-exit condition inside
+//   a blocking bench command that is ALREADY running. Returns true - after printing the standard
+//   refusal plus one line saying the command is being stopped part-way - when Return-to-Me or
+//   Follow-Me has become engaged since the command started. Returns false, silently, otherwise.
+//
+// Why it exists:
+//   rxRefuseIfEngaged() is asked once, at dispatch. That closes the front door only.
+//   rtm_rx_active / fm_rx_active are set from the triggeredReceive task when an arm packet
+//   arrives, so they can turn true at any instant - including the instant after a bench command
+//   was correctly allowed to start on an idle buggy. Without this second question, starting
+//   ?magtest on the bench and then arming RTM from the remote to watch the display bought about
+//   120 seconds in which NO safety gate was evaluated at all: no Gate 9 stop-distance hard stop,
+//   no Phase A/B, no Phase C convergence - while generatePWM carried on applying the last
+//   steering override and the last throttle cap. That is the exact hazard the dispatch gate was
+//   written to remove, surviving through the back door. This closes it.
+//
+// Where to call it:
+//   In the exit condition of a blocking command's loop, beside checkSerialQuit(), at a point
+//   where walking away leaves nothing half-finished. It is deliberately cheap - two atomic loads
+//   and nothing else - so it is fine in a 10 ms loop; it only prints on the way out, and it
+//   never delays.
+//
+// Inputs:  what - the command being abandoned, printed verbatim (e.g. "?magtest").
+// Outputs: refusal text on Serial when engaged; nothing at all otherwise.
+// Side effects: none. It does NOT tidy up on the caller's behalf - each caller is responsible for
+//   its own state (?vescraw puts the UART mux back on the GPS, ?compasscal aborts before it has
+//   written a single byte of calibration). Deliberately NOT static: Compass.ino calls it too.
+bool rxAbortIfEngaged(const char *what)
+{
+  if (!rxRefuseIfEngaged(what)) return false;
+  Serial.println("  ABORTED MID-RUN: the engagement began after this command had already started,");
+  Serial.println("  so it is being stopped part-way rather than allowed to run to the end.");
+  return true;
+}
 
 void cmdSetConf(const String& params) { serSetConf(params); }
 void cmdSetBC(const String& params) { serSetBC(params); }
@@ -398,12 +502,14 @@ void cmdLogStat(const String& params) {
 void cmdScanI2C(const String& params) { scanI2C(); }
 void cmdPrintCompass(const String& params) { serPrintCompass(); }
 void cmdCompassCal(const String& params) { runCompassCalibration(); }
-void cmdMagAlign(const String& params)   { runMagAlign(); }
+void cmdMagAlign(const String& params)   { runMagAlign(); }
 void cmdPrintCompassHeading(const String& params) {
   Serial.println("Printing compass heading. Type 'quit' to exit.");
   while (true) {
     esp_task_wdt_reset();
-    if (checkSerialQuit()) break;
+    // V2.5-Evo - 2026-08-16 - also stop if RTM/FM engages mid-stream. Read-only command, so the
+    // exit needs no tidying up at all - it simply stops printing.
+    if (checkSerialQuit() || rxAbortIfEngaged("?compassheading")) break;
     float h = getCompassHeading();
     if (h < 0.0f) Serial.println("Compass not detected or not calibrated");
     else Serial.printf("Heading: %.1f deg\n", h);
@@ -450,7 +556,11 @@ void cmdMagTest(const String& params) {
   while ((millis() - start) < TEST_DURATION_MS) {
     esp_task_wdt_reset(); // prevent WDT timeout during the 120s blocking loop
 
-    if (checkSerialQuit()) break;
+    // V2.5-Evo - 2026-08-16 - and stop if RTM/FM engages mid-test. This was THE worst case:
+    // 120 seconds of frozen safety gates bought by arming the remote after ?magtest had already
+    // been allowed to start on an idle bench. Nothing to tidy up - the command only reads the
+    // compass and the VESC struct, and every mutex it takes is given back inside this iteration.
+    if (checkSerialQuit() || rxAbortIfEngaged("?magtest")) break;
 
     // Refresh raw magnetometer globals magX/magY/magZ from QMC5883L via I2C.
     // Result ignored — magnitude is computed below regardless; stale globals
@@ -527,7 +637,9 @@ void cmdVescPing(const String& params) {
   while ((millis() - start) < TEST_DURATION_MS) {
     esp_task_wdt_reset(); // prevent WDT timeout during the 30s blocking loop
 
-    if (checkSerialQuit()) break;
+    // V2.5-Evo - 2026-08-16 - and stop if RTM/FM engages mid-test. Read-only: the vescMutex is
+    // taken and given inside this iteration, so leaving here holds nothing.
+    if (checkSerialQuit() || rxAbortIfEngaged("?vescping")) break;
 
     // Read VESC struct fields under mutex — same pattern as runPhaseC() in RTMState.ino.
     // Units: motCur = 0.01 A, batVolt = 0.1 V, fetTemp = 0.1 °C.
@@ -620,7 +732,12 @@ void cmdVescRaw(const String& params) {
   for (int iter = 1; iter <= MAX_ITERATIONS; iter++) {
     esp_task_wdt_reset(); // prevent WDT timeout during the 30s blocking loop
 
-    if (checkSerialQuit()) break;
+    // V2.5-Evo - 2026-08-16 - and stop if RTM/FM engages mid-probe. Checked HERE, at the top of
+    // the iteration and BEFORE setUartMux(0), so the mux is still resting on the GPS when we
+    // leave; the unconditional setUartMux(1) after the loop then covers this exit as well. This
+    // is the one command that deliberately points the UART away from the GPS, so where it is
+    // allowed to give up matters more than usual.
+    if (checkSerialQuit() || rxAbortIfEngaged("?vescraw")) break;
 
     // Switch mux to channel 0 (VESC) and allow it to settle
     setUartMux(0);
@@ -666,7 +783,18 @@ void cmdVescRaw(const String& params) {
     setUartMux(1);
 
     // Wait the remainder of the 2s cycle (~1700ms after 10ms mux + 200ms listen)
-    vTaskDelay(pdMS_TO_TICKS(1700));
+    // V2.5-Evo - 2026-08-16 - waited in 100 ms slices instead of one 1700 ms block, so an
+    // engagement that starts mid-wait is noticed within ~100 ms. Without this, ?vescraw had by
+    // far the longest blind spot of any gated command - a check only at the top of a 2 s cycle
+    // meant up to ~1.9 s of frozen safety gates after the arm. Timing when the command is
+    // allowed to run is IDENTICAL: 17 x 100 ms is the same 1700 ms as before. The mux is already
+    // back on the GPS at this point, and the unconditional setUartMux(1) below covers the exit.
+    bool engaged_mid_wait = false;
+    for (int slice = 0; slice < 17; slice++) {
+      if (rxAbortIfEngaged("?vescraw")) { engaged_mid_wait = true; break; }
+      vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    if (engaged_mid_wait) break;
   }
 
   // V2.5-Evo - 2026-07-25 - STAGE 1: unconditional restore on function exit, so that every path
@@ -723,16 +851,12 @@ void cmdGpsDiag(const String& params) {
   extern unsigned long gps_last_ms;
   extern bool          gps_rejected;
   extern uint8_t       gps_suspect_count;
-  extern std::atomic<bool> rtm_rx_active;
 
-  // Guard: this handler blocks the loop task for up to 120s. If invoked mid-RTM it
-  // would freeze runRtmLoop()/Phase A/B/convergence/Gate 9 for that whole window.
-  // Refuse and return when RTM is engaged — this is a bench/idle diagnostic only.
-  // (Same rtm_rx_active flag the logger gate reads via isLoggerGated().)
-  if (rtm_rx_active.load()) {
-    Serial.println("?gpsdiag refused: not while RTM active - bench/idle only");
-    return;
-  }
+  // V2.5-Evo - 2026-08-16 - the inline "refuse while RTM active" guard that used to sit here is
+  // GONE, replaced by the shared gate in checkSerial() (this row is marked blocks_loop). Same
+  // refusal, same reason — a 120 s freeze of runRtmLoop()/Phase A/B/convergence/Gate 9 — but now
+  // stated in one place for all blocking commands, and it also covers Follow-Me, which the old
+  // inline check did not. Bench/idle diagnostic only, exactly as before.
 
   Serial.println("=== GPS Diagnostic (RTM COG heading source) ===");
   Serial.printf("rtm_use_compass=%u  rtm_cog_min_speed_kmh=%u  gps_chip_type=%u\n",
@@ -747,7 +871,10 @@ void cmdGpsDiag(const String& params) {
 
   while ((millis() - start) < TEST_DURATION_MS) {
     esp_task_wdt_reset(); // prevent WDT timeout during the blocking loop
-    if (checkSerialQuit()) break;
+    // V2.5-Evo - 2026-08-16 - and stop if RTM/FM engages mid-stream. Read-only on the GPS
+    // globals, so nothing needs unwinding. This is the second 120 s command, and the one whose
+    // 2026-07-19 inline guard started this whole line of work.
+    if (checkSerialQuit() || rxAbortIfEngaged("?gpsdiag")) break;
 
     unsigned long now = millis();
 
@@ -993,20 +1120,27 @@ static const SerialCommand kCommands[] = {
   {"clearconf", "delete config from SPIFFS", cmdClearConf},
   {"clearbc", "delete battery cal from SPIFFS", cmdClearBC},
   {"reboot", "reboot the device", cmdReboot},
-  {"printpwm", "print PWM values", cmdPrintPWM},
-  {"printrssi", "print RSSI/SNR", cmdPrintRSSI},
-  {"printreceived", "print received throttle/steering", cmdPrintReceived},
-  {"printtasks", "print task stack usage", cmdPrintTasks},
+  // The trailing `true` on the rows below is blocks_loop: these five stream until you type
+  // 'quit', so they hold loop() indefinitely — strictly worse for the safety gates than the
+  // fixed-duration bench tests. ?printgps is a one-shot print and stays runnable at any time.
+  {"printpwm", "print PWM values", cmdPrintPWM, true},
+  {"printrssi", "print RSSI/SNR", cmdPrintRSSI, true},
+  {"printreceived", "print received throttle/steering", cmdPrintReceived, true},
+  {"printtasks", "print task stack usage", cmdPrintTasks, true},
   {"printgps", "print GPS info", cmdPrintGPS},
-  {"printbat", "print battery voltage", cmdPrintBat},
-  {"testbg", "test background telemetry", cmdTestBG},
-  {"testpercent", "test percentage calculation", cmdTestPercent},
+  {"printbat", "print battery voltage", cmdPrintBat, true},
+  // ?testbg and ?testpercent loop with no delay at all until 'quit', and ?testbg also writes
+  // the telemetry fields by hand — neither belongs anywhere near an active engagement.
+  {"testbg", "test background telemetry", cmdTestBG, true},
+  {"testpercent", "test percentage calculation", cmdTestPercent, true},
   {"wifi", "[on|off] WiFi/AP config service", cmdWifi},
   {"wifidbg", "[some|full|off] get/set wifi debug mode", cmdWifiDbg},
   {"wifips", "[<ms>|off] get/set AP startup timeout", cmdWifiPs},
   {"wifistop", "notify RX connected, stop AP", cmdWifiStop},
   {"wifiver", "print web UI version info", cmdWifiVer},
-  {"wifiupd", "force web UI update to SPIFFS", cmdWifiUpd},
+  // ?wifiupd rewrites the whole ~50 kB embedded web UI into SPIFFS and then reads it all back
+  // to hash-verify it — a second or more of blocked loop, and pure maintenance work.
+  {"wifiupd", "force web UI update to SPIFFS", cmdWifiUpd, true},
   {"wifistate", "wifi config state/counters", cmdWifiState},
   {"wifierr", "last wifi config error", cmdWifiErr},
   
@@ -1014,33 +1148,49 @@ static const SerialCommand kCommands[] = {
   {"start", "start data logging", cmdStartLog},
   {"stop", "stop data logging", cmdStopLog},
   {"list", "list saved log files", cmdListLogs},
-  {"download", "<filename> download log as CSV", cmdDownloadLog},
+  // ?download prints an entire log file over the serial port: minutes of blocked loop on a big
+  // file (a 350 kB file took ~3 min). ?deleteallogs erases every stored log, so its duration
+  // grows with how many there are. ?start / ?stop / ?list / ?lograte / ?logstat stay runnable —
+  // starting or stopping a log mid-session is a normal thing to want to do.
+  {"download", "<filename> download log as CSV", cmdDownloadLog, true},
   {"deletelog", "<filename> delete specific log file", cmdDeleteLog},
-  {"deleteallogs", "delete all log files (skips active log)", cmdDeleteAllLogs},
+  {"deleteallogs", "delete all log files (skips active log)", cmdDeleteAllLogs, true},
   {"lograte", "<Hz> set log rate (e.g. 1 or 0.1)", cmdLogRate},
   {"logstat", "dump logger + GPS state (diagnose why logging fails)", cmdLogStat},
   
   // --- Hardware Diagnostics ---
-  {"i2c", "scan I2C bus for compass", cmdScanI2C},
-  {"gpsdiag", "2Hz GPS feed + RTM COG-valid breakdown (diagnose why GPS COG heading never engages)", cmdGpsDiag},
+  // V2.5-Evo - 2026-08-16 - ?i2c belongs in the blocks_loop set after all. It reads like a
+  // one-shot print, but it walks all 126 addresses taking and giving i2cMutex once EACH, and
+  // initCompass() sets Wire.setTimeOut(20) - so a stalled or held bus costs up to ~2.5 s of
+  // frozen loop, plus 126 mutex acquisitions contending with the generatePWM task's AW9523
+  // enable-swap writes. That is the same class as ?gpscfg (~4.5 s), which was already gated.
+  {"i2c", "scan I2C bus for compass", cmdScanI2C, true},
+  {"gpsdiag", "2Hz GPS feed + RTM COG-valid breakdown (diagnose why GPS COG heading never engages)", cmdGpsDiag, true},
   // V2.5-Evo - 2026-07-28 - reads dynModel + GSV state back OUT of the module. configureGPS()
   // never checks a UBX ACK, so until now "sent" and "applied" were indistinguishable.
-  {"gpscfg", "read back live GPS config (dynModel, GSV filter) - verifies configureGPS() actually took; now reads M9/M10 via CFG-VALGET too", cmdGpsCfg},
+  // blocks_loop: each ubxPoll() waits up to 1500 ms for a reply and this makes up to three of
+  // them, so a silent module costs ~4.5 s of frozen loop.
+  {"gpscfg", "read back live GPS config (dynModel, GSV filter) - verifies configureGPS() actually took; now reads M9/M10 via CFG-VALGET too", cmdGpsCfg, true},
   // V2.5-Evo - 2026-07-30 - RX port of the TX GPS work. Listen-only scan: never transmits at
   // an unconfirmed baud, which is what disabled the TX's GPS receiver on 2026-07-30.
-  {"gpsbaud", "listen-only baud scan + UBX-alive check (spots the u-blox UART-RX-disable state) - ~6s block, bench only", cmdGpsBaud},
+  {"gpsbaud", "listen-only baud scan + UBX-alive check (spots the u-blox UART-RX-disable state) - ~6s block, bench only", cmdGpsBaud, true},
   // One-time full setup, saved into the MODULE's own memory (not usrConf - a confStruct change
   // would bump SW_VERSION and wipe RX SPIFFS config, compass cal and logs).
-  {"gpssetup", "ONE-TIME full GPS setup: find, configure ACK-verified, save permanently, verify - ~20s, bench only", cmdGpsSetup},
+  {"gpssetup", "ONE-TIME full GPS setup: find, configure ACK-verified, save permanently, verify - ~20s, bench only", cmdGpsSetup, true},
   {"diag", "one-shot snapshot: GPS bytes/sentences, fix age, COG updates vs value-changes, mux errors, VESC poll rate, loop min/mean/max (safe during RTM/FM)", cmdDiag},
   {"diagz", "zero the ?diag counters so a run can be bracketed", cmdDiagZ},
-  {"printcompass", "print raw compass X/Y/Z", cmdPrintCompass},
-  {"compasscal", "start 45s automated calibration", cmdCompassCal},
-  {"magalign", "set compass mounting orientation: point the nose NORTH, then run this", cmdMagAlign},
-  {"compassheading", "print live compass heading in degrees", cmdPrintCompassHeading},
-  {"magtest", "120s CSV log: compass X/Y/Z + VESC current vs throttle (bench EMI test)", cmdMagTest},
-  {"vescping", "stream VESC fields + UART packet age (2Hz, up to 30s; verify VESC UART)", cmdVescPing},
-  {"vescraw", "raw VESC UART byte dump (sends GET_VALUES, prints any bytes received as hex)", cmdVescRaw},
+  // Every row below is blocks_loop: ?printcompass and ?compassheading stream until 'quit',
+  // ?compasscal runs 45 s, ?magalign samples for 5 s, ?magtest 120 s, ?vescping 30 s, and
+  // ?vescraw 30 s while also pointing the UART mux away from the GPS. ?compasscal is ALSO
+  // reachable from the runtime BIND button — that path is gated in checkButtons() with the
+  // same rxRefuseIfEngaged() call, so the serial and button routes cannot disagree.
+  {"printcompass", "print raw compass X/Y/Z", cmdPrintCompass, true},
+  {"compasscal", "start 45s automated calibration", cmdCompassCal, true},
+  {"magalign", "set compass mounting orientation: point the nose NORTH, then run this", cmdMagAlign, true},
+  {"compassheading", "print live compass heading in degrees", cmdPrintCompassHeading, true},
+  {"magtest", "120s CSV log: compass X/Y/Z + VESC current vs throttle (bench EMI test)", cmdMagTest, true},
+  {"vescping", "stream VESC fields + UART packet age (2Hz, up to 30s; verify VESC UART)", cmdVescPing, true},
+  {"vescraw", "raw VESC UART byte dump (sends GET_VALUES, prints any bytes received as hex)", cmdVescRaw, true},
 
   {"", "show this help", cmdHelp},
 };
@@ -1119,6 +1269,20 @@ void checkSerial()
       bool found = false;
       for (size_t i = 0; i < kCommandCount; i++) {
         if (cmdName == kCommands[i].name) {
+          // V2.5-Evo - 2026-08-16 - THE one place the "not while engaged" rule is enforced.
+          // A blocking handler must never START while RTM or Follow-Me is engaged, because it
+          // freezes the loop that evaluates every safety gate. Enforcing it here instead of
+          // inside each handler means a new blocking command only has to declare itself in its
+          // table row — it cannot be forgotten in the handler body, and the wording of the
+          // refusal can never drift between commands.
+          if (kCommands[i].blocks_loop) {
+            char label[24];   // "?" + longest command name ("compassheading") + NUL, with room to spare
+            snprintf(label, sizeof(label), "?%s", kCommands[i].name);
+            if (rxRefuseIfEngaged(label)) {
+              found = true;   // recognised and deliberately NOT run — never report it as unknown
+              break;
+            }
+          }
           kCommands[i].handler(params);
           found = true;
           break;
@@ -1140,6 +1304,13 @@ void testPercent()
   while(1)
   {
     esp_task_wdt_reset(); // V2.5-Evo fix (I3): prevent WDT panic during blocking debug command
+
+    // V2.5-Evo - 2026-08-16 - stop if RTM/FM engages mid-command. checkSerialQuit() is
+    // deliberately NOT used here: this loop parses its own serial input, and checkSerialQuit()
+    // would eat the very line the user just typed. rxAbortIfEngaged() touches no serial input,
+    // only two atomics. Nothing to unwind - the command computes and prints, it stores nothing.
+    if (rxAbortIfEngaged("?testpercent")) break;
+
     if (Serial.available()) {
       String input = Serial.readStringUntil('\n'); // read until newline
       input.trim(); // remove spaces and newlines
@@ -1166,6 +1337,13 @@ void testPercent()
 void readTelemetryUntilQuit() {
     while (true) {
         esp_task_wdt_reset(); // V2.5-Evo fix (I3): prevent WDT panic during blocking debug command
+
+        // V2.5-Evo - 2026-08-16 - stop if RTM/FM engages mid-command. As in testPercent(),
+        // checkSerialQuit() is not used because this loop parses its own input. The telemetry
+        // fields this command hand-writes keep whatever was last typed, exactly as they do on a
+        // normal 'quit' exit; the live sources overwrite them again on the next ordinary pass.
+        if (rxAbortIfEngaged("?testbg")) break;
+
         if (Serial.available()) {
             String input = Serial.readStringUntil('\n'); // read line
             input.trim(); // remove CR/LF/whitespace
@@ -1214,7 +1392,10 @@ void serPrintBat()
   while (true)
   {
     esp_task_wdt_reset(); // V2.5-Evo fix (I3): prevent WDT panic during blocking debug command
-    if(checkSerialQuit()) break;
+    // V2.5-Evo - 2026-08-16 - and stop if RTM/FM engages mid-stream. Checked BEFORE the
+    // getVescLoop() call below, which is the only thing in here that touches the UART mux, so
+    // leaving at this point cannot strand the mux off the GPS.
+    if(checkSerialQuit() || rxAbortIfEngaged("?printbat")) break;
     if(usrConf.data_src == 1)
     {
       getUbatLoop();
@@ -1291,7 +1472,8 @@ void serPrintTasks()
   while (true)
   {
     esp_task_wdt_reset(); // V2.5-Evo fix (I3): prevent WDT panic during blocking debug command
-    if(checkSerialQuit()) break;
+    // V2.5-Evo - 2026-08-16 - and stop if RTM/FM engages mid-stream. Read-only, nothing to undo.
+    if(checkSerialQuit() || rxAbortIfEngaged("?printtasks")) break;
 
     Serial.println("\n=== Task Stack Usage ===");
     Serial.printf("receive stack left: %u words\n", uxTaskGetStackHighWaterMark(triggeredReceiveHandle));
@@ -1310,7 +1492,8 @@ void serPrintRSSI()
   while (true)
   {
     esp_task_wdt_reset(); // V2.5-Evo fix (I3): prevent WDT panic during blocking debug command
-    if(checkSerialQuit()) break;
+    // V2.5-Evo - 2026-08-16 - and stop if RTM/FM engages mid-stream. Read-only, nothing to undo.
+    if(checkSerialQuit() || rxAbortIfEngaged("?printrssi")) break;
     // Print the variable
     if(millis() - last_packet < usrConf.failsafe_time)
     {
@@ -1333,7 +1516,8 @@ void serPrintPWM()
   while (true)
   {
     esp_task_wdt_reset(); // V2.5-Evo fix (I3): prevent WDT panic during blocking debug command
-    if(checkSerialQuit()) break;
+    // V2.5-Evo - 2026-08-16 - and stop if RTM/FM engages mid-stream. Read-only, nothing to undo.
+    if(checkSerialQuit() || rxAbortIfEngaged("?printpwm")) break;
     // Print the variable
     Serial.print(PWM0_time);
     Serial.print(", ");
@@ -1347,7 +1531,8 @@ void serPrintReceived()
   while (true)
   {
     esp_task_wdt_reset(); // V2.5-Evo fix (I3): prevent WDT panic during blocking debug command
-    if(checkSerialQuit()) break;
+    // V2.5-Evo - 2026-08-16 - and stop if RTM/FM engages mid-stream. Read-only, nothing to undo.
+    if(checkSerialQuit() || rxAbortIfEngaged("?printreceived")) break;
     // Print received throttle/steering in JSON format for test correlation
     Serial.print("{\"throttle\":");
     Serial.print(thr_received);
@@ -1449,8 +1634,10 @@ void checkButtons()
 
   // --- RUNTIME BIND: COMPASS CALIBRATION ---
   // Short BIND press (falling edge, 50ms debounce) triggers 45s calibration.
-  // blinkBind(5) = starting, blinkBind(2) = success, blinkBind(10) = compass not detected.
+  // blinkBind(5) = starting, blinkBind(2) = full success, blinkBind(3) = PARTIAL (iron
+  // calibration saved, mounting orientation NOT re-measured), blinkBind(10) = nothing saved.
   // Boot-time pairing/reset cannot reach this block (guarded by first_call above).
+  // V2.5-Evo - 2026-08-16 - refused outright while RTM or Follow-Me is engaged (see below).
   static bool bind_last_state = true;
   xSemaphoreTake(i2cMutex, portMAX_DELAY);
   bool bind_current = aw.digitalRead(AP_S_BIND);
@@ -1461,13 +1648,47 @@ void checkButtons()
     bool bind_debounced = (aw.digitalRead(AP_S_BIND) == false);
     xSemaphoreGive(i2cMutex);
     if (bind_debounced) {
+      // V2.5-Evo - 2026-08-16 - the BIND button is a SECOND way into the 45-second compass
+      // calibration, so it needs the same refusal the ?compasscal serial command now gets.
+      // Without this, a knock against the BIND button mid-tow would freeze runRtmLoop() and
+      // runFmLoop() for 45 s — no gate checks, no Gate 9 hard stop — while generatePWM kept
+      // applying the last steering override and throttle cap.
+      //
+      // Deliberately NO blinkBind() acknowledgement on the refusal path: blinkBind() uses
+      // delay(), so "telling" the rider would itself freeze the control loop for the few
+      // hundred milliseconds this guard exists to protect. The serial line carries the reason.
+      // No wait-for-release loop either: bind_last_state is set to the held (LOW) level right
+      // here, so the falling-edge detector cannot re-fire until the button is genuinely
+      // released and pressed again — the press is consumed without spending a tick on it.
+      if (rxRefuseIfEngaged("Compass calibration (BIND button)")) {
+        bind_last_state = bind_current;
+        return;
+      }
+
       blinkBind(5);
-      extern bool compass_detected;  // global bool set by initCompass(); false if sensor absent
+      // V2.5-Evo - 2026-08-16 - the LED now reports WHICH of the three outcomes actually
+      // happened. It used to blink 2 = "success" whenever the compass chip was merely PRESENT,
+      // which was wrong twice over: a run that saved nothing (no samples, or the buggy barely
+      // turned) blinked its own 10-flash failure inside runCompassCalibration() and then got a
+      // 2-flash "success" right after it, and a PARTIAL run - iron calibration saved, mounting
+      // orientation NOT re-measured - looked exactly like a full one. The rider that hurts is
+      // the one who has just RE-MOUNTED the module and walked a sloppy circle: they are told it
+      // worked while mag_orientation still holds the OLD mounting angle and the iron calibration
+      // now matches the NEW one, so every heading is out by the mounting delta. On this path the
+      // LED is the only channel there is - nobody is watching a serial terminal while walking a
+      // buggy round a car park - so the LED has to carry the distinction.
+      //   2 flashes  = full success (iron calibration + handedness + orientation all updated)
+      //   3 flashes  = PARTIAL     (iron calibration saved, orientation NOT re-measured; re-run
+      //                             with two full clockwise circles if the module was re-mounted)
+      //   nothing    = nothing saved. runCompassCalibration() has already blinked its own
+      //                10-flash failure pattern, so repeating it here would only double it - and
+      //                on the mid-run RTM/FM abort path a 1-second blinkBind() would be exactly
+      //                the blocking announcement that abort exists to avoid.
       runCompassCalibration();        // 45s collection, hard/soft-iron calc, auto-save to SPIFFS
-      if (compass_detected) {
+      if (compass_cal_result == CAL_FULL) {
         blinkBind(2);
-      } else {
-        blinkBind(10);
+      } else if (compass_cal_result == CAL_PARTIAL) {
+        blinkBind(3);
       }
       xSemaphoreTake(i2cMutex, portMAX_DELAY);
       bool bind_held = (aw.digitalRead(AP_S_BIND) == false);

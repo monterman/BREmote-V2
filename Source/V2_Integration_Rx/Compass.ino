@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-08-16 - Two follow-ups. (1) MID-COMMAND SAFETY: ?printcompass, ?compasscal and ?magalign now abort if Return-to-Me or Follow-Me becomes engaged WHILE they are running, not only when one is already engaged at dispatch (see rxAbortIfEngaged() in System.ino). All three abort points sit BEFORE the first usrConf write, so an abandoned run leaves no half-written calibration and the existing one untouched. (2) PARTIAL CREDIT IS NOW REPORTED AS PARTIAL: a ?compasscal run that turned 300-400 deg saves the iron calibration but does NOT re-measure mounting orientation or handedness, and a run that turns far enough but finishes off north saves iron calibration and handedness but still no orientation. Both used to print the identical "--- CALIBRATION COMPLETE --- / Success!" as a full run and blink the identical 2-flash BIND pattern. A rider who had just re-mounted the module and walked a sloppy circle was therefore told it worked while mag_orientation still held the OLD mounting angle - a heading wrong by exactly the mounting delta. runCompassCalibration() now records its outcome in compass_cal_result (FAILED / PARTIAL / FULL) for the BIND LED in System.ino, and prints an explicit PARTIAL report naming what was and was not updated. NEITHER THRESHOLD MOVED - 300 deg still gates the iron save and 400 deg still gates orientation and handedness, exactly as adjudicated; only the reporting changed. No confStruct field added, no SW_VERSION bump.
+// V2.5-Evo - 2026-08-16 - Four ?compasscal / init hardening fixes: (1) an under-rotated re-run no longer silently DESTROYS a stored mirror correction — the previous sign of mag_scale_y is preserved when handedness is not re-derived, and the message now says so; (2) ?compasscal aborts without saving anything unless the buggy was actually turned (a 45 s hold used to bake offsets from a noise blob over a good cal); (3) the QMC5883P init writes — including the MANDATORY axis-sign write — are now checked, and a failed init leaves the compass reported as NOT detected instead of producing systematically wrong headings; (4) the uncalibrated-reject test is now identical in getCompassHeading(), updateCompassSnapshot() and runMagAlign() — magnitude-compared, so a legitimately MIRRORED module (negative mag_scale_y) is never mistaken for uncalibrated. Code checks only — no confStruct field added, no SW_VERSION bump.
 // V2.5-Evo - 2026-07-22 - runCompassCalibration() now clamps mag_scale_x/y to [0.1, 10.0] (the kCfgFields validator range) before cmdSave(), so a pathological high-asymmetry cal can never save a scale that fails config-load validation and wipes config+pairing on next boot. Value-clamp only — no confStruct/SW_VERSION change.
 // V2.5-Evo - 2026-07-21 - Compass hardening: (1) getCompassHeading()/updateCompassSnapshot() now reject the UNCALIBRATED degenerate default (offset 0/0 + scale 1/1), not just scale==0, so FM/RTM never steer on a garbage heading; (2) runCompassCalibration() requires compass at entry and aborts on a no-sample collection (maxX<=minX) WITHOUT saving, so a botched cal can never overwrite a good one. Pure code checks — no confStruct field added, no SW_VERSION bump.
 // V2.5-Evo - 2026-05-06 - D2: Add updateCompassSnapshot() and snapshot globals (clean heading captured during motor-idle for future RTM heading source)
@@ -84,6 +86,12 @@ unsigned long compass_snapshot_ms      = 0;     // millis() timestamp of last sn
 // We link to your existing save command to automate the process
 extern void cmdSave(const String& params);
 
+// V2.5-Evo - 2026-08-16 - the shared "has RTM/FM engaged while this command was running?" test.
+// Defined in System.ino beside rxRefuseIfEngaged(), which asks the same question at dispatch
+// time. Declared here explicitly rather than leaning on the sketch's generated prototypes, so
+// the dependency between these two files is written down where a reader will see it.
+extern bool rxAbortIfEngaged(const char *what);
+
 void initCompass() {
   Wire.setTimeOut(20);
 
@@ -133,11 +141,33 @@ void initCompass() {
     // the application examples, not in the register-map table. ArduPilot's driver
     // has this transposed (writes 0x29 into register 0x06, a read-only data
     // register) — do not copy it.
-    compassWriteReg(QMC5883P_ADDR, 0x0B, 0x80);  // soft reset
+    //
+    // V2.5-Evo - 2026-08-16 - Check every write. These four writes used to be fire-and-forget.
+    // The bug: if the axis-sign write (0x29 = 0x06) does not land, the part reports its axes in a
+    // different frame from the one the stored calibration was measured in — so EVERY heading is
+    // systematically wrong, with nothing anywhere to detect it. There is no readback and no error;
+    // the compass simply lies, and Follow-Me steers on the lie. The fix is to notice at boot: if
+    // any init write is not acknowledged, the compass is reported as NOT detected and stays
+    // disabled. Failing loudly at boot costs the rider a look at the wiring; failing silently
+    // costs them a buggy that steers to the wrong point of the compass.
+    bool init_ok = true;
+    init_ok &= compassWriteReg(QMC5883P_ADDR, 0x0B, 0x80);  // soft reset
     delay(30);
-    compassWriteReg(QMC5883P_ADDR, 0x29, 0x06);  // axis sign — mandatory
-    compassWriteReg(QMC5883P_ADDR, 0x0B, 0x08);  // CR2: set/reset on, range 8 G
-    compassWriteReg(QMC5883P_ADDR, 0x0A, 0xC7);  // CR1: OSR2/OSR1 max, ODR 50 Hz, MODE continuous (11)
+    init_ok &= compassWriteReg(QMC5883P_ADDR, 0x29, 0x06);  // axis sign — mandatory
+    init_ok &= compassWriteReg(QMC5883P_ADDR, 0x0B, 0x08);  // CR2: set/reset on, range 8 G
+    init_ok &= compassWriteReg(QMC5883P_ADDR, 0x0A, 0xC7);  // CR1: OSR2/OSR1 max, ODR 50 Hz, MODE continuous (11)
+
+    if (!init_ok) {
+      // compass_detected is already false at this point and is deliberately left that way.
+      // compass_chip is cleared too so ?i2c / ?magtest do not advertise a working part.
+      compass_chip = COMPASS_NONE;
+      Serial.println("ERROR: QMC5883P ACKed at 0x2C but one or more init writes FAILED.");
+      Serial.println("       Compass DISABLED - a half-configured QMC5883P returns readings that");
+      Serial.println("       look fine and are systematically wrong (the 0x29 axis-sign write is");
+      Serial.println("       mandatory). Check I2C wiring, pull-ups and 3.3V, then reboot.");
+      return;
+    }
+
     compass_detected = true;
     Serial.println("QMC5883P compass detected at 0x2C. Init OK (8 G, 50 Hz, continuous).");
   }
@@ -197,7 +227,9 @@ void serPrintCompass() {
   while (true) {
     esp_task_wdt_reset(); // <-- FEED THE WATCHDOG! Prevent 7-second crash.
 
-    if(checkSerialQuit()) break;
+    // V2.5-Evo - 2026-08-16 - also stop if RTM/FM engages mid-stream. Read-only command, so the
+    // exit needs no tidying up: the i2cMutex is taken and given inside readCompassRaw().
+    if(checkSerialQuit() || rxAbortIfEngaged("?printcompass")) break;
 
     if (readCompassRaw()) {
       Serial.print("Raw X: "); Serial.print(magX);
@@ -211,7 +243,43 @@ void serPrintCompass() {
   }
 }
 
+// ============================================================
+// Compass calibration OUTCOME - runtime state, deliberately not configuration
+// ============================================================
+//
+// What it is:
+//   What the LAST ?compasscal run actually achieved. Written by runCompassCalibration() on every
+//   path through it; read by the runtime BIND-button handler in System.ino to choose the LED
+//   pattern it blinks when the run finishes.
+//
+// Why it exists:
+//   A calibration has three genuinely different endings and, until now, only two of them could
+//   be told apart - and not reliably. The middle one is the dangerous one: a run that turned far
+//   enough to sweep the field (>= 300 deg) but not far enough to close a revolution (< 400 deg)
+//   saves a NEW iron calibration while leaving the OLD mounting orientation in place. If the
+//   module has just been re-mounted, those two now describe different physical mountings and
+//   every heading is wrong by the difference. It printed "Success!" and blinked the full-success
+//   pattern, so nothing anywhere told the rider. Naming the outcome is what fixes that.
+//
+// It is a plain global on purpose: it describes the run that has just happened, not a setting.
+// It must not survive a reboot and it must not cost a confStruct field - adding one would change
+// sizeof(confStruct) and force a SW_VERSION bump, which wipes the RX SPIFFS config, the pairing
+// and this very calibration on the next boot.
+enum CompassCalResult : uint8_t {
+  CAL_FAILED  = 0,   // nothing written, nothing saved - the previous calibration is untouched
+  CAL_PARTIAL = 1,   // iron calibration saved, but mounting ORIENTATION was NOT re-measured
+  CAL_FULL    = 2    // iron calibration, handedness and mounting orientation all updated + saved
+};
+
+CompassCalResult compass_cal_result = CAL_FAILED;
+
 void runCompassCalibration() {
+  // V2.5-Evo - 2026-08-16 - assume nothing was achieved until the epilogue proves otherwise.
+  // Setting it FAILED once, here, means every early return below - no compass, no samples, barely
+  // turned, no valid data, user typed 'quit', or RTM/FM engaged mid-run - reports the truth
+  // without each of those paths having to remember to say so. Only the epilogue promotes it.
+  compass_cal_result = CAL_FAILED;
+
   // V2.5-Evo - 2026-07-21 - Require the compass hardware at entry. Without this, a cal started
   // with no sensor present (loose wire, wrong hardware, BIND pressed by mistake) collects zero
   // samples and — via the min/max init values below — silently bakes a garbage 0/0/1/1 cal over
@@ -283,6 +351,18 @@ void runCompassCalibration() {
       return;
     }
 
+    // V2.5-Evo - 2026-08-16 - abort if Return-to-Me or Follow-Me engages while the 45 s collection
+    // is running. ?compasscal is refused at dispatch when the buggy is ALREADY engaged, but it can
+    // legitimately start on an idle bench and then be overtaken by an arm from the remote - and a
+    // 45 s freeze of runRtmLoop()/runFmLoop() means 45 s in which no safety gate is evaluated at
+    // all. This is the safest possible place to give up: it is before the FIRST usrConf write, so
+    // the samples gathered so far are simply discarded and the stored calibration is left exactly
+    // as it was. compass_cal_result stays CAL_FAILED, so the BIND LED cannot claim a success.
+    if (rxAbortIfEngaged("?compasscal")) {
+      Serial.println("Calibration abandoned. Nothing was saved; the existing calibration is kept.");
+      return;
+    }
+
     if (readCompassRaw()) {
       if (magX < minX) minX = magX;
       if (magX > maxX) maxX = magX;
@@ -344,6 +424,28 @@ void runCompassCalibration() {
     return;
   }
 
+  // V2.5-Evo - 2026-08-16 - Abort if the buggy was never actually TURNED. The bug: the min/max
+  // check above only catches a run with NO samples. A run where the buggy sat still for the whole
+  // 45 s collects thousands of samples, so min/max pass — but they bound a small noise blob, not
+  // the earth's field. That gives offsets at the centre of the noise and scales near 1.0: numbers
+  // that LOOK calibrated (the offsets are non-zero, so every downstream "is it calibrated?" check
+  // waves them through) while heading becomes atan2(noise) — random. Saved over a good cal, this
+  // is silent and dangerous, so a real sweep is now required BEFORE anything is written.
+  //
+  // The bar is deliberately low — one circle with slop, not the two that were asked for — in
+  // keeping with the tolerance philosophy below: a rejected run only costs the rider another walk
+  // round the buggy, while a bad stored cal is invisible and steers Follow-Me wrong. kMinTurnDeg
+  // further down is the higher bar, and it gates handedness and orientation only.
+  const float kMinIronTurnDeg = 300.0f;  // ~one full circle; less than this cannot sweep the field ellipse
+  if (fabsf(rot_accum) < kMinIronTurnDeg) {
+    Serial.printf("\nERROR: only %.0f deg of rotation seen - the buggy barely turned.\n", fabsf(rot_accum));
+    Serial.println("       Calibration ABORTED. Nothing saved, existing calibration kept.");
+    Serial.println("       The 45 s window has to be spent WALKING THE BUGGY ROUND: two full");
+    Serial.println("       circles clockwise, starting and finishing with the nose on north.");
+    blinkBind(10);
+    return;
+  }
+
   // Phase 1: Calculate Hard Iron Offsets (The Center)
   usrConf.mag_offset_x = (maxX + minX) / 2;
   usrConf.mag_offset_y = (maxY + minY) / 2;
@@ -357,6 +459,12 @@ void runCompassCalibration() {
      Serial.println("\nERROR: No valid compass data received. Calibration failed.");
      return;
   }
+
+  // V2.5-Evo - 2026-08-16 - Remember the handedness that is about to be overwritten. The two
+  // divisions below are always POSITIVE, so they wipe out the negative mag_scale_y that encodes a
+  // mirrored module. That is only correct if this run actually re-derives handedness; if it does
+  // not, the previous sign has to be put back (see the kMinTurnDeg block further down).
+  const bool prev_frame_mirrored = (usrConf.mag_scale_y < 0.0f);
 
   usrConf.mag_scale_x = avgDelta / avgDeltaX;
   usrConf.mag_scale_y = avgDelta / avgDeltaY;
@@ -420,13 +528,32 @@ void runCompassCalibration() {
 
   bool orient_ok = true;
 
+  // V2.5-Evo - 2026-08-16 - true ONLY where usrConf.mag_orientation is genuinely written. That
+  // single fact is what separates a FULL calibration from a PARTIAL one, and there are two
+  // different ways to miss it - too little rotation (orient_ok goes false above) and a turn that
+  // does not close back on north (below) - so the epilogue reads THIS rather than trying to
+  // re-derive the answer from the thresholds.
+  bool orientation_stored = false;
+
 
 
   if (fabsf(rot_accum) < kMinTurnDeg) {
 
+    // V2.5-Evo - 2026-08-16 - PUT THE OLD HANDEDNESS BACK. The bug this fixes: the scales above
+    // are always recomputed positive, and the mirror sign was only ever re-applied inside the
+    // validated branch below. So a rider with a MIRRORED module who did a sloppy re-run had the
+    // mirror correction silently destroyed while being told handedness was "NOT updated" — it had
+    // been updated, to the wrong value. The compass then read mirrored and hybrid mode steered on
+    // it at low speed. This run did not measure handedness, so it must not change it.
+    if (prev_frame_mirrored) usrConf.mag_scale_y = -usrConf.mag_scale_y;
+
     Serial.printf("\nNOTE: only %.0f deg of rotation seen (wanted ~720).\n", fabsf(rot_accum));
 
-    Serial.println("      Iron calibration saved. Handedness and orientation NOT updated.");
+    Serial.println("      Iron calibration saved. Orientation NOT updated (previous kept).");
+
+    Serial.printf("      Handedness NOT updated either - previous setting kept (%s).\n",
+
+                  prev_frame_mirrored ? "MIRRORED" : "normal");
 
     Serial.println("      Re-run and turn through two full circles to set them.");
 
@@ -512,23 +639,75 @@ void runCompassCalibration() {
 
       usrConf.mag_orientation = (uint16_t)snapped;
 
+      orientation_stored = true;   // the one place a run earns FULL rather than PARTIAL
+
       Serial.printf("\nMounting orientation: measured %.0f deg, stored %d deg.\n", h_start, snapped);
 
     }
 
   }
 
-  Serial.println("\n--- CALIBRATION COMPLETE ---");
+  // ============================================================
+  // V2.5-Evo - 2026-08-16 - REPORT PARTIAL CREDIT AS PARTIAL.
+  //
+  // The bug: a run that saved the iron calibration but did NOT re-measure the mounting
+  // orientation printed the identical "--- CALIBRATION COMPLETE --- / Success! Calibration
+  // permanently saved to hardware." that a full run prints, and blinked the identical 2-flash
+  // BIND pattern. Two different runs reach here that way: one that turned 300-400 deg (enough to
+  // sweep the field, not enough to trust closure - orientation AND handedness both left alone),
+  // and one that turned far enough but finished off north (handedness measured, orientation
+  // still left alone).
+  //
+  // Why that matters: the rider who most needs to know is the one who has just RE-MOUNTED the
+  // module. They walk a sloppy circle, are told "Success!", and walk away with an iron
+  // calibration that matches the NEW mounting and a mag_orientation that still describes the OLD
+  // one. Every heading is then wrong by exactly the mounting delta, and Follow-Me veers by that
+  // same amount at close range - the failure this whole batch of work exists to remove.
+  //
+  // What did NOT change: neither threshold moved, and nothing about WHAT gets saved moved
+  // either. A 300-400 deg run still saves its iron calibration, because a 300 deg arc can miss
+  // at most one field extreme by <= 30 deg (about 4 deg of worst-case heading error), while
+  // closure genuinely needs a completed revolution. Only the words and the LED changed.
+  // ============================================================
+  const bool cal_full = orientation_stored;
+
+  Serial.println(cal_full ? "\n--- CALIBRATION COMPLETE ---"
+                          : "\n--- CALIBRATION PARTIAL ---");
   Serial.printf("Saved Center Offsets: X=%d, Y=%d\n", usrConf.mag_offset_x, usrConf.mag_offset_y);
   Serial.printf("Saved Shape Scales:   X=%.2f, Y=%.2f\n", usrConf.mag_scale_x, usrConf.mag_scale_y);
   Serial.printf("Mounting Orientation: %u deg%s\n", usrConf.mag_orientation,
 
                 usrConf.mag_scale_y < 0.0f ? "  (frame MIRRORED)" : "");
 
-  
+  if (!cal_full) {
+    // Name precisely what this run did and did not change, so "partial" is not left as a mood.
+    Serial.println("\nUPDATED    : iron calibration - the hard-iron offsets and soft-iron scales above.");
+    Serial.printf("NOT UPDATED: mounting ORIENTATION - still %u deg, carried over from an earlier run.\n",
+                  usrConf.mag_orientation);
+    if (orient_ok) {
+      Serial.println("UPDATED    : mounting HANDEDNESS - the turn direction was measured this run.");
+    } else {
+      Serial.println("NOT UPDATED: mounting HANDEDNESS - the previous setting was kept.");
+    }
+  }
+
   // Automate the save command to SPIFFS
   cmdSave("");
-  Serial.println("Success! Calibration permanently saved to hardware.");
+
+  if (cal_full) {
+    Serial.println("Success! Calibration permanently saved to hardware.");
+    compass_cal_result = CAL_FULL;
+  } else {
+    Serial.println("PARTIAL calibration saved to hardware. This is NOT a full success.");
+    Serial.println("IF YOU HAVE JUST RE-MOUNTED OR MOVED THE COMPASS MODULE, RUN ?compasscal AGAIN:");
+    Serial.println("  the orientation above belongs to the module's OLD position, while the iron");
+    Serial.println("  calibration just saved belongs to its NEW one. Until orientation is measured");
+    Serial.println("  again, every heading is wrong by the difference between the two - and");
+    Serial.println("  Follow-Me will veer by that same amount at close range.");
+    Serial.println("  Start with the nose on north, turn TWO FULL CIRCLES CLOCKWISE, finish on north.");
+    Serial.println("  (?magalign sets orientation on its own if the iron calibration is already good.)");
+    compass_cal_result = CAL_PARTIAL;
+  }
 }
 
 // V2.5-Evo - 2026-04-25 - P7: Compute calibrated compass heading in degrees.
@@ -555,9 +734,17 @@ float getCompassHeading()
   // and returned atan2(magY*1, magX*1) with the hard-iron offset (0) never subtracted: a
   // biased/garbage heading that FM/RTM then steered on. Treat offset 0/0 + scale ~1/1 as
   // uncalibrated. Keep the scale==0 reject too (means the field was never written at all).
+  // V2.5-Evo - 2026-08-16 - Compare the MAGNITUDE of the scales, so this test matches the one in
+  // updateCompassSnapshot() and runMagAlign() exactly. It used to differ: only runMagAlign() took
+  // fabsf(), so scale ±1 with offsets 0/0 was judged three different ways in three places. What
+  // this test is for is the never-calibrated default (offsets 0/0 + scale 1/1) — the SIGN of
+  // mag_scale_y is not part of that question, because a negative mag_scale_y is a legitimate,
+  // deliberately stored value: it is how a MIRRORED module is corrected. A mirrored module that
+  // HAS been calibrated has real non-zero offsets, so it passes this test and keeps working.
   if (usrConf.mag_scale_x == 0.0f || usrConf.mag_scale_y == 0.0f) return -1.0f;
   if (usrConf.mag_offset_x == 0 && usrConf.mag_offset_y == 0 &&
-      fabsf(usrConf.mag_scale_x - 1.0f) < 1e-4f && fabsf(usrConf.mag_scale_y - 1.0f) < 1e-4f) return -1.0f;
+      fabsf(fabsf(usrConf.mag_scale_x) - 1.0f) < 1e-4f &&
+      fabsf(fabsf(usrConf.mag_scale_y) - 1.0f) < 1e-4f) return -1.0f;
 
   // Return -1 on I2C failure — stale magX/magY from a previous read would give a wrong heading.
   if (!readCompassRaw()) return -1.0f;
@@ -624,9 +811,13 @@ void updateCompassSnapshot()
   // V2.5-Evo - 2026-07-21 - Gate 2: compass must be calibrated. UNCALIBRATED = the degenerate
   // default offset 0/0 + scale 1/1 (scale is 1, NOT 0) — the old scale==0 check missed it and let
   // a biased/garbage heading become the RTM snapshot. Reject scale==0 AND the 0/0 + ~1/1 default.
+  // V2.5-Evo - 2026-08-16 - Magnitude-compared, identical to getCompassHeading() and runMagAlign().
+  // A negative mag_scale_y is the stored MIRROR correction, not evidence of a missing calibration,
+  // so the sign must not enter this test — see the longer note in getCompassHeading().
   if (usrConf.mag_scale_x == 0.0f || usrConf.mag_scale_y == 0.0f) return;
   if (usrConf.mag_offset_x == 0 && usrConf.mag_offset_y == 0 &&
-      fabsf(usrConf.mag_scale_x - 1.0f) < 1e-4f && fabsf(usrConf.mag_scale_y - 1.0f) < 1e-4f) return;
+      fabsf(fabsf(usrConf.mag_scale_x) - 1.0f) < 1e-4f &&
+      fabsf(fabsf(usrConf.mag_scale_y) - 1.0f) < 1e-4f) return;
 
   // Gate 3: motor must be idle. thr_received < 25 means the user is not pressing
   // the throttle trigger enough to spin the motor. Threshold matches RTM Gate 1
@@ -640,100 +831,110 @@ void updateCompassSnapshot()
 
   compass_snapshot_heading = h;
   compass_snapshot_ms      = millis();
-}
-// ============================================================
-// runMagAlign - set the compass mounting orientation on its own
-// ============================================================
-// V2.5-Evo - 2026-08-16 - ?magalign. The same orientation ?compasscal derives, but as a
-// standalone step so it can be re-checked or corrected WITHOUT redoing the two-circle iron
-// calibration - which is the slow, physical part.
-//
-// Point the nose of the buggy at magnetic north and run it. The buggy IS at heading 0, so
-// whatever the compass reports IS the mounting rotation. Snapped to the nearest cardinal.
-//
-// Requires an existing iron calibration: mag_offset/mag_scale must already be real, because
-// the reading is taken THROUGH them. Running this on an uncalibrated compass would measure
-// the hard-iron bias and call it a mounting angle.
-//
-// This CANNOT detect a mirrored frame - a single heading tells you where zero is, not which
-// way the numbers run. Mirroring is set by ?compasscal, from the direction of the turn.
-void runMagAlign() {
-  if (!compass_detected) {
-    Serial.println("\nERROR: no compass detected. Nothing to align.");
-    blinkBind(10);
-    return;
-  }
-
-  // Same uncalibrated-default reject that getCompassHeading() uses.
-  if (usrConf.mag_scale_x == 0.0f || usrConf.mag_scale_y == 0.0f ||
-      (usrConf.mag_offset_x == 0 && usrConf.mag_offset_y == 0 &&
-       fabsf(fabsf(usrConf.mag_scale_x) - 1.0f) < 1e-4f &&
-       fabsf(fabsf(usrConf.mag_scale_y) - 1.0f) < 1e-4f)) {
-    Serial.println("\nERROR: compass is not calibrated yet.");
-    Serial.println("       Run ?compasscal first - it sets the iron calibration AND the");
-    Serial.println("       orientation in one go. Use ?magalign only to re-check afterwards.");
-    blinkBind(10);
-    return;
-  }
-
-  Serial.println("\n--- COMPASS ORIENTATION (?magalign) ---");
-  Serial.println(">>> POINT THE FRONT OF THE BUGGY AT MAGNETIC NORTH <<<");
-  Serial.println("Hold it steady. Sampling for 5 seconds, starting now.");
-  Serial.println("Motor OFF - motor current swamps the compass entirely.");
-
-  while (Serial.available()) Serial.read();
-
-  // Average over 5 s. Idle noise here is ~3.2 deg spread, so averaging costs nothing and
-  // removes the odd outlier.
-  float sum_sin = 0.0f, sum_cos = 0.0f;
-  int   n = 0;
-  uint32_t t0 = millis();
-  while (millis() - t0 < 5000) {
-    esp_task_wdt_reset();
-    if (readCompassRaw()) {
-      float cx = ((float)magX - (float)usrConf.mag_offset_x) * usrConf.mag_scale_x;
-      float cy = ((float)magY - (float)usrConf.mag_offset_y) * usrConf.mag_scale_y;
-      float h  = atan2f(cy, cx);
-      sum_sin += sinf(h);   // circular mean - a plain average breaks across the 0/360 wrap
-      sum_cos += cosf(h);
-      n++;
-    }
-    vTaskDelay(pdMS_TO_TICKS(20));
-  }
-
-  if (n < 20) {
-    Serial.printf("\nERROR: only %d samples read. Orientation unchanged.\n", n);
-    blinkBind(10);
-    return;
-  }
-
-  float measured = atan2f(sum_sin / n, sum_cos / n) * (180.0f / M_PI);
-  if (measured < 0.0f) measured += 360.0f;
-
-  int snapped = ((int)((measured + 45.0f) / 90.0f)) * 90;
-  if (snapped >= 360) snapped -= 360;
-
-  // How far off the nearest cardinal was the reading? Large means the buggy was not
-  // actually pointing north, or the module is mounted at an odd angle - either way the
-  // rider should know rather than get a silent snap.
-  float residual = measured - (float)snapped;
-  while (residual > 180.0f)  residual -= 360.0f;
-  while (residual < -180.0f) residual += 360.0f;
-
-  uint16_t previous = usrConf.mag_orientation;
-  usrConf.mag_orientation = (uint16_t)snapped;
-
-  Serial.printf("\nMeasured heading while pointing north: %.1f deg (%d samples)\n", measured, n);
-  Serial.printf("Mounting orientation stored: %u deg (was %u)\n", usrConf.mag_orientation, previous);
-  if (fabsf(residual) > 25.0f) {
-    Serial.printf("WARNING: reading was %.0f deg off the nearest cardinal.\n", residual);
-    Serial.println("         Either the buggy was not really pointing north, or the module is");
-    Serial.println("         mounted at an odd angle. Re-check before trusting Follow-Me.");
-  }
-  Serial.println("Note: ?magalign cannot detect a MIRRORED module - only ?compasscal can,");
-  Serial.println("      from the direction of the turn.");
-
-  cmdSave("");
-  Serial.println("Saved.");
-  blinkBind(2);
-}
+}
+// ============================================================
+// runMagAlign - set the compass mounting orientation on its own
+// ============================================================
+// V2.5-Evo - 2026-08-16 - ?magalign. The same orientation ?compasscal derives, but as a
+// standalone step so it can be re-checked or corrected WITHOUT redoing the two-circle iron
+// calibration - which is the slow, physical part.
+//
+// Point the nose of the buggy at magnetic north and run it. The buggy IS at heading 0, so
+// whatever the compass reports IS the mounting rotation. Snapped to the nearest cardinal.
+//
+// Requires an existing iron calibration: mag_offset/mag_scale must already be real, because
+// the reading is taken THROUGH them. Running this on an uncalibrated compass would measure
+// the hard-iron bias and call it a mounting angle.
+//
+// This CANNOT detect a mirrored frame - a single heading tells you where zero is, not which
+// way the numbers run. Mirroring is set by ?compasscal, from the direction of the turn.
+void runMagAlign() {
+  if (!compass_detected) {
+    Serial.println("\nERROR: no compass detected. Nothing to align.");
+    blinkBind(10);
+    return;
+  }
+
+  // Same uncalibrated-default reject that getCompassHeading() uses.
+  if (usrConf.mag_scale_x == 0.0f || usrConf.mag_scale_y == 0.0f ||
+      (usrConf.mag_offset_x == 0 && usrConf.mag_offset_y == 0 &&
+       fabsf(fabsf(usrConf.mag_scale_x) - 1.0f) < 1e-4f &&
+       fabsf(fabsf(usrConf.mag_scale_y) - 1.0f) < 1e-4f)) {
+    Serial.println("\nERROR: compass is not calibrated yet.");
+    Serial.println("       Run ?compasscal first - it sets the iron calibration AND the");
+    Serial.println("       orientation in one go. Use ?magalign only to re-check afterwards.");
+    blinkBind(10);
+    return;
+  }
+
+  Serial.println("\n--- COMPASS ORIENTATION (?magalign) ---");
+  Serial.println(">>> POINT THE FRONT OF THE BUGGY AT MAGNETIC NORTH <<<");
+  Serial.println("Hold it steady. Sampling for 5 seconds, starting now.");
+  Serial.println("Motor OFF - motor current swamps the compass entirely.");
+
+  while (Serial.available()) Serial.read();
+
+  // Average over 5 s. Idle noise here is ~3.2 deg spread, so averaging costs nothing and
+  // removes the odd outlier.
+  float sum_sin = 0.0f, sum_cos = 0.0f;
+  int   n = 0;
+  uint32_t t0 = millis();
+  while (millis() - t0 < 5000) {
+    esp_task_wdt_reset();
+
+    // V2.5-Evo - 2026-08-16 - abort if RTM/FM engages during the 5 s average. Like ?compasscal,
+    // this can legitimately start on an idle bench and be overtaken by an arm from the remote.
+    // The abort is before usrConf.mag_orientation is touched, so the stored orientation is left
+    // exactly as it was and the averaged samples are simply thrown away.
+    if (rxAbortIfEngaged("?magalign")) {
+      Serial.println("Alignment abandoned. Mounting orientation unchanged, nothing saved.");
+      return;
+    }
+
+    if (readCompassRaw()) {
+      float cx = ((float)magX - (float)usrConf.mag_offset_x) * usrConf.mag_scale_x;
+      float cy = ((float)magY - (float)usrConf.mag_offset_y) * usrConf.mag_scale_y;
+      float h  = atan2f(cy, cx);
+      sum_sin += sinf(h);   // circular mean - a plain average breaks across the 0/360 wrap
+      sum_cos += cosf(h);
+      n++;
+    }
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
+
+  if (n < 20) {
+    Serial.printf("\nERROR: only %d samples read. Orientation unchanged.\n", n);
+    blinkBind(10);
+    return;
+  }
+
+  float measured = atan2f(sum_sin / n, sum_cos / n) * (180.0f / M_PI);
+  if (measured < 0.0f) measured += 360.0f;
+
+  int snapped = ((int)((measured + 45.0f) / 90.0f)) * 90;
+  if (snapped >= 360) snapped -= 360;
+
+  // How far off the nearest cardinal was the reading? Large means the buggy was not
+  // actually pointing north, or the module is mounted at an odd angle - either way the
+  // rider should know rather than get a silent snap.
+  float residual = measured - (float)snapped;
+  while (residual > 180.0f)  residual -= 360.0f;
+  while (residual < -180.0f) residual += 360.0f;
+
+  uint16_t previous = usrConf.mag_orientation;
+  usrConf.mag_orientation = (uint16_t)snapped;
+
+  Serial.printf("\nMeasured heading while pointing north: %.1f deg (%d samples)\n", measured, n);
+  Serial.printf("Mounting orientation stored: %u deg (was %u)\n", usrConf.mag_orientation, previous);
+  if (fabsf(residual) > 25.0f) {
+    Serial.printf("WARNING: reading was %.0f deg off the nearest cardinal.\n", residual);
+    Serial.println("         Either the buggy was not really pointing north, or the module is");
+    Serial.println("         mounted at an odd angle. Re-check before trusting Follow-Me.");
+  }
+  Serial.println("Note: ?magalign cannot detect a MIRRORED module - only ?compasscal can,");
+  Serial.println("      from the direction of the turn.");
+
+  cmdSave("");
+  Serial.println("Saved.");
+  blinkBind(2);
+}

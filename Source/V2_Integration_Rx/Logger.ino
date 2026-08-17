@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-08-16 - MID-RUN ABORT for ?download and ?deleteallogs, plus the MISSING WATCHDOG FEED in deleteAllLogFiles(). Both commands now ask rxAbortIfEngaged() inside their per-item loop, so an RTM/FM engagement that begins AFTER the command started stops it instead of freezing every safety gate for the rest of it — on ?download that was MINUTES (the code's own note records ~3 min for a ~350 kB file), which is by far the largest blind spot of any command on this board. ?download checks at the RECORD boundary, so no half-formatted row reaches the wire, closes the file on the way out, and prints a DIFFERENT end-of-transfer marker: "=== END CSV DATA ===" is never printed after an abort, because every reader treats that line as "the whole file arrived" and printing it over a truncated stream would silently pass a partial log off as complete; the abort marker names itself and carries the record count actually sent. ?deleteallogs checks at the WHOLE-FILE boundary before each SPIFFS.remove(), so every file is either fully deleted or fully untouched, and it now reports how many were ACTUALLY deleted instead of claiming completion over a partial run. Separately, its loop gained the watchdog feed it never had: initWatchdog() now arms the 3000 ms panic WDT on the first boot after a version bump where it previously did not, and on a full SPIFFS the garbage collection each remove() triggers can walk the loop past the timeout and panic-reboot mid-delete. The feed is gated on g_wdt_active, the same guard PWM.ino and Radio.ino use. NO change to the log file format, record layout or column set — existing logs stay parseable — and no change to either command's behaviour or timing when it runs to completion. No confStruct change, no VescLogData change, sizeof stays 192, SW_VERSION stays 35.
+// V2.5-Evo - 2026-08-16 - CRITICAL MAINTENANCE contract honoured (log mirror only; no new column, no new rtm_source value, no record-size change, no control path touched): the 2026-08-16 COG-hold change was mirrored into convertToLogData()'s STAGE 2 guards but NOT into the hold itself, so on every tick the controller was serving the last good COG (confidence 2, up to kCogHoldMs after cog_valid drops) the log recorded COMPASS_SNAPSHOT or NONE instead — the rtm_source / rtm_confidence columns misdescribed the exact source transitions these logs are being read to diagnose. The duplicate ladder now re-serves cog_last_good_deg / cog_last_good_ms in the same position and on the same terms the controller does (after the disagreement veto and the live-COG branch, gated on mode 1 and !cog_frozen_moving, ahead of the compass fallback) and logs it as src 1 / conf 2 — GPS_COG at MEDIUM, the pair getRtmHeading() actually returns, so held and live COG stay distinguishable without touching the CSV format. Strictly READ-ONLY: this mirror runs in loggerTask and writes no controller state, no timing, nothing. The 5 s escalation latch is still deliberately not read here. No confStruct change, no VescLogData change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-07-25 - STAGE 2 (log mirror only, no new column, no record-size change): the inline getRtmHeading() duplicate in convertToLogData() now applies the same two heading-trust guards RTMState.ino gained — guard 1 (COG rejected when its VALUE has been frozen longer than kRtmCogFrozenMs while gps_last_speed_kmh >= rtm_cog_min_speed_kmh, and no compass promotion in that state) and guard 2 (per-tick COG-vs-compass-snapshot disagreement beyond kHeadingDisagreeDeg = no source at all). Without this, rtm_source/rtm_confidence would keep logging "GPS COG, HIGH" for ticks where the controller was actually holding straight, which is precisely the blindness Stage 0 was built to end. The 5 s escalation latch is deliberately NOT read here: this runs in loggerTask and the mirror stays side-effect-free and per-tick. No confStruct change, no VescLogData change, sizeof stays 184, SW_VERSION stays 34, no control path touched.
 // V2.5-Evo - 2026-07-25 - STAGE 0 PART B+C (instrumentation only): every log file now opens with an 8-byte self-describing header (magic "BRLG", format version, log level, record size) so a reader can parse a VARIABLE record size instead of assuming sizeof(VescLogData); the level is latched once per FILE in createNewLogFile() so changing the setting mid-session cannot corrupt an open file; level 4 writes a 65-byte record (59-byte level-3 record + gps_sent_per_s, cog_frozen_s, mux_err_cnt, loop_max_ms); ?download reads the header, steps by header.record_size, refuses a file with no valid magic in plain English instead of emitting garbage, and formats rows through the single shared logFormatCsvRow() that the WiFi path also calls — so the two CSV outputs cannot drift apart again. No confStruct change, sizeof stays 184, SW_VERSION stays 34, no control path touched.
 // V2.5-Evo - 2026-07-24 - F9: +3 CSV columns (tx_distance_m, rssi_dbm, snr_db); 28→31 columns; VescLogData +6 bytes; distance decoded from telemetry.rtm_distance, RSSI/SNR from Radio.ino cache (g_last_rssi_dbm/g_last_snr_db); appended for parser compat; no confStruct change, SW_VERSION unchanged
@@ -30,6 +32,18 @@
 extern TinyGPSPlus gps;
 extern Adafruit_AW9523 aw;   // Pull in the global AW9523 expander
 extern SemaphoreHandle_t i2cMutex;
+
+// V2.5-Evo - 2026-08-16 - the shared "has RTM/FM engaged while this command was running?" test.
+// Defined in System.ino beside rxRefuseIfEngaged(), which asks the same question at dispatch
+// time. Declared here explicitly rather than leaning on the sketch's generated prototypes, so
+// the dependency between these two files is written down where a reader will see it.
+// Used by the two long-running log commands below, ?download and ?deleteallogs.
+extern bool rxAbortIfEngaged(const char *what);
+
+// V2.5-Evo - 2026-08-16 - true only once initWatchdog() has actually SUBSCRIBED the loop task
+// to the task WDT (defined in GPS.ino). esp_task_wdt_reset() logs an error on every call from
+// an unsubscribed task, so feeds are gated on this — the same guard PWM.ino and Radio.ino use.
+extern volatile bool g_wdt_active;
 
 #define MIN_FREE_SPACE_KB 500  
 
@@ -202,6 +216,11 @@ VescLogData convertToLogData() {
     extern unsigned long         gps_last_ms;
     extern volatile uint8_t      g_effective_steer;
     extern float                 getCompassHeading();
+    // V2.5-Evo - 2026-08-16 - the last-good COG the controller holds across a short COG dropout
+    // (RTMState.ino, kCogHoldMs). READ-ONLY here: the logger mirrors the controller's choice, it
+    // never participates in making it, so nothing in this file may ever assign to these two.
+    extern float                 cog_last_good_deg;   // last COG accepted at HIGH confidence, deg; -1.0 = none yet
+    extern unsigned long         cog_last_good_ms;    // millis() of that acceptance; 0 = none yet
 
     // Simple state reads
     data.thr_received_log       = thr_received;
@@ -303,6 +322,30 @@ VescLogData convertToLogData() {
         src    = 1;     // GPS_COG
         conf   = 3;     // HIGH
         chosen = gps_last_course_deg;
+      } else if (mode == 1 && !cog_frozen_moving &&
+                 cog_last_good_deg >= 0.0f && cog_last_good_ms > 0 &&
+                 ((now_ms - cog_last_good_ms) < (unsigned long)kCogHoldMs)) {
+        // COG-HOLD mirror (V2.5-Evo - 2026-08-16). WHAT WAS WRONG: the 2026-08-16 controller change
+        // added a step to getRtmHeading() that this duplicate never got — before falling back to the
+        // compass it re-serves the LAST GOOD COG for up to kCogHoldMs at confidence 2, which is what
+        // stops RTM flapping to an EMI-biased compass every time speed dips under the COG floor.
+        // Because it was missing here, every tick of every hold logged COMPASS_SNAPSHOT or NONE
+        // while the controller was in fact steering on held COG: the two columns we are reading
+        // field logs to understand described the wrong source at exactly the transitions in question.
+        // WHY src=1/conf=2 IS THE HONEST PAIR, with no new column and no new enum value: the value
+        // being steered on IS a GPS course (src 1), and confidence 2 is precisely what
+        // getRtmHeading() returns for it — a real measurement, but a stale one. A live COG still
+        // logs 1/3, so held and live remain distinguishable in the CSV without changing its format.
+        // ORDER MATTERS and mirrors the controller exactly: after the disagreement veto and the live
+        // COG branch, gated on mode 1 (mode 0 returns NONE before the hold, mode 2 never reaches
+        // here) and on !cog_frozen_moving (a frozen COG is refused before the hold is consulted),
+        // and ahead of the compass fallback.
+        // STRICTLY SIDE-EFFECT-FREE: three reads and nothing else. This runs in loggerTask; the two
+        // globals are written only by getRtmHeading() in the loop task, and this mirror must never
+        // write them or any other controller state, nor change any timing.
+        src    = 1;     // GPS_COG — held, not live
+        conf   = 2;     // MEDIUM — real course, but stale
+        chosen = cog_last_good_deg;
       } else if (mode == 1 && !cog_frozen_moving) {
         // Hybrid: fall back to compass snapshot — but NOT when guard 1 has just proven the COG
         // frozen while moving. In that state one source is provably dead and the other cannot be
@@ -763,11 +806,33 @@ void downloadLogFile(const char* filename) {
   uint8_t  rec_buf[sizeof(VescLogDataL4)];
   char     row[LOG_CSV_ROW_BUF];
   uint16_t recordCount = 0;
+  bool     aborted     = false;   // V2.5-Evo - 2026-08-16 - true = stopped by an RTM/FM engagement
   while (file.available()) {
     // V2.5-Evo - 2026-05-06 - FIX-LOGDL-2: feed WDT inside loop and yield to FreeRTOS.
     // Without these, files >~30KB cause WDT (3s timeout) to fire mid-download (Andres
     // confirmed crash at ~3 min / ~350KB on 050626_204204.log).
     esp_task_wdt_reset();
+
+    // ============================================================
+    // V2.5-Evo - 2026-08-16 - MID-RUN ABORT: stop if RTM or Follow-Me engages mid-transfer.
+    //
+    // This is the longest-running command on the RX — the note directly above records a
+    // measured ~3 min for a ~350 kB file — so an engagement part-way through bought MINUTES in
+    // which no safety gate was evaluated at all (no Gate 9 stop-distance hard stop, no Phase
+    // A/B/C) while generatePWM carried on applying the last steering override and throttle cap.
+    // The dispatch gate only closes the front door; rtm_rx_active is set from the radio task on
+    // an arm packet and can turn true at any instant after this command was correctly allowed
+    // to start on an idle buggy.
+    //
+    // Checked per record, at the RECORD BOUNDARY: cheap enough to be free here (two atomic
+    // loads against the read + format + serial print that follow it), and leaving on a boundary
+    // means a half-formatted row never reaches the wire.
+    //
+    // CLEANUP: this command only READS — no SPIFFS writes, no mux movement, no baud change — so
+    // the only obligations are closing the file (the existing close below covers every exit) and
+    // telling the receiving end that the stream is incomplete. See the marker after the loop.
+    // ============================================================
+    if (rxAbortIfEngaged("?download")) { aborted = true; break; }
 
     // Step by the size THIS file declares. A short read means the tail is truncated (power cut
     // mid-write): stop cleanly rather than formatting a partial record.
@@ -786,7 +851,27 @@ void downloadLogFile(const char* filename) {
     }
   }
   file.close();
-  Serial.println("=== END CSV DATA ===");
+
+  // ============================================================
+  // V2.5-Evo - 2026-08-16 - END-OF-TRANSFER MARKER: a complete download and one that was
+  // stopped part-way must NOT look the same on the wire.
+  //
+  // "=== END CSV DATA ===" is what every reader — a human scrolling the terminal, or the web
+  // serial tool scraping between the BEGIN and END lines — treats as "the whole file arrived".
+  // Printing it after an aborted stream would silently pass a truncated log off as a complete
+  // one, and a partial session log that is believed to be whole is worse than no log: the gap
+  // is invisible, so the missing records read as a period where nothing happened.
+  //
+  // So the abort path prints its OWN distinct terminator instead, naming itself and carrying
+  // the number of records actually sent. Two lines, neither containing the normal marker, so
+  // the difference is unmistakable at a glance and machine-detectable by an exact line match.
+  // ============================================================
+  if (aborted) {
+    Serial.printf("=== CSV DATA TRUNCATED - ABORTED AFTER %u RECORDS ===\n", (unsigned)recordCount);
+    Serial.println("=== THIS DOWNLOAD IS INCOMPLETE - re-run ?download once disarmed ===");
+  } else {
+    Serial.println("=== END CSV DATA ===");
+  }
 }
 
 void deleteLogFile(const char* filename) {
@@ -810,7 +895,42 @@ void deleteAllLogFiles() {
   File root = SPIFFS.open("/");
   File file = root.openNextFile();
   int deleted = 0, skipped = 0;
+  bool aborted = false;   // V2.5-Evo - 2026-08-16 - true = stopped by an RTM/FM engagement
   while (file) {
+    // ============================================================
+    // V2.5-Evo - 2026-08-16 - FEED THE WATCHDOG. This loop had no feed at all.
+    //
+    // WHAT THE BUG IS: SPIFFS runs garbage collection on remove(), and on a nearly-full
+    // filesystem holding several large logs that can take hundreds of milliseconds per file.
+    // Enough files and the loop walks straight past the 3000 ms task-WDT timeout, which is
+    // armed with trigger_panic = true — so the board PANIC-REBOOTS part-way through the delete
+    // rather than finishing it.
+    //
+    // WHY IT MATTERS NOW: this was previously unreachable in practice because initWatchdog()
+    // did not arm the WDT in the state this command was typically run in. It now arms on the
+    // first boot after a version bump, so the loop below runs watched where it used to run
+    // unwatched. The hazard did not change; its reachability did.
+    //
+    // Gated on g_wdt_active for the same reason PWM.ino and Radio.ino gate theirs: calling
+    // esp_task_wdt_reset() from a task that is not subscribed logs an error on EVERY call, and
+    // the RX has no display and no LED — the boot log is its only diagnostic surface.
+    // ============================================================
+    if (g_wdt_active) esp_task_wdt_reset();
+
+    // ============================================================
+    // V2.5-Evo - 2026-08-16 - MID-RUN ABORT: stop if RTM or Follow-Me engages mid-delete.
+    //
+    // Duration here scales with how many logs are stored, so on a full board this is the
+    // difference between a moment and many seconds during which no safety gate is evaluated
+    // while generatePWM keeps applying the last steering override and throttle cap.
+    //
+    // Checked at the TOP of the iteration, BEFORE this file's SPIFFS.remove(), so we always
+    // leave on a WHOLE-FILE boundary: every file is either fully deleted or fully untouched,
+    // never half-removed. A partial run is inherently partial, which is why the report below
+    // states what was actually done instead of claiming completion.
+    // ============================================================
+    if (rxAbortIfEngaged("?deleteallogs")) { aborted = true; break; }
+
     String fname = String("/") + file.name();
     file = root.openNextFile();  // advance before remove
     if (!fname.endsWith(".log")) continue;
@@ -818,9 +938,19 @@ void deleteAllLogFiles() {
     SPIFFS.remove(fname);
     deleted++;
   }
-  Serial.printf("LOG: deleted %d log file(s)", deleted);
+  // V2.5-Evo - 2026-08-16 - report what ACTUALLY happened. A partial delete must not print the
+  // same line as a complete one: the operator would otherwise be told every log was erased while
+  // files are still on the board, and would go hunting a storage fault that does not exist.
+  if (aborted) {
+    Serial.printf("LOG: STOPPED PART-WAY — %d log file(s) deleted before the abort", deleted);
+  } else {
+    Serial.printf("LOG: deleted %d log file(s)", deleted);
+  }
   if (skipped) Serial.printf(", skipped %d active", skipped);
   Serial.println();
+  if (aborted) {
+    Serial.println("LOG: log files REMAIN on the board — re-run ?deleteallogs once disarmed.");
+  }
 }
 
 bool isLoggingActive() {

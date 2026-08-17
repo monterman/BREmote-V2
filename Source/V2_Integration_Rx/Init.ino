@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-08-16 - initWatchdog() no longer returns early on config_version_error, so the task watchdog is armed on EVERY boot — including the first boot after a version bump, which used to run with no watchdog at all. A version mismatch is a self-healing condition (defaults are re-baked and re-read); a genuine config failure halts in spiffsErrorHalt() and never reaches this function. The flag itself is left set and untouched — it is shared with the TX, where it drives a whole-boot safe mode. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-07-25 - STAGE 1 (GPS repair): Serial1.setRxBufferSize(2048) added in runBootSequence() immediately BEFORE the first Serial1.begin(). The old setRxBufferSize(512) lived in configureGPS() (GPS.ino), which runs AFTER this begin() — and arduino-esp32 refuses a resize once the UART driver is installed, so the ring has always silently been the 256-byte default. No confStruct change, SW_VERSION stays 34.
 
 // ===== Hardware Initialization =====
@@ -56,7 +57,31 @@ void initTasks()
 
 void initWatchdog()
 {
-  if(config_version_error) return;
+  // ============================================================
+  // V2.5-Evo - 2026-08-16 - THE WATCHDOG IS NOW ARMED ON EVERY BOOT.
+  //
+  // WHAT THE BUG WAS: this function opened with `if(config_version_error) return;`, so the task
+  // watchdog was never started on any boot where the config stored in SPIFFS carried a different
+  // SW_VERSION than the running firmware. That is precisely the FIRST boot after every flash of
+  // a new build — and riders commonly go straight out on that boot without a second power cycle.
+  // The one session most likely to meet a new-code bug was the one session with nothing watching
+  // for a hang: no panic, no reboot, just a buggy whose control loop has stopped.
+  //
+  // WHY SKIPPING IT WAS NEVER RIGHT: a version mismatch is not a failure. Its whole consequence,
+  // in getConfFromSPIFFS() (Common/SPIFFSEngine.h), is that defaultConf is re-baked into SPIFFS
+  // and read back — an expected, recoverable, self-healing condition — so by the time execution
+  // reaches this line usrConf holds a fully valid config. A GENUINE config failure cannot reach
+  // this line at all: if the default re-bake fails, getConfFromSPIFFS() calls spiffsErrorHalt(),
+  // which never returns (it blinks the AUX LED forever). The early return therefore protected
+  // nothing and only disabled the watchdog on the boot that needed it most.
+  //
+  // WHY THE FLAG IS LEFT SET rather than cleared: config_version_error is set in Common/
+  // SPIFFSEngine.h, which the TX compiles too, and the TX uses the flag as a whole-boot safe
+  // mode — it skips the radio, skips initTasks(), skips the boot sequence, forces system_locked,
+  // keeps serial on and scrolls "EV" instead of running loop(). Clearing it in the shared setter
+  // would silently disarm all six of those. This function was its ONLY consumer on the RX, so
+  // dropping the early return changes nothing else on this board and nothing at all on the TX.
+  // ============================================================
 
   // V2.5-Evo fix (Bug 1): increased from 1000ms to 3000ms.
   // Peak loop load: getGPSLoop(300ms) + checkWetness(300ms) + getVescLoop(210ms) = ~810ms

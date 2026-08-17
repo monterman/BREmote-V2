@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-08-16 - Follow-up to the edge-clear fix below; three items, all in the heading-disagreement guard. (1) THE LATCH NOW ALSO CLEARS AT THE ARM EDGE, not only at the disarm edge. runRtmLoop() calls getRtmHeading() unconditionally every 100 ms to fill the fm_status telemetry byte, so the disagreement dwell runs during ORDINARY MANUAL RIDING with nothing armed: a rotated or uncalibrated compass plus five seconds of coasting above rtm_cog_min_speed_kmh with the trigger released (snapshot still refreshing, COG live) was enough to latch the fault before the rider had armed anything. Once both clears became edges, nothing forgave that. The rider then declared FM, separation latched, and FM sat in FM_ARMED for the rest of the session - silently, because fm_flags bit 2 (armed-not-ready) DROPS once separation latches so the TX reads "ready", and the HEADING DISAGREE FAULT printf only runs when FM was already engaged. RTM had the same dead end by a different road: gates 2-8 set rtm_rx_emergency_stop WITHOUT clearing rtm_rx_active, so a TX that dies mid-tow leaves rtm_rx_active stuck true, the disarm edge never fires, and the "fresh agreement" clear is unreachable because the emergency stop pins throttle at 0, so the buggy cannot move, so COG never goes valid. Both are answered by clearing at the START of an engagement as well as the end - the rtm_rx_active false -> true edge in runRtmLoop(), and the FM_IDLE -> armed edge in runFmLoop(). This cannot weaken the guard: the flag only ever SUBTRACTS eligibility, and a genuine disagreement re-proves itself within kHeadingDisagreeMs (5 s) of the run starting, so the cost is at most 5 s of protection at the very beginning of an engagement. (2) THE 15 s EVIDENCE CAP BOUNDED THE OTHER DEFECT BUT DID NOT REMOVE IT: it measures the SPAN from the start of the dwell, not the age of the last measurement, so one disagreeing tick at t=0 and one more at t=14 s passed the cap and then satisfied "held continuously for 5 s" immediately - a fault built from two isolated one-tick samples fourteen seconds apart. Persistence is now required to be CONTINUOUS: consecutive measured disagreements no more than kHeadingDisagreeGapMaxMs (2 s) apart, so at least four samples must span the dwell. The freeze-don't-clear behaviour the short COG handover needs is untouched. (3) Comment-only: the prose in front of the COG hold claimed the function hands out no heading at all once the latch sets. It still serves a HELD COG at confidence 2 for up to kCogHoldMs, deliberately - the latch is evidence against the COMPASS, and a held COG is not the compass - so the comment now states what the code does instead of asserting more. No threshold retuned, no ordering changed, no confStruct change, sizeof stays 192, SW_VERSION stays 35.
+// V2.5-Evo - 2026-08-16 - The heading-disagree backstop was INERT, and it was inert in the exact mode it was extended to protect. fmEnterIdle() zeroed heading_disagree_since_ms and heading_disagree_fault on every call, and runFmLoop() calls fmEnterIdle() on every 100 ms tick whenever FM is idle — a condition that INCLUDES rtm_rx_active. So for the whole duration of any RTM run the dwell timer and the latch were being wiped ten times a second: the kHeadingDisagreeMs (5 s) dwell could never accumulate, the fault could never be set, and the check that consumes it in getRtmHeading() (in front of the compass fallback) could never see anything. In RTM-only operation — the field case this was built for, a buggy that veered at close range and never came back — the advertised sticky backstop did nothing. FIX 1: the clear in fmEnterIdle() is now EDGE-triggered on a genuine transition into FM idle (a real end of an FM declaration), not re-applied every tick, so the latch survives across ticks WITHIN an engagement. FIX 2: RTM gained its own end-of-engagement clear at the top of runRtmLoop() — an edge on rtm_rx_active going true -> false — so a proven fault is forgiven when the rider disarms and cannot outlive the run that produced it (it is NOT a power-cycle latch). Deliberately an edge there too: clearing it at every tick RTM is inactive would recreate the same bug for Follow-Me, which only ever runs while RTM is inactive. FIX 3 (the freeze-age MEDIUM): the "no comparison possible" branch froze the dwell timestamp indefinitely, so two one-tick disagreements minutes apart escalated as one "sustained 5 s" fault; a part-finished proof older than kHeadingDisagreeEvidenceMaxMs (3x the dwell) is now discarded, while a PROVEN fault is untouched. Nothing here grants a heading, raises a cap or extends an engagement — the guard can still only subtract. cog_last_good_deg/ms are no longer static so Logger.ino can read (never write) them. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-07-25 - STAGE 2 (RX heading-source trust guards, RTM + FM): the bench ?diag on the repaired board read "COG : 7.4 timestamp-updates/s vs 0.0 value-changes/s [value frozen 533 s]" — the GPS repeated ONE course seven times a second for nine minutes while gps_last_course_ms kept refreshing, so getRtmHeading()'s 1500 ms freshness gate passed the whole time and the ladder steered on a dead number, then fell back to the EMI-biased compass. That is the Follow-Me veer. GUARD 1: the COG branch now also requires the course VALUE to have moved within kRtmCogFrozenMs (3 s), read from the existing Stage 0 tracker g_diag_cog_change_ms — and it is SPEED-GATED to the same gps_last_speed_kmh >= rtm_cog_min_speed_kmh term the branch already used, so a stationary buggy (whose constant course is correct, not faulty) is never touched. A COG frozen WHILE MOVING additionally suppresses the mode-1 compass promotion: one source is provably dead and the other unverifiable, so we hold straight instead of steering on the survivor. GUARD 2: when a live COG and a simultaneous (< kHeadingCompareSnapMs) compass snapshot are both available in hybrid mode, a shortest-angular-distance gap > kHeadingDisagreeDeg (45) returns NO heading (confidence 0) so updateRtmSteering() holds straight; sustained past kHeadingDisagreeMs (5 s) it sets heading_disagree_fault, which joins the EXISTING FM fault chain alongside A3's diverge_fault (FM_STOPPING -> cap 0 -> ramp -> FM_IDLE, re-arm required) — no new state, no new exit path. Both guards can only REMOVE eligibility: no throttle cap is raised, no engagement extended, the deadman (thr_received < 25) is untouched. Logger.ino's inline getRtmHeading() duplicate is updated in lockstep so rtm_source/rtm_confidence keep telling the truth. All compile-time constants (shared, in BREmote_V2_Rx.h); no confStruct change, sizeof stays 184, SW_VERSION stays 34.
 // V2.5-Evo - 2026-07-25 - F3-c (RX FM): the 8 m engage-distance floor guarded ONLY the manual fm_engage_dist_m value. The AUTO branch — kFmEngageFactor (1.5) x (min_dist_m + followme_smoothing_band_m) — used its product raw, and neither of those two SPIFFS fields has a lower bound, so a small tuning such as min_dist 1 + band 1 produced d_engage = 3 m: BELOW the measured 20 ft / 6.10 m tow rope, letting Follow-Me latch and engage with the rider still ON the rope. Same hazard the floor exists to prevent, reached through the other branch. FIX: each branch now only computes its candidate and ONE kFmEngageDistFloorM clamp is applied to the final d_engage regardless of origin. The clamp can only RAISE d_engage (engage later, never earlier), and it is a no-op at the owner's 4+2 tuning, which yields 9.0 m. Also swept the stale "6.7-7.6 m" tow-rope prose in this file to the measured 6.10 m. No confStruct change, sizeof stays 184, SW_VERSION stays 34.
 // V2.5-Evo - 2026-07-25 - F3-b (RX FM; comment + shared-constant move, no behaviour change): kFmEngageDistFloorM is no longer DEFINED in this file. It now has exactly one definition, in BREmote_V2_Rx.h, raised 5.0 -> 8.0 m — 5.0 m sat below the tow rope it exists to clear (the owner's rope is 20 ft = 6.10 m), so a manual fm_engage_dist_m of 5.0-6.1 m was legal and let FM engage with the rider still ON the rope. ConfigService.ino's duplicate bare 5.0f literal is gone with it; both the validator and the read-site clamp in runFmLoop() now reference the one shared constant. The clamp itself is unchanged in shape — legacy stored values still clamp UP to the floor, now 8.0 m. No confStruct change, sizeof stays 184, SW_VERSION stays 34.
@@ -218,9 +220,39 @@ static bool checkRtmSafetyGates()
 // heading_disagree_fault : set once that gap has persisted for kHeadingDisagreeMs. This is the
 //   ESCALATION — a transient disagreement only invalidates the heading for that tick, but a
 //   sustained one means a sensor is genuinely broken. runFmLoop() consumes it in exactly the same
-//   fault chain as A3's diverge_fault. It is cleared in two places and only two: here, the moment
-//   a fresh comparison shows the two sources agreeing again (the evidence is withdrawn), and in
-//   fmEnterIdle() (the re-arm boundary).
+//   fault chain as A3's diverge_fault.
+//
+//   V2.5-Evo - 2026-08-16 - WHERE IT IS CLEARED (this list used to say "two places and only two",
+//   and both of the old entries were FM-shaped, which is what left it inert during RTM):
+//     1. here, the moment a fresh comparison shows the two sources agreeing again — the evidence
+//        is withdrawn, so the verdict goes with it;
+//     2. in fmEnterIdle(), but ONLY on a genuine transition into FM idle — that function is called
+//        on every tick FM is idle, so clearing on the level wiped the latch continuously (see the
+//        block there);
+//     3. at the top of runRtmLoop(), on the edge where rtm_rx_active goes true -> false — RTM's own
+//        end of engagement. Needed because in RTM-only operation FM never leaves FM_IDLE, so route
+//        2 never fires and nothing else would ever forgive the fault.
+//     4. V2.5-Evo - 2026-08-16 - at the START of an engagement as well as its end: the rtm_rx_active
+//        false -> true edge in runRtmLoop(), and the FM_IDLE -> armed edge in runFmLoop().
+//        WHY THIS WAS NEEDED. The comparison below runs on EVERY tick in EVERY state — runRtmLoop()
+//        calls getRtmHeading() unconditionally to fill the fm_status telemetry byte — so the dwell
+//        also accumulates during ordinary manual riding, with nothing armed at all. Once routes 2
+//        and 3 became edges (correctly), a fault proven while merely riding had no boundary left to
+//        clear it, and it then blocked the next engagement from the inside: FM stayed in FM_ARMED
+//        for the rest of the session while the TX displayed "ready" (fm_flags bit 2 drops once
+//        separation latches), and the explanatory printf never fired because it only runs when FM
+//        was already engaged. RTM reached the same dead end from the other side: gates 2-8 set
+//        rtm_rx_emergency_stop without clearing rtm_rx_active, so route 3 never fired either.
+//        WHY IT IS SAFE. This flag can only ever SUBTRACT eligibility, and a real disagreement
+//        re-proves itself in kHeadingDisagreeMs. Clearing at the arm boundary therefore costs at
+//        most 5 s of protection at the very start of a run and buys the removal of two silent
+//        dead ends. EDGES, not levels, for exactly the reason routes 2 and 3 are.
+//   And separately, the part-finished dwell (not the fault) ages out after
+//   kHeadingDisagreeEvidenceMaxMs while no comparison is possible, and is restarted from the
+//   current sample if the measured disagreements themselves stop being contiguous
+//   (kHeadingDisagreeGapMaxMs).
+//   NOTHING clears either of them mid-engagement except route 1 — a live measurement proving the
+//   two sources agree again. Every other route is a boundary of an engagement.
 //
 //   WHY THE FLAG IS NEEDED AT ALL, given a disagreement already returns "no heading": the
 //   comparison window is narrow by necessity (see kHeadingCompareSnapMs). The compass snapshot
@@ -229,11 +261,13 @@ static bool checkRtmSafetyGates()
 //   valid again and FM would happily resume steering on the source we just proved suspect. The
 //   flag is what stops a proven fault from being washed out by its own evidence going stale.
 //
-//   WHY RTM DOES NOT CONSUME IT: RTM is field-proven and the owner uses it. In RTM the per-tick
-//   invalidation is enough — it holds steering straight, and with the default
-//   rtm_compass_required = 1 it fails gate 6 and stops the run anyway. Latching a sticky fault
-//   into RTM would risk an un-clearable arming block on the water for no extra safety, since RTM
-//   already carries runPhaseC()'s convergence net that FM never had.
+//   RTM DOES CONSUME IT NOW (this paragraph used to say the opposite). The 2026-08-16 close-range
+//   veer changed that: getRtmHeading() itself refuses to hand out the compass fallback while the
+//   fault is latched, so every caller inherits it — RTM, FM and anything added later. The original
+//   objection was that a sticky fault could become an un-clearable arming block on the water; that
+//   is answered by clear route 3 above, which forgives the fault the moment the rider disarms, so
+//   the worst case is one aborted run and a re-arm, never a block that survives to the next run or
+//   needs a power cycle.
 //
 // CONCURRENCY: every caller of getRtmHeading() (gate 6, checkFmFaultConditions, the fm_status
 // telemetry block, updateRtmSteering) runs in the loop task, so these statics are single-writer.
@@ -242,6 +276,58 @@ static bool checkRtmSafetyGates()
 // ============================================================
 static unsigned long heading_disagree_since_ms = 0;
 static bool          heading_disagree_fault    = false;
+
+// V2.5-Evo - 2026-08-16 - millis() of the most recent tick on which a disagreement was actually
+// MEASURED — as opposed to merely still standing on record. 0 = nothing measured. It is only
+// meaningful while heading_disagree_since_ms is non-zero, and it is cleared everywhere that is,
+// so the two can never disagree about whether a dwell is running. See kHeadingDisagreeGapMaxMs
+// below for what it is for and why the dwell needed a second, finer bound than the span cap.
+static unsigned long heading_disagree_last_seen_ms = 0;
+
+// V2.5-Evo - 2026-08-16 - The oldest part-finished disagreement proof that may still be counted.
+// It exists because the "no comparison possible" branch of getRtmHeading() FREEZES
+// heading_disagree_since_ms instead of clearing it (so a dwell survives a COG dropout mid-proof).
+// Frozen without a limit, the timestamp stops measuring a sustained condition and starts measuring
+// the wall clock: two one-tick disagreements minutes apart would satisfy "held continuously for
+// kHeadingDisagreeMs" and escalate, which is not what the constant is documented to mean.
+// 3x the dwell is the smallest multiple that is comfortably clear of the case the freeze was
+// written for - a real disagreement measurable either side of one handover, which spans a second
+// or two - while refusing to treat evidence from a different minute as part of the same event.
+// This is a compile-time constant, like every other k* in this file: no confStruct field, no SPIFFS
+// slot, no web-UI row, no SW_VERSION bump.
+static const unsigned long kHeadingDisagreeEvidenceMaxMs = 3UL * (unsigned long)kHeadingDisagreeMs;  // ms (15 s at the shipped 5 s dwell)
+
+// V2.5-Evo - 2026-08-16 - The largest gap allowed BETWEEN two measured disagreements for them to
+// count as one continuous event.
+// WHAT THE SPAN CAP ABOVE STILL LET THROUGH. kHeadingDisagreeEvidenceMaxMs bounds the total SPAN of
+// a dwell, measured from heading_disagree_since_ms — the START of it — and it is only ever tested on
+// ticks where no comparison is possible. So: one disagreeing tick at t = 0 opens the dwell; the
+// comparison is impossible for the next fourteen seconds; one more disagreeing tick arrives at
+// t = 14 s. The span test is (14000 - 0) > 15000, which is false, so the evidence survives — and
+// then (now - since) >= kHeadingDisagreeMs is true on that same tick, because the dwell clock has
+// been frozen the whole time. A fault built from two isolated one-tick samples fourteen seconds
+// apart: precisely the defect the span cap was added to kill, merely bounded at 15 s instead of
+// unbounded. The consequence is a nuisance FM fault-stop mid-wave, not a danger — but it is still
+// the guard reporting something it did not measure.
+// WHAT THIS ADDS. Continuity. A dwell only carries forward while the disagreeing samples KEEP
+// ARRIVING; a longer silence than this and the next disagreement opens a fresh dwell from itself.
+// Span is not evidence of persistence — arrival rate is — so the guard now bounds both.
+// WHY 2000 ms. It has to sit comfortably above every gap that is a genuine hiccup in the two inputs
+// a comparison needs, and comfortably below the tens of seconds the counterexample depends on. The
+// compass snapshot is only comparable for kHeadingCompareSnapMs (1000 ms) after a motor-idle
+// capture, and the COG freshness gate in getRtmHeading() is 1500 ms; 2000 ms clears the looser of
+// those two, so any gap longer than this means an input was genuinely ABSENT, not merely late —
+// which is the ordinary COG dropout the freeze exists for, and one of those spans a second or two,
+// not tens of seconds. At the 10 Hz ladder cadence a truly continuous disagreement re-measures every
+// ~100 ms, so 2000 ms is ~20 consecutive missed opportunities before continuity is called broken:
+// nothing continuous comes near it. And it forces at least four measured samples to span the 5 s
+// dwell, so the two-samples-far-apart fault is no longer reachable at any spacing.
+// DIRECTION OF THE CHANGE: strictly harder to set the fault, never easier. Restarting a dwell can
+// only delay an escalation, and the per-tick verdict (a measured disagreement returns confidence 0
+// on that tick regardless) is untouched, so no tick loses protection.
+// Compile-time constant like every other k* in this file: no confStruct field, no SPIFFS slot, no
+// web-UI row, no SW_VERSION bump.
+static const unsigned long kHeadingDisagreeGapMaxMs = 2000UL;  // ms; max spacing between two disagreeing samples
 
 
 // V2.5-Evo - 2026-08-16 - Last-good COG, held briefly across a dropout.
@@ -260,9 +346,16 @@ static bool          heading_disagree_fault    = false;
 
 // 4 km/h is a far better estimate than a compass that is 87-100 deg wrong under motor load.
 
-static float         cog_last_good_deg = -1.0f;
+// V2.5-Evo - 2026-08-16 - These two are deliberately NOT static any more. Logger.ino's duplicate
+// heading ladder READS them (it never writes them) so the rtm_source / rtm_confidence columns can
+// report a held COG instead of misreporting it as a compass reading or as no source at all. Same
+// export pattern as g_heading_error_dx10 above: a plain global here, picked up by a local extern
+// in Logger.ino. Single writer - getRtmHeading(), loop task; loggerTask only reads, and the worst
+// a preemption between the two reads can cost is ~100 ms of apparent age in a log column, never a
+// control decision.
+float                cog_last_good_deg = -1.0f;
 
-static unsigned long cog_last_good_ms  = 0;
+unsigned long        cog_last_good_ms  = 0;
 
 
 // V2.5-Evo - 2026-05-06 - D5: Layered heading source for RTM steering.
@@ -295,9 +388,11 @@ static unsigned long cog_last_good_ms  = 0;
 //     kHeadingDisagreeDeg apart, neither is trusted and NO heading is returned.
 //
 // SAFETY: This function still never modifies sensor state, config, telemetry or any control
-//         variable. It does now update two module-private guard-2 timers declared directly above
-//         (heading_disagree_since_ms / heading_disagree_fault) — that is the only state it writes,
-//         and it is single-writer from the loop task.
+//         variable. The only state it writes is the guard-2 bookkeeping declared directly above —
+//         heading_disagree_since_ms, heading_disagree_last_seen_ms and heading_disagree_fault
+//         (V2.5-Evo - 2026-08-16: last_seen added; the list previously named two of them) — plus
+//         the cog_last_good_deg / cog_last_good_ms pair used by the COG hold. All of it is
+//         single-writer from the loop task.
 //         Caller (updateRtmSteering) must handle confidence=0 as a hold-straight
 //         scenario, not as a steering command.
 static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
@@ -441,17 +536,29 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
   if (disagree_now) {
     if (heading_disagree_since_ms == 0) {
       heading_disagree_since_ms = now;
+    } else if ((now - heading_disagree_last_seen_ms) > kHeadingDisagreeGapMaxMs) {
+      // V2.5-Evo - 2026-08-16 - CONTINUITY CHECK. The last time we actually MEASURED a
+      // disagreement is too long ago for this sample to be a continuation of it, so this sample
+      // opens a NEW dwell instead of completing the old one. Without this, the frozen dwell clock
+      // in the else-branch below let two isolated samples far apart be added together and reported
+      // as one sustained condition (see kHeadingDisagreeGapMaxMs for the worked example).
+      // Restarting a dwell can only ever DELAY a fault, never create one.
+      heading_disagree_since_ms = now;
     } else if ((now - heading_disagree_since_ms) >= (unsigned long)kHeadingDisagreeMs) {
       heading_disagree_fault = true;
     }
+    // Stamped AFTER the continuity test above, which reads the PREVIOUS measurement's time.
+    heading_disagree_last_seen_ms = now;
   } else if (compare_possible) {
     // Measured, and the two agree: the disagreement evidence is withdrawn in full.
-    heading_disagree_since_ms = 0;
-    heading_disagree_fault    = false;
+    heading_disagree_since_ms     = 0;
+    heading_disagree_last_seen_ms = 0;
+    heading_disagree_fault        = false;
   } else {
     // No comparison possible this tick. Restart the dwell rather than carry a half-finished proof
-    // across a gap (same discipline as fm_diverge_since_ms). A fault already PROVEN is kept — it
-    // is cleared by a fresh agreement above, or at the re-arm boundary in fmEnterIdle().
+    // across a gap (same discipline as fm_diverge_since_ms). A fault already PROVEN is kept — it is
+    // cleared by a fresh agreement above, or at an end-of-engagement boundary (fmEnterIdle() on a
+    // real transition into FM idle, or the RTM disarm edge at the top of runRtmLoop()).
     // V2.5-Evo - 2026-08-16 - FREEZE, do not clear. This branch runs when the comparison is
 
     // IMPOSSIBLE (COG invalid), not when the sources agreed. Zeroing here discarded partial
@@ -466,6 +573,31 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
 
     // a live comparison, so a stale clock cannot fault anything on its own.
 
+    //
+    // V2.5-Evo - 2026-08-16 - ...but a frozen proof does not keep FOREVER. WHAT WAS STILL WRONG:
+    // with the timestamp held for an unbounded time, two one-tick disagreements minutes apart
+    // satisfied "the gap has held continuously for kHeadingDisagreeMs" and escalated to a fault -
+    // the dwell was measuring the wall clock between two unrelated moments, not a sustained
+    // condition. WHAT THIS DOES: a part-finished proof that has sat unmeasured for longer than
+    // kHeadingDisagreeEvidenceMaxMs is discarded, and the next disagreement opens a fresh dwell.
+    // It cannot weaken the guard in the case the freeze was written for: a genuinely continuous
+    // disagreement escalates at 5 s and never reaches this age, and evidence spanning one COG
+    // handover is seconds old, not tens of seconds. A fault already PROVEN is untouched here -
+    // only the unfinished proof ages out.
+    //
+    // V2.5-Evo - 2026-08-16 - ...and this cap alone was not enough, because it bounds the SPAN of a
+    // dwell (age measured from its first sample) and not the age of the last MEASUREMENT, and it is
+    // only tested here, on ticks where no comparison is possible. Two isolated samples 14 s apart
+    // therefore still escalated together. The companion bound is the continuity test in the
+    // if(disagree_now) branch above: consecutive disagreements more than kHeadingDisagreeGapMaxMs
+    // apart start a fresh dwell rather than completing an old one. The two work together — this one
+    // discards evidence that has gone cold, that one refuses to stitch unrelated moments into a
+    // single "sustained" condition — and neither can set a fault, only drop unfinished proof.
+    if (heading_disagree_since_ms != 0 &&
+        (now - heading_disagree_since_ms) > kHeadingDisagreeEvidenceMaxMs) {
+      heading_disagree_since_ms     = 0;
+      heading_disagree_last_seen_ms = 0;
+    }
   }
 
   if (disagree_now) {
@@ -575,17 +707,75 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
 
   //
 
+  //      V2.5-Evo - 2026-08-16 CORRECTION to point 2: "DID survive" was wrong, and it was the
+
+  //      false premise this whole block rested on. The latch survived nothing during RTM -
+
+  //      fmEnterIdle() zeroed it on every 100 ms tick, and runFmLoop() calls fmEnterIdle() while
+
+  //      rtm_rx_active is set. So the check added below was reading a flag that was being wiped
+
+  //      ten times a second and could never be true in an RTM-only run. Both clears are now
+
+  //      edge-triggered (see fmEnterIdle() and the disarm edge at the top of runRtmLoop()), which
+
+  //      is what finally makes the sentence above true.
+
+  //
+
   // Fixed at the SOURCE rather than in either loop: if the compass has been caught disagreeing
 
-  // with COG by more than kHeadingDisagreeDeg for kHeadingDisagreeMs, it is not a heading and
+  // with COG by more than kHeadingDisagreeDeg for kHeadingDisagreeMs, THE COMPASS FALLBACK BELOW
 
-  // this function will not hand one out - to RTM, to FM, or to any future consumer. Both
+  // is withdrawn - from RTM, from FM, and from any future consumer. Both callers already treat
 
-  // callers already treat 'no heading' correctly: updateRtmSteering() sets rtm_steer_override
+  // 'no heading' correctly: updateRtmSteering() sets rtm_steer_override = 127 and holds straight,
 
-  // = 127 and holds straight, which at close range is the safe outcome and is what the buggy
+  // which at close range is the safe outcome and is what the buggy should have done here.
 
-  // should have done here.
+  //
+
+  // V2.5-Evo - 2026-08-16 - SAY WHAT THE CODE DOES. This paragraph used to claim the function
+
+  // "will not hand one out" AT ALL once the latch is set. It does hand one out, and the difference
+
+  // is deliberate rather than an oversight in the ordering: the heading_disagree_fault check sits
+
+  // BELOW the last-good-COG hold, so while the fault stands a HELD COG is still served, at
+
+  // confidence 2, for up to kCogHoldMs after the live COG went invalid.
+
+  //
+
+  // WHY A HELD COG IS STILL TRUSTED WHILE THE LATCH STANDS. What a sustained disagreement actually
+
+  // buys us is evidence against THE COMPASS - the sensor this hardware is known to bias by
+
+  // 87-100 deg under motor current, and the only source the ladder can PROMOTE once COG drops out.
+
+  // A held COG is not the compass. It is a course the GPS itself measured while it was live,
+
+  // moving and unfrozen (only the cog_valid branch ever writes cog_last_good_deg, so guard 1's
+
+  // frozen-register test has already been applied to it), no more than kCogHoldMs = 3 s ago.
+
+  // Preferring a real three-second-old measurement over a sensor we have just caught disagreeing
+
+  // is the safer of the two answers available here, and it is bounded: the hold expires on its own,
+
+  // and from that moment the latch does block the compass and the function returns nothing.
+
+  //
+
+  // AND NOTE WHEN THIS CAN ARISE AT ALL. A tick on which the disagreement is actively measured
+
+  // returns confidence 0 further up, before this hold is reached; a tick on which the two sources
+
+  // are measured and AGREE clears the fault outright. So a held COG is only ever served under a
+
+  // standing fault on a tick where NO comparison was possible - never on a tick that has just
+
+  // re-measured the two sources as disagreeing.
 
   //
 
@@ -595,31 +785,31 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
 
   // ============================================================
 
-  // ============================================================
-  // V2.5-Evo - 2026-08-16 - HOLD the last good COG across a short dropout.
-  //
-  // Before falling back to the compass, prefer a COG that was valid moments ago. RTM drives at
-  // 4.0 km/h with the COG floor at 3 - a 0.278 m/s margin, inside the speed signal's own noise -
-  // so cog_valid flickers on noise alone. Each flicker previously handed steering to a compass
-  // that is 87-100 deg wrong under motor load, and the resulting hard turn SLOWED the craft,
-  // which kept COG invalid, which kept the bad compass in charge. A closed loop with no exit:
-  // that is the 'veers off and never recovers' a tester filmed.
-  //
-  // Four independent codebases - Betaflight, iNav, Ardumower, ArduPilot/PX4 - blend COG and
-  // magnetometer continuously rather than switching between them. A full blend is a bigger
-  // change than this craft needs today; holding the last good COG gets most of the benefit for
-  // a fraction of the risk, and changes NEITHER threshold.
-  //
-  // Confidence is deliberately dropped to 2 (MEDIUM): a 2-second-old course is still a real
-  // measurement, but it is stale and the caller should not treat it like a live one.
-  // ============================================================
-  if (cog_last_good_deg >= 0.0f && cog_last_good_ms > 0 &&
-      (now - cog_last_good_ms) < (unsigned long)kCogHoldMs) {
-    *out_heading = cog_last_good_deg;
-    *out_confidence = 2;   // MEDIUM - real course, but stale
-    return true;
-  }
-
+  // ============================================================
+  // V2.5-Evo - 2026-08-16 - HOLD the last good COG across a short dropout.
+  //
+  // Before falling back to the compass, prefer a COG that was valid moments ago. RTM drives at
+  // 4.0 km/h with the COG floor at 3 - a 0.278 m/s margin, inside the speed signal's own noise -
+  // so cog_valid flickers on noise alone. Each flicker previously handed steering to a compass
+  // that is 87-100 deg wrong under motor load, and the resulting hard turn SLOWED the craft,
+  // which kept COG invalid, which kept the bad compass in charge. A closed loop with no exit:
+  // that is the 'veers off and never recovers' a tester filmed.
+  //
+  // Four independent codebases - Betaflight, iNav, Ardumower, ArduPilot/PX4 - blend COG and
+  // magnetometer continuously rather than switching between them. A full blend is a bigger
+  // change than this craft needs today; holding the last good COG gets most of the benefit for
+  // a fraction of the risk, and changes NEITHER threshold.
+  //
+  // Confidence is deliberately dropped to 2 (MEDIUM): a 2-second-old course is still a real
+  // measurement, but it is stale and the caller should not treat it like a live one.
+  // ============================================================
+  if (cog_last_good_deg >= 0.0f && cog_last_good_ms > 0 &&
+      (now - cog_last_good_ms) < (unsigned long)kCogHoldMs) {
+    *out_heading = cog_last_good_deg;
+    *out_confidence = 2;   // MEDIUM - real course, but stale
+    return true;
+  }
+
   if (heading_disagree_fault) {
 
     *out_heading = -1.0f;
@@ -1179,6 +1369,74 @@ void runRtmLoop()
   unsigned long now = millis();
   if (now - last_rtm_ms < 100UL) return;
   last_rtm_ms = now;
+
+  // ============================================================
+  // V2.5-Evo - 2026-08-16 - RTM ENGAGEMENT BOUNDARY: forgive a proven heading-source disagreement
+  //
+  // WHY THIS EXISTS. The sticky heading_disagree_fault used to be cleared only in fmEnterIdle(),
+  // which is a Follow-Me function. That was fine while only FM consumed the fault, but
+  // getRtmHeading() now consumes it too (it refuses to hand out the compass fallback once the
+  // compass has been caught disagreeing with COG), and in RTM-only operation FM never leaves
+  // FM_IDLE, so that transition never happens and nothing would ever forgive the fault. Without
+  // this block a rider who provoked one genuine disagreement would find the compass fallback
+  // silently disabled for the rest of the session, with a power cycle as the only way out.
+  //
+  // WHAT IT DOES. Exactly what fmEnterIdle() does for FM, on RTM's own terms: the moment an RTM
+  // engagement ENDS (rtm_rx_active goes true -> false, whether by TX disarm, Gate 9 handoff,
+  // Phase C failure or rtm_rx_enabled being turned off), the latch and its part-finished dwell are
+  // dropped so the next arm is judged on fresh sensor evidence.
+  //
+  // WHY IT IS AN EDGE AND NOT A LEVEL. Clearing it on every tick where RTM is inactive would
+  // recreate the exact bug this pairs with — it would zero the latch ten times a second all the
+  // way through every FOLLOW-ME engagement, since FM only ever runs while RTM is inactive.
+  // Single-writer: this runs in the loop task, as does every other writer of these two.
+  //
+  // V2.5-Evo - 2026-08-16 - IT IS NOW BOTH EDGES, NOT JUST DISARM. TWO REASONS, AND THE SECOND ONE
+  // IS WHY THE DISARM EDGE ALONE WAS NOT ENOUGH.
+  //
+  //   (a) THE DWELL RUNS WHEN NOTHING IS ARMED. getRtmHeading() is called unconditionally a few
+  //       lines below, every 100 ms, purely to fill the heading-confidence bits of the fm_status
+  //       telemetry byte — regardless of RTM or FM state. So the comparison, and therefore the
+  //       5 s dwell, also accumulates during ordinary manual riding. A rotated or uncalibrated
+  //       compass plus a coast above rtm_cog_min_speed_kmh with the trigger released (the snapshot
+  //       keeps refreshing while the motor is idle, so the comparison stays live) latches the fault
+  //       before the rider has armed anything at all. With only end-of-engagement clears, nothing
+  //       forgave that, and it then blocked the NEXT engagement from the inside — FM stuck in
+  //       FM_ARMED with the TX showing "ready", because fm_flags bit 2 drops once separation
+  //       latches and the explanatory printf in runFmLoop() only fires if FM was already engaged.
+  //
+  //   (b) THE DISARM EDGE DOES NOT ALWAYS HAPPEN. Gates 2-8 in checkRtmSafetyGates() set
+  //       rtm_rx_emergency_stop but deliberately leave rtm_rx_active TRUE (only gate 9 and
+  //       runPhaseC() clear it). So if the TX dies mid-tow — flat battery, gate 7 link loss — RTM
+  //       stays "active" with the throttle pinned at 0 and this true -> false edge never arrives.
+  //       The other clear route cannot help either: the emergency stop keeps the buggy stationary,
+  //       so COG never goes valid, so no fresh comparison is ever possible. The fault would sit
+  //       there until a power cycle, and the failure it then produced on the next arm was gate 6
+  //       printing "No valid heading source", which points at the wrong cause entirely.
+  //
+  // WHY CLEARING AT ARM CANNOT WEAKEN ANYTHING. This flag only ever SUBTRACTS eligibility — it
+  // grants no heading, raises no cap and extends no engagement. And a disagreement that is real is
+  // still there when the run starts: it re-proves itself within kHeadingDisagreeMs (5 s) of the
+  // first tick, because the same comparison runs on every tick of the run. So the price is at most
+  // 5 s of protection at the very beginning of an engagement, and what it buys is the removal of
+  // two dead ends that were both silent and both survived until a reboot.
+  //
+  // NOTE ON REACHING THE ARM EDGE AFTER (b): the TX begins every arm ceremony with a 0xF1/0 burst
+  // ("armed but not yet active", TX RTMState.ino setRtmArmed()) before the 0xF1/1 that follows a
+  // successful double squeeze. So even a stuck-true rtm_rx_active is driven false and then true
+  // again by a re-arm, and BOTH edges of this test fire in the right order.
+  // ============================================================
+  {
+    static bool rtm_prev_active = false;
+    bool rtm_now_active = rtm_rx_active;
+    if (rtm_prev_active != rtm_now_active) {
+      // Either boundary of an RTM engagement: disarm (true -> false) or arm (false -> true).
+      heading_disagree_since_ms     = 0;
+      heading_disagree_last_seen_ms = 0;
+      heading_disagree_fault        = false;
+    }
+    rtm_prev_active = rtm_now_active;
+  }
 
   // ---- Extended telemetry: rx_heading, fm_heading_err, fm_status ----
   // rx_heading: GPS COG÷2 (0-179 maps to 0-358°); 0xFF = no valid COG
@@ -1824,6 +2082,13 @@ static uint16_t fmComputeThrottleCap(float dist_m, unsigned long now)
 // ------------------------------------------------------------
 static void fmEnterIdle()
 {
+  // V2.5-Evo - 2026-08-16 - Was FM already idle when we got here? runFmLoop() calls this function
+  // on EVERY 100 ms tick while FM is idle (it is the level-triggered "not eligible" branch), so
+  // "we are in fmEnterIdle" does NOT mean "an engagement just ended". Everything else below is
+  // idempotent and can safely be re-applied ten times a second; the heading-disagreement latch at
+  // the bottom is the one thing that must not be, so it is gated on this edge. See the block there.
+  bool fm_was_not_idle = (fm_state != FM_IDLE);
+
   fm_state            = FM_IDLE;
   fm_rx_active        = false;
   fm_throttle_cap     = 255;          // no cap - fully manual buggy
@@ -1857,12 +2122,32 @@ static void fmEnterIdle()
 
   // V2.5-Evo - 2026-07-25 - STAGE 2 guard 2: the re-arm boundary is where a proven heading-source
   // disagreement is forgiven. Whatever put us here ends the declaration, and the next arm must be
-  // judged on fresh sensor evidence rather than inheriting a fault from the previous run. This is
-  // the ONLY place the latch is cleared other than a live comparison showing the two sources
-  // agreeing again (in getRtmHeading) — so it can never be washed out simply by the compass
-  // snapshot going stale, which is the hole it exists to close.
-  heading_disagree_since_ms = 0;
-  heading_disagree_fault    = false;
+  // judged on fresh sensor evidence rather than inheriting a fault from the previous run. Apart
+  // from a live comparison showing the two sources agreeing again (in getRtmHeading), the latch is
+  // only ever cleared at an end-of-engagement boundary — never merely because the compass snapshot
+  // went stale, which is the hole it exists to close. The full list of clear sites is with the
+  // declarations at the top of this file.
+  //
+  // V2.5-Evo - 2026-08-16 - EDGE, NOT LEVEL. WHAT THE BUG WAS: this clear ran on every call, and
+  // runFmLoop() calls fmEnterIdle() on every 100 ms tick whenever FM is idle — and its FM_IDLE
+  // condition includes rtm_rx_active. So THE WHOLE TIME RTM WAS RUNNING, the latch and its dwell
+  // timer were being zeroed ten times a second. The 5 s dwell could never accumulate, the fault
+  // could never be set, and the check that consumes it in getRtmHeading() (in front of the compass
+  // fallback) could never see anything: in RTM-only operation — exactly the field case this
+  // backstop was built for, a buggy that veered off at close range and never came back — the
+  // advertised sticky guard did nothing at all.
+  // WHAT THE FIX DOES: clear only on a genuine TRANSITION into FM idle, i.e. when an FM engagement
+  // or declaration actually ends. Within an engagement — RTM's included — the latch now survives
+  // across ticks, which is the entire point of it being sticky. RTM's own engagement-boundary clear
+  // lives at the top of runRtmLoop() (both edges of rtm_rx_active), so neither loop depends on the
+  // other one running to have its fault forgiven. FM's matching ARM-edge clear is a few lines into
+  // runFmLoop(), just past the idle gate — see the block there for why the start of an engagement
+  // needs a clear as well as the end.
+  if (fm_was_not_idle) {
+    heading_disagree_since_ms     = 0;
+    heading_disagree_last_seen_ms = 0;
+    heading_disagree_fault        = false;
+  }
 }
 
 // ------------------------------------------------------------
@@ -1929,6 +2214,33 @@ void runFmLoop()
   if (!usrConf.gps_en || !usrConf.rtm_rx_enabled || rtm_rx_active || m < 1 || m > 3) {
     fmEnterIdle();
     return;
+  }
+
+  // ============================================================
+  // V2.5-Evo - 2026-08-16 - FM ARM BOUNDARY: forgive a heading disagreement proven while nothing
+  // was armed. This is FM's half of the arm-edge clear; RTM's half is the rtm_rx_active
+  // false -> true edge at the top of runRtmLoop(), which carries the full rationale.
+  //
+  // WHY IT IS HERE, ONE LINE BELOW THE IDLE GATE. Reaching this point means FM has a live TX
+  // declaration, RTM does not own the buggy, and GPS/RTM are enabled — i.e. this tick is part of an
+  // arm cycle. fm_state is still whatever the PREVIOUS tick left it as, and every tick that gets
+  // past this gate ends by writing FM_ARMED, FM_ACTIVE, FM_HOLD or FM_STOPPING before it returns.
+  // So "fm_state is still FM_IDLE here" is true on exactly one tick per arm cycle: the first one.
+  // That makes this a genuine EDGE with no extra bookkeeping variable, and it covers both ways out
+  // of idle (IDLE -> ARMED, and the rarer IDLE -> ACTIVE when the latch is already proven).
+  //
+  // AND IT IS DELIBERATELY BELOW THE GATE, NOT ABOVE IT. Above the gate this line would run on
+  // every tick RTM owns the buggy — FM is held in FM_IDLE for the whole of an RTM engagement — and
+  // that is exactly the wipe-every-tick bug this whole change set exists to undo.
+  //
+  // The clear runs BEFORE checkFmFaultConditions() below calls getRtmHeading(), so a disagreement
+  // that is still genuinely present is re-measured and re-opens its dwell on this very tick; it
+  // simply has to prove itself again over kHeadingDisagreeMs, from the start of the run.
+  // ============================================================
+  if (fm_state == FM_IDLE) {
+    heading_disagree_since_ms     = 0;
+    heading_disagree_last_seen_ms = 0;
+    heading_disagree_fault        = false;
   }
 
   // ---- FM_STOPPING: a FAULT ended FM; ramp throttle back to manual, then go IDLE (A3) ----

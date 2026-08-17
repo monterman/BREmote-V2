@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-08-17 - COMMENT-ONLY size correction (no code, no struct, no SW_VERSION change): the mag_orientation block claimed "sizeof 184 -> 188". The finished struct is 192 — mag_orientation (2) plus the two reserved slots rsvd_u16_1 (2) and rsvd_f32_1 (4) that landed in the same SW34->35 edit, naturally aligned with no tail pad. The static_assert has always said 192; only the prose was wrong. Corrected in three places: the mag_orientation block, the "confStruct is 184 bytes" line in the log_level block (retensed as history), and the static_assert's own trailing history, which never recorded the 184->192 step and now does. Flagged as load-bearing rather than cosmetic because the SW34->35 config-backup migration is pinned to the exact counts 184 (legacy) and 192 (current) and disables itself if either stops matching. Every remaining "184" in this file sits inside a dated change-history entry and is correct AS HISTORY — the static_assert is the SSOT for the current size.
+// V2.5-Evo - 2026-08-17 - defaultConf.vesc_timeout_s raised 6 -> 10 s, because a VESC cold restart takes roughly 8-9 seconds and 6 s is shorter than that: every restart blanked the rider's battery % and FET temperature to "N/A" on the TX while the VESC was merely booting. 10 s covers the restart and is still half the original hardcoded 20 s. VALUE-ONLY change to an existing field: no field added, moved, renamed or resized, and the 5-60 s validation range in ConfigService is untouched — so sizeof(confStruct) stays 192, the static_assert is unchanged, SW_VERSION stays 35 and the owner's SPIFFS config is NOT wiped by this flash. Because it is NOT wiped, a board with a stored vesc_timeout_s keeps its old value: it must be set on the device with `?set vesc_timeout_s 10` + `?save`. Second consumer checked — RTM Phase C check 2 uses the same field to decide when to SKIP its VESC-ERPM-vs-GPS-speed comparison; a longer timeout means fewer skips, and since a skipped check and a passed check have the identical outcome (no stop) the check's coverage can only widen, never shrink.
 // V2.5-Evo - 2026-07-25 - STAGE 2 (heading-source trust guards): added the four shared compile-time constants the RTM/FM heading ladder needs — kRtmCogFrozenMs (3000), kHeadingDisagreeDeg (45.0), kHeadingDisagreeMs (5000), kHeadingCompareSnapMs (1000). They live HERE, once, for the same reason kFmEngageDistFloorM does: getRtmHeading() in RTMState.ino and its inline duplicate in Logger.ino both read them, and Logger.ino is concatenated BEFORE RTMState.ino, so a constant defined in RTMState.ino would be invisible to the logger mirror. Constants + comments only: no confStruct field added, moved, renamed or resized; sizeof(confStruct) stays 184, static_assert unchanged, SW_VERSION stays 34, SPIFFS config is NOT reset by this flash.
 // V2.5-Evo - 2026-07-25 - STAGE 1 (GPS repair): defaultConf.gps_update_hz raised 2 -> 10 Hz, because the GPS module is configured for 5 Hz (BN-220/BN-880) or 10 Hz (M10) and, now that STAGE 1 leaves the UART mux parked on GPS, a 500 ms drain interval would leave ~1250 bytes pending per drain. VALUE-ONLY change to an existing field: no field added, moved, renamed or resized, and the 1-10 validation range in ConfigService is untouched — so sizeof(confStruct) stays 184, the static_assert is unchanged, SW_VERSION stays 34 and the owner's SPIFFS config is NOT wiped by this flash. Because it is NOT wiped, a board with a stored gps_update_hz keeps its old value: it must be set on the device with `?set gps_update_hz 10` + `?save`. No control-path field (throttle, steering, PWM, RTM/FM) is touched.
 // V2.5-Evo - 2026-07-25 - STAGE 0 (instrumentation only, ZERO control-behaviour change): (A) the unused RESERVED slot fm_steer_reposition_en is RENAMED IN PLACE to log_level — same offset, same uint16_t, so sizeof(confStruct) stays 184, the static_assert is unchanged, SW_VERSION stays 34 and the owner's SPIFFS config is NOT wiped (same trick as dummy_delete_me -> rtm_steer_response, Bundle 1). 0 = unset (behaves exactly as level 3), 1 = Basic, 2 = VESC, 3 = Developer, 4 = Deep; only 3 and 4 are implemented, 1 and 2 are accepted by the validator and currently log as level 3. (B) added LogFileHeader — every log file now starts with an 8-byte self-describing header (magic/format/level/record size) so a reader can parse a variable record size. (C) added VescLogDataL4 = VescLogData + the 4 level-4 diagnostic fields, and the free-running diagnostic counters the ?diag command and the level-4 record read. Nothing here is read by throttle, steering, PWM, the mux schedule, or any FM/RTM logic.
@@ -277,7 +279,24 @@ struct confStruct {
     // VESC polling cadence (data_src=2 polls every ~1s) with room for 5 missed packets.
     // Minimum 5s: going lower causes false N/A during normal VESC dropout transients
     // (e.g. heavy regen braking briefly interrupts UART). Maximum 60s for diagnostic use.
-    uint16_t vesc_timeout_s;  // 5-60 s; default 6; how long without a VESC UART packet before bat/temp shown as N/A
+    //
+    // V2.5-Evo - 2026-08-17 - FACTORY DEFAULT RAISED 6 -> 10 s. The 5-60 s validation range is
+    // NOT changed; only the value baked into defaultConf below.
+    // WHY: a VESC cold restart takes roughly 8-9 seconds, which is LONGER than the 6 s window.
+    // So every time the VESC rebooted, the rider's battery % and FET temperature blanked to
+    // "N/A" on the TX display even though nothing was actually wrong — the VESC was simply
+    // booting. 10 s covers that restart with about a second to spare, and it is still half the
+    // original hardcoded 20 s, so Bundle B's intent (do not show a stale reading long after a
+    // real disconnect) is preserved. The price is that a GENUINE VESC disconnect now holds the
+    // last reading for up to 10 s instead of 6 s before it blanks.
+    // SECOND CONSUMER, CHECKED: this same field also decides when RTM Phase C check 2 SKIPS its
+    // VESC-ERPM-vs-GPS-speed comparison (runPhaseC() in RTMState.ino). A longer timeout means
+    // FEWER skips — the check now runs on VESC data up to 10 s old instead of 6 s. That cannot
+    // weaken the check, because a skipped check and a passed check have the identical outcome
+    // (no stop); it only widens the window in which slightly staler ERPM is compared against a
+    // live GPS speed. And it is moot on a stock board: the check only runs when
+    // vesc_erpm_per_kmh > 0, whose factory default is 0.0 (disabled).
+    uint16_t vesc_timeout_s;  // 5-60 s; default 10; how long without a VESC UART packet before bat/temp shown as N/A
 
     // V2.5-Evo - 2026-04-30 - BUNDLE E: GPS POLLING RATE
     // V2.5-Evo - 2026-07-25 - STAGE 1: factory default raised 2 -> 10 Hz (see defaultConf below).
@@ -392,10 +411,14 @@ struct confStruct {
     // and the owner's saved settings are NOT reset by this flash. There is precedent for exactly
     // this move: dummy_delete_me -> rtm_steer_response (Bundle 1, 2026-05-08).
     //
-    // WHY THE RENAME RATHER THAN A NEW FIELD: confStruct is 184 bytes with no tail padding, so
+    // WHY THE RENAME RATHER THAN A NEW FIELD: confStruct was 184 bytes with no tail padding, so
     // appending anything grows it, which fails the SPIFFS size check on the next boot and wipes
     // the rider's entire configuration (pairing, calibration, all tuning). Reusing a dead slot
     // that is already 0 everywhere costs nothing and wipes nothing.
+    // (V2.5-Evo - 2026-08-17 - tense fix: the 184 above is the SW34-era size this rename was
+    // written against. The struct is 192 bytes today — SW35 appended mag_orientation and two
+    // reserved slots and spent the one config wipe. The static_assert below is the SSOT for the
+    // current size; every "184" in this block is history, not a current fact.)
     //
     // WHAT THE FM v2 FEATURE DOES NOW: the Option-C "steer reposition" idea has NOT been
     // implemented and has NOT been abandoned — when FM v2 lands it must claim a FRESH field of
@@ -419,9 +442,18 @@ struct confStruct {
     uint16_t log_level;                // 0 = unset (= level 3); 1 = Basic*, 2 = VESC*, 3 = Developer, 4 = Deep. (*accepted, currently logs as level 3.) Range 0-4.
 
     // V2.5-Evo - 2026-08-16 - SW34->35: mag_orientation. NEW FIELD, appended at the END of
-    // confStruct so every existing offset is unchanged; sizeof 184 -> 188 (the uint16 plus 2 bytes of
-    // 4-byte alignment padding) and SW_VERSION 34 -> 35,
-    // which DOES reset config on first boot. This is the one intended wipe for this bump.
+    // confStruct so every existing offset is unchanged, and SW_VERSION 34 -> 35, which DOES reset
+    // config on first boot. This is the one intended wipe for this bump.
+    // V2.5-Evo - 2026-08-17 - SIZE CORRECTION: this comment said "sizeof 184 -> 188 (the uint16 plus
+    // 2 bytes of 4-byte alignment padding)". THE FINISHED STRUCT IS 192 BYTES, not 188 — see the
+    // static_assert below, which is the SSOT. 188 was the size mag_orientation alone would have
+    // produced, but the two banked RESERVED slots (rsvd_u16_1 + rsvd_f32_1, documented under this
+    // field) landed in the SAME edit and account for the other 4 bytes: 184 + 2 (mag_orientation)
+    // + 2 (rsvd_u16_1) = 188, + 4 (rsvd_f32_1) = 192, naturally aligned with no tail pad.
+    // THIS IS NOT COSMETIC: the SW34 -> SW35 config-backup migration is pinned to the exact byte
+    // counts 184 (legacy) and 192 (current) and disables itself if either stops matching, so a
+    // comment claiming 188 would have someone reasoning from the wrong number about code that
+    // writes bytes into the live config.
     //
     // Mounting rotation of the compass module about the vertical axis, in degrees, applied to the
     // computed heading. Set by ?compasscal (which now starts and ends pointing north) or by
@@ -492,7 +524,7 @@ struct confStruct {
 
 
 };
-static_assert(sizeof(confStruct) == 192, "confStruct size mismatch — expected 192 bytes. Update this assert if you change the struct.");  // 176->184: +fm_engage_dist_m(float 4) +auton_runtime_cap_s(u16 2) +fm_steer_reposition_en(u16 2), all naturally aligned, no tail pad (2026-07-20 SW34)  // 172->176 motor_ramp_s float (2026-06-05 SW33)  // 112->128 Phase A; 128->136 Phase B; 136->152 P7 RTM; 152->156 Bundle B; 156 unchanged BundleE; 156->160 rtm_approach_zone_m (uint16_t + 2-byte tail pad) (2026-04-30); D3 rtm_use_compass + rtm_cog_min_speed_kmh (2x uint8_t) fill the 2-byte tail pad — sizeof stays 160 (2026-05-06); D3-Fix: uint8_t→uint16_t for ConfigService compatibility, sizeof unchanged at 164 (2026-05-06); Bundle 1: dummy_delete_me renamed to rtm_steer_response in-place, sizeof unchanged at 164 (2026-05-08); STAGE 0 PART A: fm_steer_reposition_en renamed to log_level in-place — same offset, same uint16_t, sizeof STILL 184 and SW_VERSION STILL 34, so this flash does NOT reset SPIFFS config (2026-07-25)
+static_assert(sizeof(confStruct) == 192, "confStruct size mismatch — expected 192 bytes. Update this assert if you change the struct.");  // 176->184: +fm_engage_dist_m(float 4) +auton_runtime_cap_s(u16 2) +fm_steer_reposition_en(u16 2), all naturally aligned, no tail pad (2026-07-20 SW34)  // 172->176 motor_ramp_s float (2026-06-05 SW33)  // 112->128 Phase A; 128->136 Phase B; 136->152 P7 RTM; 152->156 Bundle B; 156 unchanged BundleE; 156->160 rtm_approach_zone_m (uint16_t + 2-byte tail pad) (2026-04-30); D3 rtm_use_compass + rtm_cog_min_speed_kmh (2x uint8_t) fill the 2-byte tail pad — sizeof stays 160 (2026-05-06); D3-Fix: uint8_t→uint16_t for ConfigService compatibility, sizeof unchanged at 164 (2026-05-06); Bundle 1: dummy_delete_me renamed to rtm_steer_response in-place, sizeof unchanged at 164 (2026-05-08); STAGE 0 PART A: fm_steer_reposition_en renamed to log_level in-place — same offset, same uint16_t, sizeof STILL 184 and SW_VERSION STILL 34, so this flash does NOT reset SPIFFS config (2026-07-25); auton_runtime_cap_s renamed to gps_dyn_model in-place, sizeof STILL 184, SW_VERSION STILL 34 (2026-08-16); 184->192 SW34->35: +mag_orientation(u16 2) +rsvd_u16_1(u16 2) +rsvd_f32_1(float 4), appended at the tail, naturally aligned, no tail pad — the one intended config wipe for this bump (2026-08-16). THIS NUMBER IS THE SSOT: the SW34->35 config-backup migration is pinned to 184 (legacy) and 192 (current) and disables itself if either stops matching, so any prose elsewhere that disagrees with the 192 above is stale and must be corrected rather than trusted.
 confStruct usrConf;
   //The orginal confs were:  ##// confStruct defaultConf = {SW_VERSION, 1, 0, 0, 50, 0, 0, 1500, 2000, 1500, 2000, 1000, 10, 0, 1, 0, 0, 0, 0, 0, 25.0f, 10.0f, 10.0f, 5.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0, 1000, 1, 0, {0, 0, 0}, {0, 0, 0}, {'1','2','3','4','5','6','7','8'}};
   // Factory default configuration.
@@ -523,7 +555,15 @@ confStruct defaultConf = {SW_VERSION, 2, 22, 1, 50 /*steering_influence: convent
   // disabling the hard stop that prevents the buggy from hitting the user.
   10,  // rtm_stop_distance_m: safe default 10 m (>= 8 m GPS floor); RTM hard-stop radius
   // V2.5-Evo - 2026-04-29 - Bundle B: vesc_timeout_s replaces hardcoded 20s VESC connection timeout
-  6,          // vesc_timeout_s: seconds without VESC UART packet before bat/temp shown as N/A (range 5-60s; default 6s)
+  // V2.5-Evo - 2026-08-17 - raised 6 -> 10 s. A VESC cold restart takes roughly 8-9 s, so at 6 s
+  // the rider's battery % and FET temperature blanked to N/A on the TX across every restart even
+  // though the VESC was only booting. 10 s covers it and is still half the original hardcoded 20 s.
+  // VALUE-ONLY change: no field added, moved or resized, and the 5-60 range already in kCfgFields is
+  // unchanged, so sizeof(confStruct) stays 192, SW_VERSION stays 35 and SPIFFS config is NOT reset.
+  // NOTE: defaultConf only applies to units whose config is reset. A board with a STORED
+  // vesc_timeout_s keeps its old value (6) after this flash — set it explicitly on the device with
+  // `?set vesc_timeout_s 10` then `?save`.
+  10,         // vesc_timeout_s: seconds without VESC UART packet before bat/temp shown as N/A (range 5-60s; default 10s)
   // V2.5-Evo - 2026-04-30 - Bundle E: gps_update_hz replaces hardcoded 1Hz GPS poll cadence
   // V2.5-Evo - 2026-07-25 - STAGE 1: default raised 2 -> 10 Hz. The GPS module is configured for
   // 5 Hz (BN-220/BN-880) or 10 Hz (M10), so draining twice a second left ~1250 bytes pending per
@@ -658,11 +698,11 @@ static const uint32_t kHeadingDisagreeMs    = 5000;   // ms of sustained disagre
 // requires before it will call a snapshot MEDIUM confidence, i.e. the only compass data this
 // firmware already treats as simultaneous with now. Outside it, guard 2 simply does not run —
 // no comparison is better than a comparison of two different moments in time.
-// V2.5-Evo - 2026-08-16 - How long a COG stays usable after cog_valid goes false. Bridges the
-// noise-driven flicker between GPS course and compass that RTM's 4.0 km/h target creates
-// against a 3 km/h COG floor. 3 s is ~3.3 m of travel at that speed - short enough that the
-// held course is still true, long enough to cover the dips that caused the flapping.
-static const uint32_t kCogHoldMs           = 3000;   // ms; hold last-good COG across a dropout
+// V2.5-Evo - 2026-08-16 - How long a COG stays usable after cog_valid goes false. Bridges the
+// noise-driven flicker between GPS course and compass that RTM's 4.0 km/h target creates
+// against a 3 km/h COG floor. 3 s is ~3.3 m of travel at that speed - short enough that the
+// held course is still true, long enough to cover the dips that caused the flapping.
+static const uint32_t kCogHoldMs           = 3000;   // ms; hold last-good COG across a dropout
 static const uint32_t kHeadingCompareSnapMs = 1000;   // ms; max compass-snapshot age for a valid comparison
 
 #include "../Common/ConfigServiceEngine.h"

@@ -49,7 +49,11 @@ void getVescLoop()
   }
   get_vesc_timer = millis();
   
-  // Use configurable timeout (vesc_timeout_s). Default 6s minimises stale VESC data (range 5-60s; raise toward 12s if the VESC's ~8-9s cold-restart trips a false N/A).
+  // V2.5-Evo - 2026-08-17 - Default raised 6s -> 10s. A VESC cold restart takes ~8-9s, so at 6s
+  // the rider's battery and temperature blanked out across every restart. 10s covers it and is
+  // still half the old hardcoded 20s. Range 5-60s, unchanged. Not every rider runs a VESC -
+  // other ESCs feed telemetry by the same path - so this is not tuned to VESC timing alone.
+  // Use configurable timeout (vesc_timeout_s).
   // If no UART packet received within this window, mark battery and temperature as unavailable.
   if(millis() - last_uart_packet > ((uint32_t)usrConf.vesc_timeout_s * 1000UL))
   {

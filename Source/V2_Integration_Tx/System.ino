@@ -1083,10 +1083,24 @@ void vibrationTask(void *parameter) {
       if (current_vib_pattern == 6) current_vib_pattern = 0;
     }
     // V2.5-Evo - 2026-07-20 - StopFeel: Pattern 7 — ONE long 750ms pulse = the STOP confirm.
-    // V2.5-Evo - 2026-08-17 - Trigger list corrected. It fires on the stops the rider did NOT ask
-    // for (RTM Gates 1/2/3, FM Gate 1 release backstop, FM RX fault-stop) and on an arm REFUSAL
-    // (RTM pre-arm distance reject, FM fundamental reject). It does NOT fire on a deliberate
-    // disarm — gesture disarm, magnet-toggle disarm, steer-exit or F0 select are all silent.
+    // V2.5-Evo - 2026-08-17 - Trigger list corrected. It previously listed RTM Gate 3 and the FM
+    // Gate 1 release backstop, which the same batch had just made SILENT — the comment described
+    // behaviour that no longer existed.
+    // THE RULE THAT DECIDES: A PURE TIMEOUT IS SILENT, A FAULT BUZZES. Mid-wave the rider has no
+    // attention to spare for decoding a buzz, and the more buzzes there are the less each one is
+    // read — so Pattern 7 is spent only where it tells him something he cannot otherwise know.
+    // FIRES ON:
+    //   - RTM Gate 1 (max runtime). A timer, and the ONE exception to the rule: it has no throttle
+    //     precondition, so it can fire mid-squeeze, and rtmDisengage() lifts rtm_thr_cap_tx back to
+    //     255 in the same instant — a real step from capped RTM throttle to raw manual throttle.
+    //   - RTM Gate 2 (TX GPS stale). A fault: a sensor died and nothing the rider did explains it.
+    //   - The FM RX fault-stop. A fault: the RX gave up steering on its own.
+    //   - The two arm REFUSALS — RTM pre-arm distance reject, FM fundamental reject — where the
+    //     rider would otherwise walk away believing the mode is armed when it is not.
+    // DOES NOT FIRE ON:
+    //   - RTM Gate 3 (throttle released 4s) or the FM Gate 1 release backstop (released 30s). Both
+    //     are pure timeouts his own released trigger caused, and "St" already shows it.
+    //   - Any deliberate disarm — gesture disarm, magnet-toggle disarm, steer-exit, F0 select.
     // Deliberately a single SUSTAINED buzz so the rider can tell "stopped/off" from the arm
     // confirm by feel alone while foiling. Distinct from every other pattern:
     //   - Pattern 4 (arm) is TWO 130ms taps split by a 250ms gap; Pattern 6 is THREE — this is ONE.

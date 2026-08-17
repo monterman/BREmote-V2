@@ -4,6 +4,7 @@
 #ifdef WIFI_ENABLED
 
 // Shared web config AP and HTTP API for BREmote V2 TX and RX.
+// V2.5-Evo - 2026-08-17 - SAFETY: the web portal's Base64 config import now runs cfgValidateCrossField() as well as validateConfig(), which every other intake path (?setconf, the SPIFFS boot loader, ?set, cfgSetBatch, the legacy-migration branch) already did. It was the only path that did not, and validateConfig() checks each field against its own range in isolation - so a blob with PWM0_min = 2500 and PWM0_max = 500, both individually legal, was accepted and inverted the throttle map into a constant full-throttle output at every throttle position including zero. Called before validateConfig() and on the staging copy, matching every other path, so the validator's auto-corrections are what gets range-checked and written. Existing ERR_IMPORT_VALIDATION_FAILED reused with the reason in the existing detail field. No confStruct change, no new error code, both boards.
 // V2.5-Evo - 2026-08-17 - the web portal's Base64 config import now accepts a legacy backup on the same terms ?setconf does: a blob that is the one older SW version whose confStruct is a byte-exact prefix of this one is migrated instead of refused with ERR_IMPORT_INVALID_SIZE. It calls the SAME cfgBlobIsMigratableLegacy() / cfgMigrateLegacyBlob() helpers the serial path calls, so the two importers cannot disagree about which bytes go where. Everything that is not that exact (size, version) pair takes the identical path, and gets the identical error, it does today. Inert on the TX (compile-time constant is false there). No confStruct change.
 // V2.5-Evo - 2026-07-25 - STAGE 0 PART B (RX only, inside ENABLE_WEB_LOG_DOWNLOAD — TX never compiles this block): the WiFi log download now reads the 8-byte self-describing log header before sending anything, steps records by header.record_size instead of sizeof(VescLogData), emits the CSV column header matching the level the file was actually recorded at, and rejects a header-less/old/corrupt file with a JSON error rather than a half-sent body. Row formatting moved to the single shared logFormatCsvRow() in BREmote_V2_Rx.h that the serial ?download path also calls, so the two CSV outputs can no longer drift apart. No TX impact, no confStruct change.
 // V2.5-Evo - 2026-07-25 - F-WEBCSV: WiFi log download resynced to the serial ?download CSV (26->31 columns); ERPM x10 scaling and duty_cycle cast now match Logger.ino; row buffer 400->512
@@ -506,6 +507,57 @@ static void webCfgHandleImport()
     {
       webCfgMarkErr("ERR_IMPORT_VERSION_MISMATCH");
       webCfgSendJson(400, "{\"ok\":0,\"err\":\"ERR_IMPORT_VERSION_MISMATCH\",\"expected\":" + String(SW_VERSION) + ",\"got\":" + String(newConf.version) + "}");
+      return;
+    }
+
+    // ============================================================
+    // V2.5-Evo - 2026-08-17 - CROSS-FIELD VALIDATION ON THE BASE64 IMPORT PATH
+    //
+    // WHAT THE BUG WAS: this handler ran validateConfig() and nothing else. validateConfig() is a
+    // table walk over kCfgFields that checks each field against its OWN min/max in isolation; it has
+    // no way to see a relationship between two fields. The PWM0_max > PWM0_min rule lives only in
+    // cfgValidateCrossField(), and this was the one intake path that never called it.
+    //
+    // WHY THAT WAS DANGEROUS: PWM0_min = 2500 with PWM0_max = 500 passes validateConfig(), because
+    // 500 and 2500 are both inside the legal 500-2500 range - it is their ORDER that is illegal.
+    // calcPWM() then evaluates constrain(map(thr, 0, 255, 2500, 500) + trim, 2500, 500), and Arduino's
+    // constrain() with low > high returns low, so PWM0_time comes out 2500 us at EVERY throttle value
+    // including zero. The neutral floor does not catch it either, because that floor assigns
+    // PWM0_min - which IS 2500 here. motor_ramp_s only rate-limits the rise, so the output ramps to
+    // full over about 0.75 s and stays there, and generatePWM() emits full throttle continuously as
+    // soon as any TX packet satisfies the failsafe window. On a buggy that tows a person.
+    //
+    // WHAT THE FIX DOES: runs the same cross-field validator every other intake path already runs.
+    // ?setconf, the SPIFFS boot loader, ?set, cfgSetBatch and the legacy-migration branch directly
+    // above all call it; this handler was the outlier. Nothing new is being invented here - an
+    // inconsistency is being removed.
+    //
+    // WHY IT RUNS BEFORE validateConfig(): identical ordering to every other path (readConfFromSPIFFS,
+    // cfgMigrateLegacyBlob, the ?setconf pre-check). cfgValidateCrossField() takes a NON-CONST
+    // reference and auto-corrects some fields rather than rejecting them - it raises a too-small
+    // fm_engage_dist_m to the tow-rope floor and clears rtm_compass_required in COG-only mode, both
+    // announced on Serial. Calling it first means the CORRECTED value is what validateConfig() then
+    // range-checks and, below, what is copied into usrConf. Calling it second would have written a
+    // corrected value that nothing had range-checked.
+    //
+    // It is called on newConf, the staging copy, exactly like the two checks around it - so a blob
+    // that fails leaves the live usrConf untouched and nothing is queued for saving.
+    //
+    // The migrated path falls through here too and is validated a second time. That is deliberate and
+    // harmless: cfgValidateCrossField() is idempotent, so an already-corrected value produces no
+    // change and no repeated Serial notice - and the reset_cal / reset_bind edits above happen AFTER
+    // the migration branch ran its own checks, so re-validating is the honest thing to do.
+    //
+    // Reuses the existing ERR_IMPORT_VALIDATION_FAILED code with the reason in the same "detail"
+    // field this handler already uses, so no client needs to learn a new error. Like every other
+    // string interpolated into these responses, cross-field messages must contain no double quote or
+    // backslash - the JSON here is built by concatenation with no escaping.
+    // ============================================================
+    String crossErr;
+    if (!cfgValidateCrossField(newConf, crossErr))
+    {
+      webCfgMarkErr("ERR_IMPORT_VALIDATION_FAILED");
+      webCfgSendJson(400, "{\"ok\":0,\"err\":\"ERR_IMPORT_VALIDATION_FAILED\",\"detail\":\"" + crossErr + "\"}");
       return;
     }
 

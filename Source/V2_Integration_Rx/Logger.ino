@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-08-17 - CRITICAL MAINTENANCE contract honoured again (log mirror only): convertToLogData()'s duplicate heading ladder now reads the heading-disagreement LATCH, not just the per-tick verdict. getRtmHeading() withdraws the compass fallback entirely once the compass has been caught disagreeing with GPS course for kHeadingDisagreeMs and returns NONE, but this mirror kept falling through to the compass branch and logging rtm_source = 2 / rtm_confidence = 2 on those ticks — the CSV asserted a compass heading at MEDIUM confidence for ticks on which the controller had refused the compass and was holding straight. That was unreachable in an RTM run until the latch clears became edge-triggered; it is reachable now, so the log would actively lie about the heading source in exactly the new refusal case a rider will report. The compass-snapshot branch is gated on !headingDisagreeLatched(), positioned exactly where the controller checks it — BELOW the last-good-COG hold (a held COG is still logged src 1 / conf 2 while the fault stands, since a held GPS course is not the sensor under suspicion) and ABOVE the compass fallback — so a gated tick falls out of the else-if chain as src 0 / conf 0 = NONE, the pair getRtmHeading() actually returns. Strictly READ-ONLY: one call to a read-only accessor from loggerTask, no controller state written, no timing changed. NO new column, no new rtm_source value, no record-size change — existing logs stay parseable. No confStruct change, no VescLogData change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-08-16 - MID-RUN ABORT for ?download and ?deleteallogs, plus the MISSING WATCHDOG FEED in deleteAllLogFiles(). Both commands now ask rxAbortIfEngaged() inside their per-item loop, so an RTM/FM engagement that begins AFTER the command started stops it instead of freezing every safety gate for the rest of it — on ?download that was MINUTES (the code's own note records ~3 min for a ~350 kB file), which is by far the largest blind spot of any command on this board. ?download checks at the RECORD boundary, so no half-formatted row reaches the wire, closes the file on the way out, and prints a DIFFERENT end-of-transfer marker: "=== END CSV DATA ===" is never printed after an abort, because every reader treats that line as "the whole file arrived" and printing it over a truncated stream would silently pass a partial log off as complete; the abort marker names itself and carries the record count actually sent. ?deleteallogs checks at the WHOLE-FILE boundary before each SPIFFS.remove(), so every file is either fully deleted or fully untouched, and it now reports how many were ACTUALLY deleted instead of claiming completion over a partial run. Separately, its loop gained the watchdog feed it never had: initWatchdog() now arms the 3000 ms panic WDT on the first boot after a version bump where it previously did not, and on a full SPIFFS the garbage collection each remove() triggers can walk the loop past the timeout and panic-reboot mid-delete. The feed is gated on g_wdt_active, the same guard PWM.ino and Radio.ino use. NO change to the log file format, record layout or column set — existing logs stay parseable — and no change to either command's behaviour or timing when it runs to completion. No confStruct change, no VescLogData change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-08-16 - CRITICAL MAINTENANCE contract honoured (log mirror only; no new column, no new rtm_source value, no record-size change, no control path touched): the 2026-08-16 COG-hold change was mirrored into convertToLogData()'s STAGE 2 guards but NOT into the hold itself, so on every tick the controller was serving the last good COG (confidence 2, up to kCogHoldMs after cog_valid drops) the log recorded COMPASS_SNAPSHOT or NONE instead — the rtm_source / rtm_confidence columns misdescribed the exact source transitions these logs are being read to diagnose. The duplicate ladder now re-serves cog_last_good_deg / cog_last_good_ms in the same position and on the same terms the controller does (after the disagreement veto and the live-COG branch, gated on mode 1 and !cog_frozen_moving, ahead of the compass fallback) and logs it as src 1 / conf 2 — GPS_COG at MEDIUM, the pair getRtmHeading() actually returns, so held and live COG stay distinguishable without touching the CSV format. Strictly READ-ONLY: this mirror runs in loggerTask and writes no controller state, no timing, nothing. The 5 s escalation latch is still deliberately not read here. No confStruct change, no VescLogData change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-07-25 - STAGE 2 (log mirror only, no new column, no record-size change): the inline getRtmHeading() duplicate in convertToLogData() now applies the same two heading-trust guards RTMState.ino gained — guard 1 (COG rejected when its VALUE has been frozen longer than kRtmCogFrozenMs while gps_last_speed_kmh >= rtm_cog_min_speed_kmh, and no compass promotion in that state) and guard 2 (per-tick COG-vs-compass-snapshot disagreement beyond kHeadingDisagreeDeg = no source at all). Without this, rtm_source/rtm_confidence would keep logging "GPS COG, HIGH" for ticks where the controller was actually holding straight, which is precisely the blindness Stage 0 was built to end. The 5 s escalation latch is deliberately NOT read here: this runs in loggerTask and the mirror stays side-effect-free and per-tick. No confStruct change, no VescLogData change, sizeof stays 184, SW_VERSION stays 34, no control path touched.
@@ -44,6 +45,21 @@ extern bool rxAbortIfEngaged(const char *what);
 // to the task WDT (defined in GPS.ino). esp_task_wdt_reset() logs an error on every call from
 // an unsubscribed task, so feeds are gated on this — the same guard PWM.ino and Radio.ino use.
 extern volatile bool g_wdt_active;
+
+// V2.5-Evo - 2026-08-17 - the heading-disagreement latch, read by the log mirror in
+// convertToLogData() so the CSV cannot claim a compass heading the controller has refused.
+// Defined in RTMState.ino, which Arduino concatenates AFTER this file, so it needs a
+// declaration here — the same reason cog_last_good_deg is declared ahead of its use below.
+// NOT 'extern': the accessor is a file-scope 'static' in RTMState.ino (internal linkage), so
+// the declaration that names it here has to be 'static' too. That is enough, because Arduino
+// compiles every .ino in the sketch as ONE translation unit — this is the same forward
+// declaration RTMState.ino already makes of it ~240 lines above its own definition, just
+// placed earlier in the same unit. It is declared at file scope rather than inside
+// convertToLogData() with the extern block because C++ forbids 'static' on a block-scope
+// function declaration.
+// READ-ONLY, and it can only ever be read: the accessor returns the flag and cannot set,
+// clear or age it, which is exactly why the mirror is allowed to consult it at all.
+static bool headingDisagreeLatched();
 
 #define MIN_FREE_SPACE_KB 500  
 
@@ -346,11 +362,30 @@ VescLogData convertToLogData() {
         src    = 1;     // GPS_COG — held, not live
         conf   = 2;     // MEDIUM — real course, but stale
         chosen = cog_last_good_deg;
-      } else if (mode == 1 && !cog_frozen_moving) {
+      } else if (mode == 1 && !cog_frozen_moving && !headingDisagreeLatched()) {
         // Hybrid: fall back to compass snapshot — but NOT when guard 1 has just proven the COG
         // frozen while moving. In that state one source is provably dead and the other cannot be
         // cross-checked, so the controller holds straight instead of promoting the survivor, and
         // the log must say the same thing.
+        // V2.5-Evo - 2026-08-17 - ...and NOT while the heading-disagreement latch stands.
+        // WHAT WAS WRONG: this mirror read only the per-tick verdict (disagree_now) and never the
+        // SUSTAINED fault. getRtmHeading() withdraws the compass fallback outright once the
+        // compass has been caught disagreeing with GPS course for kHeadingDisagreeMs, and returns
+        // NONE. On exactly those ticks this duplicate still fell through to here and wrote
+        // rtm_source = 2 / rtm_confidence = 2 — the CSV reported a compass heading at MEDIUM
+        // confidence for ticks on which the controller had refused the compass and was holding
+        // straight. The log contradicted the controller in precisely the refusal a rider would be
+        // reporting, which is the one case these two columns exist to explain.
+        // WHY IT MATTERS NOW: the clears became edge-triggered, so the latch can stand across an
+        // engagement for the first time — this branch is reachable during a real run, not just in
+        // theory.
+        // POSITION MIRRORS THE CONTROLLER EXACTLY: the fault check sits BELOW the last-good-COG
+        // hold and ABOVE the compass fallback, so a held COG is still logged as src 1 / conf 2
+        // while the fault stands, and only the compass is withdrawn. Gating this branch in an
+        // else-if chain leaves src/conf at 0 = NONE, which is what getRtmHeading() returns.
+        // SIDE-EFFECT-FREE: one read of a read-only accessor. This runs in loggerTask and writes
+        // no controller state and changes no timing. No new column, no new rtm_source value, no
+        // record-size change — existing logs stay parseable.
         if (compass_snapshot_heading >= 0.0f && compass_snapshot_ms > 0) {
           unsigned long snap_age_ms = now_ms - compass_snapshot_ms;
           if (snap_age_ms < 1000UL) {

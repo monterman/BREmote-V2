@@ -141,39 +141,77 @@ Skip this entirely if you are flashing the prebuilt `.bin` above.
 - ⚠️ **WiFi turns off automatically once TX and RX are paired and in range** (LoRa wins over WiFi). To use either board's web portal later, **power the other board off** first, or the link forms and WiFi shuts down.
 - Factory wipe if you ever need it: **hold BIND + AUX together at boot** on the RX.
 
-### 2.4 Compass calibration (RX) — BIND short-press, two full 360° circles
+### 2.4 Compass calibration (RX) — nose on north, two clockwise circles
 
 The compass lives on the RX, in the buggy. With the RX running, **short-press BIND** — or send
 `?compasscal` over serial — to start the **45-second** calibration.
 
-**What you have to do: turn the buggy through TWO COMPLETE 360° CIRCLES.**
+**Four things, in this order. The direction and the start/finish point both matter:**
 
-Not a partial turn, not a wiggle — **two full rotations**, all the way around, twice. Take your time;
-you have 45 seconds, and slow and steady calibrates better than fast.
+1. **Point the nose of the buggy at NORTH.** Any compass will do — your phone's is fine.
+2. **Start it** — short-press BIND, or `?compasscal`. You have 45 seconds.
+3. **Turn SLOWLY CLOCKWISE — TWO COMPLETE CIRCLES.** Not a partial turn, not a wiggle: all the way
+   around, twice. Slow and steady calibrates better than fast.
+4. **Finish with the nose back on NORTH.**
 
 Any of these works, whichever suits where you are:
 
-- **Floating flat on the water** — rotate it through 360°, twice.
-- **Flat on the ground** — spin it in place through 360°, twice.
-- **Carried in your hands** — hold it level and turn yourself all the way around, twice.
+- **Floating flat on the water** — rotate it clockwise through 360°, twice.
+- **Flat on the ground** — spin it in place clockwise through 360°, twice.
+- **Carried in your hands** — hold it level and turn yourself clockwise all the way around, twice.
 
 Keep the buggy **level** throughout, and keep it away from anything metal — cars, rebar in concrete,
-tool benches, your own phone.
+tool benches, your own phone (put it down once you have found north).
+
+**Why north, and why clockwise?** One run measures three separate things:
+
+| What | How it is measured |
+|---|---|
+| **Iron calibration** — the hard/soft-iron offsets | The full sweep of the two circles |
+| **Mounting handedness** — is the module mirrored? | Which way the heading ran while you turned **clockwise** |
+| **Mounting rotation** — is the module glued in sideways? | The first sample, taken while you were on **north** |
+
+That last one is the reason this changed. Heading comes from the sensor's own axes, so a module
+mounted rotated makes **every** heading wrong by that angle — and the old calibration was blind to
+it, because a rotation still leaves a perfectly round, perfectly centred calibration circle. Nothing
+looked wrong. Mount the module however it fits; this is how you tell the firmware once.
+
+The tolerances are **deliberately forgiving** — at least 400° of turn (you are aiming for 720°) and
+finishing within ±40° of where you started — because a rejected run only costs you another walk
+around the buggy. The stored rotation is snapped to 0 / 90 / 180 / 270.
 
 **LED feedback — one meaning per line:**
 
 | Blinks | Meaning |
 |---|---|
-| **5 blinks** | **Started** — calibration is running, begin turning now |
-| **2 blinks** | **Success** — calibration captured and saved |
-| **10 blinks** | **No compass detected** — nothing was calibrated |
+| **5 blinks** | **Started** — begin turning now |
+| **2 blinks** | **Full success** — iron calibration, handedness and mounting orientation all updated |
+| **3 blinks** | **PARTIAL** — iron calibration saved, but the **mounting orientation was NOT updated**. Walk it again. |
+| **10 blinks** | **Nothing saved** — no compass detected, or the buggy was barely turned |
+
+**Three blinks is not a pass.** Re-walk it: north, two full clockwise circles, north. This matters
+most **right after you mount or move the module** — the iron calibration then matches the new
+position while the stored orientation still describes the old one, so every heading is out by exactly
+that difference and Follow-Me veers by the same amount at close range. If you are on serial, the same
+verdict is printed in words, naming what was and was not updated.
 
 If you get **10 blinks**, the RX cannot see a magnetometer. Check that `gps_chip_type` is set to
 **1** or **3** — those are the compass-equipped modules. A BN-220 has no compass and will always give
 you 10 blinks.
 
-On success the result saves itself to SPIFFS (`mag_offset_x/y`, `mag_scale_x/y`) — there is nothing
-else to press.
+On success the result saves itself to SPIFFS (`mag_offset_x/y`, `mag_scale_x/y`, `mag_orientation`) —
+there is nothing else to press.
+
+> **Re-checking the mounting angle alone — `?magalign`.** If the iron calibration is already good and
+> you only want to re-derive or verify the mounting orientation, point the nose at north, hold it
+> steady, and run `?magalign` over serial. It averages for 5 seconds and saves — no circles. It
+> cannot detect a mirrored module (only `?compasscal` can, from the direction of the turn), and it
+> refuses to run on a compass that has never been calibrated.
+
+> **Re-run `?compasscal` after changing the GPS or compass module.** The stored offsets are raw
+> counts; they do not survive a part change. The RX drives either a **QMC5883L** (BN-880) or a
+> **QMC5883P** (HGLRC M100-5883), detected automatically at boot — but neither one's calibration
+> carries over to the other.
 
 ### 2.5 ESC setup — power the PPM inputs, then calibrate
 
@@ -280,6 +318,7 @@ Power **one board at a time** (the other OFF, per 2.3), join its AP (password de
 | `foiler_low_speed_kmh` | **8 km/h** | Below this rider speed FM holds (won't chase a swimmer) |
 | `followme_mode` | **2 = Behind** (shipped default) | Pick the side you want and confirm it on the display — F1/F2/F3 |
 | GPS anti-spoof (Phase A/B) | leave defaults: HDOP 2.0, accel 3.0 G, teleport 80 km/h, suspect 3, pair-dist 500 m, speed-diff 50 km/h | Tuned for this craft; only widen with reason |
+| `gps_dyn_model` | **0 (Sea)** — unless your water is above ~500 m altitude, then **4 (Automotive)** | The Sea navigation model has a 500 m ceiling and good fixes start being rejected above it. Sea is the better model below that, so leave it at 0 |
 | `rtm_compass_required` | 1 | Don't arm RTM without a good compass |
 | `rtm_use_compass` | 1 (Hybrid) — never 2 on water | Mode 2 (compass-only) is bench-diagnostic only (motor EMI biases compass 100°+) |
 

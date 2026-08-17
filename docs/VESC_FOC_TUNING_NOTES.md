@@ -43,7 +43,7 @@ Both knobs are in VESC config. See §3.
 
 ## 2. Your current VESC motor config — what I found
 
-Source file: `C:\Users\Andress Montero\My Drive\Projects\Vesc and other related files\new FOC 6384 vesc1` (XML format, parsed line-by-line).
+Source file: `<VESC config folder>/new FOC 6384 vesc1` (XML format, parsed line-by-line).
 
 ### Power and current limits — these look reasonable
 | Parameter | Your value | Comment |

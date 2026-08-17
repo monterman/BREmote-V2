@@ -72,13 +72,39 @@ good fixes, because your real position sits outside the model.
 - **A mountain lake above 500 m is not fine.** Lake Tahoe (1,897 m), Lake Titicaca (3,812 m), any
   alpine reservoir — Sea is the wrong model there.
 
-**If you ride above 500 m, change `dynModel` to 4 (Automotive)**: 6,000 m ceiling, 100 m/s
-horizontal, 15 m/s vertical. Still far tighter than Portable, and still kills the 254 km/h class
-of garbage.
+**If you ride above 500 m, change the model to Automotive**: 6,000 m ceiling, 100 m/s horizontal,
+15 m/s vertical. Still far tighter than Portable, and still kills the 254 km/h class of garbage.
 
-This is **hard-coded on purpose**, not a config field — adding one would have changed the config
-struct size, which forces a settings wipe on the next flash. Changing it means editing
-`setNav5Sea` in `GPS.ino` (byte index 8 is the dynModel value) and recompiling.
+**On the RX this is a setting — `gps_dyn_model`. No recompile, no re-flash:**
+
+```
+?set gps_dyn_model 4
+?save
+```
+
+Reboot. The boot log then reads `dynModel=Automotive` instead of `dynModel=Sea`, and `?gpscfg`
+reads it back **out of the module**. The same field is on the RX web page and in the Web Serial
+Config Tool as **GPS Dynamic Model**.
+
+**Mind the two numbering systems.** What you type is the *config value*; what u-blox reports is the
+*dynModel*. They are not the same number:
+
+| `gps_dyn_model` — what you set | u-blox `dynModel` — what the module reports | Model |
+|---|---|---|
+| **0** *(default)* | 5 | **Sea** — the right choice below 500 m |
+| **4** | 4 | **Automotive** — for riders above roughly 500 m |
+| **5** | 5 | Sea, stated explicitly |
+
+Anything that is not an explicit `4` resolves to Sea, so a corrupt or out-of-range value fails
+toward the conservative model — never back to Portable. Portable is deliberately not offered.
+
+Adding the field cost nothing, because it reused a reserved slot renamed in place: `sizeof(confStruct)`
+did not change, so it caused no settings wipe of its own.
+
+> **The TX has no such field.** Its `dynModel` is still fixed at Sea in `setNav5Sea` in
+> `Source/V2_Integration_Tx/GPS.ino` (byte index 8 is the dynModel value), and changing it there does
+> mean recompiling. That only affects the speed the TX itself logs and displays — Return-to-Me and
+> Follow-Me steer on the **RX** GPS, which is the one with the setting.
 
 ---
 
@@ -187,6 +213,53 @@ power. That's also why no serial command can fix it: the module has stopped list
 > second. Both can be true — a module still being sprayed with wrong-baud traffic would
 > re-disable about as fast as it recovers. The recovery procedure is correct under either model.
 
+### The *other* "dead" module: UBX-only, straight off a flight controller
+
+The failure above still emits NMEA. There is a second one that emits **nothing** — no sentences at
+any baud, `?gpsraw` empty, `Chars processed: 0` — while the module is entirely healthy.
+
+**Betaflight's GPS auto-config switches u-blox modules to UBX only and turns NMEA output off**, and
+saves that to the module's battery-backed memory *and* its flash. It survives every power cycle.
+This firmware parses NMEA and nothing else, so it sees an empty wire. And because most modules sold
+as an "M10 GPS" are built for the drone market, a **brand-new** module can arrive this way — it is
+not only a second-hand-off-a-quad problem.
+
+Nothing in this file ever wrote the **output protocol** configuration. The legacy BN-220/880 path
+rescued this incidentally — `CFG-PRT`'s payload carries the UBX+NMEA protocol mask, so raising the
+baud rewrote it as a side effect. The M10 path had no equivalent and simply assumed NMEA had never
+been switched off.
+
+Worse, the repair was unreachable even once written, because the **detector** was the gate: the
+listen-only baud scan looked only for `$G…`, so "no NMEA" was read as "no module" and every entry
+point bailed out first.
+
+**Both halves are fixed on the RX, and the recovery is now two steps:**
+
+1. Flash the current RX firmware.
+2. Run **`?gpssetup`**.
+
+The baud scan now accepts a **complete, checksum-valid UBX frame** as evidence of life — the same
+parse and running checksum `ubxPoll()` uses, because a false positive would confirm a *wrong* baud
+and invite exactly the framing-error hazard the listen-only design exists to avoid. The NMEA test
+still runs first on every byte and still breaks early, so a healthy BN-220/880 exits at the same
+byte after the same elapsed time: that path is untouched. UBX evidence never breaks early, so a
+module emitting both is never misreported as UBX-only.
+
+Having found the module at a **proven** baud, the firmware re-enables NMEA output on UART1 — the GGA
+and RMC message rates first (Betaflight may have zeroed those individually, in which case flipping
+the port-level protocol back on alone would change nothing), then `CFG-UART1OUTPROT-UBX`, then
+`CFG-UART1OUTPROT-NMEA` last, so the sentence stream only restarts once every ACK is in. Boot writes
+RAM|BBR; **`?gpssetup` is what commits it to the module's flash.**
+
+Two caveats, in the spirit of the rest of this design: it is **reported, never enforced** — a module
+that refuses the writes still navigates on its own defaults, and the line says `REJECTED` rather than
+failing boot, which is the one remaining case that needs u-center on a PC. And the automatic repair
+uses the `CFG-VALSET` (M9/M10) interface, which is what a drone-market module is; a legacy u-blox
+6/7/8 is still rescued by the `CFG-PRT` route. **The TX does not carry this yet.**
+
+If you have written off a GPS module as dead for exactly this reason, it is probably fine. Try it
+again.
+
 ---
 
 ## 4. Baud vs update rate — why 9600 isn't enough
@@ -252,7 +325,9 @@ polling while they run. On the TX they're USB-only (the TX disables serial on a 
 
 ## 7. Fitting a different GPS
 
-**It should just work.** Plug it in, power on, run `?gpscfg`, expect `dynModel : 5 (Sea)`.
+**It should just work.** Plug it in, power on, run `?gpscfg`, expect `dynModel : 5 (Sea)` — or `4
+(Automotive)` if you have set `gps_dyn_model 4`. The readback is checked against your setting, so
+the line reads `<-- matches gps_dyn_model` when it took.
 
 The firmware finds the module at whatever baud it ships on and configures it in whichever dialect
 it speaks. Set `gps_chip_type` (0 = BN-220, 1 = BN-880, 2/3 = M10) and reboot.
@@ -264,10 +339,26 @@ Two things to check before buying:
 assuming.
 
 **Compass — RX only.** The RX needs a magnetometer for RTM/FM heading. A BN-880 has one; a BN-220
-does not. If you swap modules, the RX driver speaks **QMC5883L at address 0x0D**, and you must
-**re-run `?compasscal`** afterwards — different module, different mounting, different hard/soft
-iron offsets. A stored calibration does not carry over, and on the RX a bad heading is a
-Follow-Me fault.
+does not.
+
+The RX **auto-detects which magnetometer is fitted** at boot and drives it with the matching driver —
+one firmware image, either part, nothing to set:
+
+| I²C address | Part | Found on |
+|---|---|---|
+| `0x0D` | **QMC5883L** | Beitian BN-880, HGLRC M100 Pro |
+| `0x2C` | **QMC5883P** | HGLRC M100-5883 |
+| `0x1E` | HMC5883L | very old BN-880 stock — **reported, not supported** |
+
+These are different silicon, not a revision: among other things their data registers start at a
+different address, so reading a P with the L's driver would return a smooth, plausible, completely
+wrong heading. `?i2c` names whichever it finds, and so does the boot log.
+
+Whichever you fit, **re-run `?compasscal` after a swap** — different module, different mounting,
+different hard/soft iron offsets. The stored offsets are raw counts and do not carry over, and on
+the RX a bad heading is a Follow-Me fault. The current procedure is *nose on north → two full
+clockwise circles → finish on north*; see
+[Zero → Foiling § 2.4](ZERO_TO_FOILING.md#24-compass-calibration-rx--nose-on-north-two-clockwise-circles).
 
 ---
 

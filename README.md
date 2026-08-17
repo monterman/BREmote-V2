@@ -43,7 +43,7 @@ Every section of this README has a longer document behind it. Start here when yo
 | Compile it yourself *(advanced)* | [RX via Arduino](docs/FLASHING_RX_ARDUINO.md) · [TX via Arduino](docs/FLASHING_TX_ARDUINO.md) |
 | Wire the GPS + compass to the RX | [BN-880 → RX wiring](docs/GPS_Wiring_BN880_RX.md) |
 | Understand or fix GPS | [GPS configuration](docs/GPS.md) · [GPS troubleshooting](docs/hardware/gps-troubleshooting.md) |
-| Calibrate the compass | **[Zero → Foiling § 2.4](docs/ZERO_TO_FOILING.md#24-compass-calibration-rx--bind-short-press-two-full-360-circles)** — the procedure |
+| Calibrate the compass | **[Zero → Foiling § 2.4](docs/ZERO_TO_FOILING.md#24-compass-calibration-rx--nose-on-north-two-clockwise-circles)** — the procedure: nose on north, two clockwise circles, finish on north |
 | Chase compass EMI / understand the field data | [Compass calibration & EMI field analysis](docs/Compass_Cal_Analysis.md) *(reference, not a how-to)* |
 | Read the TX screen | [Display reference](docs/display-reference.md) |
 | Ride with Follow-Me | [Follow-Me guide](docs/FOLLOW_ME_GUIDE.md) · [design notes](DESIGN_FOLLOW_ME.md) |
@@ -109,7 +109,7 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 │  ESP32-C3                  │              │  ESP32-C3                        │
 │  SX1262 LoRa               │◄──────────►  │  SX1262 LoRa                     │
 │  BN-220 GPS (GPIO 18/19)   │  868/915MHz  │  BN-880 GPS  (Serial1 + I2C mux) │
-│  Dot matrix display        │    10 Hz     │  QMC5883L Compass  (I2C)         │
+│  Dot matrix display        │    10 Hz     │  Compass QMC5883L or 5883P (I2C) │
 │  Hall-effect throttle      │  6-byte pkt  │  AW9523 I/O Expander (I2C)       │
 │  Hall-effect toggle        │              │  VESC UART  or  ESC PWM output   │
 │  Vibration motor           │              │  Servo steering output           │
@@ -155,7 +155,7 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 | Radio | SX1262 LoRa | SX1262 LoRa |
 | BLE | Built-in (ESP32-C3) — NUS + VESC Tool protocol ✅ in master; `bt_enabled` SPIFFS config (0=off, 1=Hall-mode, 2=always-on) | Built-in (ESP32-C3) — RX BLE planned |
 | GPS | BN-220 or [HGLRC M100 Mini](https://www.hglrc.com/products/hglrc-m100_mini-gps) (M10 chip, no compass, 3.3V–5V) | BN-880 or [HGLRC M100-5883](https://www.hglrc.com/products/m100-5883-gps) (M10 chip + compass) |
-| Compass | None | QMC5883L (I2C) |
+| Compass | None | QMC5883L (I2C `0x0D`) **or** QMC5883P (I2C `0x2C`) — auto-detected at boot |
 | Display | HT16K33 dot matrix (I2C 0x70) | None |
 | ADC | ADS1115 (I2C 0x48) | None |
 | I/O Expander | None | AW9523 (I2C) |
@@ -229,7 +229,7 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 4. **Connect to WiFi AP** — SSID shown on the device; default password `12345678` *(power off the other device first — see WiFi note below)*
 5. **Open the Web Serial Config Tool** — configure all parameters with plain English labels
 6. **Calibrate TX** — hold LEFT toggle at boot, follow the display prompts
-7. **Calibrate RX compass** — connect to RX serial at 115200 baud, run `?compasscal`, rotate the buggy through a full horizontal circle, wait for confirmation
+7. **Calibrate RX compass** — **point the nose of the buggy at NORTH**, then run `?compasscal` (RX serial at 115200 baud, or short-press BIND) and **turn it slowly CLOCKWISE through two full circles, finishing back on north.** One run sets the iron calibration, the mounting handedness and the mounting orientation. **BIND LED: 2 blinks = full success. 3 blinks = PARTIAL** — the iron calibration saved but the mounting orientation did not, so walk it again. Full procedure: **[Zero → Foiling § 2.4](docs/ZERO_TO_FOILING.md#24-compass-calibration-rx--nose-on-north-two-clockwise-circles)**
 
 ---
 
@@ -332,6 +332,15 @@ self-configure from one image. 📖 **[`docs/GPS.md`](docs/GPS.md)** explains th
 `dynModel=Sea` matters (and the ⚠️ 500 m altitude caveat), and how to recover a GPS that has
 stopped accepting commands.
 
+Two things worth knowing up front:
+
+- **Riding above ~500 m?** The Sea navigation model has a 500 m ceiling. On the RX that is a
+  setting, not a recompile: `?set gps_dyn_model 4` then `?save` switches it to Automotive.
+- **A GPS that shows nothing at all** is often a module that came off a flight controller —
+  Betaflight leaves u-blox modules **UBX-only with NMEA output disabled**, saved in the module's
+  own memory. The RX now recognises that during its listen-only baud scan and switches NMEA back
+  on: flash the current RX firmware and run **`?gpssetup`**. This used to need u-center on a PC.
+
 <details>
 <summary>Older detail — wiring, commands and recovery steps</summary>
 
@@ -416,8 +425,8 @@ Unavailable modes (no VESC lock or no GPS fix) are skipped automatically. `MA` r
 - Configurable failsafe time (motor stop on LoRa link loss)
 - Foil battery cell count and voltage monitoring
 - BMS detection
-- GPS positioning (BN-880)
-- QMC5883L compass (I2C, fully calibrated) — RTM uses GPS COG as primary heading, compass snapshot as low-speed fallback; pure compass mode available as diagnostic option (`rtm_use_compass=2`)
+- GPS positioning (BN-880 or HGLRC M100-5883)
+- Compass (I2C, fully calibrated) — **either a QMC5883L at `0x0D` (BN-880) or a QMC5883P at `0x2C` (HGLRC M100-5883), detected automatically at boot and driven by the matching driver**; one firmware image, nothing to set. RTM uses GPS COG as primary heading, compass snapshot as low-speed fallback; pure compass mode available as diagnostic option (`rtm_use_compass=2`)
 - Kalman filter on GPS data
 - Follow-me mode framework (positional modes: behind, near right, near left)
 - WiFi AP for web configuration and log management
@@ -865,7 +874,7 @@ The data logger is the primary tool for validating and tuning the RTM/FM steerin
 - Press AUX again → green LED flashes 2× → logging stops.
 - Pull the file via the embedded WebUI Logs panel or via `?download <filename>` over serial.
 
-**Default logging rate:** 5 Hz (200 ms per sample), set in firmware. Override per session with `?lograte <Hz>` over serial — the argument is **Hz, not milliseconds**. Typical values 10 (10 Hz) down to 1 (1 Hz); fractions work, e.g. `?lograte 0.1`. Lower Hz = smaller files = longer sessions; higher Hz = better resolution for tuning fast oscillation.
+**Default logging rate:** 3 Hz (333 ms per sample), set in firmware. Override per session with `?lograte <Hz>` over serial — the argument is **Hz, not milliseconds**. Typical values 10 (10 Hz) down to 1 (1 Hz); fractions work, e.g. `?lograte 0.1`. Lower Hz = smaller files = longer sessions; higher Hz = better resolution for tuning fast oscillation.
 
 **Storage note:** if SPIFFS fills too quickly during long sessions, lower the rate with `?lograte`, **don't trim columns** — every diagnostic field is there to make the controller observable when something goes wrong, and the cost of dropping them is much greater than the storage savings.
 
@@ -958,7 +967,8 @@ Connect to the RX at 115200 baud. All commands are prefixed with `?`.
 | `?compassheading` | Stream live compass heading (degrees) at 10 Hz — useful for verifying QMC5883L orientation and EMI influence |
 | `?printcompass` | Print a single raw compass reading (X/Y/Z counts) — quick sanity check without streaming |
 | `?magtest` | Stream CSV telemetry (mag X/Y/Z, heading, VESC ERPM, motor current, throttle) at 10 Hz for up to 120 s — see Compass EMI section above for full usage |
-| `?compasscal` | Trigger soft-iron compass calibration routine |
+| `?compasscal` | Run the 45 s compass calibration. **Nose on NORTH → two full CLOCKWISE circles → finish on north.** Sets the iron calibration, the mounting handedness and the mounting orientation in one run. BIND LED: 2 = full success, 3 = PARTIAL (orientation not updated — walk it again), 10 = nothing saved |
+| `?magalign` | Re-derive the compass **mounting orientation only** — point the nose at north, hold steady, 5 s average. Needs an existing iron calibration; cannot detect a mirrored module |
 | `?printrssi` | Print current LoRa RSSI and SNR |
 | `?printtasks` | Print FreeRTOS task stack high-water marks — use to verify stack headroom after tuning |
 | `?printgps` | Print current RX GPS fix (lat, lon, speed, fix type) |

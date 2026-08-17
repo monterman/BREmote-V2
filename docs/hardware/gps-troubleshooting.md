@@ -158,7 +158,14 @@ tx\_gps\_speed:       0
 
 **What each field means:**
 
-| Field | Good value | Problem value | What to do | |---|---|---| | `tx_gps_initialized` | `YES` | `NO` | Type `?gpsreinit` | | `Serial1 available` | \> 0 | `0` | GPS not sending — see Step 5 | | `Chars processed` | Increasing | Always `0` | GPS data not reaching ESP32 — see Step 5 | | `Sentences failed` | `0` | \> 0 | Baud rate wrong — check `gps_chip_type` in web config | | `Location valid` | `YES` | `NO` | Go outdoors and wait up to 2 minutes | | `Satellites` | 8 or more | `invalid` or \< 4 | Go outdoors — indoors gets poor signal |
+| Field | Good value | Problem value | What to do |
+| :---- | :---- | :---- | :---- |
+| `tx_gps_initialized` | `YES` | `NO` | Type `?gpsreinit` |
+| `Serial1 available` | \> 0 | `0` | GPS not sending — see Step 5 |
+| `Chars processed` | Increasing | Always `0` | GPS data not reaching ESP32 — see Step 5 |
+| `Sentences failed` | `0` | \> 0 | Baud rate wrong — check `gps_chip_type` in web config |
+| `Location valid` | `YES` | `NO` | Go outdoors and wait up to 2 minutes |
+| `Satellites` | 8 or more | `invalid` or \< 4 | Go outdoors — indoors gets poor signal |
 
 ---
 
@@ -269,6 +276,7 @@ Once `?gpsraw` shows clean sentences, the wiring is correct. Now get a satellite
 | `tx_gps_initialized: NO` | Charge screen blocking boot | Type `?exitchg` first |
 | Blue LED off | No power to GPS | Check VCC and GND wires |
 | Garbled `?gpsraw` output | Baud rate mismatch | Change `gps_chip_type` in web config |
+| Nothing at all, but the module works on a drone | Module left **UBX-only** by Betaflight — NMEA output disabled | On the RX: flash current firmware, run `?gpssetup` — [see below](#-the-other-my-gps-shows-nothing-at-all-a-module-that-came-off-a-drone) |
 | Worked before potting, dead after | Wire broken inside compound | Open unit, retest with `?gpsraw 10` |
 
 ---
@@ -413,6 +421,59 @@ correct wiring.
   produces **zero** wrong-baud bytes.
 - `?gpsbaud` scans by listening, and checks UBX **once**, at the baud that answered.
 
+## 🚁 The other "my GPS shows nothing at all": a module that came off a drone
+
+**Symptom.** A module that looks completely dead. No NMEA at any baud, `?gpsraw` empty,
+`Chars processed: 0`, GPS dot never leaves slow-blink — but the blue LED is blinking, the wiring
+checks out, and the module works fine on a flight controller.
+
+**Cause: it is not dead, it is speaking the wrong protocol.** Betaflight's GPS auto-config switches
+u-blox modules to **UBX only and turns NMEA output off**, and saves that into the module's
+battery-backed memory and flash — so it survives every power cycle. This firmware parses NMEA and
+nothing else, so it sees an empty wire. **Most modules sold as an "M10 GPS" are aimed at the drone
+market**, so a brand-new one can arrive in this state too, not just a second-hand one.
+
+**Recovery on the RX — two steps, no PC tooling:**
+
+1. Flash the **current RX firmware**.
+2. Run **`?gpssetup`**.
+
+That is the whole procedure. The RX's listen-only baud scan now recognises a **complete,
+checksum-valid UBX frame** as evidence of life, not just `$G…`, so a UBX-only module is detected at
+its real baud instead of being written off as "no module". Having found it, the firmware re-enables
+NMEA output on UART1 — the GGA and RMC message rates plus the port's NMEA output protocol — and
+`?gpssetup` writes that into the module's own flash so it sticks. Boot alone applies the same repair
+to RAM, so you get NMEA back immediately; `?gpssetup` is what makes it permanent.
+
+You will see it happen on serial:
+
+```
+GPS: !! module is ALIVE at 115200 baud but speaking UBX ONLY — no NMEA at all.
+GPS: !! That is the signature of a flight-controller setup: Betaflight puts
+GPS: !! u-blox in UBX-only mode and saves it to battery-backed RAM and flash,
+GPS: !! so it survives every power cycle. This firmware parses NMEA, so until
+GPS: !! NMEA output is switched back on it sees an empty wire.
+GPS: !! re-enabling NMEA output below — see the config report.
+...
+GPS NMEA output on UART1 (persisted): GGA OK/valset | RMC OK/valset | UBX-out OK/valset | NMEA-out OK/valset
+GPS: NMEA output re-enabled on UART1 — GGA and RMC are the two sentences this firmware parses.
+```
+
+`?gpsbaud` also reports the diagnosis on its own — it prints `UBX only` in the protocol column and
+writes nothing.
+
+**Caveats worth knowing:**
+
+- The automatic repair uses the **`CFG-VALSET` (u-blox M9/M10)** interface, which is what a
+  drone-market module is. A legacy u-blox 6/7/8 gets its protocol mask rewritten when the firmware
+  moves it to 115200.
+- **It is reported, never enforced.** If the module refuses the writes the firmware says so — look
+  for `REJECTED` in the line above — and carries on rather than failing boot. That is the one case
+  left that still needs u-center on a PC.
+- This is the **RX**. The TX firmware does not yet carry the repair.
+- Before this firmware, this failure was indistinguishable from dead hardware and needed u-center
+  to fix. If you gave up on a module for this reason, it is probably fine — try it again.
+
 ## GPS serial commands
 
 | Command | What it does | Blocks |
@@ -469,58 +530,95 @@ the same firmware image.
 
 ---
 
+## ⭐ Dynamic platform model — `dynModel` (2026-07-28, updated 2026-08-16)
+
+**Every u-blox module ships in `dynModel 0` (Portable)**, which permits the receiver's own navigation filter to accept solutions up to **310 m/s horizontal and 50 m/s vertical** — because a "portable" device might be aboard an aircraft. Nothing in this project leaves the surface of a lake.
+
+**That permissiveness has a measured cost.** The foilIQ logger — same u-blox family, same buggy — emitted **bogus 254 km/h speeds and 4800 m altitudes as HIGH-confidence fixes (5–7 satellites, HDOP < 3)** on 2026-07-24, one day before a session where FM veered and RTM would not arm.
+
+On the RX such readings feed `gpsPhaseACheck()`, which increments `gps_suspect_count` and at threshold sets **`gps_rejected` — and that blocks RTM arming.** Killing the solutions inside the receiver is far better than filtering them downstream.
+
+`dynModel 5 (Sea)` constrains the filter to ~25 m/s horizontal and ~0 m/s vertical and pins altitude near the surface. Removing the vertical degree of freedom also sharpens the horizontal solution — and **course-over-ground is derived from horizontal velocity**, which is exactly what FM steers on.
+
+**Applied to:** BREmote RX (all `gps_chip_type`), BREmote TX (types 0 and 2), foilIQ WaveShare.
+**Re-sent on every boot** by `configureGPS()` / `initTxGPS()`, so it survives a backup-battery death, a module swap, or a factory reset. `?gpssetup` additionally writes it into the module's own flash.
+
+**Payload:** u-blox defaults with only `dynModel` altered, `mask = 0x0001`.
+
+### ⚠️ 500 m altitude ceiling — and how to change the model
+
+**`dynModel = Sea` is valid to 500 m.** The Great Lakes sit at 75–183 m (Michigan 176 m), roughly 3× margin. **On a lake above roughly 500 m the RX should be moved to Automotive** — 6,000 m ceiling, 100 m/s horizontal, 15 m/s vertical — or good fixes start being rejected. Automotive is still far tighter than Portable and still kills the 254 km/h class of garbage.
+
+**On the RX this is a config field — `gps_dyn_model`. No editing source, no recompiling:**
+
+```
+?set gps_dyn_model 4
+?save
+```
+
+Reboot. The boot log then reads `dynModel=Automotive` instead of `dynModel=Sea`, and `?gpscfg` reads `dynModel : 4` back **out of the module**. The same field is on the RX web page and in the Web Serial Config Tool as **GPS Dynamic Model**.
+
+**Two numbering systems here — do not mix them up.** What you type is the *config value*; what the module reports back is the *u-blox dynModel*:
+
+| `gps_dyn_model` — what you set | u-blox `dynModel` — what the module reports | Model |
+|---|---|---|
+| **0** *(default)* | 5 | **Sea** — leave it here below 500 m |
+| **4** | 4 | **Automotive** — for riders above ~500 m |
+| **5** | 5 | Sea, stated explicitly |
+
+Anything that is not an explicit `4` resolves to Sea, so a corrupt or out-of-range value fails toward the conservative model — never back to Portable. Portable is deliberately not offered at all.
+
+> **The TX has no such field.** Its `dynModel` is still fixed at Sea inside `setNav5Sea` in `Source/V2_Integration_Tx/GPS.ino`, and changing it there does mean recompiling. That only affects the speed the TX logs and displays — the autonomous modes steer on the **RX** GPS, which is the one with the setting.
+
+### NMEA sentence filter — GSV / GLL / VTG disabled
+
+**TinyGPS++ parses only GGA and RMC.** `GSV`, `GLL` and `VTG` are clocked across the wire, buffered, parsed to a dead end and discarded. GSV is the worst — with multiple constellations it is 6–10 sentences per epoch alone.
+
+On the **RX** that waste is not free: Serial1 is time-shared with the VESC through the 74HC4052 mux, so the GPS competes for both the line and the 2048-byte ring — the exact resource whose scarcity caused the STAGE 1 starvation. **The TX has shipped this identical filter since 2026-06-05**, recorded there as resolving *"Audit #5, GPS chatter choking the link."* The RX only received it on 2026-07-28.
+
+**Verify with `?diag`:** `g_diag_gps_bytes` should fall sharply while `g_diag_gps_sent_per_s` (complete *parsed* sentences) holds steady.
+
+### ✅ Confirming it actually took — `?gpscfg`
+
+The firmware checks the module's ACK on every configuration write, but an ACK only proves the module *accepted* the write — not that the setting survived a later write or a warm restart. `?gpscfg` is the second, independent check: it **polls the module** and prints what it reports:
+
+```
+----- GPS live config (polled from the module) -----
+  dialect  : legacy UBX-CFG (u-blox 6/7/8)
+  dynModel : 5  (Sea)  <-- matches gps_dyn_model
+  fixMode  : 3  (1=2D 2=3D 3=auto)
+  GSV      : disabled (good)   rates: 0 0 0 0 0 0
+  chip_type: 1 (0=BN-220 1=BN-880 2/3=M10)
+```
+
+Bounded at ~3 s, safe on the bench. The verdict on the `dynModel` line is compared against **your `gps_dyn_model` setting**, so an Automotive board reads `dynModel : 4 <-- matches gps_dyn_model`. **`<-- FACTORY DEFAULT, the write did NOT take` or `GSV : STILL ENABLED` means the write was silently rejected** — wrong checksum, unsupported on that chip, or the module still at the old baud. Also available from the web-UI quick-commands dropdown.
+
+---
+
 ## RX Compass — Wiring Verification and Serial Commands
 
-**Who this is for:** Builders connecting the QMC5883L compass (or BN-880 module) to the BREmote RX unit.
+**Who this is for:** Builders connecting a magnetometer (or a GPS module with one built in) to the BREmote RX unit.
 **When to use it:** Compass not detected at boot, RTM steering unreliable, or before potting the RX unit.
 
 ### Compass I2C Wiring (RX ESP32-C3)
 
-The QMC5883L compass connects via I2C. The BN-880 GPS module includes an integrated QMC5883L — if using BN-880, the GPS and compass share one I2C cable.
+The compass connects via I2C. Both the BN-880 and the HGLRC M100-5883 have one built in — with either, the GPS and compass share one cable.
+
+> **Two different magnetometers are supported, and the RX works out which one is fitted at boot:**
+>
+> | I²C address | Part | Found on |
+> |---|---|---|
+> | `0x0D` | **QMC5883L** | Beitian BN-880, HGLRC M100 Pro |
+> | `0x2C` | **QMC5883P** | HGLRC M100-5883 |
+> | `0x1E` | HMC5883L | very old BN-880 stock — **reported, not supported** |
+>
+> These are **different silicon, not a revision** — among other things their data registers start at a
+> different address — so the RX probes for both and drives whichever it finds with the right driver.
+> One firmware image, either module; nothing to set. The boot log names the part it is driving.
 
 | RX ESP32-C3 Pin | Compass / BN-880 | Signal |
 |---|---|---|
 | **GPIO 2** | SDA | I2C Data |
-<!-- V2.5-Evo 2026-07-28 — see "Dynamic platform model" section below for dynModel=Sea + NMEA filter -->
-
-> ## ⭐ Dynamic platform model — `dynModel = 5 (Sea)`, all boards (2026-07-28)
->
-> **Every u-blox module ships in `dynModel 0` (Portable)**, which permits the receiver's own navigation filter to accept solutions up to **310 m/s horizontal and 50 m/s vertical** — because a "portable" device might be aboard an aircraft. Nothing in this project leaves the surface of a lake.
->
-> **That permissiveness has a measured cost.** The foilIQ logger — same u-blox family, same buggy — emitted **bogus 254 km/h speeds and 4800 m altitudes as HIGH-confidence fixes (5–7 satellites, HDOP < 3)** on 2026-07-24, one day before a session where FM veered and RTM would not arm.
->
-> On the RX such readings feed `gpsPhaseACheck()`, which increments `gps_suspect_count` and at threshold sets **`gps_rejected` — and that blocks RTM arming.** Killing the solutions inside the receiver is far better than filtering them downstream.
->
-> `dynModel 5 (Sea)` constrains the filter to ~25 m/s horizontal and ~0 m/s vertical and pins altitude near the surface. Removing the vertical degree of freedom also sharpens the horizontal solution — and **course-over-ground is derived from horizontal velocity**, which is exactly what FM steers on.
->
-> **Applied to:** BREmote RX (all `gps_chip_type`), BREmote TX (types 0 and 2), foilIQ WaveShare.
-> **Re-sent on every boot** by `configureGPS()` / `initTxGPS()` — not stored in the module, so it survives a backup-battery death, a module swap, or a factory reset.
->
-> ⚠️ **500 m altitude ceiling.** The Great Lakes sit at 75–183 m (Michigan 176 m), roughly 3× margin. **On a lake above 500 m this MUST become `dynModel 4` (Automotive)** or fixes will degrade. Hard-coded deliberately, not a config field.
->
-> **Payload:** u-blox defaults with only `dynModel` altered, `mask = 0x0001`. Checksum `0x86 / 0x51`, independently recomputed and verified.
->
-> ### NMEA sentence filter — GSV / GLL / VTG disabled
->
-> **TinyGPS++ parses only GGA and RMC.** `GSV`, `GLL` and `VTG` are clocked across the wire, buffered, parsed to a dead end and discarded. GSV is the worst — with multiple constellations it is 6–10 sentences per epoch alone.
->
-> On the **RX** that waste is not free: Serial1 is time-shared with the VESC through the 74HC4052 mux, so the GPS competes for both the line and the 2048-byte ring — the exact resource whose scarcity caused the STAGE 1 starvation. **The TX has shipped this identical filter since 2026-06-05**, recorded there as resolving *"Audit #5, GPS chatter choking the link."* The RX only received it on 2026-07-28.
->
-> **Verify with `?diag`:** `g_diag_gps_bytes` should fall sharply while `g_diag_gps_sent_per_s` (complete *parsed* sentences) holds steady.
->
-> ### ✅ Confirming it actually took — `?gpscfg`
->
-> **No UBX ACK is checked anywhere in this firmware**, so "we sent dynModel=Sea" and "the module is in Sea" were indistinguishable until now. `?gpscfg` **polls the module** and prints what it reports:
->
-> ```
-> ----- GPS live config (polled from the module) -----
->   dynModel : 5  (Sea  <-- CORRECT for this buggy)
->   fixMode  : 3  (1=2D 2=3D 3=auto)
->   GSV      : disabled (good)   rates: 0 0 0 0 0 0
->   chip_type: 1 (0=BN-220 1=BN-880 2/3=M10)
-> ```
->
-> Bounded at ~3 s, safe on the bench. **`dynModel : 0` or `GSV : STILL ENABLED` means the write was silently rejected** — wrong checksum, unsupported on that chip, or the module still at the old baud. Also available from the web-UI quick-commands dropdown.
 | **GPIO 1** | SCL | I2C Clock |
 | `V+` on **`UART 1.1`** (selector on **5V**) | VCC | Power — see note |
 | GND | GND | Ground |
@@ -537,24 +635,42 @@ The QMC5883L compass connects via I2C. The BN-880 GPS module includes an integra
 > Added in board revision **V2.2** (`Electronics/.../Rx/Changelog.txt`) — **a V2.1 board does not
 > have them.** See the [BN-880 → RX wiring guide](../GPS_Wiring_BN880_RX.md) for a render.
 
-> The I2C bus is shared — AW9523 I/O expander (0x58) and compass (QMC5883L at 0x0D) both use the same SDA/SCL lines. Pull-up resistors are on the PCB; do not add external ones.
+> The I2C bus is shared — the AW9523 I/O expander (0x58) and the compass (QMC5883L at `0x0D` **or** QMC5883P at `0x2C`) both use the same SDA/SCL lines. Pull-up resistors are on the PCB; do not add external ones.
 
 ### Step 1 — Verify Compass Detection with `?i2c`
 
 ```
 ?i2c
 ```
-Expected output — all I2C devices present:
+Expected output — all I2C devices present. **Which compass line you get depends on the part you
+fitted; either one is correct.**
+
+With a **BN-880** (or an HGLRC M100 Pro) — QMC5883L at `0x0D`:
+
+```
 Scanning I2C bus (initialized on SDA:2 SCL:1)...
-I2C device found at address 0x0D (QMC5883L Compass) !
+I2C device found at address 0x0D (QMC5883L Compass - BN-880) !
 I2C device found at address 0x58 (AW9523 Expander) !
 Scan complete.
+```
 
-If `QMC5883L Compass` is **missing** from the output:
+With an **HGLRC M100-5883** — QMC5883P at `0x2C`:
+
+```
+Scanning I2C bus (initialized on SDA:2 SCL:1)...
+I2C device found at address 0x2C (QMC5883P Compass - M100-5883) !
+I2C device found at address 0x58 (AW9523 Expander) !
+Scan complete.
+```
+
+If **neither** compass address appears:
 - Check SDA (GPIO 2) and SCL (GPIO 1) wires match the table above
 - Verify the supply is correct for your module — **5 V for a BN-880**, 3.3 V for a bare QMC5883L
   breakout — and that GND is connected
 - If AW9523 is also missing, the entire I2C bus is open — check PCB solder joints
+
+If you see `0x1E (HMC5883L Compass - NOT supported)`, you have very old BN-880 stock. That part is
+reported but not driven — fit a BN-880 with a QMC5883L, or an M100-5883.
 
 ### Step 2 — Check Raw Compass Data with `?printcompass`
 ```
@@ -567,14 +683,63 @@ If values are all zero or completely static → compass power or wiring problem.
 
 ### Step 3 — Calibrate with `?compasscal`
 
-Run before first use and after any mechanical change to the buggy installation:
+Run before first use, after any mechanical change to the buggy installation, and **after re-mounting
+or swapping the compass module**:
+
 ```
 ?compasscal
 ```
 
-Slowly rotate the buggy 360° in the horizontal plane for 45 seconds. The calibration samples the full magnetic range and saves offsets to SPIFFS. Live min/max values print during rotation, then a completion message confirms success.
+**The procedure — the direction and the start/finish point both matter:**
 
-Calibration persists across reboots. Re-run any time the buggy's internal layout changes (motor, battery, or electronics moved).
+1. **Point the nose of the buggy at NORTH.**
+2. Run `?compasscal` (or short-press BIND on the RX). You have 45 seconds.
+3. **Rotate SLOWLY CLOCKWISE — two full circles.** Keep the buggy level, away from anything metal.
+4. **Finish with the nose back on NORTH.**
+
+One run measures three things: the hard/soft-iron calibration, the mounting **handedness** (from
+which way the heading ran while you turned clockwise), and the mounting **rotation** (from the first
+sample, taken while you were pointing north). Clockwise is what reveals handedness; ending on north
+is how the result is checked. Live min/max values print during rotation.
+
+Tolerances are deliberately loose — **≥ 400° of total rotation and closure within ±40° of where you
+started** — because a rejected run only costs you a re-walk. The stored rotation is snapped to
+0 / 90 / 180 / 270.
+
+**LED feedback on the BIND LED, and what it means:**
+
+| Blinks | Meaning |
+|---|---|
+| **5 blinks** | **Started** — begin turning now |
+| **2 blinks** | **Full success** — iron calibration, handedness and mounting orientation all updated |
+| **3 blinks** | **PARTIAL** — iron calibration saved, **mounting orientation NOT updated** (the previous value was kept) |
+| **10 blinks** | Nothing saved — no compass detected, or the buggy was barely turned |
+
+**Three blinks is not a success.** Re-walk it — start on north, two full clockwise circles, finish on
+north. This matters most **right after you re-mount or move the module**: the iron calibration then
+matches the new mounting while the stored orientation still describes the old one, so every heading
+is wrong by exactly that difference and Follow-Me veers by the same amount at close range. Serial
+prints the same verdict in words, naming what was and was not updated.
+
+**Re-checking the mounting angle on its own — `?magalign`.** If the iron calibration is already good
+and you only want to re-derive (or verify) the mounting orientation, point the nose at magnetic north,
+hold it steady and run:
+
+```
+?magalign
+```
+
+It averages for 5 seconds, stores the orientation and saves — no circles. It **cannot** detect a
+mirrored module; only `?compasscal` can, from the direction of the turn. It also refuses to run on a
+compass that has never been calibrated, because it would then measure the hard-iron bias and call it a
+mounting angle.
+
+Calibration persists across reboots. Re-run any time the buggy's internal layout changes (motor,
+battery, or electronics moved), and always after changing compass or GPS module — stored offsets are
+raw counts and do not carry across a part change.
+
+> Both `?compasscal` and `?magalign` are refused while Return-to-Me or Follow-Me is engaged, and
+> abort themselves if either engages part-way through. An abandoned run changes nothing.
 
 ### Step 4 — Verify Live Heading with `?compassheading`
 ```
@@ -608,35 +773,45 @@ Set via TX web config or `?set gps_update_hz 5` in the TX serial monitor. Reboot
 
 ## Arduino IDE Board Settings
 
-These settings must be configured in Arduino IDE before compiling or flashing either board. Wrong settings will cause compile errors or unexpected behavior.
+> 🚨 **The TX and RX need DIFFERENT partition settings, and using the TX's setting on the RX
+> WIPES the RX's config, compass calibration and all on-board logs.** An earlier version of this
+> appendix told you to use Huge App on both boards. That was wrong. The per-board flashing guides
+> are the authority: **[RX →](../FLASHING_RX_ARDUINO.md)** · **[TX →](../FLASHING_TX_ARDUINO.md)**.
 
-### Partition Scheme — CRITICAL
+Both boards are an **ESP32-C3** (HT-CT62), so **Board = "ESP32C3 Dev Module"** on the TX *and* the RX.
+There is no ESP32-S3 anywhere in BREmote.
 
-The default partition scheme will fill up at 92-94% flash usage and block further development. Always use Huge APP.
+### Partition Scheme — CRITICAL, and NOT the same on both boards
 
-| Board | Setting | Value |
+| Board | Tools → Partition Scheme | FQBN flag | Why |
+|---|---|---|---|
+| **TX** | **Huge APP (3 MB No OTA)** | `PartitionScheme=huge_app` | **Mandatory.** The TX has **no** `partitions.csv` of its own, so this flag is what decides the layout. NimBLE pushes the TX binary past the default 1.25 MB app slot — without it you get "Sketch too big". |
+| **RX** | **"Custom"** | `PartitionScheme=custom` | The RX sketch ships its **own `partitions.csv`** (2.0 MB app + 1.875 MB SPIFFS). "Custom" means *"use the sketch's own table"* — the flashed layout is byte-identical to leaving it unset; only the size limit the tool checks against changes. |
+
+> ⚠️ **NEVER select Huge APP on the RX.** A named scheme **replaces** the sketch's own table: SPIFFS
+> collapses from 1.875 MB to about 0.9 MB **and moves**, so the filesystem reformats on the next mount.
+> That means **your config, your pairing, your compass calibration and every on-board log are gone**,
+> and you have half the logging space from then on. "Custom" and "Huge App" sound similar and do
+> opposite things — read the row above twice.
+
+> **Seeing "97% of program storage" on the RX? That is a FALSE reading, not a reason to switch.**
+> With the scheme unset, arduino-cli measures the RX against a 1.25 MB limit that has nothing to do
+> with the real 2.0 MB app slot. **Select "Custom", not "Huge App"** — Huge App IS the trap this note
+> exists to keep you out of. Full explanation in [Flashing the RX](../FLASHING_RX_ARDUINO.md).
+
+**What you lose on both boards:** OTA (over-the-air WiFi flashing) — not used in BREmote. Both boards
+are flashed over USB, so nothing is lost.
+
+**If you do change the RX's partition scheme by accident:** back up first next time (`?conf` prints a
+Base64 blob; `?setconf <blob>` then `?applyconf` restores it), and expect to re-pair and re-run
+`?compasscal` — physically, two full clockwise circles — to recover.
+
+### Other settings (both boards)
+
+| Setting | Value | Why |
 |---|---|---|
-| TX (ESP32-C3) | Tools → Partition Scheme | **Huge APP (3MB No OTA)** |
-| RX (ESP32-C3) | Tools → Partition Scheme | **Huge APP (3MB No OTA)** |
-
-**Why:** The default 4MB partition gives only 1.2MB for the app. Huge APP gives 3MB — more than double. SPIFFS shrinks slightly from 1.5MB to 1.0MB but config data is only a few KB so this has no impact.
-
-**What you lose:** OTA (over the air WiFi flashing) — not used in BREmote. You always flash via USB cable so nothing is lost.
-
-Expected flash usage after switching:
-- TX: ~38% (was 92%)
-- RX: ~39% (was 94%)
-
-### Board Selection
-
-| Board | Tools → Board setting |
-|---|---|
-| TX | ESP32C3 Dev Module |
-| RX | ESP32S3 Dev Module |
-
-### Baud Rate
-
-| Setting | Value |
-|---|---|
-| Upload Speed | 921600 |
-| Serial Monitor | 115200 |
+| **USB CDC On Boot** | **Disabled** (`CDCOnBoot=default`) | GPIO 18/19 are the USB D-/D+ pins **and** the GPS UART (Serial1). Enabling CDC makes USB claim those pins → **the GPS silently dies.** |
+| Flash Size | 4 MB | |
+| Flash Mode / Freq | QIO / 80 MHz (defaults) | |
+| Upload Speed | 921600 | |
+| Serial Monitor | 115200 | |

@@ -52,6 +52,17 @@
 //   the system (fire the long STOP buzz). Every call site is classified explicitly below.
 //   All Pattern 7 requests now go through vib_stop_pending (System.ino) so a stop buzz can never be
 //   swallowed by a pattern that happens to be mid-play.
+// V2.5-Evo - 2026-08-17 - StopBuzz REVISION (supersedes the classification in the entry above):
+//   the rule is now A PURE TIMEOUT IS SILENT, A FAULT BUZZES. On a wave the rider has no attention
+//   to spare for decoding a buzz, and the more buzzes there are the less each one is read, so
+//   Pattern 7 is spent on faults only. Moved to commanded = true (SILENT): FM Gate 1 (throttle
+//   released 30s) and RTM Gate 3 (throttle released 4s) - both can only fire BECAUSE the trigger
+//   was already released, so nothing steps under the rider and the display already says "St".
+//   Still commanded = false (BUZZ): RTM Gate 2 (TX GPS lost) and the FM RX fault-stop - faults, not
+//   timers - plus RTM Gate 1 (max runtime), the one timer that can fire MID-SQUEEZE, where
+//   restoring rtm_thr_cap_tx to 255 un-clamps Throttle.ino and hands the rider raw manual throttle
+//   with no gesture behind it. The two arm REFUSALS (RTM pre-arm distance, FM fundamental reject)
+//   are unchanged and still buzz.
 
 extern volatile uint8_t current_vib_pattern;
 extern volatile bool    vib_stop_pending;   // set true to REQUEST the Pattern 7 STOP buzz (defined in
@@ -156,8 +167,11 @@ static void setRtmDisarmed()
 // ---- Disengage RTM: return to COOLDOWN, notify RX, confirm with haptic + display ----
 // V2.5-Evo - 2026-04-28 - P9 Bug1D: Pattern 4 and "St P" moved here so ALL exit paths
 // (steer-exit, GPS stale, max runtime, throttle release) fire the confirm consistently.
-// INPUT: commanded — true when the rider asked for this stop (magnet toggle, steer-exit);
-//        false when a safety gate stopped RTM on its own (max runtime, GPS stale, throttle release).
+// INPUT: commanded — true = stay SILENT, false = fire the Pattern 7 STOP buzz. Since the 2026-08-17
+//        revision the test is no longer "did the rider press something" but "is this a FAULT or a
+//        TIMEOUT": true for the deliberate stops (magnet toggle, steer-exit) AND for Gate 3, a pure
+//        timeout the rider's own released trigger caused; false for the GPS-stale fault and for
+//        Gate 1 (max runtime), the only timer here that can fire while he is still squeezing.
 // OUTPUT: none. SIDE EFFECTS: state → RTM_COOLDOWN, throttle cap restored to 255, 0xF1/0 sent to RX,
 //        STOP buzz requested when uncommanded, and a BLOCKING 2s "St" display hold.
 static void rtmDisengage(bool commanded)
@@ -176,14 +190,21 @@ static void rtmDisengage(bool commanded)
   // V2.5-Evo - 2026-08-16 - HAPTIC CUT: silent on a DELIBERATE disarm. You just did it, and the
   // display already says so - the stop confirm appears. A buzz confirming your own action is noise,
   // and it was the single most frequent buzz in the system.
-  // V2.5-Evo - 2026-08-17 - StopBuzz FIX: that cut was written here, at the shared sink, so it also
-  // silenced the three safety gates that end up in this same function (max runtime, GPS stale,
-  // throttle-release timeout). Those are exactly the stops the rider MUST feel: he is looking at
-  // the water, not at a 2s "St", and rtm_thr_cap_tx has just gone from the RTM cap back to 255, so
-  // a trigger he is already squeezing becomes raw manual throttle in the same instant.
-  // The cut now applies ONLY to the deliberate stops, via the caller's `commanded` flag, and
-  // Pattern 7 means ONE thing again: the system stopped, and you did not ask it to.
-  if (!commanded) vib_stop_pending = true;   // Pattern 7: one long buzz = uncommanded STOP
+  // V2.5-Evo - 2026-08-17 - StopBuzz: that cut was written here, at the SHARED sink, so it also
+  // silenced every safety gate that ends up in this same function. The fix is not to buzz them all
+  // back - it is to let the caller decide, on one rule: A PURE TIMEOUT IS SILENT, A FAULT BUZZES.
+  // Mid-wave the rider has no attention to spare for decoding a buzz, and the more buzzes there
+  // are the less each one is read. So Pattern 7 is spent only where it buys something:
+  //   FAULT   -> Gate 2 (TX GPS lost). A sensor died; nothing the rider did explains the stop.
+  //   TIMEOUT -> Gate 3 (trigger released 4s). His own hand caused it, "St" shows it. Silent.
+  //   Gate 1 (max runtime) buzzes despite being a timer, and it is the ONE exception: it has no
+  //   throttle precondition, so it can fire while he is still squeezing - and rtm_thr_cap_tx was
+  //   restored to 255 a few lines above, which un-clamps Throttle.ino's `if (result >
+  //   rtm_thr_cap_tx)` in the same instant. The cap is 30-90% by config range and can never BE
+  //   255, so that step to raw manual throttle is always real, and the sendData task keeps
+  //   transmitting it throughout the blocking 2s hold below. That transition earns a warning;
+  //   the two release-driven timeouts, where the trigger is already at rest, do not.
+  if (!commanded) vib_stop_pending = true;   // Pattern 7: one long buzz = a FAULT stopped the system
 
   // Large-font stop confirm: LET_S(32) renders as "5", LET_T(20) renders as "t".
   // "5t" appearance is intentional — matches large-font style of F0-F3 confirms.
@@ -385,7 +406,13 @@ void runRtmLoop()
       if (usrConf.rtm_max_runtime_s > 0 &&
           now - rtm_active_start_ms > (unsigned long)usrConf.rtm_max_runtime_s * 1000UL)
       {
-        rtmDisengage(false);   // UNCOMMANDED: a timer expired, the rider asked for nothing → buzz
+        // BUZZES — and it is the one timeout in this file that does. Every other timeout here can
+        // only fire because the trigger was already released; this gate has no throttle
+        // precondition, so it fires mid-squeeze, and rtmDisengage() lifts rtm_thr_cap_tx (30-90%
+        // by config range) back to 255 in the same instant. That is a silent step from capped RTM
+        // throttle to raw manual throttle with no gesture behind it. Off by default
+        // (rtm_max_runtime_s = 0), so keeping this buzz costs nothing against buzz saturation.
+        rtmDisengage(false);
         break;
       }
 
@@ -398,7 +425,8 @@ void runRtmLoop()
                            : (uint32_t)usrConf.rtm_gps_timeout_ms;
         if (gps_tx.location.age() > gps_thr)
         {
-          rtmDisengage(false);   // UNCOMMANDED: TX GPS went stale under RTM → buzz
+          rtmDisengage(false);   // FAULT, not a timeout: the TX GPS died under RTM and nothing the
+                                 // rider did explains the stop → buzz
           break;
         }
       }
@@ -411,10 +439,13 @@ void runRtmLoop()
         if (rtm_release_ms == 0) rtm_release_ms = now;
         if (now - rtm_release_ms > 4000UL)
         {
-          // UNCOMMANDED: letting go of the trigger for a moment is not the same as asking RTM to
-          // end. The rider gets no warning that the 4s window has run out, and the next squeeze is
-          // raw manual throttle instead of the RTM cap → buzz.
-          rtmDisengage(false);
+          // SILENT (2026-08-17 rule: a pure timeout is silent, a fault buzzes). This gate can only
+          // be reached because the rider let go and kept the trigger released for 4s — the stop
+          // follows his own hand and "St" already shows it. It is also the moment the cap lift in
+          // rtmDisengage() is harmless: thr_scaled < 10 means the shaped throttle sits far below
+          // the RTM cap, so restoring the cap to 255 changes nothing he can feel. Buzzing here
+          // spends the rider's attention on a non-event and devalues the fault buzz.
+          rtmDisengage(true);
           break;
         }
       }
@@ -533,12 +564,13 @@ static void fmSilentDisarm()
   queueMetaPacketBurst(0xF2, 0);   // mode 0 = FM disabled on RX
 }
 
-// Internal disarm: clears state, notifies RX, shows "St" full-screen, buzzes only when the stop
-// was NOT asked for.
+// Internal disarm: clears state, notifies RX, shows "St" full-screen, buzzes only on a FAULT.
 // V2.5-Evo - 2026-04-28 - P9 S2: showFmMode() removed; disarm shows blocking stop message.
 // V2.5-Evo - 2026-04-28 - ChgE: fm_last_sync_ms reset to 0 on disarm so keepalive timer clears.
-// INPUT: commanded — true when the rider asked for this disarm (toggle combo, magnet toggle);
-//        false when the system disarmed FM on its own (RX fault-stop, Gate 1 release backstop).
+// INPUT: commanded — true = stay SILENT, false = fire the Pattern 7 STOP buzz. Since the 2026-08-17
+//        revision the test is "FAULT or TIMEOUT", not "did the rider press something": true for the
+//        deliberate disarms (toggle combo, magnet toggle) AND for the Gate 1 release backstop,
+//        which is a pure timeout; false only for the RX fault-stop.
 // OUTPUT: none. SIDE EFFECTS: fm_armed cleared, keepalive stopped, 0xF2/0 sent to RX, STOP buzz
 //        requested when uncommanded, and a BLOCKING 2s "St" display hold.
 static void fmDisarm(bool commanded)
@@ -549,11 +581,14 @@ static void fmDisarm(bool commanded)
   queueMetaPacketBurst(0xF2, 0);   // mode 0 = FM disabled on RX (followme_mode=0)
   // V2.5-Evo - 2026-08-16 - HAPTIC CUT: silent on a DELIBERATE disarm. You just did it, and the
   // display already says so. A buzz confirming your own action is noise.
-  // V2.5-Evo - 2026-08-17 - StopBuzz FIX: the cut was written here, at the shared sink, so it also
-  // silenced the two disarms nobody asked for — the RX fault-stop and the Gate 1 release backstop.
-  // In both of those the RX has stopped steering for the rider and he has no way to know it, so
-  // they buzz. Deliberate disarms stay silent.
-  if (!commanded) vib_stop_pending = true;   // Pattern 7: one long buzz = uncommanded STOP
+  // V2.5-Evo - 2026-08-17 - StopBuzz: the caller now decides, on the rule A PURE TIMEOUT IS SILENT,
+  // A FAULT BUZZES. Exactly ONE FM path is a fault — the RX fault-stop in runFmLoop(), where the RX
+  // gave up steering on its own and the rider has no way to know. The Gate 1 release backstop is a
+  // timer, and it expires in the worst possible place: mid-whip, where the rider is legitimately
+  // off the trigger for 10-25 s and is riding a wave with no attention to spare for decoding a
+  // buzz. Buzz saturation is the real failure mode here — the more buzzes there are, the less any
+  // one of them is read — so Pattern 7 is spent on faults only.
+  if (!commanded) vib_stop_pending = true;   // Pattern 7: one long buzz = a FAULT stopped the system
 
   // Large-font stop confirm on FM disarm.
   DISP_LOCK(); displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
@@ -592,7 +627,9 @@ void cycleFmMode()
 
         // confirming your own action is noise, and it was the single most frequent buzz in the system.
 
-        // Pattern 7 now means ONE thing: the system stopped, and you did not ask it to.
+        // V2.5-Evo - 2026-08-17 - and after the StopBuzz revision Pattern 7 means ONE thing:
+        // a FAULT stopped the system. Timeouts — including the ones the rider did not ask for —
+        // are silent, so this deliberate F0 disarm is in the majority, not the exception.
 
         // Large-font F0 disarm confirm: LET_F + 0. Shorter hold (1s) — this is a disarm, not a mode select.
         DISP_LOCK();
@@ -736,9 +773,10 @@ void runFmLoop()
   fm_flags_prev = fm_flags_now;
   if (fm_armed && fault_rising)
   {
-    // UNCOMMANDED: the RX faulted and stopped FM by itself. This is the single most important
-    // stop in the file to make the rider feel — he asked for nothing and the buggy just stopped
-    // following him. → commanded = false → Pattern 7.
+    // FAULT — and since the 2026-08-17 revision this is the ONLY FM path that buzzes. The RX
+    // faulted and stopped following by itself: the rider asked for nothing, no timer explains it,
+    // and he has no other way to learn the buggy is no longer steering for him. → commanded =
+    // false → Pattern 7. (The Gate 1 release backstop below is a timeout and is now silent.)
     fmDisarm(false);   // clears fm_armed + keepalive, sends 0xF2/0, "St" + Pattern 7 — TX & RX can't disagree
     return;
   }
@@ -776,10 +814,14 @@ void runFmLoop()
   {
     if (now - fm_arm_ms > kFmGate1ReleaseMs)
     {
-      // UNCOMMANDED: a 30s backstop timer expired. The rider made no gesture and has no way to
-      // know his FM declaration has just been withdrawn — the next time he squeezes, the RX is
-      // no longer steering for him. Same class as RTM Gate 3. → commanded = false → Pattern 7.
-      fmDisarm(false);
+      // SILENT — the owner's ruling, 2026-08-17. A pure timeout, not a fault: it is only reachable
+      // with the trigger released (thr_scaled < 5), which on this craft means the rider is mid-whip
+      // riding a wave, where a buzz is both unreadable and unhelpful. "The more buzzing there is,
+      // the less attention you pay to them" — so Pattern 7 never fires in the middle of a wave and
+      // stays reserved for faults. Same class as RTM Gate 3, which is also silent. Nothing steps
+      // under him either: FM never touches rtm_thr_cap_tx, and he is off the trigger, so the
+      // disarm changes no throttle he is currently commanding.
+      fmDisarm(true);
       return;
     }
   }

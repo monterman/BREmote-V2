@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-08-17 - defaultConf.rtm_double_squeeze_en 0 → 1: the factory default RTM arm gesture is now the
+//   deliberate double squeeze, which is what the struct comment always documented. Default value + comments only —
+//   confStruct UNCHANGED, sizeof stays 136, SW_VERSION stays 27, no SPIFFS reset, and units with a stored value keep it.
 // V2.5-Evo - 2026-07-20 - BLE re-enable deep-fix (Rex 2026-07-20-bremote-fw-audit-tx-ble-reenable-rootcause):
 //   BLE_ENABLED turned back ON permanently with the single-core coexistence hardening applied —
 //   heap-floor guard on init, relaxed connection interval, consolidated/back-pressured notify stream
@@ -280,7 +283,7 @@ struct confStruct {
     uint16_t rtm_enabled;              // RTM master enable; 0=off, 1=on; default 1
     uint16_t rtm_hold_duration_s;      // LEFT hold time to arm RTM; 3-10 s (floor lowered 4→3 2026-07-20); default 5
     uint16_t rtm_arm_window_s;         // Window to engage throttle after arming; 5-30 s; default 10
-    uint16_t rtm_double_squeeze_en;    // Require double-squeeze (1) or 500ms hold (0); default 1
+    uint16_t rtm_double_squeeze_en;    // RTM arm gesture; 1=double squeeze, 0=single squeeze held ~500 ms; default 1
     uint16_t rtm_throttle_start_pct;   // Initial throttle cap when RTM engages; 10-50 %; default 30
     uint16_t rtm_throttle_max_pct;     // Max throttle cap after ramp; 30-90 %; default 70
     uint16_t rtm_ramp_duration_s;      // Time to ramp throttle start→max; 2-15 s; default 5
@@ -451,7 +454,14 @@ confStruct defaultConf = {  // V2.5-Evo — factory default configuration
   1,    // rtm_enabled
   3,    // rtm_hold_duration_s (3-10 s; 3 = at floor)
   15,   // rtm_arm_window_s (5-30 s)
-  0,    // rtm_double_squeeze_en (0 = 500ms hold, 1 = double-squeeze)
+  // V2.5-Evo - 2026-08-17 - Was 0 (single squeeze). The struct comment beside this field always
+  // documented "default 1", but defaultConf shipped 0, so every factory-reset TX armed RTM on the
+  // EASIER gesture — a single squeeze held ~500 ms, which an accidental throttle pull can satisfy
+  // on a machine that tows a person through water. Now 1: the deliberate double squeeze is the
+  // shipped default, and firmware and comment finally agree.
+  // Existing units are deliberately untouched: no confStruct change and no SW_VERSION bump, so a TX
+  // with a stored value keeps it. This only affects units never configured, or factory-reset later.
+  1,    // rtm_double_squeeze_en (1 = double squeeze — SHIPPED DEFAULT, deliberate, harder to trigger by accident; 0 = single squeeze held ~500 ms)
   30,   // rtm_throttle_start_pct
   70,   // rtm_throttle_max_pct
   5,    // rtm_ramp_duration_s

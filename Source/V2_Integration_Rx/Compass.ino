@@ -696,10 +696,11 @@ void runCompassCalibration() {
       while (mount_residual < -180.0f) mount_residual += 360.0f;
 
       if (fabsf(mount_residual) > kMountSquareTolDeg) {
-        Serial.println("\nWARNING: the compass module is NOT mounted square to the buggy.");
-        Serial.printf("         It sits %.1f deg from the nearest cardinal, and only 0, 90, 180\n",
+        Serial.println("\nWARNING: the compass module is NOT mounted square to the NOSE of the buggy.");
+        Serial.printf("         Its forward axis is %.1f deg off the nearest right angle to the\n",
                       fabsf(mount_residual));
-        Serial.println("         or 270 deg can be stored - so that difference was discarded.");
+        Serial.println("         nose. Only 0, 90, 180 or 270 deg can be stored, so that");
+        Serial.println("         difference was discarded.");
         Serial.printf("         About %.1f deg of heading error will REMAIN no matter how well the\n",
                       fabsf(mount_residual));
         Serial.println("         compass is calibrated. Every heading it reports is wrong by that");
@@ -1021,10 +1022,11 @@ void runMagAlign() {
   // the consequence and the physical fix. Aim is still offered as the alternative cause, because
   // here it genuinely is one: this reading is taken in a single 5 s hold pointing north.
   if (fabsf(residual) > kMountSquareTolDeg) {
-    Serial.println("\nWARNING: the compass module is NOT mounted square to the buggy.");
-    Serial.printf("         The reading sits %.1f deg from the nearest cardinal, and only 0, 90,\n",
+    Serial.println("\nWARNING: the compass module is NOT mounted square to the NOSE of the buggy.");
+    Serial.printf("         Its forward axis reads %.1f deg off the nearest right angle to the\n",
                   fabsf(residual));
-    Serial.println("         180 or 270 deg can be stored - so that difference was discarded.");
+    Serial.println("         nose. Only 0, 90, 180 or 270 deg can be stored, so that");
+    Serial.println("         difference was discarded.");
     Serial.printf("         About %.1f deg of heading error will REMAIN no matter how well the\n",
                   fabsf(residual));
     Serial.println("         compass is calibrated. Every heading it reports is wrong by that");

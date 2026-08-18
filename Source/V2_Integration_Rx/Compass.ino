@@ -328,6 +328,11 @@ void runCompassCalibration() {
     return;
   }
 
+  // V2.5-Evo - 2026-08-18 - ROT-1 sizing. 45 s / (20 ms loop x stride 5) = ~450 stored samples
+  // worst case, so 512 is the next power of two above the ceiling and can never overflow.
+  static const uint16_t kRotSampleMax    = 512;
+  static const uint8_t  kRotSampleStride = 5;
+
   int16_t minX = 32767, maxX = -32768;
   int16_t minY = 32767, maxY = -32768;
 
@@ -352,11 +357,19 @@ void runCompassCalibration() {
 
   int16_t firstX = 0, firstY = 0, lastX = 0, lastY = 0;
 
-  float   prev_raw_hdg = 0.0f;
-
-  bool    have_prev    = false;
-
   float   rot_accum    = 0.0f;   // signed degrees turned; +ve = heading rising
+
+  // V2.5-Evo - 2026-08-18 - ROT-1. Rotation is now accumulated in a SECOND PASS, about the
+  // centre of the swept field, instead of live about the raw origin (0,0). See the block
+  // after the collection loop for why the old raw-origin method measured ~0 degrees on a
+  // perfectly good full turn. Samples are decimated to one every kRotSampleStride readings
+  // (~100 ms at the 20 ms loop delay), which caps 45 s at ~450 entries and keeps the gap
+  // between consecutive stored samples far below the 180 deg shortest-path wrap limit even
+  // at a brisk spin. 512 x 2 x int16_t = 2 KB, static so it never lands on the stack.
+  static int16_t rotSampX[kRotSampleMax];
+  static int16_t rotSampY[kRotSampleMax];
+  uint16_t rotSampCount  = 0;
+  uint16_t rotSampPhase  = 0;
 
 
   uint32_t startTime = millis();
@@ -414,29 +427,19 @@ void runCompassCalibration() {
 
 
 
-      // Signed rotation from the RAW frame. A hard-iron bias makes a turn non-uniform but
-
-      // not non-monotonic, so the SIGN of the total stays trustworthy.
-
-      float raw_hdg = atan2f((float)magY, (float)magX) * (180.0f / M_PI);
-
-      if (raw_hdg < 0.0f) raw_hdg += 360.0f;
-
-      if (have_prev) {
-
-        float d = raw_hdg - prev_raw_hdg;
-
-        while (d > 180.0f)  d -= 360.0f;      // shortest-path wrap
-
-        while (d < -180.0f) d += 360.0f;
-
-        rot_accum += d;
-
+      // V2.5-Evo - 2026-08-18 - ROT-1. Store a decimated copy of the sweep. Rotation CANNOT be
+      // accumulated here, because the centre it has to be measured about is not known until the
+      // sweep is finished. The old code accumulated about the raw origin and was wrong whenever
+      // the hard-iron offset exceeded the field radius - which is the common case, not the rare
+      // one. The second pass below does the accumulation with the final centre.
+      if (++rotSampPhase >= kRotSampleStride) {
+        rotSampPhase = 0;
+        if (rotSampCount < kRotSampleMax) {
+          rotSampX[rotSampCount] = magX;
+          rotSampY[rotSampCount] = magY;
+          rotSampCount++;
+        }
       }
-
-      prev_raw_hdg = raw_hdg;
-
-      have_prev    = true;
 
     }
     
@@ -460,6 +463,75 @@ void runCompassCalibration() {
     Serial.println("\nERROR: No valid compass samples captured. Calibration aborted (existing cal kept).");
     blinkBind(10);
     return;
+  }
+
+  // ============================================================================================
+  // V2.5-Evo - 2026-08-18 - ROT-1. SECOND PASS: accumulate rotation about the CENTRE of the
+  // swept field, not about the raw origin (0,0).
+  //
+  // THE BUG THIS REPLACES. The old code did this live, inside the collection loop:
+  //
+  //     float raw_hdg = atan2f((float)magY, (float)magX);   // angle about the ORIGIN
+  //
+  // and justified it with "a hard-iron bias makes a turn non-uniform but not non-monotonic, so
+  // the SIGN of the total stays trustworthy." That claim is FALSE, and not marginally so.
+  //
+  // atan2(y, x) is the angle subtended at the ORIGIN. It only sweeps a full 360 deg over one
+  // physical revolution if the origin lies INSIDE the circle the readings trace. The circle is
+  // centred on the hard-iron offset, so the origin is inside it only while
+  //
+  //     |hard-iron offset| < field radius
+  //
+  // When the offset is LARGER than the radius the origin falls OUTSIDE the circle, and the angle
+  // subtended at an external point is bounded: it swings out to a tangent, comes back, and
+  // returns to where it started. Net accumulation over a full turn is ZERO, not 360.
+  //
+  // Reported by beta tester heiguga on SW35R2, with the numbers that prove it. His sweep:
+  // centre (-319, -28), radius ~275, so |offset| = 320 > 275 - origin outside the circle. Raw
+  // angles at N/E/S/W were 224.5, 204.4, 144.1, 183.4 deg: the value rocks across an 80 deg arc
+  // and comes back. Walking N->E->S->W->N the deltas are -20.1, -60.3, +39.3, +41.1, summing to
+  // exactly 0. His console printed "only 1 deg of rotation seen" on every attempt, however well
+  // he walked the circles - while his stored calibration produced near-perfect headings
+  // (3.9 / 98.4 / 180.9 / 268.0), because THAT path subtracts the offset and this one did not.
+  //
+  // The failure was therefore silent, repeatable, and inverted: the riders with the largest
+  // hard-iron offsets are exactly the ones who most need to calibrate, and they were the only
+  // ones locked out. It is also circular - you cannot calibrate because you are not calibrated.
+  //
+  // THE FIX. The centre is not known until the sweep is complete, so accumulation moves after
+  // the loop and runs against the final min/max centre. Sample gaps are ~100 ms, far below the
+  // 180 deg shortest-path wrap limit at any walkable turn rate. Both thresholds downstream
+  // (kMinIronTurnDeg here, kMinTurnDeg further down) are UNCHANGED - they were never wrong, they
+  // were being fed a number that did not measure what it claimed to. Raising or lowering them
+  // would not have helped: the measurement was ~0 regardless of how far the buggy actually went.
+  // ============================================================================================
+  {
+    const float rotCx = (float)(maxX + minX) / 2.0f;
+    const float rotCy = (float)(maxY + minY) / 2.0f;
+
+    float prev_hdg = 0.0f;
+    bool  have_prev = false;
+
+    for (uint16_t i = 0; i < rotSampCount; i++) {
+      const float dx = (float)rotSampX[i] - rotCx;
+      const float dy = (float)rotSampY[i] - rotCy;
+
+      // Skip a sample sitting essentially ON the centre: atan2(0,0) is meaningless and would
+      // inject a spurious jump. Only possible from a dropout, never from a real field reading.
+      if (fabsf(dx) < 1.0f && fabsf(dy) < 1.0f) continue;
+
+      float hdg = atan2f(dy, dx) * (180.0f / M_PI);
+      if (hdg < 0.0f) hdg += 360.0f;
+
+      if (have_prev) {
+        float d = hdg - prev_hdg;
+        while (d > 180.0f)  d -= 360.0f;      // shortest-path wrap
+        while (d < -180.0f) d += 360.0f;
+        rot_accum += d;
+      }
+      prev_hdg  = hdg;
+      have_prev = true;
+    }
   }
 
   // V2.5-Evo - 2026-08-16 - Abort if the buggy was never actually TURNED. The bug: the min/max

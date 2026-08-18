@@ -1271,24 +1271,40 @@ void cmdHelp(const String& params) {
   }
 }
 
-void checkSerial()
+// ============================================================================================
+// executeSerialCommand - parse and dispatch ONE command line, whatever delivered it
+// ============================================================================================
+// V2.5-Evo - 2026-08-18 - WEB-SERIAL-1, Phase 1. Split out of checkSerial(), which used to read
+// a line from the USB port and dispatch it in the same function. Nothing about the parsing,
+// dispatch, case handling or the blocks_loop safety gate changed - this is a pure refactor, and
+// the USB path must behave identically. The only reason it exists is so a second caller (the web
+// console's write route, Phase 2) can reach the same dispatcher instead of growing a parallel
+// copy of it that drifts out of step - which is exactly how the "not while engaged" rule would
+// end up enforced on one path and not the other.
+//
+// The 512-byte cap lives HERE rather than in the reader, so it protects every caller. A web
+// client is not more trustworthy than a USB one.
+void executeSerialCommand(const String &line)
 {
-  // Check if data is available on the serial port
-  if (Serial.available() > 0) {
-    
-    String command = Serial.readStringUntil('\n');
-    // Read input until newline
+  String command = line;
 
-    // SECURITY FIX: Limit command length to prevent heap exhaustion
-    if (command.length() > 512) {
-      Serial.println("ERROR: Command too long (max 512 chars)");
-      return;
-    }
+  // SECURITY FIX: Limit command length to prevent heap exhaustion
+  if (command.length() > 512) {
+    Serial.println("ERROR: Command too long (max 512 chars)");
+    return;
+  }
 
-    // Trim leading and trailing spaces
-    command.trim();
-    // Process the command
-    if (command.startsWith("?") || command.startsWith("?")) {
+  // Trim leading and trailing spaces
+  command.trim();
+
+  // A quit that arrived with nothing running must not sit latched and kill the next streaming
+  // command as it starts. Whatever was looping has already had its chance to consume it.
+  clearSerialQuitRequest();
+
+  // Process the command
+  // V2.5-Evo - 2026-08-18 - the test used to read `startsWith("?") || startsWith("?")`. Both
+  // operands were byte-identical ASCII 0x3F (verified), so the second was dead. Collapsed.
+  if (command.startsWith("?")) {
       // Find parameter separator - support both ":" and whitespace
       int separatorPos = -1;
       String params = "";
@@ -1350,13 +1366,24 @@ void checkSerial()
         }
       }
 
-      if (!found) {
-        Serial.println("Unknown command. Type '?' for help.");
-      }
-    }
-    else {
+    if (!found) {
       Serial.println("Unknown command. Type '?' for help.");
     }
+  }
+  else {
+    Serial.println("Unknown command. Type '?' for help.");
+  }
+}
+
+// The USB reader. Everything it used to do beyond reading a line now lives in
+// executeSerialCommand() above.
+void checkSerial()
+{
+  // Check if data is available on the serial port
+  if (Serial.available() > 0) {
+    // Read input until newline
+    String command = Serial.readStringUntil('\n');
+    executeSerialCommand(command);
   }
 }
 

@@ -91,7 +91,41 @@ static void exitSetup() {
   Serial.println("");
 }
 
+// ============================================================================================
+// V2.5-Evo - 2026-08-18 - WEB-SERIAL-1. A quit that does not need the USB keyboard.
+// ============================================================================================
+// checkSerialQuit() reads Serial.available() - the PHYSICAL port. A "Stop" button on the web
+// console posts over WiFi, so Serial.available() is zero and a naive button would silently do
+// nothing while the rider watched output scroll forever.
+//
+// Roughly a dozen streaming commands call this one function (?compassheading, ?printcompass,
+// ?printbat, ?magtest, ?vescping, ?vescraw, ?gpsdiag and the print* family), so the fix belongs
+// here and only here rather than in each of them.
+//
+// TWO COMMANDS DELIBERATELY HAVE NO ABORT POINT AND ARE NOT REACHED BY THIS: ?gpssetup and
+// ?wifiupd. Each is one indivisible sequence whose halves are not separately valid - ?gpssetup
+// raises the module baud, proves the link at the new rate, reverts if the proof fails, then
+// persists to the module's own NVM; ?wifiupd rewrites ~50 KB of web UI into SPIFFS and verifies
+// it afterwards. Stopping either part-way leaves the hardware in a WORSE state than letting it
+// finish, so any Stop control must go inert for those two rather than pretend.
+static volatile bool gRemoteQuitRequested = false;
+
+// Called by the web console's write route when the command is "quit". Sets a flag rather than
+// dispatching, because "quit" is not a command in the table - it is an interrupt aimed at a
+// handler that is already running and is holding the loop task.
+static inline void requestSerialQuit() { gRemoteQuitRequested = true; }
+
+// Cleared when a new command starts, so a quit that arrives with nothing running cannot sit
+// latched and kill the NEXT streaming command the instant it begins.
+static inline void clearSerialQuitRequest() { gRemoteQuitRequested = false; }
+
 static bool checkSerialQuit() {
+  // Checked first, and consumed on read: whoever is looping right now owns this quit.
+  if (gRemoteQuitRequested) {
+    gRemoteQuitRequested = false;
+    Serial.println("Stopping print loop.");
+    return true;
+  }
   if (Serial.available() > 0) {
     String input = Serial.readStringUntil('\n');
     input.trim();

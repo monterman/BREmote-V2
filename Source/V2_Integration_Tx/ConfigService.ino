@@ -42,7 +42,13 @@ const CfgFieldSpec kCfgFields[] = {
   // FM digit zone data selector: 1=TX speed, 2=distance to buggy, 3=buggy speed, 4=throttle %
   {"fm_display_mode", CFG_U16, offsetof(confStruct, fm_display_mode), true, false, true, 1.0f, 4.0f, 1, false},
   {"steer_expo", CFG_U16, offsetof(confStruct, steer_expo), true, false, true, 0.0f, 65535.0f, 0, false},
-  {"steer_expo1", CFG_U16, offsetof(confStruct, steer_expo1), true, false, true, 0.0f, 65535.0f, 0, false},
+  // V2.5-Evo - 2026-08-18 - gps_dyn_model: u-blox NAV5 dynamic platform model. Renamed in place
+  // from the unused steer_expo1 slot, so sizeof(confStruct) and SW_VERSION are both unchanged.
+  // 0 = default (Sea) | 4 = Automotive | 5 = Sea. Range 0-5 with 1/2/3 rejected by
+  // gpsBuildNav5(), which resolves anything that is not an explicit 4 to Sea — so an
+  // out-of-range or corrupt value fails toward the conservative model, never toward
+  // dynModel 0 (Portable). Sea has a 500 m altitude ceiling; above that use 4.
+  {"gps_dyn_model", CFG_U16, offsetof(confStruct, gps_dyn_model), true, false, true, 0.0f, 5.0f, 0, false},
   {"ubat_cal", CFG_FLOAT, offsetof(confStruct, ubat_cal), true, false, true, 0.000001f, 1.0f, 9, false},
   {"gps_en", CFG_U16, offsetof(confStruct, gps_en), true, false, true, 0.0f, 1.0f, 0, false},
   {"followme_mode", CFG_U16, offsetof(confStruct, followme_mode), true, false, true, 0.0f, 3.0f, 0, false},

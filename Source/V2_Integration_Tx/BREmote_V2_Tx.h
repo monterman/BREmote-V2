@@ -235,7 +235,20 @@ struct confStruct {
                                // 3=buggy speed (RX telemetry), 4=throttle %; range 1-4
 
     uint16_t steer_expo; //currently unused
-    uint16_t steer_expo1; //currently unused
+
+    // V2.5-Evo - 2026-08-18 - RENAMED IN PLACE: steer_expo1 -> gps_dyn_model. Same offset, same
+    // uint16_t, so sizeof(confStruct) STAYS 136 and SW_VERSION STAYS 27 — this flash does NOT
+    // reset the TX SPIFFS config, and testers keep throttle calibration and pairing.
+    //
+    // steer_expo1 was chosen over steer_expo specifically because its default is 0, and 0 means
+    // "use the default, which is Sea" — exactly the behaviour every TX already has hard-coded.
+    // So every remote in the field reads 0, resolves to Sea, and changes nothing. steer_expo
+    // defaults to 50, which would have needed a clamp to avoid a nonsense dynModel on first boot.
+    //
+    // Reported by beta tester heiguga 2026-08-18: `?set gps_dyn_model 4` returned
+    // ERR_UNKNOWN_KEY on the TX. The RX gained this setting in SW35 and the TX did not, but the
+    // TX has its own GPS and the same hard-coded Sea model with the same 500 m altitude ceiling.
+    uint16_t gps_dyn_model;            // 0 = default (Sea) | 4 = Automotive | 5 = Sea
 
     //System parameters
     float ubat_cal; //ADC to volt cal for bat meas, default 0.000185662
@@ -433,7 +446,7 @@ confStruct defaultConf = {  // V2.5-Evo — factory default configuration
                  //           0 = the opposite curve — aggressive at low throttle. See expoThrCurve() in Hall.ino)
   1,             // fm_display_mode (1 = TX speed; range 1-4)
   50,            // steer_expo
-  0,             // steer_expo1
+  0,             // gps_dyn_model (was steer_expo1; 0 = default = Sea, unchanged behaviour)
   0.000185662f,  // ubat_cal
   1,             // gps_en (1 = TX GPS enabled)
   2,             // followme_mode (2 = Behind — defensive FM geometry; 1=near_right, 3=near_left)

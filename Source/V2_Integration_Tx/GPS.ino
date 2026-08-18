@@ -237,6 +237,66 @@ static void ubxAppendChecksum(byte *frame, size_t frameLen)
   frame[frameLen - 1] = ckB;
 }
 
+// ============================================================
+// gpsSelectedDynModel - the ONE place that turns usrConf.gps_dyn_model into a NAV5 value
+// ============================================================
+// V2.5-Evo - 2026-08-18 - GPS-DYN-TX. The TX GPS was hard-coded to dynModel 5 (Sea) in four
+// separate places: two CFG-NAV5 literals, two CFG-VALSET writes, and two status prints that
+// said "dynModel=Sea" whatever the module actually held. The RX gained a selectable model in
+// SW35; the TX did not, and beta tester heiguga hit it on 2026-08-18 with
+// `?set gps_dyn_model 4` -> ERR_UNKNOWN_KEY. The TX carries its own GPS and feeds tx_gps_speed,
+// so the 500 m Sea ceiling bites here exactly as it does on the RX.
+//
+// CONSTRAINT (identical to the RX): anything other than an explicit 4 must resolve to Sea (5),
+// never to Portable (0). 0 is what every TX already in the field holds after the in-place rename
+// of the reserved slot, and it must keep meaning the pre-existing hard-coded behaviour, so a
+// corrupt or out-of-range value fails toward the conservative model.
+// ============================================================
+static inline uint8_t gpsSelectedDynModel()
+{
+  return (usrConf.gps_dyn_model == 4) ? 4 : 5;
+}
+
+static inline const char* gpsDynModelName(uint8_t dyn) {
+  return (dyn == 4) ? "Automotive" : "Sea";
+}
+
+// ============================================================
+// gpsBuildNav5 - CFG-NAV5 frame carrying the CONFIGURED dynamic model
+// ============================================================
+// ONE builder, called from both initTxGPS() and cmdGpsSetup(). The payload used to be a
+// pre-checksummed literal duplicated in both — the same shape that let the UBX checksum bug
+// live on this board for thirteen days after the RX was fixed. Build it once.
+//
+// The checksum is COMPUTED, never a pre-calculated pair: the dynModel byte is now variable, so
+// the old hard-coded 0x86/0x51 would be wrong for Automotive — and a bad checksum fails
+// SILENTLY. The module ignores the write and stays in whatever model it had, which on a fresh
+// module is dynModel 0 (Portable), the exact setting this mechanism exists to escape.
+//
+// Layout: [0..1] sync · [2..3] class/id 0x06/0x24 CFG-NAV5 · [4..5] len 0x0024
+//         [6..7] mask 0x0001 (apply dynModel only) · [8] dynModel · [9] fixMode
+//         ...u-blox default field values... · [42..43] checksum, filled here.
+#define GPS_NAV5_FRAME_LEN 44
+
+static uint8_t gpsBuildNav5(byte out[GPS_NAV5_FRAME_LEN])
+{
+  static const byte kNav5Template[GPS_NAV5_FRAME_LEN] = {
+    0xB5,0x62,0x06,0x24,0x24,0x00,0x01,0x00,0x05,0x03,
+    0x00,0x00,0x00,0x00,0x10,0x27,0x00,0x00,0x05,0x00,
+    0xFA,0x00,0xFA,0x00,0x64,0x00,0x5E,0x01,0x00,0x3C,
+    0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+    0x00,0x00,0x00,0x00
+  };
+  memcpy(out, kNav5Template, GPS_NAV5_FRAME_LEN);
+
+  // The selection, and the "anything but an explicit 4 means Sea" fail-safe behind it, live in
+  // gpsSelectedDynModel(). This builder must not carry a second copy of that rule.
+  const uint8_t dyn = gpsSelectedDynModel();
+  out[8] = dyn;
+  ubxAppendChecksum(out, GPS_NAV5_FRAME_LEN);
+  return dyn;
+}
+
 // ------------------------------------------------------------
 // ubxValset - set ONE configuration item through UBX-CFG-VALSET (0x06 0x8A).
 //
@@ -888,13 +948,11 @@ void initTxGPS()
   // 0x86/0x51 independently recomputed and verified 2026-07-27.
   // ============================================================
   if (tx_gps_initialized) {
-    static const byte setNav5Sea[] = {
-      0xB5,0x62,0x06,0x24,0x24,0x00,0x01,0x00,0x05,0x03,
-      0x00,0x00,0x00,0x00,0x10,0x27,0x00,0x00,0x05,0x00,
-      0xFA,0x00,0xFA,0x00,0x64,0x00,0x5E,0x01,0x00,0x3C,
-      0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
-      0x00,0x00,0x86,0x51
-    };
+    // V2.5-Evo - 2026-08-18 - GPS-DYN-TX. Was a pre-checksummed literal with dynModel pinned to
+    // 0x05 (Sea) and checksum 0x86/0x51. Both are now built from usrConf.gps_dyn_model, because
+    // a variable dynModel byte invalidates a fixed checksum and a bad checksum fails silently.
+    byte setNav5Sea[GPS_NAV5_FRAME_LEN];
+    const uint8_t dyn_sel = gpsBuildNav5(setNav5Sea);
 
     // ============================================================
     // V2.5-Evo - 2026-07-29 - GPS-ACK-1: DIALECT PROBE
@@ -951,8 +1009,12 @@ void initTxGPS()
       nav5_status = "OK";
     } else if (probe == UBX_NAK) {
       dialect = UBX_DIALECT_VALSET;
-      const byte sea = 5;   // M10 SPG 5.10, Table 23: CFG-NAVSPG-DYNMODEL constant SEA = 5
-      nav5_status = (ubxValset(KEY_NAVSPG_DYNMODEL, &sea, 1, 3) == UBX_ACK)
+      // V2.5-Evo - 2026-08-18 - GPS-DYN-TX. Was a hard-coded `const byte sea = 5`, which meant
+      // the M9/M10 path silently ignored gps_dyn_model — on exactly the modern hardware the
+      // setting exists for. Same defect the RX carried until GPS-DYN-2. M10 SPG 5.10, Table 23:
+      // CFG-NAVSPG-DYNMODEL constants SEA = 5, AUTOMOT = 4.
+      const byte dyn_valset = dyn_sel;
+      nav5_status = (ubxValset(KEY_NAVSPG_DYNMODEL, &dyn_valset, 1, 3) == UBX_ACK)
                     ? "OK/valset" : "REJECTED";
     } else {
       dialect = UBX_DIALECT_MUTE;
@@ -1027,10 +1089,13 @@ void initTxGPS()
     }
 
     // --- Report every write, so a rejected config is visible at boot rather than shipped. ---
-    Serial.printf("TX GPS config [%s]: dynModel=Sea %s | rate=%ums %s | GLL %s | GSV %s | VTG %s\n",
+    // V2.5-Evo - 2026-08-18 - GPS-DYN-TX. Was the literal "dynModel=Sea", which printed Sea even
+    // on a board configured for Automotive — reassurance in the exact spot a failure shows up.
+    Serial.printf("TX GPS config [%s]: dynModel=%s %s | rate=%ums %s | GLL %s | GSV %s | VTG %s\n",
                   dialect == UBX_DIALECT_LEGACY ? "legacy CFG (u-blox 6/7/8)"
                 : dialect == UBX_DIALECT_VALSET ? "CFG-VALSET (u-blox M9/M10)"
                                                 : "UNVERIFIED - module sends no ACK",
+                  gpsDynModelName(dyn_sel),
                   nav5_status, meas_ms, rate_status,
                   gll_status, gsv_status, vtg_status);
 
@@ -1081,14 +1146,19 @@ void initTxGPS()
 // Keeping the wrong mechanism in a warning is its own hazard: the next person to read it
 // would mis-scope the risk in both directions.
 // ============================================================
+// V2.5-Evo - 2026-08-18 - GPS-DYN-TX. This is now a PURE NAME TABLE. It used to carry the
+// verdict inline — "Sea <-- CORRECT for this buggy" — which was true only while Sea was
+// hard-coded. On a remote configured for Automotive whose write silently failed, it printed
+// reassurance in the exact spot the failure appears. The verdict moved to dynModelVerdict(),
+// which compares the readback against what gps_dyn_model actually asked for.
 static const char *dynModelName(uint8_t m)
 {
   switch (m) {
-    case 0:  return "Portable  <-- FACTORY DEFAULT, not what we want";
+    case 0:  return "Portable";
     case 2:  return "Stationary";
     case 3:  return "Pedestrian";
     case 4:  return "Automotive";
-    case 5:  return "Sea  <-- CORRECT for this buggy";
+    case 5:  return "Sea";
     case 6:  return "Airborne <1g";
     case 7:  return "Airborne <2g";
     case 8:  return "Airborne <4g";
@@ -1098,6 +1168,17 @@ static const char *dynModelName(uint8_t m)
     case 12: return "E-scooter";
     default: return "unknown";
   }
+}
+
+// V2.5-Evo - 2026-08-18 - GPS-DYN-TX. The verdict, separated from the name table above so it
+// can compare the READBACK against what this remote was actually configured to want. Portable
+// is called out specifically: it is the factory default and the one value that must never go
+// afloat, whatever gps_dyn_model says.
+static const char *dynModelVerdict(uint8_t m)
+{
+  if (m == gpsSelectedDynModel()) return "  <-- matches gps_dyn_model";
+  if (m == 0) return "  <-- FACTORY DEFAULT (Portable) - the write did NOT stick";
+  return "  <-- does NOT match gps_dyn_model";
 }
 
 // gpsBuildValget - UBX-CFG-VALGET request for ONE key, 16-byte frame.
@@ -1215,7 +1296,7 @@ void cmdGpsCfg(const String &args)
 
   if (n >= 3) {
     Serial.println("  dialect  : legacy UBX-CFG (u-blox 6/7/8)");
-    Serial.printf("  dynModel : %u  (%s)\n", pl[2], dynModelName(pl[2]));
+    Serial.printf("  dynModel : %u  (%s)%s\n", pl[2], dynModelName(pl[2]), dynModelVerdict(pl[2]));
     Serial.printf("  fixMode  : %u  (1=2D 2=3D 3=auto)\n", pl[3]);
   } else if (checkSerialQuit()) {
     // The legacy poll already cost 1.5 s; let the operator skip the second one.
@@ -1229,7 +1310,7 @@ void cmdGpsCfg(const String &args)
     if (n >= 9) {
       // Response payload: version | layer | position(2) | key(4) | value(...)
       Serial.println("  dialect  : CFG-VALSET/VALGET (u-blox M9/M10)");
-      Serial.printf("  dynModel : %u  (%s)\n", pl[8], dynModelName(pl[8]));
+      Serial.printf("  dynModel : %u  (%s)%s\n", pl[8], dynModelName(pl[8]), dynModelVerdict(pl[8]));
     } else {
       Serial.println("  dynModel : NO REPLY (neither CFG-NAV5 nor CFG-VALGET answered)");
       Serial.println("             The module is silent, on a different baud, or is a clone");
@@ -1240,8 +1321,12 @@ void cmdGpsCfg(const String &args)
   }
 
   Serial.printf("  chip_type: %u (0=BN-220 2=M10, from usrConf)\n", usrConf.gps_chip_type);
-  Serial.println("  Expect dynModel=5 (Sea). Anything else means initTxGPS() did not stick;");
-  Serial.println("  Portable (0) permits 310 m/s / 50 m/s solutions and must not go afloat.");
+  // V2.5-Evo - 2026-08-18 - GPS-DYN-TX. Was hard-coded "Expect dynModel=5 (Sea)", which told an
+  // Automotive-configured owner to expect the one value the firmware was no longer sending.
+  Serial.printf("  Expect dynModel=%u (%s), per gps_dyn_model. Anything else means initTxGPS()\n",
+                gpsSelectedDynModel(), gpsDynModelName(gpsSelectedDynModel()));
+  Serial.println("  did not stick; Portable (0) permits 310 m/s / 50 m/s solutions and must");
+  Serial.println("  not go afloat.");
   Serial.println("-------------------------------------------------------");
 }
 
@@ -1545,23 +1630,23 @@ void cmdGpsSetup(const String &args)
 
   // --- 4. Apply everything, persisted ---
   Serial.println("[4/6] applying config (persisted)...");
-  static const byte setNav5Sea[] = {
-    0xB5,0x62,0x06,0x24,0x24,0x00,0x01,0x00,0x05,0x03,
-    0x00,0x00,0x00,0x00,0x10,0x27,0x00,0x00,0x05,0x00,
-    0xFA,0x00,0xFA,0x00,0x64,0x00,0x5E,0x01,0x00,0x3C,
-    0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
-    0x00,0x00,0x86,0x51
-  };
+  // V2.5-Evo - 2026-08-18 - GPS-DYN-TX. Second copy of the pre-checksummed Sea literal, now
+  // built from usrConf.gps_dyn_model like the boot path. ?gpssetup writes to the module's OWN
+  // non-volatile memory, so a hard-coded Sea here would have persisted the wrong model into the
+  // hardware permanently — surviving reflash, and invisible until someone read it back.
+  byte setNav5Sea[GPS_NAV5_FRAME_LEN];
+  const uint8_t dyn_sel = gpsBuildNav5(setNav5Sea);
+
   static const byte disableGSV[] = {0xB5,0x62,0x06,0x01,0x03,0x00,0xF0,0x03,0x00,0xFD,0x15};
   static const byte disableGLL[] = {0xB5,0x62,0x06,0x01,0x03,0x00,0xF0,0x01,0x00,0xFB,0x11};
   static const byte disableVTG[] = {0xB5,0x62,0x06,0x01,0x03,0x00,0xF0,0x05,0x00,0xFF,0x19};
   static const byte off = 0;
-  const byte sea = 5;
+  const byte dyn_valset = dyn_sel;
 
   // Same ordering rule as boot: dynModel first (it is the setting that must not be missed),
   // then silence the NMEA chatter, then the rate once the link is quiet.
   const char *s_nav5 = gpsApplyCfg(dialect, setNav5Sea, sizeof(setNav5Sea),
-                                   KEY_NAVSPG_DYNMODEL, &sea, 1, true);
+                                   KEY_NAVSPG_DYNMODEL, &dyn_valset, 1, true);
   const char *s_gsv  = gpsApplyCfg(dialect, disableGSV, sizeof(disableGSV),
                                    KEY_MSGOUT_NMEA_GSV_U1, &off, 1, true);
   const char *s_gll  = gpsApplyCfg(dialect, disableGLL, sizeof(disableGLL),
@@ -1580,8 +1665,8 @@ void cmdGpsSetup(const String &args)
   const char *s_rate = gpsApplyCfg(dialect, setRate, sizeof(setRate),
                                    KEY_RATE_MEAS, rate_val, 2, true);
 
-  Serial.printf("  dynModel=Sea %s | GSV %s | GLL %s | VTG %s | rate=%ums %s\n",
-                s_nav5, s_gsv, s_gll, s_vtg, meas_ms, s_rate);
+  Serial.printf("  dynModel=%s %s | GSV %s | GLL %s | VTG %s | rate=%ums %s\n",
+                gpsDynModelName(dyn_sel), s_nav5, s_gsv, s_gll, s_vtg, meas_ms, s_rate);
 
   // --- 5. Commit to the module's own non-volatile memory ---
   // V2.5-Evo - 2026-07-30 - M-3: say what actually happens. CFG-CFG asks the module to save to

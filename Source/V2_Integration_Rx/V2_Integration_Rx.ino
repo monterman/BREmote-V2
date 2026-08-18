@@ -21,6 +21,12 @@ void runFmLoop();
 
 void setup()
 {
+  // V2.5-Evo - 2026-08-18 - WEB-SERIAL-1, Phase 0. FIRST line of setup(), before anything prints.
+  // Only creates the ring's recursive mutex - capture itself is already live, because the ring
+  // and its head counter are .bss and were zeroed before any constructor ran. Prints that happen
+  // ahead of this are still captured, unlocked, which is correct: nothing else is running yet.
+  serialTeeInit();
+
   enterSetup();
 
   initHardware();

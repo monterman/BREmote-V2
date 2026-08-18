@@ -56,6 +56,15 @@
 ** Includes
 */
 #include <Arduino.h>
+
+// V2.5-Evo - 2026-08-18 - WEB-SERIAL-1, Phase 0. MUST sit immediately after <Arduino.h> and
+// BEFORE every one of our own headers (ConfigServiceEngine, SPIFFSEngine, WebConfigEngine,
+// RadioCommon, SystemCommon) and before all the .ino files. It redefines what `Serial` means, so
+// anything included ahead of it binds to the real port and is silently left out of the capture -
+// a hole in the boot log that looks like working code. Nothing else about this include is
+// optional or reorderable.
+#include "../Common/SerialTee.h"
+
 #include <atomic>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"

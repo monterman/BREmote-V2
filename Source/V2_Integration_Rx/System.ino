@@ -1092,6 +1092,50 @@ void cmdDiag(const String& params) {
 //   g_diag_gps_sent_per_s  - a derived rate; getGPSLoop() refreshes it within one second.
 //
 // Inputs: params - unused. Outputs: confirmation on Serial. Side effects: as described above.
+// ============================================================================================
+// ?dump - print the captured serial ring back out
+// ============================================================================================
+// V2.5-Evo - 2026-08-18 - WEB-SERIAL-1, Phase 0. The whole capture layer, provable over USB
+// before any web code exists. Boot the board with nothing attached, plug in afterwards, run
+// ?dump, and the boot log that used to be lost is there.
+//
+// PRINTS TO gRealSerial, NOT Serial. Every other command in this file prints through the tee, on
+// purpose. This one must not: its own output would be appended to the ring it is reading, so the
+// buffer would carry a copy of itself and roughly double on every call. This is the one place in
+// the firmware where writing to the real port directly is the correct thing to do.
+void cmdDump(const String& params)
+{
+  static uint8_t buf[512];
+
+  const uint32_t head = serialTeeHead();
+  uint32_t cursor     = serialTeeTail();
+  bool     gap        = false;
+
+  gRealSerial.println();
+  gRealSerial.println("----- CAPTURED SERIAL RING -----");
+  gRealSerial.printf("captured %lu bytes total; ring holds the last %u; showing %lu\n",
+                     (unsigned long)head, (unsigned)SERIAL_TEE_RING_SIZE,
+                     (unsigned long)(head - cursor));
+  if (head > SERIAL_TEE_RING_SIZE) {
+    gRealSerial.println("NOTE: the ring has wrapped - the OLDEST output has been dropped.");
+  }
+  gRealSerial.println("--------------------------------");
+
+  // Drained in chunks so a full 8 KB dump never needs a second 8 KB buffer, and so the ring
+  // mutex is released between chunks rather than held across the whole (slow) USB write.
+  size_t n;
+  while ((n = serialTeeRead(cursor, buf, sizeof(buf), cursor, gap)) > 0) {
+    gRealSerial.write(buf, n);
+  }
+
+  gRealSerial.println();
+  gRealSerial.println("----- END OF RING -----");
+  if (gap) {
+    gRealSerial.println("WARNING: output was dropped while this dump was running.");
+  }
+  gRealSerial.printf("capture is %s\n", gTeeCaptureEnabled ? "ON" : "OFF");
+}
+
 void cmdDiagZ(const String& params) {
   g_diag_gps_bytes       = 0;
   g_diag_gps_sentences   = 0;
@@ -1191,6 +1235,11 @@ static const SerialCommand kCommands[] = {
   {"gpssetup", "ONE-TIME full GPS setup: find, configure ACK-verified, save permanently, verify - ~20s, bench only", cmdGpsSetup, true},
   {"diag", "one-shot snapshot: GPS bytes/sentences, fix age, COG updates vs value-changes, mux errors, VESC poll rate, loop min/mean/max (safe during RTM/FM)", cmdDiag},
   {"diagz", "zero the ?diag counters so a run can be bracketed", cmdDiagZ},
+  // V2.5-Evo - 2026-08-18 - WEB-SERIAL-1 Phase 0. NOT marked blocks_loop: it is a bounded copy
+  // of at most 8 KB out of RAM, not a stream, and it is the tool for reading a boot log after
+  // an unattended boot - refusing it while engaged would withhold exactly the record a rider
+  // wants after something went wrong.
+  {"dump", "print the captured serial ring (boot log included)", cmdDump},
   // Every row below is blocks_loop: ?printcompass and ?compassheading stream until 'quit',
   // ?compasscal runs 45 s, ?magalign samples for 5 s, ?magtest 120 s, ?vescping 30 s, and
   // ?vescraw 30 s while also pointing the UART mux away from the GPS. ?compasscal is ALSO

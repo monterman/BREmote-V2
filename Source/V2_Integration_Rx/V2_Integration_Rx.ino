@@ -18,6 +18,10 @@ void runRtmLoop();
 float getCompassHeading();
 // V2.5-Evo - 2026-07-19 - P3 FM: Follow-Me state machine (RTMState.ino)
 void runFmLoop();
+// V2.5-Evo - 2026-08-18 - LATCH-1: restore a heading-disagreement verdict that outlived a reboot.
+// File-scope static in RTMState.ino; Arduino compiles the sketch as one translation unit, so this
+// declaration is what makes the call legal — the same pattern headingDisagreeLatched() already uses.
+static void headingDisagreeRestore();
 
 void setup()
 {
@@ -27,7 +31,13 @@ void setup()
   initStorage();
   
   // ---> NEW: Initialize the QMC5883L Compass <---
-  initCompass(); 
+  initCompass();
+
+  // V2.5-Evo - 2026-08-18 - LATCH-1. After initStorage() has mounted SPIFFS and after the compass
+  // has reported itself, so the boot log reads in the right order: which compass is fitted, then
+  // whether there is a standing verdict against it. Must precede initTasks() — the verdict has to
+  // be in place before anything can arm.
+  headingDisagreeRestore();
 
   runBootSequence();
   initTasks();

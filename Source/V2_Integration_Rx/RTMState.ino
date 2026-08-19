@@ -447,6 +447,65 @@ static bool headingDisagreeLatched()
   return heading_disagree_fault;
 }
 
+// ============================================================================================
+// Latch persistence - the verdict survives a power cycle
+// ============================================================================================
+// V2.5-Evo - 2026-08-18 - LATCH-1. heading_disagree_fault lived only in RAM, so a power cycle
+// forgot it. A rider whose compass is genuinely mis-mounted saw the warning, switched off,
+// switched on, and Follow-Me would engage again on the compass that had just been caught
+// disagreeing with GPS course. The safety check was defeated by turning it off and on again,
+// which is the first thing anyone does when something misbehaves.
+//
+// STORED AS A MARKER FILE, NOT A confStruct FIELD. Adding a field changes sizeof(confStruct),
+// which bumps SW_VERSION, which wipes every owner's stored config on the next flash - an
+// enormous cost for one bit. The file's EXISTENCE is the latch; its contents are only there so
+// the boot log can say when and why.
+//
+// WHY PERSISTING IS NOT HARSH. The latch already clears on FIVE SECONDS OF MEASURED AGREEMENT,
+// with no rider action at all. So a false positive - passing a steel bridge, a transient - heals
+// by itself the next time the buggy coasts with the throttle released and the two sources agree.
+// Persisting costs nothing to the innocent case and closes the power-cycle hole in the guilty
+// one. The other two escapes, a FULL ?compasscal and a completed ?magalign, are unchanged.
+//
+// FAIL-SAFE DIRECTION: a SPIFFS write that fails leaves the fault set in RAM for this session,
+// which is the conservative outcome. It is never treated as a clear.
+#define HDG_FAULT_FILE "/hdg_fault"
+
+static void headingDisagreePersist(bool latched)
+{
+  if (latched) {
+    File f = SPIFFS.open(HDG_FAULT_FILE, FILE_WRITE);
+    if (!f) {
+      // Not fatal and deliberately not escalated: the fault still stands for THIS session, which
+      // is the safe direction. Only the survival across a reboot is lost.
+      Serial.println("HEADING [RX] WARNING: could not persist the disagreement latch to SPIFFS. "
+                     "It still applies now, but will not survive a reboot.");
+      return;
+    }
+    f.printf("heading_disagree_fault at %lu ms uptime\n", (unsigned long)millis());
+    f.close();
+  } else {
+    if (SPIFFS.exists(HDG_FAULT_FILE)) SPIFFS.remove(HDG_FAULT_FILE);
+  }
+}
+
+// Called ONCE from setup(), after SPIFFS is mounted and before RTM/FM can arm.
+static void headingDisagreeRestore()
+{
+  if (!SPIFFS.exists(HDG_FAULT_FILE)) return;
+
+  heading_disagree_fault = true;
+  // heading_degrade_announced is deliberately left false, so the standing degradation notice is
+  // printed once on this boot too. A rider who power-cycled needs telling again, not silence.
+
+  Serial.println("HEADING [RX] a heading disagreement was PROVEN before the last reboot and has "
+                 "not been withdrawn. Return-to-Me runs on GPS course only and Follow-Me will "
+                 "not engage.");
+  Serial.println("HEADING [RX] it clears on its own after 5 s of the compass and GPS course "
+                 "measured agreeing while coasting, or immediately after a full ?compasscal or "
+                 "a completed ?magalign.");
+}
+
 // V2.5-Evo - 2026-08-17 - true once the rider has been TOLD, on serial, that this session has been
 // degraded to GPS-course-only. Reset by every clear route, so a fault that latches again later
 // announces itself again. Notification bookkeeping only: nothing reads it as a control input.
@@ -532,6 +591,7 @@ static void headingDisagreeClearAfterCal(const char *what)
   heading_disagree_since_ms     = 0;
   heading_disagree_last_seen_ms = 0;
   heading_disagree_fault        = false;
+  headingDisagreePersist(false);         // LATCH-1: the stored verdict goes with it
   heading_degrade_announced     = false;
   // V2.5-Evo - 2026-08-17 - the agreement dwell goes with them. It is bookkeeping toward a clear
   // that has just happened by another route, so carrying it forward would describe a measurement
@@ -898,6 +958,7 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
       heading_disagree_since_ms = now;
     } else if ((now - heading_disagree_since_ms) >= (unsigned long)kHeadingDisagreeMs) {
       heading_disagree_fault = true;
+      headingDisagreePersist(true);       // LATCH-1: survive a power cycle
       headingDisagreeAnnounceDegraded();   // one line, once per fault, on the transition only
     }
     // Stamped AFTER the continuity test above, which reads the PREVIOUS measurement's time.
@@ -948,6 +1009,7 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
                       (unsigned long)kHeadingDisagreeMs);
       }
       heading_disagree_fault    = false;
+      headingDisagreePersist(false);       // LATCH-1: the stored verdict goes with it
       heading_degrade_announced = false;   // re-arm the notice if it ever latches again
     }
   } else {

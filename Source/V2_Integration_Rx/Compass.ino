@@ -1127,5 +1127,5 @@ void runMagAlign() {
   // intended rather than a reason to withhold the clear.
   headingDisagreeClearAfterCal("?magalign");
 
-  blinkBind(2);
+  blinkBindFull();
 }

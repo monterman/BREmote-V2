@@ -256,6 +256,69 @@ void blinkBind(int num)
   }
 }
 
+// ============================================================================================
+// Calibration result patterns - readable WITHOUT counting
+// ============================================================================================
+// V2.5-Evo - 2026-08-18 - LED-1. blinkBind() has one cadence for every caller: 50 ms on, 50 ms
+// off. So "2 flashes = full success" and "3 flashes = PARTIAL" were 200 ms and 300 ms of 10 Hz
+// flicker - a 100 ms difference at a rate near where flashes start to fuse. A human reliably
+// counts discrete flashes to about 4-5 Hz; 10 Hz is not countable in the field. The rider would
+// have had to be staring at the LED already knowing it was about to fire.
+//
+// That is not cosmetic. The PARTIAL result exists SPECIFICALLY so a rider who re-mounted the
+// module and walked a sloppy circle is not told "success" while mag_orientation still holds the
+// OLD angle. On the BIND-button path the LED is the only channel there is - nobody reads a
+// serial terminal while walking a buggy round a car park - so the one distinction the feature
+// was built to make was the one the LED could not carry.
+//
+// THE FIX IS ON-TIME, NOT COUNT. Counting needs the start to be caught and discrete events
+// tracked. How long the lamp stays LIT is perceived instantly and needs no counting: 70 ms
+// reads as a blip, 400 ms reads as a deliberate pulse. The two are distinguishable even by a
+// rider who glances over halfway through and misses the beginning - which is the real case.
+//
+//   FULL      2 x (70 on / 130 off)   "blip-blip"              0.4 s
+//   PARTIAL   3 x (400 on / 300 off)  "PULSE... PULSE... PULSE" 2.1 s
+//   REJECTED  10 x (50 on / 50 off)   "buzzzz"                 1.0 s   <- blinkBind(10), UNCHANGED
+//
+// The 10-flash rejection is deliberately left alone. It is already unmistakable against a 0.4 s
+// blip, and it fires from the mid-run RTM/FM abort paths where a LONGER blocking announcement is
+// precisely what those aborts exist to avoid.
+//
+// blinkBind() itself is untouched: Radio.ino calls blinkBind(2) in a loop as the pairing-mode
+// heartbeat, so retiming it would change how pairing looks.
+static void blinkBindPattern(int count, uint16_t onMs, uint16_t offMs)
+{
+  // Lead-in dark gap, so the start of the pattern is identifiable rather than running straight
+  // out of whatever the LED was doing a moment ago.
+  xSemaphoreTake(i2cMutex, portMAX_DELAY);
+  aw.digitalWrite(AP_L_BIND, HIGH);
+  xSemaphoreGive(i2cMutex);
+  delay(400);
+
+  for (int i = 0; i < count; i++) {
+    esp_task_wdt_reset();   // PARTIAL runs 2.1 s; the old patterns never exceeded 1 s
+
+    xSemaphoreTake(i2cMutex, portMAX_DELAY);
+    aw.digitalWrite(AP_L_BIND, LOW);     // lit
+    xSemaphoreGive(i2cMutex);
+    delay(onMs);
+
+    xSemaphoreTake(i2cMutex, portMAX_DELAY);
+    aw.digitalWrite(AP_L_BIND, HIGH);    // dark
+    xSemaphoreGive(i2cMutex);
+    delay(offMs);
+  }
+  esp_task_wdt_reset();
+}
+
+// Quick double-blip. Short and light: good news, nothing to do.
+void blinkBindFull()    { blinkBindPattern(2, 70, 130); }
+
+// Slow deliberate pulses. The lamp is visibly LIT for 400 ms at a time, which is what makes this
+// unmistakable against the blip above without anyone counting to three. Unhurried on purpose:
+// this is the outcome that asks the rider to walk the circles again.
+void blinkBindPartial() { blinkBindPattern(3, 400, 300); }
+
 // ===== I2C Scanner Function =====
 void scanI2C() {
   byte error, address;
@@ -1646,8 +1709,10 @@ void checkButtons()
 
   // --- RUNTIME BIND: COMPASS CALIBRATION ---
   // Short BIND press (falling edge, 50ms debounce) triggers 45s calibration.
-  // blinkBind(5) = starting, blinkBind(2) = full success, blinkBind(3) = PARTIAL (iron
+  // blinkBind(5) = starting, blinkBindFull() = full success, blinkBindPartial() = PARTIAL (iron
   // calibration saved, mounting orientation NOT re-measured), blinkBind(10) = nothing saved.
+  // The two result patterns differ in ON-TIME, not just count, so they can be told apart
+  // without counting flashes - see blinkBindPattern() for why that mattered.
   // Boot-time pairing/reset cannot reach this block (guarded by first_call above).
   // V2.5-Evo - 2026-08-16 - refused outright while RTM or Follow-Me is engaged (see below).
   static bool bind_last_state = true;
@@ -1698,9 +1763,9 @@ void checkButtons()
       //                the blocking announcement that abort exists to avoid.
       runCompassCalibration();        // 45s collection, hard/soft-iron calc, auto-save to SPIFFS
       if (compass_cal_result == CAL_FULL) {
-        blinkBind(2);
+        blinkBindFull();
       } else if (compass_cal_result == CAL_PARTIAL) {
-        blinkBind(3);
+        blinkBindPartial();
       }
       xSemaphoreTake(i2cMutex, portMAX_DELAY);
       bool bind_held = (aw.digitalRead(AP_S_BIND) == false);

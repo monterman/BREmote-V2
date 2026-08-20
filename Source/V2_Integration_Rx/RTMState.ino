@@ -494,6 +494,47 @@ static void headingDisagreeRestore()
 {
   if (!SPIFFS.exists(HDG_FAULT_FILE)) return;
 
+  // ==========================================================================================
+  // V2.5-Evo - 2026-08-20 - LATCH-2. ONLY RESTORE A VERDICT THE RIDER CAN STILL CLEAR.
+  //
+  // Found by Rex auditing LATCH-1 (shipped the same day, 2026-08-18). LATCH-1 made the latch
+  // survive a reboot, and in doing so removed clear route 3 — the reboot itself. That is correct
+  // in mode 1 with a compass fitted, where routes 1 and 2 both work. It is a TRAP everywhere
+  // else, because BOTH remaining routes need a working compass in hybrid mode:
+  //
+  //   Route 1, five seconds of measured agreement, runs only inside compare_possible, which
+  //   begins `(mode == 1) && cog_valid && ...` — so on a COG-only board it can NEVER fire.
+  //   Route 2, ?compasscal / ?magalign, needs a compass that answers.
+  //
+  // So a rider who latched the fault in hybrid mode and then set rtm_use_compass 0, or whose
+  // compass has since failed or been unplugged, would boot with Follow-Me blocked and NO route
+  // out of it — permanently, on every subsequent boot, with the only escape being a compass they
+  // no longer use or no longer have. Unrecoverable in the field is worse than the risk the latch
+  // was guarding against, and LATCH-1 created it.
+  //
+  // The stale marker is DELETED rather than left in place, so the trap cannot re-arm itself on
+  // the next boot. If the rider returns to hybrid mode with a working compass, a genuine
+  // disagreement re-proves itself within kHeadingDisagreeMs of coasting — the evidence is cheap
+  // to regather, which is exactly why it is safe to drop a verdict that can no longer be tested.
+  //
+  // TRADE-OFF, STATED PLAINLY: a rider could dodge a legitimate latch by setting
+  // rtm_use_compass 0. That is not a new hole. Rex confirmed a mode-0 board cannot set the latch
+  // in the first place, and cfgValidateCrossField() already force-zeroes rtm_compass_required for
+  // that rider class — COG-only is a deliberate, documented, supported configuration, and a rider
+  // who selects it has explicitly said the compass is not in use. This removes an unrecoverable
+  // state; it does not create a bypass that was not already there by design.
+  // ==========================================================================================
+  if (usrConf.rtm_use_compass != 1 || !compass_detected) {
+    SPIFFS.remove(HDG_FAULT_FILE);
+    Serial.printf("HEADING [RX] a stored heading-disagreement verdict was found but DISCARDED: "
+                  "%s, so neither route that could clear it is available. Follow-Me is not "
+                  "blocked.\n",
+                  (usrConf.rtm_use_compass != 1) ? "this board is configured COG-only "
+                                                   "(rtm_use_compass 0)"
+                                                 : "no compass is detected");
+    return;
+  }
+
   heading_disagree_fault = true;
   // heading_degrade_announced is deliberately left false, so the standing degradation notice is
   // printed once on this boot too. A rider who power-cycled needs telling again, not silence.
@@ -559,7 +600,7 @@ static void headingDisagreeAnnounceDegraded()
   Serial.println("        FOLLOW-ME WILL NOT ENGAGE while this stands: one of the two heading sources is wrong and the board cannot tell which, so it will not steer at you on a guess.");
   Serial.printf("        Expect NO heading, and straight-ahead steering, whenever the buggy is slower than %u km/h and the last good course is more than 3 s old.\n",
                 (unsigned)usrConf.rtm_cog_min_speed_kmh);
-  Serial.println("        To get the compass back: re-run ?compasscal (a full two-circle run) or ?magalign, or reboot. It also clears on its own once the two sources are measured AGREEING for 5 continuous seconds.");
+  Serial.println("        To get the compass back: re-run ?compasscal (a full two-circle run) or ?magalign. A reboot does NOT clear it (the verdict is stored in SPIFFS since 2026-08-18). It also clears on its own once the two sources are measured AGREEING for 5 continuous seconds.");
 }
 
 // ------------------------------------------------------------
@@ -805,7 +846,7 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
   // always required a heading to exist at all (condition 6).
   // HOW IT CAN ARISE AT ALL: the comparison that sets the fault only runs in mode 1, so this state
   // needs a rider who latched a fault in hybrid mode and then switched to mode 2 in the same power
-  // cycle. HOW TO GET OUT: ?compasscal / ?magalign, or a reboot. Route 1 (a live measurement
+  // cycle. HOW TO GET OUT: ?compasscal / ?magalign. A reboot does NOT clear it (the verdict is stored in SPIFFS since 2026-08-18). Route 1 (a live measurement
   // showing agreement) cannot fire here, because no comparison is made in mode 2 — which is another
   // reason not to trust the compass in the meantime: in this mode nothing can exonerate it.
   if (mode == 2) {
@@ -1015,7 +1056,7 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
   } else {
     // No comparison possible this tick. Restart the dwell rather than carry a half-finished proof
     // across a gap (same discipline as fm_diverge_since_ms). A fault already PROVEN is kept — it is
-    // cleared by a fresh agreement above, by a successful ?compasscal / ?magalign, or by a reboot.
+    // cleared by a fresh agreement above, by a successful ?compasscal / ?magalign. A reboot does NOT clear it (the verdict is stored in SPIFFS since 2026-08-18).
     // V2.5-Evo - 2026-08-16 - FREEZE, do not clear. This branch runs when the comparison is
 
     // IMPOSSIBLE (COG invalid), not when the sources agreed. Zeroing here discarded partial
@@ -1236,7 +1277,7 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
 
   //      only by evidence (a sustained measured agreement, a successful ?compasscal / ?magalign)
 
-  //      or a reboot. It therefore survives across engagements, and the withdrawal described below
+  //      A reboot does NOT clear it (the verdict is stored in SPIFFS since 2026-08-18). It therefore survives across engagements, and the withdrawal described below
 
   //      is exactly what a standing fault does: it takes the COMPASS out of the ladder and nothing
 
@@ -1904,7 +1945,7 @@ void runRtmLoop()
   // part-built disagreement dwell — heading_disagree_since_ms and heading_disagree_last_seen_ms —
   // so a half-finished proof can never span two different situations, and it does NOT touch
   // heading_disagree_fault at either edge. The verdict is cleared by evidence only: a sustained
-  // measurement showing agreement, a successful ?compasscal / ?magalign, or a reboot.
+  // measurement showing agreement, a successful ?compasscal / ?magalign. A reboot does NOT clear it (the verdict is stored in SPIFFS since 2026-08-18).
   //
   // EVERYTHING FROM HERE TO "WHAT EACH EDGE DOES NOW" IS HISTORY, kept because it is the reasoning
   // that constrains the answer. It describes a disarm-edge clear of the FAULT that no longer
@@ -3456,7 +3497,7 @@ void runFmLoop()
         if (fm_heading_block_msg_ms == 0 ||
             (now - fm_heading_block_msg_ms) >= kFmHeadingBlockMsgMs) {
           fm_heading_block_msg_ms = now;
-          Serial.printf("FM [RX] ARMED, NOT ENGAGING: the compass and the GPS course were measured disagreeing by more than %.0f deg for %lu ms, so Follow-Me will not steer on either of them. RTM still works. Clears on %lu ms of measured agreement (coast with the trigger released), or ?compasscal / ?magalign, or a reboot.\n",
+          Serial.printf("FM [RX] ARMED, NOT ENGAGING: the compass and the GPS course were measured disagreeing by more than %.0f deg for %lu ms, so Follow-Me will not steer on either of them. RTM still works. Clears on %lu ms of measured agreement (coast with the trigger released), or ?compasscal / ?magalign. A reboot does NOT clear it (the verdict is stored in SPIFFS since 2026-08-18).\n",
                         (double)kHeadingDisagreeDeg, (unsigned long)kHeadingDisagreeMs,
                         (unsigned long)kHeadingDisagreeMs);
         }

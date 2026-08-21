@@ -238,7 +238,7 @@ yourself, **USB CDC On Boot must be Disabled** (`Tools → USB CDC On Boot → D
 ```
 ?gpsbaud      # listen-only: are any bytes arriving at all? (answers the wiring question)
 ?printgps     # sats, fix and position = the link is working end to end
-?magtest      # magnetometer health + how much your wiring disturbs it
+?magtest      # EMI test + verdict - BUCKET/DOCK, motor MUST be loaded (see Mounting)
 ?compasscal   # full calibration — rotate the buggy through a complete horizontal circle
 ```
 No bytes at any baud is a **UART orientation** problem — swap the two data wires and retest (see the
@@ -256,9 +256,22 @@ cosmetic problem.
   exactly 90°, 180° or 270° from it. **Not diagonal.** The firmware stores the mounting rotation only
   as one of those four values, so a module at, say, 30° gets stored as 0° and keeps 30° of heading
   error that no calibration can remove.
-- Mount the BN-880 **as far from the battery and phase wires as the build allows**.
+- Mount the BN-880 **as far from the battery and phase wires as the build allows**. Two inches
+  makes a large difference at close range.
+- **Never mount it over a loop or U-turn in the phase wires.** This is the single worst position
+  and it is easy to create by accident. Out-and-back conductors cancel each other's field *at a
+  distance*, but at the centre of the loop they **add** — a current loop behaves like a magnet, and
+  its field there is far stronger than a straight wire at the same spacing. If the module sits
+  above where the phase wires turn back on themselves, fix that before anything else.
+- **Twist the phase wires into a tight bundle.** Paired conductors cancel, and the leftover field
+  then falls away much faster with distance than a single wire's does. This can buy more than
+  moving the module.
 - Keep it away from ferrous hardware and anything carrying high current.
-- Run `?magtest` **in place, on the real build** — not on the bench — to see the actual disturbance.
+- Run `?magtest` **in place, on the real build, WITH THE MOTOR UNDER LOAD** — prop in a bucket of
+  water or held against the dock. ⚠️ **Never judge it free-spinning.** The same buggy measured
+  +3-5° free-spinning and **87-101° under load** — seven times worse. A free-spinning prop draws
+  almost no current and reads clean on a compass that is useless in the water. `?magtest` now
+  refuses to grade a run whose peak current stayed under 5 A, and prints a verdict at the end.
 - **Re-run `?compasscal` after any change** to module, position, or mounting. A stored calibration
   does not carry over: different module, different mounting, different hard/soft-iron offsets.
 

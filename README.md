@@ -942,10 +942,72 @@ The two **bold** columns (`heading_error_dx10`, `d_error_dx10`) were added speci
 
 </details>
 
-### Compass EMI Bench-Test Tool
+### Compass EMI Load Test — `?magtest`
 
-BREmote V2.5-Evo ships with a serial diagnostic command, `?magtest`, that lets any builder verify whether motor current is biasing the QMC5883L magnetometer on their specific hardware. The command streams CSV at 10 Hz (millis, mag X/Y/Z, magnitude, heading, VESC ERPM, motor current, throttle) for up to 120 seconds. Recommended use: bench-mount the buggy with motors free-spinning, capture serial output to a `.csv` file, and bring throttle slowly from 0 to maximum while logging. The resulting trace makes magnetic bias from the phase wires visible — magnitude shifts > 5% or heading shifts > 5° at any current point indicate the compass cannot be trusted for steering during active motor operation. This concern was raised by upstream maintainer Jan during the V2.5-Evo review; the test command exists so builders can collect their own measurements rather than rely on assertion.
-I recommend placing the BN-880 as far as possible from the magnetic field of the battery power cables and the motor phase wires. Just 2 inches make a huge difference!
+**This is a BUCKET / DOCK TEST. The motor must be under real load. Do not run it free-spinning.**
+
+`?magtest` measures how much motor current pulls your magnetometer off true. It streams CSV at
+10 Hz (millis, mag X/Y/Z, magnitude, heading, VESC ERPM, motor current, throttle) for up to 120 s
+and then **prints a verdict** — it no longer leaves you to interpret 1200 rows yourself.
+
+#### Why the load matters more than anything else here
+
+The same buggy was measured twice:
+
+| How it was run | Reported error |
+|---|---|
+| Bench, prop **free-spinning** | +3 to +5° steady |
+| Bucket, prop **under real load** | **87–101°** |
+
+**Seven times worse under load.** A free-spinning prop draws almost no current, so it reads clean
+on a compass that is 100° out in the water. The free-spinning result is what originally supported
+"relocation is not urgent" — it was wrong, and the conclusion stood for weeks.
+
+`?magtest` now **refuses to grade a run whose peak current stayed under 5 A** rather than
+reporting a meaningless number.
+
+#### How to run it
+
+1. Prop in a **bucket of water**, or held against the dock/ground — something that makes it pull
+   real current.
+2. Leave the throttle at **zero for ~5 seconds**. This sets the motor-off baseline.
+3. Bring the throttle **up slowly**, holding at several levels so each current band gets samples.
+4. Read the verdict at the end.
+
+#### Reading the verdict
+
+| Worst error under load | Verdict | What it means |
+|---|---|---|
+| **< 10°** | GOOD | Usable as a live heading, not just the motor-off snapshot. |
+| **10–30°** | DEGRADED | Steering is unaffected — the firmware only reads the compass with the motor off — but the compass-vs-GPS cross-check still cannot run during a ride. |
+| **> 30°** | USELESS UNDER POWER | Trustworthy only at zero throttle. Move the module. |
+
+One measured detail worth knowing: in that 87–101° dataset the error **did not scale with
+current.** It was already 87° at 5–15 A — ordinary cruise — and only reached 101° at 40 A. It
+**saturates**, because the interference is already far stronger than the earth's field at the
+first few amps, so the needle stops measuring the earth and starts pointing at the motor.
+
+**That makes this a geometry problem, not a current problem.** It cannot be fixed by riding
+gently, and it cannot be fixed by calibration — calibration removes *fixed* errors, and this one
+changes with throttle, so there is nothing steady to cancel out. **Distance and wire routing are
+the only levers.**
+
+#### Where to mount the module
+
+- **As far from the phase wires and battery cables as you can get it.** Two inches makes a huge
+  difference at close range.
+- **Never over a loop or U-turn in the phase wires.** This is the single worst position and it is
+  easy to create by accident. Out-and-back wires cancel each other's field *at a distance*, but at
+  the centre of the loop they **add**, and a current loop behaves like a magnet whose field there
+  is far stronger than a straight wire at the same spacing. If the module sits above where the
+  phase wires turn back on themselves, move it before you change anything else.
+- **Twist the phase wires into a tight bundle.** Paired conductors cancel, and the leftover field
+  then falls away much faster with distance than a single wire's does. This can buy more than the
+  relocation itself.
+- **Mount it square to the nose** — see the compass mounting section. Squareness and EMI are
+  separate problems with separate fixes; you generally want both.
+- After moving it, **re-run `?compasscal`**, then re-run this test to confirm the improvement.
+
 ---
 
 ## RX Serial Diagnostic Commands
@@ -966,7 +1028,7 @@ Connect to the RX at 115200 baud. All commands are prefixed with `?`.
 | `?start` / `?stop` | Start or stop the data logger (same as AUX button) |
 | `?compassheading` | Stream live compass heading (degrees) at 10 Hz — useful for verifying QMC5883L orientation and EMI influence |
 | `?printcompass` | Print a single raw compass reading (X/Y/Z counts) — quick sanity check without streaming |
-| `?magtest` | Stream CSV telemetry (mag X/Y/Z, heading, VESC ERPM, motor current, throttle) at 10 Hz for up to 120 s — see Compass EMI section above for full usage |
+| `?magtest` | **Bucket/dock EMI test + verdict.** Streams CSV (mag X/Y/Z, heading, VESC ERPM, motor current, throttle) at 10 Hz for up to 120 s, then grades the result. ⚠️ **The motor MUST be under load** — a free-spinning run reads clean on a compass that is 100° out. Refuses to grade below 5 A peak. See the Compass EMI Load Test section above |
 | `?compasscal` | Run the 45 s compass calibration. **Nose on NORTH → two full CLOCKWISE circles → finish on north.** Sets the iron calibration, the mounting handedness and the mounting orientation in one run. BIND LED: 2 = full success, 3 = PARTIAL (orientation not updated — walk it again), 10 = nothing saved |
 | `?magalign` | Re-derive the compass **mounting orientation only** — point the nose at north, hold steady, 5 s average. Needs an existing iron calibration; cannot detect a mirrored module |
 | `?printrssi` | Print current LoRa RSSI and SNR |

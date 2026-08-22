@@ -1481,7 +1481,7 @@ void checkSerial()
       }
 
       // Commands that need original-case args
-      if(cmdName != "setconf" && cmdName != "get" && cmdName != "set" && cmdName != "wifidbg" && cmdName != "wifips")
+      if(cmdName != "setconf" && cmdName != "setbc" && cmdName != "get" && cmdName != "set" && cmdName != "wifidbg" && cmdName != "wifips")
       {
         cmdName.toLowerCase();
         params.toLowerCase();

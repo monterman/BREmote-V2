@@ -1480,8 +1480,37 @@ void checkSerial()
         cmdName = cmdName.substring(1);
       }
 
-      // Commands that need original-case args
-      if(cmdName != "setconf" && cmdName != "setbc" && cmdName != "get" && cmdName != "set" && cmdName != "wifidbg" && cmdName != "wifips")
+      // ==========================================================================================
+      // Commands that need ORIGINAL-CASE args
+      // ==========================================================================================
+      // Lower-casing is what lets ?CONF and ?Conf work like ?conf, which is worth having. But it
+      // also lower-cases the ARGUMENT, and some arguments are case-sensitive - so each of those
+      // commands has to be named here or its argument is silently destroyed before the handler
+      // ever sees it.
+      //
+      // V2.5-Evo - 2026-08-24 - "setbc" added by robertzach (PR #3). ?setbc takes a Base64
+      // battery-calibration blob and serSetBC() writes the string VERBATIM to /batconf.txt.
+      // Base64 uses A-Z and a-z as DIFFERENT symbols, so lower-casing corrupted every blob before
+      // it reached the file. ?setbc is the only way to load a battery curve, which means
+      // restoring one had NEVER worked in this fork - the defect has been present since the
+      // V3.0.0 initial commit, where this lower-casing was introduced. Ludwig's upstream does not
+      // lower-case at all and was never affected.
+      //
+      // V2.5-Evo - 2026-08-24 - "download" and "deletelog" added on the same reasoning, found
+      // while confirming the above. Log files are named "/T_%02d%02d%02d_%u.log" (Logger.ino) -
+      // note the UPPERCASE T - and SPIFFS is case-sensitive, so ?download T_143052_12.log looked
+      // for t_143052_12.log and reported it missing. Every log recorded WITH a GPS fix was
+      // undownloadable and undeletable by name. It hid because the no-fix fallback name is
+      // "/ms%u.log", all lower-case, which survives the mangling untouched.
+      //
+      // ⚠️ THIS LIST IS THE WEAK SHAPE, not the fix. It has to be updated by hand every time a
+      // command takes a case-sensitive argument, and nothing enforces that - which is how three
+      // commands ended up broken. The durable fix is a per-command flag in kCommands, the way
+      // blocks_loop already works, so a new command declares its own requirement and cannot be
+      // forgotten. Tracked as a follow-up.
+      if(cmdName != "setconf" && cmdName != "setbc" &&
+         cmdName != "download" && cmdName != "deletelog" &&
+         cmdName != "get" && cmdName != "set" && cmdName != "wifidbg" && cmdName != "wifips")
       {
         cmdName.toLowerCase();
         params.toLowerCase();

@@ -40,7 +40,7 @@ starting and finishing with the nose on north.
 > Before 2026-08-18 all three patterns ran at one speed — 50 ms on, 50 ms off. FULL and PARTIAL
 > were therefore 200 ms and 300 ms of 10 Hz flicker, a 100 ms difference at a rate people cannot
 > count. If you have an earlier copy of `BREmote-RX-SW35R3-compasscal-fix.bin`, re-download it:
-> the filename is unchanged, the flash size is 1,342,096 B.
+> the filename is unchanged, the flash size is 1,342,192 B.
 
 ### What `dual-compass` adds (2026-08-15)
 

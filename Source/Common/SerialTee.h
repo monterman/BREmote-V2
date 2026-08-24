@@ -33,10 +33,19 @@
 //
 // STATIC-INITIALISATION SAFETY. Because the #define is total, a print during static construction
 // also lands here, at a moment when a normally-constructed object might not exist yet. So the
-// state below is deliberately plain old data at file scope: it lives in .bss, which is zeroed
-// before any constructor runs. The tee owns no String, no vector, nothing with a constructor,
+// RING STATE below is deliberately plain old data at file scope: it lives in .bss, zeroed by the
+// loader before any constructor runs. The tee owns no String, no vector, nothing heap-backed,
+//
 // and the mutex handle is NULL-checked so a pre-setup() print still captures without locking.
 // On a motor controller, heap corruption at boot is not an acceptable failure mode.
+//
+// V2.5-Evo - 2026-08-24 - CORRECTION (Dexter audit): the paragraph above is true of the four ring
+// variables and FALSE of gSerialTee itself. That object is NOT pure POD - it has a vtable and a
+// Stream base that sets _timeout, so its vptr is written at RUNTIME by this TU's _GLOBAL__sub_I,
+// not by the loader. Safe today only because this header is included FIRST in the one TU that
+// uses it, so its constructor runs ahead of every other dynamic initialiser there. Add a printing
+// global ABOVE that include and the failure is a jump through a null vptr inside
+// __libc_init_array: no output, no core dump, a board that simply will not boot. Keep it first.
 //
 // NEVER CAPTURED: the ROM and second-stage bootloader banner, which print before any of our code
 // runs at all. Document it so a tester does not report it as a bug.
@@ -74,7 +83,8 @@ static volatile bool gTeeCaptureEnabled = true;
 // Recursive, because a print can legitimately happen INSIDE code that already holds this - an
 // HTTP handler that prints while assembling a response, for instance. A plain mutex would
 // deadlock there. Not a FreeRTOS stream buffer: those are single-writer by contract and there
-// are two writers here, the loop task and the logger task.
+// are two writers here: the loop task and the triggeredReceive task. (There is no logger
+// task - initTasks() creates three, and logging runs on the loop task via loggerLoop().)
 static SemaphoreHandle_t gTeeMutex;
 
 static inline void serialTeeLock()
@@ -121,6 +131,13 @@ static void serialTeeAppend(const uint8_t *data, size_t len)
 //               OLDEST data and never stops capturing (unanimous across Tasmota and ESPEasy).
 //               ESPEasy's "disable capture when nobody is fetching" is explicitly NOT adopted:
 //               it would destroy the boot-log feature, which is the reason this exists.
+// Oldest byte still retrievable, given a head the caller has already read under the lock.
+// Never underflows: before the ring has filled once, the oldest byte is 0.
+static inline uint32_t serialTeeTailLocked(uint32_t head)
+{
+  return (head > SERIAL_TEE_RING_SIZE) ? (head - SERIAL_TEE_RING_SIZE) : 0;
+}
+
 static size_t serialTeeRead(uint32_t cursor, uint8_t *out, size_t maxLen,
                             uint32_t &newCursor, bool &gap)
 {
@@ -128,12 +145,27 @@ static size_t serialTeeRead(uint32_t cursor, uint8_t *out, size_t maxLen,
   const uint32_t head = gTeeHead;
 
   gap = false;
+
+  // V2.5-Evo - 2026-08-24 - WEB-SERIAL-4. A cursor AHEAD of head means the board rebooted while a
+  // client held a cursor from the previous boot - head restarts at 0, the browser still has a big
+  // number. Found by a Dexter audit, and it is one click away: the console's own ?reboot button.
+  //
+  // Without this the unsigned subtraction below underflowed to ~2^32, tripped the overflow guard,
+  // and underflowed `cursor` too. Because 8192 divides 2^32 exactly, the modulo then landed
+  // precisely on head and returned a bufferful of UNWRITTEN ring - zeros on a fresh boot - while
+  // newCursor stayed near 4.29e9. It repeated forever: the console showed a wrap warning twice a
+  // second and no output, permanently, until the page was reloaded.
+  if (cursor > head) {
+    gap    = true;                          // tell the client its position is meaningless now
+    cursor = serialTeeTailLocked(head);     // restart from the oldest byte we still hold
+  }
+
   uint32_t behind = head - cursor;          // unsigned: correct across the 2^32 wrap
 
   if (behind > SERIAL_TEE_RING_SIZE) {      // caller fell further behind than the ring holds
     gap    = true;
-    cursor = head - SERIAL_TEE_RING_SIZE;
-    behind = SERIAL_TEE_RING_SIZE;
+    cursor = serialTeeTailLocked(head);
+    behind = head - cursor;
   }
 
   size_t n = (behind > maxLen) ? maxLen : (size_t)behind;

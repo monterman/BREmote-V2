@@ -865,20 +865,80 @@ static void webCfgHandleSerialWrite()
     return;
   }
 
-  // ⚠️ FORBIDDEN BY NAME, not merely discouraged. ?download streams a whole log file - megabytes -
-  // through Serial, which now feeds an 8 KB ring. It would evict the entire boot log and every
-  // command result with it, destroying the one feature this console exists to provide. The web UI
-  // already has /api/logs/download, which streams straight to the browser and never touches the
-  // ring.
   String bare = cmd;
   if (bare.startsWith("?")) bare = bare.substring(1);
   int sp = bare.indexOf(' ');
   if (sp > 0) bare = bare.substring(0, sp);
   bare.toLowerCase();
-  if (bare == "download") {
+
+  // ============================================================================================
+  // ⚠️ COMMANDS THAT CANNOT BE ALLOWED FROM THE WEB CONSOLE
+  // ============================================================================================
+  // V2.5-Evo - 2026-08-24 - WEB-SERIAL-4, after a Dexter audit found the STOP button unreachable
+  // BY CONSTRUCTION. This is the important comment in the file; read it before adding a command.
+  //
+  // webCfgServer.handleClient() has exactly ONE call site - inside webCfgLoop(), which is called
+  // only from loop(). Every serial command handler also runs on the loop task. So the moment a
+  // command starts, whether from USB or from here, webCfgLoop() is not reached again until it
+  // finishes, and NO HTTP REQUEST CAN BE SERVICED IN THE MEANTIME.
+  //
+  // Which means the POST that would carry "quit" is never received. The gRemoteQuitRequested flag
+  // added in Phase 1 is dead in every reachable ordering: it can only be set while nothing is
+  // running, and executeSerialCommand() clears it at entry. A STOP button cannot work here, and
+  // no amount of firmware plumbing changes that while the server is polled from the same task.
+  //
+  // So the unbounded streamers are not "discouraged", they are UNRECOVERABLE from the web: they
+  // loop until checkSerialQuit() returns true, that can only come from USB, and the whole board
+  // stops serving HTTP for the duration. The rider would see a console that never responds again
+  // and would have to fetch a laptop or pull the power - precisely the dependency this feature
+  // exists to remove.
+  //
+  // ?download is blocked for a different reason: it streams megabytes through Serial, which now
+  // feeds an 8 KB ring, so it would evict the boot log - the one thing this console is for.
+  // /api/logs/download streams to the browser and never touches the ring.
+  //
+  // Bounded blocking commands (?compasscal 45 s, ?magtest 120 s, ?gpssetup 20 s) are deliberately
+  // still ALLOWED. They end on their own, so the console comes back. They are worth the wait.
+  static const char *kWebBlocked[] = {
+    // unbounded - loop until a USB 'quit' that can never arrive from here
+    "printpwm", "printrssi", "printreceived", "printtasks", "printbat",
+    "printcompass", "compassheading", "gpsdiag", "vescping", "vescraw",
+    // these two never even call checkSerialQuit() - they parse their own USB input
+    "testbg", "testpercent",
+    // floods the ring and destroys the boot log
+    "download",
+  };
+  for (size_t i = 0; i < (sizeof(kWebBlocked) / sizeof(kWebBlocked[0])); i++) {
+    if (bare == kWebBlocked[i]) {
+      webCfgLogReq("serial_blocked", cmd);
+      webCfgSendJson(403,
+        "{\"ok\":0,\"err\":\"ERR_FORBIDDEN\",\"msg\":\"That command streams until stopped, and it "
+        "cannot be stopped from here - the board serves this page from the same loop the command "
+        "would be holding, so nothing would reach it. Run it over USB. Use ?diag or the log "
+        "download for anything you needed it for.\"}");
+      return;
+    }
+  }
+
+  // ?reboot must answer BEFORE it restarts, or the browser sees a connection reset and reports a
+  // failure for a reboot that actually worked - and the page is then holding a cursor from the
+  // previous boot. The dedicated /api/reboot route already does this properly; mirror it.
+  if (bare == "reboot") {
+    webCfgLogReq("serial_cmd", cmd);
+    webCfgSendJson(200, "{\"ok\":1,\"reboot\":1}");
+    webCfgServer.client().stop();
+    delay(300);
+    ESP.restart();
+    return;                          // not reached
+  }
+
+  // ?wifi off would tear down this very server from inside its own request handler, then try to
+  // reply on it, and leave no way back in over WiFi. ?wifistop is the safe one - it sets a flag
+  // consumed at the top of the NEXT webCfgLoop().
+  if (bare == "wifi") {
     webCfgSendJson(403,
-      "{\"ok\":0,\"err\":\"ERR_FORBIDDEN\",\"msg\":\"?download would flood the console buffer and "
-      "evict the boot log. Use the log download button instead.\"}");
+      "{\"ok\":0,\"err\":\"ERR_FORBIDDEN\",\"msg\":\"?wifi would shut down the access point you "
+      "are using, from inside its own request. Use USB if you need it.\"}");
     return;
   }
 

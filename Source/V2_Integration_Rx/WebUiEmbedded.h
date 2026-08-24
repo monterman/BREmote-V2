@@ -131,14 +131,14 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
     </div>
     <div class="card" style="margin-top:20px">
         <div class="title" style="margin-bottom:6px">Serial Console</div>
-        <div class="desc" style="margin-bottom:10px">Live serial output from the RX, captured from boot. Everything the board printed before you connected is here too.</div>
+        <div class="desc" style="margin-bottom:10px">Live serial output from the RX, captured from boot. Everything the board printed before you connected is here too.<br><br><b>Streaming commands are blocked here</b> — <span class="mono">?printcompass, ?compassheading, ?printrssi, ?printbat</span> and friends. The board serves this page from the same loop those commands hold, so nothing you tapped afterwards could reach it: it would look frozen until you fetched a USB cable. Run those over USB.<br><br><span class="mono">?compasscal</span> (45 s), <span class="mono">?magtest</span> (120 s) and <span class="mono">?gpssetup</span> (20 s) <b>do</b> work, but the console shows nothing at all until they finish. That is expected — wait for it.</div>
 
         <div id="conOut" style="height:300px;overflow-y:auto;background:#0b1220;border:1px solid #334155;border-radius:8px;padding:10px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;line-height:1.45;white-space:pre-wrap;word-break:break-word;color:#cbd5e1"></div>
 
         <div class="row" style="margin-top:8px">
             <input id="conIn" placeholder="?diag" spellcheck="false" autocapitalize="off" autocorrect="off" style="flex:1;min-width:140px;font-family:ui-monospace,Menlo,Consolas,monospace" onkeydown="if(event.key==='Enter'){conSend(document.getElementById('conIn').value);document.getElementById('conIn').value=''}">
             <button class="btn" onclick="conSend(document.getElementById('conIn').value);document.getElementById('conIn').value=''">Send</button>
-            <button class="btn warn" onclick="conSend('quit')">STOP</button>
+            <button class="btn sec" onclick="conSend('quit')" title="Only reaches the board when nothing is already running">quit</button>
         </div>
 
         <div class="row" style="margin-top:8px">
@@ -153,7 +153,6 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
             <button class="btn sec" onclick="conSend('?compasscal')">?compasscal</button>
             <button class="btn sec" onclick="conSend('?magalign')">?magalign</button>
             <button class="btn sec" onclick="conSend('?magtest')">?magtest</button>
-            <button class="btn sec" onclick="conSend('?compassheading')">?heading</button>
         </div>
         <div class="row" style="margin-top:6px">
             <button class="btn sec" onclick="conCopy()" id="conCopyBtn">Copy All</button>
@@ -577,6 +576,14 @@ function conPoll(){
     .then(r => r.json())
     .then(j => {
       if(j && j.ok){
+        // The board rebooted if its head went BACKWARDS - head restarts at 0 while we still hold
+        // a large cursor from the previous boot. Drop ours and take what it has now, or we ask
+        // forever for bytes that no longer exist. One click away: the ?reboot button.
+        if(conCursor !== null && j.head < conCursor){
+          conAppend('\n--- [board rebooted - reconnected] ---\n');
+          conCursor = null;
+          return;
+        }
         if(j.gap) conAppend('\n--- [output dropped: the board buffer wrapped] ---\n');
         conAppend(j.data);
         conCursor = j.cursor;

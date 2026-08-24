@@ -42,6 +42,7 @@ Every section of this README has a longer document behind it. Start here when yo
 | **Flash the boards** | **[Flashing with the Flash Download Tool](docs/FLASHING_WITH_DOWNLOAD_TOOL.md)** ⭐ the normal way — no Arduino · 🎥 [video from 40:00](https://youtu.be/r6JIZEq3aTU?t=2400) |
 | Compile it yourself *(advanced)* | [RX via Arduino](docs/FLASHING_RX_ARDUINO.md) · [TX via Arduino](docs/FLASHING_TX_ARDUINO.md) |
 | Wire the GPS + compass to the RX | [BN-880 → RX wiring](docs/GPS_Wiring_BN880_RX.md) |
+| **Mount the GPS/compass OUTSIDE the box** | **[External GPS + compass mount](docs/External_GPS_Compass_Mount.md)** ⭐ the single biggest fix for compass error — 10 in max, waterproofed, nothing ferrous |
 | Understand or fix GPS | [GPS configuration](docs/GPS.md) · [GPS troubleshooting](docs/hardware/gps-troubleshooting.md) |
 | Calibrate the compass | **[Zero → Foiling § 2.4](docs/ZERO_TO_FOILING.md#24-compass-calibration-rx--nose-on-north-two-clockwise-circles)** — the procedure: nose on north, two clockwise circles, finish on north |
 | Chase compass EMI / understand the field data | [Compass calibration & EMI field analysis](docs/Compass_Cal_Analysis.md) *(reference, not a how-to)* |

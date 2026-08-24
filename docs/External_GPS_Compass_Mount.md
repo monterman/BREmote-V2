@@ -168,6 +168,12 @@ The short version:
 - Insulate the outside so bare copper cannot short anything
 - Route away from the phase wires and battery leads, especially in the first few inches
 
+**Watch someone do it:** [GPS Cable Shielding](https://www.youtube.com/watch?v=3vD6K-KfmBA) — the
+practical copper-tape wrap and where to land the ground. Also useful:
+[Why Does Shielding GPS Wires Matter? Aren't They Digital?](https://www.youtube.com/watch?v=RkLIJB1lOhc),
+which answers the obvious objection before you spend the effort. Full reference list in the wiring
+doc linked above.
+
 ---
 
 ## After the move — this part is not optional

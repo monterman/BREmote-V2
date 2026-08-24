@@ -598,9 +598,19 @@ confStruct defaultConf = {SW_VERSION, 2, 22, 1, 50 /*steering_influence: convent
   0,          // gps_dyn_model: 0 = default -> Sea (was auton_runtime_cap_s, renamed in place 2026-08-16)
 
   // V2.5-Evo - 2026-07-25 - STAGE 0 PART A: this slot was fm_steer_reposition_en, renamed in place
-  // to log_level. The default stays 0 on purpose — 0 means "unset" and behaves exactly as level 3
-  // (Developer), which is the behaviour every unit already has, so nothing changes on flash.
-  0,          // log_level: 0 = unset -> logs as level 3 (Developer). 1/2 accepted but currently log as 3; 4 = Deep.
+  // to log_level. On MASTER the default is 0 — "unset", behaving exactly as level 3 (Developer),
+  // which is what every unit already has, so nothing changes on flash.
+  //
+  // V2.5-Evo - 2026-08-24 - WEB-SERIAL branch ONLY: defaulted to 4 (Deep). This build is the beta
+  // tester image, and the four extra level-4 columns — gps_sent_per_s, cog_frozen_s, mux_err_cnt,
+  // loop_max_ms — are exactly the ones needed to diagnose Follow-Me. cog_frozen_s is the frozen-COG
+  // detector that caught the original veer. Defaulting it OFF meant every log a tester sent back
+  // was missing them, and nobody thinks to turn it on before the ride that goes wrong.
+  //
+  // ⚠️ Level-4 records are LARGER, so SPIFFS fills noticeably faster. Testers must download and
+  // VERIFY a log before deleting it. ⚠️ DO NOT carry this default to master without deciding that
+  // separately — on master the storage cost applies to riders who are not debugging anything.
+  4,          // log_level: 4 = Deep (beta build). 0 = unset -> logs as level 3 (Developer); 1/2 log as 3.
   0,          // mag_orientation: 0 deg. Set by ?compasscal (north-to-north) or ?magalign.
   0,            // rsvd_u16_1  RESERVED - 0 = unused
 

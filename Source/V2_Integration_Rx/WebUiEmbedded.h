@@ -129,6 +129,42 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
             <input type="file" id="importFile" accept=".json" style="display:none" onchange="importJsonFile(this)">
         </div>
     </div>
+    <div class="card" style="margin-top:20px">
+        <div class="title" style="margin-bottom:6px">Serial Console</div>
+        <div class="desc" style="margin-bottom:10px">Live serial output from the RX, captured from boot. Everything the board printed before you connected is here too.</div>
+
+        <div id="conOut" style="height:300px;overflow-y:auto;background:#0b1220;border:1px solid #334155;border-radius:8px;padding:10px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;line-height:1.45;white-space:pre-wrap;word-break:break-word;color:#cbd5e1"></div>
+
+        <div class="row" style="margin-top:8px">
+            <input id="conIn" placeholder="?diag" spellcheck="false" autocapitalize="off" autocorrect="off" style="flex:1;min-width:140px;font-family:ui-monospace,Menlo,Consolas,monospace" onkeydown="if(event.key==='Enter'){conSend(document.getElementById('conIn').value);document.getElementById('conIn').value=''}">
+            <button class="btn" onclick="conSend(document.getElementById('conIn').value);document.getElementById('conIn').value=''">Send</button>
+            <button class="btn warn" onclick="conSend('quit')">STOP</button>
+        </div>
+
+        <div class="row" style="margin-top:8px">
+            <button class="btn sec" onclick="conSend('?diag')">?diag</button>
+            <button class="btn sec" onclick="conSend('?conf')">?conf</button>
+            <button class="btn sec" onclick="conSend('?printgps')">?printgps</button>
+            <button class="btn sec" onclick="conSend('?logstat')">?logstat</button>
+            <button class="btn sec" onclick="conSend('?list')">?list</button>
+            <button class="btn sec" onclick="conSend('?i2c')">?i2c</button>
+        </div>
+        <div class="row" style="margin-top:6px">
+            <button class="btn sec" onclick="conSend('?compasscal')">?compasscal</button>
+            <button class="btn sec" onclick="conSend('?magalign')">?magalign</button>
+            <button class="btn sec" onclick="conSend('?magtest')">?magtest</button>
+            <button class="btn sec" onclick="conSend('?compassheading')">?heading</button>
+        </div>
+        <div class="row" style="margin-top:6px">
+            <button class="btn sec" onclick="conCopy()" id="conCopyBtn">Copy All</button>
+            <button class="btn sec" onclick="conClear()">Clear View</button>
+            <button class="btn sec" onclick="conSend('?save')">?save</button>
+            <button class="btn warn" onclick="conSend('?reboot')">?reboot</button>
+            <div style="flex-grow:1"></div>
+            <label class="sub" style="display:flex;align-items:center;gap:5px"><input type="checkbox" id="conAuto" checked>follow</label>
+        </div>
+        <div class="sub" id="conStatus" style="margin-top:6px">idle</div>
+    </div>
     <div class="card foot"><div class="sub mono" id="last">Last: -</div></div>
   </div>
 
@@ -509,6 +545,102 @@ async function deleteSelected(){
 
 window.setVal=setVal;window.setBool=setBool;window.setEnum=setEnum;window.syncField=syncField;window.setAddrPart=setAddrPart;window.saveAll=saveAll;window.loadCfg=loadCfg;window.rebootDev=rebootDev;window.refreshAll=refreshAll;window.openLogs=openLogs;window.deleteLog=deleteLog;window.deleteAllLogs=deleteAllLogs;window.deleteSelected=deleteSelected;window.copyJson=copyJson;window.exportJsonFile=exportJsonFile;window.importJsonFile=importJsonFile;window.loadFromJsonText=loadFromJsonText;window.expandAll=expandAll;window.collapseAll=collapseAll;
 refreshAll();
+
+// ===== SERIAL CONSOLE (WEB-SERIAL-3) =====
+// Polls /api/serial/read for whatever the ring has gained since our cursor. Polling, not a
+// WebSocket: this is the synchronous WebServer and it serves one client at a time.
+let conCursor = null;      // null = "give me everything you still hold", i.e. the boot log
+let conBusy   = false;     // one request in flight at a time - the server cannot take two
+let conTimer  = null;
+
+function conStat(t){ const e=document.getElementById('conStatus'); if(e) e.textContent=t; }
+
+function conAppend(txt){
+  if(!txt) return;
+  const box = document.getElementById('conOut');
+  if(!box) return;
+  const follow = document.getElementById('conAuto').checked;
+  // Only stick to the bottom if we were ALREADY at the bottom, so scrolling back to read
+  // something is not yanked away by the next poll.
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  box.textContent += txt;
+  // Keep the DOM bounded. The board only holds 8 KB; there is no point growing the page forever.
+  if(box.textContent.length > 60000) box.textContent = box.textContent.slice(-40000);
+  if(follow && atBottom) box.scrollTop = box.scrollHeight;
+}
+
+function conPoll(){
+  if(conBusy) return;
+  conBusy = true;
+  const q = (conCursor === null) ? '' : ('?since=' + conCursor);
+  fetch('/api/serial/read' + q)
+    .then(r => r.json())
+    .then(j => {
+      if(j && j.ok){
+        if(j.gap) conAppend('\n--- [output dropped: the board buffer wrapped] ---\n');
+        conAppend(j.data);
+        conCursor = j.cursor;
+        conStat('connected - ' + j.head + ' bytes captured since boot');
+      }
+    })
+    .catch(() => conStat('no reply from the board'))
+    .then(() => { conBusy = false; });
+}
+
+function conSend(cmd){
+  if(!cmd) return;
+  cmd = String(cmd).trim();
+  if(!cmd) return;
+  conAppend('\n> ' + cmd + '\n');
+  const body = 'cmd=' + encodeURIComponent(cmd);
+  fetch('/api/serial/write', {
+    method: 'POST',
+    headers: {'Content-Type':'application/x-www-form-urlencoded'},
+    body: body
+  })
+    .then(r => r.json())
+    .then(j => {
+      if(j && !j.ok) conAppend('[refused] ' + (j.msg || j.err || 'error') + '\n');
+      setTimeout(conPoll, 120);   // pull the reply promptly rather than waiting for the tick
+    })
+    .catch(() => conAppend('[send failed - is the board still on WiFi?]\n'));
+}
+
+function conClear(){
+  const box = document.getElementById('conOut');
+  if(box) box.textContent = '';
+}
+
+// Copy the whole transcript. navigator.clipboard needs a SECURE context and this page is served
+// over plain http://192.168.4.1, so it is unavailable here - the fallback is the real path, not
+// the exception. Same fix as copyJson().
+function conCopy(){
+  const box = document.getElementById('conOut');
+  if(!box) return;
+  const txt = box.textContent;
+  const btn = document.getElementById('conCopyBtn');
+  const done = (ok) => {
+    if(!btn) return;
+    btn.textContent = ok ? 'Copied!' : 'Copy failed - select by hand';
+    if(ok) btn.classList.add('success');
+    setTimeout(() => { btn.textContent='Copy All'; btn.classList.remove('success'); }, 2500);
+  };
+  if(navigator.clipboard && window.isSecureContext){
+    navigator.clipboard.writeText(txt).then(() => done(true)).catch(() => done(legacyCopy(txt)));
+    return;
+  }
+  done(legacyCopy(txt));
+}
+
+// Poll faster while the tab is visible; back off hard when it is not, so a phone in a pocket is
+// not asking the board for data twice a second all afternoon.
+function conSchedule(){
+  if(conTimer) clearInterval(conTimer);
+  conTimer = setInterval(conPoll, document.hidden ? 2000 : 500);
+}
+document.addEventListener('visibilitychange', conSchedule);
+conSchedule();
+conPoll();
 </script>
 </body>
 </html>

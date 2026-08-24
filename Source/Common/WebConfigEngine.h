@@ -762,6 +762,133 @@ static void webCfgHandleDeleteAllLogs()
 }
 #endif
 
+
+// ==============================================================================================
+// WEB SERIAL CONSOLE - Phase 2 routes
+// ==============================================================================================
+// V2.5-Evo - 2026-08-24 - WEB-SERIAL-2. Two routes onto the ring buffer that Common/SerialTee.h
+// already fills. Guarded on SERIAL_TEE_RING_SIZE so the TX, which does not include the tee, is
+// completely unaffected - the routes do not exist there rather than existing and failing.
+//
+// Polling, not WebSocket: this is the synchronous WebServer, one client at a time, and a poll
+// matches it. No second server, no async rewrite, no third-party library.
+#ifdef SERIAL_TEE_RING_SIZE
+
+// Defined in the RX's System.ino. Arduino compiles the sketch as ONE translation unit and
+// concatenates the .ino files after this header, so the declaration is what makes the call legal
+// - the same pattern headingDisagreeLatched() uses.
+void executeSerialCommand(const String &line);
+
+// Also forward-declared: SystemCommon.h is included AFTER this header (BREmote_V2_Rx.h line
+// ~1325 vs ~1158), so requestSerialQuit() is not visible here yet. Same one-translation-unit
+// reasoning as above.
+static inline void requestSerialQuit();
+
+// JSON-escape a block of captured serial text. Control characters MUST be escaped or the browser
+// silently fails to parse the whole response - the console would look dead with no error anywhere.
+static void webCfgAppendJsonEscaped(String &dst, const uint8_t *src, size_t n)
+{
+  for (size_t i = 0; i < n; i++) {
+    const char c = (char)src[i];
+    switch (c) {
+      case '"':  dst += "\\\""; break;
+      case '\\': dst += "\\\\"; break;
+      case '\n': dst += "\\n";  break;
+      case '\r': dst += "\\r";  break;
+      case '\t': dst += "\\t";  break;
+      default:
+        if ((uint8_t)c < 0x20 || (uint8_t)c == 0x7F) {
+          char esc[7];
+          snprintf(esc, sizeof(esc), "\\u%04X", (unsigned)(uint8_t)c);
+          dst += esc;
+        } else {
+          dst += c;
+        }
+    }
+  }
+}
+
+// GET /api/serial/read?since=<cursor>
+//
+// ⚠️ DELIBERATELY DOES NOT CALL webCfgLogReq(). Every other handler logs itself to Serial - but
+// Serial now feeds the ring this route is reading. Logging here would append a line per poll, the
+// next poll would return it, and at two polls a second the console would fill with a transcript
+// of itself and evict the boot log. The one route that must stay silent.
+static void webCfgHandleSerialRead()
+{
+  static uint8_t buf[1536];          // static: 1.5 KB does not belong on the loop task's stack
+
+  uint32_t cursor;
+  if (webCfgServer.hasArg("since")) {
+    cursor = (uint32_t)strtoul(webCfgServer.arg("since").c_str(), NULL, 10);
+  } else {
+    cursor = serialTeeTail();        // no cursor = start from the oldest byte still held
+  }
+
+  bool   gap = false;
+  uint32_t newCursor = cursor;
+  const size_t n = serialTeeRead(cursor, buf, sizeof(buf), newCursor, gap);
+
+  String out;
+  out.reserve(n * 2 + 96);           // worst case is escaping; one allocation beats many
+  out  = "{\"ok\":1,\"cursor\":";
+  out += String((unsigned long)newCursor);
+  out += ",\"head\":";
+  out += String((unsigned long)serialTeeHead());
+  out += ",\"gap\":";
+  out += gap ? "1" : "0";
+  out += ",\"data\":\"";
+  webCfgAppendJsonEscaped(out, buf, n);
+  out += "\"}";
+
+  webCfgSendJson(200, out);
+}
+
+// POST /api/serial/write   body/arg: cmd=<the command line>
+static void webCfgHandleSerialWrite()
+{
+  String cmd = webCfgServer.arg("cmd");
+  cmd.trim();
+
+  if (cmd.length() == 0) {
+    webCfgSendJson(400, "{\"ok\":0,\"err\":\"ERR_EMPTY\"}");
+    return;
+  }
+
+  // "quit" is NOT a command in the table - it is an interrupt aimed at a handler that is already
+  // running and holding the loop task. Dispatching it would do nothing; the flag is what the
+  // dozen streaming commands actually poll. See requestSerialQuit() in SystemCommon.h.
+  if (cmd == "quit" || cmd == "?quit") {
+    requestSerialQuit();
+    webCfgLogReq("serial_quit", "");
+    webCfgSendJson(200, "{\"ok\":1,\"quit\":1}");
+    return;
+  }
+
+  // ⚠️ FORBIDDEN BY NAME, not merely discouraged. ?download streams a whole log file - megabytes -
+  // through Serial, which now feeds an 8 KB ring. It would evict the entire boot log and every
+  // command result with it, destroying the one feature this console exists to provide. The web UI
+  // already has /api/logs/download, which streams straight to the browser and never touches the
+  // ring.
+  String bare = cmd;
+  if (bare.startsWith("?")) bare = bare.substring(1);
+  int sp = bare.indexOf(' ');
+  if (sp > 0) bare = bare.substring(0, sp);
+  bare.toLowerCase();
+  if (bare == "download") {
+    webCfgSendJson(403,
+      "{\"ok\":0,\"err\":\"ERR_FORBIDDEN\",\"msg\":\"?download would flood the console buffer and "
+      "evict the boot log. Use the log download button instead.\"}");
+    return;
+  }
+
+  webCfgLogReq("serial_cmd", cmd);
+  executeSerialCommand(cmd);         // the SAME dispatcher the USB path uses, guards and all
+  webCfgSendJson(200, "{\"ok\":1}");
+}
+
+#endif // SERIAL_TEE_RING_SIZE
+
 static void webCfgHandleNotFound()
 {
   webCfgLogReq("not_found", "");
@@ -806,6 +933,10 @@ void webCfgInit()
   webCfgServer.on("/api/reboot", HTTP_POST, webCfgHandleReboot);
   
 #ifdef ENABLE_WEB_LOG_DOWNLOAD
+#ifdef SERIAL_TEE_RING_SIZE
+  webCfgServer.on("/api/serial/read",  HTTP_GET,  webCfgHandleSerialRead);
+  webCfgServer.on("/api/serial/write", HTTP_POST, webCfgHandleSerialWrite);
+#endif
   webCfgServer.on("/api/logs/list", HTTP_GET, webCfgHandleListLogs);
   webCfgServer.on("/api/logs/download", HTTP_GET, webCfgHandleDownloadLog);
   webCfgServer.on("/api/logs/delete", HTTP_POST, webCfgHandleDeleteLog);

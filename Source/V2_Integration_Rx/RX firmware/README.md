@@ -18,6 +18,30 @@ folder) · app offset **`0x10000`**
 | `BREmote-RX-SW34-pre-gpsbaud.bin` | 34 | The build immediately **before** the baud work. Use this to isolate whether a problem is GPS-related. |
 | `BREmote-RX-SW32-rtm-working.bin` | 32 | Known-good historical build from 2026-06-05. RTM working; Follow-Me not yet matured. Fallback if something newer misbehaves. |
 
+### BIND LED — reading the calibration result (updated 2026-08-18)
+
+The LED reports which of three outcomes actually happened. **The patterns differ in how long the
+lamp stays LIT, not only in how many times it flashes** — so you can tell them apart at a glance
+without counting, including when you look over halfway through and miss the start.
+
+| Outcome | Pattern | What you see | Length |
+|---|---|---|---|
+| **FULL** | 2 flashes, short | *blip-blip* | 0.4 s |
+| **PARTIAL** | 3 flashes, **long and slow** | *PULSE… PULSE… PULSE* — the lamp is visibly on | 2.1 s |
+| **REJECTED** | 10 flashes, fast | *buzzzz* | 1.0 s |
+
+Each pattern is preceded by a short dark gap so you can tell where it begins.
+
+**PARTIAL is the one that matters.** It means the iron calibration was saved but **the mounting
+angle was NOT re-measured**, so a module that has just been re-mounted still has the old angle
+stored and every heading is out by the difference. Walk it again: two full clockwise circles,
+starting and finishing with the nose on north.
+
+> Before 2026-08-18 all three patterns ran at one speed — 50 ms on, 50 ms off. FULL and PARTIAL
+> were therefore 200 ms and 300 ms of 10 Hz flicker, a 100 ms difference at a rate people cannot
+> count. If you have an earlier copy of `BREmote-RX-SW35R3-compasscal-fix.bin`, re-download it:
+> the filename is unchanged, the flash size is 1,342,192 B.
+
 ### What `dual-compass` adds (2026-08-15)
 
 The RX now **detects which magnetometer is fitted at boot** and drives it correctly. One image,

@@ -238,7 +238,7 @@ yourself, **USB CDC On Boot must be Disabled** (`Tools → USB CDC On Boot → D
 ```
 ?gpsbaud      # listen-only: are any bytes arriving at all? (answers the wiring question)
 ?printgps     # sats, fix and position = the link is working end to end
-?magtest      # magnetometer health + how much your wiring disturbs it
+?magtest      # EMI test + verdict - BUCKET/DOCK, motor MUST be loaded (see Mounting)
 ?compasscal   # full calibration — rotate the buggy through a complete horizontal circle
 ```
 No bytes at any baud is a **UART orientation** problem — swap the two data wires and retest (see the
@@ -256,11 +256,114 @@ cosmetic problem.
   exactly 90°, 180° or 270° from it. **Not diagonal.** The firmware stores the mounting rotation only
   as one of those four values, so a module at, say, 30° gets stored as 0° and keeps 30° of heading
   error that no calibration can remove.
-- Mount the BN-880 **as far from the battery and phase wires as the build allows**.
+- Mount the BN-880 **as far from the battery and phase wires as the build allows**. Two inches
+  makes a large difference at close range.
+- **Never mount it over a loop or U-turn in the phase wires.** This is the single worst position
+  and it is easy to create by accident. Out-and-back conductors cancel each other's field *at a
+  distance*, but at the centre of the loop they **add** — a current loop behaves like a magnet, and
+  its field there is far stronger than a straight wire at the same spacing. If the module sits
+  above where the phase wires turn back on themselves, fix that before anything else.
+- **Twist the phase wires into a tight bundle.** Paired conductors cancel, and the leftover field
+  then falls away much faster with distance than a single wire's does. This can buy more than
+  moving the module.
 - Keep it away from ferrous hardware and anything carrying high current.
-- Run `?magtest` **in place, on the real build** — not on the bench — to see the actual disturbance.
+- Run `?magtest` **in place, on the real build, WITH THE MOTOR UNDER LOAD** — prop in a bucket of
+  water or held against the dock. ⚠️ **Never judge it free-spinning.** The same buggy measured
+  +3-5° free-spinning and **87-101° under load** — seven times worse. A free-spinning prop draws
+  almost no current and reads clean on a compass that is useless in the water. `?magtest` now
+  refuses to grade a run whose peak current stayed under 5 A, and prints a verdict at the end.
 - **Re-run `?compasscal` after any change** to module, position, or mounting. A stored calibration
   does not carry over: different module, different mounting, different hard/soft-iron offsets.
+
+---
+
+## Moving the module out on a cable — and shielding it
+
+Relocating the BN-880 away from the electronics is the single most effective fix for compass EMI,
+because **distance is the only thing that works.** A magnetometer cannot be shielded from a
+magnetic field in any practical way — copper, aluminium and steel foil all pass it straight
+through at these frequencies. If the module is near the phase wires, it is wrong, and no amount of
+wrapping changes that.
+
+What shielding *does* fix is a different problem: **electrical noise picked up by the cable.**
+
+### Two problems, two fixes — do not confuse them
+
+| Problem | What it does | Fix |
+|---|---|---|
+| **Magnetic field reaching the sensor** | Heading off by up to 100° under throttle | **Distance only.** Move the module. |
+| **Electrical noise reaching the wires** | Corrupted I²C/serial data, dropped compass reads, GPS glitches | **Shielding.** Copper tape or a shielded cable. |
+
+Moving the module onto a cable solves the first and *creates* the second — the cable now runs
+past the ESC and the battery leads, acting as an antenna. That is why you do both.
+
+### ⚠️ Never wrap the module itself
+
+**Shield the CABLE, never the GPS module or its antenna patch.** The GPS antenna has to see the
+sky. Wrapping the module in copper tape will cost you satellite lock entirely. This mistake is
+easy to make because "shield the GPS" sounds like it means the whole thing.
+
+### How to shield the cable
+
+This is standard practice in the FPV/drone world, where the same problem exists in a smaller box.
+
+1. **Use copper tape, not aluminium.** Copper tape is sold with *conductive adhesive*, so the
+   overlapping seams conduct and the shield behaves as one surface. Aluminium tape usually has
+   insulating adhesive, which leaves every seam as a gap.
+2. **Twist the signal pairs first**, then wrap. Twisting is what rejects magnetic pickup; the
+   shield handles the electric field. Twisting also matters for I²C length — see the cable-length
+   limits below.
+3. **Wrap the full run**, overlapping each turn by about half its width. The noisiest stretch is
+   the first few inches next to the ESC, so do not leave that bare.
+4. **Ground the shield at ONE END ONLY — the RX end.** Grounding both ends creates a loop between
+   the two ground points, and a loop is exactly what you are trying to get away from. One end
+   drains the noise; two ends invite current to flow through the shield.
+5. **Insulate the outside** with heatshrink or tape. Bare copper against a battery terminal or a
+   connector shell is a short waiting to happen.
+
+### Cable length limits — this catches people out
+
+The GPS runs on a serial line and will happily go a metre. **The compass runs on I²C, which will
+not.** I²C can only pull the line down; it relies on a passive resistor to pull it back up, and a
+longer cable takes longer to charge. Too long and the receiver samples the bit before it arrives.
+
+**Shielding makes this worse, not better** — the shield is a conductor right next to the signal
+wires, so a shielded cable has roughly double the capacitance of loose wire per unit length.
+
+| I²C bus speed | Practical maximum cable |
+|---|---|
+| **400 kHz** | **~12 in / 30 cm** — and that is with shielded cable, at the edge |
+| **100 kHz** | **~3 ft / 1 m** comfortably |
+
+If you are running longer than about 12 inches, drop the bus to 100 kHz (`Wire.setClock` in
+`Init.ino`). Nothing on that bus needs the speed — a compass read goes from ~150 µs to ~600 µs,
+invisible at the 10 Hz the firmware polls at.
+
+Symptoms of an over-long I²C run are easy to misread as a dead module: `?i2c` finding the compass
+only sometimes, occasional garbage readings, calibrations failing for no visible reason.
+
+### Where to put it
+
+Out in front, away from the ESC, the battery leads and the motors — and **never over a loop or
+U-turn in the phase wires.** Out-and-back conductors cancel each other at a distance, but at the
+centre of the loop they *add*, and the bundle behaves like a magnet rather than like two wires.
+A module sitting over the point where the phase wires turn back on themselves is in the worst
+possible place, and it is easy to create by accident. Holland Shielding's drone EMI guidance makes
+the same point: keep the compass out of the surface of a current loop.
+
+Then run `?magtest` **under load** and confirm the number.
+
+### References
+
+Same problem, same fixes, from the drone world:
+
+- [GPS Placement — ARK Electronics](https://docs.arkelectron.com/knowledge-base/knowledge-base/gps-placement)
+- [EMI for Drones — Holland Shielding Systems](https://hollandshielding.com/en/emi-for-drones) — current loops and compass placement
+- [Install copper foil shield (fix low satellite count) — PhantomPilots](https://phantompilots.com/threads/how-to-install-copper-foil-shield-fix-low-satellite-count.31054/)
+- [GPS Shielding (wires?) — IntoFPV](https://intofpv.com/t-gps-shielding-wires)
+- Video: [GPS Cable Shielding](https://www.youtube.com/watch?v=3vD6K-KfmBA)
+- Video: [Why Does Shielding GPS Wires Matter? Aren't They Digital?](https://www.youtube.com/watch?v=RkLIJB1lOhc)
+- Video: [Copper Tape Install and GPS Test](https://www.youtube.com/watch?v=EC0HSKuWmvk)
 
 ---
 

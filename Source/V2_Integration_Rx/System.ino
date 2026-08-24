@@ -609,14 +609,52 @@ void cmdMagTest(const String& params) {
   extern SemaphoreHandle_t vescMutex; // declared in Logger.ino; guards vesc struct
   extern vesc_struct vesc;            // VESC telemetry struct; written by VESC.ino
 
-  Serial.println("=== Compass + Motor Current Bench Test ===");
+  Serial.println("=== Compass EMI BUCKET / DOCK TEST (motor MUST be under load) ===");
   Serial.println("Type 'quit' to abort. Runs up to 120 seconds.");
-  Serial.println("Recommended: bring throttle 0->100% slowly while collecting data.");
+  Serial.println();
+  Serial.println(">>> THE MOTOR MUST BE LOADED. A free-spinning prop draws almost no current");
+  Serial.println(">>> and will report this compass as CLEAN even when it is 100 deg out under");
+  Serial.println(">>> real load. That mistake has already been made on this buggy once.");
+  Serial.println(">>> Prop in a bucket of water, or held against the dock/ground. Then:");
+  Serial.println(">>>   1. leave the throttle at ZERO for ~5 s  (sets the baseline)");
+  Serial.println(">>>   2. bring the throttle up slowly, holding at several levels");
+  Serial.println(">>> A verdict is printed at the end. Under ~5 A peak it will REFUSE to grade.");
+  Serial.println();
   Serial.println();
   Serial.println("millis,magX,magY,magZ,magnitude,heading_deg,vesc_erpm,vesc_motor_current_a,thr_received");
 
   const uint32_t TEST_DURATION_MS = 120000UL;
   uint32_t start = millis();
+
+  // ==========================================================================================
+  // V2.5-Evo - 2026-08-20 - MAGTEST-1: this command now ENDS WITH A VERDICT instead of 1200 rows
+  // of CSV and no conclusion.
+  //
+  // WHY. The owner ran it twice with opposite results. On the bench with the motor FREE-SPINNING
+  // it read +3 to +5 deg steady and looked fine. Under real load in a bucket it read 87-101 deg
+  // — SEVEN TIMES worse. A test whose headline result swings 7x depending on how it was run, and
+  // which prints no headline at all, is worse than no test: it produces confident wrong
+  // conclusions. The free-spinning run is what supported "relocation is not urgent".
+  //
+  // WHY THE THRESHOLDS SIT WHERE THEY DO. In that data the error does NOT scale with current: it
+  // was already 87 deg at 5-15 A — ordinary cruise — and only reached 101 deg at 40 A. It
+  // SATURATES, because the interference is already far stronger than the earth's field at the
+  // first few amps, so the needle stops measuring the earth and starts pointing at the motor.
+  // That makes this a GEOMETRY problem, not a current problem, which is why the advice printed
+  // below is about where the module sits, not about riding gently.
+  //
+  // NO CURRENT, NO VERDICT. The most useful thing this can do is REFUSE to grade a run in which
+  // the motor was never loaded, instead of quietly reporting the meaningless +4 deg that sent the
+  // earlier investigation the wrong way.
+  //
+  // Accumulated as sin/cos sums so headings average correctly across the 0/360 wrap, and so the
+  // whole run costs a handful of doubles rather than storing 1200 samples.
+  double  idle_sin = 0.0, idle_cos = 0.0;  uint32_t idle_n = 0;   // < 1 A
+  double  lo_sin   = 0.0, lo_cos   = 0.0;  uint32_t lo_n   = 0;   // 1-15 A
+  double  mid_sin  = 0.0, mid_cos  = 0.0;  uint32_t mid_n  = 0;   // 15-30 A
+  double  hi_sin   = 0.0, hi_cos   = 0.0;  uint32_t hi_n   = 0;   // > 30 A
+  float   peak_a   = 0.0f;
+  bool    vesc_answered = false;
 
   while ((millis() - start) < TEST_DURATION_MS) {
     esp_task_wdt_reset(); // prevent WDT timeout during the 120s blocking loop
@@ -659,10 +697,123 @@ void cmdMagTest(const String& params) {
                   snap_erpm, snap_motor_a,
                   (unsigned)snap_thr);
 
+    // MAGTEST-1: bucket this sample by motor current. Headings are summed as unit vectors so the
+    // 0/360 wrap averages correctly — a plain arithmetic mean of 359 and 1 gives 180.
+    if (snap_motor_a >= 0.0f) {
+      vesc_answered = true;
+      if (snap_motor_a > peak_a) peak_a = snap_motor_a;
+
+      if (heading >= 0.0f) {                       // -1.0 = compass absent or uncalibrated
+        const double r = (double)heading * (double)DEG_TO_RAD;
+        const double s = sin(r), c = cos(r);
+        if      (snap_motor_a <  1.0f) { idle_sin += s; idle_cos += c; idle_n++; }
+        else if (snap_motor_a < 15.0f) { lo_sin   += s; lo_cos   += c; lo_n++;   }
+        else if (snap_motor_a < 30.0f) { mid_sin  += s; mid_cos  += c; mid_n++;  }
+        else                           { hi_sin   += s; hi_cos   += c; hi_n++;   }
+      }
+    }
+
     vTaskDelay(pdMS_TO_TICKS(100)); // 10 Hz output rate
   }
 
-  Serial.println("=== Test complete. Save serial output to a .csv file for analysis. ===");
+  Serial.println("=== Data collection complete. ===");
+
+  // ==========================================================================================
+  // MAGTEST-1 VERDICT
+  // ==========================================================================================
+  Serial.println();
+  Serial.println("========== COMPASS EMI VERDICT ==========");
+
+  if (!vesc_answered) {
+    Serial.println("NO VERDICT: the VESC never reported motor current.");
+    Serial.println("  Every current reading was unavailable, so nothing here can be graded.");
+    Serial.println("  Run ?vescping to check the telemetry link, then repeat this test.");
+    Serial.println("========================================");
+    return;
+  }
+
+  if (idle_n < 20) {
+    Serial.println("NO VERDICT: not enough IDLE samples to establish a baseline.");
+    Serial.println("  Leave the throttle at zero for a few seconds at the start of the run,");
+    Serial.println("  so there is a motor-off heading to compare the loaded readings against.");
+    Serial.println("========================================");
+    return;
+  }
+
+  // THE REFUSAL THAT MATTERS. A free-spinning motor draws almost nothing, reads about +4 deg,
+  // and looks healthy. Grading that run is how a 100 deg problem got recorded as "not urgent".
+  if (peak_a < 5.0f) {
+    Serial.printf("NO VERDICT: peak motor current was only %.1f A.\n", peak_a);
+    Serial.println("  THE MOTOR WAS NEVER LOADED, so this run cannot tell you anything about EMI.");
+    Serial.println("  A free-spinning motor draws almost no current and will read CLEAN even on a");
+    Serial.println("  module that is 100 deg out under real load - this exact mistake was made on");
+    Serial.println("  this buggy before. Load the motor properly (prop in a bucket of water, or");
+    Serial.println("  brake against the ground) and run it again.");
+    Serial.println("========================================");
+    return;
+  }
+
+  const float idle_deg = (float)(atan2(idle_sin, idle_cos) * RAD_TO_DEG);
+
+  // Shortest angular distance from the idle baseline, so 350 vs 10 reads as 20 deg, not 340.
+  auto devFrom = [idle_deg](double sSum, double cSum) -> float {
+    float d = (float)(atan2(sSum, cSum) * RAD_TO_DEG) - idle_deg;
+    while (d >  180.0f) d -= 360.0f;
+    while (d < -180.0f) d += 360.0f;
+    return fabsf(d);
+  };
+
+  Serial.printf("Idle baseline heading : %.1f deg  (%lu samples)\n",
+                (idle_deg < 0.0f) ? idle_deg + 360.0f : idle_deg, (unsigned long)idle_n);
+  Serial.printf("Peak motor current    : %.1f A\n", peak_a);
+  Serial.println();
+  Serial.println("Heading error vs idle, by motor current:");
+
+  float worst = 0.0f;
+  if (lo_n  > 0) { float d = devFrom(lo_sin,  lo_cos);
+                   Serial.printf("   1-15 A : %6.1f deg   (%lu samples)\n", d, (unsigned long)lo_n);
+                   if (d > worst) worst = d; }
+  if (mid_n > 0) { float d = devFrom(mid_sin, mid_cos);
+                   Serial.printf("  15-30 A : %6.1f deg   (%lu samples)\n", d, (unsigned long)mid_n);
+                   if (d > worst) worst = d; }
+  if (hi_n  > 0) { float d = devFrom(hi_sin,  hi_cos);
+                   Serial.printf("   30+ A  : %6.1f deg   (%lu samples)\n", d, (unsigned long)hi_n);
+                   if (d > worst) worst = d; }
+
+  Serial.println();
+  Serial.printf("WORST ERROR UNDER LOAD: %.1f deg\n", worst);
+  Serial.println();
+
+  if (worst < 10.0f) {
+    Serial.println("VERDICT: GOOD. The compass stays usable while the motor is pulling.");
+    Serial.println("  This mounting is good enough for a live compass heading, not just the");
+    Serial.println("  motor-off snapshot the firmware normally relies on.");
+  } else if (worst < 30.0f) {
+    Serial.println("VERDICT: DEGRADED. Usable, but the motor is visibly pulling the needle.");
+    Serial.println("  Steering is unaffected today - the firmware only reads the compass while");
+    Serial.println("  the motor is off - but the compass-vs-GPS cross-check still cannot run");
+    Serial.println("  during a ride. Moving the module further from the motor, and TWISTING the");
+    Serial.println("  phase wires into a tight bundle, would both help.");
+  } else {
+    Serial.println("VERDICT: USELESS UNDER POWER.");
+    Serial.println("  THIS COMPASS IS ONLY TRUSTWORTHY AT ZERO THROTTLE.");
+    Serial.println();
+    Serial.println("  STRONGLY RECOMMENDED: move the GPS/compass module further from the motor,");
+    Serial.println("  the VESC and the phase/power wires - toward the NOSE of the buggy, and");
+    Serial.println("  OUTSIDE THE DRY BOX if that is what it takes.");
+    Serial.println();
+    Serial.println("  Also TWIST THE PHASE WIRES into a tight bundle. Paired wires cancel each");
+    Serial.println("  other's field and it then falls away far faster with distance - that can");
+    Serial.println("  buy more than the move itself.");
+    Serial.println();
+    Serial.println("  This CANNOT be fixed by calibration. Calibration removes FIXED errors; this");
+    Serial.println("  one changes with throttle, so there is nothing steady to cancel out.");
+    Serial.println("  Distance and wire routing are the only levers.");
+  }
+
+  Serial.println();
+  Serial.println("Mount the module SQUARE to the nose, then re-run ?compasscal after moving it.");
+  Serial.println("========================================");
 }
 
 // ============================================================
@@ -1312,7 +1463,7 @@ static const SerialCommand kCommands[] = {
   {"compasscal", "start 45s automated calibration", cmdCompassCal, true},
   {"magalign", "set compass mounting orientation: point the nose NORTH, then run this", cmdMagAlign, true},
   {"compassheading", "print live compass heading in degrees", cmdPrintCompassHeading, true},
-  {"magtest", "120s CSV log: compass X/Y/Z + VESC current vs throttle (bench EMI test)", cmdMagTest, true},
+  {"magtest", "120s compass-vs-motor-current EMI test + VERDICT. BUCKET/DOCK TEST - the motor MUST be loaded; a free-spinning run reads clean on a compass that is 100 deg out", cmdMagTest, true},
   {"vescping", "stream VESC fields + UART packet age (2Hz, up to 30s; verify VESC UART)", cmdVescPing, true},
   {"vescraw", "raw VESC UART byte dump (sends GET_VALUES, prints any bytes received as hex)", cmdVescRaw, true},
 
@@ -1394,8 +1545,37 @@ void executeSerialCommand(const String &line)
         cmdName = cmdName.substring(1);
       }
 
-      // Commands that need original-case args
-      if(cmdName != "setconf" && cmdName != "get" && cmdName != "set" && cmdName != "wifidbg" && cmdName != "wifips")
+      // ==========================================================================================
+      // Commands that need ORIGINAL-CASE args
+      // ==========================================================================================
+      // Lower-casing is what lets ?CONF and ?Conf work like ?conf, which is worth having. But it
+      // also lower-cases the ARGUMENT, and some arguments are case-sensitive - so each of those
+      // commands has to be named here or its argument is silently destroyed before the handler
+      // ever sees it.
+      //
+      // V2.5-Evo - 2026-08-24 - "setbc" added by robertzach (PR #3). ?setbc takes a Base64
+      // battery-calibration blob and serSetBC() writes the string VERBATIM to /batconf.txt.
+      // Base64 uses A-Z and a-z as DIFFERENT symbols, so lower-casing corrupted every blob before
+      // it reached the file. ?setbc is the only way to load a battery curve, which means
+      // restoring one had NEVER worked in this fork - the defect has been present since the
+      // V3.0.0 initial commit, where this lower-casing was introduced. Ludwig's upstream does not
+      // lower-case at all and was never affected.
+      //
+      // V2.5-Evo - 2026-08-24 - "download" and "deletelog" added on the same reasoning, found
+      // while confirming the above. Log files are named "/T_%02d%02d%02d_%u.log" (Logger.ino) -
+      // note the UPPERCASE T - and SPIFFS is case-sensitive, so ?download T_143052_12.log looked
+      // for t_143052_12.log and reported it missing. Every log recorded WITH a GPS fix was
+      // undownloadable and undeletable by name. It hid because the no-fix fallback name is
+      // "/ms%u.log", all lower-case, which survives the mangling untouched.
+      //
+      // ⚠️ THIS LIST IS THE WEAK SHAPE, not the fix. It has to be updated by hand every time a
+      // command takes a case-sensitive argument, and nothing enforces that - which is how three
+      // commands ended up broken. The durable fix is a per-command flag in kCommands, the way
+      // blocks_loop already works, so a new command declares its own requirement and cannot be
+      // forgotten. Tracked as a follow-up.
+      if(cmdName != "setconf" && cmdName != "setbc" &&
+         cmdName != "download" && cmdName != "deletelog" &&
+         cmdName != "get" && cmdName != "set" && cmdName != "wifidbg" && cmdName != "wifips")
       {
         cmdName.toLowerCase();
         params.toLowerCase();

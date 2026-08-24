@@ -231,12 +231,53 @@ function setAddrPart(k,i,v){const cur=toAddrHex(state.values[k]);const c=String(
 function updateHint(k){const f=fields.find(x=>x.key===k);if(!f)return;const err=validate(f,state.values[k]);const el=document.getElementById(`hint-${k}`);if(!el)return;const hint=`Range ${f.min}..${f.max}${f.unit?(' '+f.unit):''} | default: ${f.def}`;el.textContent=err||hint;el.className=err?'err':'hint';}
 
 // --- JSON BUTTON FUNCTIONS ---
-function copyJson() {
-    navigator.clipboard.writeText(document.getElementById('jsonBox').value);
+// V2.5-Evo - 2026-08-18 - CLIP-1. navigator.clipboard exists ONLY in a secure context: HTTPS,
+// or localhost. This page is served by the board's own access point over plain
+// http://192.168.4.1, which is neither - so on a phone connected to the remote, the API is
+// either undefined (the call throws, the button does nothing at all) or present but rejecting
+// (the promise fails unhandled and the button cheerfully says "Copied!" while the clipboard
+// stays empty). The second is worse: the rider believes they have their config backed up.
+// This is the ONLY way the page is ever reached in the field, so the button never worked there.
+// It works off a local file, which is presumably how it came to be believed working.
+// execCommand('copy') is deprecated but is not secure-context gated and still works on iOS
+// Safari and Android Chrome over plain HTTP. Try the modern API first, fall back, and only
+// claim success when a copy actually happened.
+function legacyCopy(text) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    // Off-screen rather than hidden: iOS Safari will not select from a display:none element,
+    // and readOnly stops it popping the on-screen keyboard.
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    ta.setAttribute('readonly', '');
+    document.body.appendChild(ta);
+    let ok = false;
+    try {
+        ta.select();
+        ta.setSelectionRange(0, ta.value.length);   // iOS needs the explicit range
+        ok = document.execCommand('copy');
+    } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+}
+
+function copyFeedback(worked) {
     const btn = document.getElementById('btnCopy');
-    btn.innerText = "Copied!";
-    btn.classList.add('success');
-    setTimeout(() => { btn.innerText = "Copy to Clipboard"; btn.classList.remove('success'); }, 1500);
+    if (!btn) return;
+    btn.innerText = worked ? "Copied!" : "Copy failed - select and copy by hand";
+    if (worked) btn.classList.add('success');
+    setTimeout(() => { btn.innerText = "Copy to Clipboard"; btn.classList.remove('success'); }, 2500);
+}
+
+function copyJson() {
+    const text = document.getElementById('jsonBox').value;
+    if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text)
+            .then(() => copyFeedback(true))
+            .catch(() => copyFeedback(legacyCopy(text)));   // never leave the failure unhandled
+        return;
+    }
+    copyFeedback(legacyCopy(text));
 }
 
 function exportJsonFile() {

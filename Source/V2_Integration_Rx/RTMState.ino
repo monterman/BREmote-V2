@@ -1553,11 +1553,14 @@ static const uint8_t  kFmSteerCancelDeadband = 40;     // counts from 127
 // shape (a single sustained-condition timer, cleared the instant the condition stops holding) and
 // change only the test itself.
 
-// Multiple of D_engage beyond which the buggy is running away rather than following. 2x D_engage is
-// ~18 m at the owner's 9 m engage setting: far outside any legitimate follow geometry (the target
-// point sits d_follow, ~6 m, behind the rider) yet far enough out that a normal catch-up transient
-// or ordinary GPS scatter never reaches it. Scales automatically with fm_engage_dist_m (A2).
-static const float    kFmDivergeFactor       = 2.0f;   // multiplier on D_engage
+// Multiple of D_engage beyond which the buggy is considered far enough away for the sustained
+// not-closing test below to classify it as diverging. Scales automatically with the effective
+// engage distance: the configured fm_engage_dist_m when non-zero, otherwise the auto-computed
+// D_engage. V2.5-Evo - 2026-08-25: raised 2x -> 6x so normal catch-up, alignment and GPS scatter
+// cannot start the divergence dwell close to the intended follow geometry. Examples: an explicit
+// 11 m engage distance now gives a 66 m ceiling; auto D_engage=30 m gives a 180 m ceiling. The
+// existing 3 s dwell and requirement to fail to close by more than 2 m are unchanged.
+static const float    kFmDivergeFactor       = 6.0f;   // multiplier on effective D_engage
 
 // How long the distance must stay beyond that limit before it counts as divergence. Rider position
 // arrives at 2 Hz, so 3000 ms is ~6 consecutive independent fixes — the same spike-proofing argument

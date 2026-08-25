@@ -1748,17 +1748,20 @@ static void updateRtmSteering()
 
   // ---- Steering target selection: RTM aims at the rider, FM aims behind the rider ----
   // V2.5-Evo - 2026-07-19 - P3 FM. Two callers now share this controller:
-  //   RTM (fm_rx_active == false): steer straight at the rider's EMA-filtered position.
-  //                                This branch is the original code, unchanged.
-  //   FM  (fm_rx_active == true) : steer at the trailing target point that runFmLoop() already
-  //                                computed via computeFmTarget(). FM does its own EMA filtering
-  //                                in updateFmRiderTracking() (it has to keep tracking while only
-  //                                ARMED), so we skip RTM's filter here rather than filtering the
-  //                                same rider position twice and adding a second lag.
+  //   RTM (rtm_rx_active == true): steer straight at the rider's EMA-filtered position.
+  //   FM  (fm_rx_active == true and RTM inactive): steer at the trailing target point that
+  //                                runFmLoop() already computed via computeFmTarget(). FM does its
+  //                                own EMA filtering in updateFmRiderTracking() (it has to keep
+  //                                tracking while only ARMED), so we skip RTM's filter here rather
+  //                                than filtering the same rider position twice and adding a second lag.
   // Everything downstream of this block - heading error, +/-180 wrap, preset clamp, P+D, and
   // confidence-scaled authority - is shared by both modes and is untouched.
   double steer_target_lat, steer_target_lng;
-  if (fm_rx_active) {
+  // V2.5-Evo - 2026-08-25 - Give RTM explicit priority during the one loop-window in which an RTM
+  // arm packet has set rtm_rx_active but runFmLoop() has not yet cleared fm_rx_active. This makes
+  // the RTM arm-edge D reset below line up with the actual target switch instead of differentiating
+  // the direct-to-rider target one tick later against a final FM trailing target.
+  if (fm_rx_active && !rtm_rx_active) {
     steer_target_lat = fm_target_lat;
     steer_target_lng = fm_target_lng;
   } else {
@@ -2061,6 +2064,16 @@ void runRtmLoop()
       // deliberately NOT touched here: a boundary is not evidence about a compass.
       heading_disagree_since_ms     = 0;
       heading_disagree_last_seen_ms = 0;
+
+      // V2.5-Evo - 2026-08-25 - RTM may preempt an ACTIVE FM run. The FM D history is valid for
+      // FM's trailing target but not for RTM's direct-to-rider target, so cold-start the shared
+      // derivative on the RTM arm edge. Without this companion to the FM D-state fix below, the
+      // first RTM sample could differentiate across two different control targets.
+      if (rtm_now_active) {
+        prev_heading_error_deg    = 0.0f;
+        prev_heading_src_valid    = false;
+        prev_steering_update_ms   = 0;
+      }
     }
     rtm_prev_active = rtm_now_active;
   }
@@ -2310,13 +2323,22 @@ void runRtmLoop()
     rtm_prev_dist_m          = -1.0;
     rtm_phase_c_ms           = 0;
     rtm_approach_cap         = 255;   // belt-and-suspenders: ensure cap is always clear when inactive
-    // Bundle 1: reset filter + D-term state so re-arm starts fresh (not from last session)
+    // RTM-only position-filter state is never consumed by FM and may be reset whenever RTM is idle.
     tx_pos_filter_initialized = false;
-    prev_heading_error_deg    = 0.0f;
-    prev_heading_src_valid    = false;   // FM triage: no same-source prior sample after disarm
-    prev_steering_update_ms   = 0;
-    g_heading_error_dx10      = 0x7FFF;
-    g_d_error_dx10            = 0x7FFF;
+
+    // V2.5-Evo - 2026-08-25 - The P+D continuity and exported heading diagnostics are SHARED by
+    // RTM and FM. runRtmLoop() executes before runFmLoop(); resetting them merely because RTM is
+    // idle erased FM's previous sample on every tick and made its D term permanently zero. Preserve
+    // them while FM owns steering. FM already cold-starts these values on every engagement, and an
+    // ownerless/HOLD/STOP tick still clears them here so a later run cannot inherit stale history.
+    if (!fm_rx_active)
+    {
+      prev_heading_error_deg    = 0.0f;
+      prev_heading_src_valid    = false;
+      prev_steering_update_ms   = 0;
+      g_heading_error_dx10      = 0x7FFF;
+      g_d_error_dx10            = 0x7FFF;
+    }
     // telemetry.rtm_distance already set to 0xFF by the block above (inactive path)
     return;
   }

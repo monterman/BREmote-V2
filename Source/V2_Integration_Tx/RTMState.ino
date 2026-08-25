@@ -503,7 +503,7 @@ void runRtmLoop()
 // V2.5-Evo - 2026-07-20 - was a bare 3000UL literal. Raised 3000 -> 30000 ms: across a
 // whip the rider is fully off the trigger for 10-25 s, so the 3 s timer was disarming FM at
 // exactly the moment it was supposed to engage. 30 s is the hard-disarm backstop in the
-// escalation chain (RX latch-clear 10 s -> TX Gate 1 30 s -> RX mode-age 95 s).
+// escalation chain (RX latch-clear 2 s -> TX Gate 1 30 s -> RX mode-age 95 s).
 // The threshold (thr_scaled < 5) and the 5-10 dead band are UNCHANGED — timer only.
 static const unsigned long kFmGate1ReleaseMs = 30000UL;
 

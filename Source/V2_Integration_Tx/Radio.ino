@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-08-25 - 0xF2 Follow-Me declaration range documented 0-4 for F4 In Front; packet layout unchanged.
 // V2.5-Evo - 2026-05-03 - Added reserved/warning comments (LOW audit cleanup)
 // V2.5-Evo - 2026-04-24 - Added 0xF3 GPS meta-packet burst at 2Hz in sendData(); THR capped at 0xF2
 // V2.5-Evo - 2026-04-25 - P7: Added RTM/FM meta-packet queue consumer in sendData(); cap 0xF2→0xF0; queueMetaPacketBurst()
@@ -584,7 +585,7 @@ void waitForTelemetry(void *parameter)
 // Called from loop task (RTM/FM state machines in RTMState.ino).
 // sendData() FreeRTOS task consumes the queue.
 // type: 0xF1=RTM state, 0xF2=FM override, 0xF4=aux control
-// value: for 0xF1: 0=inactive 1=active; for 0xF2: 0-3 FM mode; for 0xF4: aux flags byte
+// value: for 0xF1: 0=inactive 1=active; for 0xF2: 0-4 FM mode; for 0xF4: aux flags byte
 void queueMetaPacketBurst(uint8_t type, uint8_t value)
 {
   rtm_meta_type.store(type, std::memory_order_relaxed);

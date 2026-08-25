@@ -48,9 +48,9 @@ Arming is a **declaration of intent.** It does not move anything. There are two 
 While floating, before takeoff:
 
 1. **LEFT tap, then RIGHT hold** (~3 s — set by `fm_hold_duration_s`).
-2. The remote shows **F1 / F2 / F3** and buzzes **two quick taps** = armed.
+2. The remote shows **F1 / F2 / F3 / F4** and buzzes **two quick taps** = armed.
 3. Cycle the mode by repeating the gesture before you touch the throttle
-   (**F1 → F2 → F3 → F0-off**).
+   (**F1 → F2 → F3 → F4 → F0-off**).
 
 > The toggle **cannot arm once you're on the throttle** — while you hold the trigger, the
 > toggle *is* your steering. That's what the magnet is for.
@@ -95,7 +95,7 @@ You keep the throttle held the whole time. No release step is needed; the buggy 
 
 ## 5. Where the buggy follows — the offset angle
 
-Three modes set which side the buggy stations on, **relative to you** (imagine you facing
+Four modes set where the buggy stations, **relative to you** (imagine you facing
 your direction of travel):
 
 | Mode | Name | Buggy sits |
@@ -103,9 +103,15 @@ your direction of travel):
 | **F1** | **Near-Right** | behind and to your right |
 | **F2** | **Behind** (default) | straight behind you |
 | **F3** | **Near-Left** | behind and to your left |
+| **F4** | **In Front** | ahead of you as a forward pacer |
 
-The exact angle is set by **`near_diag_offset_deg`** — the number of degrees **off
-straight-behind**. Near-Right and Near-Left are mirror images of it:
+F4 never performs an autonomous overtake. Position the buggy ahead manually first. It engages only
+after the along-course lead exceeds `fm_engage_dist_m`, stays inside the configured front cone and
+remains proven for 2 seconds. If it ceases to be provably ahead, it stops in HOLD, clears the proof
+and waits for the trigger to be released for 2 seconds before returning full manual control.
+
+For F1/F3, the exact angle is set by **`near_diag_offset_deg`** — the number of degrees **off
+straight-behind**. Near-Right and Near-Left are mirror images of it; F4 does not use this offset:
 
 - **Near-Right = 180° − offset** · **Near-Left = 180° + offset**
 - **Bigger offset → more beside you. Smaller offset → more behind you.**
@@ -167,11 +173,11 @@ fault while you're holding the trigger. A stop after you've already let go just 
 
 | Setting | What it does | Note |
 |---|---|---|
-| `followme_mode` | follow side: 1 = Near-Right, **2 = Behind (default)**, 3 = Near-Left | TX seed for the arm gesture |
+| `followme_mode` | geometry: 1 = Near-Right, **2 = Behind (default)**, 3 = Near-Left, 4 = In Front | TX seed for the arm gesture |
 | `near_diag_offset_deg` | angle off straight-behind (see §5) | **45** = Right 135° / Left 225° |
 | `min_dist_m` | hard-stop distance — throttle cut to 0 if the buggy gets this close | |
 | `followme_smoothing_band_m` | decel band above the hard stop | follow distance = `min_dist_m` + this |
-| `boogie_vmax_in_followme_kmh` | speed ceiling while following | |
+| `boogie_vmax_in_followme_kmh` | absolute speed ceiling while following | 0 = no absolute ceiling, also for F4; F4 still regulates its front gap relative to rider speed |
 | `foiler_low_speed_kmh` | below this rider speed, Follow-Me holds (won't maneuver around a swimmer) | |
 | `fm_arm_window_s` *(TX)* | how long an arm survives with no throttle | **180 s** |
 | `mag_mode` *(TX)* | magnet gesture role: 0 off, 1 = FM, 2 = RTM, 3 = FM+RTM | needs the Hall sensor |

@@ -334,7 +334,7 @@ Power **one board at a time** (the other OFF, per 2.3), join its AP (password de
 | `followme_smoothing_band_m` | **10 m** | Decel band above the hard stop (follow distance = min_dist_m + band) |
 | `boogie_vmax_in_followme_kmh` | 25 km/h or lower for your terrain | FM speed ceiling |
 | `foiler_low_speed_kmh` | **8 km/h** | Below this rider speed FM holds (won't chase a swimmer) |
-| `followme_mode` | **2 = Behind** (shipped default) | Pick the side you want and confirm it on the display — F1/F2/F3 |
+| `followme_mode` | **2 = Behind** (shipped default) | Pick the geometry and confirm it on the display — F1/F2/F3/F4 |
 | GPS anti-spoof (Phase A/B) | leave defaults: HDOP 2.0, accel 3.0 G, teleport 80 km/h, suspect 3, pair-dist 500 m, speed-diff 50 km/h | Tuned for this craft; only widen with reason |
 | `gps_dyn_model` | **0 (Sea)** — unless your water is above ~500 m altitude, then **4 (Automotive)** | The Sea navigation model has a 500 m ceiling and good fixes start being rejected above it. Sea is the better model below that, so leave it at 0 |
 | `rtm_compass_required` | 1 | Don't arm RTM without a good compass |
@@ -348,6 +348,11 @@ Power **one board at a time** (the other OFF, per 2.3), join its AP (password de
 > | **1** | **Near Right** | behind and to your right |
 > | **2** | **Behind** | directly behind you — **shipped default** |
 > | **3** | **Near Left** | behind and to your left |
+> | **4** | **In Front** | forward pacer — experimental; buggy must already be ahead |
+>
+> F4 accepts `boogie_vmax_in_followme_kmh=0`; this removes the absolute vehicle-speed ceiling but
+> keeps the rider-relative front-gap governor active. Start with a finite, low ceiling for controlled
+> validation whenever possible. F4 never performs an autonomous overtake.
 >
 > `0` disables FM steering entirely (RTM throttle-limit only). Set the side you want, then confirm it
 > on the TX display: **F1 / F2 / F3**.
@@ -406,7 +411,7 @@ chop, one-handed, with a foil under you. Learn them dry first.
 
 Confirm the gestures and display before you're in the water:
 
-- **Arm FM (toggle, works while floating):** **LEFT tap → RIGHT hold ~3 s.** Display shows **F1/F2/F3**, remote buzzes **two quick taps** = armed. Repeat the gesture to cycle **F1→F2→F3→F0-off** before you're on the throttle.
+- **Arm FM (toggle, works while floating):** **LEFT tap → RIGHT hold ~3 s.** Display shows **F1/F2/F3/F4**, remote buzzes **two quick taps** = armed. Repeat the gesture to cycle **F1→F2→F3→F4→F0-off** before you're on the throttle.
 - **Arm FM (magnet, works during the tow — if fitted):** hold magnet ~2 s, feel one pulse, pull away → two taps = armed (toggle: same gesture disarms).
 - **Arm RTM:** **RIGHT tap → LEFT hold ~5 s** (needs `gps_en=1` + `rtm_enabled=1`).
 - **Reading the FM bar:** no bar = disarmed · **sweeping** = armed & ready · **blinking in place** = armed but still getting GPS/link · **steady distance bar** = following · **`St`** = stopped.

@@ -138,7 +138,7 @@ struct confStruct {
 
     // GPS features related flags
     uint16_t gps_en;         // GPS runtime enable flag (0=disabled, 1=enabled)
-    uint16_t followme_mode;  // Follow-me mode (0=disabled, 1=near_right, 2=behind, 3=near_left) — canonical mapping, matches TX + README
+    uint16_t followme_mode;  // Follow-me mode (0=off, 1=near_right, 2=behind, 3=near_left, 4=in_front)
     uint16_t kalman_en;      // Kalman filter runtime enable flag (0=disabled, 1=enabled)
 
     //Follow-me
@@ -151,19 +151,19 @@ struct confStruct {
     // (the FM geometry consumes all three), and gave the wrong mode numbers with the wrong
     // signs for the diagonal offset. The values and ranges themselves are unchanged.
 
-    // DIAGONAL-BLEND SCHMITT — ENTER half-angle (degrees). This is NOT an engagement gate:
-    // it decides whether the buggy is lined up closely enough BEHIND the rider to apply the
-    // diagonal side offset, or whether it should just sit directly behind. Measured as the
-    // angle between the rider->buggy bearing and "directly behind the rider".
-    // Below this angle the diagonal offset is applied (see computeFmTarget in RTMState.ino).
-    // Range: 5-90°. Default 35°.
+    // FOLLOW-GEOMETRY SCHMITT — ENTER half-angle (degrees).
+    // F1/F3: decides whether the buggy is lined up closely enough BEHIND the rider to apply the
+    // diagonal side offset, or whether it should just sit directly behind. Measured from the
+    // directly-behind axis; it is not an F1/F3 engagement gate.
+    // F4: reused as the front-cone gate. A front proof can latch/re-engage only below this angle
+    // from the rider's forward course.
+    // Range: 0-180°. Default 35°.
     float zone_angle_enter_deg;
 
-    // DIAGONAL-BLEND SCHMITT — EXIT half-angle (degrees). Once the diagonal is applied it is
-    // dropped again only when the off-axis angle exceeds this value. MUST be > zone_angle_enter_deg
-    // by 5-15° — the hysteresis stops an unstable rider course from whipping the target point
-    // across the rider's wake from one side to the other.
-    // Range: 10-95°. Default 45°.
+    // FOLLOW-GEOMETRY SCHMITT — EXIT half-angle (degrees). F1/F3 drop the diagonal beyond it;
+    // F4 stops, enters HOLD and clears the front proof beyond it. MUST be > zone_angle_enter_deg
+    // by 5-15° so rider-course noise cannot flap either decision.
+    // Range: 0-180°. Default 45°.
     float zone_angle_exit_deg;
 
     // NEAR-MODE DIAGONAL OFFSET (degrees from "directly behind the rider").
@@ -176,7 +176,7 @@ struct confStruct {
     // 0° = directly behind, 90° = beside the rider. Diagonal placement keeps the buggy out of
     // the rider's wake/spray path. Authoritative derivation: the OFFSET SIGN CONVENTION block
     // above computeFmTarget() in RTMState.ino.
-    // Range: 0-90°. Default 45°.
+    // Range: 0-180°. Default 45°.
     float near_diag_offset_deg;
     
     //System parameters
@@ -740,7 +740,7 @@ unsigned long rx_tx_gps_timestamp = 0;    // millis() when last meta-packet rece
 // rtm_rx_active: true = TX signalled RTM active; safety gates in RTMState.ino may override.
 // rtm_rx_emergency_stop: true = safety gate failed; calcPWM() forces throttle to 0.
 // rtm_steer_override: bearing-derived steering value (0-255, 127=straight ahead).
-// fm_mode_runtime: TX-side FM mode override (0-3); 0xFF = use SPIFFS default.
+// fm_mode_runtime: TX-side FM mode declaration (0-4); 0xFF = no declaration this session.
 // V2.5-Evo - 2026-04-25 - P7 fix: use std::atomic for safe access across FreeRTOS task
 // preemption. generatePWM (task) and RTMState.ino loop() both run on the single-core
 // ESP32-C3; std::atomic gives an indivisible read/write + compiler barrier so a higher-

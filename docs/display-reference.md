@@ -49,7 +49,7 @@ Releasing the magnet while `BT_DOT_FAST` → returns to `BT_DOT_OFF`. Short hold
 | ≥ 100 m | scrolling **`FAR`** | no |
 
 - **Why it changed:** the dot previously meant ×100 above 100 m, so 170 m rendered as `1.7` and read as 1.7 m. That misread cost a rider control authority in the field. One meaning now: a dot is a decimal point.
-- **Why `FAR` instead of a number:** the digit zone is two characters, so 100 m+ cannot render literally. A scrolling word is unmistakable against every static state (`L#`, `E#`, `F1/2/3`, `99`, `XX`, `--`). It scrolls in the digit zone only — the R5 proximity bar, C7 status dots and C8/C9 bars are untouched, and it does not flash.
+- **Why `FAR` instead of a number:** the digit zone is two characters, so 100 m+ cannot render literally. A scrolling word is unmistakable against every static state (`L#`, `E#`, `F1/2/3/4`, `99`, `XX`, `--`). It scrolls in the digit zone only — the R5 proximity bar, C7 status dots and C8/C9 bars are untouched, and it does not flash.
 - **Row position:** the dot sits at **R3** (raised one row from R4 on 2026-07-25 — on the bottom row it was hard to read). C3 is never written by `displayDigits()`, so the dot cannot collide with a digit at any row.
 - Set via `displayBuffer[4] |= (1u << 3)` **after** calling `displayDigits()` (which clears R0–R5, R3 included). The kW readout uses the same row so the decimal point is at a consistent height everywhere.
 
@@ -69,7 +69,7 @@ Releasing the magnet while `BT_DOT_FAST` → returns to `BT_DOT_OFF`. Short hold
 | LEFT hold 2s | Cycle telemetry display mode | Simple hold, no combo required |
 | RIGHT hold 2s | Reserved — no action | Was: cycle display |
 | RIGHT tap → LEFT hold 5s | Arm RTM (Return-to-Me) | Requires gps_en=1 and rtm_enabled=1 |
-| LEFT tap → RIGHT hold 5s | Cycle FM mode (F0→F1→F2→F3) | Requires gps_en=1 and fm_override_enabled=1 |
+| LEFT tap → RIGHT hold (`fm_hold_duration_s`) | Cycle FM mode (F0→F1→F2→F3→F4) | Requires gps_en=1 and fm_override_enabled=1 |
 | Boot: hold RIGHT | Pairing mode | RIGHT toggle held at boot (no throttle) enters pairing; RIGHT + throttle = wipe SPIFFS |
 | Boot: hold LEFT | Calibration mode | LEFT toggle held at boot (no throttle) starts calibration; LEFT + throttle = force BLE session |
 

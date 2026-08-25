@@ -266,7 +266,7 @@ bool ctminus()
 //   RIGHT hold 2s (simple)             → cycle telemetry display mode
 //   LEFT hold 2s (simple)              → lock remote (unlock: left hold + throttle touch)
 //   RIGHT tap → LEFT hold 5s (combo)   → arm RTM
-//   LEFT tap → RIGHT hold 5s (combo)   → FM mode cycle
+//   LEFT tap → RIGHT hold 5s (combo)   → FM mode cycle (F1/F2/F3/F4/F0)
 // ============================================================
 static int           last_tap_dir   = 0;    // last recorded tap direction: +1=right, -1=left, 0=none
 static unsigned long last_tap_ms    = 0;    // millis() when last tap was recorded

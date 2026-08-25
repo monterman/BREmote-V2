@@ -407,7 +407,7 @@ Unavailable modes (no VESC lock or no GPS fix) are skipped automatically. `MA` r
 | LEFT hold 2 s | Lock the Remote |
 | RIGHT hold 2 s | Cycle telemetry display mode |
 | RIGHT tap → LEFT hold (default 5 s, tunable 3–10 s) | Arm **Return-to-Me** (RTM) — display shows `rn` |
-| LEFT tap → RIGHT hold (default 5 s, tunable 3–10 s) | Cycle **Follow-Me** override mode (F0/F1/F2/F3) |
+| LEFT tap → RIGHT hold (default 3 s, tunable 3–10 s) | Cycle **Follow-Me** override mode (F0/F1/F2/F3/F4) |
 
 > 💡 **Optional — magnet / Hall input for hands-free control.** A DRV5032 Hall sensor on GPIO 9 (P_MAG) lets a magnet gesture activate **BLE** and arm **Follow-Me** without reaching for the toggles (great mid-ride). Wiring + firmware: **[Hall Sensor Expansion guide →](docs/Hall_Sensor_Expansion.md)** · step-by-step fitting (incl. easier-to-solder parts): **[install tutorial →](docs/Hall_Sensor_Install_Tutorial.md)**.
 
@@ -592,14 +592,14 @@ On any gate failure: throttle → 0, TX display shows `St` for 2 s, haptic confi
 
 > FM override is fully implemented in V2.5-Evo. It overrides the RX follow-me positioning mode at runtime without a SPIFFS write.
 
-> **⚠️ Follow-Me autonomous control IS implemented in this release (alpha).** The mode override display (F0 / F1 / F2 / F3) is fully functional — you cycle and set the mode on the TX display, and the buggy follows the rider per the selected geometry. The control law is specified in [`DESIGN_FOLLOW_ME.md`](DESIGN_FOLLOW_ME.md) and coded. **Alpha — bench/wheels-up test the steering direction before any in-water use.**
+> **⚠️ Follow-Me autonomous control IS implemented in this release (alpha).** The mode override display (F0 / F1 / F2 / F3 / F4) is fully functional — you cycle and set the mode on the TX display, and the buggy follows the rider per the selected geometry. F4 is an experimental forward pacer: it never overtakes autonomously and engages only after the buggy is already proven ahead. **Alpha — bench/wheels-up test the steering direction before any in-water use.**
 
 The override is RAM-only — RX returns to its web-configured `followme_mode` on reboot.
 
 ### Activation
 
-1. **Combo gesture:** Quick-tap LEFT toggle, then within 3 seconds hold RIGHT toggle for the hold duration (`fm_hold_duration_s`, default 5 s, tunable 3–10 s)
-2. TX display shows `F` + mode number (e.g. `F0`, `F1`, `F2`, `F3`)
+1. **Combo gesture:** Quick-tap LEFT toggle, then within 3 seconds hold RIGHT toggle for the hold duration (`fm_hold_duration_s`, default 3 s, tunable 3–10 s)
+2. TX display shows `F` + mode number (`F0`–`F4`)
 3. Continue holding RIGHT or re-hold within 2 s to keep cycling modes
 4. Release and wait 2 s — TX sends the selected mode to RX via 0xF2 meta-packet
 
@@ -611,6 +611,13 @@ The override is RAM-only — RX returns to its web-configured `followme_mode` on
 | `F1` | 1 | Near-Right — RX trails behind-right of the rider |
 | `F2` | 2 | Behind (default) — RX trails directly behind the rider |
 | `F3` | 3 | Near-Left — RX trails behind-left of the rider |
+| `F4` | 4 | In Front — RX acts as a forward pacer; it engages only after it is already ahead of the rider |
+
+For F4, `fm_engage_dist_m` is measured **along the rider's forward course**, not merely as radial
+distance. The buggy must remain inside the `zone_angle_enter_deg` front cone for 2 seconds. Losing
+the front position or crossing `zone_angle_exit_deg` stops F4 in HOLD, clears the latch and requires
+a fresh front proof. `boogie_vmax_in_followme_kmh=0` is allowed and removes the absolute vehicle-
+speed ceiling; F4's rider-relative front-gap governor remains active.
 
 ### FM Proximity Warning
 
@@ -640,7 +647,7 @@ If TX-to-RX distance drops below `fm_warn_distance_m` (default 150 m), TX fires 
 | Parameter | Default | Description |
 |---|---|---|
 | `fm_override_enabled` | 1 | Master on/off switch |
-| `fm_hold_duration_s` | 5 | RIGHT-hold duration to cycle FM mode, in seconds (4–10) |
+| `fm_hold_duration_s` | 3 | RIGHT-hold duration to cycle FM mode, in seconds (3–10) |
 | `fm_warn_distance_m` | 150 | Proximity warning threshold in metres |
 
 </details>
@@ -669,6 +676,7 @@ If TX-to-RX distance drops below `fm_warn_distance_m` (default 150 m), TX fires 
 | `F1` | Follow-Me override: Near-Right |
 | `F2` | Follow-Me override: Behind (default) |
 | `F3` | Follow-Me override: Near-Left |
+| `F4` | Follow-Me override: In Front (forward pacer) |
 | `St` | Stop — RTM or FM safety gate triggered, or arming blocked |
 | `99` | Full throttle reached (100%) |
 

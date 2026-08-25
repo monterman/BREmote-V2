@@ -2,8 +2,7 @@
 
 **Project:** BREmote V2.5-Evo
 **Date:** July 18, 2026
-**Status:** Approved design — not yet implemented. Prerequisite: heading-feedback triage (see §9 Phase 0.5).
-**Baseline:** `feature/collision-backoff` @ `d68ed07`.
+**Status:** Implemented; F4 In Front remains experimental and requires controlled validation.
 **Sibling doc:** `DESIGN_RETURN_TO_ME.md` (RTM — implemented, field-tested). FM reuses RTM's validation phases, safety gates, and steering pipeline.
 
 ## 1. Purpose and Safety Philosophy
@@ -23,11 +22,12 @@ FM = autonomous steering + distance-based throttle limiting, under a human throt
 | Mode | Meaning | Geometry |
 |---|---|---|
 | 0 | Off | — |
-| 1 | **Near-Right** (default) | behind-right diagonal at `near_diag_offset_deg` |
-| 2 | **Behind** | directly behind rider's course |
+| 1 | **Near-Right** | behind-right diagonal at `near_diag_offset_deg` |
+| 2 | **Behind** (default) | directly behind rider's course |
 | 3 | **Near-Left** | behind-left diagonal |
+| 4 | **In Front** | forward pacer; engagement requires the buggy already ahead |
 
-This TX-side convention is canonical for ALL surfaces (TX display F0–F3, RX struct, both web UIs, README). RX comments/labels currently disagree and must be aligned as part of implementation. Default = 1 (rider is left-foot-forward; the right side is the visible side).
+This TX-side convention is canonical for ALL surfaces (TX display F0–F4, RX struct, both web UIs, README). Default = 2 (Behind).
 
 ## 3. What already exists (reuse verbatim — do not reimplement)
 
@@ -44,10 +44,11 @@ This TX-side convention is canonical for ALL surfaces (TX display F0–F3, RX st
 FM_IDLE → FM_ARMED → FM_ACTIVE → (FM_ARMED | FM_IDLE)
 ```
 
-- **FM_IDLE:** `fm_mode_runtime` = 0 or unset. New behavior: implement the documented 0xFF → `usrConf.followme_mode` fallback (currently missing).
-- **FM_ARMED:** mode 1–3 selected; all monitoring runs; throttle chain inactive until activation conditions met. Display/telemetry reflect armed state (`fm_status`).
+- **FM_IDLE:** `fm_mode_runtime` = 0 or unset. `0xFF` means no live TX declaration and never falls back to stored RX config.
+- **FM_ARMED:** mode 1–4 selected; all monitoring runs; throttle chain inactive until activation conditions met. Display/telemetry reflect armed state (`fm_status`).
 - **FM_ACTIVE:** engaged when ALL activation conditions hold (§5). Steering override on; throttle cap chain on (§7).
-- **Demotion:** any §5 condition failing → FM_ARMED with throttle cap 0 (motor stops; mode stays selected; re-engages when conditions restore — with the engage ramp, never a jump).
+- **FM_HOLD:** a deadman or geometric condition pauses control with cap 0. A 2 s continuous trigger release clears the separation proof and restores fully manual FM_ARMED.
+- **FM_STOPPING:** a sensor/link/heading or divergence fault ends the run, ramps the cap back to manual and requires a fresh TX declaration.
 - **Mutual exclusion with RTM:** unchanged (RTM arming silently disarms FM).
 
 ## 5. Activation / hold conditions (ALL required while FM_ACTIVE, checked every loop)
@@ -75,31 +76,39 @@ Per control tick (10 Hz), all on RX:
 5. **Steer:** feed `target` to the existing steering pipeline unchanged. Publish `fm_heading_err` and `fm_status` each rotation.
 6. **Side-zone hysteresis:** when the angle between rider course and rider→buggy bearing crosses `zone_angle_enter_deg`/`zone_angle_exit_deg`, blend diagonal ↔ pure-behind (Schmitt pair) so an unstable rider course cannot whip the target point across the wake.
 
+Mode 4 replaces the trailing point with a forward station at `d_follow`. Its steering point is a
+derived lookahead that is always kept ahead of the buggy, so excess lead can only be corrected by
+slowing down and never by a U-turn toward the rider. Engagement uses the signed along-course lead:
+`along_track > fm_engage_dist_m` inside the front-cone threshold for the existing 2 s dwell. Loss of
+course, lead or front cone clears the latch and holds the motor at zero; no autonomous overtake or
+automatic path across the rider exists.
+
 ## 7. Throttle cap chain (subtract-only; lowest cap wins)
 
 | # | Cap | Source pattern |
 |---|---|---|
 | 1 | Hard stop: `dist < min_dist_m` → 0 (re-engage per §5.8 hysteresis) | RTM gate-9 distance check |
-| 2 | Approach ramp: linear 255→0 across the smoothing band | `RTMState.ino:569–597` verbatim |
-| 3 | Speed governor: toward `min(boogie_vmax_in_followme_kmh, rider_speed + closing margin)` | Run-phase governor |
+| 2 | Approach ramp: F1–F3 linear 255→0 across the smoothing band; F4 omits it because slowing when caught collapses the front gap | RTM approach pattern |
+| 3 | Speed governor: F1–F3 target rider speed + margin; F4 varies around rider speed from along-track error; non-zero `boogie_vmax_in_followme_kmh` is the final absolute ceiling, while 0 means no absolute ceiling | Run-phase governor |
 | 4 | Align phase: heading error > threshold → ~5 % cap | Align-phase pattern |
 | 5 | Engage ramp: 0→cap over 3–4 s on every FM_ACTIVE entry | RTM ramp machinery |
 
 FM writes caps only. The human trigger remains the sole throttle source; trigger release stops the buggy through the unchanged base architecture.
 
-## 8. Parameters — zero new confStruct fields for v1
+## 8. Parameters — zero new confStruct fields for F4
 
-All eight existing FM params acquire their intended meaning (no SW_VERSION bump; owner sets values via web UI):
+F4 reuses the existing FM parameters (no SW_VERSION bump):
 
 | Param | v1 role | Owner default |
 |---|---|---|
-| `followme_mode` | SPIFFS default mode (0xFF fallback) | 1 (Near-Right) |
-| `min_dist_m` | hard-stop distance | 4 m |
-| `followme_smoothing_band_m` | hysteresis + ramp band (follow point = sum = 6 m) | 2 m |
+| `followme_mode` | TX starting mode / RX stored preference; live arming still requires 0xF2 | 2 (Behind) |
+| `min_dist_m` | hard-stop distance | 10 m |
+| `followme_smoothing_band_m` | hysteresis + ramp band (station = sum) | 10 m |
 | `near_diag_offset_deg` | diagonal offset (modes 1/3) | 45° |
-| `boogie_vmax_in_followme_kmh` | FM speed ceiling | 25 km/h (~15.5 mph) |
+| `boogie_vmax_in_followme_kmh` | FM absolute speed ceiling; 0 = no absolute ceiling (F4 gap governor remains active) | 25 km/h (~15.5 mph) |
 | `foiler_low_speed_kmh` | rider-down gate | 8 km/h (~5 mph) |
 | `zone_angle_enter_deg` / `zone_angle_exit_deg` | side-zone Schmitt pair | 35° / 45° |
+| `fm_engage_dist_m` | separation/front-proof distance; 0 = auto, otherwise 8–50 m | 0 (auto) |
 
 Field-retunable to 4/10/20 m equivalents without reflash. At the next SW_VERSION bump (whenever one happens for other reasons), bake the proven values into `defaultConf` on both sides — a version bump resets stored config to `defaultConf` (verified against `ConfigService`/`SPIFFSEngine`; web-UI-only tuning does not survive bumps).
 
@@ -115,11 +124,12 @@ Deferred to a future bump (one field, shared with RTM): an RX-side autonomous-ru
 | LoRa loss | > `failsafe_time` | PWM pulses stop (existing failsafe), independent of FM |
 | Rider inside stop radius | dist < `min_dist_m` | cap 0 until beyond band |
 | Rider down/slow | speed < `foiler_low_speed_kmh` | cap 0, wait |
-| Rider course invalid | speed < ~5 km/h | degrade to hold-station (no diagonal) |
+| Rider course invalid | speed < ~5 km/h | F1–F3 degrade to hold-station; F4 stops in HOLD and clears its front proof |
+| F4 no longer provably ahead/in front cone | signed lead / angle Schmitt fails | cap 0, HOLD, clear latch; fresh front proof required |
 | RTM armed | 0xF2/0 silent disarm | FM off (existing) |
 | Trigger released | physical | motor stops (base architecture, untouched) |
 
-**Phase 0.5 prerequisite (blocking):** log analysis of all recorded RTM activity shows GPS COG has never engaged as heading source (0 of 1,946 active samples), the compass shows large swings under motor current (evidence contaminated by uncalibrated logs — measure with `?magtest` after the telemetry fix), and steering actuation was intermittent despite valid error. FM ships on this same heading ladder. Before FM implementation: fix the RX GPS feed to the controller, characterize/compensate compass-under-load, close the actuation gap, guard against engagement with no fix, clamp `d_error` across snapshot refreshes. This also resolves the RTM "drives in circles" defect.
+**Field-validation prerequisite:** FM and F4 use the same guarded heading ladder as RTM. Verify GPS COG, compass orientation and steering direction on the actual hardware, wheels up and then at controlled low speed, before any open-water use.
 
 ## 10. Test plan
 
@@ -138,4 +148,4 @@ Deferred to a future bump (one field, shared with RTM): an RX-side autonomous-ru
 6. Telemetry: populate idx 14/15; TX display FM-active state.
 7. Safety audit (motor-safety verdict first), then §10 gates in order.
 
-No TX control-path changes. No LoRa protocol changes. No new packets, no rate changes (2 Hz 0xF3 measured sufficient).
+F4 only extends TX mode selection and the existing 0xF2 value range. No new packet, config field or rate change (2 Hz 0xF3 remains unchanged).

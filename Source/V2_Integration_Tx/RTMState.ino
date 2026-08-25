@@ -1,6 +1,7 @@
+// V2.5-Evo - 2026-08-25 - Follow-Me F4 In Front added to both FM gesture cycles, starting-mode validation and display/meta declaration. TX still only selects and declares the mode; all forward-pacer geometry and safety gates live on the RX. The existing 0xF2 byte already carries the new value, so there is no packet or confStruct change and SW_VERSION stays 27.
 // V2.5-Evo - 2026-04-25 - P7: TX RTM and FM state machines.
 // RTM: left-hold gesture → arm → squeeze(s) → active → cooldown → idle
-// FM:  right-hold gesture → cycle FM mode 0→1→2→3→0 → send 0xF2 meta-packet
+// FM:  right-hold gesture → cycle FM mode 0→1→2→3→4→0 → send 0xF2 meta-packet
 // V2.5-Evo - 2026-04-27 - P8: setRtmArmed shows "rn" ×2 (static, 3s total); showFmMode shows F0-F3;
 //   added setRtmDisarmed(); steer-exit gate in ACTIVE; rtm_max_runtime_s=0 disables runtime gate
 // V2.5-Evo - 2026-04-27 - fix: extern declaration for current_vib_pattern (defined in System.ino)
@@ -488,7 +489,7 @@ void runRtmLoop()
 //   - FM active: user engages throttle to ride
 //
 // CHANGE MODE while armed (LEFT hold 2s, intercepted by Hall.ino):
-//   - Cycles F0→F1→F2→F3→F0; stays armed; sends new mode to RX; resets arm timer
+//   - Cycles F0→F1→F2→F3→F4→F0; stays armed; sends new mode to RX; resets arm timer
 //
 // DISARM (any of):
 //   - Same combo again (LEFT tap + RIGHT hold 5s) — toggle
@@ -509,7 +510,7 @@ static const unsigned long kFmGate1ReleaseMs = 30000UL;
 
 volatile bool        fm_armed         = false;  // FM arm state; RAM only, cleared on power cycle. Not static — extern'd by Display.ino (R5 bar)
                                                  // volatile: read by updateBargraphs() (task), written by loop()
-static uint8_t       last_fm_mode     = 1;      // last active FM mode (1-3); defaults F1; RAM only
+static uint8_t       last_fm_mode     = 1;      // last active FM mode (1-4); defaults F1; RAM only
 static unsigned long fm_arm_ms        = 0;      // time of arm, or time of last throttle >10 while armed
 static bool          fm_throttle_seen = false;  // becomes true once thr_scaled>10 after arming
 
@@ -611,8 +612,8 @@ void cycleFmMode()
     }
     else
     {
-      // No throttle yet — cycle to next mode (1→2→3→0 where 0 = disarm)
-      last_fm_mode = (last_fm_mode < 3) ? last_fm_mode + 1 : 0;
+      // No throttle yet — cycle to next mode (1→2→3→4→0 where 0 = disarm)
+      last_fm_mode = (last_fm_mode < 4) ? last_fm_mode + 1 : 0;
 
       if (last_fm_mode == 0)
       {
@@ -642,12 +643,12 @@ void cycleFmMode()
         fm_throttle_seen = false;
         fm_last_sync_ms  = 0;
         // Reset mode to SPIFFS default so next arm starts at configured mode, not 0
-        last_fm_mode = (usrConf.followme_mode >= 1 && usrConf.followme_mode <= 3)
+        last_fm_mode = (usrConf.followme_mode >= 1 && usrConf.followme_mode <= 4)
                        ? usrConf.followme_mode : 1;
         return;
       }
 
-      // Large-font mode confirm: LET_F + mode digit (1/2/3). snprintf no longer needed.
+      // Large-font mode confirm: LET_F + mode digit (1/2/3/4). snprintf no longer needed.
       DISP_LOCK();
       displayDigits(LET_F, last_fm_mode);
       updateDisplay();
@@ -677,11 +678,11 @@ void cycleFmMode()
   }
 
   // V2.5-Evo - 2026-04-28 - Change B: On first arm this session, seed last_fm_mode from SPIFFS.
-  // usrConf.followme_mode is the user's configured starting mode (range 1-3; 0 is invalid here).
+  // usrConf.followme_mode is the user's configured starting mode (range 1-4; 0 is invalid here).
   // After seeding, fm_session_init_done prevents overriding any mode the user cycled to mid-session.
   if (!fm_session_init_done)
   {
-    if (usrConf.followme_mode >= 1 && usrConf.followme_mode <= 3)
+    if (usrConf.followme_mode >= 1 && usrConf.followme_mode <= 4)
       last_fm_mode = usrConf.followme_mode;
     fm_session_init_done = true;
   }
@@ -693,7 +694,7 @@ void cycleFmMode()
   if (current_vib_pattern == 0) current_vib_pattern = 4;         // Pattern 4: 2 fast buzzes = arm confirm
   fm_last_sync_ms  = millis();     // Change E: start keepalive timer from now (avoids immediate re-sync)
 
-  // V2.5-Evo - 2026-04-29 - Display: show actual mode being armed (F1/F2/F3) in large font
+  // V2.5-Evo - 2026-04-29 - Display: show actual mode being armed (F1/F2/F3/F4) in large font
   // instead of the generic "FM" text. Uses large num0[] font via LET_F(15) + mode digit.
   DISP_LOCK();
   displayDigits(LET_F, last_fm_mode);
@@ -705,12 +706,12 @@ void cycleFmMode()
 }
 
 // Called by handleGearToggle(-1) simple LEFT hold 2s when FM is armed (Hall.ino checks isFmArmed()).
-// Cycles mode 1→2→3→1 (Change C: skips mode 0 = disabled); stays armed; resets arm timer.
+// Cycles mode 1→2→3→4→0 (0 disables FM); stays armed for modes 1-4 and resets arm timer.
 void cycleFmModeArmed()
 {
   if (!fm_armed) return;
-  // Cycle 1→2→3→0 where 0 = disarm (FM disabled RAM-only state for hand-off to inexperienced user).
-  last_fm_mode = (last_fm_mode < 3) ? last_fm_mode + 1 : 0;
+  // Cycle 1→2→3→4→0 where 0 = disarm (FM disabled RAM-only state for hand-off).
+  last_fm_mode = (last_fm_mode < 4) ? last_fm_mode + 1 : 0;
 
   if (last_fm_mode == 0)
   {
@@ -736,12 +737,12 @@ void cycleFmModeArmed()
     fm_throttle_seen = false;
     fm_last_sync_ms  = 0;
     // Reset mode to SPIFFS default so next arm starts at configured mode, not 0
-    last_fm_mode = (usrConf.followme_mode >= 1 && usrConf.followme_mode <= 3)
+    last_fm_mode = (usrConf.followme_mode >= 1 && usrConf.followme_mode <= 4)
                    ? usrConf.followme_mode : 1;
     return;
   }
 
-  // Large-font mode confirm: LET_F + mode digit (1/2/3). snprintf no longer needed.
+  // Large-font mode confirm: LET_F + mode digit (1/2/3/4). snprintf no longer needed.
   DISP_LOCK();
   displayDigits(LET_F, last_fm_mode);
   updateDisplay();

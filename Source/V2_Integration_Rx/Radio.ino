@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-08-25 - 0xF2 accepts F4 In Front; removed the two-bit mask that aliased 4 to F0. Unknown values >4 now fail closed to disabled.
 // V2.5-Evo - 2026-07-24 - F9: cache last control-packet RSSI/SNR (g_last_rssi_dbm/g_last_snr_db) at receive so the logger task can add distance+link-quality CSV columns without racing the radio SPI bus. No confStruct/SW_VERSION change.
 // V2.5-Evo - 2026-07-20 - FM engagement semantics: processFmOverridePacket() stamps fm_mode_last_rx_ms on every 0xF2 so RTMState.ino can expire an unrefreshed FM declaration (95 s). This handler is now the ONLY path that can arm FM — the RX no longer auto-arms from usrConf.followme_mode.
 // V2.5-Evo - 2026-05-12 - Fix Phase B recovery: recheck gate reduces from 30s to 2s when gps_phase_b_ok=false, eliminating up to 30s RTM motor block after any TX GPS gap
@@ -347,7 +348,7 @@ static void processRtmStatePacket(const uint8_t *pkt)
 }
 
 // V2.5-Evo - 2026-04-25 - P7: Handle 0xF2 FM override meta-packet from TX.
-// pkt: 6-byte buffer. byte[3]=0xF2, byte[4]: FM mode 0-3.
+// pkt: 6-byte buffer. byte[3]=0xF2, byte[4]: FM mode 0-4.
 // Updates runtime FM mode without writing SPIFFS.
 // V2.5-Evo - 2026-07-20 - R0/R2: 0xFF (the reboot value) no longer means "use the SPIFFS
 // default" — it now means "the TX has made no declaration this session", which RTMState.ino
@@ -356,7 +357,11 @@ static void processRtmStatePacket(const uint8_t *pkt)
 // being refreshed (the TX repeats 0xF2/mode every 30 s while armed).
 static void processFmOverridePacket(const uint8_t *pkt)
 {
-  uint8_t mode = pkt[4] & 0x03;  // clamp to 0-3
+  uint8_t mode = pkt[4];
+  if (mode > 4) {
+    Serial.printf("FM [RX] invalid mode %u -> disabled\n", (unsigned)mode);
+    mode = 0;  // fail closed: an unknown geometry must never arm autonomy
+  }
   fm_mode_runtime = mode;
   fm_mode_last_rx_ms.store(millis(), std::memory_order_relaxed);
   Serial.printf("FM [RX] mode override: %d\n", mode);

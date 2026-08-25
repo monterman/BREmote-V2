@@ -255,7 +255,7 @@ struct confStruct {
 
     // GPS features related flags
     uint16_t gps_en;           // GPS runtime enable flag (0=disabled, 1=enabled)
-    uint16_t followme_mode; // Follow-me runtime mode flag (0=disabled, 1=near_right, 2=behind, 3=near_left)
+    uint16_t followme_mode; // Follow-me runtime mode flag (0=off, 1=near_right, 2=behind, 3=near_left, 4=in_front)
     uint16_t kalman_en;        // Kalman filter runtime enable flag (0=disabled, 1=enabled)
     uint16_t speed_src;   // 0=RX km/h, 1=RX knots, 2=TX km/h, 3=TX knots, 4=RX mph, 5=TX mph
     
@@ -449,7 +449,7 @@ confStruct defaultConf = {  // V2.5-Evo — factory default configuration
   0,             // gps_dyn_model (was steer_expo1; 0 = default = Sea, unchanged behaviour)
   0.000185662f,  // ubat_cal
   1,             // gps_en (1 = TX GPS enabled)
-  2,             // followme_mode (2 = Behind — defensive FM geometry; 1=near_right, 3=near_left)
+  2,             // followme_mode (2 = Behind default; 1=near_right, 3=near_left, 4=in_front)
   1,             // kalman_en
   5,             // speed_src (5 = TX mph)
   3000,          // tx_gps_stale_timeout_ms
@@ -673,7 +673,7 @@ volatile uint8_t steer_sent = 0; // Steering value actually sent over radio
 // reordering; std::atomic release/acquire prevents sendData from observing count>0
 // while type/value are still stale in the loop task's store buffer.
 std::atomic<uint8_t> rtm_meta_type  {0};    // 0xF1=RTM state, 0xF2=FM override
-std::atomic<uint8_t> rtm_meta_value {0};    // for 0xF1: 0=inactive 1=active; for 0xF2: 0-3 FM mode
+std::atomic<uint8_t> rtm_meta_value {0};    // for 0xF1: 0=inactive 1=active; for 0xF2: 0-4 FM mode
 std::atomic<uint8_t> rtm_meta_count {0};    // bursts remaining; 0 = idle (value is always 0 or 3)
 
 // V2.5-Evo - 2026-04-25 - P7 RTM throttle cap.

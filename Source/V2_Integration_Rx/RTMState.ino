@@ -1834,7 +1834,40 @@ static void updateRtmSteering()
   // Confidence: LOW conf reduces total authority by 50% (preserves D5 behavior)
   float authority = (confidence == 1) ? 0.5f : 1.0f;
 
-  float output = 127.0f + authority * (p_term - d_term);
+  // ============================================================================================
+  // V2.5-Evo - 2026-08-26 - D-SIGN. This was `p_term - d_term`, and that sign was WRONG. Found by
+  // Rex auditing beta tester robertzach's fork; robertzach's own branch does not fix it either,
+  // so it has been live in every build since the D term was introduced.
+  //
+  // p_term is positive in heading_error (line ~1796). d_error is the positive DERIVATIVE of that
+  // same error (line ~1819). A PD controller is Kp*e + Kd*e_dot. Subtracting the derivative is
+  // ANTI-damping: when the buggy is already turning toward the target and the error is shrinking
+  // (e_dot < 0), `-Kd*e_dot` is POSITIVE and pushes HARDER the closer it gets. Overshoot, then
+  // hunting - on every engagement, continuously, not at some edge case.
+  //
+  // WHY IT IS WORSE THAN "a bit twitchy". Turn rate follows the command, h_dot = k*(u-127), and
+  // with a slowly-varying bearing e_dot ~= -k*(u-127). Substituting:
+  //
+  //   correct:  (u-127)(1 + Kd*k) = Kp'*e     gain DIVIDED by (1 + Kd*k) - always stable
+  //   as-was:   (u-127)(1 - Kd*k) = Kp'*e     gain DIVIDED by (1 - Kd*k) - SINGULAR
+  //
+  // That denominator goes to zero as Kd*k approaches 1 and the gain runs away; past it the sign
+  // inverts and the controller steers AWAY from the target. The old form had a pole sitting in
+  // the operating range, its position set by a physical constant (k) nobody measured.
+  //
+  // WHY A BARE SIGN FLIP IS SAFE AT THE EXISTING GAINS. The corrected form divides by
+  // (1 + Kd*k) >= 1 for every positive kd in the preset table (0.50 Very Soft down to 0.10 Very
+  // Sharp), so flipping can only ever REDUCE loop gain and ADD damping. There is no kd at which
+  // the flip makes the loop worse. If anything the presets may now feel slightly soft - if they
+  // were ever hand-tuned against the broken sign they would have been tuned DOWN to suppress the
+  // hunting. Soft is a tuning preference; the singularity was a defect. No gain was retuned here.
+  //
+  // ⚠️ THIS IS INDEPENDENT OF THE +/-180 WRAP FIX (robertzach, aa0d771). With the sign corrected
+  // an unwrapped -358 deg/s spike still saturates the output - to 0 instead of 254, i.e. full
+  // lock the OTHER way. Neither fix alone makes the controller safe at the branch cut. They ship
+  // together or not at all.
+  // ============================================================================================
+  float output = 127.0f + authority * (p_term + d_term);
   if (output < 0.0f)   output = 0.0f;
   if (output > 254.0f) output = 254.0f;
   rtm_steer_override = (uint8_t)output;

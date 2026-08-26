@@ -1483,7 +1483,24 @@ static const float    kFmEngageFactor        = 1.5f;   // multiplier on d_follow
 // WHY: the logs contain single-fix GPS spikes implying 41-144 mph. A spike moves the
 // apparent distance for one fix; it cannot SUSTAIN it for four. The dwell converts a
 // noise-triggerable threshold into one that needs real, persistent separation.
-static const uint32_t kFmSepDwellMs          = 2000;   // ms
+// V2.5-Evo - 2026-08-26 - DWELL-1: kFmSepDwellMs (2000) is RETIRED and replaced by a fix COUNT
+// plus a time floor. The requirement above is stated in FIXES ("it cannot SUSTAIN it for four"),
+// and milliseconds were only ever a proxy for that. The proxy drifted: rider position measured at
+// 3.0 Hz in a real level-4 log, so 2000 ms was buying SIX fixes rather than four, and it would
+// keep getting stricter every time telemetry got faster. Three fixes is still 3x the observed
+// single-fix threat and recovers ~4.5 m of engage distance at riding speed. Full reasoning is at
+// the latch site in runFmLoop().
+// V2.5-Evo - 2026-08-26 - BOOTSTRAP-1. Getting a heading-less buggy moving so COG can appear.
+// Full reasoning at the use site in runRtmLoop(); the short version is that the align cap of
+// 13/255 cannot move a buggy, and without movement COG never becomes valid, so "no heading" was
+// a state nothing could escape. Speed-governed, ceiling-limited and hard-timed, so it can only
+// get the buggy going - never let it run.
+static const float    kBootstrapSpeedKmh     = 6.0f;   // fade the cap out as this is approached
+static const uint8_t  kBootstrapMaxCap       = 60;     // ~24% - a controlled start, not a lurch
+static const uint32_t kBootstrapMaxMs        = 3000;   // give up if COG has not arrived by then
+
+static const uint8_t  kFmSepDwellFixes       = 3;      // consecutive NEW rider positions
+static const uint32_t kFmSepDwellFloorMs     = 350;    // ms; backstop against burst delivery only
 
 // How long the throttle may stay released before the separation latch is cleared.
 // WHY: this is the session boundary. To rig the next tow the rider necessarily lets go of
@@ -1655,7 +1672,13 @@ static bool          fm_sep_latched      = false;
 
 // millis() when the rider first went beyond D_engage; 0 = not currently beyond it.
 // Counts the dwell that defeats single-fix GPS spikes.
+static unsigned long rtm_bootstrap_since_ms = 0;   // BOOTSTRAP-1: 0 = not bootstrapping
 static unsigned long fm_sep_over_since_ms = 0;
+// DWELL-1 companions. fm_sep_fix_count counts NEW rider positions (not loop ticks) since the
+// distance first exceeded D_engage; fm_sep_last_fix_stamp is how a new one is distinguished
+// from a re-read of the same one. Both reset wherever fm_sep_over_since_ms resets.
+static uint8_t       fm_sep_fix_count     = 0;
+static uint32_t      fm_sep_last_fix_stamp = 0;
 
 // millis() when thr_received first dropped below 25; 0 = throttle currently held.
 // Counts the kFmThrReleaseClearMs window that clears the latch at the end of a run.
@@ -2405,14 +2428,92 @@ void runRtmLoop()
   //   regardless of buggy power curve. Behaviour is consistent across different boogies.
   //   rtm_target_speed_kmh == 0 disables the governor (approach decel zone only).
   {
-    float abs_err = (g_heading_error_dx10 != 0x7FFF) ?
-        fabsf((float)g_heading_error_dx10 / 10.0f) : 180.0f;
+    // ==========================================================================================
+    // V2.5-Evo - 2026-08-26 - BOOTSTRAP-1. "No heading" and "heading is 180 deg wrong" are NOT
+    // the same thing, and treating them alike deadlocks the buggy.
+    //
+    // THE BUG, reported by beta tester Jan: RTM with rtm_use_compass 0 "did not start any
+    // steering at all". Traced here. With no heading source g_heading_error_dx10 holds the
+    // 0x7FFF sentinel, the line below coerces that to 180.0f, 180 always exceeds
+    // rtm_align_threshold_deg (range 10-90), so the align cap pins throttle at 13/255 - about 5%.
+    //
+    // And 5% cannot move a tow buggy against water drag. So it never reaches
+    // rtm_cog_min_speed_kmh, COG never becomes valid, the sentinel never clears, and the cap
+    // stays at 13 forever. It needs speed to earn a heading and throttle to earn speed, and the
+    // align cap denies the throttle. The state is self-perpetuating: the buggy arms, sits there,
+    // and never steers - exactly as reported.
+    //
+    // For a compass build this never bites, because a stationary compass gives a heading
+    // immediately (measured at 3.2 deg at idle - there is no motor current to corrupt it). It is
+    // specific to COG-only, which is also the configuration recommended to riders whose compass
+    // is swamped by motor EMI. So the mode we point people at when their compass is unusable does
+    // not currently work from a standstill.
+    //
+    // THE FIX. When there is genuinely NO heading, allow enough throttle to reach COG-valid speed
+    // instead of the align cap. Steering is already pinned at 127 by updateRtmSteering() in this
+    // state, so the buggy travels in a straight line until it learns which way it points, then
+    // the normal ladder takes over. A straight line cannot be a wrong turn.
+    //
+    // WHY THIS DOES NOT BREAK SUBTRACT-ONLY. Output is min(rider_throttle, cap). Raising a cap
+    // does not add throttle the rider did not ask for - it reduces how much is SUBTRACTED from
+    // what they are already commanding. With the trigger released the deadman holds the motor at
+    // PWM_min and the cap is irrelevant. The rider's trigger remains the only thing that makes
+    // the motor turn.
+    //
+    // BOUNDS, all mandatory:
+    //   - Speed-governed, so it fades to zero as the buggy reaches kBootstrapSpeedKmh. It cannot
+    //     run away; it can only get moving.
+    //   - Hard ceiling kBootstrapMaxCap regardless of the governor, so a rider holding full
+    //     throttle gets a controlled start rather than a lurch.
+    //   - Hard timeout. If COG has not appeared by then, fall back to the align cap and stop
+    //     trying - something else is wrong and this must not become a permanent licence.
+    //   - Never inside max(min_dist_m, kFmEngageDistFloorM). The buggy is heading-BLIND here, so
+    //     it must be at least as conservative as normal operation, which already refuses to
+    //     approach closer than min_dist_m. The 8 m floor catches a rider who has tuned min_dist_m
+    //     down (it accepts 0, meaning "no minimum").
+    // ==========================================================================================
+    const bool have_heading = (g_heading_error_dx10 != 0x7FFF);
+    float abs_err = have_heading ? fabsf((float)g_heading_error_dx10 / 10.0f) : 180.0f;
 
-    if (abs_err > (float)usrConf.rtm_align_threshold_deg) {
+    if (!have_heading) {
+      // Abort radius is TIED TO min_dist_m - the rider's own "never closer than this". The
+      // kFmEngageDistFloorM floor only bites if they have tuned it below tow-rope length; the
+      // field accepts 0, which means "no minimum" and would otherwise disable the abort entirely.
+      float abort_radius = usrConf.min_dist_m;
+      if (abort_radius < kFmEngageDistFloorM) abort_radius = kFmEngageDistFloorM;
+
+      // Same freshness discipline as the telemetry distance a few screens up: a stale rider fix
+      // must read as "unknown" (-1), never as "far away", or the abort would be skipped on exactly
+      // the data we cannot trust.
+      float rider_dist = -1.0f;
+      if (gps_last_lat != 0.0 && rx_tx_gps_timestamp > 0 &&
+          (millis() - rx_tx_gps_timestamp) < 5000UL) {
+        rider_dist = (float)TinyGPSPlus::distanceBetween(
+            gps_last_lat, gps_last_lng, rx_tx_gps_lat, rx_tx_gps_lng);
+      }
+
+      if (rtm_bootstrap_since_ms == 0) rtm_bootstrap_since_ms = millis();
+
+      const bool too_close = (rider_dist >= 0.0f && rider_dist < abort_radius);
+      const bool timed_out = (millis() - rtm_bootstrap_since_ms) >= kBootstrapMaxMs;
+
+      if (too_close || timed_out) {
+        const uint8_t kAlignCap = 13;                      // unchanged fallback
+        if (rtm_approach_cap > kAlignCap) rtm_approach_cap = kAlignCap;
+      } else {
+        float speed_frac = gps_last_speed_kmh / kBootstrapSpeedKmh;
+        if (speed_frac > 1.0f) speed_frac = 1.0f;
+        uint8_t boot_cap = (uint8_t)((1.0f - speed_frac) * 255.0f);
+        if (boot_cap > kBootstrapMaxCap) boot_cap = kBootstrapMaxCap;
+        if (rtm_approach_cap > boot_cap) rtm_approach_cap = boot_cap;
+      }
+    } else if (abs_err > (float)usrConf.rtm_align_threshold_deg) {
+      rtm_bootstrap_since_ms = 0;    // heading exists: the bootstrap window is over
       // Phase 1 — Align: ~5% throttle — differential steers; buggy barely moves forward
       const uint8_t kAlignCap = 13;
       if (rtm_approach_cap > kAlignCap) rtm_approach_cap = kAlignCap;
     } else if (usrConf.rtm_target_speed_kmh > 0.0f) {
+      rtm_bootstrap_since_ms = 0;    // heading exists: the bootstrap window is over
       // Phase 2 — Run: proportional GPS speed governor (full cap at target, zero cap at rest)
       float speed_frac = gps_last_speed_kmh / usrConf.rtm_target_speed_kmh;
       if (speed_frac > 1.0f) speed_frac = 1.0f;
@@ -2866,6 +2967,7 @@ static void fmEnterIdle()
   // declaration, so the next arm must re-prove separation from scratch before FM may engage.
   fm_sep_latched       = false;
   fm_sep_over_since_ms = 0;
+  fm_sep_fix_count     = 0;   // DWELL-1: the fix count resets with the dwell
   fm_thr_low_since_ms  = 0;
 
   // V2.5-Evo - 2026-07-20 - A3: clear the steer-cancel persistence timer and the fault-ramp clock.
@@ -3093,6 +3195,7 @@ void runFmLoop()
       }
       fm_sep_latched       = false;
       fm_sep_over_since_ms = 0;
+      fm_sep_fix_count     = 0;   // DWELL-1: the fix count resets with the dwell
       if (fm_state != FM_IDLE) {
         fm_state        = FM_ARMED;
         fm_throttle_cap = 255;   // back to fully manual; trigger is released, so no motion
@@ -3223,16 +3326,61 @@ void runFmLoop()
     }
     // F3-c: single tow-rope safety floor, applied to the COMPUTED value as well as the typed one.
     if (d_engage < kFmEngageDistFloorM) d_engage = kFmEngageDistFloorM;
+    // ==========================================================================================
+    // V2.5-Evo - 2026-08-26 - DWELL-1. The dwell now counts RIDER FIXES, not milliseconds.
+    //
+    // WHAT WAS WRONG. kFmSepDwellMs was 2000 ms, and the comment at its definition says why:
+    // "the rider position arrives at 2 Hz, so 2000 ms = 4 consecutive independent GPS fixes",
+    // guarding against the single-fix spikes the logs contain. So the REQUIREMENT is a fix count;
+    // milliseconds were only ever a proxy for it.
+    //
+    // The proxy drifted. Measured from a beta tester's level-4 log, his rider position actually
+    // arrives at 3.0 Hz - so 2000 ms was buying SIX fixes, 50% more debounce than the design ever
+    // asked for. Nobody changed anything; the link simply got faster, and a fixed time silently
+    // got stricter. It would keep getting stricter every time telemetry improves.
+    //
+    // AND THE RIDER KEEPS MOVING THROUGH IT. At 10 mph a 2000 ms dwell is 8.9 m of extra
+    // separation before the latch sets, so the EFFECTIVE engage distance is the setting plus
+    // ~9 m. The same tester had fm_engage_dist_m = 11 and measured engagements at 20-21 m across
+    // four runs. That is the whole discrepancy, and it is why Follow-Me felt like it started late.
+    //
+    // WHY THREE AND NOT FOUR. Four is the documented requirement, but it was written against
+    // SINGLE-fix spikes; three consecutive is still 3x the observed threat and buys back ~4.5 m.
+    // Not fewer: at 3 Hz, two fixes is ~660 ms and a two-fix spike would get through, which is
+    // the one thing this exists to stop.
+    //
+    // COUNTING FIXES, NOT LOOP TICKS. runFmLoop() runs at 10 Hz while rider position arrives at
+    // ~3 Hz, so a tick counter would reach three in 300 ms off a SINGLE fix and defeat the guard
+    // entirely. rx_tx_gps_timestamp changes only when a genuinely new rider position arrives, so
+    // it is what distinguishes a fix from a re-read of the same one.
+    //
+    // THE TIME FLOOR IS A BACKSTOP, NOT THE MECHANISM. If telemetry ever burst-delivers three
+    // fixes in a few tens of ms, three fixes stops being three independent samples. The floor
+    // keeps a minimum wall-clock window under the count without reintroducing the drift, because
+    // it binds only in that abnormal case and never in normal operation (3 fixes at 3 Hz ~= 1 s).
+    // ==========================================================================================
     if (dist_m > d_engage) {
       if (fm_sep_over_since_ms == 0) {
-        fm_sep_over_since_ms = now;
-      } else if (!fm_sep_latched && (now - fm_sep_over_since_ms) >= kFmSepDwellMs) {
+        fm_sep_over_since_ms   = now;
+        fm_sep_fix_count       = 0;
+        fm_sep_last_fix_stamp  = rx_tx_gps_timestamp;
+      } else if (rx_tx_gps_timestamp != fm_sep_last_fix_stamp) {
+        fm_sep_last_fix_stamp  = rx_tx_gps_timestamp;
+        if (fm_sep_fix_count < 255) fm_sep_fix_count++;
+      }
+
+      if (!fm_sep_latched &&
+          fm_sep_fix_count >= kFmSepDwellFixes &&
+          (now - fm_sep_over_since_ms) >= kFmSepDwellFloorMs) {
         fm_sep_latched = true;
-        Serial.printf("FM [RX] separation latch SET: dist=%.1f m > D_engage=%.1f m sustained %lu ms\n",
-                      dist_m, d_engage, (unsigned long)kFmSepDwellMs);
+        Serial.printf("FM [RX] separation latch SET: dist=%.1f m > D_engage=%.1f m sustained "
+                      "%u rider fixes over %lu ms\n",
+                      dist_m, d_engage, (unsigned)fm_sep_fix_count,
+                      (unsigned long)(now - fm_sep_over_since_ms));
       }
     } else {
       fm_sep_over_since_ms = 0;   // fell back inside D_engage - the dwell restarts from scratch
+      fm_sep_fix_count     = 0;
     }
 
     // ---- A3: DIVERGENCE FAULT — the upper bound FM never had ----
@@ -3320,6 +3468,7 @@ void runFmLoop()
     // No trustworthy distance this tick (trigger released, GPS stale/rejected, link down).
     // Restart the dwell rather than carrying a half-finished proof across a data gap.
     fm_sep_over_since_ms = 0;
+    fm_sep_fix_count     = 0;   // DWELL-1: the fix count resets with the dwell
     // A3: same discipline for the divergence dwell — never judge divergence on data we do not trust.
     // F1: the closure baseline goes with it; a baseline must never outlive the dwell that set it.
     fm_diverge_since_ms     = 0;
@@ -3402,6 +3551,7 @@ void runFmLoop()
         fm_state                = FM_ARMED;
         fm_sep_latched          = false;   // deliberate: no silent resume, separation must re-prove
         fm_sep_over_since_ms    = 0;
+        fm_sep_fix_count     = 0;   // DWELL-1: the fix count resets with the dwell
         fm_steer_input_since_ms = 0;
         fm_rx_active            = false;
         rtm_steer_override      = 127;

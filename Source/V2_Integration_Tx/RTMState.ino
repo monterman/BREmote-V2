@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-08-26 - FM trigger release no longer disarms the TX. Once the rider has applied throttle, the selected 0xF2 mode declaration and its 30 s keepalive persist until explicit FM/F0 disarm, RTM preemption, an RX-reported fault or declaration loss. The existing fm_arm_window_s timeout still applies before the first throttle input. No config/packet/struct change; SW_VERSION stays 27.
 // V2.5-Evo - 2026-08-25 - Follow-Me F4 In Front added to both FM gesture cycles, starting-mode validation and display/meta declaration. TX still only selects and declares the mode; all forward-pacer geometry and safety gates live on the RX. The existing 0xF2 byte already carries the new value, so there is no packet or confStruct change and SW_VERSION stays 27.
 // V2.5-Evo - 2026-04-25 - P7: TX RTM and FM state machines.
 // RTM: left-hold gesture → arm → squeeze(s) → active → cooldown → idle
@@ -37,8 +38,8 @@
 //   prevent GPS dot blinking during blocking display holds.
 // V2.5-Evo - 2026-05-02 - Gate 3 throttle-release timeout reduced 10000→4000ms (10s was too long for tow buggy field use)
 // V2.5-Evo - 2026-05-10 - SAFETY FIX: zero rtm_thr_cap_tx during arm ceremony to prevent motor runaway (see setRtmArmed)
-// V2.5-Evo - 2026-07-20 - T1: Gate 1 throttle-release disarm is now the named constant
-//   kFmGate1ReleaseMs, raised 3000 -> 30000 ms (whip gap is 10-25 s off-trigger). Threshold and dead band unchanged.
+// V2.5-Evo - 2026-07-20 - T1: Gate 1 throttle-release disarm was raised 3000 -> 30000 ms.
+//   [SUPERSEDED 2026-08-26: trigger release no longer disarms FM on the TX.]
 // V2.5-Evo - 2026-07-20 - StopFeel: every STOP/DISARM confirm now fires Pattern 7 (one 400ms long pulse)
 //   instead of Pattern 4 (two 80ms taps), so arm and disarm feel different by touch. Changed sites:
 //   rtmDisengage() (RTM disengage), fmDisarm() (FM disarm), the runDoubleSqueezeArm() pre-arm "St"
@@ -56,9 +57,9 @@
 // V2.5-Evo - 2026-08-17 - StopBuzz REVISION (supersedes the classification in the entry above):
 //   the rule is now A PURE TIMEOUT IS SILENT, A FAULT BUZZES. On a wave the rider has no attention
 //   to spare for decoding a buzz, and the more buzzes there are the less each one is read, so
-//   Pattern 7 is spent on faults only. Moved to commanded = true (SILENT): FM Gate 1 (throttle
-//   released 30s) and RTM Gate 3 (throttle released 4s) - both can only fire BECAUSE the trigger
-//   was already released, so nothing steps under the rider and the display already says "St".
+//   Pattern 7 is spent on faults only. The then-existing FM release timeout and RTM Gate 3 were
+//   silent because both could only fire after the trigger was already released. [2026-08-26: the
+//   FM timeout has been removed; RTM Gate 3 is unchanged.]
 //   Still commanded = false (BUZZ): RTM Gate 2 (TX GPS lost) and the FM RX fault-stop - faults, not
 //   timers - plus RTM Gate 1 (max runtime), the one timer that can fire MID-SQUEEZE, where
 //   restoring rtm_thr_cap_tx to 255 un-clamps Throttle.ino and hands the rider raw manual throttle
@@ -493,25 +494,14 @@ void runRtmLoop()
 //
 // DISARM (any of):
 //   - Same combo again (LEFT tap + RIGHT hold 5s) — toggle
-//   - Throttle release for kFmGate1ReleaseMs (30s) after first throttle input — Gate 1
 //   - Arm window expires (fm_arm_window_s) before any throttle input — auto-disarm
+//   - RTM preemption, RX-reported FM fault, or F0 selection
 // ============================================================
-
-// ---- Gate 1 throttle-release disarm window ----
-// How long the throttle may stay fully released (thr_scaled < 5) after the rider has
-// ridden at least once before FM hard-disarms itself on the TX.
-// Units: milliseconds. Compile-time only — deliberately NOT a SPIFFS field (no confStruct change).
-// V2.5-Evo - 2026-07-20 - was a bare 3000UL literal. Raised 3000 -> 30000 ms: across a
-// whip the rider is fully off the trigger for 10-25 s, so the 3 s timer was disarming FM at
-// exactly the moment it was supposed to engage. 30 s is the hard-disarm backstop in the
-// escalation chain (RX latch-clear 2 s -> TX Gate 1 30 s -> RX mode-age 95 s).
-// The threshold (thr_scaled < 5) and the 5-10 dead band are UNCHANGED — timer only.
-static const unsigned long kFmGate1ReleaseMs = 30000UL;
 
 volatile bool        fm_armed         = false;  // FM arm state; RAM only, cleared on power cycle. Not static — extern'd by Display.ino (R5 bar)
                                                  // volatile: read by updateBargraphs() (task), written by loop()
 static uint8_t       last_fm_mode     = 1;      // last active FM mode (1-4); defaults F1; RAM only
-static unsigned long fm_arm_ms        = 0;      // time of arm, or time of last throttle >10 while armed
+static unsigned long fm_arm_ms        = 0;      // time of arm; used only until first throttle input
 static bool          fm_throttle_seen = false;  // becomes true once thr_scaled>10 after arming
 
 // Returns true if FM is currently armed; called by Hall.ino to intercept LEFT hold 2s
@@ -570,8 +560,7 @@ static void fmSilentDisarm()
 // V2.5-Evo - 2026-04-28 - ChgE: fm_last_sync_ms reset to 0 on disarm so keepalive timer clears.
 // INPUT: commanded — true = stay SILENT, false = fire the Pattern 7 STOP buzz. Since the 2026-08-17
 //        revision the test is "FAULT or TIMEOUT", not "did the rider press something": true for the
-//        deliberate disarms (toggle combo, magnet toggle) AND for the Gate 1 release backstop,
-//        which is a pure timeout; false only for the RX fault-stop.
+//        deliberate disarms (toggle combo, magnet toggle, F0); false only for the RX fault-stop.
 // OUTPUT: none. SIDE EFFECTS: fm_armed cleared, keepalive stopped, 0xF2/0 sent to RX, STOP buzz
 //        requested when uncommanded, and a BLOCKING 2s "St" display hold.
 static void fmDisarm(bool commanded)
@@ -584,11 +573,8 @@ static void fmDisarm(bool commanded)
   // display already says so. A buzz confirming your own action is noise.
   // V2.5-Evo - 2026-08-17 - StopBuzz: the caller now decides, on the rule A PURE TIMEOUT IS SILENT,
   // A FAULT BUZZES. Exactly ONE FM path is a fault — the RX fault-stop in runFmLoop(), where the RX
-  // gave up steering on its own and the rider has no way to know. The Gate 1 release backstop is a
-  // timer, and it expires in the worst possible place: mid-whip, where the rider is legitimately
-  // off the trigger for 10-25 s and is riding a wave with no attention to spare for decoding a
-  // buzz. Buzz saturation is the real failure mode here — the more buzzes there are, the less any
-  // one of them is read — so Pattern 7 is spent on faults only.
+  // gave up steering on its own and the rider has no way to know. Trigger release no longer calls
+  // this function at all; it leaves FM armed. Pattern 7 is therefore spent on RX faults only.
   if (!commanded) vib_stop_pending = true;   // Pattern 7: one long buzz = a FAULT stopped the system
 
   // Large-font stop confirm on FM disarm.
@@ -754,7 +740,7 @@ void cycleFmModeArmed()
 }
 
 // Called from loop() every ~110ms.
-// Handles arm-window auto-disarm and Gate 1 (throttle-release disarm).
+// Handles the pre-throttle arm-window auto-disarm, RX fault handoff and 0xF2 keepalive.
 void runFmLoop()
 {
   unsigned long now = millis();
@@ -777,7 +763,7 @@ void runFmLoop()
     // FAULT — and since the 2026-08-17 revision this is the ONLY FM path that buzzes. The RX
     // faulted and stopped following by itself: the rider asked for nothing, no timer explains it,
     // and he has no other way to learn the buggy is no longer steering for him. → commanded =
-    // false → Pattern 7. (The Gate 1 release backstop below is a timeout and is now silent.)
+  // false → Pattern 7. Trigger release itself never enters this path.
     fmDisarm(false);   // clears fm_armed + keepalive, sends 0xF2/0, "St" + Pattern 7 — TX & RX can't disagree
     return;
   }
@@ -801,30 +787,11 @@ void runFmLoop()
     }
   }
 
-  // Track throttle engagement; while riding, keep arm timer alive
+  // Once throttle has been used, the pre-throttle arm window no longer applies. Trigger release
+  // deliberately does not clear fm_armed or stop the 0xF2 keepalive.
   if (thr_scaled > 10)
   {
     fm_throttle_seen = true;
-    fm_arm_ms = now;  // reset — Gate 1 timer starts from last throttle input
-  }
-
-  // Gate 1: throttle released (thr_scaled < 5) continuously for kFmGate1ReleaseMs → disarm FM.
-  // The grace period allows the rider to be off the trigger — during a whip that gap is
-  // routinely 10-25 s — without losing the FM declaration they made during the tow.
-  if (fm_throttle_seen && thr_scaled < 5)
-  {
-    if (now - fm_arm_ms > kFmGate1ReleaseMs)
-    {
-      // SILENT — the owner's ruling, 2026-08-17. A pure timeout, not a fault: it is only reachable
-      // with the trigger released (thr_scaled < 5), which on this craft means the rider is mid-whip
-      // riding a wave, where a buzz is both unreadable and unhelpful. "The more buzzing there is,
-      // the less attention you pay to them" — so Pattern 7 never fires in the middle of a wave and
-      // stays reserved for faults. Same class as RTM Gate 3, which is also silent. Nothing steps
-      // under him either: FM never touches rtm_thr_cap_tx, and he is off the trigger, so the
-      // disarm changes no throttle he is currently commanding.
-      fmDisarm(true);
-      return;
-    }
   }
 
   // V2.5-Evo - 2026-04-28 - Change E: Send 0xF2 keepalive every 30s while FM is armed.

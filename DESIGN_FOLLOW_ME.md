@@ -41,15 +41,22 @@ This TX-side convention is canonical for ALL surfaces (TX display F0–F4, RX st
 ## 4. State machine (RX)
 
 ```
-FM_IDLE → FM_ARMED → FM_ACTIVE → (FM_ARMED | FM_IDLE)
+FM_IDLE → FM_ARMED → FM_ACTIVE ↔ FM_HOLD
+                              ↘ FM_STOPPING → FM_IDLE
 ```
 
 - **FM_IDLE:** `fm_mode_runtime` = 0 or unset. `0xFF` means no live TX declaration and never falls back to stored RX config.
 - **FM_ARMED:** mode 1–4 selected; all monitoring runs; throttle chain inactive until activation conditions met. Display/telemetry reflect armed state (`fm_status`).
-- **FM_ACTIVE:** engaged when ALL activation conditions hold (§5). Steering override on; throttle cap chain on (§7).
-- **FM_HOLD:** a deadman or geometric condition pauses control with cap 0. A 2 s continuous trigger release clears the separation proof and restores fully manual FM_ARMED.
+- **FM_ACTIVE:** engaged when ALL activation conditions hold (§5). FM steering is used while the rider's steering input is centred; throttle cap chain on (§7).
+- **FM_HOLD:** a deadman or geometric condition pauses control with cap 0. Trigger release stops the motor immediately and preserves the selected mode. The separation proof also remains unless fresh positions show the rider inside effective `D_engage` and below 2 km/h continuously for 2 s; squeezing again resumes through the engage ramp when the remaining gates and latch are valid.
 - **FM_STOPPING:** a sensor/link/heading or divergence fault ends the run, ramps the cap back to manual and requires a fresh TX declaration.
 - **Mutual exclusion with RTM:** unchanged (RTM arming silently disarms FM).
+
+While FM is ACTIVE, a manual steering deflection of at least 40 raw counts from centre takes steering
+priority immediately at the 100 Hz PWM layer. FM remains ACTIVE, its separation proof and throttle
+cap remain in force, and centring the input returns steering to FM. Divergence timing is parked while
+manual steering has priority because the resulting path is rider-commanded, not FM convergence.
+F4's independent physical front-corridor loss remains a safety HOLD and clears its front proof.
 
 ## 5. Activation / hold conditions (ALL required while FM_ACTIVE, checked every loop)
 
@@ -63,7 +70,8 @@ FM_IDLE → FM_ARMED → FM_ACTIVE → (FM_ARMED | FM_IDLE)
 8. Rider beyond engage distance: `dist > min_dist_m + followme_smoothing_band_m` to activate; deactivate (cap 0) only when `dist < min_dist_m` (Schmitt hysteresis — no flapping at the band edge).
 9. Rider moving: rider speed ≥ `foiler_low_speed_kmh`. Below it (rider down, idle, pumping slowly) → cap 0, hold FM_ARMED. Prevents maneuvering around a swimmer.
 
-Failure of 1–7 → cap 0 immediately (same posture as RTM gates). 8–9 are geometric holds, not faults.
+Failure of 1 → deadman HOLD with cap 0 and no disarm. Failures 2–7 are genuine faults and end the
+FM run through STOPPING. Conditions 8–9 are geometric holds, not faults.
 
 ## 6. Target-point computation (the new control code)
 
@@ -93,7 +101,12 @@ automatic path across the rider exists.
 | 4 | Align phase: heading error > threshold → ~5 % cap | Align-phase pattern |
 | 5 | Engage ramp: 0→cap over 3–4 s on every FM_ACTIVE entry | RTM ramp machinery |
 
-FM writes caps only. The human trigger remains the sole throttle source; trigger release stops the buggy through the unchanged base architecture.
+FM writes caps only. The human trigger remains the sole throttle source; trigger release stops the
+buggy through the unchanged base architecture without disarming FM. After FM has seen its first
+throttle input, the TX keeps its mode declaration alive until explicit F0/gesture disarm, RTM
+preemption, an RX-reported fault or declaration loss. The separation proof resets automatically
+after 2 s below 2 km/h while radial distance is inside effective `D_engage`; explicit disarm remains
+the deterministic session boundary before a new tow.
 
 ## 8. Parameters — zero new confStruct fields for F4
 
@@ -108,7 +121,7 @@ F4 reuses the existing FM parameters (no SW_VERSION bump):
 | `boogie_vmax_in_followme_kmh` | FM absolute speed ceiling; 0 = no absolute ceiling (F4 gap governor remains active) | 25 km/h (~15.5 mph) |
 | `foiler_low_speed_kmh` | rider-down gate | 8 km/h (~5 mph) |
 | `zone_angle_enter_deg` / `zone_angle_exit_deg` | side-zone Schmitt pair | 35° / 45° |
-| `fm_engage_dist_m` | separation/front-proof distance; 0 = auto, otherwise 8–50 m | 0 (auto) |
+| `fm_engage_dist_m` | separation/front-proof distance; 0 = auto, otherwise 8–50 m; same effective threshold resets a set latch after 2 s below 2 km/h inside it | 0 (auto) |
 
 Field-retunable to 4/10/20 m equivalents without reflash. At the next SW_VERSION bump (whenever one happens for other reasons), bake the proven values into `defaultConf` on both sides — a version bump resets stored config to `defaultConf` (verified against `ConfigService`/`SPIFFSEngine`; web-UI-only tuning does not survive bumps).
 
@@ -118,22 +131,24 @@ Deferred to a future bump (one field, shared with RTM): an RX-side autonomous-ru
 
 | Failure | Detection | Response |
 |---|---|---|
-| TX (rider) GPS loss | age > `tx_gps_stale_timeout_ms` | cap 0, hold FM_ARMED, re-engage via ramp on recovery |
+| TX (rider) GPS loss | age > `tx_gps_stale_timeout_ms` | cap 0, STOPPING → IDLE, re-arm required |
 | RX GPS loss | age > 6 s | same |
 | Heading source invalid | ladder empty | same |
-| LoRa loss | > `failsafe_time` | PWM pulses stop (existing failsafe), independent of FM |
+| LoRa loss | > `failsafe_time` | PWM pulses stop immediately; FM fault/disarm when control resumes |
 | Rider inside stop radius | dist < `min_dist_m` | cap 0 until beyond band |
 | Rider down/slow | speed < `foiler_low_speed_kmh` | cap 0, wait |
 | Rider course invalid | speed < ~5 km/h | F1–F3 degrade to hold-station; F4 stops in HOLD and clears its front proof |
 | F4 no longer provably ahead/in front cone | signed lead / angle Schmitt fails | cap 0, HOLD, clear latch; fresh front proof required |
 | RTM armed | 0xF2/0 silent disarm | FM off (existing) |
-| Trigger released | physical | motor stops (base architecture, untouched) |
+| Trigger released | physical | motor stops; FM stays in HOLD; latch persists unless the stationary-near reset also completes |
+| Rider stationary inside effective `D_engage` | radial distance < `D_engage` and filtered speed < 2 km/h for 2 s | clear latch; mode remains declared; fresh separation proof required |
+| Manual steering deflected ≥40 counts | raw RX steering input | rider steering wins; FM state/latch/cap preserved; centre to return |
 
 **Field-validation prerequisite:** FM and F4 use the same guarded heading ladder as RTM. Verify GPS COG, compass orientation and steering direction on the actual hardware, wheels up and then at controlled low speed, before any open-water use.
 
 ## 10. Test plan
 
-1. **Bench, motor off:** mode plumbing end-to-end; simulated coordinates through the target-point math; sign/offset verification against the Settings Visualizer; hysteresis boundaries; every §5 condition force-failed → cap 0.
+1. **Bench, motor off:** mode plumbing end-to-end; simulated coordinates through the target-point math; sign/offset verification against the Settings Visualizer; hysteresis boundaries; stationary-near latch reset requires fresh positions plus both thresholds continuously for 2 s; every §5 condition force-failed → cap 0.
 2. **Bench, wheels up:** cap chain order; engage ramp; align-phase cap; compass-under-load table (from Phase 0.5).
 3. **Controlled water, tethered:** mode 2 (Behind) only, walking-pace rider, hard-stop verification, GPS-denial stop.
 4. **Field, incremental:** mode 2 first at 6 m; then mode 1 (Near-Right); throttle hand ready to cut throughout; logging enabled (aux button) every run.

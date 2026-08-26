@@ -619,6 +619,15 @@ the front position or crossing `zone_angle_exit_deg` stops F4 in HOLD, clears th
 a fresh front proof. `boogie_vmax_in_followme_kmh=0` is allowed and removes the absolute vehicle-
 speed ceiling; F4's rider-relative front-gap governor remains active.
 
+While FM is following, a deliberate manual steering input temporarily takes steering priority
+without cancelling FM; the FM throttle cap and separation proof remain active, and centring the
+steering input returns control to FM. Releasing the trigger still stops the motor immediately, but
+now leaves FM armed in HOLD. Trigger release alone does not clear its separation proof; the proof is
+cleared only when fresh positions show the rider inside the effective engagement distance and below
+2 km/h continuously for 2 seconds. Squeezing again resumes FM when its geometry, sensor gates and
+latch are valid. Explicit F0/disarm remains the deterministic boundary before a new tow. Genuine
+faults and F4's physical loss of the front corridor keep their existing stop behavior.
+
 ### FM Proximity Warning
 
 If TX-to-RX distance drops below `fm_warn_distance_m` (default 150 m), TX fires a 2×Pattern-2 vibration burst warning (2 short × 2, with 300 ms gap).
@@ -628,6 +637,10 @@ If TX-to-RX distance drops below `fm_warn_distance_m` (default 150 m), TX fires 
 > **⚠️ Set this before your first Follow-Me session.**
 
 `fm_engage_dist_m` (RX web UI: **Follow-Me → FM Engage Distance**) is how far you have to get from the buggy before Follow-Me is allowed to engage for the first time. It is the tow-rope interlock: it exists so FM can never take over while you are still on the rope.
+
+The same effective engagement distance is also the latch-reset radius: once the rider is back inside
+it and the filtered rider speed remains below 2 km/h for 2 seconds, the separation latch is cleared.
+With `fm_engage_dist_m=0`, both SET and RESET use the automatic value including the 8 m floor.
 
 **Measure your own tow rope, then set this to at least one metre more than the rope length.** Example: a 20 ft (6.1 m) rope → set **8 m or more**. A longer rope needs a bigger number.
 

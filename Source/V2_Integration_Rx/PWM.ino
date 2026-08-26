@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-08-26 - FM manual steering takeover: a rider deflection outside kFmManualSteerDeadband immediately wins over the FM steering override without changing FM state, separation latch or throttle cap. Centring the stick hands steering back to FM. RTM behaviour is unchanged.
 // V2.5-Evo - 2026-07-19 - P3 FM: calcPWM() applies fm_throttle_cap (subtract-only, lowest cap wins) and lets fm_rx_active gate the steering override alongside rtm_rx_active. Throttle can still only be reduced, never added, and the thr_received>=25 steering gate is unchanged.
 // V2.5-Evo - 2026-07-19 - FM triage: calcPWM() records effective_steer into g_effective_steer (diagnostic observer only — no control-path change) so the logger can show the actuation gap
 // V2.5-Evo - 2026-04-30 - calcPWM() applies rtm_approach_cap for RTM approach decel zone
@@ -96,11 +97,20 @@ void calcPWM()
   // Gate 1 in RTMState.ino resets rtm_steer_override=127 on throttle release (Task 1A),
   // but that runs at 10Hz. This gate ensures the PWM task (100Hz) cannot apply a stale
   // bearing value during the up-to-100ms window before Gate 1 next fires.
-  // V2.5-Evo - 2026-07-19 - P3 FM: FM steers through this same gate. RTM and FM are mutually
-  // exclusive (runFmLoop() forces FM to IDLE whenever rtm_rx_active is set), so they safely share
-  // rtm_steer_override as the steering command. The thr_received>=25 condition is unchanged and
-  // still applies to both — autonomous steering never reaches the motors on a released trigger.
-  uint8_t effective_steer = ((rtm_rx_active || fm_rx_active) && usrConf.rtm_rx_override_steering && thr_received >= 25)
+  // V2.5-Evo - 2026-08-26 - FM manual steering takeover. A deliberate rider input wins immediately
+  // in this 100 Hz task, while FM remains ACTIVE in the 10 Hz state machine. This preserves the FM
+  // mode, separation latch and subtract-only throttle cap; centring the input seamlessly restores
+  // the latest automatic steering command. RTM deliberately keeps its existing behaviour.
+  int fm_manual_steer_dev = (int)steering_received - 127;
+  if (fm_manual_steer_dev < 0) fm_manual_steer_dev = -fm_manual_steer_dev;
+  bool fm_manual_steer = fm_rx_active &&
+                         (fm_manual_steer_dev >= (int)kFmManualSteerDeadband);
+  bool automatic_steer = rtm_rx_active || (fm_rx_active && !fm_manual_steer);
+
+  // Autonomous steering never reaches the motors on a released trigger. When FM manual takeover
+  // is selected, steering_received is used below even though FM remains active in the background.
+  uint8_t effective_steer = (automatic_steer && usrConf.rtm_rx_override_steering &&
+                             thr_received >= 25)
                             ? (uint8_t)rtm_steer_override
                             : steering_received;
 

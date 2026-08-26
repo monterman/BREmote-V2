@@ -108,7 +108,8 @@ your direction of travel):
 F4 never performs an autonomous overtake. Position the buggy ahead manually first. It engages only
 after the along-course lead exceeds `fm_engage_dist_m`, stays inside the configured front cone and
 remains proven for 2 seconds. If it ceases to be provably ahead, it stops in HOLD, clears the proof
-and waits for the trigger to be released for 2 seconds before returning full manual control.
+and requires a fresh front proof. Trigger release by itself does not clear a still-valid proof; the
+general stationary-near reset can clear it after 2 seconds below 2 km/h inside the engagement radius.
 
 For F1/F3, the exact angle is set by **`near_diag_offset_deg`** — the number of degrees **off
 straight-behind**. Near-Right and Near-Left are mirror images of it; F4 does not use this offset:
@@ -135,7 +136,9 @@ Not every interruption is the same. Follow-Me tells them apart:
 
 | Situation | What it is | Follow-Me does | Re-arm needed? |
 |---|---|---|---|
-| **You release the trigger** | deadman | motor stops instantly | no |
+| **You release the trigger** | deadman | motor stops instantly; FM stays armed in HOLD; proof remains unless the stationary-near reset also completes | no |
+| **You stop inside the engagement distance** | latch reset | after 2 s below 2 km/h, the separation proof is cleared; fresh separation required | no mode re-arm, but new separation proof |
+| **You steer manually while following** | temporary takeover | your steering wins; FM state and throttle cap stay active; centre the input to return steering to FM | no |
 | **You fall / slow down / get too close** | a **HOLD** (normal) | pauses (buggy stops), **stays armed**, resumes on its own at your next separation | **no** |
 | **GPS, compass, or radio drops out** | a **FAULT** (something broke) | **stops** → shows `St`, throttle returns, must **re-arm** | **yes** |
 
@@ -197,13 +200,20 @@ fault while you're holding the trigger. A stop after you've already let go just 
 - **Automatic:** arming RTM disarms FM; the arm expires after `fm_arm_window_s` with no
   throttle; a fault ends it.
 
+Trigger release is not a disarm after FM has seen throttle. The proof resets automatically if fresh
+positions keep you inside the effective engagement distance and below 2 km/h for 2 seconds. Before
+rigging a new tow, explicit toggle/magnet/F0 disarm remains the deterministic reset.
+
 ---
 
-## 10. Not yet — planned for later
+## 10. Manual steering while following
 
-- **Steer-adjust while following** — nudge the buggy's position with the toggle *without*
-  canceling Follow-Me (today, steering while following cancels it for safety). Rides the
-  existing steer-blend setting; enabled after field testing.
+A deliberate steering deflection temporarily overrides FM steering without cancelling the mode.
+FM continues applying its throttle cap and calculating its target; centring the steering input
+hands steering back to FM. This is a direct takeover, not continuous target-angle repositioning.
+
+## 11. Not yet — planned for later
+
 - **Continuous angle repositioning** — steer to walk the buggy around your radius to any
   angle, live. Reserved as a v2 feature (`fm_steer_reposition_en`), off by default.
 
@@ -214,7 +224,7 @@ fault while you're holding the trigger. A stop after you've already let go just 
 1. The buggy moves only while you hold the throttle trigger.
 2. Follow-Me only steers and only reduces throttle — never adds.
 3. Releasing the trigger stops the buggy at the hardware level, in every mode.
-4. Manual control always works, even if GPS / compass / radio fail.
+4. Manual steering has priority while deliberately deflected; genuine GPS / compass / radio faults still end FM.
 5. Follow-Me and Return-to-Me are mutually exclusive — arming one disarms the other.
 
 *See `BUGGY_FOIL_DOMAIN.md` for the domain model and `DESIGN_FOLLOW_ME.md` for the full

@@ -1083,9 +1083,8 @@ void vibrationTask(void *parameter) {
       if (current_vib_pattern == 6) current_vib_pattern = 0;
     }
     // V2.5-Evo - 2026-07-20 - StopFeel: Pattern 7 — ONE long 750ms pulse = the STOP confirm.
-    // V2.5-Evo - 2026-08-17 - Trigger list corrected. It previously listed RTM Gate 3 and the FM
-    // Gate 1 release backstop, which the same batch had just made SILENT — the comment described
-    // behaviour that no longer existed.
+    // V2.5-Evo - 2026-08-17 - Trigger list corrected. It previously listed release timeouts that
+    // were silent. [2026-08-26: the FM release timeout was removed entirely; RTM is unchanged.]
     // THE RULE THAT DECIDES: A PURE TIMEOUT IS SILENT, A FAULT BUZZES. Mid-wave the rider has no
     // attention to spare for decoding a buzz, and the more buzzes there are the less each one is
     // read — so Pattern 7 is spent only where it tells him something he cannot otherwise know.
@@ -1098,8 +1097,7 @@ void vibrationTask(void *parameter) {
     //   - The two arm REFUSALS — RTM pre-arm distance reject, FM fundamental reject — where the
     //     rider would otherwise walk away believing the mode is armed when it is not.
     // DOES NOT FIRE ON:
-    //   - RTM Gate 3 (throttle released 4s) or the FM Gate 1 release backstop (released 30s). Both
-    //     are pure timeouts his own released trigger caused, and "St" already shows it.
+    //   - RTM Gate 3 (throttle released 4s). FM no longer has a trigger-release disarm path.
     //   - Any deliberate disarm — gesture disarm, magnet-toggle disarm, steer-exit, F0 select.
     // Deliberately a single SUSTAINED buzz so the rider can tell "stopped/off" from the arm
     // confirm by feel alone while foiling. Distinct from every other pattern:

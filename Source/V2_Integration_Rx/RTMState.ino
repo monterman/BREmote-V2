@@ -3272,6 +3272,37 @@ void runFmLoop()
       fm_latch_reset_since_ms    = 0;
       stationary_latch_cleared   = true;
       stationary_reset_dist_m    = dist_m;
+
+      // ======================================================================================
+      // V2.5-Evo - 2026-08-26 - HOLD-ESCAPE. Standing down must give the throttle back.
+      //
+      // Without the two lines below this reset is a TRAP, and the trap is created by the reset
+      // itself. FM_HOLD sets fm_throttle_cap = 0. The only branch that restores it to 255
+      // requires was_engaged == false, and was_engaged latches true for the whole run once
+      // FM_ACTIVE or FM_HOLD has been entered. The single remaining escape was the throttle-
+      // release clear, and that block was removed in this same commit series.
+      //
+      // Worse, can_be_active REQUIRES fm_sep_latched. So clearing the latch here - the very
+      // thing this reset exists to do - GUARANTEES FM can never re-enter FM_ACTIVE and never
+      // reach a branch that raises the cap. State stays FM_HOLD, cap stays 0, permanently.
+      //
+      // Field consequence: rider comes back to the buggy, stops, two seconds pass, and the
+      // motor is dead with no manual throttle. Offshore is worse - fall at 25 m and the reset
+      // cannot fire (too far) while re-engagement needs foiling speed a swimmer cannot make, so
+      // it sits in HOLD indefinitely. Only the TX disarm gesture recovers it.
+      //
+      // The reset already means "the rider has stopped nearby, stand down". Standing down has to
+      // include handing the throttle back, or it is not standing down. FM_ARMED is the correct
+      // resting state: declaration held, separation must be re-proven before it engages again.
+      //
+      // Subtract-only is untouched: cap 255 is "no cap", and the deadman still holds the motor
+      // at PWM_min whenever the trigger is released.
+      // ======================================================================================
+      if (fm_state == FM_HOLD || fm_state == FM_ACTIVE) {
+        fm_state        = FM_ARMED;
+        fm_throttle_cap = 255;
+        Serial.println("FM [RX] stationary reset: standing down to ARMED, manual throttle restored");
+      }
     }
   } else {
     fm_latch_reset_since_ms = 0;

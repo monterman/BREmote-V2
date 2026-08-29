@@ -493,15 +493,18 @@ static bool gpsPhaseATxCheck(double cur_lat, double cur_lng, unsigned long now_m
   //
   // Concretely: the TX transmits at 2 Hz off a 1 Hz GPS, so consecutive packets alternate REAL MOVE
   // / REPEATED POSITION. On a move packet the implied speed is 2v; on the repeat it is 0. The old
-  // and RAN it on every packet carrying an artifact - judging a synthetic 2v -> 0 step that no
+  // guard `tx_pa_prev_kmh > 0.0f` was false after a repeat, so the check SKIPPED every packet
+  // carrying information and RAN it on every packet carrying an artifact - judging a synthetic 2v -> 0 step that no
   // rider ever performed. It crossed gps_max_accel_g (3.0) at a rider speed of 26.5 km/h at 2 Hz,
-  // and at the 3.0 Hz rate actually measured in the beta logs it tripped at 11.8 km/h - BELOW the
-  // owner's own foiler_low_speed_kmh of 8 plus any realistic riding speed. It would have started
-  // rejecting good rider fixes during ordinary use.
+  // and at the 3.0 Hz rate actually measured in the beta logs it tripped at 11.8 km/h - which is
+  // WELL INSIDE ordinary riding speed, and barely above the 10 km/h a rider must already exceed
+  // for Follow-Me to engage at all. It would have rejected good rider fixes during normal use,
+  // in exactly the speed band where the separation dwell is trying to accumulate them.
   //
   // The teleport check alone catches the observed spikes with 3.7x margin (worst logged spike
-  // implies 301 km/h against an 80 km/h limit), and it needs only ONE position difference, so the
-  // repeat-packet pattern makes it read 0 km/h - trivially passing, never a false reject.
+  // implies 301 km/h against an 80 km/h limit), and it needs only ONE position difference. Since
+  // R4-1 the caller does not even invoke this function on a re-broadcast, so the alternating
+  // pattern never reaches it and the dt it measures is always between two DISTINCT positions.
   bool bad = (implied_kmh > usrConf.gps_max_teleport_kmh);
 
   if (bad) {
@@ -588,12 +591,19 @@ static void processMetaGpsPacket(uint8_t *pkt)
     tx_seq_prev_lat_ud = lat_ud;
     tx_seq_prev_lng_ud = lng_ud;
     tx_seq_seeded      = true;
-    rx_tx_gps_fix_seq++;          // publish: one increment per distinct rider position
   }
 
   rx_tx_gps_lat       = cand_lat;
   rx_tx_gps_lng       = cand_lng;
   rx_tx_gps_timestamp = now;
+
+  // REX S-1: the counter is published LAST, after the position it advertises. Bumping it before
+  // the writes meant a loop-task read landing in between saw "a new fix is available" with the
+  // PREVIOUS position still in place. Harmless for today's only consumer, which reads the counter
+  // and nothing else - but this is now the SSOT for "is there a new rider fix", and the next
+  // consumer will read lat/lng on the strength of it. Same publish-last discipline the timestamp
+  // already follows two lines up, for the same reason.
+  if (is_new_fix) rx_tx_gps_fix_seq++;
 
   #ifdef DEBUG_RX
   Serial.printf("META GPS received: lat=%.6f lng=%.6f\n",

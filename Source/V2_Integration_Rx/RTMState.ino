@@ -2455,6 +2455,12 @@ void runRtmLoop()
   {
     rtm_rx_active         = false;
     rtm_rx_emergency_stop = false;
+    // REX R-1, third exit. Benign on its own - only a mid-session toggle of rtm_rx_enabled can
+    // strand the timer here, and the Gate 1 reset clears it on the next trigger release anyway.
+    // Added so the invariant is "zero whenever RTM is not actively running", without exception,
+    // rather than "zero on the two paths that matter". Reasoning about the second kind is what
+    // produced R-1 in the first place.
+    rtm_bootstrap_since_ms = 0;
     return;
   }
 
@@ -2499,12 +2505,17 @@ void runRtmLoop()
     // Gate 9: stop distance reached — clean disengagement, rtm_rx_active set false, no emergency stop.
     // Gates 2-8: safety failure — rtm_rx_emergency_stop=true, calcPWM() forces throttle to 0.
     //
-    // REX R-1, second half. A failed gate is the common case, not the exotic one — Gate 1 fires
-    // every time the rider lets go of the trigger. Resetting here is what makes each fresh squeeze
-    // get a fresh bootstrap window instead of inheriting a clock that started on the first attempt
-    // and expired seconds later. A rider feathering the trigger while trying to get a COG-only
+    // REX R-1, second half — SCOPED TO GATE 1 PER REX B-3. Resetting here is what makes each
+    // fresh squeeze get a fresh bootstrap window instead of inheriting a clock that started on the
+    // first attempt and expired seconds later; a rider feathering the trigger to get a COG-only
     // buggy moving would otherwise burn the window on their first touch and never see it again.
-    rtm_bootstrap_since_ms = 0;
+    //
+    // But it must fire for Gate 1 ONLY. Gates 2-8 are FAULTS - GPS rejected, Phase B failed, TX or
+    // RX fix stale, no heading, LoRa lost - and a fault must not refresh a "stop trying" budget. A
+    // buggy flapping in and out of an intermittent LoRa or gps_rejected failure would otherwise be
+    // handed a fresh 3 s window on every flap, indefinitely, while the fault was still present.
+    // Gate 1 is the honest signal that the RIDER ended the attempt, and it is the only one.
+    if (thr_received < 25) rtm_bootstrap_since_ms = 0;
     return;
   }
 
@@ -2578,9 +2589,17 @@ void runRtmLoop()
       // Same freshness discipline as the telemetry distance a few screens up: a stale rider fix
       // must read as "unknown" (-1), never as "far away", or the abort would be skipped on exactly
       // the data we cannot trust.
+      // REX B-1: this window is DERIVED from tx_gps_stale_timeout_ms, not hardcoded. It used to
+      // be a flat 5000 ms sitting inside Gate 4, which enforces the user-configurable value and
+      // accepts 0-65535. At the 3000 default the gate binds first and this test is redundant - but
+      // set the timeout ABOVE 5000 and the relationship inverts: Gate 4 admits a 10 s old rider
+      // fix, this window calls it unknown, R-5's abort pins 13/255, and BOOTSTRAP-1 is disabled
+      // permanently for that rider. A hardcoded inner window inside a configurable outer gate is
+      // a regression waiting for someone to turn a knob. Gate 4 already vetted this value; a
+      // second, stricter, hardcoded opinion buys nothing.
       float rider_dist = -1.0f;
       if (gps_last_lat != 0.0 && rx_tx_gps_timestamp > 0 &&
-          (millis() - rx_tx_gps_timestamp) < 5000UL) {
+          (millis() - rx_tx_gps_timestamp) < (uint32_t)usrConf.tx_gps_stale_timeout_ms) {
         rider_dist = (float)TinyGPSPlus::distanceBetween(
             gps_last_lat, gps_last_lng, rx_tx_gps_lat, rx_tx_gps_lng);
       }
@@ -2610,6 +2629,20 @@ void runRtmLoop()
       if (too_close || timed_out) {
         const uint8_t kAlignCap = 13;                      // unchanged fallback
         if (rtm_approach_cap > kAlignCap) rtm_approach_cap = kAlignCap;
+
+        // REX B-2: name the reason. This fallback returns the buggy to precisely the behaviour a
+        // beta tester reported as "did not start any steering at all", and it took a full trace to
+        // diagnose the first time. Silent is not acceptable for a path that reproduces a known
+        // symptom. Rate-limited so it cannot flood the log or hold the loop.
+        static unsigned long boot_decline_msg_ms = 0;
+        if (boot_decline_msg_ms == 0 || (millis() - boot_decline_msg_ms) >= 3000UL) {
+          boot_decline_msg_ms = millis();
+          Serial.printf("RTM [BOOT] heading bootstrap declined (%s) - holding align cap %u/255. "
+                        "No heading, so the buggy may only crawl until COG appears.\n",
+                        dist_unknown ? "rider position unknown" :
+                        (too_close   ? "rider inside the abort radius" : "3 s timeout, COG never arrived"),
+                        (unsigned)kAlignCap);
+        }
       } else {
         float speed_frac = gps_last_speed_kmh / kBootstrapSpeedKmh;
         if (speed_frac > 1.0f) speed_frac = 1.0f;
@@ -3588,15 +3621,20 @@ void runFmLoop()
     // keeps a minimum wall-clock window under the count without reintroducing the drift, because
     // it binds only in that abnormal case and never in normal operation (3 fixes at 3 Hz ~= 1 s).
     // ==========================================================================================
+    // REX S-2: ONE read of the volatile, reused for both the compare and the store. Reading it
+    // twice let the radio task increment in between, so fm_sep_last_seq absorbed two increments
+    // and a fix was silently skipped. Under-counts, so the safe direction, but free to remove.
+    const uint32_t seq_now = rx_tx_gps_fix_seq;
+
     if (dist_m > d_engage) {
       if (fm_sep_over_since_ms == 0) {
         fm_sep_over_since_ms   = now;
         fm_sep_fix_count       = 0;
-        fm_sep_last_seq        = rx_tx_gps_fix_seq;
-      } else if (rx_tx_gps_fix_seq != fm_sep_last_seq) {
+        fm_sep_last_seq        = seq_now;
+      } else if (seq_now != fm_sep_last_seq) {
         // R-4: a genuinely new rider position, not a re-broadcast of the last one. The producer
         // decides that once, on the raw int32 microdegrees off the wire, and publishes it here.
-        fm_sep_last_seq        = rx_tx_gps_fix_seq;
+        fm_sep_last_seq        = seq_now;
         if (fm_sep_fix_count < 255) fm_sep_fix_count++;
       }
 

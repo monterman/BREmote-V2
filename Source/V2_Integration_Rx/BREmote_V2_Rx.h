@@ -736,6 +736,22 @@ double        rx_tx_gps_lat       = 0.0;  // TX latitude (degrees, WGS84)
 double        rx_tx_gps_lng       = 0.0;  // TX longitude (degrees, WGS84)
 unsigned long rx_tx_gps_timestamp = 0;    // millis() when last meta-packet received; 0 = never
 
+// V2.5-Evo - 2026-08-29 - REX R4-1. Bumped once per DISTINCT rider position by
+// processMetaGpsPacket(), and read by everything downstream that needs to tell a genuinely new fix
+// from a re-broadcast. The TX transmits at 2 Hz off a 1 Hz GPS (3.0 Hz measured against 1 Hz in
+// the beta logs), so roughly every other meta packet repeats a position already seen.
+//
+// WHY A COUNTER RATHER THAN COMPARING rx_tx_gps_lat/lng AT EACH CONSUMER. Comparing the position
+// is correct arithmetic and WRONG CONCURRENCY: those are doubles, written on the radio task and
+// read on the loop task, and a double is TWO 32-bit stores on RV32. A read preempted between them
+// sees a half-written value, counts it as a new fix, then counts the complete value as another on
+// the next tick - two phantom fixes injected into an interlock whose entire job is to require
+// three. A uint32_t is a single naturally-aligned access on this core and cannot tear.
+//
+// volatile because the writer is the radio task and the reader is the loop task - the same
+// discipline CLAUDE.md documents for logging_active.
+volatile uint32_t rx_tx_gps_fix_seq = 0;   // one increment per distinct rider position
+
 // V2.5-Evo - 2026-04-25 - P7 RTM/FM runtime state (set by Radio.ino meta-packet handlers)
 // rtm_rx_active: true = TX signalled RTM active; safety gates in RTMState.ino may override.
 // rtm_rx_emergency_stop: true = safety gate failed; calcPWM() forces throttle to 0.

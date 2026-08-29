@@ -1711,11 +1711,40 @@ static bool          fm_sep_latched      = false;
 // Counts the dwell that defeats single-fix GPS spikes.
 static unsigned long rtm_bootstrap_since_ms = 0;   // BOOTSTRAP-1: 0 = not bootstrapping
 static unsigned long fm_sep_over_since_ms = 0;
-// DWELL-1 companions. fm_sep_fix_count counts NEW rider positions (not loop ticks) since the
-// distance first exceeded D_engage; fm_sep_last_fix_stamp is how a new one is distinguished
-// from a re-read of the same one. Both reset wherever fm_sep_over_since_ms resets.
+// DWELL-1 companions. fm_sep_fix_count counts NEW RIDER POSITIONS - not loop ticks, and (since
+// R-4) not packet arrivals either - accumulated while the distance has been beyond D_engage.
+// fm_sep_last_seq is the value of rx_tx_gps_fix_seq at the last counted fix; that counter is
+// bumped once per DISTINCT rider position by processMetaGpsPacket(), so comparing against it is
+// what makes a genuinely new fix distinguishable from a re-broadcast of the previous one.
+//
+// R-4, FOUND BY REX: the discriminator used to be rx_tx_gps_timestamp, which is stamped with
+// millis() at PACKET RECEIPT (see processMetaGpsPacket), not at fix acquisition. The TX transmits
+// its position at 2 Hz off a GPS producing 1 Hz fixes - and the beta logs measure 3.0 Hz against a
+// 1 Hz module - so roughly every OTHER packet re-broadcasts a position the RX has already seen.
+// Every one of those bumped the counter. The separation dwell therefore latched on as few as TWO
+// genuine fixes (sometimes one), while its comment, its constant name and the public claim made
+// about it all said three. The interlock that keeps Follow-Me off the tow rope was measurably
+// weaker than it was documented to be.
+//
+// The sequence counter cannot be fooled by the rebroadcast, needs no fix-time timestamp on the
+// wire, and degrades the safe way: a stationary rider stops accumulating fixes, so the dwell
+// simply does not complete.
+//
+// REX R4-1 - WHY A COUNTER AND NOT THE POSITION ITSELF. The first version of this fix compared
+// rx_tx_gps_lat/lng directly. Correct arithmetic, wrong concurrency: those are doubles written on
+// the radio task and read here on the loop task, and a double is two 32-bit stores on RV32. A read
+// preempted between them counts the torn value as a new fix AND counts the complete value as
+// another one on the next tick - two phantom fixes in a three-fix interlock. A uint32_t is a
+// single aligned access and cannot tear.
+//
+// REX R4-2 - RESET DISCIPLINE, STATED ACCURATELY. fm_sep_last_seq is NOT reset anywhere, unlike
+// its two companions. It does not need to be, and that is worth spelling out because the invariant
+// is not local: the only read of it sits in an `else if` reachable only while
+// fm_sep_over_since_ms != 0, and every one of the five reset sites zeroes that. So the next pass
+// after any reset takes the `== 0` branch and RE-SEEDS the counter before it can ever be read.
+// Seeding on entry is deliberate - five fewer places to forget.
 static uint8_t       fm_sep_fix_count     = 0;
-static uint32_t      fm_sep_last_fix_stamp = 0;
+static uint32_t      fm_sep_last_seq      = 0;
 
 // millis() when thr_received first dropped below 25; 0 = throttle currently held.
 // Counts the kFmThrReleaseClearMs window that clears the latch at the end of a run.
@@ -2451,6 +2480,14 @@ void runRtmLoop()
       g_heading_error_dx10      = 0x7FFF;
       g_d_error_dx10            = 0x7FFF;
     }
+    // REX R-1: the bootstrap window closes when RTM is not running. Without this the 3 s timer
+    // was started once and never reset on any path that leaves RTM idle, so it was effectively
+    // ONE-SHOT PER BOOT: the first heading-blind engagement consumed the whole window, and every
+    // later attempt in that session found it already expired and fell straight back to the 13/255
+    // align cap - the exact deadlock the bootstrap was written to break. It only ever reset in
+    // the two heading-VALID branches, which by definition are the branches that do not need it.
+    rtm_bootstrap_since_ms = 0;
+
     // telemetry.rtm_distance already set to 0xFF by the block above (inactive path)
     return;
   }
@@ -2461,6 +2498,13 @@ void runRtmLoop()
     // Gate 1: throttle released — no emergency stop, motor already at 0.
     // Gate 9: stop distance reached — clean disengagement, rtm_rx_active set false, no emergency stop.
     // Gates 2-8: safety failure — rtm_rx_emergency_stop=true, calcPWM() forces throttle to 0.
+    //
+    // REX R-1, second half. A failed gate is the common case, not the exotic one — Gate 1 fires
+    // every time the rider lets go of the trigger. Resetting here is what makes each fresh squeeze
+    // get a fresh bootstrap window instead of inheriting a clock that started on the first attempt
+    // and expired seconds later. A rider feathering the trigger while trying to get a COG-only
+    // buggy moving would otherwise burn the window on their first touch and never see it again.
+    rtm_bootstrap_since_ms = 0;
     return;
   }
 
@@ -2543,8 +2587,25 @@ void runRtmLoop()
 
       if (rtm_bootstrap_since_ms == 0) rtm_bootstrap_since_ms = millis();
 
-      const bool too_close = (rider_dist >= 0.0f && rider_dist < abort_radius);
-      const bool timed_out = (millis() - rtm_bootstrap_since_ms) >= kBootstrapMaxMs;
+      // REX R-5. THIS TEST USED TO CONTRADICT THE COMMENT DIRECTLY ABOVE IT. That comment says a
+      // stale rider fix "must read as unknown (-1), never as far away, or the abort would be
+      // skipped on exactly the data we cannot trust" - and then the test was
+      // `rider_dist >= 0.0f && rider_dist < abort_radius`, which evaluates FALSE when rider_dist
+      // is -1. Unknown therefore fell through to the permissive branch and the bootstrap ran.
+      // "We do not know where the rider is" was being treated as "the rider is far enough away".
+      //
+      // It is the wrong default here more than anywhere else in the file, because the bootstrap
+      // is the ONE state in which the buggy moves while heading-BLIND: steering is pinned at 127
+      // and it travels in a straight line it cannot aim. The single thing standing between that
+      // and the rider is this radius, and it was being skipped precisely when the rider's
+      // position could not be trusted.
+      //
+      // Unknown now aborts to the align cap, which is the pre-bootstrap behaviour - conservative,
+      // not novel. The cost is that a bootstrap will not start until one fresh rider fix has
+      // arrived, which is the correct price.
+      const bool dist_unknown = (rider_dist < 0.0f);
+      const bool too_close    = dist_unknown || (rider_dist < abort_radius);
+      const bool timed_out    = (millis() - rtm_bootstrap_since_ms) >= kBootstrapMaxMs;
 
       if (too_close || timed_out) {
         const uint8_t kAlignCap = 13;                      // unchanged fallback
@@ -3517,8 +3578,10 @@ void runFmLoop()
     //
     // COUNTING FIXES, NOT LOOP TICKS. runFmLoop() runs at 10 Hz while rider position arrives at
     // ~3 Hz, so a tick counter would reach three in 300 ms off a SINGLE fix and defeat the guard
-    // entirely. rx_tx_gps_timestamp changes only when a genuinely new rider position arrives, so
-    // it is what distinguishes a fix from a re-read of the same one.
+    // entirely. REX R4-3: this paragraph used to claim rx_tx_gps_timestamp changes only when a
+    // genuinely new rider position arrives. IT DOES NOT - it is stamped with millis() at PACKET
+    // RECEIPT, so every re-broadcast moved it and every re-broadcast was counted as a fix. The
+    // discriminator is now rx_tx_gps_fix_seq, bumped once per DISTINCT position by the producer.
     //
     // THE TIME FLOOR IS A BACKSTOP, NOT THE MECHANISM. If telemetry ever burst-delivers three
     // fixes in a few tens of ms, three fixes stops being three independent samples. The floor
@@ -3529,9 +3592,11 @@ void runFmLoop()
       if (fm_sep_over_since_ms == 0) {
         fm_sep_over_since_ms   = now;
         fm_sep_fix_count       = 0;
-        fm_sep_last_fix_stamp  = rx_tx_gps_timestamp;
-      } else if (rx_tx_gps_timestamp != fm_sep_last_fix_stamp) {
-        fm_sep_last_fix_stamp  = rx_tx_gps_timestamp;
+        fm_sep_last_seq        = rx_tx_gps_fix_seq;
+      } else if (rx_tx_gps_fix_seq != fm_sep_last_seq) {
+        // R-4: a genuinely new rider position, not a re-broadcast of the last one. The producer
+        // decides that once, on the raw int32 microdegrees off the wire, and publishes it here.
+        fm_sep_last_seq        = rx_tx_gps_fix_seq;
         if (fm_sep_fix_count < 255) fm_sep_fix_count++;
       }
 

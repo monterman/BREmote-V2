@@ -448,6 +448,15 @@ static uint8_t       tx_pa_reject_run = 0;
 
 uint16_t gps_tx_phase_a_rejects = 0;   // lifetime counter, surfaced by ?diag
 
+
+// Previously accepted rider position, kept as the RAW int32 microdegrees off the wire rather than
+// as reconstructed doubles: integer comparison is exact by construction and needs no reasoning
+// about float representation. These feed rx_tx_gps_fix_seq, which is defined and fully explained
+// in BREmote_V2_Rx.h beside the other rx_tx_gps_* globals.
+static int32_t tx_seq_prev_lat_ud = 0;
+static int32_t tx_seq_prev_lng_ud = 0;
+static bool    tx_seq_seeded      = false;
+
 static bool gpsPhaseATxCheck(double cur_lat, double cur_lng, unsigned long now_ms)
 {
   // No baseline yet - nothing to compare against. Seed and accept.
@@ -555,12 +564,31 @@ static void processMetaGpsPacket(uint8_t *pkt)
   double   cand_lng = (double)lng_ud / 1e6;
   unsigned long now = millis();
 
+  // REX R4-1 / Q6: is this a genuinely NEW position, or the TX re-broadcasting the last one?
+  // The TX transmits at 2 Hz off a 1 Hz GPS (3.0 Hz measured against 1 Hz in the beta logs), so
+  // roughly every other packet carries a position the RX has already seen. Compared on the RAW
+  // integers, which is exact.
+  const bool is_new_fix = (!tx_seq_seeded) ||
+                          (lat_ud != tx_seq_prev_lat_ud) || (lng_ud != tx_seq_prev_lng_ud);
+
   // PHASE-A-TX-1: judge the rider's position before it becomes the number every FM and RTM
   // distance is computed from. On rejection NOTHING is written - not the position and not the
   // timestamp - so the previous good fix simply ages, exactly as it does when a packet is lost.
   // That is the honest representation: we do not have a fresh rider position this tick.
-  if (!gpsPhaseATxCheck(cand_lat, cand_lng, now)) {
-    return;
+  //
+  // A RE-BROADCAST IS NOT JUDGED AT ALL. It carries no new evidence, so evaluating it would only
+  // advance the Phase A baseline clock and shorten the dt seen by the next genuine fix - which
+  // inflates that fix's implied speed and risks rejecting good data. Skipping keeps the teleport
+  // check measuring between DISTINCT positions, which is the only interval where speed means
+  // anything.
+  if (is_new_fix) {
+    if (!gpsPhaseATxCheck(cand_lat, cand_lng, now)) {
+      return;
+    }
+    tx_seq_prev_lat_ud = lat_ud;
+    tx_seq_prev_lng_ud = lng_ud;
+    tx_seq_seeded      = true;
+    rx_tx_gps_fix_seq++;          // publish: one increment per distinct rider position
   }
 
   rx_tx_gps_lat       = cand_lat;

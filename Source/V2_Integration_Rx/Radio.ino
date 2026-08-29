@@ -386,6 +386,144 @@ static bool gps_meta_pending = false;
 //   On success: updates rx_tx_gps_lat, rx_tx_gps_lng, rx_tx_gps_timestamp.
 //   Always: prints diagnostics to Serial.
 // ============================================================
+// ============================================================
+// gpsPhaseATxCheck - Phase A validation for the RIDER's position
+// ============================================================
+// V2.5-Evo - 2026-08-27 - PHASE-A-TX-1.
+//
+// WHAT WAS MISSING, and it was a gap in a feature that was supposed to be symmetric. Phase A
+// anti-spoofing (HDOP / teleport / acceleration) has existed since 2026-04-22, but
+// gpsPhaseACheck() has exactly ONE call site - GPS.ino, on the RX's OWN GPS. The rider's
+// position arrives over the radio and was written straight into rx_tx_gps_lat/lng with no
+// plausibility test of any kind. Phase B cross-checks the two tracks and the FM controller
+// EMA-filters the rider, but nothing ever asked "could a human have moved that far in that
+// time?" about the very position every Follow-Me and RTM distance is computed from.
+//
+// IT IS NOT THEORETICAL. Beta tester heiguga/robertzach's 37-minute level-4 log contains nine
+// position spikes; the worst moves the rider 24 -> 52 m in 0.34 s, an implied 301 km/h. The
+// teleport limit is usrConf.gps_max_teleport_kmh, default 80. That spike is 3.7x over it and
+// would have been rejected outright.
+//
+// WHY IT COSTS NOTHING IN TRACKING LATENCY, which is the objection worth answering up front:
+// this REJECTS, it does not SMOOTH. A smoothing filter delays every sample, good ones included -
+// which is why computeFmTarget() carries a lag anchor pushing the target forward by up to 2x
+// d_follow purely to cancel the EMA's own delay. A rejection test adds nothing to a good fix:
+// it passes through on the same tick it always did. Only an already-impossible reading is
+// dropped.
+//
+// WHAT IS AND IS NOT CHECKED. The 0xF3/0x02 meta packet carries lat/lng only - no HDOP, no
+// speed - so check 1 (HDOP) has no input and is skipped; the TX runs its own Phase A on its own
+// module before transmitting, which is where HDOP is properly judged. Checks 2 and 3 are both
+// reconstructed from consecutive positions.
+//
+// THREE GUARDS, ALL BIASED TOWARD ACCEPTING. A wrongly-rejected fix ages the rider's position
+// and can trip FM's Gate 4 staleness timeout, so a false reject costs more than a missed spike -
+// and a missed spike is caught downstream anyway by the 3-fix separation dwell. Phase A here is
+// a second net, never the only one.
+//   DT FLOOR   - rx_tx_gps_timestamp is stamped at PACKET RECEIPT, not at fix time, so after a
+//     link dropout two packets can arrive back-to-back with a genuine position change between
+//     them. The raw dt is then tiny and the implied speed enormous: good data rejected as a
+//     teleport. Flooring dt makes the implied speed SMALLER, i.e. more permissive.
+//   MAX GAP    - after a long silence the baseline is too old to say anything useful, so the
+//     reading is accepted and the baseline re-seeded rather than judged against stale data.
+//   REJECT RUN - if a bad position ever becomes the baseline, every good fix afterwards looks
+//     like a teleport away from it and the rider would be frozen out permanently. After
+//     kTxPhaseAMaxRejects consecutive rejections the checker assumes ITSELF to be the problem,
+//     accepts, and re-seeds.
+// ============================================================
+// REX PA-4: this floor and usrConf.gps_max_teleport_kmh MULTIPLY into a blind spot -
+// (gps_max_teleport_kmh / 3.6) * kTxPhaseADtFloorS metres can always slip through regardless of
+// arrival timing. At the 80 km/h default that is 5.56 m: below the follow station, comparable to
+// ordinary GPS scatter, and 5x smaller than the worst spike in the beta logs. The validator allows
+// gps_max_teleport_kmh up to 500, where the blind spot becomes 34.7 m and would swallow that spike
+// whole. Do not raise the teleport limit without re-reading this line.
+static const float    kTxPhaseADtFloorS   = 0.25f;  // s; smallest dt used for the speed maths
+static const float    kTxPhaseAMaxGapS    = 10.0f;  // s; older than this, re-seed instead of judge
+static const uint8_t  kTxPhaseAMaxRejects = 3;      // consecutive rejects before force-accepting
+
+static double        tx_pa_prev_lat   = 0.0;
+static double        tx_pa_prev_lng   = 0.0;
+static unsigned long tx_pa_prev_ms    = 0;
+static uint8_t       tx_pa_reject_run = 0;
+
+uint16_t gps_tx_phase_a_rejects = 0;   // lifetime counter, surfaced by ?diag
+
+static bool gpsPhaseATxCheck(double cur_lat, double cur_lng, unsigned long now_ms)
+{
+  // No baseline yet - nothing to compare against. Seed and accept.
+  if (tx_pa_prev_ms == 0) {
+    tx_pa_prev_lat = cur_lat;
+    tx_pa_prev_lng = cur_lng;
+    tx_pa_prev_ms  = now_ms;
+    return true;
+  }
+
+  float dt_raw = (float)(now_ms - tx_pa_prev_ms) / 1000.0f;
+
+  // Baseline too old to judge against, or the clock went backwards - re-seed, do not reject.
+  if (dt_raw > kTxPhaseAMaxGapS || dt_raw <= 0.0f) {
+    tx_pa_prev_lat = cur_lat;
+    tx_pa_prev_lng = cur_lng;
+    tx_pa_prev_ms  = now_ms;
+    return true;
+  }
+
+  float dt_s = (dt_raw < kTxPhaseADtFloorS) ? kTxPhaseADtFloorS : dt_raw;
+
+  float dist_m      = (float)TinyGPSPlus::distanceBetween(
+                               tx_pa_prev_lat, tx_pa_prev_lng, cur_lat, cur_lng);
+  float implied_kmh = (dist_m / dt_s) * 3.6f;
+
+  // ---- Check 2: teleport. THE ONLY CHECK, DELIBERATELY. ----
+  // REX PA-2 KILLED CHECK 3 (acceleration), and the reasoning is worth keeping because the same
+  // trap will catch the next person who tries to add it back.
+  //
+  // Acceleration needs two successive SPEED measurements. What is available here is two successive
+  // position differences over a RECEIVE clock, not a fix clock - so computing acceleration from it
+  // differentiates the packet cadence twice and measures an artifact.
+  //
+  // Concretely: the TX transmits at 2 Hz off a 1 Hz GPS, so consecutive packets alternate REAL MOVE
+  // / REPEATED POSITION. On a move packet the implied speed is 2v; on the repeat it is 0. The old
+  // and RAN it on every packet carrying an artifact - judging a synthetic 2v -> 0 step that no
+  // rider ever performed. It crossed gps_max_accel_g (3.0) at a rider speed of 26.5 km/h at 2 Hz,
+  // and at the 3.0 Hz rate actually measured in the beta logs it tripped at 11.8 km/h - BELOW the
+  // owner's own foiler_low_speed_kmh of 8 plus any realistic riding speed. It would have started
+  // rejecting good rider fixes during ordinary use.
+  //
+  // The teleport check alone catches the observed spikes with 3.7x margin (worst logged spike
+  // implies 301 km/h against an 80 km/h limit), and it needs only ONE position difference, so the
+  // repeat-packet pattern makes it read 0 km/h - trivially passing, never a false reject.
+  bool bad = (implied_kmh > usrConf.gps_max_teleport_kmh);
+
+  if (bad) {
+    tx_pa_reject_run++;
+    if (gps_tx_phase_a_rejects < 65535) gps_tx_phase_a_rejects++;
+    Serial.printf("GPS [PhA-TX] rider position rejected: %.0f m in %.2f s = %.0f km/h "
+                  "(max %.0f), run %u/%u\n",
+                  (double)dist_m, (double)dt_raw, (double)implied_kmh,
+                  (double)usrConf.gps_max_teleport_kmh,
+                  (unsigned)tx_pa_reject_run, (unsigned)kTxPhaseAMaxRejects);
+
+    // REJECT RUN escape: the baseline is more likely wrong than the whole world.
+    if (tx_pa_reject_run >= kTxPhaseAMaxRejects) {
+      Serial.println("GPS [PhA-TX] reject run hit the limit - re-seeding the baseline and "
+                     "accepting. The stored reference was probably the bad one.");
+      tx_pa_prev_lat   = cur_lat;
+      tx_pa_prev_lng   = cur_lng;
+      tx_pa_prev_ms    = now_ms;
+      tx_pa_reject_run = 0;
+      return true;
+    }
+    return false;    // baseline deliberately NOT advanced - next fix is judged from the last good one
+  }
+
+  tx_pa_prev_lat   = cur_lat;
+  tx_pa_prev_lng   = cur_lng;
+  tx_pa_prev_ms    = now_ms;
+  tx_pa_reject_run = 0;
+  return true;
+}
+
 static void processMetaGpsPacket(uint8_t *pkt)
 {
   if (memcmp(pkt, usrConf.own_address, 3) != 0)
@@ -413,9 +551,21 @@ static void processMetaGpsPacket(uint8_t *pkt)
   memcpy(&lat_ud, pkt + 5, 4);
   memcpy(&lng_ud, pkt + 9, 4);
 
-  rx_tx_gps_lat       = (double)lat_ud / 1e6;
-  rx_tx_gps_lng       = (double)lng_ud / 1e6;
-  rx_tx_gps_timestamp = millis();
+  double   cand_lat = (double)lat_ud / 1e6;
+  double   cand_lng = (double)lng_ud / 1e6;
+  unsigned long now = millis();
+
+  // PHASE-A-TX-1: judge the rider's position before it becomes the number every FM and RTM
+  // distance is computed from. On rejection NOTHING is written - not the position and not the
+  // timestamp - so the previous good fix simply ages, exactly as it does when a packet is lost.
+  // That is the honest representation: we do not have a fresh rider position this tick.
+  if (!gpsPhaseATxCheck(cand_lat, cand_lng, now)) {
+    return;
+  }
+
+  rx_tx_gps_lat       = cand_lat;
+  rx_tx_gps_lng       = cand_lng;
+  rx_tx_gps_timestamp = now;
 
   #ifdef DEBUG_RX
   Serial.printf("META GPS received: lat=%.6f lng=%.6f\n",

@@ -90,6 +90,21 @@
 
 #include <TinyGPS++.h> //TinyGPSPlus 1.0.3 Mikal Hart
 
+// V2.5-Evo - 2026-08-29 - Minimum storable tx_gps_stale_timeout_ms.
+// The staleness test is (age > timeout), so ZERO makes every rider fix stale within a
+// millisecond: RTM Gate 4 fails permanently, Follow-Me condition 4 carries the identical test and
+// fails with it, and BOTH autonomous modes are dead until the value is put back. The web UI used
+// to describe 0 as "disabled (never stale)", which is the exact opposite of what it does, so a
+// rider relaxing the check would have bricked the feature they were relaxing.
+//
+// 500 ms is a floor, not a recommendation. It is well clear of "instantly stale" while still
+// allowing tighter-than-default tuning; at 500 ms a 1 Hz TX GPS is degraded but recoverable,
+// where at 0 it is dead. Enforced by CLAMPING in cfgValidateCrossField() rather than by narrowing
+// the kCfgFields range: that validator runs on the LOAD path too, and a range rejection there
+// fails the load and falls back to defaults - which would wipe the config, pairing and compass
+// calibration of anyone who had already stored a 0. A clamp corrects them silently instead.
+static const uint16_t kTxGpsStaleFloorMs = 500;
+
 #define SW_VERSION 35  // V2.5-Evo — 35 = mag_orientation appended (compass mounting rotation); sizeof 184->192 (mag_orientation + 2 reserved slots banked for future no-bump features), config IS reset by this flash. 34 = added fm_engage_dist_m / auton_runtime_cap_s / fm_steer_reposition_en reserved slots + defaultConf carries factory default config (compass cal, near_diag_offset 45); first flash resets all RX SPIFFS config to defaults. NOTE (2026-07-25, STAGE 0 PART A): the third of those slots has since been RENAMED IN PLACE to log_level — same offset, same uint16_t, sizeof(confStruct) still 184 — so this stays 34 and NO further config wipe happens.
 const char* CONF_FILE_PATH = "/data.txt";
 const char* BC_FILE_PATH = "/batconf.txt";

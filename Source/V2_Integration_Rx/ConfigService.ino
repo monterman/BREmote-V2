@@ -176,6 +176,15 @@ const size_t kCfgFieldCount = sizeof(kCfgFields) / sizeof(kCfgFields[0]);
 
 bool cfgValidateCrossField(confStruct &candidate, String &err)
 {
+  // ---- tx_gps_stale_timeout_ms: never storable below the floor ----
+  // A CLAMP, deliberately, not a range rejection. This function runs on the config LOAD path as
+  // well as every save path, and a rejection there fails the load and falls back to defaults -
+  // wiping config, pairing and compass calibration. Anyone who already stored a 0 (on the strength
+  // of a web UI label that called it "disabled") gets corrected on next boot instead of wiped.
+  // See kTxGpsStaleFloorMs in BREmote_V2_Rx.h for why zero is fatal rather than permissive.
+  if (candidate.tx_gps_stale_timeout_ms < kTxGpsStaleFloorMs)
+    candidate.tx_gps_stale_timeout_ms = kTxGpsStaleFloorMs;
+
   if (candidate.PWM0_max <= candidate.PWM0_min)
   {
     err = "ERR_CROSS:PWM0_max must be > PWM0_min";

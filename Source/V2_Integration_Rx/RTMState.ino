@@ -156,7 +156,7 @@ static bool checkRtmSafetyGates()
 
   // Gate 4: valid TX GPS fix (age < usrConf.tx_gps_stale_timeout_ms)
   // Finding 6-1: was hardcoded 2000ms — now reads from SPIFFS so the
-  // WebUI setting actually takes effect. Default is 1000ms.
+  // WebUI setting actually takes effect. Default is 3000 ms (defaultConf / WebUiEmbedded.h).
   if (rx_tx_gps_timestamp == 0 ||
       (now - rx_tx_gps_timestamp) > (uint32_t)usrConf.tx_gps_stale_timeout_ms)
   {
@@ -1600,6 +1600,43 @@ static const uint32_t kFmDivergeMs           = 3000;   // ms
 // distances, so noise alone cannot fake "closing" and cancel a real divergence.
 static const float    kFmDivergeCloseEpsM    = 2.0f;   // metres of closure over the dwell
 
+// ---- PIVOT-SUSPEND-1 + GOVERNOR-2 constants (V2.5-Evo - 2026-08-26) ----
+// Compile-time only, like every other kFm* above: no confStruct fields, no SW_VERSION bump,
+// no SPIFFS reset.
+//
+// Heading error above which the buggy is considered to be PIVOTING rather than following, so
+// distance stops being evidence about the steering. Well above rtm_align_threshold_deg so the
+// suspension cannot be held open by ordinary tracking wobble.
+static const float    kFmPivotSuspendDeg     = 45.0f;   // degrees
+// Hysteresis on the episode EXIT. The suspension ends below (enter - this), never at the entry
+// threshold itself, so a single dipping tick cannot grant a fresh kFmPivotSuspendMaxMs (P-2).
+static const float    kFmPivotExitHystDeg    = 10.0f;   // degrees
+// How long the heading error may fail to make measurable progress before the episode is judged
+// stalled and the suspension is latched off for the rest of it (P-1/P-3).
+static const uint32_t kFmPivotStallMs        = 2000;    // ms
+// How far the heading error may go back OUT past the best-so-far ratchet before the episode is
+// judged failed immediately, without waiting for kFmPivotStallMs (Rex PV-2). Generous, because a
+// moving target makes small excursions normal; it is the large ones that mean "not pivoting".
+static const float    kFmPivotWorseDeg       = 15.0f;   // degrees
+// Minimum separation between the buggy and the FILTERED rider track before the theta bearing
+// between them is trusted. Below this the two points are close enough that the bearing is noise
+// (Rex G-5), which matters precisely during a hard rider reversal.
+static const float    kFmThetaMinSepM        = 3.0f;    // metres
+// Noise tolerance on the "is the error still improving?" ratchet. Compass and COG both jitter;
+// without this a single noisy sample would end a legitimate suspension.
+static const float    kFmPivotErrEpsDeg      = 2.0f;    // degrees
+// Hard ceiling on any single pivot suspension. Measured pivots are 8.6-11.6 s; beyond this the
+// buggy is not turning, it is broken, and divergence must be allowed to judge it again.
+static const uint32_t kFmPivotSuspendMaxMs   = 15000;   // ms
+// Governor floor. At or below this target speed the governor stops regulating and simply stops
+// the motor - below it the P-law's gain exceeds what gps_last_speed_kmh can resolve (Rex GV-2).
+static const float    kFmGovFloorKmh         = 3.0f;    // km/h
+// GOVERNOR-2 gap term: how much extra closing speed the buggy is allowed per metre it sits
+// outside its follow station, and the ceiling on that allowance. 0.5 km/h/m reaches the cap at
+// 30 m outside station, so an 80 m recall runs at the full allowance almost the whole way in.
+static const float    kFmGapGainKmhPerM      = 0.5f;    // km/h per metre outside station
+static const float    kFmGapMaxKmh           = 15.0f;   // km/h ceiling on the gap term
+
 // V2.5-Evo - 2026-07-25 - F3-b: the hard floor for the MANUAL fm_engage_dist_m override,
 // kFmEngageDistFloorM, is NOT defined here any more. It used to sit in this block as 5.0f while
 // ConfigService.ino carried a SECOND bare 5.0f literal, on the false premise that the Arduino
@@ -1714,6 +1751,18 @@ static unsigned long fm_diverge_since_ms = 0;
 // we would like. Cleared in lockstep with fm_diverge_since_ms everywhere, so a baseline can never
 // outlive its own dwell or be compared against a distance from a different engagement.
 static float         fm_diverge_start_dist_m = -1.0f;
+
+// PIVOT-SUSPEND-1 state. fm_pivot_since_ms is when the current large-heading-error episode began
+// (0 = not pivoting); fm_pivot_best_err_deg is the best-so-far ratchet the "still improving" test
+// is measured against. Both reset together whenever the error falls back inside
+// kFmPivotSuspendDeg or FM stops being ACTIVE.
+static unsigned long fm_pivot_since_ms     = 0;
+static float         fm_pivot_best_err_deg = 180.0f;
+// fm_pivot_stall_ms: when the best-so-far ratchet last improved (drives the P-3 progress test).
+// fm_pivot_failed:   LATCHED once an episode is judged stalled, so a later local trough cannot
+//                    silently re-open the suspension (P-1).
+static unsigned long fm_pivot_stall_ms     = 0;
+static bool          fm_pivot_failed       = false;
 
 // The computed trailing target point FM steers toward. Written by computeFmTarget() and
 // read by updateRtmSteering() when fm_rx_active is set.
@@ -2895,9 +2944,118 @@ static uint16_t fmComputeThrottleCap(float dist_m, unsigned long now)
   }
 
   // ---- Cap 3: speed governor ----
-  float gov = fm_rider_speed_kmh + kFmClosingMarginKmh;
+  // GOVERNOR-2 (V2.5-Evo - 2026-08-26). WHAT WAS WRONG: gov was rider_speed + margin, full stop.
+  // That uses the rider's SPEED as a proxy for "how fast do I need to go", which is right only
+  // while the rider is running away. Two failures fell out of it, at opposite ends:
+  //
+  //   HEAD-ON IT INVERTS. A rider pumping back TOWARD the buggy at 20 km/h was granted the buggy
+  //   25 km/h - combined closure 45 km/h / 12.5 m/s. The harder the rider converged, the MORE
+  //   speed the buggy was given. Every closing limit in the design assumes the opposite.
+  //
+  //   AT RANGE IT NEVER ARRIVES. The margin IS the entire closing budget: kFmClosingMarginKmh is
+  //   5 km/h = 1.39 m/s, so recalling the buggy from 80 m took ~58 s - and once the rider passed
+  //   boogie_vmax_in_followme_kmh the gap CLOSED AT ZERO. Long-range recall was not blocked by a
+  //   bug; it was rate-limited by this line.
+  //
+  // WHAT IT IS NOW: three terms, each answering one question, instead of one term answering none.
+  //   KEEP-UP - the rider's own speed. Holding a station that is itself moving costs exactly this,
+  //     whatever the geometry. Running directly away at station this reproduces the old target
+  //     term for term, so the ordinary follow case is unchanged.
+  //   GAP     - proportional to how far outside the follow station the buggy sits, so it can
+  //     actually sprint to a recall instead of merely matching the rider's speed. Bounded by
+  //     kFmGapMaxKmh so it is a closing allowance, never a licence.
+  //   FADE    - past 90 deg the rider is closing the gap themselves, so the whole target fades
+  //     linearly to ZERO head-on. This is the term that makes a converging rider SUBTRACT.
+  //
+  // This is what delivers the owner's stated requirement in his own words: "the buggy could go
+  // only 50% or 60% just to maintain a good distance" even with the trigger at 100%.
+  //
+  // STILL SUBTRACT-ONLY, and still bounded by the rider's OWN configured ceiling: the result is
+  // clamped to boogie_vmax_in_followme_kmh exactly as before, and the whole function returns a
+  // CAP. It cannot add throttle the rider is not already commanding.
+  // THETA: the angle between the rider's course and the buggy->rider bearing. 0 deg = the rider is
+  // running directly away from us; 180 deg = coming directly at us. This is the SAME quantity as
+  // off_axis in computeFmTarget() (reciprocal bearings), and fmAngleDiff returns an unsigned
+  // 0-180 magnitude, which is all this needs.
+  // G-5 GUARD: theta is measured from the FILTERED rider track while dist_m is measured from the
+  // RAW one. During a hard reversal the filtered track passes close to the buggy's own position,
+  // where the bearing between them is pure noise. Below kFmThetaMinSepM the angle is not
+  // trustworthy, so fall back to the station-keeping branch rather than act on noise.
+  float theta = 0.0f;
+  bool  theta_ok = false;
+  if (fm_rider_course_deg >= 0.0f) {
+    float filt_sep_m = (float)TinyGPSPlus::distanceBetween(
+        gps_last_lat, gps_last_lng, fm_filt_lat, fm_filt_lng);
+    if (filt_sep_m > kFmThetaMinSepM) {
+      float b_buggy_to_rider = (float)TinyGPSPlus::courseTo(
+          gps_last_lat, gps_last_lng, fm_filt_lat, fm_filt_lng);
+      theta    = fmAngleDiff(fm_rider_course_deg, b_buggy_to_rider);
+      theta_ok = true;
+    }
+  }
+
+  float d_follow_g = min_dist + band;
+  if (d_follow_g < 0.5f) d_follow_g = 0.5f;                 // same degenerate-config guard as elsewhere
+  float gap_kmh = (dist_m - d_follow_g) * kFmGapGainKmhPerM;
+  if (gap_kmh < 0.0f)         gap_kmh = 0.0f;
+  if (gap_kmh > kFmGapMaxKmh) gap_kmh = kFmGapMaxKmh;
+
+  // STATION-KEEPING SPEED. The buggy must travel at roughly the RIDER'S OWN SPEED simply to hold
+  // a station that is itself moving, whatever the geometry - plus the closing allowance for
+  // however far outside that station it currently sits.
+  //
+  // REX G-2/G-3: an earlier draft projected the rider's speed onto the range axis and used THAT
+  // as the target. It was wrong in both directions and for the same reason - it conflated "how
+  // fast must I travel to keep up?" (which needs the rider's speed) with "am I closing?" (which
+  // needs the range rate). Abeam the rider it produced a target of 5 km/h and therefore a HARD
+  // CAP-0 STALL at station; in Near-Right / Near-Left, where the steady state sits 35-45 deg off
+  // axis, it silently lost 18-29% of the target and let the station droop.
+  // REX GV-3: when theta is untrustworthy the gap term is withdrawn. "I cannot measure the
+  // angle" must not be read as "the angle is safe" - and the window where the bearing goes
+  // untrustworthy is precisely a hard rider reversal, i.e. the start of a convergence. Without
+  // this, an unmeasurable geometry bought the FULL sprint allowance with no information about
+  // whether the rider was closing. Keep-up plus the margin only; no sprint on a guess.
+  float gov = fm_rider_speed_kmh + kFmClosingMarginKmh + (theta_ok ? gap_kmh : 0.0f);
+
+  // CONVERGENCE FADE. Past 90 deg the rider is closing the gap themselves, so the buggy needs
+  // progressively less of its own - fading linearly to ZERO head-on. This is what makes a rider
+  // pumping back toward the buggy SUBTRACT from its allowance instead of adding to it. The old
+  // governor did the opposite: a rider converging at 20 km/h was granted the buggy 25, for a
+  // combined closure of 45 km/h at the one geometry where every limit in the design assumed the
+  // rider was running away.
+  // REX GV-1: clamp to the rider's ceiling BEFORE the fade, not after. Faded first, the gap term
+  // absorbed the fade at range - at 30 m the pre-clamp target was 37 km/h against a 25 km/h
+  // ceiling, so the fade did not bind until theta passed ~119 deg and the buggy still received
+  // FULL boogie_vmax toward a converging rider through the whole 90-120 deg band. Clamping first
+  // makes the fade bite from 90 deg at every distance. Strictly more conservative above 90 deg
+  // and identical below it.
+  if (gov < 0.0f) gov = 0.0f;
   if (gov > usrConf.boogie_vmax_in_followme_kmh) gov = usrConf.boogie_vmax_in_followme_kmh;
-  if (gov > 0.1f) {
+
+  if (theta_ok && theta > 90.0f) {
+    float frac = (180.0f - theta) / 90.0f;                  // 1.0 abeam, 0.0 straight at us
+    if (frac < 0.0f) frac = 0.0f;
+    gov *= frac;
+  }
+
+  // REX G-1, AND THIS LINE IS THE WHOLE REASON THE FIRST DRAFT WAS UNSHIPPABLE. The old guard was
+  // `if (gov > 0.1f) { ...apply cap... }`, a divide-by-zero guard inherited from a formula whose
+  // output could never approach zero (gov was always >= kFmClosingMarginKmh). The moment the
+  // governor was allowed to target zero, that guard stopped meaning "avoid dividing by zero" and
+  // started meaning "SKIP CAP 3 ENTIRELY" - so a target speed of zero produced NO CAP AT ALL, a
+  // 255-count discontinuity, and full commanded throttle at a converging rider. Strictly worse
+  // than the code it replaced, and reachable ONLY in the head-on geometry it was written to fix.
+  // A target of zero must mean a cap of zero.
+  // REX GV-2: the floor is kFmGovFloorKmh, not a bare divide-by-zero epsilon. cap = (1 -
+  // v_buggy/gov) * 255 is a P-controller with gain 255/gov, so as gov shrinks the gain runs away
+  // - and below roughly 3 km/h the feedback variable is under its own sensor's noise floor. GPS
+  // speed is good to ~0.4-1.8 km/h at low speed and gps_last_speed_kmh may be up to 6 s old and
+  // is NOT zeroed on fix loss. At gov = 1.4 a stale 0.3 km/h reading yields cap 201. The result
+  // was motor PULSING through the final head-on approach, at the GPS update rate, with cap 0
+  // killing differential steering on every trough. Flooring makes that region a clean stop.
+  if (gov <= kFmGovFloorKmh) {
+    cap = 0;                                                // 0 is the chain floor: assignment == min()
+  } else {
     float speed_frac = gps_last_speed_kmh / gov;            // buggy's own GPS speed vs the target
     if (speed_frac > 1.0f) speed_frac = 1.0f;
     if (speed_frac < 0.0f) speed_frac = 0.0f;
@@ -2982,6 +3140,14 @@ static void fmEnterIdle()
   // engagement must never be the yardstick for the next one.
   fm_diverge_since_ms     = 0;
   fm_diverge_start_dist_m = -1.0f;
+  // REX P-5 parity: PIVOT-SUSPEND-1's statics reset alongside the divergence dwell. Today every
+  // entry into FM_ACTIVE happens to pass through the pivot block's own reset branch, so this is
+  // belt-and-braces - but that correctness is an accident of statement ORDER inside runFmLoop(),
+  // and a future reorder would break it silently. Resetting here makes it structural.
+  fm_pivot_since_ms     = 0;
+  fm_pivot_best_err_deg = 180.0f;
+  fm_pivot_stall_ms     = 0;
+  fm_pivot_failed       = false;
 
   // V2.5-Evo - 2026-08-17 - THE FAULT IS NO LONGER FORGIVEN HERE. This site used to clear
   // heading_disagree_fault on a genuine transition into FM idle, on the reasoning that ending a
@@ -3435,7 +3601,106 @@ void runFmLoop()
     bool in_engage_grace = (fm_engage_ms != 0) &&
                            ((now - fm_engage_ms) < (kFmEngageRampMs + kFmDivergeMs));
 
-    if (in_engage_grace) {
+    // ---- PIVOT-SUSPEND-1 (V2.5-Evo - 2026-08-26; hardened same day against Rex P-1..P-4) ----
+    // WHY: the divergence detector asks "is the distance shrinking?", but a buggy still swinging
+    // its nose toward the target closes NOTHING by definition. Measured pivots from the beta logs
+    // take 8.6-11.6 s; the engage grace is kFmEngageRampMs 3500 + kFmDivergeMs 3000 = 6500 ms, and
+    // the first judgeable verdict lands 3000 ms after that. So the judgement opened INSIDE the
+    // pivot and condemned a healthy long-range recall for the crime of turning round. Owner's
+    // call: suspend the judgement until the turn is done.
+    //
+    // WHY IT IS NOT A BLANKET DISABLE - four separate guards, each closing a hole Rex found in
+    // the first version of this block:
+    //
+    //   PROGRESS (P-3). The suspension needs MEASURABLE improvement: pivot_err must beat the
+    //     best-so-far ratchet by kFmPivotErrEpsDeg. The first version tested "<= best + eps",
+    //     which a CONSTANT error passes forever - and a buggy commanded to turn that does not
+    //     turn holds a constant error. That is the exact failure this block claims to detect, so
+    //     the old test contradicted its own design note. Stall for kFmPivotStallMs and the
+    //     episode is judged failed.
+    //
+    //   LATCH (P-1). Once failed, fm_pivot_failed stays true for the REST of the episode. Without
+    //     the latch, an error that oscillates above the entry threshold went "improving" again at
+    //     every local trough and re-parked the 3 s divergence dwell from zero - which is exactly
+    //     what a P+D loop on a lagged COG does, so divergence could be held off indefinitely.
+    //
+    //   HYSTERESIS (P-2). The episode ends only below pivot_exit, not below pivot_enter. A single
+    //     tick dipping through the entry threshold used to reset fm_pivot_since_ms and grant a
+    //     fresh kFmPivotSuspendMaxMs, so the "hard ceiling" bounded one episode but nothing in
+    //     aggregate.
+    //
+    //   BAND (P-4). pivot_enter is derived from usrConf.rtm_align_threshold_deg, floored at
+    //     kFmPivotSuspendDeg. What made a fixed 45 deg safe was that the suspension band sat
+    //     entirely INSIDE the align-capped band, so a suspended buggy is always crawling at
+    //     kFmAlignCap 13/255 - but that was a coincidence with the default. A user softening the
+    //     align threshold to 90 would otherwise have removed both backstops in the same band.
+    //     Deriving it makes the containment structural instead of accidental.
+    float pivot_err = (g_heading_error_dx10 != 0x7FFF) ?
+        fabsf((float)g_heading_error_dx10 / 10.0f) : 180.0f;
+
+    // REX P-4 + PV-3, REWORKED against the owner's ACTUAL config. The first version derived
+    // pivot_enter from rtm_align_threshold_deg and then subtracted the hysteresis to get
+    // pivot_exit, floored at the align threshold. At the owner's stored rtm_align_threshold_deg
+    // of 45 - which is also kFmPivotSuspendDeg - that produced enter = 45 and exit = max(35, 45)
+    // = 45: IDENTICAL, so the Schmitt collapsed to a bare threshold and P-2's whole reason for
+    // existing was silently cancelled at his exact setting.
+    // Correct order: derive the EXIT from the align threshold (that is the containment
+    // requirement - the suspension must never outlive the align cap that keeps a suspended buggy
+    // crawling at kFmAlignCap), then build the ENTER above it. Hysteresis and containment both
+    // hold at every legal value of rtm_align_threshold_deg.
+    float pivot_exit  = (float)usrConf.rtm_align_threshold_deg;
+    if (pivot_exit < kFmPivotSuspendDeg) pivot_exit = kFmPivotSuspendDeg;
+    float pivot_enter = pivot_exit + kFmPivotExitHystDeg;
+    if (pivot_exit < 1.0f) pivot_exit = 1.0f;
+
+    bool fm_pivoting = false;
+    bool in_pivot_band = (fm_pivot_since_ms != 0) ? (pivot_err > pivot_exit)
+                                                  : (pivot_err > pivot_enter);
+    if (fm_state == FM_ACTIVE && in_pivot_band) {
+      if (fm_pivot_since_ms == 0) {
+        fm_pivot_since_ms     = now;
+        fm_pivot_best_err_deg = pivot_err;
+        fm_pivot_stall_ms     = now;
+        fm_pivot_failed       = false;
+      }
+      // REX PV-1, AND THIS WAS THE ONE BLOCKER ON THIS BLOCK. The stall clock must not run during
+      // the engage grace. For the first kFmEngageRampMs + kFmDivergeMs the buggy is deliberately
+      // DENIED the throttle it needs to yaw at all - cap 5 is ramping 0->255 and cap 4 pins it at
+      // kFmAlignCap 13/255 - so judging it for failing to make 2 deg of progress in that window
+      // judges it for obeying its own throttle chain. And pivot_err is the error to a MOVING
+      // target: during a long recall the rider is running at 8-30 km/h, so the target bearing
+      // drifts and the error can legitimately plateau for two seconds while the buggy is hard
+      // over. Left in, this latched fm_pivot_failed before the turn had begun - and because a
+      // pivoting buggy never falls below pivot_exit, the episode could not end to clear it. The
+      // feature then did NOTHING while appearing to work, which is the worst way to ship it.
+      // Holding the clock at `now` through the grace makes it start when the grace ends.
+      if (in_engage_grace) {
+        fm_pivot_stall_ms = now;
+        if (pivot_err < fm_pivot_best_err_deg) fm_pivot_best_err_deg = pivot_err;
+      } else if (pivot_err < (fm_pivot_best_err_deg - kFmPivotErrEpsDeg)) {
+        fm_pivot_best_err_deg = pivot_err;   // real progress: ratchet down, restart the stall clock
+        fm_pivot_stall_ms     = now;
+      } else if (!fm_pivot_failed &&
+                 (pivot_err > (fm_pivot_best_err_deg + kFmPivotWorseDeg) ||
+                  (now - fm_pivot_stall_ms) >= kFmPivotStallMs)) {
+        // REX PV-2: fail on a WORSENING error immediately, not only on a stall. The latch is
+        // per-episode and an episode ends below pivot_exit, so a buggy spinning the wrong way
+        // fast enough to sweep the whole band inside kFmPivotStallMs (about 68 deg/s) used to
+        // re-arm a fresh episode every revolution and never latch. Testing the error against the
+        // best-so-far ratchet is yaw-rate independent: once the nose has come round and then goes
+        // BACK out by kFmPivotWorseDeg, the buggy is not pivoting toward anything.
+        fm_pivot_failed = true;              // LATCHED for the remainder of this episode
+      }
+      fm_pivoting = !fm_pivot_failed &&
+                    ((now - fm_pivot_since_ms) < kFmPivotSuspendMaxMs);
+    } else {
+      fm_pivot_since_ms     = 0;
+      fm_pivot_best_err_deg = 180.0f;
+      fm_pivot_stall_ms     = 0;
+      fm_pivot_failed       = false;
+    }
+
+    if (in_engage_grace || fm_pivoting) {
       // Ramping and/or aligning — not judgeable yet. Park the window so it starts fresh afterwards.
       fm_diverge_since_ms     = 0;
       fm_diverge_start_dist_m = -1.0f;
@@ -3473,6 +3738,13 @@ void runFmLoop()
     // F1: the closure baseline goes with it; a baseline must never outlive the dwell that set it.
     fm_diverge_since_ms     = 0;
     fm_diverge_start_dist_m = -1.0f;
+    // REX P-5 parity: the pivot episode goes with the dwell it suspends. Without this the ratchet,
+    // the stall clock and the failed latch would outlive the data gap that killed the dwell, and a
+    // stale best-so-far could suspend divergence on the far side of it.
+    fm_pivot_since_ms     = 0;
+    fm_pivot_best_err_deg = 180.0f;
+    fm_pivot_stall_ms     = 0;
+    fm_pivot_failed       = false;
   }
 
   // The separation latch gates eligibility. Without it FM stays ARMED and the buggy stays
@@ -3679,8 +3951,53 @@ void runFmLoop()
       // Motor stops (cap 0) but FM stays ARMED (declaration held) and auto-resumes to FM_ACTIVE
       // once the conditions restore AND the latch is set. No alarm. This is what lets a rider
       // fall, slow, or close on the buggy repeatedly without ever having to re-arm.
-      fm_state        = FM_HOLD;
-      fm_throttle_cap = 0;         // subtract-only hard stop: motor to 0
+      // ========================================================================================
+      // V2.5-Evo - 2026-08-26 - HOLD-ESCAPE-2, replacing HOLD-ESCAPE-1 which was broken twice over.
+      //
+      // WHAT HOLD-ESCAPE-1 GOT WRONG (both found by Rex):
+      //   1. IT DID NOT WORK. It wrote fm_throttle_cap = 255 only on ticks where the trigger was
+      //      RELEASED, while the line above it wrote fm_throttle_cap = 0 on EVERY tick. So the
+      //      instant the rider actually squeezed, the next 10 Hz tick put the cap straight back
+      //      to 0 and the motor died again. The rider bought at most one tick of throttle.
+      //   2. ITS SAFETY ARGUMENT WAS FACTUALLY WRONG. It claimed that with thr_received < 25 "the
+      //      deadman already holds the motor at PWM_min". It does not. The deadman is
+      //      effective_thr == 0 (PWM.ino), not thr_received < 25, and the TX throttle map has no
+      //      low-end deadzone, so 1-24 counts is a real, if small, throttle request.
+      //
+      // WHAT THIS DOES INSTEAD: leave FM_HOLD instead of overriding it. A released trigger is the
+      // rider taking the buggy back, so the STATE follows the rider rather than being patched on
+      // top of a state that contradicts it. FM_ARMED already means exactly "mode declared, not
+      // following, fully manual, cap 255", and the ARMED branch below then produces that cap on
+      // every subsequent tick — so nothing can overwrite it the way HOLD-ESCAPE-1 was overwritten.
+      // The 1-24 count band stops being a special case too: in ARMED a small squeeze gives a
+      // proportionally small motor output, which is simply what manual control means everywhere
+      // else in this firmware.
+      //
+      // WHAT IT COSTS: nothing. fm_sep_latched is NOT touched here, and can_be_active does not
+      // care whether the state is ARMED or HOLD — both take the same "else" branch of the distance
+      // Schmitt and the condition 9 speed hysteresis. So AUTO-RESUME SURVIVES INTACT: the moment
+      // the geometry recovers under a held trigger, FM re-engages through the normal engage ramp,
+      // exactly as it would have done from FM_HOLD. Only the label changes, not the behaviour.
+      //
+      // WHY THE 10 s TIMER STAYS: R2(a) still owns the SEPARATION LATCH, and that is a session
+      // boundary, not a throttle policy — the rider necessarily lets go to rig the next tow, and
+      // the geometric proof must die with the run so FM can never engage while on the rope. Two
+      // different jobs were tied to one timer; only "give the throttle back" is decoupled here.
+      //
+      // THE CASE IT FIXES, from the owner's own riding: whip, let FM follow, ease off the throttle
+      // and pump slowly back toward the buggy to set up the next start. Pumping is feathering —
+      // squeeze, release, squeeze — so the ten CONTINUOUS seconds never accumulate, and every
+      // squeeze restarted the timer from zero. That rider got a DEAD MOTOR ON EVERY SQUEEZE for as
+      // long as they kept trying, which is the exact trap already described a few screens below.
+      // ========================================================================================
+      if (thr_received < 25) {
+        // Rider let go: hand the buggy back from this tick on, as a state, not as an override.
+        fm_state        = FM_ARMED;
+        fm_throttle_cap = 255;
+      } else {
+        fm_state        = FM_HOLD;
+        fm_throttle_cap = 0;         // subtract-only hard stop: motor to 0
+      }
     } else {
       // ---- FM_ARMED: never engaged this arm cycle — fully manual buggy ----
       // The throttle chain stays INACTIVE (cap 255) so the rider keeps full manual control while

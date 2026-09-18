@@ -1,3 +1,8 @@
+// V2.5-Evo - 2026-09-17 - CHG-ADS FIX: adsReadGuarded() took the ADS1115 mux constant as uint8_t, which truncated
+//   every MUX_BY_CHANNEL[] value (0x4000..0x7000, bits 14:12) to 0 -> every charge-screen read was differential
+//   AIN0-AIN1, never the charger-status or battery pin. The signed int16_t conversion result was also stored
+//   unsigned. Signature is now (uint16_t mux, int16_t &out); chgstat/bat_volt are int16_t; a negative bat_volt
+//   becomes 0 before the voltage bargraph. Analog.ino was never affected (it calls the library directly).
 // V2.5-Evo - 2026-08-17 - StopBuzz FIX (vibrationTask): three delivery bugs in the haptics chain.
 //   1. Pattern 7 (STOP) could be silently lost — every executor branch ended with an unconditional
 //      current_vib_pattern = 0, wiping a stop queued while another pattern was mid-play (up to 4s
@@ -724,8 +729,18 @@ void serPrintStatus(bool json)
 //
 // Returns false if the ADC is known-bad or does not answer in time. Callers must decide what
 // a missing reading MEANS — never treat it as a valid zero.
+//
+// V2.5-Evo - 2026-09-17 - CHG-ADS FIX. The bug: muxChannel was uint8_t. The Adafruit
+// MUX_BY_CHANNEL[] constants are uint16_t with the channel select in bits 14:12
+// (0x4000, 0x5000, 0x6000, 0x7000), so the cast to uint8_t dropped them all to 0x0000 —
+// the library's "differential AIN0 minus AIN1" mux. Every read made here therefore sampled
+// the wrong pair of pins regardless of which channel the caller asked for, which is why the
+// charge screen showed a nonsense pack voltage and never saw a real charger-status level.
+// getLastConversionResults() also returns a SIGNED int16_t (a differential read can be
+// negative); storing it in a uint16_t turned small negatives into ~65000. The fix: pass the
+// mux word through untouched as uint16_t and hand the result back as int16_t.
 // ============================================================
-static bool adsReadGuarded(uint8_t muxChannel, uint16_t &out)
+static bool adsReadGuarded(uint16_t muxChannel, int16_t &out)
 {
   if (!g_ads_ok) return false;
 
@@ -754,7 +769,7 @@ void checkCharger()
 #ifdef WIFI_ENABLED
     webCfgLoop();
 #endif
-    uint16_t chgstat = 0;
+    int16_t chgstat = 0;   // CHG-ADS FIX 2026-09-17: signed, matches the ADS1115 conversion result
     if (!adsReadGuarded(MUX_BY_CHANNEL[P_CHGSTAT], chgstat))
     {
       // ============================================================
@@ -782,7 +797,7 @@ void checkCharger()
       break;
     }
 
-    uint16_t bat_volt = 0;
+    int16_t bat_volt = 0;   // CHG-ADS FIX 2026-09-17: signed, matches the ADS1115 conversion result
     if (!adsReadGuarded(MUX_BY_CHANNEL[P_UBAT_MEAS], bat_volt))
     {
       Serial.println("CHG: !! ADS1115 stopped answering mid-read — leaving charge screen, "
@@ -791,6 +806,10 @@ void checkCharger()
       exitChargeScreen = 1;
       break;
     }
+    // CHG-ADS FIX 2026-09-17: a single-ended read cannot legitimately be negative, but noise on
+    // an unloaded input can dip a count or two below zero. Clamp to 0 before the unsigned
+    // conversion so a -1 does not become 65535 counts and pin the bargraph at full.
+    if (bat_volt < 0) bat_volt = 0;
     uint16_t c_bat_volt = (uint16_t)((float)bat_volt * usrConf.ubat_cal * 100.0);
 
 

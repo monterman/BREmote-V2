@@ -618,12 +618,14 @@ static void fmDisarm(bool commanded)
   // V2.5-Evo - 2026-08-16 - HAPTIC CUT: silent on a DELIBERATE disarm. You just did it, and the
   // display already says so. A buzz confirming your own action is noise.
   // V2.5-Evo - 2026-08-17 - StopBuzz: the caller now decides, on the rule A PURE TIMEOUT IS SILENT,
-  // A FAULT BUZZES. Exactly ONE FM path is a fault — the RX fault-stop in runFmLoop(), where the RX
-  // gave up steering on its own and the rider has no way to know. The Gate 1 release backstop is a
-  // timer, and it expires in the worst possible place: mid-whip, where the rider is legitimately
-  // off the trigger for 10-25 s and is riding a wave with no attention to spare for decoding a
-  // buzz. Buzz saturation is the real failure mode here — the more buzzes there are, the less any
-  // one of them is read — so Pattern 7 is spent on faults only.
+  // A FAULT BUZZES. Exactly ONE FM path is a fault today — the RX fault-stop in runFmLoop(), where
+  // the RX gave up steering on its own and the rider has no way to know. Buzz saturation is the real
+  // failure mode here — the more buzzes there are, the less any one of them is read — so Pattern 7
+  // is spent on faults only.
+  // V2.5-Evo - 2026-09-17 - History: from 2026-07-20 to 2026-09-17 a Gate 1 release backstop (a 30 s
+  // off-the-trigger disarm timer) was also classified commanded=true for this same reason. It was
+  // removed because Scenario A's rider may legitimately release the trigger for up to 30 s crossing
+  // a whip; the RX 10 s latch clear and 95 s mode-age expiry are the backstops now.
   if (!commanded) vib_stop_pending = true;   // Pattern 7: one long buzz = a FAULT stopped the system
 
   // Large-font stop confirm on FM disarm.

@@ -1120,8 +1120,9 @@ void vibrationTask(void *parameter) {
     //   - The two arm REFUSALS — RTM pre-arm distance reject, FM fundamental reject — where the
     //     rider would otherwise walk away believing the mode is armed when it is not.
     // DOES NOT FIRE ON:
-    //   - RTM Gate 3 (throttle released 4s) or the FM Gate 1 release backstop (released 30s). Both
-    //     are pure timeouts his own released trigger caused, and "St" already shows it.
+    //   - RTM Gate 3 (throttle released 4s). A pure timeout his own released trigger caused, and
+    //     "St" already shows it. (The FM Gate 1 release backstop that used to sit alongside it here
+    //     was removed 2026-09-17 — it no longer exists, so it is not listed either way.)
     //   - Any deliberate disarm — gesture disarm, magnet-toggle disarm, steer-exit, F0 select.
     // Deliberately a single SUSTAINED buzz so the rider can tell "stopped/off" from the arm
     // confirm by feel alone while foiling. Distinct from every other pattern:

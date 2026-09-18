@@ -190,7 +190,8 @@ void loop()
 
   // V2.5-Evo - 2026-04-25 - P7: RTM state machine (arming, active, cooldown) and FM mode cycle.
   runRtmLoop();
-  // V2.5-Evo - 2026-04-27 - P8.1: FM arm/disarm state machine (arm window + Gate 1 throttle-release)
+  // V2.5-Evo - 2026-04-27 - P8.1: FM arm/disarm state machine (arm window; Gate 1 throttle-release
+  //   removed 2026-09-17 — see RTMState.ino fmDisarm() history note)
   runFmLoop();
 
   // V2.5-Evo - 2026-05-13 - SW33b: Hall mag sensor (P_MAG / GPIO 9) — polled every 20ms.

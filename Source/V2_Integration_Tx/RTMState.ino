@@ -624,8 +624,10 @@ static void fmDisarm(bool commanded)
   // is spent on faults only.
   // V2.5-Evo - 2026-09-17 - History: from 2026-07-20 to 2026-09-17 a Gate 1 release backstop (a 30 s
   // off-the-trigger disarm timer) was also classified commanded=true for this same reason. It was
-  // removed because Scenario A's rider may legitimately release the trigger for up to 30 s crossing
-  // a whip; the RX 10 s latch clear and 95 s mode-age expiry are the backstops now.
+  // removed because Scenario A's rider may legitimately release the trigger for up to 30 s while
+  // linking waves with the buggy already parked behind the break — the whip is a separate
+  // engagement gesture, not part of this release window. The RX 10 s latch clear and 95 s
+  // mode-age expiry are the backstops now.
   if (!commanded) vib_stop_pending = true;   // Pattern 7: one long buzz = a FAULT stopped the system
 
   // Large-font stop confirm on FM disarm.

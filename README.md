@@ -614,7 +614,7 @@ The override is RAM-only — RX returns to its web-configured `followme_mode` on
 
 ### FM Proximity Warning
 
-If TX-to-RX distance drops below `fm_warn_distance_m` (default 150 m), TX fires a 2×Pattern-2 vibration burst warning (2 short × 2, with 300 ms gap).
+While Follow-Me is armed on both TX and RX with a fresh link, TX fires one medium 300 ms vibration pulse (Pattern 8) the moment TX-to-RX distance reaches or exceeds `fm_warn_distance_m` (range 50–164 m, default 150 m), then repeats the pulse every 2 seconds for as long as the buggy stays at or beyond that distance — whether or not the trigger is held. It stops once the distance drops back below the threshold, on FM disarm, or on link loss.
 
 ### FM Engage Distance — measure your rope first (RX)
 
@@ -641,7 +641,7 @@ If TX-to-RX distance drops below `fm_warn_distance_m` (default 150 m), TX fires 
 |---|---|---|
 | `fm_override_enabled` | 1 | Master on/off switch |
 | `fm_hold_duration_s` | 5 | RIGHT-hold duration to cycle FM mode, in seconds (4–10) |
-| `fm_warn_distance_m` | 150 | Proximity warning threshold in metres |
+| `fm_warn_distance_m` | 150 | Proximity warning threshold in metres, at or beyond which the buggy triggers the warning (50–164) |
 
 </details>
 

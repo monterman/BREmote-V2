@@ -215,7 +215,7 @@ Blink pattern: 1000 ms on / 500 ms off.
 | Field | Range | Default | Description |
 |---|---|---|---|
 | `rtm_display_mode` | 0-2 | 0 | RTM/FM active display: 0=distance, 1=speed, 2=alternating 2.5s |
-| `fm_warn_distance_m` | 50-1000m | 150 | TX-RX distance for FM proximity warning vibration |
+| `fm_warn_distance_m` | 50-164m | 150 | TX-RX distance for FM proximity warning vibration (fires at/beyond threshold, repeats every 2s) |
 | `rtm_steer_exit_on_input` | 0-1 | 1 | 1=steering exits RTM; 0=blend/correction mode |
 | `rtm_max_runtime_s` | 0-300s | 0 | Max RTM runtime; 0=disabled (safety gates handle scenarios) |
 

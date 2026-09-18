@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-17 - FM STOP-REASON latch (comparison row 19): checkFmFaultConditions() now names which of conditions 2-7 failed through an out-param; the FAULT branch latches fm_stop_reason AFTER fm_throttle_cap = 0 (F7 order) and prints it; fmEnterIdle() clears the live latch at the end of the stop ramp. fm_last_stop_reason / fm_last_stop_ms keep the most recent stop for ?diag (System.ino) until the next one or a reboot. Read-only accessors, no control-path change, no confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-17 - D-term TARGET-PROFILE guard (Rex A9): the D term now also requires the steering TARGET geometry to be continuous, not only the heading source. computeFmTarget() publishes fm_target_profile (kProfDegraded / kProfBehind / kProfDiagRight / kProfDiagLeft) where it picks the branch; the RTM direct-to-rider path publishes kProfRtmDirect. updateRtmSteering() skips one D tick whenever the profile differs from the previous sample, so a side-zone Schmitt flip, a degraded<->trailing switch or an RTM/FM handover can no longer inject a phantom rate into Kd. Steering output only; no throttle path touched. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-08-25 - RX RTM/FM D-term wrap fix. heading_error itself was normalized to +/-180 deg, but the derivative subtracted two normalized samples directly. Crossing the branch cut (for example +179 -> -179) therefore looked like a -358 deg step instead of the physical +2 deg change and Kd could saturate steering for one control tick. Normalize the same-source error delta to +/-180 before dividing by dt; source-switch/re-snap suppression, P term, gains, logging and config stay unchanged. No confStruct change; SW_VERSION stays 35.
 // V2.5-Evo - 2026-08-17 - THREE FOLLOW-UPS TO THE PASS BELOW, ALL OF THEM NOTIFICATION, NONE OF THEM CONTROL. (1) THE DEGRADATION NOTICE COULD BE LOST ENTIRELY, NOT MERELY DEFERRED. headingDisagreeAnnounceDegraded() rightly returns without setting its one-shot flag while thr_received >= 25 — four Serial lines upstream of a hard stop would break the motor-to-zero-first rule — but its ONLY call site was inside the if (disagree_now) branch, so the retry needed another MEASURED disagreement. A measurement needs a live COG plus a compass snapshot younger than kHeadingCompareSnapMs, and that snapshot only refreshes while the trigger is released, so a dwell that completed inside the ~1 s window after a squeeze was silenced — and a rider who then finished the session under power and never coasted above rtm_cog_min_speed_kmh again rode the WHOLE SESSION with the compass withdrawn and Follow-Me refusing to engage, announced nowhere but a manual ?diag. getRtmHeading() now offers the notice on EVERY tick while the verdict stands, so the retry no longer depends on the evidence coming back; the deferral guard itself is untouched, and the print still cannot land between a proven fault and a motor-stopping write, because it can only fire below 25 counts where the deadman already holds the motor at 0. (2) A FAULT PROVEN WHILE COASTING NOW REACHES THE REMOTE. fm_fault_alarm_ms was set only if (thr_held), but the heading-disagree latch can only complete with the trigger RELEASED — so for this one fault the sticky fm_flags bit 3 never rose, the TX never learned the run had ended on a fault, and Follow-Me silently re-armed on the next keepalive into a blocked ARMED state whose only field signal was the not-ready flag. The alarm is now also set for a standing heading-disagree fault; every other fault keeps the surprise gating exactly as it was. (3) COMMENT-ONLY: the note in front of the restored FM fault term claimed a HOLD-parked Follow-Me would sit at cap 0 "for the rest of the session". The throttle-release clear rescues FM_HOLD back to FM_ARMED after 10 continuous seconds below 25 counts, so the accurate hazard is narrower — a rider FEATHERING the trigger restarts that timer on every squeeze, never accumulates the 10 s, and gets a dead motor on every squeeze with no explanation. Plus heading_disagree_fault is now volatile: it is read cross-task by Logger.ino through headingDisagreeLatched(), and as a file-scope static whose address never escapes the compiler may cache it. Read-only, log columns only, no control impact. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
@@ -1773,6 +1774,56 @@ static unsigned long fm_thr_low_since_ms  = 0;
 // millis() when FM entered FM_STOPPING; drives the 0 -> 255 fault ramp. 0 = not stopping.
 static unsigned long fm_stop_ms          = 0;
 
+// ---- V2.5-Evo - 2026-09-17 - FM STOP-REASON latch (comparison row 19) ----
+// WHAT IT DOES: every FAULT that ends a Follow-Me run (conditions 2-7, the A3 divergence fault
+// and the heading-disagree latch) now records WHICH one it was, so a log or a ?diag can say why
+// the buggy stopped following instead of leaving the rider to guess from a bare "FAULT".
+//   fm_stop_reason      - the LIVE latch. Set in the FAULT branch of runFmLoop(), after
+//                         fm_throttle_cap = 0 (F7 order: motor first, bookkeeping second), held for
+//                         the whole FM_STOPPING ramp so the deep log (P0-g fm_block_reason) captures
+//                         it, and cleared by fmEnterIdle() when the ramp ends. 0 = no stop in progress.
+//   fm_last_stop_reason - the most recent stop, kept until the next one or a reboot, for ?diag.
+//   fm_last_stop_ms     - millis() of that stop, so ?diag can say how long ago it was.
+// Codes are stable numbers because they go into log files; never renumber, only append.
+// RETURN_NOT_CLOSING (9) is reserved for the P1 engagement rework and is not defined yet.
+enum FmStopReason : uint8_t {
+  FM_STOP_NONE             = 0,   // no fault stop in progress / none recorded
+  FM_STOP_PHASE_A          = 1,   // condition 2: the buggy's own GPS was rejected (Phase A anti-spoofing)
+  FM_STOP_PHASE_B          = 2,   // condition 3: the TX<->RX GPS cross-validation handshake is failing
+  FM_STOP_TX_STALE         = 3,   // condition 4: the rider's (TX) GPS position is stale
+  FM_STOP_RX_STALE         = 4,   // condition 5: the buggy's (RX) GPS position is stale
+  FM_STOP_HEADING          = 5,   // condition 6: no valid heading source
+  FM_STOP_LINK             = 6,   // condition 7: the LoRa link is down (failsafe_time exceeded)
+  FM_STOP_DIVERGENCE       = 7,   // A3: sustained divergence while ACTIVE (not closing on the rider)
+  FM_STOP_HEADING_DISAGREE = 8    // the compass-vs-COG disagreement latch stood while FM had control
+  // FM_STOP_RETURN_NOT_CLOSING = 9  -- reserved for P1 (return leg not closing); not defined yet
+};
+static uint8_t       fm_stop_reason      = FM_STOP_NONE;
+static uint8_t       fm_last_stop_reason = FM_STOP_NONE;
+static unsigned long fm_last_stop_ms     = 0;
+
+// Human-readable name for a stop reason code. Used by the FAULT print here and by ?diag in
+// System.ino (which is concatenated after this file, so the static is visible there).
+static const char* fmStopReasonName(uint8_t r)
+{
+  switch (r) {
+    case FM_STOP_NONE:             return "none";
+    case FM_STOP_PHASE_A:          return "PHASE_A (RX GPS rejected)";
+    case FM_STOP_PHASE_B:          return "PHASE_B (TX<->RX handshake failing)";
+    case FM_STOP_TX_STALE:         return "TX_STALE (rider GPS stale)";
+    case FM_STOP_RX_STALE:         return "RX_STALE (buggy GPS stale)";
+    case FM_STOP_HEADING:          return "HEADING (no valid heading source)";
+    case FM_STOP_LINK:             return "LINK (LoRa link lost)";
+    case FM_STOP_DIVERGENCE:       return "DIVERGENCE (not closing on the rider)";
+    case FM_STOP_HEADING_DISAGREE: return "HEADING_DISAGREE (compass vs GPS course)";
+    default:                       return "unknown";
+  }
+}
+// Read-only accessors for ?diag. They cannot set, clear or age anything.
+static uint8_t       fmStopReason()     { return fm_stop_reason; }
+static uint8_t       fmLastStopReason() { return fm_last_stop_reason; }
+static unsigned long fmLastStopMs()     { return fm_last_stop_ms; }
+
 // millis() of the last SURPRISING fault stop (a fault that occurred while the trigger was held).
 // Drives the sticky fm_flags bit 3 for kFmFaultStickyMs so the TX cannot miss the stop
 // notification across the ~2.4 s telemetry rotation. 0 = no recent surprising fault. Deliberately
@@ -2989,24 +3040,28 @@ static void computeFmTarget(double* out_lat, double* out_lng)
 //   systems can never fight over one flag.
 //
 // Returns: true only if all six fault conditions hold.
-// Side effects: none (read-only on all globals).
+// Outputs: *out_reason (V2.5-Evo - 2026-09-17) - the FmStopReason code of the FIRST condition
+//          that failed, in the order below; FM_STOP_NONE when all six hold. Purely a name for the
+//          caller's stop latch and print; nothing reads it back into the control decision.
+// Side effects: none on control state (read-only on all globals).
 // ------------------------------------------------------------
-static bool checkFmFaultConditions()
+static bool checkFmFaultConditions(uint8_t* out_reason)
 {
   unsigned long now = millis();
+  *out_reason = FM_STOP_NONE;
 
   // 2. Phase A: the RX's own GPS has not been rejected as implausible/spoofed.
-  if (gps_rejected) return false;
+  if (gps_rejected) { *out_reason = FM_STOP_PHASE_A; return false; }
 
   // 3. Phase B: the TX<->RX cross-validation handshake is currently passing.
-  if (!gps_phase_b_ok) return false;
+  if (!gps_phase_b_ok) { *out_reason = FM_STOP_PHASE_B; return false; }
 
   // 4. The rider's (TX) GPS position is fresh.
   if (rx_tx_gps_timestamp == 0 ||
-      (now - rx_tx_gps_timestamp) > (uint32_t)usrConf.tx_gps_stale_timeout_ms) return false;
+      (now - rx_tx_gps_timestamp) > (uint32_t)usrConf.tx_gps_stale_timeout_ms) { *out_reason = FM_STOP_TX_STALE; return false; }
 
   // 5. The buggy's (RX) GPS position is fresh (same 6 s window as RTM gate 5).
-  if (gps_last_ms == 0 || (now - gps_last_ms) > 6000UL) return false;
+  if (gps_last_ms == 0 || (now - gps_last_ms) > 6000UL) { *out_reason = FM_STOP_RX_STALE; return false; }
 
   // 6. A valid heading source exists. V2.5-Evo - 2026-07-20 - A3: FM ALWAYS requires a heading
   //    source, regardless of rtm_compass_required. That flag was an RTM-arming convenience; a
@@ -3014,11 +3069,11 @@ static bool checkFmFaultConditions()
   //    is a FAULT, not something to silently permit. This is the R4 heading-source-loss fix.
   {
     float h_unused; uint8_t conf_unused;
-    if (!getRtmHeading(&h_unused, &conf_unused)) return false;
+    if (!getRtmHeading(&h_unused, &conf_unused)) { *out_reason = FM_STOP_HEADING; return false; }
   }
 
   // 7. The LoRa link is healthy.
-  if (now - last_packet > usrConf.failsafe_time) return false;
+  if (now - last_packet > usrConf.failsafe_time) { *out_reason = FM_STOP_LINK; return false; }
 
   return true;
 }
@@ -3254,6 +3309,10 @@ static void fmEnterIdle()
   // stay sticky for kFmFaultStickyMs even after FM has dropped into FM_IDLE.
   fm_steer_input_since_ms = 0;
   fm_stop_ms              = 0;
+  // V2.5-Evo - 2026-09-17 - the live stop-reason latch ends with the ramp. fm_last_stop_reason and
+  // fm_last_stop_ms are deliberately NOT cleared here: ?diag reports the most recent stop until
+  // the next one or a reboot, and this function runs on every idle tick.
+  fm_stop_reason          = FM_STOP_NONE;
 
   // V2.5-Evo - 2026-07-25 - A3: leaving FM drops any part-accumulated divergence proof with it, so
   // the next engagement starts its 3 s window from scratch rather than inheriting a stale timer.
@@ -3496,7 +3555,8 @@ void runFmLoop()
   // ---- Evaluate the conditions, split by A3 class ----
   // DEADMAN = condition 1 (throttle). FAULT = conditions 2-7. HOLD = conditions 8-9.
   bool  thr_held = (thr_received >= 25);       // condition 1 (DEADMAN — never a fault)
-  bool  fault_ok = checkFmFaultConditions();   // conditions 2-7 (FAULT)
+  uint8_t fault_reason = FM_STOP_NONE;         // V2.5-Evo - 2026-09-17 - which of 2-7 failed, for the stop latch
+  bool  fault_ok = checkFmFaultConditions(&fault_reason);   // conditions 2-7 (FAULT)
   bool  hard_ok  = thr_held && fault_ok;       // both needed for a trustworthy distance / latch
   bool  speed_ok = false;                      // condition 9 (HOLD — rider moving)
   bool  dist_ok  = false;                      // condition 8 (HOLD — follow geometry)
@@ -4059,6 +4119,15 @@ void runFmLoop()
       // divergence detail used to print at the point of detection, which is upstream of the cap write
       // — so if the USB CDC TX buffer was full (host not draining) Serial.printf() could block and
       // defer the hard stop for as long as the host took. Motor to 0 first, explain afterwards.
+      // V2.5-Evo - 2026-09-17 - STOP-REASON latch, same F7 discipline (after the cap write). A
+      // concrete broken input (conditions 2-7) is named ahead of the two derived judgements so the
+      // record points at the thing that actually failed; if all six hold, divergence outranks the
+      // heading-disagree latch because it is the one measured on this run.
+      if (!fault_ok)                  fm_stop_reason = fault_reason;
+      else if (diverge_fault)         fm_stop_reason = FM_STOP_DIVERGENCE;
+      else                            fm_stop_reason = FM_STOP_HEADING_DISAGREE;
+      fm_last_stop_reason = fm_stop_reason;
+      fm_last_stop_ms     = now;
       if (diverge_fault) {
         Serial.printf("FM [RX] DIVERGENCE FAULT: dist=%.1f m (was %.1f m at dwell start, closed <%.1f m) > limit %.1f m sustained %lu ms — not closing\n",
                       (double)dist_m, (double)diverge_start_m, (double)kFmDivergeCloseEpsM,
@@ -4076,6 +4145,7 @@ void runFmLoop()
       }
       Serial.printf("FM [RX] FAULT -> STOPPING (ramp %lu ms) -> IDLE, re-arm required (thr_held=%d)\n",
                     (unsigned long)kFmStopRampMs, (int)thr_held);
+      Serial.printf("FM [RX] stop reason: %s [%u]\n", fmStopReasonName(fm_stop_reason), (unsigned)fm_stop_reason);
     } else if (was_engaged) {
       // ---- HOLD (cond 8/9) or DEADMAN (cond 1): a geometry / throttle pause, NOT a fault ----
       // Motor stops (cap 0) but FM stays ARMED (declaration held) and auto-resumes to FM_ACTIVE

@@ -1,5 +1,6 @@
 // TX-specific config field table and cross-validation.
 // Shared engine is in ../Common/ConfigServiceEngine.h (included via BREmote_V2_Tx.h).
+// V2.5-Evo - 2026-09-17 - fm_warn_distance_m max 1000 → 164 (kFmDistanceTelemetryMaxM) with a load-time clamp in cfgValidateCrossField(). No struct change.
 // V2.5-Evo - 2026-09-17 - fm_arm_window_s renamed in place to fm_arm_timeout_s; range 10-600 → 0-1800 (0 = never, default). No struct change.
 // V2.5-Evo - 2026-04-27 - P8: Added rtm_display_mode, fm_warn_distance_m, rtm_steer_exit_on_input; rtm_max_runtime_s min changed 30→0
 // V2.5-Evo - 2026-04-28 - P9: Added dist_unit (0=Metres, 1=Feet; range 0-1)
@@ -80,7 +81,11 @@ const CfgFieldSpec kCfgFields[] = {
   {"fm_override_enabled",    CFG_U16, offsetof(confStruct, fm_override_enabled),    true, false, true,  0.0f,   1.0f,    0, false},
   // V2.5-Evo - 2026-04-27 - Priority 8 UX overhaul parameters
   {"rtm_display_mode",         CFG_U16, offsetof(confStruct, rtm_display_mode),         true, false, true,  0.0f,   2.0f,    0, false},  // 0=distance, 1=speed, 2=alternating 2.5s
-  {"fm_warn_distance_m",       CFG_U16, offsetof(confStruct, fm_warn_distance_m),       true, false, true, 50.0f, 1000.0f,   0, false},  // FM proximity warning threshold in meters
+  // V2.5-Evo - 2026-09-17 - max 1000 → 164: the RX→TX rtm_distance byte saturates at 164 m, so a
+  // higher threshold could never be reached and the warning would silently never fire. Values
+  // above 164 already stored are clamped in cfgValidateCrossField() (which every load path runs
+  // BEFORE this range check), so no existing config is rejected.
+  {"fm_warn_distance_m",       CFG_U16, offsetof(confStruct, fm_warn_distance_m),       true, false, true, 50.0f, (float)kFmDistanceTelemetryMaxM, 0, false},  // FM warning-distance haptic threshold, metres
   {"rtm_steer_exit_on_input",  CFG_U16, offsetof(confStruct, rtm_steer_exit_on_input),  true, false, true,  0.0f,   1.0f,    0, false},  // 1=steering exits RTM, 0=blend only
   // V2.5-Evo - 2026-04-27 - Priority 8.1 FM UX redesign parameter
   // V2.5-Evo - 2026-09-17 - renamed from fm_arm_window_s; range widened 10-600 → 0-1800 so 0 (= never
@@ -107,6 +112,16 @@ const size_t kCfgFieldCount = sizeof(kCfgFields) / sizeof(kCfgFields[0]);
 
 bool cfgValidateCrossField(confStruct &candidate, String &err)
 {
+  // V2.5-Evo - 2026-09-17 - fm_warn_distance_m ceiling. Older builds accepted up to 1000 m even
+  // though the one-byte rtm_distance telemetry saturates at 164 m, so a stored 300 was a warning
+  // that could never fire. CLAMP rather than reject: this validator runs on the config LOAD path
+  // as well as every save path, and a range rejection on load falls back to defaults — wiping
+  // pairing and calibration to fix one setting. The clamp corrects it silently instead.
+  if (candidate.fm_warn_distance_m > kFmDistanceTelemetryMaxM)
+  {
+    candidate.fm_warn_distance_m = kFmDistanceTelemetryMaxM;
+  }
+
   if (candidate.max_gears < 1 || candidate.max_gears > 10)
   {
     err = "ERR_RANGE:max_gears";

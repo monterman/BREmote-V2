@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-09-17 - WarnDist: vibrationTask Pattern 8 added — ONE medium 300 ms pulse, the FM warning-distance
+//   haptic. Queued by runFmLoop() (RTMState.ino) immediately when the buggy reaches fm_warn_distance_m and then every
+//   2 s while it stays there; runs with the trigger released. Shorter than the 750 ms STOP, longer than the 150 ms advisory.
 // V2.5-Evo - 2026-09-17 - CHG-ADS FIX: adsReadGuarded() took the ADS1115 mux constant as uint8_t, which truncated
 //   every MUX_BY_CHANNEL[] value (0x4000..0x7000, bits 14:12) to 0 -> every charge-screen read was differential
 //   AIN0-AIN1, never the charger-status or battery pin. The signed int16_t conversion result was also stored
@@ -915,7 +918,7 @@ void checkCharger()
   setBrightness(0x0F);
 }
 
-volatile uint8_t current_vib_pattern = 0;  // active haptic pattern: 0=none, 1=2 short, 2=5 short, 3=5 long, 4=2 fast short (RTM/FM ARM confirm), 5=1 short (magnet 2s "release for FM" advisory), 6=3 fast short (magnet 5s "release for RTM" advisory), 7=1 long (UNCOMMANDED RTM/FM stop, or an arm refusal — request it via vib_stop_pending, never by writing 7 here)
+volatile uint8_t current_vib_pattern = 0;  // active haptic pattern: 0=none, 1=2 short, 2=5 short, 3=5 long, 4=2 fast short (RTM/FM ARM confirm), 5=1 short (magnet 2s "release for FM" advisory), 6=3 fast short (magnet 5s "release for RTM" advisory), 7=1 long (UNCOMMANDED RTM/FM stop, or an arm refusal — request it via vib_stop_pending, never by writing 7 here), 8=1 medium 300ms (FM warning-distance reached; repeats every 2s from runFmLoop)
 
 // ============================================================
 // STOP-BUZZ REQUEST FLAG - how Pattern 7 gets to actually play
@@ -1131,6 +1134,17 @@ void vibrationTask(void *parameter) {
       digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(750));
       digitalWrite(P_MOT, LOW);
       if (current_vib_pattern == 7) current_vib_pattern = 0;
+    }
+    // V2.5-Evo - 2026-09-17 - WarnDist: Pattern 8 — ONE medium 300 ms pulse = the FM warning-distance
+    // haptic. runFmLoop() (RTMState.ino) queues it the moment the buggy reaches fm_warn_distance_m
+    // and then every 2 s while it stays at or beyond it, including with the trigger released.
+    // 300 ms sits between the 150 ms advisory (Pattern 5) and the 750 ms STOP (Pattern 7), so all
+    // three stay distinct by feel. It is queued only when nothing else is playing and no STOP is
+    // pending, and the pulse is bounded, so a STOP that arrives during it is promoted right after.
+    else if (current_vib_pattern == 8) {
+      digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(300));
+      digitalWrite(P_MOT, LOW);
+      if (current_vib_pattern == 8) current_vib_pattern = 0;
     }
 
     // Sleep briefly to prevent hoarding the CPU

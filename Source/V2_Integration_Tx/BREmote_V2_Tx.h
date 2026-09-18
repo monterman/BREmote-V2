@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-09-17 - FM warning-distance haptic: includes ../Common/FollowMeDistanceWarning.h (pure header shared with
+//   the host unit test). fm_warn_distance_m is now LIVE (Pattern 8) with a 164 m ceiling — the one-byte rtm_distance
+//   telemetry saturates there. No confStruct change: sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-09-17 - fm_arm_window_s RENAMED IN PLACE to fm_arm_timeout_s (owner decision 2026-09-15): same slot,
 //   same uint16_t, sizeof(confStruct) stays 136, SW_VERSION stays 27, no SPIFFS reset. Meaning: seconds armed with no
 //   throttle before auto-disarm; 0 = never (new default, was 180). A remote that already stores 180 keeps 180 until
@@ -85,6 +88,7 @@
 */
 #include <Arduino.h>
 #include <atomic>
+#include "../Common/FollowMeDistanceWarning.h"   // V2.5-Evo - 2026-09-17 - FM warning-distance haptic (pure header, host-testable)
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -317,7 +321,9 @@ struct confStruct {
     // First flash of P8 firmware resets all TX settings to defaults.
     // ============================================================
     uint16_t rtm_display_mode;         // RTM/FM active info display: 0=distance(default), 1=speed, 2=alternating 2.5s each
-    uint16_t fm_warn_distance_m;       // TX-RX distance to trigger FM proximity warning vibration; 50-1000m; default 150
+    uint16_t fm_warn_distance_m;       // TX-RX distance to trigger FM proximity warning vibration (Pattern 8); 50-164 m; default 150.
+                                       // V2.5-Evo - 2026-09-17: ceiling 1000 → 164 = kFmDistanceTelemetryMaxM, the largest value
+                                       // the one-byte rtm_distance telemetry can carry; a stored value above it is clamped on load.
     uint16_t rtm_steer_exit_on_input;  // 1=any steering input exits RTM (default); 0=blend/steering correction only
 
     // ============================================================

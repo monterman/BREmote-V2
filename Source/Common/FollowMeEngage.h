@@ -1,11 +1,14 @@
 // V2.5-Evo - 2026-09-18 - Follow-Me engagement rules that do not depend on the trigger (P1-a).
 //   Pure, header-only, no Arduino dependencies, so the host unit test in Tools/tests exercises the
-//   exact code the RX runs. Two rules live here:
+//   exact code the RX runs. Three rules live here:
 //     1. the ENGAGE FLOOR  - the distance the rider must be strictly beyond for Follow-Me to move
 //        from ARMED/HOLD into ACTIVE, never inside the tow rope whatever the tuning;
 //     2. the NEEDS-D_ENGAGE rule - after a long trigger release (or an RTM yield) the first
 //        re-engagement must clear the full separation distance again, because a latch that can now
-//        be earned while swimming must not let the rope (7.1 m) re-engage the buggy on the re-rig.
+//        be earned while swimming must not let the rope (7.1 m) re-engage the buggy on the re-rig;
+//     3. (2026-09-18, review fix) the LIVE-STREAK rule - while rule 2 applies, the first squeeze
+//        also needs the separation streak standing on that tick, so a latch earned far away cannot
+//        be spent close in.
 #ifndef BREMOTE_FOLLOW_ME_ENGAGE_H
 #define BREMOTE_FOLLOW_ME_ENGAGE_H
 
@@ -40,15 +43,46 @@ static inline float followMeEngageThresholdM(float min_dist_m, float band_m, flo
   return threshold_m;
 }
 
+// followMeSeparationStreakStands - is the rider beyond D_engage RIGHT NOW, and have they been for
+// the same evidence the separation latch demands (kFmSepDwellFixes distinct rider fixes over at
+// least kFmSepDwellFloorMs)? The caller's streak counter (fm_sep_fix_count / fm_sep_over_since_ms)
+// counts distinct fixes only while the distance is beyond D_engage and is zeroed the moment it is
+// not, so a standing streak is proof about the CURRENT position, not a memory of an old one.
+// Inputs: fix_count, over_since_ms - the live streak (over_since_ms 0 = not beyond D_engage now).
+//         now_ms, dwell_fixes, dwell_floor_ms - the current time and the latch's own two constants.
+// Returns: true when the live streak would itself satisfy the latch.
+// Side effects: none (pure). Unsigned subtraction survives a millis() wrap.
+static inline bool followMeSeparationStreakStands(uint8_t fix_count, uint32_t over_since_ms,
+                                                  uint32_t now_ms, uint8_t dwell_fixes,
+                                                  uint32_t dwell_floor_ms)
+{
+  return over_since_ms != 0 && fix_count >= dwell_fixes &&
+         (uint32_t)(now_ms - over_since_ms) >= dwell_floor_ms;
+}
+
 // followMeMayEngage - condition 8 for a Follow-Me that is not yet ACTIVE: strictly beyond the
-// threshold above. Strict, exactly like the Schmitt edge it replaces (dist > min_dist + band).
-// Inputs: dist_m - the buggy-to-rider distance this tick; the rest as for the threshold.
+// threshold above, and - while needs_dengage is set - with the separation streak standing NOW.
+// Strict, exactly like the Schmitt edge it replaces (dist > min_dist + band).
+//
+// WHY THE STREAK TERM (code-review finding on the edge-triggered release clear): once the proof can
+// be re-earned off the trigger beyond 10 s, a latch earned while swimming at 20 m would otherwise
+// survive the swim back to the rope, and the only thing left between that latch and an engagement
+// on the first squeeze would be a single-tick dist > D_engage. Demanding the live streak means the
+// first squeeze after a long release engages only if the rider is beyond D_engage on this tick AND
+// has been for the last kFmSepDwellFixes distinct fixes - which at 7.1 m on the rope is impossible,
+// and which a fresh whip satisfies within ~1 s of separating.
+//
+// Inputs: dist_m - the buggy-to-rider distance this tick; streak_stands - from
+//         followMeSeparationStreakStands(); the rest as for the threshold.
 // Returns: true when the distance alone permits an engagement. The trigger, the separation
 //          latch and the fault conditions are separate terms the caller ANDs on top.
 static inline bool followMeMayEngage(float dist_m, float min_dist_m, float band_m, float floor_m,
-                                     float d_engage_m, bool needs_dengage)
+                                     float d_engage_m, bool needs_dengage, bool streak_stands)
 {
-  return dist_m > followMeEngageThresholdM(min_dist_m, band_m, floor_m, d_engage_m, needs_dengage);
+  if (dist_m <= followMeEngageThresholdM(min_dist_m, band_m, floor_m, d_engage_m, needs_dengage)) {
+    return false;
+  }
+  return !needs_dengage || streak_stands;
 }
 
 // followMeReleaseNeedsDengage - the rule that SETS needs_dengage from the trigger-release timer:

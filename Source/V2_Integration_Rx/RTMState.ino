@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-18 - REVIEW FIX (P1-a concern A): the 10 s throttle-release latch clear is now an EDGE - one-shot fm_thr_release_cleared fires it once when the release crosses kFmThrReleaseClearMs and re-arms when the trigger is next held - so the separation proof can be re-earned off the trigger beyond 10 s (it used to be zeroed every tick past 10 s). Because a latch earned at 20 m would then survive the swim back to the rope, the engage edge while fm_reengage_needs_dengage is set now also requires the LIVE separation streak (fm_sep_fix_count >= kFmSepDwellFixes and >= kFmSepDwellFloorMs beyond D_engage on this tick) - followMeSeparationStreakStands() + a streak term in followMeMayEngage(), Common/FollowMeEngage.h, host test extended. The engage evaluation moved below the dwell/latch block so it reads this tick's counters. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-18 - P1-c: RTM > FM - FOLLOW-ME YIELDS TO AN ACTIVE RETURN-TO-ME AND STAYS ARMED THROUGH IT. rtm_rx_active is no longer in runFmLoopBody()'s idle gate; a yield block just below it forces ACTIVE/HOLD/STOPPING -> FM_ARMED on the first tick RTM is seen (one transition, printed once: fm_rx_active false, fm_throttle_cap 255 as the FM_ARMED semantics so a HOLD's cap 0 cannot stall the return, latch and dwell cleared, fm_reengage_needs_dengage set, divergence/pivot/grace/steer-cancel/stop-ramp bookkeeping reset, rtm_steer_override NOT written - RTM owns it), then writes nothing at all while rtm_rx_active holds; IDLE stays IDLE; fm_mode_runtime is never touched. When RTM ends by any of its own paths FM is ARMED, unlatched, needs-D_engage, and re-engages only by the P1-a rules. fmEnterIdle() no longer runs on RTM ticks. New static fm_yielding_to_rtm + read-only accessors (fmStateName/fmStateCode/fmSepLatched/fmNeedsDengage/fmYieldingToRtm) for the ?diag line in System.ino. Deep log: FM_LOG_GATE_YIELD_TO_RTM (bit 14). RTM's gates, caps and steering untouched. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-18 - P1-a: FOLLOW-ME ENGAGES ON SEPARATION ALONE. The separation proof (distance, conditions 8/9, the R-4 fix-counted dwell, the latch) is gated by proof_ok = fault_ok instead of hard_ok = thr_held && fault_ok, so it runs with the trigger released and a rider who whips, releases and rides away has the latch standing on the first squeeze; hard_ok stays the authority term in can_be_active and still gates the divergence/pivot bookkeeping, and the no-trustworthy-distance branch resets the dwell only on !fault_ok. The engage edge for a non-ACTIVE Follow-Me is now dist > max(min_dist + band, kFmEngageDistFloorM) (8 m at factory 4+2, was 6 m - below the 7.1 m rope), and after a trigger release of kFmEngageGraceMs (2 s) or more the new static fm_reengage_needs_dengage raises it to d_engage (12 m owner / 8 m floor) until the next ACTIVE edge, so a latch earned off the trigger can never engage on the rope at the re-rig. Both rules are pure functions in Common/FollowMeEngage.h with a host test. kFmSepDwellFixes / kFmSepDwellFloorMs / rx_tx_gps_fix_seq and the 10 s release clear are unchanged; fm_flags bit 2 semantics unchanged. Deep log: FM_LOG_GATE_PROOF_OK / _NEEDS_DENGAGE (bits 12/13), fm_distance logged whenever proof_ok. Nothing new moves the buggy without the trigger. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-17 - DEEP-LOG PUBLISH-FROM-CONTROLLER (P0-g): runFmLoop() is now a thin wrapper — 10 Hz rate limit, reset this tick's log fields, run the body, then fmPublishLogSnapshot() fills g_fm_log_snapshot under taskENTER_CRITICAL exactly once per tick whatever path the body took. The body (runFmLoopBody) records its gate verdicts into fm_log_gate_flags / fm_log_dist_dx10 / fm_log_d_engage_dx10 at the point each is evaluated. The logger copies the snapshot and never recomputes a gate. Instrumentation only: no control decision reads any of these, no confStruct change, sizeof stays 192, SW_VERSION stays 35.
@@ -1530,6 +1531,8 @@ static const uint32_t kFmSepDwellFloorMs     = 350;    // ms; backstop against b
 // the trigger, so the latch dies with the run and the next tow starts unlatched — FM cannot
 // engage again until separation has been re-proven. A rider linking waves keeps the trigger
 // held and therefore keeps the latch. Same 25-count threshold FM condition 1 uses.
+// V2.5-Evo - 2026-09-18 - It fires ONCE per release (edge), not on every tick past 10 s: see
+// fm_thr_release_cleared. The proof may then be re-earned off the trigger during the same release.
 static const uint32_t kFmThrReleaseClearMs   = 10000;  // ms
 
 // How long the RX keeps a TX-declared FM mode alive without a refresh.
@@ -1775,6 +1778,17 @@ static uint32_t      fm_sep_last_seq      = 0;
 // millis() when thr_received first dropped below 25; 0 = throttle currently held.
 // Counts the kFmThrReleaseClearMs window that clears the latch at the end of a run.
 static unsigned long fm_thr_low_since_ms  = 0;
+
+// V2.5-Evo - 2026-09-18 - THE 10 s RELEASE CLEAR IS AN EDGE (code-review ruling on the P1-a
+// concern). It used to re-run on every tick past 10 s, zeroing the dwell each time, so with the
+// proof now running off the trigger the latch could never be re-earned during a long swim - the
+// water protocol's first step (release, separate, first squeeze engages) failed as built, and the TX
+// "ready" cue flip-flopped at 10 s. This one-shot fires the clear exactly once when the release
+// crosses kFmThrReleaseClearMs and re-arms when the trigger is next held (fm_thr_low_since_ms back
+// to 0), so beyond 10 s the dwell may accumulate again and the latch re-sets on the next
+// kFmSepDwellFixes distinct fixes beyond D_engage, no gesture, no trigger. What keeps that safe on
+// the swim back to the rope is the live-streak rule on the first squeeze (followMeMayEngage()).
+static bool          fm_thr_release_cleared = false;
 
 // V2.5-Evo - 2026-09-18 - P1-a: THE FIRST ENGAGEMENT AFTER A LONG RELEASE REQUIRES D_ENGAGE.
 // WHY IT EXISTS. Separation is now proven WITHOUT the trigger (proof_ok = fault_ok in runFmLoop),
@@ -3392,6 +3406,7 @@ static void fmEnterIdle()
   fm_sep_over_since_ms = 0;
   fm_sep_fix_count     = 0;   // DWELL-1: the fix count resets with the dwell
   fm_thr_low_since_ms  = 0;
+  fm_thr_release_cleared = false;     // the release clear's one-shot re-arms with its timer
   fm_reengage_needs_dengage = true;   // P1-a: a fresh declaration must clear D_engage before it may engage
   fm_yielding_to_rtm   = false;       // P1-c: leaving FM entirely ends any yield edge tracking too
 
@@ -3730,7 +3745,11 @@ static void runFmLoopBody(unsigned long now)
       if (followMeReleaseNeedsDengage((uint32_t)fm_thr_low_since_ms, (uint32_t)now, kFmEngageGraceMs)) {
         fm_reengage_needs_dengage = true;
       }
-      if ((now - fm_thr_low_since_ms) >= kFmThrReleaseClearMs) {
+      // V2.5-Evo - 2026-09-18 - EDGE, not level: fires once per release (see fm_thr_release_cleared).
+      // A level clear zeroed the dwell every tick past 10 s and made the off-trigger proof
+      // impossible during a long swim. The clear itself is unchanged.
+      if (!fm_thr_release_cleared && (now - fm_thr_low_since_ms) >= kFmThrReleaseClearMs) {
+        fm_thr_release_cleared = true;
         if (fm_sep_latched || fm_state == FM_HOLD) {
           Serial.println("FM [RX] throttle released 10s -> separation latch cleared, ARMED-unlatched");
         }
@@ -3745,7 +3764,8 @@ static void runFmLoopBody(unsigned long now)
       }
     }
   } else {
-    fm_thr_low_since_ms = 0;
+    fm_thr_low_since_ms    = 0;
+    fm_thr_release_cleared = false;   // trigger held: the next release gets its own one-shot clear
   }
 
   // ---- Evaluate the conditions, split by A3 class ----
@@ -3898,19 +3918,8 @@ static void runFmLoopBody(unsigned long now)
     if (d_engage < kFmEngageDistFloorM) d_engage = kFmEngageDistFloorM;
     fm_log_d_engage_dx10 = (uint16_t)(d_engage * 10.0f + 0.5f);   // P0-g: the engage distance in force this tick
 
-    // ---- Condition 8, the ENGAGE edge (V2.5-Evo - 2026-09-18 - P1-a) ----
-    // dist > max(min_dist + band, kFmEngageDistFloorM), and while fm_reengage_needs_dengage is set,
-    // dist > d_engage as well. WHY THE FLOOR: the Schmitt edge alone is 9 m at the owner's tuning
-    // but 6 m at the factory 4 + 2 - BELOW the 7.1 m rope - and with a latch that can now be set
-    // off the trigger, a stale latch plus a slow drift back toward the buggy could engage on the
-    // rope at default tuning (the GPS teleport guard in Radio.ino cannot see a slow drift). 8 m
-    // clears the rope at every tuning. WHY D_ENGAGE AFTER A LONG RELEASE: see the flag's
-    // declaration. Both can only RAISE the edge - engage later, never earlier. Pure function,
-    // host-tested: Common/FollowMeEngage.h, Tools/tests/follow_me_engage_test.cpp.
-    if (fm_state != FM_ACTIVE) {
-      dist_ok = followMeMayEngage(dist_m, min_dist, band, kFmEngageDistFloorM,
-                                  d_engage, fm_reengage_needs_dengage);
-    }
+    // (Condition 8's ENGAGE edge is evaluated just past the dwell/latch block below, because since
+    //  the 2026-09-18 review fix it also reads this tick's separation streak.)
     // ==========================================================================================
     // V2.5-Evo - 2026-08-26 - DWELL-1. The dwell now counts RIDER FIXES, not milliseconds.
     //
@@ -3975,6 +3984,29 @@ static void runFmLoopBody(unsigned long now)
     } else {
       fm_sep_over_since_ms = 0;   // fell back inside D_engage - the dwell restarts from scratch
       fm_sep_fix_count     = 0;
+    }
+
+    // ---- Condition 8, the ENGAGE edge (V2.5-Evo - 2026-09-18 - P1-a; streak term added in the review fix) ----
+    // dist > max(min_dist + band, kFmEngageDistFloorM), and while fm_reengage_needs_dengage is set,
+    // dist > d_engage as well AND the separation streak must be standing on THIS tick (the same
+    // kFmSepDwellFixes / kFmSepDwellFloorMs evidence the latch needs, read from the live counters
+    // the block above just updated - which is why this sits below it).
+    // WHY THE FLOOR: the Schmitt edge alone is 9 m at the owner's tuning but 6 m at the factory
+    // 4 + 2 - BELOW the 7.1 m rope - and with a latch that can now be set off the trigger, a stale
+    // latch plus a slow drift back toward the buggy could engage on the rope at default tuning (the
+    // GPS teleport guard in Radio.ino cannot see a slow drift). The floor clears the rope at every
+    // tuning. WHY D_ENGAGE AFTER A LONG RELEASE: see the flag's declaration. WHY THE STREAK: with
+    // the release clear now an edge, a latch earned at 20 m while swimming survives the swim back
+    // to the rope; the streak makes the first squeeze prove the CURRENT position, not remember an
+    // old one - impossible at 7.1 m, ~1 s after a real whip. All three can only RAISE the edge -
+    // engage later, never earlier. Pure functions, host-tested: Common/FollowMeEngage.h,
+    // Tools/tests/follow_me_engage_test.cpp.
+    if (fm_state != FM_ACTIVE) {
+      const bool streak_stands = followMeSeparationStreakStands(
+          fm_sep_fix_count, (uint32_t)fm_sep_over_since_ms, (uint32_t)now,
+          kFmSepDwellFixes, kFmSepDwellFloorMs);
+      dist_ok = followMeMayEngage(dist_m, min_dist, band, kFmEngageDistFloorM,
+                                  d_engage, fm_reengage_needs_dengage, streak_stands);
     }
   } else {
     // No trustworthy distance this tick (GPS stale/rejected, handshake failing, no heading, link

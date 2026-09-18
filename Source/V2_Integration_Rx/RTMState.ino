@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-18 - P1-c: RTM > FM - FOLLOW-ME YIELDS TO AN ACTIVE RETURN-TO-ME AND STAYS ARMED THROUGH IT. rtm_rx_active is no longer in runFmLoopBody()'s idle gate; a yield block just below it forces ACTIVE/HOLD/STOPPING -> FM_ARMED on the first tick RTM is seen (one transition, printed once: fm_rx_active false, fm_throttle_cap 255 as the FM_ARMED semantics so a HOLD's cap 0 cannot stall the return, latch and dwell cleared, fm_reengage_needs_dengage set, divergence/pivot/grace/steer-cancel/stop-ramp bookkeeping reset, rtm_steer_override NOT written - RTM owns it), then writes nothing at all while rtm_rx_active holds; IDLE stays IDLE; fm_mode_runtime is never touched. When RTM ends by any of its own paths FM is ARMED, unlatched, needs-D_engage, and re-engages only by the P1-a rules. fmEnterIdle() no longer runs on RTM ticks. New static fm_yielding_to_rtm + read-only accessors (fmStateName/fmStateCode/fmSepLatched/fmNeedsDengage/fmYieldingToRtm) for the ?diag line in System.ino. Deep log: FM_LOG_GATE_YIELD_TO_RTM (bit 14). RTM's gates, caps and steering untouched. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-18 - P1-a: FOLLOW-ME ENGAGES ON SEPARATION ALONE. The separation proof (distance, conditions 8/9, the R-4 fix-counted dwell, the latch) is gated by proof_ok = fault_ok instead of hard_ok = thr_held && fault_ok, so it runs with the trigger released and a rider who whips, releases and rides away has the latch standing on the first squeeze; hard_ok stays the authority term in can_be_active and still gates the divergence/pivot bookkeeping, and the no-trustworthy-distance branch resets the dwell only on !fault_ok. The engage edge for a non-ACTIVE Follow-Me is now dist > max(min_dist + band, kFmEngageDistFloorM) (8 m at factory 4+2, was 6 m - below the 7.1 m rope), and after a trigger release of kFmEngageGraceMs (2 s) or more the new static fm_reengage_needs_dengage raises it to d_engage (12 m owner / 8 m floor) until the next ACTIVE edge, so a latch earned off the trigger can never engage on the rope at the re-rig. Both rules are pure functions in Common/FollowMeEngage.h with a host test. kFmSepDwellFixes / kFmSepDwellFloorMs / rx_tx_gps_fix_seq and the 10 s release clear are unchanged; fm_flags bit 2 semantics unchanged. Deep log: FM_LOG_GATE_PROOF_OK / _NEEDS_DENGAGE (bits 12/13), fm_distance logged whenever proof_ok. Nothing new moves the buggy without the trigger. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-17 - DEEP-LOG PUBLISH-FROM-CONTROLLER (P0-g): runFmLoop() is now a thin wrapper — 10 Hz rate limit, reset this tick's log fields, run the body, then fmPublishLogSnapshot() fills g_fm_log_snapshot under taskENTER_CRITICAL exactly once per tick whatever path the body took. The body (runFmLoopBody) records its gate verdicts into fm_log_gate_flags / fm_log_dist_dx10 / fm_log_d_engage_dx10 at the point each is evaluated. The logger copies the snapshot and never recomputes a gate. Instrumentation only: no control decision reads any of these, no confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-17 - FM STOP-REASON latch (comparison row 19): checkFmFaultConditions() now names which of conditions 2-7 failed through an out-param; the FAULT branch latches fm_stop_reason AFTER fm_throttle_cap = 0 (F7 order) and prints it; fmEnterIdle() clears the live latch at the end of the stop ramp. fm_last_stop_reason / fm_last_stop_ms keep the most recent stop for ?diag (System.ino) until the next one or a reboot. Read-only accessors, no control-path change, no confStruct change, sizeof stays 192, SW_VERSION stays 35.
@@ -1729,7 +1730,7 @@ static unsigned long fm_engage_ms        = 0;
 //   geometry alone — only by the throttle-release clear, a mode change, or entering FM_IDLE.
 //   V2.5-Evo - 2026-09-18 - P1-a: "during this throttle-hold session" above is now history. The
 //   proof runs off the trigger (proof_ok = fault_ok), so the latch can be earned while the rider
-//   is off the trigger; the three clears above are unchanged.
+//   is off the trigger; the three clears above are unchanged, and the RTM yield (P1-c) is a fourth.
 static bool          fm_sep_latched      = false;
 
 // millis() when the rider first went beyond D_engage; 0 = not currently beyond it.
@@ -1786,13 +1787,21 @@ static unsigned long fm_thr_low_since_ms  = 0;
 // can never pass that. See followMeEngageThresholdM() in Common/FollowMeEngage.h.
 //   SET   : when the trigger has been released continuously for kFmEngageGraceMs (2000 ms) - the
 //           same timer the 10 s latch clear counts, read at 2 s - and by every path that leaves FM
-//           (fmEnterIdle).
+//           (fmEnterIdle) or parks it (the RTM yield, P1-c).
 //   CLEAR : on the ARMED/HOLD -> ACTIVE edge only. A rider linking waves who releases the trigger
 //           for under 2 s keeps the ordinary 9 m edge, exactly as before.
 // Starts TRUE so the very first engagement after boot or a fresh declaration must clear D_engage,
 // which the separation latch already requires on the fixes that set it - a no-op in practice, and
 // the safe default if the latch and this flag ever disagree.
 static bool          fm_reengage_needs_dengage = true;
+
+// V2.5-Evo - 2026-09-18 - P1-c: RTM > FM. True from the first tick runFmLoop() sees rtm_rx_active
+// until the first tick it does not. On the rising edge Follow-Me parks (ACTIVE/HOLD/STOPPING ->
+// ARMED, latch cleared, needs-D_engage set); while it stands Follow-Me writes nothing into the
+// control path - RTM owns fm_throttle_cap's slot in the chain (it is left at 255) and
+// rtm_steer_override outright. Read by ?diag through fmYieldingToRtm(). See the yield block in
+// runFmLoopBody() for the full reasoning.
+static bool          fm_yielding_to_rtm = false;
 
 // ---- A3 fault-stop + steer-cancel state (V2.5-Evo - 2026-07-20) ----
 // millis() when FM entered FM_STOPPING; drives the 0 -> 255 fault ramp. 0 = not stopping.
@@ -1847,6 +1856,26 @@ static const char* fmStopReasonName(uint8_t r)
 static uint8_t       fmStopReason()     { return fm_stop_reason; }
 static uint8_t       fmLastStopReason() { return fm_last_stop_reason; }
 static unsigned long fmLastStopMs()     { return fm_last_stop_ms; }
+
+// V2.5-Evo - 2026-09-18 - P1-a/P1-c: the engagement facts ?diag prints on one line - the FM state,
+// whether the separation latch stands, whether the next engagement must clear the full D_engage,
+// and whether Follow-Me is currently yielding to an active Return-to-Me. Read-only, like the three
+// above; System.ino is concatenated after this file, so the statics are visible there.
+static const char* fmStateName(uint8_t s)
+{
+  switch (s) {
+    case FM_IDLE:     return "IDLE";
+    case FM_ARMED:    return "ARMED";
+    case FM_ACTIVE:   return "ACTIVE";
+    case FM_HOLD:     return "HOLD";
+    case FM_STOPPING: return "STOPPING";
+    default:          return "unknown";
+  }
+}
+static uint8_t fmStateCode()      { return (uint8_t)fm_state; }
+static bool    fmSepLatched()     { return fm_sep_latched; }
+static bool    fmNeedsDengage()   { return fm_reengage_needs_dengage; }
+static bool    fmYieldingToRtm()  { return fm_yielding_to_rtm; }
 
 // ---- V2.5-Evo - 2026-09-17 - DEEP-LOG hand-off (P0-g): this tick's verdicts, for the logger ----
 // Reset by runFmLoop() at the top of every tick and written by runFmLoopBody() at the point each
@@ -3319,8 +3348,10 @@ static uint16_t fmComputeThrottleCap(float dist_m, unsigned long now)
 // ------------------------------------------------------------
 // fmEnterIdle - drop FM fully out of the control path
 // ------------------------------------------------------------
-// Used when FM is switched off (mode 0), when RTM arms and takes the buggy, or when GPS/RTM
-// is disabled in config. Clears the throttle cap back to 255 so the rider's manual throttle
+// Used when FM is switched off (mode 0) or when GPS/RTM is disabled in config. (Until 2026-09-18
+// it was also the RTM-arm path; since P1-c an active RTM makes Follow-Me YIELD to FM_ARMED instead
+// - see the yield block in runFmLoopBody() - so this function no longer runs during an RTM run
+// and "if RTM has just armed" below is history.) Clears the throttle cap back to 255 so the rider's manual throttle
 // passes through completely untouched, drops the steering override, and cold-starts the rider
 // tracking so the next arm begins from a clean filter rather than a stale position.
 //
@@ -3362,6 +3393,7 @@ static void fmEnterIdle()
   fm_sep_fix_count     = 0;   // DWELL-1: the fix count resets with the dwell
   fm_thr_low_since_ms  = 0;
   fm_reengage_needs_dengage = true;   // P1-a: a fresh declaration must clear D_engage before it may engage
+  fm_yielding_to_rtm   = false;       // P1-c: leaving FM entirely ends any yield edge tracking too
 
   // V2.5-Evo - 2026-07-20 - A3: clear the steer-cancel persistence timer and the fault-ramp clock.
   // fm_fault_alarm_ms is deliberately NOT reset here: the surprise-gated stop notification must
@@ -3451,9 +3483,11 @@ static void fmEnterIdle()
 //   ACTIVE it computes the trailing target, hands it to the shared steering controller, and
 //   recomputes the throttle cap chain.
 //
-//   Mutual exclusion with RTM is absolute: if rtm_rx_active is set, FM drops to IDLE and stops
-//   writing anything into the control path. RTM arming therefore silently disarms FM, which is
-//   the existing documented behaviour.
+//   Mutual exclusion with RTM is absolute: if rtm_rx_active is set, FM stops writing anything into
+//   the control path. V2.5-Evo - 2026-09-18 - P1-c: it no longer drops to IDLE to do so. RTM
+//   arming makes Follow-Me YIELD - park in FM_ARMED with the latch cleared - and the declaration
+//   survives the return, so the owner's loop "stop, bring the buggy back, whip again" needs no
+//   re-arm. RTM > FM: see the yield block below.
 //
 // Inputs:  fm_mode_runtime (0xFF = no TX declaration this session = FM_IDLE), fm_mode_last_rx_ms,
 //          all GPS/link globals, the eight FM SPIFFS parameters.
@@ -3518,10 +3552,87 @@ static void runFmLoopBody(unsigned long now)
     }
   }
 
-  // ---- FM_IDLE: FM off / never declared (0xFF), RTM owns the buggy, or GPS/RTM disabled ----
-  if (!usrConf.gps_en || !usrConf.rtm_rx_enabled || rtm_rx_active || m < 1 || m > 3) {
+  // ---- FM_IDLE: FM off / never declared (0xFF), or GPS/RTM disabled ----
+  // V2.5-Evo - 2026-09-18 - P1-c: rtm_rx_active is no longer a member of this gate. An active RTM
+  // used to drive Follow-Me to IDLE here (and the TX sent 0xF2/0 first, so the declaration was
+  // gone as well). It now goes to the yield block directly below instead. A mode of 0 still lands
+  // here during an RTM run - the TX's fault-stop disarm (0xF2/0 on fm_flags bit 3) keeps working.
+  if (!usrConf.gps_en || !usrConf.rtm_rx_enabled || m < 1 || m > 3) {
     fmEnterIdle();
     return;
+  }
+
+  // ============================================================
+  // V2.5-Evo - 2026-09-18 - P1-c: RTM > FM. FOLLOW-ME YIELDS WHILE RETURN-TO-ME RUNS, AND STAYS
+  // ARMED THROUGH IT.
+  //
+  // WHAT IT REPLACES. The TX called fmSilentDisarm() before every RTM arm ("Bug2 + Finding 1-4"),
+  // sending 0xF2/0 so this loop dropped Follow-Me to IDLE for the whole return. The concern behind
+  // it was a stale fm_mode_runtime on the RX; the RX now handles that here. Under the always-armed
+  // philosophy a disarm was wrong: the owner's loop is "stop -> bring the buggy back -> whip again"
+  // and the rider should never have to re-do the FM gesture after a return.
+  //
+  // WHAT IT DOES. On the FIRST tick rtm_rx_active is seen (one transition, printed once):
+  //   - FM_ACTIVE / FM_HOLD / a running FM_STOPPING ramp -> FM_ARMED. FM_IDLE stays FM_IDLE.
+  //   - fm_rx_active = false and fm_throttle_cap = 255. This is the ONE cap write of the yield and
+  //     it is the FM_ARMED semantics ("throttle chain inactive, cap 255"): without it a HOLD's cap of
+  //     0 or a half-finished stop ramp would sit in calcPWM()'s min() chain for the whole return and
+  //     RTM could never move the buggy. It hands the slot to RTM; it cannot add throttle (255 is
+  //     "no cap", and output stays min(rider_throttle, caps)).
+  //   - the separation latch and its dwell are cleared, fm_reengage_needs_dengage is set (P1-a), and
+  //     the divergence / pivot / engage-grace / steer-cancel / stop-ramp bookkeeping is reset.
+  //   - rtm_steer_override is NOT written. runRtmLoop() runs before this function in loop() and
+  //     RTM already owns it on this tick (updateRtmSteering(), or gate 1's neutral 127).
+  // On EVERY tick while rtm_rx_active holds: nothing. No cap, no steering, no state change. FM only
+  // parks; RTM's gates, caps and steering are untouched by this change.
+  //
+  // HANDOVER BACK. When rtm_rx_active falls - RTM completed, stopped or aborted, by any of its own
+  // paths, none of which change here - Follow-Me is FM_ARMED, unlatched, needs-D_engage set. It
+  // re-engages only by the P1-a rules: 3 distinct fixes beyond D_engage set the latch, and the
+  // engage edge is D_engage itself. The rope at 7.1 m can never re-engage it. fm_mode_runtime is
+  // never touched here: the TX keeps its 30 s 0xF2 keepalive running through the return, so the
+  // 95 s mode-age expiry above keeps its meaning.
+  //
+  // SAFETY DIRECTION. The yield only ever REMOVES Follow-Me's authority: fm_rx_active goes false,
+  // the cap goes to "none", the latch is cleared and the re-engage bar is raised. It writes no
+  // throttle, no steering, and touches no RTM variable. The deadman is untouched.
+  // ============================================================
+  if (rtm_rx_active) {
+    fm_log_gate_flags |= FM_LOG_GATE_YIELD_TO_RTM;   // P0-g bit 14: every tick of the yield
+    if (!fm_yielding_to_rtm) {
+      fm_yielding_to_rtm = true;
+      if (fm_state != FM_IDLE) {
+        const uint8_t from = (uint8_t)fm_state;
+        fm_state            = FM_ARMED;
+        fm_rx_active        = false;
+        fm_throttle_cap     = 255;      // the one cap write: FM_ARMED semantics, slot handed to RTM
+        fm_engage_ms        = 0;        // engage ramp / grace: any later engagement ramps from zero
+        fm_steer_input_since_ms = 0;
+        fm_stop_ms          = 0;        // a stop ramp in progress is abandoned; the last reason stays for ?diag
+        fm_stop_reason      = FM_STOP_NONE;
+        fm_sep_latched      = false;    // the return ends the run; separation must be re-proven
+        fm_sep_over_since_ms = 0;
+        fm_sep_fix_count    = 0;
+        fm_reengage_needs_dengage = true;   // P1-a: and the first re-engagement needs the full D_engage
+        fm_diverge_since_ms     = 0;
+        fm_diverge_start_dist_m = -1.0f;
+        fm_pivot_since_ms     = 0;
+        fm_pivot_best_err_deg = 180.0f;
+        fm_pivot_stall_ms     = 0;
+        fm_pivot_failed       = false;
+        Serial.printf("FM [RX] RTM active -> Follow-Me yields: %s -> ARMED (latch cleared, needs D_engage to re-engage)\n",
+                      fmStateName(from));
+      }
+    }
+    return;
+  }
+  if (fm_yielding_to_rtm) {
+    // Falling edge: RTM has ended by one of its own paths. Follow-Me is exactly where the yield
+    // left it - ARMED, unlatched, needs-D_engage - or IDLE if it was IDLE. Say so once.
+    fm_yielding_to_rtm = false;
+    if (fm_state != FM_IDLE) {
+      Serial.println("FM [RX] RTM ended -> Follow-Me still ARMED (unlatched; 3 fixes beyond D_engage to re-engage)");
+    }
   }
 
   // ============================================================
@@ -3540,6 +3651,8 @@ static void runFmLoopBody(unsigned long now)
   // AND IT IS DELIBERATELY BELOW THE GATE, NOT ABOVE IT. Above the gate this line would run on
   // every tick RTM owns the buggy — FM is held in FM_IDLE for the whole of an RTM engagement — and
   // that is exactly the wipe-every-tick bug this whole change set exists to undo.
+  // V2.5-Evo - 2026-09-18 - P1-c: since the yield, FM is held in FM_ARMED (or stays IDLE) during an
+  // RTM run and the yield block returns before this line, so it still cannot run on RTM ticks.
   //
   // The clear runs BEFORE checkFmFaultConditions() below calls getRtmHeading(), so a disagreement
   // that is still genuinely present is re-measured and re-opens its dwell on this very tick; it

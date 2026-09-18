@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-18 - comment only: the magnet RTM-arm branch said setRtmArmed() disarms FM; it no longer does (Follow-Me stays armed through a return since 2026-09-18). No code change.
 // V2.5-Evo - 2026-09-17 - GestureAbort (Rex B7 case 2): handleGearToggle() now aborts any toggle hold the
 //   moment the trigger is squeezed (thr_scaled > 3 with steer_enabled, the same gate calcFilter() uses to hand
 //   the toggle to steering). Applies to the simple 2s holds, both combo holds and the post-action release wait. On abort
@@ -716,9 +717,10 @@ void runMagGesture()
       }
       else
       {
-        // RTM disarmed → ARM. setRtmArmed() is only the gesture half of RTM arming: it disarms FM
-        // (mutual exclusion), sets RTM_ARMED, zeroes rtm_thr_cap_tx, then runs the blocking
-        // runDoubleSqueezeArm() throttle-squeeze ceremony — exactly as the toggle path does.
+        // RTM disarmed → ARM. setRtmArmed() is only the gesture half of RTM arming: it sets
+        // RTM_ARMED, zeroes rtm_thr_cap_tx, then runs the blocking runDoubleSqueezeArm()
+        // throttle-squeeze ceremony — exactly as the toggle path does. (It no longer disarms FM:
+        // since 2026-09-18 Follow-Me stays armed through a return and the RX yields instead.)
         setRtmArmed();
       }
     }

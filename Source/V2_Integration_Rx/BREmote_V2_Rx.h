@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-18 - P1-c (Follow-Me stays armed through a Return-to-Me): adds FM_LOG_GATE_YIELD_TO_RTM (bit 14) to the deep-log gate word - a new bit in the existing u32, record size unchanged. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-18 - P1-a (trigger-free Follow-Me engagement): includes ../Common/FollowMeEngage.h (pure engage floor + needs-D_engage rule, host-tested in Tools/tests/follow_me_engage_test.cpp) and adds FM_LOG_GATE_PROOF_OK (bit 12) / FM_LOG_GATE_NEEDS_DENGAGE (bit 13) to the deep-log gate word - new bits in the existing u32, record size unchanged, bit 11 stays reserved for P1-b. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-17 - DEEP-LOG FM AUDIT COLUMNS (comparison row 13, adapted onto our 65 B level-4 record): VescLogDataL4 gains an 18-byte Follow-Me block (fm_gate_flags u32, fm_distance_dx10, fm_d_engage_dx10, fm_rider_speed_dx10, fm_sep_fix_count, fm_mode, fm_state, fm_block_reason, fm_throttle_cap, fm_station_deg_x10, 1 B pad) -> sizeof 65 -> 83, static_assert 83. The P1/P2 fields (return_candidate / fade_bypass / transit bits, fm_station_deg_x10) are laid out NOW and zero-filled so the record never changes again. PUBLISH-FROM-CONTROLLER: runFmLoop() fills g_fm_log_snapshot under taskENTER_CRITICAL once per 10 Hz tick and Logger.ino copies it - the logger never recomputes a gate. Old 65 B level-4 files still parse: the file header's record_size selects the column set (logCsvHeaderFor) and logFormatCsvRow() guards each block on the bytes actually present. Deep logging at 3 Hz now holds about 2.0 h in 1757 KB (was about 2.5 h). Log record only: NO confStruct change, sizeof(confStruct) stays 192, SW_VERSION stays 35, SPIFFS config is NOT reset by this flash.
 // V2.5-Evo - 2026-08-17 - COMMENT-ONLY size correction (no code, no struct, no SW_VERSION change): the mag_orientation block claimed "sizeof 184 -> 188". The finished struct is 192 — mag_orientation (2) plus the two reserved slots rsvd_u16_1 (2) and rsvd_f32_1 (4) that landed in the same SW34->35 edit, naturally aligned with no tail pad. The static_assert has always said 192; only the prose was wrong. Corrected in three places: the mag_orientation block, the "confStruct is 184 bytes" line in the log_level block (retensed as history), and the static_assert's own trailing history, which never recorded the 184->192 step and now does. Flagged as load-bearing rather than cosmetic because the SW34->35 config-backup migration is pinned to the exact counts 184 (legacy) and 192 (current) and disables itself if either stops matching. Every remaining "184" in this file sits inside a dated change-history entry and is correct AS HISTORY — the static_assert is the SSOT for the current size.
@@ -1043,6 +1044,8 @@ static_assert(sizeof(VescLogData) == 59, "VescLogData size mismatch — check bi
 //                           evaluated this tick WITHOUT the trigger (P1-a: proof_ok = fault_ok)
 //   bit 13 needs_dengage    the next engagement must clear the full D_engage (set by a trigger
 //                           release of kFmEngageGraceMs or more; cleared on the ACTIVE edge)
+//   bit 14 yield_to_rtm     P1-c: Return-to-Me is active and Follow-Me is parked in FM_ARMED,
+//                           writing no cap and no steering. The only bit set on such a tick.
 // Bits 0-3, 5-7 are only evaluated on ticks that reach the condition block (FM_ARMED and beyond
 // with a live declaration); on IDLE / STOPPING / early-exit ticks the whole word is 0.
 // ============================================================
@@ -1060,6 +1063,7 @@ static_assert(sizeof(VescLogData) == 59, "VescLogData size mismatch — check bi
 #define FM_LOG_GATE_RETURN_CANDIDATE  (1UL << 11)   // P1-b, reserved
 #define FM_LOG_GATE_PROOF_OK          (1UL << 12)   // P1-a
 #define FM_LOG_GATE_NEEDS_DENGAGE     (1UL << 13)   // P1-a
+#define FM_LOG_GATE_YIELD_TO_RTM      (1UL << 14)   // P1-c
 
 struct __attribute__((packed)) VescLogDataL4 {
     VescLogData base;              // the complete level-3 record, unchanged and first — do not reorder

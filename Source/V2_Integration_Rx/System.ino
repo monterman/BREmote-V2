@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-18 - ?diag gained ONE more line (P1-a/P1-c): the Follow-Me engagement facts - state, separation latch, whether the next engagement needs the full D_engage, and whether FM is yielding to an active RTM - through read-only accessors in RTMState.ino. No control-path change, no confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-17 - ?diag gained ONE line: the last Follow-Me fault-stop reason (which of conditions 2-7, divergence or the heading-disagree latch ended the run) and how long ago, plus whether a stop ramp is in progress right now. Read-only accessors from RTMState.ino (fmLastStopReason / fmLastStopMs / fmStopReason); nothing set, cleared or aged.
 // V2.5-Evo - 2026-08-17 - ?diag gained ONE line: whether the compass-vs-GPS-course disagreement latch is standing. WHY IT WAS NEEDED: that latch withdraws the compass from the heading ladder for the whole session and stops Follow-Me engaging, and until now there was no way to ASK the board about it. The one-shot serial notice prints at the instant the fault latches — typically while the buggy is on the bench, long before the rider is on the water — and then scrolls away, and the latch is deliberately not a confStruct field, not a telemetry byte and not a new log column, so nothing else could answer the question. ?diag is the right home: it is the non-blocking snapshot command, safe to run with RTM or FM engaged, and it already reports the COG-frozen evidence the same guard family is built on. Read-only — it calls the existing headingDisagreeLatched() accessor in RTMState.ino, which cannot set, clear or age anything. No new command, no confStruct change, no telemetry byte, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-08-17 - COMMENTS ONLY, no code touched: the two version-tag lines below described the abort work INACCURATELY, and this file's header is the project's change record for it. (1) The first 2026-08-16 line listed six commands as "NOT reachable ... and NOT safely abortable part-way" - ?gpscfg, ?gpsbaud, ?gpssetup, ?download, ?deleteallogs, ?wifiupd - but FOUR of the six were given abort points in that very change (?gpscfg GPS.ino:1324/1347/1379, ?gpsbaud :1529/:1558, ?download Logger.ino:835, ?deleteallogs Logger.ino:932). Only ?gpssetup and ?wifiupd are genuinely non-abortable, and that is a deliberate choice rather than an omission, so the line now names those two and says WHY they are excluded. (2) The second 2026-08-16 line still counted ?i2c among the one-shot reads "deliberately NOT gated", but ?i2c was reclassified blocks_loop in the same change and now has an abort point - 126 addresses x a 20 ms I2C timeout is up to ~2.5 s of frozen loop, which is not a one-shot read. Both sentences now state what the code actually does. No logic, dispatch table, gate or abort site was modified. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
@@ -1284,6 +1285,16 @@ void cmdDiag(const String& params) {
                   (unsigned long)((now_ms - fmLastStopMs()) / 1000UL),
                   fmStopReason() != 0 ? "  (stop ramp in progress now)" : "");
   }
+  // V2.5-Evo - 2026-09-18 - P1-a/P1-c: the Follow-Me engagement facts on one line, so the bench
+  // can confirm "still ARMED, latch clear, needs D_engage" after a Return-to-Me without waiting
+  // for a serial edge to scroll past. "needs D_engage" means the next engagement must clear the
+  // full separation distance (set by a 2 s+ trigger release or an RTM yield, cleared on the ACTIVE
+  // edge). "yielding to RTM" means RTM is active and FM is parked. Read-only accessors.
+  Serial.printf("FM engage  : state %s, separation latch %s, needs D_engage %s, yielding to RTM %s\n",
+                fmStateName(fmStateCode()),
+                fmSepLatched()    ? "SET" : "clear",
+                fmNeedsDengage()  ? "yes" : "no",
+                fmYieldingToRtm() ? "yes" : "no");
   Serial.printf("UART mux   : %.1f switches/s, %u read-back failures   [%u total since boot]\n",
                 (float)d_mux_sw / win_s, (unsigned)d_mux_err, (unsigned)cur.mux_errors);
   Serial.printf("VESC poll  : %u/%u ok (%.1f%%)\n",

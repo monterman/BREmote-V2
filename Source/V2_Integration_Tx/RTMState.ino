@@ -1,3 +1,8 @@
+// V2.5-Evo - 2026-09-18 - RTM no longer disarms Follow-Me (owner decision 27(c), always-armed): setRtmArmed() no longer calls
+//   fmSilentDisarm() and sends no 0xF2/0 - fm_armed stays true, the 30 s keepalive keeps running, last_fm_mode is untouched, the RTM
+//   ceremony is unchanged. The RX yields on its own side while rtm_rx_active is set and resumes ARMED (unlatched) when RTM ends.
+//   The warning-distance haptic in runFmLoop() is gated on !rtm_tx_active so a return does not buzz the FM warning all the way in.
+//   No confStruct change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-09-17 - WarnDist: runFmLoop() now drives the FM warning-distance haptic (Pattern 8, one 300 ms pulse,
 //   repeated every 2 s) while TX armed AND RX FM_FLAG_ARMED AND link fresh AND decoded rtm_distance >= fm_warn_distance_m.
 //   No throttle gate. Never overwrites a playing pattern or a pending STOP. Pure logic in Common/FollowMeDistanceWarning.h.
@@ -141,13 +146,23 @@ uint8_t calcRtmThrottleCap()
 }
 
 // ---- Called by handleGearToggle() when RTM combo gesture completes ----
-// Bug2: fm_armed cleared first — RTM and FM are mutually exclusive.
+// V2.5-Evo - 2026-09-18 - RTM NO LONGER DISARMS FOLLOW-ME (owner decision 27(c), always-armed).
+//   From 2026-04-28 (Bug2) to 2026-09-18 this function called fmSilentDisarm() first, sending
+//   0xF2/0 so the RX dropped Follow-Me to IDLE for the whole return (Finding 1-4's concern was a
+//   stale fm_mode_runtime on the RX while RTM ran). Under the always-armed philosophy that was
+//   wrong: the owner's loop is "stop -> bring the buggy back -> whip again" with no re-arm gesture.
+//   WHAT REPLACED IT: the RX yields on its own side (RX RTMState.ino, runFmLoopBody): while
+//   rtm_rx_active is set, Follow-Me parks in FM_ARMED, clears its separation latch, writes no cap
+//   and no steering, and re-engages after the return only by re-proving separation. So fm_armed
+//   stays true here, the 30 s 0xF2 keepalive keeps running, last_fm_mode is untouched, and the
+//   RX-side mode can never be stale because the keepalive keeps refreshing it. RTM > FM: the RTM
+//   ceremony below (rtm_hold_duration_s, double squeeze, rtm_arm_window_s) is exactly as it was.
 // Bug4: runDoubleSqueezeArm() now handles both single and double squeeze, fully blocking.
 //       On return rtm_tx_state is RTM_ACTIVE or RTM_IDLE; RTM_ARMED case in runRtmLoop() is dead code.
 void setRtmArmed()
 {
   if (!usrConf.rtm_enabled || !usrConf.gps_en) return;
-  fmSilentDisarm();                // Bug2 + Finding 1-4: disarm FM and notify RX via 0xF2/0 before RTM arms
+  // (fmSilentDisarm() was called here until 2026-09-18 - see the header note above.)
   rtm_tx_state     = RTM_ARMED;
   rtm_arm_start_ms = millis();
   rtm_hold_start   = 0;
@@ -504,6 +519,11 @@ void runRtmLoop()
 //     0 = never (the default since 2026-09-17): armed with no throttle stays armed indefinitely.
 //   - RX fault-stop (fm_flags bit3 rising edge) — the TX follows the RX's decision
 //
+// V2.5-Evo - 2026-09-18 - NOT a disarm any more: arming RTM. Follow-Me stays armed through a
+// Return-to-Me; the RX yields while RTM is active and resumes ARMED (unlatched) when it ends.
+// See setRtmArmed(). While RTM runs, loop() renders the RTM display as before (Display.ino checks
+// rtm_tx_active first on every FM-aware path), so the rider sees RTM, and FM reappears armed after.
+//
 // V2.5-Evo - 2026-09-17 - Gate1-REMOVED. There is no longer a TX-side throttle-release disarm.
 // The old Gate 1 (kFmGate1ReleaseMs, 30 s off the trigger after the first squeeze) contradicted
 // the always-armed philosophy: a rider who floats, swims or waits between runs for more than
@@ -835,8 +855,13 @@ void runFmLoop()
   // (fm_warning_sent stays as it was), so a due warning is deferred, never dropped.
   {
     const bool link_fresh = (last_packet != 0) && ((now - last_packet) < FM_LINK_HEALTHY_MS);
+    // V2.5-Evo - 2026-09-18 - Follow-Me now stays armed THROUGH a Return-to-Me (setRtmArmed() no
+    // longer disarms it), and the RX reports FM_FLAG_ARMED while it yields - so without this term
+    // every RTM run would buzz the warning-distance pulse all the way in (the buggy is far by
+    // definition when the rider calls it back). The warning belongs to a live Follow-Me that is
+    // actually following; while RTM owns the buggy it is parked, and the RTM display says so.
     const bool distance_warning_now = followMeDistanceWarningActive(
-        fm_armed,
+        fm_armed && !rtm_tx_active,
         (fm_flags_now & FM_FLAG_ARMED) != 0,
         link_fresh,
         telemetry.rtm_distance,
@@ -868,7 +893,8 @@ void runFmLoop()
       // 150ms pulse) as a NUDGE so a rider relying on the long arm window isn't left believing
       // he is still armed. Distinct by feel from the two-tap arm (Pattern 4) and the long stop
       // buzz (Pattern 7). Placed at the call site (not inside fmSilentDisarm) so it fires ONLY on
-      // arm-window expiry, never on the RTM-preemption path that also calls fmSilentDisarm().
+      // arm-window expiry, never on the RTM-preemption path that also called fmSilentDisarm()
+      // (that path is gone since 2026-09-18 - RTM no longer disarms FM - so this is now its only caller).
       fmSilentDisarm();   // arm window expired before first throttle — no blocking confirm
       if (current_vib_pattern == 0) current_vib_pattern = 5;   // nudge: one short blip
       return;

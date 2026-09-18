@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-18 - P1-a: FOLLOW-ME ENGAGES ON SEPARATION ALONE. The separation proof (distance, conditions 8/9, the R-4 fix-counted dwell, the latch) is gated by proof_ok = fault_ok instead of hard_ok = thr_held && fault_ok, so it runs with the trigger released and a rider who whips, releases and rides away has the latch standing on the first squeeze; hard_ok stays the authority term in can_be_active and still gates the divergence/pivot bookkeeping, and the no-trustworthy-distance branch resets the dwell only on !fault_ok. The engage edge for a non-ACTIVE Follow-Me is now dist > max(min_dist + band, kFmEngageDistFloorM) (8 m at factory 4+2, was 6 m - below the 7.1 m rope), and after a trigger release of kFmEngageGraceMs (2 s) or more the new static fm_reengage_needs_dengage raises it to d_engage (12 m owner / 8 m floor) until the next ACTIVE edge, so a latch earned off the trigger can never engage on the rope at the re-rig. Both rules are pure functions in Common/FollowMeEngage.h with a host test. kFmSepDwellFixes / kFmSepDwellFloorMs / rx_tx_gps_fix_seq and the 10 s release clear are unchanged; fm_flags bit 2 semantics unchanged. Deep log: FM_LOG_GATE_PROOF_OK / _NEEDS_DENGAGE (bits 12/13), fm_distance logged whenever proof_ok. Nothing new moves the buggy without the trigger. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-17 - DEEP-LOG PUBLISH-FROM-CONTROLLER (P0-g): runFmLoop() is now a thin wrapper — 10 Hz rate limit, reset this tick's log fields, run the body, then fmPublishLogSnapshot() fills g_fm_log_snapshot under taskENTER_CRITICAL exactly once per tick whatever path the body took. The body (runFmLoopBody) records its gate verdicts into fm_log_gate_flags / fm_log_dist_dx10 / fm_log_d_engage_dx10 at the point each is evaluated. The logger copies the snapshot and never recomputes a gate. Instrumentation only: no control decision reads any of these, no confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-17 - FM STOP-REASON latch (comparison row 19): checkFmFaultConditions() now names which of conditions 2-7 failed through an out-param; the FAULT branch latches fm_stop_reason AFTER fm_throttle_cap = 0 (F7 order) and prints it; fmEnterIdle() clears the live latch at the end of the stop ramp. fm_last_stop_reason / fm_last_stop_ms keep the most recent stop for ?diag (System.ino) until the next one or a reboot. Read-only accessors, no control-path change, no confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-17 - D-term TARGET-PROFILE guard (Rex A9): the D term now also requires the steering TARGET geometry to be continuous, not only the heading source. computeFmTarget() publishes fm_target_profile (kProfDegraded / kProfBehind / kProfDiagRight / kProfDiagLeft) where it picks the branch; the RTM direct-to-rider path publishes kProfRtmDirect. updateRtmSteering() skips one D tick whenever the profile differs from the previous sample, so a side-zone Schmitt flip, a degraded<->trailing switch or an RTM/FM handover can no longer inject a phantom rate into Kd. Steering output only; no throttle path touched. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
@@ -1726,6 +1727,9 @@ static unsigned long fm_engage_ms        = 0;
 //   Schmitt hysteresis governs engage/re-engage as before, so the buggy is free to close back
 //   to its normal 6 m station without fighting the interlock. The latch is NEVER cleared by
 //   geometry alone — only by the throttle-release clear, a mode change, or entering FM_IDLE.
+//   V2.5-Evo - 2026-09-18 - P1-a: "during this throttle-hold session" above is now history. The
+//   proof runs off the trigger (proof_ok = fault_ok), so the latch can be earned while the rider
+//   is off the trigger; the three clears above are unchanged.
 static bool          fm_sep_latched      = false;
 
 // millis() when the rider first went beyond D_engage; 0 = not currently beyond it.
@@ -1770,6 +1774,25 @@ static uint32_t      fm_sep_last_seq      = 0;
 // millis() when thr_received first dropped below 25; 0 = throttle currently held.
 // Counts the kFmThrReleaseClearMs window that clears the latch at the end of a run.
 static unsigned long fm_thr_low_since_ms  = 0;
+
+// V2.5-Evo - 2026-09-18 - P1-a: THE FIRST ENGAGEMENT AFTER A LONG RELEASE REQUIRES D_ENGAGE.
+// WHY IT EXISTS. Separation is now proven WITHOUT the trigger (proof_ok = fault_ok in runFmLoop),
+// so the latch can be earned while the rider is swimming, resting or rigging. That is the intended
+// cue for the rider (the TX sweep goes "ready" before they are back on the trigger) - but it also
+// means a latch can be standing when the rider is back ON THE ROPE for the next tow, and the
+// ordinary engage edge (min_dist + band, 9 m at the owner's tuning) sits only ~2 m beyond the
+// 7.1 m rope. This flag closes that: while it is set, condition 8 for a non-ACTIVE Follow-Me is
+// dist > D_engage (12 m at the owner's manual setting, never below the 8 m floor), and the rope
+// can never pass that. See followMeEngageThresholdM() in Common/FollowMeEngage.h.
+//   SET   : when the trigger has been released continuously for kFmEngageGraceMs (2000 ms) - the
+//           same timer the 10 s latch clear counts, read at 2 s - and by every path that leaves FM
+//           (fmEnterIdle).
+//   CLEAR : on the ARMED/HOLD -> ACTIVE edge only. A rider linking waves who releases the trigger
+//           for under 2 s keeps the ordinary 9 m edge, exactly as before.
+// Starts TRUE so the very first engagement after boot or a fresh declaration must clear D_engage,
+// which the separation latch already requires on the fixes that set it - a no-op in practice, and
+// the safe default if the latch and this flag ever disagree.
+static bool          fm_reengage_needs_dengage = true;
 
 // ---- A3 fault-stop + steer-cancel state (V2.5-Evo - 2026-07-20) ----
 // millis() when FM entered FM_STOPPING; drives the 0 -> 255 fault ramp. 0 = not stopping.
@@ -3338,6 +3361,7 @@ static void fmEnterIdle()
   fm_sep_over_since_ms = 0;
   fm_sep_fix_count     = 0;   // DWELL-1: the fix count resets with the dwell
   fm_thr_low_since_ms  = 0;
+  fm_reengage_needs_dengage = true;   // P1-a: a fresh declaration must clear D_engage before it may engage
 
   // V2.5-Evo - 2026-07-20 - A3: clear the steer-cancel persistence timer and the fault-ramp clock.
   // fm_fault_alarm_ms is deliberately NOT reset here: the surprise-gated stop notification must
@@ -3586,17 +3610,25 @@ static void runFmLoopBody(unsigned long now)
   if (thr_received < 25) {
     if (fm_thr_low_since_ms == 0) {
       fm_thr_low_since_ms = now;
-    } else if ((now - fm_thr_low_since_ms) >= kFmThrReleaseClearMs) {
-      if (fm_sep_latched || fm_state == FM_HOLD) {
-        Serial.println("FM [RX] throttle released 10s -> separation latch cleared, ARMED-unlatched");
+    } else {
+      // V2.5-Evo - 2026-09-18 - P1-a: the same timer, read at 2 s. A release of kFmEngageGraceMs or
+      // more means the next engagement must clear the full D_engage again (see the flag's
+      // declaration for why). Idempotent; cleared only on the ACTIVE edge further down.
+      if (followMeReleaseNeedsDengage((uint32_t)fm_thr_low_since_ms, (uint32_t)now, kFmEngageGraceMs)) {
+        fm_reengage_needs_dengage = true;
       }
-      fm_sep_latched       = false;
-      fm_sep_over_since_ms = 0;
-      fm_sep_fix_count     = 0;   // DWELL-1: the fix count resets with the dwell
-      if (fm_state != FM_IDLE) {
-        fm_state        = FM_ARMED;
-        fm_throttle_cap = 255;   // back to fully manual; trigger is released, so no motion
-        fm_rx_active    = false;
+      if ((now - fm_thr_low_since_ms) >= kFmThrReleaseClearMs) {
+        if (fm_sep_latched || fm_state == FM_HOLD) {
+          Serial.println("FM [RX] throttle released 10s -> separation latch cleared, ARMED-unlatched");
+        }
+        fm_sep_latched       = false;
+        fm_sep_over_since_ms = 0;
+        fm_sep_fix_count     = 0;   // DWELL-1: the fix count resets with the dwell
+        if (fm_state != FM_IDLE) {
+          fm_state        = FM_ARMED;
+          fm_throttle_cap = 255;   // back to fully manual; trigger is released, so no motion
+          fm_rx_active    = false;
+        }
       }
     }
   } else {
@@ -3608,10 +3640,31 @@ static void runFmLoopBody(unsigned long now)
   bool  thr_held = (thr_received >= 25);       // condition 1 (DEADMAN — never a fault)
   uint8_t fault_reason = FM_STOP_NONE;         // V2.5-Evo - 2026-09-17 - which of 2-7 failed, for the stop latch
   bool  fault_ok = checkFmFaultConditions(&fault_reason);   // conditions 2-7 (FAULT)
-  bool  hard_ok  = thr_held && fault_ok;       // both needed for a trustworthy distance / latch
+  // ============================================================
+  // V2.5-Evo - 2026-09-18 - P1-a: SEPARATION IS PROVEN WITHOUT THE TRIGGER. hard_ok used to gate
+  // everything below - the distance, conditions 8/9, the fix-counted dwell and the latch - so a
+  // rider who whipped, released and rode away had proven NOTHING when they next squeezed: the
+  // dwell had been reset on every released tick, and they got ~1 s (3 fixes) of manual throttle on
+  // the buggy's current heading before Follow-Me engaged. The proof is evidence about GEOMETRY and
+  // SENSORS (conditions 2-7: both GPS fixes fresh, not rejected, handshake passing, a heading, a
+  // link); the trigger is evidence about AUTHORITY. They are now two terms:
+  //   proof_ok = fault_ok           gates dist_m, conditions 8/9, the dwell and the latch.
+  //   hard_ok  = thr_held && fault_ok stays the authority term in can_be_active, and still gates the
+  //                                 divergence/pivot bookkeeping (judgements about a buggy that is
+  //                                 actually steering, which only happens under the trigger).
+  // NOTHING here moves the buggy without the trigger: fm_rx_active and the cap chain are written
+  // only inside the can_be_active branch, and can_be_active still carries hard_ok. What changes is
+  // that the latch can already be standing on the first squeeze, and the TX sweep can read "ready"
+  // while the rider is still off the trigger - the intended cue. The tow interlock is kept by three
+  // things that do not need the trigger: the fix-counted dwell (R-4), the engage floor and the
+  // needs-D_engage rule (both in Common/FollowMeEngage.h), and the 10 s release clear.
+  // ============================================================
+  bool  proof_ok = fault_ok;                   // a trustworthy distance / latch needs the sensors, not the trigger
+  bool  hard_ok  = thr_held && fault_ok;       // authority: the trigger AND the sensors
   bool  speed_ok = false;                      // condition 9 (HOLD — rider moving)
   bool  dist_ok  = false;                      // condition 8 (HOLD — follow geometry)
   float dist_m   = 0.0f;
+  float d_engage = 0.0f;                       // the separation distance in force this tick (set under proof_ok)
   // V2.5-Evo - 2026-07-25 - A3: sustained divergence while ACTIVE. Classed as a FAULT (same family
   // as conditions 2-7), so it is routed through the SAME FM_STOPPING path below — never its own.
   bool  diverge_fault = false;
@@ -3623,7 +3676,7 @@ static void runFmLoopBody(unsigned long now)
   float diverge_limit_m = 0.0f;   // the ceiling (kFmDivergeFactor x D_engage) that was exceeded, m
   float diverge_start_m = 0.0f;   // the distance captured when the dwell started, m
 
-  if (hard_ok) {
+  if (proof_ok) {   // P1-a: was hard_ok — the trigger no longer gates the proof
     // Both GPS sources are guaranteed fresh here by conditions 4 and 5.
     dist_m = (float)TinyGPSPlus::distanceBetween(
         gps_last_lat, gps_last_lng, rx_tx_gps_lat, rx_tx_gps_lng);
@@ -3644,8 +3697,13 @@ static void runFmLoopBody(unsigned long now)
     // Condition 8: Schmitt hysteresis on distance so FM cannot flap at the band edge.
     //   to ENGAGE  : the rider must be beyond min_dist + band
     //   to STAY ON : hold until the rider is inside min_dist
+    // V2.5-Evo - 2026-09-18 - P1-a: the ENGAGE edge now also has the tow-rope floor and the
+    // needs-D_engage rule folded in, and both need d_engage, which is computed a few screens down
+    // (after the fm_engage_dist_m override and the F3-c clamp). The STAY-ON edge is unchanged and
+    // evaluated here; the engage edge is evaluated right after the clamp - look for
+    // followMeMayEngage(). Order does not matter to anything in between: nothing reads dist_ok
+    // before can_be_active.
     if (fm_state == FM_ACTIVE) dist_ok = (dist_m >= min_dist);
-    else                       dist_ok = (dist_m >  (min_dist + band));
 
     // ---- R1: separation latch (the tow interlock) ----
     // Before FM may engage for the first time this run, the rider must be proven genuinely
@@ -3716,7 +3774,8 @@ static void runFmLoopBody(unsigned long now)
     // KNOCK-ON, CHECKED: the A3 divergence ceiling further down is kFmDivergeFactor x d_engage, so a
     // floored d_engage raises that ceiling in the same proportion — the detector becomes MORE
     // permissive, never less, and cannot be made to fire spuriously by this change.
-    float d_engage;
+    // (d_engage is declared next to dist_m, above the proof block: the divergence ceiling under
+    //  hard_ok reads it too, and since P1-a that block sits outside this one.)
     if (usrConf.fm_engage_dist_m > 0.1f) {
       d_engage = usrConf.fm_engage_dist_m;      // manual: the stored value IS the engage distance, in metres
     } else {
@@ -3725,6 +3784,20 @@ static void runFmLoopBody(unsigned long now)
     // F3-c: single tow-rope safety floor, applied to the COMPUTED value as well as the typed one.
     if (d_engage < kFmEngageDistFloorM) d_engage = kFmEngageDistFloorM;
     fm_log_d_engage_dx10 = (uint16_t)(d_engage * 10.0f + 0.5f);   // P0-g: the engage distance in force this tick
+
+    // ---- Condition 8, the ENGAGE edge (V2.5-Evo - 2026-09-18 - P1-a) ----
+    // dist > max(min_dist + band, kFmEngageDistFloorM), and while fm_reengage_needs_dengage is set,
+    // dist > d_engage as well. WHY THE FLOOR: the Schmitt edge alone is 9 m at the owner's tuning
+    // but 6 m at the factory 4 + 2 - BELOW the 7.1 m rope - and with a latch that can now be set
+    // off the trigger, a stale latch plus a slow drift back toward the buggy could engage on the
+    // rope at default tuning (the GPS teleport guard in Radio.ino cannot see a slow drift). 8 m
+    // clears the rope at every tuning. WHY D_ENGAGE AFTER A LONG RELEASE: see the flag's
+    // declaration. Both can only RAISE the edge - engage later, never earlier. Pure function,
+    // host-tested: Common/FollowMeEngage.h, Tools/tests/follow_me_engage_test.cpp.
+    if (fm_state != FM_ACTIVE) {
+      dist_ok = followMeMayEngage(dist_m, min_dist, band, kFmEngageDistFloorM,
+                                  d_engage, fm_reengage_needs_dengage);
+    }
     // ==========================================================================================
     // V2.5-Evo - 2026-08-26 - DWELL-1. The dwell now counts RIDER FIXES, not milliseconds.
     //
@@ -3790,7 +3863,20 @@ static void runFmLoopBody(unsigned long now)
       fm_sep_over_since_ms = 0;   // fell back inside D_engage - the dwell restarts from scratch
       fm_sep_fix_count     = 0;
     }
+  } else {
+    // No trustworthy distance this tick (GPS stale/rejected, handshake failing, no heading, link
+    // down). Restart the dwell rather than carrying a half-finished proof across a data gap.
+    // V2.5-Evo - 2026-09-18 - P1-a: a RELEASED TRIGGER no longer lands here - the proof continues
+    // across a release. Only a failed sensor/link condition (!fault_ok) resets it now.
+    fm_sep_over_since_ms = 0;
+    fm_sep_fix_count     = 0;   // DWELL-1: the fix count resets with the dwell
+  }
 
+  // V2.5-Evo - 2026-09-18 - P1-a: the divergence and pivot bookkeeping stays under hard_ok (trigger
+  // AND sensors). They judge a buggy that is actually steering, which only happens under the
+  // trigger, and a fault proven on the tick the trigger is released must not be allowed to fire
+  // out of the deadman branch. hard_ok implies proof_ok, so dist_m and d_engage are valid here.
+  if (hard_ok) {
     // ---- A3: DIVERGENCE FAULT — the upper bound FM never had ----
     // V2.5-Evo - 2026-07-25. Condition 8 above is a lower bound only, so a buggy steering the WRONG
     // WAY satisfies it more and more comfortably the further it runs. This adds the missing ceiling:
@@ -3974,11 +4060,8 @@ static void runFmLoopBody(unsigned long now)
       fm_diverge_start_dist_m = -1.0f;
     }
   } else {
-    // No trustworthy distance this tick (trigger released, GPS stale/rejected, link down).
-    // Restart the dwell rather than carrying a half-finished proof across a data gap.
-    fm_sep_over_since_ms = 0;
-    fm_sep_fix_count     = 0;   // DWELL-1: the fix count resets with the dwell
-    // A3: same discipline for the divergence dwell — never judge divergence on data we do not trust.
+    // Trigger released, or no trustworthy distance this tick (GPS stale/rejected, link down).
+    // A3: never judge divergence on data we do not trust, or on a buggy that is not steering.
     // F1: the closure baseline goes with it; a baseline must never outlive the dwell that set it.
     fm_diverge_since_ms     = 0;
     fm_diverge_start_dist_m = -1.0f;
@@ -4047,7 +4130,9 @@ static void runFmLoopBody(unsigned long now)
   if (fm_sep_latched)         fm_log_gate_flags |= FM_LOG_GATE_SEP_LATCHED;
   if (diverge_fault)          fm_log_gate_flags |= FM_LOG_GATE_DIVERGE;
   if (heading_disagree_fault) fm_log_gate_flags |= FM_LOG_GATE_HEADING_DISAGREE;
-  if (hard_ok) {
+  if (proof_ok)               fm_log_gate_flags |= FM_LOG_GATE_PROOF_OK;        // P1-a
+  if (fm_reengage_needs_dengage) fm_log_gate_flags |= FM_LOG_GATE_NEEDS_DENGAGE; // P1-a
+  if (proof_ok) {   // P1-a: the distance is trustworthy whenever the sensors are, trigger or not
     float dd = dist_m * 10.0f + 0.5f;
     fm_log_dist_dx10 = (dd >= 65535.0f) ? 0xFFFE : (uint16_t)dd;   // 0xFFFF stays the N/A sentinel
   }
@@ -4104,6 +4189,11 @@ static void runFmLoopBody(unsigned long now)
       prev_heading_src_valid  = false;
       prev_heading_error_deg  = 0.0f;
       prev_steering_update_ms = 0;
+
+      // V2.5-Evo - 2026-09-18 - P1-a: the ACTIVE edge is the ONLY clear of the needs-D_engage
+      // rule. This tick passed the engage edge with the rule applied, so from here a short release
+      // (< kFmEngageGraceMs) resumes on the ordinary 9 m edge, exactly as before.
+      fm_reengage_needs_dengage = false;
 
       fm_state = FM_ACTIVE;
       Serial.printf("FM [RX] ENGAGE mode %u: dist=%.1f m rider=%.1f km/h course=%.0f\n",

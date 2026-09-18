@@ -1,3 +1,8 @@
+// V2.5-Evo - 2026-09-17 - GestureAbort (Rex B7 case 2): handleGearToggle() now aborts any toggle hold the
+//   moment the trigger is squeezed (thr_scaled > 3 with steer_enabled, the same gate calcFilter() uses to hand
+//   the toggle to steering). Applies to the simple 2s holds, both combo holds and the post-action release wait. On abort
+//   in_menu is zeroed so the next calcFilter() pass returns the toggle to steering, and a throttle_abort flag
+//   stops every pending action: no gear/mode/lock step fires, no tap is recorded, no menu wait runs.
 // V2.5-Evo - 2026-08-17 - StopBuzz FIX: fmDisarm() takes a `commanded` flag; the magnet toggle's two
 //   disarm paths pass "commanded" (silent) because removing the magnet IS the rider asking. The
 //   magnet ADVISORY buzzes (Patterns 5 and 6) are unchanged. The 2026-07-20 tag below is a dated
@@ -311,9 +316,34 @@ void handleGearToggle(int direction)
   else
     long_press_ms = 2000UL;
 
+  // V2.5-Evo - 2026-09-17 - GestureAbort. While this handler runs, in_menu is non-zero, so
+  // calcFilter() leaves the toggle in menu mode even if the rider squeezes the trigger — and
+  // with the trigger squeezed the toggle IS the steering control. Before this fix a squeeze
+  // mid-hold left the rider unable to steer until the hold finished or timed out, and a
+  // gear/mode/lock action could still fire on top of it (Rex B7 failure case 2).
+  //
+  // The fix: any throttle above the calcFilter() steering threshold (thr_scaled > 3) abandons
+  // the gesture immediately. in_menu = 0 lets the very next calcFilter() pass (10 ms task)
+  // route the toggle back to steer_scaled, and throttle_abort guarantees nothing that was
+  // pending — a long-press action, a gear step, a tap record, the post-tap menu wait — can
+  // fire after the break. The thr_scaled < 10 action gate below is kept as a second, coarser
+  // guard for the instant the hold timer expires.
+  //
+  // Gated on usrConf.steer_enabled exactly like the calcFilter() gate it mirrors: with steering
+  // disabled the toggle is a gear/cap selector only, riders shift gears with the trigger
+  // squeezed, and there is no steering role to hand the toggle back to.
+  bool throttle_abort = false;
+
   while (isActive())
   {
     delay(10);
+
+    if (thr_scaled > 3 && usrConf.steer_enabled)
+    {
+      throttle_abort = true;
+      in_menu = 0;
+      break;
+    }
 
     if (millis() - pushtime > long_press_ms)
     {
@@ -357,7 +387,18 @@ void handleGearToggle(int direction)
         long_press_done = true;
         in_menu = usrConf.menu_timeout;
       }
-      while (isActive()) delay(100);
+      // Release wait after the action. A squeeze here also hands the toggle straight back to
+      // steering instead of holding the rider in menu mode until the toggle is centred.
+      while (isActive())
+      {
+        if (thr_scaled > 3 && usrConf.steer_enabled)
+        {
+          throttle_abort = true;
+          in_menu = 0;
+          break;
+        }
+        delay(100);
+      }
       break;
     }
 
@@ -394,13 +435,17 @@ void handleGearToggle(int direction)
   // Bug fix: old threshold was gear_change_waittime (100ms from pushtime after 50ms initial delay
   // = ~150ms total from press). This window was too tight — any tap over ~150ms total was silently
   // dropped and last_tap_dir was never set, so combos never triggered.
-  if (!long_press_done && held_ms < COMBO_TAP_MAX_MS)
+  // GestureAbort 2026-09-17: a hold abandoned by a squeeze is not a tap — recording one would
+  // prime a combo the rider never asked for.
+  if (!long_press_done && !throttle_abort && held_ms < COMBO_TAP_MAX_MS)
   {
     last_tap_dir = direction;  // +1 or -1
     last_tap_ms  = millis();
   }
 
-  if (!long_press_done)
+  // GestureAbort 2026-09-17: skipped on a throttle abort — this block waits for toggle release
+  // and then re-arms in_menu for gear_display_time, which would take steering away again.
+  if (!long_press_done && !throttle_abort)
   {
     while (isActive()) delay(10);
     delay(50);

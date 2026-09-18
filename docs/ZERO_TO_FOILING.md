@@ -357,7 +357,7 @@ Power **one board at a time** (the other OFF, per 2.3), join its AP (password de
 - **Units:** TX `speed_src` (lead with **mph**: value 5 = TX GPS mph, 4 = RX GPS mph) and `dist_unit` (0 = m/km, 1 = ft/mi). A common convention: **distances in metres, speeds in mph.**
 - **Display:** `fm_display_mode` (1=TX speed … 2=distance to buggy), `rtm_display_mode`.
 - **Feel:** `rtm_steer_response` preset, `motor_ramp_s` (0.75 s default; smooths throttle + steering), `near_diag_offset_deg` (offset off straight-behind).
-- **Timers:** `fm_arm_window_s` (180 s — keep generous so the arm survives float→takeoff→tow→whip), `sleep_timeout_s`.
+- **Timers:** `fm_arm_timeout_s` (0 = never, the default — the arm survives float→takeoff→tow→whip and stays armed for the whole session), `sleep_timeout_s`.
 - **Magnet (only if the Hall sensor is fitted):** TX `mag_mode` (0=off, 1=FM, 2=RTM, 3=FM@2s/RTM@5s).
 
 > `near_diag_offset_deg` ships at **45°**, which puts **Near Right at 135°** and **Near Left at 225°**
@@ -425,7 +425,7 @@ Confirm the gestures and display before you're in the water:
 
 Preconditions to *engage* (you can arm before these are perfect; it won't engage until they're met): paired, **GPS fix on both** units, healthy radio + telemetry, calibrated compass.
 
-1. **Float & arm** (toggle: LEFT tap → RIGHT hold; or magnet mid-tow). Two taps = armed. The arm survives up to `fm_arm_window_s` (180 s) with no throttle.
+1. **Float & arm** (toggle: LEFT tap → RIGHT hold; or magnet mid-tow). Two taps = armed. The arm survives the whole session with no throttle — `fm_arm_timeout_s` defaults to 0 = never; only the disarm gesture, a fault, or powering the remote off ends it.
 2. **Whip / separate**, throttle held. FM **engages only when the geometry proves you've separated** — beyond the engage distance for **2 continuous seconds**, confirmed by both GPS units. No button, no timer.
    - Two ways to separate: whip yourself past the buggy, or keep throttle and steer the buggy to its offset side so it peels off while you carry into the wave.
 3. **Following:** the buggy trails at your set side/distance, steering itself. You keep the throttle held; the buggy only ever moves on **your** throttle and only *subtracts* from it.

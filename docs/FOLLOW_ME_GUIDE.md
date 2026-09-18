@@ -65,8 +65,10 @@ If your remote has the Hall sensor fitted and `mag_mode` is set:
 - **It works with the throttle held** — so if you forgot to arm and you're already towing,
   you can arm mid-tow. This is the magnet's whole purpose.
 
-**The arm survives** for up to `fm_arm_window_s` (default **180 s / 3 min**) even if you
-don't touch the throttle — so a slow takeoff, a wait, or a short swim won't lose your arm.
+**The arm survives for the whole session.** `fm_arm_timeout_s` defaults to **0 = never**, so a
+slow takeoff, a wait, or a short swim won't lose your arm even with no throttle touched. Only
+the disarm gesture, a fault, or powering the remote off ends it — the remote forgets the arm
+at power-off, and the buggy drops to idle 95 s after the remote stops talking.
 
 ---
 
@@ -173,7 +175,7 @@ fault while you're holding the trigger. A stop after you've already let go just 
 | `followme_smoothing_band_m` | decel band above the hard stop | follow distance = `min_dist_m` + this |
 | `boogie_vmax_in_followme_kmh` | speed ceiling while following | |
 | `foiler_low_speed_kmh` | below this rider speed, Follow-Me holds (won't maneuver around a swimmer) | |
-| `fm_arm_window_s` *(TX)* | how long an arm survives with no throttle | **180 s** |
+| `fm_arm_timeout_s` *(TX)* | how long an arm survives with no throttle before auto-disarm | **0 = never (default)** |
 | `mag_mode` *(TX)* | magnet gesture role: 0 off, 1 = FM, 2 = RTM, 3 = FM+RTM | needs the Hall sensor |
 | `fm_display_mode` *(TX)* | what the digit zone shows while armed | 2 = distance to buggy |
 
@@ -188,8 +190,9 @@ fault while you're holding the trigger. A stop after you've already let go just 
 
 - **Toggle:** repeat the arm gesture.
 - **Magnet:** hold ~2 s again (one long buzz = off).
-- **Automatic:** arming RTM disarms FM; the arm expires after `fm_arm_window_s` with no
-  throttle; a fault ends it.
+- **Automatic:** arming RTM disarms FM; a fault ends it; powering the remote off drops the
+  arm (it's forgotten at power-off). It does not expire on its own — `fm_arm_timeout_s`
+  defaults to **0 = never**.
 
 ---
 

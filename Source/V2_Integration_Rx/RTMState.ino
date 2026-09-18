@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-17 - D-term TARGET-PROFILE guard (Rex A9): the D term now also requires the steering TARGET geometry to be continuous, not only the heading source. computeFmTarget() publishes fm_target_profile (kProfDegraded / kProfBehind / kProfDiagRight / kProfDiagLeft) where it picks the branch; the RTM direct-to-rider path publishes kProfRtmDirect. updateRtmSteering() skips one D tick whenever the profile differs from the previous sample, so a side-zone Schmitt flip, a degraded<->trailing switch or an RTM/FM handover can no longer inject a phantom rate into Kd. Steering output only; no throttle path touched. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-08-25 - RX RTM/FM D-term wrap fix. heading_error itself was normalized to +/-180 deg, but the derivative subtracted two normalized samples directly. Crossing the branch cut (for example +179 -> -179) therefore looked like a -358 deg step instead of the physical +2 deg change and Kd could saturate steering for one control tick. Normalize the same-source error delta to +/-180 before dividing by dt; source-switch/re-snap suppression, P term, gains, logging and config stay unchanged. No confStruct change; SW_VERSION stays 35.
 // V2.5-Evo - 2026-08-17 - THREE FOLLOW-UPS TO THE PASS BELOW, ALL OF THEM NOTIFICATION, NONE OF THEM CONTROL. (1) THE DEGRADATION NOTICE COULD BE LOST ENTIRELY, NOT MERELY DEFERRED. headingDisagreeAnnounceDegraded() rightly returns without setting its one-shot flag while thr_received >= 25 — four Serial lines upstream of a hard stop would break the motor-to-zero-first rule — but its ONLY call site was inside the if (disagree_now) branch, so the retry needed another MEASURED disagreement. A measurement needs a live COG plus a compass snapshot younger than kHeadingCompareSnapMs, and that snapshot only refreshes while the trigger is released, so a dwell that completed inside the ~1 s window after a squeeze was silenced — and a rider who then finished the session under power and never coasted above rtm_cog_min_speed_kmh again rode the WHOLE SESSION with the compass withdrawn and Follow-Me refusing to engage, announced nowhere but a manual ?diag. getRtmHeading() now offers the notice on EVERY tick while the verdict stands, so the retry no longer depends on the evidence coming back; the deferral guard itself is untouched, and the print still cannot land between a proven fault and a motor-stopping write, because it can only fire below 25 counts where the deadman already holds the motor at 0. (2) A FAULT PROVEN WHILE COASTING NOW REACHES THE REMOTE. fm_fault_alarm_ms was set only if (thr_held), but the heading-disagree latch can only complete with the trigger RELEASED — so for this one fault the sticky fm_flags bit 3 never rose, the TX never learned the run had ended on a fault, and Follow-Me silently re-armed on the next keepalive into a blocked ARMED state whose only field signal was the not-ready flag. The alarm is now also set for a standing heading-disagree fault; every other fault keeps the surprise gating exactly as it was. (3) COMMENT-ONLY: the note in front of the restored FM fault term claimed a HOLD-parked Follow-Me would sit at cap 0 "for the rest of the session". The throttle-release clear rescues FM_HOLD back to FM_ARMED after 10 continuous seconds below 25 counts, so the accurate hazard is narrower — a rider FEATHERING the trigger restarts that timer on every squeeze, never accumulates the 10 s, and gets a dead motor on every squeeze with no explanation. Plus heading_disagree_fault is now volatile: it is read cross-task by Logger.ino through headingDisagreeLatched(), and as a file-scope static whose address never escapes the compiler may cache it. Read-only, log columns only, no control impact. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-08-17 - THREE CORRECTIONS TO THE DEGRADATION PASS BELOW, WHICH ASSUMED THE COMPASS WAS THE LIAR. The cross-check proves only that the compass and the GPS course CANNOT BOTH BE RIGHT. It does not say which one is wrong — the guard says so itself in guard 2's own header: "It deliberately does NOT pick a winner." Degrading the session onto GPS course alone picks one anyway, and it picks the compass as the culprit; if the RX's course is the bad source instead (marina multipath, a wrong dynamic platform model, a lagged COG at low speed) the degradation withdraws the GOOD sensor and operates on the bad one. (1) FOLLOW-ME REFUSES AGAIN — RELEASE BLOCKER. !heading_disagree_fault is back in can_be_active, and back in the FM fault-stop classifier it was deleted with, so a disagreement proven mid-engagement ends the run through the existing FM_STOPPING ramp (back to manual, re-arm required) instead of parking FM in FM_HOLD at cap 0 for the rest of the session. RTM KEEPS DEGRADING, and that part was sound: RTM's degraded behaviour is BOUNDED — with no heading the steering override is pinned at 127 and the align cap holds the throttle at 13/255 on the 180 deg sentinel — and the alternative was a genuinely dangerous half-armed state, buggy dead with the throttle at 0 while the TX still displayed RTM as ACTIVE. FOLLOW-ME IS NOT BOUNDED LIKE THAT: it engages autonomously at rider speed plus a margin, its steering authority is continuous, its only backstops are the divergence fault (about a 6.5 s grace plus a 3 s dwell) and the deadman — and the disagreement is UNMEASURABLE during the engagement, because compare_possible needs a compass snapshot younger than kHeadingCompareSnapMs and the snapshot only refreshes while thr_received < 25, so about a second into the run the comparison goes dormant and COG is served at confidence 3 unchallenged. Refusing to engage is the right answer to "one of my two heading sources is lying and I cannot tell which", and it is the same answer guard 1 already gives a few lines up: HOLDING STRAIGHT IS SAFER THAN STEERING ON THE SURVIVOR. The rider is not left guessing: the one-shot degradation notice still prints, the rate-limited "ARMED, NOT ENGAGING" explanation is restored, fm_flags bit 2 (armed-not-ready) carries the fault again so the TX cannot render "ready" for a Follow-Me that will not engage, and ?diag now reports the latch on demand. (2) THE kCogHoldMs COG HOLD SURVIVES DEGRADATION. The fault term moved back BELOW the hold, to the site it occupied before. The hold serves a last-good GPS COURSE, and the latch is evidence about the COMPASS, so withdrawing a GPS-derived value on compass evidence was outside this guard's charter — and it cost real behaviour twice over: a COG dropout longer than 1.5 s failed FM's condition 6 and forced a stop-and-re-arm the hold would have bridged, and on the RTM side the documented cog_valid flicker in the 3-4 km/h approach band (rtm_target_speed_kmh 4.0 against rtm_cog_min_speed_kmh 3) alternated the steering override between centre and bearing at 10 Hz. Degraded now means precisely "mode 1 minus the compass", which is what the evidence supports. (3) THE CLEAR IS AS STRICT AS THE SET. Setting the fault needs at least four measured samples spanning 5 s of continuity; clearing it took ONE agreeing tick. For a MIRRORED module the reported heading is theta - h_true, so the gap is 2*h_true - theta, which passes below 45 deg in two 45-deg-wide windows per revolution — a rider coasting near one of them cleared the latch instantly with the module still mirrored, and that is exactly the fault ?magalign cannot detect. Agreement must now hold continuously for kHeadingDisagreeMs with measured samples no more than kHeadingDisagreeGapMaxMs apart, mirroring the set. No new config field, no threshold retuned, no confStruct change, sizeof stays 192, SW_VERSION stays 35.
@@ -90,6 +91,24 @@ static unsigned long prev_steering_update_ms   = 0;
 // AND on a compass-snapshot re-snap; prev_heading_src_valid gates the very first sample.
 static uint32_t      prev_heading_src_id       = 0;
 static bool          prev_heading_src_valid    = false;
+// V2.5-Evo - 2026-09-17 - TARGET-PROFILE continuity (Rex A9). The D term must also stay within one
+// continuous TARGET geometry. A live COG can remain the same heading source while the requested
+// bearing jumps in a single tick — the side-zone Schmitt flipping the diagonal on or off, the
+// rider course dropping out (trailing -> degraded hold-station), or an RTM/FM handover swapping
+// the direct-to-rider target for the trailing point. Differentiating heading_error across such a
+// step is the same phantom-rate hazard as a heading-source switch (robertzach measured -811 deg/s
+// from one of these). computeFmTarget() publishes which branch it chose; the RTM path in
+// updateRtmSteering() publishes kProfRtmDirect; updateRtmSteering() skips one D tick whenever the
+// profile differs from the previous sample. 0 = nothing published yet (boot); it never equals a
+// named profile, so the very first sample also skips D, exactly like a source switch.
+// P2 (stations) adds kProfTransit and kProfFront here — reserved, not defined yet.
+static const uint8_t kProfDegraded  = 1;   // no trustworthy rider course: hold station on the rider->buggy bearing
+static const uint8_t kProfBehind    = 2;   // trailing point directly behind the rider (mode 2, or diagonal disengaged)
+static const uint8_t kProfDiagRight = 3;   // trailing point behind and to the rider's right (mode 1, diagonal engaged)
+static const uint8_t kProfDiagLeft  = 4;   // trailing point behind and to the rider's left  (mode 3, diagonal engaged)
+static const uint8_t kProfRtmDirect = 5;   // RTM: straight at the rider's filtered position
+static uint8_t       fm_target_profile      = 0;
+static uint8_t       prev_fm_target_profile = 0;
 static double        tx_pos_filtered_lat       = 0.0;  // Filtered TX lat (degrees)
 static double        tx_pos_filtered_lng       = 0.0;  // Filtered TX lng (degrees)
 static bool          tx_pos_filter_initialized = false;
@@ -1866,7 +1885,10 @@ static void updateRtmSteering()
   if (fm_rx_active && !rtm_rx_active) {
     steer_target_lat = fm_target_lat;
     steer_target_lng = fm_target_lng;
+    // fm_target_profile was published by computeFmTarget() on this same tick (runFmLoop() calls
+    // it immediately before this function).
   } else {
+    fm_target_profile = kProfRtmDirect;   // V2.5-Evo - 2026-09-17 - RTM/FM handover skips one D tick
     if (!tx_pos_filter_initialized) {
       tx_pos_filtered_lat = rx_tx_gps_lat;
       tx_pos_filtered_lng = rx_tx_gps_lng;
@@ -1920,7 +1942,9 @@ static void updateRtmSteering()
   }
 
   float d_error;
-  if (prev_heading_src_valid && heading_src_id == prev_heading_src_id) {
+  // V2.5-Evo - 2026-09-17 - and the TARGET profile must match too (see kProf* above).
+  if (prev_heading_src_valid && heading_src_id == prev_heading_src_id &&
+      fm_target_profile == prev_fm_target_profile) {
     // heading_error lives on a circle. Subtracting its normalized representations directly
     // creates a false +/-360 deg jump at the branch cut (for example +179 -> -179). Differentiate
     // the shortest signed angular delta instead, so that example is +2 deg rather than -358 deg.
@@ -1929,11 +1953,12 @@ static void updateRtmSteering()
     while (delta_error < -180.0f) delta_error += 360.0f;
     d_error = delta_error / dt_s;
   } else {
-    d_error = 0.0f;  // source switched or snapshot re-snapped — do not differentiate across the step
+    d_error = 0.0f;  // source switched, snapshot re-snapped or target profile changed — do not differentiate across the step
   }
   float d_term = p.kd * d_error;
   prev_heading_error_deg = heading_error;
   prev_heading_src_id    = heading_src_id;
+  prev_fm_target_profile = fm_target_profile;
   prev_heading_src_valid = true;
 
   // Confidence: LOW conf reduces total authority by 50% (preserves D5 behavior)
@@ -2896,6 +2921,7 @@ static void computeFmTarget(double* out_lat, double* out_lng)
 
   // ---- Degraded mode: no trustworthy rider course - hold station at distance ----
   if (fm_rider_course_deg < 0.0f) {
+    fm_target_profile = kProfDegraded;   // V2.5-Evo - 2026-09-17 - D-term target-profile guard
     float b_rider_to_buggy = (float)TinyGPSPlus::courseTo(
         fm_filt_lat, fm_filt_lng, gps_last_lat, gps_last_lng);
     projectPoint(fm_filt_lat, fm_filt_lng, b_rider_to_buggy, d_follow, out_lat, out_lng);
@@ -2936,9 +2962,10 @@ static void computeFmTarget(double* out_lat, double* out_lng)
   uint8_t m = fm_mode_runtime.load(std::memory_order_relaxed);
 
   float offset = 0.0f;                                          // mode 2 Behind
+  fm_target_profile = kProfBehind;                              // V2.5-Evo - 2026-09-17 - D-term target-profile guard
   if (fm_diagonal_engaged) {
-    if (m == 1)      offset = -(float)usrConf.near_diag_offset_deg;   // mode 1 Near-Right
-    else if (m == 3) offset = +(float)usrConf.near_diag_offset_deg;   // mode 3 Near-Left
+    if (m == 1)      { offset = -(float)usrConf.near_diag_offset_deg; fm_target_profile = kProfDiagRight; }  // mode 1 Near-Right
+    else if (m == 3) { offset = +(float)usrConf.near_diag_offset_deg; fm_target_profile = kProfDiagLeft;  }  // mode 3 Near-Left
   }
 
   float target_bearing = course + 180.0f + offset;

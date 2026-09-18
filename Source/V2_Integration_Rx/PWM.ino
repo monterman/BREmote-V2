@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-18 - comment only (review finding F8): the steering-gate note said runFmLoop() forces FM to IDLE whenever rtm_rx_active is set; since 2026-09-18 it makes FM yield (FM_ARMED, fm_rx_active false, no cap/steer writes) instead. No code change.
 // V2.5-Evo - 2026-07-19 - P3 FM: calcPWM() applies fm_throttle_cap (subtract-only, lowest cap wins) and lets fm_rx_active gate the steering override alongside rtm_rx_active. Throttle can still only be reduced, never added, and the thr_received>=25 steering gate is unchanged.
 // V2.5-Evo - 2026-07-19 - FM triage: calcPWM() records effective_steer into g_effective_steer (diagnostic observer only — no control-path change) so the logger can show the actuation gap
 // V2.5-Evo - 2026-04-30 - calcPWM() applies rtm_approach_cap for RTM approach decel zone
@@ -97,7 +98,9 @@ void calcPWM()
   // but that runs at 10Hz. This gate ensures the PWM task (100Hz) cannot apply a stale
   // bearing value during the up-to-100ms window before Gate 1 next fires.
   // V2.5-Evo - 2026-07-19 - P3 FM: FM steers through this same gate. RTM and FM are mutually
-  // exclusive (runFmLoop() forces FM to IDLE whenever rtm_rx_active is set), so they safely share
+  // exclusive (since 2026-09-18 runFmLoop() makes FM YIELD whenever rtm_rx_active is set - it parks
+  // in FM_ARMED with fm_rx_active false and writes neither cap nor steering until RTM ends; before
+  // that it forced FM to IDLE), so they safely share
   // rtm_steer_override as the steering command. The thr_received>=25 condition is unchanged and
   // still applies to both — autonomous steering never reaches the motors on a released trigger.
   uint8_t effective_steer = ((rtm_rx_active || fm_rx_active) && usrConf.rtm_rx_override_steering && thr_received >= 25)

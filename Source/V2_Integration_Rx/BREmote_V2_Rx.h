@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-18 - comment only (review finding F6): the fm_gate_flags bit-13 note names kFmReleaseDengageMs, the alias RTMState.ino now uses for the release -> needs-D_engage timer. No code change.
 // V2.5-Evo - 2026-09-18 - kFmEngageDistFloorM raised 8.0 -> 9.5 m (code-review finding F3): the rope in use is 7.1 m (owner, 2026-08-28), not the 6.10 m the 8.0 m floor was derived from, so 8.0 m cleared it by only 0.9 m - inside GPS error. 7.1 x 1.31 = 9.3, rounded up. Validator, read-site clamp, trigger-free engage floor and the BOOTSTRAP-1 abort radius all read this one constant. fm_engage_dist_m field comment updated (0, or 9.5-50 m). Compile-time only: no confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-18 - P1-c (Follow-Me stays armed through a Return-to-Me): adds FM_LOG_GATE_YIELD_TO_RTM (bit 14) to the deep-log gate word - a new bit in the existing u32, record size unchanged. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-18 - P1-a (trigger-free Follow-Me engagement): includes ../Common/FollowMeEngage.h (pure engage floor + needs-D_engage rule, host-tested in Tools/tests/follow_me_engage_test.cpp) and adds FM_LOG_GATE_PROOF_OK (bit 12) / FM_LOG_GATE_NEEDS_DENGAGE (bit 13) to the deep-log gate word - new bits in the existing u32, record size unchanged, bit 11 stays reserved for P1-b. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
@@ -1058,7 +1059,7 @@ static_assert(sizeof(VescLogData) == 59, "VescLogData size mismatch — check bi
 //   bit 12 proof_ok         conditions 2-7 hold, so the distance, the dwell and the latch were
 //                           evaluated this tick WITHOUT the trigger (P1-a: proof_ok = fault_ok)
 //   bit 13 needs_dengage    the next engagement must clear the full D_engage (set by a trigger
-//                           release of kFmEngageGraceMs or more; cleared on the ACTIVE edge)
+//                           release of kFmReleaseDengageMs or more; cleared on the ACTIVE edge)
 //   bit 14 yield_to_rtm     P1-c: Return-to-Me is active and Follow-Me is parked in FM_ARMED,
 //                           writing no cap and no steering. The only bit set on such a tick.
 // Bits 0-3, 5-7 are only evaluated on ticks that reach the condition block (FM_ARMED and beyond

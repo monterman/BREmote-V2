@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-18 - review findings F6/F7/F8: kFmReleaseDengageMs added as an alias of kFmEngageGraceMs and used at the release -> needs-D_engage site (two rules, two names, one value); a GPS-integrity note in the P1-a block stating that conditions 2-7 still enforce the project's rule 1 (Phase A / freshness, never extrapolate) on the rider position now consumed off the trigger; the fm_sep_latched clear list corrected (no code clears the latch on a mode change - the clears are the 10 s release edge, steer-cancel, fmEnterIdle and the RTM yield). Comment + alias only, no behaviour change. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-18 - comments for the 9.5 m engage floor (kFmEngageDistFloorM 8.0 -> 9.5, review finding F3; the rope is 7.1 m): the factory auto D_engage 9.0 m now clamps up to 9.5 m, the owner's short-release edge is max(9, 9.5) = 9.5 m, the BOOTSTRAP-1 abort radius floor is 9.5 m. Comment-only in this file; the constant lives in BREmote_V2_Rx.h. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-18 - REVIEW FIX (P1-a concern A): the 10 s throttle-release latch clear is now an EDGE - one-shot fm_thr_release_cleared fires it once when the release crosses kFmThrReleaseClearMs and re-arms when the trigger is next held - so the separation proof can be re-earned off the trigger beyond 10 s (it used to be zeroed every tick past 10 s). Because a latch earned at 20 m would then survive the swim back to the rope, the engage edge while fm_reengage_needs_dengage is set now also requires the LIVE separation streak (fm_sep_fix_count >= kFmSepDwellFixes and >= kFmSepDwellFloorMs beyond D_engage on this tick) - followMeSeparationStreakStands() + a streak term in followMeMayEngage(), Common/FollowMeEngage.h, host test extended. The engage evaluation moved below the dwell/latch block so it reads this tick's counters. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-18 - P1-c: RTM > FM - FOLLOW-ME YIELDS TO AN ACTIVE RETURN-TO-ME AND STAYS ARMED THROUGH IT. rtm_rx_active is no longer in runFmLoopBody()'s idle gate; a yield block just below it forces ACTIVE/HOLD/STOPPING -> FM_ARMED on the first tick RTM is seen (one transition, printed once: fm_rx_active false, fm_throttle_cap 255 as the FM_ARMED semantics so a HOLD's cap 0 cannot stall the return, latch and dwell cleared, fm_reengage_needs_dengage set, divergence/pivot/grace/steer-cancel/stop-ramp bookkeeping reset, rtm_steer_override NOT written - RTM owns it), then writes nothing at all while rtm_rx_active holds; IDLE stays IDLE; fm_mode_runtime is never touched. When RTM ends by any of its own paths FM is ARMED, unlatched, needs-D_engage, and re-engages only by the P1-a rules. fmEnterIdle() no longer runs on RTM ticks. New static fm_yielding_to_rtm + read-only accessors (fmStateName/fmStateCode/fmSepLatched/fmNeedsDengage/fmYieldingToRtm) for the ?diag line in System.ino. Deep log: FM_LOG_GATE_YIELD_TO_RTM (bit 14). RTM's gates, caps and steering untouched. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
@@ -1567,6 +1568,12 @@ static const uint32_t kFmFaultStickyMs       = 6000;   // ms
 // steering the buggy away) means the rider is often still feeding the tail of that steering input
 // at the instant FM engages; without the grace that tail would immediately cancel the fresh FM.
 static const uint32_t kFmEngageGraceMs       = 2000;   // ms
+// V2.5-Evo - 2026-09-18 - kFmReleaseDengageMs: how long the trigger must be continuously released
+// before the NEXT engagement must clear the full D_engage again (fm_reengage_needs_dengage, P1-a).
+// It is deliberately the same 2 s as the steer-cancel grace above, but it is a DIFFERENT rule read
+// at a different site (the release timer, not the engage timer), so it gets its own name: a future
+// retune of one must not silently move the other. Alias, not a second literal (review finding F6).
+static const uint32_t kFmReleaseDengageMs    = kFmEngageGraceMs;   // ms
 
 // Steering persistence filter for steer-cancel. A steering deflection must be sustained beyond
 // the deadband for this long before it cancels an ACTIVE FM. WHY: a momentary blip (chop, a bump)
@@ -1732,6 +1739,11 @@ static unsigned long fm_engage_ms        = 0;
 //   Schmitt hysteresis governs engage/re-engage as before, so the buggy is free to close back
 //   to its normal 6 m station without fighting the interlock. The latch is NEVER cleared by
 //   geometry alone — only by the throttle-release clear, a mode change, or entering FM_IDLE.
+//   V2.5-Evo - 2026-09-18 - CORRECTION (review finding F8): no code has ever cleared the latch on a
+//   MODE CHANGE (a 0xF2 with a new mode 1-3 only rewrites fm_mode_runtime; nothing in this loop
+//   edges on it). The actual clears are: the 10 s throttle-release clear (an edge since today),
+//   the ACTIVE steer-cancel ("ARMED-UNLATCHED"), fmEnterIdle() (mode 0, a 0xFF/expired
+//   declaration, GPS/RTM disabled, or the end of a fault ramp), and the RTM yield (P1-c).
 //   V2.5-Evo - 2026-09-18 - P1-a: "during this throttle-hold session" above is now history. The
 //   proof runs off the trigger (proof_ok = fault_ok), so the latch can be earned while the rider
 //   is off the trigger; the three clears above are unchanged, and the RTM yield (P1-c) is a fourth.
@@ -1800,7 +1812,7 @@ static bool          fm_thr_release_cleared = false;
 // 7.1 m rope. This flag closes that: while it is set, condition 8 for a non-ACTIVE Follow-Me is
 // dist > D_engage (12 m at the owner's manual setting, never below the 9.5 m floor), and the rope
 // can never pass that. See followMeEngageThresholdM() in Common/FollowMeEngage.h.
-//   SET   : when the trigger has been released continuously for kFmEngageGraceMs (2000 ms) - the
+//   SET   : when the trigger has been released continuously for kFmReleaseDengageMs (2000 ms) - the
 //           same timer the 10 s latch clear counts, read at 2 s - and by every path that leaves FM
 //           (fmEnterIdle) or parks it (the RTM yield, P1-c).
 //   CLEAR : on the ARMED/HOLD -> ACTIVE edge only. A rider linking waves who releases the trigger
@@ -3741,10 +3753,10 @@ static void runFmLoopBody(unsigned long now)
     if (fm_thr_low_since_ms == 0) {
       fm_thr_low_since_ms = now;
     } else {
-      // V2.5-Evo - 2026-09-18 - P1-a: the same timer, read at 2 s. A release of kFmEngageGraceMs or
+      // V2.5-Evo - 2026-09-18 - P1-a: the same timer, read at 2 s. A release of kFmReleaseDengageMs or
       // more means the next engagement must clear the full D_engage again (see the flag's
       // declaration for why). Idempotent; cleared only on the ACTIVE edge further down.
-      if (followMeReleaseNeedsDengage((uint32_t)fm_thr_low_since_ms, (uint32_t)now, kFmEngageGraceMs)) {
+      if (followMeReleaseNeedsDengage((uint32_t)fm_thr_low_since_ms, (uint32_t)now, kFmReleaseDengageMs)) {
         fm_reengage_needs_dengage = true;
       }
       // V2.5-Evo - 2026-09-18 - EDGE, not level: fires once per release (see fm_thr_release_cleared).
@@ -3787,6 +3799,13 @@ static void runFmLoopBody(unsigned long now)
   //   hard_ok  = thr_held && fault_ok stays the authority term in can_be_active, and still gates the
   //                                 divergence/pivot bookkeeping (judgements about a buggy that is
   //                                 actually steering, which only happens under the trigger).
+  // GPS INTEGRITY (project GPS-telemetry rule 1, review finding F7): the rider position the proof
+  // now consumes OFF the trigger is still guarded by conditions 2-7 in checkFmFaultConditions() -
+  // Phase A rejection of the buggy's own fix, the TX<->RX handshake, TX freshness within
+  // tx_gps_stale_timeout_ms, RX freshness within 6 s, a heading and the link - so a position that
+  // failed Phase A or went stale is DROPPED, never used; nothing here extrapolates or interpolates,
+  // the 0xF3 meta-packet state machine and the distance maths (TinyGPSPlus on the stored doubles)
+  // are untouched, and the FM steering path itself still runs only under hard_ok.
   // NOTHING here moves the buggy without the trigger: fm_rx_active and the cap chain are written
   // only inside the can_be_active branch, and can_be_active still carries hard_ok. What changes is
   // that the latch can already be standing on the first squeeze, and the TX sweep can read "ready"
@@ -4063,7 +4082,8 @@ static void runFmLoopBody(unsigned long now)
     //      judging it mid-ramp measures the ramp, not the steering. Parking the dwell (rather than
     //      letting it run) guarantees the first post-grace window is a full, clean kFmDivergeMs.
     //      NOTE: this is deliberately NOT kFmEngageGraceMs (2000 ms) — that constant is the
-    //      steer-cancel grace and is a different, shorter window for a different purpose.
+    //      steer-cancel grace (and, through its alias kFmReleaseDengageMs, the release timer that
+    //      sets needs-D_engage): different, shorter windows for different purposes.
     //
     // Bookkeeping is otherwise the same shape runPhaseC() uses: one timer plus one baseline, evaluated
     // every tick, both cleared the instant the condition stops holding, so nothing can accumulate
@@ -4343,7 +4363,7 @@ static void runFmLoopBody(unsigned long now)
 
       // V2.5-Evo - 2026-09-18 - P1-a: the ACTIVE edge is the ONLY clear of the needs-D_engage
       // rule. This tick passed the engage edge with the rule applied, so from here a short release
-      // (< kFmEngageGraceMs) resumes on the ordinary 9 m edge, exactly as before.
+      // (< kFmReleaseDengageMs) resumes on the ordinary edge, exactly as before.
       fm_reengage_needs_dengage = false;
 
       fm_state = FM_ACTIVE;

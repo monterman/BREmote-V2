@@ -27,7 +27,7 @@
 //   d_engage_m          - the separation-latch distance in force (manual fm_engage_dist_m, or
 //                         1.5 x d_follow, already clamped up to the floor by the caller).
 //   needs_dengage       - true when the first re-engagement must clear the full separation distance
-//                         (set after a trigger release of kFmEngageGraceMs or more, and by the RTM
+//                         (set after a trigger release of kFmReleaseDengageMs or more, and by the RTM
 //                         yield; cleared on the ARMED/HOLD -> ACTIVE edge).
 // Returns: the threshold in metres.
 // Side effects: none (pure).
@@ -89,7 +89,7 @@ static inline bool followMeMayEngage(float dist_m, float min_dist_m, float band_
 // followMeReleaseNeedsDengage - the rule that SETS needs_dengage from the trigger-release timer:
 // the trigger has been continuously released (thr_received < 25) for grace_ms or longer.
 // Inputs: thr_low_since_ms - millis() when the trigger first dropped below 25; 0 = currently held.
-//         now_ms, grace_ms - the current time and kFmEngageGraceMs (2000).
+//         now_ms, grace_ms - the current time and kFmReleaseDengageMs (2000).
 // Returns: true once the release has lasted grace_ms. Unsigned subtraction so a millis() wrap
 //          cannot produce a false negative.
 static inline bool followMeReleaseNeedsDengage(uint32_t thr_low_since_ms, uint32_t now_ms,

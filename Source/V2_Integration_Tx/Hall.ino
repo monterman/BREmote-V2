@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-18 - comment only (review finding F8): the magnet-gesture header said "arming RTM disarms FM first"; corrected to the yield behaviour. No code change.
 // V2.5-Evo - 2026-09-18 - comment only: the magnet RTM-arm branch said setRtmArmed() disarms FM; it no longer does (Follow-Me stays armed through a return since 2026-09-18). No code change.
 // V2.5-Evo - 2026-09-17 - GestureAbort (Rex B7 case 2): handleGearToggle() now aborts any toggle hold the
 //   moment the trigger is squeezed (thr_scaled > 3 with steer_enabled, the same gate calcFilter() uses to hand
@@ -504,8 +505,10 @@ void handleGearToggle(int direction)
 //   The gesture mimics what the toggle-combo can do: it both arms AND disarms. On removal, if the
 //   selected mode is disarmed it arms; if it is armed it disarms through the toggle's own disarm
 //   path — fmDisarm() for FM, setRtmDisarmed()/rtmDisengage() for RTM — so the haptic feel and the
-//   RX effect are identical to the toggle-combo disarm. FM and RTM stay mutually exclusive: RTM
-//   active/arming blocks any FM toggle, and arming RTM disarms FM first (setRtmArmed()).
+//   RX effect are identical to the toggle-combo disarm. FM and RTM stay mutually exclusive on the
+//   buggy: RTM active/arming blocks any FM toggle here, and on the RX an active RTM makes Follow-Me
+//   yield. Since 2026-09-18 arming RTM no longer disarms FM first (setRtmArmed()) - Follow-Me
+//   stays armed through the return and resumes ARMED (unlatched) when it ends.
 //
 // ARMING WHILE ON THE THROTTLE IS INTENTIONAL
 //   Unlike the toggle combos, this gesture does NOT require a released throttle. The approved

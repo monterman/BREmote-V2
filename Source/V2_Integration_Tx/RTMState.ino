@@ -1,3 +1,8 @@
+// V2.5-Evo - 2026-09-18 - KEEPALIVE vs BURST QUEUE (code-review finding, water-test blocker): the 30 s 0xF2 keepalive in runFmLoop() now
+//   queues only when rtm_meta_count == 0 (the single-slot queueMetaPacketBurst() is empty), otherwise retries next tick without
+//   advancing fm_last_sync_ms - it used to overwrite the 0xF1/1 RTM-activation burst on the first tick after the blocking arm
+//   ceremony, leaving the RX unaware RTM was on. Belt: runDoubleSqueezeArm() refreshes fm_last_sync_ms on a successful arm.
+//   No confStruct change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-09-18 - RTM no longer disarms Follow-Me (owner decision 27(c), always-armed): setRtmArmed() no longer calls
 //   fmSilentDisarm() and sends no 0xF2/0 - fm_armed stays true, the 30 s keepalive keeps running, last_fm_mode is untouched, the RTM
 //   ceremony is unchanged. The RX yields on its own side while rtm_rx_active is set and resumes ARMED (unlatched) when RTM ends.
@@ -390,6 +395,12 @@ static void runDoubleSqueezeArm()
   rtm_arm_dist_m      = decodeRtmDistanceM();
   if (rtm_arm_dist_m < 0.0f) rtm_arm_dist_m = 0.0f;
   queueMetaPacketBurst(0xF1, 1);
+  // V2.5-Evo - 2026-09-18 - Belt for the single-slot burst queue: this ceremony blocked loop() for
+  // 8 s or more, so an armed Follow-Me's 30 s keepalive may be overdue the instant loop() resumes.
+  // Restart its clock now so it cannot fall due on top of the 0xF1/1 just queued. The keepalive
+  // itself also refuses to queue while a burst is in flight (see runFmLoop()); this only keeps it
+  // from trying. Only while FM is armed (fm_last_sync_ms > 0) - never starts a keepalive on its own.
+  if (fm_last_sync_ms > 0) fm_last_sync_ms = millis();
 }
 
 // ---- Called from loop() every ~110ms ----
@@ -919,9 +930,31 @@ void runFmLoop()
 
   // V2.5-Evo - 2026-04-28 - Change E: Send 0xF2 keepalive every 30s while FM is armed.
   // Ensures RX stays in the correct FM mode after any transient packet loss.
+  //
+  // V2.5-Evo - 2026-09-18 - NEVER CLOBBER AN IN-FLIGHT BURST (code-review finding, water-test
+  // blocker). queueMetaPacketBurst() is a SINGLE SLOT (Radio.ino): a new call overwrites
+  // rtm_meta_type/value and restarts the 3-packet count, so whatever burst was still being sent is
+  // simply lost on the air. WHY THAT BIT HERE: the toggle RTM arm blocks loop() inside
+  // runDoubleSqueezeArm() for 8 s or more, during which this function does not run and
+  // fm_last_sync_ms goes stale; the ceremony ends by queueing 0xF1/1 (RTM ACTIVE), loop() resumes,
+  // and on its very first tick this keepalive - now 30 s overdue - queued 0xF2/mode on top of it
+  // before sendData() (100 ms cycle) had sent a single 0xF1/1 packet. The TX then showed RTM
+  // ACTIVE with rtm_thr_cap_tx ramping while the RX never learned RTM was on: no gate 9, no
+  // approach cap, no Phase C, no RTM steering - the trigger drove the buggy straight ahead.
+  // Measured ~30-50 % of toggle arms once Follow-Me started staying armed through a return.
+  // THE FIX: queue the keepalive only when the slot is EMPTY; otherwise retry next tick and do NOT
+  // advance fm_last_sync_ms, so the retry keeps coming every ~110 ms until the slot frees (a burst
+  // drains in ~300 ms). The acquire load pairs with the release store in queueMetaPacketBurst().
+  // Belt: runDoubleSqueezeArm() also refreshes fm_last_sync_ms at the end of a successful
+  // ceremony, so the keepalive is not overdue on resume in the first place.
+  // (A 2-deep queue and a TX check of fm_status bit 1 are the longer-term answer; not built here.)
   if (fm_last_sync_ms > 0 && now - fm_last_sync_ms >= 30000UL)
   {
-    queueMetaPacketBurst(0xF2, last_fm_mode);
-    fm_last_sync_ms = now;
+    if (rtm_meta_count.load(std::memory_order_acquire) == 0)
+    {
+      queueMetaPacketBurst(0xF2, last_fm_mode);
+      fm_last_sync_ms = now;
+    }
+    // else: a burst (0xF1 RTM state, 0xF4 aux, or an earlier 0xF2) is still going out — retry next tick.
   }
 }

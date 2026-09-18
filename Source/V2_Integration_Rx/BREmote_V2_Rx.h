@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-17 - DEEP-LOG FM AUDIT COLUMNS (comparison row 13, adapted onto our 65 B level-4 record): VescLogDataL4 gains an 18-byte Follow-Me block (fm_gate_flags u32, fm_distance_dx10, fm_d_engage_dx10, fm_rider_speed_dx10, fm_sep_fix_count, fm_mode, fm_state, fm_block_reason, fm_throttle_cap, fm_station_deg_x10, 1 B pad) -> sizeof 65 -> 83, static_assert 83. The P1/P2 fields (return_candidate / fade_bypass / transit bits, fm_station_deg_x10) are laid out NOW and zero-filled so the record never changes again. PUBLISH-FROM-CONTROLLER: runFmLoop() fills g_fm_log_snapshot under taskENTER_CRITICAL once per 10 Hz tick and Logger.ino copies it - the logger never recomputes a gate. Old 65 B level-4 files still parse: the file header's record_size selects the column set (logCsvHeaderFor) and logFormatCsvRow() guards each block on the bytes actually present. Deep logging at 3 Hz now holds about 2.0 h in 1757 KB (was about 2.5 h). Log record only: NO confStruct change, sizeof(confStruct) stays 192, SW_VERSION stays 35, SPIFFS config is NOT reset by this flash.
 // V2.5-Evo - 2026-08-17 - COMMENT-ONLY size correction (no code, no struct, no SW_VERSION change): the mag_orientation block claimed "sizeof 184 -> 188". The finished struct is 192 — mag_orientation (2) plus the two reserved slots rsvd_u16_1 (2) and rsvd_f32_1 (4) that landed in the same SW34->35 edit, naturally aligned with no tail pad. The static_assert has always said 192; only the prose was wrong. Corrected in three places: the mag_orientation block, the "confStruct is 184 bytes" line in the log_level block (retensed as history), and the static_assert's own trailing history, which never recorded the 184->192 step and now does. Flagged as load-bearing rather than cosmetic because the SW34->35 config-backup migration is pinned to the exact counts 184 (legacy) and 192 (current) and disables itself if either stops matching. Every remaining "184" in this file sits inside a dated change-history entry and is correct AS HISTORY — the static_assert is the SSOT for the current size.
 // V2.5-Evo - 2026-08-17 - defaultConf.vesc_timeout_s raised 6 -> 10 s, because a VESC cold restart takes roughly 8-9 seconds and 6 s is shorter than that: every restart blanked the rider's battery % and FET temperature to "N/A" on the TX while the VESC was merely booting. 10 s covers the restart and is still half the original hardcoded 20 s. VALUE-ONLY change to an existing field: no field added, moved, renamed or resized, and the 5-60 s validation range in ConfigService is untouched — so sizeof(confStruct) stays 192, the static_assert is unchanged, SW_VERSION stays 35 and the owner's SPIFFS config is NOT wiped by this flash. Because it is NOT wiped, a board with a stored vesc_timeout_s keeps its old value: it must be set on the device with `?set vesc_timeout_s 10` + `?save`. Second consumer checked — RTM Phase C check 2 uses the same field to decide when to SKIP its VESC-ERPM-vs-GPS-speed comparison; a longer timeout means fewer skips, and since a skipped check and a passed check have the identical outcome (no stop) the check's coverage can only widen, never shrink.
 // V2.5-Evo - 2026-07-25 - STAGE 2 (heading-source trust guards): added the four shared compile-time constants the RTM/FM heading ladder needs — kRtmCogFrozenMs (3000), kHeadingDisagreeDeg (45.0), kHeadingDisagreeMs (5000), kHeadingCompareSnapMs (1000). They live HERE, once, for the same reason kFmEngageDistFloorM does: getRtmHeading() in RTMState.ino and its inline duplicate in Logger.ino both read them, and Logger.ino is concatenated BEFORE RTMState.ino, so a constant defined in RTMState.ino would be invisible to the logger mirror. Constants + comments only: no confStruct field added, moved, renamed or resized; sizeof(confStruct) stays 184, static_assert unchanged, SW_VERSION stays 34, SPIFFS config is NOT reset by this flash.
@@ -1003,14 +1004,94 @@ static_assert(sizeof(VescLogData) == 59, "VescLogData size mismatch — check bi
 //   mux_err_cnt    — how many AW9523 mux writes failed read-back? (motor EMI corrupting I2C)
 //   loop_max_ms    — did the main loop stall long enough to starve the GPS drain / RTM tick?
 // ============================================================
+// ============================================================
+// V2.5-Evo - 2026-09-17 - FOLLOW-ME AUDIT BLOCK (18 bytes, appended after the four diagnostics)
+//
+// WHY: a Follow-Me run that stops, holds, or refuses to engage leaves no record of WHICH gate did
+// it. These columns are the controller's own verdicts, copied out once per tick — not recomputed
+// by the logger from raw inputs — so a log row says what runFmLoop() actually decided at that
+// instant (Rex positive finding on robertzach's snapshot design).
+//
+// LAYOUT IS FINAL. The P1 (return_candidate) and P2 (fade_bypass, transit, fm_station_deg_x10)
+// fields are laid out now and written as zero, so adding those features later changes no record
+// size and breaks no reader. Old 65-byte level-4 files still parse: the file header's record_size
+// tells the reader which blocks are present.
+//
+// fm_gate_flags bits (1 = the condition held on this tick):
+//   bit 0 thr_held          condition 1, the deadman (thr_received >= 25)
+//   bit 1 fault_ok          conditions 2-7 all hold (Phase A/B, TX/RX GPS fresh, heading, link)
+//   bit 2 speed_ok          condition 9, rider above foiler_low_speed_kmh (+hysteresis to engage)
+//   bit 3 dist_ok           condition 8, distance Schmitt (beyond min_dist + band / inside min_dist)
+//   bit 4 sep_latched       the separation proof (tow interlock) is standing
+//   bit 5 diverge           the A3 divergence fault fired on this tick
+//   bit 6 pivoting          PIVOT-SUSPEND-1 is suspending the divergence judgement
+//   bit 7 in_grace          inside the post-engage grace (kFmEngageRampMs + kFmDivergeMs)
+//   bit 8 heading_disagree  the compass-vs-COG disagreement latch is standing
+//   bit 9 fade_bypass       P2 — always 0 until the station work lands
+//   bit 10 transit          P2 — always 0 until the station work lands
+//   bit 11 return_candidate P1 — always 0 until the engagement rework lands
+// Bits 0-3, 5-7 are only evaluated on ticks that reach the condition block (FM_ARMED and beyond
+// with a live declaration); on IDLE / STOPPING / early-exit ticks the whole word is 0.
+// ============================================================
+#define FM_LOG_GATE_THR_HELD          (1UL << 0)
+#define FM_LOG_GATE_FAULT_OK          (1UL << 1)
+#define FM_LOG_GATE_SPEED_OK          (1UL << 2)
+#define FM_LOG_GATE_DIST_OK           (1UL << 3)
+#define FM_LOG_GATE_SEP_LATCHED       (1UL << 4)
+#define FM_LOG_GATE_DIVERGE           (1UL << 5)
+#define FM_LOG_GATE_PIVOTING          (1UL << 6)
+#define FM_LOG_GATE_IN_GRACE          (1UL << 7)
+#define FM_LOG_GATE_HEADING_DISAGREE  (1UL << 8)
+#define FM_LOG_GATE_FADE_BYPASS       (1UL << 9)    // P2, reserved
+#define FM_LOG_GATE_TRANSIT           (1UL << 10)   // P2, reserved
+#define FM_LOG_GATE_RETURN_CANDIDATE  (1UL << 11)   // P1, reserved
+
 struct __attribute__((packed)) VescLogDataL4 {
     VescLogData base;              // the complete level-3 record, unchanged and first — do not reorder
     uint8_t  gps_sent_per_s;       // complete NMEA sentences parsed in the last full second (saturates at 255)
     uint8_t  cog_frozen_s;         // seconds since the COG VALUE last changed. SENTINEL 255 = no COG value has ever been seen this session. 254 = 254 s or longer.
     uint16_t mux_err_cnt;          // running session total of setUartMux() I2C read-back mismatches (saturates at 0xFFFE)
     uint16_t loop_max_ms;          // worst loop() body duration since the PREVIOUS record, in ms, rounded to nearest; reset to 0 after every record. 0 = no loop completed since the last record, or every loop was under 0.5 ms.
+    // ---- V2.5-Evo - 2026-09-17 - Follow-Me audit block (see the comment above). Byte 65 onward. ----
+    uint32_t fm_gate_flags;        // FM_LOG_GATE_* bits, the controller's verdicts on this tick; 0 on ticks that never reached the condition block
+    uint16_t fm_distance_dx10;     // buggy-to-rider distance x 10 m as the controller measured it; 0xFFFF = not trustworthy this tick (trigger released or a fault condition)
+    uint16_t fm_d_engage_dx10;     // the engage distance x 10 m in force this tick (manual or auto, after the tow-rope floor); 0xFFFF = not evaluated
+    uint16_t fm_rider_speed_dx10;  // the rider's filtered speed x 10 km/h (fm_rider_speed_kmh)
+    uint8_t  fm_sep_fix_count;     // rider GPS fixes counted toward the separation dwell (DWELL-1); OUR counter, not a dwell time
+    uint8_t  fm_mode;              // fm_mode_runtime: 1-3 declared, 0 off, 0xFF never declared this session
+    uint8_t  fm_state;             // FmState: 0 IDLE, 1 ARMED, 2 ACTIVE, 3 HOLD, 4 STOPPING
+    uint8_t  fm_block_reason;      // FmStopReason (P0-e): the live stop latch, non-zero for the whole FM_STOPPING ramp; 0 = no fault stop in progress
+    uint8_t  fm_throttle_cap;      // FM's subtract-only throttle cap this tick (0-255; 255 = no cap)
+    int16_t  fm_station_deg_x10;   // P2 station angle x 10 deg — always 0 until the station work lands
+    uint8_t  fm_pad;               // 1 B pad, always 0 — keeps the block at 18 B / the record at 83 B
 };
-static_assert(sizeof(VescLogDataL4) == 65, "VescLogDataL4 size mismatch — expected 59 (VescLogData) + 6 (level-4 block).");
+static_assert(sizeof(VescLogDataL4) == 83, "VescLogDataL4 size mismatch — expected 59 (VescLogData) + 6 (level-4 diagnostics) + 18 (Follow-Me audit block, 2026-09-17).");
+
+// ============================================================
+// V2.5-Evo - 2026-09-17 - FmLogSnapshot: the controller -> logger hand-off
+//
+// runFmLoop() (loop task, 10 Hz) fills g_fm_log_snapshot exactly once per tick, inside
+// taskENTER_CRITICAL(&g_fm_log_mux); fillLevel4Diag() (loggerTask) copies it out inside the same
+// critical section. The two tasks share one core at the same priority and are time-sliced, so
+// without the critical section an 18-byte copy could be torn mid-way and a row would mix two
+// ticks. The section is a handful of instructions long — no I/O, no computation inside it.
+// The logger NEVER recomputes a gate from raw inputs: what it writes is what the controller
+// decided. Control code reads nothing from this struct.
+// ============================================================
+struct FmLogSnapshot {
+    uint32_t gate_flags;
+    uint16_t distance_dx10;
+    uint16_t d_engage_dx10;
+    uint16_t rider_speed_dx10;
+    uint8_t  sep_fix_count;
+    uint8_t  mode;
+    uint8_t  state;
+    uint8_t  block_reason;
+    uint8_t  throttle_cap;
+    int16_t  station_deg_x10;
+};
+FmLogSnapshot g_fm_log_snapshot = { 0, 0xFFFF, 0xFFFF, 0, 0, 0xFF, 0, 0, 255, 0 };
+portMUX_TYPE  g_fm_log_mux      = portMUX_INITIALIZER_UNLOCKED;
 
 // ============================================================
 // V2.5-Evo - 2026-07-25 - STAGE 0 PART B: SELF-DESCRIBING LOG FILE HEADER
@@ -1079,17 +1160,37 @@ static inline uint16_t logRecordSizeForLevel(uint8_t level)
 // and add the argument in logFormatCsvRow(). Both readers pick it up with no further edits.
 // ============================================================
 #define LOG_CSV_HEADER_L3 "timestamp_ms,motor_current_A,battery_current_A,duty_cycle_%,voltage_V,ERPM,temp_mos_C,fault_code,speed_kmh,latitude,longitude,datetime_unix,thr_received,rtm_source,rtm_confidence,rtm_rx_active,gps_phase_b_ok,rtm_steer_override,rtm_heading_chosen_dx10,compass_live_dx10,compass_snap_dx10,snap_age_s,gps_course_dx10,cog_age_ms_div10,heading_error_dx10,d_error_dx10,remote_error,effective_steer,tx_distance_m,rssi_dbm,snr_db"
-#define LOG_CSV_HEADER_L4 LOG_CSV_HEADER_L3 ",gps_sent_per_s,cog_frozen_s,mux_err_cnt,loop_max_ms"
+// V2.5-Evo - 2026-09-17 - two level-4 column sets: _L4_DIAG is the 65-byte layout written from
+// 2026-07-25 to 2026-09-16 (four diagnostics); _L4 is the current 83-byte layout (diagnostics +
+// the Follow-Me audit block). logCsvHeaderFor() picks by the file's own record_size.
+#define LOG_CSV_HEADER_L4_DIAG LOG_CSV_HEADER_L3 ",gps_sent_per_s,cog_frozen_s,mux_err_cnt,loop_max_ms"
+#define LOG_CSV_HEADER_L4 LOG_CSV_HEADER_L4_DIAG ",fm_gate_flags,fm_distance_m,fm_d_engage_m,fm_rider_speed_kmh,fm_sep_fix_count,fm_mode,fm_state,fm_block_reason,fm_throttle_cap,fm_station_deg"
 
 #define LOG_CSV_ROW_FMT_L3 "%u,%.2f,%.2f,%d,%.1f,%d,%u,%u,%.1f,%.6f,%.6f,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%d,%d,%u,%u,%.1f,%d,%.1f"
 #define LOG_CSV_ROW_EXT_L4 ",%u,%u,%u,%u"
+#define LOG_CSV_ROW_EXT_L4_FM ",%u,%.1f,%.1f,%.1f,%u,%u,%u,%u,%u,%.1f"
 
 // Row buffer size. Sizing arithmetic for the 31 level-3 columns is unchanged from F-WEBCSV:
 //   ~178 field chars + 30 commas + newline + NUL = ~210 bytes for normal data, and a corrupt
-//   latitude/longitude printed via "%.6f" can reach ~282. The 4 level-4 columns add at most
-//   3+3+5+5 chars plus 4 commas = 20. 640 clears the pathological case by ~2.1x. It is a stack
-//   local in the Arduino loop task (8 KB stack), which is where both readers run.
+//   latitude/longitude printed via "%.6f" can reach ~282. The 4 level-4 diagnostic columns add
+//   at most 3+3+5+5 chars plus 4 commas = 20. The 10 Follow-Me columns (2026-09-17) add at most
+//   ~60 more (a u32 flag word, three "%.1f" distances/speeds, five u8s, one signed "%.1f"). 640
+//   clears the pathological ~362 by ~1.8x. It is a stack local in the Arduino loop task (8 KB
+//   stack), which is where both readers run.
 #define LOG_CSV_ROW_BUF 640
+
+// ============================================================
+// V2.5-Evo - 2026-09-17 - logCsvHeaderFor - the column header that matches a file's own layout
+// Inputs: level and record_size, both from the file's LogFileHeader. Outputs: the header string.
+// Side effects: none. Both readers (serial ?download, WiFi /api/logs/download) call this so a
+// 65-byte level-4 file written before the Follow-Me block still gets exactly its 35 columns.
+// ============================================================
+static inline const char* logCsvHeaderFor(uint8_t level, uint16_t record_size)
+{
+  if (level < 4 || record_size < (uint16_t)offsetof(VescLogDataL4, fm_gate_flags)) return LOG_CSV_HEADER_L3;
+  if (record_size < (uint16_t)sizeof(VescLogDataL4)) return LOG_CSV_HEADER_L4_DIAG;
+  return LOG_CSV_HEADER_L4;
+}
 
 // ============================================================
 // logFormatCsvRow - format ONE binary log record as one CSV line
@@ -1160,12 +1261,17 @@ static int logFormatCsvRow(char* out, size_t out_len, const uint8_t* rec_bytes, 
   if (n < 0) { out[0] = '\0'; return 0; }
   if ((size_t)n >= out_len) n = (int)out_len - 1;   // snprintf truncated — keep the index inside the buffer
 
-  // Level-4 block. Guarded on the RECORD SIZE as well as the level so a truncated or
+  // Level-4 blocks. Guarded on the RECORD SIZE as well as the level so a truncated or
   // mislabelled file can never make us read past the bytes we actually have.
-  if (level >= 4 && rec_size >= (uint16_t)sizeof(VescLogDataL4) && (size_t)n < (out_len - 1))
+  // V2.5-Evo - 2026-09-17 - two blocks now: the four diagnostics (present from byte 59, i.e. in
+  // every 65 B or 83 B level-4 file) and the Follow-Me audit block (present only in 83 B files).
+  // Only rec_size bytes are copied, into a zeroed struct, so a 65 B record never reads stale
+  // buffer bytes as Follow-Me columns.
+  if (level >= 4 && rec_size >= (uint16_t)offsetof(VescLogDataL4, fm_gate_flags) && (size_t)n < (out_len - 1))
   {
     VescLogDataL4 d4;
-    memcpy(&d4, rec_bytes, sizeof(VescLogDataL4));
+    memset(&d4, 0, sizeof(d4));
+    memcpy(&d4, rec_bytes, (rec_size < (uint16_t)sizeof(VescLogDataL4)) ? rec_size : (uint16_t)sizeof(VescLogDataL4));
     int m = snprintf(out + n, out_len - (size_t)n, LOG_CSV_ROW_EXT_L4,
                      (unsigned)d4.gps_sent_per_s,
                      (unsigned)d4.cog_frozen_s,
@@ -1175,6 +1281,26 @@ static int logFormatCsvRow(char* out, size_t out_len, const uint8_t* rec_bytes, 
     {
       n += m;
       if ((size_t)n >= out_len) n = (int)out_len - 1;
+    }
+    if (rec_size >= (uint16_t)sizeof(VescLogDataL4) && (size_t)n < (out_len - 1))
+    {
+      // Follow-Me audit block. N/A distances print as -1.0 (same convention as tx_distance_m).
+      int k = snprintf(out + n, out_len - (size_t)n, LOG_CSV_ROW_EXT_L4_FM,
+                       (unsigned)d4.fm_gate_flags,
+                       (d4.fm_distance_dx10 == 0xFFFF) ? -1.0f : (d4.fm_distance_dx10 / 10.0f),
+                       (d4.fm_d_engage_dx10 == 0xFFFF) ? -1.0f : (d4.fm_d_engage_dx10 / 10.0f),
+                       d4.fm_rider_speed_dx10 / 10.0f,
+                       (unsigned)d4.fm_sep_fix_count,
+                       (unsigned)d4.fm_mode,
+                       (unsigned)d4.fm_state,
+                       (unsigned)d4.fm_block_reason,
+                       (unsigned)d4.fm_throttle_cap,
+                       d4.fm_station_deg_x10 / 10.0f);
+      if (k > 0)
+      {
+        n += k;
+        if ((size_t)n >= out_len) n = (int)out_len - 1;
+      }
     }
   }
 

@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-17 - DEEP-LOG PUBLISH-FROM-CONTROLLER (P0-g): runFmLoop() is now a thin wrapper — 10 Hz rate limit, reset this tick's log fields, run the body, then fmPublishLogSnapshot() fills g_fm_log_snapshot under taskENTER_CRITICAL exactly once per tick whatever path the body took. The body (runFmLoopBody) records its gate verdicts into fm_log_gate_flags / fm_log_dist_dx10 / fm_log_d_engage_dx10 at the point each is evaluated. The logger copies the snapshot and never recomputes a gate. Instrumentation only: no control decision reads any of these, no confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-17 - FM STOP-REASON latch (comparison row 19): checkFmFaultConditions() now names which of conditions 2-7 failed through an out-param; the FAULT branch latches fm_stop_reason AFTER fm_throttle_cap = 0 (F7 order) and prints it; fmEnterIdle() clears the live latch at the end of the stop ramp. fm_last_stop_reason / fm_last_stop_ms keep the most recent stop for ?diag (System.ino) until the next one or a reboot. Read-only accessors, no control-path change, no confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-17 - D-term TARGET-PROFILE guard (Rex A9): the D term now also requires the steering TARGET geometry to be continuous, not only the heading source. computeFmTarget() publishes fm_target_profile (kProfDegraded / kProfBehind / kProfDiagRight / kProfDiagLeft) where it picks the branch; the RTM direct-to-rider path publishes kProfRtmDirect. updateRtmSteering() skips one D tick whenever the profile differs from the previous sample, so a side-zone Schmitt flip, a degraded<->trailing switch or an RTM/FM handover can no longer inject a phantom rate into Kd. Steering output only; no throttle path touched. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-08-25 - RX RTM/FM D-term wrap fix. heading_error itself was normalized to +/-180 deg, but the derivative subtracted two normalized samples directly. Crossing the branch cut (for example +179 -> -179) therefore looked like a -358 deg step instead of the physical +2 deg change and Kd could saturate steering for one control tick. Normalize the same-source error delta to +/-180 before dividing by dt; source-switch/re-snap suppression, P term, gains, logging and config stay unchanged. No confStruct change; SW_VERSION stays 35.
@@ -1824,6 +1825,40 @@ static uint8_t       fmStopReason()     { return fm_stop_reason; }
 static uint8_t       fmLastStopReason() { return fm_last_stop_reason; }
 static unsigned long fmLastStopMs()     { return fm_last_stop_ms; }
 
+// ---- V2.5-Evo - 2026-09-17 - DEEP-LOG hand-off (P0-g): this tick's verdicts, for the logger ----
+// Reset by runFmLoop() at the top of every tick and written by runFmLoopBody() at the point each
+// value is evaluated, so a tick that exits early (IDLE, STOPPING, expired declaration) publishes
+// zero flags and N/A distances instead of last tick's numbers. Nothing in the control path reads
+// these — they exist only to be copied into g_fm_log_snapshot.
+static uint32_t fm_log_gate_flags    = 0;
+static uint16_t fm_log_dist_dx10     = 0xFFFF;
+static uint16_t fm_log_d_engage_dx10 = 0xFFFF;
+
+// fmPublishLogSnapshot - copy the controller's state for this tick into the shared snapshot.
+// Inputs: the fm_log_* tick fields above plus the FM statics/atomics. Outputs: g_fm_log_snapshot.
+// Side effects: one short critical section (taskENTER_CRITICAL) around a struct copy — no I/O.
+// The float->fixed conversions happen OUTSIDE the section so it stays a plain copy.
+static void fmPublishLogSnapshot()
+{
+  FmLogSnapshot s;
+  s.gate_flags       = fm_log_gate_flags;
+  s.distance_dx10    = fm_log_dist_dx10;
+  s.d_engage_dx10    = fm_log_d_engage_dx10;
+  float spd = fm_rider_speed_kmh * 10.0f;
+  if (spd < 0.0f) spd = 0.0f;
+  if (spd > 65535.0f) spd = 65535.0f;
+  s.rider_speed_dx10 = (uint16_t)spd;
+  s.sep_fix_count    = fm_sep_fix_count;
+  s.mode             = fm_mode_runtime.load(std::memory_order_relaxed);
+  s.state            = (uint8_t)fm_state;
+  s.block_reason     = fm_stop_reason;
+  s.throttle_cap     = fm_throttle_cap.load(std::memory_order_relaxed);
+  s.station_deg_x10  = 0;   // P2: station angle — laid out now, written when the station work lands
+  taskENTER_CRITICAL(&g_fm_log_mux);
+  g_fm_log_snapshot = s;
+  taskEXIT_CRITICAL(&g_fm_log_mux);
+}
+
 // millis() of the last SURPRISING fault stop (a fault that occurred while the trigger was held).
 // Drives the sticky fm_flags bit 3 for kFmFaultStickyMs so the TX cannot miss the stop
 // notification across the ~2.4 s telemetry rotation. 0 = no recent surprising fault. Deliberately
@@ -3404,6 +3439,11 @@ static void fmEnterIdle()
 //   redirect steering, but only ever through calcPWM()'s existing subtract-only chain and only
 //   while the rider is holding the trigger.
 // ------------------------------------------------------------
+// V2.5-Evo - 2026-09-17 - runFmLoop() is a thin wrapper around runFmLoopBody(): the 10 Hz rate
+// limit lives here, this tick's log fields are reset here, and fmPublishLogSnapshot() runs here
+// AFTER the body — exactly once per tick, whichever of the body's many return paths was taken.
+// The body is unchanged apart from taking `now` as a parameter and recording its verdicts.
+static void runFmLoopBody(unsigned long now);
 void runFmLoop()
 {
   // Rate-limit to 10 Hz (matches runRtmLoop; the geometry maths costs ~1 ms per call).
@@ -3412,6 +3452,17 @@ void runFmLoop()
   if (now - last_fm_ms < 100UL) return;
   last_fm_ms = now;
 
+  fm_log_gate_flags    = 0;        // this tick's verdicts start empty; the body fills what it reaches
+  fm_log_dist_dx10     = 0xFFFF;
+  fm_log_d_engage_dx10 = 0xFFFF;
+
+  runFmLoopBody(now);
+
+  fmPublishLogSnapshot();          // once per tick, after every possible exit of the body
+}
+
+static void runFmLoopBody(unsigned long now)
+{
   // Keep the rider filter and derived motion warm on every tick, in every state, so the
   // instant the conditions are met we already have a trustworthy course and speed.
   updateFmRiderTracking();
@@ -3673,6 +3724,7 @@ void runFmLoop()
     }
     // F3-c: single tow-rope safety floor, applied to the COMPUTED value as well as the typed one.
     if (d_engage < kFmEngageDistFloorM) d_engage = kFmEngageDistFloorM;
+    fm_log_d_engage_dx10 = (uint16_t)(d_engage * 10.0f + 0.5f);   // P0-g: the engage distance in force this tick
     // ==========================================================================================
     // V2.5-Evo - 2026-08-26 - DWELL-1. The dwell now counts RIDER FIXES, not milliseconds.
     //
@@ -3790,6 +3842,7 @@ void runFmLoop()
     // every other fault condition and the deadman in place, and the rider can always let go.
     bool in_engage_grace = (fm_engage_ms != 0) &&
                            ((now - fm_engage_ms) < (kFmEngageRampMs + kFmDivergeMs));
+    if (in_engage_grace) fm_log_gate_flags |= FM_LOG_GATE_IN_GRACE;   // P0-g
 
     // ---- PIVOT-SUSPEND-1 (V2.5-Evo - 2026-08-26; hardened same day against Rex P-1..P-4) ----
     // WHY: the divergence detector asks "is the distance shrinking?", but a buggy still swinging
@@ -3889,6 +3942,7 @@ void runFmLoop()
       fm_pivot_stall_ms     = 0;
       fm_pivot_failed       = false;
     }
+    if (fm_pivoting) fm_log_gate_flags |= FM_LOG_GATE_PIVOTING;   // P0-g
 
     if (in_engage_grace || fm_pivoting) {
       // Ramping and/or aligning — not judgeable yet. Park the window so it starts fresh afterwards.
@@ -3983,6 +4037,20 @@ void runFmLoop()
   // working throughout, so the buggy can always be brought home.
   bool can_be_active = hard_ok && speed_ok && dist_ok && fm_sep_latched &&
                        !diverge_fault && !heading_disagree_fault;
+
+  // V2.5-Evo - 2026-09-17 - P0-g: record the verdicts that just decided can_be_active, exactly as
+  // evaluated, for the deep log. Pure bookkeeping — nothing below reads fm_log_*.
+  if (thr_held)               fm_log_gate_flags |= FM_LOG_GATE_THR_HELD;
+  if (fault_ok)               fm_log_gate_flags |= FM_LOG_GATE_FAULT_OK;
+  if (speed_ok)               fm_log_gate_flags |= FM_LOG_GATE_SPEED_OK;
+  if (dist_ok)                fm_log_gate_flags |= FM_LOG_GATE_DIST_OK;
+  if (fm_sep_latched)         fm_log_gate_flags |= FM_LOG_GATE_SEP_LATCHED;
+  if (diverge_fault)          fm_log_gate_flags |= FM_LOG_GATE_DIVERGE;
+  if (heading_disagree_fault) fm_log_gate_flags |= FM_LOG_GATE_HEADING_DISAGREE;
+  if (hard_ok) {
+    float dd = dist_m * 10.0f + 0.5f;
+    fm_log_dist_dx10 = (dd >= 65535.0f) ? 0xFFFE : (uint16_t)dd;   // 0xFFFF stays the N/A sentinel
+  }
 
   if (can_be_active) {
     // ---- Steer-cancel while ACTIVE (A3 PART 2 / R-steering) ----

@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-17 - DEEP-LOG FM AUDIT COLUMNS (P0-g): fillLevel4Diag() now also copies g_fm_log_snapshot — filled by runFmLoop() once per tick — into the 18-byte Follow-Me block appended to VescLogDataL4 (65 -> 83 B). The copy runs inside taskENTER_CRITICAL(&g_fm_log_mux) so a row can never mix two ticks; the logger recomputes NO gate. ?download picks the CSV header by the file's own record_size (logCsvHeaderFor), so 65 B level-4 files written before this change still print their 35 columns. No confStruct change, sizeof stays 192, SW_VERSION stays 35, no control path touched.
 // V2.5-Evo - 2026-08-17 - CRITICAL MAINTENANCE contract honoured again, same day, because the controller moved again (log mirror only): a standing heading-disagreement latch no longer just withdraws the compass, it drops the WHOLE ladder to the mode-0 path — GPS course only — so getRtmHeading() now returns NONE below rtm_cog_min_speed_kmh instead of serving a held COG, and returns NONE in mode 2 instead of serving the live compass. Two branches of this duplicate had to follow or the CSV would contradict the controller in exactly the state a rider would be reporting: (1) the COG-HOLD branch is now gated on !headingDisagreeLatched(), so a degraded tick logs src 0 / conf 0 rather than claiming a held GPS course the controller did not serve; (2) the mode-2 branch is gated the same way, so a diagnostic-mode session whose compass has been proven wrong logs NONE rather than src 3 / conf 2 COMPASS_LIVE. The compass-snapshot branch keeps the gate it was given this morning. Everything else about the mirror is unchanged, and the ORDER still matches the controller exactly: disagreement veto, live COG, held COG, compass snapshot. STRICTLY READ-ONLY: two more calls to the same read-only accessor from loggerTask, no controller state written, no timing changed. NO new column, no new rtm_source value, no record-size change — existing logs stay parseable. No confStruct change, no VescLogData change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-08-17 - CRITICAL MAINTENANCE contract honoured again (log mirror only): convertToLogData()'s duplicate heading ladder now reads the heading-disagreement LATCH, not just the per-tick verdict. getRtmHeading() withdraws the compass fallback entirely once the compass has been caught disagreeing with GPS course for kHeadingDisagreeMs and returns NONE, but this mirror kept falling through to the compass branch and logging rtm_source = 2 / rtm_confidence = 2 on those ticks — the CSV asserted a compass heading at MEDIUM confidence for ticks on which the controller had refused the compass and was holding straight. That was unreachable in an RTM run until the latch clears became edge-triggered; it is reachable now, so the log would actively lie about the heading source in exactly the new refusal case a rider will report. The compass-snapshot branch is gated on !headingDisagreeLatched(), positioned exactly where the controller checks it — BELOW the last-good-COG hold (a held COG is still logged src 1 / conf 2 while the fault stands, since a held GPS course is not the sensor under suspicion) and ABOVE the compass fallback — so a gated tick falls out of the else-if chain as src 0 / conf 0 = NONE, the pair getRtmHeading() actually returns. Strictly READ-ONLY: one call to a read-only accessor from loggerTask, no controller state written, no timing changed. NO new column, no new rtm_source value, no record-size change — existing logs stay parseable. No confStruct change, no VescLogData change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-08-16 - MID-RUN ABORT for ?download and ?deleteallogs, plus the MISSING WATCHDOG FEED in deleteAllLogFiles(). Both commands now ask rxAbortIfEngaged() inside their per-item loop, so an RTM/FM engagement that begins AFTER the command started stops it instead of freezing every safety gate for the rest of it — on ?download that was MINUTES (the code's own note records ~3 min for a ~350 kB file), which is by far the largest blind spot of any command on this board. ?download checks at the RECORD boundary, so no half-formatted row reaches the wire, closes the file on the way out, and prints a DIFFERENT end-of-transfer marker: "=== END CSV DATA ===" is never printed after an abort, because every reader treats that line as "the whole file arrived" and printing it over a truncated stream would silently pass a partial log off as complete; the abort marker names itself and carries the record count actually sent. ?deleteallogs checks at the WHOLE-FILE boundary before each SPIFFS.remove(), so every file is either fully deleted or fully untouched, and it now reports how many were ACTUALLY deleted instead of claiming completion over a partial run. Separately, its loop gained the watchdog feed it never had: initWatchdog() now arms the 3000 ms panic WDT on the first boot after a version bump where it previously did not, and on a full SPIFFS the garbage collection each remove() triggers can walk the loop past the timeout and panic-reboot mid-delete. The feed is gated on g_wdt_active, the same guard PWM.ino and Radio.ino use. NO change to the log file format, record layout or column set — existing logs stay parseable — and no change to either command's behaviour or timing when it runs to completion. No confStruct change, no VescLogData change, sizeof stays 192, SW_VERSION stays 35.
@@ -523,6 +524,25 @@ static void fillLevel4Diag(VescLogDataL4 &rec)
   g_diag_loop_max_us_log = 0;
   uint32_t max_ms = (max_us + 500UL) / 1000UL;
   rec.loop_max_ms = (max_ms > 0xFFFEUL) ? 0xFFFE : (uint16_t)max_ms;
+
+  // V2.5-Evo - 2026-09-17 - P0-g: the Follow-Me audit block. A straight COPY of the snapshot the
+  // controller published on its last 10 Hz tick — the logger recomputes nothing. The critical
+  // section is a struct copy and nothing else, so it costs a few dozen cycles with interrupts off.
+  FmLogSnapshot s;
+  taskENTER_CRITICAL(&g_fm_log_mux);
+  s = g_fm_log_snapshot;
+  taskEXIT_CRITICAL(&g_fm_log_mux);
+  rec.fm_gate_flags       = s.gate_flags;
+  rec.fm_distance_dx10    = s.distance_dx10;
+  rec.fm_d_engage_dx10    = s.d_engage_dx10;
+  rec.fm_rider_speed_dx10 = s.rider_speed_dx10;
+  rec.fm_sep_fix_count    = s.sep_fix_count;
+  rec.fm_mode             = s.mode;
+  rec.fm_state            = s.state;
+  rec.fm_block_reason     = s.block_reason;
+  rec.fm_throttle_cap     = s.throttle_cap;
+  rec.fm_station_deg_x10  = s.station_deg_x10;
+  rec.fm_pad              = 0;
 }
 
 // Check and manage SPIFFS space
@@ -853,7 +873,9 @@ void downloadLogFile(const char* filename) {
   // download path emits the same macro, so the two can no longer drift. The header printed must
   // match the level the file was actually RECORDED at (from its own header), not the level the
   // config happens to be set to now.
-  Serial.println((hdr.log_level >= 4) ? LOG_CSV_HEADER_L4 : LOG_CSV_HEADER_L3);
+  // V2.5-Evo - 2026-09-17 - and by the file's RECORD SIZE too, so a 65 B level-4 file written
+  // before the Follow-Me block gets its own 35-column header, not the 45-column one.
+  Serial.println(logCsvHeaderFor(hdr.log_level, hdr.record_size));
 
   uint8_t  rec_buf[sizeof(VescLogDataL4)];
   char     row[LOG_CSV_ROW_BUF];

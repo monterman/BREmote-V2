@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-17 - (RX only, inside ENABLE_WEB_LOG_DOWNLOAD) the WiFi log download picks the CSV column header by the file's own record_size as well as its level (logCsvHeaderFor in BREmote_V2_Rx.h), so 65 B level-4 files written before the Follow-Me audit block still download with exactly their 35 columns and new 83 B files get all 45. No TX impact, no confStruct change.
 #ifndef WEB_CONFIG_ENGINE_H
 #define WEB_CONFIG_ENGINE_H
 
@@ -688,7 +689,8 @@ static void webCfgHandleDownloadLog()
   // because Serial.println() supplies its own line ending.
   // The header emitted matches the level the file was RECORDED at (from its own header), not the
   // level the config happens to be set to now.
-  String header = String((hdr.log_level >= 4) ? LOG_CSV_HEADER_L4 : LOG_CSV_HEADER_L3) + "\n";
+  // V2.5-Evo - 2026-09-17 - chosen by record_size as well, see logCsvHeaderFor().
+  String header = String(logCsvHeaderFor(hdr.log_level, hdr.record_size)) + "\n";
   webCfgServer.sendContent(header);
 
   // V2.5-Evo - 2026-07-25 - STAGE 0: raw record buffer, sized for the largest record this

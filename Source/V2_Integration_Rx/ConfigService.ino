@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-18 - fm_engage_dist_m: the shared floor kFmEngageDistFloorM is 9.5 m now (was 8.0; the rope is 7.1 m, review finding F3) - the validator reads the constant, so only the comments and the clamp NOTE's advice ("about a third beyond the rope", not "a metre") change here. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // RX-specific config field table and cross-validation.
 // Shared engine is in ../Common/ConfigServiceEngine.h (included via BREmote_V2_Rx.h).
 // V2.5-Evo - 2026-04-22 - Added gps_chip_type field (GPS module selector: 0=BN-220, 1=BN-880+compass, 2=M10, 3=M10+compass)
@@ -139,11 +140,12 @@ const CfgFieldSpec kCfgFields[] = {
   // V2.5-Evo - 2026-07-25 - A2: fm_engage_dist_m is NO LONGER RESERVED — it is now read live by
   // runFmLoop() in RTMState.ino. 0 = auto (engage distance computed from min_dist_m + smoothing band);
   // >0 = the FM engage distance itself, in metres. Range unchanged at 0-50 m; cfgValidateCrossField()
-  // below additionally rejects (0, 8) m. Metadata row is unchanged — comment/semantics only.
-  // HOW THE RIDER PICKS THIS VALUE: measure your own tow rope and set this to AT LEAST one metre more
+  // below additionally clamps (0, kFmEngageDistFloorM) up. Metadata row is unchanged — comment/semantics only.
+  // HOW THE RIDER PICKS THIS VALUE: measure your own tow rope and set this to about a third more
   // than the rope length, so Follow-Me only engages once you have genuinely let go and separated.
-  // Example: a 20 ft (6.1 m) rope -> set 8 m or more. Setting it at or below your rope length lets FM
-  // engage while you are still on the rope. 8.0 m is the enforced minimum, not a recommendation.
+  // Example: a 7.1 m rope -> set 9.5 m or more. Setting it at or below your rope length lets FM
+  // engage while you are still on the rope. The floor (9.5 m since 2026-09-18; it was 8.0 m, derived
+  // for a 6.10 m rope) is the enforced minimum, not a recommendation.
   // V2.5-Evo - 2026-07-25 - F3-c: setting 0 does not bypass that minimum. runFmLoop() applies the
   // same kFmEngageDistFloorM clamp to the AUTO-computed engage distance too, so a small min_dist_m /
   // smoothing-band tuning can no longer produce an on-rope engage distance down the automatic path.
@@ -265,9 +267,11 @@ bool cfgValidateCrossField(confStruct &candidate, String &err)
 
     Serial.printf("NOTE: Follow-Me Engage Distance %.1f m raised to the %.1f m minimum.\n",
                   asked, kFmEngageDistFloorM);
+    // V2.5-Evo - 2026-09-18 - advice matches the floor's derivation (rope x 1.31): "about a third
+    // beyond it", not "a metre beyond it", which a 7.1 m rope would have put inside the floor.
     Serial.println("      That minimum is the tow-rope safety floor: Follow-Me must never be able");
-    Serial.println("      to engage while you are still on the rope. Measure your rope and set at");
-    Serial.println("      least a metre beyond it. Setting 0 (automatic) is floored at the same value.");
+    Serial.println("      to engage while you are still on the rope. Measure your rope and set about");
+    Serial.println("      a third beyond it. Setting 0 (automatic) is floored at the same value.");
 
   }
 

@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-18 - kFmEngageDistFloorM raised 8.0 -> 9.5 m (code-review finding F3): the rope in use is 7.1 m (owner, 2026-08-28), not the 6.10 m the 8.0 m floor was derived from, so 8.0 m cleared it by only 0.9 m - inside GPS error. 7.1 x 1.31 = 9.3, rounded up. Validator, read-site clamp, trigger-free engage floor and the BOOTSTRAP-1 abort radius all read this one constant. fm_engage_dist_m field comment updated (0, or 9.5-50 m). Compile-time only: no confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-18 - P1-c (Follow-Me stays armed through a Return-to-Me): adds FM_LOG_GATE_YIELD_TO_RTM (bit 14) to the deep-log gate word - a new bit in the existing u32, record size unchanged. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-18 - P1-a (trigger-free Follow-Me engagement): includes ../Common/FollowMeEngage.h (pure engage floor + needs-D_engage rule, host-tested in Tools/tests/follow_me_engage_test.cpp) and adds FM_LOG_GATE_PROOF_OK (bit 12) / FM_LOG_GATE_NEEDS_DENGAGE (bit 13) to the deep-log gate word - new bits in the existing u32, record size unchanged, bit 11 stays reserved for P1-b. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-17 - DEEP-LOG FM AUDIT COLUMNS (comparison row 13, adapted onto our 65 B level-4 record): VescLogDataL4 gains an 18-byte Follow-Me block (fm_gate_flags u32, fm_distance_dx10, fm_d_engage_dx10, fm_rider_speed_dx10, fm_sep_fix_count, fm_mode, fm_state, fm_block_reason, fm_throttle_cap, fm_station_deg_x10, 1 B pad) -> sizeof 65 -> 83, static_assert 83. The P1/P2 fields (return_candidate / fade_bypass / transit bits, fm_station_deg_x10) are laid out NOW and zero-filled so the record never changes again. PUBLISH-FROM-CONTROLLER: runFmLoop() fills g_fm_log_snapshot under taskENTER_CRITICAL once per 10 Hz tick and Logger.ino copies it - the logger never recomputes a gate. Old 65 B level-4 files still parse: the file header's record_size selects the column set (logCsvHeaderFor) and logFormatCsvRow() guards each block on the bytes actually present. Deep logging at 3 Hz now holds about 2.0 h in 1757 KB (was about 2.5 h). Log record only: NO confStruct change, sizeof(confStruct) stays 192, SW_VERSION stays 35, SPIFFS config is NOT reset by this flash.
@@ -394,15 +395,17 @@ struct confStruct {
     //   0   = auto: d_engage = kFmEngageFactor (1.5) * (min_dist_m + followme_smoothing_band_m), the
     //         original behaviour, reproduced exactly.
     //   >0  = the engage distance itself, in METRES. This is NOT the rope length — set it to rope
-    //         length x ~1.3 so the buggy clears the rope with margin (a 20 ft / 6.10 m rope -> 8.0).
+    //         length x ~1.3 so the buggy clears the rope with margin (the 7.1 m rope -> 9.5).
     //         V2.5-Evo - 2026-07-25 - F3-b: legal non-zero values start at kFmEngageDistFloorM
-    //         (8.0 m, defined below this struct); (0, 8) m is rejected by cfgValidateCrossField().
-    //   HOW THE RIDER PICKS THIS VALUE: measure your own tow rope and set this to AT LEAST one metre
+    //         (defined below this struct); (0, floor) is clamped up by cfgValidateCrossField().
+    //         V2.5-Evo - 2026-09-18 - the floor is 9.5 m (was 8.0, derived for a 6.10 m rope; the
+    //         rope in use is 7.1 m). See the constant's block for the derivation and knock-ons.
+    //   HOW THE RIDER PICKS THIS VALUE: measure your own tow rope and set this to about a third
     //   more than the rope length, so Follow-Me only engages once you have genuinely let go and
-    //   separated. Example: a 20 ft (6.1 m) rope -> set 8 m or more. Setting it at or below your rope
-    //   length lets FM engage while you are still on the rope. 8.0 m is the enforced minimum, not a
+    //   separated. Example: a 7.1 m rope -> set 9.5 m or more. Setting it at or below your rope
+    //   length lets FM engage while you are still on the rope. 9.5 m is the enforced minimum, not a
     //   recommendation — a longer rope needs a bigger number.
-    float    fm_engage_dist_m;         // 0 = auto; >0 = fixed engage distance in metres; 0, or 8-50 m
+    float    fm_engage_dist_m;         // 0 = auto; >0 = fixed engage distance in metres; 0, or 9.5-50 m
     // V2.5-Evo - 2026-08-16 - RENAMED IN PLACE: auton_runtime_cap_s -> gps_dyn_model.
     // Same offset, same uint16_t, so sizeof(confStruct) stays 184, the static_assert is
     // unchanged, SW_VERSION stays 34 and NOBODY'S CONFIG IS WIPED. Same trick as
@@ -634,19 +637,31 @@ confStruct defaultConf = {SW_VERSION, 2, 22, 1, 50 /*steering_influence: convent
 // as 3 m was accepted and stored. An engage distance shorter than the rope does not tune the
 // interlock, it DEFEATS it — FM engages with the rider still on the rope, i.e. autonomous steering
 // mid-tow. The first fix (F3) set this floor to 5.0 m, which was still BELOW the hazard it named:
-// the owner's tow rope is 20 ft = 6.10 m, so 5.0-6.1 m was still storable and still on-rope.
-// 8.0 m clears a 6.10 m rope by ~1.31x, and it also sits above the owner's own follow geometry
+// the owner's tow rope was then taken as 20 ft = 6.10 m, so 5.0-6.1 m was still storable and still
+// on-rope. 8.0 m cleared a 6.10 m rope by ~1.31x, and it also sits above the factory follow geometry
 // (min_dist 4 m + smoothing band 2 m = 6 m), so the interlock is a real gate rather than a no-op.
 //
-// WHERE IT IS USED — exactly two places, both reading THIS definition; there is no second copy:
-//   1. cfgValidateCrossField() in ConfigService.ino — refuses to STORE anything in (0, 8) m.
+// V2.5-Evo - 2026-09-18 - RAISED 8.0 -> 9.5 m (code-review finding F3). The rope actually in use is
+// 7.1 m (owner, 2026-08-28), not the 6.10 m the 8.0 m figure was derived from: 8.0 m cleared it by
+// only 0.9 m, inside ordinary GPS error, so the floor no longer did the job its own comment claims.
+// Same derivation, right rope: 7.1 x 1.31 = 9.3 m, rounded up to 9.5 m. The owner's manual 12 m is
+// unaffected. Knock-ons, all in the conservative direction: the factory engage edge becomes
+// max(4 + 2, 9.5) = 9.5 m; the owner's short-release edge becomes max(5 + 4, 9.5) = 9.5 m (was 9);
+// the auto D_engage at factory tuning clamps 9.0 -> 9.5 m; a stored fm_engage_dist_m of 8.0-9.4 m
+// now clamps up to 9.5 m at the read site; and the heading-blind RTM bootstrap abort radius in
+// runRtmLoop() (max(min_dist_m, this)) grows 8 -> 9.5 m.
+//
+// WHERE IT IS USED — the same definition everywhere; there is no second copy:
+//   1. cfgValidateCrossField() in ConfigService.ino — refuses to STORE anything in (0, 9.5) m.
 //   2. runFmLoop() in RTMState.ino — defensive clamp UP to this floor for a value already sitting in
-//      SPIFFS from before the rule existed (a stored config is never re-validated when it is loaded).
-// Both are .ino files, and this header is included at the top of V2_Integration_Rx.ino, which the
-// Arduino build concatenates first — so the constant is visible to both. (An earlier comment claimed
+//      SPIFFS from before the rule existed (a stored config is never re-validated when it is loaded),
+//      and the trigger-free engage floor (Common/FollowMeEngage.h, since 2026-09-18).
+//   3. runRtmLoop() in RTMState.ino — the BOOTSTRAP-1 abort radius floor.
+// All are .ino files, and this header is included at the top of V2_Integration_Rx.ino, which the
+// Arduino build concatenates first — so the constant is visible to all. (An earlier comment claimed
 // concatenation order prevented sharing and used that to justify a duplicated literal. It was wrong.)
 // ============================================================
-static const float kFmEngageDistFloorM = 8.0f;   // metres; smallest legal non-zero fm_engage_dist_m
+static const float kFmEngageDistFloorM = 9.5f;   // metres; smallest legal non-zero fm_engage_dist_m (7.1 m rope x 1.31, rounded up)
 
 // V2.5-Evo - 2026-09-18 - P1-a: the trigger-free engage floor and the needs-D_engage rule are pure
 // functions in ../Common/FollowMeEngage.h so Tools/tests/follow_me_engage_test.cpp runs the exact

@@ -8,7 +8,7 @@ static const uint32_t kDwellFloorMs = 350;
 
 int main()
 {
-  const float floorM = 8.0f;   // kFmEngageDistFloorM
+  const float floorM = 9.5f;   // kFmEngageDistFloorM (9.5 m since 2026-09-18: 7.1 m rope x 1.31, rounded up)
 
   // ---- Owner's tuning: min_dist 5 + band 4 = 9 m station, manual fm_engage_dist_m 12, rope 7.1 m ----
   const float ownerMin = 5.0f, ownerBand = 4.0f, ownerDengage = 12.0f;
@@ -24,15 +24,17 @@ int main()
   // ... and not without one either (the 9 m station edge still stands above the rope).
   assert(!followMeMayEngage(7.1f, ownerMin, ownerBand, floorM, ownerDengage, false, streakUp));
 
-  // 9 m engages at the owner's tuning without a long release. The edge is STRICT, exactly like the
-  // Schmitt "dist > min_dist + band" it replaces, so the sample must sit beyond the 9.0 m threshold.
-  assert(followMeEngageThresholdM(ownerMin, ownerBand, floorM, ownerDengage, false) == 9.0f);
-  assert(followMeMayEngage(9.1f, ownerMin, ownerBand, floorM, ownerDengage, false, streakDown));
-  assert(!followMeMayEngage(9.0f, ownerMin, ownerBand, floorM, ownerDengage, false, streakDown));
+  // The owner's short-release edge is max(5 + 4, 9.5) = 9.5 m: the 9 m station edge is now under
+  // the floor. The edge is STRICT, exactly like the Schmitt "dist > min_dist + band" it replaces,
+  // so the sample must sit beyond the 9.5 m threshold.
+  assert(followMeEngageThresholdM(ownerMin, ownerBand, floorM, ownerDengage, false) == 9.5f);
+  assert(followMeMayEngage(9.6f, ownerMin, ownerBand, floorM, ownerDengage, false, streakDown));
+  assert(!followMeMayEngage(9.5f, ownerMin, ownerBand, floorM, ownerDengage, false, streakDown));
+  assert(!followMeMayEngage(9.1f, ownerMin, ownerBand, floorM, ownerDengage, false, streakDown));   // was the edge before the 9.5 m floor
 
-  // After a long release the same 9.1 m is NOT enough: the full 12 m separation is required again.
+  // After a long release the same 9.6 m is NOT enough: the full 12 m separation is required again.
   assert(followMeEngageThresholdM(ownerMin, ownerBand, floorM, ownerDengage, true) == 12.0f);
-  assert(!followMeMayEngage(9.1f, ownerMin, ownerBand, floorM, ownerDengage, true, streakUp));
+  assert(!followMeMayEngage(9.6f, ownerMin, ownerBand, floorM, ownerDengage, true, streakUp));
   assert(!followMeMayEngage(12.0f, ownerMin, ownerBand, floorM, ownerDengage, true, streakUp));
   assert(followMeMayEngage(12.1f, ownerMin, ownerBand, floorM, ownerDengage, true, streakUp));
 
@@ -74,27 +76,30 @@ int main()
   assert(!followMeSeparationStreakStands(3, 0u, 5000u, kDwellFixes, kDwellFloorMs));      // not beyond D_engage now
   assert(followMeSeparationStreakStands(3, 0xFFFFFF00u, 0x00000200u, kDwellFixes, kDwellFloorMs));   // millis() wrap
   // Without needs_dengage the streak is not consulted (a short release keeps the ordinary edge).
-  assert(followMeMayEngage(9.1f, ownerMin, ownerBand, floorM, ownerDengage, false, false));
+  assert(followMeMayEngage(9.6f, ownerMin, ownerBand, floorM, ownerDengage, false, false));
 
-  // ---- Factory tuning: min_dist 4 + band 2 = 6 m, auto d_engage 1.5 x 6 = 9 m ----
-  const float factMin = 4.0f, factBand = 2.0f, factDengage = 9.0f;
+  // ---- Factory tuning: min_dist 4 + band 2 = 6 m; auto d_engage 1.5 x 6 = 9.0 m, which the RX
+  //      clamps up to the 9.5 m floor before it gets here (F3-c) ----
+  const float factMin = 4.0f, factBand = 2.0f, factDengage = 9.5f;
 
-  // 6 m never engages: the 8 m floor now sits above the 6 m station edge (was 6 m, below the rope).
-  assert(followMeEngageThresholdM(factMin, factBand, floorM, factDengage, false) == 8.0f);
+  // 6 m never engages: the 9.5 m floor sits above the 6 m station edge (which is below the rope).
+  // 9.5 m is refused (strict edge), 9.6 m engages.
+  assert(followMeEngageThresholdM(factMin, factBand, floorM, factDengage, false) == 9.5f);
   assert(!followMeMayEngage(6.0f, factMin, factBand, floorM, factDengage, false, streakUp));
   assert(!followMeMayEngage(7.1f, factMin, factBand, floorM, factDengage, false, streakUp));
-  assert(!followMeMayEngage(8.0f, factMin, factBand, floorM, factDengage, false, streakUp));
-  assert(followMeMayEngage(8.1f, factMin, factBand, floorM, factDengage, false, streakDown));
+  assert(!followMeMayEngage(8.1f, factMin, factBand, floorM, factDengage, false, streakUp));   // engaged under the old 8 m floor
+  assert(!followMeMayEngage(9.5f, factMin, factBand, floorM, factDengage, false, streakUp));
+  assert(followMeMayEngage(9.6f, factMin, factBand, floorM, factDengage, false, streakDown));
 
-  // With needs_dengage the factory tuning asks for the 9 m auto D_engage, plus the streak.
-  assert(followMeEngageThresholdM(factMin, factBand, floorM, factDengage, true) == 9.0f);
-  assert(!followMeMayEngage(8.5f, factMin, factBand, floorM, factDengage, true, streakUp));
-  assert(followMeMayEngage(9.5f, factMin, factBand, floorM, factDengage, true, streakUp));
-  assert(!followMeMayEngage(9.5f, factMin, factBand, floorM, factDengage, true, streakDown));
+  // With needs_dengage the factory tuning asks for the (clamped) 9.5 m D_engage, plus the streak.
+  assert(followMeEngageThresholdM(factMin, factBand, floorM, factDengage, true) == 9.5f);
+  assert(!followMeMayEngage(9.5f, factMin, factBand, floorM, factDengage, true, streakUp));
+  assert(followMeMayEngage(9.6f, factMin, factBand, floorM, factDengage, true, streakUp));
+  assert(!followMeMayEngage(9.6f, factMin, factBand, floorM, factDengage, true, streakDown));
 
   // ---- The threshold can only rise: a manual D_engage below the station edge never lowers it ----
-  assert(followMeEngageThresholdM(10.0f, 5.0f, floorM, 8.0f, true) == 15.0f);
-  assert(followMeEngageThresholdM(10.0f, 5.0f, floorM, 8.0f, false) == 15.0f);
+  assert(followMeEngageThresholdM(10.0f, 5.0f, floorM, 9.5f, true) == 15.0f);
+  assert(followMeEngageThresholdM(10.0f, 5.0f, floorM, 9.5f, false) == 15.0f);
 
   // ---- The release rule: continuous release of kFmEngageGraceMs (2000) or more sets needs_dengage ----
   assert(!followMeReleaseNeedsDengage(0u, 5000u, 2000u));           // trigger held (timer idle)

@@ -21,7 +21,8 @@
 // Inputs:
 //   min_dist_m, band_m  - the follow geometry; min_dist + band is the ordinary Schmitt "to engage"
 //                         edge that has always applied.
-//   floor_m             - kFmEngageDistFloorM (8.0 m): the tow-rope floor. Before this rule the
+//   floor_m             - kFmEngageDistFloorM (9.5 m since 2026-09-18, review fix; 8.0 m before,
+//                         derived for a 6.1 m rope): the tow-rope floor. Before this rule the
 //                         engage edge at the factory 4 + 2 tuning was 6 m, BELOW the 7.1 m rope.
 //   d_engage_m          - the separation-latch distance in force (manual fm_engage_dist_m, or
 //                         1.5 x d_follow, already clamped up to the floor by the caller).

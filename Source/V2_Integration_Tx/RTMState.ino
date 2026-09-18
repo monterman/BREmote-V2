@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-09-17 - ArmTimeout: fm_arm_window_s → fm_arm_timeout_s; the arm-window auto-disarm in runFmLoop() now
+//   runs only when usrConf.fm_arm_timeout_s > 0 (0 = never, the new default). fm_throttle_seen is unchanged.
 // V2.5-Evo - 2026-09-17 - Gate1-REMOVED (Rex A2-TX, owner decision 2026-09-14): the TX 30 s throttle-release
 //   disarm (kFmGate1ReleaseMs) is gone. Follow-Me is meant to stay armed for the whole session; the RX 10 s
 //   latch clear and the RX 95 s mode-age expiry remain the backstops. The 30 s 0xF2 keepalive is unchanged.
@@ -495,7 +497,8 @@ void runRtmLoop()
 //
 // DISARM (any of):
 //   - Same combo again (LEFT tap + RIGHT hold 5s) — toggle
-//   - Arm window expires (fm_arm_window_s) before any throttle input — auto-disarm
+//   - Arm timeout expires (fm_arm_timeout_s) before any throttle input — auto-disarm.
+//     0 = never (the default since 2026-09-17): armed with no throttle stays armed indefinitely.
 //   - RX fault-stop (fm_flags bit3 rising edge) — the TX follows the RX's decision
 //
 // V2.5-Evo - 2026-09-17 - Gate1-REMOVED. There is no longer a TX-side throttle-release disarm.
@@ -783,10 +786,13 @@ void runFmLoop()
 
   if (!fm_armed) return;
 
-  // Arm-window auto-disarm: if user never applied throttle since arming, disarm after fm_arm_window_s
-  if (!fm_throttle_seen)
+  // Arm-timeout auto-disarm: if the rider never applied throttle since arming, disarm after
+  // fm_arm_timeout_s. V2.5-Evo - 2026-09-17: gated on fm_arm_timeout_s > 0 — 0 means NEVER, and is
+  // the default. An armed remote with no throttle now stays armed until the rider disarms it, the
+  // RX faults, or power is cut (always-armed philosophy, owner decision 2026-09-15).
+  if (!fm_throttle_seen && usrConf.fm_arm_timeout_s > 0)
   {
-    if (now - fm_arm_ms > (unsigned long)usrConf.fm_arm_window_s * 1000UL)
+    if (now - fm_arm_ms > (unsigned long)usrConf.fm_arm_timeout_s * 1000UL)
     {
       // V2.5-Evo - 2026-07-20 - Batch T (A2 D1): the silent disarm is no longer fully silent.
       // The scanner going dark is the primary signal; add ONE short blip (Pattern 5, a single

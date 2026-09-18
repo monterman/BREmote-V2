@@ -1,10 +1,11 @@
 // TX-specific config field table and cross-validation.
 // Shared engine is in ../Common/ConfigServiceEngine.h (included via BREmote_V2_Tx.h).
+// V2.5-Evo - 2026-09-17 - fm_arm_window_s renamed in place to fm_arm_timeout_s; range 10-600 → 0-1800 (0 = never, default). No struct change.
 // V2.5-Evo - 2026-04-27 - P8: Added rtm_display_mode, fm_warn_distance_m, rtm_steer_exit_on_input; rtm_max_runtime_s min changed 30→0
 // V2.5-Evo - 2026-04-28 - P9: Added dist_unit (0=Metres, 1=Feet; range 0-1)
 // V2.5-Evo - 2026-07-25 - dist_unit: Feet (1) is NOT yet rendered on the TX display this version — the
 //   display always shows metres regardless of this value. Key retained (no schema change) for a future version.
-// V2.5-Evo - 2026-04-28 - ChangeA: fm_arm_window_s max raised 60→120s (no struct change, no SPIFFS reset)
+// V2.5-Evo - 2026-04-28 - ChangeA: FM arm window (now fm_arm_timeout_s) max raised 60→120s (no struct change, no SPIFFS reset)
 // V2.5-Evo - 2026-04-29 - Sleep: added sleep_timeout_s to ConfigService validation table
 // V2.5-Evo - 2026-07-20 - MagGesture: added mag_mode (0=off/not fitted, 1=FM, 2=RTM, 3=FM+RTM). bt_enabled unchanged.
 // V2.5-Evo - 2026-05-15 - feature/bluetooth: added bt_enabled (0=off, 1=Hall/session, 2=always on)
@@ -82,7 +83,10 @@ const CfgFieldSpec kCfgFields[] = {
   {"fm_warn_distance_m",       CFG_U16, offsetof(confStruct, fm_warn_distance_m),       true, false, true, 50.0f, 1000.0f,   0, false},  // FM proximity warning threshold in meters
   {"rtm_steer_exit_on_input",  CFG_U16, offsetof(confStruct, rtm_steer_exit_on_input),  true, false, true,  0.0f,   1.0f,    0, false},  // 1=steering exits RTM, 0=blend only
   // V2.5-Evo - 2026-04-27 - Priority 8.1 FM UX redesign parameter
-  {"fm_arm_window_s",          CFG_U16, offsetof(confStruct, fm_arm_window_s),          true, false, true, 10.0f, 600.0f,    0, false},  // FM auto-disarm after N seconds of no throttle input
+  // V2.5-Evo - 2026-09-17 - renamed from fm_arm_window_s; range widened 10-600 → 0-1800 so 0 (= never
+  // auto-disarm, the new default) is storable and a 30-minute option remains. Widening only: every
+  // previously stored value (10-600) is still in range, so no load path can reject an old config.
+  {"fm_arm_timeout_s",         CFG_U16, offsetof(confStruct, fm_arm_timeout_s),         true, false, true,  0.0f, 1800.0f,   0, false},  // seconds armed with no throttle before auto-disarm; 0 = never
   // V2.5-Evo - 2026-04-28 - P9: Distance unit selector. 0=Metres, 1=Feet.
   // NOTE (2026-07-25): Feet (1) is not yet rendered on the TX display this version — metres are shown
   // regardless. Value is still stored/validated so a future version can implement feet without a wipe.

@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-09-17 - fm_arm_window_s RENAMED IN PLACE to fm_arm_timeout_s (owner decision 2026-09-15): same slot,
+//   same uint16_t, sizeof(confStruct) stays 136, SW_VERSION stays 27, no SPIFFS reset. Meaning: seconds armed with no
+//   throttle before auto-disarm; 0 = never (new default, was 180). A remote that already stores 180 keeps 180 until
+//   `?set fm_arm_timeout_s 0` + `?save` — the stored value keeps its meaning in seconds.
 // V2.5-Evo - 2026-08-17 - defaultConf.rtm_double_squeeze_en 0 → 1: the factory default RTM arm gesture is now the
 //   deliberate double squeeze, which is what the struct comment always documented. Default value + comments only —
 //   confStruct UNCHANGED, sizeof stays 136, SW_VERSION stays 27, no SPIFFS reset, and units with a stored value keep it.
@@ -16,8 +20,8 @@
 //   ⚠ SW_VERSION bump RESETS the TX SPIFFS config to defaultConf on first flash.
 // V2.5-Evo - 2026-07-20 - SW27 defaults bake: defaultConf carries the factory default
 //   configuration — pairing unbound, calibration nominal, GPS/speed source and RTM/FM tuning
-//   at generic defaults. fm_arm_window_s is baked at 180 (see the rationale comment at the
-//   field). No struct change: sizeof(confStruct) stays 136 and SW_VERSION stays 27.
+//   at generic defaults. The FM arm window (now fm_arm_timeout_s) was baked at 180 (see the
+//   rationale comment at the field). No struct change: sizeof(confStruct) stays 136 and SW_VERSION stays 27.
 //
 // ============================================================
 // V2.5-Evo - 2026-07-20 - defaultConf.mag_mode ships at 0 (magnet gesture off). This is the
@@ -39,7 +43,7 @@
 // V2.5-Evo - 2026-04-22 - Added gps_chip_type field (GPS module selector: 0=BN-220, 2=M10); sizeof 92→96
 // V2.5-Evo - 2026-04-25 - P7: Added RTM meta-packet queue globals (rtm_meta_type/value/count) and RTM throttle cap (rtm_thr_cap_tx, rtm_tx_active)
 // V2.5-Evo - 2026-04-27 - P8: Added rtm_display_mode, fm_warn_distance_m, rtm_steer_exit_on_input to confStruct; TelemetryPacket adds rtm_distance at index 5; rtm_max_runtime_s default 120→0
-// V2.5-Evo - 2026-04-27 - P8.1: Added fm_arm_window_s to confStruct; FM redesigned as arm/disarm toggle with mode memory; sizeof 124→128
+// V2.5-Evo - 2026-04-27 - P8.1: Added the FM arm window (now fm_arm_timeout_s) to confStruct; FM redesigned as arm/disarm toggle with mode memory; sizeof 124→128
 // V2.5-Evo - 2026-04-28 - P9: Added dist_unit (fills 2-byte tail padding; sizeof stays 128); rtm_arm_dist_m RAM global
 // V2.5-Evo - 2026-04-29 - Sleep: added sleep_timeout_s to confStruct; SW_VERSION 25→26
 // V2.5-Evo - 2026-05-01 - Release: DEBUG_RX commented out for production build
@@ -54,7 +58,7 @@
 // V2.5-Evo - 2026-05-13 - SW32 M3: rtm_meta_type/value/count + rtm_thr_cap_tx + rtm_tx_active changed volatile→std::atomic<T>; release/acquire ordering in queue/consumer
 // V2.5-Evo - 2026-05-13 - SW32: default display_mode changed 0→DISPLAY_MODE_THR (throttle % as boot display; field test feedback)
 // V2.5-Evo - 2026-05-09 - Bundle 9-Final: Added USB CDC On Boot compile-time guard
-// V2.5-Evo - 2026-07-20 - T2: fm_arm_window_s comment corrected 10-60s → 10-600s (validation range was already 10-600; comment was stale). No struct change.
+// V2.5-Evo - 2026-07-20 - T2: FM arm window (now fm_arm_timeout_s) comment corrected 10-60s → 10-600s (validation range was already 10-600; comment was stale). No struct change.
 
 // ============================================================
 // V2.5-Evo - 2026-05-09 - Bundle 9-Final: USB CDC On Boot guard
@@ -322,7 +326,8 @@ struct confStruct {
     // 1 new uint16_t field — sizeof grows 124→128 (126 data + 2 tail padding; 126%4=2).
     // First flash of P8.1 firmware resets all TX settings to defaults.
     // ============================================================
-    uint16_t fm_arm_window_s;          // FM auto-disarms after this many seconds with no throttle input; 10-600s; default 30
+    // V2.5-Evo - 2026-09-17 - renamed in place from fm_arm_window_s (same slot, same type, sizeof unchanged).
+    uint16_t fm_arm_timeout_s;         // seconds armed with no throttle before auto-disarm; 0 = never (default); range 0-1800 s
 
     // ============================================================
     // V2.5-Evo - 2026-04-28 - PRIORITY 9: DISTANCE UNIT SELECTION
@@ -488,16 +493,14 @@ confStruct defaultConf = {  // V2.5-Evo — factory default configuration
   150,  // fm_warn_distance_m (150m FM proximity warning threshold)
   1,    // rtm_steer_exit_on_input (1=steering exits RTM; 0=blend only)
   // V2.5-Evo - 2026-04-27 - Priority 8.1 FM UX redesign defaults
-  // V2.5-Evo - 2026-07-20 - SW27: fm_arm_window_s baked at 180 s (3 minutes).
-  // THE FLOOR IS LOAD-BEARING — do not "tidy" this back down to the old 30s default.
-  // Reason: the toggle doubles as the steering control on the throttle, so FM must be
-  // armed while the rider is still floating, before he is holding steering. The armed
-  // window then has to survive the whole sequence float → takeoff → tow → whip, and at
-  // 30s it expires mid-sequence, silently disarming FM before it is ever useful.
-  // The value is a preference, not a derived number: units are seconds, the validated
-  // range is 10-600 (10 s to 10 minutes), set here to 180 = 3 minutes. Tune freely above
-  // the floor; just never drop it back toward 30.
-  180,  // fm_arm_window_s (180s = 3 min before auto-disarm if no throttle input; range 10-600)
+  // V2.5-Evo - 2026-09-17 - fm_arm_timeout_s ships at 0 = NEVER auto-disarm (owner decision
+  // 2026-09-15). Follow-Me is meant to stay armed for the whole session; only the disarm
+  // gesture, an RX fault, or remote power-off ends it. The previous 180 s default existed
+  // because the arm had to survive float → takeoff → tow → whip and a 30 s window expired
+  // mid-sequence — with 0 there is no window to outlast. If a timeout IS wanted, the same
+  // reasoning still applies: keep it well above the longest float, so 180+ rather than 30.
+  // Units are seconds, validated range 0-1800 (0 = never, up to 30 minutes).
+  0,    // fm_arm_timeout_s (0 = never auto-disarm; range 0-1800 s)
   0,    // dist_unit (0 = Metres)
   // V2.5-Evo - 2026-04-29 - sleep timeout default
   300,  // sleep_timeout_s — 300s = 5 minutes; set to 0 to disable

@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-19 - STICK DURING AUTO-STEER: the kCfgFields row "rsvd_u16_1" (u16, RESERVED, 0-65535) becomes "steer_during_auto" (u16, 0-1: 0 = the stick cancels automatic steering as before, 1 = it takes over while deflected and resumes on centring), plus a CLAMP in cfgValidateCrossField() (> 1 -> 1) next to the fm_return_mode clamp. The confStruct slot is the SAME slot renamed in place, so sizeof stays 200, SW_VERSION stays 36 and no config is wiped; every stored blob reads 0 = cancel there.
 // V2.5-Evo - 2026-09-19 - SW36: three kCfgFields rows for the appended Follow-Me fields - fm_return_mode (u16, 0-1), fm_align_cap (u16, 8-80), fm_align_influence (u16, 0-100) - and two CLAMPS in cfgValidateCrossField(): fm_return_mode > 1 -> 1, fm_align_influence > 100 -> 100. Clamps, never rejections, because this validator runs on the LOAD path (the 2026-09-03 lesson: a range rejection at boot wipes the whole config). sizeof(confStruct) 192 -> 200, SW_VERSION 35 -> 36; the stored SW35 config is migrated at boot, not reset.
 // V2.5-Evo - 2026-09-18 - fm_engage_dist_m: the shared floor kFmEngageDistFloorM is 9.5 m now (was 8.0; the rope is 7.1 m, review finding F3) - the validator reads the constant, so only the comments and the clamp NOTE's advice ("about a third beyond the rope", not "a metre") change here. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // RX-specific config field table and cross-validation.
@@ -133,7 +134,14 @@ const CfgFieldSpec kCfgFields[] = {
 
   // RENAME IT IN PLACE here and in confStruct, tighten the range, and do NOT bump SW_VERSION.
 
-  {"rsvd_u16_1", CFG_U16,   offsetof(confStruct, rsvd_u16_1), true, false, true, 0.0f, 65535.0f, 0, false},
+  // V2.5-Evo - 2026-09-19 - this row was rsvd_u16_1 (u16, 0-65535, unread). The slot has been RENAMED
+  // IN PLACE in confStruct to steer_during_auto - same offset, same uint16_t - so sizeof stays 200,
+  // SW_VERSION stays 36 and no config is wiped. Only the key, the range and the meaning change here.
+  //   0 = CANCEL (default, what every board already stores): a held stick push ends the automatic
+  //       steering - following drops to ARMED, an auto-return stops, the remote exits return-to-me.
+  //   1 = TAKE OVER: the push makes the stick steer while it is held; centring it hands the steering
+  //       back and cancels nothing. Also clamped (> 1 -> 1) in cfgValidateCrossField() below.
+  {"steer_during_auto", CFG_U16, offsetof(confStruct, steer_during_auto), true, false, true, 0.0f, 1.0f, 0, false},
 
   {"rsvd_f32_1", CFG_FLOAT, offsetof(confStruct, rsvd_f32_1), true, false, true, -1e6f, 1e6f,    3, false},
 
@@ -206,6 +214,10 @@ bool cfgValidateCrossField(confStruct &candidate, String &err)
   // so anything above 100 means full. Both corrections are silent and idempotent.
   if (candidate.fm_return_mode > 1)       candidate.fm_return_mode = 1;
   if (candidate.fm_align_influence > 100) candidate.fm_align_influence = 100;
+  // V2.5-Evo - 2026-09-19 - steer_during_auto is a 0/1 switch on the SAME terms: the slot used to
+  // be a RESERVED u16 validated 0-65535, so a value above 1 could in principle be sitting in a
+  // stored blob; anything above 1 means take over, corrected silently on load rather than rejected.
+  if (candidate.steer_during_auto > 1)    candidate.steer_during_auto = 1;
 
   if (candidate.PWM0_max <= candidate.PWM0_min)
   {

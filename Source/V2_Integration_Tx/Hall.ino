@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-09-19 - RIGHT tap + LEFT hold now calls returnGesture() (RTMState.ino) instead of setRtmArmed() directly: the same
+//   combo is a three-state machine (arm RTM as before / cancel the arm and flip the auto-return override for the session / back to
+//   default). The gesture map comment below is updated. The magnet FM disarm prints its reason (the remote printed nothing for any
+//   RTM/FM state change before). No confStruct change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-09-18 - comment only (review finding F8): the magnet-gesture header said "arming RTM disarms FM first"; corrected to the yield behaviour. No code change.
 // V2.5-Evo - 2026-09-18 - comment only: the magnet RTM-arm branch said setRtmArmed() disarms FM; it no longer does (Follow-Me stays armed through a return since 2026-09-18). No code change.
 // V2.5-Evo - 2026-09-17 - GestureAbort (Rex B7 case 2): handleGearToggle() now aborts any toggle hold the
@@ -272,9 +276,12 @@ bool ctminus()
 // Gesture map:
 //   RIGHT hold 2s (simple)             → cycle telemetry display mode
 //   LEFT hold 2s (simple)              → lock remote (unlock: left hold + throttle touch)
-//   RIGHT tap → LEFT hold 5s (combo)   → arm RTM
+//   RIGHT tap → LEFT hold 5s (combo)   → the return gesture (returnGesture(), RTMState.ino):
+//                                         arm RTM / cancel the arm + flip auto-return / back to default
 //   LEFT tap → RIGHT hold 5s (combo)   → FM mode cycle
 // ============================================================
+// V2.5-Evo - 2026-09-19 - defined in RTMState.ino (concatenated after this file).
+void returnGesture();
 static int           last_tap_dir   = 0;    // last recorded tap direction: +1=right, -1=left, 0=none
 static unsigned long last_tap_ms    = 0;    // millis() when last tap was recorded
 static const unsigned long COMBO_WINDOW_MS  = 3000UL;  // max gap between tap and hold for combo
@@ -355,9 +362,11 @@ void handleGearToggle(int direction)
         {
           if (direction < 0 && last_tap_dir == 1)
           {
-            // RIGHT tap + LEFT hold 5s → arm RTM
-            if (usrConf.rtm_enabled && usrConf.gps_en)
-              setRtmArmed();
+            // RIGHT tap + LEFT hold 5s → the return gesture. V2.5-Evo - 2026-09-19: it arms RTM as
+            // before when no auto-return override stands (the rtm_enabled / gps_en gate is inside),
+            // and otherwise clears the override; the cancel-and-flip state is landed from inside
+            // the arm ceremony. See returnGesture() in RTMState.ino.
+            returnGesture();
           }
           else if (direction > 0 && last_tap_dir == -1)
           {
@@ -739,6 +748,7 @@ void runMagGesture()
         // 0xF2/0 and shows "St" with no buzz — so the magnet disarm feels and behaves exactly like the
         // toggle disarm the owner used successfully. (This is a hard disarm, not cycleFmMode()'s
         // arm/cycle/disarm behaviour: the magnet is a pure arm↔disarm toggle.)
+        Serial.println("FM [TX] disarm: magnet gesture -> 0xF2/0");   // V2.5-Evo - 2026-09-19
         fmDisarm(true);   // COMMANDED: the magnet gesture IS the rider asking → silent
       }
       else

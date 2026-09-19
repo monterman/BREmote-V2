@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-09-19 - Return gesture: FM_FLAG_RETURN_ON (fm_flags bit 7) is the RX's echo of its EFFECTIVE auto-return mode
+//   (1 = when the rider stops, Follow-Me brings the buggy back). The return gesture in RTMState.ino reads it to set the
+//   session override to the opposite value. Define only: no confStruct change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-09-17 - FM warning-distance haptic: includes ../Common/FollowMeDistanceWarning.h (pure header shared with
 //   the host unit test). fm_warn_distance_m is now LIVE (Pattern 8) with a 164 m ceiling — the one-byte rtm_distance
 //   telemetry saturates there. No confStruct change: sizeof stays 136, SW_VERSION stays 27.
@@ -557,6 +560,10 @@ struct __attribute__((packed)) TelemetryPacket {
 #define FM_FLAG_ENGAGED   0x02  // bit1: RX FM engaged (actively steering / capping)
 #define FM_FLAG_NOTREADY  0x04  // bit2: RX-side armed-not-ready (separation latch not yet proven)
 #define FM_FLAG_FAULT     0x08  // bit3: RX fault-stop, sticky 6s (already surprise-gated on the RX)
+// V2.5-Evo - 2026-09-19 - bit 7: the RX's EFFECTIVE auto-return mode (its stored fm_return_mode unless this remote has
+// overridden it for the session). Read by returnGesture() (RTMState.ino) to flip the override to the OPPOSITE value, and
+// shown as "Ar" (ON) / "AO" (OFF) at that moment. Bits 4-6 are reserved for the accepted-mode echo.
+#define FM_FLAG_RETURN_ON 0x80  // bit7: RX effective auto-return mode is ON
 // Link-health window: the TX treats the RX link as alive only while a packet has landed within
 // this many ms (matches the existing `millis()-last_packet < 1000` failsafe window used for the
 // bargraphs/vibration connectivity checks). Used by the FM readiness OR and the engaged gate.

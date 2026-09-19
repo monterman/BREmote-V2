@@ -1,3 +1,16 @@
+// V2.5-Evo - 2026-09-19 - THE RETURN GESTURE (RIGHT tap + LEFT hold, the RTM arm combo) is now returnGesture(), a three-state
+//   machine read at the instant the hold completes: (1) no override and RTM not armed -> arm RTM exactly as before (setRtmArmed(),
+//   ceremony, gates, rtm_arm_window_s untouched); (2) RTM armed and still inside the arm window (the blocking ceremony is waiting for
+//   the squeeze) -> the ceremony's own wait loops poll for the same gesture, CANCEL the arm (0xF1/0, TX -> IDLE) and set the
+//   auto-return override to the OPPOSITE of the value the buggy echoes in fm_flags bit 7 (last_fm_return_mode = !echo), Pattern 9,
+//   "Ar" (ON) / "AO" (OFF) for 2 s; (3) an override standing (either value) -> back to default (last_fm_return_mode = 0xFF), Pattern 10.
+//   last_fm_return_mode (RAM, 0xFF = none, like last_fm_mode) is encoded into bits 5-6 of EVERY 0xF2 the remote sends
+//   (fmEncodeModeByte(): cycleFmMode(), cycleFmModeArmed(), the 30 s keepalive, every 0xF2/0 disarm burst) and cleared on FM disarm
+//   and power-up; a flip while armed asks the keepalive to go out now (fmRequestKeepaliveNow()) instead of in 30 s.
+//   cycleFmModeArmed() now WRAPS 1 -> 2 -> 3 -> 1 and never lands on F0 (owner rule: nothing disarms Follow-Me deliberately except
+//   the disarm gesture); cycleFmMode()'s pre-throttle F0 landing is kept. Unconditional Serial prints (the remote printed nothing
+//   for any RTM/FM state change before) at the RTM ceremony timeouts, the distance reject, the activation, and at every 0xF2/0
+//   call site with its reason. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-09-18 - KEEPALIVE vs BURST QUEUE (code-review finding, water-test blocker): the 30 s 0xF2 keepalive in runFmLoop() now
 //   queues only when rtm_meta_count == 0 (the single-slot queueMetaPacketBurst() is empty), otherwise retries next tick without
 //   advancing fm_last_sync_ms - it used to overwrite the 0xF1/1 RTM-activation burst on the first tick after the blocking arm
@@ -137,6 +150,46 @@ static uint32_t rtm_arm_gps_timeout_override = 0;
 static bool          fm_session_init_done = false;  // Change B: true once last_fm_mode seeded from SPIFFS this session
 static unsigned long fm_last_sync_ms      = 0;      // Change E: millis() of last 0xF2 keepalive; 0 when FM disarmed
 
+// ============================================================
+// V2.5-Evo - 2026-09-19 - AUTO-RETURN SESSION OVERRIDE (the followme_mode pattern, RAM only)
+//
+// last_fm_return_mode: this remote's override of the buggy's stored fm_return_mode for THIS session.
+//   0xFF = none (the buggy uses its own stored default), 0 = OFF, 1 = ON. Set and cleared only by
+//   returnGesture(); cleared on every FM disarm and lost on power-up. It rides in bits 5-6 of every
+//   0xF2 the remote sends (00 none, 01 OFF, 10 ON), so a lost packet is repaired by the next 30 s
+//   keepalive and a remote power cycle returns the buggy to its stored default within one.
+// Declared HERE, ahead of the RTM ceremony, because the ceremony's wait loops are where the second
+// gesture state lands (see returnGestureCeremonyPoll()).
+// ============================================================
+static uint8_t       last_fm_return_mode  = 0xFF;   // 0xFF none, 0 OFF, 1 ON; RAM only
+
+// fmEncodeModeByte - compose the 0xF2 value byte: bits 0-2 the FM mode, bits 5-6 the override.
+// Inputs: mode 0-7 (0 = disarm, 1-3 the modes). Reads last_fm_return_mode. Output: the byte.
+// Side effects: none. EVERY 0xF2 goes through here so the RX always sees the current override.
+static uint8_t fmEncodeModeByte(uint8_t mode)
+{
+  uint8_t ret_bits = 0;                              // 00 = no override: the buggy keeps its stored default
+  if (last_fm_return_mode == 0)      ret_bits = 1;   // 01 = OFF for the session
+  else if (last_fm_return_mode == 1) ret_bits = 2;   // 10 = ON for the session
+  return (uint8_t)((mode & 0x07) | (uint8_t)(ret_bits << 5));
+}
+
+// fmRequestKeepaliveNow - ask runFmLoop()'s 30 s 0xF2 keepalive to go out on its next tick.
+// Used after the override changes while FM is armed, so the buggy learns the new value in ~100 ms
+// (or as soon as the single-slot burst queue is free) instead of up to 30 s later. Deliberately
+// NOT a direct queueMetaPacketBurst(): the gesture that sets the override has just queued the
+// 0xF1/0 cancel burst, and a second burst would overwrite it (single slot, see the 2026-09-18
+// keepalive note). The keepalive path already waits for an empty slot. No-op while FM is disarmed
+// (fm_last_sync_ms == 0): the next arm's 0xF2 carries the override anyway.
+// Inputs: none. Side effects: rewinds fm_last_sync_ms so the keepalive is due now (never to 0,
+// which the keepalive reads as "disarmed").
+static void fmRequestKeepaliveNow()
+{
+  if (fm_last_sync_ms == 0) return;
+  unsigned long t = millis() - 30000UL;
+  fm_last_sync_ms = (t == 0) ? 1UL : t;
+}
+
 // ---- Compute the current throttle cap for the ramp ----
 // Returns 0-255. During ACTIVE, ramps from rtm_throttle_start_pct→max over rtm_ramp_duration_s.
 uint8_t calcRtmThrottleCap()
@@ -255,6 +308,107 @@ static float decodeRtmDistanceM()
 }
 
 // ============================================================
+// V2.5-Evo - 2026-09-19 - THE RETURN GESTURE INSIDE THE ARM CEREMONY (gesture state 2)
+//
+// The RTM arm is a BLOCKING ceremony: setRtmArmed() runs runDoubleSqueezeArm(), which holds loop()
+// - and therefore checkButtons()/handleGearToggle() - for up to rtm_arm_window_s while it waits
+// for the squeeze. rtm_tx_state == RTM_ARMED exists ONLY inside that ceremony, so "the gesture done
+// again while RTM is armed and inside the arm window" can only be seen from inside it. These two
+// helpers are that: the wait loops call returnGestureCeremonyPoll() every 100 ms; it re-implements
+// handleGearToggle()'s combo on the live toggle input (calcFilter() keeps producing tog_input during
+// the ceremony because in_menu is held non-zero) - a RIGHT tap shorter than COMBO_TAP_MAX_MS, then a
+// LEFT hold of rtm_hold_duration_s begun within COMBO_WINDOW_MS of the tap, with the trigger released
+// (thr_scaled < 10, the same action gate). The LEFT hold that STARTED the ceremony must be released
+// first; it never counts. When it fires, ceremonyCancelForReturnGesture() aborts the arm exactly
+// like a timeout does (cap 255, GPS override cleared, display cleared, RTM_IDLE, 0xF1/0) and then
+// flips the override: last_fm_return_mode = the OPPOSITE of the auto-return mode the buggy last
+// echoed in fm_flags bit 7, Pattern 9, "Ar" (ON) / "AO" (OFF) for 2 s, keepalive requested.
+//
+// INVARIANT (owner's miscount hazard): a miscounted gesture can never produce motion. Arming RTM
+// only declares intent - the squeeze ceremony, RTM's gates and a held trigger are still required;
+// cancelling the arm removes intent; the override only changes what a Follow-Me HOLD graduates to
+// on the buggy, and that graduation itself moves nothing without the trigger. The gesture is
+// off-throttle only (thr_scaled < 10 at the instant the hold completes) and the ceremony's own
+// squeeze detection (thr_scaled > 76) is mutually exclusive with it.
+// ============================================================
+
+// returnGestureCeremonyPoll - RIGHT tap + LEFT hold detector for the blocking arm ceremony.
+// Inputs:  reset - true to clear the detector at ceremony start (the arming LEFT hold is still
+//          down at that moment and must be released before anything counts). Reads ctplus() /
+//          ctminus() (Hall.ino), thr_scaled, usrConf.rtm_hold_duration_s, COMBO_TAP_MAX_MS,
+//          COMBO_WINDOW_MS (Hall.ino).
+// Returns: true exactly once per completed gesture. Side effects: its own static state only.
+static bool returnGestureCeremonyPoll(bool reset)
+{
+  static bool          arm_hold_released = false;   // the LEFT hold that started the ceremony has been let go
+  static bool          right_was_down    = false;
+  static bool          left_was_down     = false;
+  static unsigned long right_down_ms     = 0;
+  static unsigned long right_tap_ms      = 0;       // millis() of the last RIGHT tap; 0 = none pending
+  static unsigned long left_down_ms      = 0;
+  if (reset) {
+    arm_hold_released = false;
+    right_was_down = left_was_down = false;
+    right_down_ms = right_tap_ms = left_down_ms = 0;
+    return false;
+  }
+  const unsigned long now   = millis();
+  const bool          right = ctplus();
+  const bool          left  = ctminus();
+
+  if (!arm_hold_released) {
+    if (!left) arm_hold_released = true;   // the arming hold is over; from here the toggle is a fresh input
+    return false;
+  }
+
+  // RIGHT: a press shorter than COMBO_TAP_MAX_MS, on release, is a tap.
+  if (right && !right_was_down) right_down_ms = now;
+  if (!right && right_was_down && (now - right_down_ms) < COMBO_TAP_MAX_MS) right_tap_ms = now;
+  right_was_down = right;
+
+  // LEFT: time the hold from its press edge.
+  if (left && !left_was_down) left_down_ms = now;
+  left_was_down = left;
+
+  if (left && right_tap_ms != 0 &&
+      (left_down_ms - right_tap_ms) < COMBO_WINDOW_MS &&
+      (now - left_down_ms) >= (unsigned long)usrConf.rtm_hold_duration_s * 1000UL &&
+      thr_scaled < 10) {
+    right_tap_ms = 0;   // consumed: the same hold cannot fire twice
+    return true;
+  }
+  return false;
+}
+
+// ceremonyCancelForReturnGesture - abort the RTM arm ceremony and flip the auto-return override.
+// Inputs: none (reads telemetry.fm_flags for the buggy's echo). Side effects: rtm_tx_state ->
+//   RTM_IDLE, rtm_thr_cap_tx 255, rtm_arm_gps_timeout_override 0, display cleared, 0xF1/0 queued;
+//   last_fm_return_mode set to the opposite of the echo; Pattern 9; a BLOCKING 2 s "Ar"/"AO" hold;
+//   the keepalive requested (if FM is armed). Called only from runDoubleSqueezeArm().
+static void ceremonyCancelForReturnGesture()
+{
+  // The abort, exactly as the ceremony's own timeout paths do it.
+  rtm_arm_gps_timeout_override = 0;
+  rtm_thr_cap_tx = 255;
+  DISP_LOCK(); for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000; updateDisplay(); DISP_UNLOCK();
+  rtm_tx_state  = RTM_IDLE;
+  rtm_tx_active = false;
+  queueMetaPacketBurst(0xF1, 0);   // tell RX: RTM not active (belt: it already heard 0xF1/0 at ceremony start)
+
+  // The flip: opposite of what the buggy says it is doing NOW. With the stored default ON this is
+  // the only way the gesture can turn auto-return OFF for a session, and vice versa.
+  const bool echo_on = (telemetry.fm_flags & FM_FLAG_RETURN_ON) != 0;
+  last_fm_return_mode = echo_on ? 0 : 1;
+  Serial.printf("RETURN [TX] gesture during the RTM arm: arm cancelled (0xF1/0); auto-return override set %s for this session (buggy reported %s)\n",
+                last_fm_return_mode ? "ON" : "OFF", echo_on ? "ON" : "OFF");
+  if (current_vib_pattern == 0) current_vib_pattern = 9;   // Pattern 9: four quick taps = override SET
+  // "Ar" = auto-return ON, "AO" = OFF (the 0 glyph is the O: the 3x5 font has no lowercase o).
+  DISP_LOCK(); displayDigits(LET_A, last_fm_return_mode ? LET_R : 0); updateDisplay(); DISP_UNLOCK();
+  gpsKeepAliveDelay(2000);
+  fmRequestKeepaliveNow();   // the 0xF1/0 burst drains first; the keepalive then carries bits 5-6
+}
+
+// ============================================================
 // V2.5-Evo - 2026-04-28 - Bug4: Full rewrite. Handles both single and double squeeze.
 // Always called blocking from setRtmArmed(). Uses rtm_arm_start_ms as shared arm-window ref.
 // "A r" and "rn ×2" ceremony removed. Arm confirmation is unlockAnimation() + "r n" 2s.
@@ -279,6 +433,8 @@ static void runDoubleSqueezeArm()
   displayDigitZone("r n");
   advanceArrow();   // prime arrow before loop; advanceArrow() calls updateDisplay() internally
 
+  returnGestureCeremonyPoll(true);   // V2.5-Evo - 2026-09-19 - fresh detector; the arming hold is still down
+
   // Wait for first squeeze: thr > 30% (thr_scaled > 76) held for 500ms continuous
   bool          first_ok = false;
   unsigned long hold_ms  = 0;
@@ -291,6 +447,8 @@ static void runDoubleSqueezeArm()
       if (millis() - hold_ms >= 500UL) { first_ok = true; hold_ms = 0; break; }
     }
     else { hold_ms = 0; }
+    // V2.5-Evo - 2026-09-19 - the return gesture done again while waiting = cancel + flip (state 2).
+    if (returnGestureCeremonyPoll(false)) { ceremonyCancelForReturnGesture(); return; }
     delay(100);
     checkSerial();
   }
@@ -300,6 +458,7 @@ static void runDoubleSqueezeArm()
     rtm_thr_cap_tx = 255;              // restore throttle passthrough — arm aborted
     DISP_LOCK(); for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000; updateDisplay(); DISP_UNLOCK();
     rtm_tx_state = RTM_IDLE;
+    Serial.printf("RTM [TX] arm cancelled: no first squeeze within %u s\n", (unsigned)usrConf.rtm_arm_window_s);
     return;
   }
 
@@ -332,6 +491,8 @@ static void runDoubleSqueezeArm()
         if (millis() - hold_ms >= 500UL) { second_ok = true; hold_ms = 0; break; }
       }
       else { hold_ms = 0; }
+      // V2.5-Evo - 2026-09-19 - the return gesture done again while waiting = cancel + flip (state 2).
+      if (returnGestureCeremonyPoll(false)) { ceremonyCancelForReturnGesture(); return; }
       delay(100);
       checkSerial();
     }
@@ -341,6 +502,7 @@ static void runDoubleSqueezeArm()
       rtm_thr_cap_tx = 255;              // restore throttle passthrough — arm aborted
       DISP_LOCK(); for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000; updateDisplay(); DISP_UNLOCK();
       rtm_tx_state = RTM_IDLE;
+      Serial.printf("RTM [TX] arm cancelled: no second squeeze within %u s\n", (unsigned)usrConf.rtm_arm_window_s);
       return;
     }
 
@@ -370,6 +532,8 @@ static void runDoubleSqueezeArm()
     rtm_tx_state  = RTM_IDLE;
     rtm_tx_active = false;
     queueMetaPacketBurst(0xF1, 0);
+    Serial.printf("RTM [TX] arm refused: buggy is %.1f m away, inside the %u m disengage distance\n",
+                  (double)prearm_m, (unsigned)usrConf.rtm_disengage_distance_m);
     return;
   }
 
@@ -395,6 +559,7 @@ static void runDoubleSqueezeArm()
   rtm_arm_dist_m      = decodeRtmDistanceM();
   if (rtm_arm_dist_m < 0.0f) rtm_arm_dist_m = 0.0f;
   queueMetaPacketBurst(0xF1, 1);
+  Serial.printf("RTM [TX] ACTIVE: 0xF1/1 queued (buggy %.1f m away)\n", (double)rtm_arm_dist_m);
   // V2.5-Evo - 2026-09-18 - Belt for the single-slot burst queue: this ceremony blocked loop() for
   // 8 s or more, so an armed Follow-Me's 30 s keepalive may be overdue the instant loop() resumes.
   // Restart its clock now so it cannot fall due on top of the 0xF1/1 just queued. The keepalive
@@ -628,7 +793,8 @@ static void fmSilentDisarm()
   fm_armed         = false;
   fm_throttle_seen = false;
   fm_last_sync_ms  = 0;
-  queueMetaPacketBurst(0xF2, 0);   // mode 0 = FM disabled on RX
+  last_fm_return_mode = 0xFF;      // V2.5-Evo - 2026-09-19 - the override ends with the declaration (bits 5-6 = 00)
+  queueMetaPacketBurst(0xF2, fmEncodeModeByte(0));   // mode 0 = FM disabled on RX
 }
 
 // Internal disarm: clears state, notifies RX, shows "St" full-screen, buzzes only on a FAULT.
@@ -645,7 +811,8 @@ static void fmDisarm(bool commanded)
   fm_armed         = false;
   fm_throttle_seen = false;
   fm_last_sync_ms  = 0;            // Change E: clear keepalive timer
-  queueMetaPacketBurst(0xF2, 0);   // mode 0 = FM disabled on RX (followme_mode=0)
+  last_fm_return_mode = 0xFF;      // V2.5-Evo - 2026-09-19 - the override ends with the declaration (bits 5-6 = 00)
+  queueMetaPacketBurst(0xF2, fmEncodeModeByte(0));   // mode 0 = FM disabled on RX (followme_mode=0)
   // V2.5-Evo - 2026-08-16 - HAPTIC CUT: silent on a DELIBERATE disarm. You just did it, and the
   // display already says so. A buzz confirming your own action is noise.
   // V2.5-Evo - 2026-08-17 - StopBuzz: the caller now decides, on the rule A PURE TIMEOUT IS SILENT,
@@ -678,6 +845,7 @@ void cycleFmMode()
     if (fm_throttle_seen)
     {
       // User already rode — treat gesture as disarm toggle
+      Serial.println("FM [TX] disarm: the disarm gesture after riding -> 0xF2/0");   // V2.5-Evo - 2026-09-19
       fmDisarm(true);   // COMMANDED: the rider made the disarm gesture → silent
     }
     else
@@ -708,7 +876,9 @@ void cycleFmMode()
         updateDisplay();
         DISP_UNLOCK();
         gpsKeepAliveDelay(1000);
-        queueMetaPacketBurst(0xF2, 0);       // tell RX: FM disabled
+        Serial.println("FM [TX] disarm: cycled to F0 before riding -> 0xF2/0");   // V2.5-Evo - 2026-09-19
+        last_fm_return_mode = 0xFF;          // V2.5-Evo - 2026-09-19 - the override ends with the declaration
+        queueMetaPacketBurst(0xF2, fmEncodeModeByte(0));       // tell RX: FM disabled
         fm_armed         = false;
         fm_throttle_seen = false;
         fm_last_sync_ms  = 0;
@@ -724,7 +894,7 @@ void cycleFmMode()
       updateDisplay();
       DISP_UNLOCK();
       gpsKeepAliveDelay(2000);
-      queueMetaPacketBurst(0xF2, last_fm_mode);
+      queueMetaPacketBurst(0xF2, fmEncodeModeByte(last_fm_mode));   // V2.5-Evo - 2026-09-19 - carries the override bits
       fm_last_sync_ms = millis();
       fm_arm_ms       = millis();   // reset arm window — user is actively choosing a mode
     }
@@ -772,45 +942,22 @@ void cycleFmMode()
   DISP_UNLOCK();
   gpsKeepAliveDelay(2000);
 
-  queueMetaPacketBurst(0xF2, last_fm_mode);
+  queueMetaPacketBurst(0xF2, fmEncodeModeByte(last_fm_mode));   // V2.5-Evo - 2026-09-19 - carries the override bits
 }
 
 // Called by handleGearToggle(-1) simple LEFT hold 2s when FM is armed (Hall.ino checks isFmArmed()).
 // Cycles mode 1→2→3→1 (Change C: skips mode 0 = disabled); stays armed; resets arm timer.
+// V2.5-Evo - 2026-09-19 - IT WRAPS, AND NEVER LANDS ON F0 (owner rule: nothing disarms Follow-Me
+// deliberately except the disarm gesture). From 2026-04-29 (F0) until today the third LEFT hold
+// while armed reached 0 = disarm, so a rider stepping through the modes on the water could disarm
+// by miscounting one hold. Disarm stays on the combo-after-throttle (cycleFmMode()) and the magnet
+// toggle; cycleFmMode()'s pre-throttle F0 landing is kept, because that is the deliberate disarm
+// path before a tow. No buzz on a mode cycle (2026-08-16 haptic cut).
 void cycleFmModeArmed()
 {
   if (!fm_armed) return;
-  // Cycle 1→2→3→0 where 0 = disarm (FM disabled RAM-only state for hand-off to inexperienced user).
-  last_fm_mode = (last_fm_mode < 3) ? last_fm_mode + 1 : 0;
-
-  if (last_fm_mode == 0)
-  {
-    // F0: FM disabled — disarm with brief visual confirm and return to normal display.
-    // Sends 0xF2/0 to RX (FM off) and resets mode to SPIFFS default. No buzz — selecting F0 is a
-    // deliberate disarm the rider is watching happen on the display (comment corrected 2026-08-17:
-    // it said "fires Pattern 4", which stopped being true with the 08-16 cut).
-    // This is RAM-only; power cycle restores usrConf.followme_mode.
-    // V2.5-Evo - 2026-08-16 - HAPTIC CUT: no buzz on a mode CYCLE. You are actively
-
-    // pressing through modes and watching the display change; the arm buzz already fired
-
-    // once when you armed. Repeating it per mode is what made the patterns unreadable.
-
-    // Large-font F0 disarm confirm: LET_F + 0. Shorter hold (1s) — this is a disarm, not a mode select.
-    DISP_LOCK();
-    displayDigits(LET_F, 0);
-    updateDisplay();
-    DISP_UNLOCK();
-    gpsKeepAliveDelay(1000);
-    queueMetaPacketBurst(0xF2, 0);       // tell RX: FM disabled
-    fm_armed         = false;
-    fm_throttle_seen = false;
-    fm_last_sync_ms  = 0;
-    // Reset mode to SPIFFS default so next arm starts at configured mode, not 0
-    last_fm_mode = (usrConf.followme_mode >= 1 && usrConf.followme_mode <= 3)
-                   ? usrConf.followme_mode : 1;
-    return;
-  }
+  // Cycle 1→2→3→1: wrap, never 0.
+  last_fm_mode = (last_fm_mode < 3) ? last_fm_mode + 1 : 1;
 
   // Large-font mode confirm: LET_F + mode digit (1/2/3). snprintf no longer needed.
   DISP_LOCK();
@@ -818,9 +965,57 @@ void cycleFmModeArmed()
   updateDisplay();
   DISP_UNLOCK();
   gpsKeepAliveDelay(2000);
-  queueMetaPacketBurst(0xF2, last_fm_mode);
+  queueMetaPacketBurst(0xF2, fmEncodeModeByte(last_fm_mode));   // V2.5-Evo - 2026-09-19 - carries the override bits
   fm_last_sync_ms = millis();              // reset keepalive — just synced
   fm_arm_ms       = millis();             // reset arm window — user is actively choosing a mode
+}
+
+// ============================================================
+// V2.5-Evo - 2026-09-19 - returnGesture - RIGHT tap + LEFT hold, the three-state return gesture.
+//
+// Called by handleGearToggle() (Hall.ino) when the combo hold completes, in place of the direct
+// setRtmArmed() call it used to make. The STATE IS READ AT THE INSTANT THE HOLD COMPLETES, never
+// remembered from a previous press:
+//   (1) no override standing and RTM not armed -> ARM RTM exactly as before: setRtmArmed(), the
+//       squeeze ceremony, the gates, rtm_arm_window_s, Pattern 4 - nothing about RTM changes.
+//   (2) RTM armed and inside the arm window -> the ceremony is BLOCKING loop(), so this function
+//       cannot run then; the ceremony's own wait loops poll for the gesture and land this state
+//       from inside (returnGestureCeremonyPoll() / ceremonyCancelForReturnGesture() above):
+//       cancel the arm (0xF1/0, TX -> IDLE) and set the override to the OPPOSITE of the value the
+//       buggy echoes in fm_flags bit 7. Pattern 9, "Ar" / "AO".
+//   (3) an override standing (either value) -> BACK TO DEFAULT: last_fm_return_mode = 0xFF, so the
+//       next 0xF2 carries bits 5-6 = 00 and the buggy uses its stored fm_return_mode. Pattern 10,
+//       nothing on the display. The next gesture after this one arms RTM again (state 1).
+// WHY "OPPOSITE OF THE ECHO": with the buggy's stored default ON, "set the override ON" could never
+// turn auto-return OFF for a session; the opposite of the effective value is useful under either
+// default. A rider who wants ON permanently sets it on the buggy, not with the gesture.
+//
+// INVARIANT - A MISCOUNT CAN NEVER PRODUCE MOTION. Arming RTM only declares intent: the squeeze
+// ceremony, RTM's own gates and a held trigger are all still required before anything moves, and
+// the wrong-state outcome of a miscount is one of "RTM armed and waiting for a squeeze", "RTM arm
+// cancelled" or "override changed" - none of which is a motor command. The override only changes
+// what a Follow-Me HOLD graduates to on the buggy, and that graduation moves nothing without the
+// trigger either. The gesture is off-throttle only (the calcFilter() gate hands the toggle to
+// steering the moment the trigger rises, and handleGearToggle() aborts a hold on thr_scaled > 3).
+//
+// Inputs: last_fm_return_mode, rtm_tx_state (via setRtmArmed), usrConf.rtm_enabled / gps_en.
+// Side effects: state 1 - everything setRtmArmed() does (blocking); state 3 - the override
+//   cleared, Pattern 10, the keepalive requested (if FM is armed), one Serial line.
+// ============================================================
+void returnGesture()
+{
+  if (last_fm_return_mode != 0xFF)
+  {
+    // State 3: back to default.
+    last_fm_return_mode = 0xFF;
+    Serial.println("RETURN [TX] gesture: auto-return override cleared -> the buggy uses its stored default (next 0xF2 carries no override)");
+    if (current_vib_pattern == 0) current_vib_pattern = 10;   // Pattern 10: two medium pulses = override CLEARED
+    fmRequestKeepaliveNow();
+    return;
+  }
+  // State 1: arm RTM as before. (State 2 is landed from inside the ceremony this starts.)
+  if (usrConf.rtm_enabled && usrConf.gps_en)
+    setRtmArmed();
 }
 
 // Called from loop() every ~110ms.
@@ -849,6 +1044,7 @@ void runFmLoop()
     // faulted and stopped following by itself: the rider asked for nothing, no timer explains it,
     // and he has no other way to learn the buggy is no longer steering for him. → commanded =
     // false → Pattern 7.
+    Serial.println("FM [TX] disarm: the buggy reported a Follow-Me fault stop (fm_flags bit 3) -> 0xF2/0");   // V2.5-Evo - 2026-09-19
     fmDisarm(false);   // clears fm_armed + keepalive, sends 0xF2/0, "St" + Pattern 7 — TX & RX can't disagree
     return;
   }
@@ -906,6 +1102,7 @@ void runFmLoop()
       // buzz (Pattern 7). Placed at the call site (not inside fmSilentDisarm) so it fires ONLY on
       // arm-window expiry, never on the RTM-preemption path that also called fmSilentDisarm()
       // (that path is gone since 2026-09-18 - RTM no longer disarms FM - so this is now its only caller).
+      Serial.printf("FM [TX] disarm: armed %u s with no throttle (fm_arm_timeout_s) -> 0xF2/0\n", (unsigned)usrConf.fm_arm_timeout_s);   // V2.5-Evo - 2026-09-19
       fmSilentDisarm();   // arm window expired before first throttle — no blocking confirm
       if (current_vib_pattern == 0) current_vib_pattern = 5;   // nudge: one short blip
       return;
@@ -952,7 +1149,7 @@ void runFmLoop()
   {
     if (rtm_meta_count.load(std::memory_order_acquire) == 0)
     {
-      queueMetaPacketBurst(0xF2, last_fm_mode);
+      queueMetaPacketBurst(0xF2, fmEncodeModeByte(last_fm_mode));   // V2.5-Evo - 2026-09-19 - carries the override bits
       fm_last_sync_ms = now;
     }
     // else: a burst (0xF1 RTM state, 0xF4 aux, or an earlier 0xF2) is still going out — retry next tick.

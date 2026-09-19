@@ -1,3 +1,8 @@
+// V2.5-Evo - 2026-09-19 - Return gesture: vibrationTask Patterns 9 and 10 added. 9 = FOUR quick 80 ms taps (a trill) = the
+//   auto-return override was SET for the session (RTM arm cancelled, override = opposite of the RX's echo); 10 = TWO medium
+//   300 ms pulses = the override was CLEARED (back to the buggy's stored default). Both are new shapes: no existing pattern is
+//   four quick taps or two medium pulses, so neither can be confused by feel with the two firm arm taps (4), the one long
+//   STOP (7) or the single 300 ms warning (8). Both break early for a pending STOP.
 // V2.5-Evo - 2026-09-17 - WarnDist: vibrationTask Pattern 8 added — ONE medium 300 ms pulse, the FM warning-distance
 //   haptic. Queued by runFmLoop() (RTMState.ino) immediately when the buggy reaches fm_warn_distance_m and then every
 //   2 s while it stays there; runs with the trigger released. Shorter than the 750 ms STOP, longer than the 150 ms advisory.
@@ -918,7 +923,7 @@ void checkCharger()
   setBrightness(0x0F);
 }
 
-volatile uint8_t current_vib_pattern = 0;  // active haptic pattern: 0=none, 1=2 short, 2=5 short, 3=5 long, 4=2 fast short (RTM/FM ARM confirm), 5=1 short (magnet 2s "release for FM" advisory), 6=3 fast short (magnet 5s "release for RTM" advisory), 7=1 long (UNCOMMANDED RTM/FM stop, or an arm refusal — request it via vib_stop_pending, never by writing 7 here), 8=1 medium 300ms (FM warning-distance reached; repeats every 2s from runFmLoop)
+volatile uint8_t current_vib_pattern = 0;  // active haptic pattern: 0=none, 1=2 short, 2=5 short, 3=5 long, 4=2 fast short (RTM/FM ARM confirm), 5=1 short (magnet 2s "release for FM" advisory), 6=3 fast short (magnet 5s "release for RTM" advisory), 7=1 long (UNCOMMANDED RTM/FM stop, or an arm refusal — request it via vib_stop_pending, never by writing 7 here), 8=1 medium 300ms (FM warning-distance reached; repeats every 2s from runFmLoop), 9=4 quick 80ms taps (return gesture: auto-return override SET for the session), 10=2 medium 300ms pulses (return gesture: override CLEARED, back to the stored default)
 
 // ============================================================
 // STOP-BUZZ REQUEST FLAG - how Pattern 7 gets to actually play
@@ -1146,6 +1151,30 @@ void vibrationTask(void *parameter) {
       digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(300));
       digitalWrite(P_MOT, LOW);
       if (current_vib_pattern == 8) current_vib_pattern = 0;
+    }
+    // V2.5-Evo - 2026-09-19 - Return gesture: Pattern 9 — FOUR quick 80 ms taps, 80 ms gaps (a trill).
+    // Fired by returnGesture() when the RTM arm is cancelled and the auto-return override is SET
+    // (to the opposite of what the buggy reported). Four fast taps are a new shape: the arm confirm
+    // is two firm taps (4), the magnet advisory three (6), so the count and the speed both differ.
+    else if (current_vib_pattern == 9) {
+      for (int i = 0; i < 4; i++) {
+        digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(80));
+        digitalWrite(P_MOT, LOW);  vTaskDelay(pdMS_TO_TICKS(80));
+        if (vib_stop_pending) break;   // a stop outranks a confirm — cut it short
+      }
+      if (current_vib_pattern == 9) current_vib_pattern = 0;
+    }
+    // V2.5-Evo - 2026-09-19 - Return gesture: Pattern 10 — TWO medium 300 ms pulses, 200 ms gap.
+    // Fired by returnGesture() when the override is CLEARED (back to the buggy's stored default).
+    // Two mediums: longer than the two firm arm taps (4: 130 ms), one more than the single 300 ms
+    // warning (8), far shorter than the one 750 ms STOP (7).
+    else if (current_vib_pattern == 10) {
+      for (int i = 0; i < 2; i++) {
+        digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(300));
+        digitalWrite(P_MOT, LOW);  vTaskDelay(pdMS_TO_TICKS(200));
+        if (vib_stop_pending) break;   // a stop outranks a confirm — cut it short
+      }
+      if (current_vib_pattern == 10) current_vib_pattern = 0;
     }
 
     // Sleep briefly to prevent hoarding the CPU

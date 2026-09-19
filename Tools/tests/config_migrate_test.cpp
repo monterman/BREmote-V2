@@ -67,7 +67,8 @@ struct ConfSw35 {
   uint16_t gps_dyn_model;
   uint16_t log_level;
   uint16_t mag_orientation;
-  uint16_t rsvd_u16_1;
+  uint16_t rsvd_u16_1;           // keeps the SW35 name on purpose: this mirrors the SW35 image AS IT WAS; the live RX struct
+                                 // renamed this slot in place to steer_during_auto on 2026-09-19 (same offset, same u16)
   float    rsvd_f32_1;
 };
 static_assert(sizeof(ConfSw35) == 192, "SW35 mirror must be 192 bytes");
@@ -206,6 +207,8 @@ int main()
   assert(near(m.fm_engage_dist_m, 12.0f, 0.001f));
   assert(m.log_level == 4);
   assert(m.mag_orientation == 180);
+  // The old-named slot reads 0 on the migrated image: a migrated board reads steer_during_auto 0 = cancel, the
+  // behaviour-preserving default the rename-in-place rules require (2026-09-19).
   assert(m.rsvd_u16_1 == 0 && near(m.rsvd_f32_1, 0.0f, 1e-6f));
 
   // ---- Refusals: the image is never reinterpreted when the sizes do not say it is a prefix ----

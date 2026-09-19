@@ -1,3 +1,11 @@
+// V2.5-Evo - 2026-09-19 - fix round 1 (code review M-1, L-2, L-4): the FOLLOWING takeover timeout no longer copies the ACTIVE
+//   steer-cancel's writes (ARMED, cap 255 under a HELD trigger - a surprise un-clamp 20 s after the push, worst on a drifted stick
+//   with the buggy veering under it); it now exits through the HOLD surge guard exactly as FM_RETURN's exits do: FM_HOLD, cap 0,
+//   fm_rx_active false, override 127, latch cleared, needs-D_engage set, engage ramp 0, arbitration reset, print after the writes.
+//   HOLD-ESCAPE-2 turns it into ARMED/255 on the first RELEASED tick. The mode-0 cancel block is untouched (byte-identical) and is
+//   only re-indented inside its steer_during_auto == 0 wrapper (whitespace only). steerTakeoverTick() records STO_END_OWNER when the
+//   owner drops out from under a standing takeover (a RETURN takeover ended by the trigger release now shows in ?diag). The RTM and
+//   RETURN timeouts are unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - STICK DURING AUTO-STEER (owner decision, session log item 48): with usrConf.steer_during_auto == 1 the rider's
 //   stick TAKES OVER the steering byte during Follow-Me following, auto-return (FM_RETURN) and classic return-to-me instead of
 //   cancelling them; with 0 (default, every fielded board) the three cancel paths run VERBATIM - the ACTIVE steer-cancel and the
@@ -6,8 +14,9 @@
 //   mode that owns the steering with its own motion clock as the grace base (fm_engage_ms / fm_return_motion_ms / the new
 //   rtm_motion_ms): centre-seen required (a drifted remote centre never takes over silently, rate-limited print), 40 counts for
 //   500 ms after the 2 s grace to engage (the cancel's own constants through aliases), 20 counts for 200 ms to release, 20 s
-//   maximum then the mode's CANCEL path with a print naming centre drift (following -> ARMED-unlatched with the cancel block's
-//   writes; RETURN -> fmReturnExitToHold(FM_RET_STEERED); RTM -> the Gate-9-shaped clean handoff). Published ONCE per tick through
+//   maximum then the mode's CANCEL path with a print naming centre drift (following -> FM_HOLD cap 0, latch cleared, needs-D_engage,
+//   ARMED/255 on the first released tick - the HOLD surge guard, fix round 1 review M-1; RETURN -> fmReturnExitToHold(FM_RET_STEERED);
+//   RTM -> the Gate-9-shaped clean handoff). Published ONCE per tick through
 //   steer_takeover_active (single write site publishSteerTakeover(), RTM > FM, the publishAlignMixerInfluence() shape); calcPWM()
 //   only reads it. While a takeover stands: the divergence net (following) and the not-closing net (RETURN) are PARKED and re-armed
 //   with a fresh window on release (following adds a kFmDivergeMs post-release grace; RETURN re-bases its align suspension on
@@ -2103,11 +2112,17 @@ static uint8_t steerTakeoverTick(unsigned long now, unsigned long owner_since_ms
   const bool    owner_active = (thr_received >= 25) && (usrConf.rtm_rx_override_steering != 0);
   const uint8_t stick        = steering_received;
   const uint8_t dev          = steerTakeoverDeflection(stick);
+  const bool    was_active   = steer_takeover.active;
   const unsigned long was_since = steer_takeover.active_since_ms;
   const unsigned long deflect_since = steer_takeover.deflect_since_ms;
 
   const uint8_t v = steerTakeoverStep(&steer_takeover, (uint32_t)now, owner_active,
                                       (uint32_t)owner_since_ms, stick, &kSteerTakeoverParams);
+
+  // Fix round 1 (review L-2): the owner dropped out from under a standing takeover on this very
+  // tick (the trigger released, or override switched off) - the header has already zeroed the
+  // memory, so the reset the caller runs afterwards sees nothing to record. Record it here.
+  if (!owner_active && was_active) steer_takeover_last_end = STO_END_OWNER;
 
   if (v == STO_ENGAGED) {
     if (steer_takeover_episodes < 0xFFFF) steer_takeover_episodes++;
@@ -5463,32 +5478,32 @@ static void runFmLoopBody(unsigned long now)
     // the takeover arbitration in its place, same gate (fm_state == FM_ACTIVE), same grace base
     // (fm_engage_ms). Everything after the split is common to both modes.
     if (usrConf.steer_during_auto == 0) {
-    steerTakeoverReset();   // mode 0: the memory is always zero (covers a setting flipped 1 -> 0 -> 1 mid-session); a no-op otherwise
-    if (fm_state == FM_ACTIVE) {
-      int sdev = (int)steering_received - 127;
-      if (sdev < 0) sdev = -sdev;
-      if (sdev >= (int)kFmSteerCancelDeadband) {
-        if (fm_steer_input_since_ms == 0) fm_steer_input_since_ms = now;
-      } else {
-        fm_steer_input_since_ms = 0;
+      steerTakeoverReset();   // mode 0: the memory is always zero (covers a setting flipped 1 -> 0 -> 1 mid-session); a no-op otherwise
+      if (fm_state == FM_ACTIVE) {
+        int sdev = (int)steering_received - 127;
+        if (sdev < 0) sdev = -sdev;
+        if (sdev >= (int)kFmSteerCancelDeadband) {
+          if (fm_steer_input_since_ms == 0) fm_steer_input_since_ms = now;
+        } else {
+          fm_steer_input_since_ms = 0;
+        }
+        bool past_grace = (fm_engage_ms != 0) && ((now - fm_engage_ms) >= kFmEngageGraceMs);
+        bool persisted  = (fm_steer_input_since_ms != 0) &&
+                          ((now - fm_steer_input_since_ms) >= kFmSteerPersistMs);
+        if (past_grace && persisted) {
+          Serial.println("FM [RX] steer-cancel -> ARMED-UNLATCHED (separation latch cleared, no alarm)");
+          fm_state                = FM_ARMED;
+          fm_sep_latched          = false;   // deliberate: no silent resume, separation must re-prove
+          fm_sep_over_since_ms    = 0;
+          fm_sep_fix_count     = 0;   // DWELL-1: the fix count resets with the dwell
+          fm_steer_input_since_ms = 0;
+          fm_rx_active            = false;
+          rtm_steer_override      = 127;
+          fm_engage_ms            = 0;
+          fm_throttle_cap         = 255;      // manual; trigger may be held, but the latch is now clear
+          return;
+        }
       }
-      bool past_grace = (fm_engage_ms != 0) && ((now - fm_engage_ms) >= kFmEngageGraceMs);
-      bool persisted  = (fm_steer_input_since_ms != 0) &&
-                        ((now - fm_steer_input_since_ms) >= kFmSteerPersistMs);
-      if (past_grace && persisted) {
-        Serial.println("FM [RX] steer-cancel -> ARMED-UNLATCHED (separation latch cleared, no alarm)");
-        fm_state                = FM_ARMED;
-        fm_sep_latched          = false;   // deliberate: no silent resume, separation must re-prove
-        fm_sep_over_since_ms    = 0;
-        fm_sep_fix_count     = 0;   // DWELL-1: the fix count resets with the dwell
-        fm_steer_input_since_ms = 0;
-        fm_rx_active            = false;
-        rtm_steer_override      = 127;
-        fm_engage_ms            = 0;
-        fm_throttle_cap         = 255;      // manual; trigger may be held, but the latch is now clear
-        return;
-      }
-    }
     }
     else if (fm_state == FM_ACTIVE) {
       // ---- TAKEOVER (steer_during_auto 1): the rider's stick steers while deflected ----
@@ -5501,23 +5516,30 @@ static void runFmLoopBody(unsigned long now)
       // latch, fm_engage_ms and needs-D_engage are untouched (a takeover is not a cancel), HOLD /
       // faults / the RETURN candidate were evaluated above and independent of the stick, and any
       // exit from FM_ACTIVE ends the owner (the not-eligible branch resets the memory).
-      // TIMED OUT (20 s): the same writes as the mode-0 cancel block above (kept verbatim there),
-      // then the print after them (F7) naming centre drift as the likely cause.
+      // TIMED OUT (20 s): through the HOLD SURGE GUARD, the shape FM_RETURN's exits already use
+      // (fix round 1, review M-1). NOT the mode-0 cancel block's writes: that block ends in ARMED
+      // with cap 255 because the rider caused it half a second earlier and is expecting manual;
+      // the timeout is a different event - 20 s after the push, on a stick that may be a drifted
+      // centre with the buggy veering under it - and lifting the governor's cap to the raw held
+      // trigger at that instant is a surprise un-clamp. So: FM_HOLD with cap 0 under the held
+      // trigger, latch cleared, needs-D_engage set; the ordinary HOLD branch keeps cap 0 while the
+      // trigger stays held and HOLD-ESCAPE-2 turns it into ARMED/255 on the first RELEASED tick -
+      // one release, one squeeze, manual. The print comes after the writes (F7).
       const uint8_t sto = steerTakeoverTick(now, fm_engage_ms, "FM");
       fm_steer_takeover_req = steer_takeover.active;
       if (steer_takeover.active) fm_log_gate_flags |= FM_LOG_GATE_STEER_TAKEOVER;   // deep log bit 16
       if (sto == STO_TIMED_OUT) {
-        fm_state                = FM_ARMED;
-        fm_sep_latched          = false;   // deliberate: no silent resume, separation must re-prove
-        fm_sep_over_since_ms    = 0;
-        fm_sep_fix_count        = 0;
-        fm_steer_input_since_ms = 0;
-        fm_rx_active            = false;
-        rtm_steer_override      = 127;
-        fm_engage_ms            = 0;
-        fm_throttle_cap         = 255;      // manual; trigger may be held, but the latch is now clear
+        fm_state                  = FM_HOLD;
+        fm_throttle_cap           = 0;      // subtract-only hard stop under the held trigger: the surge guard
+        fm_rx_active              = false;
+        rtm_steer_override        = 127;
+        fm_sep_latched            = false;  // deliberate: no silent resume, separation must re-prove
+        fm_sep_over_since_ms      = 0;
+        fm_sep_fix_count          = 0;
+        fm_reengage_needs_dengage = true;   // and the next engagement must clear the full D_engage
+        fm_engage_ms              = 0;
         steerTakeoverReset();               // the owner ended; the request stays false this tick
-        Serial.printf("STEER [RX] FM: takeover held %lu s - following ended: ARMED-UNLATCHED (separation latch cleared, no alarm); a stick that never comes back to centre is most likely a drifted remote centre - check it\n",
+        Serial.printf("STEER [RX] FM: takeover held %lu s - following ended through HOLD (cap 0 until the trigger is released once, then ARMED-unlatched, needs D_engage; no alarm); a stick that never comes back to centre is most likely a drifted remote centre - check it\n",
                       (unsigned long)(kSteerTakeoverMaxMs / 1000UL));
         return;
       }

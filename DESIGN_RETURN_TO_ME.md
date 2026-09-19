@@ -133,6 +133,7 @@ Any gate failure → throttle forced to 0, `St` for 2s, RTM disengages.
 |---|---|---|---|---|
 | `rtm_rx_enabled` | 0-1 | 1 | bool | RX-side master enable (safety kill switch) |
 | `rtm_rx_override_steering` | 0-1 | 1 | bool | Allow RTM to override steering |
+| `steer_during_auto` | 0-1 | 0 | enum | The stick during any automatic steering (RTM, Follow-Me following, auto-return): 0 = cancel (a held push ends it), 1 = take over while deflected, resume on centring (2026-09-19; the remote's `rtm_steer_exit_on_input` is no longer read - the remote follows this echo in `fm_flags` bit 4) |
 | `rtm_compass_required` | 0-1 | 1 | bool | Require valid compass for RTM (safety) |
 
 ### 4c. Rule reminder

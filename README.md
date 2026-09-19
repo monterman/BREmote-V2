@@ -631,6 +631,17 @@ While Follow-Me is armed on both TX and RX with a fresh link, TX fires one mediu
 - `0` = auto: the firmware works it out as 1.5 × (Min Distance + Smoothing Band). Use a measured value if you know your rope.
 - You have to stay beyond this distance for 2 seconds before Follow-Me can engage.
 
+### Two motor ramps — manual towing vs the automatic modes (RX)
+
+The motors never jump to a new throttle; they ramp up over a set number of seconds (the fall is always instant). Since 2026-09-19 there are two ramps, because the slow one was only ever for the rider's shoulder on a manual tow start — the rope is loaded then, and it is not loaded while the buggy drives itself.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `motor_ramp_s` | 0.75 | **Manual towing motor ramp.** Seconds for the motors to ramp up when you squeeze the trigger in manual towing (rider on the rope). Starts the motors progressively so the rope does not give a hard yank on your arm. Larger = gentler start; smaller = quicker. This ramp is also used every time the buggy hands control back to you (arrival, cancel, hold). It also ramps the start of a hard turn (straightening is instant). 0 = instant. Range 0-4 s. Owner rides 2.0. |
+| `auto_ramp_s` | 0 | **Automatic modes ramp.** Seconds for the motors to ramp up while the buggy drives itself — following you in Follow-Me, spinning around and coming back in return-to-me / auto-return. The rope is not loaded in these modes, so you want this SMALL (quick) so the buggy is reactive: catches up fast and pivots fast. Smaller = quicker. 0 = same as the manual ramp (unchanged behaviour). Try 0.5. Range 0.2-4.0 s (a value under 0.2 is raised to 0.2). Any future mode with the buggy ahead of you uses the manual ramp. |
+
+**The rule:** the ramp follows whoever is capping the throttle. While Follow-Me is following, an auto-return is moving or a return-to-me is running, the automatic ramp applies (a stick take-over included). Manual towing, Follow-Me armed but not yet engaged, and every hand-back to you — arrival, a cancel, a hold, the fault ramp — use the manual ramp, so control always comes back to you softly. Switching between the two mid-rise never jumps: the ramp continues from where the motors are, at the new rate.
+
 ### SPIFFS Configuration (TX)
 
 <details>

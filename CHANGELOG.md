@@ -1,5 +1,37 @@
 # Changelog
 
+## 2026-09-19 — RX: two motor ramps — slow for manual towing, quick for the automatic modes (side branch, not yet released)
+
+**No config wipe.** The RX reuses its last reserved slot `rsvd_f32_1`, renamed in place to
+`auto_ramp_s`, so `sizeof(confStruct)` stays 200 and `SW_VERSION` stays 36. TX untouched.
+
+The motor ramp (`motor_ramp_s`) was only ever for your shoulder: on a manual tow start the rope is
+loaded and a hard yank hurts, so the motors build up slowly. While the buggy drives itself the rope is
+not loaded, and the same slow ramp just made it sluggish. There are now two:
+
+| Setting | Rides on | Value |
+|---|---|---|
+| `motor_ramp_s` — **Manual towing motor ramp** | manual towing, Follow-Me armed but not engaged, and every hand-back to you (arrival, cancel, hold, the fault ramp) | unchanged; the owner rides 2.0 |
+| `auto_ramp_s` — **Automatic modes ramp** | following, auto-return moving, return-to-me (a stick take-over included) | **0 = same as the manual ramp (unchanged behaviour). Try 0.5.** Range 0.2-4.0 s. |
+
+```
+?set auto_ramp_s 0.5
+?save
+```
+
+Smaller = quicker (units are seconds). A value under 0.2 is raised to 0.2 and the buggy says so; 0 is
+accepted and means inherit. The fall is instant in every mode, as before. Switching ramps mid-rise
+never jumps — the motors carry on from where they are at the new rate — and a ramp switched on
+mid-session no longer dips for a moment (an old quirk, fixed while the ramp code moved into a tested
+header).
+
+Also: the **Follow-Me engage ramp is now 1.5 s** (was 3.5 s; the beta tester's water-tested number),
+for the first squeeze after engaging and for each squeeze of an auto-return. The judging windows that
+were tied to it (when the buggy is first allowed to be judged for not closing on you) keep their old
+lengths, so nothing stops sooner than before.
+
+---
+
 ## 2026-09-19 — RX + TX: the stick during auto-steer, cancel or take over (side branch, not yet released)
 
 **No config wipe.** The RX reuses the reserved slot `rsvd_u16_1`, renamed in place to

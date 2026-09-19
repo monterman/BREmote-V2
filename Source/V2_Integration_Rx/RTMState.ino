@@ -1,3 +1,28 @@
+// V2.5-Evo - 2026-09-19 - FM_RETURN (auto-return inside Follow-Me, state 5). While the effective auto-return mode is 1, a rider who STOPS
+//   (raw displacement speed < kFmReturnRiderRawMaxKmh 4 km/h, judged on raw positions, not the filtered track) in FM_ACTIVE or FM_HOLD is a
+//   RETURN CANDIDATE: that same tick Follow-Me refuses to steer (cap 0 through the HOLD branch, steering 127, engage ramp reset) and the
+//   proof in Common/FollowMeReturnProof.h starts - the cap read back as 0 (or the trigger released) for kFmReturnCapZeroMinMs 3 s, the
+//   buggy's own GPS speed under kFmReturnBuggyMaxKmh 3 km/h, then a kFmReturnWindowMs 4 s window over which the relative displacement of
+//   rider and buggy (vector, raw positions) is under kFmReturnRelSpeedKmh 3 km/h. The proof survives a trigger release (HOLD-ESCAPE-2 turns
+//   a released HOLD into ARMED; the candidate stays pending) so "stop, wait, squeeze" works; a squeeze before it completes is manual
+//   throttle and resets the proof; one RETURN per engagement (fm_return_spent, cleared on the ACTIVE edge). Confirmed -> FM_RETURN with the
+//   separation latch cleared: motion ONLY while the trigger is held, aimed at the RAW rider position, cap = min(approach ramp over
+//   rtm_approach_zone_m down to the stop radius, P-law to rtm_target_speed_kmh as RTM's run phase, fm_align_cap while aligning, the engage
+//   ramp from each squeeze) - no GOVERNOR-2 fade and no min_dist_m rule in RETURN. STOP RADIUS = usrConf.rtm_stop_distance_m EXACTLY (1 m
+//   sanity minimum; owner rule 2026-09-19): auto-return is return-to-me inside Follow-Me and stops where return-to-me stops. Arrival ->
+//   FM_HOLD cap 0 until one trigger release, then ARMED-unlatched with needs-D_engage set; raw rider > kFmReturnCancelKmh 5 km/h for 1 s or
+//   kFmReturnMaxMs 60 s of held-trigger motion -> the same HOLD exit (not a fault); not closing 0.5 m over 5 s while moving and aligned ->
+//   FM_STOPPING with FM_STOP_RETURN_NOT_CLOSING (9). COG-only riders (rtm_use_compass 0) get no RETURN motion: the confirmed proof is declined
+//   once with a print and RTM stays their recall. Trim NOTE at entry when |trim| > 10. Rear-station (F2) warning at candidate time.
+//   PIVOT BOOST: while FM ACTIVE align, FM_RETURN align OR CLASSIC RTM PHASE 1 align (owner decision 2026-09-19) commands a heading error
+//   above rtm_align_threshold_deg, usrConf.fm_align_influence is published for the mixer through ONE atomic
+//   (align_mixer_influence_override, single write site publishAlignMixerInfluence(), RTM > FM) which calcPWM() uses in place of
+//   steering_influence; cleared on every exit from align, fmEnterIdle(), the RTM yield. The align cap on all three paths is
+//   usrConf.fm_align_cap (fmAlignCapValue(), read-site clamp 8-80 -> 13); kFmAlignCap (13) is retired. RTM's gates, stop radius, Gate 9,
+//   approach ramp, R-1/R-5 and BOOTSTRAP-1 are untouched - only the cap and the influence RTM feeds the mixer during alignment change.
+//   runRtmLoop() is now a thin wrapper (rate limit, compass snapshot, the influence publish once per tick) around runRtmLoopBody(), the
+//   P0-g shape. Deep log: bit 11 return_candidate, bit 15 return_window, fm_state 5, fm_block_reason 9. ?diag: one line. No confStruct
+//   change beyond SW36's three fields (already in), sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - auto-return mode plumbing (RX side of the 0xF2 override): the EFFECTIVE return mode - the remote's session override (fm_return_mode_runtime, 0/1) when one stands, else the stored usrConf.fm_return_mode - is resolved ONCE per tick at the top of runFmLoop() into fm_return_mode_effective, echoed to the remote in telemetry.fm_flags bit 7 by runRtmLoop(), and read by nothing else yet (FM_RETURN itself lands in the next commit). fmEnterIdle() clears the runtime override back to 0xFF, so the 95 s mode-age expiry and a 0xF2/0 disarm both end an override. Read-only accessors for ?diag. No control-path change, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-18 - review findings F6/F7/F8: kFmReleaseDengageMs added as an alias of kFmEngageGraceMs and used at the release -> needs-D_engage site (two rules, two names, one value); a GPS-integrity note in the P1-a block stating that conditions 2-7 still enforce the project's rule 1 (Phase A / freshness, never extrapolate) on the rider position now consumed off the trigger; the fm_sep_latched clear list corrected (no code clears the latch on a mode change - the clears are the 10 s release edge, steer-cancel, fmEnterIdle and the RTM yield). Comment + alias only, no behaviour change. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-18 - comments for the 9.5 m engage floor (kFmEngageDistFloorM 8.0 -> 9.5, review finding F3; the rope is 7.1 m): the factory auto D_engage 9.0 m now clamps up to 9.5 m, the owner's short-release edge is max(9, 9.5) = 9.5 m, the BOOTSTRAP-1 abort radius floor is 9.5 m. Comment-only in this file; the constant lives in BREmote_V2_Rx.h. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
@@ -115,6 +140,7 @@ static const uint8_t kProfBehind    = 2;   // trailing point directly behind the
 static const uint8_t kProfDiagRight = 3;   // trailing point behind and to the rider's right (mode 1, diagonal engaged)
 static const uint8_t kProfDiagLeft  = 4;   // trailing point behind and to the rider's left  (mode 3, diagonal engaged)
 static const uint8_t kProfRtmDirect = 5;   // RTM: straight at the rider's filtered position
+static const uint8_t kProfReturnDirect = 6; // FM_RETURN: straight at the rider's RAW position (V2.5-Evo - 2026-09-19)
 static uint8_t       fm_target_profile      = 0;
 static uint8_t       prev_fm_target_profile = 0;
 static double        tx_pos_filtered_lat       = 0.0;  // Filtered TX lat (degrees)
@@ -1471,9 +1497,20 @@ static const float    kFmCourseValidSpeedKmh = 5.0f;   // km/h
 // Feeds throttle cap 3 (speed governor): target = min(boogie_vmax, rider_speed + this).
 static const float    kFmClosingMarginKmh    = 5.0f;   // km/h
 
-// Align-phase throttle cap (~5% of 255). While the heading error is large the buggy
-// should pivot toward the target, not drive away from it. Same value RTM's align phase uses.
-static const uint8_t  kFmAlignCap            = 13;     // 0-255
+// Align-phase throttle cap. While the heading error is large the buggy should pivot toward the
+// target, not drive away from it.
+// V2.5-Evo - 2026-09-19 - kFmAlignCap (13, ~5 % of 255) is RETIRED. The align cap is the SW36 SPIFFS
+// field usrConf.fm_align_cap (8-80, default 13 - the same number), read through fmAlignCapValue()
+// by Follow-Me's cap 4, FM_RETURN's align cap and, since today, classic RTM's Phase 1 align (owner
+// decision: every "turn to face me" gets the same cap and the same pivot boost). The read-site
+// clamp below is the belt for a stored value outside the validator's range: it falls back to the
+// shipped 13, never to 0 (which would stop the buggy) and never above 80.
+static inline uint8_t fmAlignCapValue()
+{
+  uint16_t c = usrConf.fm_align_cap;
+  if (c < 8 || c > 80) c = 13;
+  return (uint8_t)c;
+}
 
 // Engage ramp length. On every entry into FM_ACTIVE the throttle cap ramps 0 -> full
 // over this time so re-engagement is always a smooth build, never a throttle jump.
@@ -1672,6 +1709,35 @@ static const float    kFmGovFloorKmh         = 3.0f;    // km/h
 static const float    kFmGapGainKmhPerM      = 0.5f;    // km/h per metre outside station
 static const float    kFmGapMaxKmh           = 15.0f;   // km/h ceiling on the gap term
 
+// ---- FM_RETURN constants (V2.5-Evo - 2026-09-19) ----
+// Compile-time, like every other kFm* above: no confStruct fields (the three SW36 fields that ARE
+// config - fm_return_mode, fm_align_cap, fm_align_influence - live in BREmote_V2_Rx.h).
+// The proof numbers implement the code review's A5 findings on the owner's "both drift in the same
+// water" idea: prove the buggy is coasting no more (cap 0 for 3 s AND its own speed under 3 km/h)
+// before comparing, compare DISPLACEMENTS over a window rather than two noisy scalar speeds, accept
+// a band rather than zero (windage on the hull vs current on the rider), and keep an absolute
+// sanity cap on the rider's RAW speed (never the filtered track: a slow carve at the Very Soft
+// preset sits under 2 km/h filtered for a second).
+static const float    kFmReturnRelSpeedKmh    = 3.0f;    // km/h; rider-minus-buggy relative displacement band (A5-3)
+static const float    kFmReturnRiderRawMaxKmh = 4.0f;    // km/h; absolute sanity on RAW rider displacement over ~1 s (H-4)
+static const uint32_t kFmReturnCapZeroMinMs   = 3000;    // ms; cap proven 0 this long before the relative test opens (A5-1)
+static const float    kFmReturnBuggyMaxKmh    = 3.0f;    // km/h; the buggy's own GPS speed below this before the window opens
+static const uint32_t kFmReturnWindowMs       = 4000;    // ms; the relative-displacement window from raw positions (A5-2)
+static const float    kFmReturnCancelKmh      = 5.0f;    // km/h; raw rider speed above this for kFmReturnCancelMs ends RETURN -> HOLD/ARMED
+static const uint32_t kFmReturnCancelMs       = 1000;    // ms
+static const uint32_t kFmReturnMaxMs          = 60000;   // ms; held-trigger RETURN motion beyond this -> HOLD/ARMED (not a fault)
+static const float    kFmReturnNotClosingM    = 0.5f;    // m; the distance must close by at least this ...
+static const uint32_t kFmReturnNotClosingMs   = 5000;    // ms; ... over each window of this length while moving and aligned, else FM_STOPPING
+static const float    kFmReturnStopMinM       = 1.0f;    // m; sanity minimum on the stop radius (matches the field's validator floor)
+// The RAW rider speed: displacement between two distinct rider fixes at least this far apart in
+// time, from the raw 0xF3 positions (rx_tx_gps_lat/lng), never the EMA track. Unknown (-1) when no
+// new fix has arrived for kFmReturnRawStaleMs - and unknown is never a candidate.
+static const uint32_t kFmReturnRawSpeedMs     = 1000;    // ms; minimum baseline between the two fixes
+static const uint32_t kFmReturnRawStaleMs     = 3000;    // ms; no new fix this long -> raw speed unknown
+static const FmReturnProofParams kFmReturnProofParams = {
+  kFmReturnRiderRawMaxKmh, kFmReturnCapZeroMinMs, kFmReturnBuggyMaxKmh, kFmReturnWindowMs, kFmReturnRelSpeedKmh
+};
+
 // V2.5-Evo - 2026-07-25 - F3-b: the hard floor for the MANUAL fm_engage_dist_m override,
 // kFmEngageDistFloorM, is NOT defined here any more. It used to sit in this block as 5.0f while
 // ConfigService.ino carried a SECOND bare 5.0f literal, on the false premise that the Arduino
@@ -1702,7 +1768,15 @@ static const float    kFmGapMaxKmh           = 15.0f;   // km/h ceiling on the g
 //                returns, never a lurch under a held trigger), then FM drops to FM_IDLE and a
 //                fresh TX declaration is required to re-arm. A surprise-gated St + stop buzz fires
 //                (fm_flags bit 3) only if the trigger was held at the fault instant.
-enum FmState : uint8_t { FM_IDLE = 0, FM_ARMED = 1, FM_ACTIVE = 2, FM_HOLD = 3, FM_STOPPING = 4 };
+//   FM_RETURN  : V2.5-Evo - 2026-09-19 - auto-return inside Follow-Me. The rider stopped while FM
+//                was ACTIVE/HOLD, the effective auto-return mode is 1, and the proof in
+//                Common/FollowMeReturnProof.h confirmed both rider and buggy are genuinely stopped.
+//                The separation latch is cleared on entry. The buggy comes back to the rider's RAW
+//                position ONLY while the trigger is held, through the engage ramp, at the align cap
+//                while turning and the RTM run-phase P-law once aligned, and stops at
+//                rtm_stop_distance_m -> FM_HOLD (cap 0 until one release) -> ARMED-unlatched.
+//                Numbered 5 so HOLD/STOPPING keep their log values.
+enum FmState : uint8_t { FM_IDLE = 0, FM_ARMED = 1, FM_ACTIVE = 2, FM_HOLD = 3, FM_STOPPING = 4, FM_RETURN = 5 };
 static FmState fm_state = FM_IDLE;
 
 // ---- V2.5-Evo - 2026-09-19 - the EFFECTIVE auto-return mode, resolved once per tick ----
@@ -1843,6 +1917,182 @@ static bool          fm_reengage_needs_dengage = true;
 // runFmLoopBody() for the full reasoning.
 static bool          fm_yielding_to_rtm = false;
 
+// ============================================================
+// V2.5-Evo - 2026-09-19 - FM_RETURN state, the raw rider-speed tracker, and the align-influence
+// publication. All written on the loop task only.
+// ============================================================
+// The proof's memory (Common/FollowMeReturnProof.h) and the raw positions snapshotted when its
+// window opened; the displacements handed to the proof are measured from these.
+static FmReturnProofState fm_return_proof = {0, 0};
+static double        fm_return_win_rider_lat = 0.0, fm_return_win_rider_lng = 0.0;
+static double        fm_return_win_buggy_lat = 0.0, fm_return_win_buggy_lng = 0.0;
+// fm_return_pending: a RETURN candidate was seen while FM was ACTIVE or HOLD and the proof is
+//   running. It SURVIVES a trigger release (HOLD-ESCAPE-2 turns a released HOLD into ARMED) so the
+//   owner's "stop, wait, squeeze" works; it is dropped the moment the rider's raw speed leaves the
+//   candidate band, the sensors go untrustworthy, the mode turns off, RETURN is entered, or FM
+//   leaves/yields. A squeeze while it stands is ordinary manual throttle and merely resets the
+//   proof's timers (the cap is no longer read back as 0).
+// fm_return_spent: ONE RETURN PER ENGAGEMENT. Set on RETURN entry and on every RETURN exit, cleared
+//   on the ARMED/HOLD -> ACTIVE edge (a new engagement earns a new return) and in fmEnterIdle().
+//   Without it the arrival HOLD (rider still stopped) would immediately be a new candidate.
+static bool          fm_return_pending      = false;
+static bool          fm_return_spent        = false;
+static uint8_t       fm_return_last_verdict = 0;      // last FmReturnProofVerdict, for ?diag
+static uint8_t       fm_return_last_reason  = 0;      // FmReturnReason below: why the last candidate / RETURN ended, for ?diag
+static unsigned long fm_return_motion_ms    = 0;      // millis() the current held-trigger stretch of RETURN motion began; 0 = parked (trigger released)
+static unsigned long fm_return_check_ms     = 0;      // not-closing window start; 0 = none running
+static float         fm_return_check_dist_m = -1.0f;  // the distance at that window's start
+static unsigned long fm_return_cancel_since_ms = 0;   // millis() the raw rider speed first exceeded kFmReturnCancelKmh in RETURN; 0 = not
+static bool          fm_return_cogonly_printed = false;   // the COG-only decline prints once per declaration
+// The RAW rider speed tracker (H-4: never fm_rider_speed_kmh, the EMA track).
+static double        fm_raw_base_lat = 0.0, fm_raw_base_lng = 0.0;
+static unsigned long fm_raw_base_ms  = 0;             // 0 = no baseline yet
+static uint32_t      fm_raw_last_seq = 0;             // rx_tx_gps_fix_seq at the last counted fix
+static unsigned long fm_raw_last_fix_ms = 0;          // millis() of the last DISTINCT rider fix seen here
+static float         fm_rider_raw_kmh = -1.0f;        // -1 = unknown
+// The align-influence requests: what each loop wants the mixer to use this tick (0 = nothing).
+// publishAlignMixerInfluence() is the ONE write site of the atomic; RTM outranks FM (P1-c).
+static uint8_t       rtm_align_influence_req = 0;
+static uint8_t       fm_align_influence_req  = 0;
+
+// Why the last candidate or RETURN ended. Stable codes for ?diag only.
+enum FmReturnReason : uint8_t {
+  FM_RET_NONE          = 0,
+  FM_RET_RIDER_MOVED   = 1,   // candidate dropped: raw rider speed left the band before the proof completed
+  FM_RET_SENSORS       = 2,   // candidate dropped: conditions 2-7 failed (no trustworthy positions)
+  FM_RET_MODE_OFF      = 3,   // candidate dropped: the effective mode went to 0
+  FM_RET_ENTERED       = 4,   // proof confirmed: FM_RETURN entered
+  FM_RET_DECLINED_COG  = 5,   // proof confirmed but rtm_use_compass is 0: no heading at a standstill, no RETURN motion
+  FM_RET_ARRIVED       = 6,   // RETURN: inside the stop radius -> HOLD
+  FM_RET_CANCELLED     = 7,   // RETURN: rider moving > kFmReturnCancelKmh for 1 s -> HOLD
+  FM_RET_TIMEOUT       = 8,   // RETURN: kFmReturnMaxMs of held-trigger motion -> HOLD
+  FM_RET_FAULT         = 9,   // RETURN: a fault (conditions 2-7 or not closing) -> STOPPING
+  FM_RET_LEFT          = 10   // RETURN / candidate ended because FM left or yielded
+};
+static const char* fmReturnReasonName(uint8_t r)
+{
+  switch (r) {
+    case FM_RET_NONE:         return "none";
+    case FM_RET_RIDER_MOVED:  return "candidate dropped - rider moved";
+    case FM_RET_SENSORS:      return "candidate dropped - positions untrustworthy";
+    case FM_RET_MODE_OFF:     return "candidate dropped - auto-return turned off";
+    case FM_RET_ENTERED:      return "proof confirmed - RETURN entered";
+    case FM_RET_DECLINED_COG: return "proof confirmed but declined - COG-only heading, use RTM";
+    case FM_RET_ARRIVED:      return "RETURN arrived at the stop radius";
+    case FM_RET_CANCELLED:    return "RETURN cancelled - rider moving";
+    case FM_RET_TIMEOUT:      return "RETURN timed out (60 s of motion)";
+    case FM_RET_FAULT:        return "RETURN fault -> STOPPING";
+    case FM_RET_LEFT:         return "RETURN / candidate ended - Follow-Me left or yielded";
+    default:                  return "unknown";
+  }
+}
+static const char* fmReturnVerdictName(uint8_t v)
+{
+  switch (v) {
+    case FMRP_IDLE:          return "no proof running";
+    case FMRP_CAP_DWELL:     return "cap-zero dwell";
+    case FMRP_WINDOW_OPENED:
+    case FMRP_WINDOW_OPEN:   return "window open";
+    case FMRP_CONFIRMED:     return "confirmed";
+    case FMRP_WINDOW_FAILED: return "window failed (reopens)";
+    default:                 return "unknown";
+  }
+}
+// Read-only accessors for ?diag.
+static bool        fmReturnPending()        { return fm_return_pending; }
+static const char* fmReturnVerdictText()    { return fmReturnVerdictName(fm_return_last_verdict); }
+static const char* fmReturnLastReasonText() { return fmReturnReasonName(fm_return_last_reason); }
+
+// publishAlignMixerInfluence - the ONE write site of align_mixer_influence_override.
+// Inputs: rtm_align_influence_req / fm_align_influence_req (what each loop decided this tick) and
+//         rtm_rx_active. Output: the atomic calcPWM() reads. Side effects: none else.
+// RTM outranks FM (P1-c, RTM > FM): while RTM is active only RTM's request counts, so a yielding
+// Follow-Me can never hand the mixer a boost RTM did not ask for. Called once at the end of every
+// runRtmLoop() and runFmLoop() tick; both read the same two statics, so whichever runs last on a
+// loop() pass publishes the same value. 0 = no boost: calcPWM() uses steering_influence.
+static void publishAlignMixerInfluence()
+{
+  uint8_t v = rtm_rx_active ? rtm_align_influence_req : fm_align_influence_req;
+  if (v > 100) v = 100;
+  align_mixer_influence_override.store(v, std::memory_order_relaxed);
+}
+
+// fmHeadingAligning - is the controller in its align phase (heading error above the threshold)?
+// Inputs: g_heading_error_dx10 (0x7FFF = no heading -> worst case 180), rtm_align_threshold_deg.
+// Returns: true while turning to face the target. Side effects: none. The same test cap 4 has
+// always used, and the one RTM Phase 1 uses.
+static bool fmHeadingAligning()
+{
+  float abs_err = (g_heading_error_dx10 != 0x7FFF) ?
+      fabsf((float)g_heading_error_dx10 / 10.0f) : 180.0f;
+  return abs_err > (float)usrConf.rtm_align_threshold_deg;
+}
+
+// fmClearReturnProof - drop the running proof (candidate stays as the caller decides).
+static void fmClearReturnProof()
+{
+  fm_return_proof.cap_zero_since_ms = 0;
+  fm_return_proof.window_since_ms   = 0;
+  fm_return_last_verdict            = FMRP_IDLE;
+}
+
+// fmResetReturnState - everything FM_RETURN owns, back to nothing. Called by fmEnterIdle() and the
+// RTM yield. Does NOT touch fm_return_last_reason (kept for ?diag until the next event).
+static void fmResetReturnState()
+{
+  fmClearReturnProof();
+  fm_return_pending         = false;
+  fm_return_spent           = false;
+  fm_return_motion_ms       = 0;
+  fm_return_check_ms        = 0;
+  fm_return_check_dist_m    = -1.0f;
+  fm_return_cancel_since_ms = 0;
+  fm_return_cogonly_printed = false;
+  fm_raw_base_ms            = 0;
+  fm_raw_last_fix_ms        = 0;
+  fm_rider_raw_kmh          = -1.0f;
+  fm_align_influence_req    = 0;
+}
+
+// updateFmRawRiderSpeed - the rider's RAW displacement speed over the last >= 1 s.
+// What it does: every DISTINCT rider fix (rx_tx_gps_fix_seq moved) is compared against a baseline
+//   fix at least kFmReturnRawSpeedMs older; speed = distance / time. The baseline then moves to the
+//   new fix. No filtering, no extrapolation: a position that never arrived is never invented, and
+//   after kFmReturnRawStaleMs without a new fix the speed reads unknown (-1), which is never a
+//   candidate (project GPS rule 1/4: stale is dropped, not used).
+// Inputs: rx_tx_gps_fix_seq / rx_tx_gps_lat / rx_tx_gps_lng (radio task, see the R4-1 note on the
+//   counter), now. Outputs: fm_rider_raw_kmh and the baseline statics. Side effects: none else.
+// The lat/lng doubles can tear under preemption exactly as the R4-1 note describes; a torn read
+// gives one wild speed sample, which the proof's 3 s + 4 s dwells cannot be fooled by.
+static void updateFmRawRiderSpeed(unsigned long now)
+{
+  if (rx_tx_gps_timestamp == 0) { fm_rider_raw_kmh = -1.0f; return; }
+  const uint32_t seq = rx_tx_gps_fix_seq;
+  if (fm_raw_base_ms == 0) {
+    fm_raw_base_lat = rx_tx_gps_lat; fm_raw_base_lng = rx_tx_gps_lng;
+    fm_raw_base_ms  = (now != 0) ? now : 1;
+    fm_raw_last_seq = seq;
+    fm_raw_last_fix_ms = fm_raw_base_ms;
+    fm_rider_raw_kmh = -1.0f;
+    return;
+  }
+  if (seq != fm_raw_last_seq) {
+    fm_raw_last_seq    = seq;
+    fm_raw_last_fix_ms = now;
+    const unsigned long dt = now - fm_raw_base_ms;
+    if (dt >= kFmReturnRawSpeedMs) {
+      const float d_m = (float)TinyGPSPlus::distanceBetween(
+          fm_raw_base_lat, fm_raw_base_lng, rx_tx_gps_lat, rx_tx_gps_lng);
+      fm_rider_raw_kmh = (d_m / ((float)dt / 1000.0f)) * 3.6f;
+      fm_raw_base_lat = rx_tx_gps_lat; fm_raw_base_lng = rx_tx_gps_lng;
+      fm_raw_base_ms  = now;
+    }
+  }
+  if (fm_raw_last_fix_ms != 0 && (now - fm_raw_last_fix_ms) > kFmReturnRawStaleMs) {
+    fm_rider_raw_kmh = -1.0f;   // no fresh rider fix: unknown, never a candidate
+  }
+}
+
 // ---- A3 fault-stop + steer-cancel state (V2.5-Evo - 2026-07-20) ----
 // millis() when FM entered FM_STOPPING; drives the 0 -> 255 fault ramp. 0 = not stopping.
 static unsigned long fm_stop_ms          = 0;
@@ -1868,8 +2118,8 @@ enum FmStopReason : uint8_t {
   FM_STOP_HEADING          = 5,   // condition 6: no valid heading source
   FM_STOP_LINK             = 6,   // condition 7: the LoRa link is down (failsafe_time exceeded)
   FM_STOP_DIVERGENCE       = 7,   // A3: sustained divergence while ACTIVE (not closing on the rider)
-  FM_STOP_HEADING_DISAGREE = 8    // the compass-vs-COG disagreement latch stood while FM had control
-  // FM_STOP_RETURN_NOT_CLOSING = 9  -- reserved for P1 (return leg not closing); not defined yet
+  FM_STOP_HEADING_DISAGREE = 8,   // the compass-vs-COG disagreement latch stood while FM had control
+  FM_STOP_RETURN_NOT_CLOSING = 9  // V2.5-Evo - 2026-09-19 - FM_RETURN: moving and aligned, yet the distance did not close 0.5 m over 5 s (the mirrored-steering net)
 };
 static uint8_t       fm_stop_reason      = FM_STOP_NONE;
 static uint8_t       fm_last_stop_reason = FM_STOP_NONE;
@@ -1889,6 +2139,7 @@ static const char* fmStopReasonName(uint8_t r)
     case FM_STOP_LINK:             return "LINK (LoRa link lost)";
     case FM_STOP_DIVERGENCE:       return "DIVERGENCE (not closing on the rider)";
     case FM_STOP_HEADING_DISAGREE: return "HEADING_DISAGREE (compass vs GPS course)";
+    case FM_STOP_RETURN_NOT_CLOSING: return "RETURN_NOT_CLOSING (return leg did not close on the rider)";
     default:                       return "unknown";
   }
 }
@@ -1909,6 +2160,7 @@ static const char* fmStateName(uint8_t s)
     case FM_ACTIVE:   return "ACTIVE";
     case FM_HOLD:     return "HOLD";
     case FM_STOPPING: return "STOPPING";
+    case FM_RETURN:   return "RETURN";
     default:          return "unknown";
   }
 }
@@ -2290,6 +2542,13 @@ static void runPhaseC()
 }
 
 // ---- Main RTM loop — call from RX loop() ----
+// V2.5-Evo - 2026-09-19 - runRtmLoop() is a thin wrapper around runRtmLoopBody() (the P0-g shape
+// runFmLoop() already has): the compass snapshot and the 10 Hz rate limit live here, this tick's
+// align-influence request starts at 0, the body runs, and publishAlignMixerInfluence() runs ONCE
+// afterwards whichever of the body's many return paths was taken - so the pivot boost is cleared on
+// every exit from Phase 1 (run phase, gate stop, Gate 9, disarm, BOOTSTRAP-1, RTM disabled) without
+// a clear at each of those sites, and the mixer never sees a half-tick value.
+static void runRtmLoopBody(unsigned long now);
 void runRtmLoop()
 {
   // V2.5-Evo - 2026-05-06 - D5: Always update the compass snapshot, regardless
@@ -2304,6 +2563,14 @@ void runRtmLoop()
   unsigned long now = millis();
   if (now - last_rtm_ms < 100UL) return;
   last_rtm_ms = now;
+
+  rtm_align_influence_req = 0;      // no boost unless Phase 1 align asks for one below
+  runRtmLoopBody(now);
+  publishAlignMixerInfluence();     // once per tick, after every possible exit of the body
+}
+
+static void runRtmLoopBody(unsigned long now)
+{
 
   // ============================================================
   // V2.5-Evo - 2026-08-17 - RTM ENGAGEMENT BOUNDARY: DROP AN UNFINISHED PROOF, KEEP THE VERDICT
@@ -2515,8 +2782,10 @@ void runRtmLoop()
   {
     uint8_t f = 0;
     FmState s = fm_state;
-    if (s == FM_ARMED || s == FM_ACTIVE || s == FM_HOLD)    f |= (1 << 0);
-    if (s == FM_ACTIVE)                                     f |= (1 << 1);
+    // V2.5-Evo - 2026-09-19 - FM_RETURN is an armed state (bit 0) and "engaged" (bit 1) while it
+    // actually moves the buggy (fm_rx_active), so the remote's distance bar runs during a return.
+    if (s == FM_ARMED || s == FM_ACTIVE || s == FM_HOLD || s == FM_RETURN)    f |= (1 << 0);
+    if (s == FM_ACTIVE || (s == FM_RETURN && fm_rx_active))                  f |= (1 << 1);
     if ((s == FM_ARMED || s == FM_HOLD) &&
         (!fm_sep_latched || heading_disagree_fault))        f |= (1 << 2);
     if (fm_fault_alarm_ms != 0 && (now - fm_fault_alarm_ms) < kFmFaultStickyMs) f |= (1 << 3);
@@ -2883,8 +3152,18 @@ void runRtmLoop()
     } else if (abs_err > (float)usrConf.rtm_align_threshold_deg) {
       rtm_bootstrap_since_ms = 0;    // heading exists: the bootstrap window is over
       // Phase 1 — Align: ~5% throttle — differential steers; buggy barely moves forward
-      const uint8_t kAlignCap = 13;
-      if (rtm_approach_cap > kAlignCap) rtm_approach_cap = kAlignCap;
+      // V2.5-Evo - 2026-09-19 - PIVOT BOOST ON CLASSIC RTM TOO (owner decision). With the
+      // throttle-relative mixer in, this align at cap 13 / influence 55 is 8-14 counts of
+      // differential - a worse pivot than before the mixer. So Phase 1 now (a) uses the SW36
+      // fm_align_cap in place of the compile-time 13 (same number by default, same clamp range) and
+      // (b) asks the mixer for fm_align_influence for exactly as long as it is aligning: the request
+      // is published once at the end of this tick by the runRtmLoop() wrapper and starts at 0 on
+      // every tick, so leaving this branch by any route - run phase, a gate, Gate 9, a disarm,
+      // BOOTSTRAP-1 - clears it. RTM's gates, stop radius, Gate 9, approach ramp, R-1/R-5 and the
+      // bootstrap logic are untouched; only the two numbers RTM feeds the mixer during alignment.
+      const uint8_t align_cap = fmAlignCapValue();
+      if (rtm_approach_cap > align_cap) rtm_approach_cap = align_cap;
+      rtm_align_influence_req = (uint8_t)usrConf.fm_align_influence;
     } else if (usrConf.rtm_target_speed_kmh > 0.0f) {
       rtm_bootstrap_since_ms = 0;    // heading exists: the bootstrap window is over
       // Phase 2 — Run: proportional GPS speed governor (full cap at target, zero cap at rest)
@@ -3394,10 +3673,11 @@ static uint16_t fmComputeThrottleCap(float dist_m, unsigned long now)
   }
 
   // ---- Cap 4: align phase ----
-  float abs_err = (g_heading_error_dx10 != 0x7FFF) ?
-      fabsf((float)g_heading_error_dx10 / 10.0f) : 180.0f;  // no heading data -> treat as worst case
-  if (abs_err > (float)usrConf.rtm_align_threshold_deg && kFmAlignCap < cap) {
-    cap = kFmAlignCap;
+  // V2.5-Evo - 2026-09-19 - the cap is usrConf.fm_align_cap (fmAlignCapValue()), no longer the
+  // compile-time 13; the ACTIVE branch publishes fm_align_influence for the mixer on the same test.
+  if (fmHeadingAligning()) {
+    const uint16_t c = fmAlignCapValue();               // no heading data -> fmHeadingAligning() treats it as worst case
+    if (c < cap) cap = c;
   }
 
   // ---- Cap 5: engage ramp ----
@@ -3440,6 +3720,10 @@ static void fmEnterIdle()
   // idempotent and can safely be re-applied ten times a second; the heading-disagreement latch at
   // the bottom is the one thing that must not be, so it is gated on this edge. See the block there.
   bool fm_was_not_idle = (fm_state != FM_IDLE);
+  // V2.5-Evo - 2026-09-19 - a RETURN or a pending candidate that ends by leaving FM (mode 0, the
+  // 95 s expiry, GPS/RTM disabled, the end of a fault ramp) is recorded for ?diag before the state
+  // is overwritten below.
+  if (fm_state == FM_RETURN || fm_return_pending) fm_return_last_reason = FM_RET_LEFT;
 
   fm_state            = FM_IDLE;
   fm_rx_active        = false;
@@ -3462,6 +3746,11 @@ static void fmEnterIdle()
   fm_thr_release_cleared = false;     // the release clear's one-shot re-arms with its timer
   fm_reengage_needs_dengage = true;   // P1-a: a fresh declaration must clear D_engage before it may engage
   fm_yielding_to_rtm   = false;       // P1-c: leaving FM entirely ends any yield edge tracking too
+  // V2.5-Evo - 2026-09-19 - FM_RETURN: the candidate, the proof, the spent flag and the raw-speed
+  // baseline all go with the declaration; the pivot-boost request is withdrawn (published 0 by
+  // the runFmLoop() wrapper after this tick). fm_return_last_reason was set at the top of this
+  // function while the old state was still readable.
+  fmResetReturnState();
   // V2.5-Evo - 2026-09-19 - the remote's auto-return override lives exactly as long as the
   // declaration it rode in on (the followme_mode pattern): a 0xF2/0 disarm, the 95 s mode-age
   // expiry and every other road to IDLE end it. The next declaration carries a fresh one (or none).
@@ -3546,6 +3835,300 @@ static void fmEnterIdle()
   }
 }
 
+// ============================================================
+// V2.5-Evo - 2026-09-19 - FM_RETURN: entry, the return leg, and its exits
+// ============================================================
+
+// fmComputeReturnThrottleCap - the cap chain for the return leg. Every term can only lower the
+// rider's throttle (calcPWM() applies the result as min(rider, cap)); nothing here can add.
+// Inputs:  dist_m - buggy-to-RAW-rider distance; stop_m - the stop radius (rtm_stop_distance_m);
+//          now; aligning - fmHeadingAligning() this tick.
+// Returns: 0-255. Side effects: none.
+//   1. APPROACH RAMP over rtm_approach_zone_m down to the stop radius - RTM's own shape (255 at
+//      the outer edge, 0 at the stop radius, linear between; 0 = disabled).
+//   2. P-LAW SPEED GOVERNOR to rtm_target_speed_kmh, exactly RTM's run phase: cap = (1 - v/target)
+//      x 255 against the buggy's own GPS speed; 0 = no governor. No GOVERNOR-2 keep-up/gap/fade
+//      here on purpose: this is a deliberate head-on at walking pace toward a STOPPED rider.
+//   3. ALIGN CAP fm_align_cap while the heading error is above rtm_align_threshold_deg.
+//   4. ENGAGE RAMP 0 -> 255 over kFmEngageRampMs from the start of EACH held-trigger stretch, so a
+//      re-squeeze is never a jump.
+//   min_dist_m is deliberately NOT in this chain (owner rule 2026-09-19): it is a FOLLOWING rule;
+//   in RETURN the only stop is the stop radius, tested by the caller before this runs.
+static uint8_t fmComputeReturnThrottleCap(float dist_m, float stop_m, unsigned long now, bool aligning)
+{
+  uint16_t cap = 255;
+
+  if (usrConf.rtm_approach_zone_m > 0) {
+    const float approach_m = (float)usrConf.rtm_approach_zone_m;
+    if (approach_m > stop_m && dist_m < approach_m) {
+      float frac = (dist_m - stop_m) / (approach_m - stop_m);
+      if (frac < 0.0f) frac = 0.0f;
+      if (frac > 1.0f) frac = 1.0f;
+      const uint16_t c = (uint16_t)(frac * 255.0f);
+      if (c < cap) cap = c;
+    }
+  }
+
+  if (usrConf.rtm_target_speed_kmh > 0.0f) {
+    float speed_frac = gps_last_speed_kmh / usrConf.rtm_target_speed_kmh;
+    if (speed_frac > 1.0f) speed_frac = 1.0f;
+    if (speed_frac < 0.0f) speed_frac = 0.0f;
+    const uint16_t c = (uint16_t)((1.0f - speed_frac) * 255.0f);
+    if (c < cap) cap = c;
+  }
+
+  if (aligning) {
+    const uint16_t c = fmAlignCapValue();
+    if (c < cap) cap = c;
+  }
+
+  if (fm_return_motion_ms != 0) {
+    const unsigned long elapsed = now - fm_return_motion_ms;
+    if (elapsed < kFmEngageRampMs) {
+      const uint16_t c = (uint16_t)(((float)elapsed / (float)kFmEngageRampMs) * 255.0f);
+      if (c < cap) cap = c;
+    }
+  }
+
+  return (uint8_t)cap;
+}
+
+// fmEnterReturn - the proof confirmed: enter FM_RETURN.
+// Inputs: now, dist_m (for the print). Side effects: fm_state = FM_RETURN with the motor posture
+//   written FIRST (fm_rx_active false, cap 0, steering 127 - nothing moves until the trigger is
+//   held on a later tick); the separation latch and its dwell cleared (the rider must re-prove
+//   separation after the recall); the following bookkeeping (engage ramp, diagonal, steer-cancel,
+//   divergence, pivot) reset; the shared P+D derivative cold-started (a different target); the
+//   candidate consumed and the engagement's one return spent; prints AFTER the motor writes.
+static void fmEnterReturn(unsigned long now, float dist_m)
+{
+  fm_state           = FM_RETURN;
+  fm_rx_active       = false;
+  fm_throttle_cap    = 0;
+  rtm_steer_override = 127;
+
+  fm_sep_latched        = false;
+  fm_sep_over_since_ms  = 0;
+  fm_sep_fix_count      = 0;
+  fm_engage_ms          = 0;
+  fm_diagonal_engaged   = false;
+  fm_steer_input_since_ms = 0;
+  fm_diverge_since_ms     = 0;
+  fm_diverge_start_dist_m = -1.0f;
+  fm_pivot_since_ms     = 0;
+  fm_pivot_best_err_deg = 180.0f;
+  fm_pivot_stall_ms     = 0;
+  fm_pivot_failed       = false;
+
+  fm_return_pending         = false;
+  fm_return_spent           = true;
+  fm_return_motion_ms       = 0;
+  fm_return_check_ms        = 0;
+  fm_return_check_dist_m    = -1.0f;
+  fm_return_cancel_since_ms = 0;
+  fm_return_last_reason     = FM_RET_ENTERED;
+  fmClearReturnProof();
+  fm_align_influence_req    = 0;
+
+  // Direct-to-rider is a different target from the trailing point: never differentiate the
+  // first return heading error against the last following sample.
+  prev_heading_src_valid  = false;
+  prev_heading_error_deg  = 0.0f;
+  prev_steering_update_ms = 0;
+
+  float stop_m = (float)usrConf.rtm_stop_distance_m;
+  if (stop_m < kFmReturnStopMinM) stop_m = kFmReturnStopMinM;
+  Serial.printf("FM [RX] ENTER RETURN: both stopped (rider raw %.1f km/h, buggy %.1f km/h), dist=%.1f m, stop radius %.1f m - motion only while the trigger is held, separation latch cleared\n",
+                (double)fm_rider_raw_kmh, (double)gps_last_speed_kmh, (double)dist_m, (double)stop_m);
+  // Trim precondition (code review, task 3a): the pivot boost assumes a symmetric mix. Note only.
+  if (usrConf.trim > 10 || usrConf.trim < -10) {
+    Serial.printf("NOTE: trim is %d (|trim| > 10): the align pivot may be yaw-biased toward one side; not blocking\n", (int)usrConf.trim);
+  }
+}
+
+// fmReturnExitToHold - the three normal exits of RETURN (arrival, rider moving, runtime cap).
+// Inputs: reason (FM_RET_ARRIVED / _CANCELLED / _TIMEOUT), now, dist_m (print). Side effects: the
+//   motor posture FIRST (fm_rx_active false, cap 0, steering 127), then fm_state = FM_HOLD - which
+//   is the surge guard: the ordinary HOLD branch keeps cap 0 while the trigger stays held and
+//   HOLD-ESCAPE-2 turns it into ARMED (cap 255, manual) on the first released tick - the latch
+//   cleared, needs-D_engage set, this engagement's return spent, the derivative cold-started, and
+//   the print after the writes.
+static void fmReturnExitToHold(uint8_t reason, unsigned long now, float dist_m)
+{
+  (void)now;
+  fm_rx_active       = false;
+  fm_throttle_cap    = 0;
+  rtm_steer_override = 127;
+  fm_state           = FM_HOLD;
+
+  fm_sep_latched            = false;
+  fm_sep_over_since_ms      = 0;
+  fm_sep_fix_count          = 0;
+  fm_reengage_needs_dengage = true;
+  fm_engage_ms              = 0;
+  fm_return_spent           = true;
+  fm_return_pending         = false;
+  fm_return_motion_ms       = 0;
+  fm_return_check_ms        = 0;
+  fm_return_check_dist_m    = -1.0f;
+  fm_return_cancel_since_ms = 0;
+  fm_return_last_reason     = reason;
+  fmClearReturnProof();
+  fm_align_influence_req    = 0;
+
+  prev_heading_src_valid  = false;
+  prev_heading_error_deg  = 0.0f;
+  prev_steering_update_ms = 0;
+
+  Serial.printf("FM [RX] RETURN -> HOLD: %s (dist=%.1f m, rider raw %.1f km/h); cap 0 until the trigger is released once, then ARMED-unlatched, needs D_engage\n",
+                fmReturnReasonName(reason), (double)dist_m, (double)fm_rider_raw_kmh);
+}
+
+// fmReturnFault - a fault on the return leg (conditions 2-7, or not closing) -> FM_STOPPING.
+// Same F7 order as the following FAULT branch: cap 0 first, then the latch, then the prints.
+static void fmReturnFault(uint8_t stop_reason, unsigned long now, bool thr_held)
+{
+  fm_rx_active       = false;
+  fm_throttle_cap    = 0;
+  rtm_steer_override = 127;
+  if (thr_held) fm_fault_alarm_ms = now;   // the sticky St + stop buzz, surprise-gated as always
+  fm_stop_ms          = now;
+  fm_state            = FM_STOPPING;
+  fm_stop_reason      = stop_reason;
+  fm_last_stop_reason = stop_reason;
+  fm_last_stop_ms     = now;
+
+  fm_return_spent           = true;
+  fm_return_pending         = false;
+  fm_return_motion_ms       = 0;
+  fm_return_check_ms        = 0;
+  fm_return_check_dist_m    = -1.0f;
+  fm_return_cancel_since_ms = 0;
+  fm_return_last_reason     = FM_RET_FAULT;
+  fmClearReturnProof();
+  fm_align_influence_req    = 0;
+
+  Serial.printf("FM [RX] RETURN FAULT -> STOPPING (ramp %lu ms) -> IDLE, re-arm required (thr_held=%d)\n",
+                (unsigned long)kFmStopRampMs, (int)thr_held);
+  Serial.printf("FM [RX] stop reason: %s [%u]\n", fmStopReasonName(stop_reason), (unsigned)stop_reason);
+}
+
+// runFmReturnTick - one 10 Hz tick of FM_RETURN. Called from runFmLoopBody() while fm_state ==
+// FM_RETURN, after the mode/idle/yield/STOPPING/release-clear blocks and before the following
+// machinery (which does not run in RETURN).
+// Inputs: now; the GPS/link globals; usrConf. Outputs: fm_rx_active, fm_throttle_cap,
+//   rtm_steer_override (via updateRtmSteering), fm_target_*, fm_align_influence_req, the state.
+// Side effects: MOTOR-RELEVANT, in the same subtract-only way as following - and ONLY while the
+//   trigger is held. Order per tick: faults, distance, arrival, cancel, the trigger, the runtime
+//   cap, then steering + cap, then the not-closing judgement.
+static void runFmReturnTick(unsigned long now)
+{
+  const bool thr_held = (thr_received >= 25);
+
+  // Conditions 2-7 hold in RETURN exactly as in following: a broken input ends the run.
+  uint8_t fault_reason = FM_STOP_NONE;
+  if (!checkFmFaultConditions(&fault_reason)) {
+    fmReturnFault(fault_reason, now, thr_held);
+    return;
+  }
+  fm_log_gate_flags |= FM_LOG_GATE_FAULT_OK;
+  if (thr_held) fm_log_gate_flags |= FM_LOG_GATE_THR_HELD;
+
+  // The distance to the rider's RAW position (both fixes fresh under conditions 4 and 5).
+  const float dist_m = (float)TinyGPSPlus::distanceBetween(
+      gps_last_lat, gps_last_lng, rx_tx_gps_lat, rx_tx_gps_lng);
+  {
+    const float dd = dist_m * 10.0f + 0.5f;
+    fm_log_dist_dx10 = (dd >= 65535.0f) ? 0xFFFE : (uint16_t)dd;
+  }
+
+  // THE STOP RADIUS = rtm_stop_distance_m EXACTLY (owner rule 2026-09-19). Auto-return is
+  // return-to-me inside Follow-Me; it stops where return-to-me stops. The rope floats and trails
+  // behind a forward-moving buggy; the rider feathers the trigger on approach. No 8 m floor and
+  // no max() against anything except the 1 m sanity minimum that matches the field's validator.
+  float stop_m = (float)usrConf.rtm_stop_distance_m;
+  if (stop_m < kFmReturnStopMinM) stop_m = kFmReturnStopMinM;
+  if (dist_m <= stop_m) {
+    fmReturnExitToHold(FM_RET_ARRIVED, now, dist_m);
+    return;
+  }
+
+  // The rider moving off (raw speed above the cancel band for 1 s) ends the return - not a fault.
+  if (fm_rider_raw_kmh > kFmReturnCancelKmh) {
+    if (fm_return_cancel_since_ms == 0) fm_return_cancel_since_ms = now;
+    else if ((now - fm_return_cancel_since_ms) >= kFmReturnCancelMs) {
+      fmReturnExitToHold(FM_RET_CANCELLED, now, dist_m);
+      return;
+    }
+  } else {
+    fm_return_cancel_since_ms = 0;
+  }
+
+  // INVARIANT: motion only while the trigger is held. Released = parked: no steering, cap 0, the
+  // engage ramp and the runtime cap restart on the next squeeze, the not-closing window is dropped.
+  if (!thr_held) {
+    fm_rx_active           = false;
+    rtm_steer_override     = 127;
+    fm_throttle_cap        = 0;
+    fm_return_motion_ms    = 0;
+    fm_return_check_ms     = 0;
+    fm_return_check_dist_m = -1.0f;
+    fm_align_influence_req = 0;
+    return;
+  }
+  if (fm_return_motion_ms == 0) {
+    fm_return_motion_ms    = now;
+    fm_return_check_ms     = 0;
+    fm_return_check_dist_m = -1.0f;
+    prev_heading_src_valid  = false;   // cold-start the derivative on every squeeze
+    prev_heading_error_deg  = 0.0f;
+    prev_steering_update_ms = 0;
+    Serial.printf("FM [RX] RETURN moving: trigger held, dist=%.1f m, stop radius %.1f m, ramp %lu ms\n",
+                  (double)dist_m, (double)stop_m, (unsigned long)kFmEngageRampMs);
+  }
+
+  // Runtime cap on held-trigger motion: a return that has not arrived in 60 s of motion ends.
+  if ((now - fm_return_motion_ms) >= kFmReturnMaxMs) {
+    fmReturnExitToHold(FM_RET_TIMEOUT, now, dist_m);
+    return;
+  }
+
+  // Steer straight at the rider's RAW position (not fm_filt_*): the rider is stopped, the filter
+  // only adds lag. updateRtmSteering() reads fm_target_* while fm_rx_active && !rtm_rx_active.
+  fm_target_lat     = rx_tx_gps_lat;
+  fm_target_lng     = rx_tx_gps_lng;
+  fm_target_profile = kProfReturnDirect;
+  fm_rx_active      = true;
+  updateRtmSteering();
+  const bool aligning = fmHeadingAligning();
+  fm_throttle_cap = fmComputeReturnThrottleCap(dist_m, stop_m, now, aligning);
+  fm_align_influence_req = aligning ? (uint8_t)usrConf.fm_align_influence : 0;   // the pivot boost, this tick only
+
+  // NOT CLOSING - the mirrored-steering net. Judged only while moving AND past the engage ramp
+  // plus one window (the buggy must first be given throttle), and NOT while it is still turning to
+  // face the rider inside the first kFmPivotSuspendMaxMs of motion (a pivot closes nothing by
+  // definition; beyond that ceiling the judgement runs whatever the heading says). Then: every
+  // kFmReturnNotClosingMs the distance must have closed by kFmReturnNotClosingM, else a FAULT.
+  const bool in_grace      = (now - fm_return_motion_ms) < (kFmEngageRampMs + kFmReturnNotClosingMs);
+  const bool align_suspend = aligning && (now - fm_return_motion_ms) < kFmPivotSuspendMaxMs;
+  if (in_grace || align_suspend) {
+    fm_return_check_ms     = 0;
+    fm_return_check_dist_m = -1.0f;
+  } else if (fm_return_check_ms == 0) {
+    fm_return_check_ms     = now;
+    fm_return_check_dist_m = dist_m;
+  } else if ((now - fm_return_check_ms) >= kFmReturnNotClosingMs) {
+    if (dist_m >= (fm_return_check_dist_m - kFmReturnNotClosingM)) {
+      fmReturnFault(FM_STOP_RETURN_NOT_CLOSING, now, thr_held);
+      Serial.printf("FM [RX] RETURN not closing: dist=%.1f m (was %.1f m %lu ms ago, closed < %.1f m)\n",
+                    (double)dist_m, (double)fm_return_check_dist_m, (unsigned long)kFmReturnNotClosingMs, (double)kFmReturnNotClosingM);
+      return;
+    }
+    fm_return_check_ms     = now;
+    fm_return_check_dist_m = dist_m;
+  }
+}
+
 // ------------------------------------------------------------
 // runFmLoop - the Follow-Me state machine. Call from loop().
 // ------------------------------------------------------------
@@ -3587,10 +4170,12 @@ void runFmLoop()
   fm_log_d_engage_dx10 = 0xFFFF;
 
   fmResolveReturnMode();           // V2.5-Evo - 2026-09-19 - one effective auto-return value per tick
+  fm_align_influence_req = 0;      // V2.5-Evo - 2026-09-19 - no pivot boost unless an align branch asks below
 
   runFmLoopBody(now);
 
   fmPublishLogSnapshot();          // once per tick, after every possible exit of the body
+  publishAlignMixerInfluence();    // V2.5-Evo - 2026-09-19 - once per tick, RTM > FM, after every exit of the body
 }
 
 static void runFmLoopBody(unsigned long now)
@@ -3598,6 +4183,7 @@ static void runFmLoopBody(unsigned long now)
   // Keep the rider filter and derived motion warm on every tick, in every state, so the
   // instant the conditions are met we already have a trustworthy course and speed.
   updateFmRiderTracking();
+  updateFmRawRiderSpeed(now);   // V2.5-Evo - 2026-09-19 - the RAW rider speed the RETURN candidate is judged on
 
   // ---- Resolve the active mode ----
   // V2.5-Evo - 2026-07-20 - R0: the "0xFF falls back to usrConf.followme_mode" line is GONE.
@@ -3694,6 +4280,10 @@ static void runFmLoopBody(unsigned long now)
         fm_pivot_best_err_deg = 180.0f;
         fm_pivot_stall_ms     = 0;
         fm_pivot_failed       = false;
+        // V2.5-Evo - 2026-09-19 - a RETURN in progress or a pending candidate ends here too: RTM is
+        // the recall now. The pivot-boost request is withdrawn; RTM publishes its own.
+        if (from == (uint8_t)FM_RETURN || fm_return_pending) fm_return_last_reason = FM_RET_LEFT;
+        fmResetReturnState();
         Serial.printf("FM [RX] RTM active -> Follow-Me yields: %s -> ARMED (latch cleared, needs D_engage to re-engage)\n",
                       fmStateName(from));
       }
@@ -3815,7 +4405,10 @@ static void runFmLoopBody(unsigned long now)
         fm_sep_latched       = false;
         fm_sep_over_since_ms = 0;
         fm_sep_fix_count     = 0;   // DWELL-1: the fix count resets with the dwell
-        if (fm_state != FM_IDLE) {
+        // V2.5-Evo - 2026-09-19 - FM_RETURN is exempt from the state write: a return parked with
+        // the trigger released is exactly the "stop, wait, squeeze" the owner asked for, and its
+        // latch is already clear. It keeps its own runtime cap (60 s of held-trigger motion).
+        if (fm_state != FM_IDLE && fm_state != FM_RETURN) {
           fm_state        = FM_ARMED;
           fm_throttle_cap = 255;   // back to fully manual; trigger is released, so no motion
           fm_rx_active    = false;
@@ -3825,6 +4418,17 @@ static void runFmLoopBody(unsigned long now)
   } else {
     fm_thr_low_since_ms    = 0;
     fm_thr_release_cleared = false;   // trigger held: the next release gets its own one-shot clear
+  }
+
+  // ---- FM_RETURN: the return leg has its own tick (V2.5-Evo - 2026-09-19) ----
+  // Everything below this point is the FOLLOWING machinery - separation dwell and latch, the
+  // Schmitt, divergence, pivot suspension, steer-cancel - and none of it applies to a buggy that
+  // is coming back to a stopped rider. RETURN returns here on every tick until it exits to HOLD
+  // (arrival, cancel, timeout) or STOPPING (fault); those exits are ordinary states and the next
+  // tick takes the ordinary branches.
+  if (fm_state == FM_RETURN) {
+    runFmReturnTick(now);
+    return;
   }
 
   // ---- Evaluate the conditions, split by A3 class ----
@@ -4087,6 +4691,110 @@ static void runFmLoopBody(unsigned long now)
     fm_sep_fix_count     = 0;   // DWELL-1: the fix count resets with the dwell
   }
 
+  // ============================================================
+  // V2.5-Evo - 2026-09-19 - AUTO-RETURN CANDIDATE AND PROOF (P1-b)
+  //
+  // WHAT: while the effective auto-return mode is 1, a rider whose RAW displacement speed drops
+  // under kFmReturnRiderRawMaxKmh (4 km/h) in FM_ACTIVE or FM_HOLD becomes a RETURN CANDIDATE. On
+  // that same tick can_be_active is forced false, so the not-eligible branch below writes the
+  // motor posture the review demanded (cap 0 under a held trigger, steering 127, engage ramp 0);
+  // the raw judgement leads the filtered condition 9 by about the filter's tau, which at station
+  // speed is the 9-14 m the buggy would otherwise keep closing on a rider who has just stopped.
+  // The rear-station warning (F2, directly behind): that cap-0 coast is on the rider's line.
+  //
+  // THE PROOF (Common/FollowMeReturnProof.h, host-tested): the cap READ BACK as 0 - or the trigger
+  // released, the deadman - for 3 s, the buggy's own speed under 3 km/h, then a 4 s window over
+  // which the relative displacement of the two raw positions is under 3 km/h. It runs on every
+  // tick the candidate stands, in ACTIVE, HOLD and the ARMED that HOLD-ESCAPE-2 turns a released
+  // HOLD into - so the owner's "stop, wait, squeeze" works: the proof completes with the trigger
+  // released and the squeeze that follows is RETURN motion. A squeeze BEFORE it completes is
+  // ordinary manual throttle (ARMED, cap 255) and resets the proof's timers because the cap is
+  // no longer 0 - manual control is never taken away in ARMED. One RETURN per engagement
+  // (fm_return_spent): the arrival HOLD, with the rider still stopped, is not a new candidate.
+  //
+  // WHAT CANNOT HAPPEN HERE: no motion. This block writes no cap, no steering and no state; it
+  // only removes eligibility (can_be_active) and, on a confirmed proof, hands over to
+  // fmEnterReturn(), which itself writes cap 0 and moves nothing until the trigger is held.
+  // ============================================================
+  bool return_candidate = false;
+  if (fm_return_mode_effective == 1 && !fm_return_spent) {
+    const bool cand_now = proof_ok && followMeReturnCandidate(fm_rider_raw_kmh, kFmReturnRiderRawMaxKmh);
+    if (cand_now) {
+      if (!fm_return_pending && (fm_state == FM_ACTIVE || fm_state == FM_HOLD)) {
+        fm_return_pending = true;
+        fmClearReturnProof();
+        Serial.printf("FM [RX] RETURN candidate: rider raw %.1f km/h (< %.1f), dist=%.1f m - Follow-Me stops steering, proving both stopped\n",
+                      (double)fm_rider_raw_kmh, (double)kFmReturnRiderRawMaxKmh, (double)dist_m);
+        if (m == 2) {
+          Serial.println("FM [RX] WARNING: station is F2 (directly behind) - the cap-0 coast from here is on the rider's line; F1/F3 pair better with auto-return");
+        }
+      }
+    } else if (fm_return_pending) {
+      fm_return_pending = false;
+      fmClearReturnProof();
+      fm_return_last_reason = proof_ok ? FM_RET_RIDER_MOVED : FM_RET_SENSORS;
+      Serial.printf("FM [RX] RETURN candidate dropped: %s (rider raw %.1f km/h)\n",
+                    fmReturnReasonName(fm_return_last_reason), (double)fm_rider_raw_kmh);
+    }
+    return_candidate = fm_return_pending;
+  } else if (fm_return_pending) {
+    fm_return_pending = false;
+    fmClearReturnProof();
+    fm_return_last_reason = FM_RET_MODE_OFF;
+    Serial.println("FM [RX] RETURN candidate dropped: auto-return is off for this session");
+  }
+  if (return_candidate) {
+    fm_log_gate_flags |= FM_LOG_GATE_RETURN_CANDIDATE;   // P0-g bit 11
+
+    // The cap is PROVEN zero by reading it back, never assumed from the state name; a released
+    // trigger counts the same way (the deadman: below 25 counts nothing FM does reaches the motor).
+    const bool cap_zero = (fm_throttle_cap.load(std::memory_order_relaxed) == 0) || (thr_received < 25);
+    // The buggy's own speed, only while its fix is fresh (condition 5 already holds under proof_ok,
+    // but the value is read here on its own terms so an unknown never opens the window).
+    const float buggy_kmh = (gps_last_ms != 0 && (now - gps_last_ms) <= 6000UL) ? gps_last_speed_kmh : -1.0f;
+    // Displacements since the window opened, as local north/east metres from the raw positions.
+    float rdn = 0.0f, rde = 0.0f, bdn = 0.0f, bde = 0.0f;
+    if (fm_return_proof.window_since_ms != 0) {
+      const double cos_lat = cos(gps_last_lat * M_PI / 180.0);
+      rdn = (float)((rx_tx_gps_lat - fm_return_win_rider_lat) * 111320.0);
+      rde = (float)((rx_tx_gps_lng - fm_return_win_rider_lng) * 111320.0 * cos_lat);
+      bdn = (float)((gps_last_lat  - fm_return_win_buggy_lat) * 111320.0);
+      bde = (float)((gps_last_lng  - fm_return_win_buggy_lng) * 111320.0 * cos_lat);
+    }
+    const uint8_t verdict = followMeReturnProofStep(&fm_return_proof, (uint32_t)now, true, cap_zero, buggy_kmh,
+                                                    rdn, rde, bdn, bde, &kFmReturnProofParams);
+    fm_return_last_verdict = verdict;
+    if (verdict == FMRP_WINDOW_OPENED) {
+      fm_return_win_rider_lat = rx_tx_gps_lat; fm_return_win_rider_lng = rx_tx_gps_lng;
+      fm_return_win_buggy_lat = gps_last_lat;  fm_return_win_buggy_lng = gps_last_lng;
+      Serial.printf("FM [RX] RETURN proof: cap 0 for %lu ms, buggy %.1f km/h - relative window open (%lu ms)\n",
+                    (unsigned long)(now - fm_return_proof.cap_zero_since_ms), (double)buggy_kmh, (unsigned long)kFmReturnWindowMs);
+    }
+    if (verdict == FMRP_WINDOW_OPENED || verdict == FMRP_WINDOW_OPEN) fm_log_gate_flags |= FM_LOG_GATE_RETURN_WINDOW;   // P0-g bit 15
+    if (verdict == FMRP_WINDOW_FAILED) {
+      Serial.printf("FM [RX] RETURN proof: relative %.1f km/h over the window >= %.1f band - window reopens\n",
+                    (double)followMeRelativeKmh(rdn, rde, bdn, bde, kFmReturnWindowMs), (double)kFmReturnRelSpeedKmh);
+    }
+    if (verdict == FMRP_CONFIRMED) {
+      if (usrConf.rtm_use_compass == 0) {
+        // Condition 6 stands, and a COG-only buggy has no heading at a standstill: RETURN could
+        // only crawl blind. Declined - the rider keeps HOLD/ARMED as before, and RTM (which has
+        // BOOTSTRAP-1) remains the recall. Once per declaration.
+        if (!fm_return_cogonly_printed) {
+          fm_return_cogonly_printed = true;
+          Serial.println("FM [RX] RETURN declined: Heading Source is GPS COG only, so there is no heading at a standstill and the buggy will not creep blind. Use return-to-me (RTM) to recall it, or set rtm_use_compass 1.");
+        }
+        fm_return_pending     = false;
+        fm_return_spent       = true;
+        fm_return_last_reason = FM_RET_DECLINED_COG;
+        fmClearReturnProof();
+      } else {
+        fmEnterReturn(now, dist_m);
+        return;
+      }
+    }
+  }
+
   // V2.5-Evo - 2026-09-18 - P1-a: the divergence and pivot bookkeeping stays under hard_ok (trigger
   // AND sensors). They judge a buggy that is actually steering, which only happens under the
   // trigger, and a fault proven on the tick the trigger is released must not be allowed to fire
@@ -4335,7 +5043,8 @@ static void runFmLoopBody(unsigned long now)
   // one-shot degradation notice has already printed, and ?diag answers on demand. And RTM keeps
   // working throughout, so the buggy can always be brought home.
   bool can_be_active = hard_ok && speed_ok && dist_ok && fm_sep_latched &&
-                       !diverge_fault && !heading_disagree_fault;
+                       !diverge_fault && !heading_disagree_fault &&
+                       !return_candidate;   // V2.5-Evo - 2026-09-19 - a stopped rider is never followed (raw judgement, B6)
 
   // V2.5-Evo - 2026-09-17 - P0-g: record the verdicts that just decided can_be_active, exactly as
   // evaluated, for the deep log. Pure bookkeeping — nothing below reads fm_log_*.
@@ -4410,6 +5119,9 @@ static void runFmLoopBody(unsigned long now)
       // rule. This tick passed the engage edge with the rule applied, so from here a short release
       // (< kFmReleaseDengageMs) resumes on the ordinary edge, exactly as before.
       fm_reengage_needs_dengage = false;
+      // V2.5-Evo - 2026-09-19 - a new engagement earns a new auto-return opportunity.
+      fm_return_spent           = false;
+      fm_return_cogonly_printed = false;
 
       fm_state = FM_ACTIVE;
       Serial.printf("FM [RX] ENGAGE mode %u: dist=%.1f m rider=%.1f km/h course=%.0f\n",
@@ -4420,6 +5132,11 @@ static void runFmLoopBody(unsigned long now)
     computeFmTarget(&fm_target_lat, &fm_target_lng);       // where behind the rider to sit
     updateRtmSteering();                                   // shared P+D controller, unchanged
     fm_throttle_cap = (uint8_t)fmComputeThrottleCap(dist_m, now);
+    // V2.5-Evo - 2026-09-19 - PIVOT BOOST: while cap 4 is pinning the throttle to the align cap,
+    // ask the mixer for fm_align_influence (100 = one-motor pivot) instead of steering_influence.
+    // Published once at the end of this tick by the runFmLoop() wrapper; starts at 0 every tick,
+    // so leaving align by any route clears it.
+    fm_align_influence_req = fmHeadingAligning() ? (uint8_t)usrConf.fm_align_influence : 0;
   }
   else {
     // ---- Not eligible to steer — classify the drop (A3 DEADMAN / HOLD / FAULT) ----

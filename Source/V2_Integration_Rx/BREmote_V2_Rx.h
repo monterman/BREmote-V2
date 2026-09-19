@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-19 - FM_RETURN + pivot boost: adds the align_mixer_influence_override atomic (0 = none; the ONE mixer influence override, written by publishAlignMixerInfluence() in RTMState.ino for FM align, FM_RETURN align and classic RTM Phase 1 align, read by calcPWM()), includes ../Common/FollowMeReturnProof.h (the pure, host-tested FM_RETURN entry proof), and adds FM_LOG_GATE_RETURN_WINDOW (bit 15) to the deep-log gate word next to the P1-b bit 11 it reserved - new bit in the existing u32, record size unchanged; fm_state gains the value 5 (RETURN). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - 0xF2 return-mode override: adds the fm_return_mode_runtime atomic (0xFF = use the SPIFFS fm_return_mode; 0 / 1 = the remote's session override, carried in 0xF2 bits 5-6) next to fm_mode_runtime, and documents telemetry.fm_flags bit 7 as the RX's echo of its EFFECTIVE return mode for the remote's display and return gesture. Runtime globals + comments only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - SW36: three Follow-Me fields APPENDED at the tail of confStruct - fm_return_mode (u16, 0-1, default 1: when the rider stops, Follow-Me graduates to FM_RETURN and brings the buggy back under the trigger), fm_align_cap (u16, 8-80, default 13: the throttle cap during the FM align phase and the FM_RETURN align/engage ramp, replacing the compile-time kFmAlignCap for FM paths), fm_align_influence (u16, 0-100, default 80: the mixer steering influence during FM align / FM_RETURN align only - 100 = one-motor pivot; 0 = use steering_influence). sizeof 192 -> 200 (192 + 3 x 2 = 198, padded to the 4-byte struct alignment), static_assert 200, SW_VERSION 35 -> 36. Config is NOT reset by this flash: the 192-byte SW35 blob is migrated by prefix at boot (Common/SPIFFSEngine.h, host-tested in Tools/tests/config_migrate_test.cpp) and the three new fields take their defaults.
 // V2.5-Evo - 2026-09-19 - C-4 fix (throttle-relative differential mixer): includes ../Common/DifferentialMixer.h (pure mixer, adopted verbatim, host-tested in Tools/tests/differential_mixer_test.cpp) for calcPWM()'s steering_type 1 branch. Include only: no confStruct change, sizeof stays 192, SW_VERSION stays 35.
@@ -710,6 +711,11 @@ static const float kFmEngageDistFloorM = 9.5f;   // metres; smallest legal non-z
 // code runFmLoop() calls. The floor constant above is passed in as an argument; the header defines
 // no constants of its own.
 #include "../Common/FollowMeEngage.h"
+// V2.5-Evo - 2026-09-19 - P1-b: the FM_RETURN entry proof (candidate on raw rider speed, cap-zero
+// dwell, buggy-stopped gate, relative-displacement window) is pure in ../Common/FollowMeReturnProof.h
+// so Tools/tests/follow_me_return_proof_test.cpp runs the exact code runFmLoop() calls. The RX's
+// kFmReturn* constants (RTMState.ino) are passed in; the header defines none of its own.
+#include "../Common/FollowMeReturnProof.h"
 
 // ============================================================
 // V2.5-Evo - 2026-07-25 - STAGE 2: HEADING-SOURCE TRUST CONSTANTS (RTM + FM)
@@ -881,6 +887,21 @@ std::atomic<uint8_t> rtm_approach_cap      {255};  // V2.5-Evo - 2026-04-30 - ap
 //                atomics — an indivisible read/write the 100Hz generatePWM task cannot tear.
 std::atomic<bool>    fm_rx_active     {false};
 std::atomic<uint8_t> fm_throttle_cap  {255};
+
+// V2.5-Evo - 2026-09-19 - THE PIVOT BOOST: the steering influence the differential mixer should use
+// INSTEAD of usrConf.steering_influence while an autonomous controller is turning the buggy to
+// face its target (heading error above rtm_align_threshold_deg) at the align cap. 0 = no override
+// (calcPWM() uses steering_influence). Non-zero = usrConf.fm_align_influence (100 = one-motor
+// pivot at the align cap: motors 0 / 2 x cap). Published for: Follow-Me ACTIVE align (cap 4),
+// FM_RETURN align, and classic RTM Phase 1 align (owner decision 2026-09-19 - with the
+// throttle-relative mixer, RTM's align at cap 13 / influence 55 was 8-14 counts of differential).
+// SINGLE WRITE SITE: publishAlignMixerInfluence() in RTMState.ino, called once at the end of every
+// runRtmLoop() and runFmLoop() tick with RTM outranking FM; each loop's request starts at 0 on
+// every tick, so any exit from an align branch clears it. Reader: calcPWM() (generatePWM task,
+// 100 Hz), which applies it only on ticks where it is already applying an autonomous steering
+// override (rtm_rx_active || fm_rx_active, override enabled, trigger held). std::atomic for the
+// same single-core preemption reason as fm_throttle_cap above.
+std::atomic<uint8_t> align_mixer_influence_override {0};
 
 #include "../Common/SPIFFSEngine.h"
 
@@ -1106,7 +1127,9 @@ static_assert(sizeof(VescLogData) == 59, "VescLogData size mismatch — check bi
 //   bit 8 heading_disagree  the compass-vs-COG disagreement latch is standing
 //   bit 9 fade_bypass       P2 — always 0 until the station work lands
 //   bit 10 transit          P2 — always 0 until the station work lands
-//   bit 11 return_candidate P1 — always 0 until the engagement rework lands
+//   bit 11 return_candidate P1-b (live since 2026-09-19): a RETURN candidate stands this tick - the
+//                           rider's raw speed is under the band and the entry proof is running
+//   bit 15 return_window    P1-b: the proof's relative-displacement window is open this tick
 //   V2.5-Evo - 2026-09-18 - P1-a (trigger-free engagement) adds two bits. Bit 11 stays reserved for
 //   the auto-return proof (P1-b, not built); these are new bits in the same u32, no record change.
 //   bit 12 proof_ok         conditions 2-7 hold, so the distance, the dwell and the latch were
@@ -1129,10 +1152,11 @@ static_assert(sizeof(VescLogData) == 59, "VescLogData size mismatch — check bi
 #define FM_LOG_GATE_HEADING_DISAGREE  (1UL << 8)
 #define FM_LOG_GATE_FADE_BYPASS       (1UL << 9)    // P2, reserved
 #define FM_LOG_GATE_TRANSIT           (1UL << 10)   // P2, reserved
-#define FM_LOG_GATE_RETURN_CANDIDATE  (1UL << 11)   // P1-b, reserved
+#define FM_LOG_GATE_RETURN_CANDIDATE  (1UL << 11)   // P1-b (live 2026-09-19)
 #define FM_LOG_GATE_PROOF_OK          (1UL << 12)   // P1-a
 #define FM_LOG_GATE_NEEDS_DENGAGE     (1UL << 13)   // P1-a
 #define FM_LOG_GATE_YIELD_TO_RTM      (1UL << 14)   // P1-c
+#define FM_LOG_GATE_RETURN_WINDOW     (1UL << 15)   // P1-b (2026-09-19): the relative-displacement window is open
 
 struct __attribute__((packed)) VescLogDataL4 {
     VescLogData base;              // the complete level-3 record, unchanged and first — do not reorder
@@ -1147,7 +1171,7 @@ struct __attribute__((packed)) VescLogDataL4 {
     uint16_t fm_rider_speed_dx10;  // the rider's filtered speed x 10 km/h (fm_rider_speed_kmh)
     uint8_t  fm_sep_fix_count;     // rider GPS fixes counted toward the separation dwell (DWELL-1); OUR counter, not a dwell time
     uint8_t  fm_mode;              // fm_mode_runtime: 1-3 declared, 0 off, 0xFF never declared this session
-    uint8_t  fm_state;             // FmState: 0 IDLE, 1 ARMED, 2 ACTIVE, 3 HOLD, 4 STOPPING
+    uint8_t  fm_state;             // FmState: 0 IDLE, 1 ARMED, 2 ACTIVE, 3 HOLD, 4 STOPPING, 5 RETURN (2026-09-19)
     uint8_t  fm_block_reason;      // FmStopReason (P0-e): the live stop latch, non-zero for the whole FM_STOPPING ramp; 0 = no fault stop in progress
     uint8_t  fm_throttle_cap;      // FM's subtract-only throttle cap this tick (0-255; 255 = no cap)
     int16_t  fm_station_deg_x10;   // P2 station angle x 10 deg — always 0 until the station work lands

@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-19 - ?diag gained ONE more line (P1-b): the effective auto-return mode and its source (stored default / the remote's session override), whether a RETURN candidate proof is running and what it last decided, and why the last candidate or RETURN ended. Read-only accessors in RTMState.ino. No control-path change, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-18 - ?diag gained ONE more line (P1-a/P1-c): the Follow-Me engagement facts - state, separation latch, whether the next engagement needs the full D_engage, and whether FM is yielding to an active RTM - through read-only accessors in RTMState.ino. No control-path change, no confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-17 - ?diag gained ONE line: the last Follow-Me fault-stop reason (which of conditions 2-7, divergence or the heading-disagree latch ended the run) and how long ago, plus whether a stop ramp is in progress right now. Read-only accessors from RTMState.ino (fmLastStopReason / fmLastStopMs / fmStopReason); nothing set, cleared or aged.
 // V2.5-Evo - 2026-08-17 - ?diag gained ONE line: whether the compass-vs-GPS-course disagreement latch is standing. WHY IT WAS NEEDED: that latch withdraws the compass from the heading ladder for the whole session and stops Follow-Me engaging, and until now there was no way to ASK the board about it. The one-shot serial notice prints at the instant the fault latches — typically while the buggy is on the bench, long before the rider is on the water — and then scrolls away, and the latch is deliberately not a confStruct field, not a telemetry byte and not a new log column, so nothing else could answer the question. ?diag is the right home: it is the non-blocking snapshot command, safe to run with RTM or FM engaged, and it already reports the COG-frozen evidence the same guard family is built on. Read-only — it calls the existing headingDisagreeLatched() accessor in RTMState.ino, which cannot set, clear or age anything. No new command, no confStruct change, no telemetry byte, sizeof stays 192, SW_VERSION stays 35.
@@ -1295,6 +1296,16 @@ void cmdDiag(const String& params) {
                 fmSepLatched()    ? "SET" : "clear",
                 fmNeedsDengage()  ? "yes" : "no",
                 fmYieldingToRtm() ? "yes" : "no");
+  // V2.5-Evo - 2026-09-19 - P1-b: auto-return on one line - the effective mode and where it came
+  // from (the buggy's stored fm_return_mode, or the remote's session override), the RETURN proof
+  // (candidate standing? what did the proof last decide?), and why the last candidate or return
+  // ended. "state RETURN" is already on the line above. Read-only accessors.
+  Serial.printf("FM return  : auto-return %s (source: %s), candidate %s, proof %s, last: %s\n",
+                fmReturnModeEffective() ? "ON" : "OFF",
+                fmReturnModeFromOverride() ? "remote override this session" : "stored default",
+                fmReturnPending() ? "STANDING" : "none",
+                fmReturnVerdictText(),
+                fmReturnLastReasonText());
   Serial.printf("UART mux   : %.1f switches/s, %u read-back failures   [%u total since boot]\n",
                 (float)d_mux_sw / win_s, (unsigned)d_mux_err, (unsigned)cur.mux_errors);
   Serial.printf("VESC poll  : %u/%u ok (%.1f%%)\n",

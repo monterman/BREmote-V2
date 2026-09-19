@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-19 - PIVOT BOOST: in steering_type 1, calcPWM() passes align_mixer_influence_override (BREmote_V2_Rx.h; published by RTMState.ino while Follow-Me align, FM_RETURN align or classic RTM Phase 1 align is turning the buggy to face its target) to mixThrottleRelativeDifferential() in place of usrConf.steering_influence when it is non-zero AND an autonomous steering override is being applied on this tick (the same gate as effective_steer). Manual steering, the efoil and servo branches, the ramp and the terminal effective_thr == 0 guard are untouched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - C-4 FIX: throttle-relative differential mixer. BUG: in steering_type 1 the steering term was a fixed fraction of the FULL PWM span (steering_influence % of PWM_max-PWM_min) added AFTER the throttle map, so it was never scaled by effective_thr - a hard steer during a 13/255 crawl (influence 50) put one motor at ~55 % regardless of the RTM/FM throttle cap, i.e. steering could ADD power past the cap. FIX: calcPWM() now calls mixThrottleRelativeDifferential() (Common/DifferentialMixer.h, host-tested in Tools/tests/differential_mixer_test.cpp): turn = T x influence x |steer-127| / (100 x span), motor0 = T - turn, motor1 = T + turn, each clamped 0..255, then each motor command is map()ed into its own PWM range and trim is applied as the same symmetric post-map correction as before (+trim ch0, -trim ch1). Steering is now proportional to the permitted throttle - none at zero, less at low throttle, full authority at full throttle - and before upper saturation the two commands always sum to exactly 2T (power-neutral; saturation can only lower it). 127 is the exact neutral byte inside the mixer, so the 2026-06-05 H-1 recentring is no longer needed and is removed. steering_inverted semantics are unchanged: 0 -> steer > 127 slows motor0 / speeds motor1; 1 -> the mirror. Efoil and servo branches, the ramp and the terminal effective_thr==0 guard are untouched. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-18 - comment only (review finding F8): the steering-gate note said runFmLoop() forces FM to IDLE whenever rtm_rx_active is set; since 2026-09-18 it makes FM yield (FM_ARMED, fm_rx_active false, no cap/steer writes) instead. No code change.
 // V2.5-Evo - 2026-07-19 - P3 FM: calcPWM() applies fm_throttle_cap (subtract-only, lowest cap wins) and lets fm_rx_active gate the steering override alongside rtm_rx_active. Throttle can still only be reduced, never added, and the thr_received>=25 steering gate is unchanged.
@@ -104,9 +105,21 @@ void calcPWM()
   // that it forced FM to IDLE), so they safely share
   // rtm_steer_override as the steering command. The thr_received>=25 condition is unchanged and
   // still applies to both — autonomous steering never reaches the motors on a released trigger.
-  uint8_t effective_steer = ((rtm_rx_active || fm_rx_active) && usrConf.rtm_rx_override_steering && thr_received >= 25)
-                            ? (uint8_t)rtm_steer_override
-                            : steering_received;
+  const bool auto_steer = ((rtm_rx_active || fm_rx_active) && usrConf.rtm_rx_override_steering && thr_received >= 25);
+  uint8_t effective_steer = auto_steer ? (uint8_t)rtm_steer_override : steering_received;
+
+  // V2.5-Evo - 2026-09-19 - PIVOT BOOST. While an autonomous controller is in its align phase it
+  // publishes usrConf.fm_align_influence here (see align_mixer_influence_override in the header);
+  // the mixer then splits the permitted throttle harder between the two motors - at 100 one motor
+  // stops and the other gets twice the align cap, a pivot on the spot - WITHOUT adding any power
+  // (the mixer is throttle-relative: motor0 + motor1 <= 2T always). It is honoured only on ticks
+  // where the autonomous steering override itself is honoured, so manual steering is never mixed
+  // with a boosted influence, and 0 means "use steering_influence" exactly as before.
+  uint16_t mix_influence = usrConf.steering_influence;
+  {
+    const uint8_t boost = align_mixer_influence_override.load(std::memory_order_relaxed);
+    if (auto_steer && boost != 0) mix_influence = boost;
+  }
 
   // V2.5-Evo - 2026-07-19 - FM triage: record the steering byte actually applied this loop for
   // the logger. Diagnostic observer only — this write does not alter any PWM/motor control path.
@@ -136,7 +149,7 @@ void calcPWM()
     // Inversion semantics are unchanged from the old branch: steering_inverted 0 -> a steer byte above 127 slows
     // motor 0 and speeds motor 1; steering_inverted 1 -> the mirror (motor 0 speeds, motor 1 slows).
     DifferentialMotorMix motor_mix = mixThrottleRelativeDifferential(
-        effective_thr, effective_steer, usrConf.steering_influence,
+        effective_thr, effective_steer, mix_influence,   // V2.5-Evo - 2026-09-19 - steering_influence, or the align pivot boost
         usrConf.steering_inverted);
     int motor_0_pwm = map(motor_mix.motor0, 0, 255, usrConf.PWM0_min, usrConf.PWM0_max);
     int motor_1_pwm = map(motor_mix.motor1, 0, 255, usrConf.PWM1_min, usrConf.PWM1_max);

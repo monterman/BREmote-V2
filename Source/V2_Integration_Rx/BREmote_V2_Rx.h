@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-19 - SEPARATE RAMPS, part 2: includes ../Common/OutputRamp.h (the pure motor rise-limit step calcPWM() now calls, arithmetic unchanged, host-tested). Include only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - SEPARATE RAMPS (owner decision 14:00): the banked RESERVED slot rsvd_f32_1 is RENAMED IN PLACE to auto_ramp_s (float, 0 = inherit motor_ramp_s = today's behaviour byte-identical, else 0.2-4.0 s) - the motor rise-limit while an AUTOMATIC mode (Follow-Me following, FM_RETURN motion, classic RTM) caps the throttle; the slow motor_ramp_s stays the manual-tow ramp (the rider's shoulder on a loaded rope) and every hand-back to the rider. kAutoRampMinS / kAutoRampMaxS bounds, clamped on load. The P2 rule (buggy ahead of the rider -> manual ramp) is recorded at the field. No confStruct size change: sizeof stays 200, SW_VERSION stays 36, config is NOT reset by this flash.
 // V2.5-Evo - 2026-09-19 - fix round 2: comments only - the takeover release band is 30 counts (was 20) and the maximum takeover is 10 s (was 20 s); the constants live in RTMState.ino. No code change here, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - STICK DURING AUTO-STEER (cancel or take over): the banked RESERVED slot rsvd_u16_1 is RENAMED IN PLACE to steer_during_auto (u16, 0-1, default 0) - same offset, same type; 0 = the stick CANCELS the automatic steering exactly as before (every fielded board holds 0 here), 1 = the stick TAKES OVER the steering byte while deflected and hands it back on centring, for Follow-Me following, auto-return (FM_RETURN) and classic return-to-me alike. Adds the steer_takeover_active atomic (the ONE takeover flag; single write site publishSteerTakeover() in RTMState.ino, read by calcPWM(), false on every tick with no auto-steer owner), includes ../Common/SteerArbitration.h (the pure, host-tested engage/release/timeout arbitration), adds FM_LOG_GATE_STEER_TAKEOVER (bit 16) to the deep-log gate word (existing u32, record size unchanged) and documents telemetry.fm_flags bits 4 (setting echo) and 5 (takeover standing) for the remote. No confStruct size change: sizeof stays 200, SW_VERSION stays 36, config is NOT reset by this flash.
@@ -76,6 +77,11 @@
 // RTM/FM throttle caps or create any motor command at zero gas. Header adopted verbatim; it defines
 // no constants and reads no config of its own — influence and inversion are passed in from usrConf.
 #include "../Common/DifferentialMixer.h"
+// V2.5-Evo - 2026-09-19 - the motor rise-limit (the "motor ramp") calcPWM() applies after the mixer is
+// a pure function in ../Common/OutputRamp.h (arithmetic unchanged from the old inline block; host-
+// tested in Tools/tests/output_ramp_test.cpp against a copy of that block) so the two-ramp selector
+// (motor_ramp_s for manual, auto_ramp_s for the automatic modes) shares one memory and one step.
+#include "../Common/OutputRamp.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"

@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-19 - SEPARATE RAMPS (owner decision 14:00): the motor rise-limit now selects its seconds on the OWNER flags - (rtm_rx_active || fm_rx_active) && auto_ramp_s > 0 ? auto_ramp_s : motor_ramp_s - so Follow-Me following, FM_RETURN motion and classic RTM (a stick takeover included) ride the automatic modes' fast ramp while manual towing and every hand-back to the rider (ARMED-not-engaged, FM_STOPPING, a HOLD escape, Gate 9, the mode-0 cancel) ride the slow manual one. The step itself moved verbatim into Common/OutputRamp.h (pure, host-tested: rise <= target, instant fall, continuity across a rate change) and gains the stale-state fix: the memory tracks the output while the ramp is off, so a ramp switched on mid-session no longer dips. With auto_ramp_s 0 the selector always yields motor_ramp_s and the bytes are identical to before in any session where motor_ramp_s is not changed live. The terminal effective_thr == 0 clamp stays the last writer. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - STICK TAKEOVER: calcPWM()'s steering-source selector reads the steer_takeover_active atomic (BREmote_V2_Rx.h; published once per 10 Hz tick by RTMState.ino while the rider's stick has taken over an automatic steering run under usrConf.steer_during_auto 1). The unchanged auto_steer test becomes auto_owner; auto_cmd = auto_owner && !takeover selects rtm_steer_override, otherwise the stick; the pivot boost follows auto_cmd. Nothing else changes: no new writer of effective_thr, any cap, rtm_steer_override or a PWM time; the thr_received >= 25 gate, the efoil and servo branches, the ramp and the terminal effective_thr == 0 clamp are untouched. With the atomic false (the setting at 0, every fielded board) the selector is the old `auto_steer ? override : stick`, byte for byte (host test). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - PIVOT BOOST: in steering_type 1, calcPWM() passes align_mixer_influence_override (BREmote_V2_Rx.h; published by RTMState.ino while Follow-Me align, FM_RETURN align or classic RTM Phase 1 align is turning the buggy to face its target) to mixThrottleRelativeDifferential() in place of usrConf.steering_influence when it is non-zero AND an autonomous steering override is being applied on this tick (the same gate as effective_steer). Manual steering, the efoil and servo branches, the ramp and the terminal effective_thr == 0 guard are untouched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - C-4 FIX: throttle-relative differential mixer. BUG: in steering_type 1 the steering term was a fixed fraction of the FULL PWM span (steering_influence % of PWM_max-PWM_min) added AFTER the throttle map, so it was never scaled by effective_thr - a hard steer during a 13/255 crawl (influence 50) put one motor at ~55 % regardless of the RTM/FM throttle cap, i.e. steering could ADD power past the cap. FIX: calcPWM() now calls mixThrottleRelativeDifferential() (Common/DifferentialMixer.h, host-tested in Tools/tests/differential_mixer_test.cpp): turn = T x influence x |steer-127| / (100 x span), motor0 = T - turn, motor1 = T + turn, each clamped 0..255, then each motor command is map()ed into its own PWM range and trim is applied as the same symmetric post-map correction as before (+trim ch0, -trim ch1). Steering is now proportional to the permitted throttle - none at zero, less at low throttle, full authority at full throttle - and before upper saturation the two commands always sum to exactly 2T (power-neutral; saturation can only lower it). 127 is the exact neutral byte inside the mixer, so the 2026-06-05 H-1 recentring is no longer needed and is removed. steering_inverted semantics are unchanged: 0 -> steer > 127 slows motor0 / speeds motor1; 1 -> the mirror. Efoil and servo branches, the ramp and the terminal effective_thr==0 guard are untouched. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
@@ -197,22 +198,42 @@ void calcPWM()
     PWM_active = 0;
   }
 
-  // ── SAFETY: MOTOR RAMPING (usrConf.motor_ramp_s, seconds) ──────────────────────
-  // Rise-limit BOTH motor outputs so 0->full takes motor_ramp_s seconds. Prevents a violent throttle
+  // ── SAFETY: MOTOR RAMPING (usrConf.motor_ramp_s / usrConf.auto_ramp_s, seconds) ──────────
+  // Rise-limit BOTH motor outputs so 0->full takes the ramp's seconds. Prevents a violent throttle
   // yank AND a single motor taking off (throttle- or steering-driven). FALL is instant so release /
   // failsafe / RTM e-stop / straightening drop the motor immediately. By design this also ramps the
   // differential-steering response (a sharp turn builds over this time). 0 = instant/off.
-  if (usrConf.motor_ramp_s > 0.001f)
+  //
+  // V2.5-Evo - 2026-09-19 - TWO RAMPS (owner decision 14:00). The slow motor_ramp_s exists for the
+  // rider's shoulder on a MANUAL tow start, where the rope is loaded; in the automatic modes the rope
+  // is not loaded and a fast ramp is what makes the buggy reactive. The ramp in force this tick is
+  // selected on the OWNER flags - rtm_rx_active || fm_rx_active, whoever is CAPPING the throttle -
+  // and deliberately NOT on auto_owner above, which also carries the trigger and the stick switch:
+  //   - Follow-Me following, FM_RETURN moving and classic RTM ride auto_ramp_s (when it is non-zero;
+  //     0 = inherit motor_ramp_s, today's behaviour). A stick takeover rides it too: the steering
+  //     byte changes hands, the throttle is still the automatic owner's.
+  //   - FM_ARMED-not-engaged towing, FM_STOPPING's hand-back ramp, a HOLD escape, Gate 9's handoff and
+  //     the mode-0 steer-cancel un-clamp all ride motor_ramp_s: on every one of those the owner flag
+  //     is already false, so every hand-back to the rider is softened by the slow slew (the shoulder
+  //     case) - the fast ramp never lands on the rider's own throttle.
+  // The step lives in Common/OutputRamp.h (pure, host-tested: rise <= target, instant fall,
+  // continuity across a rate change, and the memory now TRACKS the output while the ramp is off, so a
+  // ramp switched on mid-session resumes from the live output instead of the stale value the old
+  // inline block kept - a momentary dip, fixed here). The memory holds the last OUTPUT and the step
+  // is recomputed on every 100 Hz tick, so switching between the two ramps mid-rise continues from
+  // the current output at the new rate - no jump either way. The terminal effective_thr == 0 clamp
+  // below stays the last writer. RULE FOR P2 (not built): an automatic mode with the buggy AHEAD of
+  // the rider (front_along_m > 0) uses motor_ramp_s - see auto_ramp_s in the header.
   {
-    static uint16_t pwm0_ramp = 0, pwm1_ramp = 0;
-    static bool     ramp_init = false;
-    if (!ramp_init) { pwm0_ramp = usrConf.PWM0_min; pwm1_ramp = usrConf.PWM1_min; ramp_init = true; }
-    uint16_t step0 = (uint16_t)max(1.0f, (float)(usrConf.PWM0_max - usrConf.PWM0_min) / (usrConf.motor_ramp_s * 100.0f));
-    uint16_t step1 = (uint16_t)max(1.0f, (float)(usrConf.PWM1_max - usrConf.PWM1_min) / (usrConf.motor_ramp_s * 100.0f));
-    if (PWM0_time > pwm0_ramp + step0) pwm0_ramp += step0; else pwm0_ramp = PWM0_time;
-    if (PWM1_time > pwm1_ramp + step1) pwm1_ramp += step1; else pwm1_ramp = PWM1_time;
-    PWM0_time = pwm0_ramp;
-    PWM1_time = pwm1_ramp;
+    static OutputRampState motor_ramp = {0, 0, false};
+    const bool  auto_ramp_owner = (rtm_rx_active || fm_rx_active) && (usrConf.auto_ramp_s > 0.001f);
+    const float ramp_s = auto_ramp_owner ? usrConf.auto_ramp_s : usrConf.motor_ramp_s;
+    uint16_t ramped0, ramped1;
+    outputRampStep(&motor_ramp, PWM0_time, PWM1_time,
+                   usrConf.PWM0_min, usrConf.PWM0_max, usrConf.PWM1_min, usrConf.PWM1_max,
+                   ramp_s, 100.0f, &ramped0, &ramped1);
+    PWM0_time = ramped0;
+    PWM1_time = ramped1;
   }
 
   // ============================================================

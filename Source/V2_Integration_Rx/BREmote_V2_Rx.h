@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-19 - SEPARATE RAMPS, part 3: comment only - the deep-log bit 7 note names kFmJudgeGraceMs (6500, pinned in RTMState.ino when the engage ramp went 3500 -> 1500). No code change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - SEPARATE RAMPS, part 2: includes ../Common/OutputRamp.h (the pure motor rise-limit step calcPWM() now calls, arithmetic unchanged, host-tested). Include only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - SEPARATE RAMPS (owner decision 14:00): the banked RESERVED slot rsvd_f32_1 is RENAMED IN PLACE to auto_ramp_s (float, 0 = inherit motor_ramp_s = today's behaviour byte-identical, else 0.2-4.0 s) - the motor rise-limit while an AUTOMATIC mode (Follow-Me following, FM_RETURN motion, classic RTM) caps the throttle; the slow motor_ramp_s stays the manual-tow ramp (the rider's shoulder on a loaded rope) and every hand-back to the rider. kAutoRampMinS / kAutoRampMaxS bounds, clamped on load. The P2 rule (buggy ahead of the rider -> manual ramp) is recorded at the field. No confStruct size change: sizeof stays 200, SW_VERSION stays 36, config is NOT reset by this flash.
 // V2.5-Evo - 2026-09-19 - fix round 2: comments only - the takeover release band is 30 counts (was 20) and the maximum takeover is 10 s (was 20 s); the constants live in RTMState.ino. No code change here, sizeof stays 200, SW_VERSION stays 36.
@@ -1208,7 +1209,7 @@ static_assert(sizeof(VescLogData) == 59, "VescLogData size mismatch — check bi
 //   bit 4 sep_latched       the separation proof (tow interlock) is standing
 //   bit 5 diverge           the A3 divergence fault fired on this tick
 //   bit 6 pivoting          PIVOT-SUSPEND-1 is suspending the divergence judgement
-//   bit 7 in_grace          inside the post-engage grace (kFmEngageRampMs + kFmDivergeMs)
+//   bit 7 in_grace          inside the post-engage grace (kFmJudgeGraceMs, 6500 ms; until 2026-09-19 kFmEngageRampMs + kFmDivergeMs)
 //   bit 8 heading_disagree  the compass-vs-COG disagreement latch is standing
 //   bit 9 fade_bypass       P2 — always 0 until the station work lands
 //   bit 10 transit          P2 — always 0 until the station work lands

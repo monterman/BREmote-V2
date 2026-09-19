@@ -1,3 +1,9 @@
+// V2.5-Evo - 2026-09-19 - SEPARATE RAMPS, part 3: kFmEngageRampMs 3500 -> 1500 ms (owner decision 14:00, the beta tester's water-tested number;
+//   the rope is not loaded when Follow-Me engages) - Follow-Me's cap-5 engage ramp and FM_RETURN's per-squeeze cap-4 ramp. The two
+//   judging graces that were written as "this ramp + a dwell" are PINNED at their old values as named constants, one definition each,
+//   used at every site: kFmJudgeGraceMs 6500 (following: the divergence net's park and PV-1's stall-clock hold, was ramp + kFmDivergeMs)
+//   and kFmReturnJudgeGraceMs 8500 (FM_RETURN's not-closing in_grace, was ramp + kFmReturnNotClosingMs). align_suspend's 15 s and
+//   kFmEngageGraceMs 2 s are unchanged and independent. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - fix round 2 (owner + code review): kSteerTakeoverMaxMs 20000 -> 10000 and kSteerTakeoverReleaseDeadband
 //   20 -> 30. A deliberate dodge is 2-5 s, so 10 s halves the exposure of a buggy steered by a drifted stick (108 -> 54 m at
 //   12 mph); with the shorter timer a stick resting at 20-29 counts after a push would have sat in the old 20-39 gap - neither
@@ -1556,7 +1562,22 @@ static inline uint8_t fmAlignCapValue()
 
 // Engage ramp length. On every entry into FM_ACTIVE the throttle cap ramps 0 -> full
 // over this time so re-engagement is always a smooth build, never a throttle jump.
-static const uint32_t kFmEngageRampMs        = 3500;   // ms
+// V2.5-Evo - 2026-09-19 - 3500 -> 1500 ms (owner decision 14:00, the beta tester's water-tested
+// number): the rope is not loaded when Follow-Me engages, so the cap-5 build can be quick. It is
+// also FM_RETURN's per-squeeze engage ramp (cap 4 there) - the P-law and the approach ramp still cap
+// the speed. A constant, not derived, not a field. The two judging graces that used to be written
+// as "this ramp + a dwell" are PINNED below at their old values so they do not silently shorten.
+static const uint32_t kFmEngageRampMs        = 1500;   // ms
+
+// ---- Judging graces, PINNED (V2.5-Evo - 2026-09-19) ----
+// Both used to be spelled kFmEngageRampMs + <dwell>. They are not "the ramp plus a dwell": they are
+// how long a freshly engaged buggy is left unjudged - long enough to ramp, align and start closing -
+// and that time was set by measured pivots (8.6-11.6 s), not by the ramp. Shortening the ramp to
+// 1500 ms must not shorten them, so each is one named constant at its 2026-09-18 value, used at
+// every site. kFmEngageGraceMs (2 s, the steer-cancel / takeover grace) is a third, independent
+// window and is deliberately not derived from any of these.
+static const uint32_t kFmJudgeGraceMs        = 6500;   // ms; following: divergence net parked + PV-1 stall clock held (was kFmEngageRampMs 3500 + kFmDivergeMs 3000)
+static const uint32_t kFmReturnJudgeGraceMs  = 8500;   // ms; FM_RETURN: the not-closing net's in_grace from each motion start (was kFmEngageRampMs 3500 + kFmReturnNotClosingMs 5000)
 
 // Minimum time between rider course/speed samples. The rider's position arrives at 2 Hz,
 // so we need a baseline of a few hundred ms for a stable course rather than differentiating
@@ -1731,7 +1752,8 @@ static const uint32_t kFmDivergeMs           = 3000;   // ms
 // judged "following, just far" rather than "running away".
 // WHY THIS EXISTS AT ALL. The first cut of this detector was a BARE THRESHOLD: beyond the ceiling for
 // kFmDivergeMs = a fault, full stop. That is wrong for two reasons that together aborted ordinary
-// engagements. (1) The engage ramp is kFmEngageRampMs = 3500 ms, LONGER than the 3000 ms dwell, so the
+// engagements. (1) The engage ramp is kFmEngageRampMs = 3500 ms [1500 since 2026-09-19; the grace it
+// motivated is pinned as kFmJudgeGraceMs 6500], LONGER than the 3000 ms dwell, so the
 // fault could fire before the buggy had even been given full throttle. (2) During align the cap is
 // kFmAlignCap = 13/255 (~5%), so the buggy pivots on the spot and the distance GROWS before it starts
 // to shrink — while at the engagement instant dist_m is typically 13-21 m against an 18 m ceiling
@@ -4503,7 +4525,7 @@ static void runFmReturnTick(unsigned long now)
   // a fresh kFmPivotSuspendMaxMs to turn back at the align cap before it is judged; without that
   // a 20 s-old motion start would have expired the suspension and the re-align at cap 13, closing
   // nothing in 5 s, would have tripped RETURN_NOT_CLOSING. In mode 0 judge_base == motion start.
-  const bool in_grace      = (now - fm_return_motion_ms) < (kFmEngageRampMs + kFmReturnNotClosingMs);
+  const bool in_grace      = (now - fm_return_motion_ms) < kFmReturnJudgeGraceMs;   // V2.5-Evo - 2026-09-19 - pinned 8500 (was the ramp + 5 s)
   const unsigned long judge_base = (fm_return_judge_base_ms != 0) ? fm_return_judge_base_ms : fm_return_motion_ms;
   const bool align_suspend = aligning && (now - judge_base) < kFmPivotSuspendMaxMs;
   if (in_grace || align_suspend || steer_takeover.active) {
@@ -5205,7 +5227,7 @@ static void runFmLoopBody(unsigned long now)
     //
     // V2.5-Evo - 2026-07-25 - F1: this used to be a BARE THRESHOLD (beyond the ceiling for the dwell
     // = fault) and that aborted legitimate engagements. Two reasons, and they compound. First, the
-    // engage ramp is kFmEngageRampMs = 3500 ms but the dwell is only kFmDivergeMs = 3000 ms, so the
+    // engage ramp was kFmEngageRampMs = 3500 ms (1500 since 2026-09-19) but the dwell is only kFmDivergeMs = 3000 ms, so the
     // fault could fire BEFORE the buggy had finished being given throttle. Second, while the heading
     // error is still large, cap 4 pins the throttle at kFmAlignCap = 13/255 (~5%) so the buggy pivots
     // in place and the gap GROWS before it starts to shrink — and at the engagement instant dist_m is
@@ -5227,7 +5249,8 @@ static void runFmLoopBody(unsigned long now)
     //      distance legitimately rises and falls every wave. The epsilon is what carries that across.)
     //
     //   2. ENGAGE GRACE. The detector is skipped entirely, and its dwell parked, for
-    //      kFmEngageRampMs + kFmDivergeMs (3500 + 3000 = 6500 ms) after every entry into FM_ACTIVE.
+    //      kFmJudgeGraceMs (6500 ms; until 2026-09-19 written as kFmEngageRampMs 3500 + kFmDivergeMs
+    //      3000, pinned when the ramp went to 1500) after every entry into FM_ACTIVE.
     //      The buggy must be allowed to finish ramping AND aligning before its geometry is judged;
     //      judging it mid-ramp measures the ramp, not the steering. Parking the dwell (rather than
     //      letting it run) guarantees the first post-grace window is a full, clean kFmDivergeMs.
@@ -5248,13 +5271,13 @@ static void runFmLoopBody(unsigned long now)
     // make the detector STRICTLY LESS likely to fire, never more — a missed divergence still leaves
     // every other fault condition and the deadman in place, and the rider can always let go.
     bool in_engage_grace = (fm_engage_ms != 0) &&
-                           ((now - fm_engage_ms) < (kFmEngageRampMs + kFmDivergeMs));
+                           ((now - fm_engage_ms) < kFmJudgeGraceMs);   // V2.5-Evo - 2026-09-19 - pinned 6500 (was the ramp + the dwell)
     if (in_engage_grace) fm_log_gate_flags |= FM_LOG_GATE_IN_GRACE;   // P0-g
 
     // ---- PIVOT-SUSPEND-1 (V2.5-Evo - 2026-08-26; hardened same day against Rex P-1..P-4) ----
     // WHY: the divergence detector asks "is the distance shrinking?", but a buggy still swinging
     // its nose toward the target closes NOTHING by definition. Measured pivots from the beta logs
-    // take 8.6-11.6 s; the engage grace is kFmEngageRampMs 3500 + kFmDivergeMs 3000 = 6500 ms, and
+    // take 8.6-11.6 s; the engage grace is kFmJudgeGraceMs 6500 ms (pinned 2026-09-19; was written as the ramp + the dwell), and
     // the first judgeable verdict lands 3000 ms after that. So the judgement opened INSIDE the
     // pivot and condemned a healthy long-range recall for the crime of turning round. Owner's
     // call: suspend the judgement until the turn is done.
@@ -5318,7 +5341,7 @@ static void runFmLoopBody(unsigned long now)
         fm_pivot_failed       = false;
       }
       // REX PV-1, AND THIS WAS THE ONE BLOCKER ON THIS BLOCK. The stall clock must not run during
-      // the engage grace. For the first kFmEngageRampMs + kFmDivergeMs the buggy is deliberately
+      // the engage grace. For the first kFmJudgeGraceMs the buggy is deliberately
       // DENIED the throttle it needs to yaw at all - cap 5 is ramping 0->255 and cap 4 pins it at
       // kFmAlignCap 13/255 - so judging it for failing to make 2 deg of progress in that window
       // judges it for obeying its own throttle chain. And pivot_err is the error to a MOVING

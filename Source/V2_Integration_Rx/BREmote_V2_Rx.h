@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-19 - SEPARATE RAMPS (owner decision 14:00): the banked RESERVED slot rsvd_f32_1 is RENAMED IN PLACE to auto_ramp_s (float, 0 = inherit motor_ramp_s = today's behaviour byte-identical, else 0.2-4.0 s) - the motor rise-limit while an AUTOMATIC mode (Follow-Me following, FM_RETURN motion, classic RTM) caps the throttle; the slow motor_ramp_s stays the manual-tow ramp (the rider's shoulder on a loaded rope) and every hand-back to the rider. kAutoRampMinS / kAutoRampMaxS bounds, clamped on load. The P2 rule (buggy ahead of the rider -> manual ramp) is recorded at the field. No confStruct size change: sizeof stays 200, SW_VERSION stays 36, config is NOT reset by this flash.
 // V2.5-Evo - 2026-09-19 - fix round 2: comments only - the takeover release band is 30 counts (was 20) and the maximum takeover is 10 s (was 20 s); the constants live in RTMState.ino. No code change here, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - STICK DURING AUTO-STEER (cancel or take over): the banked RESERVED slot rsvd_u16_1 is RENAMED IN PLACE to steer_during_auto (u16, 0-1, default 0) - same offset, same type; 0 = the stick CANCELS the automatic steering exactly as before (every fielded board holds 0 here), 1 = the stick TAKES OVER the steering byte while deflected and hands it back on centring, for Follow-Me following, auto-return (FM_RETURN) and classic return-to-me alike. Adds the steer_takeover_active atomic (the ONE takeover flag; single write site publishSteerTakeover() in RTMState.ino, read by calcPWM(), false on every tick with no auto-steer owner), includes ../Common/SteerArbitration.h (the pure, host-tested engage/release/timeout arbitration), adds FM_LOG_GATE_STEER_TAKEOVER (bit 16) to the deep-log gate word (existing u32, record size unchanged) and documents telemetry.fm_flags bits 4 (setting echo) and 5 (takeover standing) for the remote. No confStruct size change: sizeof stays 200, SW_VERSION stays 36, config is NOT reset by this flash.
 // V2.5-Evo - 2026-09-19 - FM_RETURN + pivot boost: adds the align_mixer_influence_override atomic (0 = none; the ONE mixer influence override, written by publishAlignMixerInfluence() in RTMState.ino for FM align, FM_RETURN align and classic RTM Phase 1 align, read by calcPWM()), includes ../Common/FollowMeReturnProof.h (the pure, host-tested FM_RETURN entry proof), and adds FM_LOG_GATE_RETURN_WINDOW (bit 15) to the deep-log gate word next to the P1-b bit 11 it reserved - new bit in the existing u32, record size unchanged; fm_state gains the value 5 (RETURN). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -122,6 +123,16 @@
 // fails the load and falls back to defaults - which would wipe the config, pairing and compass
 // calibration of anyone who had already stored a 0. A clamp corrects them silently instead.
 static const uint16_t kTxGpsStaleFloorMs = 500;
+
+// V2.5-Evo - 2026-09-19 - auto_ramp_s bounds: 0 = inherit motor_ramp_s, else kAutoRampMinS..kAutoRampMaxS
+// (the same 4 s ceiling motor_ramp_s has). Enforced by CLAMPING in cfgValidateCrossField() for the
+// same reason as the floor above: it runs on the LOAD path, and the slot this field reuses was a
+// RESERVED float validated -1e6..1e6, so a stored blob may in principle hold anything. A value in
+// (0, 0.2) is raised to 0.2 with a NOTE (a ramp that short is instant in all but name); below 0 or
+// NaN becomes 0 (inherit) and above 4 becomes 4, silently. The kCfgFields row is 0-4.0 like
+// motor_ramp_s, so a typed value above the ceiling is refused the way motor_ramp_s refuses it.
+static const float kAutoRampMinS = 0.2f;   // s; smallest non-zero auto_ramp_s
+static const float kAutoRampMaxS = 4.0f;   // s; the ceiling, shared with motor_ramp_s
 
 #define SW_VERSION 36  // V2.5-Evo - 2026-09-19 - 36 = fm_return_mode / fm_align_cap / fm_align_influence appended at the tail; sizeof 192->200 (198 + 2 B alignment pad). Config is NOT reset by this flash: the 192-byte SW35 blob is migrated by prefix (every stored value keeps its offset and its value) and the three new fields default (1 / 13 / 80) - see the LEGACY CONFIG BLOB MIGRATION block in Common/SPIFFSEngine.h. 35 = mag_orientation appended (compass mounting rotation); sizeof 184->192 (mag_orientation + 2 reserved slots banked for future no-bump features), config IS reset by this flash. 34 = added fm_engage_dist_m / auton_runtime_cap_s / fm_steer_reposition_en reserved slots + defaultConf carries factory default config (compass cal, near_diag_offset 45); first flash resets all RX SPIFFS config to defaults. NOTE (2026-07-25, STAGE 0 PART A): the third of those slots has since been RENAMED IN PLACE to log_level — same offset, same uint16_t, sizeof(confStruct) still 184 — so this stays 34 and NO further config wipe happens.
 const char* CONF_FILE_PATH = "/data.txt";
@@ -575,7 +586,33 @@ struct confStruct {
 
 
 
-    float    rsvd_f32_1;               // RESERVED. 0 = unused. For a threshold or coefficient.
+    // V2.5-Evo - 2026-09-19 - THE SECOND SLOT IS CLAIMED TOO: rsvd_f32_1 is RENAMED IN PLACE to
+    // auto_ramp_s, by the same five rules. Same offset, same float, sizeof stays 200, the
+    // static_assert is untouched, SW_VERSION stays 36, and 0 - what every fielded board holds
+    // here - is the behaviour-preserving default: inherit motor_ramp_s, exactly as before.
+    //
+    // auto_ramp_s - the motor rise-limit (seconds, 0 -> full) while an AUTOMATIC mode is capping
+    //   the throttle: Follow-Me following, auto-return (FM_RETURN) motion, classic return-to-me.
+    //   WHY TWO RAMPS (owner decision 2026-09-19 14:00): the slow motor_ramp_s exists for the
+    //   rider's shoulder on a MANUAL tow start - the rope is loaded and a hard yank hurts. In the
+    //   automatic modes the rope is not loaded, so a fast ramp is what makes the buggy reactive:
+    //   it catches up fast and pivots fast. The rider's own trigger stays the only throttle
+    //   source in both; a ramp only ever delays a rise, never adds throttle, and the fall stays
+    //   instant.
+    //     0         = inherit motor_ramp_s (default; today's behaviour, byte-identical).
+    //     0.2 - 4.0 = the automatic modes' own ramp (the owner's suggestion: try 0.5).
+    //   WHO RIDES WHICH (the selector in PWM.ino calcPWM(), on the OWNER flags rtm_rx_active ||
+    //   fm_rx_active - deliberately not the takeover's auto_owner, which also carries the trigger
+    //   and the stick switch): the ramp belongs to whoever is capping the throttle. Following,
+    //   RETURN moving and classic RTM ride the auto ramp - a stick takeover included, since the
+    //   throttle is still the automatic owner's. FM_ARMED-not-engaged towing, FM_STOPPING's hand-
+    //   back, a HOLD escape, Gate 9 and the mode-0 cancel un-clamp all ride the MANUAL ramp, so
+    //   every hand-back to the rider is softened by the slow slew (the shoulder case).
+    //   RULE FOR P2 (stations), NOT BUILT: any automatic mode with the buggy AHEAD of the rider -
+    //   front_along_m > 0, the fade-bypass predicate - must use motor_ramp_s, not auto_ramp_s: with
+    //   the buggy in front the rope can load again, and that is the shoulder case in another guise.
+    //   Bounds: kAutoRampMinS / kAutoRampMaxS above; clamped on load, never rejected.
+    float    auto_ramp_s;              // 0 = same as motor_ramp_s; else 0.2-4.0 s rise time while an auto mode caps the throttle. Default 0
 
     // ============================================================
     // V2.5-Evo - 2026-09-19 - SW35->36: AUTO-RETURN INSIDE FOLLOW-ME (three fields, APPENDED)
@@ -680,7 +717,7 @@ confStruct defaultConf = {SW_VERSION, 2, 22, 1, 50 /*steering_influence: convent
   0,            // steer_during_auto: 0 = the stick CANCELS automatic steering (the tested behaviour); 1 = it takes over while deflected (was rsvd_u16_1, renamed in place 2026-09-19)
 
 
-  0.0f,         // rsvd_f32_1  RESERVED - 0 = unused
+  0.0f,         // auto_ramp_s: 0 = the automatic modes ride motor_ramp_s (today's behaviour); 0.2-4.0 = their own, faster ramp (was rsvd_f32_1, renamed in place 2026-09-19)
   // V2.5-Evo - 2026-09-19 - SW36 auto-return defaults. These are also the values the boot-path
   // migration writes into a migrated SW35 config (the tail of the struct is copied from HERE).
   1,            // fm_return_mode: 1 = auto-return ON (owner decision, session log item 32); 0 = HOLD as before

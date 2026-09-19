@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-19 - rtm_steer_exit_on_input is DEPRECATED (unread by the remote; the buggy's steer_during_auto decides). Row and range kept so stored settings load. Comment only; TX struct untouched (136, SW27).
 // TX-specific config field table and cross-validation.
 // Shared engine is in ../Common/ConfigServiceEngine.h (included via BREmote_V2_Tx.h).
 // V2.5-Evo - 2026-09-17 - fm_warn_distance_m max 1000 → 164 (kFmDistanceTelemetryMaxM) with a load-time clamp in cfgValidateCrossField(). No struct change.
@@ -86,7 +87,9 @@ const CfgFieldSpec kCfgFields[] = {
   // above 164 already stored are clamped in cfgValidateCrossField() (which every load path runs
   // BEFORE this range check), so no existing config is rejected.
   {"fm_warn_distance_m",       CFG_U16, offsetof(confStruct, fm_warn_distance_m),       true, false, true, 50.0f, (float)kFmDistanceTelemetryMaxM, 0, false},  // FM warning-distance haptic threshold, metres
-  {"rtm_steer_exit_on_input",  CFG_U16, offsetof(confStruct, rtm_steer_exit_on_input),  true, false, true,  0.0f,   1.0f,    0, false},  // 1=steering exits RTM, 0=blend only
+  // V2.5-Evo - 2026-09-19 - DEPRECATED, unread by the remote: the buggy's steer_during_auto (RX) decides whether the stick
+  // cancels or takes over an automatic return, echoed in fm_flags bit 4. Row kept so stored settings load; delete at the next TX struct bump.
+  {"rtm_steer_exit_on_input",  CFG_U16, offsetof(confStruct, rtm_steer_exit_on_input),  true, false, true,  0.0f,   1.0f,    0, false},  // DEPRECATED (2026-09-19): unread. Was 1=steering exits RTM, 0=blend only
   // V2.5-Evo - 2026-04-27 - Priority 8.1 FM UX redesign parameter
   // V2.5-Evo - 2026-09-17 - renamed from fm_arm_window_s; range widened 10-600 → 0-1800 so 0 (= never
   // auto-disarm, the new default) is storable and a 30-minute option remains. Widening only: every

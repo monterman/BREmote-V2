@@ -1,3 +1,11 @@
+// V2.5-Evo - 2026-09-19 - GATE 4 FOLLOWS THE BUGGY (stick during auto-steer). The classic-RTM steer-exit no longer reads
+//   usrConf.rtm_steer_exit_on_input; it reads the buggy's steer_during_auto echo, telemetry.fm_flags bit 4
+//   (FM_FLAG_STEER_TAKEOVER), under the same FM_LINK_HEALTHY_MS window as the other flags. Bit clear, or link stale, or an old
+//   RX that never sets it -> a push > 20 counts exits RTM exactly as before (setRtmDisarmed(), silent, "St"). Bit set -> the
+//   buggy is letting the stick steer the return and the remote must not end it: the gate stands down, and says so once per
+//   RTM run (rtm_gate4_takeover_printed, cleared at every RTM_ACTIVE entry). Gates 1-3 untouched. The one delta for a remote
+//   that stored rtm_steer_exit_on_input 0: it now exits on a push when the buggy says cancel (none known; the owner's is 1).
+//   TX struct untouched (136, SW27).
 // V2.5-Evo - 2026-09-19 - THE RETURN GESTURE (RIGHT tap + LEFT hold, the RTM arm combo) is now returnGesture(), a three-state
 //   machine read at the instant the hold completes: (1) no override and RTM not armed -> arm RTM exactly as before (setRtmArmed(),
 //   ceremony, gates, rtm_arm_window_s untouched); (2) RTM armed and still inside the arm window (the blocking ceremony is waiting for
@@ -145,6 +153,10 @@ static unsigned long rtm_hold_start    = 0;   // single-mode: when thr_scaled fi
 // rtmDisengage() (covers all RTM_ACTIVE exit paths) and the two ceremony timeout returns.
 // TODO: remove when arm ceremony is refactored to non-blocking.
 static uint32_t rtm_arm_gps_timeout_override = 0;
+
+// V2.5-Evo - 2026-09-19 - Gate 4 prints once per RTM run when it stands down because the buggy
+// says the stick takes over (fm_flags bit 4). Cleared at every RTM_ACTIVE entry.
+static bool rtm_gate4_takeover_printed = false;
 
 // FM session-init and keepalive state (Changes B + E)
 static bool          fm_session_init_done = false;  // Change B: true once last_fm_mode seeded from SPIFFS this session
@@ -556,6 +568,7 @@ static void runDoubleSqueezeArm()
   rtm_active_start_ms = millis();
   rtm_tx_active       = true;
   rtm_release_ms      = 0;
+  rtm_gate4_takeover_printed = false;   // V2.5-Evo - 2026-09-19 - Gate 4's stand-down notice is once per run
   rtm_arm_dist_m      = decodeRtmDistanceM();
   if (rtm_arm_dist_m < 0.0f) rtm_arm_dist_m = 0.0f;
   queueMetaPacketBurst(0xF1, 1);
@@ -653,12 +666,32 @@ void runRtmLoop()
         rtm_release_ms = 0;
       }
 
-      // Gate 4: steering exit (P8 — if enabled, any significant steering input exits RTM)
-      if (usrConf.rtm_steer_exit_on_input && toggle_blocked_by_steer &&
-          abs((int)steer_scaled - 127) > 20)
+      // Gate 4: steering exit (P8 — any significant steering input exits RTM)
+      // V2.5-Evo - 2026-09-19 - THE GATE FOLLOWS THE BUGGY. usrConf.rtm_steer_exit_on_input is no
+      // longer read (deprecated, see BREmote_V2_Tx.h). Whether the stick cancels or takes over an
+      // automatic return is the buggy's steer_during_auto setting, echoed in fm_flags bit 4 and
+      // read here only while the link is fresh (FM_LINK_HEALTHY_MS, as every other flag): bit
+      // clear, link stale, or an old RX -> the push exits RTM exactly as before; bit set -> the
+      // buggy is steering by the rider's stick and will resume on its own when the stick centres,
+      // so the remote must NOT end the run - the gate stands down and says so once per run. During
+      // the ~2 s handshake after a setting change the two boards may disagree for one telemetry
+      // rotation; both directions fail to cancel or to ignore, never to an unguarded takeover.
       {
-        setRtmDisarmed();   // COMMANDED: the rider deliberately steered out (opt-in gate) → silent
-        break;
+        const bool link_fresh     = (last_packet != 0) && ((now - last_packet) < FM_LINK_HEALTHY_MS);
+        const bool buggy_takeover = link_fresh && ((telemetry.fm_flags & FM_FLAG_STEER_TAKEOVER) != 0);
+        if (toggle_blocked_by_steer && abs((int)steer_scaled - 127) > 20)
+        {
+          if (!buggy_takeover)
+          {
+            setRtmDisarmed();   // COMMANDED: the rider deliberately steered out → silent
+            break;
+          }
+          if (!rtm_gate4_takeover_printed)
+          {
+            rtm_gate4_takeover_printed = true;
+            Serial.println("RTM [TX] Gate 4: stick pushed, but the buggy says the stick takes over (steer_during_auto 1) - not exiting; the buggy resumes when the stick centres");
+          }
+        }
       }
 
       // Display handled by renderRtmInfoDisplay() in loop() when rtm_tx_active==true

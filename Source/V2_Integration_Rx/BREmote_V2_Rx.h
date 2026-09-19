@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-19 - SW36: three Follow-Me fields APPENDED at the tail of confStruct - fm_return_mode (u16, 0-1, default 1: when the rider stops, Follow-Me graduates to FM_RETURN and brings the buggy back under the trigger), fm_align_cap (u16, 8-80, default 13: the throttle cap during the FM align phase and the FM_RETURN align/engage ramp, replacing the compile-time kFmAlignCap for FM paths), fm_align_influence (u16, 0-100, default 80: the mixer steering influence during FM align / FM_RETURN align only - 100 = one-motor pivot; 0 = use steering_influence). sizeof 192 -> 200 (192 + 3 x 2 = 198, padded to the 4-byte struct alignment), static_assert 200, SW_VERSION 35 -> 36. Config is NOT reset by this flash: the 192-byte SW35 blob is migrated by prefix at boot (Common/SPIFFSEngine.h, host-tested in Tools/tests/config_migrate_test.cpp) and the three new fields take their defaults.
 // V2.5-Evo - 2026-09-19 - C-4 fix (throttle-relative differential mixer): includes ../Common/DifferentialMixer.h (pure mixer, adopted verbatim, host-tested in Tools/tests/differential_mixer_test.cpp) for calcPWM()'s steering_type 1 branch. Include only: no confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-18 - comment only (review finding F6): the fm_gate_flags bit-13 note names kFmReleaseDengageMs, the alias RTMState.ino now uses for the release -> needs-D_engage timer. No code change.
 // V2.5-Evo - 2026-09-18 - kFmEngageDistFloorM raised 8.0 -> 9.5 m (code-review finding F3): the rope in use is 7.1 m (owner, 2026-08-28), not the 6.10 m the 8.0 m floor was derived from, so 8.0 m cleared it by only 0.9 m - inside GPS error. 7.1 x 1.31 = 9.3, rounded up. Validator, read-site clamp, trigger-free engage floor and the BOOTSTRAP-1 abort radius all read this one constant. fm_engage_dist_m field comment updated (0, or 9.5-50 m). Compile-time only: no confStruct change, sizeof stays 192, SW_VERSION stays 35.
@@ -118,7 +119,7 @@
 // calibration of anyone who had already stored a 0. A clamp corrects them silently instead.
 static const uint16_t kTxGpsStaleFloorMs = 500;
 
-#define SW_VERSION 35  // V2.5-Evo — 35 = mag_orientation appended (compass mounting rotation); sizeof 184->192 (mag_orientation + 2 reserved slots banked for future no-bump features), config IS reset by this flash. 34 = added fm_engage_dist_m / auton_runtime_cap_s / fm_steer_reposition_en reserved slots + defaultConf carries factory default config (compass cal, near_diag_offset 45); first flash resets all RX SPIFFS config to defaults. NOTE (2026-07-25, STAGE 0 PART A): the third of those slots has since been RENAMED IN PLACE to log_level — same offset, same uint16_t, sizeof(confStruct) still 184 — so this stays 34 and NO further config wipe happens.
+#define SW_VERSION 36  // V2.5-Evo - 2026-09-19 - 36 = fm_return_mode / fm_align_cap / fm_align_influence appended at the tail; sizeof 192->200 (198 + 2 B alignment pad). Config is NOT reset by this flash: the 192-byte SW35 blob is migrated by prefix (every stored value keeps its offset and its value) and the three new fields default (1 / 13 / 80) - see the LEGACY CONFIG BLOB MIGRATION block in Common/SPIFFSEngine.h. 35 = mag_orientation appended (compass mounting rotation); sizeof 184->192 (mag_orientation + 2 reserved slots banked for future no-bump features), config IS reset by this flash. 34 = added fm_engage_dist_m / auton_runtime_cap_s / fm_steer_reposition_en reserved slots + defaultConf carries factory default config (compass cal, near_diag_offset 45); first flash resets all RX SPIFFS config to defaults. NOTE (2026-07-25, STAGE 0 PART A): the third of those slots has since been RENAMED IN PLACE to log_level — same offset, same uint16_t, sizeof(confStruct) still 184 — so this stays 34 and NO further config wipe happens.
 const char* CONF_FILE_PATH = "/data.txt";
 const char* BC_FILE_PATH = "/batconf.txt";
 
@@ -552,9 +553,38 @@ struct confStruct {
 
     float    rsvd_f32_1;               // RESERVED. 0 = unused. For a threshold or coefficient.
 
-
+    // ============================================================
+    // V2.5-Evo - 2026-09-19 - SW35->36: AUTO-RETURN INSIDE FOLLOW-ME (three fields, APPENDED)
+    //
+    // Appended at the END so every existing offset is unchanged and the SW35 blob is a byte-exact
+    // prefix of this struct - that is what lets the boot-path migration keep every stored value
+    // (pairing, compass calibration, every tuning number) instead of re-baking defaults. The two
+    // reserved slots above are deliberately left alone: the owner accepted the version bump so the
+    // slots stay banked for a future no-bump feature.
+    //
+    // fm_return_mode - the buggy's POWER-ON DEFAULT for auto-return. It is read only while the
+    //   remote has not overridden it for the session (fm_return_mode_runtime == 0xFF; the remote's
+    //   return gesture pushes an override in 0xF2 bits 5-6, RAM only, gone on a remote power cycle).
+    //     0 = when the rider stops, Follow-Me HOLDs (cap 0) as it always has.
+    //     1 = when the rider stops, Follow-Me graduates to FM_RETURN: the buggy proves that both it
+    //         and the rider have genuinely stopped, then creeps back to the rider - ONLY while the
+    //         trigger is held - and stops at rtm_stop_distance_m.
+    // fm_align_cap - throttle cap (0-255 scale) while the buggy turns to face its target: the FM
+    //   align phase and the FM_RETURN align / engage ramp. Replaces the compile-time kFmAlignCap
+    //   (13) for the Follow-Me paths. 13 is about 5 %; raise it only after the bench spin has
+    //   measured the yaw rate at the throttle-relative mixer.
+    // fm_align_influence - the steering influence (percent) handed to the differential mixer during
+    //   those same align phases ONLY, in place of steering_influence. 100 = one-motor pivot (at cap
+    //   13: motors 0 / 26). 0 = no boost, use steering_influence. Ordinary following and manual
+    //   driving always use steering_influence.
+    // ============================================================
+    uint16_t fm_return_mode;           // 0 = HOLD when the rider stops (as before); 1 = FM_RETURN. Range 0-1; default 1
+    uint16_t fm_align_cap;             // throttle cap during FM align / FM_RETURN align+ramp, 0-255 scale; range 8-80; default 13
+    uint16_t fm_align_influence;       // mixer steering influence during FM align / FM_RETURN align, %; range 0-100 (0 = use steering_influence); default 80
+    // (2 bytes of tail padding follow: 198 rounds up to 200 for the 4-byte float alignment.)
 };
-static_assert(sizeof(confStruct) == 192, "confStruct size mismatch — expected 192 bytes. Update this assert if you change the struct.");  // 176->184: +fm_engage_dist_m(float 4) +auton_runtime_cap_s(u16 2) +fm_steer_reposition_en(u16 2), all naturally aligned, no tail pad (2026-07-20 SW34)  // 172->176 motor_ramp_s float (2026-06-05 SW33)  // 112->128 Phase A; 128->136 Phase B; 136->152 P7 RTM; 152->156 Bundle B; 156 unchanged BundleE; 156->160 rtm_approach_zone_m (uint16_t + 2-byte tail pad) (2026-04-30); D3 rtm_use_compass + rtm_cog_min_speed_kmh (2x uint8_t) fill the 2-byte tail pad — sizeof stays 160 (2026-05-06); D3-Fix: uint8_t→uint16_t for ConfigService compatibility, sizeof unchanged at 164 (2026-05-06); Bundle 1: dummy_delete_me renamed to rtm_steer_response in-place, sizeof unchanged at 164 (2026-05-08); STAGE 0 PART A: fm_steer_reposition_en renamed to log_level in-place — same offset, same uint16_t, sizeof STILL 184 and SW_VERSION STILL 34, so this flash does NOT reset SPIFFS config (2026-07-25); auton_runtime_cap_s renamed to gps_dyn_model in-place, sizeof STILL 184, SW_VERSION STILL 34 (2026-08-16); 184->192 SW34->35: +mag_orientation(u16 2) +rsvd_u16_1(u16 2) +rsvd_f32_1(float 4), appended at the tail, naturally aligned, no tail pad — the one intended config wipe for this bump (2026-08-16). THIS NUMBER IS THE SSOT: the SW34->35 config-backup migration is pinned to 184 (legacy) and 192 (current) and disables itself if either stops matching, so any prose elsewhere that disagrees with the 192 above is stale and must be corrected rather than trusted.
+static_assert(sizeof(confStruct) == 200, "confStruct size mismatch — expected 200 bytes (SW36: 192 + fm_return_mode/fm_align_cap/fm_align_influence 3 x u16 = 198, padded to 200). Update this assert if you change the struct.");  // 192->200 SW35->36: +fm_return_mode(u16 2) +fm_align_cap(u16 2) +fm_align_influence(u16 2) appended at the tail, +2 B tail pad (2026-09-19). The SW35->36 boot-path migration in Common/SPIFFSEngine.h is pinned to 192 (legacy) and 200 (current) and disables itself if either stops matching.
+// HISTORY of the size assert as it stood until 2026-09-19 (192 bytes), kept verbatim: 176->184: +fm_engage_dist_m(float 4) +auton_runtime_cap_s(u16 2) +fm_steer_reposition_en(u16 2), all naturally aligned, no tail pad (2026-07-20 SW34)  // 172->176 motor_ramp_s float (2026-06-05 SW33)  // 112->128 Phase A; 128->136 Phase B; 136->152 P7 RTM; 152->156 Bundle B; 156 unchanged BundleE; 156->160 rtm_approach_zone_m (uint16_t + 2-byte tail pad) (2026-04-30); D3 rtm_use_compass + rtm_cog_min_speed_kmh (2x uint8_t) fill the 2-byte tail pad — sizeof stays 160 (2026-05-06); D3-Fix: uint8_t→uint16_t for ConfigService compatibility, sizeof unchanged at 164 (2026-05-06); Bundle 1: dummy_delete_me renamed to rtm_steer_response in-place, sizeof unchanged at 164 (2026-05-08); STAGE 0 PART A: fm_steer_reposition_en renamed to log_level in-place — same offset, same uint16_t, sizeof STILL 184 and SW_VERSION STILL 34, so this flash does NOT reset SPIFFS config (2026-07-25); auton_runtime_cap_s renamed to gps_dyn_model in-place, sizeof STILL 184, SW_VERSION STILL 34 (2026-08-16); 184->192 SW34->35: +mag_orientation(u16 2) +rsvd_u16_1(u16 2) +rsvd_f32_1(float 4), appended at the tail, naturally aligned, no tail pad — the one intended config wipe for this bump (2026-08-16). THIS NUMBER IS THE SSOT: the SW34->35 config-backup migration is pinned to 184 (legacy) and 192 (current) and disables itself if either stops matching, so any prose elsewhere that disagrees with the 192 above is stale and must be corrected rather than trusted.
 confStruct usrConf;
   //The orginal confs were:  ##// confStruct defaultConf = {SW_VERSION, 1, 0, 0, 50, 0, 0, 1500, 2000, 1500, 2000, 1000, 10, 0, 1, 0, 0, 0, 0, 0, 25.0f, 10.0f, 10.0f, 5.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0, 1000, 1, 0, {0, 0, 0}, {0, 0, 0}, {'1','2','3','4','5','6','7','8'}};
   // Factory default configuration.
@@ -626,10 +656,12 @@ confStruct defaultConf = {SW_VERSION, 2, 22, 1, 50 /*steering_influence: convent
   0,            // rsvd_u16_1  RESERVED - 0 = unused
 
 
-  0.0f          // rsvd_f32_1  RESERVED - 0 = unused
-
-
-
+  0.0f,         // rsvd_f32_1  RESERVED - 0 = unused
+  // V2.5-Evo - 2026-09-19 - SW36 auto-return defaults. These are also the values the boot-path
+  // migration writes into a migrated SW35 config (the tail of the struct is copied from HERE).
+  1,            // fm_return_mode: 1 = auto-return ON (owner decision, session log item 32); 0 = HOLD as before
+  13,           // fm_align_cap: ~5 % throttle while turning to face the target (same number kFmAlignCap held)
+  80            // fm_align_influence: 80 % steering split during the align phases (owner decision 2026-09-19; 100 = one-motor pivot, 0 = use steering_influence)
 };
 
 // ============================================================

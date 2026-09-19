@@ -228,14 +228,15 @@ static void serSetConf(String data) {
     Serial.print(SW_VERSION);
     Serial.println(", then stored.");
     Serial.println("OK your settings came across: throttle calibration, pairing, compass calibration and all the tuning values.");
-    Serial.print("NOTE: exactly one setting could not come from the backup, because SW");
+    // V2.5-Evo - 2026-09-19 - the pair is SW35 -> SW36 now; the three fields SW36 appended are the
+    // ones a backup cannot carry, and they take their factory defaults (see SPIFFSEngine.h).
+    Serial.print("NOTE: three settings could not come from the backup, because SW");
     Serial.print(CFG_LEGACY_BLOB_SW);
-    Serial.println(" did not have it:");
-    Serial.println("NOTE:   the compass mounting orientation (mag_orientation) is set to 0, meaning no rotation.");
-    Serial.print("NOTE:   0 is exactly how SW");
+    Serial.println(" did not have them - they take their factory defaults:");
+    Serial.println("NOTE:   fm_return_mode 1 (auto-return inside Follow-Me ON), fm_align_cap 13, fm_align_influence 80.");
+    Serial.print("NOTE: SW");
     Serial.print(CFG_LEGACY_BLOB_SW);
-    Serial.println(" behaved, so nothing changes unless your compass module is physically mounted turned.");
-    Serial.println("NOTE: if it IS mounted turned, run ?compasscal afterwards (or ?magalign, which sets just this one setting).");
+    Serial.println(" always HELD when you stopped; set fm_return_mode 0 (then ?save) if you want that behaviour back.");
     Serial.println("OK run ?applyconf (or ?reboot) to make it live.");
     return;
   }

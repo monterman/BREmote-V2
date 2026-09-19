@@ -592,11 +592,11 @@ static void webCfgHandleImport()
     response += ",\"detail\":\"This backup was taken from SW" + String(CFG_LEGACY_BLOB_SW);
     response += " and has been MIGRATED to SW" + String(SW_VERSION);
     response += ". Your settings came across: throttle calibration, pairing, compass calibration and all the tuning values.";
-    response += " Exactly one setting could not come from the backup, because SW" + String(CFG_LEGACY_BLOB_SW);
-    response += " did not have it: the compass mounting orientation (mag_orientation) is set to 0, meaning no rotation.";
-    response += " 0 is exactly how SW" + String(CFG_LEGACY_BLOB_SW);
-    response += " behaved, so nothing changes unless your compass module is physically mounted turned.";
-    response += " If it IS mounted turned, run ?compasscal afterwards (or ?magalign, which sets just this one setting).\"";
+    // V2.5-Evo - 2026-09-19 - the pair is SW35 -> SW36 now; the three appended fields take their defaults.
+    response += " Three settings could not come from the backup, because SW" + String(CFG_LEGACY_BLOB_SW);
+    response += " did not have them - they take their factory defaults: fm_return_mode 1 (auto-return inside Follow-Me ON), fm_align_cap 13, fm_align_influence 80.";
+    response += " SW" + String(CFG_LEGACY_BLOB_SW);
+    response += " always HELD when you stopped; set fm_return_mode 0 and save if you want that behaviour back.\"";
   }
   response += "}";
   webCfgSendJson(200, response);

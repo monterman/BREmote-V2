@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-09-19 - DEEP LOG (B): fmPublishLogSnapshot() also publishes fm_rider_raw_kmh x 10 as rider_raw_dx10 (0xFFFF when unknown, i.e. < 0) - the raw
+//   displacement speed the FM_RETURN candidate is judged on, next to the filtered track that was already logged. Copy only. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG (A) + gate prints: (1) fmPublishLogSnapshot() now also copies fm_return_last_reason (sticky, never cleared here) into the snapshot's
 //   return_reason and sets two publish-time bits in the flag word - FM_LOG_GATE_ALIGNING (17: fm_rx_active || rtm_rx_active, and fmHeadingAligning()) and
 //   FM_LOG_GATE_BOOST (18: align_mixer_influence_override != 0); runFmLoop() publishes the mixer influence BEFORE the snapshot so bit 18 describes this
@@ -2279,6 +2281,14 @@ static void fmPublishLogSnapshot()
   s.throttle_cap     = fm_throttle_cap.load(std::memory_order_relaxed);
   s.station_deg_x10  = 0;   // P2: station angle — laid out now, written when the station work lands
   s.return_reason    = fm_return_last_reason;   // DEEP LOG (A): sticky FmReturnReason, changes only on an event
+  // DEEP LOG (B): the RAW rider speed (updateFmRawRiderSpeed), 0xFFFF = unknown, saturating at 0xFFFE.
+  if (fm_rider_raw_kmh < 0.0f) {
+    s.rider_raw_dx10 = 0xFFFF;
+  } else {
+    float raw = fm_rider_raw_kmh * 10.0f;
+    if (raw > 65534.0f) raw = 65534.0f;
+    s.rider_raw_dx10 = (uint16_t)raw;
+  }
   taskENTER_CRITICAL(&g_fm_log_mux);
   g_fm_log_snapshot = s;
   taskEXIT_CRITICAL(&g_fm_log_mux);

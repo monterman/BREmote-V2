@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-19 - DEEP LOG (B)+(C): VescLogDataL4 grows 83 -> 87 B (static_assert 87). (B) fm_rider_raw_dx10 u16 = the rider's RAW displacement speed x 10 km/h (RTMState.ino fm_rider_raw_kmh, the number the FM_RETURN candidate is judged on; the filtered EMA track was already logged as fm_rider_speed_dx10), sentinel 0xFFFF = unknown (< 0). (C) motor0_cmd / motor1_cmd u8 = the two post-mixer, pre-map motor commands out of calcPWM()'s steering_type 1 branch (g_motor0_cmd / g_motor1_cmd, two diagnostic observers written every 100 Hz tick, the g_effective_steer pattern; 0 for the efoil / servo branches). TIER FIX for the readers: logCsvHeaderFor() used to return the 65 B DIAG header for anything smaller than sizeof(VescLogDataL4), so after this bump every 83 B file written since 2026-09-17 would have printed with the wrong header; it now picks by the offsets of the blocks actually present (65 B DIAG / 83 B L4_83 / 85 B +raw / 87 B full) and logFormatCsvRow() guards each new field on record_size >= its offset + size. The 2026-09-17 'LAYOUT IS FINAL' note is history. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG (A): the one unused byte of the level-4 Follow-Me block, fm_pad, becomes fm_return_reason - a straight copy of the controller's FmReturnReason latch (RTMState.ino fm_return_last_reason: 0 = no event since boot; 4 = RETURN entered, 6/7/8/11 = arrived / cancelled / timed out / steered, 1-3 = a candidate dropped), STICKY - it changes only on an event, so read it on the row where fm_state changes. Two new bits in the existing fm_gate_flags u32: bit 17 aligning (an autonomous controller is turning to face its target this tick) and bit 18 boost (the pivot-boost mixer influence is published this tick); bit 16 is left free because the takeover side branch already defines it. CSV gains fm_return_reason, fm_aligning, fm_boost (45 -> 48 columns for an 83 B file; the two bits are read out of fm_gate_flags). Record size unchanged at 83, static_assert stays 83, old 83 B files print 0 in all three new columns (the pad was always 0). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - FM_RETURN + pivot boost: adds the align_mixer_influence_override atomic (0 = none; the ONE mixer influence override, written by publishAlignMixerInfluence() in RTMState.ino for FM align, FM_RETURN align and classic RTM Phase 1 align, read by calcPWM()), includes ../Common/FollowMeReturnProof.h (the pure, host-tested FM_RETURN entry proof), and adds FM_LOG_GATE_RETURN_WINDOW (bit 15) to the deep-log gate word next to the P1-b bit 11 it reserved - new bit in the existing u32, record size unchanged; fm_state gains the value 5 (RETURN). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - 0xF2 return-mode override: adds the fm_return_mode_runtime atomic (0xFF = use the SPIFFS fm_return_mode; 0 / 1 = the remote's session override, carried in 0xF2 bits 5-6) next to fm_mode_runtime, and documents telemetry.fm_flags bit 7 as the RX's echo of its EFFECTIVE return mode for the remote's display and return gesture. Runtime globals + comments only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -1111,10 +1112,11 @@ static_assert(sizeof(VescLogData) == 59, "VescLogData size mismatch — check bi
 // by the logger from raw inputs — so a log row says what runFmLoop() actually decided at that
 // instant (Rex positive finding on robertzach's snapshot design).
 //
-// LAYOUT IS FINAL. The P1 (return_candidate) and P2 (fade_bypass, transit, fm_station_deg_x10)
-// fields are laid out now and written as zero, so adding those features later changes no record
-// size and breaks no reader. Old 65-byte level-4 files still parse: the file header's record_size
-// tells the reader which blocks are present.
+// LAYOUT (history: 'LAYOUT IS FINAL' as written 2026-09-17; the record grew 83 -> 87 B on 2026-09-19,
+// see below). The P1 (return_candidate) and P2 (fade_bypass, transit, fm_station_deg_x10) fields
+// were laid out then and written as zero. Old 65-byte and 83-byte level-4 files still parse: the file
+// header's record_size tells the reader which blocks are present (logCsvHeaderFor / logFormatCsvRow
+// pick by the OFFSET of each block, never by sizeof, so a bump never re-labels an older file).
 //
 // fm_gate_flags bits (1 = the condition held on this tick):
 //   bit 0 thr_held          condition 1, the deadman (thr_received >= 25)
@@ -1199,8 +1201,15 @@ struct __attribute__((packed)) VescLogDataL4 {
                                    // leaves 5 carries the exit reason (6 arrived, 7 cancelled, 8 timeout, 9 fault, 10 left, 11 steered);
                                    // 1-3 = a candidate dropped before RETURN. Changes only on an event - read it at the row where the
                                    // state changes. Same offset, same size: the block stays 18 B / the record 83 B.
+    // ---- V2.5-Evo - 2026-09-19 - DEEP LOG (B)+(C): four bytes appended, byte 83 onward. 83 -> 87 B. ----
+    uint16_t fm_rider_raw_dx10;    // (B) the rider's RAW displacement speed x 10 km/h (fm_rider_raw_kmh: distance between two
+                                   //     distinct rider fixes >= 1 s apart, no filter, no extrapolation) - the number the FM_RETURN
+                                   //     candidate is judged on. SENTINEL 0xFFFF = unknown (no baseline yet, no rider fix for 3 s,
+                                   //     or no meta-packet ever); saturates at 0xFFFE. fm_rider_speed_dx10 above is the FILTERED track.
+    uint8_t  motor0_cmd;           // (C) g_motor0_cmd: motor 0 command out of the differential mixer, 0-255 counts, post-mixer pre-map
+    uint8_t  motor1_cmd;           // (C) g_motor1_cmd: motor 1 command, same scale. Both 0 on a non-diff steering_type.
 };
-static_assert(sizeof(VescLogDataL4) == 83, "VescLogDataL4 size mismatch — expected 59 (VescLogData) + 6 (level-4 diagnostics) + 18 (Follow-Me audit block, 2026-09-17).");
+static_assert(sizeof(VescLogDataL4) == 87, "VescLogDataL4 size mismatch — expected 59 (VescLogData) + 6 (level-4 diagnostics) + 18 (Follow-Me audit block, 2026-09-17) + 2 (fm_rider_raw_dx10) + 2 (motor0_cmd, motor1_cmd) (2026-09-19).");  // 83 -> 87: +fm_rider_raw_dx10 (u16) +motor0_cmd +motor1_cmd (u8 x 2), appended 2026-09-19
 
 // ============================================================
 // V2.5-Evo - 2026-09-17 - FmLogSnapshot: the controller -> logger hand-off
@@ -1225,8 +1234,9 @@ struct FmLogSnapshot {
     uint8_t  throttle_cap;
     int16_t  station_deg_x10;
     uint8_t  return_reason;    // V2.5-Evo - 2026-09-19 - DEEP LOG (A): fm_return_last_reason, sticky (see VescLogDataL4.fm_return_reason)
+    uint16_t rider_raw_dx10;   // V2.5-Evo - 2026-09-19 - DEEP LOG (B): fm_rider_raw_kmh x 10; 0xFFFF = unknown
 };
-FmLogSnapshot g_fm_log_snapshot = { 0, 0xFFFF, 0xFFFF, 0, 0, 0xFF, 0, 0, 255, 0, 0 };
+FmLogSnapshot g_fm_log_snapshot = { 0, 0xFFFF, 0xFFFF, 0, 0, 0xFF, 0, 0, 255, 0, 0, 0xFFFF };
 portMUX_TYPE  g_fm_log_mux      = portMUX_INITIALIZER_UNLOCKED;
 
 // ============================================================
@@ -1302,18 +1312,27 @@ static inline uint16_t logRecordSizeForLevel(uint8_t level)
 #define LOG_CSV_HEADER_L4_DIAG LOG_CSV_HEADER_L3 ",gps_sent_per_s,cog_frozen_s,mux_err_cnt,loop_max_ms"
 // V2.5-Evo - 2026-09-19 - DEEP LOG (A): +fm_return_reason (the sticky FmReturnReason latch), +fm_aligning and +fm_boost
 // (bits 17 / 18 of fm_gate_flags, read out as their own 0/1 columns so a reader never has to mask the flag word).
-#define LOG_CSV_HEADER_L4 LOG_CSV_HEADER_L4_DIAG ",fm_gate_flags,fm_distance_m,fm_d_engage_m,fm_rider_speed_kmh,fm_sep_fix_count,fm_mode,fm_state,fm_block_reason,fm_throttle_cap,fm_station_deg,fm_return_reason,fm_aligning,fm_boost"
+// V2.5-Evo - 2026-09-19 - DEEP LOG (B)+(C): three tiers above DIAG now, each its own macro, each selected by the
+// file's record_size: _L4_83 is the 83 B layout written from 2026-09-17 to the (B)+(C) bump (48 columns), _L4_RAW
+// adds fm_rider_raw_kmh (85 B, never shipped on its own but a reader must still be able to name it), _L4 is the
+// current 87 B layout with motor0_cmd / motor1_cmd (51 columns).
+#define LOG_CSV_HEADER_L4_83 LOG_CSV_HEADER_L4_DIAG ",fm_gate_flags,fm_distance_m,fm_d_engage_m,fm_rider_speed_kmh,fm_sep_fix_count,fm_mode,fm_state,fm_block_reason,fm_throttle_cap,fm_station_deg,fm_return_reason,fm_aligning,fm_boost"
+#define LOG_CSV_HEADER_L4_RAW LOG_CSV_HEADER_L4_83 ",fm_rider_raw_kmh"
+#define LOG_CSV_HEADER_L4 LOG_CSV_HEADER_L4_RAW ",motor0_cmd,motor1_cmd"
 
 #define LOG_CSV_ROW_FMT_L3 "%u,%.2f,%.2f,%d,%.1f,%d,%u,%u,%.1f,%.6f,%.6f,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%d,%d,%u,%u,%.1f,%d,%.1f"
 #define LOG_CSV_ROW_EXT_L4 ",%u,%u,%u,%u"
 #define LOG_CSV_ROW_EXT_L4_FM ",%u,%.1f,%.1f,%.1f,%u,%u,%u,%u,%u,%.1f,%u,%u,%u"
+#define LOG_CSV_ROW_EXT_L4_RAW ",%.1f"        // (B) fm_rider_raw_kmh; -1.0 = unknown
+#define LOG_CSV_ROW_EXT_L4_MOTORS ",%u,%u"    // (C) motor0_cmd, motor1_cmd
 
 // Row buffer size. Sizing arithmetic for the 31 level-3 columns is unchanged from F-WEBCSV:
 //   ~178 field chars + 30 commas + newline + NUL = ~210 bytes for normal data, and a corrupt
 //   latitude/longitude printed via "%.6f" can reach ~282. The 4 level-4 diagnostic columns add
 //   at most 3+3+5+5 chars plus 4 commas = 20. The 10 Follow-Me columns (2026-09-17) add at most
 //   ~60 more (a u32 flag word, three "%.1f" distances/speeds, five u8s, one signed "%.1f"); the
-//   three 2026-09-19 columns (a u8 and two 0/1 flags) at most 9 more. 640
+//   three 2026-09-19 (A) columns (a u8 and two 0/1 flags) at most 9 more, and the (B)+(C) columns (one
+//   "%.1f" speed, two u8s) at most 15 more. 640
 //   clears the pathological ~362 by ~1.8x. It is a stack local in the Arduino loop task (8 KB
 //   stack), which is where both readers run.
 #define LOG_CSV_ROW_BUF 640
@@ -1323,12 +1342,20 @@ static inline uint16_t logRecordSizeForLevel(uint8_t level)
 // Inputs: level and record_size, both from the file's LogFileHeader. Outputs: the header string.
 // Side effects: none. Both readers (serial ?download, WiFi /api/logs/download) call this so a
 // 65-byte level-4 file written before the Follow-Me block still gets exactly its 35 columns.
+// V2.5-Evo - 2026-09-19 - DEEP LOG (B)+(C) TIER FIX: the second test used to be
+// record_size < sizeof(VescLogDataL4), which was right only while sizeof was the ONE size above DIAG.
+// After the 83 -> 87 bump every 83 B file on the board would have printed with the 35-column DIAG
+// header - 13 columns short of its own contents. Each tier is now bounded by the OFFSET where the
+// next block starts, so the record size is matched to the columns that are actually present and a
+// future bump cannot re-label an older file. Order: 65 DIAG, 83 L4_83, 85 +raw, 87 full.
 // ============================================================
 static inline const char* logCsvHeaderFor(uint8_t level, uint16_t record_size)
 {
   if (level < 4 || record_size < (uint16_t)offsetof(VescLogDataL4, fm_gate_flags)) return LOG_CSV_HEADER_L3;
-  if (record_size < (uint16_t)sizeof(VescLogDataL4)) return LOG_CSV_HEADER_L4_DIAG;
-  return LOG_CSV_HEADER_L4;
+  if (record_size < (uint16_t)offsetof(VescLogDataL4, fm_rider_raw_dx10))                              return LOG_CSV_HEADER_L4_DIAG;  // 65 B: diagnostics only
+  if (record_size < (uint16_t)(offsetof(VescLogDataL4, fm_rider_raw_dx10) + sizeof(uint16_t)))         return LOG_CSV_HEADER_L4_83;    // 83 B: + Follow-Me block
+  if (record_size < (uint16_t)(offsetof(VescLogDataL4, motor1_cmd) + sizeof(uint8_t)))                 return LOG_CSV_HEADER_L4_RAW;   // 85 B: + raw rider speed
+  return LOG_CSV_HEADER_L4;                                                                                                             // 87 B: + motor commands
 }
 
 // ============================================================
@@ -1421,7 +1448,11 @@ static int logFormatCsvRow(char* out, size_t out_len, const uint8_t* rec_bytes, 
       n += m;
       if ((size_t)n >= out_len) n = (int)out_len - 1;
     }
-    if (rec_size >= (uint16_t)sizeof(VescLogDataL4) && (size_t)n < (out_len - 1))
+    // V2.5-Evo - 2026-09-19 - DEEP LOG (B)+(C): the Follow-Me block is present when the record reaches
+    // the byte after it (the offset of fm_rider_raw_dx10, 83) - NOT sizeof(), which is 87 now and
+    // would have dropped the whole block for every 83 B file. The (B) and (C) fields are each guarded
+    // on their own offset + size, so 83 / 85 / 87 B records print exactly the columns they carry.
+    if (rec_size >= (uint16_t)offsetof(VescLogDataL4, fm_rider_raw_dx10) && (size_t)n < (out_len - 1))
     {
       // Follow-Me audit block. N/A distances print as -1.0 (same convention as tx_distance_m).
       int k = snprintf(out + n, out_len - (size_t)n, LOG_CSV_ROW_EXT_L4_FM,
@@ -1442,6 +1473,28 @@ static int logFormatCsvRow(char* out, size_t out_len, const uint8_t* rec_bytes, 
       if (k > 0)
       {
         n += k;
+        if ((size_t)n >= out_len) n = (int)out_len - 1;
+      }
+    }
+    // (B) raw rider speed: present from 85 B. 0xFFFF (unknown) prints as -1.0.
+    if (rec_size >= (uint16_t)(offsetof(VescLogDataL4, fm_rider_raw_dx10) + sizeof(uint16_t)) && (size_t)n < (out_len - 1))
+    {
+      int r = snprintf(out + n, out_len - (size_t)n, LOG_CSV_ROW_EXT_L4_RAW,
+                       (d4.fm_rider_raw_dx10 == 0xFFFF) ? -1.0f : (d4.fm_rider_raw_dx10 / 10.0f));
+      if (r > 0)
+      {
+        n += r;
+        if ((size_t)n >= out_len) n = (int)out_len - 1;
+      }
+    }
+    // (C) the two mixer outputs: present from 87 B.
+    if (rec_size >= (uint16_t)(offsetof(VescLogDataL4, motor1_cmd) + sizeof(uint8_t)) && (size_t)n < (out_len - 1))
+    {
+      int c = snprintf(out + n, out_len - (size_t)n, LOG_CSV_ROW_EXT_L4_MOTORS,
+                       (unsigned)d4.motor0_cmd, (unsigned)d4.motor1_cmd);
+      if (c > 0)
+      {
+        n += c;
         if ((size_t)n >= out_len) n = (int)out_len - 1;
       }
     }
@@ -1544,6 +1597,18 @@ volatile uint8_t steering_received = 127;
 // the actuation gap is visible: rtm_steer_override can command a turn while this stays neutral
 // because the throttle-release gate suppressed it. 127 = straight ahead.
 volatile uint8_t g_effective_steer = 127;
+
+// V2.5-Evo - 2026-09-19 - DEEP LOG (C): the two motor commands the differential mixer produced this
+// calcPWM() pass, in 0-255 command counts AFTER the mixer and BEFORE map() into each channel's PWM
+// range (so the split is visible independent of PWM_min/max, trim, the ramp and the effective_thr
+// == 0 clamp, all of which act on the microsecond values afterwards). Written unconditionally on
+// every pass of the steering_type == 1 branch from motor_mix.motor0/motor1; 0 / 0 for the efoil and
+// servo branches, which have no mixer. DIAGNOSTIC OBSERVERS ONLY - the g_effective_steer pattern
+// exactly: written by calcPWM() (generatePWM task, 100 Hz), read by fillLevel4Diag() (loggerTask),
+// never read back into any control path. Single-byte volatiles, atomic on the ESP32-C3. A bench
+// check: full-lock squeeze at 30 % throttle (76/255) with steering_influence 60 -> turn = 46 -> 30 / 122.
+volatile uint8_t g_motor0_cmd = 0;   // motor 0 command out of the mixer, 0-255; 0 when not the diff branch
+volatile uint8_t g_motor1_cmd = 0;   // motor 1 command out of the mixer, 0-255; 0 when not the diff branch
 
 volatile unsigned long get_vesc_timer = 0;
 volatile unsigned long last_uart_packet = 0;

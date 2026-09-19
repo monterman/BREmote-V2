@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-19 - DEEP LOG (C): calcPWM() records the two post-mixer, pre-map motor commands (motor_mix.motor0 / motor1, 0-255 counts) into g_motor0_cmd / g_motor1_cmd - diagnostic observers only, the g_effective_steer pattern: written on every pass, never read back into any control path. The steering_type 1 branch writes the mixer's values; the efoil and servo branches write 0 / 0. No PWM value, cap, gate or ramp is touched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - PIVOT BOOST: in steering_type 1, calcPWM() passes align_mixer_influence_override (BREmote_V2_Rx.h; published by RTMState.ino while Follow-Me align, FM_RETURN align or classic RTM Phase 1 align is turning the buggy to face its target) to mixThrottleRelativeDifferential() in place of usrConf.steering_influence when it is non-zero AND an autonomous steering override is being applied on this tick (the same gate as effective_steer). Manual steering, the efoil and servo branches, the ramp and the terminal effective_thr == 0 guard are untouched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - C-4 FIX: throttle-relative differential mixer. BUG: in steering_type 1 the steering term was a fixed fraction of the FULL PWM span (steering_influence % of PWM_max-PWM_min) added AFTER the throttle map, so it was never scaled by effective_thr - a hard steer during a 13/255 crawl (influence 50) put one motor at ~55 % regardless of the RTM/FM throttle cap, i.e. steering could ADD power past the cap. FIX: calcPWM() now calls mixThrottleRelativeDifferential() (Common/DifferentialMixer.h, host-tested in Tools/tests/differential_mixer_test.cpp): turn = T x influence x |steer-127| / (100 x span), motor0 = T - turn, motor1 = T + turn, each clamped 0..255, then each motor command is map()ed into its own PWM range and trim is applied as the same symmetric post-map correction as before (+trim ch0, -trim ch1). Steering is now proportional to the permitted throttle - none at zero, less at low throttle, full authority at full throttle - and before upper saturation the two commands always sum to exactly 2T (power-neutral; saturation can only lower it). 127 is the exact neutral byte inside the mixer, so the 2026-06-05 H-1 recentring is no longer needed and is removed. steering_inverted semantics are unchanged: 0 -> steer > 127 slows motor0 / speeds motor1; 1 -> the mirror. Efoil and servo branches, the ramp and the terminal effective_thr==0 guard are untouched. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-18 - comment only (review finding F8): the steering-gate note said runFmLoop() forces FM to IDLE whenever rtm_rx_active is set; since 2026-09-18 it makes FM yield (FM_ARMED, fm_rx_active false, no cap/steer writes) instead. No code change.
@@ -125,6 +126,13 @@ void calcPWM()
   // the logger. Diagnostic observer only — this write does not alter any PWM/motor control path.
   g_effective_steer = effective_steer;
 
+  // V2.5-Evo - 2026-09-19 - DEEP LOG (C): the two motor commands the differential mixer produces this
+  // pass, for the logger. Locals here, published once below the branch chain so the pair is written
+  // together and reads 0 / 0 on the branches that have no mixer. Diagnostic observers only - the
+  // g_effective_steer pattern; nothing in this function or anywhere else reads them back.
+  uint8_t motor0_cmd_obs = 0;
+  uint8_t motor1_cmd_obs = 0;
+
   if(usrConf.steering_type == 0)
   {
     //Efoil mode
@@ -151,6 +159,8 @@ void calcPWM()
     DifferentialMotorMix motor_mix = mixThrottleRelativeDifferential(
         effective_thr, effective_steer, mix_influence,   // V2.5-Evo - 2026-09-19 - steering_influence, or the align pivot boost
         usrConf.steering_inverted);
+    motor0_cmd_obs = motor_mix.motor0;   // DEEP LOG (C): post-mixer, pre-map counts, every pass of this branch
+    motor1_cmd_obs = motor_mix.motor1;
     int motor_0_pwm = map(motor_mix.motor0, 0, 255, usrConf.PWM0_min, usrConf.PWM0_max);
     int motor_1_pwm = map(motor_mix.motor1, 0, 255, usrConf.PWM1_min, usrConf.PWM1_max);
 
@@ -177,6 +187,10 @@ void calcPWM()
   {
     PWM_active = 0;
   }
+
+  // DEEP LOG (C) 2026-09-19: publish the two observers (diagnostic only; see the declaration in the header).
+  g_motor0_cmd = motor0_cmd_obs;
+  g_motor1_cmd = motor1_cmd_obs;
 
   // ── SAFETY: MOTOR RAMPING (usrConf.motor_ramp_s, seconds) ──────────────────────
   // Rise-limit BOTH motor outputs so 0->full takes motor_ramp_s seconds. Prevents a violent throttle

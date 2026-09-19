@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-19 - DEEP LOG: ?logstat now prints the log level in force, the record size, the log rate and the capacity that follows from them - computed from logRecordSizeForLevel() / log_interval_ms / SPIFFS.totalBytes() and the MIN_FREE_SPACE_KB reserve, never from a literal, so a record-size change (83 -> 87 B today) is reflected without touching this command. Print only. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - ?diag gained ONE more line (P1-b): the effective auto-return mode and its source (stored default / the remote's session override), whether a RETURN candidate proof is running and what it last decided, and why the last candidate or RETURN ended. Read-only accessors in RTMState.ino. No control-path change, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-18 - ?diag gained ONE more line (P1-a/P1-c): the Follow-Me engagement facts - state, separation latch, whether the next engagement needs the full D_engage, and whether FM is yielding to an active RTM - through read-only accessors in RTMState.ino. No control-path change, no confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-17 - ?diag gained ONE line: the last Follow-Me fault-stop reason (which of conditions 2-7, divergence or the heading-disagree latch ended the run) and how long ago, plus whether a stop ramp is in progress right now. Read-only accessors from RTMState.ino (fmLastStopReason / fmLastStopMs / fmStopReason); nothing set, cleared or aged.
@@ -550,6 +551,27 @@ void cmdLogStat(const String& params) {
   Serial.printf("currentLogFile  : %s\n", currentLogFileName.length() ? currentLogFileName.c_str() : "(none)");
   Serial.printf("gps_en (config) : %u\n", usrConf.gps_en);
   Serial.printf("logger_en       : %u\n", usrConf.logger_en);
+  // V2.5-Evo - 2026-09-19 - DEEP LOG: level, record size, rate and the capacity they imply. The
+  // record size comes from logRecordSizeForLevel() (sizeof of the record struct), the rate from the
+  // logger's live interval, the usable space from the partition minus the reserve ensureFreeSpace()
+  // keeps - so none of these numbers can go stale when the record grows. "full" is a freshly cleared
+  // partition; "free now" is what is left with the logs currently on the board.
+  {
+    extern uint32_t log_interval_ms;   // Logger.ino (same translation unit, defined earlier)
+    const uint8_t  lvl      = logResolveLevel();
+    const uint16_t rec_b    = logRecordSizeForLevel(lvl);
+    const float    rate_hz  = (log_interval_ms > 0) ? (1000.0f / (float)log_interval_ms) : 0.0f;
+    const float    b_per_h  = (float)rec_b * rate_hz * 3600.0f;
+    const size_t   reserve  = (size_t)MIN_FREE_SPACE_KB * 1024u;
+    const size_t   total    = SPIFFS.totalBytes();
+    const size_t   freeb    = total - SPIFFS.usedBytes();
+    const float    full_h   = (b_per_h > 0.0f && total > reserve) ? ((float)(total - reserve) / b_per_h) : 0.0f;
+    const float    now_h    = (b_per_h > 0.0f && freeb > reserve) ? ((float)(freeb - reserve) / b_per_h) : 0.0f;
+    Serial.printf("log_level       : cfg %u -> level %u, %u bytes/record, %.1f Hz\n",
+                  (unsigned)usrConf.log_level, (unsigned)lvl, (unsigned)rec_b, rate_hz);
+    Serial.printf("capacity        : ~%.2f h on a full partition, ~%.2f h in the space free now (%u KB reserve kept)\n",
+                  full_h, now_h, (unsigned)MIN_FREE_SPACE_KB);
+  }
   Serial.println("--- GPS (TinyGPS++) ---");
   Serial.printf("location.isValid: %s\n", gps.location.isValid() ? "YES" : "NO");
   Serial.printf("date.isValid    : %s\n", gps.date.isValid()     ? "YES" : "NO");

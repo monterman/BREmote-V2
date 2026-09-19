@@ -1,3 +1,11 @@
+// V2.5-Evo - 2026-09-19 - fix round 1 (code review M-1): FM_RETURN gains a STEER-CANCEL with following's own constants - a stick deflection of
+//   kFmSteerCancelDeadband (40 counts from 127) sustained kFmSteerPersistMs (500 ms), past a kFmEngageGraceMs (2 s) grace measured from the
+//   start of the current held-trigger RETURN motion (fm_return_motion_ms, never from ENTER RETURN), exits through fmReturnExitToHold() with the
+//   new reason FM_RET_STEERED (11): the HOLD surge guard (cap 0, ARMED/255 only on a released tick), never a direct ARMED. Evaluated after
+//   faults / distance / arrival / the rider-moving cancel and BEFORE the trigger gate, so a released trigger still parks and a held-trigger
+//   steer cancels through HOLD; a twitch during the proof or before the first squeeze cannot count (no motion start = no grace clock, and the
+//   persistence timer fm_steer_input_since_ms is zeroed on RETURN entry, at every motion start and on every RETURN exit). (L-4) the stop-reason
+//   comment no longer calls RETURN_NOT_CLOSING "not defined yet". No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - FM_RETURN (auto-return inside Follow-Me, state 5). While the effective auto-return mode is 1, a rider who STOPS
 //   (raw displacement speed < kFmReturnRiderRawMaxKmh 4 km/h, judged on raw positions, not the filtered track) in FM_ACTIVE or FM_HOLD is a
 //   RETURN CANDIDATE: that same tick Follow-Me refuses to steer (cap 0 through the HOLD branch, steering 127, engage ramp reset) and the
@@ -1967,7 +1975,8 @@ enum FmReturnReason : uint8_t {
   FM_RET_CANCELLED     = 7,   // RETURN: rider moving > kFmReturnCancelKmh for 1 s -> HOLD
   FM_RET_TIMEOUT       = 8,   // RETURN: kFmReturnMaxMs of held-trigger motion -> HOLD
   FM_RET_FAULT         = 9,   // RETURN: a fault (conditions 2-7 or not closing) -> STOPPING
-  FM_RET_LEFT          = 10   // RETURN / candidate ended because FM left or yielded
+  FM_RET_LEFT          = 10,  // RETURN / candidate ended because FM left or yielded
+  FM_RET_STEERED       = 11   // RETURN: the rider steered (deadband + persistence past the motion grace) -> HOLD (fix round 1, M-1)
 };
 static const char* fmReturnReasonName(uint8_t r)
 {
@@ -1983,6 +1992,7 @@ static const char* fmReturnReasonName(uint8_t r)
     case FM_RET_TIMEOUT:      return "RETURN timed out (60 s of motion)";
     case FM_RET_FAULT:        return "RETURN fault -> STOPPING";
     case FM_RET_LEFT:         return "RETURN / candidate ended - Follow-Me left or yielded";
+    case FM_RET_STEERED:      return "RETURN cancelled - rider steered";
     default:                  return "unknown";
   }
 }
@@ -2108,7 +2118,7 @@ static unsigned long fm_stop_ms          = 0;
 //   fm_last_stop_reason - the most recent stop, kept until the next one or a reboot, for ?diag.
 //   fm_last_stop_ms     - millis() of that stop, so ?diag can say how long ago it was.
 // Codes are stable numbers because they go into log files; never renumber, only append.
-// RETURN_NOT_CLOSING (9) is reserved for the P1 engagement rework and is not defined yet.
+// RETURN_NOT_CLOSING (9) is live since 2026-09-19: FM_RETURN's not-closing fault (runFmReturnTick).
 enum FmStopReason : uint8_t {
   FM_STOP_NONE             = 0,   // no fault stop in progress / none recorded
   FM_STOP_PHASE_A          = 1,   // condition 2: the buggy's own GPS was rejected (Phase A anti-spoofing)
@@ -3966,6 +3976,7 @@ static void fmReturnExitToHold(uint8_t reason, unsigned long now, float dist_m)
   fm_sep_fix_count          = 0;
   fm_reengage_needs_dengage = true;
   fm_engage_ms              = 0;
+  fm_steer_input_since_ms   = 0;      // fix round 1 (M-1): the steer-cancel persistence timer ends with the return
   fm_return_spent           = true;
   fm_return_pending         = false;
   fm_return_motion_ms       = 0;
@@ -4005,6 +4016,7 @@ static void fmReturnFault(uint8_t stop_reason, unsigned long now, bool thr_held)
   fm_return_check_dist_m    = -1.0f;
   fm_return_cancel_since_ms = 0;
   fm_return_last_reason     = FM_RET_FAULT;
+  fm_steer_input_since_ms   = 0;      // fix round 1 (M-1): the steer-cancel persistence timer ends with the return
   fmClearReturnProof();
   fm_align_influence_req    = 0;
 
@@ -4064,6 +4076,40 @@ static void runFmReturnTick(unsigned long now)
     fm_return_cancel_since_ms = 0;
   }
 
+  // ---- STEER-CANCEL (fix round 1, code review M-1): the rider's stick ends a return ----
+  // While RETURN moves, calcPWM() applies rtm_steer_override and the stick is not steering the
+  // buggy - exactly as in following, where the ACTIVE branch reads a sustained deflection as the
+  // rider taking manual control and exits. Classic RTM does the same on the remote
+  // (rtm_steer_exit_on_input). RETURN had no such exit: a rider pushing the stick to swerve the
+  // buggy away from something was ignored until they let go of the trigger. Same three constants as
+  // following - kFmSteerCancelDeadband from centre, kFmSteerPersistMs sustained - and a grace of
+  // kFmEngageGraceMs measured from THE START OF THE CURRENT HELD-TRIGGER MOTION (fm_return_motion_ms),
+  // not from ENTER RETURN: while parked (no motion started) there is no grace clock, so a twitch
+  // during the proof or before the first squeeze can never count, and the persistence timer is
+  // zeroed at every motion start, on entry and on every exit. Sits BEFORE the trigger gate on
+  // purpose: a released trigger still takes its own parking path below; a held-trigger steer exits
+  // through fmReturnExitToHold() - cap 0 and FM_HOLD, ARMED/255 only on a released tick - never a
+  // direct ARMED. A rider DECLARATION, not a fault: no stop reason, no St / stop buzz.
+  {
+    int sdev = (int)steering_received - 127;
+    if (sdev < 0) sdev = -sdev;
+    if (sdev >= (int)kFmSteerCancelDeadband) {
+      if (fm_steer_input_since_ms == 0) fm_steer_input_since_ms = now;
+    } else {
+      fm_steer_input_since_ms = 0;
+    }
+    const bool past_grace = (fm_return_motion_ms != 0) && ((now - fm_return_motion_ms) >= kFmEngageGraceMs);
+    const bool persisted  = (fm_steer_input_since_ms != 0) && ((now - fm_steer_input_since_ms) >= kFmSteerPersistMs);
+    if (past_grace && persisted) {
+      const unsigned long held_ms   = now - fm_steer_input_since_ms;   // captured before the exit zeroes both timers
+      const unsigned long motion_ms = now - fm_return_motion_ms;
+      fmReturnExitToHold(FM_RET_STEERED, now, dist_m);   // motor posture first; it prints the HOLD line
+      Serial.printf("FM [RX] RETURN cancelled: rider steered (stick %d from centre for %lu ms, %lu ms into the motion) -> HOLD, no alarm\n",
+                    sdev, held_ms, motion_ms);
+      return;
+    }
+  }
+
   // INVARIANT: motion only while the trigger is held. Released = parked: no steering, cap 0, the
   // engage ramp and the runtime cap restart on the next squeeze, the not-closing window is dropped.
   if (!thr_held) {
@@ -4080,6 +4126,7 @@ static void runFmReturnTick(unsigned long now)
     fm_return_motion_ms    = now;
     fm_return_check_ms     = 0;
     fm_return_check_dist_m = -1.0f;
+    fm_steer_input_since_ms = 0;       // fix round 1 (M-1): a deflection from before this squeeze never counts; the grace starts now
     prev_heading_src_valid  = false;   // cold-start the derivative on every squeeze
     prev_heading_error_deg  = 0.0f;
     prev_steering_update_ms = 0;

@@ -32,7 +32,7 @@ static inline bool cfgLegacyPairMatches(size_t decoded_len, uint16_t blob_versio
 //   keeps its offset and its value); every byte after that - the appended fields AND any tail
 //   padding - comes from the factory-default image at the same offset. Copying the tail from the
 //   defaults, rather than zeroing it, is what gives an appended field a non-zero default (SW36's
-//   fm_return_mode 1 / fm_align_cap 13 / fm_align_influence 100) and means a future appended field
+//   fm_return_mode 1 / fm_align_cap 13 / fm_align_influence 80) and means a future appended field
 //   cannot be forgotten here.
 // Inputs:  blob / blob_len - the decoded legacy bytes; legacy_len - the size the blob must be;
 //          defaults / target_len - the factory-default image and the current struct size;

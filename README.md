@@ -1067,6 +1067,7 @@ Connect to the TX at 115200 baud. All commands are prefixed with `?`.
 - [Original BREmote V2 repository — Luddi96](https://github.com/Luddi96/BREmote)
 - [Web Serial Config Tool — open in browser](https://monterman.github.io/BREmote-V2/BREmote_V2.5-Evo_Web_Serial_Config_Tool.html) *(Chrome/Edge — no download needed)*
 - [Web Serial Config Tool — offline download](docs/BREmote_V2.5-Evo_Web_Serial_Config_Tool.html)
+- [RX Log Reader — Tools/logreader/](Tools/logreader/README.md) *(decode the on-board deep log — real units, named Follow-Me gate bits, session timeline)*
 - [RTM Design Document — DESIGN_RETURN_TO_ME.md](DESIGN_RETURN_TO_ME.md)
 - [FM Autonomous-Following Design Document — DESIGN_FOLLOW_ME.md](DESIGN_FOLLOW_ME.md) *(design spec — implemented in this release, alpha)*
 - [Config Tool — lbre.de](https://lbre.de) *(LudwigBre's original web config tool)*

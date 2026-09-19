@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-19 - STICK TAKEOVER: calcPWM()'s steering-source selector reads the steer_takeover_active atomic (BREmote_V2_Rx.h; published once per 10 Hz tick by RTMState.ino while the rider's stick has taken over an automatic steering run under usrConf.steer_during_auto 1). The unchanged auto_steer test becomes auto_owner; auto_cmd = auto_owner && !takeover selects rtm_steer_override, otherwise the stick; the pivot boost follows auto_cmd. Nothing else changes: no new writer of effective_thr, any cap, rtm_steer_override or a PWM time; the thr_received >= 25 gate, the efoil and servo branches, the ramp and the terminal effective_thr == 0 clamp are untouched. With the atomic false (the setting at 0, every fielded board) the selector is the old `auto_steer ? override : stick`, byte for byte (host test). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - PIVOT BOOST: in steering_type 1, calcPWM() passes align_mixer_influence_override (BREmote_V2_Rx.h; published by RTMState.ino while Follow-Me align, FM_RETURN align or classic RTM Phase 1 align is turning the buggy to face its target) to mixThrottleRelativeDifferential() in place of usrConf.steering_influence when it is non-zero AND an autonomous steering override is being applied on this tick (the same gate as effective_steer). Manual steering, the efoil and servo branches, the ramp and the terminal effective_thr == 0 guard are untouched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - C-4 FIX: throttle-relative differential mixer. BUG: in steering_type 1 the steering term was a fixed fraction of the FULL PWM span (steering_influence % of PWM_max-PWM_min) added AFTER the throttle map, so it was never scaled by effective_thr - a hard steer during a 13/255 crawl (influence 50) put one motor at ~55 % regardless of the RTM/FM throttle cap, i.e. steering could ADD power past the cap. FIX: calcPWM() now calls mixThrottleRelativeDifferential() (Common/DifferentialMixer.h, host-tested in Tools/tests/differential_mixer_test.cpp): turn = T x influence x |steer-127| / (100 x span), motor0 = T - turn, motor1 = T + turn, each clamped 0..255, then each motor command is map()ed into its own PWM range and trim is applied as the same symmetric post-map correction as before (+trim ch0, -trim ch1). Steering is now proportional to the permitted throttle - none at zero, less at low throttle, full authority at full throttle - and before upper saturation the two commands always sum to exactly 2T (power-neutral; saturation can only lower it). 127 is the exact neutral byte inside the mixer, so the 2026-06-05 H-1 recentring is no longer needed and is removed. steering_inverted semantics are unchanged: 0 -> steer > 127 slows motor0 / speeds motor1; 1 -> the mirror. Efoil and servo branches, the ramp and the terminal effective_thr==0 guard are untouched. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-18 - comment only (review finding F8): the steering-gate note said runFmLoop() forces FM to IDLE whenever rtm_rx_active is set; since 2026-09-18 it makes FM yield (FM_ARMED, fm_rx_active false, no cap/steer writes) instead. No code change.
@@ -105,8 +106,23 @@ void calcPWM()
   // that it forced FM to IDLE), so they safely share
   // rtm_steer_override as the steering command. The thr_received>=25 condition is unchanged and
   // still applies to both — autonomous steering never reaches the motors on a released trigger.
-  const bool auto_steer = ((rtm_rx_active || fm_rx_active) && usrConf.rtm_rx_override_steering && thr_received >= 25);
-  uint8_t effective_steer = auto_steer ? (uint8_t)rtm_steer_override : steering_received;
+  // V2.5-Evo - 2026-09-19 - STICK TAKEOVER (usrConf.steer_during_auto 1). Three names for one
+  // decision, so the motor path stays readable:
+  //   auto_owner - the test above, unchanged: an autonomous controller owns the steering this tick.
+  //   takeover   - the rider's stick has taken that steering over (steer_takeover_active, decided
+  //                at 10 Hz in RTMState.ino with 500 ms / 200 ms persistence and 40 / 20 count
+  //                hysteresis, published through ONE atomic with one writer; this task only reads).
+  //   auto_cmd   - the controller's byte is applied: an owner exists AND no takeover stands.
+  // The selector is the ONLY thing the takeover changes here: which of the two EXISTING steering
+  // sources feeds the mixer. effective_thr, every cap above, rtm_steer_override and the PWM times
+  // have exactly the writers they had. A takeover with no owner is impossible (auto_owner carries
+  // thr_received >= 25, so a released trigger makes the flag irrelevant on this very cycle and
+  // effective_thr == 0 lands both outputs at PWM_min below), and with the setting at 0 the flag is
+  // never true, so auto_cmd == auto_steer and the bytes are identical to before.
+  const bool auto_owner = ((rtm_rx_active || fm_rx_active) && usrConf.rtm_rx_override_steering && thr_received >= 25);
+  const bool takeover   = auto_owner && steer_takeover_active.load(std::memory_order_relaxed);
+  const bool auto_cmd   = auto_owner && !takeover;
+  uint8_t effective_steer = auto_cmd ? (uint8_t)rtm_steer_override : steering_received;
 
   // V2.5-Evo - 2026-09-19 - PIVOT BOOST. While an autonomous controller is in its align phase it
   // publishes usrConf.fm_align_influence here (see align_mixer_influence_override in the header);
@@ -115,10 +131,13 @@ void calcPWM()
   // (the mixer is throttle-relative: motor0 + motor1 <= 2T always). It is honoured only on ticks
   // where the autonomous steering override itself is honoured, so manual steering is never mixed
   // with a boosted influence, and 0 means "use steering_influence" exactly as before.
+  // V2.5-Evo - 2026-09-19 - and that means auto_cmd, not auto_owner: a takeover mixes the rider's
+  // stick at steering_influence (the "manual feel never changes" rule), the boost follows the
+  // CONTROLLER's command only.
   uint16_t mix_influence = usrConf.steering_influence;
   {
     const uint8_t boost = align_mixer_influence_override.load(std::memory_order_relaxed);
-    if (auto_steer && boost != 0) mix_influence = boost;
+    if (auto_cmd && boost != 0) mix_influence = boost;
   }
 
   // V2.5-Evo - 2026-07-19 - FM triage: record the steering byte actually applied this loop for

@@ -1,3 +1,21 @@
+// V2.5-Evo - 2026-09-19 - STICK DURING AUTO-STEER (owner decision, session log item 48): with usrConf.steer_during_auto == 1 the rider's
+//   stick TAKES OVER the steering byte during Follow-Me following, auto-return (FM_RETURN) and classic return-to-me instead of
+//   cancelling them; with 0 (default, every fielded board) the three cancel paths run VERBATIM - the ACTIVE steer-cancel and the
+//   RETURN steer-cancel (M-1) sit unchanged inside `if (usrConf.steer_during_auto == 0)` and the takeover step is the else branch;
+//   classic RTM has no RX-side cancel and gets none. The decision is the pure Common/SteerArbitration.h step, run at 10 Hz by the
+//   mode that owns the steering with its own motion clock as the grace base (fm_engage_ms / fm_return_motion_ms / the new
+//   rtm_motion_ms): centre-seen required (a drifted remote centre never takes over silently, rate-limited print), 40 counts for
+//   500 ms after the 2 s grace to engage (the cancel's own constants through aliases), 20 counts for 200 ms to release, 20 s
+//   maximum then the mode's CANCEL path with a print naming centre drift (following -> ARMED-unlatched with the cancel block's
+//   writes; RETURN -> fmReturnExitToHold(FM_RET_STEERED); RTM -> the Gate-9-shaped clean handoff). Published ONCE per tick through
+//   steer_takeover_active (single write site publishSteerTakeover(), RTM > FM, the publishAlignMixerInfluence() shape); calcPWM()
+//   only reads it. While a takeover stands: the divergence net (following) and the not-closing net (RETURN) are PARKED and re-armed
+//   with a fresh window on release (following adds a kFmDivergeMs post-release grace; RETURN re-bases its align suspension on
+//   fm_return_judge_base_ms), PIVOT-SUSPEND-1's episode statics are held reset, Phase C check 1 (RTM) is parked and re-seeded on
+//   release; the cap chains, the stop radius, arrival, the rider-moving cancel, the trigger gate, the return proof and every gate
+//   keep priority over the stick. updateRtmSteering() keeps running in shadow so the D term has no gap on resume. The state is
+//   zeroed at every owner exit. fm_flags bits 4 (setting echo) and 5 (takeover standing); deep-log bit 16; ?diag accessors.
+//   No confStruct size change (rsvd_u16_1 renamed in place in BREmote_V2_Rx.h), sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - fix round 1 (code review M-1): FM_RETURN gains a STEER-CANCEL with following's own constants - a stick deflection of
 //   kFmSteerCancelDeadband (40 counts from 127) sustained kFmSteerPersistMs (500 ms), past a kFmEngageGraceMs (2 s) grace measured from the
 //   start of the current held-trigger RETURN motion (fm_return_motion_ms, never from ENTER RETURN), exits through fmReturnExitToHold() with the
@@ -1630,6 +1648,31 @@ static const uint32_t kFmSteerPersistMs      = 500;    // ms
 // deflection smaller than this is treated as centred and never counts toward steer-cancel.
 static const uint8_t  kFmSteerCancelDeadband = 40;     // counts from 127
 
+// ---- Stick-takeover constants (V2.5-Evo - 2026-09-19) ----
+// Compile-time, like the cancel constants above: no confStruct field beyond the steer_during_auto
+// switch itself, no SW_VERSION bump, no SPIFFS reset. The takeover ENGAGES the way the cancel
+// fires - the same deadband, the same persistence, the same grace - so a push that would have
+// cancelled in mode 0 takes over in mode 1 at the same instant. Aliases, not second literals (the
+// F6 pattern): one value, two rules, two names, so a retune of the cancel does not silently move
+// the takeover or vice versa. The three release/timeout numbers are the takeover's own.
+static const uint8_t  kSteerTakeoverEngageDeadband  = kFmSteerCancelDeadband;   // counts from 127 (40)
+static const uint32_t kSteerTakeoverEngageMs        = kFmSteerPersistMs;        // ms sustained to engage (500)
+static const uint32_t kSteerTakeoverGraceMs         = kFmEngageGraceMs;         // ms after the owner's motion start (2000)
+// Release band: the stick is "centred" inside this, and must stay there kSteerTakeoverReleaseMs to
+// hand the steering back. 20 is half the engage band so chop between the two (20-39) flips nothing.
+static const uint8_t  kSteerTakeoverReleaseDeadband = 20;      // counts from 127
+static const uint32_t kSteerTakeoverReleaseMs       = 200;     // ms
+// Maximum takeover. Beyond it the episode ends through the mode's CANCEL path: a rider who has
+// steered for 20 s is driving manually and a stick that never comes back is most likely a drifted
+// centre; resuming the controller against a still-deflected stick would override a deliberate hand.
+static const uint32_t kSteerTakeoverMaxMs           = 20000;   // ms
+static const SteerTakeoverParams kSteerTakeoverParams = {
+  kSteerTakeoverEngageDeadband, kSteerTakeoverReleaseDeadband,
+  kSteerTakeoverEngageMs, kSteerTakeoverReleaseMs, kSteerTakeoverGraceMs, kSteerTakeoverMaxMs
+};
+// How often the "stick not centred since the run began - takeover disabled" notice may repeat.
+static const uint32_t kSteerTakeoverNoticeMs        = 5000;    // ms
+
 // ---- FM divergence-fault constants (V2.5-Evo - 2026-07-25 - A3) ----
 // Compile-time only, like every other kFm* above: no confStruct fields, no SW_VERSION bump, no
 // SPIFFS reset.
@@ -1962,6 +2005,140 @@ static float         fm_rider_raw_kmh = -1.0f;        // -1 = unknown
 // publishAlignMixerInfluence() is the ONE write site of the atomic; RTM outranks FM (P1-c).
 static uint8_t       rtm_align_influence_req = 0;
 static uint8_t       fm_align_influence_req  = 0;
+
+// ============================================================
+// V2.5-Evo - 2026-09-19 - THE STICK TAKEOVER: memory, the ONE publish site, the shared owner tick.
+// All written on the loop task only. See the file header and Common/SteerArbitration.h.
+// ============================================================
+// The arbitration's memory. ONE instance for the three modes, because they are mutually exclusive
+// owners of the steering (RTM > FM by the yield; ACTIVE and RETURN are different fm_state values):
+// whoever owns the steering this tick steps it with its own motion clock, and every owner exit
+// zeroes it through steerTakeoverReset(), so a takeover never crosses from one owner to the next.
+static SteerTakeoverState steer_takeover = {0, 0, 0, false, false};
+// What each loop wants published this tick (the publishAlignMixerInfluence() shape): starts at
+// false at the top of every wrapper tick, set by the owner's tick, read by publishSteerTakeover().
+static bool          rtm_steer_takeover_req    = false;
+static bool          fm_steer_takeover_req     = false;
+// millis() of the most recent RELEASE; 0 = none. Following parks its divergence net for
+// kFmDivergeMs after a release (a re-align after a nudge closes nothing for a moment).
+static unsigned long takeover_release_ms       = 0;
+// Classic RTM's grace base: the first tick checkRtmSafetyGates() passed with the trigger held in
+// this engagement; 0 = no motion yet. Reset where rtm_bootstrap_since_ms is reset (Gate 1, the
+// inactive path, rtm_rx_enabled == 0), so the 2 s grace runs from each squeeze as in the FM modes.
+static unsigned long rtm_motion_ms             = 0;
+// RETURN's align-suspension base for the not-closing net: the motion start, RE-BASED to now on every
+// takeover release, so a nudge 20 s into a return that leaves the buggy 60 deg off its aim gets a
+// fresh kFmPivotSuspendMaxMs to turn back at the align cap before the net may judge it.
+static unsigned long fm_return_judge_base_ms   = 0;
+// For ?diag: engagements since boot, and how the last one ended.
+static uint16_t      steer_takeover_episodes   = 0;
+static unsigned long steer_takeover_notice_ms  = 0;    // rate limit for the not-centred notice
+enum SteerTakeoverEnd : uint8_t {
+  STO_END_NONE      = 0,   // no takeover has ended since boot
+  STO_END_RELEASED  = 1,   // the rider centred the stick: the controller resumed
+  STO_END_TIMED_OUT = 2,   // 20 s standing: the mode's cancel path ran
+  STO_END_OWNER     = 3    // the owner ended under it (trigger released, stop, arrival, fault, disarm)
+};
+static uint8_t       steer_takeover_last_end   = STO_END_NONE;
+static const char* steerTakeoverEndName(uint8_t e)
+{
+  switch (e) {
+    case STO_END_NONE:      return "none yet";
+    case STO_END_RELEASED:  return "released (stick centred, controller resumed)";
+    case STO_END_TIMED_OUT: return "timed out after 20 s -> cancel path";
+    case STO_END_OWNER:     return "owner ended under it (release / stop / arrival / fault / disarm)";
+    default:                return "unknown";
+  }
+}
+// Read-only accessors for ?diag (System.ino is concatenated after this file).
+static bool          steerTakeoverActive()      { return steer_takeover.active; }
+static unsigned long steerTakeoverActiveMs(unsigned long now)
+{
+  return steer_takeover.active ? (unsigned long)(now - steer_takeover.active_since_ms) : 0UL;
+}
+static bool          steerTakeoverCentreSeen()  { return steer_takeover.centre_seen; }
+static uint16_t      steerTakeoverEpisodes()    { return steer_takeover_episodes; }
+static const char*   steerTakeoverLastEndText() { return steerTakeoverEndName(steer_takeover_last_end); }
+
+// publishSteerTakeover - the ONE write site of steer_takeover_active.
+// Inputs: rtm_steer_takeover_req / fm_steer_takeover_req (what each loop decided this tick) and
+//         rtm_rx_active. Output: the atomic calcPWM() reads. Side effects: none else.
+// RTM outranks FM exactly as publishAlignMixerInfluence() does: while RTM is active only RTM's
+// request counts. Called once at the end of every runRtmLoop() and runFmLoop() tick; both read the
+// same two statics, so whichever runs last on a loop() pass publishes the same value. A tick on
+// which no owner stepped the arbitration publishes false.
+static void publishSteerTakeover()
+{
+  const bool v = rtm_rx_active ? rtm_steer_takeover_req : fm_steer_takeover_req;
+  steer_takeover_active.store(v, std::memory_order_relaxed);
+}
+
+// steerTakeoverReset - the owner ended or changed: zero the arbitration memory.
+// Inputs: none. Side effects: steer_takeover zeroed through the header's own no-owner path, both
+// requests cleared (no takeover is published from anyone at the end of this tick); if a takeover
+// was standing, ?diag remembers that the owner ended under it. Idempotent - safe to call on every
+// tick of a non-owner state. The atomic itself is written only by publishSteerTakeover().
+static void steerTakeoverReset()
+{
+  if (steer_takeover.active) steer_takeover_last_end = STO_END_OWNER;
+  steerTakeoverStep(&steer_takeover, 0u, false, 0u, 127u, &kSteerTakeoverParams);
+  rtm_steer_takeover_req = false;
+  fm_steer_takeover_req  = false;
+}
+
+// steerTakeoverTick - one OWNER tick of the arbitration, shared by the three modes.
+// Inputs:  now; owner_since_ms - the mode's motion clock (its grace base); who - print prefix.
+//          The stick is read from steering_received; the owner test is (trigger >= 25 AND
+//          rtm_rx_override_steering) - the caller has already established that its mode is
+//          steering this tick. With override off the stick already has the wheel: nothing to take
+//          over, the memory stays zero.
+// Returns: the SteerTakeoverVerdict. The caller publishes steer_takeover.active as its request,
+//          and on STO_TIMED_OUT runs its mode's CANCEL path (writes first, then its print).
+// Side effects: steer_takeover; the episode counter and last-end record; takeover_release_ms on a
+//          release; Serial prints on the ENGAGED and RELEASED edges (a takeover stops nothing, so
+//          these are not upstream of any motor-stopping write) and the rate-limited not-centred
+//          notice. NOT on the timeout: that print belongs after the caller's cap write (F7).
+static uint8_t steerTakeoverTick(unsigned long now, unsigned long owner_since_ms, const char* who)
+{
+  const bool    owner_active = (thr_received >= 25) && (usrConf.rtm_rx_override_steering != 0);
+  const uint8_t stick        = steering_received;
+  const uint8_t dev          = steerTakeoverDeflection(stick);
+  const unsigned long was_since = steer_takeover.active_since_ms;
+  const unsigned long deflect_since = steer_takeover.deflect_since_ms;
+
+  const uint8_t v = steerTakeoverStep(&steer_takeover, (uint32_t)now, owner_active,
+                                      (uint32_t)owner_since_ms, stick, &kSteerTakeoverParams);
+
+  if (v == STO_ENGAGED) {
+    if (steer_takeover_episodes < 0xFFFF) steer_takeover_episodes++;
+    Serial.printf("STEER [RX] %s: takeover ENGAGED - stick %u from centre for %lu ms, %lu ms into the motion; "
+                  "the stick steers until centred (< %u counts for %lu ms), %lu s at most; nothing cancelled\n",
+                  who, (unsigned)dev, (unsigned long)(now - deflect_since), (unsigned long)(now - owner_since_ms),
+                  (unsigned)kSteerTakeoverReleaseDeadband, (unsigned long)kSteerTakeoverReleaseMs,
+                  (unsigned long)(kSteerTakeoverMaxMs / 1000UL));
+  } else if (v == STO_RELEASED) {
+    steer_takeover_last_end = STO_END_RELEASED;
+    takeover_release_ms     = (now != 0) ? now : 1;
+    Serial.printf("STEER [RX] %s: takeover RELEASED after %lu ms - stick centred, automatic steering resumes, nothing cancelled\n",
+                  who, (unsigned long)(now - was_since));
+  } else if (v == STO_TIMED_OUT) {
+    steer_takeover_last_end = STO_END_TIMED_OUT;
+  } else if (v == STO_INACTIVE && owner_active && !steer_takeover.centre_seen) {
+    // M-1b: the push would have engaged but the stick has never been read centred since this
+    // owner's run began. A drifted remote centre gets the automatic steering (the "ignore"
+    // behaviour for that rider) and a visible notice instead of a silent takeover.
+    const bool grace_served = (owner_since_ms != 0) && ((now - owner_since_ms) >= kSteerTakeoverGraceMs);
+    const bool persisted    = (steer_takeover.deflect_since_ms != 0) &&
+                              ((now - steer_takeover.deflect_since_ms) >= kSteerTakeoverEngageMs);
+    if (grace_served && persisted &&
+        (steer_takeover_notice_ms == 0 || (now - steer_takeover_notice_ms) >= kSteerTakeoverNoticeMs)) {
+      steer_takeover_notice_ms = (now != 0) ? now : 1;
+      Serial.printf("STEER [RX] %s: stick reads %u from centre and has not been centred since the run began - takeover disabled; check the remote's steering centre\n",
+                    who, (unsigned)dev);
+    }
+  }
+  return v;
+}
 
 // Why the last candidate or RETURN ended. Stable codes for ?diag only.
 enum FmReturnReason : uint8_t {
@@ -2488,15 +2665,28 @@ static void runPhaseC()
       gps_last_lat, gps_last_lng, rx_tx_gps_lat, rx_tx_gps_lng);
 
   // Phase C check 1: convergence — distance to TX must be decreasing
-  if (rtm_prev_dist_m >= 0.0f && dist_m >= rtm_prev_dist_m)
+  // V2.5-Evo - 2026-09-19 - PARKED while the rider's stick has taken over the steering (the RTM
+  // twin of the RETURN not-closing net): a rider steering away is not the controller failing to
+  // close. No baseline is kept from a rider-steered stretch; the release in runRtmLoopBody()
+  // re-bases this check (baseline -1, clock = now) so the first verdict after a resume lands 10 s
+  // later - seeded at +5 s, judged at +10 s. Checks 2 and 3 below keep running throughout. With
+  // steer_during_auto 0 the takeover never stands and this block is the code it always was.
+  if (steer_takeover.active)
   {
-    Serial.printf("RTM [PhC] FAIL convergence: dist %.0f m (was %.0f m) — not closing\n",
-                  dist_m, rtm_prev_dist_m);
-    rtm_rx_emergency_stop = true;
-    rtm_rx_active = false;
-    return;
+    rtm_prev_dist_m = -1.0;
   }
-  rtm_prev_dist_m = dist_m;
+  else
+  {
+    if (rtm_prev_dist_m >= 0.0f && dist_m >= rtm_prev_dist_m)
+    {
+      Serial.printf("RTM [PhC] FAIL convergence: dist %.0f m (was %.0f m) — not closing\n",
+                    dist_m, rtm_prev_dist_m);
+      rtm_rx_emergency_stop = true;
+      rtm_rx_active = false;
+      return;
+    }
+    rtm_prev_dist_m = dist_m;
+  }
 
   // Phase C check 2: VESC ERPM vs GPS speed (only if vesc_erpm_per_kmh is configured)
   // V2.5-Evo - 2026-05-11 - Freshness guard: vesc.last_packet is read inside the same mutex
@@ -2548,7 +2738,10 @@ static void runPhaseC()
     return;
   }
 
-  Serial.printf("RTM [PhC] PASS: dist=%.0f m, converging\n", dist_m);
+  if (steer_takeover.active)
+    Serial.printf("RTM [PhC] PASS: dist=%.0f m (convergence check parked: the rider is steering)\n", dist_m);
+  else
+    Serial.printf("RTM [PhC] PASS: dist=%.0f m, converging\n", dist_m);
 }
 
 // ---- Main RTM loop — call from RX loop() ----
@@ -2575,8 +2768,10 @@ void runRtmLoop()
   last_rtm_ms = now;
 
   rtm_align_influence_req = 0;      // no boost unless Phase 1 align asks for one below
+  rtm_steer_takeover_req  = false;  // V2.5-Evo - 2026-09-19 - no takeover unless the RTM owner tick below stands one
   runRtmLoopBody(now);
   publishAlignMixerInfluence();     // once per tick, after every possible exit of the body
+  publishSteerTakeover();           // V2.5-Evo - 2026-09-19 - once per tick, RTM > FM, after every exit of the body
 }
 
 static void runRtmLoopBody(unsigned long now)
@@ -2706,6 +2901,14 @@ static void runRtmLoopBody(unsigned long now)
       heading_disagree_since_ms     = 0;
       heading_disagree_last_seen_ms = 0;
 
+      // V2.5-Evo - 2026-09-19 - the stick takeover never crosses an RTM boundary. Both edges: on
+      // ARM, whatever Follow-Me had standing ends (RTM is the owner from this tick, and this loop
+      // runs before runFmLoop(), so the yield block there must NOT zero it again - it would wipe
+      // the fresh RTM step of the same tick); on DISARM, RTM's own episode ends. An EDGE and not
+      // the inactive level below, for the same reason the neutral-override reset is gated on both
+      // flags: the inactive path runs ten times a second all the way through a Follow-Me run.
+      steerTakeoverReset();
+
       // V2.5-Evo - 2026-08-25 - RTM may preempt an ACTIVE FM run. The FM D history is valid for
       // FM's trailing target but not for RTM's direct-to-rider target, so cold-start the shared
       // derivative on the RTM arm edge. Without this companion to the FM D-state fix below, the
@@ -2805,6 +3008,13 @@ static void runRtmLoopBody(unsigned long now)
     // remote's display shows it. Bits 4-6 stay free for the accepted-mode echo. fmResolveReturnMode()
     // (runFmLoop) is the single writer of the value; this is a read.
     if (fm_return_mode_effective) f |= (1 << 7);
+    // V2.5-Evo - 2026-09-19 - bit 4: the buggy's steer_during_auto setting, echoed every tick in
+    // every FM state so the remote knows whether its classic-RTM Gate 4 steer-exit must stand
+    // (0 = cancel) or stand down (1 = take over). Bit 5: a takeover is STANDING on this tick, for
+    // the remote's display only - read from the published atomic (last tick's value at this point
+    // in the loop, one 10 Hz tick of lag, display only). Bit 6 stays free.
+    if (usrConf.steer_during_auto != 0)                              f |= (1 << 4);
+    if (steer_takeover_active.load(std::memory_order_relaxed))        f |= (1 << 5);
     telemetry.fm_flags = f;
   }
 
@@ -2969,6 +3179,7 @@ static void runRtmLoopBody(unsigned long now)
     // rather than "zero on the two paths that matter". Reasoning about the second kind is what
     // produced R-1 in the first place.
     rtm_bootstrap_since_ms = 0;
+    rtm_motion_ms          = 0;   // V2.5-Evo - 2026-09-19 - the takeover grace base follows the bootstrap clock's resets
     return;
   }
 
@@ -3001,6 +3212,7 @@ static void runRtmLoopBody(unsigned long now)
     // align cap - the exact deadlock the bootstrap was written to break. It only ever reset in
     // the two heading-VALID branches, which by definition are the branches that do not need it.
     rtm_bootstrap_since_ms = 0;
+    rtm_motion_ms          = 0;   // V2.5-Evo - 2026-09-19 - same reset sites as the bootstrap clock (the takeover memory itself is zeroed on the edge above, never here: Follow-Me may own it)
 
     // telemetry.rtm_distance already set to 0xFF by the block above (inactive path)
     return;
@@ -3024,12 +3236,64 @@ static void runRtmLoopBody(unsigned long now)
     // handed a fresh 3 s window on every flap, indefinitely, while the fault was still present.
     // Gate 1 is the honest signal that the RIDER ended the attempt, and it is the only one.
     if (thr_received < 25) rtm_bootstrap_since_ms = 0;
+    // V2.5-Evo - 2026-09-19 - RTM is not steering on this tick (Gate 1: trigger released; Gates 2-8:
+    // a fault, motor at 0; Gate 9: handed off), so no stick takeover may stand: the arbitration
+    // memory is zeroed and the request stays false (published at the end of this tick). The grace
+    // base follows the bootstrap clock: it restarts on the rider's own release (Gate 1), not on a
+    // fault, so a fault flapping in and out cannot hand the stick a fresh 2 s grace each time.
+    steerTakeoverReset();
+    if (thr_received < 25) rtm_motion_ms = 0;
     return;
   }
 
   // All gates pass: clear emergency stop, update steering
   rtm_rx_emergency_stop = false;
   updateRtmSteering();
+
+  // ============================================================
+  // V2.5-Evo - 2026-09-19 - THE STICK DURING A CLASSIC RETURN-TO-ME (steer_during_auto).
+  // Classic RTM has no RX-side cancel today - the remote's Gate 4 exits on a push when the buggy
+  // says cancel (fm_flags bit 4 = 0) - and it gets none here: with steer_during_auto 0 this block
+  // only keeps the motion clock, and the memory stays zero. With 1 the arbitration runs on every
+  // gates-pass tick, AFTER updateRtmSteering() so the controller keeps computing its override in
+  // shadow (the D term has no gap on resume) and calcPWM() simply stops applying it while the
+  // takeover stands. The grace base is rtm_motion_ms - the first tick the gates passed with the
+  // trigger held in this engagement (the FM modes' fm_engage_ms / fm_return_motion_ms shape).
+  //   ENGAGED / RELEASED: the stick steers / the controller resumes; Phase C check 1 is parked
+  //     while the takeover stands (runPhaseC) and re-seeded on release (baseline -1, clock now:
+  //     seed at +5 s, judge at +10 s). Gate 9, the approach ramp, the align cap, the run-phase
+  //     governor and BOOTSTRAP-1 keep running exactly as they do below - a takeover during the
+  //     bootstrap is the rider steering a heading-blind buggy at <= 24 % under its own abort
+  //     radius and timeout.
+  //   TIMED OUT (20 s): the Gate-9-shaped clean handoff - rtm_rx_active false, no emergency stop,
+  //     cap 255, manual at the held trigger with the stick the rider was already using. The print
+  //     comes after those writes (F7). The remote learns of it the way it does of Gate 9 today.
+  // ============================================================
+  if (rtm_motion_ms == 0) rtm_motion_ms = (now != 0) ? now : 1;
+  if (usrConf.steer_during_auto != 0)
+  {
+    const uint8_t sto = steerTakeoverTick(now, rtm_motion_ms, "RTM");
+    rtm_steer_takeover_req = steer_takeover.active;
+    if (sto == STO_RELEASED)
+    {
+      rtm_prev_dist_m = -1.0;          // Phase C check 1: no baseline from the rider-steered stretch
+      rtm_phase_c_ms  = now;           // next runPhaseC() in 5 s seeds, the one after judges
+    }
+    else if (sto == STO_TIMED_OUT)
+    {
+      rtm_rx_active         = false;   // disarm — the inactive path next tick, as after Gate 9
+      rtm_rx_emergency_stop = false;   // no emergency; manual throttle passes through at once
+      rtm_approach_cap      = 255;     // no decel cap on manual
+      rtm_steer_takeover_req = false;
+      Serial.printf("STEER [RX] RTM: takeover held %lu s - return-to-me ended, clean handoff to manual (a stick that never comes back to centre is most likely a drifted remote centre; check it)\n",
+                    (unsigned long)(kSteerTakeoverMaxMs / 1000UL));
+      return;
+    }
+  }
+  else
+  {
+    steerTakeoverReset();   // mode 0: the memory is always zero (covers a setting flipped 1 -> 0 -> 1 mid-session); a no-op otherwise
+  }
 
   // Two-phase RTM throttle control (SW32):
   // Phase 1 (Align): heading error > rtm_align_threshold_deg → ~5% throttle cap.
@@ -3765,6 +4029,13 @@ static void fmEnterIdle()
   // declaration it rode in on (the followme_mode pattern): a 0xF2/0 disarm, the 95 s mode-age
   // expiry and every other road to IDLE end it. The next declaration carries a fresh one (or none).
   fm_return_mode_runtime.store(0xFF, std::memory_order_relaxed);
+  // V2.5-Evo - 2026-09-19 - leaving Follow-Me ends any stick takeover Follow-Me was serving. Gated
+  // on RTM not being active: this function runs on every idle tick, including during an RTM run
+  // when the declared mode is 0, and the arbitration memory is then RTM's to keep.
+  if (!rtm_rx_active) {
+    steerTakeoverReset();
+    takeover_release_ms = 0;
+  }
 
   // V2.5-Evo - 2026-07-20 - A3: clear the steer-cancel persistence timer and the fault-ramp clock.
   // fm_fault_alarm_ms is deliberately NOT reset here: the surprise-gated stop notification must
@@ -3939,6 +4210,8 @@ static void fmEnterReturn(unsigned long now, float dist_m)
   fm_return_last_reason     = FM_RET_ENTERED;
   fmClearReturnProof();
   fm_align_influence_req    = 0;
+  steerTakeoverReset();               // V2.5-Evo - 2026-09-19 - a new owner: a following takeover never carries into the return
+  fm_return_judge_base_ms   = 0;
 
   // Direct-to-rider is a different target from the trailing point: never differentiate the
   // first return heading error against the last following sample.
@@ -3986,6 +4259,8 @@ static void fmReturnExitToHold(uint8_t reason, unsigned long now, float dist_m)
   fm_return_last_reason     = reason;
   fmClearReturnProof();
   fm_align_influence_req    = 0;
+  steerTakeoverReset();               // V2.5-Evo - 2026-09-19 - the owner ended: any takeover ends with it (request stays false this tick)
+  fm_return_judge_base_ms   = 0;
 
   prev_heading_src_valid  = false;
   prev_heading_error_deg  = 0.0f;
@@ -4019,6 +4294,8 @@ static void fmReturnFault(uint8_t stop_reason, unsigned long now, bool thr_held)
   fm_steer_input_since_ms   = 0;      // fix round 1 (M-1): the steer-cancel persistence timer ends with the return
   fmClearReturnProof();
   fm_align_influence_req    = 0;
+  steerTakeoverReset();               // V2.5-Evo - 2026-09-19 - the owner ended: any takeover ends with it (request stays false this tick)
+  fm_return_judge_base_ms   = 0;
 
   Serial.printf("FM [RX] RETURN FAULT -> STOPPING (ramp %lu ms) -> IDLE, re-arm required (thr_held=%d)\n",
                 (unsigned long)kFmStopRampMs, (int)thr_held);
@@ -4090,7 +4367,14 @@ static void runFmReturnTick(unsigned long now)
   // purpose: a released trigger still takes its own parking path below; a held-trigger steer exits
   // through fmReturnExitToHold() - cap 0 and FM_HOLD, ARMED/255 only on a released tick - never a
   // direct ARMED. A rider DECLARATION, not a fault: no stop reason, no St / stop buzz.
+  // V2.5-Evo - 2026-09-19 - STICK DURING AUTO-STEER: the block below is the CANCEL behaviour and
+  // runs VERBATIM when usrConf.steer_during_auto is 0 (the default). With 1 the else branch runs
+  // the takeover arbitration in its place, at this same point in the tick order - after faults,
+  // distance, arrival and the rider-moving cancel, BEFORE the trigger gate - with the same grace
+  // base (fm_return_motion_ms). Everything after this block is common to both modes.
+  if (usrConf.steer_during_auto == 0)
   {
+    steerTakeoverReset();   // mode 0: the memory is always zero (covers a setting flipped 1 -> 0 -> 1 mid-session); a no-op otherwise
     int sdev = (int)steering_received - 127;
     if (sdev < 0) sdev = -sdev;
     if (sdev >= (int)kFmSteerCancelDeadband) {
@@ -4109,6 +4393,31 @@ static void runFmReturnTick(unsigned long now)
       return;
     }
   }
+  else
+  {
+    // ---- TAKEOVER (steer_during_auto 1): the rider's stick steers the return while deflected ----
+    // The arbitration (Common/SteerArbitration.h) decides at 10 Hz; calcPWM() applies the stick
+    // instead of rtm_steer_override while it stands. The cap chain below is untouched - the nudge
+    // happens at walking pace under the approach ramp, the P-law and the align cap - and arrival,
+    // the rider-moving cancel and the trigger gate have already had, or still get, priority over
+    // the stick on this tick. While parked (no motion clock) the tick sees no owner and keeps the
+    // memory zero, so a twitch during the proof or before the first squeeze can never count.
+    // TIMED OUT (20 s): the cancel path this mode already has - fmReturnExitToHold(FM_RET_STEERED),
+    // cap 0 and FM_HOLD - then the print, after the motor writes (F7).
+    const uint8_t sto = steerTakeoverTick(now, fm_return_motion_ms, "RETURN");
+    fm_steer_takeover_req = steer_takeover.active;
+    if (steer_takeover.active) fm_log_gate_flags |= FM_LOG_GATE_STEER_TAKEOVER;   // deep log bit 16
+    if (sto == STO_RELEASED) {
+      fm_return_judge_base_ms = now;   // the not-closing net's align suspension runs from the resume, not from the motion start
+    }
+    if (sto == STO_TIMED_OUT) {
+      const unsigned long motion_ms = (fm_return_motion_ms != 0) ? (now - fm_return_motion_ms) : 0UL;
+      fmReturnExitToHold(FM_RET_STEERED, now, dist_m);   // motor posture first; it prints the HOLD line; resets the arbitration
+      Serial.printf("STEER [RX] RETURN: takeover held %lu s (%lu ms into the motion) - return ended through HOLD, no alarm; a stick that never comes back to centre is most likely a drifted remote centre - check it\n",
+                    (unsigned long)(kSteerTakeoverMaxMs / 1000UL), motion_ms);
+      return;
+    }
+  }
 
   // INVARIANT: motion only while the trigger is held. Released = parked: no steering, cap 0, the
   // engage ramp and the runtime cap restart on the next squeeze, the not-closing window is dropped.
@@ -4120,10 +4429,13 @@ static void runFmReturnTick(unsigned long now)
     fm_return_check_ms     = 0;
     fm_return_check_dist_m = -1.0f;
     fm_align_influence_req = 0;
+    steerTakeoverReset();              // V2.5-Evo - 2026-09-19 - parked: no owner, no takeover; the next squeeze starts a fresh grace and needs centre-seen again
+    fm_return_judge_base_ms = 0;
     return;
   }
   if (fm_return_motion_ms == 0) {
     fm_return_motion_ms    = now;
+    fm_return_judge_base_ms = now;     // V2.5-Evo - 2026-09-19 - the align-suspension base starts with the motion (re-based on every takeover release)
     fm_return_check_ms     = 0;
     fm_return_check_dist_m = -1.0f;
     fm_steer_input_since_ms = 0;       // fix round 1 (M-1): a deflection from before this squeeze never counts; the grace starts now
@@ -4156,9 +4468,17 @@ static void runFmReturnTick(unsigned long now)
   // face the rider inside the first kFmPivotSuspendMaxMs of motion (a pivot closes nothing by
   // definition; beyond that ceiling the judgement runs whatever the heading says). Then: every
   // kFmReturnNotClosingMs the distance must have closed by kFmReturnNotClosingM, else a FAULT.
+  // V2.5-Evo - 2026-09-19 - PARKED while the rider's stick has taken over (the rider steering away
+  // is not the controller failing to close), exactly like in_grace, and re-armed with a fresh
+  // window on release. The align suspension is measured from fm_return_judge_base_ms - the motion
+  // start, RE-BASED to the release tick - so a nudge that leaves the buggy 60 deg off its aim gets
+  // a fresh kFmPivotSuspendMaxMs to turn back at the align cap before it is judged; without that
+  // a 20 s-old motion start would have expired the suspension and the re-align at cap 13, closing
+  // nothing in 5 s, would have tripped RETURN_NOT_CLOSING. In mode 0 judge_base == motion start.
   const bool in_grace      = (now - fm_return_motion_ms) < (kFmEngageRampMs + kFmReturnNotClosingMs);
-  const bool align_suspend = aligning && (now - fm_return_motion_ms) < kFmPivotSuspendMaxMs;
-  if (in_grace || align_suspend) {
+  const unsigned long judge_base = (fm_return_judge_base_ms != 0) ? fm_return_judge_base_ms : fm_return_motion_ms;
+  const bool align_suspend = aligning && (now - judge_base) < kFmPivotSuspendMaxMs;
+  if (in_grace || align_suspend || steer_takeover.active) {
     fm_return_check_ms     = 0;
     fm_return_check_dist_m = -1.0f;
   } else if (fm_return_check_ms == 0) {
@@ -4218,11 +4538,13 @@ void runFmLoop()
 
   fmResolveReturnMode();           // V2.5-Evo - 2026-09-19 - one effective auto-return value per tick
   fm_align_influence_req = 0;      // V2.5-Evo - 2026-09-19 - no pivot boost unless an align branch asks below
+  fm_steer_takeover_req  = false;  // V2.5-Evo - 2026-09-19 - no takeover unless an FM owner tick (ACTIVE / RETURN moving) stands one below
 
   runFmLoopBody(now);
 
   fmPublishLogSnapshot();          // once per tick, after every possible exit of the body
   publishAlignMixerInfluence();    // V2.5-Evo - 2026-09-19 - once per tick, RTM > FM, after every exit of the body
+  publishSteerTakeover();          // V2.5-Evo - 2026-09-19 - once per tick, RTM > FM, after every exit of the body
 }
 
 static void runFmLoopBody(unsigned long now)
@@ -4956,7 +5278,11 @@ static void runFmLoopBody(unsigned long now)
     bool fm_pivoting = false;
     bool in_pivot_band = (fm_pivot_since_ms != 0) ? (pivot_err > pivot_exit)
                                                   : (pivot_err > pivot_enter);
-    if (fm_state == FM_ACTIVE && in_pivot_band) {
+    // V2.5-Evo - 2026-09-19 - and NOT while the rider's stick has taken over the steering: the
+    // rider's own turn would otherwise ratchet the "best error" and PV-2 could latch
+    // fm_pivot_failed for the episode, leaving the controller's genuine pivot back after the
+    // resume unsuspended. The else branch holds the episode statics reset for the duration.
+    if (fm_state == FM_ACTIVE && in_pivot_band && !steer_takeover.active) {
       if (fm_pivot_since_ms == 0) {
         fm_pivot_since_ms     = now;
         fm_pivot_best_err_deg = pivot_err;
@@ -5001,7 +5327,16 @@ static void runFmLoopBody(unsigned long now)
     }
     if (fm_pivoting) fm_log_gate_flags |= FM_LOG_GATE_PIVOTING;   // P0-g
 
-    if (in_engage_grace || fm_pivoting) {
+    // V2.5-Evo - 2026-09-19 - the divergence net is PARKED while the rider's stick has taken over
+    // the steering (the rider steering away is not the controller diverging) and for kFmDivergeMs
+    // after the release (the controller re-aligning after a nudge closes nothing for a moment),
+    // exactly as it is parked for the grace and a pivot: the window starts fresh afterwards. A
+    // false positive here is only an FM_STOPPING with a re-arm, so the grace buys fewer nuisance
+    // stops and nothing else. In mode 0 neither term is ever true.
+    const bool takeover_park = steer_takeover.active ||
+                               (takeover_release_ms != 0 && (now - takeover_release_ms) < kFmDivergeMs);
+
+    if (in_engage_grace || fm_pivoting || takeover_park) {
       // Ramping and/or aligning — not judgeable yet. Park the window so it starts fresh afterwards.
       fm_diverge_since_ms     = 0;
       fm_diverge_start_dist_m = -1.0f;
@@ -5122,6 +5457,13 @@ static void runFmLoopBody(unsigned long now)
     // steering separation safe: steering while merely armed is just steering. v1 policy = cancel;
     // the advanced steer-adjust-while-following blend (rtm_steer_exit_on_input == 0) is DEFERRED —
     // that param lives on the TX, not the RX, this pass.
+    // V2.5-Evo - 2026-09-19 - STICK DURING AUTO-STEER: that deferred blend is now the takeover,
+    // selected by the RX's own usrConf.steer_during_auto. The block directly below is the CANCEL
+    // behaviour and runs VERBATIM when the setting is 0 (the default); with 1 the else branch runs
+    // the takeover arbitration in its place, same gate (fm_state == FM_ACTIVE), same grace base
+    // (fm_engage_ms). Everything after the split is common to both modes.
+    if (usrConf.steer_during_auto == 0) {
+    steerTakeoverReset();   // mode 0: the memory is always zero (covers a setting flipped 1 -> 0 -> 1 mid-session); a no-op otherwise
     if (fm_state == FM_ACTIVE) {
       int sdev = (int)steering_received - 127;
       if (sdev < 0) sdev = -sdev;
@@ -5147,6 +5489,39 @@ static void runFmLoopBody(unsigned long now)
         return;
       }
     }
+    }
+    else if (fm_state == FM_ACTIVE) {
+      // ---- TAKEOVER (steer_during_auto 1): the rider's stick steers while deflected ----
+      // The arbitration (Common/SteerArbitration.h) decides at 10 Hz with fm_engage_ms as the
+      // grace base (the whip tail must no more become a takeover than a cancel; centre-seen
+      // covers a stick hard over at engagement). While it stands calcPWM() applies the stick in
+      // place of rtm_steer_override and NOTHING ELSE changes: the cap chain below runs every tick
+      // (a nudge past rtm_align_threshold_deg drops the cap to fm_align_cap until the buggy points
+      // back inside it - the rider's cue that they over-steered, not a fault), the separation
+      // latch, fm_engage_ms and needs-D_engage are untouched (a takeover is not a cancel), HOLD /
+      // faults / the RETURN candidate were evaluated above and independent of the stick, and any
+      // exit from FM_ACTIVE ends the owner (the not-eligible branch resets the memory).
+      // TIMED OUT (20 s): the same writes as the mode-0 cancel block above (kept verbatim there),
+      // then the print after them (F7) naming centre drift as the likely cause.
+      const uint8_t sto = steerTakeoverTick(now, fm_engage_ms, "FM");
+      fm_steer_takeover_req = steer_takeover.active;
+      if (steer_takeover.active) fm_log_gate_flags |= FM_LOG_GATE_STEER_TAKEOVER;   // deep log bit 16
+      if (sto == STO_TIMED_OUT) {
+        fm_state                = FM_ARMED;
+        fm_sep_latched          = false;   // deliberate: no silent resume, separation must re-prove
+        fm_sep_over_since_ms    = 0;
+        fm_sep_fix_count        = 0;
+        fm_steer_input_since_ms = 0;
+        fm_rx_active            = false;
+        rtm_steer_override      = 127;
+        fm_engage_ms            = 0;
+        fm_throttle_cap         = 255;      // manual; trigger may be held, but the latch is now clear
+        steerTakeoverReset();               // the owner ended; the request stays false this tick
+        Serial.printf("STEER [RX] FM: takeover held %lu s - following ended: ARMED-UNLATCHED (separation latch cleared, no alarm); a stick that never comes back to centre is most likely a drifted remote centre - check it\n",
+                      (unsigned long)(kSteerTakeoverMaxMs / 1000UL));
+        return;
+      }
+    }
 
     // ---- FM_ACTIVE ----
     if (fm_state != FM_ACTIVE) {
@@ -5154,6 +5529,7 @@ static void runFmLoopBody(unsigned long now)
       fm_engage_ms            = now;    // start the engage ramp - re-engagement is never a jump
       fm_diagonal_engaged     = false;  // re-evaluate which side we are on for this engagement
       fm_steer_input_since_ms = 0;      // ignore any pre-engagement deflection; the grace starts now
+      takeover_release_ms     = 0;      // V2.5-Evo - 2026-09-19 - no post-release divergence grace carries into a new engagement
 
       // Reset the shared P+D derivative continuity. Without this the controller would
       // differentiate a fresh heading error against a stale pre-engagement sample across the
@@ -5191,6 +5567,7 @@ static void runFmLoopBody(unsigned long now)
     rtm_steer_override      = 127;   // hand steering straight back to the rider
     fm_engage_ms            = 0;     // any re-engagement ramps from zero again
     fm_steer_input_since_ms = 0;
+    steerTakeoverReset();            // V2.5-Evo - 2026-09-19 - no owner on this tick: any stick takeover ends here (HOLD, deadman, fault, RETURN candidate)
 
     bool was_engaged = (fm_state == FM_ACTIVE || fm_state == FM_HOLD);
 

@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-19 - ?diag gained ONE more line (stick during auto-steer): the steer_during_auto setting (cancel / take over), whether a stick takeover is standing right now and for how long, whether the stick has been read centred since the current run began (the M-1b guard), how many takeovers have engaged since boot and how the last one ended. Read-only accessors in RTMState.ino. No control-path change, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - ?diag gained ONE more line (P1-b): the effective auto-return mode and its source (stored default / the remote's session override), whether a RETURN candidate proof is running and what it last decided, and why the last candidate or RETURN ended. Read-only accessors in RTMState.ino. No control-path change, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-18 - ?diag gained ONE more line (P1-a/P1-c): the Follow-Me engagement facts - state, separation latch, whether the next engagement needs the full D_engage, and whether FM is yielding to an active RTM - through read-only accessors in RTMState.ino. No control-path change, no confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-17 - ?diag gained ONE line: the last Follow-Me fault-stop reason (which of conditions 2-7, divergence or the heading-disagree latch ended the run) and how long ago, plus whether a stop ramp is in progress right now. Read-only accessors from RTMState.ino (fmLastStopReason / fmLastStopMs / fmStopReason); nothing set, cleared or aged.
@@ -1306,6 +1307,17 @@ void cmdDiag(const String& params) {
                 fmReturnPending() ? "STANDING" : "none",
                 fmReturnVerdictText(),
                 fmReturnLastReasonText());
+  // V2.5-Evo - 2026-09-19 - the stick during auto-steer on one line: the stored setting, whether
+  // the rider's stick has taken over the steering right now (and for how long), whether the stick
+  // has been read centred since the current run began - the guard that keeps a drifted remote
+  // centre from taking over silently - and the episode history. Read-only accessors.
+  Serial.printf("Stick/auto : steer_during_auto %s; takeover %s for %lu ms, centre seen %s, episodes %u, last ended: %s\n",
+                usrConf.steer_during_auto ? "1 (take over, resume on centring)" : "0 (cancel)",
+                steerTakeoverActive() ? "STANDING" : "none",
+                steerTakeoverActiveMs(now_ms),
+                steerTakeoverCentreSeen() ? "yes" : "no",
+                (unsigned)steerTakeoverEpisodes(),
+                steerTakeoverLastEndText());
   Serial.printf("UART mux   : %.1f switches/s, %u read-back failures   [%u total since boot]\n",
                 (float)d_mux_sw / win_s, (unsigned)d_mux_err, (unsigned)cur.mux_errors);
   Serial.printf("VESC poll  : %u/%u ok (%.1f%%)\n",

@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-19 - DEEP LOG level 5: loggerTask() builds a VescLogDataL5 (109 B) when the file was created at level 5 - convertToLogData() for the base, ONE snapshot copy per row (logTakeFmSnapshot(), one critical section) shared by fillLevel4Diag() and the new fillLevel5Extra(), so a row never mixes two ticks between its level-4 and level-5 columns. Record buffers and ?download's record-size ceiling are sizeof(VescLogDataL5) now; the header/row tiers stay offset-selected. AUX button and logger_en semantics unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG (B)+(C): fillLevel4Diag() fills the three fields appended to VescLogDataL4 (83 -> 87 B): fm_rider_raw_dx10 from the snapshot (RTMState.ino publishes fm_rider_raw_kmh x 10, 0xFFFF = unknown), motor0_cmd / motor1_cmd from the two calcPWM() observers g_motor0_cmd / g_motor1_cmd (PWM.ino). ?download's record-size ceiling is sizeof(VescLogDataL4) as before, so it follows the bump; the header/row tiers are chosen by block offset in BREmote_V2_Rx.h, so 83 B files written since 2026-09-17 still print their own 48 columns. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG (A): fillLevel4Diag() copies the snapshot's return_reason into the byte that was fm_pad (now VescLogDataL4.fm_return_reason) - the sticky FmReturnReason latch, published by RTMState.ino every tick. Record size unchanged at 83; the two new gate bits (17 aligning, 18 boost) ride inside fm_gate_flags, which was already copied. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-17 - DEEP-LOG FM AUDIT COLUMNS (P0-g): fillLevel4Diag() now also copies g_fm_log_snapshot — filled by runFmLoop() once per tick — into the 18-byte Follow-Me block appended to VescLogDataL4 (65 -> 83 B). The copy runs inside taskENTER_CRITICAL(&g_fm_log_mux) so a row can never mix two ticks; the logger recomputes NO gate. ?download picks the CSV header by the file's own record_size (logCsvHeaderFor), so 65 B level-4 files written before this change still print their 35 columns. No confStruct change, sizeof stays 192, SW_VERSION stays 35, no control path touched.
@@ -490,6 +491,9 @@ VescLogData convertToLogData() {
 //   the free-running diagnostic counters declared in BREmote_V2_Rx.h and does no I/O.
 //
 // Inputs:  rec - a VescLogDataL4 whose .base has already been filled by convertToLogData()
+//          s   - the controller's snapshot for this row (logTakeFmSnapshot(), V2.5-Evo - 2026-09-19:
+//                taken ONCE by the caller so the level-4 and level-5 columns of a row come from the
+//                same tick)
 // Outputs: none (rec is filled in place)
 // Side effects: resets g_diag_loop_max_us_log to 0 — that field is defined as "worst loop since
 //   the PREVIOUS record", so consuming it here is what makes consecutive records comparable.
@@ -497,7 +501,22 @@ VescLogData convertToLogData() {
 //
 // Sentinels: cog_frozen_s == 255 means no COG value has ever been captured this session (NOT
 //   "0 seconds"); 254 means 254 seconds or longer. mux_err_cnt saturates at 0xFFFE.
-static void fillLevel4Diag(VescLogDataL4 &rec)
+// ============================================================
+// V2.5-Evo - 2026-09-19 - logTakeFmSnapshot - copy the controller's snapshot out, once per row
+// Inputs: none. Outputs: a copy of g_fm_log_snapshot. Side effects: one short critical section
+// (taskENTER_CRITICAL) around a struct copy - no I/O, no computation inside it. Was inline in
+// fillLevel4Diag(); moved out so a level-5 row takes the snapshot exactly once.
+// ============================================================
+static FmLogSnapshot logTakeFmSnapshot()
+{
+  FmLogSnapshot s;
+  taskENTER_CRITICAL(&g_fm_log_mux);
+  s = g_fm_log_snapshot;
+  taskEXIT_CRITICAL(&g_fm_log_mux);
+  return s;
+}
+
+static void fillLevel4Diag(VescLogDataL4 &rec, const FmLogSnapshot &s)
 {
   uint32_t now_ms = millis();
 
@@ -528,12 +547,8 @@ static void fillLevel4Diag(VescLogDataL4 &rec)
   rec.loop_max_ms = (max_ms > 0xFFFEUL) ? 0xFFFE : (uint16_t)max_ms;
 
   // V2.5-Evo - 2026-09-17 - P0-g: the Follow-Me audit block. A straight COPY of the snapshot the
-  // controller published on its last 10 Hz tick — the logger recomputes nothing. The critical
-  // section is a struct copy and nothing else, so it costs a few dozen cycles with interrupts off.
-  FmLogSnapshot s;
-  taskENTER_CRITICAL(&g_fm_log_mux);
-  s = g_fm_log_snapshot;
-  taskEXIT_CRITICAL(&g_fm_log_mux);
+  // controller published on its last 10 Hz tick — the logger recomputes nothing. (V2.5-Evo -
+  // 2026-09-19: the copy itself now happens in logTakeFmSnapshot(), once per row, in the caller.)
   rec.fm_gate_flags       = s.gate_flags;
   rec.fm_distance_dx10    = s.distance_dx10;
   rec.fm_d_engage_dx10    = s.d_engage_dx10;
@@ -552,6 +567,35 @@ static void fillLevel4Diag(VescLogDataL4 &rec)
   // core, and the pair may straddle one 10 ms pass at worst - fine for a 3-5 Hz diagnostic row.
   rec.motor0_cmd          = g_motor0_cmd;
   rec.motor1_cmd          = g_motor1_cmd;
+}
+
+// ============================================================
+// V2.5-Evo - 2026-09-19 - fillLevel5Extra - add the level-5 ("Everything") block to a log record
+//
+// What it does: copies the level-5 fields of the controller's snapshot into the 22-byte block that
+// VescLogDataL5 appends after the level-4 record. Straight copies - every value was published by
+// fmPublishLogSnapshot() (RTMState.ino) on the controller's last 10 Hz tick; the logger derives
+// nothing. The two reserved bytes are written 0 here (the steer-takeover branch fills them).
+// Inputs:  rec - a VescLogDataL5 whose .l4 has already been filled (convertToLogData + fillLevel4Diag)
+//          s   - the same snapshot fillLevel4Diag() was given, so the row is one tick throughout
+// Outputs: none (rec is filled in place). Side effects: none - no I/O, no globals written.
+// ============================================================
+static void fillLevel5Extra(VescLogDataL5 &rec, const FmLogSnapshot &s)
+{
+  rec.rider_lat               = s.l5_rider_lat;
+  rec.rider_lng               = s.l5_rider_lng;
+  rec.rider_fix_seq           = s.l5_rider_fix_seq;
+  rec.rider_fix_age_div10     = s.l5_rider_fix_age_div10;
+  rec.rtm_approach_cap        = s.l5_rtm_approach_cap;
+  rec.rtm_phase               = s.l5_rtm_phase;
+  rec.align_cap               = s.l5_align_cap;
+  rec.align_influence         = s.l5_align_influence;
+  rec.mix_influence           = s.l5_mix_influence;
+  rec.fm_return_override      = s.l5_fm_return_override;
+  rec.fm_flags_sent           = s.l5_fm_flags_sent;
+  rec.fm_keepalive_age_div100 = s.l5_fm_keepalive_age_div100;
+  rec.l5_rsvd_takeover_active = 0;
+  rec.l5_rsvd_takeover_end    = 0;
 }
 
 // Check and manage SPIFFS space
@@ -703,17 +747,29 @@ void loggerTask(void* parameter) {
 
       // ============================================================
       // V2.5-Evo - 2026-07-25 - STAGE 0 PART C: build the record for the level this FILE was
-      // created at (active_log_level), not for whatever the config says right now. Both tiers
+      // created at (active_log_level), not for whatever the config says right now. All tiers
       // are assembled into one byte buffer so there is still exactly ONE write path holding
       // fileMutex — the mutex block below is unchanged apart from taking a length instead of
       // a hardcoded sizeof().
       // ============================================================
-      uint8_t  rec_buf[sizeof(VescLogDataL4)];
+      // V2.5-Evo - 2026-09-19 - level 5 added: the same shape one tier up. The controller snapshot
+      // is taken ONCE per row and handed to both fill functions, so a level-5 row is one tick
+      // throughout. The buffer is sized for the largest record this firmware writes (level 5).
+      uint8_t  rec_buf[sizeof(VescLogDataL5)];
       uint16_t rec_len;
-      if (active_log_level >= 4) {
+      if (active_log_level >= 5) {
+        VescLogDataL5 logData5;
+        logData5.l4.base = convertToLogData();
+        const FmLogSnapshot snap = logTakeFmSnapshot();
+        fillLevel4Diag(logData5.l4, snap);
+        fillLevel5Extra(logData5, snap);
+        memcpy(rec_buf, &logData5, sizeof(logData5));
+        rec_len = (uint16_t)sizeof(logData5);
+      } else if (active_log_level >= 4) {
         VescLogDataL4 logData4;
         logData4.base = convertToLogData();
-        fillLevel4Diag(logData4);
+        const FmLogSnapshot snap = logTakeFmSnapshot();
+        fillLevel4Diag(logData4, snap);
         memcpy(rec_buf, &logData4, sizeof(logData4));
         rec_len = (uint16_t)sizeof(logData4);
       } else {
@@ -865,13 +921,13 @@ void downloadLogFile(const char* filename) {
   }
   if (hdr.format_ver != LOG_FILE_FORMAT_VER ||
       hdr.record_size < (uint16_t)sizeof(VescLogData) ||
-      hdr.record_size > (uint16_t)sizeof(VescLogDataL4)) {
+      hdr.record_size > (uint16_t)sizeof(VescLogDataL5)) {   // V2.5-Evo - 2026-09-19 - level 5 is the largest record now
     file.close();
     Serial.printf("LOG: unsupported log format (header version %u, %u bytes/record).\n",
                   (unsigned)hdr.format_ver, (unsigned)hdr.record_size);
     Serial.printf("LOG: this firmware reads header version %u with %u-%u bytes/record. Nothing printed.\n",
                   (unsigned)LOG_FILE_FORMAT_VER,
-                  (unsigned)sizeof(VescLogData), (unsigned)sizeof(VescLogDataL4));
+                  (unsigned)sizeof(VescLogData), (unsigned)sizeof(VescLogDataL5));
     return;
   }
 
@@ -886,7 +942,7 @@ void downloadLogFile(const char* filename) {
   // before the Follow-Me block gets its own 35-column header, not the 45-column one.
   Serial.println(logCsvHeaderFor(hdr.log_level, hdr.record_size));
 
-  uint8_t  rec_buf[sizeof(VescLogDataL4)];
+  uint8_t  rec_buf[sizeof(VescLogDataL5)];   // V2.5-Evo - 2026-09-19 - sized for the largest record (level 5)
   char     row[LOG_CSV_ROW_BUF];
   uint16_t recordCount = 0;
   bool     aborted     = false;   // V2.5-Evo - 2026-08-16 - true = stopped by an RTM/FM engagement

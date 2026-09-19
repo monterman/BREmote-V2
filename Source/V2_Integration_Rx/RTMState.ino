@@ -1,3 +1,8 @@
+// V2.5-Evo - 2026-09-19 - DEEP LOG level 5: fmPublishLogSnapshot() also publishes the level-5 block (rider position + fix seq/age, rtm_approach_cap, the RTM phase code,
+//   the align cap / align influence / mixer influence in force, the auto-return override state, fm_flags as sent, the keepalive age) - all copies of published
+//   state. The RTM phase code is a new static (rtm_log_phase) written by runRtmLoopBody() at the branch it takes (reset to 0 at the top of each runRtmLoop() tick,
+//   like rtm_align_influence_req) and a second static (rtm_log_in_approach) notes when the approach ramp is capping; both are read only by the snapshot. No decision
+//   reads either. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG (B): fmPublishLogSnapshot() also publishes fm_rider_raw_kmh x 10 as rider_raw_dx10 (0xFFFF when unknown, i.e. < 0) - the raw
 //   displacement speed the FM_RETURN candidate is judged on, next to the filtered track that was already logged. Copy only. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG (A) + gate prints: (1) fmPublishLogSnapshot() now also copies fm_return_last_reason (sticky, never cleared here) into the snapshot's
@@ -2249,6 +2254,13 @@ static void fmResolveReturnMode()
 static uint32_t fm_log_gate_flags    = 0;
 static uint16_t fm_log_dist_dx10     = 0xFFFF;
 static uint16_t fm_log_d_engage_dx10 = 0xFFFF;
+// V2.5-Evo - 2026-09-19 - level 5: the classic-RTM branch taken this tick, for the log only. Reset to
+// 0 at the top of every runRtmLoop() tick; runRtmLoopBody() writes it where it commits to a branch.
+// 0 inactive/disabled, 1 align, 2 run, 3 approach (aligned + the decel ramp is capping), 4 bootstrap-
+// headless, 5 gate-stop (gates 2-7), 6 trigger released (gate 1), 7 Gate 9 handoff. Read by
+// fmPublishLogSnapshot() only; no decision reads it.
+static uint8_t  rtm_log_phase        = 0;
+static bool     rtm_log_in_approach  = false;   // this tick, the RTM approach ramp wrote a cap below 255
 
 // fmPublishLogSnapshot - copy the controller's state for this tick into the shared snapshot.
 // Inputs: the fm_log_* tick fields above plus the FM statics/atomics. Outputs: g_fm_log_snapshot.
@@ -2288,6 +2300,51 @@ static void fmPublishLogSnapshot()
     float raw = fm_rider_raw_kmh * 10.0f;
     if (raw > 65534.0f) raw = 65534.0f;
     s.rider_raw_dx10 = (uint16_t)raw;
+  }
+  // V2.5-Evo - 2026-09-19 - the level-5 block: copies of published state, nothing decided here.
+  {
+    const unsigned long now_ms = millis();
+    // Rider position as the RX holds it. The lat/lng doubles are written on the radio task and can
+    // tear under preemption (the R4-1 note on rx_tx_gps_fix_seq): one wild row at worst, and the
+    // seq / age columns let a reader spot it. The seq counter itself cannot tear.
+    const unsigned long tx_ts = rx_tx_gps_timestamp;
+    s.l5_rider_lat     = (float)rx_tx_gps_lat;
+    s.l5_rider_lng     = (float)rx_tx_gps_lng;
+    s.l5_rider_fix_seq = (uint16_t)(rx_tx_gps_fix_seq & 0xFFFFu);
+    if (tx_ts == 0) {
+      s.l5_rider_fix_age_div10 = 0xFFFF;                       // never received
+    } else {
+      unsigned long a = (now_ms - tx_ts) / 10UL;
+      s.l5_rider_fix_age_div10 = (a > 0xFFFEUL) ? 0xFFFE : (uint16_t)a;
+    }
+    // Classic RTM: the cap it published and the branch it took this tick.
+    s.l5_rtm_approach_cap = rtm_approach_cap.load(std::memory_order_relaxed);
+    s.l5_rtm_phase        = rtm_log_phase;
+    // The caps in force: the align cap only while aligning (bit 17 above), the boost as published
+    // (0 = none), and the influence the mixer used - calcPWM()'s own rule from the same inputs:
+    // the boost only when it is honouring an autonomous steering override with the trigger held,
+    // else steering_influence. Mirrored rather than observed so PWM.ino keeps only its two motor
+    // observers; the inputs are the atomics calcPWM() reads.
+    const bool    aligning_now = (flags & FM_LOG_GATE_ALIGNING) != 0;
+    const uint8_t boost        = align_mixer_influence_override.load(std::memory_order_relaxed);
+    const bool    auto_steer   = (rtm_rx_active || fm_rx_active) && usrConf.rtm_rx_override_steering && (thr_received >= 25);
+    uint16_t      mix          = usrConf.steering_influence;
+    if (auto_steer && boost != 0) mix = boost;
+    if (mix > 100) mix = 100;
+    s.l5_align_cap       = aligning_now ? fmAlignCapValue() : 0;
+    s.l5_align_influence = boost;
+    s.l5_mix_influence   = (uint8_t)mix;
+    // The FM declaration as the RX holds it and what it echoes back.
+    const uint8_t rt = fm_return_mode_runtime.load(std::memory_order_relaxed);
+    s.l5_fm_return_override = (rt == 0xFF) ? 0 : ((rt == 0) ? 1 : 2);
+    s.l5_fm_flags_sent      = telemetry.fm_flags;
+    const unsigned long ka = fm_mode_last_rx_ms.load(std::memory_order_relaxed);
+    if (ka == 0) {
+      s.l5_fm_keepalive_age_div100 = 0xFF;                     // no 0xF2 this session
+    } else {
+      unsigned long a = (now_ms - ka) / 100UL;
+      s.l5_fm_keepalive_age_div100 = (a > 0xFEUL) ? 0xFE : (uint8_t)a;
+    }
   }
   taskENTER_CRITICAL(&g_fm_log_mux);
   g_fm_log_snapshot = s;
@@ -2636,6 +2693,8 @@ void runRtmLoop()
   last_rtm_ms = now;
 
   rtm_align_influence_req = 0;      // no boost unless Phase 1 align asks for one below
+  rtm_log_phase       = 0;          // V2.5-Evo - 2026-09-19 - level-5 log: inactive unless the body commits to a branch
+  rtm_log_in_approach = false;
   runRtmLoopBody(now);
   publishAlignMixerInfluence();     // once per tick, after every possible exit of the body
 }
@@ -2945,6 +3004,7 @@ static void runRtmLoopBody(unsigned long now)
             if (cap_frac < 0.0f) cap_frac = 0.0f;
             if (cap_frac > 1.0f) cap_frac = 1.0f;
             rtm_approach_cap = (uint8_t)(cap_frac * 255.0f);
+            rtm_log_in_approach = true;   // level-5 log: the decel ramp is capping this tick
           }
           else
           {
@@ -3085,6 +3145,11 @@ static void runRtmLoopBody(unsigned long now)
     // handed a fresh 3 s window on every flap, indefinitely, while the fault was still present.
     // Gate 1 is the honest signal that the RIDER ended the attempt, and it is the only one.
     if (thr_received < 25) rtm_bootstrap_since_ms = 0;
+    // V2.5-Evo - 2026-09-19 - level-5 log: name the branch the gate check took, from the state it
+    // left behind. Gate 1 (trigger released) is tested first, exactly as checkRtmSafetyGates() does,
+    // because a standing e-stop from an earlier tick would otherwise read as a gate-stop on a
+    // released-trigger tick; Gate 9 disarms (rtm_rx_active false); gates 2-7 raise the e-stop.
+    rtm_log_phase = (thr_received < 25) ? 6 : (!rtm_rx_active ? 7 : 5);
     return;
   }
 
@@ -3149,7 +3214,12 @@ static void runRtmLoopBody(unsigned long now)
     const bool have_heading = (g_heading_error_dx10 != 0x7FFF);
     float abs_err = have_heading ? fabsf((float)g_heading_error_dx10 / 10.0f) : 180.0f;
 
+    // V2.5-Evo - 2026-09-19 - level-5 log: a tick past the gates is "run" (2), or "approach" (3)
+    // when the decel ramp is capping; the bootstrap and align branches below overwrite with 4 / 1.
+    rtm_log_phase = rtm_log_in_approach ? 3 : 2;
+
     if (!have_heading) {
+      rtm_log_phase = 4;   // level-5 log: bootstrap-headless (BOOTSTRAP-1 or its declined fallback)
       // Abort radius is TIED TO min_dist_m - the rider's own "never closer than this". The
       // kFmEngageDistFloorM floor only bites if they have tuned it below tow-rope length; the
       // field accepts 0, which means "no minimum" and would otherwise disable the abort entirely.
@@ -3222,6 +3292,7 @@ static void runRtmLoopBody(unsigned long now)
       }
     } else if (abs_err > (float)usrConf.rtm_align_threshold_deg) {
       rtm_bootstrap_since_ms = 0;    // heading exists: the bootstrap window is over
+      rtm_log_phase = 1;             // level-5 log: align (Phase 1)
       // Phase 1 — Align: ~5% throttle — differential steers; buggy barely moves forward
       // V2.5-Evo - 2026-09-19 - PIVOT BOOST ON CLASSIC RTM TOO (owner decision). With the
       // throttle-relative mixer in, this align at cap 13 / influence 55 is 8-14 counts of

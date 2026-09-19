@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-19 - (RX only, inside ENABLE_WEB_LOG_DOWNLOAD) the WiFi log download accepts and buffers the level-5 record (109 B, VescLogDataL5) - the record-size ceiling and the raw buffer are sizeof(VescLogDataL5) now, the largest record the RX writes; logCsvHeaderFor() / logFormatCsvRow() already select the level-5 columns by record_size. No TX impact, no confStruct change.
 // V2.5-Evo - 2026-09-17 - (RX only, inside ENABLE_WEB_LOG_DOWNLOAD) the WiFi log download picks the CSV column header by the file's own record_size as well as its level (logCsvHeaderFor in BREmote_V2_Rx.h), so 65 B level-4 files written before the Follow-Me audit block still download with exactly their 35 columns and new 83 B files get all 45. No TX impact, no confStruct change.
 #ifndef WEB_CONFIG_ENGINE_H
 #define WEB_CONFIG_ENGINE_H
@@ -662,7 +663,7 @@ static void webCfgHandleDownloadLog()
                (hdr.magic == LOG_FILE_MAGIC) &&
                (hdr.format_ver == LOG_FILE_FORMAT_VER) &&
                (hdr.record_size >= (uint16_t)sizeof(VescLogData)) &&
-               (hdr.record_size <= (uint16_t)sizeof(VescLogDataL4));
+               (hdr.record_size <= (uint16_t)sizeof(VescLogDataL5));   // V2.5-Evo - 2026-09-19 - level 5 is the largest record
   if(!hdrOk)
   {
     file.close();
@@ -694,8 +695,8 @@ static void webCfgHandleDownloadLog()
   webCfgServer.sendContent(header);
 
   // V2.5-Evo - 2026-07-25 - STAGE 0: raw record buffer, sized for the largest record this
-  // firmware understands (level 4). The file header guarantees hdr.record_size fits in it.
-  uint8_t rec_buf[sizeof(VescLogDataL4)];
+  // firmware understands (level 5 since 2026-09-19). The file header guarantees hdr.record_size fits in it.
+  uint8_t rec_buf[sizeof(VescLogDataL5)];
   // V2.5-Evo - 2026-07-25 - F-WEBCSV: row buffer resized 400 -> 512 for the 31-column CSV.
   // V2.5-Evo - 2026-07-25 - STAGE 0: the buffer size and the sizing arithmetic behind it now live
   // once, as LOG_CSV_ROW_BUF in BREmote_V2_Rx.h (640 B: the ~282 B pathological level-3 row plus

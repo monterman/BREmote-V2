@@ -459,6 +459,16 @@ The RX board logs GPS position, VESC telemetry, voltage, speed, and timestamps t
 - **Download:** Connect to RX WiFi AP → open the RX embedded web page or the Web Serial Config Tool → **Manage Logs** section
 - **Log rate:** default **3 Hz**, tuned for propeller / max-speed testing. Raise to 5 Hz for RTM/steering analysis with `?lograte 5` over serial (resets to 3 Hz on reboot; not persisted). Record size, rate→duration table, and SPIFFS capacity: see `docs/LOGGER_NOTES.md`.
 
+**Log detail levels (`log_level`, RX setting):** every log file records its own level and record size in an 8-byte header, so older files always download with their own columns. `?logstat` prints the level in force and the hours it buys; `?download <file>` and the web page emit CSV.
+
+| Level | Record | Continuous logging (1757 KB usable) | What it adds |
+|---|---|---|---|
+| **0 / 3 — Developer** (default) | 59 B | ≈ 2 h 50 min at 3 Hz, ≈ 1 h 40 min at 5 Hz | VESC, GPS, heading source, steering applied, distance to the remote, LoRa link |
+| **4 — Deep** (everyday deep log) | 87 B | ≈ 1 h 55 min at 3 Hz, ≈ 1 h 10 min at 5 Hz | + GPS feed / frozen-course / mux / loop diagnostics, the Follow-Me gate verdicts and state, the sticky auto-return reason, aligning and pivot-boost flags, the rider’s raw speed, the two mixer motor commands |
+| **5 — Everything** (test sessions) | 109 B | ≈ 1 h 30 min at 3 Hz, ≈ 55 min at 5 Hz | + the rider’s position as the buggy holds it (fix counter + age), the Return-to-Me phase and approach cap, the align cap / boost / mixer influence in force, the remote’s auto-return override, the Follow-Me flags echoed to the remote, keepalive age. Clear the logs first (`?deleteallogs`). |
+
+The logger keeps a 500 KB free-space reserve and deletes the oldest files to hold it, so a board with old logs on it stops that much short of the figures above. Levels 1 and 2 are reserved and currently log as level 3.
+
 *\* Date format changed from DDMMYY (original LudwigBre) to MMDDYY in V2.5-Evo.*
 
 ---

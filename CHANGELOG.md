@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-09-19 — RX: the deep log explains an auto-return, plus a level 5 “everything” record for test sessions
+
+Logging only — nothing about how the buggy drives changes, and your settings survive the flash.
+
+- **Level 4 (Deep) grows 83 → 87 bytes** and gains: the auto-return reason (sticky — read it on the row
+  where `fm_state` changes), an *aligning* flag and a *pivot boost* flag, the rider’s **raw** speed (the number
+  auto-return is judged on, next to the filtered one), and the two motor commands out of the differential mixer
+  (`motor0_cmd` / `motor1_cmd`, post-mixer, pre-map) — so a pivot is visible as the split it actually asked for.
+- **New level 5 (Everything, 109 bytes)** for test sessions: the rider’s position as the buggy holds it (with a
+  distinct-fix counter and the fix age), the Return-to-Me phase and approach cap, the align cap / boost / mixer
+  influence in force, the remote’s auto-return override, the Follow-Me flags echoed to the remote and the
+  keepalive age. `?set log_level 5`, `?save`, `?reboot`; clear the logs first. About 1 h 30 min at 3 Hz.
+- **Older Deep files keep their own columns.** The CSV header is now chosen by the record size the file itself
+  declares (65 / 83 / 85 / 87 / 109 B), so a log written last week downloads exactly as it did.
+- **`?logstat`** now prints the level in force, the record size, the log rate and the hours they buy.
+- **Return-to-Me gate stops** (Phase A/B, stale GPS, link lost) set the motor to zero *before* printing, and print
+  once per 2 s instead of ten times a second.
+
 ## 2026-09-19 — TX: the Follow-Me station cycle never lands on F0 any more
 
 Cycling stations before you touch the throttle (LEFT tap → RIGHT hold) used to run 1 → 2 → 3 → **0**,

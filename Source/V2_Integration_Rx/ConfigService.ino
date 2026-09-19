@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-19 - DEEP LOG level 5: the log_level row's max is raised 4 -> 5 (5 = Everything, the 109 B test-session record), and cfgValidateCrossField() CLAMPS log_level > 5 down to 5 - a clamp, never a rejection, because this validator runs on the LOAD path and a range rejection there wipes the whole config (the 2026-09-03 lesson, same as fm_return_mode). Same u16 slot, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - SW36: three kCfgFields rows for the appended Follow-Me fields - fm_return_mode (u16, 0-1), fm_align_cap (u16, 8-80), fm_align_influence (u16, 0-100) - and two CLAMPS in cfgValidateCrossField(): fm_return_mode > 1 -> 1, fm_align_influence > 100 -> 100. Clamps, never rejections, because this validator runs on the LOAD path (the 2026-09-03 lesson: a range rejection at boot wipes the whole config). sizeof(confStruct) 192 -> 200, SW_VERSION 35 -> 36; the stored SW35 config is migrated at boot, not reset.
 // V2.5-Evo - 2026-09-18 - fm_engage_dist_m: the shared floor kFmEngageDistFloorM is 9.5 m now (was 8.0; the rope is 7.1 m, review finding F3) - the validator reads the constant, so only the comments and the clamp NOTE's advice ("about a third beyond the rope", not "a metre") change here. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // RX-specific config field table and cross-validation.
@@ -164,7 +165,11 @@ const CfgFieldSpec kCfgFields[] = {
   //   1 = Basic  RESERVED for a future storage optimisation (smaller records) — CURRENTLY LOGS AS 3.
   //   2 = VESC   RESERVED for a future storage optimisation (smaller records) — CURRENTLY LOGS AS 3.
   //   3 = Developer, the full 59-byte record this firmware has always written.
-  //   4 = Deep, Developer plus the 6-byte diagnostic block (65 bytes/record).
+  //   4 = Deep, Developer plus the 6-byte diagnostic block (65 bytes/record; 87 B since 2026-09-19
+  //       with the Follow-Me audit block, the raw rider speed and the two mixer outputs).
+  //   5 = Everything (V2.5-Evo - 2026-09-19): Deep plus the 22-byte level-5 block = 109 bytes/record,
+  //       for test sessions. ACCEPTED RANGE is 0-5 now; anything above 5 is CLAMPED to 5 in
+  //       cfgValidateCrossField() below, never rejected (a rejection on the load path wipes config).
   // 1 and 2 are deliberately ACCEPTED rather than rejected: a rider can select them now and a later
   // firmware will honour them without another config migration. They are NOT silently ignored —
   // the fallback to level 3 is stated in the field comment, in both web UIs and in the standalone
@@ -172,7 +177,7 @@ const CfgFieldSpec kCfgFields[] = {
   //
   // The FM v2 "steer reposition" feature that owned this slot is NOT cancelled; when it lands it
   // will claim a FRESH confStruct field (a deliberate, announced config-wipe event), not this one.
-  {"log_level",              CFG_U16,   offsetof(confStruct, log_level),              true, false, true, 0.0f,  4.0f,    0, false},
+  {"log_level",              CFG_U16,   offsetof(confStruct, log_level),              true, false, true, 0.0f,  5.0f,    0, false},   // max 4 -> 5 (2026-09-19)
   // V2.5-Evo - 2026-09-19 - SW36: auto-return inside Follow-Me. All three are read live by RTMState.ino.
   //   fm_return_mode     0-1   : power-on default for auto-return (1 = FM_RETURN when the rider stops, 0 = HOLD as before).
   //                              The remote's return gesture overrides it for the session (0xF2 bits 5-6, RAM only).
@@ -206,6 +211,9 @@ bool cfgValidateCrossField(confStruct &candidate, String &err)
   // so anything above 100 means full. Both corrections are silent and idempotent.
   if (candidate.fm_return_mode > 1)       candidate.fm_return_mode = 1;
   if (candidate.fm_align_influence > 100) candidate.fm_align_influence = 100;
+  // V2.5-Evo - 2026-09-19 - log_level: 5 (Everything) is the top level now; anything above it means
+  // "the most detail there is", so it clamps to 5 rather than failing the load. Same reasoning.
+  if (candidate.log_level > 5)            candidate.log_level = 5;
 
   if (candidate.PWM0_max <= candidate.PWM0_min)
   {

@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-19 - DEEP LOG level 5 ("everything", owner request for the test sessions): VescLogDataL5 = the complete 87 B level-4 record + a 22 B level-5 block = 109 B (static_assert 109): the rider's position as the RX holds it (rx_tx_gps_lat/lng as float, the distinct-fix counter, the fix age), the classic RTM phase code and rtm_approach_cap, the align cap / align influence / mixer influence in force this tick, the auto-return override state, telemetry.fm_flags as sent, the 0xF2 keepalive age, and two reserved bytes for the steer-takeover branch (l5_rsvd_takeover_active / _end) so its integration does not bump the size again. Every field is a COPY of published state, taken in fmPublishLogSnapshot() (loop task, one writer) and carried in FmLogSnapshot; nothing in the control path reads any of it. log_level 5 selects it (logResolveLevel / logRecordSizeForLevel), createNewLogFile() stamps record_size 109, logCsvHeaderFor() gains the L5 tier (65 columns) and logFormatCsvRow() prints every level-5 field with units. Capacity on the 1757 KB the filesystem reports: about 1 h 30 min at 3 Hz, about 55 min at 5 Hz (87 B level 4: about 1 h 55 min / 1 h 10 min). No confStruct change - the log_level field is the same u16, its validator max is raised 4 -> 5 - sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG (B)+(C): VescLogDataL4 grows 83 -> 87 B (static_assert 87). (B) fm_rider_raw_dx10 u16 = the rider's RAW displacement speed x 10 km/h (RTMState.ino fm_rider_raw_kmh, the number the FM_RETURN candidate is judged on; the filtered EMA track was already logged as fm_rider_speed_dx10), sentinel 0xFFFF = unknown (< 0). (C) motor0_cmd / motor1_cmd u8 = the two post-mixer, pre-map motor commands out of calcPWM()'s steering_type 1 branch (g_motor0_cmd / g_motor1_cmd, two diagnostic observers written every 100 Hz tick, the g_effective_steer pattern; 0 for the efoil / servo branches). TIER FIX for the readers: logCsvHeaderFor() used to return the 65 B DIAG header for anything smaller than sizeof(VescLogDataL4), so after this bump every 83 B file written since 2026-09-17 would have printed with the wrong header; it now picks by the offsets of the blocks actually present (65 B DIAG / 83 B L4_83 / 85 B +raw / 87 B full) and logFormatCsvRow() guards each new field on record_size >= its offset + size. The 2026-09-17 'LAYOUT IS FINAL' note is history. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG (A): the one unused byte of the level-4 Follow-Me block, fm_pad, becomes fm_return_reason - a straight copy of the controller's FmReturnReason latch (RTMState.ino fm_return_last_reason: 0 = no event since boot; 4 = RETURN entered, 6/7/8/11 = arrived / cancelled / timed out / steered, 1-3 = a candidate dropped), STICKY - it changes only on an event, so read it on the row where fm_state changes. Two new bits in the existing fm_gate_flags u32: bit 17 aligning (an autonomous controller is turning to face its target this tick) and bit 18 boost (the pivot-boost mixer influence is published this tick); bit 16 is left free because the takeover side branch already defines it. CSV gains fm_return_reason, fm_aligning, fm_boost (45 -> 48 columns for an 83 B file; the two bits are read out of fm_gate_flags). Record size unchanged at 83, static_assert stays 83, old 83 B files print 0 in all three new columns (the pad was always 0). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - FM_RETURN + pivot boost: adds the align_mixer_influence_override atomic (0 = none; the ONE mixer influence override, written by publishAlignMixerInfluence() in RTMState.ino for FM align, FM_RETURN align and classic RTM Phase 1 align, read by calcPWM()), includes ../Common/FollowMeReturnProof.h (the pure, host-tested FM_RETURN entry proof), and adds FM_LOG_GATE_RETURN_WINDOW (bit 15) to the deep-log gate word next to the P1-b bit 11 it reserved - new bit in the existing u32, record size unchanged; fm_state gains the value 5 (RETURN). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -474,7 +475,13 @@ struct confStruct {
     // The level is latched once per log FILE (createNewLogFile() in Logger.ino) and written into
     // that file's header, so changing this setting mid-session never corrupts an open file.
     // ============================================================
-    uint16_t log_level;                // 0 = unset (= level 3); 1 = Basic*, 2 = VESC*, 3 = Developer, 4 = Deep. (*accepted, currently logs as level 3.) Range 0-4.
+    // V2.5-Evo - 2026-09-19 - level 5 = Everything: the 87 B Deep record plus a 22 B block (rider
+    // position + freshness, RTM phase and approach cap, the align/mixer influences in force, the
+    // auto-return override, fm_flags as sent, the keepalive age, two reserved bytes) = 109 B/record,
+    // for test sessions only (about 1 h 30 min at 3 Hz). Same u16 slot; the validator max is 5 now
+    // and cfgValidateCrossField() CLAMPS anything above 5 down to 5 on every path (a range rejection
+    // on the load path would wipe the config). See VescLogDataL5 below.
+    uint16_t log_level;                // 0 = unset (= level 3); 1 = Basic*, 2 = VESC*, 3 = Developer, 4 = Deep, 5 = Everything. (*accepted, currently logs as level 3.) Range 0-5.
 
     // V2.5-Evo - 2026-08-16 - SW34->35: mag_orientation. NEW FIELD, appended at the END of
     // confStruct so every existing offset is unchanged, and SW_VERSION 34 -> 35, which DOES reset
@@ -1212,6 +1219,80 @@ struct __attribute__((packed)) VescLogDataL4 {
 static_assert(sizeof(VescLogDataL4) == 87, "VescLogDataL4 size mismatch — expected 59 (VescLogData) + 6 (level-4 diagnostics) + 18 (Follow-Me audit block, 2026-09-17) + 2 (fm_rider_raw_dx10) + 2 (motor0_cmd, motor1_cmd) (2026-09-19).");  // 83 -> 87: +fm_rider_raw_dx10 (u16) +motor0_cmd +motor1_cmd (u8 x 2), appended 2026-09-19
 
 // ============================================================
+// V2.5-Evo - 2026-09-19 - LEVEL-5 ("Everything") LOG RECORD - 109 B
+//
+// Owner request for the first water sessions with auto-return and the pivot boost: "dump anything
+// you need into log 5; sessions will not be ultra long". Tiers stay ADDITIVE: the first 87 bytes are
+// a byte-identical VescLogDataL4, so every level-4 column decodes with the same code, and the 22-byte
+// level-5 block is appended after it. Like the level-4 Follow-Me block it is PUBLISHED by the
+// controller (fmPublishLogSnapshot(), loop task, one writer, once per 10 Hz tick) and COPIED by the
+// logger; nothing in the control path reads any of it. Packed like the other records; the file
+// header's record_size (109) is what a reader steps by.
+//
+// WHAT THE BLOCK LETS A READER REBUILD:
+//   rider_lat / rider_lng + the buggy's latitude/longitude in the base record -> the bearing to the
+//   rider, the station angle (rider course from consecutive rider positions), and the geometry of
+//   every align / return decision; rider_fix_seq / rider_fix_age -> whether that position was a
+//   NEW fix or a repeat, and how old; rtm_phase + rtm_approach_cap -> which branch classic RTM took
+//   and the cap it wrote; align_cap / align_influence / mix_influence -> the throttle cap and the
+//   motor split the pivot boost actually asked for; fm_return_override / fm_flags_sent /
+//   fm_keepalive_age -> what the remote declared and what the RX echoed back.
+//
+// BYTE OFFSETS (from the start of the record; the Python reader is built from this table):
+//    87  rider_lat            f32   rider (TX) latitude, degrees, as the RX holds it (rx_tx_gps_lat cast to float:
+//                                   ~0.5 m resolution at mid latitudes, the same precision the base record's own
+//                                   latitude/longitude carry). 0.0 with rider_fix_age 0xFFFF = no meta-packet ever
+//    91  rider_lng            f32   rider (TX) longitude, degrees
+//    95  rider_fix_seq        u16   rx_tx_gps_fix_seq & 0xFFFF - bumps once per DISTINCT rider position (wraps)
+//    97  rider_fix_age_div10  u16   (now - rx_tx_gps_timestamp) / 10 ms; 0xFFFF = never received; saturates 0xFFFE
+//    99  rtm_approach_cap     u8    rtm_approach_cap as published (0-255; 255 = no cap)
+//   100  rtm_phase            u8    RTM branch taken this tick: 0 inactive/disabled, 1 align (Phase 1), 2 run
+//                                   (aligned; governor or free), 3 approach (aligned AND inside rtm_approach_zone_m,
+//                                   the decel ramp is capping), 4 bootstrap-headless (no heading: BOOTSTRAP-1 or its
+//                                   declined fallback), 5 gate-stop (a gate 2-7 failed: rtm_rx_emergency_stop),
+//                                   6 trigger released (gate 1: armed, motor already 0), 7 Gate 9 handoff (one tick)
+//   101  align_cap            u8    fmAlignCapValue() while fm_gate_flags bit 17 (aligning) is set, else 0
+//   102  align_influence      u8    align_mixer_influence_override as published this tick (0 = no boost)
+//   103  mix_influence        u8    the steering influence the differential mixer used this tick, %: the boost
+//                                   when calcPWM() honours it (auto-steer with the trigger held), else
+//                                   steering_influence - the same rule calcPWM() applies, from the same inputs
+//   104  fm_return_override   u8    the remote's 0xF2 auto-return override: 0 none (stored default), 1 OFF, 2 ON
+//   105  fm_flags_sent        u8    telemetry.fm_flags as sent to the remote ([7] effective auto-return, [3] fault
+//                                   sticky, [2] armed-not-ready, [1] engaged, [0] armed)
+//   106  fm_keepalive_age_div100 u8 (now - fm_mode_last_rx_ms) / 100 ms since the last 0xF2; 0xFF = none this
+//                                   session; saturates 0xFE (25.4 s; the keepalive is every 30 s, expiry 95 s)
+//   107  l5_rsvd_takeover_active u8 RESERVED, 0 here: steer_takeover_active for the steer-takeover branch
+//   108  l5_rsvd_takeover_end    u8 RESERVED, 0 here: that branch's last_end code
+//   109 = sizeof
+// NOT INCLUDED, and why: the raw 0xF2 byte (Radio.ino decodes it into fm_mode_runtime and
+// fm_return_mode_runtime and keeps no copy - both decoded values are here: fm_mode in the level-4
+// block, fm_return_override above); a compass yaw rate (Compass.ino has no per-tick heading history
+// to derive one from cheaply - derive it from compass_live_dx10 across consecutive rows instead).
+// CAPACITY on the 1757 KB the filesystem reports (the logger keeps a 500 KB reserve on top): about
+// 1 h 30 min at 3 Hz, about 55 min at 5 Hz. Level 4 at 87 B: about 1 h 55 min / 1 h 10 min.
+// ============================================================
+struct __attribute__((packed)) VescLogDataL5 {
+    VescLogDataL4 l4;                    // the complete 87 B level-4 record, unchanged and first — do not reorder
+    // ---- level-5 block, byte 87 onward (22 B) ----
+    float    rider_lat;                  // rider latitude, deg (rx_tx_gps_lat)
+    float    rider_lng;                  // rider longitude, deg (rx_tx_gps_lng)
+    uint16_t rider_fix_seq;              // rx_tx_gps_fix_seq & 0xFFFF
+    uint16_t rider_fix_age_div10;        // ms / 10 since the last meta-packet; 0xFFFF = never
+    uint8_t  rtm_approach_cap;           // 0-255; 255 = no cap
+    uint8_t  rtm_phase;                  // 0-7, see the table above
+    uint8_t  align_cap;                  // 0 when not aligning
+    uint8_t  align_influence;            // 0 = no boost published
+    uint8_t  mix_influence;              // %, what the mixer used
+    uint8_t  fm_return_override;         // 0 none / 1 OFF / 2 ON
+    uint8_t  fm_flags_sent;              // telemetry.fm_flags
+    uint8_t  fm_keepalive_age_div100;    // ms / 100; 0xFF = none
+    uint8_t  l5_rsvd_takeover_active;    // RESERVED (takeover branch), 0
+    uint8_t  l5_rsvd_takeover_end;       // RESERVED (takeover branch), 0
+};
+static_assert(sizeof(VescLogDataL5) == 109, "VescLogDataL5 size mismatch — expected 87 (VescLogDataL4) + 22 (level-5 block, 2026-09-19).");
+static_assert(offsetof(VescLogDataL5, rider_lat) == 87, "level-5 block must start right after the 87 B level-4 record");
+
+// ============================================================
 // V2.5-Evo - 2026-09-17 - FmLogSnapshot: the controller -> logger hand-off
 //
 // runFmLoop() (loop task, 10 Hz) fills g_fm_log_snapshot exactly once per tick, inside
@@ -1235,8 +1316,23 @@ struct FmLogSnapshot {
     int16_t  station_deg_x10;
     uint8_t  return_reason;    // V2.5-Evo - 2026-09-19 - DEEP LOG (A): fm_return_last_reason, sticky (see VescLogDataL4.fm_return_reason)
     uint16_t rider_raw_dx10;   // V2.5-Evo - 2026-09-19 - DEEP LOG (B): fm_rider_raw_kmh x 10; 0xFFFF = unknown
+    // V2.5-Evo - 2026-09-19 - the level-5 block, same fields and sentinels as VescLogDataL5 (copied
+    // by fillLevel5Extra() only when the file is level 5; published on every tick regardless).
+    float    l5_rider_lat;
+    float    l5_rider_lng;
+    uint16_t l5_rider_fix_seq;
+    uint16_t l5_rider_fix_age_div10;
+    uint8_t  l5_rtm_approach_cap;
+    uint8_t  l5_rtm_phase;
+    uint8_t  l5_align_cap;
+    uint8_t  l5_align_influence;
+    uint8_t  l5_mix_influence;
+    uint8_t  l5_fm_return_override;
+    uint8_t  l5_fm_flags_sent;
+    uint8_t  l5_fm_keepalive_age_div100;
 };
-FmLogSnapshot g_fm_log_snapshot = { 0, 0xFFFF, 0xFFFF, 0, 0, 0xFF, 0, 0, 255, 0, 0, 0xFFFF };
+FmLogSnapshot g_fm_log_snapshot = { 0, 0xFFFF, 0xFFFF, 0, 0, 0xFF, 0, 0, 255, 0, 0, 0xFFFF,
+                                    0.0f, 0.0f, 0, 0xFFFF, 255, 0, 0, 0, 0, 0, 0, 0xFF };
 portMUX_TYPE  g_fm_log_mux      = portMUX_INITIALIZER_UNLOCKED;
 
 // ============================================================
@@ -1262,7 +1358,7 @@ portMUX_TYPE  g_fm_log_mux      = portMUX_INITIALIZER_UNLOCKED;
 struct __attribute__((packed)) LogFileHeader {
     uint32_t magic;        // LOG_FILE_MAGIC — absent/mismatched means "not a BREmote log of this era"
     uint8_t  format_ver;   // LOG_FILE_FORMAT_VER — layout of THIS header
-    uint8_t  log_level;    // the level the file was actually recorded at (3 or 4 today)
+    uint8_t  log_level;    // the level the file was actually recorded at (3, 4 or 5 since 2026-09-19)
     uint16_t record_size;  // bytes per record in this file — the ONLY thing a reader may step by
 };
 static_assert(sizeof(LogFileHeader) == 8, "LogFileHeader must stay 8 bytes — readers step past it by sizeof().");
@@ -1270,9 +1366,10 @@ static_assert(sizeof(LogFileHeader) == 8, "LogFileHeader must stay 8 bytes — r
 // ============================================================
 // logResolveLevel - turn the stored config value into the level actually used
 //
-// Inputs:  usrConf.log_level. Outputs: 3 or 4. Side effects: none.
+// Inputs:  usrConf.log_level. Outputs: 3, 4 or 5. Side effects: none.
 //
 // 0 (unset), 1 (Basic), 2 (VESC), 3 (Developer) and ANY out-of-range value all resolve to 3.
+// V2.5-Evo - 2026-09-19 - 5 (Everything) resolves to 5.
 // Levels 1 and 2 are reserved for a future storage optimisation (smaller records); they are
 // accepted by the config validator so a rider can select them and a later firmware will honour
 // them, but until those records exist they are documented — here, in the field comment, and in
@@ -1280,15 +1377,17 @@ static_assert(sizeof(LogFileHeader) == 8, "LogFileHeader must stay 8 bytes — r
 // ============================================================
 static inline uint8_t logResolveLevel()
 {
+  if (usrConf.log_level == 5) return 5;
   return (usrConf.log_level == 4) ? 4 : 3;
 }
 
 // ============================================================
 // logRecordSizeForLevel - bytes per record for a given level
-// Inputs: level (3 or 4). Outputs: record size in bytes. Side effects: none.
+// Inputs: level (3, 4 or 5). Outputs: record size in bytes. Side effects: none.
 // ============================================================
 static inline uint16_t logRecordSizeForLevel(uint8_t level)
 {
+  if (level >= 5) return (uint16_t)sizeof(VescLogDataL5);   // V2.5-Evo - 2026-09-19 - level 5, 109 B
   return (level >= 4) ? (uint16_t)sizeof(VescLogDataL4) : (uint16_t)sizeof(VescLogData);
 }
 
@@ -1319,12 +1418,15 @@ static inline uint16_t logRecordSizeForLevel(uint8_t level)
 #define LOG_CSV_HEADER_L4_83 LOG_CSV_HEADER_L4_DIAG ",fm_gate_flags,fm_distance_m,fm_d_engage_m,fm_rider_speed_kmh,fm_sep_fix_count,fm_mode,fm_state,fm_block_reason,fm_throttle_cap,fm_station_deg,fm_return_reason,fm_aligning,fm_boost"
 #define LOG_CSV_HEADER_L4_RAW LOG_CSV_HEADER_L4_83 ",fm_rider_raw_kmh"
 #define LOG_CSV_HEADER_L4 LOG_CSV_HEADER_L4_RAW ",motor0_cmd,motor1_cmd"
+// V2.5-Evo - 2026-09-19 - level 5: the 14 level-5 columns after the full level-4 set (65 columns, 109 B files).
+#define LOG_CSV_HEADER_L5 LOG_CSV_HEADER_L4 ",rider_lat,rider_lng,rider_fix_seq,rider_fix_age_ms,rtm_approach_cap,rtm_phase,align_cap,align_influence,mix_influence,fm_return_override,fm_flags_sent,fm_keepalive_age_s,l5_rsvd_takeover_active,l5_rsvd_takeover_end"
 
 #define LOG_CSV_ROW_FMT_L3 "%u,%.2f,%.2f,%d,%.1f,%d,%u,%u,%.1f,%.6f,%.6f,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%d,%d,%u,%u,%.1f,%d,%.1f"
 #define LOG_CSV_ROW_EXT_L4 ",%u,%u,%u,%u"
 #define LOG_CSV_ROW_EXT_L4_FM ",%u,%.1f,%.1f,%.1f,%u,%u,%u,%u,%u,%.1f,%u,%u,%u"
 #define LOG_CSV_ROW_EXT_L4_RAW ",%.1f"        // (B) fm_rider_raw_kmh; -1.0 = unknown
 #define LOG_CSV_ROW_EXT_L4_MOTORS ",%u,%u"    // (C) motor0_cmd, motor1_cmd
+#define LOG_CSV_ROW_EXT_L5 ",%.6f,%.6f,%u,%d,%u,%u,%u,%u,%u,%u,%u,%.1f,%u,%u"   // level 5: lat, lng, seq, age ms (-1 never), cap, phase, align cap, align infl, mix infl, return override, fm_flags, keepalive s (-1.0 none), rsvd x 2
 
 // Row buffer size. Sizing arithmetic for the 31 level-3 columns is unchanged from F-WEBCSV:
 //   ~178 field chars + 30 commas + newline + NUL = ~210 bytes for normal data, and a corrupt
@@ -1332,7 +1434,8 @@ static inline uint16_t logRecordSizeForLevel(uint8_t level)
 //   at most 3+3+5+5 chars plus 4 commas = 20. The 10 Follow-Me columns (2026-09-17) add at most
 //   ~60 more (a u32 flag word, three "%.1f" distances/speeds, five u8s, one signed "%.1f"); the
 //   three 2026-09-19 (A) columns (a u8 and two 0/1 flags) at most 9 more, and the (B)+(C) columns (one
-//   "%.1f" speed, two u8s) at most 15 more. 640
+//   "%.1f" speed, two u8s) at most 15 more. The 14 level-5 columns add at most ~80 (two "%.6f"
+//   coordinates, one "%.1f", eleven small integers, 14 commas): pathological total ~470. 640
 //   clears the pathological ~362 by ~1.8x. It is a stack local in the Arduino loop task (8 KB
 //   stack), which is where both readers run.
 #define LOG_CSV_ROW_BUF 640
@@ -1355,7 +1458,8 @@ static inline const char* logCsvHeaderFor(uint8_t level, uint16_t record_size)
   if (record_size < (uint16_t)offsetof(VescLogDataL4, fm_rider_raw_dx10))                              return LOG_CSV_HEADER_L4_DIAG;  // 65 B: diagnostics only
   if (record_size < (uint16_t)(offsetof(VescLogDataL4, fm_rider_raw_dx10) + sizeof(uint16_t)))         return LOG_CSV_HEADER_L4_83;    // 83 B: + Follow-Me block
   if (record_size < (uint16_t)(offsetof(VescLogDataL4, motor1_cmd) + sizeof(uint8_t)))                 return LOG_CSV_HEADER_L4_RAW;   // 85 B: + raw rider speed
-  return LOG_CSV_HEADER_L4;                                                                                                             // 87 B: + motor commands
+  if (record_size < (uint16_t)sizeof(VescLogDataL5))                                                    return LOG_CSV_HEADER_L4;       // 87 B: + motor commands
+  return LOG_CSV_HEADER_L5;                                                                                                             // 109 B: + the level-5 block (2026-09-19)
 }
 
 // ============================================================
@@ -1371,7 +1475,7 @@ static inline const char* logCsvHeaderFor(uint8_t level, uint16_t record_size)
 //   out_len   - size of that buffer
 //   rec_bytes - one raw record as read from the file, at least sizeof(VescLogData) bytes
 //   rec_size  - bytes actually read for this record, taken from the FILE HEADER, never sizeof()
-//   level     - log level from the file header (3 or 4)
+//   level     - log level from the file header (3, 4 or 5)
 //
 // Outputs: number of characters written (excluding the NUL); 0 on a bad argument.
 // Side effects: none — reads nothing global, writes only into out.
@@ -1495,6 +1599,33 @@ static int logFormatCsvRow(char* out, size_t out_len, const uint8_t* rec_bytes, 
       if (c > 0)
       {
         n += c;
+        if ((size_t)n >= out_len) n = (int)out_len - 1;
+      }
+    }
+    // V2.5-Evo - 2026-09-19 - the level-5 block: present only in a full 109 B record. Sentinels print
+    // as -1 (fix age never received) / -1.0 (no keepalive this session), the same convention as above.
+    if (rec_size >= (uint16_t)sizeof(VescLogDataL5) && (size_t)n < (out_len - 1))
+    {
+      VescLogDataL5 d5;
+      memcpy(&d5, rec_bytes, sizeof(VescLogDataL5));
+      int f = snprintf(out + n, out_len - (size_t)n, LOG_CSV_ROW_EXT_L5,
+                       d5.rider_lat,
+                       d5.rider_lng,
+                       (unsigned)d5.rider_fix_seq,
+                       (d5.rider_fix_age_div10 == 0xFFFF) ? -1 : (int)d5.rider_fix_age_div10 * 10,
+                       (unsigned)d5.rtm_approach_cap,
+                       (unsigned)d5.rtm_phase,
+                       (unsigned)d5.align_cap,
+                       (unsigned)d5.align_influence,
+                       (unsigned)d5.mix_influence,
+                       (unsigned)d5.fm_return_override,
+                       (unsigned)d5.fm_flags_sent,
+                       (d5.fm_keepalive_age_div100 == 0xFF) ? -1.0f : (d5.fm_keepalive_age_div100 / 10.0f),
+                       (unsigned)d5.l5_rsvd_takeover_active,
+                       (unsigned)d5.l5_rsvd_takeover_end);
+      if (f > 0)
+      {
+        n += f;
         if ((size_t)n >= out_len) n = (int)out_len - 1;
       }
     }

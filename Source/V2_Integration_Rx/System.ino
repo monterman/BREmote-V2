@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-19 - DEEP LOG level 5: ?diag's log_level line names level 5 "Everything" (it would have said "Deep"); ?logstat already derives level, record size and capacity from logResolveLevel() / logRecordSizeForLevel(), so it reports 109 B and the hours for level 5 with no change. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG: ?logstat now prints the log level in force, the record size, the log rate and the capacity that follows from them - computed from logRecordSizeForLevel() / log_interval_ms / SPIFFS.totalBytes() and the MIN_FREE_SPACE_KB reserve, never from a literal, so a record-size change (83 -> 87 B today) is reflected without touching this command. Print only. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - ?diag gained ONE more line (P1-b): the effective auto-return mode and its source (stored default / the remote's session override), whether a RETURN candidate proof is running and what it last decided, and why the last candidate or RETURN ended. Read-only accessors in RTMState.ino. No control-path change, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-18 - ?diag gained ONE more line (P1-a/P1-c): the Follow-Me engagement facts - state, separation latch, whether the next engagement needs the full D_engage, and whether FM is yielding to an active RTM - through read-only accessors in RTMState.ino. No control-path change, no confStruct change, sizeof stays 192, SW_VERSION stays 35.
@@ -1257,7 +1258,7 @@ void cmdDiag(const String& params) {
                                                      : "since boot (first call)";
 
   const uint8_t lvl = logResolveLevel();
-  const char*   lvl_txt = (lvl >= 4) ? "Deep" : "Developer";
+  const char*   lvl_txt = (lvl >= 5) ? "Everything" : (lvl >= 4) ? "Deep" : "Developer";   // V2.5-Evo - 2026-09-19 - level 5
 
   // "-1" in the lines below always means "no sample in this window", never a real measurement.
   const long  fix_age_now  = (gps_last_ms != 0) ? (long)(now_ms - (uint32_t)gps_last_ms) : -1L;

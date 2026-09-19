@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-19 - auto-return mode plumbing (RX side of the 0xF2 override): the EFFECTIVE return mode - the remote's session override (fm_return_mode_runtime, 0/1) when one stands, else the stored usrConf.fm_return_mode - is resolved ONCE per tick at the top of runFmLoop() into fm_return_mode_effective, echoed to the remote in telemetry.fm_flags bit 7 by runRtmLoop(), and read by nothing else yet (FM_RETURN itself lands in the next commit). fmEnterIdle() clears the runtime override back to 0xFF, so the 95 s mode-age expiry and a 0xF2/0 disarm both end an override. Read-only accessors for ?diag. No control-path change, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-18 - review findings F6/F7/F8: kFmReleaseDengageMs added as an alias of kFmEngageGraceMs and used at the release -> needs-D_engage site (two rules, two names, one value); a GPS-integrity note in the P1-a block stating that conditions 2-7 still enforce the project's rule 1 (Phase A / freshness, never extrapolate) on the rider position now consumed off the trigger; the fm_sep_latched clear list corrected (no code clears the latch on a mode change - the clears are the 10 s release edge, steer-cancel, fmEnterIdle and the RTM yield). Comment + alias only, no behaviour change. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-18 - comments for the 9.5 m engage floor (kFmEngageDistFloorM 8.0 -> 9.5, review finding F3; the rope is 7.1 m): the factory auto D_engage 9.0 m now clamps up to 9.5 m, the owner's short-release edge is max(9, 9.5) = 9.5 m, the BOOTSTRAP-1 abort radius floor is 9.5 m. Comment-only in this file; the constant lives in BREmote_V2_Rx.h. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-18 - REVIEW FIX (P1-a concern A): the 10 s throttle-release latch clear is now an EDGE - one-shot fm_thr_release_cleared fires it once when the release crosses kFmThrReleaseClearMs and re-arms when the trigger is next held - so the separation proof can be re-earned off the trigger beyond 10 s (it used to be zeroed every tick past 10 s). Because a latch earned at 20 m would then survive the swim back to the rope, the engage edge while fm_reengage_needs_dengage is set now also requires the LIVE separation streak (fm_sep_fix_count >= kFmSepDwellFixes and >= kFmSepDwellFloorMs beyond D_engage on this tick) - followMeSeparationStreakStands() + a streak term in followMeMayEngage(), Common/FollowMeEngage.h, host test extended. The engage evaluation moved below the dwell/latch block so it reads this tick's counters. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
@@ -1704,6 +1705,18 @@ static const float    kFmGapMaxKmh           = 15.0f;   // km/h ceiling on the g
 enum FmState : uint8_t { FM_IDLE = 0, FM_ARMED = 1, FM_ACTIVE = 2, FM_HOLD = 3, FM_STOPPING = 4 };
 static FmState fm_state = FM_IDLE;
 
+// ---- V2.5-Evo - 2026-09-19 - the EFFECTIVE auto-return mode, resolved once per tick ----
+// fm_return_mode_effective : 1 = when the rider stops, Follow-Me graduates to FM_RETURN; 0 = HOLD
+//                            as before. Resolved at the top of every runFmLoop() tick as
+//                            (fm_return_mode_runtime != 0xFF) ? runtime : usrConf.fm_return_mode,
+//                            so every reader in the tick - the state machine, the fm_flags echo
+//                            that runRtmLoop() publishes, ?diag - sees ONE value.
+// fm_return_mode_from_override : true when the remote's session override is what decided it
+//                            (for ?diag's "source" and nothing else).
+// Single writer: runFmLoop() on the loop task. runRtmLoop() and ?diag only read.
+static uint8_t fm_return_mode_effective     = 0;
+static bool    fm_return_mode_from_override = false;
+
 // ---- FM rider tracking state ----
 // fm_filt_* is FM's EMA-filtered rider position. It uses the SAME first-order filter
 // formula and the SAME preset time constant as RTM's tx_pos_filtered_* (see
@@ -1903,6 +1916,26 @@ static uint8_t fmStateCode()      { return (uint8_t)fm_state; }
 static bool    fmSepLatched()     { return fm_sep_latched; }
 static bool    fmNeedsDengage()   { return fm_reengage_needs_dengage; }
 static bool    fmYieldingToRtm()  { return fm_yielding_to_rtm; }
+// V2.5-Evo - 2026-09-19 - the effective auto-return mode and where it came from, for ?diag.
+static uint8_t fmReturnModeEffective()    { return fm_return_mode_effective; }
+static bool    fmReturnModeFromOverride() { return fm_return_mode_from_override; }
+
+// fmResolveReturnMode - resolve the effective auto-return mode for this tick.
+// Inputs:  fm_return_mode_runtime (the remote's 0xF2 session override, 0xFF = none) and the stored
+//          usrConf.fm_return_mode. Outputs: fm_return_mode_effective / fm_return_mode_from_override.
+// Side effects: none beyond those two statics. Called once per runFmLoop() tick, BEFORE the body,
+// so the value is current on every path the body can take, early exits included.
+static void fmResolveReturnMode()
+{
+  const uint8_t rt = fm_return_mode_runtime.load(std::memory_order_relaxed);
+  if (rt != 0xFF) {
+    fm_return_mode_effective     = (rt != 0) ? 1 : 0;
+    fm_return_mode_from_override = true;
+  } else {
+    fm_return_mode_effective     = (usrConf.fm_return_mode != 0) ? 1 : 0;
+    fm_return_mode_from_override = false;
+  }
+}
 
 // ---- V2.5-Evo - 2026-09-17 - DEEP-LOG hand-off (P0-g): this tick's verdicts, for the logger ----
 // Reset by runFmLoop() at the top of every tick and written by runFmLoopBody() at the point each
@@ -2487,6 +2520,12 @@ void runRtmLoop()
     if ((s == FM_ARMED || s == FM_HOLD) &&
         (!fm_sep_latched || heading_disagree_fault))        f |= (1 << 2);
     if (fm_fault_alarm_ms != 0 && (now - fm_fault_alarm_ms) < kFmFaultStickyMs) f |= (1 << 3);
+    // V2.5-Evo - 2026-09-19 - bit 7: the EFFECTIVE auto-return mode, echoed in every FM state
+    // (IDLE included - with no override standing it is simply the stored default). The remote's
+    // return gesture reads this bit to set its session override to the OPPOSITE value, and the
+    // remote's display shows it. Bits 4-6 stay free for the accepted-mode echo. fmResolveReturnMode()
+    // (runFmLoop) is the single writer of the value; this is a read.
+    if (fm_return_mode_effective) f |= (1 << 7);
     telemetry.fm_flags = f;
   }
 
@@ -3423,6 +3462,10 @@ static void fmEnterIdle()
   fm_thr_release_cleared = false;     // the release clear's one-shot re-arms with its timer
   fm_reengage_needs_dengage = true;   // P1-a: a fresh declaration must clear D_engage before it may engage
   fm_yielding_to_rtm   = false;       // P1-c: leaving FM entirely ends any yield edge tracking too
+  // V2.5-Evo - 2026-09-19 - the remote's auto-return override lives exactly as long as the
+  // declaration it rode in on (the followme_mode pattern): a 0xF2/0 disarm, the 95 s mode-age
+  // expiry and every other road to IDLE end it. The next declaration carries a fresh one (or none).
+  fm_return_mode_runtime.store(0xFF, std::memory_order_relaxed);
 
   // V2.5-Evo - 2026-07-20 - A3: clear the steer-cancel persistence timer and the fault-ramp clock.
   // fm_fault_alarm_ms is deliberately NOT reset here: the surprise-gated stop notification must
@@ -3542,6 +3585,8 @@ void runFmLoop()
   fm_log_gate_flags    = 0;        // this tick's verdicts start empty; the body fills what it reaches
   fm_log_dist_dx10     = 0xFFFF;
   fm_log_d_engage_dx10 = 0xFFFF;
+
+  fmResolveReturnMode();           // V2.5-Evo - 2026-09-19 - one effective auto-return value per tick
 
   runFmLoopBody(now);
 

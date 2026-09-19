@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-19 - 0xF2 return-mode override: adds the fm_return_mode_runtime atomic (0xFF = use the SPIFFS fm_return_mode; 0 / 1 = the remote's session override, carried in 0xF2 bits 5-6) next to fm_mode_runtime, and documents telemetry.fm_flags bit 7 as the RX's echo of its EFFECTIVE return mode for the remote's display and return gesture. Runtime globals + comments only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - SW36: three Follow-Me fields APPENDED at the tail of confStruct - fm_return_mode (u16, 0-1, default 1: when the rider stops, Follow-Me graduates to FM_RETURN and brings the buggy back under the trigger), fm_align_cap (u16, 8-80, default 13: the throttle cap during the FM align phase and the FM_RETURN align/engage ramp, replacing the compile-time kFmAlignCap for FM paths), fm_align_influence (u16, 0-100, default 80: the mixer steering influence during FM align / FM_RETURN align only - 100 = one-motor pivot; 0 = use steering_influence). sizeof 192 -> 200 (192 + 3 x 2 = 198, padded to the 4-byte struct alignment), static_assert 200, SW_VERSION 35 -> 36. Config is NOT reset by this flash: the 192-byte SW35 blob is migrated by prefix at boot (Common/SPIFFSEngine.h, host-tested in Tools/tests/config_migrate_test.cpp) and the three new fields take their defaults.
 // V2.5-Evo - 2026-09-19 - C-4 fix (throttle-relative differential mixer): includes ../Common/DifferentialMixer.h (pure mixer, adopted verbatim, host-tested in Tools/tests/differential_mixer_test.cpp) for calcPWM()'s steering_type 1 branch. Include only: no confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-18 - comment only (review finding F6): the fm_gate_flags bit-13 note names kFmReleaseDengageMs, the alias RTMState.ino now uses for the release -> needs-D_engage timer. No code change.
@@ -854,6 +855,18 @@ std::atomic<uint8_t> fm_mode_runtime       {0xFF};
 // Written by Radio.ino's meta-packet handler (triggeredReceive task), read by RTMState.ino's
 // runFmLoop() (loop) — std::atomic for the same single-core preemption reason as the flags above.
 std::atomic<unsigned long> fm_mode_last_rx_ms {0};
+
+// V2.5-Evo - 2026-09-19 - the remote's SESSION override of fm_return_mode (auto-return inside
+// Follow-Me). 0xFF = no override this session: the RX uses its stored usrConf.fm_return_mode.
+// 0 / 1 = the remote's return gesture set it OFF / ON for the session; carried in bits 5-6 of every
+// 0xF2 the remote sends (00 = none -> 0xFF here, 01 = OFF -> 0, 10 = ON -> 1, 11 = ignored), so a
+// lost packet is repaired by the next 30 s keepalive and a remote power cycle (RAM lost there)
+// falls back to the stored default within one keepalive. Cleared to 0xFF by fmEnterIdle() (which
+// the 95 s mode-age expiry and a 0xF2/0 disarm both reach). The EFFECTIVE value - this when it is
+// not 0xFF, else the SPIFFS field - is resolved once per tick in runFmLoop() and echoed to the
+// remote in telemetry.fm_flags bit 7. Written by Radio.ino (triggeredReceive task), read by
+// RTMState.ino (loop task): std::atomic for the same single-core preemption reason as above.
+std::atomic<uint8_t> fm_return_mode_runtime {0xFF};
 std::atomic<uint8_t> rtm_approach_cap      {255};  // V2.5-Evo - 2026-04-30 - approach decel cap (0-255); 255=no cap; computed by RTMState.ino during active RTM; applied by calcPWM()
 
 // V2.5-Evo - 2026-07-19 - P3 Follow-Me (FM) autonomous-following runtime flags.
@@ -1416,7 +1429,7 @@ struct __attribute__((packed)) TelemetryPacket {
     uint8_t rx_heading = 0xFF;        // index 13 — GPS COG÷2 (0-179→0-358°); 0xFF = N/A
     uint8_t fm_heading_err = 127;     // index 14 — bearing error+127; 127 = no data
     uint8_t fm_status = 0;            // index 15 — [7]=aux2_on [6]=aux1_on [5]=vesc_online [4]=rx_wetness [3:2]=heading_conf [1]=rtm_active [0]=fm_active
-    uint8_t fm_flags = 0;             // index 16 — Follow-Me engagement sub-state (assembled in RTMState.ino runRtmLoop): [3]=fault-stop-sticky [2]=armed-not-ready [1]=engaged [0]=armed. Was reserved_tx_imu (unused reserved byte).
+    uint8_t fm_flags = 0;             // index 16 — Follow-Me engagement sub-state (assembled in RTMState.ino runRtmLoop): [7]=effective auto-return mode echo (1 = ON; V2.5-Evo 2026-09-19, read by the remote's display and return gesture) [6:4]=reserved for the accepted-mode echo [3]=fault-stop-sticky [2]=armed-not-ready [1]=engaged (FM_ACTIVE, or FM_RETURN while it moves) [0]=armed. Was reserved_tx_imu (unused reserved byte).
     uint8_t rx_bearing_to_tx = 0xFF;  // index 17 — bearing from buggy toward rider÷2; 0xFF = N/A
     uint8_t link_quality = 0;         // index 18 (must be last)
 } telemetry;

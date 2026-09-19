@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-19 - processFmOverridePacket() decodes the FULL 0xF2 mode byte: bits 0-2 = mode (a value above 5 fails closed to 0 = disarm, printed once), bits 5-6 = the remote's auto-return override (0 = none -> fm_return_mode_runtime 0xFF, 1 = OFF -> 0, 2 = ON -> 1, 3 = ignored). It used to mask with 0x03, which would have folded the override bits into the mode. fm_mode_last_rx_ms is stamped as before. GPS-integrity note (project rule 5): this touches only the 0xF2 control meta-packet; the 0xF3 GPS state machine, Phase A/B and the freshness gates are untouched, so rules 1-4 hold exactly as before.
 // V2.5-Evo - 2026-07-24 - F9: cache last control-packet RSSI/SNR (g_last_rssi_dbm/g_last_snr_db) at receive so the logger task can add distance+link-quality CSV columns without racing the radio SPI bus. No confStruct/SW_VERSION change.
 // V2.5-Evo - 2026-07-20 - FM engagement semantics: processFmOverridePacket() stamps fm_mode_last_rx_ms on every 0xF2 so RTMState.ino can expire an unrefreshed FM declaration (95 s). This handler is now the ONLY path that can arm FM — the RX no longer auto-arms from usrConf.followme_mode.
 // V2.5-Evo - 2026-05-12 - Fix Phase B recovery: recheck gate reduces from 30s to 2s when gps_phase_b_ok=false, eliminating up to 30s RTM motor block after any TX GPS gap
@@ -347,19 +348,51 @@ static void processRtmStatePacket(const uint8_t *pkt)
 }
 
 // V2.5-Evo - 2026-04-25 - P7: Handle 0xF2 FM override meta-packet from TX.
-// pkt: 6-byte buffer. byte[3]=0xF2, byte[4]: FM mode 0-3.
+// pkt: 6-byte buffer. byte[3]=0xF2, byte[4]: the FM mode byte (layout below).
 // Updates runtime FM mode without writing SPIFFS.
 // V2.5-Evo - 2026-07-20 - R0/R2: 0xFF (the reboot value) no longer means "use the SPIFFS
 // default" — it now means "the TX has made no declaration this session", which RTMState.ino
 // treats as FM_IDLE. This handler is therefore the ONLY way FM can ever become armed.
 // Each packet also stamps fm_mode_last_rx_ms so the RX can expire a declaration that stops
 // being refreshed (the TX repeats 0xF2/mode every 30 s while armed).
+//
+// V2.5-Evo - 2026-09-19 - THE FULL MODE BYTE. byte[4] is no longer a bare 0-3:
+//   bits 0-2  FM mode. 0 = disarm, 1-3 = the modes this firmware knows, 4-5 reserved for the
+//             station work. Anything above 5 cannot be a mode this remote meant, so it FAILS CLOSED
+//             to 0 (disarm) and says so once - never "the nearest mode".
+//   bits 3-4  reserved (ignored).
+//   bits 5-6  the remote's SESSION override of auto-return (fm_return_mode):
+//             00 = none  -> fm_return_mode_runtime = 0xFF (use the stored default)
+//             01 = OFF   -> 0
+//             10 = ON    -> 1
+//             11 = ignored (the runtime value is left as it was)
+//   bit 7     reserved (ignored).
+// The old `& 0x03` mask would have folded bit 5 into the mode; it is gone. Because the override
+// rides on EVERY 0xF2 (declaration, 30 s keepalive, disarm burst), a lost packet is repaired by the
+// next keepalive and a remote power cycle - which forgets its RAM override - returns the RX to its
+// stored default within one keepalive. Order: the runtime override is written BEFORE the mode, so
+// a 0xF2/0 disarm (bits 5-6 = 00) lands the runtime at 0xFF on the same packet that idles FM.
 static void processFmOverridePacket(const uint8_t *pkt)
 {
-  uint8_t mode = pkt[4] & 0x03;  // clamp to 0-3
+  const uint8_t raw  = pkt[4];
+  uint8_t       mode = raw & 0x07;
+  if (mode > 5) {
+    static bool bad_mode_printed = false;   // one-shot: a stuck sender must not flood the log
+    if (!bad_mode_printed) {
+      bad_mode_printed = true;
+      Serial.printf("FM [RX] 0xF2 mode %u is not a mode this firmware knows - treated as 0 (disarm)\n", (unsigned)mode);
+    }
+    mode = 0;
+  }
+  const uint8_t ret = (raw >> 5) & 0x03;
+  if (ret == 0)      fm_return_mode_runtime.store(0xFF, std::memory_order_relaxed);
+  else if (ret == 1) fm_return_mode_runtime.store(0,    std::memory_order_relaxed);
+  else if (ret == 2) fm_return_mode_runtime.store(1,    std::memory_order_relaxed);
+  // ret == 3: ignored on purpose (reserved encoding) - the runtime override keeps its value.
   fm_mode_runtime = mode;
   fm_mode_last_rx_ms.store(millis(), std::memory_order_relaxed);
-  Serial.printf("FM [RX] mode override: %d\n", mode);
+  Serial.printf("FM [RX] mode override: %u (auto-return override: %s)\n", (unsigned)mode,
+                ret == 0 ? "none - stored default" : ret == 1 ? "OFF" : ret == 2 ? "ON" : "ignored");
 }
 
 // V2.5-Evo - 2026-04-24 - GPS meta-packet state and handler for 0xF3 protocol

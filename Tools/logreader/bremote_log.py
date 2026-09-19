@@ -13,26 +13,36 @@ and turns it into:
 
   - an EXPANDED CSV with real units on every field, the Follow-Me gate word
     unpacked into one boolean column per named bit, and the numeric state
-    codes (rtm_source, rtm_confidence, fm_mode, fm_state, fm_block_reason)
-    given readable names alongside the raw value.
+    codes (rtm_source, rtm_confidence, fm_mode, fm_state, fm_block_reason,
+    fm_return_reason, rtm_phase) given readable names alongside the raw
+    value.
   - a human-readable TIMELINE of state changes (FM state transitions, RTM
-    active/ended edges, the gate-bit edges that matter for a return-to-rider
-    diagnosis, fault stops, and one summary line per RETURN episode).
+    active/ended edges, RTM phase transitions, the gate-bit edges that
+    matter for a return-to-rider diagnosis, boost on/off, fault stops, and
+    one summary line per RETURN episode).
   - a SUMMARY of counts and rates for the whole session.
 
 Record layouts, field order, scaling and the CSV column contract are all
 sourced from ``Source/V2_Integration_Rx/BREmote_V2_Rx.h`` (``VescLogData``,
-``VescLogDataL4``, ``LogFileHeader``, the ``FM_LOG_GATE_*`` bit defines and
-the ``LOG_CSV_HEADER_*`` / ``logFormatCsvRow()`` macros) and
-``Source/V2_Integration_Rx/RTMState.ino`` (``FmState``, ``FmStopReason``,
-``FmReturnReason``). All three structs there are ``__attribute__((packed))``,
-so byte offsets below follow field declaration order with no alignment gaps
-- confirmed against the ``static_assert(sizeof(...) == N, ...)`` lines next
-to each struct and cross-checked against the CSV formatter's own field
-order, which is the one other place record layout is spelled out.
+``VescLogDataL4``, ``VescLogDataL5``, ``LogFileHeader``, the
+``FM_LOG_GATE_*`` bit defines and the ``LOG_CSV_HEADER_*`` /
+``logFormatCsvRow()`` macros) and ``Source/V2_Integration_Rx/RTMState.ino``
+(``FmState``, ``FmStopReason``, ``FmReturnReason``, the ``rtm_phase`` codes
+and the ``telemetry.fm_flags`` bit map). All structs there are
+``__attribute__((packed))``, so byte offsets below follow field declaration
+order with no alignment gaps - confirmed against the
+``static_assert(sizeof(...) == N, ...)`` lines next to each struct and
+cross-checked against the CSV formatter's own field order and offset
+guards in ``logFormatCsvRow()`` / ``logCsvHeaderFor()``.
 
-The record layout table (``RECORD_LAYOUTS``) is keyed by on-disk record
-size, so a future record size is one new table entry, not a rewrite.
+Six record tiers exist today, selected by on-disk record size (bytes ->
+columns): 59 -> 31 (level 3), 65 -> 35 (level 4 diagnostics only), 83 -> 48
+(level 4 + Follow-Me block), 85 -> 49 (+ raw rider speed; never shipped
+alone, kept so a reader can still name it), 87 -> 51 (+ the two mixer
+outputs - the current everyday level-4 record), 109 -> 65 (level 5,
+"everything"). The record layout table (``RECORD_LAYOUTS``) is keyed by
+record size, so a future record size is one new table entry, not a
+rewrite; an unrecognized size decodes the largest known prefix that fits.
 
 Python 3.10+, standard library only.
 """
@@ -90,10 +100,10 @@ FM_STOP_REASON_NAMES = {
     9: "RETURN_NOT_CLOSING (return leg did not close on the rider)",
 }
 
-# RTMState.ino: enum FmReturnReason + fmReturnReasonName(). NOT part of VescLogDataL4 today -
-# no column carries it - so this table exists only so the timeline's RETURN-episode summary
-# line can name the reason THE DAY the firmware adds a column for it. Until then every episode
-# summary prints "not logged in this record version" for the exit reason.
+# RTMState.ino: enum FmReturnReason + fmReturnReasonName(). Sticky in the deep log as of the
+# 2026-09-19 "DEEP LOG (A)" change (VescLogDataL4.fm_return_reason, was the fm_pad byte): 0 = no
+# event since boot; during a RETURN leg it reads 4 (ENTERED); the row where fm_state leaves 5
+# carries the exit reason (6/7/8/9/10/11); 1-3 = a candidate dropped before RETURN was entered.
 FM_RETURN_REASON_NAMES = {
     0: "none",
     1: "candidate dropped - rider moved",
@@ -109,9 +119,26 @@ FM_RETURN_REASON_NAMES = {
     11: "RETURN cancelled - rider steered",
 }
 
+# RTMState.ino: the classic-RTM rtm_phase codes copied into VescLogDataL5.rtm_phase (level 5
+# only). "approach" outranks "run" but is outranked by "align" and "bootstrap-headless"; 6 and 7
+# are one-tick/gate branches, not steady states.
+RTM_PHASE_NAMES = {
+    0: "inactive/disabled",
+    1: "align",
+    2: "run",
+    3: "approach",
+    4: "bootstrap_headless",
+    5: "gate_stop",
+    6: "trigger_released",
+    7: "gate9_handoff",
+}
+
 # BREmote_V2_Rx.h: FM_LOG_GATE_* bit defines, in bit order. Bit 1 = the condition held on that
-# tick. Only these 16 bits are named today; any OTHER bit found set in fm_gate_flags is reported
-# dynamically as "bit_N" (see decode_gate_flags()) rather than silently dropped.
+# tick. bits 0-15 are the original 2026-09-17 audit block; 16 is reserved for the steer-takeover
+# side branch (not yet defined/set by any code path in this tree - documented here so this tool
+# names it instead of falling back to "bit_16" the day that branch lands); 17/18 are the
+# 2026-09-19 "DEEP LOG (A)" additions, set at PUBLISH time (fmPublishLogSnapshot), not gate
+# verdicts. Any bit found set that is NOT in this table is reported dynamically as "bit_N".
 FM_LOG_GATE_BITS: list[tuple[int, str]] = [
     (0, "thr_held"),
     (1, "fault_ok"),
@@ -129,12 +156,32 @@ FM_LOG_GATE_BITS: list[tuple[int, str]] = [
     (13, "needs_dengage"),
     (14, "yield_to_rtm"),
     (15, "return_window"),
+    (16, "steer_takeover"),  # reserved for the steer-takeover branch; not set by any code path yet
+    (17, "fm_aligning"),     # named to match the firmware's own standalone fm_aligning CSV column
+    (18, "fm_boost"),        # named to match the firmware's own standalone fm_boost CSV column
 ]
 FM_LOG_GATE_BIT_NAMES = [name for _, name in FM_LOG_GATE_BITS]
 
+# RTMState.ino: telemetry.fm_flags bit map (the byte the RX sends the remote every tick), copied
+# verbatim into VescLogDataL5.fm_flags_sent. Bits 4-6 are free/reserved (not yet assigned).
+FM_FLAGS_SENT_BITS: list[tuple[int, str]] = [
+    (0, "armed"),
+    (1, "engaged"),
+    (2, "armed_not_ready"),
+    (3, "fault_sticky"),
+    (7, "effective_auto_return"),
+]
+FM_FLAGS_SENT_BIT_NAMES = [f"fm_flags_{name}" for _, name in FM_FLAGS_SENT_BITS]
+
 # The gate-bit edges the timeline calls out by name (task spec: separation latch, needs-D_engage,
-# return candidate, return window, yield-to-RTM, thr_held).
+# return candidate, return window, yield-to-RTM, thr_held). fm_boost gets its own dedicated
+# on/off wording in the timeline (see generate_timeline()), not this generic "gate X set" form.
 TIMELINE_GATE_BITS = ["sep_latched", "needs_dengage", "return_candidate", "return_window", "yield_to_rtm", "thr_held"]
+
+# Layout tier order, lightest to richest - used to pick which tier's column set an expanded CSV
+# should use when a file's records are not all the same size (should not happen in practice: the
+# level is latched once per FILE by createNewLogFile()), and by the CLI's file-type detection.
+TIER_ORDER = ["L3", "L4_DIAG", "L4_83", "L4_RAW", "L4", "L5"]
 
 
 # ============================================================
@@ -148,7 +195,8 @@ TIMELINE_GATE_BITS = ["sep_latched", "needs_dengage", "return_candidate", "retur
 #                  the whole point of "expanded": every field gets real units here).
 # 'raw_scale'    - divide the raw struct value by this to get the engineering value (binary
 #                  path). None = no scaling. A few fields need a *10 instead of a /10 (ERPM,
-#                  cog_age_ms_div10); those use raw_scale=0.1 so value/0.1 == value*10.
+#                  cog_age_ms_div10, rider_fix_age_div10); those use raw_scale=0.1 so
+#                  value/0.1 == value*10.
 # 'sentinel_raw' - the raw struct value that means "no data" (None = no sentinel).
 # 'csv_prescaled'- True if the FIRMWARE'S CSV already applied raw_scale (i.e. the CSV column
 #                  holds the final engineering value, e.g. motor_current_A, ERPM, speed_kmh).
@@ -157,8 +205,17 @@ TIMELINE_GATE_BITS = ["sep_latched", "needs_dengage", "return_candidate", "retur
 #                  exactly the columns whose csv_col still carries a "_dxN" suffix.
 # 'sentinel_val' - for csv_prescaled columns only: the ALREADY-SCALED sentinel value the
 #                  firmware's CSV prints for "no data" (e.g. -1.0 for a 0xFFFF distance).
-# 'skip'         - True for padding fields that exist only to keep struct offsets correct
-#                  (fm_pad) - consumed by struct.unpack, never emitted as a column.
+# 'skip'         - True for padding fields that exist only to keep struct offsets correct -
+#                  consumed by struct.unpack, never emitted as a column. None of today's fields
+#                  need this (the last one that did, fm_pad, became fm_return_reason on
+#                  2026-09-19), kept for a future struct that reserves a byte again.
+#
+# NOTE on "virtual" columns: fm_aligning and fm_boost are real, standalone columns in the
+# firmware's own CSV (LOG_CSV_HEADER_L4_83 onward) but are NOT separate struct bytes - they are
+# bits 17/18 of fm_gate_flags, printed a second time so a reader never has to mask the flag word.
+# This tool does not give them field-table entries: it derives them from fm_gate_flags via
+# decode_gate_flags() for BOTH binary and CSV input (one source of truth), and splices their
+# names into the generated csv_header at the right position (see _layout()'s virtual_after).
 # ============================================================
 
 def F(name, fmt, csv_col=None, raw_scale=None, sentinel_raw=None,
@@ -230,8 +287,9 @@ L4_DIAG_EXTRA_FIELDS = [
     F("loop_max_ms", "H", csv_prescaled=True, unit="ms"),
 ]
 
-# ---- Follow-Me audit block (bytes 65-82) - present only in the current 83 B "L4" record ----
-L4_FM_EXTRA_FIELDS = [
+# ---- Follow-Me audit block (bytes 65-82) - the 83 B "L4_83" tier. fm_return_reason (byte 82) was
+#      the fm_pad byte until the 2026-09-19 "DEEP LOG (A)" change; same offset, same size. ----
+L4_83_EXTRA_FIELDS = [
     F("fm_gate_flags", "I", csv_prescaled=True, unit="bitfield"),   # kept RAW - see decode_gate_flags()
     F("fm_distance_m", "H", csv_col="fm_distance_m",
       raw_scale=10.0, sentinel_raw=0xFFFF, csv_prescaled=True, sentinel_val=-1.0, unit="m"),
@@ -245,43 +303,94 @@ L4_FM_EXTRA_FIELDS = [
     F("fm_block_reason", "B", csv_prescaled=True, unit="code"),
     F("fm_throttle_cap", "B", csv_prescaled=True, unit="0-255"),
     F("fm_station_deg", "h", csv_col="fm_station_deg", raw_scale=10.0, csv_prescaled=True, unit="deg"),
-    F("_fm_pad", "B", skip=True),
+    F("fm_return_reason", "B", csv_prescaled=True, unit="code"),   # 2026-09-19: was fm_pad
 ]
 
+# ---- (B) raw rider speed (byte 83-84) - the 85 B "L4_RAW" tier. Never shipped alone by
+#      createNewLogFile() (level 4 always writes the full 87 B record) - kept as its own tier so
+#      a reader can still name a file that happens to be exactly this size. ----
+L4_RAW_EXTRA_FIELDS = [
+    F("fm_rider_raw_kmh", "H", csv_col="fm_rider_raw_kmh",
+      raw_scale=10.0, sentinel_raw=0xFFFF, csv_prescaled=True, sentinel_val=-1.0, unit="km/h"),
+]
 
-def _layout(level: int, name: str, fields: list[dict]) -> dict:
+# ---- (C) the two mixer outputs (bytes 85-86) - the 87 B "L4" tier: today's everyday deep log. ----
+L4_MOTORS_EXTRA_FIELDS = [
+    F("motor0_cmd", "B", csv_prescaled=True, unit="0-255"),
+    F("motor1_cmd", "B", csv_prescaled=True, unit="0-255"),
+]
+
+# ---- Level-5 "everything" block (bytes 87-108) - the 109 B "L5" tier. ----
+L5_EXTRA_FIELDS = [
+    F("rider_lat", "f", csv_prescaled=True, unit="deg"),
+    F("rider_lng", "f", csv_prescaled=True, unit="deg"),
+    F("rider_fix_seq", "H", csv_prescaled=True, unit="count"),
+    F("rider_fix_age_ms", "H", csv_col="rider_fix_age_ms",
+      raw_scale=0.1, sentinel_raw=0xFFFF, csv_prescaled=True, sentinel_val=-1, unit="ms"),
+    F("rtm_approach_cap", "B", csv_prescaled=True, unit="0-255"),
+    F("rtm_phase", "B", csv_prescaled=True, unit="code"),
+    F("align_cap", "B", csv_prescaled=True, unit="0-255"),
+    F("align_influence", "B", csv_prescaled=True, unit="%"),
+    F("mix_influence", "B", csv_prescaled=True, unit="%"),
+    F("fm_return_override", "B", csv_prescaled=True, unit="code"),
+    F("fm_flags_sent", "B", csv_prescaled=True, unit="bitfield"),
+    F("fm_keepalive_age_s", "B", csv_col="fm_keepalive_age_s",
+      raw_scale=10.0, sentinel_raw=0xFF, csv_prescaled=True, sentinel_val=-1.0, unit="s"),
+    F("l5_rsvd_takeover_active", "B", csv_prescaled=True, unit="reserved"),
+    F("l5_rsvd_takeover_end", "B", csv_prescaled=True, unit="reserved"),
+]
+
+# fm_aligning / fm_boost are spliced into the CSV header right after fm_return_reason in every
+# tier from L4_83 up - see the field-table note above for why they have no field-table entry.
+_VIRTUAL_GATE_COLUMNS = {"fm_return_reason": ["fm_aligning", "fm_boost"]}
+
+
+def _layout(level: int, name: str, fields: list[dict], virtual_after: Optional[dict[str, list[str]]] = None) -> dict:
     struct_fmt = "<" + "".join(f["fmt"] for f in fields)
     record_size = struct.calcsize(struct_fmt)
+    real_cols = [f["csv_col"] for f in fields if not f["skip"]]
+    cols = []
+    for col in real_cols:
+        cols.append(col)
+        if virtual_after and col in virtual_after:
+            cols.extend(virtual_after[col])
     return {
         "level": level,
         "name": name,
         "fields": fields,
         "struct_fmt": struct_fmt,
         "record_size": record_size,
-        "csv_header": ",".join(f["csv_col"] for f in fields if not f["skip"]),
+        "csv_header": ",".join(cols),
+        "csv_header_cols": cols,
     }
 
 
 LAYOUT_L3 = _layout(3, "L3", L3_FIELDS)
 LAYOUT_L4_DIAG = _layout(4, "L4_DIAG", L3_FIELDS + L4_DIAG_EXTRA_FIELDS)
-LAYOUT_L4 = _layout(4, "L4", L3_FIELDS + L4_DIAG_EXTRA_FIELDS + L4_FM_EXTRA_FIELDS)
+LAYOUT_L4_83 = _layout(4, "L4_83", L3_FIELDS + L4_DIAG_EXTRA_FIELDS + L4_83_EXTRA_FIELDS,
+                       virtual_after=_VIRTUAL_GATE_COLUMNS)
+LAYOUT_L4_RAW = _layout(4, "L4_RAW", L3_FIELDS + L4_DIAG_EXTRA_FIELDS + L4_83_EXTRA_FIELDS + L4_RAW_EXTRA_FIELDS,
+                        virtual_after=_VIRTUAL_GATE_COLUMNS)
+LAYOUT_L4 = _layout(4, "L4",
+                    L3_FIELDS + L4_DIAG_EXTRA_FIELDS + L4_83_EXTRA_FIELDS + L4_RAW_EXTRA_FIELDS + L4_MOTORS_EXTRA_FIELDS,
+                    virtual_after=_VIRTUAL_GATE_COLUMNS)
+LAYOUT_L5 = _layout(5, "L5",
+                    L3_FIELDS + L4_DIAG_EXTRA_FIELDS + L4_83_EXTRA_FIELDS + L4_RAW_EXTRA_FIELDS
+                    + L4_MOTORS_EXTRA_FIELDS + L5_EXTRA_FIELDS,
+                    virtual_after=_VIRTUAL_GATE_COLUMNS)
 
-# Table-driven: keyed by on-disk record size. A future record (e.g. an 85 or 87 byte layout once
-# the P2 station-fade fields go live) is one new _layout() call and one new dict entry here.
-RECORD_LAYOUTS: dict[int, dict] = {
-    LAYOUT_L3["record_size"]: LAYOUT_L3,
-    LAYOUT_L4_DIAG["record_size"]: LAYOUT_L4_DIAG,
-    LAYOUT_L4["record_size"]: LAYOUT_L4,
-}
-assert LAYOUT_L3["record_size"] == 59
-assert LAYOUT_L4_DIAG["record_size"] == 65
-assert LAYOUT_L4["record_size"] == 83
+LAYOUT_BY_NAME = {lay["name"]: lay for lay in (LAYOUT_L3, LAYOUT_L4_DIAG, LAYOUT_L4_83, LAYOUT_L4_RAW, LAYOUT_L4, LAYOUT_L5)}
 
-# The three CSV headers the firmware itself can print (BREmote_V2_Rx.h LOG_CSV_HEADER_L3 /
-# _L4_DIAG / _L4). Copied verbatim so CSV-input detection is an exact match against what the
-# device actually sends - the CSV column order IS the input contract. A unit test asserts these
-# stay byte-identical to the csv_header the field table above generates, so the table can never
-# silently drift from the firmware macros it was built from.
+# Table-driven: keyed by on-disk record size. A future record (e.g. the steer-takeover branch
+# claiming bit 16 and its own bytes) is one new _layout() call and one new dict entry here.
+RECORD_LAYOUTS: dict[int, dict] = {lay["record_size"]: lay for lay in LAYOUT_BY_NAME.values()}
+assert RECORD_LAYOUTS.keys() == {59, 65, 83, 85, 87, 109}, sorted(RECORD_LAYOUTS)
+
+# The six CSV headers the firmware itself can print (BREmote_V2_Rx.h LOG_CSV_HEADER_L3 /
+# _L4_DIAG / _L4_83 / _L4_RAW / _L4 / _L5). Copied verbatim so CSV-input detection is an exact
+# match against what the device actually sends - the CSV column order IS the input contract. A
+# unit test asserts these stay byte-identical to the csv_header the field table above generates,
+# so the table can never silently drift from the firmware macros it was built from.
 LOG_CSV_HEADER_L3 = (
     "timestamp_ms,motor_current_A,battery_current_A,duty_cycle_%,voltage_V,ERPM,temp_mos_C,"
     "fault_code,speed_kmh,latitude,longitude,datetime_unix,thr_received,rtm_source,rtm_confidence,"
@@ -290,15 +399,25 @@ LOG_CSV_HEADER_L3 = (
     "remote_error,effective_steer,tx_distance_m,rssi_dbm,snr_db"
 )
 LOG_CSV_HEADER_L4_DIAG = LOG_CSV_HEADER_L3 + ",gps_sent_per_s,cog_frozen_s,mux_err_cnt,loop_max_ms"
-LOG_CSV_HEADER_L4 = LOG_CSV_HEADER_L4_DIAG + (
+LOG_CSV_HEADER_L4_83 = LOG_CSV_HEADER_L4_DIAG + (
     ",fm_gate_flags,fm_distance_m,fm_d_engage_m,fm_rider_speed_kmh,fm_sep_fix_count,fm_mode,"
-    "fm_state,fm_block_reason,fm_throttle_cap,fm_station_deg"
+    "fm_state,fm_block_reason,fm_throttle_cap,fm_station_deg,fm_return_reason,fm_aligning,fm_boost"
+)
+LOG_CSV_HEADER_L4_RAW = LOG_CSV_HEADER_L4_83 + ",fm_rider_raw_kmh"
+LOG_CSV_HEADER_L4 = LOG_CSV_HEADER_L4_RAW + ",motor0_cmd,motor1_cmd"
+LOG_CSV_HEADER_L5 = LOG_CSV_HEADER_L4 + (
+    ",rider_lat,rider_lng,rider_fix_seq,rider_fix_age_ms,rtm_approach_cap,rtm_phase,align_cap,"
+    "align_influence,mix_influence,fm_return_override,fm_flags_sent,fm_keepalive_age_s,"
+    "l5_rsvd_takeover_active,l5_rsvd_takeover_end"
 )
 
 CSV_HEADER_TO_LAYOUT = {
     LOG_CSV_HEADER_L3: LAYOUT_L3,
     LOG_CSV_HEADER_L4_DIAG: LAYOUT_L4_DIAG,
+    LOG_CSV_HEADER_L4_83: LAYOUT_L4_83,
+    LOG_CSV_HEADER_L4_RAW: LAYOUT_L4_RAW,
     LOG_CSV_HEADER_L4: LAYOUT_L4,
+    LOG_CSV_HEADER_L5: LAYOUT_L5,
 }
 
 
@@ -337,40 +456,58 @@ def csv_text_to_engineering(field: dict, text: str) -> Optional[float | int]:
     return raw_value if scale is None else raw_value / scale
 
 
-def decode_gate_flags(flags: int) -> dict[str, bool]:
-    """fm_gate_flags -> one boolean per named FM_LOG_GATE_* bit, plus bit_N for anything else
-    found set that is not one of the 16 bits currently defined (BREmote_V2_Rx.h)."""
+def decode_bitfield(value: int, bit_table: list[tuple[int, str]], prefix: str = "", bit_range: int = 32) -> dict[str, bool]:
+    """Generic bitfield decoder: one boolean per named bit in bit_table, plus "{prefix}bit_N" for
+    any OTHER bit found set within bit_range that is not in the table."""
     out: dict[str, bool] = {}
-    known_bits = {b for b, _ in FM_LOG_GATE_BITS}
-    for bit, name in FM_LOG_GATE_BITS:
-        out[name] = bool(flags & (1 << bit))
-    for bit in range(32):
+    known_bits = {b for b, _ in bit_table}
+    for bit, name in bit_table:
+        out[f"{prefix}{name}"] = bool(value & (1 << bit))
+    for bit in range(bit_range):
         if bit in known_bits:
             continue
-        if flags & (1 << bit):
-            out[f"bit_{bit}"] = True
+        if value & (1 << bit):
+            out[f"{prefix}bit_{bit}"] = True
     return out
+
+
+def decode_gate_flags(flags: int) -> dict[str, bool]:
+    """fm_gate_flags -> one boolean per named FM_LOG_GATE_* bit (including fm_aligning/fm_boost,
+    the two 2026-09-19 additions, and steer_takeover, reserved), plus bit_N for anything else."""
+    return decode_bitfield(flags, FM_LOG_GATE_BITS)
+
+
+def decode_fm_flags_sent(value: int) -> dict[str, bool]:
+    """fm_flags_sent (level 5 only) -> one boolean per named telemetry.fm_flags bit, prefixed
+    fm_flags_ to keep them visually and namespace-distinct from the fm_gate_flags bit columns."""
+    return decode_bitfield(value, FM_FLAGS_SENT_BITS, prefix="fm_flags_", bit_range=8)
 
 
 def add_decoded_columns(rec: dict) -> dict:
     """Append the human-readable name/bit columns the expanded CSV and timeline both use."""
-    if "rtm_source" in rec:
+    if "rtm_source" in rec and rec["rtm_source"] is not None:
         rec["rtm_source_name"] = RTM_SOURCE_NAMES.get(rec["rtm_source"], f"unknown({rec['rtm_source']})")
-    if "rtm_confidence" in rec:
+    if "rtm_confidence" in rec and rec["rtm_confidence"] is not None:
         rec["rtm_confidence_name"] = RTM_CONFIDENCE_NAMES.get(rec["rtm_confidence"], f"unknown({rec['rtm_confidence']})")
-    if "fm_mode" in rec:
+    if "fm_mode" in rec and rec["fm_mode"] is not None:
         rec["fm_mode_name"] = FM_MODE_NAMES.get(rec["fm_mode"], f"unknown({rec['fm_mode']})")
-    if "fm_state" in rec:
+    if "fm_state" in rec and rec["fm_state"] is not None:
         rec["fm_state_name"] = FM_STATE_NAMES.get(rec["fm_state"], f"unknown({rec['fm_state']})")
-    if "fm_block_reason" in rec:
+    if "fm_block_reason" in rec and rec["fm_block_reason"] is not None:
         rec["fm_block_reason_name"] = FM_STOP_REASON_NAMES.get(rec["fm_block_reason"], f"unknown({rec['fm_block_reason']})")
+    if "fm_return_reason" in rec and rec["fm_return_reason"] is not None:
+        rec["fm_return_reason_name"] = FM_RETURN_REASON_NAMES.get(rec["fm_return_reason"], f"unknown({rec['fm_return_reason']})")
+    if "rtm_phase" in rec and rec["rtm_phase"] is not None:
+        rec["rtm_phase_name"] = RTM_PHASE_NAMES.get(rec["rtm_phase"], f"unknown({rec['rtm_phase']})")
     if "fm_gate_flags" in rec and rec["fm_gate_flags"] is not None:
         rec.update(decode_gate_flags(int(rec["fm_gate_flags"])))
+    if "fm_flags_sent" in rec and rec["fm_flags_sent"] is not None:
+        rec.update(decode_fm_flags_sent(int(rec["fm_flags_sent"])))
     return rec
 
 
 def build_canonical_from_raw(layout: dict, raw_values: tuple) -> dict:
-    rec: dict[str, Any] = {"_level": layout["level"], "_record_size": layout["record_size"]}
+    rec: dict[str, Any] = {"_level": layout["level"], "_record_size": layout["record_size"], "_layout_name": layout["name"]}
     for field, raw in zip(layout["fields"], raw_values):
         if field["skip"]:
             continue
@@ -379,9 +516,17 @@ def build_canonical_from_raw(layout: dict, raw_values: tuple) -> dict:
 
 
 def build_canonical_from_csv_row(layout: dict, row: list[str]) -> dict:
-    rec: dict[str, Any] = {"_level": layout["level"], "_record_size": None}
-    for field, text in zip(layout["fields"], row):
+    # Named lookup, not positional zip: the device CSV carries two "virtual" columns
+    # (fm_aligning, fm_boost) that have no field-table entry (see the note above the field
+    # table), so column POSITION in the row does not line up 1:1 with layout["fields"]. Building
+    # a name -> text dict from the layout's own known header makes every lookup robust to that.
+    cell = dict(zip(layout["csv_header_cols"], row))
+    rec: dict[str, Any] = {"_level": layout["level"], "_record_size": None, "_layout_name": layout["name"]}
+    for field in layout["fields"]:
         if field["skip"]:
+            continue
+        text = cell.get(field["csv_col"])
+        if text is None:
             continue
         rec[field["name"]] = csv_text_to_engineering(field, text)
     return add_decoded_columns(rec)
@@ -398,9 +543,10 @@ class LogFormatError(Exception):
 
 def _pick_layout_for_record_size(record_size: int) -> tuple[dict, int]:
     """Return (layout, decode_size). Exact match uses the layout as-is. An unrecognized
-    record_size decodes the largest known layout that fits inside it (a future firmware adding
-    fields tail-appends, per the FM audit block's own design note), with the remainder ignored
-    and a warning printed once. Smaller than the smallest known layout cannot be decoded at all."""
+    record_size decodes the largest known layout that fits inside it (matching the firmware's
+    own logCsvHeaderFor() range-tiering: anything between two known sizes reads as the smaller
+    tier, extra bytes ignored), with a warning printed once. Smaller than the smallest known
+    layout cannot be decoded at all."""
     layout = RECORD_LAYOUTS.get(record_size)
     if layout is not None:
         return layout, record_size
@@ -457,10 +603,11 @@ def iter_csv_records(path: str):
         if layout is None:
             raise LogFormatError(
                 f"{path}: first line does not match any known BREmote log CSV header "
-                "(L3 / L4_DIAG / L4). Not a device log CSV, or from a different firmware era."
+                "(L3 / L4_DIAG / L4_83 / L4_RAW / L4 / L5). Not a device log CSV, or from a "
+                "different firmware era."
             )
 
-        expected_cols = len(layout["fields"]) - sum(1 for f in layout["fields"] if f["skip"])
+        expected_cols = len(layout["csv_header_cols"])
         reader = csv.reader(f)
         for row in reader:
             if not row:
@@ -494,22 +641,17 @@ def load_records(path: str) -> list[dict]:
 # OUTPUT 1 - EXPANDED CSV
 # ============================================================
 
-def csv_field_order(level: int) -> list[str]:
-    """Base columns (in struct/CSV order) + the decoded columns this tool adds, for one level."""
-    if level == 3:
-        base = [f["name"] for f in L3_FIELDS if not f["skip"]]
-        extra = ["rtm_source_name", "rtm_confidence_name"]
-        return base + extra
-
-    base = [f["name"] for f in LAYOUT_L4_DIAG["fields"] if not f["skip"]]
+def csv_field_order_for_layout(layout_name: str) -> list[str]:
+    """Base columns (struct/CSV order) + the decoded columns this tool adds, for one tier."""
+    layout = LAYOUT_BY_NAME[layout_name]
+    base = [f["name"] for f in layout["fields"] if not f["skip"]]
     extra = ["rtm_source_name", "rtm_confidence_name"]
-    return base + extra
-
-
-def csv_field_order_l4_full() -> list[str]:
-    base = [f["name"] for f in LAYOUT_L4["fields"] if not f["skip"]]
-    extra = ["rtm_source_name", "rtm_confidence_name", "fm_mode_name", "fm_state_name", "fm_block_reason_name"]
-    extra += FM_LOG_GATE_BIT_NAMES
+    if layout_name in ("L4_83", "L4_RAW", "L4", "L5"):
+        extra += ["fm_mode_name", "fm_state_name", "fm_block_reason_name", "fm_return_reason_name"]
+        extra += FM_LOG_GATE_BIT_NAMES
+    if layout_name == "L5":
+        extra += ["rtm_phase_name"]
+        extra += FM_FLAGS_SENT_BIT_NAMES
     return base + extra
 
 
@@ -529,15 +671,13 @@ def write_expanded_csv(records: list[dict], out_path: str) -> None:
             f.write("")
         return
 
-    has_fm = any(r.get("fm_gate_flags") is not None for r in records)
-    level = max(r["_level"] for r in records)
-    fieldnames = csv_field_order_l4_full() if (level == 4 and has_fm) else csv_field_order(level)
+    layout_name = max(records, key=lambda r: TIER_ORDER.index(r["_layout_name"]))["_layout_name"]
+    fieldnames = csv_field_order_for_layout(layout_name)
 
-    # Any UNKNOWN gate bit (bit_N) discovered at runtime gets its own trailing column too, so a
-    # firmware that starts using a currently-reserved bit does not lose the information.
+    # Any UNKNOWN bit (bit_N / fm_flags_bit_N) discovered at runtime gets its own trailing column
+    # too, so a firmware that starts using a currently-reserved bit does not lose the information.
     dynamic_bits = sorted(
-        {k for r in records for k in r if k.startswith("bit_") and k not in fieldnames},
-        key=lambda s: int(s.split("_")[1]),
+        {k for r in records for k in r if (k.startswith("bit_") or k.startswith("fm_flags_bit_")) and k not in fieldnames}
     )
     fieldnames = fieldnames + dynamic_bits
 
@@ -574,9 +714,11 @@ def _ts_str(rec: dict, t0_ms: int) -> str:
 
 
 def generate_timeline(records: list[dict]) -> list[str]:
-    """Row-to-row change list: FM state transitions, RTM active/ended edges, the gate-bit edges
-    that matter for a return-to-rider diagnosis, non-zero fault stops, throttle-cap drops into
-    the align/approach range, and one summary line per RETURN episode."""
+    """Row-to-row change list: FM state transitions, RTM active/ended edges, RTM phase
+    transitions (level 5), the gate-bit edges that matter for a return-to-rider diagnosis, boost
+    on/off, non-zero fault stops, throttle-cap drops into the align/approach range, and one
+    summary line per RETURN episode (including the real exit reason and the tightest motor0/
+    motor1 split commanded during the episode's align sub-phase, where those columns exist)."""
     lines: list[str] = []
     if not records:
         return lines
@@ -590,14 +732,21 @@ def generate_timeline(records: list[dict]) -> list[str]:
         if ret_episode is None:
             return
         duration_s = (rec["timestamp_ms"] - ret_episode["entry_ts_ms"]) / 1000.0
+        exit_reason = rec.get("fm_return_reason_name")
+        if exit_reason is None:
+            exit_reason = "not logged in this record version"
         lines.append(
             "    RETURN episode: entry T+{entry:.1f}s, entry_dist={ed}, min_dist={md}, "
-            "duration={dur:.1f}s, exit_state={ex}, exit_reason=not logged in this record version".format(
+            "duration={dur:.1f}s, exit_state={ex}, exit_reason={reason}, "
+            "motor0_min={m0}, motor1_min={m1}".format(
                 entry=ret_episode["entry_t_rel"],
                 ed=_fmt_or_na(ret_episode["entry_dist"], "m"),
                 md=_fmt_or_na(ret_episode["min_dist"], "m"),
                 dur=duration_s,
                 ex=rec.get("fm_state_name", "?"),
+                reason=exit_reason,
+                m0=_fmt_or_na(ret_episode["min_motor0"]),
+                m1=_fmt_or_na(ret_episode["min_motor1"]),
             )
         )
         ret_episode = None
@@ -615,6 +764,8 @@ def generate_timeline(records: list[dict]) -> list[str]:
                         "entry_ts_ms": rec["timestamp_ms"],
                         "entry_dist": rec.get("fm_distance_m"),
                         "min_dist": rec.get("fm_distance_m"),
+                        "min_motor0": None,
+                        "min_motor1": None,
                     }
                 elif prev.get("fm_state") == 5:  # leaving FM_RETURN
                     close_return_episode(rec)
@@ -623,11 +774,21 @@ def generate_timeline(records: list[dict]) -> list[str]:
             if "rtm_rx_active" in rec and rec["rtm_rx_active"] != prev.get("rtm_rx_active"):
                 lines.append(f"{_ts_str(rec, t0_ms)} {'RTM active' if rec['rtm_rx_active'] else 'RTM ended'}")
 
+            # ---- RTM phase transitions (level 5 only) ----
+            if "rtm_phase" in rec and rec["rtm_phase"] != prev.get("rtm_phase"):
+                lines.append(
+                    f"{_ts_str(rec, t0_ms)} RTM phase: {prev.get('rtm_phase_name', '?')} -> {rec.get('rtm_phase_name', '?')}"
+                )
+
             # ---- gate-bit edges that matter for a return-to-rider diagnosis ----
             for bit_name in TIMELINE_GATE_BITS:
                 if bit_name in rec and bool(rec[bit_name]) != bool(prev.get(bit_name)):
                     verb = "set" if rec[bit_name] else "cleared"
                     lines.append(f"{_ts_str(rec, t0_ms)} gate {bit_name} {verb}")
+
+            # ---- pivot-boost on/off ----
+            if "fm_boost" in rec and bool(rec["fm_boost"]) != bool(prev.get("fm_boost")):
+                lines.append(f"{_ts_str(rec, t0_ms)} {'boost on' if rec['fm_boost'] else 'boost off'}")
 
             # ---- fault stop reason ----
             if "fm_block_reason" in rec and rec["fm_block_reason"] != prev.get("fm_block_reason"):
@@ -641,10 +802,19 @@ def generate_timeline(records: list[dict]) -> list[str]:
                 if rec["fm_throttle_cap"] is not None and rec["fm_throttle_cap"] <= 20:
                     lines.append(f"{_ts_str(rec, t0_ms)} FM throttle cap -> {rec['fm_throttle_cap']} (align/approach cap)")
 
-        # track the minimum distance reached while inside an open RETURN episode
-        if ret_episode is not None and rec.get("fm_distance_m") is not None:
-            if ret_episode["min_dist"] is None or rec["fm_distance_m"] < ret_episode["min_dist"]:
-                ret_episode["min_dist"] = rec["fm_distance_m"]
+        # track the minimum distance reached, and the tightest motor0/motor1 split commanded
+        # during the align sub-phase, while inside an open RETURN episode
+        if ret_episode is not None:
+            if rec.get("fm_distance_m") is not None:
+                if ret_episode["min_dist"] is None or rec["fm_distance_m"] < ret_episode["min_dist"]:
+                    ret_episode["min_dist"] = rec["fm_distance_m"]
+            if rec.get("fm_aligning"):
+                if rec.get("motor0_cmd") is not None:
+                    if ret_episode["min_motor0"] is None or rec["motor0_cmd"] < ret_episode["min_motor0"]:
+                        ret_episode["min_motor0"] = rec["motor0_cmd"]
+                if rec.get("motor1_cmd") is not None:
+                    if ret_episode["min_motor1"] is None or rec["motor1_cmd"] < ret_episode["min_motor1"]:
+                        ret_episode["min_motor1"] = rec["motor1_cmd"]
 
         prev = rec
 

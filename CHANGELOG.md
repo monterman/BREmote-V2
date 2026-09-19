@@ -13,7 +13,7 @@ steering. That is still the default. One RX setting now offers the other behavio
 | Value | The stick... | Use it when |
 |---|---|---|
 | **0** | **cancels** (default). A push of 40 counts held half a second, after the first 2 s of a run, ends it: following drops to armed, an auto-return stops, the remote exits return-to-me. | **Leave it here** until the take-over has been bench-spun on your hardware. What every board already does. |
-| **1** | **takes over** while you hold it, and hands back on centring. Centre it (within 20 counts for 0.2 s) and the buggy goes back to aiming at you; nothing is cancelled. | You want to nudge the buggy around something mid-run without ending the run. |
+| **1** | **takes over** while you hold it, and hands back on centring. Centre it (within 30 counts for 0.2 s) and the buggy goes back to aiming at you; nothing is cancelled. | You want to nudge the buggy around something mid-run without ending the run. |
 
 ```
 ?set steer_during_auto 1
@@ -26,7 +26,7 @@ to the align cap until it points back — your cue that you over-steered, not a 
 radius, arrival, the trigger deadman and every safety gate keep priority over the stick, and it
 never adds throttle. Two guards against a remote whose stick centre has drifted: a stick that has
 not been read centred at least once since the run began cannot take over (the buggy prints
-`takeover disabled; check the remote's steering centre`), and a takeover held 20 s ends as a cancel.
+`takeover disabled; check the remote's steering centre`), and a takeover held 10 s ends as a cancel.
 The remote learns the setting from the buggy (`fm_flags` bit 4) and stops exiting return-to-me on a
 push when the buggy says take over; `rtm_steer_exit_on_input` on the remote is no longer read.
 `?diag` on the buggy shows the setting, a standing takeover, and the episode history.

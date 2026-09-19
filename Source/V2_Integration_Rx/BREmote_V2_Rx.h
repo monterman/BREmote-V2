@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-19 - fix round 2: comments only - the takeover release band is 30 counts (was 20) and the maximum takeover is 10 s (was 20 s); the constants live in RTMState.ino. No code change here, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - STICK DURING AUTO-STEER (cancel or take over): the banked RESERVED slot rsvd_u16_1 is RENAMED IN PLACE to steer_during_auto (u16, 0-1, default 0) - same offset, same type; 0 = the stick CANCELS the automatic steering exactly as before (every fielded board holds 0 here), 1 = the stick TAKES OVER the steering byte while deflected and hands it back on centring, for Follow-Me following, auto-return (FM_RETURN) and classic return-to-me alike. Adds the steer_takeover_active atomic (the ONE takeover flag; single write site publishSteerTakeover() in RTMState.ino, read by calcPWM(), false on every tick with no auto-steer owner), includes ../Common/SteerArbitration.h (the pure, host-tested engage/release/timeout arbitration), adds FM_LOG_GATE_STEER_TAKEOVER (bit 16) to the deep-log gate word (existing u32, record size unchanged) and documents telemetry.fm_flags bits 4 (setting echo) and 5 (takeover standing) for the remote. No confStruct size change: sizeof stays 200, SW_VERSION stays 36, config is NOT reset by this flash.
 // V2.5-Evo - 2026-09-19 - FM_RETURN + pivot boost: adds the align_mixer_influence_override atomic (0 = none; the ONE mixer influence override, written by publishAlignMixerInfluence() in RTMState.ino for FM align, FM_RETURN align and classic RTM Phase 1 align, read by calcPWM()), includes ../Common/FollowMeReturnProof.h (the pure, host-tested FM_RETURN entry proof), and adds FM_LOG_GATE_RETURN_WINDOW (bit 15) to the deep-log gate word next to the P1-b bit 11 it reserved - new bit in the existing u32, record size unchanged; fm_state gains the value 5 (RETURN). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - 0xF2 return-mode override: adds the fm_return_mode_runtime atomic (0xFF = use the SPIFFS fm_return_mode; 0 / 1 = the remote's session override, carried in 0xF2 bits 5-6) next to fm_mode_runtime, and documents telemetry.fm_flags bit 7 as the RX's echo of its EFFECTIVE return mode for the remote's display and return gesture. Runtime globals + comments only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -561,12 +562,12 @@ struct confStruct {
     //         auto-return stops through HOLD, and the remote exits a classic return-to-me. Exactly
     //         the behaviour before this setting existed - the three cancel paths run unchanged.
     //     1 = TAKE OVER. The same push makes the stick steer the buggy while it is held; centring it
-    //         (within 20 counts for 0.2 s) hands the steering back to the controller and nothing is
+    //         (within 30 counts for 0.2 s) hands the steering back to the controller and nothing is
     //         cancelled. The takeover changes only WHICH steering byte calcPWM() applies: every
     //         throttle cap, the stop radius, the return proof and every safety gate keep running.
     //         A stick that has not been read centred at least once since the run began cannot take
     //         over (a remote whose centre has drifted must never steer silently); a takeover held
-    //         for 20 s ends through the mode's cancel path. See Common/SteerArbitration.h.
+    //         for 10 s ends through the mode's cancel path. See Common/SteerArbitration.h.
     //   Range 0-1; the remote learns the value from telemetry.fm_flags bit 4 (its Gate 4 cancel
     //   stays for 0). Turn on with `?set steer_during_auto 1` + `?save`.
     uint16_t steer_during_auto;        // 0 = stick cancels auto-steer (as before); 1 = stick takes over while deflected, resumes on centring. Range 0-1; default 0
@@ -738,7 +739,7 @@ static const float kFmEngageDistFloorM = 9.5f;   // metres; smallest legal non-z
 // kFmReturn* constants (RTMState.ino) are passed in; the header defines none of its own.
 #include "../Common/FollowMeReturnProof.h"
 // V2.5-Evo - 2026-09-19 - the stick-takeover arbitration (centre-seen, 40/500 ms engage, 20/200 ms
-// release, 20 s timeout, zeroed with no owner) is pure in ../Common/SteerArbitration.h so
+// release, 10 s timeout, zeroed with no owner) is pure in ../Common/SteerArbitration.h so
 // Tools/tests/steer_arbitration_test.cpp runs the exact code the three auto-steer modes call. The
 // RX's kSteerTakeover* constants (RTMState.ino) are passed in; the header defines none of its own.
 #include "../Common/SteerArbitration.h"

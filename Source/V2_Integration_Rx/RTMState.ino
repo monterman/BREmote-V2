@@ -1,5 +1,12 @@
+// V2.5-Evo - 2026-09-19 - fix round 2 (owner + code review): kSteerTakeoverMaxMs 20000 -> 10000 and kSteerTakeoverReleaseDeadband
+//   20 -> 30. A deliberate dodge is 2-5 s, so 10 s halves the exposure of a buggy steered by a drifted stick (108 -> 54 m at
+//   12 mph); with the shorter timer a stick resting at 20-29 counts after a push would have sat in the old 20-39 gap - neither
+//   releasing nor engaging - and stopped the buggy through the timeout every 10 s, so the release band widens to 30 (the gap
+//   is 30-39). A 20-29 rest drift still cannot engage (that needs >= 40 for 500 ms) and centre-seen still refuses a stick
+//   resting at >= 30. The ENGAGED and timeout prints compute from the constants; the ?diag "timed out" text and every comment
+//   that quoted the numbers are updated. Nothing else changes. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - fix round 1 (code review M-1, L-2, L-4): the FOLLOWING takeover timeout no longer copies the ACTIVE
-//   steer-cancel's writes (ARMED, cap 255 under a HELD trigger - a surprise un-clamp 20 s after the push, worst on a drifted stick
+//   steer-cancel's writes (ARMED, cap 255 under a HELD trigger - a surprise un-clamp 20 s [10 s since fix round 2] after the push, worst on a drifted stick
 //   with the buggy veering under it); it now exits through the HOLD surge guard exactly as FM_RETURN's exits do: FM_HOLD, cap 0,
 //   fm_rx_active false, override 127, latch cleared, needs-D_engage set, engage ramp 0, arbitration reset, print after the writes.
 //   HOLD-ESCAPE-2 turns it into ARMED/255 on the first RELEASED tick. The mode-0 cancel block is untouched (byte-identical) and is
@@ -13,7 +20,7 @@
 //   classic RTM has no RX-side cancel and gets none. The decision is the pure Common/SteerArbitration.h step, run at 10 Hz by the
 //   mode that owns the steering with its own motion clock as the grace base (fm_engage_ms / fm_return_motion_ms / the new
 //   rtm_motion_ms): centre-seen required (a drifted remote centre never takes over silently, rate-limited print), 40 counts for
-//   500 ms after the 2 s grace to engage (the cancel's own constants through aliases), 20 counts for 200 ms to release, 20 s
+//   500 ms after the 2 s grace to engage (the cancel's own constants through aliases), 20 counts for 200 ms to release, 20 s [fix round 2: 30 counts, 10 s]
 //   maximum then the mode's CANCEL path with a print naming centre drift (following -> FM_HOLD cap 0, latch cleared, needs-D_engage,
 //   ARMED/255 on the first released tick - the HOLD surge guard, fix round 1 review M-1; RETURN -> fmReturnExitToHold(FM_RET_STEERED);
 //   RTM -> the Gate-9-shaped clean handoff). Published ONCE per tick through
@@ -1668,13 +1675,19 @@ static const uint8_t  kSteerTakeoverEngageDeadband  = kFmSteerCancelDeadband;   
 static const uint32_t kSteerTakeoverEngageMs        = kFmSteerPersistMs;        // ms sustained to engage (500)
 static const uint32_t kSteerTakeoverGraceMs         = kFmEngageGraceMs;         // ms after the owner's motion start (2000)
 // Release band: the stick is "centred" inside this, and must stay there kSteerTakeoverReleaseMs to
-// hand the steering back. 20 is half the engage band so chop between the two (20-39) flips nothing.
-static const uint8_t  kSteerTakeoverReleaseDeadband = 20;      // counts from 127
+// hand the steering back. 30 leaves a 30-39 gap under the engage band so chop between the two flips
+// nothing. V2.5-Evo - 2026-09-19 - fix round 2: was 20. With the shorter 10 s cap below, a stick
+// resting at 20-29 after a push would have sat in the gap - neither releasing nor engaging - and
+// stopped the buggy through the timeout every 10 s; at 30 it releases instead. A 20-29 rest drift
+// still cannot engage (that needs >= 40) and centre-seen still refuses a stick resting at >= 30.
+static const uint8_t  kSteerTakeoverReleaseDeadband = 30;      // counts from 127
 static const uint32_t kSteerTakeoverReleaseMs       = 200;     // ms
 // Maximum takeover. Beyond it the episode ends through the mode's CANCEL path: a rider who has
-// steered for 20 s is driving manually and a stick that never comes back is most likely a drifted
+// steered for 10 s is driving manually and a stick that never comes back is most likely a drifted
 // centre; resuming the controller against a still-deflected stick would override a deliberate hand.
-static const uint32_t kSteerTakeoverMaxMs           = 20000;   // ms
+// V2.5-Evo - 2026-09-19 - fix round 2: was 20 s. A deliberate dodge is 2-5 s; 10 s halves the
+// exposure of a buggy being steered by a drifted stick (108 -> 54 m at 12 mph).
+static const uint32_t kSteerTakeoverMaxMs           = 10000;   // ms
 static const SteerTakeoverParams kSteerTakeoverParams = {
   kSteerTakeoverEngageDeadband, kSteerTakeoverReleaseDeadband,
   kSteerTakeoverEngageMs, kSteerTakeoverReleaseMs, kSteerTakeoverGraceMs, kSteerTakeoverMaxMs
@@ -2045,7 +2058,7 @@ static unsigned long steer_takeover_notice_ms  = 0;    // rate limit for the not
 enum SteerTakeoverEnd : uint8_t {
   STO_END_NONE      = 0,   // no takeover has ended since boot
   STO_END_RELEASED  = 1,   // the rider centred the stick: the controller resumed
-  STO_END_TIMED_OUT = 2,   // 20 s standing: the mode's cancel path ran
+  STO_END_TIMED_OUT = 2,   // 10 s standing: the mode's cancel path ran
   STO_END_OWNER     = 3    // the owner ended under it (trigger released, stop, arrival, fault, disarm)
 };
 static uint8_t       steer_takeover_last_end   = STO_END_NONE;
@@ -2054,7 +2067,7 @@ static const char* steerTakeoverEndName(uint8_t e)
   switch (e) {
     case STO_END_NONE:      return "none yet";
     case STO_END_RELEASED:  return "released (stick centred, controller resumed)";
-    case STO_END_TIMED_OUT: return "timed out after 20 s -> cancel path";
+    case STO_END_TIMED_OUT: return "timed out after 10 s -> cancel path";
     case STO_END_OWNER:     return "owner ended under it (release / stop / arrival / fault / disarm)";
     default:                return "unknown";
   }
@@ -3280,7 +3293,7 @@ static void runRtmLoopBody(unsigned long now)
   //     governor and BOOTSTRAP-1 keep running exactly as they do below - a takeover during the
   //     bootstrap is the rider steering a heading-blind buggy at <= 24 % under its own abort
   //     radius and timeout.
-  //   TIMED OUT (20 s): the Gate-9-shaped clean handoff - rtm_rx_active false, no emergency stop,
+  //   TIMED OUT (10 s): the Gate-9-shaped clean handoff - rtm_rx_active false, no emergency stop,
   //     cap 255, manual at the held trigger with the stick the rider was already using. The print
   //     comes after those writes (F7). The remote learns of it the way it does of Gate 9 today.
   // ============================================================
@@ -4417,7 +4430,7 @@ static void runFmReturnTick(unsigned long now)
     // the rider-moving cancel and the trigger gate have already had, or still get, priority over
     // the stick on this tick. While parked (no motion clock) the tick sees no owner and keeps the
     // memory zero, so a twitch during the proof or before the first squeeze can never count.
-    // TIMED OUT (20 s): the cancel path this mode already has - fmReturnExitToHold(FM_RET_STEERED),
+    // TIMED OUT (10 s): the cancel path this mode already has - fmReturnExitToHold(FM_RET_STEERED),
     // cap 0 and FM_HOLD - then the print, after the motor writes (F7).
     const uint8_t sto = steerTakeoverTick(now, fm_return_motion_ms, "RETURN");
     fm_steer_takeover_req = steer_takeover.active;
@@ -5516,10 +5529,10 @@ static void runFmLoopBody(unsigned long now)
       // latch, fm_engage_ms and needs-D_engage are untouched (a takeover is not a cancel), HOLD /
       // faults / the RETURN candidate were evaluated above and independent of the stick, and any
       // exit from FM_ACTIVE ends the owner (the not-eligible branch resets the memory).
-      // TIMED OUT (20 s): through the HOLD SURGE GUARD, the shape FM_RETURN's exits already use
+      // TIMED OUT (10 s): through the HOLD SURGE GUARD, the shape FM_RETURN's exits already use
       // (fix round 1, review M-1). NOT the mode-0 cancel block's writes: that block ends in ARMED
       // with cap 255 because the rider caused it half a second earlier and is expecting manual;
-      // the timeout is a different event - 20 s after the push, on a stick that may be a drifted
+      // the timeout is a different event - 10 s after the push, on a stick that may be a drifted
       // centre with the buggy veering under it - and lifting the governor's cap to the raw held
       // trigger at that instant is a surprise un-clamp. So: FM_HOLD with cap 0 under the held
       // trigger, latch cleared, needs-D_engage set; the ordinary HOLD branch keeps cap 0 while the

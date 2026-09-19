@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-09-19 - fix round 2 (owner + review): the RX's numbers are now release band 30 counts (was 20) and maximum takeover 10 s (was 20 s);
+//   the header takes both as parameters and changes no code - the comments below quote the new values. See RTMState.ino for the reasoning.
 // V2.5-Evo - 2026-09-19 - The stick during automatic steering: the TAKEOVER arbitration, pure and host-testable.
 //   Whenever the buggy steers itself - Follow-Me following, auto-return (FM_RETURN) or a classic
 //   return-to-me - the rider's steering stick is thrown away and, today, a held push CANCELS the
@@ -6,17 +8,17 @@
 //   This header decides WHEN a takeover stands. It is called once per 10 Hz tick by the mode that owns
 //   the steering (RX RTMState.ino), with that mode's own grace clock, and the result is published to
 //   calcPWM() through one atomic - the 100 Hz motor path never decides anything itself.
-//     ENGAGE   - the stick has been read within release_deadband (20) of centre at least once since
+//     ENGAGE   - the stick has been read within release_deadband (30) of centre at least once since
 //                the owner started ("centre-seen": a remote whose rest position has drifted can never
 //                take over silently), the owner's grace (2 s from the start of its motion, the same
 //                grace the cancel uses) has passed, and the stick has been at or beyond
 //                engage_deadband (40 counts from 127) for engage_persist_ms (500 ms) without a break.
-//     ACTIVE   - the stick steers. A byte between the two deadbands (20-39) neither engages nor
+//     ACTIVE   - the stick steers. A byte between the two deadbands (30-39) neither engages nor
 //                releases: that is the hysteresis that keeps chop from flipping the source.
 //     RELEASE  - the stick has been inside release_deadband for release_persist_ms (200 ms): the
 //                automatic steering resumes. Nothing was cancelled.
-//     TIMEOUT  - a takeover that stands for max_active_ms (20 s) ends; the caller runs its CANCEL
-//                path (a rider who has steered for 20 s is driving manually, and a stick that never
+//     TIMEOUT  - a takeover that stands for max_active_ms (10 s) ends; the caller runs its CANCEL
+//                path (a rider who has steered for 10 s is driving manually, and a stick that never
 //                comes back to centre is most likely a drifted centre). Centre-seen is cleared, so
 //                the stick must be read centred again before another takeover.
 //     NO OWNER - no mode is steering, the trigger is below 25 counts, or steering override is off:
@@ -34,11 +36,11 @@
 // The arbitration's tuning, passed in by the caller (the RX's kSteerTakeover* constants).
 struct SteerTakeoverParams {
   uint8_t  engage_deadband;     // counts from 127 at or beyond which the stick counts as deflected (40)
-  uint8_t  release_deadband;    // counts from 127 below which the stick counts as centred (20)
+  uint8_t  release_deadband;    // counts from 127 below which the stick counts as centred (30)
   uint32_t engage_persist_ms;   // the deflection must stand this long to engage (500)
   uint32_t release_persist_ms;  // the centre must stand this long to release (200)
   uint32_t grace_ms;            // no engage this long after the owner's motion started (2000)
-  uint32_t max_active_ms;       // a takeover standing this long times out into the cancel path (20000)
+  uint32_t max_active_ms;       // a takeover standing this long times out into the cancel path (10000)
 };
 
 // The arbitration's memory between ticks. All zero = nothing seen, nothing standing.

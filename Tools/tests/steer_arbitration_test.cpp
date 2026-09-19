@@ -1,14 +1,15 @@
 // Host test for Common/SteerArbitration.h - the stick-takeover arbitration during automatic steering.
-// The RX's constants (RTMState.ino kSteerTakeover*): engage deadband 40 counts, release deadband 20,
+// The RX's constants (RTMState.ino kSteerTakeover*): engage deadband 40 counts, release deadband 30,
 // engage persistence 500 ms, release persistence 200 ms, grace 2000 ms from the owner's motion start,
-// maximum takeover 20000 ms. Ticks are 100 ms like runFmLoop() / runRtmLoop().
+// maximum takeover 10000 ms (fix round 2: release band was 20, the cap was 20 s). Ticks are 100 ms
+// like runFmLoop() / runRtmLoop().
 
 #include <assert.h>
 #include <stdint.h>
 
 #include "../../Source/Common/SteerArbitration.h"
 
-static const SteerTakeoverParams P = { 40u, 20u, 500u, 200u, 2000u, 20000u };
+static const SteerTakeoverParams P = { 40u, 30u, 500u, 200u, 2000u, 10000u };
 
 // Feed one constant steering byte for `ticks` ticks starting at t0 (100 ms apart), owner active with
 // the given motion start. Returns the last verdict; *t_out is the tick time of the first edge verdict
@@ -88,8 +89,8 @@ int main()
     uint8_t v = feed(&s, 1000u, 100u, 1000u, 167u, &t, &e); // 10 s deflected, grace long served
     assert(v == STO_INACTIVE && e == 0 && !s.active && !s.centre_seen);
     assert(s.deflect_since_ms == 1000u);                     // the persistence stands; only centre-seen is missing
-    // A drifted centre of 25 counts (152) counts as neither centred nor deflected: still nothing.
-    v = feed(&s, 11000u, 50u, 1000u, 152u, &t, &e);
+    // A drifted centre of 35 counts (162) counts as neither centred nor deflected: still nothing.
+    v = feed(&s, 11000u, 50u, 1000u, 162u, &t, &e);
     assert(v == STO_INACTIVE && !s.centre_seen && s.deflect_since_ms == 0);
     // Once read centred, a fresh 500 ms deflection engages.
     v = steerTakeoverStep(&s, 16000u, true, 1000u, 127u, &P);
@@ -117,7 +118,7 @@ int main()
     assert(v == STO_INACTIVE && e == 0 && !s.active);
   }
 
-  // ---- Release at 200 ms inside 20 counts; the controller resumes; centre-seen is kept ----
+  // ---- Release at 200 ms inside 30 counts; the controller resumes; centre-seen is kept ----
   {
     SteerTakeoverState s = primed(&t);
     uint8_t v = feed(&s, t, 6u, 1000u, 167u, &t, &e);
@@ -137,28 +138,29 @@ int main()
     v = steerTakeoverStep(&s, t0 + 900u, true, 1000u, 167u, &P);
     assert(v == STO_ENGAGED);
   }
-  // 19 counts (146) releases; 20 counts (147) does not - the release band is strictly inside 20.
+  // 29 counts (156) releases; 30 counts (157) does not - the release band is strictly inside 30.
   {
     SteerTakeoverState s = primed(&t);
     feed(&s, t, 6u, 1000u, 167u, &t, &e);
-    uint8_t v = feed(&s, t + 100u, 50u, 1000u, 147u, &t, &e);       // 5 s at exactly 20
+    uint8_t v = feed(&s, t + 100u, 50u, 1000u, 157u, &t, &e);       // 5 s at exactly 30
     assert(v == STO_ACTIVE && e == 0 && s.active && s.centre_since_ms == 0);
-    v = feed(&s, t + 100u, 3u, 1000u, 146u, &t, &e);                 // 19: released after 200 ms
+    v = feed(&s, t + 100u, 3u, 1000u, 156u, &t, &e);                 // 29: released after 200 ms
     assert(v == STO_RELEASED && e == 1);
   }
 
-  // ---- 20-39 counts neither engages nor releases ----
+  // ---- 30-39 counts neither engages nor releases ----
   {
     SteerTakeoverState s = primed(&t);
-    uint8_t v = feed(&s, t, 100u, 1000u, 157u, &t, &e);              // 30 counts, 10 s
+    uint8_t v = feed(&s, t, 100u, 1000u, 162u, &t, &e);              // 35 counts, 10 s
     assert(v == STO_INACTIVE && e == 0 && !s.active);
     v = feed(&s, t + 100u, 6u, 1000u, 167u, &t, &e);                 // now 40: engages
     assert(v == STO_ENGAGED);
-    v = feed(&s, t + 100u, 100u, 1000u, 157u, &t, &e);               // back to 30, 10 s: still standing
+    v = feed(&s, t + 100u, 90u, 1000u, 162u, &t, &e);                // back to 35, 9 s (inside the 10 s cap): still standing
     assert(v == STO_ACTIVE && e == 0 && s.active);
   }
 
-  // ---- Chatter: 20/60 alternating at 10 Hz never engages ----
+  // ---- Chatter: 20/60 alternating at 10 Hz never engages (20 is inside the release band now; the
+  //      deflection timer still never accumulates 500 ms) ----
   {
     SteerTakeoverState s = primed(&t);
     uint32_t now = t;
@@ -168,35 +170,35 @@ int main()
       assert(v == STO_INACTIVE && !s.active);
     }
   }
-  // ---- Chatter: 10/30 alternating while active never releases ----
+  // ---- Chatter: 10/35 alternating while active never releases ----
   {
     SteerTakeoverState s = primed(&t);
     feed(&s, t, 6u, 1000u, 167u, &t, &e);
     assert(s.active);
     uint32_t now = t + 100u;
-    for (uint32_t i = 0; i < 150u; ++i, now += 100u) {              // 15 s of chop, inside the 20 s cap
-      const uint8_t byte = (i & 1u) ? 157u : 137u;                    // 30 / 10 counts
+    for (uint32_t i = 0; i < 80u; ++i, now += 100u) {               // 8 s of chop, inside the 10 s cap
+      const uint8_t byte = (i & 1u) ? 162u : 137u;                    // 35 / 10 counts
       const uint8_t v = steerTakeoverStep(&s, now, true, 1000u, byte, &P);
       assert(v == STO_ACTIVE && s.active);
     }
   }
 
-  // ---- Timeout at 20 s: STO_TIMED_OUT once, active false, centre-seen cleared ----
+  // ---- Timeout at 10 s: STO_TIMED_OUT once, active false, centre-seen cleared ----
   {
     SteerTakeoverState s = primed(&t);
     uint8_t v = feed(&s, t, 6u, 1000u, 167u, &t, &e);
     assert(v == STO_ENGAGED);
     const uint32_t t_eng = t;
-    v = feed(&s, t_eng + 100u, 199u, 1000u, 167u, &t, &e);           // up to 19.9 s of hold
+    v = feed(&s, t_eng + 100u, 99u, 1000u, 167u, &t, &e);            // up to 9.9 s of hold
     assert(v == STO_ACTIVE && e == 0 && s.active);
-    v = steerTakeoverStep(&s, t_eng + 20000u, true, 1000u, 167u, &P);
+    v = steerTakeoverStep(&s, t_eng + 10000u, true, 1000u, 167u, &P);
     assert(v == STO_TIMED_OUT && !s.active && !s.centre_seen && s.active_since_ms == 0);
-    // Still deflected afterwards: nothing engages, because the centre has not been seen again.
-    v = feed(&s, t_eng + 20100u, 100u, 1000u, 167u, &t, &e);
+    // Still deflected afterwards (to 12 s and beyond): nothing engages, because the centre has not been seen again.
+    v = feed(&s, t_eng + 10100u, 100u, 1000u, 167u, &t, &e);
     assert(v == STO_INACTIVE && e == 0 && !s.active);
     // Centre it once, deflect again: a new takeover after the usual 500 ms.
-    steerTakeoverStep(&s, t_eng + 30200u, true, 1000u, 127u, &P);
-    v = feed(&s, t_eng + 30300u, 6u, 1000u, 167u, &t, &e);
+    steerTakeoverStep(&s, t_eng + 20200u, true, 1000u, 127u, &P);
+    v = feed(&s, t_eng + 20300u, 6u, 1000u, 167u, &t, &e);
     assert(v == STO_ENGAGED);
   }
   // A release that completes on the same tick as the timeout is a release (the rider centred).
@@ -204,10 +206,10 @@ int main()
     SteerTakeoverState s = primed(&t);
     feed(&s, t, 6u, 1000u, 167u, &t, &e);
     const uint32_t t_eng = t;
-    feed(&s, t_eng + 100u, 197u, 1000u, 167u, &t, &e);               // to 19.7 s
-    steerTakeoverStep(&s, t_eng + 19800u, true, 1000u, 127u, &P);
-    steerTakeoverStep(&s, t_eng + 19900u, true, 1000u, 127u, &P);
-    uint8_t v = steerTakeoverStep(&s, t_eng + 20000u, true, 1000u, 127u, &P);
+    feed(&s, t_eng + 100u, 97u, 1000u, 167u, &t, &e);                // to 9.7 s
+    steerTakeoverStep(&s, t_eng + 9800u, true, 1000u, 127u, &P);
+    steerTakeoverStep(&s, t_eng + 9900u, true, 1000u, 127u, &P);
+    uint8_t v = steerTakeoverStep(&s, t_eng + 10000u, true, 1000u, 127u, &P);
     assert(v == STO_RELEASED && s.centre_seen);
   }
 
@@ -232,8 +234,8 @@ int main()
     steerTakeoverStep(&s, base, true, base, 127u, &P);               // centred; motion begins here
     uint8_t v = feed(&s, base + 2000u, 6u, base, 167u, &t, &e);      // grace served at +2000; wraps at +4096
     assert(v == STO_ENGAGED && t == base + 2500u);
-    v = feed(&s, base + 2600u, 200u, base, 167u, &t, &e);            // crosses 0 while active
-    assert(v == STO_TIMED_OUT && t == base + 2500u + 20000u);
+    v = feed(&s, base + 2600u, 100u, base, 167u, &t, &e);            // crosses 0 while active; the last tick is the timeout tick
+    assert(v == STO_TIMED_OUT && t == base + 2500u + 10000u);
   }
   // A stamp at millis() == 0 is stored as 1, never as the 0 sentinel.
   {

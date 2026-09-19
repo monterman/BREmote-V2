@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-19 - C-4 FIX: throttle-relative differential mixer. BUG: in steering_type 1 the steering term was a fixed fraction of the FULL PWM span (steering_influence % of PWM_max-PWM_min) added AFTER the throttle map, so it was never scaled by effective_thr - a hard steer during a 13/255 crawl (influence 50) put one motor at ~55 % regardless of the RTM/FM throttle cap, i.e. steering could ADD power past the cap. FIX: calcPWM() now calls mixThrottleRelativeDifferential() (Common/DifferentialMixer.h, host-tested in Tools/tests/differential_mixer_test.cpp): turn = T x influence x |steer-127| / (100 x span), motor0 = T - turn, motor1 = T + turn, each clamped 0..255, then each motor command is map()ed into its own PWM range and trim is applied as the same symmetric post-map correction as before (+trim ch0, -trim ch1). Steering is now proportional to the permitted throttle - none at zero, less at low throttle, full authority at full throttle - and before upper saturation the two commands always sum to exactly 2T (power-neutral; saturation can only lower it). 127 is the exact neutral byte inside the mixer, so the 2026-06-05 H-1 recentring is no longer needed and is removed. steering_inverted semantics are unchanged: 0 -> steer > 127 slows motor0 / speeds motor1; 1 -> the mirror. Efoil and servo branches, the ramp and the terminal effective_thr==0 guard are untouched. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-18 - comment only (review finding F8): the steering-gate note said runFmLoop() forces FM to IDLE whenever rtm_rx_active is set; since 2026-09-18 it makes FM yield (FM_ARMED, fm_rx_active false, no cap/steer writes) instead. No code change.
 // V2.5-Evo - 2026-07-19 - P3 FM: calcPWM() applies fm_throttle_cap (subtract-only, lowest cap wins) and lets fm_rx_active gate the steering override alongside rtm_rx_active. Throttle can still only be reduced, never added, and the thr_received>=25 steering gate is unchanged.
 // V2.5-Evo - 2026-07-19 - FM triage: calcPWM() records effective_steer into g_effective_steer (diagnostic observer only — no control-path change) so the logger can show the actuation gap
@@ -120,33 +121,31 @@ void calcPWM()
   else if(usrConf.steering_type == 1)
   {
     //Diff
-    // Map throttle input to PWM range for each motor
-    uint16_t throttle_0 = map(effective_thr, 0, 255, usrConf.PWM0_min, usrConf.PWM0_max);
-    uint16_t throttle_1 = map(effective_thr, 0, 255, usrConf.PWM1_min, usrConf.PWM1_max);
+    // V2.5-Evo - 2026-09-19 - C-4 FIX: steering redistributes the PERMITTED throttle instead of adding
+    // a gas-independent offset taken from the full PWM span. The old form was
+    //   PWM0 = map(effective_thr) + trim -/+ steering_offset_0,  steering_offset = influence% of (PWM_max - PWM_min)
+    // so at a 13/255 crawl with influence 50 a full-lock steer still moved one motor by 500 us — steering
+    // could push a motor past every throttle cap (RTM approach, FM cap) that had just been applied above.
+    // The mixer works in normalized 0..255 command space: turn = T x influence x |steer - 127| / (100 x span),
+    // motor0 = T - turn, motor1 = T + turn (inversion flips the sign of turn), each clamped 0..255. At T = 0 the
+    // turn term is zero for every steering byte, so steering can no longer create motor command from zero gas;
+    // below upper saturation motor0 + motor1 == 2T exactly, so steering never adds aggregate power. 127 is the
+    // exact neutral inside the mixer, which is why the former H-1 recentring (2026-06-05) is gone: there is no
+    // map() residual to cancel. Mapping each command into its own calibrated PWM range afterwards preserves the
+    // same relative power request even when the two channels have unequal ranges.
+    // Inversion semantics are unchanged from the old branch: steering_inverted 0 -> a steer byte above 127 slows
+    // motor 0 and speeds motor 1; steering_inverted 1 -> the mirror (motor 0 speeds, motor 1 slows).
+    DifferentialMotorMix motor_mix = mixThrottleRelativeDifferential(
+        effective_thr, effective_steer, usrConf.steering_influence,
+        usrConf.steering_inverted);
+    int motor_0_pwm = map(motor_mix.motor0, 0, 255, usrConf.PWM0_min, usrConf.PWM0_max);
+    int motor_1_pwm = map(motor_mix.motor1, 0, 255, usrConf.PWM1_min, usrConf.PWM1_max);
 
-    // Compute differential steering adjustment with influence factor
-    int max_steering_offset_0 = map(usrConf.steering_influence, 0, 100, 0, (usrConf.PWM0_max - usrConf.PWM0_min));
-    int max_steering_offset_1 = map(usrConf.steering_influence, 0, 100, 0, (usrConf.PWM1_max - usrConf.PWM1_min));
-
-    // V2.5-Evo - 2026-06-05 - H-1 recentering: removed the +1 bias AND recentre so neutral steering (127)
-    // maps to exactly 0 — both motors sit at PWM_min at rest, killing the ~2us map-quantization residual
-    // that read 1000,1002 (127 mapped to -2 because 0-255 has no whole-number centre). No dead zone, smooth
-    // steering. Neutral stability is handled upstream by the TX tog_deadzone.
-    int center_off_0 = map(127, 0, 255, -max_steering_offset_0, max_steering_offset_0);
-    int center_off_1 = map(127, 0, 255, -max_steering_offset_1, max_steering_offset_1);
-    int steering_offset_0 = map(effective_steer, 0, 255, -max_steering_offset_0, max_steering_offset_0) - center_off_0;
-    int steering_offset_1 = map(effective_steer, 0, 255, -max_steering_offset_1, max_steering_offset_1) - center_off_1;
-
-    if(usrConf.steering_inverted)
-    {
-      PWM0_time = constrain(throttle_0 + usrConf.trim + steering_offset_0, usrConf.PWM0_min, usrConf.PWM0_max);
-      PWM1_time = constrain(throttle_1 - usrConf.trim - steering_offset_1, usrConf.PWM1_min, usrConf.PWM1_max);
-    }
-    else
-    {
-      PWM0_time = constrain(throttle_0 + usrConf.trim - steering_offset_0, usrConf.PWM0_min, usrConf.PWM0_max);
-      PWM1_time = constrain(throttle_1 - usrConf.trim + steering_offset_1, usrConf.PWM1_min, usrConf.PWM1_max);
-    }
+    // Trim stays a symmetric post-map correction with the same sign convention as before and as the efoil
+    // branch: +trim on channel 0, -trim on channel 1, independent of steering_inverted. The final
+    // effective_thr == 0 clamp below still owns the absolute stopped state and cannot be bypassed by trim.
+    PWM0_time = constrain(motor_0_pwm + usrConf.trim, usrConf.PWM0_min, usrConf.PWM0_max);
+    PWM1_time = constrain(motor_1_pwm - usrConf.trim, usrConf.PWM1_min, usrConf.PWM1_max);
   }
   else if(usrConf.steering_type == 2)
   {
@@ -222,6 +221,14 @@ void calcPWM()
   // NOTE: this is deliberately == 0 and NOT a deadband. If the TX ever sends a non-zero
   // throttle with the trigger released, that is a TX fault that must be found and fixed at
   // source, and swallowing it in a deadband here would hide it.
+  //
+  // V2.5-Evo - 2026-09-19 - The two contributors named above (the full-span steering_offset_0/1
+  // and the H-1 recentring it needed) no longer exist: the throttle-relative mixer in the diff
+  // branch makes the turn term zero whenever effective_thr is zero, for every steering byte and
+  // both inversions, so the drift mechanism suspected above is closed by construction. The
+  // history is kept as written. This clamp deliberately stays as defence in depth for trim,
+  // ramp residue and whatever is added next — it is the last writer and therefore the stronger
+  // stopped-state invariant.
   // ============================================================
   if (effective_thr == 0)
   {

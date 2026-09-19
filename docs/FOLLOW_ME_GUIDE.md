@@ -50,7 +50,7 @@ While floating, before takeoff:
 1. **LEFT tap, then RIGHT hold** (~3 s — set by `fm_hold_duration_s`).
 2. The remote shows **F1 / F2 / F3** and buzzes **two quick taps** = armed.
 3. Cycle the mode by repeating the gesture before you touch the throttle
-   (**F1 → F2 → F3 → F0-off**).
+   (**F1 → F2 → F3 → F1**, it wraps and never disarms — to leave Follow-Me off, don't arm it).
 
 > The toggle **cannot arm once you're on the throttle** — while you hold the trigger, the
 > toggle *is* your steering. That's what the magnet is for.

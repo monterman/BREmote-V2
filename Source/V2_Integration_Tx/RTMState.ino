@@ -1,3 +1,15 @@
+// V2.5-Evo - 2026-09-19 - F0 REMOVED FROM THE PRE-THROTTLE CYCLE (owner ruling 12:45, supersedes the
+//   "F0 landing is kept" call in the entry below). Bench testing today: the tap+hold combo cycling
+//   stations before any throttle ran 1 -> 2 -> 3 -> 0 (disarm) and landed on it twice in five minutes
+//   — F0 had no purpose as a cycle-stop once the disarm gesture exists. cycleFmMode()'s pre-throttle
+//   branch now wraps 1 -> 2 -> 3 -> 1, the same wrap cycleFmModeArmed() already used, and can no
+//   longer land on F0; the F0-disarm branch it used to take is gone (unreachable). To leave
+//   Follow-Me off, don't arm it; the after-throttle disarm gesture and the magnet toggle disarm
+//   exactly as before. Diagnostic only, no behaviour change: returnGestureCeremonyPoll() now prints
+//   one RETURN [TX] line per detector edge (arming hold released, RIGHT tap registered, LEFT hold
+//   started, gesture fired) so the next USB check of the in-ceremony second gesture is conclusive —
+//   detector timing, thresholds and ordering are untouched. No confStruct change, sizeof stays 136,
+//   SW_VERSION stays 27.
 // V2.5-Evo - 2026-09-19 - THE RETURN GESTURE (RIGHT tap + LEFT hold, the RTM arm combo) is now returnGesture(), a three-state
 //   machine read at the instant the hold completes: (1) no override and RTM not armed -> arm RTM exactly as before (setRtmArmed(),
 //   ceremony, gates, rtm_arm_window_s untouched); (2) RTM armed and still inside the arm window (the blocking ceremony is waiting for
@@ -8,7 +20,9 @@
 //   (fmEncodeModeByte(): cycleFmMode(), cycleFmModeArmed(), the 30 s keepalive, every 0xF2/0 disarm burst) and cleared on FM disarm
 //   and power-up; a flip while armed asks the keepalive to go out now (fmRequestKeepaliveNow()) instead of in 30 s.
 //   cycleFmModeArmed() now WRAPS 1 -> 2 -> 3 -> 1 and never lands on F0 (owner rule: nothing disarms Follow-Me deliberately except
-//   the disarm gesture); cycleFmMode()'s pre-throttle F0 landing is kept. Unconditional Serial prints (the remote printed nothing
+//   the disarm gesture); cycleFmMode()'s pre-throttle F0 landing was kept at the time this line was
+//   written — superseded later the same day, see the entry above: it also wraps without F0 now.
+//   Unconditional Serial prints (the remote printed nothing
 //   for any RTM/FM state change before) at the RTM ceremony timeouts, the distance reject, the activation, and at every 0xF2/0
 //   call site with its reason. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-09-18 - KEEPALIVE vs BURST QUEUE (code-review finding, water-test blocker): the 30 s 0xF2 keepalive in runFmLoop() now
@@ -338,6 +352,11 @@ static float decodeRtmDistanceM()
 //          ctminus() (Hall.ino), thr_scaled, usrConf.rtm_hold_duration_s, COMBO_TAP_MAX_MS,
 //          COMBO_WINDOW_MS (Hall.ino).
 // Returns: true exactly once per completed gesture. Side effects: its own static state only.
+// V2.5-Evo - 2026-09-19 - DIAGNOSTIC ONLY, no behaviour change: one Serial.printf per detector
+//   edge (arming hold released, RIGHT tap registered, LEFT hold started, gesture fired) in the
+//   RETURN [TX] print style, added because the owner could not get the in-ceremony second gesture
+//   to fire on the bench and the remote was not on USB. Detector timing, thresholds and ordering
+//   are untouched.
 static bool returnGestureCeremonyPoll(bool reset)
 {
   static bool          arm_hold_released = false;   // the LEFT hold that started the ceremony has been let go
@@ -357,17 +376,26 @@ static bool returnGestureCeremonyPoll(bool reset)
   const bool          left  = ctminus();
 
   if (!arm_hold_released) {
-    if (!left) arm_hold_released = true;   // the arming hold is over; from here the toggle is a fresh input
+    if (!left) {
+      arm_hold_released = true;   // the arming hold is over; from here the toggle is a fresh input
+      Serial.println("RETURN [TX] ceremony poll: arming hold released, detector live");   // V2.5-Evo - 2026-09-19 - diagnostic only
+    }
     return false;
   }
 
   // RIGHT: a press shorter than COMBO_TAP_MAX_MS, on release, is a tap.
   if (right && !right_was_down) right_down_ms = now;
-  if (!right && right_was_down && (now - right_down_ms) < COMBO_TAP_MAX_MS) right_tap_ms = now;
+  if (!right && right_was_down && (now - right_down_ms) < COMBO_TAP_MAX_MS) {
+    right_tap_ms = now;
+    Serial.printf("RETURN [TX] ceremony poll: RIGHT tap registered (%lu ms)\n", (unsigned long)(now - right_down_ms));   // V2.5-Evo - 2026-09-19 - diagnostic only
+  }
   right_was_down = right;
 
   // LEFT: time the hold from its press edge.
-  if (left && !left_was_down) left_down_ms = now;
+  if (left && !left_was_down) {
+    left_down_ms = now;
+    Serial.println("RETURN [TX] ceremony poll: LEFT hold started");   // V2.5-Evo - 2026-09-19 - diagnostic only
+  }
   left_was_down = left;
 
   if (left && right_tap_ms != 0 &&
@@ -375,6 +403,7 @@ static bool returnGestureCeremonyPoll(bool reset)
       (now - left_down_ms) >= (unsigned long)usrConf.rtm_hold_duration_s * 1000UL &&
       thr_scaled < 10) {
     right_tap_ms = 0;   // consumed: the same hold cannot fire twice
+    Serial.println("RETURN [TX] ceremony poll: gesture fired (tap+hold combo complete)");   // V2.5-Evo - 2026-09-19 - diagnostic only
     return true;
   }
   return false;
@@ -687,7 +716,8 @@ void runRtmLoop()
 //   - FM active: user engages throttle to ride
 //
 // CHANGE MODE while armed (LEFT hold 2s, intercepted by Hall.ino):
-//   - Cycles F0→F1→F2→F3→F0; stays armed; sends new mode to RX; resets arm timer
+//   - Cycles F1→F2→F3→F1, never F0 (owner rule 2026-09-19: nothing disarms Follow-Me by cycling);
+//     stays armed; sends new mode to RX; resets arm timer
 //
 // DISARM (any of):
 //   - Same combo again (LEFT tap + RIGHT hold 5s) — toggle
@@ -850,43 +880,14 @@ void cycleFmMode()
     }
     else
     {
-      // No throttle yet — cycle to next mode (1→2→3→0 where 0 = disarm)
-      last_fm_mode = (last_fm_mode < 3) ? last_fm_mode + 1 : 0;
-
-      if (last_fm_mode == 0)
-      {
-        // F0: FM disabled — disarm with brief visual confirm and return to normal display.
-        // Sends 0xF2/0 to RX (FM off) and resets mode to SPIFFS default. No buzz — selecting F0 is
-        // a deliberate disarm the rider is watching happen on the display (comment corrected
-        // 2026-08-17: it said "fires Pattern 7", which stopped being true with the 08-16 cut).
-        // This is RAM-only; power cycle restores usrConf.followme_mode.
-        // V2.5-Evo - 2026-08-16 - HAPTIC CUT: silent on a DELIBERATE disarm. You just did it, and
-
-        // the display already says so - RTM/FM stops being shown and the stop confirm appears. A buzz
-
-        // confirming your own action is noise, and it was the single most frequent buzz in the system.
-
-        // V2.5-Evo - 2026-08-17 - and after the StopBuzz revision Pattern 7 means ONE thing:
-        // a FAULT stopped the system. Timeouts — including the ones the rider did not ask for —
-        // are silent, so this deliberate F0 disarm is in the majority, not the exception.
-
-        // Large-font F0 disarm confirm: LET_F + 0. Shorter hold (1s) — this is a disarm, not a mode select.
-        DISP_LOCK();
-        displayDigits(LET_F, 0);
-        updateDisplay();
-        DISP_UNLOCK();
-        gpsKeepAliveDelay(1000);
-        Serial.println("FM [TX] disarm: cycled to F0 before riding -> 0xF2/0");   // V2.5-Evo - 2026-09-19
-        last_fm_return_mode = 0xFF;          // V2.5-Evo - 2026-09-19 - the override ends with the declaration
-        queueMetaPacketBurst(0xF2, fmEncodeModeByte(0));       // tell RX: FM disabled
-        fm_armed         = false;
-        fm_throttle_seen = false;
-        fm_last_sync_ms  = 0;
-        // Reset mode to SPIFFS default so next arm starts at configured mode, not 0
-        last_fm_mode = (usrConf.followme_mode >= 1 && usrConf.followme_mode <= 3)
-                       ? usrConf.followme_mode : 1;
-        return;
-      }
+      // No throttle yet — cycle to next mode. V2.5-Evo - 2026-09-19 (owner ruling 12:45): wraps
+      // 1 -> 2 -> 3 -> 1 and never lands on F0 any more, the same wrap cycleFmModeArmed() uses.
+      // F0 had no purpose as a cycle-stop — bench testing showed the tap+hold combo landing on it
+      // (an unwanted disarm) twice in five minutes before any throttle. The F0-disarm branch this
+      // wrap used to reach (display "F0", 0xF2/0, reset to SPIFFS default) is removed; it is
+      // unreachable now. To leave Follow-Me off, don't arm it — the combo-after-throttle disarm
+      // above and the magnet toggle disarm are unaffected.
+      last_fm_mode = (last_fm_mode < 3) ? last_fm_mode + 1 : 1;
 
       // Large-font mode confirm: LET_F + mode digit (1/2/3). snprintf no longer needed.
       DISP_LOCK();
@@ -951,8 +952,9 @@ void cycleFmMode()
 // deliberately except the disarm gesture). From 2026-04-29 (F0) until today the third LEFT hold
 // while armed reached 0 = disarm, so a rider stepping through the modes on the water could disarm
 // by miscounting one hold. Disarm stays on the combo-after-throttle (cycleFmMode()) and the magnet
-// toggle; cycleFmMode()'s pre-throttle F0 landing is kept, because that is the deliberate disarm
-// path before a tow. No buzz on a mode cycle (2026-08-16 haptic cut).
+// toggle; cycleFmMode()'s pre-throttle cycle now uses this same 1->2->3->1 wrap too (owner ruling
+// 12:45 the same day — F0 had no purpose as a cycle-stop; see the header note at the top of this
+// file). No buzz on a mode cycle (2026-08-16 haptic cut).
 void cycleFmModeArmed()
 {
   if (!fm_armed) return;

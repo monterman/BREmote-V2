@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-19 — TX: the Follow-Me station cycle never lands on F0 any more
+
+Cycling stations before you touch the throttle (LEFT tap → RIGHT hold) used to run 1 → 2 → 3 → **0**,
+and landing on 0 disarmed Follow-Me — an easy miscount to make mid-cycle. The station cycle never
+disarms now; to leave Follow-Me off, don't arm it; to disarm after riding, the same gesture;
+power-off also ends it.
+
 ## 2026-08-16 — RX SW35: the compass knows how it is mounted (⚠️ resets your RX settings once)
 
 **Recommended: reflash the RX. Back it up first.**

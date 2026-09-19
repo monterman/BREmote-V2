@@ -69,7 +69,7 @@ Releasing the magnet while `BT_DOT_FAST` → returns to `BT_DOT_OFF`. Short hold
 | LEFT hold 2s | Cycle telemetry display mode | Simple hold, no combo required |
 | RIGHT hold 2s | Reserved — no action | Was: cycle display |
 | RIGHT tap → LEFT hold 5s | Arm RTM (Return-to-Me) | Requires gps_en=1 and rtm_enabled=1 |
-| LEFT tap → RIGHT hold 5s | Cycle FM mode (F0→F1→F2→F3) | Requires gps_en=1 and fm_override_enabled=1 |
+| LEFT tap → RIGHT hold 5s | Cycle FM mode (F1→F2→F3→F1, never F0) | Requires gps_en=1 and fm_override_enabled=1 |
 | Boot: hold RIGHT | Pairing mode | RIGHT toggle held at boot (no throttle) enters pairing; RIGHT + throttle = wipe SPIFFS |
 | Boot: hold LEFT | Calibration mode | LEFT toggle held at boot (no throttle) starts calibration; LEFT + throttle = force BLE session |
 

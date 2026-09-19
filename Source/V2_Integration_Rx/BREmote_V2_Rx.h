@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-19 - DEEP LOG (A): the one unused byte of the level-4 Follow-Me block, fm_pad, becomes fm_return_reason - a straight copy of the controller's FmReturnReason latch (RTMState.ino fm_return_last_reason: 0 = no event since boot; 4 = RETURN entered, 6/7/8/11 = arrived / cancelled / timed out / steered, 1-3 = a candidate dropped), STICKY - it changes only on an event, so read it on the row where fm_state changes. Two new bits in the existing fm_gate_flags u32: bit 17 aligning (an autonomous controller is turning to face its target this tick) and bit 18 boost (the pivot-boost mixer influence is published this tick); bit 16 is left free because the takeover side branch already defines it. CSV gains fm_return_reason, fm_aligning, fm_boost (45 -> 48 columns for an 83 B file; the two bits are read out of fm_gate_flags). Record size unchanged at 83, static_assert stays 83, old 83 B files print 0 in all three new columns (the pad was always 0). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - FM_RETURN + pivot boost: adds the align_mixer_influence_override atomic (0 = none; the ONE mixer influence override, written by publishAlignMixerInfluence() in RTMState.ino for FM align, FM_RETURN align and classic RTM Phase 1 align, read by calcPWM()), includes ../Common/FollowMeReturnProof.h (the pure, host-tested FM_RETURN entry proof), and adds FM_LOG_GATE_RETURN_WINDOW (bit 15) to the deep-log gate word next to the P1-b bit 11 it reserved - new bit in the existing u32, record size unchanged; fm_state gains the value 5 (RETURN). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - 0xF2 return-mode override: adds the fm_return_mode_runtime atomic (0xFF = use the SPIFFS fm_return_mode; 0 / 1 = the remote's session override, carried in 0xF2 bits 5-6) next to fm_mode_runtime, and documents telemetry.fm_flags bit 7 as the RX's echo of its EFFECTIVE return mode for the remote's display and return gesture. Runtime globals + comments only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - SW36: three Follow-Me fields APPENDED at the tail of confStruct - fm_return_mode (u16, 0-1, default 1: when the rider stops, Follow-Me graduates to FM_RETURN and brings the buggy back under the trigger), fm_align_cap (u16, 8-80, default 13: the throttle cap during the FM align phase and the FM_RETURN align/engage ramp, replacing the compile-time kFmAlignCap for FM paths), fm_align_influence (u16, 0-100, default 80: the mixer steering influence during FM align / FM_RETURN align only - 100 = one-motor pivot; 0 = use steering_influence). sizeof 192 -> 200 (192 + 3 x 2 = 198, padded to the 4-byte struct alignment), static_assert 200, SW_VERSION 35 -> 36. Config is NOT reset by this flash: the 192-byte SW35 blob is migrated by prefix at boot (Common/SPIFFSEngine.h, host-tested in Tools/tests/config_migrate_test.cpp) and the three new fields take their defaults.
@@ -1138,8 +1139,22 @@ static_assert(sizeof(VescLogData) == 59, "VescLogData size mismatch — check bi
 //                           release of kFmReleaseDengageMs or more; cleared on the ACTIVE edge)
 //   bit 14 yield_to_rtm     P1-c: Return-to-Me is active and Follow-Me is parked in FM_ARMED,
 //                           writing no cap and no steering. The only bit set on such a tick.
+//   V2.5-Evo - 2026-09-19 - DEEP LOG (A): two bits set at PUBLISH time (fmPublishLogSnapshot) from
+//   published state, on EVERY tick whatever path the body took - they are not gate verdicts.
+//   bit 16 (reserved)       taken by the steer-takeover side branch (FM_LOG_GATE_STEER_TAKEOVER);
+//                           deliberately not defined here so the two branches merge without a clash
+//   bit 17 aligning         an autonomous controller (Follow-Me or Return-to-Me) is ACTIVE and in its
+//                           align phase this tick: |heading error| > rtm_align_threshold_deg, the
+//                           same fmHeadingAligning() test cap 4 / FM_RETURN / RTM Phase 1 use. Gated
+//                           on fm_rx_active || rtm_rx_active on purpose: with nothing engaged the
+//                           0x7FFF no-heading sentinel reads as 180 deg and the bit would be set on
+//                           every idle tick
+//   bit 18 boost            the pivot boost is published this tick: align_mixer_influence_override
+//                           is non-zero, so calcPWM() mixes with fm_align_influence, not
+//                           steering_influence
 // Bits 0-3, 5-7 are only evaluated on ticks that reach the condition block (FM_ARMED and beyond
-// with a live declaration); on IDLE / STOPPING / early-exit ticks the whole word is 0.
+// with a live declaration); on IDLE / STOPPING / early-exit ticks the whole word is 0 apart from
+// bits 17-18, which describe the engaged controller and are therefore 0 on such ticks anyway.
 // ============================================================
 #define FM_LOG_GATE_THR_HELD          (1UL << 0)
 #define FM_LOG_GATE_FAULT_OK          (1UL << 1)
@@ -1157,6 +1172,9 @@ static_assert(sizeof(VescLogData) == 59, "VescLogData size mismatch — check bi
 #define FM_LOG_GATE_NEEDS_DENGAGE     (1UL << 13)   // P1-a
 #define FM_LOG_GATE_YIELD_TO_RTM      (1UL << 14)   // P1-c
 #define FM_LOG_GATE_RETURN_WINDOW     (1UL << 15)   // P1-b (2026-09-19): the relative-displacement window is open
+// bit 16: reserved for the steer-takeover side branch (FM_LOG_GATE_STEER_TAKEOVER) - not defined here.
+#define FM_LOG_GATE_ALIGNING          (1UL << 17)   // DEEP LOG (A) 2026-09-19: engaged controller is in its align phase this tick
+#define FM_LOG_GATE_BOOST             (1UL << 18)   // DEEP LOG (A) 2026-09-19: the pivot-boost mixer influence is published this tick
 
 struct __attribute__((packed)) VescLogDataL4 {
     VescLogData base;              // the complete level-3 record, unchanged and first — do not reorder
@@ -1175,7 +1193,12 @@ struct __attribute__((packed)) VescLogDataL4 {
     uint8_t  fm_block_reason;      // FmStopReason (P0-e): the live stop latch, non-zero for the whole FM_STOPPING ramp; 0 = no fault stop in progress
     uint8_t  fm_throttle_cap;      // FM's subtract-only throttle cap this tick (0-255; 255 = no cap)
     int16_t  fm_station_deg_x10;   // P2 station angle x 10 deg — always 0 until the station work lands
-    uint8_t  fm_pad;               // 1 B pad, always 0 — keeps the block at 18 B / the record at 83 B
+    uint8_t  fm_return_reason;     // V2.5-Evo - 2026-09-19 - DEEP LOG (A): was fm_pad (always 0). FmReturnReason (RTMState.ino): why the last
+                                   // RETURN candidate / RETURN ended. STICKY - a straight copy of fm_return_last_reason every tick, never
+                                   // cleared: 0 = no event since boot; during a RETURN leg it reads 4 (ENTERED); the row where fm_state
+                                   // leaves 5 carries the exit reason (6 arrived, 7 cancelled, 8 timeout, 9 fault, 10 left, 11 steered);
+                                   // 1-3 = a candidate dropped before RETURN. Changes only on an event - read it at the row where the
+                                   // state changes. Same offset, same size: the block stays 18 B / the record 83 B.
 };
 static_assert(sizeof(VescLogDataL4) == 83, "VescLogDataL4 size mismatch — expected 59 (VescLogData) + 6 (level-4 diagnostics) + 18 (Follow-Me audit block, 2026-09-17).");
 
@@ -1201,8 +1224,9 @@ struct FmLogSnapshot {
     uint8_t  block_reason;
     uint8_t  throttle_cap;
     int16_t  station_deg_x10;
+    uint8_t  return_reason;    // V2.5-Evo - 2026-09-19 - DEEP LOG (A): fm_return_last_reason, sticky (see VescLogDataL4.fm_return_reason)
 };
-FmLogSnapshot g_fm_log_snapshot = { 0, 0xFFFF, 0xFFFF, 0, 0, 0xFF, 0, 0, 255, 0 };
+FmLogSnapshot g_fm_log_snapshot = { 0, 0xFFFF, 0xFFFF, 0, 0, 0xFF, 0, 0, 255, 0, 0 };
 portMUX_TYPE  g_fm_log_mux      = portMUX_INITIALIZER_UNLOCKED;
 
 // ============================================================
@@ -1276,17 +1300,20 @@ static inline uint16_t logRecordSizeForLevel(uint8_t level)
 // 2026-07-25 to 2026-09-16 (four diagnostics); _L4 is the current 83-byte layout (diagnostics +
 // the Follow-Me audit block). logCsvHeaderFor() picks by the file's own record_size.
 #define LOG_CSV_HEADER_L4_DIAG LOG_CSV_HEADER_L3 ",gps_sent_per_s,cog_frozen_s,mux_err_cnt,loop_max_ms"
-#define LOG_CSV_HEADER_L4 LOG_CSV_HEADER_L4_DIAG ",fm_gate_flags,fm_distance_m,fm_d_engage_m,fm_rider_speed_kmh,fm_sep_fix_count,fm_mode,fm_state,fm_block_reason,fm_throttle_cap,fm_station_deg"
+// V2.5-Evo - 2026-09-19 - DEEP LOG (A): +fm_return_reason (the sticky FmReturnReason latch), +fm_aligning and +fm_boost
+// (bits 17 / 18 of fm_gate_flags, read out as their own 0/1 columns so a reader never has to mask the flag word).
+#define LOG_CSV_HEADER_L4 LOG_CSV_HEADER_L4_DIAG ",fm_gate_flags,fm_distance_m,fm_d_engage_m,fm_rider_speed_kmh,fm_sep_fix_count,fm_mode,fm_state,fm_block_reason,fm_throttle_cap,fm_station_deg,fm_return_reason,fm_aligning,fm_boost"
 
 #define LOG_CSV_ROW_FMT_L3 "%u,%.2f,%.2f,%d,%.1f,%d,%u,%u,%.1f,%.6f,%.6f,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%d,%d,%u,%u,%.1f,%d,%.1f"
 #define LOG_CSV_ROW_EXT_L4 ",%u,%u,%u,%u"
-#define LOG_CSV_ROW_EXT_L4_FM ",%u,%.1f,%.1f,%.1f,%u,%u,%u,%u,%u,%.1f"
+#define LOG_CSV_ROW_EXT_L4_FM ",%u,%.1f,%.1f,%.1f,%u,%u,%u,%u,%u,%.1f,%u,%u,%u"
 
 // Row buffer size. Sizing arithmetic for the 31 level-3 columns is unchanged from F-WEBCSV:
 //   ~178 field chars + 30 commas + newline + NUL = ~210 bytes for normal data, and a corrupt
 //   latitude/longitude printed via "%.6f" can reach ~282. The 4 level-4 diagnostic columns add
 //   at most 3+3+5+5 chars plus 4 commas = 20. The 10 Follow-Me columns (2026-09-17) add at most
-//   ~60 more (a u32 flag word, three "%.1f" distances/speeds, five u8s, one signed "%.1f"). 640
+//   ~60 more (a u32 flag word, three "%.1f" distances/speeds, five u8s, one signed "%.1f"); the
+//   three 2026-09-19 columns (a u8 and two 0/1 flags) at most 9 more. 640
 //   clears the pathological ~362 by ~1.8x. It is a stack local in the Arduino loop task (8 KB
 //   stack), which is where both readers run.
 #define LOG_CSV_ROW_BUF 640
@@ -1407,7 +1434,11 @@ static int logFormatCsvRow(char* out, size_t out_len, const uint8_t* rec_bytes, 
                        (unsigned)d4.fm_state,
                        (unsigned)d4.fm_block_reason,
                        (unsigned)d4.fm_throttle_cap,
-                       d4.fm_station_deg_x10 / 10.0f);
+                       d4.fm_station_deg_x10 / 10.0f,
+                       // DEEP LOG (A) 2026-09-19: the sticky return reason, then bits 17/18 of the flag word as 0/1
+                       (unsigned)d4.fm_return_reason,
+                       (unsigned)((d4.fm_gate_flags & FM_LOG_GATE_ALIGNING) ? 1 : 0),
+                       (unsigned)((d4.fm_gate_flags & FM_LOG_GATE_BOOST)    ? 1 : 0));
       if (k > 0)
       {
         n += k;

@@ -1,3 +1,11 @@
+// V2.5-Evo - 2026-09-19 - DEEP LOG (A) + gate prints: (1) fmPublishLogSnapshot() now also copies fm_return_last_reason (sticky, never cleared here) into the snapshot's
+//   return_reason and sets two publish-time bits in the flag word - FM_LOG_GATE_ALIGNING (17: fm_rx_active || rtm_rx_active, and fmHeadingAligning()) and
+//   FM_LOG_GATE_BOOST (18: align_mixer_influence_override != 0); runFmLoop() publishes the mixer influence BEFORE the snapshot so bit 18 describes this
+//   tick (the two publishes are independent writes to different consumers; their order changes nothing the control path reads). (2) checkRtmSafetyGates()
+//   gates 2, 3, 4, 5 and 7 now write rtm_rx_emergency_stop = true BEFORE they print (the F7 order gate 6 already had: motor to 0 first, explain second,
+//   because a full serial buffer can block inside Serial), and each print is rate-limited to one per kRtmGateMsgMs (2 s) with a static per gate - the
+//   e-stop write itself is still unconditional on every failing tick. Print order and print rate only; no gate condition, threshold or outcome changed.
+//   No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - fix round 1 (code review M-1): FM_RETURN gains a STEER-CANCEL with following's own constants - a stick deflection of
 //   kFmSteerCancelDeadband (40 counts from 127) sustained kFmSteerPersistMs (500 ms), past a kFmEngageGraceMs (2 s) grace measured from the
 //   start of the current held-trigger RETURN motion (fm_return_motion_ms, never from ENTER RETURN), exits through fmReturnExitToHold() with the
@@ -183,6 +191,13 @@ static bool headingDisagreeLatched();
 static bool checkRtmSafetyGates()
 {
   unsigned long now = millis();
+  // V2.5-Evo - 2026-09-19 - gates 2, 3, 4, 5 and 7 print at most once per this interval, one static
+  // timer per gate (the kFmHeadingBlockMsgMs shape in runFmLoopBody). This function is called from the
+  // 10 Hz runRtmLoopBody() only, so a standing fault used to print the same STOP line ten times a
+  // second - which floods the log AND holds the loop task inside Serial while the buggy is stopped.
+  // The rtm_rx_emergency_stop write is NOT rate-limited: it happens on every failing tick, before the
+  // print (F7 order: motor to 0 first, explain second).
+  static const unsigned long kRtmGateMsgMs = 2000UL;   // ms between repeats of one gate's STOP line
 
   // Gate 1 (ABSOLUTE): user must be physically holding throttle > 10%.
   // Creator safety philosophy — this gate CANNOT be waived.
@@ -202,16 +217,26 @@ static bool checkRtmSafetyGates()
   // Gate 2: Phase A GPS not rejected on RX
   if (gps_rejected)
   {
-    Serial.println("RTM [RX] STOP: Phase A GPS rejected");
-    rtm_rx_emergency_stop = true;
+    rtm_rx_emergency_stop = true;   // F7: motor to 0 first (V2.5-Evo - 2026-09-19)
+    static unsigned long gate2_msg_ms = 0;
+    if (gate2_msg_ms == 0 || (now - gate2_msg_ms) >= kRtmGateMsgMs)
+    {
+      gate2_msg_ms = now;
+      Serial.println("RTM [RX] STOP: Phase A GPS rejected");
+    }
     return false;
   }
 
   // Gate 3: Phase B handshake passed
   if (!gps_phase_b_ok)
   {
-    Serial.println("RTM [RX] STOP: Phase B handshake not passed");
-    rtm_rx_emergency_stop = true;
+    rtm_rx_emergency_stop = true;   // F7: motor to 0 first (V2.5-Evo - 2026-09-19)
+    static unsigned long gate3_msg_ms = 0;
+    if (gate3_msg_ms == 0 || (now - gate3_msg_ms) >= kRtmGateMsgMs)
+    {
+      gate3_msg_ms = now;
+      Serial.println("RTM [RX] STOP: Phase B handshake not passed");
+    }
     return false;
   }
 
@@ -221,16 +246,26 @@ static bool checkRtmSafetyGates()
   if (rx_tx_gps_timestamp == 0 ||
       (now - rx_tx_gps_timestamp) > (uint32_t)usrConf.tx_gps_stale_timeout_ms)
   {
-    Serial.println("RTM [RX] STOP: TX GPS stale or never received");
-    rtm_rx_emergency_stop = true;
+    rtm_rx_emergency_stop = true;   // F7: motor to 0 first (V2.5-Evo - 2026-09-19)
+    static unsigned long gate4_msg_ms = 0;
+    if (gate4_msg_ms == 0 || (now - gate4_msg_ms) >= kRtmGateMsgMs)
+    {
+      gate4_msg_ms = now;
+      Serial.println("RTM [RX] STOP: TX GPS stale or never received");
+    }
     return false;
   }
 
   // Gate 5: valid RX GPS fix (age < 6000ms = 3× TX GPS timeout)
   if (gps_last_ms == 0 || (now - gps_last_ms) > 6000UL)
   {
-    Serial.println("RTM [RX] STOP: RX GPS stale");
-    rtm_rx_emergency_stop = true;
+    rtm_rx_emergency_stop = true;   // F7: motor to 0 first (V2.5-Evo - 2026-09-19)
+    static unsigned long gate5_msg_ms = 0;
+    if (gate5_msg_ms == 0 || (now - gate5_msg_ms) >= kRtmGateMsgMs)
+    {
+      gate5_msg_ms = now;
+      Serial.println("RTM [RX] STOP: RX GPS stale");
+    }
     return false;
   }
 
@@ -290,8 +325,13 @@ static bool checkRtmSafetyGates()
   // Gate 7: LoRa link healthy
   if (millis() - last_packet > usrConf.failsafe_time)
   {
-    Serial.println("RTM [RX] STOP: LoRa link lost");
-    rtm_rx_emergency_stop = true;
+    rtm_rx_emergency_stop = true;   // F7: motor to 0 first (V2.5-Evo - 2026-09-19)
+    static unsigned long gate7_msg_ms = 0;
+    if (gate7_msg_ms == 0 || (now - gate7_msg_ms) >= kRtmGateMsgMs)
+    {
+      gate7_msg_ms = now;
+      Serial.println("RTM [RX] STOP: LoRa link lost");
+    }
     return false;
   }
 
@@ -2212,10 +2252,20 @@ static uint16_t fm_log_d_engage_dx10 = 0xFFFF;
 // Inputs: the fm_log_* tick fields above plus the FM statics/atomics. Outputs: g_fm_log_snapshot.
 // Side effects: one short critical section (taskENTER_CRITICAL) around a struct copy — no I/O.
 // The float->fixed conversions happen OUTSIDE the section so it stays a plain copy.
+// V2.5-Evo - 2026-09-19 - DEEP LOG (A): two PUBLISH-TIME bits are ORed into the flag word here, on
+// every tick whatever path the body took. They are not gate verdicts, they are the published state
+// of the engaged controller: bit 17 aligning is gated on fm_rx_active || rtm_rx_active because with
+// nothing engaged g_heading_error_dx10 holds the 0x7FFF sentinel, fmHeadingAligning() reads that as
+// 180 deg, and the bit would be set on every idle tick. Bit 18 reads the atomic calcPWM() reads;
+// runFmLoop() publishes it just before calling here so the bit describes THIS tick. And the sticky
+// return reason is copied as-is - it is never cleared here, so it changes only on an event.
 static void fmPublishLogSnapshot()
 {
   FmLogSnapshot s;
-  s.gate_flags       = fm_log_gate_flags;
+  uint32_t flags = fm_log_gate_flags;
+  if ((fm_rx_active || rtm_rx_active) && fmHeadingAligning())               flags |= FM_LOG_GATE_ALIGNING;
+  if (align_mixer_influence_override.load(std::memory_order_relaxed) != 0)  flags |= FM_LOG_GATE_BOOST;
+  s.gate_flags       = flags;
   s.distance_dx10    = fm_log_dist_dx10;
   s.d_engage_dx10    = fm_log_d_engage_dx10;
   float spd = fm_rider_speed_kmh * 10.0f;
@@ -2228,6 +2278,7 @@ static void fmPublishLogSnapshot()
   s.block_reason     = fm_stop_reason;
   s.throttle_cap     = fm_throttle_cap.load(std::memory_order_relaxed);
   s.station_deg_x10  = 0;   // P2: station angle — laid out now, written when the station work lands
+  s.return_reason    = fm_return_last_reason;   // DEEP LOG (A): sticky FmReturnReason, changes only on an event
   taskENTER_CRITICAL(&g_fm_log_mux);
   g_fm_log_snapshot = s;
   taskEXIT_CRITICAL(&g_fm_log_mux);
@@ -4221,8 +4272,12 @@ void runFmLoop()
 
   runFmLoopBody(now);
 
+  // V2.5-Evo - 2026-09-19 - DEEP LOG (A): the mixer influence is published BEFORE the log snapshot so
+  // the snapshot's boost bit (18) reads this tick's value, not last tick's. The two are independent
+  // writes to two different consumers (calcPWM() reads the atomic; the logger copies the snapshot):
+  // nothing in the control path reads the snapshot and the atomic's value is the same either way.
+  publishAlignMixerInfluence();    // once per tick, RTM > FM, after every exit of the body
   fmPublishLogSnapshot();          // once per tick, after every possible exit of the body
-  publishAlignMixerInfluence();    // V2.5-Evo - 2026-09-19 - once per tick, RTM > FM, after every exit of the body
 }
 
 static void runFmLoopBody(unsigned long now)

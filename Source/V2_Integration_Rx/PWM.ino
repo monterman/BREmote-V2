@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-24 - RAMP BEFORE THE MIXER, STEERING IS INSTANT. WHAT WAS WRONG: the rise-limit sat AFTER the differential mixer and rate-limited PWM0_time / PWM1_time, i.e. the two finished MOTOR outputs - and on a differential drive the turn IS the difference between those two outputs, so the block rate-limited the steering as well. Its own comment admitted it ("By design this also ramps the differential-steering response (a sharp turn builds over this time)"). That is the one thing the owner has ruled out repeatedly: the ramp exists for the THROTTLE - a soft tow start that pulls a rider off a shoulder without snatching the rope - while steering must land on the very next 10 ms pass. On the servo branch it was worse: the block was rate-limiting the steering SERVO channel itself, which has no throttle in it at all. FIX: the rise-limit moves UP into the throttle domain (0-255 counts), applied to effective_thr AFTER every cap and BEFORE the mixer, producing ramped_thr. All three branches drive their motor channel(s) from ramped_thr; the mixer computes the turn from ramped_thr with no rate limit of its own, so a stick flick moves both motors on the next pass; the post-mixer block is deleted (keeping it would double-ramp). RISE ONLY - the fall branch snaps onto the target, so trigger release, failsafe, RTM/FM emergency stop and straightening still drop the output on the same tick. motor_ramp_s <= 0.001 still means instant/off. CAPS STILL BOUND THE OUTPUT: the ramp only ever approaches effective_thr from below, so ramped_thr <= effective_thr <= rtm_approach_cap / fm_throttle_cap on every tick - a cap DROP is instant, a cap RISE is slewed, exactly as before - and the pivot boost still only redistributes that permitted throttle. STEP QUANTISATION, READ BEFORE CHANGING motor_ramp_s: step = (uint16_t)max(1.0f, 255.0f / (motor_ramp_s * 100)) is the old expression in the smaller domain, so the truncation bites harder - 0.5 s -> step 5 -> 0.51 s; 0.75 s (the default) -> step 3 -> 0.85 s; 1.0 s -> step 2 -> 1.28 s; everything from 1.275 s up floors at step 1 and produces a fixed 2.55 s. Below 2.55 s the ramp is therefore never FASTER than configured (truncation errs slow, the safe direction); above 2.55 s the setting saturates and the ramp is faster than asked. The old per-channel form hid this behind the ~1000-count PWM span; in exchange, one shared ramp means the two motors can no longer slew at different real rates when one channel's span hits the minimum-1-count floor. DEEP LOG: g_motor0_cmd / g_motor1_cmd now carry the ramp and are still exactly what their name says (post-mixer, pre-map motor commands); thr_received_log is still the raw TX byte and g_effective_steer is still the steering byte applied. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG (C): calcPWM() records the two post-mixer, pre-map motor commands (motor_mix.motor0 / motor1, 0-255 counts) into g_motor0_cmd / g_motor1_cmd - diagnostic observers only, the g_effective_steer pattern: written on every pass, never read back into any control path. The steering_type 1 branch writes the mixer's values; the efoil and servo branches write 0 / 0. No PWM value, cap, gate or ramp is touched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - PIVOT BOOST: in steering_type 1, calcPWM() passes align_mixer_influence_override (BREmote_V2_Rx.h; published by RTMState.ino while Follow-Me align, FM_RETURN align or classic RTM Phase 1 align is turning the buggy to face its target) to mixThrottleRelativeDifferential() in place of usrConf.steering_influence when it is non-zero AND an autonomous steering override is being applied on this tick (the same gate as effective_steer). Manual steering, the efoil and servo branches, the ramp and the terminal effective_thr == 0 guard are untouched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - C-4 FIX: throttle-relative differential mixer. BUG: in steering_type 1 the steering term was a fixed fraction of the FULL PWM span (steering_influence % of PWM_max-PWM_min) added AFTER the throttle map, so it was never scaled by effective_thr - a hard steer during a 13/255 crawl (influence 50) put one motor at ~55 % regardless of the RTM/FM throttle cap, i.e. steering could ADD power past the cap. FIX: calcPWM() now calls mixThrottleRelativeDifferential() (Common/DifferentialMixer.h, host-tested in Tools/tests/differential_mixer_test.cpp): turn = T x influence x |steer-127| / (100 x span), motor0 = T - turn, motor1 = T + turn, each clamped 0..255, then each motor command is map()ed into its own PWM range and trim is applied as the same symmetric post-map correction as before (+trim ch0, -trim ch1). Steering is now proportional to the permitted throttle - none at zero, less at low throttle, full authority at full throttle - and before upper saturation the two commands always sum to exactly 2T (power-neutral; saturation can only lower it). 127 is the exact neutral byte inside the mixer, so the 2026-06-05 H-1 recentring is no longer needed and is removed. steering_inverted semantics are unchanged: 0 -> steer > 127 slows motor0 / speeds motor1; 1 -> the mirror. Efoil and servo branches, the ramp and the terminal effective_thr==0 guard are untouched. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
@@ -96,6 +97,43 @@ void calcPWM()
     effective_thr = fm_throttle_cap;
   }
 
+  // -- SAFETY: THROTTLE RAMPING (usrConf.motor_ramp_s, seconds) -------------------
+  // V2.5-Evo - 2026-09-24 - The ramp lives HERE now: in the throttle domain, after every cap and
+  // before the differential mixer, so that it can only ever slow the THROTTLE down. It used to sit
+  // after the mixer and rate-limit the two finished motor outputs, which by definition also
+  // rate-limited the difference between them - the steering. Owner rule: never ramp steering. The
+  // ramp is for a soft tow start; a turn has to be there on the next 10 ms pass.
+  //
+  // RISE ONLY. The else-branch snaps the memory straight onto the target, so every kind of stop -
+  // trigger release, failsafe, RTM/FM emergency stop, a cap collapsing to 0, straightening - drops
+  // the throttle on the same tick with no slew at all. That same else-branch is also why the ramp
+  // can neither stall nor jump: it is the only way the memory can move DOWN, and it always moves it
+  // the whole way in one tick.
+  //
+  // WHAT thr_ramp HOLDS WITH THE TRIGGER RELEASED: exactly 0. effective_thr is 0, the rise test
+  // (0 > thr_ramp + step) is false, so the first released tick assigns thr_ramp = 0 and it stays
+  // there. Re-engaging always starts a fresh full ramp from 0 - the rider cannot bank ramp credit by
+  // feathering the trigger, and there is no stale value left to jump to. 0 is also the power-on
+  // value of the static, so the first squeeze after boot behaves like every later one; no init flag
+  // is needed here (the old PWM-domain version needed one only because its resting value was
+  // PWM_min, not 0).
+  //
+  // STEP: 255 command counts / (motor_ramp_s x 100 ticks per second), minimum 1 count - the same
+  // expression the PWM-domain version used, with the 0-255 command span in place of a channel's PWM
+  // span, so 0 -> full still takes motor_ramp_s seconds. See the quantisation table in the file
+  // header before changing motor_ramp_s: truncation is coarser in this smaller domain and every
+  // setting from 1.275 s upward produces the same 2.55 s ramp.
+  //
+  // motor_ramp_s 0 (or <= 0.001) = off: ramped_thr is effective_thr, instant, exactly as before.
+  uint8_t ramped_thr = effective_thr;
+  if (usrConf.motor_ramp_s > 0.001f)
+  {
+    static uint16_t thr_ramp = 0;
+    uint16_t step = (uint16_t)max(1.0f, 255.0f / (usrConf.motor_ramp_s * 100.0f));
+    if (effective_thr > thr_ramp + step) thr_ramp += step; else thr_ramp = effective_thr;
+    ramped_thr = (uint8_t)thr_ramp;   // always <= effective_thr, so every cap above still bounds it
+  }
+
   // SAFETY FIX (2026-04-28 audit): also gate on thr_received>=25.
   // Gate 1 in RTMState.ino resets rtm_steer_override=127 on throttle release (Task 1A),
   // but that runs at 10Hz. This gate ensures the PWM task (100Hz) cannot apply a stale
@@ -136,8 +174,13 @@ void calcPWM()
   if(usrConf.steering_type == 0)
   {
     //Efoil mode
-    PWM0_time = constrain(map(effective_thr, 0, 255, usrConf.PWM0_min, usrConf.PWM0_max) + usrConf.trim, usrConf.PWM0_min, usrConf.PWM0_max);
-    PWM1_time = constrain(map(effective_thr, 0, 255, usrConf.PWM1_min, usrConf.PWM1_max) - usrConf.trim, usrConf.PWM1_min, usrConf.PWM1_max);
+    // V2.5-Evo - 2026-09-24 - ramped_thr, not effective_thr: the rise-limit now runs ahead of this
+    // branch chain instead of behind it. This branch has no steering term at all, so both channels
+    // simply follow the ramped throttle - the same trajectory the old post-map ramp produced (map()
+    // is linear, so a linear rise in command counts is a linear rise in microseconds), with one
+    // shared rate instead of two independently-floored per-channel rates.
+    PWM0_time = constrain(map(ramped_thr, 0, 255, usrConf.PWM0_min, usrConf.PWM0_max) + usrConf.trim, usrConf.PWM0_min, usrConf.PWM0_max);
+    PWM1_time = constrain(map(ramped_thr, 0, 255, usrConf.PWM1_min, usrConf.PWM1_max) - usrConf.trim, usrConf.PWM1_min, usrConf.PWM1_max);
   }
   else if(usrConf.steering_type == 1)
   {
@@ -156,8 +199,15 @@ void calcPWM()
     // same relative power request even when the two channels have unequal ranges.
     // Inversion semantics are unchanged from the old branch: steering_inverted 0 -> a steer byte above 127 slows
     // motor 0 and speeds motor 1; steering_inverted 1 -> the mirror (motor 0 speeds, motor 1 slows).
+    // V2.5-Evo - 2026-09-24 - the mixer is fed ramped_thr (the rise-limited throttle) and the LIVE
+    // steering byte. The mixer is memoryless, so the split is recomputed from scratch every 10 ms:
+    // the throttle it is allowed to share out builds over motor_ramp_s, while a stick flick changes
+    // how that throttle is shared on the very next pass. Steering has no rate limit anywhere now.
+    // Everything the C-4 note above says still holds with T = ramped_thr, including the key one: at
+    // T = 0 the turn term is zero for every steering byte, and ramped_thr is 0 exactly when
+    // effective_thr is 0 (the ramp's fall is instant), so the stopped state is unchanged.
     DifferentialMotorMix motor_mix = mixThrottleRelativeDifferential(
-        effective_thr, effective_steer, mix_influence,   // V2.5-Evo - 2026-09-19 - steering_influence, or the align pivot boost
+        ramped_thr, effective_steer, mix_influence,   // V2.5-Evo - 2026-09-19 - steering_influence, or the align pivot boost
         usrConf.steering_inverted);
     motor0_cmd_obs = motor_mix.motor0;   // DEEP LOG (C): post-mixer, pre-map counts, every pass of this branch
     motor1_cmd_obs = motor_mix.motor1;
@@ -173,7 +223,12 @@ void calcPWM()
   else if(usrConf.steering_type == 2)
   {
     //Servo
-    PWM0_time = map(effective_thr, 0, 255, usrConf.PWM0_min, usrConf.PWM0_max);
+    // V2.5-Evo - 2026-09-24 - throttle channel follows ramped_thr; the STEERING SERVO on channel 1
+    // below is deliberately left alone. The deleted post-mixer block used to rate-limit PWM1_time
+    // too, which on this steering_type meant the servo itself could only sweep at the ramp rate - a
+    // ramped steering wheel, with no throttle in it at all. That is exactly the behaviour the owner
+    // rules out; the servo now tracks the stick with no limiting.
+    PWM0_time = map(ramped_thr, 0, 255, usrConf.PWM0_min, usrConf.PWM0_max);
     if(usrConf.steering_inverted)
     {
       PWM1_time = constrain(map(effective_steer, 0, 255, usrConf.PWM1_min, usrConf.PWM1_max)+usrConf.trim, usrConf.PWM1_min, usrConf.PWM1_max);
@@ -192,23 +247,11 @@ void calcPWM()
   g_motor0_cmd = motor0_cmd_obs;
   g_motor1_cmd = motor1_cmd_obs;
 
-  // ── SAFETY: MOTOR RAMPING (usrConf.motor_ramp_s, seconds) ──────────────────────
-  // Rise-limit BOTH motor outputs so 0->full takes motor_ramp_s seconds. Prevents a violent throttle
-  // yank AND a single motor taking off (throttle- or steering-driven). FALL is instant so release /
-  // failsafe / RTM e-stop / straightening drop the motor immediately. By design this also ramps the
-  // differential-steering response (a sharp turn builds over this time). 0 = instant/off.
-  if (usrConf.motor_ramp_s > 0.001f)
-  {
-    static uint16_t pwm0_ramp = 0, pwm1_ramp = 0;
-    static bool     ramp_init = false;
-    if (!ramp_init) { pwm0_ramp = usrConf.PWM0_min; pwm1_ramp = usrConf.PWM1_min; ramp_init = true; }
-    uint16_t step0 = (uint16_t)max(1.0f, (float)(usrConf.PWM0_max - usrConf.PWM0_min) / (usrConf.motor_ramp_s * 100.0f));
-    uint16_t step1 = (uint16_t)max(1.0f, (float)(usrConf.PWM1_max - usrConf.PWM1_min) / (usrConf.motor_ramp_s * 100.0f));
-    if (PWM0_time > pwm0_ramp + step0) pwm0_ramp += step0; else pwm0_ramp = PWM0_time;
-    if (PWM1_time > pwm1_ramp + step1) pwm1_ramp += step1; else pwm1_ramp = PWM1_time;
-    PWM0_time = pwm0_ramp;
-    PWM1_time = pwm1_ramp;
-  }
+  // V2.5-Evo - 2026-09-24 - the post-mixer MOTOR RAMPING block that used to sit here is gone. It
+  // rate-limited PWM0_time / PWM1_time, and the difference between those two IS the differential
+  // steering, so it slewed every turn as well - the behaviour the owner has ruled out. Its job now
+  // happens before the mixer, on the throttle itself (see the ramp block above). Leaving it here as
+  // well would double-ramp the throttle.
 
   // ============================================================
   // V2.5-Evo - 2026-07-27 - SAFETY-NEUTRAL-1: RELEASED THROTTLE == ABSOLUTE MINIMUM.

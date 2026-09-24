@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-09-24 — RX: the motor ramp is the THROTTLE ramp — steering is immediate again
+
+**No config wipe.** `sizeof(confStruct)` stays 200 and `SW_VERSION` stays 36.
+
+The motor ramp used to slow down the start of a turn as well as the start of the throttle. That was
+never intended: the rate limit sat on the two finished motor outputs, and on a differential drive the
+*difference* between those two outputs **is** the turn, so limiting them limited the steering. (On a
+servo rig it was limiting the steering servo itself, which has no throttle in it at all.)
+
+The limit now runs on the throttle, before the motor mixer:
+
+- **Steering is immediate, in both directions.** A stick flick moves both motors on the very next
+  10 ms pass. Starting a hard turn is no longer softened; straightening was already instant and still is.
+- **The tow start is unchanged in feel.** The throttle still builds over `motor_ramp_s` — the soft start
+  so the rope does not snatch when you pull a rider off a shoulder.
+- **Dropping power is still instant**: trigger release, failsafe, a Return-to-Me / Follow-Me stop, a cap
+  collapsing to zero. Nothing about stopping was slowed down.
+- **Every ramp value now does what it says.** The ramp counts in 1/4096 of a throttle count, so the whole
+  0.2–4.0 s range is honoured to within one 10 ms tick and is **never faster than you set it**. Before this
+  change, in the new domain, 1.00 s would have run 1.28 s and everything from 1.275 s up would have
+  collapsed onto a single 2.55 s ramp.
+- **In the log**, `motor0_cmd` / `motor1_cmd` now include the ramp: they climb over `motor_ramp_s` while
+  `thr_received_log` (your raw trigger) jumps at once. That gap *is* the ramp — it was invisible before.
+
 ## 2026-09-19 — RX: the deep log explains an auto-return, plus a level 5 “everything” record for test sessions
 
 Logging only — nothing about how the buggy drives changes, and your settings survive the flash.
@@ -24,6 +48,70 @@ Cycling stations before you touch the throttle (LEFT tap → RIGHT hold) used to
 and landing on 0 disarmed Follow-Me — an easy miscount to make mid-cycle. The station cycle never
 disarms now; to leave Follow-Me off, don't arm it; to disarm after riding, the same gesture;
 power-off also ends it.
+## 2026-09-19 — RX: two motor ramps — slow for manual towing, quick for the automatic modes (side branch, not yet released)
+
+**No config wipe.** The RX reuses its last reserved slot `rsvd_f32_1`, renamed in place to
+`auto_ramp_s`, so `sizeof(confStruct)` stays 200 and `SW_VERSION` stays 36. TX untouched.
+
+The motor ramp (`motor_ramp_s`) was only ever for your shoulder: on a manual tow start the rope is
+loaded and a hard yank hurts, so the motors build up slowly. While the buggy drives itself the rope is
+not loaded, and the same slow ramp just made it sluggish. There are now two:
+
+| Setting | Rides on | Value |
+|---|---|---|
+| `motor_ramp_s` — **Manual towing motor ramp** | manual towing, Follow-Me armed but not engaged, and every hand-back to you (arrival, cancel, hold, the fault ramp) | unchanged; the owner rides 2.0 |
+| `auto_ramp_s` — **Automatic modes ramp** | following, auto-return moving, return-to-me (a stick take-over included) | **0 = same as the manual ramp (unchanged behaviour). Try 0.5.** Range 0.2-4.0 s. |
+
+```
+?set auto_ramp_s 0.5
+?save
+```
+
+Smaller = quicker (units are seconds). A value under 0.2 is raised to 0.2 and the buggy says so; 0 is
+accepted and means inherit. The fall is instant in every mode, as before. Switching ramps mid-rise
+never jumps — the motors carry on from where they are at the new rate — and a ramp switched on
+mid-session no longer dips for a moment (an old quirk, fixed while the ramp code moved into a tested
+header).
+
+Also: the **Follow-Me engage ramp is now 1.5 s** (was 3.5 s; the beta tester's water-tested number),
+for the first squeeze after engaging and for each squeeze of an auto-return. The judging windows that
+were tied to it (when the buggy is first allowed to be judged for not closing on you) keep their old
+lengths, so nothing stops sooner than before.
+
+---
+
+## 2026-09-19 — RX + TX: the stick during auto-steer, cancel or take over (side branch, not yet released)
+
+**No config wipe.** The RX reuses the reserved slot `rsvd_u16_1`, renamed in place to
+`steer_during_auto`, so `sizeof(confStruct)` stays 200 and `SW_VERSION` stays 36. The TX struct is
+untouched (136, SW27).
+
+Whenever the buggy steers itself — following you, coming back on its own after you stop, or a
+gestured return-to-me — the stick used to be thrown away and a held push ended the automatic
+steering. That is still the default. One RX setting now offers the other behaviour:
+
+| Value | The stick... | Use it when |
+|---|---|---|
+| **0** | **cancels** (default). A push of 40 counts held half a second, after the first 2 s of a run, ends it: following drops to armed, an auto-return stops, the remote exits return-to-me. | **Leave it here** until the take-over has been bench-spun on your hardware. What every board already does. |
+| **1** | **takes over** while you hold it, and hands back on centring. Centre it (within 30 counts for 0.2 s) and the buggy goes back to aiming at you; nothing is cancelled. | You want to nudge the buggy around something mid-run without ending the run. |
+
+```
+?set steer_during_auto 1
+?save
+```
+
+**What does not change with 1.** Only which steering byte the motor mixer applies. Every throttle
+cap keeps applying while you steer (turn the buggy more than 45° off its aim and the throttle drops
+to the align cap until it points back — your cue that you over-steered, not a fault), the stop
+radius, arrival, the trigger deadman and every safety gate keep priority over the stick, and it
+never adds throttle. Two guards against a remote whose stick centre has drifted: a stick that has
+not been read centred at least once since the run began cannot take over (the buggy prints
+`takeover disabled; check the remote's steering centre`), and a takeover held 10 s ends as a cancel.
+The remote learns the setting from the buggy (`fm_flags` bit 4) and stops exiting return-to-me on a
+push when the buggy says take over; `rtm_steer_exit_on_input` on the remote is no longer read.
+`?diag` on the buggy shows the setting, a standing takeover, and the episode history.
+
+---
 
 ## 2026-08-16 — RX SW35: the compass knows how it is mounted (⚠️ resets your RX settings once)
 

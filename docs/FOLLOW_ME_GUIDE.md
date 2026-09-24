@@ -178,6 +178,14 @@ fault while you're holding the trigger. A stop after you've already let go just 
 | `fm_arm_timeout_s` *(TX)* | how long an arm survives with no throttle before auto-disarm | **0 = never (default)** |
 | `mag_mode` *(TX)* | magnet gesture role: 0 off, 1 = FM, 2 = RTM, 3 = FM+RTM | needs the Hall sensor |
 | `fm_display_mode` *(TX)* | what the digit zone shows while armed | 2 = distance to buggy |
+| `motor_ramp_s` | seconds the motors take to ramp up on a manual tow start, and every time the buggy hands control back to you | your shoulder: the owner rides 2.0 |
+| `auto_ramp_s` | seconds the motors take to ramp up while the buggy drives itself (following, auto-return, return-to-me) | **0 = same as the manual ramp**; try 0.5 |
+
+> **Two ramps (2026-09-19):** the slow manual ramp is for your shoulder — on a manual tow start the rope is
+> loaded and a hard yank hurts. In the automatic modes the rope is not loaded, so `auto_ramp_s` can be
+> quick and the buggy becomes reactive: it catches up fast and pivots fast. Every hand-back to you
+> (arrival, a cancel, a hold) still uses the manual ramp, and the engage ramp inside Follow-Me is now
+> 1.5 s. Any future mode with the buggy ahead of you uses the manual ramp.
 
 > **Tuning note:** the follow distance is currently set generous (`min_dist_m` + band
 > larger than the final target). Tighten it only after the separation interlock is confirmed

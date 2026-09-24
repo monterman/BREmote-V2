@@ -1,3 +1,8 @@
+// V2.5-Evo - 2026-09-19 - Stick during auto-steer: FM_FLAG_STEER_TAKEOVER (fm_flags bit 4) is the buggy's echo of its
+//   steer_during_auto setting (1 = the stick takes over an automatic steering run instead of cancelling it) and
+//   FM_FLAG_STEER_ACTIVE (bit 5) says a takeover is standing right now (display only). Gate 4 in RTMState.ino reads bit 4
+//   under the link-fresh window; rtm_steer_exit_on_input is no longer read by the remote (kept so stored settings load).
+//   Defines + comments only: TX struct untouched (136, SW27), no SPIFFS reset.
 // V2.5-Evo - 2026-09-19 - Return gesture: FM_FLAG_RETURN_ON (fm_flags bit 7) is the RX's echo of its EFFECTIVE auto-return mode
 //   (1 = when the rider stops, Follow-Me brings the buggy back). The return gesture in RTMState.ino reads it to set the
 //   session override to the opposite value. Define only: no confStruct change, sizeof stays 136, SW_VERSION stays 27.
@@ -327,7 +332,13 @@ struct confStruct {
     uint16_t fm_warn_distance_m;       // TX-RX distance to trigger FM proximity warning vibration (Pattern 8); 50-164 m; default 150.
                                        // V2.5-Evo - 2026-09-17: ceiling 1000 → 164 = kFmDistanceTelemetryMaxM, the largest value
                                        // the one-byte rtm_distance telemetry can carry; a stored value above it is clamped on load.
-    uint16_t rtm_steer_exit_on_input;  // 1=any steering input exits RTM (default); 0=blend/steering correction only
+    // V2.5-Evo - 2026-09-19 - DEPRECATED, no longer read by the remote. Whether the stick cancels
+    // or takes over an automatic return is the BUGGY's steer_during_auto setting, echoed to the
+    // remote in telemetry.fm_flags bit 4; Gate 4 (RTMState.ino) follows the buggy. Kept in the
+    // struct so stored settings load unchanged (a rename-in-place to a reserved slot is wrong here:
+    // fielded remotes store 1, violating "0 = unused"). Delete at the next TX struct bump. The "0 =
+    // blend" behaviour its help text promised was never written.
+    uint16_t rtm_steer_exit_on_input;  // DEPRECATED (2026-09-19): unread. Was 1=any steering input exits RTM; 0=blend
 
     // ============================================================
     // V2.5-Evo - 2026-04-27 - PRIORITY 8.1: FM UX REDESIGN
@@ -560,9 +571,19 @@ struct __attribute__((packed)) TelemetryPacket {
 #define FM_FLAG_ENGAGED   0x02  // bit1: RX FM engaged (actively steering / capping)
 #define FM_FLAG_NOTREADY  0x04  // bit2: RX-side armed-not-ready (separation latch not yet proven)
 #define FM_FLAG_FAULT     0x08  // bit3: RX fault-stop, sticky 6s (already surprise-gated on the RX)
+// V2.5-Evo - 2026-09-19 - bits 4 and 5: the stick during auto-steer. Bit 4 is the buggy's echo of its
+// steer_during_auto setting, sent every tick in every FM state: 0 = the stick CANCELS automatic steering (Gate 4 in
+// RTMState.ino exits a classic return-to-me on a push, as it always has); 1 = the stick TAKES OVER (the buggy steers
+// by the stick while it is deflected and resumes on centring; Gate 4 stands down so the remote does not exit the run
+// the buggy is deliberately continuing). Bit 5 = a takeover is STANDING on this tick (display only). Both are read
+// only under the FM_LINK_HEALTHY_MS window like the other flags - a stale packet reads as cancel, never as takeover.
+// An old RX never sets either bit, so a new remote with an old buggy cancels everywhere, as before. Bit 6 stays free.
+#define FM_FLAG_STEER_TAKEOVER 0x10  // bit4: RX steer_during_auto is 1 (take over) - Gate 4 steer-exit stands down
+#define FM_FLAG_STEER_ACTIVE   0x20  // bit5: a stick takeover is standing on the RX right now (display only)
 // V2.5-Evo - 2026-09-19 - bit 7: the RX's EFFECTIVE auto-return mode (its stored fm_return_mode unless this remote has
 // overridden it for the session). Read by returnGesture() (RTMState.ino) to flip the override to the OPPOSITE value, and
-// shown as "Ar" (ON) / "AO" (OFF) at that moment. Bits 4-6 are reserved for the accepted-mode echo.
+// shown as "Ar" (ON) / "AO" (OFF) at that moment. Bit 6 is reserved for the accepted-mode echo (which will need its own
+// telemetry byte if it needs 3 bits).
 #define FM_FLAG_RETURN_ON 0x80  // bit7: RX effective auto-return mode is ON
 // Link-health window: the TX treats the RX link as alive only while a packet has landed within
 // this many ms (matches the existing `millis()-last_packet < 1000` failsafe window used for the

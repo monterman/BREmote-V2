@@ -83,7 +83,7 @@ Per control tick (10 Hz), all on RX:
 | 2 | Approach ramp: linear 255→0 across the smoothing band | `RTMState.ino:569–597` verbatim |
 | 3 | Speed governor: toward `min(boogie_vmax_in_followme_kmh, rider_speed + closing margin)` | Run-phase governor |
 | 4 | Align phase: heading error > threshold → ~5 % cap | Align-phase pattern |
-| 5 | Engage ramp: 0→cap over 3–4 s on every FM_ACTIVE entry | RTM ramp machinery |
+| 5 | Engage ramp: 0→cap over 1.5 s on every FM_ACTIVE entry (3.5 s until 2026-09-19; the judging graces that were written as ramp + dwell are pinned at 6.5 s / 8.5 s) | RTM ramp machinery |
 
 FM writes caps only. The human trigger remains the sole throttle source; trigger release stops the buggy through the unchanged base architecture.
 

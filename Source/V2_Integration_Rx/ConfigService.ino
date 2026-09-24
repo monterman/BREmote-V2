@@ -1,4 +1,6 @@
 // V2.5-Evo - 2026-09-19 - DEEP LOG level 5: the log_level row's max is raised 4 -> 5 (5 = Everything, the 109 B test-session record), and cfgValidateCrossField() CLAMPS log_level > 5 down to 5 - a clamp, never a rejection, because this validator runs on the LOAD path and a range rejection there wipes the whole config (the 2026-09-03 lesson, same as fm_return_mode). Same u16 slot, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
+// V2.5-Evo - 2026-09-19 - SEPARATE RAMPS: the kCfgFields row "rsvd_f32_1" (float, RESERVED, -1e6..1e6) becomes "auto_ramp_s" (float, 0-4.0, 2 dp: 0 = the automatic modes ride motor_ramp_s as before, 0.2-4.0 = their own rise-limit), plus CLAMPS in cfgValidateCrossField(): (0, 0.2) -> 0.2 with a NOTE, NaN / negative -> 0, above 4.0 -> 4.0. The confStruct slot is the SAME slot renamed in place, so sizeof stays 200, SW_VERSION stays 36 and no config is wiped; every stored blob reads 0 = inherit there.
+// V2.5-Evo - 2026-09-19 - STICK DURING AUTO-STEER: the kCfgFields row "rsvd_u16_1" (u16, RESERVED, 0-65535) becomes "steer_during_auto" (u16, 0-1: 0 = the stick cancels automatic steering as before, 1 = it takes over while deflected and resumes on centring), plus a CLAMP in cfgValidateCrossField() (> 1 -> 1) next to the fm_return_mode clamp. The confStruct slot is the SAME slot renamed in place, so sizeof stays 200, SW_VERSION stays 36 and no config is wiped; every stored blob reads 0 = cancel there.
 // V2.5-Evo - 2026-09-19 - SW36: three kCfgFields rows for the appended Follow-Me fields - fm_return_mode (u16, 0-1), fm_align_cap (u16, 8-80), fm_align_influence (u16, 0-100) - and two CLAMPS in cfgValidateCrossField(): fm_return_mode > 1 -> 1, fm_align_influence > 100 -> 100. Clamps, never rejections, because this validator runs on the LOAD path (the 2026-09-03 lesson: a range rejection at boot wipes the whole config). sizeof(confStruct) 192 -> 200, SW_VERSION 35 -> 36; the stored SW35 config is migrated at boot, not reset.
 // V2.5-Evo - 2026-09-18 - fm_engage_dist_m: the shared floor kFmEngageDistFloorM is 9.5 m now (was 8.0; the rope is 7.1 m, review finding F3) - the validator reads the constant, so only the comments and the clamp NOTE's advice ("about a third beyond the rope", not "a metre") change here. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // RX-specific config field table and cross-validation.
@@ -134,9 +136,21 @@ const CfgFieldSpec kCfgFields[] = {
 
   // RENAME IT IN PLACE here and in confStruct, tighten the range, and do NOT bump SW_VERSION.
 
-  {"rsvd_u16_1", CFG_U16,   offsetof(confStruct, rsvd_u16_1), true, false, true, 0.0f, 65535.0f, 0, false},
+  // V2.5-Evo - 2026-09-19 - this row was rsvd_u16_1 (u16, 0-65535, unread). The slot has been RENAMED
+  // IN PLACE in confStruct to steer_during_auto - same offset, same uint16_t - so sizeof stays 200,
+  // SW_VERSION stays 36 and no config is wiped. Only the key, the range and the meaning change here.
+  //   0 = CANCEL (default, what every board already stores): a held stick push ends the automatic
+  //       steering - following drops to ARMED, an auto-return stops, the remote exits return-to-me.
+  //   1 = TAKE OVER: the push makes the stick steer while it is held; centring it hands the steering
+  //       back and cancels nothing. Also clamped (> 1 -> 1) in cfgValidateCrossField() below.
+  {"steer_during_auto", CFG_U16, offsetof(confStruct, steer_during_auto), true, false, true, 0.0f, 1.0f, 0, false},
 
-  {"rsvd_f32_1", CFG_FLOAT, offsetof(confStruct, rsvd_f32_1), true, false, true, -1e6f, 1e6f,    3, false},
+  // V2.5-Evo - 2026-09-19 - this row was rsvd_f32_1 (float, -1e6..1e6, unread). The slot has been RENAMED
+  // IN PLACE in confStruct to auto_ramp_s - same offset, same float - so sizeof stays 200, SW_VERSION
+  // stays 36 and no config is wiped. 0 = the automatic modes ride motor_ramp_s (what every board already
+  // stores); 0.2-4.0 = their own, faster rise-limit. Same 0-4 range and 2 dp as motor_ramp_s; the 0.2
+  // floor and the load-path belts are clamps in cfgValidateCrossField() below, never rejections.
+  {"auto_ramp_s", CFG_FLOAT, offsetof(confStruct, auto_ramp_s), true, false, true, 0.0f, kAutoRampMaxS, 2, false},
 
   // V2.5-Evo - 2026-07-20 - SW34 reserved fields (validation only; not read by v1 control law)
   // V2.5-Evo - 2026-07-25 - A2: fm_engage_dist_m is NO LONGER RESERVED — it is now read live by
@@ -214,6 +228,27 @@ bool cfgValidateCrossField(confStruct &candidate, String &err)
   // V2.5-Evo - 2026-09-19 - log_level: 5 (Everything) is the top level now; anything above it means
   // "the most detail there is", so it clamps to 5 rather than failing the load. Same reasoning.
   if (candidate.log_level > 5)            candidate.log_level = 5;
+  // V2.5-Evo - 2026-09-19 - steer_during_auto is a 0/1 switch on the SAME terms: the slot used to
+  // be a RESERVED u16 validated 0-65535, so a value above 1 could in principle be sitting in a
+  // stored blob; anything above 1 means take over, corrected silently on load rather than rejected.
+  if (candidate.steer_during_auto > 1)    candidate.steer_during_auto = 1;
+  // V2.5-Evo - 2026-09-19 - auto_ramp_s: 0 = inherit motor_ramp_s, else kAutoRampMinS..kAutoRampMaxS.
+  // The fm_engage_dist_m shape - exactly 0, or at least the floor - as CLAMPS, never rejections: this
+  // runs on the LOAD path, and the slot was a RESERVED float validated -1e6..1e6, so a stored blob
+  // may hold anything. A value in (0, 0.2) is raised to 0.2 and says so (a ramp that short is
+  // instant in all but name, and the rider should know their number moved); NaN or below 0 becomes
+  // 0 (inherit) and above the ceiling becomes the ceiling, silently - those two can only come from
+  // a blob, never from ?set or the web page, whose 0-4 row refuses them first.
+  if (!(candidate.auto_ramp_s == candidate.auto_ramp_s)) candidate.auto_ramp_s = 0.0f;   // NaN
+  if (candidate.auto_ramp_s < 0.0f)          candidate.auto_ramp_s = 0.0f;
+  if (candidate.auto_ramp_s > kAutoRampMaxS) candidate.auto_ramp_s = kAutoRampMaxS;
+  if (candidate.auto_ramp_s > 0.001f && candidate.auto_ramp_s < kAutoRampMinS)
+  {
+    const float asked = candidate.auto_ramp_s;
+    candidate.auto_ramp_s = kAutoRampMinS;
+    Serial.printf("NOTE: Automatic modes ramp %.2f s raised to the %.1f s minimum (0 = same as the manual ramp).\n",
+                  asked, kAutoRampMinS);
+  }
 
   if (candidate.PWM0_max <= candidate.PWM0_min)
   {

@@ -1,5 +1,8 @@
+// V2.5-Evo - 2026-09-24 - MERGE of the takeover side branch into the throttle-ramp move. The two branches rewrote the same block in opposite directions: this one moved the rise-limit AHEAD of the mixer onto the throttle (so steering is never slewed), the side branch kept it after the mixer but gave it TWO rates. Both survive. The ramp step lives in Common/OutputRamp.h as the side branch intended, but the header is rewritten as a SINGLE-CHANNEL 0-255 throttle ramp with the Q12 accumulator (the two-channel microsecond version and its min-1-us floor are gone), and calcPWM() calls it at the pre-mixer site with the side branch's selector: (rtm_rx_active || fm_rx_active) && auto_ramp_s > 0.001 ? auto_ramp_s : motor_ramp_s. The side branch's post-mixer call site is deleted - it would have double-ramped and re-ramped steering. Its stale-state fix is KEPT and is now the reason the ramp-off path is inside the helper: with the ramp off the memory tracks the target instead of going stale, so a ramp switched on mid-session no longer dips. Its steering work is untouched: auto_owner / takeover / auto_cmd, steer_takeover_active and the pivot boost following auto_cmd all merged as written. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-24 - RAMP BEFORE THE MIXER, STEERING IS INSTANT. WHAT WAS WRONG: the rise-limit sat AFTER the differential mixer and rate-limited PWM0_time / PWM1_time, i.e. the two finished MOTOR outputs - and on a differential drive the turn IS the difference between those two outputs, so the block rate-limited the steering as well. Its own comment admitted it ("By design this also ramps the differential-steering response (a sharp turn builds over this time)"). That is the one thing the owner has ruled out repeatedly: the ramp exists for the THROTTLE - a soft tow start that pulls a rider off a shoulder without snatching the rope - while steering must land on the very next 10 ms pass. On the servo branch it was worse: the block was rate-limiting the steering SERVO channel itself, which has no throttle in it at all. FIX: the rise-limit moves UP into the throttle domain (0-255 counts), applied to effective_thr AFTER every cap and BEFORE the mixer, producing ramped_thr. All three branches drive their motor channel(s) from ramped_thr; the mixer computes the turn from ramped_thr with no rate limit of its own, so a stick flick moves both motors on the next pass; the post-mixer block is deleted (keeping it would double-ramp). RISE ONLY - the fall branch snaps onto the target, so trigger release, failsafe, RTM/FM emergency stop and straightening still drop the output on the same tick. motor_ramp_s <= 0.001 still means instant/off. CAPS STILL BOUND THE OUTPUT: the ramp only ever approaches effective_thr from below, so ramped_thr <= effective_thr <= rtm_approach_cap / fm_throttle_cap on every tick - a cap DROP is instant, a cap RISE is slewed, exactly as before - and the pivot boost still only redistributes that permitted throttle. STEP - Q12 FIXED POINT, and why it has to be: the ramp accumulates in 1/4096 of a throttle count (full scale 255 x 4096 = 1044480, a uint32_t), step = full scale / (motor_ramp_s x 100 ticks per second). A whole-count integer step does not work in this domain - 255 counts is four times coarser than the ~1000-count PWM span the old post-mixer ramp used, so a whole-count step turned the owner's 1.00 s setting into 1.28 s and floored every setting from 1.275 s upward at one fixed 2.55 s (4.00 s would have run 36 % FAST, the wrong direction). With Q12 the entire configured 0.20-4.00 s range lands WITHIN ONE 10 ms TICK of nominal and always on the slow side, because truncation is the safe direction and the ramp is never faster than asked: 0.20 s -> 0.20 s; 0.50 s -> 0.51 s; 0.75 s -> 0.76 s; 1.00 s -> 1.01 s; 1.50 s -> 1.51 s; 2.00 s -> 2.01 s; 3.00 s -> 3.01 s; 4.00 s -> 4.01 s. The residual is the single tick it costs to land exactly on target - a flat +10 ms, which is +0 % at the 0.20 s end (20 ticks divide exactly), +2 % worst relative at 0.50 s, and +0.25 % at 4.00 s; measured by brute-force sweep of the whole range in 0.01 s steps, worst case +1 tick, zero cases faster than configured. The old max(1.0f, ...) WHOLE-count floor is gone; a 1-unit (1/4096 count) floor replaces it purely to guarantee forward progress against a corrupt out-of-range config value, and it cannot bite anywhere in the validated range, where the step runs 2611 (4.00 s) to 52224 (0.20 s). One shared ramp also means the two motors can no longer slew at different real rates when one channel's PWM span hits a floor. DEEP LOG: g_motor0_cmd / g_motor1_cmd now carry the ramp and are still exactly what their name says (post-mixer, pre-map motor commands); thr_received_log is still the raw TX byte and g_effective_steer is still the steering byte applied. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG (C): calcPWM() records the two post-mixer, pre-map motor commands (motor_mix.motor0 / motor1, 0-255 counts) into g_motor0_cmd / g_motor1_cmd - diagnostic observers only, the g_effective_steer pattern: written on every pass, never read back into any control path. The steering_type 1 branch writes the mixer's values; the efoil and servo branches write 0 / 0. No PWM value, cap, gate or ramp is touched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
+// V2.5-Evo - 2026-09-19 - SEPARATE RAMPS (owner decision 14:00): the motor rise-limit now selects its seconds on the OWNER flags - (rtm_rx_active || fm_rx_active) && auto_ramp_s > 0 ? auto_ramp_s : motor_ramp_s - so Follow-Me following, FM_RETURN motion and classic RTM (a stick takeover included) ride the automatic modes' fast ramp while manual towing and every hand-back to the rider (ARMED-not-engaged, FM_STOPPING, a HOLD escape, Gate 9, the mode-0 cancel) ride the slow manual one. The step itself moved verbatim into Common/OutputRamp.h (pure, host-tested: rise <= target, instant fall, continuity across a rate change) and gains the stale-state fix: the memory tracks the output while the ramp is off, so a ramp switched on mid-session no longer dips. With auto_ramp_s 0 the selector always yields motor_ramp_s and the bytes are identical to before in any session where motor_ramp_s is not changed live. The terminal effective_thr == 0 clamp stays the last writer. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
+// V2.5-Evo - 2026-09-19 - STICK TAKEOVER: calcPWM()'s steering-source selector reads the steer_takeover_active atomic (BREmote_V2_Rx.h; published once per 10 Hz tick by RTMState.ino while the rider's stick has taken over an automatic steering run under usrConf.steer_during_auto 1). The unchanged auto_steer test becomes auto_owner; auto_cmd = auto_owner && !takeover selects rtm_steer_override, otherwise the stick; the pivot boost follows auto_cmd. Nothing else changes: no new writer of effective_thr, any cap, rtm_steer_override or a PWM time; the thr_received >= 25 gate, the efoil and servo branches, the ramp and the terminal effective_thr == 0 clamp are untouched. With the atomic false (the setting at 0, every fielded board) the selector is the old `auto_steer ? override : stick`, byte for byte (host test). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - PIVOT BOOST: in steering_type 1, calcPWM() passes align_mixer_influence_override (BREmote_V2_Rx.h; published by RTMState.ino while Follow-Me align, FM_RETURN align or classic RTM Phase 1 align is turning the buggy to face its target) to mixThrottleRelativeDifferential() in place of usrConf.steering_influence when it is non-zero AND an autonomous steering override is being applied on this tick (the same gate as effective_steer). Manual steering, the efoil and servo branches, the ramp and the terminal effective_thr == 0 guard are untouched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - C-4 FIX: throttle-relative differential mixer. BUG: in steering_type 1 the steering term was a fixed fraction of the FULL PWM span (steering_influence % of PWM_max-PWM_min) added AFTER the throttle map, so it was never scaled by effective_thr - a hard steer during a 13/255 crawl (influence 50) put one motor at ~55 % regardless of the RTM/FM throttle cap, i.e. steering could ADD power past the cap. FIX: calcPWM() now calls mixThrottleRelativeDifferential() (Common/DifferentialMixer.h, host-tested in Tools/tests/differential_mixer_test.cpp): turn = T x influence x |steer-127| / (100 x span), motor0 = T - turn, motor1 = T + turn, each clamped 0..255, then each motor command is map()ed into its own PWM range and trim is applied as the same symmetric post-map correction as before (+trim ch0, -trim ch1). Steering is now proportional to the permitted throttle - none at zero, less at low throttle, full authority at full throttle - and before upper saturation the two commands always sum to exactly 2T (power-neutral; saturation can only lower it). 127 is the exact neutral byte inside the mixer, so the 2026-06-05 H-1 recentring is no longer needed and is removed. steering_inverted semantics are unchanged: 0 -> steer > 127 slows motor0 / speeds motor1; 1 -> the mirror. Efoil and servo branches, the ramp and the terminal effective_thr==0 guard are untouched. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-18 - comment only (review finding F8): the steering-gate note said runFmLoop() forces FM to IDLE whenever rtm_rx_active is set; since 2026-09-18 it makes FM yield (FM_ARMED, fm_rx_active false, no cap/steer writes) instead. No code change.
@@ -97,60 +100,50 @@ void calcPWM()
     effective_thr = fm_throttle_cap;
   }
 
-  // -- SAFETY: THROTTLE RAMPING (usrConf.motor_ramp_s, seconds) -------------------
-  // V2.5-Evo - 2026-09-24 - The ramp lives HERE now: in the throttle domain, after every cap and
-  // before the differential mixer, so that it can only ever slow the THROTTLE down. It used to sit
-  // after the mixer and rate-limit the two finished motor outputs, which by definition also
-  // rate-limited the difference between them - the steering. Owner rule: never ramp steering. The
-  // ramp is for a soft tow start; a turn has to be there on the next 10 ms pass.
+  // -- SAFETY: THROTTLE RAMPING (usrConf.motor_ramp_s / usrConf.auto_ramp_s, seconds) ----------
+  // V2.5-Evo - 2026-09-24 - The ramp lives HERE: in the throttle domain, after every cap and before
+  // the differential mixer, so it can only ever slow the THROTTLE down. It used to sit after the
+  // mixer and rate-limit the two finished motor outputs, and the difference between those two IS the
+  // turn, so it slewed steering as well. Owner rule: never ramp steering. The ramp is for a soft tow
+  // start; a turn has to be there on the next 10 ms pass. The step itself is in Common/OutputRamp.h
+  // (pure, host-tested in Tools/tests/output_ramp_test.cpp): rise <= target, instant fall, continuity
+  // across a rate change, pass-through-and-track while off, and a Q12 accumulator so the whole
+  // 0.20-4.00 s range is honoured to within one 10 ms tick and is never faster than configured.
   //
-  // RISE ONLY. The else-branch snaps the memory straight onto the target, so every kind of stop -
-  // trigger release, failsafe, RTM/FM emergency stop, a cap collapsing to 0, straightening - drops
-  // the throttle on the same tick with no slew at all. That same else-branch is also why the ramp
-  // can neither stall nor jump: it is the only way the memory can move DOWN, and it always moves it
-  // the whole way in one tick.
+  // WHICH RAMP (V2.5-Evo - 2026-09-19 - TWO RAMPS, owner decision 14:00). The slow motor_ramp_s
+  // exists for the rider's shoulder on a MANUAL tow start, where the rope is loaded; in the automatic
+  // modes the rope is not loaded and a fast ramp is what makes the buggy reactive. The ramp in force
+  // this tick is selected on the OWNER flags - rtm_rx_active || fm_rx_active, whoever is CAPPING the
+  // throttle - and deliberately NOT on auto_owner below, which also carries the trigger and the stick
+  // switch:
+  //   - Follow-Me following, FM_RETURN moving and classic RTM ride auto_ramp_s (when it is non-zero;
+  //     0 = inherit motor_ramp_s, today's behaviour). A stick takeover rides it too: the steering
+  //     byte changes hands, the throttle is still the automatic owner's.
+  //   - FM_ARMED-not-engaged towing, FM_STOPPING's hand-back ramp, a HOLD escape, Gate 9's handoff and
+  //     the mode-0 steer-cancel un-clamp all ride motor_ramp_s: on every one of those the owner flag
+  //     is already false, so every hand-back to the rider is softened by the slow slew (the shoulder
+  //     case) - the fast ramp never lands on the rider's own throttle.
+  // RULE FOR P2 (not built): an automatic mode with the buggy AHEAD of the rider (front_along_m > 0)
+  // uses motor_ramp_s - see auto_ramp_s in the header.
   //
-  // WHAT thr_ramp_q12 HOLDS WITH THE TRIGGER RELEASED: exactly 0. effective_thr is 0 so the target
-  // is 0, the rise test (0 > thr_ramp_q12 + step) is false, the first released tick assigns 0 and it stays
-  // there. Re-engaging always starts a fresh full ramp from 0 - the rider cannot bank ramp credit by
-  // feathering the trigger, and there is no stale value left to jump to. 0 is also the power-on
-  // value of the static, so the first squeeze after boot behaves like every later one; no init flag
-  // is needed here (the old PWM-domain version needed one only because its resting value was
-  // PWM_min, not 0).
+  // RISE ONLY. The helper's else-branch snaps the memory straight onto the target, so every kind of
+  // stop - trigger release, failsafe, RTM/FM emergency stop, a cap collapsing to 0, straightening -
+  // drops the throttle on the same tick with no slew. That is also the only way the memory can move
+  // DOWN, and it always moves it the whole way, so the ramp can neither stall nor jump.
   //
-  // STEP, AND WHY IT IS FIXED POINT: 0 -> full must take motor_ramp_s seconds anywhere in the
-  // configured 0.20-4.00 s range, and at a 10 ms tick a 4 s ramp needs 0.64 of a throttle count per
-  // pass. A whole-count step cannot express that - it floors at 1 count, which is 2.55 s, so every
-  // setting from 1.275 s up would collapse onto the same ramp and 4.00 s would run 36 % FAST. So the
-  // accumulator carries 1/4096 of a count (Q12) in a uint32_t: full scale is 255 x 4096 = 1044480
-  // and the step is that over (motor_ramp_s x 100). The step is TRUNCATED, never rounded, because
-  // truncation can only make the ramp slower than configured, and slower is the safe direction.
-  // Result across the whole range, always +1 tick at worst and never fast: 0.20 s -> 0.20 s,
-  // 0.50 s -> 0.51 s, 0.75 s -> 0.76 s, 1.00 s -> 1.01 s, 2.00 s -> 2.01 s, 4.00 s -> 4.01 s.
-  // Overflow: the accumulator never exceeds full scale, the largest in-range step is 52224, so the
-  // rise test tops out near 1.1 M - three orders of magnitude inside a uint32_t.
+  // WHAT THE MEMORY HOLDS WITH THE TRIGGER RELEASED: exactly 0. effective_thr is 0, so the target is
+  // 0 and the fall branch assigns it on the first released tick. Re-engaging always starts a fresh
+  // full ramp from 0 - the rider cannot bank ramp credit by feathering the trigger, and there is no
+  // stale value to jump to. 0 is the zero-init value too, so the first squeeze after boot behaves
+  // like every later one.
   //
-  // motor_ramp_s 0 (or <= 0.001) = off: ramped_thr is effective_thr, instant, exactly as before.
-  uint8_t ramped_thr = effective_thr;
-  if (usrConf.motor_ramp_s > 0.001f)
-  {
-    const uint32_t kThrRampFullQ12 = 255UL * 4096UL;   // 1044480 = throttle 255 in Q12 units
-    static uint32_t thr_ramp_q12 = 0;                  // the ramp memory, in 1/4096 of a count
-
-    const uint32_t target_q12 = (uint32_t)effective_thr * 4096UL;
-    const float    step_f     = (float)kThrRampFullQ12 / (usrConf.motor_ramp_s * 100.0f);
-    // A ramp shorter than one tick, or a corrupt sub-0.01 s config value, means "instant": clamp the
-    // step to full scale so the rise test below always takes the else-branch. The 1-unit floor is
-    // the successor of the old whole-count floor and exists only so a nonsense value can never stall
-    // the ramp at zero; at 1/4096 of a count it is unreachable anywhere in the validated range.
-    uint32_t step_q12 = (step_f >= (float)kThrRampFullQ12) ? kThrRampFullQ12 : (uint32_t)step_f;
-    if (step_q12 == 0) step_q12 = 1;
-
-    if (target_q12 > thr_ramp_q12 + step_q12) thr_ramp_q12 += step_q12;
-    else                                      thr_ramp_q12 = target_q12;   // instant fall, and the
-                                                                           // only downward path
-    ramped_thr = (uint8_t)(thr_ramp_q12 >> 12);   // always <= effective_thr, so every cap still bounds it
-  }
+  // CAPS STILL BOUND THE OUTPUT: the ramp only approaches effective_thr from below, so
+  // ramped_thr <= effective_thr <= rtm_approach_cap / fm_throttle_cap on every tick. A cap DROP is
+  // instant, a cap RISE is slewed. Both ramps at 0 = off: the target passes straight through.
+  static OutputRampState motor_ramp = {0};
+  const bool  auto_ramp_owner = (rtm_rx_active || fm_rx_active) && (usrConf.auto_ramp_s > 0.001f);
+  const float ramp_s          = auto_ramp_owner ? usrConf.auto_ramp_s : usrConf.motor_ramp_s;
+  const uint8_t ramped_thr    = throttleRampStep(&motor_ramp, effective_thr, ramp_s, 100.0f);
 
   // SAFETY FIX (2026-04-28 audit): also gate on thr_received>=25.
   // Gate 1 in RTMState.ino resets rtm_steer_override=127 on throttle release (Task 1A),
@@ -162,8 +155,23 @@ void calcPWM()
   // that it forced FM to IDLE), so they safely share
   // rtm_steer_override as the steering command. The thr_received>=25 condition is unchanged and
   // still applies to both — autonomous steering never reaches the motors on a released trigger.
-  const bool auto_steer = ((rtm_rx_active || fm_rx_active) && usrConf.rtm_rx_override_steering && thr_received >= 25);
-  uint8_t effective_steer = auto_steer ? (uint8_t)rtm_steer_override : steering_received;
+  // V2.5-Evo - 2026-09-19 - STICK TAKEOVER (usrConf.steer_during_auto 1). Three names for one
+  // decision, so the motor path stays readable:
+  //   auto_owner - the test above, unchanged: an autonomous controller owns the steering this tick.
+  //   takeover   - the rider's stick has taken that steering over (steer_takeover_active, decided
+  //                at 10 Hz in RTMState.ino with 500 ms / 200 ms persistence and 40 / 20 count
+  //                hysteresis, published through ONE atomic with one writer; this task only reads).
+  //   auto_cmd   - the controller's byte is applied: an owner exists AND no takeover stands.
+  // The selector is the ONLY thing the takeover changes here: which of the two EXISTING steering
+  // sources feeds the mixer. effective_thr, every cap above, rtm_steer_override and the PWM times
+  // have exactly the writers they had. A takeover with no owner is impossible (auto_owner carries
+  // thr_received >= 25, so a released trigger makes the flag irrelevant on this very cycle and
+  // effective_thr == 0 lands both outputs at PWM_min below), and with the setting at 0 the flag is
+  // never true, so auto_cmd == auto_steer and the bytes are identical to before.
+  const bool auto_owner = ((rtm_rx_active || fm_rx_active) && usrConf.rtm_rx_override_steering && thr_received >= 25);
+  const bool takeover   = auto_owner && steer_takeover_active.load(std::memory_order_relaxed);
+  const bool auto_cmd   = auto_owner && !takeover;
+  uint8_t effective_steer = auto_cmd ? (uint8_t)rtm_steer_override : steering_received;
 
   // V2.5-Evo - 2026-09-19 - PIVOT BOOST. While an autonomous controller is in its align phase it
   // publishes usrConf.fm_align_influence here (see align_mixer_influence_override in the header);
@@ -172,10 +180,13 @@ void calcPWM()
   // (the mixer is throttle-relative: motor0 + motor1 <= 2T always). It is honoured only on ticks
   // where the autonomous steering override itself is honoured, so manual steering is never mixed
   // with a boosted influence, and 0 means "use steering_influence" exactly as before.
+  // V2.5-Evo - 2026-09-19 - and that means auto_cmd, not auto_owner: a takeover mixes the rider's
+  // stick at steering_influence (the "manual feel never changes" rule), the boost follows the
+  // CONTROLLER's command only.
   uint16_t mix_influence = usrConf.steering_influence;
   {
     const uint8_t boost = align_mixer_influence_override.load(std::memory_order_relaxed);
-    if (auto_steer && boost != 0) mix_influence = boost;
+    if (auto_cmd && boost != 0) mix_influence = boost;
   }
 
   // V2.5-Evo - 2026-07-19 - FM triage: record the steering byte actually applied this loop for

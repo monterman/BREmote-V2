@@ -2,6 +2,11 @@
 // V2.5-Evo - 2026-09-19 - DEEP LOG level 5 ("everything", owner request for the test sessions): VescLogDataL5 = the complete 87 B level-4 record + a 22 B level-5 block = 109 B (static_assert 109): the rider's position as the RX holds it (rx_tx_gps_lat/lng as float, the distinct-fix counter, the fix age), the classic RTM phase code and rtm_approach_cap, the align cap / align influence / mixer influence in force this tick, the auto-return override state, telemetry.fm_flags as sent, the 0xF2 keepalive age, and two reserved bytes for the steer-takeover branch (l5_rsvd_takeover_active / _end) so its integration does not bump the size again. Every field is a COPY of published state, taken in fmPublishLogSnapshot() (loop task, one writer) and carried in FmLogSnapshot; nothing in the control path reads any of it. log_level 5 selects it (logResolveLevel / logRecordSizeForLevel), createNewLogFile() stamps record_size 109, logCsvHeaderFor() gains the L5 tier (65 columns) and logFormatCsvRow() prints every level-5 field with units. Capacity on the 1757 KB the filesystem reports: about 1 h 30 min at 3 Hz, about 55 min at 5 Hz (87 B level 4: about 1 h 55 min / 1 h 10 min). No confStruct change - the log_level field is the same u16, its validator max is raised 4 -> 5 - sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG (B)+(C): VescLogDataL4 grows 83 -> 87 B (static_assert 87). (B) fm_rider_raw_dx10 u16 = the rider's RAW displacement speed x 10 km/h (RTMState.ino fm_rider_raw_kmh, the number the FM_RETURN candidate is judged on; the filtered EMA track was already logged as fm_rider_speed_dx10), sentinel 0xFFFF = unknown (< 0). (C) motor0_cmd / motor1_cmd u8 = the two post-mixer, pre-map motor commands out of calcPWM()'s steering_type 1 branch (g_motor0_cmd / g_motor1_cmd, two diagnostic observers written every 100 Hz tick, the g_effective_steer pattern; 0 for the efoil / servo branches). TIER FIX for the readers: logCsvHeaderFor() used to return the 65 B DIAG header for anything smaller than sizeof(VescLogDataL4), so after this bump every 83 B file written since 2026-09-17 would have printed with the wrong header; it now picks by the offsets of the blocks actually present (65 B DIAG / 83 B L4_83 / 85 B +raw / 87 B full) and logFormatCsvRow() guards each new field on record_size >= its offset + size. The 2026-09-17 'LAYOUT IS FINAL' note is history. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG (A): the one unused byte of the level-4 Follow-Me block, fm_pad, becomes fm_return_reason - a straight copy of the controller's FmReturnReason latch (RTMState.ino fm_return_last_reason: 0 = no event since boot; 4 = RETURN entered, 6/7/8/11 = arrived / cancelled / timed out / steered, 1-3 = a candidate dropped), STICKY - it changes only on an event, so read it on the row where fm_state changes. Two new bits in the existing fm_gate_flags u32: bit 17 aligning (an autonomous controller is turning to face its target this tick) and bit 18 boost (the pivot-boost mixer influence is published this tick); bit 16 is left free because the takeover side branch already defines it. CSV gains fm_return_reason, fm_aligning, fm_boost (45 -> 48 columns for an 83 B file; the two bits are read out of fm_gate_flags). Record size unchanged at 83, static_assert stays 83, old 83 B files print 0 in all three new columns (the pad was always 0). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
+// V2.5-Evo - 2026-09-19 - SEPARATE RAMPS, part 3: comment only - the deep-log bit 7 note names kFmJudgeGraceMs (6500, pinned in RTMState.ino when the engage ramp went 3500 -> 1500). No code change, sizeof stays 200, SW_VERSION stays 36.
+// V2.5-Evo - 2026-09-19 - SEPARATE RAMPS, part 2: includes ../Common/OutputRamp.h (the pure motor rise-limit step calcPWM() now calls, arithmetic unchanged, host-tested). Include only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
+// V2.5-Evo - 2026-09-19 - SEPARATE RAMPS (owner decision 14:00): the banked RESERVED slot rsvd_f32_1 is RENAMED IN PLACE to auto_ramp_s (float, 0 = inherit motor_ramp_s = today's behaviour byte-identical, else 0.2-4.0 s) - the motor rise-limit while an AUTOMATIC mode (Follow-Me following, FM_RETURN motion, classic RTM) caps the throttle; the slow motor_ramp_s stays the manual-tow ramp (the rider's shoulder on a loaded rope) and every hand-back to the rider. kAutoRampMinS / kAutoRampMaxS bounds, clamped on load. The P2 rule (buggy ahead of the rider -> manual ramp) is recorded at the field. No confStruct size change: sizeof stays 200, SW_VERSION stays 36, config is NOT reset by this flash.
+// V2.5-Evo - 2026-09-19 - fix round 2: comments only - the takeover release band is 30 counts (was 20) and the maximum takeover is 10 s (was 20 s); the constants live in RTMState.ino. No code change here, sizeof stays 200, SW_VERSION stays 36.
+// V2.5-Evo - 2026-09-19 - STICK DURING AUTO-STEER (cancel or take over): the banked RESERVED slot rsvd_u16_1 is RENAMED IN PLACE to steer_during_auto (u16, 0-1, default 0) - same offset, same type; 0 = the stick CANCELS the automatic steering exactly as before (every fielded board holds 0 here), 1 = the stick TAKES OVER the steering byte while deflected and hands it back on centring, for Follow-Me following, auto-return (FM_RETURN) and classic return-to-me alike. Adds the steer_takeover_active atomic (the ONE takeover flag; single write site publishSteerTakeover() in RTMState.ino, read by calcPWM(), false on every tick with no auto-steer owner), includes ../Common/SteerArbitration.h (the pure, host-tested engage/release/timeout arbitration), adds FM_LOG_GATE_STEER_TAKEOVER (bit 16) to the deep-log gate word (existing u32, record size unchanged) and documents telemetry.fm_flags bits 4 (setting echo) and 5 (takeover standing) for the remote. No confStruct size change: sizeof stays 200, SW_VERSION stays 36, config is NOT reset by this flash.
 // V2.5-Evo - 2026-09-19 - FM_RETURN + pivot boost: adds the align_mixer_influence_override atomic (0 = none; the ONE mixer influence override, written by publishAlignMixerInfluence() in RTMState.ino for FM align, FM_RETURN align and classic RTM Phase 1 align, read by calcPWM()), includes ../Common/FollowMeReturnProof.h (the pure, host-tested FM_RETURN entry proof), and adds FM_LOG_GATE_RETURN_WINDOW (bit 15) to the deep-log gate word next to the P1-b bit 11 it reserved - new bit in the existing u32, record size unchanged; fm_state gains the value 5 (RETURN). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - 0xF2 return-mode override: adds the fm_return_mode_runtime atomic (0xFF = use the SPIFFS fm_return_mode; 0 / 1 = the remote's session override, carried in 0xF2 bits 5-6) next to fm_mode_runtime, and documents telemetry.fm_flags bit 7 as the RX's echo of its EFFECTIVE return mode for the remote's display and return gesture. Runtime globals + comments only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - SW36: three Follow-Me fields APPENDED at the tail of confStruct - fm_return_mode (u16, 0-1, default 1: when the rider stops, Follow-Me graduates to FM_RETURN and brings the buggy back under the trigger), fm_align_cap (u16, 8-80, default 13: the throttle cap during the FM align phase and the FM_RETURN align/engage ramp, replacing the compile-time kFmAlignCap for FM paths), fm_align_influence (u16, 0-100, default 80: the mixer steering influence during FM align / FM_RETURN align only - 100 = one-motor pivot; 0 = use steering_influence). sizeof 192 -> 200 (192 + 3 x 2 = 198, padded to the 4-byte struct alignment), static_assert 200, SW_VERSION 35 -> 36. Config is NOT reset by this flash: the 192-byte SW35 blob is migrated by prefix at boot (Common/SPIFFSEngine.h, host-tested in Tools/tests/config_migrate_test.cpp) and the three new fields take their defaults.
@@ -77,6 +82,15 @@
 // RTM/FM throttle caps or create any motor command at zero gas. Header adopted verbatim; it defines
 // no constants and reads no config of its own — influence and inversion are passed in from usrConf.
 #include "../Common/DifferentialMixer.h"
+// V2.5-Evo - 2026-09-19 - the motor rise-limit (the "motor ramp") calcPWM() applies is a pure function
+// in ../Common/OutputRamp.h (host-tested in Tools/tests/output_ramp_test.cpp) so the two-ramp selector
+// (motor_ramp_s for manual, auto_ramp_s for the automatic modes) shares one memory and one step.
+// V2.5-Evo - 2026-09-24 - two corrections to the line above, both from the throttle-ramp move: it is
+// applied BEFORE the mixer, not after (rate-limiting the two finished motor outputs also rate-limited
+// the difference between them, which is the steering), and the arithmetic is NOT the old inline
+// block's - the header is a single-channel 0-255 throttle ramp with a Q12 accumulator, because a
+// whole-count step in that domain floors at 2.55 s and cannot express the configured 0.2-4.0 s range.
+#include "../Common/OutputRamp.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -124,6 +138,16 @@
 // fails the load and falls back to defaults - which would wipe the config, pairing and compass
 // calibration of anyone who had already stored a 0. A clamp corrects them silently instead.
 static const uint16_t kTxGpsStaleFloorMs = 500;
+
+// V2.5-Evo - 2026-09-19 - auto_ramp_s bounds: 0 = inherit motor_ramp_s, else kAutoRampMinS..kAutoRampMaxS
+// (the same 4 s ceiling motor_ramp_s has). Enforced by CLAMPING in cfgValidateCrossField() for the
+// same reason as the floor above: it runs on the LOAD path, and the slot this field reuses was a
+// RESERVED float validated -1e6..1e6, so a stored blob may in principle hold anything. A value in
+// (0, 0.2) is raised to 0.2 with a NOTE (a ramp that short is instant in all but name); below 0 or
+// NaN becomes 0 (inherit) and above 4 becomes 4, silently. The kCfgFields row is 0-4.0 like
+// motor_ramp_s, so a typed value above the ceiling is refused the way motor_ramp_s refuses it.
+static const float kAutoRampMinS = 0.2f;   // s; smallest non-zero auto_ramp_s
+static const float kAutoRampMaxS = 4.0f;   // s; the ceiling, shared with motor_ramp_s
 
 #define SW_VERSION 36  // V2.5-Evo - 2026-09-19 - 36 = fm_return_mode / fm_align_cap / fm_align_influence appended at the tail; sizeof 192->200 (198 + 2 B alignment pad). Config is NOT reset by this flash: the 192-byte SW35 blob is migrated by prefix (every stored value keeps its offset and its value) and the three new fields default (1 / 13 / 80) - see the LEGACY CONFIG BLOB MIGRATION block in Common/SPIFFSEngine.h. 35 = mag_orientation appended (compass mounting rotation); sizeof 184->192 (mag_orientation + 2 reserved slots banked for future no-bump features), config IS reset by this flash. 34 = added fm_engage_dist_m / auton_runtime_cap_s / fm_steer_reposition_en reserved slots + defaultConf carries factory default config (compass cal, near_diag_offset 45); first flash resets all RX SPIFFS config to defaults. NOTE (2026-07-25, STAGE 0 PART A): the third of those slots has since been RENAMED IN PLACE to log_level — same offset, same uint16_t, sizeof(confStruct) still 184 — so this stays 34 and NO further config wipe happens.
 const char* CONF_FILE_PATH = "/data.txt";
@@ -568,12 +592,58 @@ struct confStruct {
 
     // ============================================================
 
-    uint16_t rsvd_u16_1;               // RESERVED. 0 = unused. Rename in place; do NOT bump.
+    // V2.5-Evo - 2026-09-19 - THE FIRST OF THESE IS CLAIMED: rsvd_u16_1 is RENAMED IN PLACE to
+    // steer_during_auto, by the five rules above. Same offset, same uint16_t, sizeof stays 200, the
+    // static_assert is untouched, SW_VERSION stays 36, and 0 - what every fielded board holds here -
+    // is the behaviour-preserving default: the stick CANCELS automatic steering exactly as before.
+    //
+    // steer_during_auto - what the rider's steering stick does while the buggy is steering itself
+    //   (Follow-Me following, auto-return FM_RETURN, and a classic return-to-me):
+    //     0 = CANCEL (default). A held push (40 counts from centre for 0.5 s, after the first 2 s
+    //         of a run) ends the automatic steering: following drops to ARMED-unlatched, an
+    //         auto-return stops through HOLD, and the remote exits a classic return-to-me. Exactly
+    //         the behaviour before this setting existed - the three cancel paths run unchanged.
+    //     1 = TAKE OVER. The same push makes the stick steer the buggy while it is held; centring it
+    //         (within 30 counts for 0.2 s) hands the steering back to the controller and nothing is
+    //         cancelled. The takeover changes only WHICH steering byte calcPWM() applies: every
+    //         throttle cap, the stop radius, the return proof and every safety gate keep running.
+    //         A stick that has not been read centred at least once since the run began cannot take
+    //         over (a remote whose centre has drifted must never steer silently); a takeover held
+    //         for 10 s ends through the mode's cancel path. See Common/SteerArbitration.h.
+    //   Range 0-1; the remote learns the value from telemetry.fm_flags bit 4 (its Gate 4 cancel
+    //   stays for 0). Turn on with `?set steer_during_auto 1` + `?save`.
+    uint16_t steer_during_auto;        // 0 = stick cancels auto-steer (as before); 1 = stick takes over while deflected, resumes on centring. Range 0-1; default 0
 
 
 
 
-    float    rsvd_f32_1;               // RESERVED. 0 = unused. For a threshold or coefficient.
+    // V2.5-Evo - 2026-09-19 - THE SECOND SLOT IS CLAIMED TOO: rsvd_f32_1 is RENAMED IN PLACE to
+    // auto_ramp_s, by the same five rules. Same offset, same float, sizeof stays 200, the
+    // static_assert is untouched, SW_VERSION stays 36, and 0 - what every fielded board holds
+    // here - is the behaviour-preserving default: inherit motor_ramp_s, exactly as before.
+    //
+    // auto_ramp_s - the motor rise-limit (seconds, 0 -> full) while an AUTOMATIC mode is capping
+    //   the throttle: Follow-Me following, auto-return (FM_RETURN) motion, classic return-to-me.
+    //   WHY TWO RAMPS (owner decision 2026-09-19 14:00): the slow motor_ramp_s exists for the
+    //   rider's shoulder on a MANUAL tow start - the rope is loaded and a hard yank hurts. In the
+    //   automatic modes the rope is not loaded, so a fast ramp is what makes the buggy reactive:
+    //   it catches up fast and pivots fast. The rider's own trigger stays the only throttle
+    //   source in both; a ramp only ever delays a rise, never adds throttle, and the fall stays
+    //   instant.
+    //     0         = inherit motor_ramp_s (default; today's behaviour, byte-identical).
+    //     0.2 - 4.0 = the automatic modes' own ramp (the owner's suggestion: try 0.5).
+    //   WHO RIDES WHICH (the selector in PWM.ino calcPWM(), on the OWNER flags rtm_rx_active ||
+    //   fm_rx_active - deliberately not the takeover's auto_owner, which also carries the trigger
+    //   and the stick switch): the ramp belongs to whoever is capping the throttle. Following,
+    //   RETURN moving and classic RTM ride the auto ramp - a stick takeover included, since the
+    //   throttle is still the automatic owner's. FM_ARMED-not-engaged towing, FM_STOPPING's hand-
+    //   back, a HOLD escape, Gate 9 and the mode-0 cancel un-clamp all ride the MANUAL ramp, so
+    //   every hand-back to the rider is softened by the slow slew (the shoulder case).
+    //   RULE FOR P2 (stations), NOT BUILT: any automatic mode with the buggy AHEAD of the rider -
+    //   front_along_m > 0, the fade-bypass predicate - must use motor_ramp_s, not auto_ramp_s: with
+    //   the buggy in front the rope can load again, and that is the shoulder case in another guise.
+    //   Bounds: kAutoRampMinS / kAutoRampMaxS above; clamped on load, never rejected.
+    float    auto_ramp_s;              // 0 = same as motor_ramp_s; else 0.2-4.0 s rise time while an auto mode caps the throttle. Default 0
 
     // ============================================================
     // V2.5-Evo - 2026-09-19 - SW35->36: AUTO-RETURN INSIDE FOLLOW-ME (three fields, APPENDED)
@@ -675,10 +745,10 @@ confStruct defaultConf = {SW_VERSION, 2, 22, 1, 50 /*steering_influence: convent
   // (Developer), which is the behaviour every unit already has, so nothing changes on flash.
   0,          // log_level: 0 = unset -> logs as level 3 (Developer). 1/2 accepted but currently log as 3; 4 = Deep.
   0,          // mag_orientation: 0 deg. Set by ?compasscal (north-to-north) or ?magalign.
-  0,            // rsvd_u16_1  RESERVED - 0 = unused
+  0,            // steer_during_auto: 0 = the stick CANCELS automatic steering (the tested behaviour); 1 = it takes over while deflected (was rsvd_u16_1, renamed in place 2026-09-19)
 
 
-  0.0f,         // rsvd_f32_1  RESERVED - 0 = unused
+  0.0f,         // auto_ramp_s: 0 = the automatic modes ride motor_ramp_s (today's behaviour); 0.2-4.0 = their own, faster ramp (was rsvd_f32_1, renamed in place 2026-09-19)
   // V2.5-Evo - 2026-09-19 - SW36 auto-return defaults. These are also the values the boot-path
   // migration writes into a migrated SW35 config (the tail of the struct is copied from HERE).
   1,            // fm_return_mode: 1 = auto-return ON (owner decision, session log item 32); 0 = HOLD as before
@@ -736,6 +806,11 @@ static const float kFmEngageDistFloorM = 9.5f;   // metres; smallest legal non-z
 // so Tools/tests/follow_me_return_proof_test.cpp runs the exact code runFmLoop() calls. The RX's
 // kFmReturn* constants (RTMState.ino) are passed in; the header defines none of its own.
 #include "../Common/FollowMeReturnProof.h"
+// V2.5-Evo - 2026-09-19 - the stick-takeover arbitration (centre-seen, 40/500 ms engage, 20/200 ms
+// release, 10 s timeout, zeroed with no owner) is pure in ../Common/SteerArbitration.h so
+// Tools/tests/steer_arbitration_test.cpp runs the exact code the three auto-steer modes call. The
+// RX's kSteerTakeover* constants (RTMState.ino) are passed in; the header defines none of its own.
+#include "../Common/SteerArbitration.h"
 
 // ============================================================
 // V2.5-Evo - 2026-07-25 - STAGE 2: HEADING-SOURCE TRUST CONSTANTS (RTM + FM)
@@ -922,6 +997,21 @@ std::atomic<uint8_t> fm_throttle_cap  {255};
 // override (rtm_rx_active || fm_rx_active, override enabled, trigger held). std::atomic for the
 // same single-core preemption reason as fm_throttle_cap above.
 std::atomic<uint8_t> align_mixer_influence_override {0};
+
+// V2.5-Evo - 2026-09-19 - THE STICK TAKEOVER: true while the rider's stick, not the controller, is
+// the steering byte calcPWM() applies during an automatic steering run (Follow-Me following,
+// FM_RETURN, classic RTM) - usrConf.steer_during_auto == 1 and the arbitration in
+// Common/SteerArbitration.h has engaged. It changes ONLY the steering-byte selector: no cap, no
+// effective_thr, no rtm_steer_override and no PWM time is written because of it, and the pivot
+// boost above follows the CONTROLLER's byte (a takeover mixes the stick at steering_influence).
+// SINGLE WRITE SITE: publishSteerTakeover() in RTMState.ino, called once at the end of every
+// runRtmLoop() and runFmLoop() tick with RTM outranking FM; each loop's request starts at false on
+// every tick, so any tick with no auto-steer owner (mode not steering, trigger below 25 counts,
+// override off) publishes false - the flag can never outlive its owner by more than one 10 Hz
+// tick, and calcPWM()'s own thr_received >= 25 test makes it irrelevant before that. Reader:
+// calcPWM() (generatePWM task, 100 Hz). With steer_during_auto == 0 it is never written true.
+// std::atomic for the same single-core preemption reason as fm_throttle_cap above.
+std::atomic<bool> steer_takeover_active {false};
 
 #include "../Common/SPIFFSEngine.h"
 
@@ -1144,7 +1234,7 @@ static_assert(sizeof(VescLogData) == 59, "VescLogData size mismatch — check bi
 //   bit 4 sep_latched       the separation proof (tow interlock) is standing
 //   bit 5 diverge           the A3 divergence fault fired on this tick
 //   bit 6 pivoting          PIVOT-SUSPEND-1 is suspending the divergence judgement
-//   bit 7 in_grace          inside the post-engage grace (kFmEngageRampMs + kFmDivergeMs)
+//   bit 7 in_grace          inside the post-engage grace (kFmJudgeGraceMs, 6500 ms; until 2026-09-19 kFmEngageRampMs + kFmDivergeMs)
 //   bit 8 heading_disagree  the compass-vs-COG disagreement latch is standing
 //   bit 9 fade_bypass       P2 — always 0 until the station work lands
 //   bit 10 transit          P2 — always 0 until the station work lands
@@ -1159,10 +1249,14 @@ static_assert(sizeof(VescLogData) == 59, "VescLogData size mismatch — check bi
 //                           release of kFmReleaseDengageMs or more; cleared on the ACTIVE edge)
 //   bit 14 yield_to_rtm     P1-c: Return-to-Me is active and Follow-Me is parked in FM_ARMED,
 //                           writing no cap and no steering. The only bit set on such a tick.
+//   bit 16 steer_takeover   V2.5-Evo - 2026-09-19: the rider's stick has taken over the steering
+//                           byte this tick (steer_during_auto 1, arbitration engaged) while
+//                           Follow-Me was following or returning. New bit in the same u32, no
+//                           record change. (V2.5-Evo - 2026-09-24: the two branches merged, so this
+//                           is no longer "reserved" - it is live. Set straight into fm_log_gate_flags
+//                           inside the body, not at publish time like 17/18.)
 //   V2.5-Evo - 2026-09-19 - DEEP LOG (A): two bits set at PUBLISH time (fmPublishLogSnapshot) from
 //   published state, on EVERY tick whatever path the body took - they are not gate verdicts.
-//   bit 16 (reserved)       taken by the steer-takeover side branch (FM_LOG_GATE_STEER_TAKEOVER);
-//                           deliberately not defined here so the two branches merge without a clash
 //   bit 17 aligning         an autonomous controller (Follow-Me or Return-to-Me) is ACTIVE and in its
 //                           align phase this tick: |heading error| > rtm_align_threshold_deg, the
 //                           same fmHeadingAligning() test cap 4 / FM_RETURN / RTM Phase 1 use. Gated
@@ -1192,7 +1286,7 @@ static_assert(sizeof(VescLogData) == 59, "VescLogData size mismatch — check bi
 #define FM_LOG_GATE_NEEDS_DENGAGE     (1UL << 13)   // P1-a
 #define FM_LOG_GATE_YIELD_TO_RTM      (1UL << 14)   // P1-c
 #define FM_LOG_GATE_RETURN_WINDOW     (1UL << 15)   // P1-b (2026-09-19): the relative-displacement window is open
-// bit 16: reserved for the steer-takeover side branch (FM_LOG_GATE_STEER_TAKEOVER) - not defined here.
+#define FM_LOG_GATE_STEER_TAKEOVER    (1UL << 16)   // 2026-09-19: the rider's stick has taken over the steering byte this tick
 #define FM_LOG_GATE_ALIGNING          (1UL << 17)   // DEEP LOG (A) 2026-09-19: engaged controller is in its align phase this tick
 #define FM_LOG_GATE_BOOST             (1UL << 18)   // DEEP LOG (A) 2026-09-19: the pivot-boost mixer influence is published this tick
 
@@ -1679,7 +1773,7 @@ struct __attribute__((packed)) TelemetryPacket {
     uint8_t rx_heading = 0xFF;        // index 13 — GPS COG÷2 (0-179→0-358°); 0xFF = N/A
     uint8_t fm_heading_err = 127;     // index 14 — bearing error+127; 127 = no data
     uint8_t fm_status = 0;            // index 15 — [7]=aux2_on [6]=aux1_on [5]=vesc_online [4]=rx_wetness [3:2]=heading_conf [1]=rtm_active [0]=fm_active
-    uint8_t fm_flags = 0;             // index 16 — Follow-Me engagement sub-state (assembled in RTMState.ino runRtmLoop): [7]=effective auto-return mode echo (1 = ON; V2.5-Evo 2026-09-19, read by the remote's display and return gesture) [6:4]=reserved for the accepted-mode echo [3]=fault-stop-sticky [2]=armed-not-ready [1]=engaged (FM_ACTIVE, or FM_RETURN while it moves) [0]=armed. Was reserved_tx_imu (unused reserved byte).
+    uint8_t fm_flags = 0;             // index 16 — Follow-Me engagement sub-state (assembled in RTMState.ino runRtmLoop): [7]=effective auto-return mode echo (1 = ON; V2.5-Evo 2026-09-19, read by the remote's display and return gesture) [6]=reserved [5]=steer takeover STANDING this tick (the stick is steering an auto-steer run; display only) [4]=steer_during_auto echo (1 = take over: the remote's Gate 4 steer-exit stands down; 0 = cancel) - both V2.5-Evo 2026-09-19, sent every tick in every FM state [3]=fault-stop-sticky [2]=armed-not-ready [1]=engaged (FM_ACTIVE, or FM_RETURN while it moves) [0]=armed. Was reserved_tx_imu (unused reserved byte).
     uint8_t rx_bearing_to_tx = 0xFF;  // index 17 — bearing from buggy toward rider÷2; 0xFF = N/A
     uint8_t link_quality = 0;         // index 18 (must be last)
 } telemetry;

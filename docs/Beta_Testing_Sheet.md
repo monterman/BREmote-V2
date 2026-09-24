@@ -67,7 +67,7 @@ esptool --chip esp32c3 --port COM<N> write-flash 0x10000 <the-file>.bin
 
 ### Motor ramping (RX safety, SW33+)
 `motor_ramp_s` (RX setting, in **seconds**) limits how fast the motors spin up — smooths the throttle **and** prevents a single motor from taking off at power-on or on a glitch. **Default 0.75 s**, range 0–4 s (`0` = instant/off). It's like the VESC ramp time, but on the remote, so it protects every motor even without a tuned VESC.
-> ⚠️ It **also ramps differential steering** — a sharp turn builds over this time. You can always *straighten* instantly (fall is instant); only *starting* a hard turn is ramped. Set higher for smoother/safer, lower for snappier.
+> **2026-09-24 — this now ramps the THROTTLE ONLY.** It used to ramp differential steering as well (the limit sat on the two finished motor outputs, and the difference between those two *is* the turn), so a sharp turn built up over this time. It no longer does: steering is immediate in both directions — a turn lands on the very next 10 ms pass and straightening is instant. Dropping power stays instant too (trigger release, failsafe, an RTM/Follow-Me stop). Set higher for a gentler start, lower for a snappier one; every value from 0.2 s to 4 s is honoured to within 10 ms and is never faster than you set it. The automatic modes can use their own, quicker ramp — see `auto_ramp_s`.
 
 ---
 

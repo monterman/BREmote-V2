@@ -546,7 +546,7 @@ RTM stops automatically when **any** of these conditions occur:
 | LoRa link lost | No packet for failsafe timeout |
 | Max runtime | If `rtm_max_runtime_s > 0` (default: 0 = disabled) |
 | Convergence fail | Distance to TX not decreasing (Phase C, checked every 5 s) |
-| Steering input | Steering override while `rtm_steer_exit_on_input = 1` (default) |
+| Steering input | A stick push beyond 20 counts, when the buggy's `steer_during_auto` is 0 (cancel, default). With 1 the buggy lets the stick take over the steering while it is held and resumes when it centres; the remote does not exit (it follows the buggy through telemetry). |
 
 On any gate failure: throttle → 0, TX display shows `St` for 2 s, haptic confirms disarm.
 
@@ -570,14 +570,14 @@ On any gate failure: throttle → 0, TX display shows `St` for 2 s, haptic confi
 | `rtm_gps_timeout_ms` | 2000 | TX GPS stale timeout in ms |
 | `rtm_max_runtime_s` | 0 | Max runtime (0 = disabled) |
 | `rtm_display_mode` | 0 | 0=distance, 1=speed, 2=alternating |
-| `rtm_steer_exit_on_input` | 1 | 1=steering exits RTM, 0=correction blend |
+| `rtm_steer_exit_on_input` | 1 | No longer read by the remote (kept so stored settings load). Whether the stick cancels or takes over an automatic return is the buggy's `steer_during_auto`; the remote follows the buggy. |
 
 </details>
 
 ### SPIFFS Configuration (RX)
 
 <details>
-<summary><strong>Click to expand: RTM RX SPIFFS parameters (8 fields)</strong></summary>
+<summary><strong>Click to expand: RTM RX SPIFFS parameters (9 fields)</strong></summary>
 
 <br>
 
@@ -585,6 +585,7 @@ On any gate failure: throttle → 0, TX display shows `St` for 2 s, haptic confi
 |---|---|---|
 | `rtm_rx_enabled` | 1 | RX-side RTM enable |
 | `rtm_rx_override_steering` | 1 | Allow RX to auto-steer (0=disable steering override) |
+| `steer_during_auto` | 0 | What the stick does while the buggy steers itself (Follow-Me following, auto-return, return-to-me). 0 = cancel: a held push (40 counts for 0.5 s, after the first 2 s of a run) ends the automatic steering. 1 = take over: the stick steers while held, centre it (within 30 counts for 0.2 s) and the buggy goes back to aiming at you, nothing cancelled; throttle caps still apply; a stick not read centred since the run began cannot take over; 10 s held ends as a cancel. With `rtm_rx_override_steering` 0 the stick already steers, so 1 has nothing to take over and cancels nothing, while 0 still cancels. Off by default: `?set steer_during_auto 1` + `?save`. |
 | `rtm_compass_required` | 1 | Require at least one valid heading source before RTM runs; 0=bypass (advanced only) |
 | `rtm_use_compass` | 1 | Heading source mode: 0=GPS COG only, 1=Hybrid GPS+snapshot (default), 2=Compass only (diagnostic) |
 | `rtm_cog_min_speed_kmh` | 3 | Minimum speed (km/h) for GPS COG to be considered reliable. Below this, falls back to compass snapshot. |
@@ -639,6 +640,17 @@ While Follow-Me is armed on both TX and RX with a fresh link, TX fires one mediu
 - Setting it at or below your rope length would let Follow-Me engage while you are still **on** the rope, which is exactly what the interlock prevents.
 - `0` = auto: the firmware works it out as 1.5 × (Min Distance + Smoothing Band). Use a measured value if you know your rope.
 - You have to stay beyond this distance for 2 seconds before Follow-Me can engage.
+
+### Two motor ramps — manual towing vs the automatic modes (RX)
+
+The motors never jump to a new throttle; they ramp up over a set number of seconds (the fall is always instant). Since 2026-09-19 there are two ramps, because the slow one was only ever for the rider's shoulder on a manual tow start — the rope is loaded then, and it is not loaded while the buggy drives itself.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `motor_ramp_s` | 0.75 | **Manual towing motor ramp.** Seconds for the motors to ramp up when you squeeze the trigger in manual towing (rider on the rope). Starts the motors progressively so the rope does not give a hard yank on your arm. Larger = gentler start; smaller = quicker. This ramp is also used every time the buggy hands control back to you (arrival, cancel, hold). It ramps **throttle only** — steering is immediate, a turn lands on the very next 10 ms pass and straightening is instant. Dropping power is instant too (trigger release, failsafe, an RTM/FM stop). 0 = instant. Range 0-4 s, honoured to within 10 ms and never faster than you set it. |
+| `auto_ramp_s` | 0 | **Automatic modes ramp.** Seconds for the motors to ramp up while the buggy drives itself — following you in Follow-Me, spinning around and coming back in return-to-me / auto-return. The rope is not loaded in these modes, so you want this SMALL (quick) so the buggy is reactive: catches up fast and pivots fast. Smaller = quicker. Like the manual ramp it is **throttle only** — steering is never ramped in any mode, so a pivot turns as hard as it is asked to from the first tick. 0 = same as the manual ramp (unchanged behaviour). Try 0.5. Range 0.2-4.0 s (a value under 0.2 is raised to 0.2). Any future mode with the buggy ahead of you uses the manual ramp. |
+
+**The rule:** the ramp follows whoever is capping the throttle. While Follow-Me is following, an auto-return is moving or a return-to-me is running, the automatic ramp applies (a stick take-over included). Manual towing, Follow-Me armed but not yet engaged, and every hand-back to you — arrival, a cancel, a hold, the fault ramp — use the manual ramp, so control always comes back to you softly. Switching between the two mid-rise never jumps: the ramp continues from where the motors are, at the new rate.
 
 ### SPIFFS Configuration (TX)
 
@@ -867,7 +879,7 @@ Full bar (10 pixels) = buggy at arm distance. Shrinks from the right as the bugg
 BREmote V2.5-Evo is in Alpha. The firmware compiles, has been water tested for control flow and safety gates, and includes anti-spoofing and RTM/FM features. Currently running more water tests to graduate to Beta release.  If you are an alpha tester building on this fork, the project recommends:
 
 - Test in a controlled environment (shallow water, short range, motors disconnected for first dry run, second run with motors on a leashed test stand) before any open-water use.
-- Until the compass EMI behavior on your specific hardware is characterized, treat RTM steering as advisory, not autonomous. Keep `rtm_steer_exit_on_input = 1` enabled (any sideways toggle disengages RTM immediately and returns full manual control).
+- Until the compass EMI behavior on your specific hardware is characterized, treat RTM steering as advisory, not autonomous. Keep the buggy's `steer_during_auto` at 0 (cancel: any sideways toggle disengages RTM immediately and returns full manual control) until the take-over behaviour has been bench-spun and audited on your hardware.
 - Manual control must always work even if RTM, FM, GPS, or compass fail. Do not rely on autonomous features as the primary safety path.
 - Releasing the throttle trigger always stops the motor — this is the failsafe, and it works regardless of what RTM, FM, or telemetry are doing.
 

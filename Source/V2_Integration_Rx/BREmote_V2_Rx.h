@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-24 - COMMENT-ONLY RESYNC after the throttle-ramp move in PWM.ino: motor_ramp_s ramps the THROTTLE ONLY and steering is never rate-limited, so the confStruct field comment, the defaultConf line and the g_motor0_cmd / g_motor1_cmd declaration (which claimed the observers were independent of the ramp - they now carry it) are corrected. No struct, no default value, no code and no field changed: sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG level 5 ("everything", owner request for the test sessions): VescLogDataL5 = the complete 87 B level-4 record + a 22 B level-5 block = 109 B (static_assert 109): the rider's position as the RX holds it (rx_tx_gps_lat/lng as float, the distinct-fix counter, the fix age), the classic RTM phase code and rtm_approach_cap, the align cap / align influence / mixer influence in force this tick, the auto-return override state, telemetry.fm_flags as sent, the 0xF2 keepalive age, and two reserved bytes for the steer-takeover branch (l5_rsvd_takeover_active / _end) so its integration does not bump the size again. Every field is a COPY of published state, taken in fmPublishLogSnapshot() (loop task, one writer) and carried in FmLogSnapshot; nothing in the control path reads any of it. log_level 5 selects it (logResolveLevel / logRecordSizeForLevel), createNewLogFile() stamps record_size 109, logCsvHeaderFor() gains the L5 tier (65 columns) and logFormatCsvRow() prints every level-5 field with units. Capacity on the 1757 KB the filesystem reports: about 1 h 30 min at 3 Hz, about 55 min at 5 Hz (87 B level 4: about 1 h 55 min / 1 h 10 min). No confStruct change - the log_level field is the same u16, its validator max is raised 4 -> 5 - sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG (B)+(C): VescLogDataL4 grows 83 -> 87 B (static_assert 87). (B) fm_rider_raw_dx10 u16 = the rider's RAW displacement speed x 10 km/h (RTMState.ino fm_rider_raw_kmh, the number the FM_RETURN candidate is judged on; the filtered EMA track was already logged as fm_rider_speed_dx10), sentinel 0xFFFF = unknown (< 0). (C) motor0_cmd / motor1_cmd u8 = the two post-mixer, pre-map motor commands out of calcPWM()'s steering_type 1 branch (g_motor0_cmd / g_motor1_cmd, two diagnostic observers written every 100 Hz tick, the g_effective_steer pattern; 0 for the efoil / servo branches). TIER FIX for the readers: logCsvHeaderFor() used to return the 65 B DIAG header for anything smaller than sizeof(VescLogDataL4), so after this bump every 83 B file written since 2026-09-17 would have printed with the wrong header; it now picks by the offsets of the blocks actually present (65 B DIAG / 83 B L4_83 / 85 B +raw / 87 B full) and logFormatCsvRow() guards each new field on record_size >= its offset + size. The 2026-09-17 'LAYOUT IS FINAL' note is history. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG (A): the one unused byte of the level-4 Follow-Me block, fm_pad, becomes fm_return_reason - a straight copy of the controller's FmReturnReason latch (RTMState.ino fm_return_last_reason: 0 = no event since boot; 4 = RETURN entered, 6/7/8/11 = arrived / cancelled / timed out / steered, 1-3 = a candidate dropped), STICKY - it changes only on an event, so read it on the row where fm_state changes. Two new bits in the existing fm_gate_flags u32: bit 17 aligning (an autonomous controller is turning to face its target this tick) and bit 18 boost (the pivot-boost mixer influence is published this tick); bit 16 is left free because the takeover side branch already defines it. CSV gains fm_return_reason, fm_aligning, fm_boost (45 -> 48 columns for an 83 B file; the two bits are read out of fm_gate_flags). Record size unchanged at 83, static_assert stays 83, old 83 B files print 0 in all three new columns (the pad was always 0). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -395,9 +396,19 @@ struct confStruct {
     // V2.5-Evo - 2026-06-05 - SW33: MOTOR RAMPING (seconds). Time for a motor output to rise
     // 0->full. Applied to BOTH motor channels — smooths the throttle AND prevents a single motor
     // from taking off (throttle- or steering-driven). Fall is instant (release/failsafe/e-stop/
-    // straightening drop immediately). NOTE: this also ramps differential steering — a sharp turn
-    // builds over this time. 0 = instant/off. sizeof grows 172->176; SW_VERSION 32->33; SPIFFS resets.
-    float    motor_ramp_s;              // 0=off/instant, 0-4 s; default 0.75
+    // straightening drop immediately). NOTE: this also ramped differential steering — a sharp turn
+    // built over this time. 0 = instant/off. sizeof grows 172->176; SW_VERSION 32->33; SPIFFS resets.
+    //
+    // V2.5-Evo - 2026-09-24 - THE STEERING SENTENCE ABOVE IS HISTORY. It was true because the
+    // rise-limit sat AFTER the differential mixer, on PWM0_time / PWM1_time - and the difference
+    // between those two outputs IS the turn, so it slewed steering too (on steering_type 2 it slewed
+    // the steering servo itself, which carries no throttle at all). calcPWM() now rate-limits the
+    // THROTTLE instead: effective_thr, after every cap, before the mixer. So this field ramps
+    // THROTTLE ONLY - steering is never rate-limited and a turn lands on the next 10 ms pass. Fall
+    // is still instant (release / failsafe / RTM / FM stop). The ramp accumulates in Q12 (1/4096 of
+    // a throttle count), so the whole 0.20-4.00 s range is honoured to within one 10 ms tick and is
+    // never faster than configured; the per-setting numbers are in PWM.ino's file header.
+    float    motor_ramp_s;              // 0=off/instant, 0-4 s; default 0.75; THROTTLE only — steering is never ramped
 
     // V2.5-Evo - 2026-07-20 - SW34 reserved slots (added together so only ONE config wipe is needed).
     // They were all storage slots at SW34 so v2 features could be code-only, with no re-wipe.
@@ -654,7 +665,7 @@ confStruct defaultConf = {SW_VERSION, 2, 22, 1, 50 /*steering_influence: convent
   4.0f,       // rtm_target_speed_kmh: Phase 2 GPS speed cap; 4 km/h default; 0=disabled
   45,         // rtm_align_threshold_deg: heading error threshold for Phase 1→2 transition; 45° default
   // V2.5-Evo - 2026-06-05 - SW33: motor ramping (secs) default
-  0.75f,      // motor_ramp_s: motors ramp 0->full over 0.75s (0=instant/off, 0-4s); also ramps steering
+  0.75f,      // motor_ramp_s: THROTTLE ramps 0->full over 0.75s (0=instant/off, 0-4s); steering is never ramped
   // V2.5-Evo - 2026-07-20 - SW34 slots. 2026-07-25 A2: fm_engage_dist_m is now live; the other two stay reserved/unread.
   0.0f,       // fm_engage_dist_m: 0 = auto (RTMState computes d_engage from min_dist + band); >0 = fixed engage distance in metres
   0,          // gps_dyn_model: 0 = default -> Sea (was auton_runtime_cap_s, renamed in place 2026-08-16)
@@ -1731,13 +1742,20 @@ volatile uint8_t g_effective_steer = 127;
 
 // V2.5-Evo - 2026-09-19 - DEEP LOG (C): the two motor commands the differential mixer produced this
 // calcPWM() pass, in 0-255 command counts AFTER the mixer and BEFORE map() into each channel's PWM
-// range (so the split is visible independent of PWM_min/max, trim, the ramp and the effective_thr
-// == 0 clamp, all of which act on the microsecond values afterwards). Written unconditionally on
+// range (so the split is visible independent of PWM_min/max, trim and the effective_thr == 0 clamp,
+// all of which act on the microsecond values afterwards). Written unconditionally on
 // every pass of the steering_type == 1 branch from motor_mix.motor0/motor1; 0 / 0 for the efoil and
 // servo branches, which have no mixer. DIAGNOSTIC OBSERVERS ONLY - the g_effective_steer pattern
 // exactly: written by calcPWM() (generatePWM task, 100 Hz), read by fillLevel4Diag() (loggerTask),
 // never read back into any control path. Single-byte volatiles, atomic on the ESP32-C3. A bench
 // check: full-lock squeeze at 30 % throttle (76/255) with steering_influence 60 -> turn = 46 -> 30 / 122.
+// V2.5-Evo - 2026-09-24 - the ramp is deliberately NO LONGER in that list of things these observers
+// are independent of. motor_ramp_s used to rate-limit the finished microsecond values, downstream of
+// every observer, so it was invisible in every log column; it now rate-limits the throttle BEFORE the
+// mixer, so these two carry it and show the motor commands the ramp actually permitted on that tick.
+// Their definition is otherwise unchanged - still post-mixer, pre-map, still diagnostic only. A rider
+// squeezing from rest therefore shows these two climbing over motor_ramp_s while thr_received_log
+// (the raw TX byte) jumps immediately: that gap IS the ramp, and it is the only place it is visible.
 volatile uint8_t g_motor0_cmd = 0;   // motor 0 command out of the mixer, 0-255; 0 when not the diff branch
 volatile uint8_t g_motor1_cmd = 0;   // motor 1 command out of the mixer, 0-255; 0 when not the diff branch
 

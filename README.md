@@ -155,7 +155,7 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 | Module | HT-CT62 (ESP32-C3 + SX1262 + WiFi + **BLE** integrated) | HT-CT62 |
 | Radio | SX1262 LoRa | SX1262 LoRa |
 | BLE | Built-in (ESP32-C3) — NUS + VESC Tool protocol ✅ in master; `bt_enabled` SPIFFS config (0=off, 1=Hall-mode, 2=always-on) | Built-in (ESP32-C3) — RX BLE planned |
-| GPS | BN-220 or [HGLRC M100 Mini](https://www.hglrc.com/products/hglrc-m100_mini-gps) (M10 chip, no compass, 3.3V–5V) | BN-880 or [HGLRC M100-5883](https://www.hglrc.com/products/m100-5883-gps) (M10 chip + compass) |
+| GPS | BN-220 or [HGLRC M100 Mini](https://www.hglrc.com/products/hglrc-m100_mini-gps) (M10 chip, no compass, 3.3V–5V) | BN-880 or [HGLRC M100-5883](https://www.hglrc.com/products/m100-5883-gps) (M10 chip + compass) — **not the HGLRC M100 Pro** ("B101" chip, not u-blox; see [docs/GPS.md §7](docs/GPS.md#7-fitting-a-different-gps)) |
 | Compass | None | QMC5883L (I2C `0x0D`) **or** QMC5883P (I2C `0x2C`) — auto-detected at boot |
 | Display | HT16K33 dot matrix (I2C 0x70) | None |
 | ADC | ADS1115 (I2C 0x48) | None |

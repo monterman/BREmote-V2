@@ -332,7 +332,15 @@ the line reads `<-- matches gps_dyn_model` when it took.
 The firmware finds the module at whatever baud it ships on and configures it in whichever dialect
 it speaks. Set `gps_chip_type` (0 = BN-220, 1 = BN-880, 2/3 = M10) and reboot.
 
-Two things to check before buying:
+Three things to check before buying:
+
+**Chip — it must be a u-blox M10 (or M8/M9).** The listing must say **u-blox M10 / M10050** (or
+NEO-M8N / M9N). **Do not buy the HGLRC M100 Pro** — HGLRC lists its chip as **"B101"**, which is not a
+u-blox part: ArduPilot users with five units found the UBX configuration ACKs unreliable, most polled
+messages unanswered, and it ships UBX-only. BREmote parses NMEA and relies on those ACKs to switch NMEA
+back on, so a B101 module can sit silent on a perfectly good board. Known-good with compass:
+**HGLRC M100-5883** (u-blox M10 + QMC5883P, 3.3–5 V, pads `SCL · SDA · RX · TX · 5V · GND`) and the
+Beitian **BN-880** (M8 + QMC5883L, 5 V). Known-good without compass (TX): **HGLRC M100 Mini**, BN-220.
 
 **Voltage.** The TX supplies **3.3 V only**. Modules needing 3.6 V+ (e.g. HGLRC M100 Pro at
 3.6–5.5 V) will have corrupted UART on the TX. Measure the red wire on your board before
@@ -346,7 +354,7 @@ one firmware image, either part, nothing to set:
 
 | I²C address | Part | Found on |
 |---|---|---|
-| `0x0D` | **QMC5883L** | Beitian BN-880, HGLRC M100 Pro |
+| `0x0D` | **QMC5883L** | Beitian BN-880 (also the HGLRC M100 Pro — **not recommended**, see above) |
 | `0x2C` | **QMC5883P** | HGLRC M100-5883 |
 | `0x1E` | HMC5883L | very old BN-880 stock — **reported, not supported** |
 

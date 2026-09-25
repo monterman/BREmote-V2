@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-25 - comment only (R-9): the `!(st > 0.0f)` guard in throttleRampStepQ12() is documented as UNREACHABLE from its only caller, so nobody relies on it to stop a NaN - the NaN is stopped in cfgValidateCrossField() instead. No code change.
 // V2.5-Evo - 2026-09-19 - The motor rise-limit (the "motor ramp"), pure and host-testable.
 // V2.5-Evo - 2026-09-24 - REWRITTEN: this is now a SINGLE-CHANNEL ramp on the THROTTLE (0-255 command
 //   counts), not a two-channel ramp on the finished PWM microseconds, and it accumulates in Q12 fixed
@@ -67,7 +68,15 @@ struct OutputRampState {
 static inline uint32_t throttleRampStepQ12(float ramp_s, float tick_hz)
 {
   const float st = (float)THROTTLE_RAMP_Q12_FULL / (ramp_s * tick_hz);
-  if (!(st > 0.0f))                              return 1UL;   // also catches NaN
+  // V2.5-Evo - 2026-09-25 - R-9: this line is UNREACHABLE from the only caller, and must not be
+  // trusted as protection. throttleRampStep() calls this solely inside `if (ramp_s > 0.001f)`, and
+  // tick_hz is the literal 100.0f at the single call site, so by the time we arrive `st` is always
+  // positive and finite: a NaN or a negative ramp_s fails that caller's own test and never gets
+  // here. It stays as a belt for any FUTURE caller that does not pre-filter its inputs. The NaN
+  // that actually matters is stopped upstream, in cfgValidateCrossField() (RX ConfigService.ino),
+  // which corrects a NaN motor_ramp_s or auto_ramp_s on load. The `s == 0` floor below is a
+  // different case and IS reachable - a corrupt blob holding a huge ramp_s lands there.
+  if (!(st > 0.0f))                              return 1UL;
   if (st >= (float)THROTTLE_RAMP_Q12_FULL)       return THROTTLE_RAMP_Q12_FULL;
   const uint32_t s = (uint32_t)st;
   return (s == 0UL) ? 1UL : s;

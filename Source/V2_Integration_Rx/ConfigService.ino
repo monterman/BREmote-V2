@@ -230,8 +230,28 @@ bool cfgValidateCrossField(confStruct &candidate, String &err)
   if (candidate.log_level > 5)            candidate.log_level = 5;
   // V2.5-Evo - 2026-09-19 - steer_during_auto is a 0/1 switch on the SAME terms: the slot used to
   // be a RESERVED u16 validated 0-65535, so a value above 1 could in principle be sitting in a
-  // stored blob; anything above 1 means take over, corrected silently on load rather than rejected.
-  if (candidate.steer_during_auto > 1)    candidate.steer_during_auto = 1;
+  // stored blob; it is corrected silently on load rather than rejected.
+  // V2.5-Evo - 2026-09-25 - R-8: out of range now becomes 0, NOT 1. WHAT WAS WRONG: this field is a
+  // PERMISSION - it authorises the rider's stick to take over autonomous steering - and the old
+  // clamp sent a corrupt value toward ENABLED, the one direction a clamp must never take a
+  // permission. Every other correction in this function moves toward the behaviour-preserving
+  // default, and for this field that default is 0 (the stick CANCELS), which is what every fielded
+  // board stores. A blob holding 2 now reads as "cancel", the conservative reading; a rider who
+  // wants takeover asks for it explicitly with ?set steer_during_auto 1 + ?save.
+  if (candidate.steer_during_auto > 1)    candidate.steer_during_auto = 0;
+  // V2.5-Evo - 2026-09-25 - R-9: motor_ramp_s NaN guard, the same shape as the auto_ramp_s guard
+  // below. WHAT WAS WRONG: validateConfig()'s range test is a pair of comparisons, and BOTH
+  // (NaN < min) and (NaN > max) are false, so a NaN in this slot passed validation untouched. It
+  // then failed `ramp_s > 0.001f` inside throttleRampStep() (Common/OutputRamp.h) - every
+  // comparison against a NaN is false - and the ramp silently switched OFF: full instant throttle
+  // where the rider had configured a soft start, with nothing printed to say so. That is precisely
+  // the event the ramp exists to prevent, and on a loaded tow rope it lands on the rider's arm.
+  // NaN goes to defaultConf.motor_ramp_s, NOT to 0: unlike auto_ramp_s, 0 is a legal value here and
+  // it MEANS "ramp off", so sending NaN to 0 would preserve the very behaviour being rejected. The
+  // factory default is the behaviour-preserving answer when the stored value is unreadable. A NaN
+  // can only arrive from a corrupt SPIFFS blob - ?set and the web page's 0-4 row refuse it first.
+  if (!(candidate.motor_ramp_s == candidate.motor_ramp_s))
+    candidate.motor_ramp_s = defaultConf.motor_ramp_s;
   // V2.5-Evo - 2026-09-19 - auto_ramp_s: 0 = inherit motor_ramp_s, else kAutoRampMinS..kAutoRampMaxS.
   // The fm_engage_dist_m shape - exactly 0, or at least the floor - as CLAMPS, never rejections: this
   // runs on the LOAD path, and the slot was a RESERVED float validated -1e6..1e6, so a stored blob

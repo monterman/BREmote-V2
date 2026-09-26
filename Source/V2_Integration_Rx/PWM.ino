@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-25 - MANUAL PIVOT ASSIST. WHAT THE OWNER ASKED FOR: "should be natural but for when starting from [low] speed to pivot fast. There are many occasions where the buggy's nose is misaligned and you want to turn in the right direction before you take off." He already does it by hand - easing the trigger back to about half while holding the stick over tightens the turn, and at full throttle the arc is too wide - and steering_influence is already at its maximum 100, so no stored setting can reproduce it. WHAT THIS ADDS: calcPWM() multiplies the ramped throttle by a factor of 1.00 down to kPivotFloorQ8/256 (0.50 as shipped) while the buggy is slow AND the rider's stick is hard over, and feeds THAT to the differential mixer. SUBTRACT-ONLY BY CONSTRUCTION: the factor is never above 1.0, the result is taken only when it is strictly lower (`if (assisted < pivot_thr)`), and it is applied DOWNSTREAM of every cap and of the ramp, so pivot_thr <= ramped_thr <= effective_thr <= min(rtm_approach_cap, fm_throttle_cap) <= thr_received on every tick - the assist cannot raise a byte, lift a cap, or reach past the ramp's rise limit. MANUAL ONLY: gated off whenever rtm_rx_active || fm_rx_active, because the automatic modes have their own align pivot (fm_align_cap / fm_align_influence via align_mixer_influence_override) and the two must never fight; that machinery is not touched here. DIFF ONLY: gated on steering_type == 1, because the assist exists to change how the differential mixer splits the throttle - on the efoil and servo branches a throttle cut during a turn buys nothing, so they keep reading ramped_thr and their bytes are unchanged. NATURAL, NOT SWITCH-LIKE: two continuous blends (speed, stick deflection) multiply into a DEPTH, the depth is rate-limited to kPivotDepthRiseQ8 / kPivotDepthFallQ8 per tick so it walks rather than steps, and a Schmitt band (kPivotDepthArmQ8 to arm, 0 to release) stops it flickering at the edge of the window. PROVABLY INERT ABOVE THE WINDOW: depth 0 makes the factor exactly 256/256, and (thr * 256) >> 8 == thr for every byte, so fast riding and small stick angles produce the identical bytes they do today. SAFETY-NEUTRAL-1 is untouched and still last. All nine tuning numbers are compile-time kPivot* constants in BREmote_V2_Rx.h with their derivations: no confStruct field, so sizeof stays 200, SW_VERSION stays 36, and the owner's stored settings are NOT wiped by this flash.
 // V2.5-Evo - 2026-09-24 - MERGE of the takeover side branch into the throttle-ramp move. The two branches rewrote the same block in opposite directions: this one moved the rise-limit AHEAD of the mixer onto the throttle (so steering is never slewed), the side branch kept it after the mixer but gave it TWO rates. Both survive. The ramp step lives in Common/OutputRamp.h as the side branch intended, but the header is rewritten as a SINGLE-CHANNEL 0-255 throttle ramp with the Q12 accumulator (the two-channel microsecond version and its min-1-us floor are gone), and calcPWM() calls it at the pre-mixer site with the side branch's selector: (rtm_rx_active || fm_rx_active) && auto_ramp_s > 0.001 ? auto_ramp_s : motor_ramp_s. The side branch's post-mixer call site is deleted - it would have double-ramped and re-ramped steering. Its stale-state fix is KEPT and is now the reason the ramp-off path is inside the helper: with the ramp off the memory tracks the target instead of going stale, so a ramp switched on mid-session no longer dips. Its steering work is untouched: auto_owner / takeover / auto_cmd, steer_takeover_active and the pivot boost following auto_cmd all merged as written. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-24 - RAMP BEFORE THE MIXER, STEERING IS INSTANT. WHAT WAS WRONG: the rise-limit sat AFTER the differential mixer and rate-limited PWM0_time / PWM1_time, i.e. the two finished MOTOR outputs - and on a differential drive the turn IS the difference between those two outputs, so the block rate-limited the steering as well. Its own comment admitted it ("By design this also ramps the differential-steering response (a sharp turn builds over this time)"). That is the one thing the owner has ruled out repeatedly: the ramp exists for the THROTTLE - a soft tow start that pulls a rider off a shoulder without snatching the rope - while steering must land on the very next 10 ms pass. On the servo branch it was worse: the block was rate-limiting the steering SERVO channel itself, which has no throttle in it at all. FIX: the rise-limit moves UP into the throttle domain (0-255 counts), applied to effective_thr AFTER every cap and BEFORE the mixer, producing ramped_thr. All three branches drive their motor channel(s) from ramped_thr; the mixer computes the turn from ramped_thr with no rate limit of its own, so a stick flick moves both motors on the next pass; the post-mixer block is deleted (keeping it would double-ramp). RISE ONLY - the fall branch snaps onto the target, so trigger release, failsafe, RTM/FM emergency stop and straightening still drop the output on the same tick. motor_ramp_s <= 0.001 still means instant/off. CAPS STILL BOUND THE OUTPUT: the ramp only ever approaches effective_thr from below, so ramped_thr <= effective_thr <= rtm_approach_cap / fm_throttle_cap on every tick - a cap DROP is instant, a cap RISE is slewed, exactly as before - and the pivot boost still only redistributes that permitted throttle. STEP - Q12 FIXED POINT, and why it has to be: the ramp accumulates in 1/4096 of a throttle count (full scale 255 x 4096 = 1044480, a uint32_t), step = full scale / (motor_ramp_s x 100 ticks per second). A whole-count integer step does not work in this domain - 255 counts is four times coarser than the ~1000-count PWM span the old post-mixer ramp used, so a whole-count step turned the owner's 1.00 s setting into 1.28 s and floored every setting from 1.275 s upward at one fixed 2.55 s (4.00 s would have run 36 % FAST, the wrong direction). With Q12 the entire configured 0.20-4.00 s range lands WITHIN ONE 10 ms TICK of nominal and always on the slow side, because truncation is the safe direction and the ramp is never faster than asked: 0.20 s -> 0.20 s; 0.50 s -> 0.51 s; 0.75 s -> 0.76 s; 1.00 s -> 1.01 s; 1.50 s -> 1.51 s; 2.00 s -> 2.01 s; 3.00 s -> 3.01 s; 4.00 s -> 4.01 s. The residual is the single tick it costs to land exactly on target - a flat +10 ms, which is +0 % at the 0.20 s end (20 ticks divide exactly), +2 % worst relative at 0.50 s, and +0.25 % at 4.00 s; measured by brute-force sweep of the whole range in 0.01 s steps, worst case +1 tick, zero cases faster than configured. The old max(1.0f, ...) WHOLE-count floor is gone; a 1-unit (1/4096 count) floor replaces it purely to guarantee forward progress against a corrupt out-of-range config value, and it cannot bite anywhere in the validated range, where the step runs 2611 (4.00 s) to 52224 (0.20 s). One shared ramp also means the two motors can no longer slew at different real rates when one channel's PWM span hits a floor. DEEP LOG: g_motor0_cmd / g_motor1_cmd now carry the ramp and are still exactly what their name says (post-mixer, pre-map motor commands); thr_received_log is still the raw TX byte and g_effective_steer is still the steering byte applied. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG (C): calcPWM() records the two post-mixer, pre-map motor commands (motor_mix.motor0 / motor1, 0-255 counts) into g_motor0_cmd / g_motor1_cmd - diagnostic observers only, the g_effective_steer pattern: written on every pass, never read back into any control path. The steering_type 1 branch writes the mixer's values; the efoil and servo branches write 0 / 0. No PWM value, cap, gate or ramp is touched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -145,6 +146,162 @@ void calcPWM()
   const float ramp_s          = auto_ramp_owner ? usrConf.auto_ramp_s : usrConf.motor_ramp_s;
   const uint8_t ramped_thr    = throttleRampStep(&motor_ramp, effective_thr, ramp_s, 100.0f);
 
+  // -- MANUAL PIVOT ASSIST (kPivot* constants in BREmote_V2_Rx.h) -------------------------------
+  // V2.5-Evo - 2026-09-25 - Slow buggy + hard-over stick = lower the throttle reaching the mixer,
+  // which is exactly what the owner does by hand to tighten a standing-start pivot. It produces
+  // pivot_thr, and ONLY the steering_type 1 (differential) branch below reads it.
+  //
+  // WHY IT SITS HERE, AFTER THE RAMP, AND NOT AS A THIRD CAP ABOVE IT. Both placements are
+  // subtract-only, so this is a feel decision and it was decided on the EXIT from the pivot:
+  //   - As a cap BEFORE the ramp, the cut would enter instantly (the ramp's fall is instant) but
+  //     the RECOVERY would be slewed by the ramp. At the owner's motor_ramp_s of 1.00 s, coming
+  //     back from a 50 % cut costs 0.5 s of climb - so every pivot would end in half a second of
+  //     sluggish exit, which is worse than having no pivot at all. Worse, the cut would also drag
+  //     the ramp's MEMORY down, so the ramp would then have to re-climb ground it had already won.
+  //   - AFTER the ramp, the assist is a pure multiply with no memory of its own in the throttle
+  //     domain: the cut lands on the very next 10 ms pass, the ramp's memory keeps tracking the
+  //     un-assisted capped throttle and never dips, and the recovery is governed by the assist's
+  //     OWN release rate (kPivotDepthFallQ8, 0.08 s full travel) instead of borrowing the tow-start
+  //     ramp's. The ramp keeps doing the only job it has - rise-limiting the rider's throttle for a
+  //     soft tow start - and the assist owns its own exit. That is the crisp pivot exit he needs.
+  // The ramp still BOUNDS the assist: pivot_thr <= ramped_thr, always, so nothing the assist does
+  // can outrun the rise limit. And because the fall branch of the ramp is instant, effective_thr
+  // 0 still gives ramped_thr 0 and therefore pivot_thr 0 on the same tick - the deadman is
+  // untouched, and SAFETY-NEUTRAL-1 below is still the last writer.
+  uint8_t pivot_thr = ramped_thr;
+  {
+    // THE SPEED SOURCE: GPS, and only GPS. Two reasons, and the second is the decisive one.
+    //   1. There is no calibrated ERPM-to-km/h conversion on this board. usrConf.vesc_erpm_per_kmh
+    //      is 0.0 - the factory default, meaning "not calibrated, skip the Phase C VESC check" -
+    //      and the owner's own config backup of 2026-09-25 confirms it is still 0.0. An
+    //      ERPM-derived speed would be a guess dressed as a measurement.
+    //   2. Even calibrated, ERPM is the WRONG signal for this test. These are propeller drives:
+    //      at a standstill with the trigger held the motors spin near their free-running speed
+    //      while the buggy is not moving at all. That is the EXACT situation this assist exists
+    //      for, and an ERPM-based speed test would read it as "fast" and refuse to engage. ERPM
+    //      measures thrust, not ground speed.
+    // GPS.ino is concatenated before this file, so these are its own definitions; the externs are
+    // written out so the dependency is visible where a reader will look for it (the same habit
+    // Logger.ino and V2_Integration_Rx.ino already follow).
+    extern float         gps_last_speed_kmh;   // last ACCEPTED GPS speed, km/h (Phase A passed)
+    extern unsigned long gps_last_ms;          // millis() of that reading; 0 = none this session
+    extern bool          gps_rejected;         // Phase A anti-spoofing has rejected the GPS
+    // Plain cross-task reads of 32-bit, naturally-aligned values on a single-core RV32 part - a
+    // single load each, which cannot tear. They are inputs to a PERMISSION test whose failure
+    // direction is "no assist", so even a one-tick-old value can only make the assist smaller or
+    // absent, never larger.
+
+    // THE ASSIST'S ONLY MEMORY: the depth, Q8, 0..256. Zero-init is the inert state, so the first
+    // squeeze after boot behaves like every later one (the OutputRampState argument, same reason).
+    // A function-static in calcPWM() is safe here for exactly the reason motor_ramp above is: this
+    // function has ONE caller, generatePWM(), and therefore one task and no re-entry.
+    static uint16_t pivot_depth_q8 = 0;
+
+    uint16_t target_q8 = 0;   // what the two blends ask for this tick; 0 = no assist requested
+
+    // THE FOUR HARD GATES. Every one of them fails toward NO assist, and three of them are the
+    // speed source failing: GPS disabled, no accepted reading this session, a reading older than
+    // kPivotSpeedMaxAgeMs, or a GPS the anti-spoofing has rejected. In all of those the assist is
+    // not computed at all and the depth is walked back to 0 below.
+    const bool manual_only = !(rtm_rx_active || fm_rx_active);   // RTM/FM own their own align pivot
+    const bool diff_drive  = (usrConf.steering_type == 1);       // the mixer is what this acts on
+    const bool speed_ok    = (usrConf.gps_en != 0) && !gps_rejected && (gps_last_ms != 0) &&
+                             ((millis() - gps_last_ms) <= kPivotSpeedMaxAgeMs);
+
+    if (manual_only && diff_drive && speed_ok)
+    {
+      const float kmh = gps_last_speed_kmh;
+
+      // SPEED BLEND, 0..256. Deliberately written as "only if the reading is BELOW the zero point",
+      // because a NaN fails every float comparison and therefore lands on 0 - the assist stays
+      // inert with no explicit NaN test needed, fail-closed by structure. (A NEGATIVE reading is a
+      // different case and is deliberately NOT treated as a fault: it falls into the full-blend
+      // branch, i.e. it is read as "stopped", which is the only sensible reading of "slower than
+      // zero" and is exactly what 0.0 km/h would have given. TinyGPS++ kmph() cannot return one.)
+      uint16_t speed_q8 = 0;
+      if (kmh < kPivotSpeedZeroKmh)
+      {
+        if (kmh <= kPivotSpeedFullKmh)
+        {
+          speed_q8 = 256;
+        }
+        else
+        {
+          speed_q8 = (uint16_t)(256.0f * (kPivotSpeedZeroKmh - kmh) /
+                                         (kPivotSpeedZeroKmh - kPivotSpeedFullKmh));
+        }
+      }
+
+      // STICK BLEND, 0..256, from the RIDER's stick. steering_received is the right byte to read
+      // and not effective_steer: inside this gate no autonomous controller is active, so the two
+      // are the same value, and naming the rider's own byte is what makes "manual only" textual.
+      // 127 is the neutral byte the mixer itself uses, so the deflection here is the same quantity
+      // the mixer will turn into its turn term.
+      const int sdev = (int)steering_received - 127;
+      const int defl = (sdev < 0) ? -sdev : sdev;
+      uint16_t steer_q8 = 0;
+      if (defl >= (int)kPivotSteerFullCounts)
+      {
+        steer_q8 = 256;
+      }
+      else if (defl > (int)kPivotSteerStartCounts)
+      {
+        steer_q8 = (uint16_t)(((uint32_t)(defl - (int)kPivotSteerStartCounts) * 256UL) /
+                              (uint32_t)(kPivotSteerFullCounts - kPivotSteerStartCounts));
+      }
+
+      // The two blends MULTIPLY, so either one at zero is a hard zero: a fast buggy gets no assist
+      // at any stick angle, and a small stick angle gets none at any speed. That product is what
+      // makes requirement "fast and straight stays exactly as it is today" an arithmetic fact
+      // rather than a tuning hope.
+      target_q8 = (uint16_t)(((uint32_t)speed_q8 * (uint32_t)steer_q8) >> 8);
+    }
+
+    // HYSTERESIS - a Schmitt band on the depth's zero. Arm only when the blends ask for at least
+    // one full rise step; release all the way to 0. The blends themselves are continuous, so there
+    // is no threshold for the OUTPUT to toggle across; what this stops is the assist repeatedly
+    // starting and stopping at the very edge of the window on GPS noise or a trembling stick.
+    if (pivot_depth_q8 == 0 && target_q8 < kPivotDepthArmQ8) target_q8 = 0;
+
+    // RATE LIMIT - the depth WALKS to its target, it never steps, and it always arrives exactly
+    // (the "within one step" case assigns the target rather than overshooting). Coming on is
+    // deliberately slower than letting go. Note that every exit path - the gates failing, RTM or FM
+    // taking over mid-pivot, the rider straightening - lands here with target 0 and therefore
+    // bleeds the assist out over 0.08 s instead of releasing it in one tick.
+    if (target_q8 > pivot_depth_q8)
+    {
+      pivot_depth_q8 = ((uint16_t)(target_q8 - pivot_depth_q8) > kPivotDepthRiseQ8)
+                     ? (uint16_t)(pivot_depth_q8 + kPivotDepthRiseQ8)
+                     : target_q8;
+    }
+    else if (target_q8 < pivot_depth_q8)
+    {
+      pivot_depth_q8 = ((uint16_t)(pivot_depth_q8 - target_q8) > kPivotDepthFallQ8)
+                     ? (uint16_t)(pivot_depth_q8 - kPivotDepthFallQ8)
+                     : target_q8;
+    }
+
+    // THE CUT. factor_q8 = 256 - depth x (256 - floor) / 256, so 256 (x1.00) at depth 0 and
+    // kPivotFloorQ8 (x0.50 as shipped) at depth 256. Integer throughout and the shift TRUNCATES,
+    // so any rounding error is a slightly deeper cut - the subtract-only direction.
+    // At depth 0 the multiply is (thr * 256) >> 8, which is thr for every byte 0-255: the assist is
+    // then not "nearly" transparent, it is bit-identical.
+    const uint16_t factor_q8 = (uint16_t)(256U -
+        (uint16_t)(((uint32_t)pivot_depth_q8 * (uint32_t)(256U - kPivotFloorQ8)) >> 8));
+    const uint8_t  assisted  = (uint8_t)(((uint32_t)ramped_thr * (uint32_t)factor_q8) >> 8);
+
+    // SUBTRACT-ONLY, enforced and not merely derived: the assisted value is taken ONLY when it is
+    // strictly lower than what the rider's throttle had already been reduced to. Same shape as the
+    // rtm_approach_cap / fm_throttle_cap tests above - lowest wins - so even a future arithmetic
+    // mistake in factor_q8 cannot raise a single count of throttle.
+    if (assisted < pivot_thr) pivot_thr = assisted;
+
+    // DEEP LOG: publish the depth for fm_gate_flags bits 19-22 (see g_pivot_assist_q4 in the
+    // header). Round to nearest of 15; the Schmitt band above guarantees the internal depth is
+    // either 0 or at least 16, so a running assist can never report itself as inert.
+    g_pivot_assist_q4 = (uint8_t)(((uint32_t)pivot_depth_q8 * 15UL + 128UL) / 256UL);
+  }
+
   // SAFETY FIX (2026-04-28 audit): also gate on thr_received>=25.
   // Gate 1 in RTMState.ino resets rtm_steer_override=127 on throttle release (Task 1A),
   // but that runs at 10Hz. This gate ensures the PWM task (100Hz) cannot apply a stale
@@ -235,8 +392,17 @@ void calcPWM()
     // Everything the C-4 note above says still holds with T = ramped_thr, including the key one: at
     // T = 0 the turn term is zero for every steering byte, and ramped_thr is 0 exactly when
     // effective_thr is 0 (the ramp's fall is instant), so the stopped state is unchanged.
+    // V2.5-Evo - 2026-09-25 - MANUAL PIVOT ASSIST: the mixer is fed pivot_thr, which is ramped_thr
+    // with the assist's subtract-only cut applied (see the assist block above). pivot_thr ==
+    // ramped_thr bit for bit whenever the assist is inert - which is every tick above the speed
+    // window, every tick below the stick window, every tick RTM or FM is active, and every tick on a
+    // board that is not steering_type 1 - so this line is byte-identical to the old one in all of
+    // those cases. Everything the C-4 note above says still holds with T = pivot_thr, including the
+    // stopped state: pivot_thr <= ramped_thr and the assist is a multiply, so T is 0 exactly when
+    // effective_thr is 0. This is also the ONLY branch that reads pivot_thr; the efoil and servo
+    // branches keep ramped_thr, because a throttle cut during a turn buys them nothing.
     DifferentialMotorMix motor_mix = mixThrottleRelativeDifferential(
-        ramped_thr, effective_steer, mix_influence,   // V2.5-Evo - 2026-09-19 - steering_influence, or the align pivot boost
+        pivot_thr, effective_steer, mix_influence,   // V2.5-Evo - 2026-09-19 - steering_influence, or the align pivot boost
         usrConf.steering_inverted);
     motor0_cmd_obs = motor_mix.motor0;   // DEEP LOG (C): post-mixer, pre-map counts, every pass of this branch
     motor1_cmd_obs = motor_mix.motor1;

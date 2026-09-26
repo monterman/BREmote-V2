@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-25 - MANUAL PIVOT ASSIST (log only): fillLevel4Diag() ORs the assist's depth, 0-15, into bits 19-22 of the fm_gate_flags word it already copies - one 4-bit field, no new column, no record-size change, so every existing 87 B / 109 B log file and both readers are unaffected. The value comes from the calcPWM() observer g_pivot_assist_q4 (PWM.ino), the same route motor0_cmd / motor1_cmd take, because the assist's controller is the 100 Hz PWM task and g_fm_log_snapshot must keep its single loop-task writer. Strictly additive and masked to its own four bits: no FM gate verdict, no other column and no control path is touched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG level 5: loggerTask() builds a VescLogDataL5 (109 B) when the file was created at level 5 - convertToLogData() for the base, ONE snapshot copy per row (logTakeFmSnapshot(), one critical section) shared by fillLevel4Diag() and the new fillLevel5Extra(), so a row never mixes two ticks between its level-4 and level-5 columns. Record buffers and ?download's record-size ceiling are sizeof(VescLogDataL5) now; the header/row tiers stay offset-selected. AUX button and logger_en semantics unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG (B)+(C): fillLevel4Diag() fills the three fields appended to VescLogDataL4 (83 -> 87 B): fm_rider_raw_dx10 from the snapshot (RTMState.ino publishes fm_rider_raw_kmh x 10, 0xFFFF = unknown), motor0_cmd / motor1_cmd from the two calcPWM() observers g_motor0_cmd / g_motor1_cmd (PWM.ino). ?download's record-size ceiling is sizeof(VescLogDataL4) as before, so it follows the bump; the header/row tiers are chosen by block offset in BREmote_V2_Rx.h, so 83 B files written since 2026-09-17 still print their own 48 columns. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG (A): fillLevel4Diag() copies the snapshot's return_reason into the byte that was fm_pad (now VescLogDataL4.fm_return_reason) - the sticky FmReturnReason latch, published by RTMState.ino every tick. Record size unchanged at 83; the two new gate bits (17 aligning, 18 boost) ride inside fm_gate_flags, which was already copied. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -567,6 +568,17 @@ static void fillLevel4Diag(VescLogDataL4 &rec, const FmLogSnapshot &s)
   // core, and the pair may straddle one 10 ms pass at worst - fine for a 3-5 Hz diagnostic row.
   rec.motor0_cmd          = g_motor0_cmd;
   rec.motor1_cmd          = g_motor1_cmd;
+
+  // V2.5-Evo - 2026-09-25 - MANUAL PIVOT ASSIST: its depth rides in bits 19-22 of the gate word
+  // that was just copied above, so the assist adds NO column and the record size is unchanged.
+  // This is an OR into the copied value, not a recomputation: the controller for those four bits is
+  // calcPWM(), not runFmLoop(), so the value cannot come through g_fm_log_snapshot (one writer, the
+  // loop task) without giving that struct a second writer on another task. It comes through the same
+  // route motor0_cmd / motor1_cmd just used - a single-byte volatile observer written by the PWM task
+  // - and the mask keeps it strictly inside its own four bits, so no FM gate verdict can be altered
+  // by it. The assist is never active while Follow-Me or RTM is, so these bits and bits 0-18 are
+  // never both meaningful on the same row.
+  rec.fm_gate_flags |= ((uint32_t)(g_pivot_assist_q4 & 0x0FU)) << FM_LOG_GATE_PIVOT_ASSIST_SHIFT;
 }
 
 // ============================================================

@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-25 - MANUAL PIVOT ASSIST (owner request: "a fast pivot will aid enormously in getting it right right away"). Adds, with NO confStruct field: (1) the nine compile-time kPivot* tuning constants below the heading-trust block - the assist is deliberately recompile-tuned, in the kFm* style, so this flash does NOT reset the owner's SPIFFS config (sizeof stays 200, SW_VERSION stays 36); (2) the diagnostic observer g_pivot_assist_q4 beside g_motor0_cmd / g_motor1_cmd - the assist depth quantised to 4 bits, written by calcPWM() at 100 Hz and read by fillLevel4Diag(); (3) FM_LOG_GATE_PIVOT_ASSIST_SHIFT / _MASK - bits 19-22 of the EXISTING fm_gate_flags u32, so the log gains no column and no record size changes. The control code itself is in PWM.ino: a subtract-only multiply applied to the ramped throttle in the steering_type 1 branch only, gated OFF whenever rtm_rx_active || fm_rx_active. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-24 - COMMENT-ONLY RESYNC after the throttle-ramp move in PWM.ino: motor_ramp_s ramps the THROTTLE ONLY and steering is never rate-limited, so the confStruct field comment, the defaultConf line and the g_motor0_cmd / g_motor1_cmd declaration (which claimed the observers were independent of the ramp - they now carry it) are corrected. No struct, no default value, no code and no field changed: sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG level 5 ("everything", owner request for the test sessions): VescLogDataL5 = the complete 87 B level-4 record + a 22 B level-5 block = 109 B (static_assert 109): the rider's position as the RX holds it (rx_tx_gps_lat/lng as float, the distinct-fix counter, the fix age), the classic RTM phase code and rtm_approach_cap, the align cap / align influence / mixer influence in force this tick, the auto-return override state, telemetry.fm_flags as sent, the 0xF2 keepalive age, and two reserved bytes for the steer-takeover branch (l5_rsvd_takeover_active / _end) so its integration does not bump the size again. Every field is a COPY of published state, taken in fmPublishLogSnapshot() (loop task, one writer) and carried in FmLogSnapshot; nothing in the control path reads any of it. log_level 5 selects it (logResolveLevel / logRecordSizeForLevel), createNewLogFile() stamps record_size 109, logCsvHeaderFor() gains the L5 tier (65 columns) and logFormatCsvRow() prints every level-5 field with units. Capacity on the 1757 KB the filesystem reports: about 1 h 30 min at 3 Hz, about 55 min at 5 Hz (87 B level 4: about 1 h 55 min / 1 h 10 min). No confStruct change - the log_level field is the same u16, its validator max is raised 4 -> 5 - sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG (B)+(C): VescLogDataL4 grows 83 -> 87 B (static_assert 87). (B) fm_rider_raw_dx10 u16 = the rider's RAW displacement speed x 10 km/h (RTMState.ino fm_rider_raw_kmh, the number the FM_RETURN candidate is judged on; the filtered EMA track was already logged as fm_rider_speed_dx10), sentinel 0xFFFF = unknown (< 0). (C) motor0_cmd / motor1_cmd u8 = the two post-mixer, pre-map motor commands out of calcPWM()'s steering_type 1 branch (g_motor0_cmd / g_motor1_cmd, two diagnostic observers written every 100 Hz tick, the g_effective_steer pattern; 0 for the efoil / servo branches). TIER FIX for the readers: logCsvHeaderFor() used to return the 65 B DIAG header for anything smaller than sizeof(VescLogDataL4), so after this bump every 83 B file written since 2026-09-17 would have printed with the wrong header; it now picks by the offsets of the blocks actually present (65 B DIAG / 83 B L4_83 / 85 B +raw / 87 B full) and logFormatCsvRow() guards each new field on record_size >= its offset + size. The 2026-09-17 'LAYOUT IS FINAL' note is history. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -887,6 +888,127 @@ static const uint32_t kHeadingDisagreeMs    = 5000;   // ms of sustained disagre
 static const uint32_t kCogHoldMs           = 3000;   // ms; hold last-good COG across a dropout
 static const uint32_t kHeadingCompareSnapMs = 1000;   // ms; max compass-snapshot age for a valid comparison
 
+// ============================================================
+// V2.5-Evo - 2026-09-25 - MANUAL PIVOT ASSIST - THE TUNED CONSTANTS
+//
+// WHAT THE RIDER ASKED FOR, IN HIS WORDS
+//   "should be natural but for when starting from [low] speed to pivot fast. There are many
+//    occasions where the buggy's nose is misaligned and you want to turn in the right direction
+//    before you take off. A fast pivot will aid enormously in getting it right right away."
+//   He already does this by hand: on the water he found that easing the trigger back to roughly
+//   half while holding the stick over tightened the U-turn, and that at full throttle the arc was
+//   too wide. steering_influence is already at its maximum of 100, so no stored setting can
+//   reproduce it. The assist does that same hand action automatically, and ONLY that: it lowers
+//   the throttle that reaches the differential mixer while the buggy is slow and the stick is
+//   hard over. It is SUBTRACT-ONLY (see PWM.ino) and it never touches a cap, the ramp's memory,
+//   the deadman or the SAFETY-NEUTRAL-1 clamp.
+//
+// WHAT THE ARITHMETIC ACTUALLY SAYS - READ THIS BEFORE RETUNING kPivotFloorQ8
+//   The mixer (Common/DifferentialMixer.h) is turn = T x influence x |steer-127| / (100 x span),
+//   motor0 = T - turn, motor1 = T + turn, each clamped 0..255. At the owner's influence of 100:
+//     FULL LOCK  (|steer-127| = span): turn == T, so the pair is (0, 2T) clamped -> (0, 255) for
+//       ANY T from 127 to 255. T = 255 gives (0, 255); T = 127 gives (0, 254). Those are the SAME
+//       pair. At full lock and influence 100 the outer motor is already saturated and the yaw-to-
+//       forward-thrust ratio is already 1.0 - the best two forward-only motors can do - so a cut
+//       that lands at or above T = 127 changes the motor commands by a single count. The benefit
+//       in that regime is NOT recovered differential headroom; it is the lower speed and smaller
+//       forward surge the reduced thrust produces, which is what tightens the path.
+//     PARTIAL LOCK, e.g. 85 counts (two thirds): turn = 0.664T. T = 255 -> (86, 255): differential
+//       169 on a total of 341, ratio 0.50, because the outer motor is clipped. T = 127 -> (43, 211):
+//       differential 168 - the SAME yaw - on a total of only 254, ratio 0.66. Here the cut really
+//       does buy headroom: identical turning moment for a quarter less forward thrust.
+//   So the assist earns its keep in both regimes, by two different mechanisms, and the honest
+//   summary is: it trades forward surge for the same or nearly the same yaw. kPivotFloorQ8 is set
+//   to the 50 % the owner measured by hand; if the pivot still feels wide at full lock, the number
+//   to move is this one, DOWNWARD (below 127 counts of throttle the pair becomes (0, 2T) and both
+//   surge and yaw fall together - a slower but much shorter pivot).
+//
+// WHY ALL NINE ARE COMPILE-TIME AND NOT confStruct FIELDS
+//   Both banked reserved slots are spent (rsvd_u16_1 -> steer_during_auto, rsvd_f32_1 ->
+//   auto_ramp_s), so any new field grows sizeof(confStruct) past 200, trips the version check and
+//   WIPES the owner's stored settings on the next boot. He is on the water tomorrow morning. These
+//   are therefore deliberate compile-time constants in the kFm* / kRtm* style already used all
+//   over this header: every number is stated here with its derivation so it can be changed by
+//   recompile, and a future owner decision can promote any of them to SPIFFS with a struct bump.
+//
+// THE SHAPE, IN ONE PARAGRAPH (the code is in PWM.ino; this is why the numbers are what they are)
+//   Two continuous 0..1 blends - one on speed, one on stick deflection - are multiplied into a
+//   DEPTH. The depth is rate-limited, and the throttle reaching the mixer is multiplied by
+//   1 - depth x (1 - floor). Depth 0 is a bit-identical pass-through, which is what makes the
+//   assist PROVABLY inert above the speed window and at small stick angles.
+// ============================================================
+
+// SPEED WINDOW. Below kPivotSpeedFullKmh the speed blend is 1.0; at and above kPivotSpeedZeroKmh
+// it is exactly 0 and the assist cannot act at all; in between it is linear.
+// WHY 2.5 AND 5.0 km/h. 5.0 km/h is a brisk walking pace and it is the owner's own "starting from
+// low speed" boundary - above it he has said repeatedly that he likes the current feel and does
+// not want it sharper, so that is where the assist must be arithmetically absent, not merely
+// small. 2.5 km/h is set from measured data rather than taste: on the 2026-09-25 dock session
+// (Logs testing/2026-09-25-water-fm/RX_092526_202904.csv) a stationary RX logged GPS speeds of
+// 0.0-1.3 km/h, so 2.5 km/h clears this board's at-rest noise floor by ~2x and guarantees that a
+// genuinely stopped buggy - the nose-misaligned case he described - gets the FULL assist rather
+// than a noise-dependent fraction of it.
+static const float    kPivotSpeedFullKmh   = 2.5f;   // km/h at or below which the speed blend is 1.0
+static const float    kPivotSpeedZeroKmh   = 5.0f;   // km/h at or above which the assist is inert
+
+// HOW OLD A SPEED READING MAY BE. The RX has exactly one calibrated speed: the GPS. See PWM.ino
+// for why ERPM is not usable here. A speed that stops arriving must fail toward NO assist, so the
+// reading is required to be fresher than this or the assist is skipped entirely.
+// WHY 1500 ms. It is the same freshness window getRtmHeading() already applies to GPS course, so
+// the firmware now has ONE definition of "a fresh GPS number" instead of two. It is also 4x
+// tighter than the 6000 ms the FM_RETURN buggy-speed gate allows, and that margin matters in the
+// unsafe direction: the longer this window, the further the buggy could have accelerated behind a
+// stale "slow" reading. At the owner's gps_update_hz of 10 against a module that emits at 5 Hz,
+// 1500 ms is still seven consecutive missed updates before the assist drops out.
+static const uint32_t kPivotSpeedMaxAgeMs  = 1500;   // ms; older than this = no assist at all
+
+// STICK WINDOW, in counts away from the neutral byte 127 (full lock is 127 counts one way, 128 the
+// other). AT OR BELOW kPivotSteerStartCounts the stick blend is exactly 0; at or above
+// kPivotSteerFullCounts it is 1.0; linear strictly between the two.
+// WHY 85 AND 120. 85 counts is two thirds of full deflection - the "deliberate hard stick" the
+// owner asked for - and it is 2.1x kFmSteerCancelDeadband (40 counts), the existing threshold for
+// "the rider means this", so ordinary steering corrections and the Follow-Me cancel gesture both
+// sit far below the assist's first count of authority. 120 counts (~94 %) rather than 127 is the
+// margin for a TX that does not quite reach its rail: stick trim, tog_deadzone and ADC spread mean
+// a hard-over stick can report 120-125, and the rider must be able to reach FULL assist without
+// fighting his own remote for the last few counts.
+static const uint8_t  kPivotSteerStartCounts = 85;   // counts from 127; below this the assist is inert
+static const uint8_t  kPivotSteerFullCounts  = 120;  // counts from 127; at/above this the stick blend is 1.0
+
+// HOW DEEP THE CUT GOES AT FULL ASSIST, as a Q8 fraction of the rider's own throttle (256 = 1.0).
+// WHY 128 (= 50 %). It is the number the owner measured by hand on the water - trigger back to
+// about half tightened the turn. See the arithmetic block above before moving it: at full lock with
+// influence 100 the effect of a cut only appears once the result drops below 127 counts, so if the
+// pivot still feels wide the change is to LOWER this value.
+static const uint16_t kPivotFloorQ8        = 128;    // Q8; throttle at full assist = this/256 of command
+
+// HOW FAST THE ASSIST MAY COME ON AND LET GO, in Q8 depth units per 10 ms calcPWM() tick.
+// The depth cannot step: it walks. That is the whole answer to "it must feel natural, not
+// switch-like", and it is also what stops GPS speed noise or stick jitter from producing a snatch -
+// the worst the assist can do to the throttle in one tick is this step x (1 - floor)/256, i.e. 8
+// counts of 255 on the way in.
+// WHY 16 IN (0.16 s full travel) AND 32 OUT (0.08 s). 0.16 s to full depth is quicker than a human
+// can move a stick from two thirds to full lock, so the assist is never the thing the rider waits
+// for, while still being four times slower than the 40 ms a 50 % throttle step would take to feel
+// like a fault. The release is deliberately TWICE as fast, because a sluggish exit from a pivot is
+// the one outcome that would be worse than no pivot at all: 0.08 s returns the rider's own throttle
+// authority, and it is still gentler than what the mixer already does on the same stick movement -
+// straightening from full lock today moves the inner motor from 0 to T in a single 10 ms pass.
+static const uint16_t kPivotDepthRiseQ8    = 16;     // Q8 depth per tick coming on  (256/16 = 16 ticks = 0.16 s)
+static const uint16_t kPivotDepthFallQ8    = 32;     // Q8 depth per tick letting go (256/32 =  8 ticks = 0.08 s)
+
+// THE HYSTERESIS. Both blends are continuous, so there is no threshold anywhere for the output to
+// toggle across - the classic chatter mechanism is absent by construction. What remains is the
+// assist repeatedly starting and stopping at the very edge of the window as a noisy GPS speed or a
+// trembling stick crosses back and forth. This is a Schmitt band on the depth's zero: the assist
+// will not START until the blends together ask for at least this much depth, but once running it
+// follows them all the way back down to exactly 0.
+// WHY 16/256. It is one rise step, so the arm threshold and the smallest step the depth can take
+// are the same number and the depth can never sit in the dead range 1-15. In throttle terms the
+// largest jolt this band can ever hide is 16/256 x 50 % = 3 % of the rider's command, which is
+// below perception and is itself delivered over one tick.
+static const uint16_t kPivotDepthArmQ8     = 16;     // Q8; minimum depth to START the assist (release is 0)
+
 #include "../Common/ConfigServiceEngine.h"
 
 // Web config globals
@@ -1266,6 +1388,21 @@ static_assert(sizeof(VescLogData) == 59, "VescLogData size mismatch — check bi
 //   bit 18 boost            the pivot boost is published this tick: align_mixer_influence_override
 //                           is non-zero, so calcPWM() mixes with fm_align_influence, not
 //                           steering_influence
+//   V2.5-Evo - 2026-09-25 - MANUAL PIVOT ASSIST: bits 19-22 are ONE 4-BIT FIELD, not four flags,
+//   and they are the only thing this feature adds to the log - no new column, no record-size
+//   change, the same "ride in the existing u32" mechanism bits 16-18 use.
+//   bits 19-22 pivot_assist_q4  the MANUAL pivot assist's depth on this tick, 0-15 (g_pivot_assist_q4,
+//                           written by calcPWM() at 100 Hz, copied in at fill time like motor0_cmd /
+//                           motor1_cmd). 0 = the assist is inert and the throttle reaching the mixer
+//                           is bit-identical to the un-assisted value; 15 = full assist. ONE field
+//                           answers both tuning questions: non-zero says WHEN it was active, the
+//                           value says HOW MUCH it cut - the throttle multiplier is
+//                           1 - (value/15) x (1 - kPivotFloorQ8/256), i.e. 1.00 at 0 down to 0.50 at
+//                           15 with the shipped floor of 128. To read the cut in counts, multiply by
+//                           the same row's thr_received. NOTE it is the assist's REQUEST, so at zero
+//                           throttle a non-zero depth still cut nothing (0 x anything is 0). Never
+//                           set while rtm_rx_active || fm_rx_active, and never on a non-differential
+//                           steering_type - the assist is manual-only and diff-only by gate.
 // Bits 0-3, 5-7 are only evaluated on ticks that reach the condition block (FM_ARMED and beyond
 // with a live declaration); on IDLE / STOPPING / early-exit ticks the whole word is 0 apart from
 // bits 17-18, which describe the engaged controller and are therefore 0 on such ticks anyway.
@@ -1289,6 +1426,11 @@ static_assert(sizeof(VescLogData) == 59, "VescLogData size mismatch — check bi
 #define FM_LOG_GATE_STEER_TAKEOVER    (1UL << 16)   // 2026-09-19: the rider's stick has taken over the steering byte this tick
 #define FM_LOG_GATE_ALIGNING          (1UL << 17)   // DEEP LOG (A) 2026-09-19: engaged controller is in its align phase this tick
 #define FM_LOG_GATE_BOOST             (1UL << 18)   // DEEP LOG (A) 2026-09-19: the pivot-boost mixer influence is published this tick
+// V2.5-Evo - 2026-09-25 - MANUAL PIVOT ASSIST: a 4-BIT FIELD, not a flag. Shift/mask rather than a
+// single-bit macro so nobody can accidentally test it with the == pattern the flags above use.
+// Reader: value = (fm_gate_flags & FM_LOG_GATE_PIVOT_ASSIST_MASK) >> FM_LOG_GATE_PIVOT_ASSIST_SHIFT.
+#define FM_LOG_GATE_PIVOT_ASSIST_SHIFT 19            // bits 19-22 hold the manual pivot assist depth, 0-15
+#define FM_LOG_GATE_PIVOT_ASSIST_MASK  (0xFUL << FM_LOG_GATE_PIVOT_ASSIST_SHIFT)
 
 struct __attribute__((packed)) VescLogDataL4 {
     VescLogData base;              // the complete level-3 record, unchanged and first — do not reorder
@@ -1850,8 +1992,25 @@ volatile uint8_t g_effective_steer = 127;
 // Their definition is otherwise unchanged - still post-mixer, pre-map, still diagnostic only. A rider
 // squeezing from rest therefore shows these two climbing over motor_ramp_s while thr_received_log
 // (the raw TX byte) jumps immediately: that gap IS the ramp, and it is the only place it is visible.
+// V2.5-Evo - 2026-09-25 - and the MANUAL PIVOT ASSIST is now in that same list of things these two
+// observers are NOT independent of: on the diff branch they are computed from the assisted throttle,
+// so a row where g_pivot_assist_q4 below is non-zero shows the motor commands the assist actually
+// permitted. Their definition is otherwise unchanged - still post-mixer, pre-map, still diagnostic.
 volatile uint8_t g_motor0_cmd = 0;   // motor 0 command out of the mixer, 0-255; 0 when not the diff branch
 volatile uint8_t g_motor1_cmd = 0;   // motor 1 command out of the mixer, 0-255; 0 when not the diff branch
+
+// V2.5-Evo - 2026-09-25 - MANUAL PIVOT ASSIST observer: the assist's depth this calcPWM() pass,
+// quantised to the 4 bits it rides in inside the deep log's existing fm_gate_flags word (bits
+// 19-22, FM_LOG_GATE_PIVOT_ASSIST_SHIFT). 0 = inert, and inert means the throttle handed to the
+// mixer is bit-identical to the un-assisted one; 15 = full assist, i.e. the throttle multiplied by
+// kPivotFloorQ8/256. The intermediate depths 1-14 are genuine - the assist blends - but the values
+// 1-15 can never appear "by accident" because the Schmitt band kPivotDepthArmQ8 keeps the internal
+// depth at either 0 or at least one full rise step.
+// DIAGNOSTIC OBSERVER ONLY - exactly the g_effective_steer / g_motor0_cmd pattern: written on every
+// pass by calcPWM() (generatePWM task, 100 Hz), read by fillLevel4Diag() (loggerTask), and read back
+// by NOTHING in any control path. Single-byte volatile, atomic on the ESP32-C3. The assist's real
+// state is a uint16_t static inside calcPWM(); this is a lossy copy for the log, never the source.
+volatile uint8_t g_pivot_assist_q4 = 0;   // manual pivot assist depth, 0 = inert, 15 = full
 
 volatile unsigned long get_vesc_timer = 0;
 volatile unsigned long last_uart_packet = 0;

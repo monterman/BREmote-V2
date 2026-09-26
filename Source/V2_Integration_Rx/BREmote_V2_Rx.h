@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-25 - MANUAL PIVOT ASSIST, FLOOR CORRECTION (review findings P-7 / P-6). kPivotFloorQ8 128 -> 64. WHY: at full lock the mixer's gain into the outer motor is exactly 2x, so a throttle-domain floor f lands the outer motor - and therefore ALL the thrust, since the inner motor is 0 - at min(2fT, 255). f = 1/2 is the EXACT RECIPROCAL of that gain, so it cancels it and cuts NOTHING at full trigger (outer 254 of 255): the single worst value the constant can take, worst precisely in the owner's trigger-pinned use case. 64 (f = 1/4) puts the outer motor at 126/255 at full trigger, a 51 % cut of total thrust. The min(2fT, 255) derivation, the floor table and the "do not go below 64 without water testing" bound are now written into the constants block; the old comment claimed the full-lock benefit was "reduced thrust", which at f = 1/2 and full trigger did not exist (254 vs 255) and would have hidden this from the next reader (P-7). Also corrects the "byte-for-byte no-op" wording: the depth BLEEDS OUT over 8 ticks, so RTM/FM taking over, crossing 5 km/h and straightening are inert WITHIN 80 ms, subtract-only throughout, not on the same tick (P-6). ONE code change - the constant; everything else is comment. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-25 - MANUAL PIVOT ASSIST (owner request: "a fast pivot will aid enormously in getting it right right away"). Adds, with NO confStruct field: (1) the nine compile-time kPivot* tuning constants below the heading-trust block - the assist is deliberately recompile-tuned, in the kFm* style, so this flash does NOT reset the owner's SPIFFS config (sizeof stays 200, SW_VERSION stays 36); (2) the diagnostic observer g_pivot_assist_q4 beside g_motor0_cmd / g_motor1_cmd - the assist depth quantised to 4 bits, written by calcPWM() at 100 Hz and read by fillLevel4Diag(); (3) FM_LOG_GATE_PIVOT_ASSIST_SHIFT / _MASK - bits 19-22 of the EXISTING fm_gate_flags u32, so the log gains no column and no record size changes. The control code itself is in PWM.ino: a subtract-only multiply applied to the ramped throttle in the steering_type 1 branch only, gated OFF whenever rtm_rx_active || fm_rx_active. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-24 - COMMENT-ONLY RESYNC after the throttle-ramp move in PWM.ino: motor_ramp_s ramps the THROTTLE ONLY and steering is never rate-limited, so the confStruct field comment, the defaultConf line and the g_motor0_cmd / g_motor1_cmd declaration (which claimed the observers were independent of the ramp - they now carry it) are corrected. No struct, no default value, no code and no field changed: sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG level 5 ("everything", owner request for the test sessions): VescLogDataL5 = the complete 87 B level-4 record + a 22 B level-5 block = 109 B (static_assert 109): the rider's position as the RX holds it (rx_tx_gps_lat/lng as float, the distinct-fix counter, the fix age), the classic RTM phase code and rtm_approach_cap, the align cap / align influence / mixer influence in force this tick, the auto-return override state, telemetry.fm_flags as sent, the 0xF2 keepalive age, and two reserved bytes for the steer-takeover branch (l5_rsvd_takeover_active / _end) so its integration does not bump the size again. Every field is a COPY of published state, taken in fmPublishLogSnapshot() (loop task, one writer) and carried in FmLogSnapshot; nothing in the control path reads any of it. log_level 5 selects it (logResolveLevel / logRecordSizeForLevel), createNewLogFile() stamps record_size 109, logCsvHeaderFor() gains the L5 tier (65 columns) and logFormatCsvRow() prints every level-5 field with units. Capacity on the 1757 KB the filesystem reports: about 1 h 30 min at 3 Hz, about 55 min at 5 Hz (87 B level 4: about 1 h 55 min / 1 h 10 min). No confStruct change - the log_level field is the same u16, its validator max is raised 4 -> 5 - sizeof stays 200, SW_VERSION stays 36.
@@ -907,21 +908,48 @@ static const uint32_t kHeadingCompareSnapMs = 1000;   // ms; max compass-snapsho
 //   The mixer (Common/DifferentialMixer.h) is turn = T x influence x |steer-127| / (100 x span),
 //   motor0 = T - turn, motor1 = T + turn, each clamped 0..255. At the owner's influence of 100:
 //     FULL LOCK  (|steer-127| = span): turn == T, so the pair is (0, 2T) clamped -> (0, 255) for
-//       ANY T from 127 to 255. T = 255 gives (0, 255); T = 127 gives (0, 254). Those are the SAME
-//       pair. At full lock and influence 100 the outer motor is already saturated and the yaw-to-
-//       forward-thrust ratio is already 1.0 - the best two forward-only motors can do - so a cut
-//       that lands at or above T = 127 changes the motor commands by a single count. The benefit
-//       in that regime is NOT recovered differential headroom; it is the lower speed and smaller
-//       forward surge the reduced thrust produces, which is what tightens the path.
+//       ANY T from 128 to 255. T = 255 gives (0, 255); T = 127 gives (0, 254). Those are the SAME
+//       pair, and that is the whole reason this constant needs a derivation instead of a guess.
+//
+//       THE MECHANISM: AT FULL LOCK THE MIXER'S GAIN INTO THE OUTER MOTOR IS EXACTLY 2x. The inner
+//       motor is already 0, so with a throttle-domain floor f the outer motor - and therefore the
+//       ENTIRE thrust the craft produces - lands at exactly
+//                                  min(2 x f x T, 255).
+//       Read that formula once and the trap is obvious: f = 1/2 is the EXACT RECIPROCAL of the
+//       mixer's gain, so it cancels the gain and puts the outer motor at exactly T. For every
+//       T >= 128 the un-assisted outer motor was already clamped at 255, so at f = 1/2 the assist's
+//       entire effect is to bring 255 down to T - a cut of 255 - T, which is ZERO at full trigger
+//       and only grows as the rider eases off. f = 1/2 is therefore the single WORST value this
+//       constant can take, and it is worst precisely in the owner's use case: trigger pinned, stick
+//       hard over, nose misaligned. It was the shipped value for a few hours on 2026-09-25 and is
+//       now 64 (f = 1/4). THE TABLE, outer motor at FULL TRIGGER (T = 255), as the code computes it
+//       (Q8 multiply, truncating):
+//                kPivotFloorQ8 = 128  (f = 0.500) -> 254   =  0 % cut   <- annihilated
+//                kPivotFloorQ8 =  96  (f = 0.375) -> 190   = 25 % cut
+//                kPivotFloorQ8 =  64  (f = 0.250) -> 126   = 51 % cut   <- SHIPPED
+//                kPivotFloorQ8 =  51  (f = 0.199) -> 100   = 61 % cut   <- too deep, see below
+//
+//       WHY TOTAL THRUST IS THE RIGHT QUANTITY TO CONTROL, and not the differential. At full lock
+//       the inner motor is 0, so yaw and forward surge are THE SAME NUMBER and the yaw-to-thrust
+//       ratio is already 1.0 - the maximum two forward-only motors can ever reach. The throttle
+//       cannot improve that ratio; there is nothing left to improve. What the throttle DOES control
+//       is whether the hull stays in the low-speed regime where it rotates freely on the spot rather
+//       than carving a wide arc on a loaded skeg. And because the inner motor is 0, total thrust
+//       EQUALS the outer motor command - so the quantity to control is exactly min(2fT, 255), the
+//       formula above, and nothing else.
 //     PARTIAL LOCK, e.g. 85 counts (two thirds): turn = 0.664T. T = 255 -> (86, 255): differential
 //       169 on a total of 341, ratio 0.50, because the outer motor is clipped. T = 127 -> (43, 211):
 //       differential 168 - the SAME yaw - on a total of only 254, ratio 0.66. Here the cut really
-//       does buy headroom: identical turning moment for a quarter less forward thrust.
-//   So the assist earns its keep in both regimes, by two different mechanisms, and the honest
-//   summary is: it trades forward surge for the same or nearly the same yaw. kPivotFloorQ8 is set
-//   to the 50 % the owner measured by hand; if the pivot still feels wide at full lock, the number
-//   to move is this one, DOWNWARD (below 127 counts of throttle the pair becomes (0, 2T) and both
-//   surge and yaw fall together - a slower but much shorter pivot).
+//       does buy headroom in the ordinary sense: identical turning moment for a quarter less
+//       forward thrust.
+//   So the assist earns its keep in both regimes, by two different mechanisms: at partial lock it
+//   recovers genuine differential headroom, and at full lock it holds total thrust - which IS the
+//   outer motor - down to min(2fT, 255) so the hull stays in the regime where it will rotate.
+//
+//   DO NOT GO BELOW 64 WITHOUT WATER TESTING. At f = 0.20 the outer motor sits at only ~100/255 at
+//   full trigger, and the craft may not break out and rotate at all - a pivot that never starts is
+//   a worse failure than a pivot that is too wide, because the rider cannot tell it from a fault.
+//   64 is the first value below the f = 1/2 trap that still leaves half the outer motor's authority.
 //
 // WHY ALL NINE ARE COMPILE-TIME AND NOT confStruct FIELDS
 //   Both banked reserved slots are spent (rsvd_u16_1 -> steer_during_auto, rsvd_f32_1 ->
@@ -936,6 +964,21 @@ static const uint32_t kHeadingCompareSnapMs = 1000;   // ms; max compass-snapsho
 //   DEPTH. The depth is rate-limited, and the throttle reaching the mixer is multiplied by
 //   1 - depth x (1 - floor). Depth 0 is a bit-identical pass-through, which is what makes the
 //   assist PROVABLY inert above the speed window and at small stick angles.
+//
+// HOW "INERT" SHOULD BE READ - IT IS WITHIN 80 ms, NOT ON THE SAME TICK
+//   An earlier version of these comments called the disengaged cases "byte-for-byte no-ops". That
+//   is true of the STEADY STATE and of the never-armed cases, and it is NOT true of the instant of
+//   crossing, which matters when reading a log row or reasoning about a handover. The depth does not
+//   snap to 0: it BLEEDS OUT over kPivotDepthFallQ8, i.e. up to 8 ticks / 80 ms. So for all three
+//   disengagements - RTM or Follow-Me becoming active mid-pivot, the buggy crossing 5 km/h, and the
+//   rider straightening the stick - the assist is inert WITHIN 80 ms, monotonically and
+//   subtract-only the whole way down, never on the very tick the condition changes. That bleed is
+//   deliberate (a one-tick release would be the snatch this design exists to avoid), and it is safe
+//   in every case because the assist can only ever SUBTRACT: during those 80 ms the throttle is
+//   climbing back toward what the rider and every cap already permit, never past it.
+//   The two genuinely same-tick, byte-for-byte cases are: a board that is not steering_type 1 (the
+//   gate never opens, so the depth is 0 for the whole session), and any steady state outside the
+//   speed or stick window (depth already 0, factor exactly 256/256, (thr x 256) >> 8 == thr).
 // ============================================================
 
 // SPEED WINDOW. Below kPivotSpeedFullKmh the speed blend is 1.0; at and above kPivotSpeedZeroKmh
@@ -976,21 +1019,26 @@ static const uint8_t  kPivotSteerStartCounts = 85;   // counts from 127; below t
 static const uint8_t  kPivotSteerFullCounts  = 120;  // counts from 127; at/above this the stick blend is 1.0
 
 // HOW DEEP THE CUT GOES AT FULL ASSIST, as a Q8 fraction of the rider's own throttle (256 = 1.0).
-// WHY 128 (= 50 %). It is the number the owner measured by hand on the water - trigger back to
-// about half tightened the turn. See the arithmetic block above before moving it: at full lock with
-// influence 100 the effect of a cut only appears once the result drops below 127 counts, so if the
-// pivot still feels wide the change is to LOWER this value.
-static const uint16_t kPivotFloorQ8        = 128;    // Q8; throttle at full assist = this/256 of command
+// WHY 64 (= 25 %), AND WHY NOT THE 128 THE OWNER MEASURED BY HAND. 128 is f = 1/2, which is the
+// exact reciprocal of the mixer's 2x gain into the outer motor at full lock, so it cancels that gain
+// and cuts NOTHING at full trigger - the one value that is useless in exactly the situation the
+// assist is for. Read the min(2fT, 255) block above; it has the derivation and the table. 64 puts
+// the outer motor at 126/255 at full trigger (a 51 % cut of total thrust) instead of 254/255 (0 %).
+// The owner's "trigger back to about half" was a correct OBSERVATION of a real effect and the wrong
+// NUMBER to copy into the throttle domain, because his hand was moving T while this constant moves
+// the outer motor through the 2x gain. DO NOT lower it below 64 without water testing - at f = 0.20
+// the outer motor is ~100/255 and the craft may never break out and rotate.
+static const uint16_t kPivotFloorQ8        = 64;     // Q8; throttle at full assist = this/256 of command
 
 // HOW FAST THE ASSIST MAY COME ON AND LET GO, in Q8 depth units per 10 ms calcPWM() tick.
 // The depth cannot step: it walks. That is the whole answer to "it must feel natural, not
 // switch-like", and it is also what stops GPS speed noise or stick jitter from producing a snatch -
-// the worst the assist can do to the throttle in one tick is this step x (1 - floor)/256, i.e. 8
-// counts of 255 on the way in.
+// the worst the assist can do to the throttle in one tick is this step x (1 - floor)/256, i.e. 12
+// counts of 255 on the way in at the shipped floor of 64.
 // WHY 16 IN (0.16 s full travel) AND 32 OUT (0.08 s). 0.16 s to full depth is quicker than a human
 // can move a stick from two thirds to full lock, so the assist is never the thing the rider waits
-// for, while still being four times slower than the 40 ms a 50 % throttle step would take to feel
-// like a fault. The release is deliberately TWICE as fast, because a sluggish exit from a pivot is
+// for, while still spreading the full 75 % cut over sixteen ticks rather than delivering it as the
+// single step that would feel like a fault. The release is deliberately TWICE as fast, because a sluggish exit from a pivot is
 // the one outcome that would be worse than no pivot at all: 0.08 s returns the rider's own throttle
 // authority, and it is still gentler than what the mixer already does on the same stick movement -
 // straightening from full lock today moves the inner motor from 0 to T in a single 10 ms pass.
@@ -1005,7 +1053,7 @@ static const uint16_t kPivotDepthFallQ8    = 32;     // Q8 depth per tick lettin
 // follows them all the way back down to exactly 0.
 // WHY 16/256. It is one rise step, so the arm threshold and the smallest step the depth can take
 // are the same number and the depth can never sit in the dead range 1-15. In throttle terms the
-// largest jolt this band can ever hide is 16/256 x 50 % = 3 % of the rider's command, which is
+// largest jolt this band can ever hide is 16/256 x 75 % = under 5 % of the rider's command, which is
 // below perception and is itself delivered over one tick.
 static const uint16_t kPivotDepthArmQ8     = 16;     // Q8; minimum depth to START the assist (release is 0)
 
@@ -1397,12 +1445,18 @@ static_assert(sizeof(VescLogData) == 59, "VescLogData size mismatch — check bi
 //                           is bit-identical to the un-assisted value; 15 = full assist. ONE field
 //                           answers both tuning questions: non-zero says WHEN it was active, the
 //                           value says HOW MUCH it cut - the throttle multiplier is
-//                           1 - (value/15) x (1 - kPivotFloorQ8/256), i.e. 1.00 at 0 down to 0.50 at
-//                           15 with the shipped floor of 128. To read the cut in counts, multiply by
-//                           the same row's thr_received. NOTE it is the assist's REQUEST, so at zero
-//                           throttle a non-zero depth still cut nothing (0 x anything is 0). Never
-//                           set while rtm_rx_active || fm_rx_active, and never on a non-differential
-//                           steering_type - the assist is manual-only and diff-only by gate.
+//                           1 - (value/15) x (1 - kPivotFloorQ8/256), i.e. 1.00 at 0 down to 0.25 at
+//                           15 with the shipped floor of 64. To read the cut in counts, multiply by
+//                           the same row's thr_received; to read what the OUTER motor actually got at
+//                           full lock, that result doubles (clamped at 255) - see the min(2fT, 255)
+//                           block beside the kPivot* constants. NOTE it is the assist's REQUEST, so at
+//                           zero throttle a non-zero depth still cut nothing (0 x anything is 0).
+//                           Never non-zero on a non-differential steering_type (the gate never opens).
+//                           It CAN be non-zero for up to 8 rows-worth of ticks (80 ms) after
+//                           rtm_rx_active || fm_rx_active goes true, because the depth bleeds out
+//                           rather than snapping to 0 - so a handover row may legitimately show a
+//                           falling assist depth alongside an FM/RTM verdict. It is still
+//                           subtract-only throughout that bleed.
 // Bits 0-3, 5-7 are only evaluated on ticks that reach the condition block (FM_ARMED and beyond
 // with a live declaration); on IDLE / STOPPING / early-exit ticks the whole word is 0 apart from
 // bits 17-18, which describe the engaged controller and are therefore 0 on such ticks anyway.

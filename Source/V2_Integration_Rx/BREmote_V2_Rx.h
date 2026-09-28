@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-09-28 - R-3 FIX, part 1 of 3 (see Radio.ino and PWM.ino): adds the plain global last_control_packet - a SECOND link timestamp, stamped only by the normal control-packet branch and read only by the motor gate in PWM.ino. last_packet means "the remote is alive" and is refreshed by the 0xF1 / 0xF2 / 0xF4 meta-packets too, none of which carries a throttle byte; the motor gate was testing it and so could reopen on a meta-packet with a stale thr_received and the trigger released. All four of last_packet's other readers (Logger.ino's link flag, RTMState.ino's RTM failsafe stop and FM_STOP_LINK, System.ino's connection status) are deliberately left exactly as they are - liveness is the right question for them. It is a plain global, NOT a confStruct field: no struct change, sizeof stays 200, SW_VERSION stays 36, and this flash does NOT wipe the owner's stored config.
 // V2.5-Evo - 2026-09-25 - MANUAL PIVOT ASSIST, FLOOR CORRECTION (review findings P-7 / P-6). kPivotFloorQ8 128 -> 64. WHY: at full lock the mixer's gain into the outer motor is exactly 2x, so a throttle-domain floor f lands the outer motor - and therefore ALL the thrust, since the inner motor is 0 - at min(2fT, 255). f = 1/2 is the EXACT RECIPROCAL of that gain, so it cancels it and cuts NOTHING at full trigger (outer 254 of 255): the single worst value the constant can take, worst precisely in the owner's trigger-pinned use case. 64 (f = 1/4) puts the outer motor at 126/255 at full trigger, a 51 % cut of total thrust. The min(2fT, 255) derivation, the floor table and the "do not go below 64 without water testing" bound are now written into the constants block; the old comment claimed the full-lock benefit was "reduced thrust", which at f = 1/2 and full trigger did not exist (254 vs 255) and would have hidden this from the next reader (P-7). Also corrects the "byte-for-byte no-op" wording: the depth BLEEDS OUT over 8 ticks, so RTM/FM taking over, crossing 5 km/h and straightening are inert WITHIN 80 ms, subtract-only throughout, not on the same tick (P-6). ONE code change - the constant; everything else is comment. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-25 - MANUAL PIVOT ASSIST (owner request: "a fast pivot will aid enormously in getting it right right away"). Adds, with NO confStruct field: (1) the nine compile-time kPivot* tuning constants below the heading-trust block - the assist is deliberately recompile-tuned, in the kFm* style, so this flash does NOT reset the owner's SPIFFS config (sizeof stays 200, SW_VERSION stays 36); (2) the diagnostic observer g_pivot_assist_q4 beside g_motor0_cmd / g_motor1_cmd - the assist depth quantised to 4 bits, written by calcPWM() at 100 Hz and read by fillLevel4Diag(); (3) FM_LOG_GATE_PIVOT_ASSIST_SHIFT / _MASK - bits 19-22 of the EXISTING fm_gate_flags u32, so the log gains no column and no record size changes. The control code itself is in PWM.ino: a subtract-only multiply applied to the ramped throttle in the steering_type 1 branch only, gated OFF whenever rtm_rx_active || fm_rx_active. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-24 - COMMENT-ONLY RESYNC after the throttle-ramp move in PWM.ino: motor_ramp_s ramps the THROTTLE ONLY and steering is never rate-limited, so the confStruct field comment, the defaultConf line and the g_motor0_cmd / g_motor1_cmd declaration (which claimed the observers were independent of the ramp - they now carry it) are corrected. No struct, no default value, no code and no field changed: sizeof stays 200, SW_VERSION stays 36.
@@ -2002,6 +2003,52 @@ std::atomic<bool> rfInterrupt{false};
 volatile bool rxIsrState = 0;
 volatile int unpairedBlink = 0;
 volatile unsigned long last_packet = 0;
+
+// ============================================================
+// V2.5-Evo - 2026-09-28 - R-3 FIX: the motor gate's own timestamp.
+// ============================================================
+// THE BUG THIS CLOSES. last_packet answers "is the remote alive?" and it is refreshed by FIVE
+// radio branches in Radio.ino: the normal control packet, and the three meta-packets 0xF1 (RTM
+// state), 0xF2 (Follow-Me mode) and 0xF4 (aux). Only ONE of those five carries a throttle byte -
+// thr_received has exactly one writer in the whole firmware, the control-packet branch - and
+// nothing anywhere zeroes thr_received on a failsafe. But the motor gate in PWM.ino was testing
+// last_packet, so it was answering the throttle question with the liveness answer.
+//
+// THE FAILURE THAT PRODUCES. Rider on the throttle; the link drops past usrConf.failsafe_time, so
+// the gate closes and the motors cut; the rider lets go of the trigger, as anyone would. A
+// meta-packet then arrives BEFORE the next control packet - the 0xF2 Follow-Me keepalive is the
+// most reachable one, it repeats every 30 s whenever FM is armed, including armed while the buggy
+// is being towed by hand - and it refreshes last_packet. The gate reopens on a stale thr_received
+// from before the dropout, with the trigger released, and stays there until a real control packet
+// lands. Worse, calcPWM() is called BEFORE the gate on every 10 ms pass, so the throttle ramp has
+// already climbed back to that stale value by the time the gate opens: the motors do not ease in,
+// they are already there. That is motor movement with no user throttle input, which the creator
+// safety philosophy forbids outright.
+//
+// THE FIX, and why it is a SECOND timestamp rather than a change to the first. "The remote is
+// alive" and "I have a fresh throttle command" are two different questions and the code was
+// conflating them. Both are wanted - just by different readers:
+//   - THIS variable is stamped ONLY in the control-packet branch (Radio.ino), and is read ONLY by
+//     the motor gate in PWM.ino. A meta-packet cannot open the motor gate, full stop.
+//   - last_packet keeps its existing meaning and ALL FOUR of its other readers untouched:
+//     Logger.ino's link flag, RTMState.ino's RTM failsafe stop and FM_STOP_LINK, and System.ino's
+//     connection status. "The TX is alive" is the correct question for every one of those.
+// The two alternatives were both rejected for having side effects we do not want: zeroing
+// thr_received in the meta branches would stutter the throttle every time a keepalive lands during
+// normal riding, and not refreshing last_packet in the meta branches would change FM/RTM stop
+// timing and the logger's link flag.
+//
+// THE INVARIANT TO CHECK THIS AGAINST: on a healthy 10 Hz control link this is refreshed every
+// ~100 ms, i.e. far inside usrConf.failsafe_time, so the motor gate behaves IDENTICALLY to today
+// in normal operation. The only behaviour that changes is the failure case described above. The
+// 0 initial value is also unchanged in effect: it matches last_packet's, so the first
+// failsafe_time ms after boot read as "fresh" exactly as they always have.
+//
+// Written by the triggeredReceive task, read by the generatePWM task. volatile for the same reason
+// last_packet is: single-core preemption, and the compiler must not cache it in a register across
+// the gate's loop. A 32-bit naturally-aligned load/store cannot tear on this RV32 part.
+volatile unsigned long last_control_packet = 0;
+
 volatile uint8_t telemetry_index = 0;
 
 volatile uint8_t payload_buffer[10];

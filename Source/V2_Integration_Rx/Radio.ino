@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-09-28 - RX-ONLY standbyXOSC (adopted from the upstream "RF optimization (RadioLib bug #1827)" change, 2026-07-04, adapted). startupRadio() now sets radio.standbyXOSC = true BEFORE initRadioHardware(), so the SX1262 stands by on the crystal instead of on its internal RC oscillator. THE MECHANISM, and it is specific to how this board is configured: initRadioHardware() calls radio.begin(..., 1.8, false) - the 1.8 is a TCXO supply voltage on DIO3, so this module runs a TCXO, not a bare crystal, and RadioLib's default TCXO start-up delay is 5000 us. With the default STDBY_RC fallback the chip drops to the RC oscillator after every receive and every transmit, which POWERS THE TCXO DOWN; the next Rx or Tx then has to re-enable it and wait that 5 ms out before the PLL can lock. On STDBY_XOSC the TCXO simply stays running and the 5 ms is never paid. With standbyXOSC set, RadioLib writes STDBY_XOSC into SetRxTxFallbackMode at begin() time and every later standby() call honours the same flag. That turnaround delay sits directly inside this RX's reply path - triggeredReceive() receives a control packet, waits 10 ms, transmits a 6-byte telemetry reply, waits 10 ms, and re-arms the receiver, ten times a second - which is why upstream credits it with fewer packet collisions. TREAT THE FIELD BENEFIT AS UPSTREAM'S CLAIM UNTIL IT IS MEASURED ON OUR OWN HARDWARE; the mechanism above is what is verifiable from the source. THE COST is a slightly higher standby current plus the TCXO's own draw during the standby windows, and it is negligible here for two reasons: the RX runs off the buggy's pack, and it re-arms the receiver immediately after every packet, so it is only ever in standby transiently. WHY THE LINE IS HERE AND NOT IN initRadioHardware(): that function lives in ../Common/RadioCommon.h and is compiled into BOTH boards, so writing it there would change the TX binary too and force a TX reflash - the exact thing this change is shaped to avoid. It has to sit BEFORE the initRadioHardware() call because begin() is what reads the flag. No confStruct change, sizeof stays 200, SW_VERSION stays 36 - this flash does NOT reset the owner's stored settings.
+// V2.5-Evo - 2026-09-28 - R-3 FIX, part 2 of 3 (see PWM.ino and BREmote_V2_Rx.h): the normal control-packet branch now also stamps last_control_packet, next to the existing last_packet. The three meta-packet branches (0xF1 RTM state, 0xF2 FM mode, 0xF4 aux) deliberately do NOT, and that is the whole fix - they refresh "the remote is alive" without ever refreshing "I have a fresh throttle command", because none of them carries a throttle byte. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - processFmOverridePacket() decodes the FULL 0xF2 mode byte: bits 0-2 = mode (a value above 5 fails closed to 0 = disarm, printed once), bits 5-6 = the remote's auto-return override (0 = none -> fm_return_mode_runtime 0xFF, 1 = OFF -> 0, 2 = ON -> 1, 3 = ignored). It used to mask with 0x03, which would have folded the override bits into the mode. fm_mode_last_rx_ms is stamped as before. GPS-integrity note (project rule 5): this touches only the 0xF2 control meta-packet; the 0xF3 GPS state machine, Phase A/B and the freshness gates are untouched, so rules 1-4 hold exactly as before.
 // V2.5-Evo - 2026-07-24 - F9: cache last control-packet RSSI/SNR (g_last_rssi_dbm/g_last_snr_db) at receive so the logger task can add distance+link-quality CSV columns without racing the radio SPI bus. No confStruct/SW_VERSION change.
 // V2.5-Evo - 2026-07-20 - FM engagement semantics: processFmOverridePacket() stamps fm_mode_last_rx_ms on every 0xF2 so RTMState.ino can expire an unrefreshed FM declaration (95 s). This handler is now the ONLY path that can arm FM — the RX no longer auto-arms from usrConf.followme_mode.
@@ -28,6 +30,18 @@ void radioInitSuccess()
 
 void startupRadio()
 {
+  // V2.5-Evo - 2026-09-28 - Stand by on the crystal (TCXO), not the RC oscillator. See the dated
+  // header note at the top of this file for the full reasoning. Two things make the placement
+  // load-bearing and neither is style:
+  //   1. It MUST be before initRadioHardware(), because radio.begin() inside that function is what
+  //      reads the flag and writes STDBY_XOSC into the SX1262's Rx/Tx fallback mode.
+  //   2. It must be HERE and not inside initRadioHardware(), which lives in ../Common/RadioCommon.h
+  //      and is shared with the TX. Setting it there would change the TX binary and force a TX
+  //      reflash; this way the change is RX-only.
+  // The SX126x constructor zero-initialises this member to false, and that constructor runs at
+  // static-init time, long before setup() reaches here - so this assignment always wins.
+  radio.standbyXOSC = true;
+
   initRadioHardware();
 }
 
@@ -743,6 +757,15 @@ void triggeredReceive(void *parameter) {
               {
                 // ---- Normal throttle/steering control packet ----
                 last_packet = millis();
+                // V2.5-Evo - 2026-09-28 - R-3 FIX: the motor gate's own timestamp, stamped HERE and
+                // in no other branch. This is the only branch that writes thr_received (a few lines
+                // down), so it is the only one that can honestly claim "the RX has a fresh throttle
+                // command". The 0xF1 / 0xF2 / 0xF4 branches above still stamp last_packet - the TX
+                // really is alive - but they must not be able to reopen the motor gate on a throttle
+                // byte left over from before a dropout. Full reasoning at the declaration in
+                // BREmote_V2_Rx.h; the gate itself is PWM.ino. On a healthy 10 Hz link this is
+                // refreshed every ~100 ms, so normal riding is unchanged.
+                last_control_packet = millis();
 #ifdef WIFI_ENABLED
                 webCfgNotifyRxConnected();
 #endif
@@ -815,8 +838,10 @@ void triggeredReceive(void *parameter) {
       // The fix: on timeout, re-run the same re-arm sequence used at the common exit so a wedged
       // radio self-heals. startReceive() resets the FIFO/IRQ state, so it doubles as the buffer flush.
       // Motor-safety: this runs only after 2000ms of RF silence, by which point the RX failsafe has
-      // long since zeroed the motor (PWM.ino:13 gates on millis()-last_packet). This branch never
-      // writes thr_received, last_packet, or any PWM state — motor-safe by construction.
+      // long since zeroed the motor (the gate in PWM.ino tests millis()-last_control_packet; it was
+      // last_packet until the 2026-09-28 R-3 fix, and the stale line number it used to quote has been
+      // dropped rather than re-guessed). This branch never writes thr_received, last_packet,
+      // last_control_packet, or any PWM state — motor-safe by construction.
       radio.implicitHeader(6);
       radio.startReceive();
       rfInterrupt = false;

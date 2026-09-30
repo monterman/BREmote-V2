@@ -1,3 +1,13 @@
+// V2.5-Evo - 2026-09-30 - MagStations: new mag_mode 4 (MAG_ROLE_FMSET) — a magnet TAP (60-400 ms) steps
+//   through the Follow-Me stations selected in the new mag_fm_set bitmask, and a 2.5 s hold toggles
+//   rtm_enabled for the session. mag_fm_set OCCUPIES THE 2 TAIL PADDING BYTES mag_mode left behind, so
+//   sizeof(confStruct) stays 136 and SW_VERSION stays 27: no SPIFFS reset, no lost throttle calibration.
+//   Station changes are HARD-GATED to "Follow-Me actively following" — never while the rider is on the
+//   rope under tow, because a buggy that repositions itself while the rider is attached and cannot steer
+//   away is unacceptable. Stations 4 and 5 (front) do not exist in this firmware and are NOT added here.
+//   ⚠ GPIO 9 (P_MAG) IS AN ESP32-C3 STRAPPING PIN. NEVER POWER THE REMOTE ON WITH THE MAGNET ATTACHED:
+//   the chip samples GPIO 9 at reset and a magnet held there puts it into UART download mode, so the
+//   remote will not boot. mag_seen_high cannot prevent this — strapping happens before any firmware runs.
 // V2.5-Evo - 2026-09-19 - Stick during auto-steer: FM_FLAG_STEER_TAKEOVER (fm_flags bit 4) is the buggy's echo of its
 //   steer_during_auto setting (1 = the stick takes over an automatic steering run instead of cancelling it) and
 //   FM_FLAG_STEER_ACTIVE (bit 5) says a takeover is standing right now (display only). Gate 4 in RTMState.ino reads bit 4
@@ -387,15 +397,44 @@ struct confStruct {
     //   3 = magnet arms FM at 2s / RTM at 5s (full two-tier gesture; the tier is decided
     //       by how long the magnet was held, and arming fires on REMOVAL)
     //
-    // Valid range 0-3; default 0. Implemented by runMagGesture() in Hall.ino.
-    uint16_t mag_mode;         // magnet/Hall gesture role; 0-3; default 0 (off / not fitted)
+    //   4 = magnet TAPS through the Follow-Me stations listed in mag_fm_set, and a 2.5 s hold
+    //       toggles Return-To-Me on or off. See the mag_mode 4 block below and runMagGesture().
+    //
+    // Valid range 0-4; default 0. Implemented by runMagGesture() in Hall.ino.
+    uint16_t mag_mode;         // magnet/Hall gesture role; 0-4; default 0 (off / not fitted)
+
+    // ============================================================
+    // V2.5-Evo - 2026-09-30 - MagStations: mag_fm_set fills the 2 tail padding bytes that
+    // mag_mode left behind, so sizeof(confStruct) STAYS 136 and SW_VERSION STAYS 27.
+    // This flash does NOT reset the TX SPIFFS config: the owner keeps his throttle
+    // calibration, his toggle calibration and his pairing. bt_enabled was added exactly
+    // this way at SW26 (see the note above sleep_timeout_s) and this is the same trick.
+    // ============================================================
+    // Which Follow-Me stations a magnet TAP steps through when mag_mode == 4. One bit per
+    // station, so "never send me to station 2" is simply bit 1 left clear:
+    //   bit 0 = station 1 (near right) | bit 1 = station 2 (behind) | bit 2 = station 3 (near left)
+    // Valid range 1-7 (at least one station must be selected); default 7 = all three, which
+    // is what the remote already does when the toggle cycles stations, so the default changes
+    // nothing. A remote flashed from an older build reads 0 out of the old padding bytes;
+    // cfgValidateCrossField() silently corrects 0 (and anything above 7) to 7 on load rather
+    // than rejecting the config, because a rejection on the load path would write defaultConf
+    // and wipe the calibration this whole field placement exists to protect.
+    // Stations 4 and 5 (the two FRONT stations) DO NOT EXIST in this firmware — the mode wrap
+    // in RTMState.ino is 1 -> 2 -> 3 -> 1 — so bits 3 and up are deliberately unused and are
+    // masked off by fmNextStationInSet() in case a future build ever stores them.
+    uint16_t mag_fm_set;       // magnet-tap station set, bitmask bit0=F1 bit1=F2 bit2=F3; 1-7; default 7 (all)
 };
 
 // V2.5-Evo - 2026-07-20 - MagGesture: 132 → 136. mag_mode is a uint16_t (+2 bytes = 134), but the
 // struct's alignment is 4 (it contains uint32_t/float members), so the compiler pads the tail back
 // out to 136. Those 2 trailing padding bytes are the slot a future uint16_t field can occupy for
 // free — exactly how bt_enabled was added at SW26 without changing sizeof.
-static_assert(sizeof(confStruct) == 136, "confStruct size mismatch — expected 136 bytes (V2.5-Evo sleep_timeout_s + bt_enabled + mag_mode + 2 tail padding). Update this assert if you change the struct.");  // pinned to exact size; catches both shrinkage and unexpected growth
+// V2.5-Evo - 2026-09-30 - MagStations: mag_fm_set CLAIMED those 2 padding bytes. The data now fills
+// all 136 bytes with no tail padding left, so sizeof is STILL 136 and SW_VERSION is STILL 27 — the
+// config version check passes on the next boot and nothing in SPIFFS is reset. THE TAIL IS NOW FULL:
+// the next uint16_t added to this struct grows sizeof to 140, which IS a version bump and IS a config
+// wipe. Do not add one without saying so out loud.
+static_assert(sizeof(confStruct) == 136, "confStruct size mismatch — expected 136 bytes (V2.5-Evo sleep_timeout_s + bt_enabled + mag_mode + mag_fm_set; no tail padding left). Update this assert if you change the struct.");  // pinned to exact size; catches both shrinkage and unexpected growth
 confStruct usrConf;
 
 // ============================================================
@@ -407,9 +446,14 @@ confStruct usrConf;
 #define MAG_ROLE_FM    1   // single 2s threshold arms FM
 #define MAG_ROLE_RTM   2   // single 2s threshold arms RTM
 #define MAG_ROLE_BOTH  3   // two-tier: 2s → FM, 5s → RTM
+// V2.5-Evo - 2026-09-30 - MagStations: the fourth role. A short TAP (60-400 ms) steps through the
+// Follow-Me stations selected in mag_fm_set, but ONLY while Follow-Me is actively following; a
+// 2.5 s hold toggles Return-To-Me on or off. Roles 1-3 are untouched by this addition — their
+// timings, their buzzes and their arm-on-removal behaviour are exactly as they were.
+#define MAG_ROLE_FMSET 4   // tap = next station in mag_fm_set (FM following only); 2.5s hold = RTM on/off
 
 // Returns what the magnet gesture should arm for the current mag_mode value.
-// Inputs: usrConf.mag_mode (0-3). Output: MAG_ROLE_NONE / _FM / _RTM / _BOTH.
+// Inputs: usrConf.mag_mode (0-4). Output: MAG_ROLE_NONE / _FM / _RTM / _BOTH / _FMSET.
 // No side effects. Mode 0 and anything out of range return NONE, so the gesture stays
 // completely dormant for remotes with no Hall sensor fitted (the default).
 static inline uint8_t magGestureRole()
@@ -419,6 +463,7 @@ static inline uint8_t magGestureRole()
     case 1:  return MAG_ROLE_FM;
     case 2:  return MAG_ROLE_RTM;
     case 3:  return MAG_ROLE_BOTH;
+    case 4:  return MAG_ROLE_FMSET;   // V2.5-Evo - 2026-09-30 - MagStations
     default: return MAG_ROLE_NONE;
   }
 }
@@ -530,6 +575,11 @@ confStruct defaultConf = {  // V2.5-Evo — factory default configuration
   // hardware case, where the gesture must stay opt-in because a remote with no DRV5032 on
   // GPIO 9 has undefined P_MAG state. Enable 1/2/3 per device via the web UI.
   0,    // mag_mode (0 = off / Hall not fitted; enable per device via web UI)
+  // V2.5-Evo - 2026-09-30 - MagStations: 7 = 0b111 = all three Follow-Me stations selected, which
+  // is exactly what the remote already does when the toggle cycles stations. Shipping the
+  // permissive value means enabling mag_mode 4 changes WHICH INPUT cycles the stations, never
+  // which stations exist. Narrow it per rider in the web UI (three tick boxes).
+  7,    // mag_fm_set (bit0=F1, bit1=F2, bit2=F3; 7 = all three)
 };
 
 

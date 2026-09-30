@@ -1,3 +1,9 @@
+// V2.5-Evo - 2026-09-30 - MagStations: mag_mode range widened 0-3 → 0-4 (4 = magnet tap steps Follow-Me stations,
+//   2.5 s hold toggles Return-To-Me). New field mag_fm_set (station bitmask, 1-7, default 7) added at the END of the
+//   table, filling the struct's 2 tail padding bytes — sizeof(confStruct) stays 136 and SW_VERSION stays 27, so this
+//   flash does NOT reset the TX config. A remote flashed from an older build reads 0 out of the old padding, so
+//   cfgValidateCrossField() CLAMPS 0 (and anything above 7) to 7 instead of rejecting — a rejection on the load path
+//   writes defaultConf and wipes the throttle calibration, which is the one outcome this placement exists to avoid.
 // V2.5-Evo - 2026-09-19 - rtm_steer_exit_on_input is DEPRECATED (unread by the remote; the buggy's steer_during_auto decides). Row and range kept so stored settings load. Comment only; TX struct untouched (136, SW27).
 // TX-specific config field table and cross-validation.
 // Shared engine is in ../Common/ConfigServiceEngine.h (included via BREmote_V2_Tx.h).
@@ -105,7 +111,16 @@ const CfgFieldSpec kCfgFields[] = {
   {"bt_enabled",      CFG_U16, offsetof(confStruct, bt_enabled),      true, false, true, 0.0f,    2.0f, 0, false},
   // V2.5-Evo - 2026-07-20 - MagGesture: magnet/Hall gesture role.
   // 0=off/not fitted (default), 1=arm FM (2s), 2=arm RTM (2s), 3=FM (2s) + RTM (5s).
-  {"mag_mode",        CFG_U16, offsetof(confStruct, mag_mode),        true, false, true, 0.0f,    3.0f, 0, false},
+  // V2.5-Evo - 2026-09-30 - MagStations: max 3 → 4. 4 = a magnet TAP (60-400 ms) steps through the
+  // stations in mag_fm_set while Follow-Me is actively following, and a 2.5 s hold toggles
+  // Return-To-Me. WIDENING ONLY — every previously stored value (0-3) is still in range and still
+  // means exactly what it meant, so no load path can reject an existing config.
+  {"mag_mode",        CFG_U16, offsetof(confStruct, mag_mode),        true, false, true, 0.0f,    4.0f, 0, false},
+  // V2.5-Evo - 2026-09-30 - MagStations: which Follow-Me stations a magnet tap steps through when
+  // mag_mode == 4. Bitmask: bit0 = station 1 (near right), bit1 = station 2 (behind), bit2 = station 3
+  // (near left). Range 1-7 — at least one station must be selected, or the tap would have nowhere to
+  // go. Default 7 = all three. Stations 4 and 5 do not exist in this firmware, so there is no bit 3/4.
+  {"mag_fm_set",      CFG_U16, offsetof(confStruct, mag_fm_set),      true, false, true, 1.0f,    7.0f, 0, false},
   {"paired", CFG_U16, offsetof(confStruct, paired), true, false, true, 0.0f, 1.0f, 0, false},
   {"own_address", CFG_ADDR3, offsetof(confStruct, own_address), true, false, false, 0.0f, 0.0f, 0, false},
   {"dest_address", CFG_ADDR3, offsetof(confStruct, dest_address), true, false, false, 0.0f, 0.0f, 0, false}
@@ -123,6 +138,17 @@ bool cfgValidateCrossField(confStruct &candidate, String &err)
   if (candidate.fm_warn_distance_m > kFmDistanceTelemetryMaxM)
   {
     candidate.fm_warn_distance_m = kFmDistanceTelemetryMaxM;
+  }
+
+  // V2.5-Evo - 2026-09-30 - MagStations: mag_fm_set sits in what used to be the struct's 2 tail
+  // padding bytes, so a config saved by any earlier build decodes to 0 here (and, if that padding
+  // ever held garbage, possibly to something above 7). Both are meaningless as a station set.
+  // CLAMP, DO NOT REJECT: this validator also runs on the config LOAD path, and a range rejection
+  // there falls back to defaultConf — which would wipe pairing and throttle calibration to fix one
+  // setting. 7 = all three stations, i.e. the behaviour the remote already has.
+  if (candidate.mag_fm_set == 0 || candidate.mag_fm_set > 0x07)
+  {
+    candidate.mag_fm_set = 0x07;
   }
 
   if (candidate.max_gears < 1 || candidate.max_gears > 10)

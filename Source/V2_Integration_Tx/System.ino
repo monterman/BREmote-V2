@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-09-30 - MagStations: haptic Pattern 11 added — N short taps, where N is the Follow-Me station
+//   number a magnet tap just selected (count carried by the new volatile vib_pulse_count). Pattern 10 gained a second
+//   caller (the mag_mode 4 2.5 s advisory) and its comment now says so. No other pattern changed, no confStruct change.
 // V2.5-Evo - 2026-09-19 - Return gesture: vibrationTask Patterns 9 and 10 added. 9 = FOUR quick 80 ms taps (a trill) = the
 //   auto-return override was SET for the session (RTM arm cancelled, override = opposite of the RX's echo); 10 = TWO medium
 //   300 ms pulses = the override was CLEARED (back to the buggy's stored default). Both are new shapes: no existing pattern is
@@ -923,7 +926,13 @@ void checkCharger()
   setBrightness(0x0F);
 }
 
-volatile uint8_t current_vib_pattern = 0;  // active haptic pattern: 0=none, 1=2 short, 2=5 short, 3=5 long, 4=2 fast short (RTM/FM ARM confirm), 5=1 short (magnet 2s "release for FM" advisory), 6=3 fast short (magnet 5s "release for RTM" advisory), 7=1 long (UNCOMMANDED RTM/FM stop, or an arm refusal — request it via vib_stop_pending, never by writing 7 here), 8=1 medium 300ms (FM warning-distance reached; repeats every 2s from runFmLoop), 9=4 quick 80ms taps (return gesture: auto-return override SET for the session), 10=2 medium 300ms pulses (return gesture: override CLEARED, back to the stored default)
+volatile uint8_t current_vib_pattern = 0;  // active haptic pattern: 0=none, 1=2 short, 2=5 short, 3=5 long, 4=2 fast short (RTM/FM ARM confirm), 5=1 short (magnet 2s "release for FM" advisory), 6=3 fast short (magnet 5s "release for RTM" advisory), 7=1 long (UNCOMMANDED RTM/FM stop, or an arm refusal — request it via vib_stop_pending, never by writing 7 here), 8=1 medium 300ms (FM warning-distance reached; repeats every 2s from runFmLoop), 9=4 quick 80ms taps (return gesture: auto-return override SET for the session), 10=2 medium 300ms pulses (return gesture: override CLEARED, back to the stored default), 11=vib_pulse_count short taps (magnet station change: the tap count IS the station number — see the MagStations note below)
+// V2.5-Evo - 2026-09-30 - MagStations: how many taps Pattern 11 plays. It is the Follow-Me station number
+// (1-3), so the rider counts the buzzes and knows where the buggy just went without looking at the display.
+// WRITE THIS FIRST, then current_vib_pattern = 11 — the vibration task reads the count when it starts the
+// pattern, and a count of 0 would silently play nothing. It is clamped to 1-5 inside the task so a stray
+// value can never spin the motor for an unbounded time.
+volatile uint8_t vib_pulse_count = 0;
 
 // ============================================================
 // STOP-BUZZ REQUEST FLAG - how Pattern 7 gets to actually play
@@ -1168,6 +1177,11 @@ void vibrationTask(void *parameter) {
     // Fired by returnGesture() when the override is CLEARED (back to the buggy's stored default).
     // Two mediums: longer than the two firm arm taps (4: 130 ms), one more than the single 300 ms
     // warning (8), far shorter than the one 750 ms STOP (7).
+    // V2.5-Evo - 2026-09-30 - MagStations: SECOND CALLER. runMagGesture() also fires Pattern 10 as the
+    // 2.5 s advisory in mag_mode 4 — "let go now and Return-To-Me will toggle". It is the first half of
+    // that gesture's signature: two mediums, then two firm taps (4) for ON or one long buzz (7) for OFF.
+    // The two callers can never overlap — one is the toggle combo, the other needs a magnet held for
+    // 2.5 s — and both mean "a deliberate two-state decision just happened", so the feel stays honest.
     else if (current_vib_pattern == 10) {
       for (int i = 0; i < 2; i++) {
         digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(300));
@@ -1175,6 +1189,25 @@ void vibrationTask(void *parameter) {
         if (vib_stop_pending) break;   // a stop outranks a confirm — cut it short
       }
       if (current_vib_pattern == 10) current_vib_pattern = 0;
+    }
+    // V2.5-Evo - 2026-09-30 - MagStations: Pattern 11 — N short taps, where N IS THE ANSWER.
+    // vib_pulse_count carries the Follow-Me station number the magnet tap just moved to (1-3), so the rider
+    // counts taps instead of reading the display: two taps means the buggy is heading to station 2.
+    // The pulse shape (100 ms on / 150 ms off) is copied from Pattern 6 — this firmware's existing
+    // "counted taps" shape — so a count reads as a count and not as a new signal to learn. Pattern 11 with
+    // a count of 3 is deliberately identical to Pattern 6: Pattern 6 only ever plays in mag_mode 3 and
+    // Pattern 11 only in mag_mode 4, so one remote never produces both.
+    // The count is clamped to 1-5 so a stray or uninitialised value cannot buzz forever.
+    else if (current_vib_pattern == 11) {
+      uint8_t n = vib_pulse_count;
+      if (n < 1) n = 1;
+      if (n > 5) n = 5;
+      for (uint8_t i = 0; i < n; i++) {
+        digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(100));
+        digitalWrite(P_MOT, LOW);  vTaskDelay(pdMS_TO_TICKS(150));
+        if (vib_stop_pending) break;   // a stop outranks a confirm — cut it short
+      }
+      if (current_vib_pattern == 11) current_vib_pattern = 0;
     }
 
     // Sleep briefly to prevent hoarding the CPU

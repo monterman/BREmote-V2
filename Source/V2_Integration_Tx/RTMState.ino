@@ -1,3 +1,10 @@
+// V2.5-Evo - 2026-09-30 - MagStations (mag_mode 4): fmIsEngaged() is the new FM-actively-following predicate and the
+//   safety gate for the magnet tap; fmNextStationInSet() resolves the next station inside the mag_fm_set bitmask;
+//   fmStepStationFromMagnet() performs the move (0xF2 + N-tap Pattern 11 + F<n> flash for gear_display_time) and
+//   returns SILENTLY when the tap resolves to the station the buggy is already at — a tap either moves the buggy or
+//   does nothing at all. fmToggleRtmEnabledFromMagnet() flips usrConf.rtm_enabled in RAM only, off-throttle only.
+//   cycleFmMode(), cycleFmModeArmed(), fmDisarm() and every RTM path are UNCHANGED. No confStruct size change:
+//   mag_fm_set took the 2 tail padding bytes, so sizeof stays 136 and SW_VERSION stays 27.
 // V2.5-Evo - 2026-09-19 - F0 REMOVED FROM THE PRE-THROTTLE CYCLE (owner ruling 12:45, supersedes the
 //   "F0 landing is kept" call in the entry below). Bench testing today: the tap+hold combo cycling
 //   stations before any throttle ran 1 -> 2 -> 3 -> 0 (disarm) and landed on it twice in five minutes
@@ -118,6 +125,9 @@
 //   are unchanged and still buzz.
 
 extern volatile uint8_t current_vib_pattern;
+// V2.5-Evo - 2026-09-30 - MagStations: how many taps Pattern 11 plays (1-3 = the station number).
+// Set it BEFORE writing 11 into current_vib_pattern. Defined in System.ino.
+extern volatile uint8_t vib_pulse_count;
 extern volatile bool    vib_stop_pending;   // set true to REQUEST the Pattern 7 STOP buzz (defined in
                                             // System.ino). Never write current_vib_pattern = 7 directly:
                                             // the flag is what makes the stop buzz preempt and survive.
@@ -1003,6 +1013,180 @@ void cycleFmModeArmed()
   queueMetaPacketBurst(0xF2, fmEncodeModeByte(last_fm_mode));   // V2.5-Evo - 2026-09-19 - carries the override bits
   fm_last_sync_ms = millis();              // reset keepalive — just synced
   fm_arm_ms       = millis();             // reset arm window — user is actively choosing a mode
+}
+
+// ============================================================
+// V2.5-Evo - 2026-09-30 - MagStations: the magnet-tap station stepper (mag_mode 4).
+//
+// WHY THESE FUNCTIONS EXIST SEPARATELY FROM cycleFmModeArmed()
+//   cycleFmModeArmed() is the toggle's stepper: it walks 1 -> 2 -> 3 -> 1 unconditionally and it
+//   holds the confirm on screen for 2 s. The magnet tap needs two things that one cannot give:
+//   it must honour the rider's mag_fm_set station subset, and it must refuse to do anything at all
+//   unless Follow-Me is ACTIVELY FOLLOWING. Rather than bolt both onto the shared path and risk
+//   changing the toggle's behaviour, the magnet gets its own entry point. cycleFmModeArmed() and
+//   cycleFmMode() are untouched.
+// ============================================================
+
+// fmIsEngaged - is Follow-Me actively following right now?
+//
+// This is THE safety gate for the magnet tap, and it is the same three-part test the R5 proximity
+// bar already uses to decide it may draw the "engaged" distance bar: the remote has declared FM
+// armed, a packet from the buggy has landed inside the link-health window, and that packet says
+// FM_FLAG_ENGAGED. A stale packet reads as NOT engaged, which fails safe.
+//
+// WHY "ENGAGED" AND NOT "ARMED" IS THE GATE: Follow-Me is armed during the tow, while the rider is
+// on the rope and physically attached to the buggy. A buggy that repositions itself then would pull
+// a rider who cannot steer away from it. It ENGAGES after the whip, when the rope is slack and the
+// rider is riding independently - a station transit there pulls nobody. So armed-but-not-engaged is
+// exactly the tow state, and the magnet tap must be dead in it.
+//
+// INPUTS: fm_armed, last_packet, telemetry.fm_flags. OUTPUT: true = following. No side effects.
+// Safe to call from the loop task and from the bargraph task: reads only, never blocks.
+bool fmIsEngaged()
+{
+  if (!fm_armed) return false;
+  if (last_packet == 0 || (millis() - last_packet) >= FM_LINK_HEALTHY_MS) return false;
+  return (telemetry.fm_flags & FM_FLAG_ENGAGED) != 0;
+}
+
+// fmNextStationInSet - which station does a tap move to?
+//
+// INPUTS:  from = the station the buggy is at now (1-3; anything else counts as "outside the set")
+//          mask = usrConf.mag_fm_set, bit0 = station 1, bit1 = station 2, bit2 = station 3
+// OUTPUT:  the station to move to (1-3), or 0 for "there is nowhere to go, do nothing".
+// No side effects.
+//
+// Rules, straight from the design:
+//   - from IS in the set     -> the next set station going up, wrapping 3 -> 1
+//   - from is NOT in the set -> the LOWEST set station (the rider asked never to sit where he is)
+//   - the set holds only from -> returns from, which the caller treats as DO NOTHING. A tap never
+//     says "you are already there"; it either moves the buggy or it is silent.
+// Bits 3 and up are masked off: stations 4 and 5 (the front pair) DO NOT EXIST in this firmware -
+// the mode wrap is 1 -> 2 -> 3 -> 1 - and a bit for a station the buggy cannot reach would strand
+// the tap on a station it could never leave.
+static uint8_t fmNextStationInSet(uint8_t from, uint16_t mask)
+{
+  mask &= 0x07;                 // stations 1-3 only
+  if (mask == 0) return 0;      // nothing selected - validated against, but fail quietly anyway
+
+  // Current station outside the chosen set -> go to the lowest station that IS in it.
+  if (from < 1 || from > 3 || !(mask & (1u << (from - 1))))
+  {
+    for (uint8_t s = 1; s <= 3; s++)
+      if (mask & (1u << (s - 1))) return s;
+    return 0;
+  }
+
+  // Current station inside the set -> walk forward and stop at the first set station.
+  for (uint8_t step = 1; step <= 3; step++)
+  {
+    uint8_t s = (uint8_t)(((from - 1 + step) % 3) + 1);
+    if (mask & (1u << (s - 1))) return s;
+  }
+  return 0;
+}
+
+// fmStepStationFromMagnet - act on a magnet TAP (mag_mode 4).
+//
+// Called from runMagGesture() (Hall.ino) once a 60-400 ms magnet tap has been accepted AND
+// fmIsEngaged() has returned true. It re-checks the gate itself so the safety rule lives with the
+// action, not only with the caller.
+//
+// CONFIRMATIONS - two channels, as the design requires, and only when something actually changed:
+//   haptic  : N short taps = station number (Pattern 11, N taken from vib_pulse_count)
+//   display : the existing "F<n>" large-font confirm, held for usrConf.gear_display_time (800 ms)
+// If the tap resolves to the station the buggy is already at, this function returns in silence: no
+// buzz, no flash, no packet. A confirmation for "nothing happened" teaches the rider to expect
+// feedback from accidental magnet contact, which is the opposite of what we want.
+//
+// INPUTS: last_fm_mode, usrConf.mag_fm_set, usrConf.gear_display_time.
+// SIDE EFFECTS: last_fm_mode updated, one 0xF2 burst to the buggy, keepalive + arm timers reset,
+//   Pattern 11 queued, and a BLOCKING display hold of gear_display_time (800 ms by default) via
+//   gpsKeepAliveDelay(), which keeps draining the GPS UART so no fix goes stale. Loop task only -
+//   never from a FreeRTOS task.
+void fmStepStationFromMagnet()
+{
+  if (!fmIsEngaged()) return;                        // the gate lives with the action too
+
+  uint8_t next = fmNextStationInSet(last_fm_mode, usrConf.mag_fm_set);
+  if (next == 0 || next == last_fm_mode) return;     // nowhere to go - stay silent
+
+  last_fm_mode = next;
+  Serial.print("FM [TX] magnet tap: station -> F");  // V2.5-Evo - 2026-09-30
+  Serial.println(last_fm_mode);
+
+  // Tell the buggy first, so the transit starts while the rider is still reading the confirm.
+  queueMetaPacketBurst(0xF2, fmEncodeModeByte(last_fm_mode));
+  fm_last_sync_ms = millis();              // reset keepalive - just synced
+  fm_arm_ms       = millis();              // reset arm window - the rider is actively choosing
+
+  // Haptic first: the vibration runs in its own task, so it plays THROUGH the display hold below
+  // instead of after it. N taps = station number.
+  if (current_vib_pattern == 0)
+  {
+    vib_pulse_count     = last_fm_mode;    // must be set BEFORE the pattern number
+    current_vib_pattern = 11;
+  }
+
+  // The same "F<n>" confirm the toggle path draws, held for the gear-change flash time instead of
+  // the toggle's 2 s. 800 ms keeps the remote's own timing language and is the shortest sensible
+  // hold on the single-core TX, which matters because this call blocks loop().
+  DISP_LOCK();
+  displayDigits(LET_F, last_fm_mode);
+  updateDisplay();
+  DISP_UNLOCK();
+  gpsKeepAliveDelay(usrConf.gear_display_time);
+}
+
+// fmToggleRtmEnabledFromMagnet - act on a 2.5 s magnet hold (mag_mode 4).
+//
+// Flips usrConf.rtm_enabled, the remote's master enable for Return-To-Me.
+//
+// RAM ONLY, DELIBERATELY. Nothing is written to SPIFFS: the flip lasts the session and the stored
+// setting comes back on the next power-up. Two reasons. A flash write on the water is a blocking
+// erase/write cycle in the middle of a ride, and this is the same pattern followme_mode and the
+// auto-return session override already use - the gesture is a session decision, the web UI is the
+// permanent one.
+//
+// ZERO THROTTLE REQUIRED. Unlike the arm gestures, this changes what the craft will do on its own
+// initiative later, so it must not be possible to do by accident while riding. thr_scaled < 10 is
+// the same "trigger released" test the toggle gestures use.
+//
+// CONFIRMATIONS: Pattern 4 (two firm taps) for enabled, Pattern 7 (one long buzz) for disabled -
+// the remote's existing on/off feel. The 2.5 s advisory that fired while the magnet was still held
+// (Pattern 10, two medium pulses) is the first half of the signature, so the rider feels
+// "buzz-buzz .. tap-tap" for ON and "buzz-buzz .. buzzzzz" for OFF. Display shows "R1" / "R0" -
+// the same letter-plus-number shape as the F<n> station and L<n> gear readouts.
+//
+// INPUTS: thr_scaled, usrConf.rtm_enabled. SIDE EFFECTS: usrConf.rtm_enabled flipped in RAM, one
+// haptic pattern queued, and a BLOCKING 2 s display hold via gpsKeepAliveDelay(). Loop task only.
+void fmToggleRtmEnabledFromMagnet()
+{
+  // Refuse while the trigger is held. Silent refusal: a buzz for "I did nothing" is exactly the
+  // training we do not want around a magnet.
+  if (thr_scaled >= 10) return;
+
+  // Never flip it out from under a Return-To-Me run that is already in progress.
+  if (rtm_tx_active || rtmIsArming()) return;
+
+  usrConf.rtm_enabled = usrConf.rtm_enabled ? 0 : 1;
+  Serial.print("RTM [TX] magnet hold 2.5s: rtm_enabled -> ");   // V2.5-Evo - 2026-09-30
+  Serial.println(usrConf.rtm_enabled);
+
+  if (usrConf.rtm_enabled)
+  {
+    if (current_vib_pattern == 0) current_vib_pattern = 4;   // two firm taps = ON
+  }
+  else
+  {
+    vib_stop_pending = true;                                 // Pattern 7: one long buzz = OFF
+  }
+
+  DISP_LOCK();
+  displayDigits(LET_R, usrConf.rtm_enabled ? 1 : 0);          // "R1" = on, "R0" = off
+  updateDisplay();
+  DISP_UNLOCK();
+  gpsKeepAliveDelay(2000);
 }
 
 // ============================================================

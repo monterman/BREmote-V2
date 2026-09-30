@@ -1,3 +1,8 @@
+// V2.5-Evo - 2026-09-30 - MagStations: runMagGesture() gains mag_mode 4 (MAG_ROLE_FMSET). A short TAP (60-400 ms)
+//   steps through the Follow-Me stations selected in the new mag_fm_set bitmask, and a 2.5 s hold toggles
+//   Return-To-Me for the session. Roles 1-3 are BIT-FOR-BIT UNCHANGED: same 120 ms debounce, same 2 s / 5 s
+//   thresholds, same advisories, same arm-on-removal. See the MAG_ROLE_FMSET block inside runMagGesture().
+//   — GPIO 9 (P_MAG) IS AN ESP32-C3 STRAPPING PIN. NEVER POWER THE REMOTE ON WITH THE MAGNET ATTACHED.
 // V2.5-Evo - 2026-09-19 - RIGHT tap + LEFT hold now calls returnGesture() (RTMState.ino) instead of setRtmArmed() directly: the same
 //   combo is a three-state machine (arm RTM as before / cancel the arm and flip the auto-return override for the session / back to
 //   default). The gesture map comment below is updated. The magnet FM disarm prints its reason (the remote printed nothing for any
@@ -503,6 +508,46 @@ void handleGearToggle(int direction)
 //   MAG_ROLE_NONE (mag_mode 0, the default) — dormant. The function returns immediately
 //   and the Hall sensor behaves exactly as it did before this feature existed.
 //
+//   MAG_ROLE_FMSET (mag_mode 4) — V2.5-Evo - 2026-09-30 - MagStations. A DIFFERENT SHAPE OF GESTURE:
+//     Magnet held        Feedback while holding          On magnet REMOVAL
+//     -----------        ----------------------          -----------------
+//     < 60ms             none                            nothing (debounce, not a gesture)
+//     60-400ms (a TAP)   none (too short to buzz)        step to the next station in mag_fm_set,
+//                                                        or ARM Follow-Me if it is not armed yet
+//     400ms - 2.5s       none                            nothing (deliberate dead zone, see below)
+//     >= 2.5s            TWO medium pulses (Pattern 10)  toggle Return-To-Me on/off (zero throttle)
+//
+//     WHY THE 400ms - 2.5s DEAD ZONE IS DELIBERATE. A tap is about 300 ms and the hold is 2500 ms, so the
+//     two gestures sit roughly 8x apart. That is what makes them impossible to confuse with cold hands,
+//     wet hands, gloves or one-handed in chop. Widening the tap toward the hold would buy nothing and
+//     would start costing accuracy. A hold in the dead zone is silent: the rider feels no buzz, nothing
+//     happens, and they simply tap again.
+//
+//     THE FIRST TAP IS NEVER A NO-OP, AND NEVER SAYS "YOU ARE ALREADY THERE":
+//       Follow-Me not armed          -> ARM it at the stored default station (cycleFmMode())
+//       Follow-Me actively following -> move to the next station set in mag_fm_set, wrapping
+//       ...at a station NOT in the set -> move to the lowest station that IS in the set
+//       already at the only set station -> NOTHING AT ALL, and no buzz (fmStepStationFromMagnet())
+//
+//     — THE HARD GATE: A STATION ONLY MOVES WHILE FOLLOW-ME IS ACTIVELY FOLLOWING.
+//     Never while the rider is on the rope under tow. On the rope the rider is physically attached to the
+//     buggy and cannot steer away from it, so a buggy that repositions itself on its own decision would
+//     drag him. Once Follow-Me has ENGAGED the rope is slack — the rider is riding independently after
+//     the whip and the buggy is trailing — so a station transit pulls nobody. fmIsEngaged() is the test.
+//     Armed-but-not-engaged is exactly the tow state, and the tap is dead in it.
+//
+//     THE GATE IS ALSO THE ACCIDENT GUARD, WHICH IS WHY ONE TAP IS ENOUGH. A magnet brushing the case in
+//     a bag, in the car, against a fridge or another magnet does nothing at all unless Follow-Me is
+//     already following. A state gate is a far stronger guard than counting taps, and counting taps has a
+//     measured reliability cost on competitor water remotes. A REFUSED GESTURE IS COMPLETELY SILENT:
+//     buzzing for "I did nothing" would train the rider to expect feedback from accidental contact.
+//
+// — HARDWARE HAZARD THE RIDER MUST KNOW: GPIO 9 (P_MAG) IS AN ESP32-C3 STRAPPING PIN.
+//   A magnet held against the case at power-up or reset puts the chip into UART DOWNLOAD MODE, and the
+//   remote will not boot normally. NEVER POWER THE REMOTE ON WITH THE MAGNET ATTACHED. The mag_seen_high
+//   boot guard below cannot prevent this: strapping is sampled by the silicon at reset, before any
+//   firmware runs. The guard only stops a magnet that was already resting there from firing a gesture.
+//
 // WHY THE ACTION FIRES ON REMOVAL, NOT ON THE THRESHOLD
 //   A 5s RTM hold necessarily passes through the 2s FM threshold on its way. If FM
 //   armed at the 2s mark, the rider would get an FM arm they never asked for, and RTM
@@ -569,6 +614,21 @@ static const uint32_t kMagPollMs     = 20UL;     // sampling interval — matche
 // a gesture — the remote is stowed against something magnetic. The gesture is abandoned and
 // removal does nothing. Without this, un-stowing the remote hours later would arm RTM.
 static const uint32_t kMagMaxHoldMs  = 30000UL;
+// ---- V2.5-Evo - 2026-09-30 - MagStations: mag_mode 4 timing (compile-time only, no confStruct change) ----
+// A TAP is 60-400 ms of magnet-present. 60 ms is the floor because anything shorter is indistinguishable
+// from contact bounce, and because P_MAG is sampled every 20 ms — 60 ms is three samples, the fewest that
+// can be called a deliberate touch rather than noise. 400 ms is the ceiling taken from shipped double-tap
+// windows (Android 300 ms, the OneButton library 400 ms).
+static const uint32_t kMagTapMinMs   = 60UL;      // shorter than this = bounce, ignored
+static const uint32_t kMagTapMaxMs   = 400UL;     // longer than this is not a tap (see the dead-zone note)
+// The hold that toggles Return-To-Me. 2500 ms is ~8x the length of a tap, which is what makes the pair
+// impossible to confuse. The advisory buzz fires the moment the hold crosses it, so the rider never has to
+// estimate time: hold until you feel it, then take the magnet away.
+static const uint32_t kMagRtmToggleHoldMs = 2500UL;
+// Debounce for mag_mode 4 ONLY. The 120 ms used by roles 1-3 is longer than the whole 60 ms tap floor, so
+// with it a tap could never be seen at all. 40 ms = two samples of stability, still well inside the 60 ms
+// floor, and roles 1-3 keep their original 120 ms untouched — this constant is never applied to them.
+static const uint32_t kMagTapDebounceMs = 40UL;
 
 // ---- Called from loop() every cycle; self-rate-limits to kMagPollMs ----
 void runMagGesture()
@@ -612,7 +672,13 @@ void runMagGesture()
     return;
   }
 
-  // ---- Debounce: a level must persist for kMagDebounceMs before it is accepted ----
+  // ---- Debounce: a level must persist for the role's debounce window before it is accepted ----
+  // V2.5-Evo - 2026-09-30 - MagStations: roles 1-3 keep the original 120 ms exactly. MAG_ROLE_FMSET
+  // needs 40 ms instead, because 120 ms is longer than the entire 60 ms tap floor — with it, a tap
+  // could never be accepted at all and the gesture would simply not work. 40 ms is still two full
+  // 20 ms samples of stability, so it is a real debounce, not a removal of one.
+  uint32_t debounce_ms = (role == MAG_ROLE_FMSET) ? kMagTapDebounceMs : kMagDebounceMs;
+
   bool raw_low = (digitalRead(P_MAG) == LOW);   // LOW = magnet present
   if (raw_low != mag_raw_last)
   {
@@ -621,7 +687,7 @@ void runMagGesture()
   }
 
   bool edge_accepted = false;
-  if (raw_low != mag_stable_low && (now - mag_raw_since) >= kMagDebounceMs)
+  if (raw_low != mag_stable_low && (now - mag_raw_since) >= debounce_ms)
   {
     mag_stable_low = raw_low;
     edge_accepted  = true;
@@ -654,6 +720,20 @@ void runMagGesture()
     // Guarded on current_vib_pattern == 0 so an advisory never stomps a warning
     // pattern (signal drop, low battery, E71) that is already playing.
     // The 5s tier exists only in MAG_ROLE_BOTH; the single-role modes stop at 2s.
+    // V2.5-Evo - 2026-09-30 - MagStations: MAG_ROLE_FMSET has its own single band at 2.5 s and does
+    // NOT use the 2 s / 5 s thresholds at all, so it is handled first and returns. Pattern 10 (two
+    // medium pulses) says "let go now and Return-To-Me will toggle". Same buzz-announces-the-band
+    // principle as the other roles: the rider holds until the pattern arrives, then takes the magnet
+    // away — they never have to estimate 2.5 seconds.
+    if (role == MAG_ROLE_FMSET)
+    {
+      if (!rtm_advised && held >= kMagRtmToggleHoldMs)
+      {
+        rtm_advised = true;
+        if (current_vib_pattern == 0) current_vib_pattern = 10;
+      }
+      return;
+    }
     if (role == MAG_ROLE_BOTH && !rtm_advised && held >= kMagRtmHoldMs)
     {
       rtm_advised = true;
@@ -686,12 +766,73 @@ void runMagGesture()
     hold_abandoned = false;
 
     if (was_abandoned) return;          // parked-magnet guard tripped
-    if (held < kMagFmHoldMs) return;    // accident guard — too short to mean anything
 
-    // ---- Common preconditions: states in which no arm gesture should be honoured at all ----
-    if (system_locked) return;                      // remote locked — no arming from a stowed remote
+    // ---- Common preconditions: states in which no gesture should be honoured at all ----
+    // V2.5-Evo - 2026-09-30 - MagStations: moved ABOVE the roles 1-3 length check so mag_mode 4 gets
+    // the same three refusals. Their meaning is unchanged for every role.
+    if (system_locked) return;                      // remote locked — no gesture from a stowed remote
     if (in_setup) return;                           // mid-calibration / setup
     if (remote_error && !remote_error_blocked) return;  // unacknowledged error on screen
+
+    // ============================================================
+    // V2.5-Evo - 2026-09-30 - MagStations: MAG_ROLE_FMSET (mag_mode 4) removal handling.
+    // Entirely separate from the roles 1-3 branch below, which continues untouched.
+    //
+    // TAP (60-400 ms): if Follow-Me is not armed, arm it at the stored default station; if it is
+    // ACTIVELY FOLLOWING, step to the next station in mag_fm_set. Anything else — armed but not yet
+    // following, i.e. the rider on the rope under tow — does NOTHING AND SAYS NOTHING. That silence is
+    // the point: a buzz meaning "I ignored you" teaches the rider to expect feedback from accidental
+    // magnet contact, and the buggy must never reposition itself while he is attached to the rope.
+    //
+    // HOLD (>= 2.5 s): toggle Return-To-Me. fmToggleRtmEnabledFromMagnet() enforces zero throttle
+    // itself, because unlike arming it changes what the craft will do on its own initiative later.
+    //
+    // 400 ms - 2.5 s falls through both and does nothing: the deliberate dead zone that keeps the tap
+    // and the hold ~8x apart. See the band table in this function's header comment.
+    // ============================================================
+    if (role == MAG_ROLE_FMSET)
+    {
+      if (held >= kMagRtmToggleHoldMs)
+      {
+        fmToggleRtmEnabledFromMagnet();
+      }
+      else if (held >= kMagTapMinMs && held <= kMagTapMaxMs)
+      {
+        if (rtm_tx_active || rtmIsArming())
+        {
+          // Return-To-Me owns the buggy right now — never touch Follow-Me underneath it.
+        }
+        else if (!(usrConf.fm_override_enabled && usrConf.gps_en))
+        {
+          // Follow-Me is not usable on this remote at all — same guard the roles 1-3 FM path applies.
+        }
+        else if (!isFmArmed())
+        {
+          // Not armed — the first tap ARMS at the stored default station. cycleFmMode() does the
+          // fundamental-readiness check, the Pattern 4 confirm and the F<n> display, exactly as it does
+          // for the toggle combo and for mag_mode 1.
+          cycleFmMode();
+        }
+        else if (fmIsEngaged())
+        {
+          // Actively following — the rope is slack, so a station transit is safe. This is the ONLY
+          // state in which the magnet is allowed to move the buggy's station.
+          fmStepStationFromMagnet();
+        }
+        // else: armed but not following = on the rope. Nothing, and no feedback. See the block above.
+      }
+      // Re-synchronise the debounce state: the actions above can block for up to 2 s, so the magnet
+      // may have been re-applied since. A new gesture needs a fresh, fully debounced arrival edge.
+      mag_raw_last     = (digitalRead(P_MAG) == LOW);
+      mag_stable_low   = mag_raw_last;
+      mag_raw_since    = millis();
+      mag_hold_start   = millis();
+      hold_abandoned   = mag_stable_low;  // magnet still there on return -> parked, not a new gesture
+      mag_next_poll_ms = millis() + kMagPollMs;
+      return;
+    }
+
+    if (held < kMagFmHoldMs) return;    // accident guard — too short to mean anything (roles 1-3)
 
     // NOTE — deliberately NO throttle-released check here, unlike handleGearToggle().
     // handleGearToggle() requires thr_scaled < 10 because the toggle IS the steering control

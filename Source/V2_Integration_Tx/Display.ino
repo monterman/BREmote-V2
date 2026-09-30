@@ -1,3 +1,8 @@
+// V2.5-Evo - 2026-09-30 - MagStations: two FM status dots added at C7 R3 + C7 R4 in updateBargraphs() — both off
+//   = Follow-Me not armed, both slow-blinking in unison (1000 ms) = armed, both solid = actively following. R5/R6 were
+//   rejected for this: displayHorzBargraph() clears C7 in those rows, so a dot there would flicker with the battery
+//   bar. C7 R2 stays free on purpose, reserved for a future Return-To-Me dot. No new clear-mask plumbing needed —
+//   the digit-clear masks are already 0xFF80, which preserves bit 7.
 // V2.5-Evo - 2026-07-25 - displayDistanceInUnits(): decimal dot = TRUE decimal always; >=100 m scrolls non-blocking "FAR" (old ×100-dot far branch deleted); metres rendered for both dist_unit settings (feet parked)
 // V2.5-Evo - 2026-07-20 - Rex §4.6 (H4): every HT16K33 (0x70) Wire transaction below now takes i2cMutex (I2C_LOCK/UNLOCK) so it can't tear against the ADS1115 ADC read on the shared bus. displayMutex still guards displayBuffer; i2cMutex is the inner bus lock. No leaf-lock function calls another leaf-lock function, so there is no re-entrant deadlock.
 // V2.5-Evo - 2026-07-20 - GPS dot: solid only on FM-grade fix (adds HDOP + speed-valid to match the publish gate); solid branch now calls shared txGpsGoodFix() (GPS.ino).
@@ -1216,6 +1221,51 @@ void updateBargraphs(void *parameter)
     if (bt_dot_on) displayBuffer[2] |=  (1u << 7);
     else           displayBuffer[2] &= ~(1u << 7);
     // ---- End BT status dot --------------------------------------------
+
+    // ---- V2.5-Evo - 2026-09-30 - MagStations: FM status dots  C7 R3 + C7 R4 ----------
+    // Bit 7 of displayBuffer[4] (row R3) and displayBuffer[5] (row R4), driven together so the pair
+    // reads as ONE short vertical stroke rather than two unrelated specks. They sit immediately above
+    // the bargraphs, which are the largest thing on the screen, so the eye finds them off the bar edge
+    // instead of counting rows down from the top.
+    //
+    //   both off            = Follow-Me not armed
+    //   both slow-blinking  = armed, not yet following  (1000 ms toggle, in unison)
+    //   both solid          = actively following
+    //
+    // WHY 1000 ms AND NOT FASTER: the GPS dot at C7 R0 already blinks at 250 ms to mean "rejected".
+    // A slow blink here can never be misread as that fast one even when both are blinking at once.
+    //
+    // WHY NOT R5 OR R6, WHICH WOULD BE EASIER TO SEE: displayHorzBargraph() writes bits 0-9, i.e. C0
+    // through C9, and it does not merely set them — it CLEARS every bit above the bar's length. R6 is
+    // the battery bar and R5 the proximity bar, so a dot at C7 in either row would be erased and
+    // redrawn as the battery drained, i.e. it would flicker. R3 and R4 are outside both bars.
+    // C7 R2 is left deliberately EMPTY: the gap separates this pair from the GPS/BT dots above so they
+    // group as one indicator, and it is reserved for a future Return-To-Me dot.
+    // No new plumbing is needed to keep these alive: every digit-clear in this file already masks with
+    // 0xFF80, which preserves bit 7, because that is how the GPS dot survives digit updates.
+    static uint32_t fm_dot_ms = 0;      // millis() of the last blink toggle
+    static bool     fm_dot_on = false;  // current on/off state of BOTH dots
+    if (!fm_armed)
+    {
+      // Not armed — dark, and reset the timer so a later blink starts cleanly on its on-phase.
+      fm_dot_on = false;
+      fm_dot_ms = millis();
+    }
+    else if (fmIsEngaged())
+    {
+      // Actively following — solid. Same three-part test the R5 bar uses (armed + link fresh +
+      // FM_FLAG_ENGAGED), so the dots and the bar can never disagree about what state FM is in.
+      fm_dot_on = true;
+      fm_dot_ms = millis();
+    }
+    else
+    {
+      // Armed but not following yet — slow blink.
+      if (millis() - fm_dot_ms >= 1000) { fm_dot_on = !fm_dot_on; fm_dot_ms = millis(); }
+    }
+    if (fm_dot_on) { displayBuffer[4] |=  (1u << 7); displayBuffer[5] |=  (1u << 7); }
+    else           { displayBuffer[4] &= ~(1u << 7); displayBuffer[5] &= ~(1u << 7); }
+    // ---- End FM status dots -------------------------------------------
 
     displayVertBargraph(9, sq_graph, 2);
     updateDisplay();

@@ -1,3 +1,9 @@
+// V2.5-Evo - 2026-09-30 - MagFix (Rex delta audit): haptic Pattern 12 added — THREE FIRM taps (130 ms on /
+//   250 ms off, the Pattern 4 shape) = a mag_mode 4 magnet hold switched Return-To-Me OFF for the session.
+//   It replaces the vib_stop_pending / Pattern 7 long buzz that confirm used to borrow: Pattern 7 means "a
+//   FAULT stopped the system", its own contract says it does not fire on a deliberate disarm, and it preempts
+//   every other pattern. ON stays Pattern 4 (two firm taps), so ON and OFF now differ only in tap count.
+//   New pattern only — no other pattern changed, no confStruct change, sizeof stays 136, SW_VERSION 27.
 // V2.5-Evo - 2026-09-30 - MagStations: haptic Pattern 11 added — N short taps, where N is the Follow-Me station
 //   number a magnet tap just selected (count carried by the new volatile vib_pulse_count). Pattern 10 gained a second
 //   caller (the mag_mode 4 2.5 s advisory) and its comment now says so. No other pattern changed, no confStruct change.
@@ -926,7 +932,7 @@ void checkCharger()
   setBrightness(0x0F);
 }
 
-volatile uint8_t current_vib_pattern = 0;  // active haptic pattern: 0=none, 1=2 short, 2=5 short, 3=5 long, 4=2 fast short (RTM/FM ARM confirm), 5=1 short (magnet 2s "release for FM" advisory), 6=3 fast short (magnet 5s "release for RTM" advisory), 7=1 long (UNCOMMANDED RTM/FM stop, or an arm refusal — request it via vib_stop_pending, never by writing 7 here), 8=1 medium 300ms (FM warning-distance reached; repeats every 2s from runFmLoop), 9=4 quick 80ms taps (return gesture: auto-return override SET for the session), 10=2 medium 300ms pulses (return gesture: override CLEARED, back to the stored default), 11=vib_pulse_count short taps (magnet station change: the tap count IS the station number — see the MagStations note below)
+volatile uint8_t current_vib_pattern = 0;  // active haptic pattern: 0=none, 1=2 short, 2=5 short, 3=5 long, 4=2 fast short (RTM/FM ARM confirm), 5=1 short (magnet 2s "release for FM" advisory), 6=3 fast short (magnet 5s "release for RTM" advisory), 7=1 long (UNCOMMANDED RTM/FM stop, or an arm refusal — request it via vib_stop_pending, never by writing 7 here), 8=1 medium 300ms (FM warning-distance reached; repeats every 2s from runFmLoop), 9=4 quick 80ms taps (return gesture: auto-return override SET for the session), 10=2 medium 300ms pulses (return gesture: override CLEARED, back to the stored default), 11=vib_pulse_count short taps (magnet station change: the tap count IS the station number — see the MagStations note below), 12=3 firm 130ms taps (magnet hold turned Return-To-Me OFF for the session — deliberately NOT the Pattern 7 stop buzz; see the note on Pattern 12 below)
 // V2.5-Evo - 2026-09-30 - MagStations: how many taps Pattern 11 plays. It is the Follow-Me station number
 // (1-3), so the rider counts the buzzes and knows where the buggy just went without looking at the display.
 // WRITE THIS FIRST, then current_vib_pattern = 11 — the vibration task reads the count when it starts the
@@ -1138,6 +1144,11 @@ void vibrationTask(void *parameter) {
     //     "St" already shows it. (The FM Gate 1 release backstop that used to sit alongside it here
     //     was removed 2026-09-17 — it no longer exists, so it is not listed either way.)
     //   - Any deliberate disarm — gesture disarm, magnet-toggle disarm, steer-exit, F0 select.
+    //   - The mag_mode 4 magnet hold that switches Return-To-Me OFF. V2.5-Evo - 2026-09-30 (Rex delta
+    //     audit): that confirm DID route through vib_stop_pending for one commit and it should not have.
+    //     It is a deliberate two-state decision, not a fault and not even a stop — nothing was running —
+    //     and borrowing the fault buzz for it invited a rider with mag_mode 3 muscle memory to read
+    //     "disarmed" when he had actually disabled Return-To-Me. It is Pattern 12 now (three firm taps).
     // Deliberately a single SUSTAINED buzz so the rider can tell "stopped/off" from the arm
     // confirm by feel alone while foiling. Distinct from every other pattern:
     //   - Pattern 4 (arm) is TWO 130ms taps split by a 250ms gap; Pattern 6 is THREE — this is ONE.
@@ -1208,6 +1219,33 @@ void vibrationTask(void *parameter) {
         if (vib_stop_pending) break;   // a stop outranks a confirm — cut it short
       }
       if (current_vib_pattern == 11) current_vib_pattern = 0;
+    }
+    // V2.5-Evo - 2026-09-30 - MagFix (Rex delta audit): Pattern 12 — THREE FIRM taps, the Pattern 4 shape
+    // (130 ms on / 250 ms off). Fired by fmToggleRtmEnabledFromMagnet() when a mag_mode 4 magnet hold turns
+    // Return-To-Me OFF for the session.
+    // WHY THIS PATTERN EXISTS AT ALL. OFF used to raise vib_stop_pending, i.e. Pattern 7, the one long buzz.
+    // Pattern 7 means "a FAULT stopped the system" and its own contract above says it DOES NOT FIRE ON any
+    // deliberate disarm — and because it preempts every other pattern, it also outranked everything else the
+    // remote might have been saying. The rider that hurts is the one carrying mag_mode 3 muscle memory, where
+    // a magnet hold disarms and buzzes long: in mode 4 he would feel the same long buzz, read it as "disarmed",
+    // and have actually switched Return-To-Me off with Follow-Me still armed.
+    // WHY THREE FIRM TAPS. A deliberate two-state decision gets a bounded counted-tap confirm, which is the
+    // shape this firmware already uses for exactly that. ON is Pattern 4 = TWO firm taps; OFF is the same
+    // shape with THREE, so the pair differs only in count — the same 2-vs-3 discrimination Pattern 4 and
+    // Pattern 6 already rely on — and neither is a single sustained buzz, so neither can be read as a stop.
+    // NOT confusable with Pattern 6 (three LIGHT 100/150 taps, mag_mode 3 only — this is mag_mode 4 only, so
+    // one remote never produces both) nor with Pattern 11 (light taps, and it confirms a station change, which
+    // never follows the two-medium Pattern 10 advisory that precedes every RTM toggle) nor with Pattern 9
+    // (four taps at 80/80 — twice the tempo and one more tap).
+    // Bounded at three pulses, so like every confirm here it cannot buzz indefinitely, and it yields to a real
+    // stop between pulses.
+    else if (current_vib_pattern == 12) {
+      for (uint8_t i = 0; i < 3; i++) {
+        digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(130));
+        digitalWrite(P_MOT, LOW);  vTaskDelay(pdMS_TO_TICKS(250));
+        if (vib_stop_pending) break;   // a stop outranks a confirm — cut it short
+      }
+      if (current_vib_pattern == 12) current_vib_pattern = 0;
     }
 
     // Sleep briefly to prevent hoarding the CPU

@@ -1,7 +1,20 @@
-// V2.5-Evo - 2026-09-30 - MagStations: runMagGesture() gains mag_mode 4 (MAG_ROLE_FMSET). A short TAP (60-400 ms)
+// V2.5-Evo - 2026-09-30 - MagFix (Rex delta audit of 98fb7a8): runMagGesture() gains a SAMPLE-GAP GUARD (H-1) —
+//   a hold is abandoned if loop() stalled long enough that the magnet pin went unsampled, so a blocking disarm,
+//   disengage or arm ceremony can no longer promote a 300 ms tap into the 2.5 s hold and silently turn
+//   Return-To-Me off. Applies to EVERY mag_mode role, because all of them time their holds off wall-clock.
+//   kMagTapMaxMs 400 -> 600 ms (M-2): the real sample interval is ~110 ms (one loop() iteration), not the
+//   20 ms kMagPollMs suggests, so a genuine 300 ms tap could measure ~410 ms and be dropped. Every comment
+//   that claimed 20 ms sampling, or reasoned from it, is corrected. The mode 4 RTM gate now reads the
+//   effective enable (rtmEnabledEffective()) so a session override is honoured. The stray-magnet claim in
+//   the header is corrected: a stray tap CAN arm Follow-Me (the owner asked for that), it just cannot move a
+//   station and cannot produce motion — no_lock = 0 (boots locked) is the real mitigation.
+//   Comments, timing and guard logic only: no confStruct change, sizeof stays 136, SW_VERSION stays 27.
+// V2.5-Evo - 2026-09-30 - MagStations: runMagGesture() gains mag_mode 4 (MAG_ROLE_FMSET). A short TAP (60-600 ms)
 //   steps through the Follow-Me stations selected in the new mag_fm_set bitmask, and a 2.5 s hold toggles
-//   Return-To-Me for the session. Roles 1-3 are BIT-FOR-BIT UNCHANGED: same 120 ms debounce, same 2 s / 5 s
+//   Return-To-Me for the session. Roles 1-3 keep their own behaviour: same 120 ms debounce, same 2 s / 5 s
 //   thresholds, same advisories, same arm-on-removal. See the MAG_ROLE_FMSET block inside runMagGesture().
+//   (The 2026-09-30 MagFix entry above DOES touch roles 1-3 in one respect: the sample-gap guard protects
+//   their holds too, because the wall-clock weakness it fixes was never specific to mode 4.)
 //   — GPIO 9 (P_MAG) IS AN ESP32-C3 STRAPPING PIN. NEVER POWER THE REMOTE ON WITH THE MAGNET ATTACHED.
 // V2.5-Evo - 2026-09-19 - RIGHT tap + LEFT hold now calls returnGesture() (RTMState.ino) instead of setRtmArmed() directly: the same
 //   combo is a three-state machine (arm RTM as before / cancel the arm and flip the auto-return override for the session / back to
@@ -512,16 +525,29 @@ void handleGearToggle(int direction)
 //     Magnet held        Feedback while holding          On magnet REMOVAL
 //     -----------        ----------------------          -----------------
 //     < 60ms             none                            nothing (debounce, not a gesture)
-//     60-400ms (a TAP)   none (too short to buzz)        step to the next station in mag_fm_set,
+//     60-600ms (a TAP)   none (too short to buzz)        step to the next station in mag_fm_set,
 //                                                        or ARM Follow-Me if it is not armed yet
-//     400ms - 2.5s       none                            nothing (deliberate dead zone, see below)
+//     600ms - 2.5s       none                            nothing (deliberate dead zone, see below)
 //     >= 2.5s            TWO medium pulses (Pattern 10)  toggle Return-To-Me on/off (zero throttle)
 //
-//     WHY THE 400ms - 2.5s DEAD ZONE IS DELIBERATE. A tap is about 300 ms and the hold is 2500 ms, so the
-//     two gestures sit roughly 8x apart. That is what makes them impossible to confuse with cold hands,
-//     wet hands, gloves or one-handed in chop. Widening the tap toward the hold would buy nothing and
-//     would start costing accuracy. A hold in the dead zone is silent: the rider feels no buzz, nothing
-//     happens, and they simply tap again.
+//     MODE 4 HAS NO MAGNET DISARM. Roles 1 and 3 make the magnet an arm↔disarm toggle; in mode 4 the
+//     magnet only ARMS Follow-Me or STEPS its station, and the hold only flips the Return-To-Me enable.
+//     To disarm Follow-Me in mode 4, use the toggle combo (LEFT tap → RIGHT hold) or select F0. This is a
+//     deliberate difference and it is why the hold does NOT use the stop buzz: see fmToggleRtmEnabledFromMagnet().
+//
+//     WHY THE 600ms - 2.5s DEAD ZONE IS DELIBERATE. A tap is about 300 ms and the hold is 2500 ms, and the
+//     tap CEILING sits at 600 ms, so the two bands stay more than 4x apart end-to-end. That is what makes
+//     them impossible to confuse with cold hands, wet hands, gloves or one-handed in chop. A hold in the
+//     dead zone is silent: the rider feels no buzz, nothing happens, and they simply tap again.
+//
+//     WHY THE TAP CEILING IS 600ms AND NOT 400ms (V2.5-Evo - 2026-09-30, Rex delta audit M-2). The original
+//     400 ms ceiling was specified against a 20 ms sample rate that DOES NOT EXIST in this firmware. This
+//     function is reached once per loop() iteration and loop() ends in vTaskDelay(110), so the real magnet
+//     sample interval is ~110 ms, not 20 ms — kMagPollMs is only a floor, never the actual cadence. With
+//     ±110 ms of quantisation a true 300 ms tap could measure ~410 ms and be silently dropped. 600 ms
+//     absorbs that jitter and still leaves the tap band and the 2.5 s hold band far apart. A future option
+//     (NOT done here) is to move the P_MAG sample into a dedicated 20 ms task and leave only the action in
+//     loop(); that would make the sample rate match the original design instead of widening the window.
 //
 //     THE FIRST TAP IS NEVER A NO-OP, AND NEVER SAYS "YOU ARE ALREADY THERE":
 //       Follow-Me not armed          -> ARM it at the stored default station (cycleFmMode())
@@ -536,11 +562,24 @@ void handleGearToggle(int direction)
 //     the whip and the buggy is trailing — so a station transit pulls nobody. fmIsEngaged() is the test.
 //     Armed-but-not-engaged is exactly the tow state, and the tap is dead in it.
 //
-//     THE GATE IS ALSO THE ACCIDENT GUARD, WHICH IS WHY ONE TAP IS ENOUGH. A magnet brushing the case in
-//     a bag, in the car, against a fridge or another magnet does nothing at all unless Follow-Me is
-//     already following. A state gate is a far stronger guard than counting taps, and counting taps has a
-//     measured reliability cost on competitor water remotes. A REFUSED GESTURE IS COMPLETELY SILENT:
-//     buzzing for "I did nothing" would train the rider to expect feedback from accidental contact.
+//     WHAT A STRAY MAGNET CAN AND CANNOT DO — CORRECTED V2.5-Evo - 2026-09-30 (Rex delta audit). An earlier
+//     version of this comment claimed a stray magnet "does nothing at all unless Follow-Me is already
+//     following". THAT WAS FALSE and is corrected here, because a comment that overstates a guard is worse
+//     than no comment. The truth:
+//       - A stray tap CANNOT move the buggy's station. That is hard-gated on fmIsEngaged() above, and it is
+//         the case the safety rule is actually about.
+//       - A stray tap CAN ARM Follow-Me, on an unlocked and paired remote that already has a GPS fix and a
+//         live link. This is the owner's explicit requirement ("if fm mode never armed then yes it arms at
+//         default mode ie fm3, then again tap goes to fm4"), so the behaviour stays.
+//       - NO MOTION RESULTS FROM THAT ARM. Arming only declares intent: the RX still needs its separation
+//         latch proven and the rider still has to hold the trigger before anything moves, and Follow-Me can
+//         only ever SUBTRACT from the rider's throttle.
+//       - THE REAL MITIGATION IS THE LOCK, NOT THE GATE. This whole function returns early while
+//         system_locked is set, and the owner ships no_lock = 0, so a remote in a bag or a car boots LOCKED
+//         and no magnet gesture of any kind is honoured until the rider unlocks it deliberately.
+//     A REFUSED GESTURE IS COMPLETELY SILENT: buzzing for "I did nothing" would train the rider to expect
+//     feedback from accidental contact. Counting taps was rejected as the guard because it has a measured
+//     reliability cost on competitor water remotes.
 //
 // — HARDWARE HAZARD THE RIDER MUST KNOW: GPIO 9 (P_MAG) IS AN ESP32-C3 STRAPPING PIN.
 //   A magnet held against the case at power-up or reset puts the chip into UART DOWNLOAD MODE, and the
@@ -590,6 +629,12 @@ void handleGearToggle(int direction)
 extern volatile uint8_t current_vib_pattern;
 // rtmIsArming() is defined in RTMState.ino (also concatenated after this file).
 bool rtmIsArming();
+// V2.5-Evo - 2026-09-30 - rtmEnabledEffective() is the ONE place that answers "is Return-To-Me enabled
+// right now". It is the stored usrConf.rtm_enabled unless the magnet hold has overridden it for this
+// session (RAM only — see the RTM SESSION OVERRIDE block in RTMState.ino). Every gate that used to read
+// usrConf.rtm_enabled directly now calls this, so a session flip is honoured everywhere and can still
+// never reach SPIFFS. Defined in RTMState.ino, concatenated after this file.
+bool rtmEnabledEffective();
 // fmDisarm() and setRtmDisarmed() are the toggle-combo's own disarm paths (both static in
 // RTMState.ino, concatenated after this file). Declared static here — matching their definitions
 // so the linkage agrees — so the magnet TOGGLE can fire the identical disarm the toggle uses
@@ -609,25 +654,60 @@ static const uint32_t kMagRtmHoldMs  = 5000UL;   // hold >= this → arm RTM on 
 // still flutter the pin; the level must read the same for this long before it is accepted.
 // 120ms is well under the 2000ms shortest meaningful hold, so it cannot mask a real gesture.
 static const uint32_t kMagDebounceMs = 120UL;
-static const uint32_t kMagPollMs     = 20UL;     // sampling interval — matches the SW33b dot poll rate
+// kMagPollMs is a FLOOR, NOT THE ACTUAL SAMPLE RATE. V2.5-Evo - 2026-09-30 (Rex delta audit M-2): this
+// function is reached once per loop() iteration and loop() ends in vTaskDelay(110), so the real interval
+// between two P_MAG samples is ~110 ms. This constant only stops the gesture from re-sampling FASTER than
+// 20 ms if loop() ever gets shorter; it has never made the sampling 20 ms, and no timing rationale in this
+// file may be reasoned from "20 ms samples". Use kMagLoopPeriodMs below for anything that needs the real
+// cadence. (The SW33b dot block in loop() does poll on its own 20 ms clock — that is a different sampler.)
+static const uint32_t kMagPollMs     = 20UL;     // MINIMUM interval between samples, not the real one
+// The real loop() period: V2_Integration_Tx.ino ends loop() with vTaskDelay(pdMS_TO_TICKS(110)). Everything
+// in this file that has to know how often the pin is actually read uses this, not kMagPollMs.
+static const uint32_t kMagLoopPeriodMs = 110UL;
+// ---- V2.5-Evo - 2026-09-30 - SAMPLE-GAP GUARD (Rex delta audit H-1) ----
+// THE BUG THIS FIXES. Hold length was computed purely from wall-clock (now - mag_hold_start) with no check
+// that the pin had actually been READ across that interval. Any block of loop() longer than the hold
+// threshold therefore promoted a short touch into a long hold: a 300 ms tap taken while an FM fault-stop
+// disarm (2 s), an rtmDisengage() (2 s) or the RTM arm ceremony (up to rtm_arm_window_s = 15 s) was
+// blocking loop() would come back measuring >2.5 s and silently toggle the Return-To-Me enable — a
+// safety-relevant setting the rider would only discover when he next tried to recall the buggy.
+// THE FIX. Remember when the last sample was actually accepted. If the gap since then is larger than a
+// magnet hold could possibly hide behind, the pin went UNOBSERVED, so this hold is not evidence of
+// anything: abandon it exactly as the parked-magnet guard does, and removal then does nothing at all.
+// WHY A TIMESTAMP AND NOT A SAMPLE COUNT: a count still has to be compared against an expected count for
+// the elapsed wall-clock, which needs a trustworthy cadence — the very thing that is missing here. One gap
+// measurement is direct evidence that the pin was not read, with nothing inferred.
+// WHY 5 LOOP PERIODS (550 ms): the real cadence is ~110 ms, so 5 periods clears ordinary jitter (display
+// writes, GPS drain, a serial command) without false-tripping, while still catching EVERY blocker Rex
+// listed — the shortest of them is 2000 ms, and even a gear-flash hold (gear_display_time, 800 ms default)
+// is caught. THE COST OF A FALSE TRIP IS ZERO RISK: the gesture is abandoned silently and the rider taps
+// again. APPLIES TO EVERY ROLE, not just mode 4: roles 1-3 measure their 2 s / 5 s holds off the same
+// wall-clock and had the same weakness.
+static const uint32_t kMagSampleGapMaxMs = 5UL * kMagLoopPeriodMs;   // 550 ms
 // Parked-magnet guard: if the magnet stays present longer than this, the rider is not making
 // a gesture — the remote is stowed against something magnetic. The gesture is abandoned and
 // removal does nothing. Without this, un-stowing the remote hours later would arm RTM.
 static const uint32_t kMagMaxHoldMs  = 30000UL;
 // ---- V2.5-Evo - 2026-09-30 - MagStations: mag_mode 4 timing (compile-time only, no confStruct change) ----
-// A TAP is 60-400 ms of magnet-present. 60 ms is the floor because anything shorter is indistinguishable
-// from contact bounce, and because P_MAG is sampled every 20 ms — 60 ms is three samples, the fewest that
-// can be called a deliberate touch rather than noise. 400 ms is the ceiling taken from shipped double-tap
-// windows (Android 300 ms, the OneButton library 400 ms).
+// A TAP is 60-600 ms of magnet-present. 60 ms is the floor because anything shorter is indistinguishable
+// from contact bounce. 600 ms is the ceiling (raised from 400 ms on 2026-09-30, Rex delta audit M-2): the
+// 400 ms figure came from shipped double-tap windows (Android 300 ms, the OneButton library 400 ms), but
+// those assume a fast sampler, and this gesture is sampled once per ~110 ms loop() iteration. With ±110 ms
+// of quantisation a real 300 ms tap can measure ~410 ms, so a 400 ms ceiling dropped good taps silently.
+// 600 ms swallows the jitter and still keeps the tap band and the 2500 ms hold band more than 4x apart.
 static const uint32_t kMagTapMinMs   = 60UL;      // shorter than this = bounce, ignored
-static const uint32_t kMagTapMaxMs   = 400UL;     // longer than this is not a tap (see the dead-zone note)
-// The hold that toggles Return-To-Me. 2500 ms is ~8x the length of a tap, which is what makes the pair
-// impossible to confuse. The advisory buzz fires the moment the hold crosses it, so the rider never has to
-// estimate time: hold until you feel it, then take the magnet away.
+static const uint32_t kMagTapMaxMs   = 600UL;     // longer than this is not a tap (see the dead-zone note)
+// The hold that toggles Return-To-Me. 2500 ms is more than 4x the tap CEILING (and ~8x a typical 300 ms
+// tap), which is what makes the pair impossible to confuse. The advisory buzz fires the moment the hold
+// crosses it, so the rider never has to estimate time: hold until you feel it, then take the magnet away.
 static const uint32_t kMagRtmToggleHoldMs = 2500UL;
 // Debounce for mag_mode 4 ONLY. The 120 ms used by roles 1-3 is longer than the whole 60 ms tap floor, so
-// with it a tap could never be seen at all. 40 ms = two samples of stability, still well inside the 60 ms
-// floor, and roles 1-3 keep their original 120 ms untouched — this constant is never applied to them.
+// with it a tap could never be seen at all. 40 ms is the shortest window that still requires the level to
+// survive into a following sample before it is believed — and since the real sample interval is ~110 ms
+// (see kMagLoopPeriodMs), in practice that means one further loop iteration, so it is a real debounce and
+// not a removal of one. (V2.5-Evo - 2026-09-30: the old comment here claimed "two full 20 ms samples",
+// which described a sample rate this firmware has never run. Corrected, value unchanged.)
+// Roles 1-3 keep their original 120 ms untouched — this constant is never applied to them.
 static const uint32_t kMagTapDebounceMs = 40UL;
 
 // ---- Called from loop() every cycle; self-rate-limits to kMagPollMs ----
@@ -642,7 +722,10 @@ void runMagGesture()
   static uint32_t mag_hold_start   = 0;   // millis() of the accepted magnet-arrival edge
   static bool     fm_advised       = false;  // 2s advisory buzz already fired this hold
   static bool     rtm_advised      = false;  // 5s advisory buzz already fired this hold
-  static bool     hold_abandoned   = false;  // parked-magnet guard tripped this hold
+  static bool     hold_abandoned   = false;  // parked-magnet OR sample-gap guard tripped this hold
+  // V2.5-Evo - 2026-09-30 - H-1: millis() of the last sample this function actually took. 0 = none yet.
+  // The gap between consecutive samples is the evidence that the pin was really watched across a hold.
+  static uint32_t mag_last_sample_ms = 0;
 
   // Role gate. With mag_mode == 0 (the default — no Hall sensor fitted) the gesture does not
   // exist: bail out before touching any state, so the Hall behaves exactly as it did before
@@ -662,6 +745,29 @@ void runMagGesture()
   if ((int32_t)(now - mag_next_poll_ms) < 0) return;
   mag_next_poll_ms = now + kMagPollMs;
 
+  // ---- V2.5-Evo - 2026-09-30 - SAMPLE-GAP GUARD (Rex delta audit H-1) ----
+  // This sample is about to be taken, so first judge how long it has been since the last one. If loop()
+  // was blocked longer than kMagSampleGapMaxMs then the pin was NOT watched over that stretch, and any
+  // hold in progress cannot be trusted to be a hold at all — a brief touch could have started and ended
+  // inside the blind window, or a touch that is still present could look far older than it is. Abandon it
+  // the same way the parked-magnet guard does: no advisory, and removal does nothing.
+  // The guard only judges a hold that is already in progress (mag_stable_low). A gap with no magnet
+  // present is harmless — nothing was being timed — and the very first call has no previous sample to
+  // compare against, which is why mag_last_sample_ms == 0 is excluded.
+  // See the kMagSampleGapMaxMs comment for why the threshold is 5 loop periods and why this applies to
+  // every mag_mode role, not only mode 4.
+  uint32_t sample_gap = now - mag_last_sample_ms;
+  bool     first_ever = (mag_last_sample_ms == 0);
+  mag_last_sample_ms  = now;
+  if (!first_ever && mag_stable_low && !hold_abandoned && sample_gap > kMagSampleGapMaxMs)
+  {
+    hold_abandoned = true;
+    Serial.print("MAG [TX] hold abandoned: loop stalled ");   // V2.5-Evo - 2026-09-30 - H-1
+    Serial.print(sample_gap);
+    Serial.println(" ms, the magnet pin went unsampled - this hold is not trusted");
+    return;
+  }
+
   // Boot guard (SW33): until GPIO 9 has been seen HIGH at least once since power-up we cannot
   // tell "rider is holding a magnet" from "a magnet was already sitting there when it booted".
   // mag_seen_high is set by the bt_dot_state block in loop(); we only read it.
@@ -675,8 +781,11 @@ void runMagGesture()
   // ---- Debounce: a level must persist for the role's debounce window before it is accepted ----
   // V2.5-Evo - 2026-09-30 - MagStations: roles 1-3 keep the original 120 ms exactly. MAG_ROLE_FMSET
   // needs 40 ms instead, because 120 ms is longer than the entire 60 ms tap floor — with it, a tap
-  // could never be accepted at all and the gesture would simply not work. 40 ms is still two full
-  // 20 ms samples of stability, so it is a real debounce, not a removal of one.
+  // could never be accepted at all and the gesture would simply not work.
+  // V2.5-Evo - 2026-09-30 - comment corrected (Rex delta audit M-2): this used to claim 40 ms is "two full
+  // 20 ms samples". It is not — the real sample interval is ~110 ms (see kMagLoopPeriodMs), so what 40 ms
+  // actually requires is that the new level still be there on a LATER sample, i.e. one further loop
+  // iteration. That is still a real debounce against pin flutter; only the arithmetic behind it was wrong.
   uint32_t debounce_ms = (role == MAG_ROLE_FMSET) ? kMagTapDebounceMs : kMagDebounceMs;
 
   bool raw_low = (digitalRead(P_MAG) == LOW);   // LOW = magnet present
@@ -701,18 +810,38 @@ void runMagGesture()
     mag_hold_start = mag_raw_since;
     fm_advised     = false;
     rtm_advised    = false;
-    hold_abandoned = false;
+    // V2.5-Evo - 2026-09-30 - H-1, THE OTHER HALF OF THE SAME BUG. The guard at the top of this function
+    // catches a stall that happens DURING a debounced hold, but a stall can also land across the ARRIVAL
+    // itself: the pin is seen LOW on one sample, loop() blocks for seconds, the pin is seen LOW again, the
+    // debounce accepts the edge - and because the hold clock is back-dated to mag_raw_since (the first of
+    // those two samples) the "hold" is already seconds old before the rider has held anything. Worse, the
+    // magnet could have been taken away and put back inside that blind window.
+    // So: back-date the hold ONLY as far as a genuinely observed edge. If the edge being back-dated to is
+    // older than the sample-gap limit, it was not observed - abandon the hold instead of trusting it.
+    // In normal running the edge is one or two samples old (~110-230 ms) and this never trips.
+    hold_abandoned = ((now - mag_raw_since) > kMagSampleGapMaxMs);
     return;
   }
 
   // ---- Magnet present: fire the advisory buzzes as each threshold is crossed ----
+  // NO ADVISORY EVER FIRES ON AN ABANDONED HOLD. The !hold_abandoned test on this block is what
+  // enforces it, and it matters more now than it did: since 2026-09-30 a hold can be abandoned by the
+  // sample-gap guard at ANY time, including before the 2.5 s mark, not only at the 30 s parked-magnet
+  // mark. An advisory is a promise ("let go now and X will happen"), and removal after an abandon does
+  // nothing at all, so promising on a hold that can no longer deliver would be a lie the rider feels.
+  // ONE RESIDUAL CASE, STATED HONESTLY: the 2.5 s advisory fires at 2.5 s and the parked-magnet guard
+  // trips at 30 s, so a rider who keeps holding for another 27.5 s after the buzz has already been
+  // promised something that will not happen. The promise was true when it was made; it expires only
+  // because he kept holding far past the band. Nothing is re-buzzed on that expiry, deliberately —
+  // a buzz meaning "never mind" is exactly the feedback-on-nothing this gesture avoids everywhere else.
   if (mag_stable_low && !hold_abandoned)
   {
     uint32_t held = now - mag_hold_start;
 
     if (held >= kMagMaxHoldMs)
     {
-      // Parked magnet — abandon this hold entirely; removal will do nothing.
+      // Parked magnet — abandon this hold entirely; removal will do nothing, and no further
+      // advisory can fire because this whole block is gated on !hold_abandoned.
       hold_abandoned = true;
       return;
     }
@@ -765,7 +894,10 @@ void runMagGesture()
     rtm_advised    = false;
     hold_abandoned = false;
 
-    if (was_abandoned) return;          // parked-magnet guard tripped
+    // Abandoned by EITHER guard — the parked-magnet 30 s limit or the sample-gap guard at the top of
+    // this function (V2.5-Evo - 2026-09-30 - H-1). In both cases the hold length is not evidence of
+    // anything the rider did, so removal does nothing, silently.
+    if (was_abandoned) return;
 
     // ---- Common preconditions: states in which no gesture should be honoured at all ----
     // V2.5-Evo - 2026-09-30 - MagStations: moved ABOVE the roles 1-3 length check so mag_mode 4 gets
@@ -778,17 +910,19 @@ void runMagGesture()
     // V2.5-Evo - 2026-09-30 - MagStations: MAG_ROLE_FMSET (mag_mode 4) removal handling.
     // Entirely separate from the roles 1-3 branch below, which continues untouched.
     //
-    // TAP (60-400 ms): if Follow-Me is not armed, arm it at the stored default station; if it is
+    // TAP (60-600 ms): if Follow-Me is not armed, arm it at the stored default station; if it is
     // ACTIVELY FOLLOWING, step to the next station in mag_fm_set. Anything else — armed but not yet
     // following, i.e. the rider on the rope under tow — does NOTHING AND SAYS NOTHING. That silence is
     // the point: a buzz meaning "I ignored you" teaches the rider to expect feedback from accidental
     // magnet contact, and the buggy must never reposition itself while he is attached to the rope.
     //
-    // HOLD (>= 2.5 s): toggle Return-To-Me. fmToggleRtmEnabledFromMagnet() enforces zero throttle
-    // itself, because unlike arming it changes what the craft will do on its own initiative later.
+    // HOLD (>= 2.5 s): toggle the Return-To-Me enable FOR THIS SESSION ONLY.
+    // fmToggleRtmEnabledFromMagnet() enforces zero throttle itself, because unlike arming it changes
+    // what the craft will do on its own initiative later. It writes a RAM session override and never
+    // touches usrConf, so nothing can carry the flip into SPIFFS.
     //
-    // 400 ms - 2.5 s falls through both and does nothing: the deliberate dead zone that keeps the tap
-    // and the hold ~8x apart. See the band table in this function's header comment.
+    // 600 ms - 2.5 s falls through both and does nothing: the deliberate dead zone that keeps the tap
+    // band and the hold band more than 4x apart. See the band table in this function's header comment.
     // ============================================================
     if (role == MAG_ROLE_FMSET)
     {
@@ -823,12 +957,16 @@ void runMagGesture()
       }
       // Re-synchronise the debounce state: the actions above can block for up to 2 s, so the magnet
       // may have been re-applied since. A new gesture needs a fresh, fully debounced arrival edge.
-      mag_raw_last     = (digitalRead(P_MAG) == LOW);
-      mag_stable_low   = mag_raw_last;
-      mag_raw_since    = millis();
-      mag_hold_start   = millis();
-      hold_abandoned   = mag_stable_low;  // magnet still there on return -> parked, not a new gesture
-      mag_next_poll_ms = millis() + kMagPollMs;
+      // V2.5-Evo - 2026-09-30 - H-1: mag_last_sample_ms is re-based here too. The action we just ran IS
+      // a long unsampled gap, and it is an ACCOUNTED-FOR one — the state above is rebuilt from the pin as
+      // it reads right now — so the sample-gap guard must not also punish the next sample for it.
+      mag_raw_last       = (digitalRead(P_MAG) == LOW);
+      mag_stable_low     = mag_raw_last;
+      mag_raw_since      = millis();
+      mag_hold_start     = millis();
+      hold_abandoned     = mag_stable_low;  // magnet still there on return -> parked, not a new gesture
+      mag_next_poll_ms   = millis() + kMagPollMs;
+      mag_last_sample_ms = millis();
       return;
     }
 
@@ -859,7 +997,9 @@ void runMagGesture()
     {
       // ---- toggle RTM ----
       // Bail out entirely if RTM isn't usable — same guard the toggle path applies.
-      if (!(usrConf.rtm_enabled && usrConf.gps_en)) return;
+      // V2.5-Evo - 2026-09-30 - reads the EFFECTIVE enable (stored value, or the RAM session override a
+      // mag_mode 4 hold may have set) instead of usrConf.rtm_enabled directly.
+      if (!(rtmEnabledEffective() && usrConf.gps_en)) return;
       if (rtm_tx_active || rtmIsArming())
       {
         // RTM already active (or mid arm-ceremony) → DISARM through the toggle's own path.
@@ -902,12 +1042,15 @@ void runMagGesture()
     // setRtmArmed() / cycleFmMode() block for seconds. The magnet may have been re-applied
     // in the meantime, so resynchronise the debounce state to the pin as it is right now.
     // A new gesture then requires a fresh, fully debounced magnet-arrival edge.
-    mag_raw_last     = (digitalRead(P_MAG) == LOW);
-    mag_stable_low   = mag_raw_last;
-    mag_raw_since    = millis();
-    mag_hold_start   = millis();
-    hold_abandoned   = mag_stable_low;  // magnet still there on return → treat as parked, not a new gesture
-    mag_next_poll_ms = millis() + kMagPollMs;
+    // V2.5-Evo - 2026-09-30 - H-1: mag_last_sample_ms is re-based for the same reason as in the mode 4
+    // branch above — this block IS the accounted-for unsampled gap, so the guard must not re-judge it.
+    mag_raw_last       = (digitalRead(P_MAG) == LOW);
+    mag_stable_low     = mag_raw_last;
+    mag_raw_since      = millis();
+    mag_hold_start     = millis();
+    hold_abandoned     = mag_stable_low;  // magnet still there on return → treat as parked, not a new gesture
+    mag_next_poll_ms   = millis() + kMagPollMs;
+    mag_last_sample_ms = millis();
   }
 }
 

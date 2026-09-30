@@ -1,8 +1,24 @@
+// V2.5-Evo - 2026-09-30 - MagFix (Rex delta audit of 98fb7a8), four changes here:
+//   1. RAM-ONLY ENFORCED. fmToggleRtmEnabledFromMagnet() no longer writes usrConf.rtm_enabled - it writes the new
+//      RAM rtm_enabled_session, and every gate now asks rtmEnabledEffective(). `?save` and the web-UI save persist
+//      the live usrConf wholesale, so the old code let a session flip become permanent at the next save, which is
+//      the opposite of the owner's instruction that the magnet is temporary and SPIFFS is deliberate.
+//   2. THE TOW GATE IS CORROBORATED. fmIsEngaged() now needs FM_FLAG_ARMED as well as FM_FLAG_ENGAGED, and needs
+//      them on 2 consecutive arrivals of the fm_flags byte (fm_engaged_streak, counted in Radio.ino). The rule
+//      "never reposition the buggy while the rider is on the rope" no longer rests on one CRC8-protected bit.
+//      Distance corroboration via rtm_distance was considered and rejected - see the note on the function.
+//   3. THE STATION FLASH IS 1.2 s AND CLAMPED. It was usrConf.gear_display_time, a user field with a 65535 ms
+//      ceiling, which meant a readable gear flash bought a multi-second loop() stall on every station change.
+//   4. RTM-OFF NO LONGER USES THE STOP BUZZ. Pattern 7 means "a fault stopped the system" and preempts everything;
+//      a deliberate two-state confirm must not borrow it. OFF is now Pattern 12, three firm taps.
+//   Comments, RAM state and one new haptic pattern: no confStruct change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-09-30 - MagStations (mag_mode 4): fmIsEngaged() is the new FM-actively-following predicate and the
 //   safety gate for the magnet tap; fmNextStationInSet() resolves the next station inside the mag_fm_set bitmask;
-//   fmStepStationFromMagnet() performs the move (0xF2 + N-tap Pattern 11 + F<n> flash for gear_display_time) and
+//   fmStepStationFromMagnet() performs the move (0xF2 + N-tap Pattern 11 + F<n> flash; the flash was
+//   gear_display_time here, now a clamped 1.2 s — see the 2026-09-30 MagFix entry above) and
 //   returns SILENTLY when the tap resolves to the station the buggy is already at — a tap either moves the buggy or
-//   does nothing at all. fmToggleRtmEnabledFromMagnet() flips usrConf.rtm_enabled in RAM only, off-throttle only.
+//   does nothing at all. fmToggleRtmEnabledFromMagnet() flips the Return-To-Me enable off-throttle only, for the
+//   session only (it wrote usrConf.rtm_enabled here and now writes the RAM rtm_enabled_session instead).
 //   cycleFmMode(), cycleFmModeArmed(), fmDisarm() and every RTM path are UNCHANGED. No confStruct size change:
 //   mag_fm_set took the 2 tail padding bytes, so sizeof stays 136 and SW_VERSION stays 27.
 // V2.5-Evo - 2026-09-19 - F0 REMOVED FROM THE PRE-THROTTLE CYCLE (owner ruling 12:45, supersedes the
@@ -199,6 +215,48 @@ static unsigned long fm_last_sync_ms      = 0;      // Change E: millis() of las
 // ============================================================
 static uint8_t       last_fm_return_mode  = 0xFF;   // 0xFF none, 0 OFF, 1 ON; RAM only
 
+// ============================================================
+// V2.5-Evo - 2026-09-30 - RETURN-TO-ME SESSION OVERRIDE (Rex delta audit: the RAM-only claim enforced)
+//
+// THE BUG THIS FIXES. fmToggleRtmEnabledFromMagnet() used to write usrConf.rtm_enabled directly and call
+// that "RAM only" because it never wrote SPIFFS itself. It is not RAM only: `?save` and the web-UI save
+// both persist the LIVE usrConf wholesale, so one magnet hold on the water followed by any later config
+// save made a session decision permanent. The owner's instruction was explicit — "No do not change spiffs
+// with a toggle or magnet ... spiffs changing is deliberate and intentional. Magnet is temp."
+//
+// THE FIX, AND WHY IT LOOKS LIKE THIS. usrConf is now NEVER touched by the gesture. The session value
+// lives here instead, exactly the way followme_mode (last_fm_mode) and the auto-return override
+// (last_fm_return_mode, right above) already work — this file's established pattern for "a decision that
+// lasts the session and dies at power-off".
+//   rtm_enabled_session: 0xFF = no override, use the stored usrConf.rtm_enabled
+//                        0    = Return-To-Me OFF for this session
+//                        1    = Return-To-Me ON for this session
+// TRI-STATE, NOT A BOOL, for one concrete reason: usrConf is loaded from SPIFFS in setup(), long after
+// static initialisation, so a bool here could not be seeded with the stored value at declaration time
+// without inventing a second "have I been seeded yet" flag. 0xFF IS that flag.
+// A POWER CYCLE RETURNS THE STORED VALUE, with nothing to undo: this variable is RAM, it resets to 0xFF,
+// and usrConf.rtm_enabled still holds whatever the rider last saved deliberately through the web UI.
+//
+// NO NEW STRUCT FIELD. A RAM variable is not a confStruct field: sizeof(confStruct) stays 136 and
+// SW_VERSION stays 27, which matters because the TX struct tail is FULL and a version bump here would
+// wipe the owner's throttle calibration.
+// ============================================================
+static uint8_t       rtm_enabled_session  = 0xFF;   // 0xFF none, 0 OFF, 1 ON; RAM only, dies at power-off
+
+// rtmEnabledEffective - is Return-To-Me enabled right now?
+//
+// THE SINGLE SOURCE OF TRUTH for that question. Returns the session override when one is standing,
+// otherwise the value stored in SPIFFS. Every gate that used to read usrConf.rtm_enabled directly calls
+// this instead — setRtmArmed(), runRtmLoop(), returnGesture() here, and the magnet RTM branch in Hall.ino
+// — so a session flip is honoured in all of them at once and cannot be half-applied.
+// Not static: Hall.ino (concatenated BEFORE this file) declares and calls it.
+// INPUTS: rtm_enabled_session, usrConf.rtm_enabled. OUTPUT: true = enabled. No side effects, never blocks.
+bool rtmEnabledEffective()
+{
+  if (rtm_enabled_session == 0xFF) return (usrConf.rtm_enabled != 0);   // no override -> the stored value
+  return (rtm_enabled_session != 0);
+}
+
 // fmEncodeModeByte - compose the 0xF2 value byte: bits 0-2 the FM mode, bits 5-6 the override.
 // Inputs: mode 0-7 (0 = disarm, 1-3 the modes). Reads last_fm_return_mode. Output: the byte.
 // Side effects: none. EVERY 0xF2 goes through here so the RX always sees the current override.
@@ -255,7 +313,9 @@ uint8_t calcRtmThrottleCap()
 //       On return rtm_tx_state is RTM_ACTIVE or RTM_IDLE; RTM_ARMED case in runRtmLoop() is dead code.
 void setRtmArmed()
 {
-  if (!usrConf.rtm_enabled || !usrConf.gps_en) return;
+  // V2.5-Evo - 2026-09-30 - the EFFECTIVE enable: the stored usrConf.rtm_enabled unless a mag_mode 4 hold
+  // has overridden it for this session (see rtmEnabledEffective()). Was usrConf.rtm_enabled directly.
+  if (!rtmEnabledEffective() || !usrConf.gps_en) return;
   // (fmSilentDisarm() was called here until 2026-09-18 - see the header note above.)
   rtm_tx_state     = RTM_ARMED;
   rtm_arm_start_ms = millis();
@@ -623,7 +683,10 @@ static void runDoubleSqueezeArm()
 // ---- Called from loop() every ~110ms ----
 void runRtmLoop()
 {
-  if (!usrConf.rtm_enabled || !usrConf.gps_en) return;
+  // V2.5-Evo - 2026-09-30 - the EFFECTIVE enable (see rtmEnabledEffective()). A session override that
+  // says OFF parks this whole state machine exactly as a stored 0 always did; it cannot leave a run
+  // half-supervised, because the flip is refused outright while RTM is active or arming.
+  if (!rtmEnabledEffective() || !usrConf.gps_en) return;
 
   unsigned long now = millis();
 
@@ -1029,10 +1092,10 @@ void cycleFmModeArmed()
 
 // fmIsEngaged - is Follow-Me actively following right now?
 //
-// This is THE safety gate for the magnet tap, and it is the same three-part test the R5 proximity
-// bar already uses to decide it may draw the "engaged" distance bar: the remote has declared FM
-// armed, a packet from the buggy has landed inside the link-health window, and that packet says
-// FM_FLAG_ENGAGED. A stale packet reads as NOT engaged, which fails safe.
+// This is THE safety gate for the magnet tap, and it is the SINGLE source of truth for "engaged":
+// the magnet tap, the C7 R3/R4 FM status dots and the R5 proximity bar all call this one function
+// (V2.5-Evo - 2026-09-30: the R5 bar used to repeat the test inline, which meant the display and the
+// safety gate could drift apart at the next edit; it now calls here like everything else).
 //
 // WHY "ENGAGED" AND NOT "ARMED" IS THE GATE: Follow-Me is armed during the tow, while the rider is
 // on the rope and physically attached to the buggy. A buggy that repositions itself then would pull
@@ -1040,13 +1103,45 @@ void cycleFmModeArmed()
 // rider is riding independently - a station transit there pulls nobody. So armed-but-not-engaged is
 // exactly the tow state, and the magnet tap must be dead in it.
 //
-// INPUTS: fm_armed, last_packet, telemetry.fm_flags. OUTPUT: true = following. No side effects.
-// Safe to call from the loop task and from the bargraph task: reads only, never blocks.
+// ---- V2.5-Evo - 2026-09-30 - CORROBORATION (Rex delta audit: the tow gate rested on ONE bit) ----
+// WHAT WAS WRONG. The owner's hard rule - the buggy must never reposition while he is on the rope -
+// was carried by a SINGLE un-debounced bit (FM_FLAG_ENGAGED) arriving over a 1-byte-per-packet
+// telemetry stream protected only by CRC8. A CRC8 lets roughly 1 in 256 random corruptions through,
+// so one bad-but-valid packet could open a window in which a tap moved a station while he was
+// attached. Low probability, unacceptable consequence: the fix costs nothing, so it is worth making.
+// WHAT IS REQUIRED NOW, all four at once:
+//   1. this remote believes FM is armed        (fm_armed, TX-local, not from the radio at all)
+//   2. a packet landed inside FM_LINK_HEALTHY_MS (a stale or absent link reads as NOT engaged)
+//   3. the RX also says FM_FLAG_ARMED           - a lone ENGAGED bit with no ARMED bit alongside it is
+//      not a state the RX ever sends, so it is corruption on its face
+//   4. it said so on 2 CONSECUTIVE ARRIVALS of the fm_flags byte (fm_engaged_streak >= 2, counted in
+//      Radio.ino where the byte is unpacked - see the streak block there for why it has to be counted
+//      per ARRIVAL of index 16 and not per received packet or per loop tick)
+// WHY THIS CANNOT BACKFIRE. Every added condition can only make the answer MORE conservative, and the
+// conservative answer is "not engaged" = "the magnet tap does nothing". It never opens the gate. The
+// only cost is latency: the gate now opens one telemetry rotation later than it used to, and the FM
+// dots go solid one rotation later, which is a display nicety against a safety rule.
+// DISTANCE CORROBORATION VIA rtm_distance WAS CONSIDERED AND DELIBERATELY NOT ADDED. telemetry
+// .rtm_distance decodes 0x00 as "no data" (-1.0f) and saturates at ~164 m, and there is no honest
+// whip-distance floor to test against: the rope is 10-25 m but the buggy is legitimately closer than
+// that the instant after it engages, so any floor would either be so low it proves nothing or high
+// enough to refuse taps the owner asked for. A gate that is sometimes wrong in the permissive
+// direction and sometimes wrong in the restrictive one is worse than the two clean bits above.
+//
+// INPUTS: fm_armed, last_packet, telemetry.fm_flags, fm_engaged_streak.
+// OUTPUT: true = following. No side effects, never blocks.
+// Safe to call from the loop task and from the bargraph task: every read is single-instruction on this
+// RISC-V core, so no read can tear; an inconsistent snapshot resolves to true or false, never garbage,
+// and a spurious true would need all four conditions to hold genuinely.
 bool fmIsEngaged()
 {
   if (!fm_armed) return false;
   if (last_packet == 0 || (millis() - last_packet) >= FM_LINK_HEALTHY_MS) return false;
-  return (telemetry.fm_flags & FM_FLAG_ENGAGED) != 0;
+  uint8_t f = telemetry.fm_flags;
+  if ((f & FM_FLAG_ENGAGED) == 0) return false;
+  if ((f & FM_FLAG_ARMED)   == 0) return false;   // engaged without armed is not a state the RX sends
+  if (fm_engaged_streak < 2)      return false;   // one corroborating arrival of the byte, minimum
+  return true;
 }
 
 // fmNextStationInSet - which station does a tap move to?
@@ -1086,24 +1181,44 @@ static uint8_t fmNextStationInSet(uint8_t from, uint16_t mask)
   return 0;
 }
 
+// ---- V2.5-Evo - 2026-09-30 - THE STATION-FLASH HOLD: A DEDICATED, CLAMPED 1.2 s ----
+// WHY THIS IS NOT usrConf.gear_display_time ANY MORE. Two reasons, and both matter.
+//   1. THE OWNER DECIDED 1.2 s for this flash. Reusing the gear-flash field was a specification miss,
+//      not a design choice, and 1.2 s is what he asked to see on the display for a station change.
+//   2. gear_display_time IS A USER FIELD WITH A 65535 ms RANGE CEILING (see its row in
+//      ConfigService.ino). A rider who sets it to 5000 for a comfortably readable gear flash would
+//      have bought a 5 SECOND loop() stall on every magnet station change. That is not merely slow:
+//      a long stall is exactly what the sample-gap guard in runMagGesture() exists to defend against,
+//      so an unclamped blocking delay at this call site actively feeds the bug Rex filed as H-1.
+// BLOCKING CALL - freezes GPS polling, FreeRTOS task scheduling and Serial1 reads for its duration
+// (CLAUDE.md section 13). It is bounded at 1.2 s, it is far shorter than the 2 s the toggle's own
+// station confirm already blocks for, and the throttle path is untouched by it: the throttle is read
+// in measBufCalc at priority 6 and the radio byte is built in sendData at priority 5, while loop() -
+// and therefore this delay - runs at priority 1 and cannot starve either of them.
+// THE CLAMP IS KEPT EVEN THOUGH THE VALUE IS NOW A CONSTANT. It costs one comparison and it means no
+// future edit to kMagStationFlashMs - or any later decision to feed a config field in here again -
+// can hand this call site a multi-second block without someone also raising the ceiling on purpose.
+static const uint32_t kMagStationFlashMs    = 1200UL;   // how long "F<n>" stays on screen (owner's figure)
+static const uint32_t kMagStationFlashCapMs = 1200UL;   // hard ceiling on the blocking call, whatever is asked
+
 // fmStepStationFromMagnet - act on a magnet TAP (mag_mode 4).
 //
-// Called from runMagGesture() (Hall.ino) once a 60-400 ms magnet tap has been accepted AND
+// Called from runMagGesture() (Hall.ino) once a 60-600 ms magnet tap has been accepted AND
 // fmIsEngaged() has returned true. It re-checks the gate itself so the safety rule lives with the
 // action, not only with the caller.
 //
 // CONFIRMATIONS - two channels, as the design requires, and only when something actually changed:
 //   haptic  : N short taps = station number (Pattern 11, N taken from vib_pulse_count)
-//   display : the existing "F<n>" large-font confirm, held for usrConf.gear_display_time (800 ms)
+//   display : the existing "F<n>" large-font confirm, held for a dedicated, clamped 1.2 s
 // If the tap resolves to the station the buggy is already at, this function returns in silence: no
 // buzz, no flash, no packet. A confirmation for "nothing happened" teaches the rider to expect
 // feedback from accidental magnet contact, which is the opposite of what we want.
 //
-// INPUTS: last_fm_mode, usrConf.mag_fm_set, usrConf.gear_display_time.
+// INPUTS: last_fm_mode, usrConf.mag_fm_set. (usrConf.gear_display_time is NO LONGER read here - see
+//   the constants above for why.)
 // SIDE EFFECTS: last_fm_mode updated, one 0xF2 burst to the buggy, keepalive + arm timers reset,
-//   Pattern 11 queued, and a BLOCKING display hold of gear_display_time (800 ms by default) via
-//   gpsKeepAliveDelay(), which keeps draining the GPS UART so no fix goes stale. Loop task only -
-//   never from a FreeRTOS task.
+//   Pattern 11 queued, and a BLOCKING display hold of at most 1.2 s via gpsKeepAliveDelay(), which
+//   keeps draining the GPS UART so no fix goes stale. Loop task only - never from a FreeRTOS task.
 void fmStepStationFromMagnet()
 {
   if (!fmIsEngaged()) return;                        // the gate lives with the action too
@@ -1128,38 +1243,62 @@ void fmStepStationFromMagnet()
     current_vib_pattern = 11;
   }
 
-  // The same "F<n>" confirm the toggle path draws, held for the gear-change flash time instead of
-  // the toggle's 2 s. 800 ms keeps the remote's own timing language and is the shortest sensible
-  // hold on the single-core TX, which matters because this call blocks loop().
+  // The same "F<n>" confirm the toggle path draws, held for 1.2 s instead of the toggle's 2 s.
+  // The hold is clamped at the call site so this blocking delay can never grow - see the
+  // kMagStationFlashMs / kMagStationFlashCapMs comment above.
   DISP_LOCK();
   displayDigits(LET_F, last_fm_mode);
   updateDisplay();
   DISP_UNLOCK();
-  gpsKeepAliveDelay(usrConf.gear_display_time);
+  uint32_t flash_ms = (kMagStationFlashMs < kMagStationFlashCapMs) ? kMagStationFlashMs
+                                                                  : kMagStationFlashCapMs;
+  gpsKeepAliveDelay(flash_ms);
 }
 
 // fmToggleRtmEnabledFromMagnet - act on a 2.5 s magnet hold (mag_mode 4).
 //
-// Flips usrConf.rtm_enabled, the remote's master enable for Return-To-Me.
+// Flips the EFFECTIVE Return-To-Me enable for this session by writing rtm_enabled_session.
 //
-// RAM ONLY, DELIBERATELY. Nothing is written to SPIFFS: the flip lasts the session and the stored
-// setting comes back on the next power-up. Two reasons. A flash write on the water is a blocking
-// erase/write cycle in the middle of a ride, and this is the same pattern followme_mode and the
-// auto-return session override already use - the gesture is a session decision, the web UI is the
-// permanent one.
+// ---- V2.5-Evo - 2026-09-30 - GENUINELY RAM ONLY NOW (Rex delta audit) ----
+// WHAT WAS WRONG BEFORE. This function used to write usrConf.rtm_enabled and describe itself as "RAM
+// only" because it never called the SPIFFS writer itself. That was not enough: `?save` and the web-UI
+// save both persist the LIVE usrConf wholesale, so a magnet flip on the water plus any later config
+// save made a session decision permanent. The owner's instruction was explicit - "No do not change
+// spiffs with a toggle or magnet ... spiffs changing is deliberate and intentional. Magnet is temp."
+// WHAT IT DOES NOW. usrConf is never touched. The session value goes into rtm_enabled_session and
+// every gate reads it through rtmEnabledEffective(). The stored setting is untouched on disk, so a
+// power cycle brings it straight back, and only the web UI (or `?set` + `?save`) can change it for
+// good - which is exactly the split the owner asked for: the magnet is temporary, SPIFFS is
+// deliberate. It is also the pattern followme_mode (last_fm_mode) and the auto-return override
+// (last_fm_return_mode) have always used, so it is no longer the odd one out.
+// NO NEW STRUCT FIELD: a RAM variable is not a confStruct field. sizeof(confStruct) stays 136 and
+// SW_VERSION stays 27 - the TX struct tail is full, and a bump would wipe the throttle calibration.
 //
 // ZERO THROTTLE REQUIRED. Unlike the arm gestures, this changes what the craft will do on its own
 // initiative later, so it must not be possible to do by accident while riding. thr_scaled < 10 is
 // the same "trigger released" test the toggle gestures use.
 //
-// CONFIRMATIONS: Pattern 4 (two firm taps) for enabled, Pattern 7 (one long buzz) for disabled -
-// the remote's existing on/off feel. The 2.5 s advisory that fired while the magnet was still held
-// (Pattern 10, two medium pulses) is the first half of the signature, so the rider feels
-// "buzz-buzz .. tap-tap" for ON and "buzz-buzz .. buzzzzz" for OFF. Display shows "R1" / "R0" -
-// the same letter-plus-number shape as the F<n> station and L<n> gear readouts.
+// ---- CONFIRMATIONS, AND WHY "OFF" IS NO LONGER THE STOP BUZZ (Rex delta audit) ----
+// Pattern 4 (two firm taps) = ON, as before. Pattern 12 (THREE firm taps) = OFF, NEW.
+// WHAT WAS WRONG BEFORE. OFF used to raise vib_stop_pending, i.e. Pattern 7, the one long buzz. That
+// broke Pattern 7's documented contract (System.ino: it means "a FAULT stopped the system" and it
+// explicitly DOES NOT FIRE ON any deliberate disarm), and vib_stop_pending PREEMPTS every other
+// pattern. The rider harmed by that is a specific one: someone carrying mag_mode 3 muscle memory,
+// where a magnet hold disarms and buzzes long. In mode 4 he would feel that same long buzz, read it
+// as "disarmed", and have actually switched Return-To-Me off while Follow-Me was still armed - and
+// the "R0" glyph is the only honest signal, at the moment he is looking at the water.
+// WHY THREE FIRM TAPS. A deliberate two-state decision gets a bounded counted-tap confirm, the shape
+// this remote already uses for exactly that (Pattern 4 = two taps = arm, Pattern 6 = three taps). ON
+// and OFF now differ only in COUNT within one identical shape, which is the same 2-vs-3 discrimination
+// the firmware already trusts, and neither of them can be mistaken for a stop, because neither is a
+// single sustained buzz. Nothing about Pattern 7 or vib_stop_pending changes for any other caller.
+// THE FULL SIGNATURE the rider feels, advisory first: "buzz-buzz .. tap-tap" = ON,
+// "buzz-buzz .. tap-tap-tap" = OFF. Display shows "R1" / "R0" - the same letter-plus-number shape as
+// the F<n> station and L<n> gear readouts, and the display is the tie-breaker if the buzz is missed.
 //
-// INPUTS: thr_scaled, usrConf.rtm_enabled. SIDE EFFECTS: usrConf.rtm_enabled flipped in RAM, one
-// haptic pattern queued, and a BLOCKING 2 s display hold via gpsKeepAliveDelay(). Loop task only.
+// INPUTS: thr_scaled, rtm_enabled_session, usrConf.rtm_enabled (read only, via rtmEnabledEffective()).
+// SIDE EFFECTS: rtm_enabled_session set, one haptic pattern queued, and a BLOCKING 2 s display hold
+// via gpsKeepAliveDelay(). usrConf IS NOT WRITTEN. Loop task only.
 void fmToggleRtmEnabledFromMagnet()
 {
   // Refuse while the trigger is held. Silent refusal: a buzz for "I did nothing" is exactly the
@@ -1169,21 +1308,27 @@ void fmToggleRtmEnabledFromMagnet()
   // Never flip it out from under a Return-To-Me run that is already in progress.
   if (rtm_tx_active || rtmIsArming()) return;
 
-  usrConf.rtm_enabled = usrConf.rtm_enabled ? 0 : 1;
+  // Flip the EFFECTIVE value, so the first hold of a session always does the opposite of whatever the
+  // remote is actually doing right now - whether that came from SPIFFS or from an earlier hold.
+  bool now_on = !rtmEnabledEffective();
+  rtm_enabled_session = now_on ? 1 : 0;
   Serial.print("RTM [TX] magnet hold 2.5s: rtm_enabled -> ");   // V2.5-Evo - 2026-09-30
-  Serial.println(usrConf.rtm_enabled);
+  Serial.print(now_on ? 1 : 0);
+  Serial.print(" (SESSION ONLY, RAM - stored value still ");     // V2.5-Evo - 2026-09-30 - RAM-only fix
+  Serial.print(usrConf.rtm_enabled);
+  Serial.println(", returns on power cycle)");
 
-  if (usrConf.rtm_enabled)
+  if (now_on)
   {
-    if (current_vib_pattern == 0) current_vib_pattern = 4;   // two firm taps = ON
+    if (current_vib_pattern == 0) current_vib_pattern = 4;    // two firm taps = ON
   }
   else
   {
-    vib_stop_pending = true;                                 // Pattern 7: one long buzz = OFF
+    if (current_vib_pattern == 0) current_vib_pattern = 12;   // three firm taps = OFF (NOT the stop buzz)
   }
 
   DISP_LOCK();
-  displayDigits(LET_R, usrConf.rtm_enabled ? 1 : 0);          // "R1" = on, "R0" = off
+  displayDigits(LET_R, now_on ? 1 : 0);                       // "R1" = on, "R0" = off
   updateDisplay();
   DISP_UNLOCK();
   gpsKeepAliveDelay(2000);
@@ -1233,7 +1378,9 @@ void returnGesture()
     return;
   }
   // State 1: arm RTM as before. (State 2 is landed from inside the ceremony this starts.)
-  if (usrConf.rtm_enabled && usrConf.gps_en)
+  // V2.5-Evo - 2026-09-30 - the EFFECTIVE enable (see rtmEnabledEffective()), so the toggle combo and the
+  // magnet gesture agree about whether Return-To-Me is available this session. setRtmArmed() re-checks it.
+  if (rtmEnabledEffective() && usrConf.gps_en)
     setRtmArmed();
 }
 

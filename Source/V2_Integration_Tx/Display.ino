@@ -1,3 +1,8 @@
+// V2.5-Evo - 2026-09-30 - MagFix (Rex delta audit LOW): updateR5ProximityBar() now CALLS fmIsEngaged() instead of
+//   repeating its three-part test inline, so the engaged distance bar, the C7 R3/R4 FM dots and the magnet-tap
+//   safety gate all read one predicate and cannot drift apart. Presentation only: no confStruct change, sizeof
+//   stays 136, SW_VERSION stays 27. Visible effect: the bar and the dots now wait for the same corroboration the
+//   safety gate waits for (one extra telemetry rotation), which is the point.
 // V2.5-Evo - 2026-09-30 - MagStations: two FM status dots added at C7 R3 + C7 R4 in updateBargraphs() — both off
 //   = Follow-Me not armed, both slow-blinking in unison (1000 ms) = armed, both solid = actively following. R5/R6 were
 //   rejected for this: displayHorzBargraph() clears C7 in those rows, so a dot there would flicker with the battery
@@ -1476,7 +1481,8 @@ void renderRtmInfoDisplay()
 //                                           per ~200ms (matches the bargraph tick cadence).
 //   ARMED-NOT-READY (armed, !engaged,    → same 3-px segment BLINKS IN PLACE (centered), no sweep
 //     any not-ready per fmArmedNotReady())  — "armed, waiting on GPS/link"; flips to sweep live.
-//   ENGAGED (fm_flags bit1, link fresh)  → static distance bar, GROW-WITH-FAR (same direction as
+//   ENGAGED (fmIsEngaged() — the shared → static distance bar, GROW-WITH-FAR (same direction as
+//     predicate, not a copy of its test)
 //                                           RTM for consistency), center-expanding, SPIFFS-scaled
 //                                           full-scale from usrConf.fm_warn_distance_m (existing
 //                                           field — no new confStruct field).
@@ -1532,14 +1538,18 @@ void updateR5ProximityBar()
   // ---- FM R5 row (Batch T): state-driven from fm_flags + TX-local readiness ----
   if (!fm_armed) return;  // Disarmed → R5 fully OFF
 
-  uint8_t f = telemetry.fm_flags;
-  bool link_recent = (last_packet != 0 && (now - last_packet) < FM_LINK_HEALTHY_MS);
-
   // ENGAGED → static distance bar, GROW-WITH-FAR, SPIFFS-scaled, center-expanding.
   // Reuses the RX→TX distance byte (telemetry.rtm_distance). Full-scale = fm_warn_distance_m so
   // the bar fills as the buggy falls behind and is full at the proximity-warn threshold. Same
   // GROW-WITH-FAR direction as the RTM bar above (one physical row, one meaning across modes).
-  if (link_recent && (f & FM_FLAG_ENGAGED))
+  // V2.5-Evo - 2026-09-30 - MagFix (Rex delta audit LOW): this CALLS fmIsEngaged() now instead of
+  // repeating its test inline. The old inline copy (armed + link fresh + FM_FLAG_ENGAGED) happened to
+  // agree with the safety gate, and a comment claimed the two "can never disagree" — true only until
+  // the next edit to either one, and that edit came immediately: fmIsEngaged() now also demands
+  // FM_FLAG_ARMED and two consecutive corroborating telemetry arrivals. One predicate, one answer, so
+  // the R5 bar, the C7 R3/R4 dots and the magnet tap gate cannot drift apart. The local `f` and
+  // `link_recent` variables were deleted with the duplicate test; nothing else used them.
+  if (fmIsEngaged())
   {
     uint8_t d = telemetry.rtm_distance;
     if (d == 0xFF) return;  // no distance data — leave R5 dark

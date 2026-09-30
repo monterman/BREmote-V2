@@ -1,3 +1,8 @@
+// V2.5-Evo - 2026-09-30 - MagFix (Rex delta audit): the telemetry unpack in waitForTelemetry() now counts
+//   consecutive arrivals of the fm_flags byte that claim Follow-Me ARMED + ENGAGED (fm_engaged_streak).
+//   fmIsEngaged() requires two of them before it lets a magnet tap move a Follow-Me station, so the
+//   "never reposition the buggy while the rider is on the rope" rule no longer rests on a single
+//   CRC8-protected bit. Counter only - no packet format change, no confStruct change, sizeof stays 136.
 // V2.5-Evo - 2026-05-03 - Added reserved/warning comments (LOW audit cleanup)
 // V2.5-Evo - 2026-04-24 - Added 0xF3 GPS meta-packet burst at 2Hz in sendData(); THR capped at 0xF2
 // V2.5-Evo - 2026-04-25 - P7: Added RTM/FM meta-packet queue consumer in sendData(); cap 0xF2→0xF0; queueMetaPacketBurst()
@@ -530,6 +535,37 @@ void waitForTelemetry(void *parameter)
           if (rcvArray[3] < sizeof(TelemetryPacket))
           {
             ptr[rcvArray[3]] = rcvArray[4];
+          }
+
+          // ---- V2.5-Evo - 2026-09-30 - FOLLOW-ME "ENGAGED" CORROBORATION COUNTER ----
+          // WHY THIS IS HERE. The magnet tap may only move a Follow-Me station while the buggy is
+          // actively following - never while the rider is on the tow rope, where he is attached to the
+          // buggy and cannot steer away from it. That rule used to be carried by ONE bit in ONE packet,
+          // and a CRC8 lets roughly 1 in 256 random corruptions through, so a single bad-but-valid
+          // packet could have opened the gate. fmIsEngaged() (RTMState.ino) now demands the claim on
+          // two consecutive arrivals, and this is where they are counted.
+          // THIS IS THE ONLY PLACE IT CAN BE COUNTED. The RX sends one telemetry byte per packet and
+          // rotates through the indices, so telemetry.fm_flags only changes when its own index arrives.
+          // Counting anywhere else - per received packet, or per loop tick - would re-count the same
+          // cached byte and corroborate nothing at all.
+          // Both bits are required: ENGAGED without ARMED alongside it is not a state the RX sends.
+          // Any arrival that does not make the full claim resets the streak to 0, so it always
+          // describes the CURRENT claim and never accumulates stale history. It saturates rather than
+          // wrapping, because a rollover would read 0 or 1 for a moment and shut the gate on a
+          // perfectly healthy link.
+          if (rcvArray[3] == offsetof(TelemetryPacket, fm_flags))
+          {
+            const uint8_t want = (uint8_t)(FM_FLAG_ARMED | FM_FLAG_ENGAGED);
+            if ((rcvArray[4] & want) == want)
+            {
+              // Written as an explicit read-modify-write, not ++: a ++ on a volatile is deprecated in
+              // C++20 and compiling with --warnings all would flag it.
+              if (fm_engaged_streak < 255) fm_engaged_streak = (uint8_t)(fm_engaged_streak + 1);
+            }
+            else
+            {
+              fm_engaged_streak = 0;
+            }
           }
 
           // Speed conversion: RX sends speed in km/h; convert to the unit selected in web config.

@@ -1,4 +1,17 @@
-// V2.5-Evo - 2026-09-30 - MagStations: new mag_mode 4 (MAG_ROLE_FMSET) — a magnet TAP (60-400 ms) steps
+// V2.5-Evo - 2026-09-30 - MagFix (Rex delta audit of 98fb7a8) — SEVEN FOLLOW-UPS, NO STRUCT CHANGE. sizeof
+//   (confStruct) STAYS 136 and SW_VERSION STAYS 27: the tail is full, and a bump would wipe the owner's
+//   throttle calibration, so the one piece of new state (the Return-To-Me session override) is a RAM
+//   variable, not a field. (1) A sample-gap guard in runMagGesture(): a loop() stall can no longer promote a
+//   tap into the 2.5 s hold. (2) The Return-To-Me magnet toggle is now genuinely RAM only — it writes
+//   rtm_enabled_session, not usrConf, so `?save` cannot make a session flip permanent. (3) The tap ceiling is
+//   600 ms, because the real magnet sample interval is ~110 ms and never was the 20 ms the old comments
+//   claimed. (4) The RTM-OFF confirm is Pattern 12 (three firm taps), not the Pattern 7 fault buzz. (5) The
+//   station flash is a clamped 1.2 s, not gear_display_time. (6) The tow gate (fmIsEngaged()) needs
+//   FM_FLAG_ARMED as well as FM_FLAG_ENGAGED, on 2 consecutive telemetry arrivals — new global
+//   fm_engaged_streak. (7) The mode table below records that mode 4 has NO MAGNET DISARM, and the
+//   stray-magnet claim is corrected: a stray tap CAN arm Follow-Me (the owner asked for that) but cannot
+//   move a station and cannot produce motion; no_lock = 0 is the real mitigation.
+// V2.5-Evo - 2026-09-30 - MagStations: new mag_mode 4 (MAG_ROLE_FMSET) — a magnet TAP (60-600 ms) steps
 //   through the Follow-Me stations selected in the new mag_fm_set bitmask, and a 2.5 s hold toggles
 //   rtm_enabled for the session. mag_fm_set OCCUPIES THE 2 TAIL PADDING BYTES mag_mode left behind, so
 //   sizeof(confStruct) stays 136 and SW_VERSION stays 27: no SPIFFS reset, no lost throttle calibration.
@@ -397,8 +410,17 @@ struct confStruct {
     //   3 = magnet arms FM at 2s / RTM at 5s (full two-tier gesture; the tier is decided
     //       by how long the magnet was held, and arming fires on REMOVAL)
     //
-    //   4 = magnet TAPS through the Follow-Me stations listed in mag_fm_set, and a 2.5 s hold
-    //       toggles Return-To-Me on or off. See the mag_mode 4 block below and runMagGesture().
+    //   4 = magnet TAPS (60-600 ms) step through the Follow-Me stations listed in mag_fm_set, and a
+    //       2.5 s hold toggles Return-To-Me on or off FOR THE SESSION ONLY — the stored value below
+    //       is never written, so a power cycle brings it back. See the mag_mode 4 block below and
+    //       runMagGesture(). A tap only moves a station while Follow-Me is ACTIVELY FOLLOWING; if
+    //       Follow-Me is not armed yet, the first tap arms it at the stored default station.
+    //       ⚠ MODE 4 HAS NO MAGNET DISARM. This is the one behavioural difference between mode 4 and
+    //       modes 1/3 that a rider can be surprised by, so it is written down here: in modes 1 and 3
+    //       the magnet is an arm↔DISARM toggle, while in mode 4 the magnet only ever ARMS Follow-Me
+    //       or STEPS its station, and the hold only flips the Return-To-Me enable. To disarm
+    //       Follow-Me in mode 4, use the toggle combo (LEFT tap → RIGHT hold) or select F0.
+    //       (V2.5-Evo - 2026-09-30: documented after Rex flagged the silent capability change.)
     //
     // Valid range 0-4; default 0. Implemented by runMagGesture() in Hall.ino.
     uint16_t mag_mode;         // magnet/Hall gesture role; 0-4; default 0 (off / not fitted)
@@ -446,11 +468,12 @@ confStruct usrConf;
 #define MAG_ROLE_FM    1   // single 2s threshold arms FM
 #define MAG_ROLE_RTM   2   // single 2s threshold arms RTM
 #define MAG_ROLE_BOTH  3   // two-tier: 2s → FM, 5s → RTM
-// V2.5-Evo - 2026-09-30 - MagStations: the fourth role. A short TAP (60-400 ms) steps through the
-// Follow-Me stations selected in mag_fm_set, but ONLY while Follow-Me is actively following; a
-// 2.5 s hold toggles Return-To-Me on or off. Roles 1-3 are untouched by this addition — their
-// timings, their buzzes and their arm-on-removal behaviour are exactly as they were.
-#define MAG_ROLE_FMSET 4   // tap = next station in mag_fm_set (FM following only); 2.5s hold = RTM on/off
+// V2.5-Evo - 2026-09-30 - MagStations: the fourth role. A short TAP (60-600 ms; the ceiling was 400 ms
+// until the 2026-09-30 MagFix — see kMagTapMaxMs in Hall.ino) steps through the Follow-Me stations
+// selected in mag_fm_set, but ONLY while Follow-Me is actively following; a 2.5 s hold toggles
+// Return-To-Me on or off for THIS SESSION (RAM, never SPIFFS). Roles 1-3 keep their own timings, buzzes
+// and arm-on-removal behaviour. NOTE: mode 4 has no magnet disarm — see the mag_mode field comment.
+#define MAG_ROLE_FMSET 4   // tap = next station in mag_fm_set (FM following only); 2.5s hold = RTM on/off (session)
 
 // Returns what the magnet gesture should arm for the current mag_mode value.
 // Inputs: usrConf.mag_mode (0-4). Output: MAG_ROLE_NONE / _FM / _RTM / _BOTH / _FMSET.
@@ -639,6 +662,29 @@ struct __attribute__((packed)) TelemetryPacket {
 // this many ms (matches the existing `millis()-last_packet < 1000` failsafe window used for the
 // bargraphs/vibration connectivity checks). Used by the FM readiness OR and the engaged gate.
 #define FM_LINK_HEALTHY_MS 1000UL
+
+// ============================================================
+// V2.5-Evo - 2026-09-30 - fm_engaged_streak: HOW MANY CONSECUTIVE ARRIVALS of the fm_flags byte have
+// said "Follow-Me armed AND engaged". Written only by the telemetry unpack in Radio.ino (the
+// waitForTelemetry task, where the byte physically arrives); read by fmIsEngaged() in RTMState.ino.
+//
+// WHY IT EXISTS. The magnet tap may only move a Follow-Me station while the buggy is actively
+// following - never while the rider is on the tow rope, attached and unable to steer away. That rule
+// used to rest on ONE bit inside ONE CRC8-protected packet. This counter is the corroboration:
+// fmIsEngaged() requires the claim twice before it believes it. Reset to 0 the moment an fm_flags byte
+// arrives without both bits, so it tracks the CURRENT claim and never accumulates history.
+//
+// WHY IT COUNTS ARRIVALS OF THE BYTE AND NOT PACKETS OR LOOP TICKS. The RX sends ONE telemetry byte
+// per packet (Radio.ino: ptr[rcvArray[3]] = rcvArray[4]) and rotates through the indices, so
+// telemetry.fm_flags only changes when index 16 comes round. Counting received packets or loop
+// iterations would just re-count the same cached byte over and over and would corroborate nothing.
+//
+// It saturates instead of wrapping: a uint8_t that rolled over would momentarily read 0 or 1 and
+// close the gate under a perfectly healthy link.
+// volatile: written by a task, read by the loop task and the bargraph task. Single-byte accesses are
+// one instruction on this RISC-V core, so no read can tear.
+// ============================================================
+volatile uint8_t fm_engaged_streak = 0;   // consecutive fm_flags arrivals with ARMED+ENGAGED both set
 
 /*
 ** FreeRTOS/Task handles

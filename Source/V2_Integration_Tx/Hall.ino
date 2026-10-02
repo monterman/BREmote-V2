@@ -635,6 +635,10 @@ bool rtmIsArming();
 // usrConf.rtm_enabled directly now calls this, so a session flip is honoured everywhere and can still
 // never reach SPIFFS. Defined in RTMState.ino, concatenated after this file.
 bool rtmEnabledEffective();
+// V2.5-Evo - 2026-10-02 - the FM-armed half of the state-aware 2.5 s hold (RTMState.ino,
+// concatenated after this file). Toggles AUTO-RETURN for the session and shows "A1"/"A0".
+// BLOCKS for ~2 s on the display confirm, so loop()-only like the rest of this function.
+void fmToggleAutoReturnFromMagnet();
 // fmDisarm() and setRtmDisarmed() are the toggle-combo's own disarm paths (both static in
 // RTMState.ino, concatenated after this file). Declared static here — matching their definitions
 // so the linkage agrees — so the magnet TOGGLE can fire the identical disarm the toggle uses
@@ -928,7 +932,22 @@ void runMagGesture()
     {
       if (held >= kMagRtmToggleHoldMs)
       {
-        fmToggleRtmEnabledFromMagnet();
+        // V2.5-Evo - 2026-10-02 - STATE-AWARE HOLD (owner's decision).
+        //   FM ARMED     -> toggle AUTO-RETURN for the session        -> "A1" / "A0"
+        //   FM NOT ARMED -> start the MANUAL Return-To-Me ceremony     -> "rn", squeeze confirm
+        // The two can never both apply: auto-return only means anything while Follow-Me is
+        // running, and a manual recall only means something when it is not - if FM is armed the
+        // buggy is already on its way to him. Separated by STATE, not by timing, exactly as the
+        // TAP above is (arm when disarmed / step station when following), so there is nothing to
+        // pre-select before a session and no config field was added.
+        //
+        // The manual path goes through setRtmArmed(), which keeps the FULL ceremony: it re-checks
+        // rtmEnabledEffective() and gps_en itself, then blinks "rn" and requires a >30% trigger
+        // squeeze held 500 ms before anything is armed. The magnet is another DOORWAY to that
+        // ceremony, never a way past it - and it is the only doorway reachable mid-tow, because
+        // calcFilter() hands the toggle to steering the moment the trigger rises.
+        if (isFmArmed()) fmToggleAutoReturnFromMagnet();
+        else             setRtmArmed();
       }
       else if (held >= kMagTapMinMs && held <= kMagTapMaxMs)
       {

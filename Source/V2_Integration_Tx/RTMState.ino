@@ -1303,6 +1303,59 @@ void fmStepStationFromMagnet()
 // INPUTS: thr_scaled, rtm_enabled_session, usrConf.rtm_enabled (read only, via rtmEnabledEffective()).
 // SIDE EFFECTS: rtm_enabled_session set, one haptic pattern queued, and a BLOCKING 2 s display hold
 // via gpsKeepAliveDelay(). usrConf IS NOT WRITTEN. Loop task only.
+// ============================================================
+// V2.5-Evo - 2026-10-02 - fmToggleAutoReturnFromMagnet - the 2.5 s magnet hold WHILE FOLLOW-ME IS
+// ARMED toggles AUTO-RETURN for this session. ("r1"/"r0" used to mean something else entirely from
+// this gesture - whether the MANUAL recall was available - which is neither of the two things the
+// owner wanted it to do. See the state-aware dispatch in Hall.ino.)
+//
+// WHAT AUTO-RETURN IS, and why it is not Return-To-Me: auto-return is the automatic one inside
+// Follow-Me - the rider stops, the buggy comes back on its own. Return-To-Me is the MANUAL recall
+// the rider asks for with a gesture. Different features, and the readouts now differ too: "A1"/"A0"
+// here, "r1"/"r0" and "rn" for the manual one.
+//
+// THE FLIP IS AGAINST THE BUGGY'S ECHO, not against a local copy. telemetry.fm_flags bit 7
+// (FM_FLAG_RETURN_ON) is the RX's echo of its EFFECTIVE mode, so the first hold of a session always
+// does the OPPOSITE of what the buggy is actually doing - whether that came from the RX's stored
+// fm_return_mode or from an earlier hold. Same approach ceremonyCancelForReturnGesture() uses.
+//
+// RAM ONLY. last_fm_return_mode is never written to SPIFFS; the RX holds it in
+// fm_return_mode_runtime, also RAM. A power cycle returns to the stored default, which is
+// fm_return_mode = 1 (auto-return ON). That is the owner's rule: always on unless he switches it off.
+//
+// MOVES NOTHING. The override only changes what a Follow-Me HOLD graduates to on the buggy, and
+// that graduation still requires a held trigger.
+//
+// Vibration matches the convention he has already learned from this gesture: Pattern 4 (two firm
+// taps) = ON, Pattern 12 (three firm taps) = OFF. Deliberately NOT Pattern 7, the long stop buzz,
+// which means "refused".
+// ============================================================
+void fmToggleAutoReturnFromMagnet()
+{
+  // Off-throttle only. Silent refusal: a buzz for "I did nothing" is exactly the training we do
+  // not want around a magnet.
+  if (thr_scaled >= 10) return;
+
+  // Never flip it out from under a Return-To-Me run that is already arming or active.
+  if (rtm_tx_active || rtmIsArming()) return;
+
+  const bool echo_on  = (telemetry.fm_flags & FM_FLAG_RETURN_ON) != 0;
+  last_fm_return_mode = echo_on ? 0 : 1;
+
+  Serial.print("RETURN [TX] magnet hold 2.5s while FM armed: auto-return override -> ");
+  Serial.print(last_fm_return_mode ? "ON" : "OFF");
+  Serial.print(" for this session (buggy reported ");
+  Serial.print(echo_on ? "ON" : "OFF");
+  Serial.println("); SPIFFS fm_return_mode untouched, returns on power cycle");
+
+  if (current_vib_pattern == 0)
+    current_vib_pattern = last_fm_return_mode ? 4 : 12;   // 2 taps = ON, 3 taps = OFF
+
+  DISP_LOCK(); displayDigits(LET_A, last_fm_return_mode ? 1 : 0); updateDisplay(); DISP_UNLOCK();
+  gpsKeepAliveDelay(2000);
+  fmRequestKeepaliveNow();   // carry bits 5-6 to the buggy now instead of in 30 s
+}
+
 void fmToggleRtmEnabledFromMagnet()
 {
   // Refuse while the trigger is held. Silent refusal: a buzz for "I did nothing" is exactly the

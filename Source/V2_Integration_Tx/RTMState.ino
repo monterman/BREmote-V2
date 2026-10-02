@@ -1332,9 +1332,9 @@ void fmToggleRtmEnabledFromMagnet()
   }
 
   DISP_LOCK();
-  // V2.5-Evo - 2026-10-01 - lowercase r: uppercase R is F plus two pixels in this font, so "R0"
-  // was being read as a Follow-Me "F0". "r1" = on, "r0" = off.
-  displayDigits(LET_R_LC, now_on ? 1 : 0);                    // "r1" = on, "r0" = off
+  // V2.5-Evo - 2026-10-01 - the LET_R glyph itself is now lowercase (see num0[] in the header),
+  // because uppercase R was F plus two pixels and "R0" was being read as a Follow-Me "F0".
+  displayDigits(LET_R, now_on ? 1 : 0);                       // "r1" = on, "r0" = off
   updateDisplay();
   DISP_UNLOCK();
   gpsKeepAliveDelay(2000);

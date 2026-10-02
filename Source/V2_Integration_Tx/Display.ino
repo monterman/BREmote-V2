@@ -317,11 +317,10 @@ void displayDigits(uint8_t dig1, uint8_t dig2)
 {
   // V2.5-Evo - 2026-04-27 - P8: Clamp raised 29→33. LET_R(30)/LET_N(31)/LET_S(32)/LET_M(33) were
   // added to num0[] after this clamp was written, causing them to silently render as BLANK.
-  // V2.5-Evo - 2026-10-01 - 33 -> 34 with the lowercase r added at index 34. This clamp is the
-  // reason a new glyph renders BLANK if the table grows and this line does not - it happened
-  // once already (see the P8 note above), so the two always move together.
-  if (dig1 > 34) dig1 = BLANK;
-  if (dig2 > 34) dig2 = BLANK;
+  // NOTE: this clamp is the reason a new glyph renders BLANK if num0[] grows and this line does
+  // not - it has happened once already (see the P8 note above). The two always move together.
+  if (dig1 > 33) dig1 = BLANK;
+  if (dig2 > 33) dig2 = BLANK;
 
   //Delete whole number field
   for(int i = 1; i < 7; i++)
@@ -850,7 +849,7 @@ void renderOperationalDisplay()
 void displayError(int err)
 {
   DISP_LOCK();
-  displayDigits(LET_E, min(err, 33));  // clamp stays 33 ON PURPOSE: num0[] now has 35 entries, but index 34 is the lowercase r, not an error code
+  displayDigits(LET_E, min(err, 33));  // clamp to 33 — num0[] has 34 entries (indices 0–33); was 29, silently wrong for err 30–33
   updateDisplay();
   DISP_UNLOCK();
 }

@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-01 - M-2 FIX, part 1 of 4 (see PWM.ino, Logger.ino, System.ino): THE MOTOR GATE BECOMES VISIBLE. There are now two link timestamps - last_packet ("is the remote alive?") and last_control_packet ("do I have a fresh throttle command?") - and the motor gate uses the second while EVERY instrument still read the first, so the motor could be gated off with the BIND LED solid, ?printrssi showing good signal and the log's link flag reading healthy, and nothing anywhere saying why the motors stopped. It cost a half-day on 2026-09-29: ?printpwm showed a live throttle value while the gate was shut, and remote_error stayed 0 through two confirmed outages of 5.4 s and 8.75 s. FOUR instruments, none of which could see the gate. THIS FILE ADDS: (1) the diagnostic observer g_motor_gate_open - calcPWM() publishes the verdict of the gate-mirror expression it already computes, so ?diag, ?printpwm and the logger read ONE published value instead of each growing a third copy of the gate test; (2) two columns at the tail of VescLogData, the BASE record: ctrl_pkt_age_ms (u16, capped 0xFFFE) and motor_gate_open (u8). They go in the base deliberately - the tiers are cumulative and levels 0-3 all record as level 3, so a field in the base appears at EVERY log level, 0 through 5, and an incident is never re-runnable at a higher level. sizeof(VescLogData) 59 -> 62, VescLogDataL4 87 -> 90, VescLogDataL5 109 -> 112, asserts updated. OLD LOGS DO NOT PARSE AFTER THIS FLASH and the per-file header does NOT rescue them: record_size tells a reader how far to step, but it cannot express that every block above byte 59 has moved 3 bytes, so a pre-flash level-4/5 file would have been accepted and silently mis-decoded - exactly the "convincing garbage" this format exists to prevent. LOG_FILE_FORMAT_VER is therefore bumped 1 -> 2, which both readers already test, so every pre-flash file is now refused in plain English instead. DOWNLOAD ANY LOGS WORTH KEEPING BEFORE FLASHING. This is the same accepted cost as the 51->52, 53->59 record growths. No confStruct change, sizeof(confStruct) stays 200, SW_VERSION stays 36, the owner's stored config is NOT wiped.
 // V2.5-Evo - 2026-09-28 - R-3 FIX, part 1 of 3 (see Radio.ino and PWM.ino): adds the plain global last_control_packet - a SECOND link timestamp, stamped only by the normal control-packet branch and read only by the motor gate in PWM.ino. last_packet means "the remote is alive" and is refreshed by the 0xF1 / 0xF2 / 0xF4 meta-packets too, none of which carries a throttle byte; the motor gate was testing it and so could reopen on a meta-packet with a stale thr_received and the trigger released. All four of last_packet's other readers (Logger.ino's link flag, RTMState.ino's RTM failsafe stop and FM_STOP_LINK, System.ino's connection status) are deliberately left exactly as they are - liveness is the right question for them. It is a plain global, NOT a confStruct field: no struct change, sizeof stays 200, SW_VERSION stays 36, and this flash does NOT wipe the owner's stored config.
 // V2.5-Evo - 2026-09-25 - MANUAL PIVOT ASSIST, FLOOR CORRECTION (review findings P-7 / P-6). kPivotFloorQ8 128 -> 64. WHY: at full lock the mixer's gain into the outer motor is exactly 2x, so a throttle-domain floor f lands the outer motor - and therefore ALL the thrust, since the inner motor is 0 - at min(2fT, 255). f = 1/2 is the EXACT RECIPROCAL of that gain, so it cancels it and cuts NOTHING at full trigger (outer 254 of 255): the single worst value the constant can take, worst precisely in the owner's trigger-pinned use case. 64 (f = 1/4) puts the outer motor at 126/255 at full trigger, a 51 % cut of total thrust. The min(2fT, 255) derivation, the floor table and the "do not go below 64 without water testing" bound are now written into the constants block; the old comment claimed the full-lock benefit was "reduced thrust", which at f = 1/2 and full trigger did not exist (254 vs 255) and would have hidden this from the next reader (P-7). Also corrects the "byte-for-byte no-op" wording: the depth BLEEDS OUT over 8 ticks, so RTM/FM taking over, crossing 5 km/h and straightening are inert WITHIN 80 ms, subtract-only throughout, not on the same tick (P-6). ONE code change - the constant; everything else is comment. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-25 - MANUAL PIVOT ASSIST (owner request: "a fast pivot will aid enormously in getting it right right away"). Adds, with NO confStruct field: (1) the nine compile-time kPivot* tuning constants below the heading-trust block - the assist is deliberately recompile-tuned, in the kFm* style, so this flash does NOT reset the owner's SPIFFS config (sizeof stays 200, SW_VERSION stays 36); (2) the diagnostic observer g_pivot_assist_q4 beside g_motor0_cmd / g_motor1_cmd - the assist depth quantised to 4 bits, written by calcPWM() at 100 Hz and read by fillLevel4Diag(); (3) FM_LOG_GATE_PIVOT_ASSIST_SHIFT / _MASK - bits 19-22 of the EXISTING fm_gate_flags u32, so the log gains no column and no record size changes. The control code itself is in PWM.ino: a subtract-only multiply applied to the ramped throttle in the steering_type 1 branch only, gated OFF whenever rtm_rx_active || fm_rx_active. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -1365,14 +1366,23 @@ struct __attribute__((packed)) VescLogData {
     uint16_t tx_distance_dx10;    // RX→TX distance × 10 m (0.1 m resolution, capped ~164 m); 0xFFFF = N/A (no valid GPS pair)
     int16_t  rssi_dbm;            // last control-packet RSSI in dBm (rounded); 0x7FFF = N/A (failsafe — no recent packet)
     int16_t  snr_dx10;            // last control-packet SNR × 10 dB; 0x7FFF = N/A (failsafe — no recent packet)
+    // V2.5-Evo - 2026-10-01 - M-2 (diagnosability): THE MOTOR GATE. In the BASE record on purpose -
+    // the tiers are cumulative and levels 0-3 all record as level 3, so a field here appears at every
+    // log level 0 through 5, and you never get to re-run an incident at a higher level. Needed because
+    // every other link field in this record keys on last_packet ("is the remote alive?") - including
+    // the rssi_dbm / snr_dx10 N/A sentinels just above - while the motor gate keys on
+    // last_control_packet ("do I have a fresh throttle command?"). A motor gated off for want of a
+    // control packet therefore logged as a perfectly healthy link, with nothing recording the gate.
+    uint16_t ctrl_pkt_age_ms;     // millis() - last_control_packet at log time, in ms; capped at 0xFFFE (>= ~65.5 s of control silence is one state)
+    uint8_t  motor_gate_open;     // 1 = gate OPEN, pulses reaching the ESCs; 0 = SHUT, nothing leaving the board. Copy of g_motor_gate_open - calcPWM()'s own verdict, so it carries PWM_active too, which the age alone cannot show.
 };
-static_assert(sizeof(VescLogData) == 59, "VescLogData size mismatch — check binary log compat.");  // 29 base; +18 LOG-EXT-1 (2026-05-06); +4 Bundle 1 tuning fields (2026-05-08); +1 error_code_log E7 fix (2026-05-11); +1 effective_steer_log FM triage (2026-07-19); +6 F9 distance+RSSI+SNR (2026-07-24)
+static_assert(sizeof(VescLogData) == 62, "VescLogData size mismatch — check binary log compat.");  // 29 base; +18 LOG-EXT-1 (2026-05-06); +4 Bundle 1 tuning fields (2026-05-08); +1 error_code_log E7 fix (2026-05-11); +1 effective_steer_log FM triage (2026-07-19); +6 F9 distance+RSSI+SNR (2026-07-24); +3 M-2 motor-gate block ctrl_pkt_age_ms+motor_gate_open (2026-10-01), 59->62
 
 // ============================================================
 // V2.5-Evo - 2026-07-25 - STAGE 0 PART C: LEVEL-4 ("Deep") LOG RECORD
 //
 // Tiers are ADDITIVE: level N is level N-1 plus a block. VescLogDataL4 starts with a complete,
-// byte-identical VescLogData, so the first 59 bytes of a level-4 record decode with exactly the
+// byte-identical VescLogData, so the first 62 bytes of a level-4 record decode with exactly the
 // same code that decodes a level-3 record. That is what lets one CSV formatter serve both.
 //
 // The four fields answer the four open theories about the on-water failure:
@@ -1518,7 +1528,7 @@ struct __attribute__((packed)) VescLogDataL4 {
     uint8_t  motor0_cmd;           // (C) g_motor0_cmd: motor 0 command out of the differential mixer, 0-255 counts, post-mixer pre-map
     uint8_t  motor1_cmd;           // (C) g_motor1_cmd: motor 1 command, same scale. Both 0 on a non-diff steering_type.
 };
-static_assert(sizeof(VescLogDataL4) == 87, "VescLogDataL4 size mismatch — expected 59 (VescLogData) + 6 (level-4 diagnostics) + 18 (Follow-Me audit block, 2026-09-17) + 2 (fm_rider_raw_dx10) + 2 (motor0_cmd, motor1_cmd) (2026-09-19).");  // 83 -> 87: +fm_rider_raw_dx10 (u16) +motor0_cmd +motor1_cmd (u8 x 2), appended 2026-09-19
+static_assert(sizeof(VescLogDataL4) == 90, "VescLogDataL4 size mismatch — expected 62 (VescLogData, which carries the 3 B M-2 motor-gate block since 2026-10-01) + 6 (level-4 diagnostics) + 18 (Follow-Me audit block, 2026-09-17) + 2 (fm_rider_raw_dx10) + 2 (motor0_cmd, motor1_cmd) (2026-09-19).");  // 83 -> 87: +fm_rider_raw_dx10 (u16) +motor0_cmd +motor1_cmd (u8 x 2), appended 2026-09-19
 
 // ============================================================
 // V2.5-Evo - 2026-09-19 - LEVEL-5 ("Everything") LOG RECORD - 109 B
@@ -1591,8 +1601,8 @@ struct __attribute__((packed)) VescLogDataL5 {
     uint8_t  l5_rsvd_takeover_active;    // RESERVED (takeover branch), 0
     uint8_t  l5_rsvd_takeover_end;       // RESERVED (takeover branch), 0
 };
-static_assert(sizeof(VescLogDataL5) == 109, "VescLogDataL5 size mismatch — expected 87 (VescLogDataL4) + 22 (level-5 block, 2026-09-19).");
-static_assert(offsetof(VescLogDataL5, rider_lat) == 87, "level-5 block must start right after the 87 B level-4 record");
+static_assert(sizeof(VescLogDataL5) == 112, "VescLogDataL5 size mismatch — expected 90 (VescLogDataL4) + 22 (level-5 block, 2026-09-19).");
+static_assert(offsetof(VescLogDataL5, rider_lat) == 90, "level-5 block must start right after the 90 B level-4 record");
 
 // ============================================================
 // V2.5-Evo - 2026-09-17 - FmLogSnapshot: the controller -> logger hand-off
@@ -1655,7 +1665,22 @@ portMUX_TYPE  g_fm_log_mux      = portMUX_INITIALIZER_UNLOCKED;
 // 53 -> 59 byte record change (F9, 2026-07-24) — this just makes the failure honest.
 // ============================================================
 #define LOG_FILE_MAGIC       0x474C5242UL  // little-endian bytes on disk read "BRLG" (BREmote Log)
-#define LOG_FILE_FORMAT_VER  1             // bump ONLY if the header layout itself changes
+// V2.5-Evo - 2026-10-01 - M-2: bumped 1 -> 2, and the rule above it corrected. The old rule said
+// "bump ONLY if the header layout itself changes", on the assumption that record_size alone could
+// always describe a record. It cannot: the M-2 motor-gate block was appended to the BASE record, so
+// every block above byte 59 of a level-4/5 record moved 3 bytes. record_size still says how far to
+// STEP, but nothing in a format-version-1 file says which GENERATION of layout its bytes follow,
+// and the pre-flash sizes (59/65/83/85/87/109) sit inside the new accepted range, so both readers
+// would have taken an old level-4/5 file and silently mis-decoded every column above byte 59 -
+// precisely the convincing garbage this self-describing header was created to prevent. Both readers
+// (the serial ?download path in Logger.ino and the WiFi /api/logs/download path in
+// Common/WebConfigEngine.h) ALREADY test format_ver against this constant and refuse a mismatch in
+// plain English, so the bump makes the failure honest with no new logic at either reader.
+// THE RULE, restated: bump this when the header layout changes OR when the RECORD layout changes in
+// a way that moves an existing field - i.e. any time an older file's bytes can no longer be decoded
+// by this build. Appending at the tail of the LARGEST record does not qualify; appending to the base
+// record does. Pre-flash logs must be downloaded BEFORE flashing a build that bumps this.
+#define LOG_FILE_FORMAT_VER  2             // 2 = M-2 motor-gate block in the base record (2026-10-01); 1 = the original STAGE 0 PART B layout (2026-07-25)
 
 struct __attribute__((packed)) LogFileHeader {
     uint32_t magic;        // LOG_FILE_MAGIC — absent/mismatched means "not a BREmote log of this era"
@@ -1706,7 +1731,7 @@ static inline uint16_t logRecordSizeForLevel(uint8_t level)
 // If you add a column: extend LOG_CSV_HEADER_L3 (or _L4), extend the matching format string,
 // and add the argument in logFormatCsvRow(). Both readers pick it up with no further edits.
 // ============================================================
-#define LOG_CSV_HEADER_L3 "timestamp_ms,motor_current_A,battery_current_A,duty_cycle_%,voltage_V,ERPM,temp_mos_C,fault_code,speed_kmh,latitude,longitude,datetime_unix,thr_received,rtm_source,rtm_confidence,rtm_rx_active,gps_phase_b_ok,rtm_steer_override,rtm_heading_chosen_dx10,compass_live_dx10,compass_snap_dx10,snap_age_s,gps_course_dx10,cog_age_ms_div10,heading_error_dx10,d_error_dx10,remote_error,effective_steer,tx_distance_m,rssi_dbm,snr_db"
+#define LOG_CSV_HEADER_L3 "timestamp_ms,motor_current_A,battery_current_A,duty_cycle_%,voltage_V,ERPM,temp_mos_C,fault_code,speed_kmh,latitude,longitude,datetime_unix,thr_received,rtm_source,rtm_confidence,rtm_rx_active,gps_phase_b_ok,rtm_steer_override,rtm_heading_chosen_dx10,compass_live_dx10,compass_snap_dx10,snap_age_s,gps_course_dx10,cog_age_ms_div10,heading_error_dx10,d_error_dx10,remote_error,effective_steer,tx_distance_m,rssi_dbm,snr_db,ctrl_pkt_age_ms,motor_gate_open"
 // V2.5-Evo - 2026-09-17 - two level-4 column sets: _L4_DIAG is the 65-byte layout written from
 // 2026-07-25 to 2026-09-16 (four diagnostics); _L4 is the current 83-byte layout (diagnostics +
 // the Follow-Me audit block). logCsvHeaderFor() picks by the file's own record_size.
@@ -1723,7 +1748,8 @@ static inline uint16_t logRecordSizeForLevel(uint8_t level)
 // V2.5-Evo - 2026-09-19 - level 5: the 14 level-5 columns after the full level-4 set (65 columns, 109 B files).
 #define LOG_CSV_HEADER_L5 LOG_CSV_HEADER_L4 ",rider_lat,rider_lng,rider_fix_seq,rider_fix_age_ms,rtm_approach_cap,rtm_phase,align_cap,align_influence,mix_influence,fm_return_override,fm_flags_sent,fm_keepalive_age_s,l5_rsvd_takeover_active,l5_rsvd_takeover_end"
 
-#define LOG_CSV_ROW_FMT_L3 "%u,%.2f,%.2f,%d,%.1f,%d,%u,%u,%.1f,%.6f,%.6f,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%d,%d,%u,%u,%.1f,%d,%.1f"
+// V2.5-Evo - 2026-10-01 - M-2: 31 level-3 columns -> 33 (+ctrl_pkt_age_ms, +motor_gate_open).
+#define LOG_CSV_ROW_FMT_L3 "%u,%.2f,%.2f,%d,%.1f,%d,%u,%u,%.1f,%.6f,%.6f,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%d,%d,%u,%u,%.1f,%d,%.1f,%u,%u"
 #define LOG_CSV_ROW_EXT_L4 ",%u,%u,%u,%u"
 #define LOG_CSV_ROW_EXT_L4_FM ",%u,%.1f,%.1f,%.1f,%u,%u,%u,%u,%u,%.1f,%u,%u,%u"
 #define LOG_CSV_ROW_EXT_L4_RAW ",%.1f"        // (B) fm_rider_raw_kmh; -1.0 = unknown
@@ -1737,7 +1763,8 @@ static inline uint16_t logRecordSizeForLevel(uint8_t level)
 //   ~60 more (a u32 flag word, three "%.1f" distances/speeds, five u8s, one signed "%.1f"); the
 //   three 2026-09-19 (A) columns (a u8 and two 0/1 flags) at most 9 more, and the (B)+(C) columns (one
 //   "%.1f" speed, two u8s) at most 15 more. The 14 level-5 columns add at most ~80 (two "%.6f"
-//   coordinates, one "%.1f", eleven small integers, 14 commas): pathological total ~470. 640
+//   coordinates, one "%.1f", eleven small integers, 14 commas). The two 2026-10-01 motor-gate
+//   columns (a 5-digit capped age and a single 0/1) add at most 8: pathological total ~478. 640
 //   clears the pathological ~362 by ~1.8x. It is a stack local in the Arduino loop task (8 KB
 //   stack), which is where both readers run.
 #define LOG_CSV_ROW_BUF 640
@@ -1828,7 +1855,17 @@ static int logFormatCsvRow(char* out, size_t out_len, const uint8_t* rec_bytes, 
                    // F9: distance (m) + link quality. N/A → distance -1.0, rssi -999, snr -99.0
                    (d.tx_distance_dx10 == 0xFFFF) ? -1.0f : (d.tx_distance_dx10 / 10.0f),
                    (d.rssi_dbm == 0x7FFF) ? -999 : (int)d.rssi_dbm,
-                   (d.snr_dx10 == 0x7FFF) ? -99.0f : (d.snr_dx10 / 10.0f));
+                   (d.snr_dx10 == 0x7FFF) ? -99.0f : (d.snr_dx10 / 10.0f),
+                   // V2.5-Evo - 2026-10-01 - M-2: the motor gate. ctrl_pkt_age_ms is how stale the
+                   // last THROTTLE command was on this row (0xFFFE = capped, >= ~65.5 s); it has no
+                   // N/A sentinel because it is always a real measurement - before the first control
+                   // packet it simply reads as uptime, the same thing the gate itself sees.
+                   // motor_gate_open is 1 = OPEN (pulses reaching the ESCs) / 0 = SHUT. Read them
+                   // together: a 0 with a large age is a link failsafe, a 0 with a small age is
+                   // PWM_active being down, and a 0 of any kind means the motor columns on this row
+                   // describe arithmetic that never left the board.
+                   (unsigned)d.ctrl_pkt_age_ms,
+                   (unsigned)d.motor_gate_open);
 
   if (n < 0) { out[0] = '\0'; return 0; }
   if ((size_t)n >= out_len) n = (int)out_len - 1;   // snprintf truncated — keep the index inside the buffer
@@ -2028,8 +2065,13 @@ volatile unsigned long last_packet = 0;
 // THE FIX, and why it is a SECOND timestamp rather than a change to the first. "The remote is
 // alive" and "I have a fresh throttle command" are two different questions and the code was
 // conflating them. Both are wanted - just by different readers:
-//   - THIS variable is stamped ONLY in the control-packet branch (Radio.ino), and is read ONLY by
-//     the motor gate in PWM.ino. A meta-packet cannot open the motor gate, full stop.
+//   - THIS variable is stamped ONLY in the control-packet branch (Radio.ino), and the only thing
+//     that ACTS on it is the motor gate in PWM.ino. A meta-packet cannot open the motor gate, full
+//     stop. V2.5-Evo - 2026-10-01 - M-2 added two READ-ONLY readers, neither in a control path:
+//     cmdDiag() prints its age on ?diag's "motor gate" line, and convertToLogData() records that
+//     age as the log column ctrl_pkt_age_ms. Both only subtract it from millis() and print/store
+//     the result. The gate VERDICT they show comes from g_motor_gate_open, not from a second
+//     evaluation of the gate test here.
 //   - last_packet keeps its existing meaning and ALL FOUR of its other readers untouched:
 //     Logger.ino's link flag, RTMState.ino's RTM failsafe stop and FM_STOP_LINK, and System.ino's
 //     connection status. "The TX is alive" is the correct question for every one of those.
@@ -2112,6 +2154,26 @@ volatile uint8_t g_motor1_cmd = 0;   // motor 1 command out of the mixer, 0-255;
 // by NOTHING in any control path. Single-byte volatile, atomic on the ESP32-C3. The assist's real
 // state is a uint16_t static inside calcPWM(); this is a lossy copy for the log, never the source.
 volatile uint8_t g_pivot_assist_q4 = 0;   // manual pivot assist depth, 0 = inert, 15 = full
+
+// V2.5-Evo - 2026-10-01 - M-2 (diagnosability): THE MOTOR GATE'S OWN VERDICT, published once per
+// calcPWM() pass. 1 = the gate in generatePWM() is OPEN on this tick, so generate_pulse() is being
+// called and the ESCs are being driven. 0 = SHUT, so NOTHING is leaving the board no matter what
+// PWM0_time / PWM1_time happen to read - and calcPWM() computes those two unconditionally, which is
+// exactly how ?printpwm came to show a live throttle value through a closed gate and cost a half-day
+// on 2026-09-29.
+// WHY A PUBLISHED VALUE AND NOT A THIRD COPY OF THE TEST: this is the value of the gate-mirror
+// expression calcPWM() ALREADY computes for the M-3 ramp reset, so it carries PWM_active as well as
+// the control-packet age, and the instruments that read it do not each grow their own copy of
+// "PWM_active && millis() - last_control_packet < usrConf.failsafe_time". There are exactly TWO
+// copies of that expression - the gate in generatePWM() and its documented mirror in calcPWM() - and
+// the maintenance warning at both sites still names both. Adding readers here cannot make a third.
+// DIAGNOSTIC OBSERVER ONLY - exactly the g_effective_steer / g_motor0_cmd pattern: written on every
+// pass by calcPWM() (generatePWM task, 100 Hz), read by convertToLogData() (loggerTask) and by
+// cmdDiag() / serPrintPWM() (loop task), and read back by NOTHING in any control path. Single-byte
+// volatile, atomic on the ESP32-C3. Initialised 0 so a read before the PWM task's first pass reports
+// the gate SHUT - the safe direction: an instrument must never claim the motors are live when it has
+// not yet been told.
+volatile uint8_t g_motor_gate_open = 0;   // 1 = motor gate OPEN this tick, 0 = SHUT (also 0 whenever PWM_active is down)
 
 volatile unsigned long get_vesc_timer = 0;
 volatile unsigned long last_uart_packet = 0;

@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-01 - M-2 FIX, part 4 of 4 (see BREmote_V2_Rx.h, PWM.ino, Logger.ino): the two serial instruments stop hiding the motor gate. (1) ?diag gained ONE line - "motor gate" - printing the gate's OPEN/CLOSED verdict, the age of the last CONTROL packet, the failsafe_time it is being measured against and PWM_active. ?diag is the owner's one-shot snapshot and had no link or gate field at all, while the BIND LED, ?printrssi and the deep log's link flag all read last_packet ("is the remote alive?") rather than last_control_packet ("do I have a fresh throttle command?") - so a gated-off motor read as connected with good RSSI. (2) ?printpwm appends "(GATED ...)" when the gate is shut, because calcPWM() computes PWM0_time / PWM1_time UNCONDITIONALLY and the gate wraps only generate_pulse(): the numbers can look live while nothing is leaving the board, which cost a half-day on 2026-09-29. The two numbers keep their exact positions and the line is not restructured - the marker is appended after them - so anything parsing ?printpwm still works. Both read the published observer g_motor_gate_open, NOT a fresh evaluation of the gate test, so there are still exactly two copies of that expression. Read-only, no control path, no new command (so no web-UI dropdown change), no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG level 5: ?diag's log_level line names level 5 "Everything" (it would have said "Deep"); ?logstat already derives level, record size and capacity from logResolveLevel() / logRecordSizeForLevel(), so it reports 109 B and the hours for level 5 with no change. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG: ?logstat now prints the log level in force, the record size, the log rate and the capacity that follows from them - computed from logRecordSizeForLevel() / log_interval_ms / SPIFFS.totalBytes() and the MIN_FREE_SPACE_KB reserve, never from a literal, so a record-size change (83 -> 87 B today) is reflected without touching this command. Print only. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - ?diag gained ONE more line (stick during auto-steer): the steer_during_auto setting (cancel / take over), whether a stick takeover is standing right now and for how long, whether the stick has been read centred since the current run began (the M-1b guard), how many takeovers have engaged since boot and how the last one ended. Read-only accessors in RTMState.ino. No control-path change, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -1282,6 +1283,22 @@ void cmdDiag(const String& params) {
   Serial.printf("log_level  : cfg %u -> level %u (%s), %u bytes/record\n",
                 (unsigned)usrConf.log_level, (unsigned)lvl, lvl_txt,
                 (unsigned)logRecordSizeForLevel(lvl));
+  // V2.5-Evo - 2026-10-01 - M-2: the motor gate, placed high in the report because it answers the
+  // first question a stopped buggy raises. CLOSED means generate_pulse() is not being called at all,
+  // so the ESCs are receiving nothing - regardless of what ?printpwm, the BIND LED or ?printrssi say,
+  // because every one of those reads last_packet ("is the remote alive?") while the gate reads
+  // last_control_packet ("do I have a fresh throttle command?"). Meta-packets (0xF1 / 0xF2 / 0xF4)
+  // refresh the former and carry no throttle byte, so the two genuinely diverge. READ THE THREE
+  // NUMBERS TOGETHER: age >= failsafe_time is a control-link failsafe; age well under failsafe_time
+  // with the gate still CLOSED means PWM_active is down, not the link. The verdict is the gate's own
+  // published value (g_motor_gate_open, written by calcPWM()), not a re-evaluation here. Read-only -
+  // this prints state and sets nothing.
+  Serial.printf("motor gate : %s - control-packet age %lu ms vs failsafe_time %u ms, PWM_active %u\n",
+                g_motor_gate_open ? "OPEN (pulses reaching the ESCs)"
+                                  : "CLOSED (no pulses leaving the board - the motors are not being driven)",
+                (unsigned long)(now_ms - last_control_packet),
+                (unsigned)usrConf.failsafe_time,
+                (unsigned)(PWM_active ? 1 : 0));
   Serial.printf("GPS feed   : %.0f bytes/s, %.1f sentences/s   [window %u B, %u sentences]\n",
                 (float)d_bytes / win_s, (float)d_sent / win_s,
                 (unsigned)d_bytes, (unsigned)d_sent);
@@ -1843,9 +1860,19 @@ void serPrintPWM()
     // V2.5-Evo - 2026-08-16 - and stop if RTM/FM engages mid-stream. Read-only, nothing to undo.
     if(checkSerialQuit() || rxAbortIfEngaged("?printpwm")) break;
     // Print the variable
+    // V2.5-Evo - 2026-10-01 - M-2: mark the pair when the motor gate is shut. These two are computed
+    // by calcPWM() on EVERY 10 ms pass; the failsafe gate wraps only generate_pulse(), and nothing
+    // zeroes them when it closes - so a plausible non-minimum reading here can mean NOTHING is
+    // reaching the ESCs. On 2026-09-29 a frozen "1376, 1376" held for 20 s after a TX off/on cycle and
+    // looked exactly like the RX emitting thrust from a stale throttle; it was not, and proving that
+    // cost a half-day. The marker is APPENDED: both numbers keep their exact positions and the line is
+    // not restructured, so anything parsing this still parses it. To judge the gate quantitatively use
+    // ?diag's "motor gate" line; this is the warning that the number in front of you is arithmetic.
     Serial.print(PWM0_time);
     Serial.print(", ");
-    Serial.println(PWM1_time);
+    Serial.print(PWM1_time);
+    if (!g_motor_gate_open) Serial.print("  (GATED - motor gate shut, no pulses leaving the board)");
+    Serial.println();
     vTaskDelay(pdMS_TO_TICKS(100));
   }
 }

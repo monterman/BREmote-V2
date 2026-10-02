@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-01 - M-2 FIX, part 3 of 4 (see BREmote_V2_Rx.h, PWM.ino, System.ino): convertToLogData() fills the two motor-gate columns appended to the BASE record, VescLogData (59 -> 62 B, so VescLogDataL4 is 90 B and VescLogDataL5 112 B): ctrl_pkt_age_ms = millis() - last_control_packet, capped at 0xFFFE, and motor_gate_open = the calcPWM() observer g_motor_gate_open (PWM.ino), the same route motor0_cmd / motor1_cmd take. THE BASE RECORD ON PURPOSE: the tiers are cumulative and levels 0-3 all record as level 3, so these two columns appear at EVERY log level 0 through 5 - there is no stored log_level that could miss them, and an incident is never re-runnable at a higher level. The gate is copied, never recomputed: this file already holds one CRITICAL MAINTENANCE inline duplicate (the heading ladder) and must not acquire a second. OLD LOGS: a pre-flash file cannot be decoded by this build - record_size says how far to step but cannot express that every block above byte 59 moved 3 bytes - so LOG_FILE_FORMAT_VER went 1 -> 2 and the format_ver test already in this file's download guard refuses them in plain English instead of mis-decoding them. Download anything worth keeping BEFORE flashing. ?download's record-size ceiling and the record buffers are sizeof()-derived and follow automatically. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-25 - MANUAL PIVOT ASSIST (log only): fillLevel4Diag() ORs the assist's depth, 0-15, into bits 19-22 of the fm_gate_flags word it already copies - one 4-bit field, no new column, no record-size change, so every existing 87 B / 109 B log file and both readers are unaffected. The value comes from the calcPWM() observer g_pivot_assist_q4 (PWM.ino), the same route motor0_cmd / motor1_cmd take, because the assist's controller is the 100 Hz PWM task and g_fm_log_snapshot must keep its single loop-task writer. Strictly additive and masked to its own four bits: no FM gate verdict, no other column and no control path is touched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG level 5: loggerTask() builds a VescLogDataL5 (109 B) when the file was created at level 5 - convertToLogData() for the base, ONE snapshot copy per row (logTakeFmSnapshot(), one critical section) shared by fillLevel4Diag() and the new fillLevel5Extra(), so a row never mixes two ticks between its level-4 and level-5 columns. Record buffers and ?download's record-size ceiling are sizeof(VescLogDataL5) now; the header/row tiers stay offset-selected. AUX button and logger_en semantics unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG (B)+(C): fillLevel4Diag() fills the three fields appended to VescLogDataL4 (83 -> 87 B): fm_rider_raw_dx10 from the snapshot (RTMState.ino publishes fm_rider_raw_kmh x 10, 0xFFFF = unknown), motor0_cmd / motor1_cmd from the two calcPWM() observers g_motor0_cmd / g_motor1_cmd (PWM.ino). ?download's record-size ceiling is sizeof(VescLogDataL4) as before, so it follows the bump; the header/row tiers are chosen by block offset in BREmote_V2_Rx.h, so 83 B files written since 2026-09-17 still print their own 48 columns. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -477,6 +478,32 @@ VescLogData convertToLogData() {
       data.rssi_dbm = 0x7FFF;   // N/A — failsafe
       data.snr_dx10 = 0x7FFF;   // N/A — failsafe
     }
+  }
+
+  // V2.5-Evo - 2026-10-01 - M-2: THE MOTOR GATE, the one thing no instrument on this board could
+  // see. Everything else in this record that touches the link keys on last_packet ("is the remote
+  // alive?") - including the rssi_dbm / snr_dx10 N/A sentinels immediately above - while the motor
+  // gate in generatePWM() keys on last_control_packet ("do I have a fresh throttle command?"). The
+  // two diverge exactly when it matters: through a meta-packet-only stretch the link flag, the RSSI
+  // and the BIND LED all read healthy while the motors are not being driven at all. On 2026-09-29
+  // that cost a half-day, with remote_error sitting at 0 through two confirmed outages of 5.4 s and
+  // 8.75 s. These two columns close it.
+  {
+    // How stale the last THROTTLE command was on this row. Unsigned subtraction is correct across a
+    // millis() wrap. Capped at 0xFFFE so the column cannot wrap its own u16 encoding - anything past
+    // ~65.5 s of control silence is one state, "long gone", and the gate has been shut for all of it.
+    // No N/A sentinel: this is always a real measurement. Before the first control packet it reads as
+    // uptime, which is exactly what the gate itself sees at that moment.
+    unsigned long ctrl_age_ms = millis() - last_control_packet;
+    data.ctrl_pkt_age_ms = (uint16_t)((ctrl_age_ms > 0xFFFEUL) ? 0xFFFEUL : ctrl_age_ms);
+
+    // The gate's OWN verdict, straight from the calcPWM() observer (g_motor_gate_open, PWM.ino) -
+    // a single-byte volatile written at 100 Hz on the generatePWM task, read atomically here, the
+    // identical route motor0_cmd / motor1_cmd already take. COPIED, NOT RECOMPUTED: the gate
+    // expression exists exactly twice (the gate itself and its documented mirror in calcPWM) and
+    // this file must not become a third site to keep in step. The observer also carries PWM_active,
+    // so a 0 with a SMALL age means the PWM path is down rather than the link.
+    data.motor_gate_open = g_motor_gate_open ? 1 : 0;
   }
 
   return data;

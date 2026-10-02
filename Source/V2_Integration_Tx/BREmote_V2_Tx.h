@@ -567,7 +567,7 @@ confStruct defaultConf = {  // V2.5-Evo — factory default configuration
   // shipped default, and firmware and comment finally agree.
   // Existing units are deliberately untouched: no confStruct change and no SW_VERSION bump, so a TX
   // with a stored value keeps it. This only affects units never configured, or factory-reset later.
-  1,    // rtm_double_squeeze_en (1 = double squeeze — SHIPPED DEFAULT, deliberate, harder to trigger by accident; 0 = single squeeze held ~500 ms)
+  0,    // rtm_double_squeeze_en (0 = SINGLE squeeze held ~500 ms — OWNER'S DEFAULT 2026-10-02, set on his board and here so a config wipe cannot quietly restore the double; 1 = double squeeze, the upstream default)
   30,   // rtm_throttle_start_pct
   70,   // rtm_throttle_max_pct
   5,    // rtm_ramp_duration_s

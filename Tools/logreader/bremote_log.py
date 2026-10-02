@@ -61,7 +61,13 @@ from typing import Any, Callable, Optional
 # FILE HEADER - BREmote_V2_Rx.h: LogFileHeader / LOG_FILE_MAGIC / LOG_FILE_FORMAT_VER
 # ============================================================
 LOG_FILE_MAGIC = 0x474C5242          # little-endian bytes on disk read "BRLG"
-LOG_FILE_FORMAT_VER = 1              # layout of the 8-byte header itself
+LOG_FILE_FORMAT_VER = 2              # current: 2 = the M-2 motor-gate block in the base record
+# Both are READABLE. 1 is every file written before the M-2 flash (2026-10-02) and 2 is every
+# file after it. The two differ by 3 bytes at the tail of the BASE record, which moves every
+# block above byte 59 - record_size alone cannot express that, which is why the firmware bumped
+# the version rather than relying on the per-file header. Keeping 1 here is what lets every CSV
+# and .log already pulled off a board still parse.
+LOG_FILE_FORMAT_VERS_SUPPORTED = (1, 2)
 LOG_FILE_HEADER_FMT = "<IBBH"        # magic u32, format_ver u8, log_level u8, record_size u16
 LOG_FILE_HEADER_SIZE = struct.calcsize(LOG_FILE_HEADER_FMT)
 assert LOG_FILE_HEADER_SIZE == 8
@@ -279,6 +285,26 @@ L3_FIELDS = [
       raw_scale=10.0, sentinel_raw=0x7FFF, csv_prescaled=True, sentinel_val=-99.0, unit="dB"),
 ]
 
+# ---- M-2 motor-gate block (bytes 59-61), appended to the BASE record 2026-10-02 ----
+# Deliberately in the base: the tiers are cumulative and levels 0-3 all record as level 3, so a
+# field here appears at EVERY log level, 0 through 5. The firmware's reasoning was that an incident
+# is never re-runnable at a higher log level.
+#
+# ctrl_pkt_age_ms is millis() - last_control_packet at log time. 0xFFFE is a CAP, not a sentinel
+# ("65.5 s or more of control silence is one state"), so it is passed through as a real number
+# rather than mapped to -1 - turning a cap into "unknown" would throw away the fact that the gate
+# had been shut for a long time, which is the whole point of the column.
+#
+# motor_gate_open is calcPWM()'s own verdict, so it carries PWM_active too - something the age
+# alone cannot show. 1 = pulses reaching the ESCs, 0 = nothing leaving the board.
+L3_GATE_EXTRA_FIELDS = [
+    F("ctrl_pkt_age_ms", "H", csv_prescaled=True, unit="ms"),
+    F("motor_gate_open", "B", csv_prescaled=True, unit="1=open"),
+]
+
+# The base record as written from 2026-10-02 onward (62 B).
+L3_FIELDS_V2 = L3_FIELDS + L3_GATE_EXTRA_FIELDS
+
 # ---- VescLogDataL4 diagnostics block (bytes 59-64) - the historical 65 B "L4_DIAG" record ----
 L4_DIAG_EXTRA_FIELDS = [
     F("gps_sent_per_s", "B", csv_prescaled=True, unit="/s"),
@@ -379,12 +405,41 @@ LAYOUT_L5 = _layout(5, "L5",
                     + L4_MOTORS_EXTRA_FIELDS + L5_EXTRA_FIELDS,
                     virtual_after=_VIRTUAL_GATE_COLUMNS)
 
-LAYOUT_BY_NAME = {lay["name"]: lay for lay in (LAYOUT_L3, LAYOUT_L4_DIAG, LAYOUT_L4_83, LAYOUT_L4_RAW, LAYOUT_L4, LAYOUT_L5)}
+# ---- the post-M-2 record sizes (2026-10-02). Only these three are written by the current
+#      firmware; the six above remain for every file recorded before the flash. ----
+LAYOUT_L3_V2 = _layout(3, "L3_V2", L3_FIELDS_V2)
+LAYOUT_L4_V2 = _layout(4, "L4_V2",
+                       L3_FIELDS_V2 + L4_DIAG_EXTRA_FIELDS + L4_83_EXTRA_FIELDS
+                       + L4_RAW_EXTRA_FIELDS + L4_MOTORS_EXTRA_FIELDS,
+                       virtual_after=_VIRTUAL_GATE_COLUMNS)
+LAYOUT_L5_V2 = _layout(5, "L5_V2",
+                       L3_FIELDS_V2 + L4_DIAG_EXTRA_FIELDS + L4_83_EXTRA_FIELDS
+                       + L4_RAW_EXTRA_FIELDS + L4_MOTORS_EXTRA_FIELDS + L5_EXTRA_FIELDS,
+                       virtual_after=_VIRTUAL_GATE_COLUMNS)
+
+LAYOUT_BY_NAME = {lay["name"]: lay for lay in (LAYOUT_L3, LAYOUT_L4_DIAG, LAYOUT_L4_83, LAYOUT_L4_RAW, LAYOUT_L4, LAYOUT_L5,
+                                               LAYOUT_L3_V2, LAYOUT_L4_V2, LAYOUT_L5_V2)}
 
 # Table-driven: keyed by on-disk record size. A future record (e.g. the steer-takeover branch
 # claiming bit 16 and its own bytes) is one new _layout() call and one new dict entry here.
 RECORD_LAYOUTS: dict[int, dict] = {lay["record_size"]: lay for lay in LAYOUT_BY_NAME.values()}
-assert RECORD_LAYOUTS.keys() == {59, 65, 83, 85, 87, 109}, sorted(RECORD_LAYOUTS)
+
+# BREmote_V2_Rx.h LOG_CSV_HEADER_L3 as of the M-2 change, copied verbatim. If the firmware adds a
+# base column and this reader is not updated, this assert fires on import rather than letting a
+# mis-aligned decode through.
+_FW_CSV_HEADER_L3_V2 = (
+    "timestamp_ms,motor_current_A,battery_current_A,duty_cycle_%,voltage_V,ERPM,temp_mos_C,"
+    "fault_code,speed_kmh,latitude,longitude,datetime_unix,thr_received,rtm_source,rtm_confidence,"
+    "rtm_rx_active,gps_phase_b_ok,rtm_steer_override,rtm_heading_chosen_dx10,compass_live_dx10,"
+    "compass_snap_dx10,snap_age_s,gps_course_dx10,cog_age_ms_div10,heading_error_dx10,d_error_dx10,"
+    "remote_error,effective_steer,tx_distance_m,rssi_dbm,snr_db,ctrl_pkt_age_ms,motor_gate_open"
+)
+assert LAYOUT_L3_V2["csv_header"] == _FW_CSV_HEADER_L3_V2, (
+    "generated level-3 header has drifted from the firmware macro - generated "
+    + LAYOUT_L3_V2["csv_header"] + " / firmware " + _FW_CSV_HEADER_L3_V2
+)
+# 59/65/83/85/87/109 = format_ver 1 (pre-2026-10-02). 62/90/112 = format_ver 2, the M-2 base.
+assert RECORD_LAYOUTS.keys() == {59, 65, 83, 85, 87, 109, 62, 90, 112}, sorted(RECORD_LAYOUTS)
 
 # The six CSV headers the firmware itself can print (BREmote_V2_Rx.h LOG_CSV_HEADER_L3 /
 # _L4_DIAG / _L4_83 / _L4_RAW / _L4 / _L5). Copied verbatim so CSV-input detection is an exact
@@ -418,6 +473,13 @@ CSV_HEADER_TO_LAYOUT = {
     LOG_CSV_HEADER_L4_RAW: LAYOUT_L4_RAW,
     LOG_CSV_HEADER_L4: LAYOUT_L4,
     LOG_CSV_HEADER_L5: LAYOUT_L5,
+    # The post-M-2 headers. Taken from the GENERATED layouts rather than hand-typed: the generator
+    # is the same field table that produced the byte-identical headers above, and the assert below
+    # checks its level-3 output against the firmware macro copied verbatim, so any drift between
+    # this table and BREmote_V2_Rx.h is caught at import time instead of in the field.
+    LAYOUT_L3_V2["csv_header"]: LAYOUT_L3_V2,
+    LAYOUT_L4_V2["csv_header"]: LAYOUT_L4_V2,
+    LAYOUT_L5_V2["csv_header"]: LAYOUT_L5_V2,
 }
 
 
@@ -581,9 +643,10 @@ def iter_binary_records(path: str):
                 f"{path}: bad magic (0x{magic:08X}, expected 0x{LOG_FILE_MAGIC:08X}) - "
                 "this file predates the self-describing log header, or is corrupt."
             )
-        if format_ver != LOG_FILE_FORMAT_VER:
+        if format_ver not in LOG_FILE_FORMAT_VERS_SUPPORTED:
             raise LogFormatError(
-                f"{path}: header format_ver={format_ver}, this tool understands format_ver={LOG_FILE_FORMAT_VER}."
+                f"{path}: header format_ver={format_ver}, this tool understands "
+                f"format_ver={' and '.join(str(v) for v in LOG_FILE_FORMAT_VERS_SUPPORTED)}."
             )
 
         layout, decode_size = _pick_layout_for_record_size(record_size)

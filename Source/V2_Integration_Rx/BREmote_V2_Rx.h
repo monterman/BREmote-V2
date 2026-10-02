@@ -1583,6 +1583,13 @@ static_assert(sizeof(VescLogData) == 62, "VescLogData size mismatch — check bi
 // Reader: value = (fm_gate_flags & FM_LOG_GATE_PIVOT_ASSIST_MASK) >> FM_LOG_GATE_PIVOT_ASSIST_SHIFT.
 #define FM_LOG_GATE_PIVOT_ASSIST_SHIFT 19            // bits 19-22 hold the manual pivot assist depth, 0-15
 #define FM_LOG_GATE_PIVOT_ASSIST_MASK  (0xFUL << FM_LOG_GATE_PIVOT_ASSIST_SHIFT)
+// V2.5-Evo - 2026-10-02 - P2: bit 23. The PG-4 escape is standing this tick - a FRONT station is
+// commanded but the buggy is not wide enough of the rider's line on that side to prove the aim line
+// clear, so the aim is an OUTWARD waypoint and both the closing allowance and the convergence fade
+// are withdrawn. Read it alongside bit 9 (fade bypass) and bit 10 (transit): 9 and 23 are mutually
+// exclusive by construction, so a row with both set is a bug. New bit in the existing u32 - the log
+// record size does not change and no column is added.
+#define FM_LOG_GATE_AIM_OUTWARD        (1UL << 23)
 
 struct __attribute__((packed)) VescLogDataL4 {
     VescLogData base;              // the complete level-3 record, unchanged and first — do not reorder

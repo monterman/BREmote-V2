@@ -356,9 +356,20 @@ int main()
       assert(worst >= kPassLateral - 0.001f);   // every point of the aim line clears the line
     }
 
-    // PG-4: the escape test. Only ever true while the station is AHEAD.
+    // PG-4: the escape test. Only ever true while the station is STRICTLY AHEAD.
     assert(!fmAimOutwardNeeded(+45.0f, 0.0f, 0.0f, kPassLateral));          // rear station: never
     assert(!fmAimOutwardNeeded(  0.0f, 0.0f, 0.0f, kPassLateral));
+    // ABEAM IS NOT AHEAD, and that boundary is load-bearing. psi = 90 is the WAITING waypoint of the
+    // two-waypoint pass - the station level with the rider and pass_lateral to the side, which is
+    // where the buggy is sent BECAUSE it is not yet wide enough to go in front. If abeam counted as
+    // ahead, the manoeuvre that earns the pass would trip the escape that exists to abort it, and
+    // the G-4 engage seed (clamped to +/-90) could fire the escape on the very first tick.
+    assert(!fmAimOutwardNeeded(+90.0f, 0.0f, +13.7f, kPassLateral));
+    assert(!fmAimOutwardNeeded(-90.0f, 0.0f, -13.7f, kPassLateral));
+    assert(!fmStationIsFront(+90.0f) && !fmStationIsFront(-90.0f));
+    assert( fmStationIsFront(+90.1f) &&  fmStationIsFront(-90.1f));
+    // One degree past abeam it IS ahead, so the escape arms immediately.
+    assert( fmAimOutwardNeeded(+91.0f, 0.0f, +13.7f, kPassLateral));
     assert( fmAimOutwardNeeded(+135.0f, +2.0f, +13.0f, kPassLateral));      // rider turned into us
     assert( fmAimOutwardNeeded(+135.0f, -20.0f, +13.0f, kPassLateral));     // wrong side
     assert(!fmAimOutwardNeeded(+135.0f, +11.0f, +13.0f, kPassLateral));     // still lawfully wide

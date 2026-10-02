@@ -71,11 +71,21 @@ static inline float fmsWrap180(float a)
   return a;
 }
 
-// fmStationIsFront - is this a station AHEAD of the rider? The abeam line (|psi| == 90) counts as
-// ahead, so the pass-lateral floor PG-1 applies from abeam outward rather than just past it.
+// fmStationIsFront - is this station strictly AHEAD of the rider?
+//
+// STRICT, and the boundary matters. The abeam line (|psi| == 90) is the WAITING waypoint of the
+// two-waypoint pass: the station sits level with the rider and pass_lateral_m to the side, and the
+// buggy is sent out there precisely because it is NOT yet wide enough to go in front. So abeam is
+// not "ahead": PG-4's escape and the fade bypass must both read false there, or the manoeuvre that
+// gets the buggy wide would be mistaken for the pass it is a prerequisite for. The same strict test
+// is used by fmFadeBypass(), so the two can never disagree.
+//
+// PG-1's radius floor is deliberately NOT written in terms of this function - it applies from abeam
+// outward (a >= 90 inside fmStationRadiusM), because the abeam waypoint is exactly where the
+// station's own clearance has to be guaranteed.
 static inline bool fmStationIsFront(float psi_deg)
 {
-  return fabsf(psi_deg) >= 90.0f;
+  return fabsf(psi_deg) > 90.0f;
 }
 
 // fmFrontRadiusM - the radius of a FRONT station, in metres.

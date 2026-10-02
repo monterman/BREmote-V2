@@ -261,7 +261,7 @@ void sendData(void *parameter)
     uint32_t extra_delay = 0;
 
     // Feature A req#3 — suspend the backoff while an autonomous mode is active (FM armed or RTM
-    // active). CLAUDE.md §12.4 requires GPS meta-packets >=2Hz during active FM steering, and the
+    // active). The design requires GPS meta-packets >=2Hz during active FM steering, and the
     // every-5th-cycle GPS meta only stays at 2Hz while the cadence is a flat 100ms. Holding
     // base_interval at 100 and applying no jitter here preserves the >=2Hz meta floor (§12 rules
     // 1-4: the collision heuristic must never starve the FM/anti-spoofing data path).

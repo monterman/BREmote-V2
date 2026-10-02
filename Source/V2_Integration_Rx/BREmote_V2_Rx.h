@@ -1102,7 +1102,7 @@ unsigned long rx_tx_gps_timestamp = 0;    // millis() when last meta-packet rece
 // three. A uint32_t is a single naturally-aligned access on this core and cannot tear.
 //
 // volatile because the writer is the radio task and the reader is the loop task - the same
-// discipline CLAUDE.md documents for logging_active.
+// discipline this project documents for logging_active.
 volatile uint32_t rx_tx_gps_fix_seq = 0;   // one increment per distinct rider position
 
 // V2.5-Evo - 2026-04-25 - P7 RTM/FM runtime state (set by Radio.ino meta-packet handlers)

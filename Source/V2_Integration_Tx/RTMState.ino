@@ -1191,7 +1191,7 @@ static uint8_t fmNextStationInSet(uint8_t from, uint16_t mask)
 //      a long stall is exactly what the sample-gap guard in runMagGesture() exists to defend against,
 //      so an unclamped blocking delay at this call site actively feeds the bug Rex filed as H-1.
 // BLOCKING CALL - freezes GPS polling, FreeRTOS task scheduling and Serial1 reads for its duration
-// (CLAUDE.md section 13). It is bounded at 1.2 s, it is far shorter than the 2 s the toggle's own
+// (the blocking-call rule). It is bounded at 1.2 s, it is far shorter than the 2 s the toggle's own
 // station confirm already blocks for, and the throttle path is untouched by it: the throttle is read
 // in measBufCalc at priority 6 and the radio byte is built in sendData at priority 5, while loop() -
 // and therefore this delay - runs at priority 1 and cannot starve either of them.

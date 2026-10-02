@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-01 - M-3 FIX (the follow-up residual the ramp-placement audit left open, now water-critical by owner request): the throttle rate-limiter is RESET while the motor gate is shut. calcPWM() runs before the gate on every 10 ms pass, so through a link dropout - gate shut, no pulses leaving the board - the ramp kept winding its memory up toward the rider's last pre-dropout throttle byte, and a link that came back with the trigger still held stepped the motors straight to that value instead of easing in over motor_ramp_s. The same snapback a competitor's manual documents ("may jump to 100% if trigger still fully pressed"). FIX: calcPWM() mirrors the gate's own test and hands the ramp a target of 0 while it is shut, so the memory lands on 0 through the helper's existing instant-fall path - its only downward path - and the climb on recovery starts from 0, at motor_ramp_s whenever RTM and FM are inactive. No new state, no second timer (the gate's own failsafe_time already means a closure is never a micro glitch), nothing reaches inside OutputRampState, and Common/OutputRamp.h is not touched at all - so the separate ramp-OFF tracking fix inside the helper (rate 0 = track the target, no mid-session dip) is untouched: that one is about the RATE and lives in the helper, this one is about the GATE and lives in the caller. The gate line itself is unchanged, effective_thr and every cap are unchanged, and the terminal effective_thr == 0 clamp is still the last writer. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-28 - R-3 FIX, part 3 of 3 (see BREmote_V2_Rx.h and Radio.ino): the motor gate in generatePWM() tests last_control_packet instead of last_packet. last_packet is refreshed by the 0xF1 / 0xF2 / 0xF4 meta-packets too, and none of them carries a throttle byte, so after a dropout a meta-packet - most reachably the 30 s Follow-Me keepalive, which fires whenever FM is armed - could reopen this gate on the stale pre-dropout thr_received with the trigger released, and with the ramp already climbed back to it because calcPWM() runs before the gate. The gate now asks "do I have a fresh throttle command?" rather than "is the remote alive?". ONE token changed; everything else here is comment. last_packet and its four other readers are untouched. With a healthy 10 Hz link last_control_packet is refreshed every ~100 ms, so normal operation is byte-for-byte unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-25 - MANUAL PIVOT ASSIST, FLOOR CORRECTION (review findings P-7 / P-6): kPivotFloorQ8 128 -> 64 in BREmote_V2_Rx.h, because f = 1/2 is the exact reciprocal of the mixer's 2x gain into the outer motor at full lock and therefore cut nothing at full trigger. No code change in this file - the stale 0.50 literals are corrected to 0.25, the ramp-placement paragraph now quotes the real 75 % cut / 0.75 s recovery it would have cost as a pre-ramp cap, and the "byte-for-byte" claim at the mixer call is corrected to "within 8 ticks / 80 ms, monotonically and subtract-only" because the depth bleeds out rather than snapping to 0. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-25 - MANUAL PIVOT ASSIST. WHAT THE OWNER ASKED FOR: "should be natural but for when starting from [low] speed to pivot fast. There are many occasions where the buggy's nose is misaligned and you want to turn in the right direction before you take off." He already does it by hand - easing the trigger back to about half while holding the stick over tightens the turn, and at full throttle the arc is too wide - and steering_influence is already at its maximum 100, so no stored setting can reproduce it. WHAT THIS ADDS: calcPWM() multiplies the ramped throttle by a factor of 1.00 down to kPivotFloorQ8/256 (0.25 as shipped, which puts the outer motor at 126/255 at full trigger instead of the 254/255 an f of 0.50 would have left - see the min(2fT, 255) derivation in the header) while the buggy is slow AND the rider's stick is hard over, and feeds THAT to the differential mixer. SUBTRACT-ONLY BY CONSTRUCTION: the factor is never above 1.0, the result is taken only when it is strictly lower (`if (assisted < pivot_thr)`), and it is applied DOWNSTREAM of every cap and of the ramp, so pivot_thr <= ramped_thr <= effective_thr <= min(rtm_approach_cap, fm_throttle_cap) <= thr_received on every tick - the assist cannot raise a byte, lift a cap, or reach past the ramp's rise limit. MANUAL ONLY: gated off whenever rtm_rx_active || fm_rx_active, because the automatic modes have their own align pivot (fm_align_cap / fm_align_influence via align_mixer_influence_override) and the two must never fight; that machinery is not touched here. DIFF ONLY: gated on steering_type == 1, because the assist exists to change how the differential mixer splits the throttle - on the efoil and servo branches a throttle cut during a turn buys nothing, so they keep reading ramped_thr and their bytes are unchanged. NATURAL, NOT SWITCH-LIKE: two continuous blends (speed, stick deflection) multiply into a DEPTH, the depth is rate-limited to kPivotDepthRiseQ8 / kPivotDepthFallQ8 per tick so it walks rather than steps, and a Schmitt band (kPivotDepthArmQ8 to arm, 0 to release) stops it flickering at the edge of the window. PROVABLY INERT ABOVE THE WINDOW: depth 0 makes the factor exactly 256/256, and (thr * 256) >> 8 == thr for every byte, so fast riding and small stick angles produce the identical bytes they do today. Read 'inert' as WITHIN 80 ms, not on the same tick: the depth BLEEDS OUT over kPivotDepthFallQ8 (8 ticks), so crossing 5 km/h, straightening the stick, or RTM/FM taking over mid-pivot each reach bit-identical output within 80 ms rather than instantly - monotonically and subtract-only the whole way. The genuinely same-tick cases are a non-steering_type-1 board and any steady state outside the windows. SAFETY-NEUTRAL-1 is untouched and still last. All nine tuning numbers are compile-time kPivot* constants in BREmote_V2_Rx.h with their derivations: no confStruct field, so sizeof stays 200, SW_VERSION stays 36, and the owner's stored settings are NOT wiped by this flash.
@@ -41,6 +42,11 @@ void generatePWM(void *parameter) {
     // pre-dropout throttle with the trigger released. Note calcPWM() above runs BEFORE the gate, so
     // the ramp has already climbed back to that stale value by the time the gate opens - the motors
     // do not ease in, they are already there.
+    // V2.5-Evo - 2026-10-01 - M-3 FIX: that last sentence is no longer true. calcPWM() still runs
+    // first, but it now MIRRORS this exact test and feeds the throttle ramp a target of 0 whenever
+    // this gate is shut, so the ramp memory is at 0 when the gate reopens and the motors do ease
+    // in. The gate itself is unchanged - not one token of the line below moved. If this expression
+    // is ever edited, edit the mirror in calcPWM() in the same commit.
     // THE FIX: last_control_packet is stamped only by the control-packet branch, so this gate now
     // asks "do I have a FRESH THROTTLE COMMAND?" instead of "is the remote alive?". Those are two
     // different questions and this line was answering the wrong one. last_packet keeps its liveness
@@ -163,10 +169,76 @@ void calcPWM()
   // CAPS STILL BOUND THE OUTPUT: the ramp only approaches effective_thr from below, so
   // ramped_thr <= effective_thr <= rtm_approach_cap / fm_throttle_cap on every tick. A cap DROP is
   // instant, a cap RISE is slewed. Both ramps at 0 = off: the target passes straight through.
+  //
+  // V2.5-Evo - 2026-10-01 - M-3 FIX: THE RAMP IS RESET WHILE THE MOTOR GATE IS SHUT.
+  //
+  // WHAT WAS WRONG. calcPWM() runs BEFORE the motor gate in generatePWM() on every 10 ms pass, so
+  // during a link dropout - gate shut, no pulses leaving the board - this ramp kept on winding its
+  // memory UP toward the last throttle byte it had been given. thr_received has exactly one writer
+  // (the control-packet branch in Radio.ino) and nothing zeroes it on a failsafe, so the target it
+  // was climbing toward was the rider's pre-dropout command. When the link came back WITH THE
+  // TRIGGER STILL HELD, the memory was already at the top: the motors did not ease in over
+  // motor_ramp_s, they stepped straight to the commanded value. The soft-start the ramp exists to
+  // provide was defeated by exactly the event that needs it most. This is the vendor-documented
+  // snapback a competitor's manual warns about ("may jump to 100% if trigger still fully pressed"),
+  // so it is a real field failure mode and not a theoretical one. Pre-existing behaviour - it was
+  // ruled acceptable once (as the ramp-placement follow-up residual) and the owner has now asked
+  // for it closed before his next water session.
+  //
+  // THE FIX, AND WHY IT IS A TARGET AND NOT A POKE AT THE MEMORY. While the gate is shut the ramp
+  // is handed a target of 0 instead of effective_thr. The helper's fall branch is instant and is
+  // the ONLY downward path it has, so the memory lands on exactly 0 on the first shut tick and
+  // stays there for the rest of the dropout; on recovery the climb starts from 0, which is what a
+  // hand-back to the rider should feel like. Nothing reaches inside OutputRampState - the helper
+  // keeps its single-writer contract and its host test (Tools/tests/output_ramp_test.cpp) still
+  // describes it exactly.
+  //
+  // THIS IS NOT THE RAMP-OFF TRACKING PATH, AND THE TWO MUST NOT BE CONFLATED. The 2026-09-24
+  // merge kept a stale-state fix: with the ramp DISABLED (ramp_s <= 0.001) the helper's else-branch
+  // assigns the target every tick so the memory TRACKS it, and a ramp switched on mid-session
+  // therefore does not dip. That path is about the RATE being zero and it lives INSIDE the helper,
+  // where it decides the update RULE. This fix is about the GATE being shut and it lives OUT HERE,
+  // where it decides the TARGET. Two different conditions, two different places, neither touched by
+  // the other: with the gate OPEN the target is effective_thr byte-for-byte as before, so ramp-off
+  // tracking behaves identically to today; with the gate SHUT both branches of the helper converge
+  // on 0, which is the intended reset in either rate setting.
+  //
+  // NO EXTRA HYSTERESIS ON PURPOSE. The gate only shuts after usrConf.failsafe_time without a
+  // control packet (default 1000 ms, validated 100-10000), so by the time it shuts the motors have
+  // already been dead for that whole period - a gate closure is a significant event, never a micro
+  // glitch, and brief dropouts never shut it at all. A second timer here would be a second source
+  // of truth for one decision. (At the 100 ms floor the gate already flaps and already cuts pulses
+  // between packets on a 10 Hz link; this reset rides that same gate and adds no new flap case.)
+  //
+  // IT CANNOT FIRE WITH THE GATE OPEN - no mid-pull dip. The test below is the gate's own test, so
+  // the target is 0 only on ticks where generatePWM() emits no pulse. The two are read a few
+  // microseconds apart, and both orders of disagreement are safe: if this test sees the gate open
+  // and the gate then sees it shut, the ramp advanced but nothing was pulsed; if a control packet
+  // lands in between so that this test saw it shut and the gate sees it open, that tick pulses at
+  // the ramp's 0 (PWM minimum, the same place the first tick of any squeeze starts from) and the
+  // next tick climbs from 0 - the soft start, not a dip, and the motor had been dead for at least
+  // failsafe_time anyway. On a healthy 10 Hz link millis() - last_control_packet sits near 100 ms
+  // against a 1000 ms failsafe, so mid-pull the reset is simply unreachable.
+  //
+  // WHICH RAMP ON RECOVERY: motor_ramp_s, the slow manual one, whenever RTM and FM are inactive -
+  // the selector above keys on rtm_rx_active || fm_rx_active, and a dropout past failsafe_time is
+  // itself what stops both (RTM gate 7 raises rtm_rx_emergency_stop, FM fails eligibility with
+  // FM_STOP_LINK), so a recovery into manual control is a hand-back and gets the shoulder-friendly
+  // slew. That is deliberate and matches the standing rule that the fast auto_ramp_s never lands on
+  // the rider's own throttle.
+  //
+  // NOT TOUCHED: effective_thr, every cap above it, and the terminal effective_thr == 0 clamp,
+  // which is still the last writer of the stopped state. The only values that differ while the gate
+  // is shut are ones nobody acts on - PWM0_time / PWM1_time (not pulsed in that branch) and the
+  // g_motor0_cmd / g_motor1_cmd log observers and ?printpwm, which now read the minimum instead of a
+  // stale command, i.e. they report what the motors are actually being given: nothing.
   static OutputRampState motor_ramp = {0};
   const bool  auto_ramp_owner = (rtm_rx_active || fm_rx_active) && (usrConf.auto_ramp_s > 0.001f);
   const float ramp_s          = auto_ramp_owner ? usrConf.auto_ramp_s : usrConf.motor_ramp_s;
-  const uint8_t ramped_thr    = throttleRampStep(&motor_ramp, effective_thr, ramp_s, 100.0f);
+  // Mirror of the motor gate in generatePWM() - keep the two expressions identical if either moves.
+  const bool  motor_gate_open = (PWM_active && (millis() - last_control_packet) < usrConf.failsafe_time);
+  const uint8_t ramp_target   = motor_gate_open ? effective_thr : 0;
+  const uint8_t ramped_thr    = throttleRampStep(&motor_ramp, ramp_target, ramp_s, 100.0f);
 
   // -- MANUAL PIVOT ASSIST (kPivot* constants in BREmote_V2_Rx.h) -------------------------------
   // V2.5-Evo - 2026-09-25 - Slow buggy + hard-over stick = lower the throttle reaching the mixer,

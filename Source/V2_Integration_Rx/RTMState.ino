@@ -2541,6 +2541,24 @@ static uint8_t       fmStopReason()     { return fm_stop_reason; }
 static uint8_t       fmLastStopReason() { return fm_last_stop_reason; }
 static unsigned long fmLastStopMs()     { return fm_last_stop_ms; }
 
+// V2.5-Evo - 2026-10-02 - P2: the STATION facts for ?diag, so the bench protocol can be run with a
+// serial console and no log download at all - which is the difference between the owner being able
+// to check the pass geometry on the driveway and having to pull a file. Read-only, like every
+// accessor above; System.ino is concatenated after this file, so the statics are visible there.
+// fmStationRadiusNowM() is deliberately NOT called fmStationRadiusM(): that name belongs to the pure
+// six-argument function in Common/FollowMeStation.h, and a zero-argument overload of it would read
+// like the same thing while meaning something else.
+static float fmStationLiveDeg()     { return fm_station_live_deg; }
+static float fmStationTargetDeg()   { return fm_station_target_deg; }
+static float fmStationRadiusNowM()  { return fm_station_radius_m; }
+static float fmBuggyAlongNowM()     { return fm_buggy_along_m; }
+static float fmBuggyCrossNowM()     { return fm_buggy_cross_m; }
+static bool  fmStationFrameValid()  { return fm_frame_valid; }
+static bool  fmStationTransit()     { return fm_transit_active; }
+static bool  fmStationFrontAbort()  { return fm_front_aborted; }
+static bool  fmStationFadeBypass()  { return fm_fade_bypass; }
+static bool  fmStationAimOutward()  { return fm_aim_outward; }
+
 // V2.5-Evo - 2026-09-18 - P1-a/P1-c: the engagement facts ?diag prints on one line - the FM state,
 // whether the separation latch stands, whether the next engagement must clear the full D_engage,
 // and whether Follow-Me is currently yielding to an active Return-to-Me. Read-only, like the three
@@ -4121,12 +4139,22 @@ static void computeFmTarget(double* out_lat, double* out_lng)
     if (!fm_transit_active) {
       fm_transit_active           = true;
       fm_transit_start_course_deg = course;
-      Serial.printf("FM [RX] station transit START: F%u, psi %.0f -> %.0f deg at <= %.0f deg/s, "
-                    "radius %.1f -> %.1f m, front angle %.0f deg (effective %.0f), clearance %.1f m\n",
-                    (unsigned)m_eff, (double)fm_station_live_deg, (double)psi_target,
-                    (double)kFmStationRateDegPerS, (double)d_follow, (double)r_front,
-                    (double)phi, (double)phi_eff,
-                    (double)(r_front * sinf(phi_eff * BREMOTE_FMS_DEG2RAD)));
+      // RATE-LIMITED, because this edge can legitimately RECUR: when the PG-2 ceiling drops the
+      // station back to abeam and the live angle walks away from the target again, the station is
+      // genuinely in transit once more, so the flag has to re-arm - but the message does not need to.
+      // 1.5 s between repeats, the fm_heading_block_msg_ms pattern. The deep log carries the transit
+      // bit (10) on every tick regardless.
+      static const unsigned long kFmTransitMsgMs = 1500UL;
+      static unsigned long fm_transit_msg_ms = 0;
+      if (fm_transit_msg_ms == 0 || (st_now - fm_transit_msg_ms) >= kFmTransitMsgMs) {
+        fm_transit_msg_ms = st_now;
+        Serial.printf("FM [RX] station transit: F%u, psi %.0f -> %.0f deg at <= %.0f deg/s, "
+                      "radius %.1f -> %.1f m, front angle %.0f deg (effective %.0f), clearance %.1f m\n",
+                      (unsigned)m_eff, (double)fm_station_live_deg, (double)psi_target,
+                      (double)kFmStationRateDegPerS, (double)d_follow, (double)r_front,
+                      (double)phi, (double)phi_eff,
+                      (double)(r_front * sinf(phi_eff * BREMOTE_FMS_DEG2RAD)));
+      }
     }
   } else {
     fm_transit_active = false;
@@ -4197,8 +4225,15 @@ static void computeFmTarget(double* out_lat, double* out_lng)
     fm_target_profile = kProfOutward;
     const float lat_off = fmOutwardAimLateralM(fm_station_live_deg, fm_buggy_cross_m,
                                                pass_lateral, d_follow);
+    // Built in two legs from the rider's FILTERED position: along the course to the buggy's own
+    // along-track offset, then square out to lat_off. Both legs use a POSITIVE distance and flip the
+    // bearing by 180 instead, rather than handing projectPoint() a negative distance - the formula
+    // happens to be correct for a negative angular distance, but relying on that is the kind of
+    // thing that is true until someone edits projectPoint().
     double p_lat, p_lng;
-    projectPoint(fm_filt_lat, fm_filt_lng, course, fm_buggy_along_m, &p_lat, &p_lng);
+    projectPoint(fm_filt_lat, fm_filt_lng,
+                 (fm_buggy_along_m >= 0.0f) ? course : (course + 180.0f),
+                 fabsf(fm_buggy_along_m), &p_lat, &p_lng);
     projectPoint(p_lat, p_lng, course + ((lat_off >= 0.0f) ? 90.0f : -90.0f), fabsf(lat_off),
                  out_lat, out_lng);
     // RATE-LIMITED: this branch runs at 10 Hz for as long as the escape stands, and an unlimited
@@ -4234,6 +4269,11 @@ static void computeFmTarget(double* out_lat, double* out_lng)
   // switch would move the aim by a whole d_follow in one tick every time psi crossed abeam - in both
   // directions, including on the way home from a front station - and that step is exactly the
   // phantom-rate input the D term must never see.
+  // PG-3 IS UNAFFECTED BY IT, which is why it is pushed along the COURSE and not toward the rider:
+  // a displacement parallel to the rider's course line changes the aim's along-track offset and
+  // leaves its CROSS-TRACK offset exactly as it was, and cross-track offset is the only quantity
+  // PG-1/PG-2/PG-3 are about. The lookahead can therefore never bring the aim line closer to the
+  // rider's line.
   float look_m = 0.0f;
   const float a_live = fabsf(fm_station_live_deg);
   if (a_live > 90.0f && st_limit > 90.0f) {
@@ -6033,11 +6073,19 @@ static void runFmLoopBody(unsigned long now)
     //     back than we would like" from "not following".
     // The printed limit below is the one that was actually applied, not the old formula.
     // ==========================================================================================
+    // ONE TICK OF LAG, AND IT IS DELIBERATE. This block runs BEFORE can_be_active, so it reads the
+    // radius computeFmTarget() published on the PREVIOUS tick - the flag fm_frame_valid is cleared at
+    // the top of every tick and cannot be true here, so the test is "is there a published radius at
+    // all", i.e. > 0. At 15 deg/s a tick of lag is 1.5 deg of station angle, which is about 0.25 m of
+    // radius: far inside the metre-scale terms this ceiling is made of. fm_station_radius_m is zeroed
+    // by fmEnterIdle() and by the RTM yield, so a radius from a previous engagement can never be
+    // read; on the first ACTIVE tick it is 0 and the ceiling is exactly the old 2 x D_engage, which
+    // is moot because the engage grace parks this whole detector for kFmJudgeGraceMs anyway.
     float diverge_ceiling_m = kFmDivergeFactor * d_engage;
     {
       const float band_c = usrConf.followme_smoothing_band_m;
       const float geom_c = fm_station_radius_m + ((band_c > 0.0f) ? band_c : 0.0f);
-      if (fm_frame_valid && geom_c > diverge_ceiling_m) diverge_ceiling_m = geom_c;
+      if (fm_station_radius_m > 0.0f && geom_c > diverge_ceiling_m) diverge_ceiling_m = geom_c;
     }
     if (in_engage_grace || fm_pivoting || takeover_park) {
       // Ramping and/or aligning — not judgeable yet. Park the window so it starts fresh afterwards.

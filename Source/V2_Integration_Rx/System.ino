@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-02 - P2 (FRONT STATIONS F4/F5): two new ?diag lines so the whole pass geometry can be read off a serial console on the bench, with no log download. "FM station" is what the controller COMMANDED - the live station angle, where it is walking to, the radius, whether a transit is running and whether the front-station abort is latched. "FM pass" is what it MEASURED about the buggy (along-track offset, distance from the rider course line and which side) plus the two verdicts that follow from it: the GOVERNOR-2 fade bypass and the PG-4 outward escape. All read-only accessors added in RTMState.ino (System.ino is concatenated after it, so the file-scope statics are visible); nothing here is in the control path and no new ?command is added, so the quick-commands dropdown is unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-01 - M-2 FIX, part 4 of 4 (see BREmote_V2_Rx.h, PWM.ino, Logger.ino): the two serial instruments stop hiding the motor gate. (1) ?diag gained ONE line - "motor gate" - printing the gate's OPEN/CLOSED verdict, the age of the last CONTROL packet, the failsafe_time it is being measured against and PWM_active. ?diag is the owner's one-shot snapshot and had no link or gate field at all, while the BIND LED, ?printrssi and the deep log's link flag all read last_packet ("is the remote alive?") rather than last_control_packet ("do I have a fresh throttle command?") - so a gated-off motor read as connected with good RSSI. (2) ?printpwm appends "(GATED ...)" when the gate is shut, because calcPWM() computes PWM0_time / PWM1_time UNCONDITIONALLY and the gate wraps only generate_pulse(): the numbers can look live while nothing is leaving the board, which cost a half-day on 2026-09-29. The two numbers keep their exact positions and the line is not restructured - the marker is appended after them - so anything parsing ?printpwm still works. Both read the published observer g_motor_gate_open, NOT a fresh evaluation of the gate test, so there are still exactly two copies of that expression. Read-only, no control path, no new command (so no web-UI dropdown change), no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG level 5: ?diag's log_level line names level 5 "Everything" (it would have said "Deep"); ?logstat already derives level, record size and capacity from logResolveLevel() / logRecordSizeForLevel(), so it reports 109 B and the hours for level 5 with no change. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG: ?logstat now prints the log level in force, the record size, the log rate and the capacity that follows from them - computed from logRecordSizeForLevel() / log_interval_ms / SPIFFS.totalBytes() and the MIN_FREE_SPACE_KB reserve, never from a literal, so a record-size change (83 -> 87 B today) is reflected without touching this command. Print only. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -1347,6 +1348,29 @@ void cmdDiag(const String& params) {
                 fmReturnPending() ? "STANDING" : "none",
                 fmReturnVerdictText(),
                 fmReturnLastReasonText());
+  // V2.5-Evo - 2026-10-02 - P2: the STATION on two lines, so the whole pass geometry can be read off
+  // a serial console on the bench without downloading a log. Line 1 is what the controller COMMANDED
+  // (the live station angle, where it is walking to, the radius, and whether a transit or the
+  // front-station abort is standing); line 2 is what it MEASURED about the buggy, and the two
+  // geometry verdicts that follow from it - the fade bypass and the PG-4 outward escape. "station"
+  // is degrees around you: 0 = directly behind, positive = your right. "along" is positive when the
+  // buggy is AHEAD of you, "beside" is its distance from your course line. All read-only accessors.
+  Serial.printf("FM station : %.0f deg -> %.0f deg (0 = behind you, + = your right), radius %.1f m, "
+                "transit %s, front-abort %s\n",
+                (double)fmStationLiveDeg(), (double)fmStationTargetDeg(),
+                (double)fmStationRadiusNowM(),
+                fmStationTransit()    ? "YES" : "no",
+                fmStationFrontAbort() ? "LATCHED (F4/F5 read as F1/F3 until re-selected)" : "no");
+  if (fmStationFrameValid()) {
+    Serial.printf("FM pass    : buggy along %+.1f m, beside your line %.1f m (%s), fade bypass %s, "
+                  "outward escape %s\n",
+                  (double)fmBuggyAlongNowM(), (double)fabsf(fmBuggyCrossNowM()),
+                  fmBuggyCrossNowM() >= 0.0f ? "your right" : "your left",
+                  fmStationFadeBypass() ? "ON (passing beside you)" : "off",
+                  fmStationAimOutward() ? "STANDING (steering away from your line)" : "no");
+  } else {
+    Serial.println("FM pass    : no geometry this tick (Follow-Me not steering, or no trustworthy course)");
+  }
   // V2.5-Evo - 2026-09-19 - the stick during auto-steer on one line: the stored setting, whether
   // the rider's stick has taken over the steering right now (and for how long), whether the stick
   // has been read centred since the current run began - the guard that keeps a drifted remote

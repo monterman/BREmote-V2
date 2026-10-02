@@ -46,7 +46,7 @@
 //   ceremony, gates, rtm_arm_window_s untouched); (2) RTM armed and still inside the arm window (the blocking ceremony is waiting for
 //   the squeeze) -> the ceremony's own wait loops poll for the same gesture, CANCEL the arm (0xF1/0, TX -> IDLE) and set the
 //   auto-return override to the OPPOSITE of the value the buggy echoes in fm_flags bit 7 (last_fm_return_mode = !echo), Pattern 9,
-//   "Ar" (ON) / "AO" (OFF) for 2 s; (3) an override standing (either value) -> back to default (last_fm_return_mode = 0xFF), Pattern 10.
+//   "A1" (ON) / "A0" (OFF) for 2 s; (3) an override standing (either value) -> back to default (last_fm_return_mode = 0xFF), Pattern 10.
 //   last_fm_return_mode (RAM, 0xFF = none, like last_fm_mode) is encoded into bits 5-6 of EVERY 0xF2 the remote sends
 //   (fmEncodeModeByte(): cycleFmMode(), cycleFmModeArmed(), the 30 s keepalive, every 0xF2/0 disarm burst) and cleared on FM disarm
 //   and power-up; a flip while armed asks the keepalive to go out now (fmRequestKeepaliveNow()) instead of in 30 s.
@@ -494,7 +494,7 @@ static bool returnGestureCeremonyPoll(bool reset)
 // ceremonyCancelForReturnGesture - abort the RTM arm ceremony and flip the auto-return override.
 // Inputs: none (reads telemetry.fm_flags for the buggy's echo). Side effects: rtm_tx_state ->
 //   RTM_IDLE, rtm_thr_cap_tx 255, rtm_arm_gps_timeout_override 0, display cleared, 0xF1/0 queued;
-//   last_fm_return_mode set to the opposite of the echo; Pattern 9; a BLOCKING 2 s "Ar"/"AO" hold;
+//   last_fm_return_mode set to the opposite of the echo; Pattern 9; a BLOCKING 2 s "A1"/"A0" hold;
 //   the keepalive requested (if FM is armed). Called only from runDoubleSqueezeArm().
 static void ceremonyCancelForReturnGesture()
 {
@@ -513,8 +513,12 @@ static void ceremonyCancelForReturnGesture()
   Serial.printf("RETURN [TX] gesture during the RTM arm: arm cancelled (0xF1/0); auto-return override set %s for this session (buggy reported %s)\n",
                 last_fm_return_mode ? "ON" : "OFF", echo_on ? "ON" : "OFF");
   if (current_vib_pattern == 0) current_vib_pattern = 9;   // Pattern 9: four quick taps = override SET
-  // "Ar" = auto-return ON, "AO" = OFF (the 0 glyph is the O: the 3x5 font has no lowercase o).
-  DISP_LOCK(); displayDigits(LET_A, last_fm_return_mode ? LET_R : 0); updateDisplay(); DISP_UNLOCK();
+  // V2.5-Evo - 2026-10-01 - "A1" = auto-return ON, "A0" = OFF. Was "Ar"/"AO", which
+  // shared the r glyph with the MANUAL Return-To-Me readout ("r1"/"r0") and invited
+  // exactly the confusion the owner flagged: RTM is the manual recall, auto-return is
+  // the automatic one inside Follow-Me. One grammar now - letter = which feature,
+  // digit = its state - and no glyph shared between the two.
+  DISP_LOCK(); displayDigits(LET_A, last_fm_return_mode ? 1 : 0); updateDisplay(); DISP_UNLOCK();
   gpsKeepAliveDelay(2000);
   fmRequestKeepaliveNow();   // the 0xF1/0 burst drains first; the keepalive then carries bits 5-6
 }
@@ -1328,7 +1332,9 @@ void fmToggleRtmEnabledFromMagnet()
   }
 
   DISP_LOCK();
-  displayDigits(LET_R, now_on ? 1 : 0);                       // "R1" = on, "R0" = off
+  // V2.5-Evo - 2026-10-01 - lowercase r: uppercase R is F plus two pixels in this font, so "R0"
+  // was being read as a Follow-Me "F0". "r1" = on, "r0" = off.
+  displayDigits(LET_R_LC, now_on ? 1 : 0);                    // "r1" = on, "r0" = off
   updateDisplay();
   DISP_UNLOCK();
   gpsKeepAliveDelay(2000);

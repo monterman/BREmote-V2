@@ -964,9 +964,15 @@ String web_cfg_last_err = "";
 #define LET_N 31
 #define LET_S 32
 #define LET_M 33
+// V2.5-Evo - 2026-10-01 - LOWERCASE r for the two-character STATUS codes ("r1"/"r0",
+// "Ar"/"A0"). In this font uppercase R is F plus two bottom-right pixels, so "R0" reads as
+// "F0 with a small line" and was misread as a Follow-Me mode. LET_R (30) is UNCHANGED because
+// scrollFarStep() builds the word "FAR" from it. Any new glyph MUST also raise the index clamp
+// in displayDigits() - see Display.ino, where new entries once rendered silently BLANK.
+#define LET_R_LC 34
 
                     //0                 //1                 //2                 //3                 //4
-uint8_t num0[34][3]{ {0x1F, 0x11, 0x1F}, {0x00, 0x00, 0x1F}, {0x17, 0x15, 0x1D}, {0x11, 0x15, 0x1F}, {0x1C, 0x04, 0x1F},
+uint8_t num0[35][3]{ {0x1F, 0x11, 0x1F}, {0x00, 0x00, 0x1F}, {0x17, 0x15, 0x1D}, {0x11, 0x15, 0x1F}, {0x1C, 0x04, 0x1F},
                     //5                 //6                 //7                 //8                 //9
                     {0x1D, 0x15, 0x17}, {0x1F, 0x15, 0x17}, {0x10, 0x10, 0x1F}, {0x1F, 0x15, 0x1F}, {0x1D, 0x15, 0x1F},
                     //A                 //B                 //C                 //D                 //E                 //F
@@ -978,7 +984,9 @@ uint8_t num0[34][3]{ {0x1F, 0x11, 0x1F}, {0x00, 0x00, 0x1F}, {0x17, 0x15, 0x1D},
                     //Dash              //LOWER_CELSIUS     //TGT (>)           //TLT(<)
                     {0x04, 0x04, 0x04}, {0x08, 0x07, 0x05}, {0x11, 0x0A, 0x04}, {0x04, 0x0A, 0x11},
                     //R (30)              //N (31)              //S (32)              //M (33)
-                    {0x1F, 0x14, 0x13}, {0x1F, 0x10, 0x1F}, {0x1D, 0x15, 0x17}, {0x1F, 0x18, 0x1F}
+                    {0x1F, 0x14, 0x13}, {0x1F, 0x10, 0x1F}, {0x1D, 0x15, 0x17}, {0x1F, 0x18, 0x1F},
+                    //r lowercase (34) - half height, one arch; bit4=top .. bit0=bottom
+                    {0x07, 0x04, 0x04}
                     };
 
 uint8_t row_mapper[] = { 8,9,7,5,6,3,4,2,0,1 };

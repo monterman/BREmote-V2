@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-03 - (RX only, inside SERIAL_TEE_RING_SIZE - the TX does not include the serial capture ring, so none of this is compiled there) WiFi COMMAND CONSOLE: three routes (POST /api/cmd, GET /api/cmd/out, GET /api/cmd/list), a deferred runner called from webCfgLoop() so a command never executes inside the request that asked for it, and webCfgPumpWhileBlocked() so the four bounded blocking commands the console permits can answer HTTP from inside their own loops. The permitted set, the confirm requirement and the connection-dropping class are all read out of the RX's kCommands[] table through rxWebCommandInfo() / rxWebCommandListJson() - there is no second command list anywhere. The log-download route gains a 409 while a command is running, because the pump makes it reachable from inside one. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - (RX only, inside ENABLE_WEB_LOG_DOWNLOAD) the WiFi log download accepts and buffers the level-5 record (109 B, VescLogDataL5) - the record-size ceiling and the raw buffer are sizeof(VescLogDataL5) now, the largest record the RX writes; logCsvHeaderFor() / logFormatCsvRow() already select the level-5 columns by record_size. No TX impact, no confStruct change.
 // V2.5-Evo - 2026-09-17 - (RX only, inside ENABLE_WEB_LOG_DOWNLOAD) the WiFi log download picks the CSV column header by the file's own record_size as well as its level (logCsvHeaderFor in BREmote_V2_Rx.h), so 65 B level-4 files written before the Follow-Me audit block still download with exactly their 35 columns and new 83 B files get all 45. No TX impact, no confStruct change.
 #ifndef WEB_CONFIG_ENGINE_H
@@ -35,6 +36,20 @@ static bool web_cfg_should_shutdown = false;
 static uint8_t web_cfg_last_station_count = 0;
 static uint32_t web_cfg_ap_started_at_ms = 0;
 static String web_cfg_last_shutdown_reason = "";
+
+// V2.5-Evo - 2026-10-03 - RX WEB CONSOLE: the deferred command slot. Declared up here with the
+// rest of the service state because the log-download route, which is defined earlier in this file
+// than the console block, has to be able to refuse while a command is running.
+//
+// A fixed buffer, not a String: this is written from inside an HTTP handler and read from the loop
+// task, and a heap allocation is not worth risking at that moment. 520 B of .bss covers the
+// 512-character command cap executeSerialCommand() enforces, plus the NUL. Only compiled where the
+// capture ring exists, i.e. on the RX.
+#ifdef SERIAL_TEE_RING_SIZE
+static char          web_cmd_pending[520];
+static volatile bool web_cmd_queued  = false;   // a line is waiting to be run
+static volatile bool web_cmd_running = false;   // one is running right now - refuse a second
+#endif
 
 // ===== Helpers =====
 
@@ -633,6 +648,18 @@ static void webCfgHandleDownloadLog()
   if(!fname.startsWith("/")) fname = "/" + fname;
   webCfgLogReq("logs_download", fname);
 
+  // V2.5-Evo - 2026-10-03 - RX WEB CONSOLE. Refuse while a console command is running. This route
+  // is reachable through webCfgPumpWhileBlocked(), i.e. from INSIDE a 45 s calibration, and a
+  // multi-minute file stream started from in there is not something to discover afterwards.
+  // Outside a command this changes nothing - the flag is false.
+#ifdef SERIAL_TEE_RING_SIZE
+  if(web_cmd_running)
+  {
+    webCfgSendJson(409, "{\"ok\":0,\"err\":\"ERR_BUSY\",\"msg\":\"A command is running on the board. Wait for it to finish, then download.\"}");
+    return;
+  }
+#endif
+
   if(!SPIFFS.exists(fname))
   {
     webCfgSendJson(404, "{\"ok\":0,\"err\":\"Not Found\"}");
@@ -765,6 +792,305 @@ static void webCfgHandleDeleteAllLogs()
 }
 #endif
 
+// ==============================================================================================
+// WiFi COMMAND CONSOLE
+// ==============================================================================================
+// V2.5-Evo - 2026-10-03 - RX WEB CONSOLE. Three routes onto the capture ring that
+// ../Common/SerialTee.h already fills, plus the deferred runner and the service pump that make a
+// multi-second command survivable on a phone.
+//
+// GUARDED ON SERIAL_TEE_RING_SIZE so the TX, which does not include the tee, is completely
+// unaffected: the routes do not EXIST there rather than existing and failing.
+//
+// WHY THIS SHAPE, stated plainly because it is the part of the design that had to be argued:
+//
+//   1. THE SERVER IS POLLED FROM loop(). webCfgServer.handleClient() has exactly one ordinary
+//      call site - webCfgLoop(), called from loop() in V2_Integration_Rx.ino. Every command
+//      handler also runs on the loop task. So while a command runs, no HTTP request is serviced
+//      at all. On a single-core ESP32-C3 there is no second core to move the server to.
+//
+//   2. SO THE COMMAND IS NOT RUN INSIDE THE REQUEST. POST /api/cmd validates, whitelists,
+//      queues and REPLIES. webCfgLoop() runs the queued line afterwards, outside
+//      handleClient(). Two things fall out of that, both wanted: the reply is always sent BEFORE
+//      the command executes - which is the only way a command that kills its own transport
+//      (?reboot, ?wifistop) can honestly report success - and the command never executes nested
+//      inside the synchronous WebServer's request state, which it would clobber.
+//
+//   3. AND THE SERVER IS PUMPED FROM INSIDE THE LONG COMMANDS. webCfgPumpWhileBlocked() is
+//      called from the EXISTING periodic abort points of the four bounded blocking commands the
+//      console permits (?checkheading, ?magalign, ?compasscal, ?magtest). Each of those loops
+//      already has a vTaskDelay, so the pump runs tens of times a second and a half-second
+//      browser poll is answered throughout. Without it, tapping ?compasscal gives the owner a
+//      dead page for 45 seconds and none of the countdown he is meant to rotate the buggy to.
+//
+//   4. POLLING, NOT WebSocket or SSE. This is the synchronous WebServer, one client at a time,
+//      and a poll matches it. No second server, no async rewrite, no third-party library.
+//
+// ⚠️ ARCHITECTURE STATUS: points 2 and 3 are this implementation's answer and are NOT yet proven
+// on hardware - nothing here has been flashed. Both are deliberately confined: the pump is ONE
+// function with four one-line call sites, and the runner is ONE function called from one place in
+// webCfgLoop(). Replacing either, if prior art says something better, touches nothing else.
+#ifdef SERIAL_TEE_RING_SIZE
+
+// All four defined in the RX's System.ino / SystemCommon.h, which the sketch concatenates AFTER
+// this header. Arduino compiles the whole sketch as one translation unit, so these declarations
+// are what make the calls legal - the same pattern headingDisagreeLatched() uses.
+void executeSerialCommand(const String &line);
+bool rxWebCommandInfo(const String& bareName, bool& blocksLoop, bool& needsConfirm, bool& dropsConn);
+void rxWebCommandListJson(String& out);
+bool rxEngagedNow();
+static inline void requestSerialQuit();
+
+// ============================================================
+// webCfgPumpWhileBlocked - answer HTTP from inside a long command
+// ============================================================
+// What it does: services one round of web-server work. Called from the periodic abort points of
+//   the bounded blocking commands the console permits, so their output reaches the browser while
+//   they run instead of all at once at the end (or not at all, if the browser has given up).
+// Inputs/outputs: none.
+// Side effects: it is the web server, so it can dispatch any registered route. The guards below
+//   are what keep that from being a surprise:
+//     - does nothing unless the AP is actually up;
+//     - never re-enters itself (a handler reached THROUGH the pump cannot pump again);
+//     - POST /api/cmd refuses with 409 while web_cmd_running, so a command cannot be started
+//       from inside another one;
+//     - the log download refuses with 409 for the same reason - a multi-minute stream started
+//       from inside a calibration is not something to find out about later.
+//   It does NOT touch web_cfg_should_shutdown: an AP shutdown asked for mid-command is handled by
+//   the next ordinary webCfgLoop(), after the command has finished, which is the right order.
+void webCfgPumpWhileBlocked()
+{
+  static bool in_pump = false;
+  if (!web_cfg_ap_started) return;
+  if (in_pump) return;
+  in_pump = true;
+  webCfgServer.handleClient();
+  in_pump = false;
+}
+
+// JSON-escape a block of captured serial text. Control characters MUST be escaped or the browser
+// silently fails to parse the whole response - which presents as a dead console with no error
+// reported anywhere.
+static void webCfgAppendJsonEscaped(String &dst, const uint8_t *src, size_t n)
+{
+  for (size_t i = 0; i < n; i++) {
+    const char c = (char)src[i];
+    switch (c) {
+      case '"':  dst += "\\\""; break;
+      case '\\': dst += "\\\\"; break;
+      case '\n': dst += "\\n";  break;
+      case '\r': dst += "\\r";  break;
+      case '\t': dst += "\\t";  break;
+      default:
+        if ((uint8_t)c < 0x20 || (uint8_t)c == 0x7F) {
+          char esc[7];
+          snprintf(esc, sizeof(esc), "\\u%04X", (unsigned)(uint8_t)c);
+          dst += esc;
+        } else {
+          dst += c;
+        }
+    }
+  }
+}
+
+// GET /api/cmd/out?since=<cursor>   - the new bytes of the capture ring since <cursor>
+//
+// ⚠️ DELIBERATELY DOES NOT CALL webCfgLogReq(). Every other handler logs itself to Serial - but
+// Serial now feeds the ring this route is reading. Logging here would append a line per poll, the
+// next poll would return it, and at two polls a second the console would fill with a transcript
+// of itself and evict the boot log. This is the one route that must stay silent.
+static void webCfgHandleCmdOut()
+{
+  static uint8_t buf[1536];          // static: 1.5 KB does not belong on the loop task's stack
+
+  uint32_t cursor;
+  if (webCfgServer.hasArg("since")) {
+    cursor = (uint32_t)strtoul(webCfgServer.arg("since").c_str(), NULL, 10);
+  } else {
+    cursor = serialTeeTail();        // no cursor = start from the oldest byte still held
+  }
+
+  bool     gap = false;
+  uint32_t newCursor = cursor;
+  const size_t n = serialTeeRead(cursor, buf, sizeof(buf), newCursor, gap);
+
+  String out;
+  out.reserve(n * 2 + 128);          // worst case is escaping; one allocation beats many
+  out  = "{\"ok\":1,\"cursor\":";
+  out += String((unsigned long)newCursor);
+  out += ",\"head\":";
+  out += String((unsigned long)serialTeeHead());
+  out += ",\"gap\":";
+  out += gap ? "1" : "0";
+  out += ",\"busy\":";
+  out += (web_cmd_running || web_cmd_queued) ? "1" : "0";
+  out += ",\"data\":\"";
+  webCfgAppendJsonEscaped(out, buf, n);
+  out += "\"}";
+
+  webCfgSendJson(200, out);
+}
+
+// GET /api/cmd/list  - the permitted commands, straight out of kCommands[]
+// The page's dropdown is built from this, so the list it shows is the list the firmware will
+// actually accept. There is no copy of it in the HTML to drift.
+static void webCfgHandleCmdList()
+{
+  webCfgLogReq("cmd_list", "");
+  String out = "{\"ok\":1,\"cmds\":";
+  rxWebCommandListJson(out);
+  out += "}";
+  webCfgMarkOk();
+  webCfgSendJson(200, out);
+}
+
+// POST /api/cmd   args: cmd=<the command line>  [confirm=<bare name>]
+//
+// Whitelist, queue, reply. It does NOT run the command - see point 2 of the block comment above.
+static void webCfgHandleCmd()
+{
+  String cmd = webCfgServer.arg("cmd");
+  cmd.trim();
+
+  if (cmd.length() == 0) {
+    webCfgSendJson(400, "{\"ok\":0,\"err\":\"ERR_EMPTY\"}");
+    return;
+  }
+  if (cmd.length() > 512) {
+    webCfgSendJson(400, "{\"ok\":0,\"err\":\"ERR_TOO_LONG\",\"msg\":\"Command longer than 512 characters.\"}");
+    return;
+  }
+
+  // "quit" is NOT a command in the table - it is an interrupt aimed at a handler that is already
+  // running and holding the loop task. Dispatching it would do nothing; the flag is what the
+  // timed commands poll. It only reaches a running command because the four pumped commands
+  // service this route while they run; outside those it is harmless and does nothing.
+  if (cmd.equalsIgnoreCase("quit") || cmd.equalsIgnoreCase("?quit")) {
+    requestSerialQuit();
+    webCfgLogReq("cmd_quit", "");
+    webCfgSendJson(200, "{\"ok\":1,\"quit\":1}");
+    return;
+  }
+
+  // Reduce to the bare command name the table is keyed on: drop the '?', drop any argument,
+  // lower-case it. executeSerialCommand() does the same reduction for dispatch, and for the eight
+  // commands with case-sensitive arguments it preserves the ARGUMENT's case - which is why the
+  // full line is queued verbatim below and only this local copy is folded.
+  String bare = cmd;
+  if (bare.startsWith("?")) bare = bare.substring(1);
+  int sp = bare.indexOf(' ');
+  if (sp < 0) sp = bare.indexOf(':');
+  if (sp > 0) bare = bare.substring(0, sp);
+  bare.trim();
+  bare.toLowerCase();
+
+  bool blocksLoop = false, needsConfirm = false, dropsConn = false;
+  if (!rxWebCommandInfo(bare, blocksLoop, needsConfirm, dropsConn)) {
+    webCfgLogReq("cmd_refused", cmd);
+    webCfgMarkErr("ERR_NOT_PERMITTED");
+    webCfgSendJson(403,
+      "{\"ok\":0,\"err\":\"ERR_NOT_PERMITTED\",\"msg\":\"That command is not available over WiFi. "
+      "Either it is not a command at all, or it streams until stopped, or it would overwrite "
+      "something that cannot be undone from a phone. Run it over USB. The dropdown lists "
+      "everything this console will accept.\"}");
+    return;
+  }
+
+  // The firmware half of the two-step confirm. The page asks the owner twice, but a page is not a
+  // gate - anything can POST to this route - so the command is refused outright unless the
+  // request also carries confirm=<name>.
+  if (needsConfirm) {
+    String conf = webCfgServer.arg("confirm");
+    conf.trim();
+    conf.toLowerCase();
+    if (conf != bare) {
+      webCfgLogReq("cmd_needs_confirm", cmd);
+      webCfgSendJson(409,
+        "{\"ok\":0,\"err\":\"ERR_CONFIRM_REQUIRED\",\"msg\":\"This one overwrites the compass "
+        "mounting orientation and clears the heading-disagreement latch that is currently keeping "
+        "Follow-Me off an unverified compass. Confirm it deliberately.\"}");
+      return;
+    }
+  }
+
+  // THE SAFETY GATE, asked here only so the phone gets a readable answer.
+  //
+  // ⚠️ This is NOT the gate. The gate is rxRefuseIfEngaged(), inside executeSerialCommand(),
+  // immediately before the firmware's single kCommands[].handler call - the web path reaches it
+  // because it uses that same dispatcher and for no other reason. This pre-check exists because
+  // the reply here would otherwise say "queued" and the refusal would only appear as text
+  // scrolling past in the output pane, which on a beach reads as "nothing happened".
+  //
+  // Belt and braces on top of a structural guarantee: the AP is torn down the moment a throttle
+  // packet arrives from the remote (webCfgNotifyRxConnected(), Radio.ino), so a live console and
+  // a remote in control are already mutually exclusive. That is the stronger argument. This is
+  // the one that still holds if that ever changes.
+  if (blocksLoop && rxEngagedNow()) {
+    webCfgLogReq("cmd_refused_engaged", cmd);
+    webCfgMarkErr("ERR_ENGAGED");
+    webCfgSendJson(409,
+      "{\"ok\":0,\"err\":\"ERR_ENGAGED\",\"msg\":\"Return-to-Me or Follow-Me is engaged right now. "
+      "This command freezes the control loop while it runs, which stops every safety gate being "
+      "checked. Disarm on the remote first.\"}");
+    return;
+  }
+
+  // One at a time. The loop task runs the queue, so a second line arriving while one is running
+  // or waiting has nowhere to go - and silently dropping it would be worse than saying so.
+  if (web_cmd_running || web_cmd_queued) {
+    webCfgSendJson(409,
+      "{\"ok\":0,\"err\":\"ERR_BUSY\",\"msg\":\"A command is still running on the board. Wait for "
+      "it to finish - the output pane keeps updating while it does.\"}");
+    return;
+  }
+
+  // Queue the line VERBATIM (case intact), then reply. The reply goes out first for every
+  // command, not only the connection-dropping ones, because the alternative is a browser that
+  // waits out the whole command and reports a failure for something that worked.
+  strncpy(web_cmd_pending, cmd.c_str(), sizeof(web_cmd_pending) - 1);
+  web_cmd_pending[sizeof(web_cmd_pending) - 1] = '\0';
+  web_cmd_queued = true;
+
+  webCfgLogReq("cmd", cmd);
+  webCfgMarkOk();
+
+  String data = "{\"ok\":1,\"queued\":1,\"blocks\":";
+  data += blocksLoop ? "1" : "0";
+  data += ",\"drops\":";
+  data += dropsConn ? "1" : "0";
+  data += "}";
+  webCfgSendJson(200, data);
+
+  // For a command that takes the transport with it, make sure the reply is actually off the board
+  // before the runner gets to it. send() has handed the bytes to the stack; closing the socket
+  // here is what the dedicated /api/reboot route has always done for the same reason.
+  if (dropsConn) {
+    webCfgServer.client().stop();
+  }
+}
+
+// ============================================================
+// webCfgRunPendingCommand - run the queued line, outside the request that asked for it
+// ============================================================
+// Called from webCfgLoop(), immediately after handleClient() has fully returned. That placement
+// is the whole point: the command executes with the synchronous WebServer idle, so a pump from
+// inside the command is a fresh handleClient() and not a re-entry into a half-finished one.
+// Inputs/outputs: none. Side effects: whatever the command does, plus it clears the queue.
+static void webCfgRunPendingCommand()
+{
+  if (!web_cmd_queued || web_cmd_running) return;
+  web_cmd_queued  = false;
+  web_cmd_running = true;
+  // Copied onto the stack first: the command may run for 45 s and pump the server, and the next
+  // POST would otherwise be writing into the buffer being executed.
+  String line = String(web_cmd_pending);
+  web_cmd_pending[0] = '\0';
+  executeSerialCommand(line);
+  web_cmd_running = false;
+}
+
+#endif // SERIAL_TEE_RING_SIZE
+
 static void webCfgHandleNotFound()
 {
   webCfgLogReq("not_found", "");
@@ -807,7 +1133,15 @@ void webCfgInit()
   webCfgServer.on("/api/save", HTTP_POST, webCfgHandleSave);
   webCfgServer.on("/api/load", HTTP_POST, webCfgHandleLoad);
   webCfgServer.on("/api/reboot", HTTP_POST, webCfgHandleReboot);
-  
+
+  // V2.5-Evo - 2026-10-03 - RX WEB CONSOLE. Present only where the serial capture ring is, i.e.
+  // on the RX. The TX does not get these routes at all.
+#ifdef SERIAL_TEE_RING_SIZE
+  webCfgServer.on("/api/cmd",      HTTP_POST, webCfgHandleCmd);
+  webCfgServer.on("/api/cmd/out",  HTTP_GET,  webCfgHandleCmdOut);
+  webCfgServer.on("/api/cmd/list", HTTP_GET,  webCfgHandleCmdList);
+#endif
+
 #ifdef ENABLE_WEB_LOG_DOWNLOAD
   webCfgServer.on("/api/logs/list", HTTP_GET, webCfgHandleListLogs);
   webCfgServer.on("/api/logs/download", HTTP_GET, webCfgHandleDownloadLog);
@@ -831,6 +1165,15 @@ void webCfgLoop()
 {
   if(!web_cfg_ap_started) return;
   webCfgServer.handleClient();
+
+  // V2.5-Evo - 2026-10-03 - RX WEB CONSOLE. Run a console command here and nowhere else: this is
+  // the first point at which handleClient() has FULLY returned, so the command executes with the
+  // synchronous WebServer idle. That is what lets the long commands pump the server from inside
+  // their own loops without re-entering a half-finished request. See the block comment on
+  // webCfgRunPendingCommand().
+#ifdef SERIAL_TEE_RING_SIZE
+  webCfgRunPendingCommand();
+#endif
 
   const uint8_t stationCount = WiFi.softAPgetStationNum();
   if(stationCount > 0)

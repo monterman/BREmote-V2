@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-03 - RX WEB CONSOLE. (1) kCommands[] rows gain three declarations - web_ok, web_confirm, drops_connection - so the WiFi console is driven by THIS table and never by a second list; web_ok is DENY BY DEFAULT, so a command added later is unreachable from a browser until someone decides otherwise, and the complete reasoning for every permit and every refusal is written out immediately above kCommands[]. (2) checkSerial() is split: the parsing, case handling, table lookup and the blocks_loop rxRefuseIfEngaged() gate all move verbatim into executeSerialCommand(const String&), which the web route also calls - so the engaged-refusal cannot be enforced on one path and not the other. That function now holds the firmware's only call to kCommands[].handler. The USB path reads a line and calls it; nothing about USB behaviour changes. (3) New ?checkheading [s] - the NORTH CHECK: a BOUNDED compass-heading sample (default 5 s, max 30, 2 Hz print) that ends on its own and prints the circular mean, so the owner can confirm a calibration from a phone instead of counting LED flashes. ?compassheading is untouched and stays the unbounded USB tool. (4) New ?dump - prints the captured serial ring over USB, deliberately to the real port and not through the tee. (5) rxWebCommandInfo() / rxWebCommandListJson() read the table for the web layer. (6) One webCfgPumpWhileBlocked() call at ?magtest's EXISTING abort point. No control-path statement added, removed or reordered. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-01 - M-2 FIX, part 4 of 4 (see BREmote_V2_Rx.h, PWM.ino, Logger.ino): the two serial instruments stop hiding the motor gate. (1) ?diag gained ONE line - "motor gate" - printing the gate's OPEN/CLOSED verdict, the age of the last CONTROL packet, the failsafe_time it is being measured against and PWM_active. ?diag is the owner's one-shot snapshot and had no link or gate field at all, while the BIND LED, ?printrssi and the deep log's link flag all read last_packet ("is the remote alive?") rather than last_control_packet ("do I have a fresh throttle command?") - so a gated-off motor read as connected with good RSSI. (2) ?printpwm appends "(GATED ...)" when the gate is shut, because calcPWM() computes PWM0_time / PWM1_time UNCONDITIONALLY and the gate wraps only generate_pulse(): the numbers can look live while nothing is leaving the board, which cost a half-day on 2026-09-29. The two numbers keep their exact positions and the line is not restructured - the marker is appended after them - so anything parsing ?printpwm still works. Both read the published observer g_motor_gate_open, NOT a fresh evaluation of the gate test, so there are still exactly two copies of that expression. Read-only, no control path, no new command (so no web-UI dropdown change), no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG level 5: ?diag's log_level line names level 5 "Everything" (it would have said "Deep"); ?logstat already derives level, record size and capacity from logResolveLevel() / logRecordSizeForLevel(), so it reports 109 B and the hours for level 5 with no change. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG: ?logstat now prints the log level in force, the record size, the log rate and the capacity that follows from them - computed from logRecordSizeForLevel() / log_interval_ms / SPIFFS.totalBytes() and the MIN_FREE_SPACE_KB reserve, never from a literal, so a record-size change (83 -> 87 B today) is reflected without touching this command. Print only. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -396,6 +397,31 @@ struct SerialCommand {
   // `true` at the end of its kCommands row. Rows that leave it out are false (C++ value-
   // initialises the missing member), which is the right default for one-shot reads and setters.
   bool blocks_loop;
+
+  // ============================================================
+  // V2.5-Evo - 2026-10-03 - RX WEB CONSOLE. Three more per-command declarations, so the WiFi
+  // console is driven by THIS table and never by a second list kept somewhere else. A parallel
+  // list is how the "not while engaged" rule would end up enforced on one path and not the other.
+  // ============================================================
+  //
+  // web_ok = "the WiFi console may run this". DENY BY DEFAULT: a row that does not say `true`
+  // here is refused by POST /api/cmd, so a command added later is unreachable from a browser
+  // until someone looks at it and decides. That is the whole point of a whitelist - forgetting
+  // fails closed. The reasons for every refusal are written out above kCommands below.
+  bool web_ok;
+  //
+  // web_confirm = "the browser must send confirm=<name> as well as the command". For things that
+  // overwrite something the owner cannot easily get back, so a stray tap on a phone in a wet
+  // pocket cannot do it. Enforced in FIRMWARE, not only in the page, because a two-step confirm
+  // that lives purely in JavaScript is not a gate - it is a suggestion.
+  bool web_confirm;
+  //
+  // drops_connection = "running this takes away the transport the request arrived on". The reply
+  // is therefore sent BEFORE the command runs (see the deferred runner in WebConfigEngine.h), and
+  // the page warns first and then shows a finished state instead of a spinner that never resolves.
+  // These are PERMITTED, not excluded - ?reboot without a cable is one of the main reasons this
+  // console exists. The requirement is only that the console tells the truth about what happens.
+  bool drops_connection;
 };
 
 // ============================================================
@@ -611,6 +637,103 @@ void cmdPrintCompassHeading(const String& params) {
 }
 
 // ============================================================
+// cmdCheckHeading - the north check: a BOUNDED compass-heading sample
+// ============================================================
+// V2.5-Evo - 2026-10-03 - RX WEB CONSOLE. The confirmation instrument for the calibration
+// workflow, and the one command the console most needed.
+//
+// What it does:
+//   Prints the live compass heading at 2 Hz for a FIXED number of seconds (default 5, maximum 30)
+//   and then stops ON ITS OWN, printing the circular mean of everything it read. Point the nose of
+//   the buggy at magnetic north and this should come back near 0 deg; turn it a quarter circle and
+//   it should come back near 90. That is how the owner can tell a ?compasscal / ?magalign actually
+//   took, instead of counting flashes on a small LED on a wet buggy.
+//
+// Why it is a SEPARATE command from ?compassheading rather than an argument to it:
+//   ?compassheading streams until someone types 'quit' on the USB port. The console whitelist is
+//   keyed on the command NAME, so if ?compassheading were permitted, the UNBOUNDED form would be
+//   permitted with it - one missing argument and the console is holding the loop task forever with
+//   no reader. A distinct name is what makes "bounded" a property of the whitelist entry instead
+//   of a property of the arguments someone remembered to type. ?compassheading is unchanged and
+//   stays the USB tool.
+//
+// Print rate: 2 Hz, the same cadence ?compassheading already uses. It is a number a human reads
+//   while turning a buggy, so 2 Hz is more useful than 10 Hz and is a tenth of the capture-ring
+//   traffic. The SAMPLING is not throttled - every pass reads the sensor - so the mean is built
+//   from all the readings, not only the printed ones.
+//
+// Inputs:  params - seconds, optional. Blank or unparseable -> 5. Clamped to 1..30.
+// Outputs: one "Heading: N deg" line per 500 ms, then a summary line, on Serial.
+// Side effects: none. Reads the compass and prints; writes no config and no control state. It
+//   does hold the loop task for its whole duration, which is why its row is marked blocks_loop
+//   and why it is refused while Return-to-Me or Follow-Me is engaged.
+void cmdCheckHeading(const String& params) {
+  // Parse and clamp. 30 s is the ceiling because this blocks loop(): long enough to walk the
+  // buggy round a quarter turn and watch the number follow, short enough that a mistake is over
+  // before it matters.
+  long secs = params.length() ? params.toInt() : 0;
+  if (secs <= 0)  secs = 5;
+  if (secs > 30)  secs = 30;
+
+  Serial.printf("\n--- NORTH CHECK (?checkheading) - %ld s at 2 Hz ---\n", secs);
+  Serial.println("Point the NOSE of the buggy where you want to measure and hold it steady.");
+  Serial.println("Nose at magnetic north should read about 0 deg. It stops on its own.");
+
+  float    sum_sin = 0.0f, sum_cos = 0.0f;
+  uint32_t n = 0, bad = 0;
+  uint32_t t0 = millis();
+  uint32_t lastPrint = 0;
+
+  while (millis() - t0 < (uint32_t)secs * 1000UL) {
+    esp_task_wdt_reset();
+
+    // Same two exits every other timed command uses: a 'quit' (from the USB port or from the
+    // console) and the engagement abort. Read-only command, so there is nothing to unwind.
+    if (checkSerialQuit() || rxAbortIfEngaged("?checkheading")) break;
+
+    // Keep the WiFi console alive while this holds the loop task - otherwise the owner taps the
+    // button and watches a dead page for the whole sample. See webCfgPumpWhileBlocked().
+#ifdef WIFI_ENABLED
+    webCfgPumpWhileBlocked();
+#endif
+
+    const float h = getCompassHeading();
+    if (h < 0.0f) {
+      bad++;
+    } else {
+      // Circular mean, not a plain average: a plain average of 359 and 1 is 180, which is the
+      // exact opposite of the right answer.
+      sum_sin += sinf(h * (float)M_PI / 180.0f);
+      sum_cos += cosf(h * (float)M_PI / 180.0f);
+      n++;
+    }
+
+    if (millis() - lastPrint >= 500) {
+      lastPrint = millis();
+      if (h < 0.0f) Serial.println("Heading: -- (compass not detected or not calibrated)");
+      else          Serial.printf("Heading: %.1f deg\n", h);
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+
+  if (n == 0) {
+    Serial.printf("RESULT: no valid readings (%u failed reads). Compass not detected or not calibrated.\n",
+                  (unsigned)bad);
+    return;
+  }
+
+  float mean = atan2f(sum_sin / (float)n, sum_cos / (float)n) * (180.0f / (float)M_PI);
+  if (mean < 0.0f) mean += 360.0f;
+  Serial.printf("RESULT: average heading %.1f deg over %u readings (%u failed).\n",
+                mean, (unsigned)n, (unsigned)bad);
+  Serial.println("If the nose was on magnetic north, anything within a few degrees of 0 (or of 360)");
+  Serial.println("is a pass. A constant offset of about 90/180/270 means the mounting rotation is");
+  Serial.println("wrong - run ?magalign with the nose on north. Any other constant offset is the");
+  Serial.println("module not being square to the frame, which no calibration can remove.");
+}
+
+// ============================================================
 // cmdMagTest - Compass + Motor Current EMI Bench Test Logger
 // ============================================================
 //
@@ -692,6 +815,13 @@ void cmdMagTest(const String& params) {
     // been allowed to start on an idle bench. Nothing to tidy up - the command only reads the
     // compass and the VESC struct, and every mutex it takes is given back inside this iteration.
     if (checkSerialQuit() || rxAbortIfEngaged("?magtest")) break;
+
+    // V2.5-Evo - 2026-10-03 - RX WEB CONSOLE. Keep the WiFi console alive across this 120 s block.
+    // Placed at the EXISTING abort point, which is the pattern this file already uses for anything
+    // that has to happen periodically inside a blocking command.
+#ifdef WIFI_ENABLED
+    webCfgPumpWhileBlocked();
+#endif
 
     // Refresh raw magnetometer globals magX/magY/magZ from QMC5883L via I2C.
     // Result ignored — magnitude is computed below regardless; stale globals
@@ -1392,6 +1522,58 @@ void cmdDiag(const String& params) {
 //   g_diag_gps_sent_per_s  - a derived rate; getGPSLoop() refreshes it within one second.
 //
 // Inputs: params - unused. Outputs: confirmation on Serial. Side effects: as described above.
+// ============================================================================================
+// ?dump - print the captured serial ring back out over USB
+// ============================================================================================
+// V2.5-Evo - 2026-10-03 - RX WEB CONSOLE. The capture layer, provable over USB with no WiFi
+// involved at all. Boot the board with nothing attached, plug in afterwards, run ?dump, and the
+// boot log that used to be lost - compass detection, GPS init, dynModel, the mounting-angle
+// warning - is there. It is also the bench gate for the whole feature: if ?dump does not return
+// the boot log over a cable, nothing the web console shows can be trusted either.
+//
+// PRINTS TO gRealSerial, NOT Serial. Every other command in this file prints through the tee, on
+// purpose. This one must not: its own output would be appended to the ring it is reading, so the
+// buffer would carry a copy of itself and roughly double on every call. This is the one place in
+// the firmware where writing to the real port directly is the correct thing to do.
+//
+// Which is also why ?dump is NOT on the web whitelist: its output never enters the ring, so over
+// WiFi it would appear to do nothing at all. The console pane already shows the same ring.
+//
+// Inputs: params - unused. Outputs: the ring contents on the physical USB port.
+// Side effects: none. It reads the ring and prints; it does not consume or clear it.
+void cmdDump(const String& params)
+{
+  static uint8_t buf[512];
+
+  const uint32_t head = serialTeeHead();
+  uint32_t cursor     = serialTeeTail();
+  bool     gap        = false;
+
+  gRealSerial.println();
+  gRealSerial.println("----- CAPTURED SERIAL RING -----");
+  gRealSerial.printf("captured %lu bytes total; ring holds the last %u; showing %lu\n",
+                     (unsigned long)head, (unsigned)SERIAL_TEE_RING_SIZE,
+                     (unsigned long)(head - cursor));
+  if (head > SERIAL_TEE_RING_SIZE) {
+    gRealSerial.println("NOTE: the ring has wrapped - the OLDEST output has been dropped.");
+  }
+  gRealSerial.println("--------------------------------");
+
+  // Drained in chunks so a full 8 KB dump never needs a second 8 KB buffer, and so the ring
+  // mutex is released between chunks rather than held across the whole (slow) USB write.
+  size_t n;
+  while ((n = serialTeeRead(cursor, buf, sizeof(buf), cursor, gap)) > 0) {
+    gRealSerial.write(buf, n);
+  }
+
+  gRealSerial.println();
+  gRealSerial.println("----- END OF RING -----");
+  if (gap) {
+    gRealSerial.println("WARNING: output was dropped while this dump was running.");
+  }
+  gRealSerial.printf("capture is %s\n", gTeeCaptureEnabled ? "ON" : "OFF");
+}
+
 void cmdDiagZ(const String& params) {
   g_diag_gps_bytes       = 0;
   g_diag_gps_sentences   = 0;
@@ -1420,18 +1602,83 @@ void cmdDiagZ(const String& params) {
 
 void cmdHelp(const String& params);
 
+// ============================================================================================
+// V2.5-Evo - 2026-10-03 - RX WEB CONSOLE: WHY EACH COMMAND IS OR IS NOT ON THE WiFi WHITELIST
+// ============================================================================================
+// The `web_ok` flag on a row below is the ONLY thing that makes a command reachable from a
+// browser. It is deny-by-default, so this list is the complete record of what was decided and
+// why. Read it before adding `true` to a new row.
+//
+// PERMITTED - one-shot reads and setters that return and are over:
+//   ?conf ?get ?set ?keys ?save ?applyconf ?printgps ?diag ?diagz ?logstat ?list ?lograte
+//   ?start ?stop ?deletelog ?wifistate ?wifierr ?wifiver ?wifidbg ?wifips and bare ? (help).
+//   None of these holds loop() for a meaningful time. ?set / ?save / ?applyconf / ?deletelog do
+//   exactly what the page's own /api/set, /api/save, /api/load and /api/logs/delete routes
+//   already do, so they add no capability that WiFi did not already have.
+//
+// PERMITTED - bounded blockers. They hold loop() but they END ON THEIR OWN, so the console comes
+// back without a cable:
+//   ?checkheading (<=30 s) ?magalign (5 s) ?compasscal (45 s) ?magtest (120 s) ?i2c (<=2.5 s)
+//   ?gpscfg (~4.5 s) ?gpsbaud (~6 s).
+//   ?checkheading, ?magalign, ?compasscal and ?magtest also pump the web server from inside
+//   their own loops, so their output arrives WHILE they run. ?i2c, ?gpscfg and ?gpsbaud do not -
+//   the console simply pauses for their few seconds and then catches up.
+//   ?compasscal and ?magalign additionally require a confirm (web_confirm) because each
+//   overwrites the compass mounting orientation and clears the heading-disagreement latch that
+//   is currently keeping Follow-Me off an unverified compass. A stray tap must not do that.
+//
+// PERMITTED but they take the console with them (drops_connection):
+//   ?reboot - restarts the chip, so the access point goes away. Wanted deliberately: rebooting
+//     without a cable is one of the reasons this console exists.
+//   ?wifistop - raises the "stop the AP" flag that the NEXT pass of webCfgLoop() acts on.
+//   Both get their HTTP reply BEFORE they run, and the page warns first.
+//
+// REFUSED - unbounded streams. Every one of these loops until someone types 'quit'. A few of
+// them would now be stoppable from the page, because the three pumped commands proved the
+// request can arrive, but a stream with no hard end can fill the 8 KB capture ring in seconds
+// and the ring is where the calibration transcript lives. That transcript is the whole feature.
+// Run them over USB:
+//   ?printpwm ?printrssi ?printreceived ?printtasks ?printbat ?printcompass ?compassheading
+//   ?gpsdiag ?vescping ?vescraw.
+//   ?compassheading in particular has a bounded replacement built for the console:
+//   ?checkheading, which samples for a fixed few seconds and prints the average.
+//
+// REFUSED - loops that never call checkSerialQuit() at all, because they parse their own USB
+// input. Nothing a browser sends can ever end them:
+//   ?testbg ?testpercent.
+//
+// REFUSED - they would destroy the thing the console is for, or cannot be undone:
+//   ?download - streams a whole log file through Serial (minutes, megabytes) and would evict the
+//     entire capture ring. /api/logs/download streams to the browser and never touches the ring.
+//   ?deleteallogs - erases every stored log; /api/logs/delete_all already exists, behind the
+//     page's own confirm.
+//   ?setconf ?setbc - Base64 blobs with case-sensitive payloads. /api/config/import is the
+//     checked path for this and runs the same validation; a truncated paste here is a lost
+//     config, and a config has already been lost once this week.
+//   ?clearconf ?clearbc - delete the stored config / battery calibration outright.
+//   ?gpssetup - one indivisible ~20 s sequence that writes the GPS module's own NVM and has no
+//     abort point by design; stopped part-way it leaves the module worse than before.
+//   ?wifiupd - rewrites ~50 KB of web UI into SPIFFS, non-abortable, and the file it rewrites is
+//     the page being used to ask for it.
+//   ?wifi - would call webCfgServer.stop() from inside that server's own request handler, then
+//     try to reply on it, and leave no way back in over WiFi. ?wifistop is the safe equivalent
+//     and IS permitted.
+//   ?dump - prints to the physical UART only, deliberately (its output must not re-enter the
+//     ring it is reading), so over WiFi it would appear to do nothing. The console pane already
+//     shows that same ring.
+// ============================================================================================
 static const SerialCommand kCommands[] = {
-  {"conf", "print current config", cmdConf},
+  {"conf", "print current config", cmdConf, false, true},
   {"setconf", "<data> write Base64 config to SPIFFS", cmdSetConf},
   {"setbc", "<data> write Base64 battery cal to SPIFFS", cmdSetBC},
-  {"set", "<key> <value> set config value", cmdSet},
-  {"get", "<key> get config value", cmdGet},
-  {"keys", "list all config keys", cmdKeys},
-  {"applyconf", "reload config from SPIFFS", cmdApplyConf},
-  {"save", "save config to SPIFFS", cmdSave},
+  {"set", "<key> <value> set config value", cmdSet, false, true},
+  {"get", "<key> get config value", cmdGet, false, true},
+  {"keys", "list all config keys", cmdKeys, false, true},
+  {"applyconf", "reload config from SPIFFS", cmdApplyConf, false, true},
+  {"save", "save config to SPIFFS", cmdSave, false, true},
   {"clearconf", "delete config from SPIFFS", cmdClearConf},
   {"clearbc", "delete battery cal from SPIFFS", cmdClearBC},
-  {"reboot", "reboot the device", cmdReboot},
+  {"reboot", "reboot the device", cmdReboot, false, true, false, true},
   // The trailing `true` on the rows below is blocks_loop: these five stream until you type
   // 'quit', so they hold loop() indefinitely — strictly worse for the safety gates than the
   // fixed-duration bench tests. ?printgps is a one-shot print and stays runnable at any time.
@@ -1439,36 +1686,36 @@ static const SerialCommand kCommands[] = {
   {"printrssi", "print RSSI/SNR", cmdPrintRSSI, true},
   {"printreceived", "print received throttle/steering", cmdPrintReceived, true},
   {"printtasks", "print task stack usage", cmdPrintTasks, true},
-  {"printgps", "print GPS info", cmdPrintGPS},
+  {"printgps", "print GPS info", cmdPrintGPS, false, true},
   {"printbat", "print battery voltage", cmdPrintBat, true},
   // ?testbg and ?testpercent loop with no delay at all until 'quit', and ?testbg also writes
   // the telemetry fields by hand — neither belongs anywhere near an active engagement.
   {"testbg", "test background telemetry", cmdTestBG, true},
   {"testpercent", "test percentage calculation", cmdTestPercent, true},
   {"wifi", "[on|off] WiFi/AP config service", cmdWifi},
-  {"wifidbg", "[some|full|off] get/set wifi debug mode", cmdWifiDbg},
-  {"wifips", "[<ms>|off] get/set AP startup timeout", cmdWifiPs},
-  {"wifistop", "notify RX connected, stop AP", cmdWifiStop},
-  {"wifiver", "print web UI version info", cmdWifiVer},
+  {"wifidbg", "[some|full|off] get/set wifi debug mode", cmdWifiDbg, false, true},
+  {"wifips", "[<ms>|off] get/set AP startup timeout", cmdWifiPs, false, true},
+  {"wifistop", "notify RX connected, stop AP", cmdWifiStop, false, true, false, true},
+  {"wifiver", "print web UI version info", cmdWifiVer, false, true},
   // ?wifiupd rewrites the whole ~50 kB embedded web UI into SPIFFS and then reads it all back
   // to hash-verify it — a second or more of blocked loop, and pure maintenance work.
   {"wifiupd", "force web UI update to SPIFFS", cmdWifiUpd, true},
-  {"wifistate", "wifi config state/counters", cmdWifiState},
-  {"wifierr", "last wifi config error", cmdWifiErr},
+  {"wifistate", "wifi config state/counters", cmdWifiState, false, true},
+  {"wifierr", "last wifi config error", cmdWifiErr, false, true},
   
   // --- Logger Commands ---
-  {"start", "start data logging", cmdStartLog},
-  {"stop", "stop data logging", cmdStopLog},
-  {"list", "list saved log files", cmdListLogs},
+  {"start", "start data logging", cmdStartLog, false, true},
+  {"stop", "stop data logging", cmdStopLog, false, true},
+  {"list", "list saved log files", cmdListLogs, false, true},
   // ?download prints an entire log file over the serial port: minutes of blocked loop on a big
   // file (a 350 kB file took ~3 min). ?deleteallogs erases every stored log, so its duration
   // grows with how many there are. ?start / ?stop / ?list / ?lograte / ?logstat stay runnable —
   // starting or stopping a log mid-session is a normal thing to want to do.
   {"download", "<filename> download log as CSV", cmdDownloadLog, true},
-  {"deletelog", "<filename> delete specific log file", cmdDeleteLog},
+  {"deletelog", "<filename> delete specific log file", cmdDeleteLog, false, true},
   {"deleteallogs", "delete all log files (skips active log)", cmdDeleteAllLogs, true},
-  {"lograte", "<Hz> set log rate (e.g. 1 or 0.1)", cmdLogRate},
-  {"logstat", "dump logger + GPS state (diagnose why logging fails)", cmdLogStat},
+  {"lograte", "<Hz> set log rate (e.g. 1 or 0.1)", cmdLogRate, false, true},
+  {"logstat", "dump logger + GPS state (diagnose why logging fails)", cmdLogStat, false, true},
   
   // --- Hardware Diagnostics ---
   // V2.5-Evo - 2026-08-16 - ?i2c belongs in the blocks_loop set after all. It reads like a
@@ -1476,35 +1723,46 @@ static const SerialCommand kCommands[] = {
   // initCompass() sets Wire.setTimeOut(20) - so a stalled or held bus costs up to ~2.5 s of
   // frozen loop, plus 126 mutex acquisitions contending with the generatePWM task's AW9523
   // enable-swap writes. That is the same class as ?gpscfg (~4.5 s), which was already gated.
-  {"i2c", "scan I2C bus for compass", cmdScanI2C, true},
+  {"i2c", "scan I2C bus for compass", cmdScanI2C, true, true},
   {"gpsdiag", "2Hz GPS feed + RTM COG-valid breakdown (diagnose why GPS COG heading never engages)", cmdGpsDiag, true},
   // V2.5-Evo - 2026-07-28 - reads dynModel + GSV state back OUT of the module. configureGPS()
   // never checks a UBX ACK, so until now "sent" and "applied" were indistinguishable.
   // blocks_loop: each ubxPoll() waits up to 1500 ms for a reply and this makes up to three of
   // them, so a silent module costs ~4.5 s of frozen loop.
-  {"gpscfg", "read back live GPS config (dynModel, GSV filter) - verifies configureGPS() actually took; now reads M9/M10 via CFG-VALGET too", cmdGpsCfg, true},
+  {"gpscfg", "read back live GPS config (dynModel, GSV filter) - verifies configureGPS() actually took; now reads M9/M10 via CFG-VALGET too", cmdGpsCfg, true, true},
   // V2.5-Evo - 2026-07-30 - RX port of the TX GPS work. Listen-only scan: never transmits at
   // an unconfirmed baud, which is what disabled the TX's GPS receiver on 2026-07-30.
-  {"gpsbaud", "listen-only baud scan + UBX-alive check (spots the u-blox UART-RX-disable state) - ~6s block, bench only", cmdGpsBaud, true},
+  {"gpsbaud", "listen-only baud scan + UBX-alive check (spots the u-blox UART-RX-disable state) - ~6s block, bench only", cmdGpsBaud, true, true},
   // One-time full setup, saved into the MODULE's own memory (not usrConf - a confStruct change
   // would bump SW_VERSION and wipe RX SPIFFS config, compass cal and logs).
   {"gpssetup", "ONE-TIME full GPS setup: find, configure ACK-verified, save permanently, verify - ~20s, bench only", cmdGpsSetup, true},
-  {"diag", "one-shot snapshot: GPS bytes/sentences, fix age, COG updates vs value-changes, mux errors, VESC poll rate, loop min/mean/max (safe during RTM/FM)", cmdDiag},
-  {"diagz", "zero the ?diag counters so a run can be bracketed", cmdDiagZ},
+  {"diag", "one-shot snapshot: GPS bytes/sentences, fix age, COG updates vs value-changes, mux errors, VESC poll rate, loop min/mean/max (safe during RTM/FM)", cmdDiag, false, true},
+  {"diagz", "zero the ?diag counters so a run can be bracketed", cmdDiagZ, false, true},
+  // V2.5-Evo - 2026-10-03 - RX WEB CONSOLE. NOT web_ok: ?dump writes to the physical USB port on
+  // purpose (its output must not re-enter the ring it is reading), so from a browser it would
+  // look like a command that does nothing. NOT blocks_loop either: a bounded copy of at most
+  // 8 KB out of RAM is not a stream, and refusing it while engaged would withhold exactly the
+  // record the owner wants after something has gone wrong.
+  {"dump", "print the captured serial ring over USB (boot log included)", cmdDump},
   // Every row below is blocks_loop: ?printcompass and ?compassheading stream until 'quit',
   // ?compasscal runs 45 s, ?magalign samples for 5 s, ?magtest 120 s, ?vescping 30 s, and
   // ?vescraw 30 s while also pointing the UART mux away from the GPS. ?compasscal is ALSO
   // reachable from the runtime BIND button — that path is gated in checkButtons() with the
   // same rxRefuseIfEngaged() call, so the serial and button routes cannot disagree.
   {"printcompass", "print raw compass X/Y/Z", cmdPrintCompass, true},
-  {"compasscal", "start 45s automated calibration", cmdCompassCal, true},
-  {"magalign", "set compass mounting orientation: point the nose NORTH, then run this", cmdMagAlign, true},
+  {"compasscal", "start 45s automated calibration", cmdCompassCal, true, true, true},
+  {"magalign", "set compass mounting orientation: point the nose NORTH, then run this", cmdMagAlign, true, true, true},
   {"compassheading", "print live compass heading in degrees", cmdPrintCompassHeading, true},
-  {"magtest", "120s compass-vs-motor-current EMI test + VERDICT. BUCKET/DOCK TEST - the motor MUST be loaded; a free-spinning run reads clean on a compass that is 100 deg out", cmdMagTest, true},
+  // V2.5-Evo - 2026-10-03 - RX WEB CONSOLE. The bounded twin of ?compassheading, and the reason
+  // the console is worth having: point the nose at north, tap this, read a number. blocks_loop
+  // (up to 30 s) but it ends on its own and it pumps the web server while it runs, so the
+  // readings arrive live. web_ok precisely BECAUSE it is bounded - see the whitelist note above.
+  {"checkheading", "[s] NORTH CHECK: sample the compass heading for s seconds (default 5, max 30), print the average, stop on its own", cmdCheckHeading, true, true},
+  {"magtest", "120s compass-vs-motor-current EMI test + VERDICT. BUCKET/DOCK TEST - the motor MUST be loaded; a free-spinning run reads clean on a compass that is 100 deg out", cmdMagTest, true, true},
   {"vescping", "stream VESC fields + UART packet age (2Hz, up to 30s; verify VESC UART)", cmdVescPing, true},
   {"vescraw", "raw VESC UART byte dump (sends GET_VALUES, prints any bytes received as hex)", cmdVescRaw, true},
 
-  {"", "show this help", cmdHelp},
+  {"", "show this help", cmdHelp, false, true},
 };
 
 static const size_t kCommandCount = sizeof(kCommands) / sizeof(kCommands[0]);
@@ -1522,24 +1780,43 @@ void cmdHelp(const String& params) {
   }
 }
 
-void checkSerial()
+// ============================================================================================
+// executeSerialCommand - parse and dispatch ONE command line, whatever delivered it
+// ============================================================================================
+// V2.5-Evo - 2026-10-03 - RX WEB CONSOLE. Split out of checkSerial(), which used to read a line
+// from the USB port and dispatch it in the same function. Nothing about the parsing, the case
+// handling, the table lookup or the blocks_loop safety gate changed - this is a pure refactor and
+// the USB path must behave identically.
+//
+// THE ONLY REASON IT EXISTS: so the WiFi console reaches the SAME dispatcher instead of growing a
+// parallel copy that drifts out of step. This function holds the only call to
+// kCommands[].handler in the firmware, and that is what makes the "not while engaged" refusal
+// impossible to enforce on one path and not the other. If a second call to .handler ever appears
+// anywhere, that property is gone and the gate has to be re-proved.
+//
+// The 512-byte cap lives HERE rather than in the reader, so it protects every caller. A web
+// client is not more trustworthy than a USB one.
+void executeSerialCommand(const String &line)
 {
-  // Check if data is available on the serial port
-  if (Serial.available() > 0) {
-    
-    String command = Serial.readStringUntil('\n');
-    // Read input until newline
+  String command = line;
 
-    // SECURITY FIX: Limit command length to prevent heap exhaustion
-    if (command.length() > 512) {
-      Serial.println("ERROR: Command too long (max 512 chars)");
-      return;
-    }
+  // SECURITY FIX: Limit command length to prevent heap exhaustion
+  if (command.length() > 512) {
+    Serial.println("ERROR: Command too long (max 512 chars)");
+    return;
+  }
 
-    // Trim leading and trailing spaces
-    command.trim();
-    // Process the command
-    if (command.startsWith("?") || command.startsWith("?")) {
+  // Trim leading and trailing spaces
+  command.trim();
+
+  // A quit that arrived with nothing running must not sit latched and kill the next timed
+  // command as it starts. Whatever was looping has already had its chance to consume it.
+  clearSerialQuitRequest();
+
+  // Process the command
+  // V2.5-Evo - 2026-10-03 - the test used to read `startsWith("?") || startsWith("?")`. Both
+  // operands were byte-identical ASCII 0x3F, so the second was dead code. Collapsed.
+  if (command.startsWith("?")) {
       // Find parameter separator - support both ":" and whitespace
       int separatorPos = -1;
       String params = "";
@@ -1633,11 +1910,107 @@ void checkSerial()
       if (!found) {
         Serial.println("Unknown command. Type '?' for help.");
       }
-    }
-    else {
-      Serial.println("Unknown command. Type '?' for help.");
-    }
   }
+  else {
+    Serial.println("Unknown command. Type '?' for help.");
+  }
+}
+
+// The USB reader. Everything it used to do beyond reading a line now lives in
+// executeSerialCommand() above.
+void checkSerial()
+{
+  // Check if data is available on the serial port
+  if (Serial.available() > 0) {
+    // Read input until newline
+    String command = Serial.readStringUntil('\n');
+    executeSerialCommand(command);
+  }
+}
+
+// ============================================================================================
+// THE WiFi CONSOLE's VIEW OF kCommands[] - one source, no second list
+// ============================================================================================
+// V2.5-Evo - 2026-10-03 - RX WEB CONSOLE. Everything the browser is told about commands comes
+// through these three functions, and they read kCommands[] directly. There is no second table to
+// fall out of step with the first: add a row with web_ok and it appears in the dropdown; leave
+// web_ok off and POST /api/cmd refuses it. The rationale for each decision is in the long comment
+// above kCommands[].
+//
+// Declared in ../Common/WebConfigEngine.h, which the sketch includes BEFORE this file. Arduino
+// compiles the whole sketch as one translation unit and concatenates the .ino files after the
+// headers, so the forward declaration there is what makes these calls legal - the same pattern
+// headingDisagreeLatched() already uses.
+
+// Is Return-to-Me or Follow-Me engaged right now? Two atomic loads, no printing.
+//
+// ⚠️ ADVISORY ONLY, and it matters that this is understood: this exists so POST /api/cmd can tell
+// the phone "refused, the buggy is engaged" in the HTTP reply instead of accepting the command and
+// leaving the owner to notice the refusal text scrolling past in the output pane. It is NOT the
+// gate. The gate is rxRefuseIfEngaged() inside executeSerialCommand(), which is asked again - on
+// the loop task, immediately before the single kCommands[].handler call in the firmware - and
+// which is what actually decides. Deleting this function would cost a clear error message and
+// change nothing about what is allowed to run.
+bool rxEngagedNow()
+{
+  extern std::atomic<bool> rtm_rx_active;   // true while Return-to-Me is engaged
+  extern std::atomic<bool> fm_rx_active;    // true while Follow-Me is actively steering
+  return rtm_rx_active.load() || fm_rx_active.load();
+}
+
+// Report what the console may do with one command, looked up by its bare name (no leading '?',
+// already lower-cased by the caller).
+//   returns false  - not in the table at all, or in the table but not web_ok. The browser is told
+//                    "refused" and nothing is dispatched.
+//   returns true   - permitted; the three out-params describe how the page must behave.
+// The table is searched inline rather than through a helper that returns a SerialCommand*:
+// Arduino generates prototypes for .ino functions at the TOP of the sketch, ahead of this file's
+// struct declaration, so a signature naming the type does not compile.
+// Side effects: none, it only reads the table.
+bool rxWebCommandInfo(const String& bareName, bool& blocksLoop, bool& needsConfirm, bool& dropsConn)
+{
+  for (size_t i = 0; i < kCommandCount; i++) {
+    if (bareName != kCommands[i].name) continue;
+    if (!kCommands[i].web_ok) return false;
+    blocksLoop   = kCommands[i].blocks_loop;
+    needsConfirm = kCommands[i].web_confirm;
+    dropsConn    = kCommands[i].drops_connection;
+    return true;
+  }
+  return false;
+}
+
+// Build the JSON array the console's dropdown is populated from. Every entry carries the name,
+// the table's own help text and the three flags, so the page can label a command, warn before a
+// connection-dropping one and demand a confirm for a destructive one WITHOUT holding its own copy
+// of any of that. The bare help row (name "") is emitted as "?" so it is selectable.
+// Output: appends to `out`. Side effects: none.
+void rxWebCommandListJson(String& out)
+{
+  out += "[";
+  bool first = true;
+  for (size_t i = 0; i < kCommandCount; i++) {
+    if (!kCommands[i].web_ok) continue;
+    if (!first) out += ",";
+    first = false;
+    out += "{\"cmd\":\"?";
+    out += (strlen(kCommands[i].name) > 0) ? kCommands[i].name : "";
+    out += "\",\"help\":\"";
+    // The help strings are plain ASCII prose written in this file, but they do contain quotes and
+    // angle brackets, so escape the two characters that would break the JSON.
+    for (const char* p = kCommands[i].help; p && *p; p++) {
+      if (*p == '"' || *p == '\\') out += '\\';
+      out += *p;
+    }
+    out += "\",\"blocks\":";
+    out += kCommands[i].blocks_loop ? "1" : "0";
+    out += ",\"confirm\":";
+    out += kCommands[i].web_confirm ? "1" : "0";
+    out += ",\"drops\":";
+    out += kCommands[i].drops_connection ? "1" : "0";
+    out += "}";
+  }
+  out += "]";
 }
 
 void testPercent()

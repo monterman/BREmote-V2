@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-03 - RX WEB CONSOLE: one webCfgPumpWhileBlocked() call added at the EXISTING periodic abort point of runCompassCalibration() (45 s) and of runMagAlign() (5 s), so the WiFi console keeps being served while either holds the loop task - the owner taps the button and watches the text arrive, including the 5 s countdown he is meant to rotate the buggy to, instead of a dead page. Both loops already carry a vTaskDelay(20), so the service rate is roughly 50 Hz. No calibration threshold, sample, verdict, write or abort condition is touched, and neither function's behaviour over USB changes at all. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-08-17 - REPORT THE ERROR THE CARDINAL SNAP LEAVES BEHIND. mag_orientation can only ever hold 0, 90, 180 or 270, so a module glued in at any other angle keeps the difference between where it actually sits and the cardinal it snapped to as a CONSTANT heading error - up to 45 deg - that no calibration can remove. Both numbers were already printed side by side ("measured 251 deg, stored 270 deg") but nothing anywhere said they were meant to match, so a rider saw two numbers and no reason to care. This is not hypothetical: a tester's published run measured 251.25 deg, snapped to 270, and his four post-correction cardinal errors then averaged exactly -18.75 deg - the residual, showing up as a fixed bias he could not calibrate away and could not have diagnosed from the output. Both ?compasscal and ?magalign now compute that residual as a SHORTEST ANGULAR DISTANCE (so 359 deg snapping to 0 is 1 deg out, not 359) and print a warning naming the remaining error and the physical fix. New file-scope constant kMountSquareTolDeg = 9.6 deg = 3x the ~3.2 deg idle noise this file documents twice, so noise alone can never trip it; deliberately NOT raised to cover the 15-20 deg human aim slop kNorthTolDeg allows for, because that band is exactly where the real failure sat. ?magalign's existing 25 deg warning is REPLACED by this one - at 25 deg it would have said nothing about the tester's 18.75 deg. Reporting only: the snap, the stored value, orientation_stored, the FULL/PARTIAL verdict and the 2/3/10 BIND LED patterns are all untouched, and no threshold that already existed (kNorthTolDeg, kMinTurnDeg, kMinIronTurnDeg) moved. No confStruct field added, no SW_VERSION bump, sizeof stays 192.
 // V2.5-Evo - 2026-08-17 - ?compasscal and ?magalign are now the rider's way OUT of a heading-disagreement degradation. RTMState.ino's heading_disagree_fault latch stopped being cleared at engagement boundaries (it was forgiveness without evidence — a compass mounted 90 deg out is just as wrong on the next run), so while it stands the whole session runs on GPS course only. The escape routes have to be evidence that the compass was actually FIXED, and there are exactly two here: a FULL ?compasscal, and a completed ?magalign. Both call headingDisagreeClearAfterCal() at the point where the new mounting numbers have been written and saved, which drops the latch and restores hybrid heading immediately — no reboot, and no coasting to re-prove anything. A PARTIAL cal deliberately does NOT clear it: a 300-400 deg run saves the iron calibration but keeps the OLD mag_orientation, which is usually the very thing that caused the disagreement, so promoting it to "fixed" would hand the compass straight back to the steering while it was still wrong. Aborted and failed runs do not clear it either — they write nothing at all. The clear function is a file-scope static in RTMState.ino, forward-declared below in the same way Logger.ino declares headingDisagreeLatched(); Arduino compiles the whole sketch as one translation unit and concatenates Compass.ino ahead of RTMState.ino, so the declaration is what makes the call legal. Both commands run in the loop task (System.ino dispatches them), so the latch keeps its single-writer property. No confStruct field added, no SW_VERSION bump, sizeof stays 192.
 // V2.5-Evo - 2026-08-16 - Two follow-ups. (1) MID-COMMAND SAFETY: ?printcompass, ?compasscal and ?magalign now abort if Return-to-Me or Follow-Me becomes engaged WHILE they are running, not only when one is already engaged at dispatch (see rxAbortIfEngaged() in System.ino). All three abort points sit BEFORE the first usrConf write, so an abandoned run leaves no half-written calibration and the existing one untouched. (2) PARTIAL CREDIT IS NOW REPORTED AS PARTIAL: a ?compasscal run that turned 300-400 deg saves the iron calibration but does NOT re-measure mounting orientation or handedness, and a run that turns far enough but finishes off north saves iron calibration and handedness but still no orientation. Both used to print the identical "--- CALIBRATION COMPLETE --- / Success!" as a full run and blink the identical 2-flash BIND pattern. A rider who had just re-mounted the module and walked a sloppy circle was therefore told it worked while mag_orientation still held the OLD mounting angle - a heading wrong by exactly the mounting delta. runCompassCalibration() now records its outcome in compass_cal_result (FAILED / PARTIAL / FULL) for the BIND LED in System.ino, and prints an explicit PARTIAL report naming what was and was not updated. NEITHER THRESHOLD MOVED - 300 deg still gates the iron save and 400 deg still gates orientation and handedness, exactly as adjudicated; only the reporting changed. No confStruct field added, no SW_VERSION bump.
@@ -413,6 +414,17 @@ void runCompassCalibration() {
       Serial.println("Calibration abandoned. Nothing was saved; the existing calibration is kept.");
       return;
     }
+
+    // V2.5-Evo - 2026-10-03 - RX WEB CONSOLE. Service the WiFi web server across this 45 s block,
+    // at the SAME existing periodic point the engagement abort uses. Without it the owner taps
+    // ?compasscal on his phone and then watches a dead page for 45 seconds with no way to tell a
+    // running calibration from a crashed board - and the countdown printed below, which is the
+    // thing he is supposed to rotate the buggy to, never reaches him. The 20 ms vTaskDelay at the
+    // bottom of this loop sets the service rate at roughly 50 Hz, which is far more than a
+    // half-second browser poll needs.
+#ifdef WIFI_ENABLED
+    webCfgPumpWhileBlocked();
+#endif
 
     if (readCompassRaw()) {
       if (magX < minX) minX = magX;
@@ -1044,6 +1056,14 @@ void runMagAlign() {
       Serial.println("Alignment abandoned. Mounting orientation unchanged, nothing saved.");
       return;
     }
+
+    // V2.5-Evo - 2026-10-03 - RX WEB CONSOLE. Same one-line web-server service call as
+    // ?compasscal, at the same existing periodic point. 5 s is short enough that a browser would
+    // survive the gap, but the owner is told to hold the nose on north for the whole sample and
+    // needs to see that it is actually sampling rather than guess.
+#ifdef WIFI_ENABLED
+    webCfgPumpWhileBlocked();
+#endif
 
     if (readCompassRaw()) {
       float cx = ((float)magX - (float)usrConf.mag_offset_x) * usrConf.mag_scale_x;

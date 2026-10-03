@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 2 of 4 - THE INSTRUMENT (see BREmote_V2_Rx.h, PWM.ino, System.ino): fillLevel4Diag() ORs two 4-bit DELTAS of the enable-swap failure counters into bits 23-30 of the fm_gate_flags word it already copies - how many swaps lost the mutex since the previous row, per channel, saturating at 15. NO NEW COLUMN AND NO NEW BYTES, deliberately: the project's own rule beside LOG_FILE_FORMAT_VER says appending to the BASE record forces a format bump, and it would move every field above byte 62 and break offsetof(VescLogDataL5, rider_lat) == 90, making EVERY EXISTING LOG FILE undecodable. Riding in the existing u32 costs nothing, needs no bump (format stays 2), covers levels 4 AND 5, and leaves record sizes at 62 / 90 / 112. The delta is computed against loggerTask-LOCAL statics, so this task reads the PWM task's two volatiles and writes only its own - the single-writer contract that makes the FmLogSnapshot hand-off safe is preserved exactly. The cur < prev case (?diagz zeroing the counters mid-session) is handled rather than wrapping. Strictly additive and masked to its own eight bits: no FM gate verdict, no other column, no control path and no record size is touched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-01 - M-2 FIX, part 3 of 4 (see BREmote_V2_Rx.h, PWM.ino, System.ino): convertToLogData() fills the two motor-gate columns appended to the BASE record, VescLogData (59 -> 62 B, so VescLogDataL4 is 90 B and VescLogDataL5 112 B): ctrl_pkt_age_ms = millis() - last_control_packet, capped at 0xFFFE, and motor_gate_open = the calcPWM() observer g_motor_gate_open (PWM.ino), the same route motor0_cmd / motor1_cmd take. THE BASE RECORD ON PURPOSE: the tiers are cumulative and levels 0-3 all record as level 3, so these two columns appear at EVERY log level 0 through 5 - there is no stored log_level that could miss them, and an incident is never re-runnable at a higher level. The gate is copied, never recomputed: this file already holds one CRITICAL MAINTENANCE inline duplicate (the heading ladder) and must not acquire a second. OLD LOGS: a pre-flash file cannot be decoded by this build - record_size says how far to step but cannot express that every block above byte 59 moved 3 bytes - so LOG_FILE_FORMAT_VER went 1 -> 2 and the format_ver test already in this file's download guard refuses them in plain English instead of mis-decoding them. Download anything worth keeping BEFORE flashing. ?download's record-size ceiling and the record buffers are sizeof()-derived and follow automatically. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-25 - MANUAL PIVOT ASSIST (log only): fillLevel4Diag() ORs the assist's depth, 0-15, into bits 19-22 of the fm_gate_flags word it already copies - one 4-bit field, no new column, no record-size change, so every existing 87 B / 109 B log file and both readers are unaffected. The value comes from the calcPWM() observer g_pivot_assist_q4 (PWM.ino), the same route motor0_cmd / motor1_cmd take, because the assist's controller is the 100 Hz PWM task and g_fm_log_snapshot must keep its single loop-task writer. Strictly additive and masked to its own four bits: no FM gate verdict, no other column and no control path is touched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG level 5: loggerTask() builds a VescLogDataL5 (109 B) when the file was created at level 5 - convertToLogData() for the base, ONE snapshot copy per row (logTakeFmSnapshot(), one critical section) shared by fillLevel4Diag() and the new fillLevel5Extra(), so a row never mixes two ticks between its level-4 and level-5 columns. Record buffers and ?download's record-size ceiling are sizeof(VescLogDataL5) now; the header/row tiers stay offset-selected. AUX button and logger_en semantics unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -606,6 +607,41 @@ static void fillLevel4Diag(VescLogDataL4 &rec, const FmLogSnapshot &s)
   // by it. The assist is never active while Follow-Me or RTM is, so these bits and bits 0-18 are
   // never both meaningful on the same row.
   rec.fm_gate_flags |= ((uint32_t)(g_pivot_assist_q4 & 0x0FU)) << FM_LOG_GATE_PIVOT_ASSIST_SHIFT;
+
+  // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP FAILURES: two more 4-bit fields in bits 23-30 of the
+  // same gate word, on the same mechanism the pivot assist just used. ZERO added bytes, no
+  // record-size change, no LOG_FILE_FORMAT_VER bump, and every log file written before today still
+  // parses - which is the whole reason they ride in here instead of becoming a column. Appending to
+  // the BASE record would move every field above byte 62 and break the
+  // offsetof(VescLogDataL5, rider_lat) == 90 assertion, forcing format 2 -> 3 and making every
+  // existing log undecodable; see the restated rule beside LOG_FILE_FORMAT_VER.
+  //
+  // A DELTA, NOT A TOTAL, and that is what the local snapshot is for. g_swap_fail_ch0/ch1 are
+  // monotonic session counters owned by the generatePWM task. Subtracting a loggerTask-LOCAL
+  // snapshot taken at the previous row keeps the single-writer contract intact: this task reads
+  // those two volatiles and writes only its own statics, never the PWM task's variables. That is
+  // the same discipline the FmLogSnapshot hand-off uses and the reason this can be added safely.
+  // Four bits means "how bad was this row" (saturating at 15), while the exact cumulative figures
+  // live on ?diag. At 100 Hz a 333 ms row holds at most ~33 swaps, so 15 does not span a total
+  // outage - a row reading 15/15 means "pinned", which is all the CSV has to say.
+  //
+  // THE cur < prev CASE IS REAL AND HANDLED: ?diagz zeroes the counters mid-session, so the next
+  // row would otherwise compute a huge wrapped delta. When that happens the current value IS the
+  // count since the reset, so it is used directly.
+  {
+    static uint16_t prev_swap_fail_ch0 = 0;
+    static uint16_t prev_swap_fail_ch1 = 0;
+
+    const uint16_t cur0 = g_swap_fail_ch0;
+    const uint16_t cur1 = g_swap_fail_ch1;
+    const uint16_t d0   = (cur0 >= prev_swap_fail_ch0) ? (uint16_t)(cur0 - prev_swap_fail_ch0) : cur0;
+    const uint16_t d1   = (cur1 >= prev_swap_fail_ch1) ? (uint16_t)(cur1 - prev_swap_fail_ch1) : cur1;
+    prev_swap_fail_ch0  = cur0;
+    prev_swap_fail_ch1  = cur1;
+
+    rec.fm_gate_flags |= ((uint32_t)((d0 > 15U) ? 15U : d0)) << FM_LOG_GATE_SWAP_FAIL_CH0_SHIFT;
+    rec.fm_gate_flags |= ((uint32_t)((d1 > 15U) ? 15U : d1)) << FM_LOG_GATE_SWAP_FAIL_CH1_SHIFT;
+  }
 }
 
 // ============================================================

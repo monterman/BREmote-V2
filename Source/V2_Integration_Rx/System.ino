@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 2 of 4 - THE INSTRUMENT (see BREmote_V2_Rx.h, PWM.ino, Logger.ino): the serial surface for the enable-swap failure counters. (1) ?diag gains ONE line, "swap fails", directly under the "motor gate" line it belongs beside - the gate line answers "are pulses leaving the board?" and this one answers "are they reaching BOTH ESCs?". It prints the two per-channel session totals, the live consecutive-failure run length and the current channel index, and it spells out the direction a reader gets wrong otherwise: ch0 counts failures while PWM0 was the enabled channel, so a non-zero ch0 means PWM1 was the STARVED one. (2) ?diagz zeroes all three alongside the existing counters, so a bench run reports its window rather than the session. DELIBERATELY NO NEW ?command: the standing rule is that any new command must ship simultaneously in the firmware, the web quick-commands dropdown and the relevant UI panel, and none of that is needed here because ?diag already exists on all three surfaces. Read-only, no control path, no confStruct change: sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 1 of 4 (see Init.ino, Compass.ino): COMMENT ONLY in this file, no code touched. The ?i2c note in the kCommands[] table quoted "initCompass() sets Wire.setTimeOut(20) - so a stalled or held bus costs up to ~2.5 s of frozen loop". STEP 1 moved that global ceiling into initHardware() and lowered it to 3 ms, so the same scan now costs up to ~380 ms and the note's arithmetic was wrong in the direction that matters (it over-stated the hazard of a command the owner uses for diagnosis). The note now reads 3 ms / ~380 ms and records what it is derived from. ?i2c stays blocks_loop regardless: 126 acquisitions of the motor's own mutex is reason enough. NOTE for anyone reading the older dated lines below: the two 2026-08-16 / 2026-08-17 entries also quote the 20 ms ceiling and "~2.5 s". Those are dated change records and are deliberately left as written - they were correct on their date - but their arithmetic is SUPERSEDED by the 3 ms ceiling set in initHardware() as of today. No dispatch table, gate, abort site or command behaviour changed. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-03 - RX WEB CONSOLE. (1) kCommands[] rows gain three declarations - web_ok, web_confirm, drops_connection - so the WiFi console is driven by THIS table and never by a second list; web_ok is DENY BY DEFAULT, so a command added later is unreachable from a browser until someone decides otherwise, and the complete reasoning for every permit and every refusal is written out immediately above kCommands[]. (2) checkSerial() is split: the parsing, case handling, table lookup and the blocks_loop rxRefuseIfEngaged() gate all move verbatim into executeSerialCommand(const String&), which the web route also calls - so the engaged-refusal cannot be enforced on one path and not the other. That function now holds the firmware's only call to kCommands[].handler. The USB path reads a line and calls it; nothing about USB behaviour changes. (3) New ?checkheading [s] - the NORTH CHECK: a BOUNDED compass-heading sample (default 5 s, max 30, 2 Hz print) that ends on its own and prints the circular mean, so the owner can confirm a calibration from a phone instead of counting LED flashes. ?compassheading is untouched and stays the unbounded USB tool. (4) New ?dump - prints the captured serial ring over USB, deliberately to the real port and not through the tee. (5) rxWebCommandInfo() / rxWebCommandListJson() read the table for the web layer. (6) One webCfgPumpWhileBlocked() call at ?magtest's EXISTING abort point. No control-path statement added, removed or reordered. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-01 - M-2 FIX, part 4 of 4 (see BREmote_V2_Rx.h, PWM.ino, Logger.ino): the two serial instruments stop hiding the motor gate. (1) ?diag gained ONE line - "motor gate" - printing the gate's OPEN/CLOSED verdict, the age of the last CONTROL packet, the failsafe_time it is being measured against and PWM_active. ?diag is the owner's one-shot snapshot and had no link or gate field at all, while the BIND LED, ?printrssi and the deep log's link flag all read last_packet ("is the remote alive?") rather than last_control_packet ("do I have a fresh throttle command?") - so a gated-off motor read as connected with good RSSI. (2) ?printpwm appends "(GATED ...)" when the gate is shut, because calcPWM() computes PWM0_time / PWM1_time UNCONDITIONALLY and the gate wraps only generate_pulse(): the numbers can look live while nothing is leaving the board, which cost a half-day on 2026-09-29. The two numbers keep their exact positions and the line is not restructured - the marker is appended after them - so anything parsing ?printpwm still works. Both read the published observer g_motor_gate_open, NOT a fresh evaluation of the gate test, so there are still exactly two copies of that expression. Read-only, no control path, no new command (so no web-UI dropdown change), no confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -1430,6 +1431,20 @@ void cmdDiag(const String& params) {
                 (unsigned long)(now_ms - last_control_packet),
                 (unsigned)usrConf.failsafe_time,
                 (unsigned)(PWM_active ? 1 : 0));
+  // V2.5-Evo - 2026-10-03 - STEP 2 of the enable-swap starvation fix: the counters that say whether
+  // the single PPM output is actually reaching BOTH motors. Placed directly under the motor gate
+  // line because the two answer the same question in sequence - "are pulses leaving the board?"
+  // then "are they reaching both ESCs?". READ IT THE RIGHT WAY ROUND: ch0 counts swaps that failed
+  // while PWM0 was the enabled channel, so a non-zero ch0 means PWM0 kept its pulses and PWM1 WAS
+  // THE STARVED ONE. "consecutive now" is the live run length, 0 whenever the last swap succeeded;
+  // on a healthy bus all three read 0 and stay 0. Same style, and the same saturating-volatile
+  // shape, as the mux counters below. Both totals saturate at 65535 and are cleared by ?diagz.
+  // Read-only - this prints state and sets nothing.
+  Serial.printf("swap fails : ch0 %u, ch1 %u, consecutive now %u  (channel index now %u; ch0 non-zero => PWM1 starved)\n",
+                (unsigned)g_swap_fail_ch0,
+                (unsigned)g_swap_fail_ch1,
+                (unsigned)g_swap_fail_run,
+                (unsigned)alternatePWMChannel);
   Serial.printf("GPS feed   : %.0f bytes/s, %.1f sentences/s   [window %u B, %u sentences]\n",
                 (float)d_bytes / win_s, (float)d_sent / win_s,
                 (unsigned)d_bytes, (unsigned)d_sent);
@@ -1585,6 +1600,16 @@ void cmdDiagZ(const String& params) {
   g_diag_fix_age_max_ms  = 0;
   g_diag_mux_switches    = 0;
   g_diag_mux_errors      = 0;
+  // V2.5-Evo - 2026-10-03 - STEP 2: the enable-swap failure counters are zeroed with the rest, so a
+  // bench run ("?diagz, load the prop, walk the throttle, ?diag") reports the window and not the
+  // session. This is the SECOND writer of these three - generatePWM() is the only other one, and it
+  // only ever increments - so the worst case is one lost increment if a swap fails during this
+  // assignment, exactly the accepted behaviour of g_diag_mux_* two lines up. Zeroing the run length
+  // is deliberate: it is a live measurement, not a total, so after ?diagz it reports the run that
+  // has happened since the reset.
+  g_swap_fail_ch0        = 0;
+  g_swap_fail_ch1        = 0;
+  g_swap_fail_run        = 0;
   g_diag_vesc_polls      = 0;
   g_diag_vesc_ok         = 0;
   g_diag_loop_count      = 0;

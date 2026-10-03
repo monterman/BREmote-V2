@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 2 of 4 - THE INSTRUMENT (see PWM.ino, System.ino, Logger.ino, Tools/logreader/bremote_log.py). The enable swap that time-multiplexes the single PPM output between the two motors has never had an observer on it, which is why a failure that starves one channel entirely could not be confirmed or ruled out from the field. THIS FILE ADDS, all of it diagnostic: (1) three saturating volatile uint16_t counters beside g_motor_gate_open - g_swap_fail_ch0 / g_swap_fail_ch1 (per-channel session totals of swaps that lost the mutex) and g_swap_fail_run (the CONSECUTIVE run length right now). volatile, not std::atomic, because this is the g_diag_mux_errors shape exactly: single writer in generatePWM(), single core, read by ?diag and the logger, zeroed by ?diagz - full reasoning at the declaration. (2) kSwapStarveTicks (25) and kSwapRecoverTicks (5) beside the kPivot* block, with their derivations, so STEP 3 needs no confStruct field; kSwapStarveTicks is explicitly COUPLED to the Wire.setTimeOut(3) that landed in STEP 1 and is not justified without it. (3) FM_LOG_GATE_SWAP_FAIL_CH0/CH1_SHIFT+MASK for bits 23-30 of the existing fm_gate_flags word, which were free. NOTHING READS g_swap_fail_run BACK AT THIS STEP - it becomes a control input only in STEP 3, as a separate commit. ZERO log bytes, NO LOG_FILE_FORMAT_VER bump (stays 2), record sizes stay 62 / 90 / 112, every existing log file still parses, and no confStruct change: sizeof stays 200, SW_VERSION stays 36. Cost: 6 bytes of RAM.
 // V2.5-Evo - 2026-10-03 - RX WEB CONSOLE: #include "../Common/SerialTee.h" added immediately after <Arduino.h> and before every one of our own headers, which is where it has to be - it redefines what the word `Serial` means, so anything included ahead of it is silently left out of the capture. Include only; no declaration, default, struct or constant in this file is changed. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-01 - M-2 FIX, part 1 of 4 (see PWM.ino, Logger.ino, System.ino): THE MOTOR GATE BECOMES VISIBLE. There are now two link timestamps - last_packet ("is the remote alive?") and last_control_packet ("do I have a fresh throttle command?") - and the motor gate uses the second while EVERY instrument still read the first, so the motor could be gated off with the BIND LED solid, ?printrssi showing good signal and the log's link flag reading healthy, and nothing anywhere saying why the motors stopped. It cost a half-day on 2026-09-29: ?printpwm showed a live throttle value while the gate was shut, and remote_error stayed 0 through two confirmed outages of 5.4 s and 8.75 s. FOUR instruments, none of which could see the gate. THIS FILE ADDS: (1) the diagnostic observer g_motor_gate_open - calcPWM() publishes the verdict of the gate-mirror expression it already computes, so ?diag, ?printpwm and the logger read ONE published value instead of each growing a third copy of the gate test; (2) two columns at the tail of VescLogData, the BASE record: ctrl_pkt_age_ms (u16, capped 0xFFFE) and motor_gate_open (u8). They go in the base deliberately - the tiers are cumulative and levels 0-3 all record as level 3, so a field in the base appears at EVERY log level, 0 through 5, and an incident is never re-runnable at a higher level. sizeof(VescLogData) 59 -> 62, VescLogDataL4 87 -> 90, VescLogDataL5 109 -> 112, asserts updated. OLD LOGS DO NOT PARSE AFTER THIS FLASH and the per-file header does NOT rescue them: record_size tells a reader how far to step, but it cannot express that every block above byte 59 has moved 3 bytes, so a pre-flash level-4/5 file would have been accepted and silently mis-decoded - exactly the "convincing garbage" this format exists to prevent. LOG_FILE_FORMAT_VER is therefore bumped 1 -> 2, which both readers already test, so every pre-flash file is now refused in plain English instead. DOWNLOAD ANY LOGS WORTH KEEPING BEFORE FLASHING. This is the same accepted cost as the 51->52, 53->59 record growths. No confStruct change, sizeof(confStruct) stays 200, SW_VERSION stays 36, the owner's stored config is NOT wiped.
 // V2.5-Evo - 2026-09-28 - R-3 FIX, part 1 of 3 (see Radio.ino and PWM.ino): adds the plain global last_control_packet - a SECOND link timestamp, stamped only by the normal control-packet branch and read only by the motor gate in PWM.ino. last_packet means "the remote is alive" and is refreshed by the 0xF1 / 0xF2 / 0xF4 meta-packets too, none of which carries a throttle byte; the motor gate was testing it and so could reopen on a meta-packet with a stale thr_received and the trigger released. All four of last_packet's other readers (Logger.ino's link flag, RTMState.ino's RTM failsafe stop and FM_STOP_LINK, System.ino's connection status) are deliberately left exactly as they are - liveness is the right question for them. It is a plain global, NOT a confStruct field: no struct change, sizeof stays 200, SW_VERSION stays 36, and this flash does NOT wipe the owner's stored config.
@@ -1070,6 +1071,62 @@ static const uint16_t kPivotDepthFallQ8    = 32;     // Q8 depth per tick lettin
 // below perception and is itself delivered over one tick.
 static const uint16_t kPivotDepthArmQ8     = 16;     // Q8; minimum depth to START the assist (release is 0)
 
+// -- I2C ENABLE-SWAP STARVATION: FAIL SYMMETRIC, NOT ASYMMETRIC -------------------------------
+// V2.5-Evo - 2026-10-03 - the two thresholds of the swap-starvation state machine in PWM.ino.
+// Declared here, with the kPivot* block, for the same two reasons: it is where this project keeps
+// its derived tuning numbers, and it keeps them OUT of confStruct - sizeof stays 200, nothing is
+// wiped, no web-UI field is owed.
+//
+// WHAT THE STATE MACHINE IS FOR. When the enable swap cannot get i2cMutex, one motor keeps being
+// pulsed and the other gets nothing: the starved VESC eventually times out and releases while the
+// other holds the rider's commanded throttle. A differential-drive buggy in that state does not
+// stop - it turns hard under power, toward the rider and the tow rope. After kSwapStarveTicks
+// consecutive failures the firmware therefore stops pulsing BOTH channels, so both VESCs time out
+// together and the buggy COASTS. Loss of propulsion is the failure direction this system already
+// has (trigger release, link failsafe, VESC timeout all produce it); uncommanded yaw at power is
+// not, and the rider has no training for it.
+//
+// WHY 25 TICKS IN (250 ms), against all four of the clocks that matter:
+//   - the PWM task's tick is 10 ms, so 25 ticks is 250 ms: no single tick and no short burst trips
+//     it, and one timed-out take is 1/25 of the trip;
+//   - the VESC's own timeout_msec is 1000 ms. 250 ms is ONE QUARTER of it, so the symmetric stop
+//     lands ~750 ms BEFORE the starved VESC would have released - the asymmetry never becomes
+//     mechanical at all. This is the load-bearing number;
+//   - usrConf.failsafe_time is 1000 ms by default (validated 100-10000), so this nests INSIDE the
+//     existing link authority rather than competing with it;
+//   - on a healthy bus the worst instantaneous pile-up of every other holder is ~1.5 ms against a
+//     10 ms take budget - not one failure, let alone 25. 25 can only be reached by repeated
+//     physical-layer timeouts, which is precisely the condition it should fire on.
+//
+// 🔴 25 IS ONLY VALID BECAUSE Wire.setTimeOut(3) LANDED IN initHardware() (Init.ino, STEP 1 of this
+// fix). At the OLD 20 ms per-transaction ceiling the worst plausible HEALTHY transient burst was
+// setUartMux() on its corrective path (10 txn = 200 ms = 20 ticks) immediately followed by a
+// compass read that also timed out (2 txn = 40 ms = 4 ticks) = 24 ticks - ONE TICK short of 25,
+// which is far too thin a margin and would have made the correct value 40. At 3 ms the same burst
+// is 36 ms = 4 ticks and 25 has ~6x margin. If Wire.setTimeOut() is ever raised, THIS NUMBER IS NO
+// LONGER JUSTIFIED and must be re-derived; the two are coupled and a change to one silently
+// invalidates the other.
+static const uint16_t kSwapStarveTicks   = 25;   // consecutive FAILED enable swaps before both channels stop pulsing (10 ms/tick => 250 ms)
+
+// WHY 5 TICKS OUT (50 ms), AND WHY RECOVERY IS NOT "the first successful swap".
+// Recovery is a Schmitt trigger, deliberately asymmetric: 250 ms to cut, 50 ms to clear.
+// THE HAZARD THIS CLOSES is F-1 of the 2026-10-02 M-3 delta audit: because M-3 drives the throttle
+// ramp's target to 0 whenever the motor gate is shut, a gate that FLAPS costs a full re-ramp every
+// time it reopens - and a marginal bus that produced cut/resume/cut/resume on alternate ticks would
+// pin the throttle near the bottom of the ramp indefinitely. The buggy would crawl rather than stop,
+// which is a failure mode with no clear signature and no obvious rider response. Requiring five
+// consecutive GOOD swaps means one lucky swap in a storm of failures cannot resume output, so the
+// oscillation cannot start.
+// WHY NOT A HARD LATCH: a latch converts a transient glitch into a dead ride, with a rider on a rope
+// and no way to restore propulsion without a power cycle he cannot perform on the water. That is a
+// worse safety outcome than the fault being fixed. Auto-recovery is safe here specifically because
+// the stop is implemented as a GATE TERM: the ramp memory is at 0 while it is shut, so recovery is a
+// full soft ramp from 0 over motor_ramp_s, not a step back to the commanded throttle.
+// WHY 5 AND NOT MORE: 50 ms is five motor ticks and half a control-packet interval at 10 Hz - below
+// the threshold at which a rider could perceive the delay - while still being five independent
+// pieces of evidence that the bus is working again.
+static const uint16_t kSwapRecoverTicks  = 5;    // consecutive SUCCESSFUL enable swaps required to resume pulsing (10 ms/tick => 50 ms)
+
 #include "../Common/ConfigServiceEngine.h"
 
 // Web config globals
@@ -1479,6 +1536,24 @@ static_assert(sizeof(VescLogData) == 62, "VescLogData size mismatch — check bi
 //                           rather than snapping to 0 - so a handover row may legitimately show a
 //                           falling assist depth alongside an FM/RTM verdict. It is still
 //                           subtract-only throughout that bleed.
+//   V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP FAILURES: bits 23-30 are TWO MORE 4-BIT FIELDS, on the
+//   same "ride in the existing u32" mechanism. Zero added bytes, no record-size change, no
+//   LOG_FILE_FORMAT_VER bump, and every log file written before today still parses.
+//   bits 23-26 swap_fail_ch0_q4  FAILED enable swaps counted on ticks where PWM0 was the enabled
+//                           channel, SINCE THE PREVIOUS LOG ROW, saturating at 15. A DELTA, not a
+//                           total - computed in fillLevel4Diag() against a loggerTask-local
+//                           snapshot of the monotonic g_swap_fail_ch0, so the logger never writes
+//                           the PWM task's variables and the single-writer contract holds.
+//   bits 27-30 swap_fail_ch1_q4  the same for PWM1.
+//                           READ THEM THE RIGHT WAY ROUND: a non-zero ch0 field means PWM0 kept
+//                           being re-pulsed, so PWM1 WAS THE STARVED CHANNEL. The field names the
+//                           channel that kept its pulses.
+//                           SATURATION IS DELIBERATE AND IS NOT A DEFECT: at 100 Hz there are at
+//                           most ~33 swaps in a 333 ms row, so 15 does not cover a total outage.
+//                           These fields are a RATE INDICATOR - a row reading 15/15 means "pinned",
+//                           which is all the CSV needs to say - and ?diag carries the exact
+//                           cumulative figures. Both fields read 0 on a healthy bus.
+//                           Bit 31 is free.
 // Bits 0-3, 5-7 are only evaluated on ticks that reach the condition block (FM_ARMED and beyond
 // with a live declaration); on IDLE / STOPPING / early-exit ticks the whole word is 0 apart from
 // bits 17-18, which describe the engaged controller and are therefore 0 on such ticks anyway.
@@ -1507,6 +1582,20 @@ static_assert(sizeof(VescLogData) == 62, "VescLogData size mismatch — check bi
 // Reader: value = (fm_gate_flags & FM_LOG_GATE_PIVOT_ASSIST_MASK) >> FM_LOG_GATE_PIVOT_ASSIST_SHIFT.
 #define FM_LOG_GATE_PIVOT_ASSIST_SHIFT 19            // bits 19-22 hold the manual pivot assist depth, 0-15
 #define FM_LOG_GATE_PIVOT_ASSIST_MASK  (0xFUL << FM_LOG_GATE_PIVOT_ASSIST_SHIFT)
+// V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP FAILURES: two more 4-BIT FIELDS, not eight flags. Same
+// shift/mask shape as the pivot assist above and for the same reason - so nobody can test them with
+// the single-bit == pattern bits 0-18 use.
+// Reader: value = (fm_gate_flags & FM_LOG_GATE_SWAP_FAIL_CH0_MASK) >> FM_LOG_GATE_SWAP_FAIL_CH0_SHIFT.
+// WHY THEY RIDE IN HERE RATHER THAN BECOMING A COLUMN: appending to the base record would move every
+// field above byte 62 and break offsetof(VescLogDataL5, rider_lat) == 90, which forces
+// LOG_FILE_FORMAT_VER 2 -> 3 and makes EVERY EXISTING LOG FILE undecodable - see the restated rule
+// at the format-version define below. Appending to the L5 tail would avoid the bump but would cover
+// level 5 only. These eight bits were free, cost ZERO bytes, need NO format bump, and are present at
+// levels 4 AND 5. Bit 31 is left free.
+#define FM_LOG_GATE_SWAP_FAIL_CH0_SHIFT 23           // bits 23-26: FAILED ch0 enable swaps since the previous log row, saturating at 15
+#define FM_LOG_GATE_SWAP_FAIL_CH0_MASK  (0xFUL << FM_LOG_GATE_SWAP_FAIL_CH0_SHIFT)
+#define FM_LOG_GATE_SWAP_FAIL_CH1_SHIFT 27           // bits 27-30: the same for ch1
+#define FM_LOG_GATE_SWAP_FAIL_CH1_MASK  (0xFUL << FM_LOG_GATE_SWAP_FAIL_CH1_SHIFT)
 
 struct __attribute__((packed)) VescLogDataL4 {
     VescLogData base;              // the complete level-3 record, unchanged and first — do not reorder
@@ -2185,6 +2274,37 @@ volatile uint8_t g_pivot_assist_q4 = 0;   // manual pivot assist depth, 0 = iner
 // the gate SHUT - the safe direction: an instrument must never claim the motors are live when it has
 // not yet been told.
 volatile uint8_t g_motor_gate_open = 0;   // 1 = motor gate OPEN this tick, 0 = SHUT (also 0 whenever PWM_active is down)
+
+// V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP FAILURE COUNTERS. THE INSTRUMENT THIS CONTROL PATH HAS
+// NEVER HAD, and the reason three separate half-days went into it blind.
+//
+// WHAT THEY COUNT. There is ONE PPM output on this board (GPIO 9, one RMT channel) and two motors.
+// generatePWM() time-multiplexes them: pulse channel 0, wait 2 ms, swap the optocoupler enables
+// over the AW9523 on I2C, pulse channel 1, swap back. That swap takes i2cMutex with a 10 ms bound,
+// and when the take TIMES OUT the swap does not happen - correctly, because firing one channel's
+// pulse onto the other channel's enable state would drive the wrong VESC. alternatePWMChannel is
+// therefore left where it is and the SAME motor is pulsed again, which means THE OTHER MOTOR GETS
+// NOTHING AT ALL. These two count exactly that event, per channel.
+//
+// READ THEM THE RIGHT WAY ROUND. g_swap_fail_ch0 counts failures on the tick where PWM0 was the
+// enabled channel - so a run of ch0 failures means PWM0 is being re-pulsed and PWM1 IS THE STARVED
+// ONE. ch1 is the mirror. The counter names the channel that KEPT its pulses, not the one that lost
+// them, because that is the channel the code was looking at when it failed.
+//
+// SATURATING, NOT WRAPPING. A wrapped counter can read 0 after 65536 failures, which is the one
+// value that must mean "healthy". They stop at 0xFFFF and stay there; ?diagz clears them.
+//
+// WHY volatile uint16_t AND NOT std::atomic. This is the g_diag_mux_switches / g_diag_mux_errors
+// shape exactly (see those two above): a single-writer scalar observer, ++ from one task, read by
+// ?diag and by the logger, zeroed by ?diagz. generatePWM() is the only task that can observe a swap
+// outcome, so there is no second writer to tear against; the part is single-core, so there is no
+// cache coherency to solve; and std::atomic<uint16_t>::fetch_add emits a barriered read-modify-write
+// in the one task that must not be made heavier. ?diagz adds a second writer doing a plain = 0, so
+// the worst case is ONE LOST INCREMENT around a zeroing - the identical, long-accepted behaviour of
+// g_diag_mux_*. Stated here so nobody has to rediscover it.
+volatile uint16_t g_swap_fail_ch0 = 0;   // enable-swap i2cMutex timeouts while PWM0 was the enabled channel (so PWM1 was starved). Saturates at 0xFFFF; cleared by ?diagz.
+volatile uint16_t g_swap_fail_ch1 = 0;   // ...while PWM1 was enabled (so PWM0 was starved). Saturates at 0xFFFF; cleared by ?diagz.
+volatile uint16_t g_swap_fail_run = 0;   // CONSECUTIVE failures as of right now; set to 0 by the next successful swap. Not a session total - it is the live run length.
 
 volatile unsigned long get_vesc_timer = 0;
 volatile unsigned long last_uart_packet = 0;

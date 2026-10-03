@@ -12,7 +12,9 @@ Reads either of the two forms a rider can get off the buggy:
 and turns it into:
 
   - an EXPANDED CSV with real units on every field, the Follow-Me gate word
-    unpacked into one boolean column per named bit, and the numeric state
+    unpacked into one boolean column per named bit PLUS one integer column
+    per multi-bit field riding inside it (2026-10-03: the two I2C
+    enable-swap failure deltas in bits 23-30), and the numeric state
     codes (rtm_source, rtm_confidence, fm_mode, fm_state, fm_block_reason,
     fm_return_reason, rtm_phase) given readable names alongside the raw
     value.
@@ -167,6 +169,30 @@ FM_LOG_GATE_BITS: list[tuple[int, str]] = [
     (18, "fm_boost"),        # named to match the firmware's own standalone fm_boost CSV column
 ]
 FM_LOG_GATE_BIT_NAMES = [name for _, name in FM_LOG_GATE_BITS]
+
+# BREmote_V2_Rx.h: the MULTI-BIT fields that ride inside the same fm_gate_flags word. These are NOT
+# flags - each is a small unsigned integer - so they are decoded by shift+mask into their own
+# numeric column instead of a boolean, and their bits are suppressed from the generic "bit_N"
+# fallback below so one field does not also appear as four anonymous set bits.
+#   (shift, width, name)
+# 2026-10-03: bits 23-30 are the two I2C enable-swap failure deltas. The RX drives both motors from
+# ONE PPM output by swapping the optocoupler enables over I2C; a swap that loses the bus mutex
+# leaves one motor being re-pulsed and starves the other entirely. Each field counts the FAILED
+# swaps since the previous log row, per channel, saturating at 15.
+# READ THEM THE RIGHT WAY ROUND: swap_fail_ch0_q4 counts failures on ticks where PWM0 was the
+# ENABLED channel, so a non-zero ch0 means PWM0 kept its pulses and PWM1 was the STARVED one.
+# Both read 0 on a healthy bus. Firmware-side cumulative totals are on ?diag.
+# Bit 31 is free.
+# NOT IN THIS TABLE, DELIBERATELY: bits 19-22, the manual pivot assist depth (2026-09-25). This
+# tool has always reported them as the four anonymous columns bit_19..bit_22 and that behaviour is
+# left exactly as it is here - adding it would change existing output columns, which is outside the
+# scope of the 2026-10-03 swap-failure change. The fix, when someone wants it, is one line:
+#     (19, 4, "pivot_assist_q4"),
+FM_LOG_GATE_FIELDS: list[tuple[int, int, str]] = [
+    (23, 4, "swap_fail_ch0_q4"),   # failed ch0 enable swaps this row, 0-15 (2026-10-03)
+    (27, 4, "swap_fail_ch1_q4"),   # failed ch1 enable swaps this row, 0-15 (2026-10-03)
+]
+FM_LOG_GATE_FIELD_NAMES = [name for _, _, name in FM_LOG_GATE_FIELDS]
 
 # RTMState.ino: telemetry.fm_flags bit map (the byte the RX sends the remote every tick), copied
 # verbatim into VescLogDataL5.fm_flags_sent. Bits 4-6 are free/reserved (not yet assigned).
@@ -533,10 +559,21 @@ def decode_bitfield(value: int, bit_table: list[tuple[int, str]], prefix: str = 
     return out
 
 
-def decode_gate_flags(flags: int) -> dict[str, bool]:
+def decode_gate_flags(flags: int) -> dict[str, Any]:
     """fm_gate_flags -> one boolean per named FM_LOG_GATE_* bit (including fm_aligning/fm_boost,
-    the two 2026-09-19 additions, and steer_takeover, reserved), plus bit_N for anything else."""
-    return decode_bitfield(flags, FM_LOG_GATE_BITS)
+    the two 2026-09-19 additions, and steer_takeover, reserved), plus the multi-bit numeric fields
+    in FM_LOG_GATE_FIELDS, plus bit_N for anything else.
+
+    2026-10-03: bits 23-30 carry the two I2C enable-swap failure deltas, which are 4-bit NUMBERS,
+    not flags. They are extracted by shift+mask into their own integer columns and their bits are
+    removed from the generic bit_N fallback, so one 4-bit field cannot also surface as four
+    anonymous set bits."""
+    out: dict[str, Any] = dict(decode_bitfield(flags, FM_LOG_GATE_BITS))
+    for shift, width, name in FM_LOG_GATE_FIELDS:
+        out[name] = (flags >> shift) & ((1 << width) - 1)
+        for bit in range(shift, shift + width):
+            out.pop(f"bit_{bit}", None)
+    return out
 
 
 def decode_fm_flags_sent(value: int) -> dict[str, bool]:
@@ -712,6 +749,10 @@ def csv_field_order_for_layout(layout_name: str) -> list[str]:
     if layout_name in ("L4_83", "L4_RAW", "L4", "L5"):
         extra += ["fm_mode_name", "fm_state_name", "fm_block_reason_name", "fm_return_reason_name"]
         extra += FM_LOG_GATE_BIT_NAMES
+        # 2026-10-03: the multi-bit numeric fields that ride in the same word (the two enable-swap
+        # failure deltas). Appended AFTER the flag columns so every column that existed before this
+        # change keeps its position - anything consuming this CSV by index still works.
+        extra += FM_LOG_GATE_FIELD_NAMES
     if layout_name == "L5":
         extra += ["rtm_phase_name"]
         extra += FM_FLAGS_SENT_BIT_NAMES

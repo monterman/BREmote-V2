@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 2 of 4 - THE INSTRUMENT (see BREmote_V2_Rx.h, System.ino, Logger.ino): the two enable-swap timeout paths at :75-100 now COUNT. On a timeout the swap does not happen, alternatePWMChannel is deliberately left where it is, the still-enabled motor is re-pulsed and THE OTHER MOTOR RECEIVES NO PULSES AT ALL - the starved VESC then times out and releases while the other holds the rider's commanded throttle, which on a differential drive is uncommanded yaw at power. That path has existed and been correct since 2026-07-22 and was completely silent: three half-days of field work on an asymmetric-thrust failure could not establish whether it had ever fired, because ?printpwm reads PWM0_time / PWM1_time, which calcPWM() computes unconditionally whether a pulse leaves the board or not. ADDED: g_swap_fail_ch0++ / g_swap_fail_ch1++ (saturating at 0xFFFF) in the two else-branches, g_swap_fail_run++ beside them, and g_swap_fail_run = 0 on each successful swap. Read them the right way round - a run of ch0 failures means PWM0 kept its pulses and PWM1 was the starved channel. DIAGNOSTIC ONLY: three counter writes are the whole change; nothing reads them back, g_swap_fail_run is a PURE OBSERVER until STEP 3, and no gate, channel index, cap, ramp or PWM value moves. The pulse-then-2 ms-then-swap ordering is byte-for-byte unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36, no log format change.
 // V2.5-Evo - 2026-10-01 - M-2 FIX, part 2 of 4 (see BREmote_V2_Rx.h, Logger.ino, System.ino): calcPWM() PUBLISHES the motor gate's verdict into the diagnostic observer g_motor_gate_open. The gate's state had no instrument anywhere: the BIND LED, ?printrssi and the deep log's link flag all read last_packet ("is the remote alive?"), while the gate reads last_control_packet ("do I have a fresh throttle command?"), so a motor gated off displayed as connected with good signal. ?printpwm was worse than useless - it prints PWM0_time / PWM1_time, which calcPWM() computes UNCONDITIONALLY every 10 ms whether the gate lets a pulse out or not. ONE new line here: the local motor_gate_open that the M-3 ramp reset below already computes is copied to the observer, so ?diag, ?printpwm and the logger all read the gate's own verdict rather than each growing a third copy of the expression - there are still exactly TWO copies, the gate in generatePWM() and this mirror, and the warning at both sites still says so. The observer also carries PWM_active, which a bare control-packet age cannot show. DIAGNOSTIC ONLY: nothing reads it back, ramp_target still uses the local bool, and no gate, cap, ramp or PWM value changes - the control path is byte-for-byte identical. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-01 - M-3 FIX (the follow-up residual the ramp-placement audit left open, now water-critical by owner request): the throttle rate-limiter is RESET while the motor gate is shut. calcPWM() runs before the gate on every 10 ms pass, so through a link dropout - gate shut, no pulses leaving the board - the ramp kept winding its memory up toward the rider's last pre-dropout throttle byte, and a link that came back with the trigger still held stepped the motors straight to that value instead of easing in over motor_ramp_s. The same snapback a competitor's manual documents ("may jump to 100% if trigger still fully pressed"). FIX: calcPWM() mirrors the gate's own test and hands the ramp a target of 0 while it is shut, so the memory lands on 0 through the helper's existing instant-fall path - its only downward path - and the climb on recovery starts from 0, at motor_ramp_s whenever RTM and FM are inactive. No new state, no second timer (the gate's own failsafe_time already means a closure is never a micro glitch), nothing reaches inside OutputRampState, and Common/OutputRamp.h is not touched at all - so the separate ramp-OFF tracking fix inside the helper (rate 0 = track the target, no mid-session dip) is untouched: that one is about the RATE and lives in the helper, this one is about the GATE and lives in the caller. The gate line itself is unchanged, effective_thr and every cap are unchanged, and the terminal effective_thr == 0 clamp is still the last writer. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-28 - R-3 FIX, part 3 of 3 (see BREmote_V2_Rx.h and Radio.ino): the motor gate in generatePWM() tests last_control_packet instead of last_packet. last_packet is refreshed by the 0xF1 / 0xF2 / 0xF4 meta-packets too, and none of them carries a throttle byte, so after a dropout a meta-packet - most reachably the 30 s Follow-Me keepalive, which fires whenever FM is armed - could reopen this gate on the stale pre-dropout thr_received with the trigger released, and with the ramp already climbed back to it because calcPWM() runs before the gate. The gate now asks "do I have a fresh throttle command?" rather than "is the remote alive?". ONE token changed; everything else here is comment. last_packet and its four other readers are untouched. With a healthy 10 Hz link last_control_packet is refreshed every ~100 ms, so normal operation is byte-for-byte unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -72,6 +73,19 @@ void generatePWM(void *parameter) {
       // Worst case under bus contention: one motor gets repeated pulses for a few 10ms cycles while
       // the other misses updates — no wrong-motor pulse, no unbounded block, no WDT trip. On timeout
       // we do NOT hold the mutex, so we do NOT give it.
+      // V2.5-Evo - 2026-10-03 - STEP 2: COUNT THE FAILED SWAPS. Everything above this line is
+      // unchanged; the three counter writes below are the entire change in this file.
+      // WHY IT HAD TO BE DONE FIRST: the timeout path above has existed since 2026-07-22 and is
+      // correct, but it was SILENT. A swap that fails leaves one motor being re-pulsed and gives
+      // the other NOTHING, and nothing anywhere recorded that it had happened - so after three
+      // half-days of field work on an asymmetric-thrust failure there was still no way to say
+      // whether this mechanism had fired. ?printpwm cannot see it (calcPWM() computes PWM0_time /
+      // PWM1_time unconditionally whether a pulse leaves the board or not), and the deep log had
+      // no column for it. These counters are that missing observer.
+      // DIAGNOSTIC ONLY AT THIS STEP: the increments are the only new statements, nothing reads
+      // them back, and no gate, channel index, cap, ramp or PWM value is touched. g_swap_fail_run
+      // in particular is a PURE OBSERVER here - it becomes a control input in STEP 3, in its own
+      // commit, so that the two changes can be audited and reverted independently.
       if(alternatePWMChannel)
       {
         generate_pulse(PWM0_time);
@@ -82,8 +96,15 @@ void generatePWM(void *parameter) {
           aw.pinMode(AP_EN_PWM1, OUTPUT);
           xSemaphoreGive(i2cMutex);
           alternatePWMChannel = 0;  // advance only on a successful enable swap
+          g_swap_fail_run = 0;      // STEP 2: the run ends on any successful swap
         }
-        // timeout: keep alternatePWMChannel=1 so PWM0 (still enabled) re-pulses next cycle
+        else
+        {
+          // timeout: keep alternatePWMChannel=1 so PWM0 (still enabled) re-pulses next cycle.
+          // PWM0 keeps its pulses, so PWM1 is the channel being starved on this tick.
+          if(g_swap_fail_ch0 < 0xFFFFU) g_swap_fail_ch0++;   // saturate: a wrapped counter reads as healthy
+          if(g_swap_fail_run < 0xFFFFU) g_swap_fail_run++;
+        }
       }
       else
       {
@@ -95,8 +116,15 @@ void generatePWM(void *parameter) {
           aw.pinMode(AP_EN_PWM0, OUTPUT);
           xSemaphoreGive(i2cMutex);
           alternatePWMChannel = 1;  // advance only on a successful enable swap
+          g_swap_fail_run = 0;      // STEP 2: the run ends on any successful swap
         }
-        // timeout: keep alternatePWMChannel=0 so PWM1 (still enabled) re-pulses next cycle
+        else
+        {
+          // timeout: keep alternatePWMChannel=0 so PWM1 (still enabled) re-pulses next cycle.
+          // PWM1 keeps its pulses, so PWM0 is the channel being starved on this tick.
+          if(g_swap_fail_ch1 < 0xFFFFU) g_swap_fail_ch1++;
+          if(g_swap_fail_run < 0xFFFFU) g_swap_fail_run++;
+        }
       }
     }
     vTaskDelayUntil(&xLastWakeTime, xFrequency);

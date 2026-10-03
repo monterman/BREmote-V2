@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 4 of 4 - MOTOR PRIORITY OVER COMPASS (see Logger.ino, System.ino, PWM.ino). THREE CHANGES HERE. (1) All four portMAX_DELAY takes become pdMS_TO_TICKS(10) and return false on timeout: compassWriteReg(), compassReadReg(), compassProbe() and readCompassRaw(). A compass may skip a sample; a motor may not skip an enable swap, and the swap takes this same mutex with a 10 ms bound. This does NOT shorten a single compass hold - the hold is Wire time, capped by Wire.setTimeOut(3) since STEP 1, not by the semaphore - but it stops the compass stacking its hold on top of a pile-up it was queued behind, and it REMOVES a loop-task WDT panic path (updateCompassSnapshot() runs in the WDT-registered loop task, where an unbounded take could wedge to the 3000 ms panic - the same hazard the 2026-07-22 fix removed from the PWM task, still live on this side until today). 10 ms is correct only because STEP 1 landed the 3 ms transaction ceiling; at the old 20 ms ceiling it would have been 25. Degrades safely, verified rather than assumed: every one of the four already had a false-return path and every consumer treats a failed read as "no heading" and holds straight, readCompassRaw() reads into locals so a torn read cannot leave magX fresh and magY stale, and the age windows sit on a timestamp that only advances on SUCCESS - there is no extrapolation and no last-value-held path in this chain. (2) getCompassHeading() now PUBLISHES its last successful result into compass_live_cache_deg / _ms, so the logger can RECORD a heading without triggering a fresh two-transaction I2C read on the motor path at 2.89 Hz. Updated only on success, so a refusal or a bus failure leaves the value and its timestamp alone and it simply ages out. No control path reads the cache; getCompassHeading() remains the only producer of a heading. (3) updateCompassSnapshot() gains an early return on usrConf.rtm_use_compass == 0, so that setting finally means what every owner assumes: at mode 0 the driver issues NO compass transaction. Verified safe - getRtmHeading() returns NONE at an explicit mode == 0 test that sits ABOVE the compass fallback, so mode 0 never steered on the snapshot; the only visible effect is that the log's compass_snap columns report their documented 0xFFFF "no snapshot" sentinel on a mode-0 board. Operator-initiated diagnostics (?printcompass, ?compassheading, ?magtest, ?compasscal, ?magalign) still read the part deliberately - someone who types ?magtest is asking for a reading. No confStruct change, sizeof stays 200, SW_VERSION stays 36, no log format change.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 1 of 4 (see Init.ino, System.ino): initCompass() no longer calls Wire.setTimeOut(20). That call set a GLOBAL Wire property - the per-transaction ceiling every holder on this bus runs under - from a compass-specific function, so a board with no compass fitted never reached it and silently ran the arduino-esp32 default of 50 ms, which is 2.5x worse than the ceiling everyone believed was in force. The call now lives once in initHardware() (Init.ino) at 3 ms, on the unconditional boot path, immediately after Wire.begin(). Only the line and its replacement comment change here: detection, configuration, calibration, readCompassRaw() and every heading path are untouched, and this file issues exactly the transactions it did before. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-03 - RX WEB CONSOLE: one webCfgPumpWhileBlocked() call added at the EXISTING periodic abort point of runCompassCalibration() (45 s) and of runMagAlign() (5 s), so the WiFi console keeps being served while either holds the loop task - the owner taps the button and watches the text arrive, including the 5 s countdown he is meant to rotate the buggy to, instead of a dead page. Both loops already carry a vTaskDelay(20), so the service rate is roughly 50 Hz. No calibration threshold, sample, verdict, write or abort condition is touched, and neither function's behaviour over USB changes at all. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-08-17 - REPORT THE ERROR THE CARDINAL SNAP LEAVES BEHIND. mag_orientation can only ever hold 0, 90, 180 or 270, so a module glued in at any other angle keeps the difference between where it actually sits and the cardinal it snapped to as a CONSTANT heading error - up to 45 deg - that no calibration can remove. Both numbers were already printed side by side ("measured 251 deg, stored 270 deg") but nothing anywhere said they were meant to match, so a rider saw two numbers and no reason to care. This is not hypothetical: a tester's published run measured 251.25 deg, snapped to 270, and his four post-correction cardinal errors then averaged exactly -18.75 deg - the residual, showing up as a fixed bias he could not calibrate away and could not have diagnosed from the output. Both ?compasscal and ?magalign now compute that residual as a SHORTEST ANGULAR DISTANCE (so 359 deg snapping to 0 is 1 deg out, not 359) and print a warning naming the remaining error and the physical fix. New file-scope constant kMountSquareTolDeg = 9.6 deg = 3x the ~3.2 deg idle noise this file documents twice, so noise alone can never trip it; deliberately NOT raised to cover the 15-20 deg human aim slop kNorthTolDeg allows for, because that band is exactly where the real failure sat. ?magalign's existing 25 deg warning is REPLACED by this one - at 25 deg it would have said nothing about the tester's 18.75 deg. Reporting only: the snap, the stored value, orientation_stored, the FULL/PARTIAL verdict and the 2/3/10 BIND LED patterns are all untouched, and no threshold that already existed (kNorthTolDeg, kMinTurnDeg, kMinIronTurnDeg) moved. No confStruct field added, no SW_VERSION bump, sizeof stays 192.
@@ -53,9 +54,45 @@ const char* compassChipName() {
   }
 }
 
+// ============================================================
+// V2.5-Evo - 2026-10-03 - STEP 4: EVERY I2C TAKE IN THIS FILE IS NOW BOUNDED. MOTOR PRIORITY OVER
+// COMPASS - a compass may skip a sample, a motor may not skip an enable swap.
+//
+// WHAT WAS WRONG: all four takes below used portMAX_DELAY. The 100 Hz PWM task's enable swap - the
+// thing that decides which of the two motors receives the single PPM output - takes the SAME mutex
+// with a 10 ms bound, so a compass read that queued behind another holder and then added its own
+// hold on top could blow that budget and starve a motor channel entirely.
+//
+// WHAT A BOUNDED TAKE DOES AND DOES NOT BUY. It does NOT shorten a single compass hold: the hold is
+// Wire time, and Wire time is capped by Wire.setTimeOut() (3 ms since STEP 1), not by the
+// semaphore. What it DOES buy is worth having anyway: (1) the compass can no longer stack its hold
+// on top of a pile-up it was queued behind - it walks away instead; (2) it removes a loop-task WDT
+// panic path, because updateCompassSnapshot() runs in the WDT-registered loop task and a
+// portMAX_DELAY take there could wedge it to the 3000 ms panic - the identical hazard the
+// 2026-07-22 fix removed from the PWM task, still live on this side until today.
+//
+// 10 ms IS ONLY CORRECT BECAUSE Wire.setTimeOut(3) LANDED IN STEP 1. At the old 20 ms
+// per-transaction ceiling the worst plausible pile-up was ~180 ms and 10 ms would have produced
+// frequent skips, so the right number then was 25. At 3 ms the worst pile-up is ~27 ms and a tight
+// 10 ms - matching the PWM task's own bound - is both correct and consistent. If Wire.setTimeOut()
+// is ever raised, re-derive this.
+//
+// IT DEGRADES SAFELY, VERIFIED HERE RATHER THAN ASSUMED: every one of the four already had a
+// false-return path, and every consumer up the chain treats a failed read as "no heading" and holds
+// straight - readCompassRaw() returns false and leaves magX/Y/Z untouched (it reads into locals
+// first, for exactly this reason), getCompassHeading() returns -1.0f rather than recomputing from
+// stale axes, updateCompassSnapshot() leaves both the snapshot AND its timestamp alone, and the
+// age windows in getRtmHeading() sit on that timestamp - which only ever advances on a SUCCESSFUL
+// read. There is no extrapolation and no last-value-held path anywhere in this chain, so a skipped
+// read cannot feed a stale heading into a steering decision. The PWM task's own 10 ms bound is NOT
+// touched by any of this: the 2026-07-22 fix stands exactly as written.
+// ============================================================
+
 // Single-register write. Takes the I2C mutex itself, matching the style below.
+// V2.5-Evo - 2026-10-03 - bounded take; returns false if the bus is busy, which every caller
+// already handles as "that write did not land".
 static bool compassWriteReg(uint8_t addr, uint8_t reg, uint8_t val) {
-  xSemaphoreTake(i2cMutex, portMAX_DELAY);
+  if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(10)) != pdTRUE) return false;
   Wire.beginTransmission(addr);
   Wire.write(reg);
   Wire.write(val);
@@ -65,8 +102,10 @@ static bool compassWriteReg(uint8_t addr, uint8_t reg, uint8_t val) {
 }
 
 // Single-register read. Returns false on any bus error; value in *out.
+// V2.5-Evo - 2026-10-03 - bounded take; a busy bus is reported the same way a bus error already
+// was, so *out is left untouched and no caller can read a value that was never fetched.
 static bool compassReadReg(uint8_t addr, uint8_t reg, uint8_t *out) {
-  xSemaphoreTake(i2cMutex, portMAX_DELAY);
+  if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(10)) != pdTRUE) return false;
   Wire.beginTransmission(addr);
   Wire.write(reg);
   if (Wire.endTransmission(false) != 0) { xSemaphoreGive(i2cMutex); return false; }
@@ -77,8 +116,12 @@ static bool compassReadReg(uint8_t addr, uint8_t reg, uint8_t *out) {
 }
 
 // Does anything ACK at this address?
+// V2.5-Evo - 2026-10-03 - bounded take. "Bus busy" reports as "no ACK", which is the correct
+// answer for a probe: this runs at boot from initCompass(), before the PWM task is emitting, so a
+// timeout here is not reachable in practice - it is bounded for consistency, so that no take in
+// this file is unbounded and a future caller cannot inherit a 3000 ms WDT hazard by accident.
 static bool compassProbe(uint8_t addr) {
-  xSemaphoreTake(i2cMutex, portMAX_DELAY);
+  if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(10)) != pdTRUE) return false;
   Wire.beginTransmission(addr);
   bool ack = (Wire.endTransmission() == 0);
   xSemaphoreGive(i2cMutex);
@@ -86,6 +129,48 @@ static bool compassProbe(uint8_t addr) {
 }
 float         compass_snapshot_heading = -1.0f; // Last "clean" compass heading captured while motor was idle (degrees, 0–360 clockwise from North). -1.0f = no valid snapshot yet.
 unsigned long compass_snapshot_ms      = 0;     // millis() timestamp of last snapshot capture. 0 = no snapshot yet.
+
+// ============================================================
+// V2.5-Evo - 2026-10-03 - STEP 4: THE LIVE-HEADING CACHE. Published by getCompassHeading() on every
+// SUCCESSFUL computation, so a reader that only wants to RECORD a heading does not have to trigger
+// a fresh I2C transaction to get one.
+//
+// WHY IT EXISTS: Logger.ino called getCompassHeading() on EVERY log record - ~2.89 Hz at the
+// default rate - from loggerTask, with no throttle gate, no rtm_use_compass gate and no latch gate.
+// That is two chained Wire transactions in one mutex hold, at any throttle, including full throttle
+// with a rider on the rope, competing with the 100 Hz enable swap that decides which motor gets the
+// single PPM output. It was the compass starver nobody had found, and loggerTask is not even
+// registered with the task watchdog, so a hold that never returned would not have panicked
+// anything. The logger now reads this cache instead and issues NO bus traffic at all.
+//
+// IT IS NOT A SECOND SOURCE OF TRUTH AND NOTHING STEERS ON IT. getCompassHeading() remains the only
+// producer of a heading; this is a copy of its last good output, for recording only. No control
+// path reads it - the steering ladder in RTMState.ino is untouched and still calls the real
+// function, which is exactly why the cache stays fresh in the mode that needs it (mode 2 reads live
+// at 10 Hz, so the logged value is never more than ~100 ms behind what the controller used).
+//
+// UPDATED ONLY ON SUCCESS, which is the whole discipline: a failed or refused read leaves the last
+// good value AND its timestamp alone, so the value simply AGES OUT and a reader that applies the
+// age test below records "invalid" rather than something misleading. Same rule the snapshot above
+// follows.
+//
+// CROSS-TASK: written by whichever task called getCompassHeading() (always the loop task now) and
+// read by loggerTask. The pair can straddle one preemption, so a row could in principle pair a new
+// value with the previous timestamp. Worst case is a diagnostic column one sample out of date, or
+// one that passes the age test by under a millisecond. Benign, diagnostic-only, and stated here for
+// the same reason the gps.* note in Logger.ino states its own.
+float         compass_live_cache_deg = -1.0f;   // last heading getCompassHeading() successfully computed (deg, 0-360). -1.0f = none this session.
+unsigned long compass_live_cache_ms  = 0;       // millis() of that computation. SENTINEL: 0 = never computed, and never a valid timestamp.
+
+// How old the cached live heading may be before a reader must treat it as invalid.
+// WHY 1000 ms: it is the same window getRtmHeading() already allows a compass snapshot to be used
+// at its higher confidence, so "too old to steer on" and "too old to log as live" agree. It is also
+// ~3 log rows at the default 2.89 Hz, so a value that survives the test is genuinely contemporary
+// with its row. Past it, the log records the 0xFFFF invalid sentinel it has always had for this
+// column - which is the honest answer, because at real throttle there IS no live compass heading:
+// the snapshot path is gated off above thr_received 25 precisely because motor current biases the
+// part by 100 degrees or more.
+static const unsigned long kCompassLiveCacheMaxAgeMs = 1000UL;
 
 // We link to your existing save command to automate the process
 extern void cmdSave(const String& params);
@@ -215,7 +300,12 @@ bool readCompassRaw() {
   // part. The data-register base is the difference that matters: QMC5883L starts
   // at 0x00, QMC5883P at 0x01. Reading from the wrong base does not error — it
   // shifts every axis by one byte and returns a plausible, wrong heading.
-  xSemaphoreTake(i2cMutex, portMAX_DELAY);
+  // V2.5-Evo - 2026-10-03 - bounded take, and THIS is the one that matters: this function chains
+  // TWO Wire transactions inside a single hold and it is the compass path that used to coexist with
+  // real throttle. A busy bus now returns false exactly as a bus error does, magX/Y/Z are left
+  // untouched, and getCompassHeading() turns that into -1.0f ("no heading") rather than a heading
+  // computed from stale axes. A motor's enable swap takes this same mutex with a 10 ms bound.
+  if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(10)) != pdTRUE) return false;
   Wire.beginTransmission(compass_addr);
   Wire.write(compass_data_reg);
   if (Wire.endTransmission(false) != 0) {
@@ -948,6 +1038,21 @@ float getCompassHeading()
   }
 
 
+  // V2.5-Evo - 2026-10-03 - STEP 4: publish the result for readers that only want to RECORD a
+  // heading. Reached ONLY on success - every refusal and every bus failure above returns -1.0f
+  // before this line - so the cache holds the last genuinely computed heading and ages out instead
+  // of going stale silently. This is the last statement before the return on purpose: the value
+  // cached is exactly the value returned, including the mounting rotation applied above.
+  compass_live_cache_deg = heading;
+  {
+    // 0 is the "never computed" sentinel, so it must never be written as a real timestamp. The
+    // substitution can only ever fire in the first millisecond after boot, where no compass read
+    // is reachable anyway - it is here so the sentinel's contract is guaranteed, not assumed. Same
+    // habit as g_diag_cog_change_ms in BREmote_V2_Rx.h.
+    const unsigned long now = millis();
+    compass_live_cache_ms = (now == 0) ? 1UL : now;
+  }
+
   return heading;
 }
 
@@ -980,6 +1085,28 @@ void updateCompassSnapshot()
 {
   // Gate 1: compass hardware must be present
   if (!compass_detected) return;
+
+  // V2.5-Evo - 2026-10-03 - STEP 4: GATE 1b - rtm_use_compass 0 NOW MEANS WHAT THE OWNER THINKS IT
+  // MEANS. Until today it did not: this function had no rtm_use_compass test at all and is called
+  // unconditionally from runRtmLoop() on every loop() pass, and the logger read the part above the
+  // mode branch as well - so the setting chose which heading was STEERED ON and changed nothing
+  // about the I2C traffic. An owner who set it to 0 to take the compass off a contended bus got no
+  // reduction whatsoever, which is the worst kind of mitigation: one that is believed.
+  // With this gate plus the logger now reading a cache instead of the part, rtm_use_compass 0
+  // issues NO compass transaction from any automatic/driver path.
+  // DELIBERATE SCOPE: the operator-initiated serial diagnostics (?printcompass, ?compassheading,
+  // ?magtest, ?compasscal, ?magalign) still read the part. Someone who types ?magtest is asking for
+  // a compass reading and must get one, and refusing them would make a dead compass undiagnosable.
+  // What this closes is the DRIVER reading a part the owner has switched off.
+  // SAFE BY CONSTRUCTION, VERIFIED NOT ASSUMED: at mode 0 the heading ladder in getRtmHeading()
+  // returns NONE at an explicit `if (mode == 0)` that sits ABOVE the compass-snapshot fallback, so
+  // mode 0 never consults the snapshot for steering - withholding it removes nothing any control
+  // path was using. Modes 1 and 2 are untouched and behave exactly as before.
+  // THE ONE VISIBLE CONSEQUENCE, stated rather than discovered later: at mode 0 the deep log's
+  // compass_snap_dx10 / snap_age_s columns now read their 0xFFFF "no snapshot" sentinel instead of
+  // a value, because no snapshot is taken. That is the honest reading of a board whose compass the
+  // owner has switched off, and it is the sentinel those columns have always documented.
+  if (usrConf.rtm_use_compass == 0) return;
 
   // V2.5-Evo - 2026-07-21 - Gate 2: compass must be calibrated. UNCALIBRATED = the degenerate
   // default offset 0/0 + scale 1/1 (scale is 1, NOT 0) — the old scale==0 check missed it and let

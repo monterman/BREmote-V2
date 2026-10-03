@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 4 of 4 - THE BUTTON READER STOPS SPENDING THE MOTOR'S BUS (see Compass.ino, Logger.ino, PWM.ino). checkButtons() was taking i2cMutex TWICE PER loop() PASS with portMAX_DELAY - 120 to 180 unbounded holds per second, ungated, at any throttle, forever - which makes it by a wide margin the highest-frequency unbounded holder on this board and gives it 120-180 chances a second to blow the 10 ms budget of the enable swap that decides which of the two motors receives the single PPM output. The 2026-10-03 audit's verdict: with the compass removed entirely, this alone would still reproduce the asymmetric-thrust failure. TWO CHANGES. (1) The whole function is RATE-LIMITED TO 20 Hz on a millis() guard. A human press lasts hundreds of milliseconds, so sampling it ~150 times a second does not make it more detectable - it just spends the bus. 50 ms preserves the current feel exactly (a 400 ms press still gives 8 samples, a brisk 100 ms tap gives 2), so nobody has to press anything differently; 10 Hz would have cut a little more but needs a deliberate ~300 ms tap, and buying that by changing how the rider presses was explicitly declined. Net: ~120-180 unbounded holds/s become 20 BOUNDED holds/s, about an 88 % reduction. THE FIRST CALL IS NEVER SKIPPED - it comes from runBootSequence() and owns boot-time pairing and factory reset - which is what the primed flag guarantees. CHECKED BEFORE TOUCHING THE RATE: nothing in this function counts samples or loop iterations. The 50 ms debounce is a vTaskDelay, the hold-for-release loops are vTaskDelay loops that complete inside one call, the boot re-reads use delay(10), the 45 s calibration owns its own clock, and the BIND calibration fires on a single debounced falling edge rather than N consecutive LOW samples - so there was no sample-count timing to convert and no duration moves. (2) The two per-pass takes become pdMS_TO_TICKS(2) and the poll is SKIPPED on a miss (return, leaving the edge-detector statics untouched - no phantom edge, no lost held state). It also fails safe if the transaction itself fails, verified in the library rather than assumed: Adafruit_BusIO's register read returns -1 (all ones) on an I2C error, so aw.digitalRead() yields HIGH and these active-LOW buttons read as NOT PRESSED - no accidental log toggle, no accidental 45 s calibration. The press-conditional takes (boot-time reset, the 50 ms debounce re-reads, the hold-for-release loops) are deliberately left unbounded: they are not on the 120-180/s path, they only run when a button is actually down, and bounding them is a separate question from this one. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 2 of 4 - THE INSTRUMENT (see BREmote_V2_Rx.h, PWM.ino, Logger.ino): the serial surface for the enable-swap failure counters. (1) ?diag gains ONE line, "swap fails", directly under the "motor gate" line it belongs beside - the gate line answers "are pulses leaving the board?" and this one answers "are they reaching BOTH ESCs?". It prints the two per-channel session totals, the live consecutive-failure run length and the current channel index, and it spells out the direction a reader gets wrong otherwise: ch0 counts failures while PWM0 was the enabled channel, so a non-zero ch0 means PWM1 was the STARVED one. (2) ?diagz zeroes all three alongside the existing counters, so a bench run reports its window rather than the session. DELIBERATELY NO NEW ?command: the standing rule is that any new command must ship simultaneously in the firmware, the web quick-commands dropdown and the relevant UI panel, and none of that is needed here because ?diag already exists on all three surfaces. Read-only, no control path, no confStruct change: sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 1 of 4 (see Init.ino, Compass.ino): COMMENT ONLY in this file, no code touched. The ?i2c note in the kCommands[] table quoted "initCompass() sets Wire.setTimeOut(20) - so a stalled or held bus costs up to ~2.5 s of frozen loop". STEP 1 moved that global ceiling into initHardware() and lowered it to 3 ms, so the same scan now costs up to ~380 ms and the note's arithmetic was wrong in the direction that matters (it over-stated the hazard of a command the owner uses for diagnosis). The note now reads 3 ms / ~380 ms and records what it is derived from. ?i2c stays blocks_loop regardless: 126 acquisitions of the motor's own mutex is reason enough. NOTE for anyone reading the older dated lines below: the two 2026-08-16 / 2026-08-17 entries also quote the 20 ms ceiling and "~2.5 s". Those are dated change records and are deliberately left as written - they were correct on their date - but their arithmetic is SUPERSEDED by the 3 ms ceiling set in initHardware() as of today. No dispatch table, gate, abort site or command behaviour changed. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-03 - RX WEB CONSOLE. (1) kCommands[] rows gain three declarations - web_ok, web_confirm, drops_connection - so the WiFi console is driven by THIS table and never by a second list; web_ok is DENY BY DEFAULT, so a command added later is unreachable from a browser until someone decides otherwise, and the complete reasoning for every permit and every refusal is written out immediately above kCommands[]. (2) checkSerial() is split: the parsing, case handling, table lookup and the blocks_loop rxRefuseIfEngaged() gate all move verbatim into executeSerialCommand(const String&), which the web route also calls - so the engaged-refusal cannot be enforced on one path and not the other. That function now holds the firmware's only call to kCommands[].handler. The USB path reads a line and calls it; nothing about USB behaviour changes. (3) New ?checkheading [s] - the NORTH CHECK: a BOUNDED compass-heading sample (default 5 s, max 30, 2 Hz print) that ends on its own and prints the circular mean, so the owner can confirm a calibration from a phone instead of counting LED flashes. ?compassheading is untouched and stays the unbounded USB tool. (4) New ?dump - prints the captured serial ring over USB, deliberately to the real port and not through the tee. (5) rxWebCommandInfo() / rxWebCommandListJson() read the table for the web layer. (6) One webCfgPumpWhileBlocked() call at ?magtest's EXISTING abort point. No control-path statement added, removed or reordered. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -2303,8 +2304,51 @@ void serPrintReceived()
   }
 }
 
+// ============================================================
+// V2.5-Evo - 2026-10-03 - STEP 4: HOW OFTEN THE BUTTONS ARE POLLED. 50 ms = 20 Hz.
+//
+// WHY THIS EXISTS AT ALL. checkButtons() is called once per loop() pass, and loop() runs at roughly
+// 60-90 Hz, so this function was taking the i2cMutex TWICE PER PASS - 120 to 180 unbounded takes
+// per second, ungated, at any throttle, forever. It is by a wide margin the highest-frequency
+// unbounded holder on this board, and every one of those takes is a chance to blow the 10 ms budget
+// of the enable swap that decides which of the two motors receives the single PPM output. The audit
+// of 2026-10-03 put it plainly: with the compass removed entirely, this alone would still reproduce
+// the asymmetric-thrust failure.
+//
+// AND IT IS PURE WASTE. A human button press lasts hundreds of milliseconds. Sampling it 150 times
+// a second does not make it more detectable; it just spends the motor's bus.
+//
+// WHY 20 Hz AND NOT LOWER - READ THIS BEFORE "OPTIMISING" IT. 20 Hz samples every 50 ms, which
+// PRESERVES THE CURRENT FEEL EXACTLY: a 400 ms press still produces 8 samples and even a brisk
+// 100 ms tap produces 2, so the owner does not have to change how he presses anything. 10 Hz would
+// cut traffic a further 5 % of the original but needs a deliberate ~300 ms tap to be reliable, and
+// buying that last sliver by asking the rider to press differently is a bad trade - the offer was
+// explicitly declined. The win is already taken: 120-180 unbounded holds/s become 20 BOUNDED
+// holds/s, an ~88 % reduction, with no change in how the buttons behave.
+//
+// CHECKED FIRST, BECAUSE A POLL-RATE CHANGE CAN SILENTLY BREAK TIMING: nothing in checkButtons()
+// counts samples or loop iterations. The 50 ms debounce is a vTaskDelay, the hold-for-release loops
+// are vTaskDelay loops that run to completion INSIDE one call, the boot-time factory-reset re-reads
+// use delay(10), and the 45 s calibration owns its own clock. Every duration here is wall-clock, so
+// none of it moves when the poll rate changes. There is no N-consecutive-samples long-press
+// detector anywhere in this function - the BIND calibration fires on a single debounced falling
+// edge - so there was nothing to convert.
+static const unsigned long kButtonPollIntervalMs = 50;   // 20 Hz; see the derivation above
+
 void checkButtons()
 {
+  // V2.5-Evo - 2026-10-03 - STEP 4: the 20 Hz gate. THE FIRST CALL IS NEVER SKIPPED - that call
+  // comes from runBootSequence() (Init.ino) and owns boot-time pairing and factory reset, so a
+  // naive "millis() - 0 < 50" test could have silently disabled both on a fast boot. The primed
+  // flag is what guarantees it: the gate only starts applying once a poll has actually happened.
+  {
+    static bool          button_poll_primed  = false;
+    static unsigned long button_poll_last_ms = 0;
+    if (button_poll_primed && (millis() - button_poll_last_ms) < kButtonPollIntervalMs) return;
+    button_poll_primed  = true;
+    button_poll_last_ms = millis();
+  }
+
   // --- BOOT-TIME BIND / RESET LOGIC ---
   // Runs only on the first call (via runBootSequence() during setup). Static guard
   // prevents pairing and factory-reset from triggering during runtime calls from loop().
@@ -2349,7 +2393,22 @@ void checkButtons()
   // Static variables remember their state between loops
   static bool aux_last_state = true;
   // true = HIGH (unpressed due to pullup)
-  xSemaphoreTake(i2cMutex, portMAX_DELAY);
+  // V2.5-Evo - 2026-10-03 - STEP 4: BOUNDED TAKE, AND THE POLL IS SKIPPED ON A MISS. This was
+  // portMAX_DELAY - one of the two most frequent unbounded holds in the whole system, on the same
+  // mutex the 100 Hz motor enable swap needs within 10 ms.
+  // WHY 2 ms: a healthy single-register AW9523 read is ~0.4 ms at 100 kHz and the 3 ms Wire
+  // ceiling from STEP 1 bounds the worst single-transaction holder, so 2 ms means "someone else is
+  // mid-transaction, come back in 50 ms" and never fires on an idle bus.
+  // WHY return AND NOT "assume not pressed": returning leaves aux_last_state exactly as it was, so
+  // the poll simply DID NOT HAPPEN - no phantom edge, no lost held state, and the next poll 50 ms
+  // later sees the true level. It also skips the BIND poll below, which is correct: both are reads
+  // of the same bus, and if it is busy neither reading is available.
+  // AND IT FAILS SAFE EVEN IF THE TRANSACTION ITSELF FAILS, verified in the library rather than
+  // assumed: Adafruit_BusIO's register read returns -1 (all ones) on an I2C failure, so
+  // aw.digitalRead() yields HIGH - and these buttons are active-LOW. A failed read therefore reads
+  // as NOT PRESSED: no accidental log toggle, no accidental 45 s calibration. The cost is that a
+  // press may need repeating, which is the right direction for this trade.
+  if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(2)) != pdTRUE) return;
   bool aux_current = aw.digitalRead(AP_S_AUX);
   xSemaphoreGive(i2cMutex);
   // Detect a "falling edge" (button was just pressed down)
@@ -2396,7 +2455,11 @@ void checkButtons()
   // Boot-time pairing/reset cannot reach this block (guarded by first_call above).
   // V2.5-Evo - 2026-08-16 - refused outright while RTM or Follow-Me is engaged (see below).
   static bool bind_last_state = true;
-  xSemaphoreTake(i2cMutex, portMAX_DELAY);
+  // V2.5-Evo - 2026-10-03 - STEP 4: bounded take, poll skipped on a miss - the twin of the AUX read
+  // above and the second of the two highest-frequency unbounded holds on this board. Same 2 ms
+  // bound, same reasoning, same fail-to-not-pressed behaviour. Returning here leaves
+  // bind_last_state untouched, and the AUX half of this pass has already completed normally.
+  if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(2)) != pdTRUE) return;
   bool bind_current = aw.digitalRead(AP_S_BIND);
   xSemaphoreGive(i2cMutex);
   if (bind_last_state == true && bind_current == false) {

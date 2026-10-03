@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 4 of 4 (see Compass.ino, System.ino, PWM.ino): convertToLogData() STOPS READING THE COMPASS OVER I2C. It used to call getCompassHeading() on EVERY log record - ~2.89 Hz at the default rate - which is two chained Wire transactions inside one portMAX_DELAY mutex hold, from loggerTask, with NO throttle gate, NO rtm_use_compass gate and NO heading-latch gate. So whenever logging was on, the RX hit the compass about three times a second at ANY throttle, including full throttle with a rider on the rope, contending for the same mutex as the 100 Hz enable swap that decides which of the two motors receives the single PPM output; and loggerTask is not registered with the task watchdog, so a hold that never returned would not have panicked anything. This was the compass starver nobody had found. IT IS NOT AN ARBITRATION PROBLEM: the logger and the compass were never two competing bus users - the logger's I2C traffic WAS a compass read - so the fix is a cache, not a referee. getCompassHeading() (Compass.ino) now publishes its last successful result, and this file reads that, with an age test: past kCompassLiveCacheMaxAgeMs the column records the 0xFFFF invalid sentinel it has always had. Zero transactions, zero mutex takes, zero contention. The column's contract is unchanged - same field, same size, same scaling, same 0xFFFF-means-invalid semantics - and the mode-2 heading mirror below is unaffected because in that mode getRtmHeading() reads live at 10 Hz, so the cached value is never more than ~100 ms behind what the controller actually used. No record-size change, no LOG_FILE_FORMAT_VER bump, no confStruct change: sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 2 of 4 - THE INSTRUMENT (see BREmote_V2_Rx.h, PWM.ino, System.ino): fillLevel4Diag() ORs two 4-bit DELTAS of the enable-swap failure counters into bits 23-30 of the fm_gate_flags word it already copies - how many swaps lost the mutex since the previous row, per channel, saturating at 15. NO NEW COLUMN AND NO NEW BYTES, deliberately: the project's own rule beside LOG_FILE_FORMAT_VER says appending to the BASE record forces a format bump, and it would move every field above byte 62 and break offsetof(VescLogDataL5, rider_lat) == 90, making EVERY EXISTING LOG FILE undecodable. Riding in the existing u32 costs nothing, needs no bump (format stays 2), covers levels 4 AND 5, and leaves record sizes at 62 / 90 / 112. The delta is computed against loggerTask-LOCAL statics, so this task reads the PWM task's two volatiles and writes only its own - the single-writer contract that makes the FmLogSnapshot hand-off safe is preserved exactly. The cur < prev case (?diagz zeroing the counters mid-session) is handled rather than wrapping. Strictly additive and masked to its own eight bits: no FM gate verdict, no other column, no control path and no record size is touched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-01 - M-2 FIX, part 3 of 4 (see BREmote_V2_Rx.h, PWM.ino, System.ino): convertToLogData() fills the two motor-gate columns appended to the BASE record, VescLogData (59 -> 62 B, so VescLogDataL4 is 90 B and VescLogDataL5 112 B): ctrl_pkt_age_ms = millis() - last_control_packet, capped at 0xFFFE, and motor_gate_open = the calcPWM() observer g_motor_gate_open (PWM.ino), the same route motor0_cmd / motor1_cmd take. THE BASE RECORD ON PURPOSE: the tiers are cumulative and levels 0-3 all record as level 3, so these two columns appear at EVERY log level 0 through 5 - there is no stored log_level that could miss them, and an incident is never re-runnable at a higher level. The gate is copied, never recomputed: this file already holds one CRITICAL MAINTENANCE inline duplicate (the heading ladder) and must not acquire a second. OLD LOGS: a pre-flash file cannot be decoded by this build - record_size says how far to step but cannot express that every block above byte 59 moved 3 bytes - so LOG_FILE_FORMAT_VER went 1 -> 2 and the format_ver test already in this file's download guard refuses them in plain English instead of mis-decoding them. Download anything worth keeping BEFORE flashing. ?download's record-size ceiling and the record buffers are sizeof()-derived and follow automatically. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-25 - MANUAL PIVOT ASSIST (log only): fillLevel4Diag() ORs the assist's depth, 0-15, into bits 19-22 of the fm_gate_flags word it already copies - one 4-bit field, no new column, no record-size change, so every existing 87 B / 109 B log file and both readers are unaffected. The value comes from the calcPWM() observer g_pivot_assist_q4 (PWM.ino), the same route motor0_cmd / motor1_cmd take, because the assist's controller is the 100 Hz PWM task and g_fm_log_snapshot must keep its single loop-task writer. Strictly additive and masked to its own four bits: no FM gate verdict, no other column and no control path is touched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -239,7 +240,12 @@ VescLogData convertToLogData() {
     extern float                 gps_last_speed_kmh;
     extern unsigned long         gps_last_ms;
     extern volatile uint8_t      g_effective_steer;
-    extern float                 getCompassHeading();
+    // V2.5-Evo - 2026-10-03 - STEP 4: getCompassHeading() is NO LONGER CALLED FROM THIS TASK. The
+    // two cache globals below replace it; they are defined in Compass.ino, which the Arduino build
+    // concatenates ahead of this file (the same dependency the gps_* externs above rely on, written
+    // out for the same reason - so a reader sees it where they will look for it).
+    extern float                 compass_live_cache_deg;   // last heading getCompassHeading() computed, deg; -1.0 = none yet
+    extern unsigned long         compass_live_cache_ms;    // millis() of that computation; 0 = never
     // V2.5-Evo - 2026-08-16 - the last-good COG the controller holds across a short COG dropout
     // (RTMState.ino, kCogHoldMs). READ-ONLY here: the logger mirrors the controller's choice, it
     // never participates in making it, so nothing in this file may ever assign to these two.
@@ -254,7 +260,44 @@ VescLogData convertToLogData() {
     data.effective_steer_log    = g_effective_steer;   // FM triage: steering byte actually applied by calcPWM()
 
     // Live compass heading × 10 (0xFFFF = invalid/uncalibrated)
-    float live_compass = getCompassHeading();
+    // ============================================================
+    // V2.5-Evo - 2026-10-03 - STEP 4: THIS LINE USED TO CALL getCompassHeading(). IT NO LONGER
+    // ISSUES ANY I2C TRAFFIC AT ALL.
+    //
+    // WHAT WAS WRONG: getCompassHeading() -> readCompassRaw() -> two chained Wire transactions
+    // inside ONE i2cMutex hold taken with portMAX_DELAY, performed on EVERY log record - ~2.89 Hz
+    // at the default rate - from loggerTask, with no throttle gate, no rtm_use_compass gate and no
+    // heading-latch gate. So whenever logging was on, the RX hit the compass about three times a
+    // second AT ANY THROTTLE, including full throttle with a rider on the rope, competing for the
+    // same mutex as the 100 Hz enable swap that decides which of the two motors receives the single
+    // PPM output. A swap that loses that race starves one channel completely. loggerTask is also
+    // NOT registered with the task watchdog, so a hold that never returned would not have panicked
+    // anything either. This was the compass starver nobody had found.
+    //
+    // THE FIX IS A CACHE, NOT AN ARBITRATION. The logger and the compass were never two competing
+    // bus users - the logger's I2C traffic WAS a compass read - so there is nothing to arbitrate.
+    // getCompassHeading() publishes its last successful result in Compass.ino; recording a heading
+    // no longer requires fetching one. Zero transactions, zero mutex takes, zero contention with
+    // the motor path, and no behaviour anywhere else changes because no control path reads this.
+    //
+    // THE AGE TEST IS THE HONEST PART. Past kCompassLiveCacheMaxAgeMs the column records its
+    // existing 0xFFFF invalid sentinel rather than a value that no longer describes this row. That
+    // is not a loss: at real throttle there IS no trustworthy live compass heading - the snapshot
+    // path is gated off above thr_received 25 precisely because motor current biases this part by
+    // 100 degrees or more - so a fresh read on the motor path was buying a number that was already
+    // known to be wrong, at the price of starving a motor. In the one mode where the live value is
+    // genuinely load-bearing (rtm_use_compass 2, where getRtmHeading() reads live at 10 Hz) the
+    // cache is never more than ~100 ms old, so the mode-2 mirror below logs exactly what the
+    // controller used.
+    //
+    // THE COLUMN'S CONTRACT IS UNCHANGED: same field, same size, same scaling, same
+    // 0xFFFF-means-invalid semantics. No record-size change and no format bump.
+    // ============================================================
+    float live_compass = -1.0f;
+    if (compass_live_cache_ms != 0 &&
+        (millis() - compass_live_cache_ms) <= kCompassLiveCacheMaxAgeMs) {
+      live_compass = compass_live_cache_deg;
+    }
     if (live_compass >= 0.0f && live_compass < 360.0f) {
       data.compass_live_dx10 = (uint16_t)(live_compass * 10.0f);
     } else {

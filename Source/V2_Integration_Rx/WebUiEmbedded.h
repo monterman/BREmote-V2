@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-03 - RX WEB CONSOLE: a Serial Console card on the existing page - output pane, a dropdown of permitted commands, a free-text box, and buttons for the heading-confirmation workflow (North check, a two-tap ?magalign, ?diag, ?conf, ?printgps, ?logstat, Copy, Clear). The dropdown and its help text are fetched from the board (GET /api/cmd/list, built from kCommands[]) rather than embedded here, so the page cannot list a command the firmware would refuse and there is no second copy of the command set to drift. Deliberately plain: no library, no font, no icon, one new CSS rule (#co, the output pane) and otherwise only the classes this page already had - the page lives in the same SPIFFS as the logs, so every byte here is recording time. Cost: WEB_UI_INDEX_HTML 54,614 -> 62,046 B (+7,432, of which about 2,070 is explanatory comments). Embedded JS syntax-checked with node --check. No field added, removed or changed in the config array, so the three-surface field sync is unaffected. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-24 - MERGE: the side branch's two ramp rows (motor_ramp_s relabelled "Manual towing motor ramp" + the new auto_ramp_s) are kept, with the steering claim corrected in BOTH - the ramp is THROTTLE ONLY now, so the side branch's "It also ramps the start of a hard turn" sentence is replaced by the throttle-only / steering-immediate wording and auto_ramp_s says the same. The side branch's "Owner rides 2.0" line is dropped: a live per-board setting does not belong in firmware help text. Rows byte-identical to the docs HTML tool, as the three-surface rule requires. Text only - no key, type, default, range or group changed.
 // V2.5-Evo - 2026-09-24 - motor_ramp_s help text resynced to the throttle-ramp move in PWM.ino: the field ramps THROTTLE ONLY and steering is immediate, so the old "WARNING: this also ramps differential steering" line is replaced by a plain statement of what is ramped and what is not, plus the instant-drop rule. Description text only - no key, type, default, range or group changed, no confStruct change, SW_VERSION stays 36. Mirrored byte-identically into docs/BREmote_V2.5-Evo_Web_Serial_Config_Tool.html, per the three-surface rule.
 // V2.5-Evo - 2026-09-19 - log_level help: level 4 (Deep) is 87 B now (the sticky auto-return reason, aligning / boost flags, raw rider speed and the two mixer outputs joined it on 2026-09-19) and a level 5 (Everything, 109 B, test sessions) is added - max 4 -> 5, one more option, capacity figures for both (about 1 h 55 min / 1 h 10 min at 3 / 5 Hz for 87 B; about 1 h 30 min / 55 min for 109 B, on the 1757 KB the filesystem reports). Row text + max + options only; the field is the same u16 slot. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -98,6 +99,8 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
     .log-size{font-size:10px;color:var(--muted);}
     .log-actions{display:flex;gap:3px;flex-shrink:0;}
     @media (max-width:600px){.modal-overlay{padding:8px;}.modal{padding:10px;}}
+    /* Console output pane. One rule, no decoration: high contrast and a readable size for a phone in sunlight. */
+    #co{height:260px;overflow-y:auto;margin:8px 0;padding:8px;background:#060b14;border:1px solid #334155;border-radius:8px;color:#d1d5db;font-size:12px;line-height:1.4;white-space:pre-wrap;word-break:break-word}
   </style>
 </head>
 <body>
@@ -139,6 +142,28 @@ static const char WEB_UI_INDEX_HTML[] PROGMEM = R"HTML(
             <button class="btn sec" onclick="document.getElementById('importFile').click()">Import File</button>
             <input type="file" id="importFile" accept=".json" style="display:none" onchange="importJsonFile(this)">
         </div>
+    </div>
+    <div class="card">
+      <div class="title">Serial Console</div>
+      <div class="sub">What the board printed, from boot onwards. The dropdown is the complete list of commands this board accepts over WiFi - it is read off the board, not stored in this page. Anything that streams until stopped is USB-only.</div>
+      <pre id="co" class="mono"></pre>
+      <div class="row"><select id="cl" onchange="cPick()"><option value="">- pick a command -</option></select></div>
+      <div class="row">
+        <input id="ci" class="mono" placeholder="?diag" spellcheck="false" autocapitalize="off" autocorrect="off" style="flex:1;min-width:120px" onkeydown="if(event.key==='Enter')cGo(this.value)">
+        <button class="btn" onclick="cGo(document.getElementById('ci').value)">Send</button>
+        <button class="btn sec" onclick="cSend('quit','')" title="Stops a running timed command">quit</button>
+      </div>
+      <div class="row">
+        <button class="btn" onclick="cGo('?checkheading 8')" title="Point the nose north: 8 s of live heading, then the average">North check</button>
+        <button class="btn warn" id="cma" onclick="cMag()" title="Overwrites the compass mounting orientation - two taps">?magalign</button>
+        <button class="btn sec" onclick="cGo('?diag')">?diag</button>
+        <button class="btn sec" onclick="cGo('?conf')">?conf</button>
+        <button class="btn sec" onclick="cGo('?printgps')">?printgps</button>
+        <button class="btn sec" onclick="cGo('?logstat')">?logstat</button>
+        <button class="btn sec" id="ccb" onclick="cCopy()">Copy</button>
+        <button class="btn sec" onclick="document.getElementById('co').textContent=''">Clear</button>
+      </div>
+      <div class="sub" id="cs">idle</div>
     </div>
     <div class="card foot"><div class="sub mono" id="last">Last: -</div></div>
   </div>
@@ -526,6 +551,80 @@ async function deleteSelected(){
 
 window.setVal=setVal;window.setBool=setBool;window.setEnum=setEnum;window.syncField=syncField;window.setAddrPart=setAddrPart;window.saveAll=saveAll;window.loadCfg=loadCfg;window.rebootDev=rebootDev;window.refreshAll=refreshAll;window.openLogs=openLogs;window.deleteLog=deleteLog;window.deleteAllLogs=deleteAllLogs;window.deleteSelected=deleteSelected;window.copyJson=copyJson;window.exportJsonFile=exportJsonFile;window.importJsonFile=importJsonFile;window.loadFromJsonText=loadFromJsonText;window.expandAll=expandAll;window.collapseAll=collapseAll;
 refreshAll();
+
+// ===== SERIAL CONSOLE =====
+// Polls GET /api/cmd/out for whatever the board's capture ring has gained since our cursor, and
+// posts command lines to POST /api/cmd. Polling, not a WebSocket: the board runs the synchronous
+// WebServer and serves one client at a time. No library, no framework, one CSS rule - this page
+// is stored in the same SPIFFS the logs are written to, so every byte here is recording time.
+// The command list, its help text and the per-command flags all come FROM THE BOARD
+// (/api/cmd/list, built from kCommands[]), so this page holds no copy of them to drift.
+let cC=null,cB=0,cT=null,cArm=0;
+const cM={};
+function cSt(t){document.getElementById('cs').textContent=t}
+function cAp(t){if(!t)return;const b=document.getElementById('co');
+  // Only stick to the bottom if we were ALREADY at the bottom, so scrolling back to read
+  // something is not yanked away by the next poll.
+  const at=b.scrollHeight-b.scrollTop-b.clientHeight<40;b.textContent+=t;
+  // The board only holds 8 KB; there is no point growing the page forever.
+  if(b.textContent.length>40000)b.textContent=b.textContent.slice(-30000);
+  if(at)b.scrollTop=b.scrollHeight}
+function cName(l){let b=String(l||'').trim();if(b.charAt(0)==='?')b=b.substring(1);return b.split(/[ :]/)[0].toLowerCase()}
+function cPoll(){if(cB)return;cB=1;
+  fetch('/api/cmd/out'+(cC===null?'':'?since='+cC)).then(r=>r.json()).then(j=>{
+    if(!j||!j.ok)return;
+    // head going BACKWARDS means the board rebooted - it restarts at 0 while we still hold a big
+    // cursor. Drop ours, or we ask forever for bytes that no longer exist.
+    if(cC!==null&&j.head<cC){cAp('\n--- board rebooted - reconnected ---\n');cC=null;return}
+    if(j.gap)cAp('\n--- output dropped: the board buffer wrapped ---\n');
+    cAp(j.data);cC=j.cursor;
+    cSt((j.busy?'command running, output follows - ':'idle - ')+j.head+' bytes since boot')})
+  .catch(()=>cSt('no reply from the board')).then(()=>{cB=0})}
+function cLoad(){fetch('/api/cmd/list').then(r=>r.json()).then(j=>{if(!j||!j.ok)return;
+  const s=document.getElementById('cl');
+  j.cmds.forEach(c=>{cM[cName(c.cmd)]=c;const o=document.createElement('option');
+    o.value=c.cmd;o.textContent=c.cmd+(c.help?' - '+c.help:'');s.appendChild(o)})}).catch(()=>{})}
+// Picking from the dropdown FILLS THE BOX, it does not fire. Several commands take an argument,
+// and a list that executed on selection would run the wrong thing on a mis-scroll.
+function cPick(){const s=document.getElementById('cl');if(!s.value)return;
+  document.getElementById('ci').value=s.value+' ';s.selectedIndex=0}
+function cGo(l){l=String(l||'').trim();if(!l)return;const m=cM[cName(l)];
+  // Tell the truth before sending, for both of the classes the board flags.
+  if(m&&m.drops&&!confirm(l+' will disconnect this console. Continue?'))return;
+  if(m&&m.confirm&&cName(l)!=='magalign'&&!confirm(l+' overwrites stored compass calibration and clears the heading-disagreement latch. Continue?'))return;
+  cSend(l,(m&&m.confirm)?cName(l):'')}
+function cSend(l,cf){cAp('\n> '+l+'\n');
+  fetch('/api/cmd',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'cmd='+encodeURIComponent(l)+(cf?('&confirm='+encodeURIComponent(cf)):'')})
+  .then(r=>r.json()).then(j=>{
+    if(j&&!j.ok){cAp('[refused] '+(j.msg||j.err||'error')+'\n');return}
+    if(j&&j.drops){
+      // A terminal state, not a spinner that never resolves: the board is taking the transport
+      // away on purpose and nothing more will arrive on it.
+      cAp('[sent. The board is dropping this connection on purpose. Rejoin its WiFi and reload the page.]\n');
+      cSt('disconnected on purpose');if(cT){clearInterval(cT);cT=null}return}
+    if(j&&j.blocks)cSt('command running, output follows');
+    setTimeout(cPoll,150)})
+  .catch(()=>cAp('[send failed - is the board still on WiFi?]\n'))}
+// Two taps, deliberately. ?magalign overwrites the compass mounting orientation and clears the
+// heading-disagreement latch that is keeping Follow-Me off an unverified compass, so a stray tap
+// on a phone in a wet pocket must not be able to do it. The board refuses it too without the
+// confirm field - this is the convenient half of the gate, not the gate itself.
+function cMag(){const b=document.getElementById('cma');
+  if(cArm){cArm=0;b.textContent='?magalign';cSend('?magalign','magalign');return}
+  cArm=1;b.textContent='Tap again to confirm';
+  setTimeout(()=>{if(cArm){cArm=0;b.textContent='?magalign'}},8000)}
+// navigator.clipboard needs a secure context and this page is plain http://192.168.4.1, so the
+// legacy path is the normal one here, not the exception. Same as copyJson().
+function cCopy(){const t=document.getElementById('co').textContent;const b=document.getElementById('ccb');
+  const done=ok=>{b.textContent=ok?'Copied':'Select by hand';setTimeout(()=>{b.textContent='Copy'},2500)};
+  if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(t).then(()=>done(true)).catch(()=>done(legacyCopy(t)));return}
+  done(legacyCopy(t))}
+// 1 s while the tab is visible, 4 s when it is not, so a phone in a pocket is not asking the
+// board for data all afternoon.
+function cTick(){if(cT)clearInterval(cT);cT=setInterval(cPoll,document.hidden?4000:1000)}
+document.addEventListener('visibilitychange',cTick);
+cLoad();cTick();cPoll();
 </script>
 </body>
 </html>

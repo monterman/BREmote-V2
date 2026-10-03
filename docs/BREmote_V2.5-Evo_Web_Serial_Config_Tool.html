@@ -529,6 +529,7 @@ const RX_CMD_HTML = `
   <option value="?printrssi">?printrssi — live RSSI/SNR (quit to exit)</option>
   <option value="?diag">?diag — one-shot snapshot: GPS bytes/sentences per s, fix age, COG updates vs value-changes, mux errors, VESC poll rate, loop min/mean/max (safe during RTM/FM, no quit needed)</option>
   <option value="?diagz">?diagz — zero the ?diag counters so a run can be bracketed</option>
+  <option value="?dump">?dump — print the RX's captured serial ring, boot log included. Boot the board with nothing attached, plug in afterwards, run this: the output you missed is still there. USB only, by design — its own output must not re-enter the ring it is reading</option>
 </optgroup>
 <optgroup label="GPS &amp; Compass">
   <option value="?gpsbaud">?gpsbaud — listen-only baud scan; are ANY bytes arriving? (~6 s, bench only)</option>
@@ -538,6 +539,7 @@ const RX_CMD_HTML = `
   <option value="?gpscfg">?gpscfg — read GPS config back OUT of the module (dynModel + GSV filter; verifies configureGPS actually took)</option>
   <option value="?printcompass">?printcompass — raw compass XYZ readings</option>
   <option value="?compassheading">?compassheading — computed heading degrees</option>
+  <option value="?checkheading 8">?checkheading 8 — NORTH CHECK: sample the heading for 8 s (1-30, default 5), print the average, stop on its own. Point the nose at magnetic north: anything within a few degrees of 0 is a pass</option>
   <option value="?compasscal">?compasscal — start compass calibration (runcal)</option>
   <option value="?magalign">?magalign — set compass mounting rotation only: point the nose NORTH, then run this (~5s, no turning)</option>
   <option value="?magtest">?magtest — CSV mag/heading/VESC/throttle stream for EMI diagnostics</option>

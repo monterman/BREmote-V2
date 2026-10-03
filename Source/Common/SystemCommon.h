@@ -1,3 +1,8 @@
+// V2.5-Evo - 2026-10-03 - RX WEB CONSOLE: checkSerialQuit() now also honours a quit raised from off-port
+// (gRemoteQuitRequested / requestSerialQuit() / clearSerialQuitRequest(), added just above it). The USB
+// behaviour is unchanged - the physical port is still read exactly as before, the flag is simply tested
+// first and consumed on read. Inert on the TX: nothing on that board calls requestSerialQuit(). No
+// confStruct change, no SW_VERSION change on either board.
 #ifndef SYSTEM_COMMON_H
 #define SYSTEM_COMMON_H
 
@@ -91,7 +96,50 @@ static void exitSetup() {
   Serial.println("");
 }
 
+// ============================================================================================
+// V2.5-Evo - 2026-10-03 - RX WEB CONSOLE. A quit that does not need the USB keyboard.
+// ============================================================================================
+// checkSerialQuit() reads Serial.available() - the PHYSICAL port. A "quit" tapped on the WiFi
+// console arrives as an HTTP POST, so Serial.available() is zero and a naive button would
+// silently do nothing while the owner watched output scroll forever.
+//
+// Roughly a dozen streaming and timed commands call this one function (?compasscal,
+// ?compassheading, ?printcompass, ?printbat, ?magtest, ?vescping, ?vescraw, ?gpsdiag and the
+// print* family), so the fix belongs here and only here rather than in each of them.
+//
+// WHY IT CAN WORK AT ALL: the request has to be SERVICED while the command is running, and the
+// web server is pumped from only one place in loop(). The RX now pumps it again from inside the
+// three bounded blocking commands that are reachable from the console (?compasscal, ?magalign,
+// ?magtest) - see webCfgPumpWhileBlocked() in ../Common/WebConfigEngine.h. Outside those three
+// the flag can still only be set while nothing is running, so it is latent, not load-bearing.
+//
+// TWO COMMANDS DELIBERATELY HAVE NO ABORT POINT AND ARE NOT REACHED BY THIS: ?gpssetup and
+// ?wifiupd. Each is one indivisible sequence whose halves are not separately valid - ?gpssetup
+// raises the module baud, proves the link at the new rate, reverts if the proof fails, then
+// persists to the module's own NVM; ?wifiupd rewrites ~50 KB of web UI into SPIFFS and verifies
+// it afterwards. Stopping either part-way leaves the hardware in a WORSE state than letting it
+// finish, so any stop control must go inert for those two rather than pretend. Both are refused
+// by the console whitelist for exactly this reason.
+//
+// Inert on the TX: nothing on that board calls requestSerialQuit().
+static volatile bool gRemoteQuitRequested = false;
+
+// Called by the web console's command route when the line is "quit". Sets a flag rather than
+// dispatching, because "quit" is not a command in the table - it is an interrupt aimed at a
+// handler that is already running and holding the loop task.
+static inline void requestSerialQuit() { gRemoteQuitRequested = true; }
+
+// Cleared when a new command starts, so a quit that arrives with nothing running cannot sit
+// latched and kill the NEXT timed command the instant it begins.
+static inline void clearSerialQuitRequest() { gRemoteQuitRequested = false; }
+
 static bool checkSerialQuit() {
+  // Checked first, and consumed on read: whoever is looping right now owns this quit.
+  if (gRemoteQuitRequested) {
+    gRemoteQuitRequested = false;
+    Serial.println("Stopping print loop.");
+    return true;
+  }
   if (Serial.available() > 0) {
     String input = Serial.readStringUntil('\n');
     input.trim();

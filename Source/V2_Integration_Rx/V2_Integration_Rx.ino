@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-03 - RX WEB CONSOLE: serialTeeInit() added as the first line of setup() so the
+// serial capture ring has its mutex before anything else prints. No control-path statement added,
+// removed or reordered; loop() is untouched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // *** LATEST: V2.5-Evo - 2026-07-25 - STAGE 0 (instrumentation only): loop() body wrapped in diagLoopBegin()/diagLoopEnd() so ?diag and the level-4 log record can report loop min/mean/max time. Cycle-counter based (~5 ns), measured before the existing vTaskDelay so the deliberate 10 ms sleep is not counted as work. No control-path statement added, removed or reordered; no confStruct change; SW_VERSION stays 34 ***
 // V2.5-Evo - 2026-07-19 - P3 FM — runFmLoop() added to loop() after runRtmLoop(); Follow-Me autonomous following (see RTMState.ino). No confStruct change; SW_VERSION stays 33
 // V2.5-Evo - 2026-06-04 - D1 — UART-mux read-back verify (setUartMux); skip VESC poll while throttle high; no confStruct change
@@ -25,6 +28,13 @@ static void headingDisagreeRestore();
 
 void setup()
 {
+  // V2.5-Evo - 2026-10-03 - RX WEB CONSOLE. FIRST line of setup(), before anything prints. It only
+  // creates the capture ring's recursive mutex - capture itself is already live, because the ring
+  // and its head counter live in .bss and were zeroed before any constructor ran. Prints that
+  // happen ahead of this line are still captured, unlocked, which is correct: nothing else is
+  // running yet.
+  serialTeeInit();
+
   enterSetup();
 
   initHardware();

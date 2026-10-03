@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 3 of 4 - FAIL SYMMETRIC, NOT ASYMMETRIC. THIS IS THE SAFETY FIX AND IT IS CONFINED TO THIS FILE. WHAT WAS WRONG: when the enable swap loses i2cMutex, one motor keeps being pulsed and the other gets nothing; the starved VESC waits out its own timeout_msec (1000 ms) and releases while the other HOLDS THE RIDER'S COMMANDED THROTTLE. A differential-drive buggy in that state does not stop - it turns hard under power, toward the rider and the trailing rope. The owner has already been hit by this buggy once. WHAT IT DOES NOW: after kSwapStarveTicks (25 ticks = 250 ms) of consecutive failures, NEITHER channel is pulsed. Both VESCs time out together and the buggy COASTS - the failure direction this system already has and the rider has already met (trigger release, link failsafe, VESC timeout all produce it), rather than an uncommanded yaw at power he has no training for. 250 ms is one quarter of the VESC's 1000 ms timeout, so the symmetric stop lands ~750 ms BEFORE the starved VESC would have released and the asymmetry never becomes mechanical at all. HOW IT IS IMPLEMENTED, and this part is non-negotiable: as a TERM IN THE GATE EXPRESSION (!g_swap_starved, added at the pulse site AND at the calcPWM() mirror - one new && token each, still exactly TWO copies of that expression), NOT as a skipped generate_pulse() call. A skipped pulse would leave motor_gate_open true, M-3's ramp target would keep climbing on the rider's live throttle, and recovery would STEP STRAIGHT TO FULL COMMANDED THROTTLE - the M-3 snapback, reintroduced by the safety fix at the worst possible moment. As a gate term the ramp target goes to 0, recovery is a full soft ramp from 0 over motor_ramp_s, BOTH channels resume together with normal alternation, the effective_thr == 0 clamp is untouched, and ?diag / ?printpwm / the log's motor_gate_open column all report the starvation with no new code. RECOVERY IS A SCHMITT TRIGGER, NOT A LATCH: 25 failures in, kSwapRecoverTicks (5) consecutive successes out. One lucky swap must not resume output - because M-3 resets the ramp whenever the gate shuts, a flapping cut/resume would re-ramp every time and PIN THE THROTTLE near zero, which is F-1 of the 2026-10-02 M-3 delta audit. No hard latch either: a latch turns a transient into a dead ride a rider cannot recover from on the water. THE SWAP IS STILL ATTEMPTED ON EVERY link_ok TICK, starved or not - identical frequency to before, zero new I2C traffic - because an attempt left inside the pulse gate could never clear the counter and would have been an accidental permanent latch. No reordering of the pulse-then-2 ms-then-swap sequence. Two new file-scope volatiles and two new && tokens; no confStruct change, sizeof stays 200, SW_VERSION stays 36, no log format change.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 2 of 4 - THE INSTRUMENT (see BREmote_V2_Rx.h, System.ino, Logger.ino): the two enable-swap timeout paths at :75-100 now COUNT. On a timeout the swap does not happen, alternatePWMChannel is deliberately left where it is, the still-enabled motor is re-pulsed and THE OTHER MOTOR RECEIVES NO PULSES AT ALL - the starved VESC then times out and releases while the other holds the rider's commanded throttle, which on a differential drive is uncommanded yaw at power. That path has existed and been correct since 2026-07-22 and was completely silent: three half-days of field work on an asymmetric-thrust failure could not establish whether it had ever fired, because ?printpwm reads PWM0_time / PWM1_time, which calcPWM() computes unconditionally whether a pulse leaves the board or not. ADDED: g_swap_fail_ch0++ / g_swap_fail_ch1++ (saturating at 0xFFFF) in the two else-branches, g_swap_fail_run++ beside them, and g_swap_fail_run = 0 on each successful swap. Read them the right way round - a run of ch0 failures means PWM0 kept its pulses and PWM1 was the starved channel. DIAGNOSTIC ONLY: three counter writes are the whole change; nothing reads them back, g_swap_fail_run is a PURE OBSERVER until STEP 3, and no gate, channel index, cap, ramp or PWM value moves. The pulse-then-2 ms-then-swap ordering is byte-for-byte unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36, no log format change.
 // V2.5-Evo - 2026-10-01 - M-2 FIX, part 2 of 4 (see BREmote_V2_Rx.h, Logger.ino, System.ino): calcPWM() PUBLISHES the motor gate's verdict into the diagnostic observer g_motor_gate_open. The gate's state had no instrument anywhere: the BIND LED, ?printrssi and the deep log's link flag all read last_packet ("is the remote alive?"), while the gate reads last_control_packet ("do I have a fresh throttle command?"), so a motor gated off displayed as connected with good signal. ?printpwm was worse than useless - it prints PWM0_time / PWM1_time, which calcPWM() computes UNCONDITIONALLY every 10 ms whether the gate lets a pulse out or not. ONE new line here: the local motor_gate_open that the M-3 ramp reset below already computes is copied to the observer, so ?diag, ?printpwm and the logger all read the gate's own verdict rather than each growing a third copy of the expression - there are still exactly TWO copies, the gate in generatePWM() and this mirror, and the warning at both sites still says so. The observer also carries PWM_active, which a bare control-packet age cannot show. DIAGNOSTIC ONLY: nothing reads it back, ramp_target still uses the local bool, and no gate, cap, ramp or PWM value changes - the control path is byte-for-byte identical. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-01 - M-3 FIX (the follow-up residual the ramp-placement audit left open, now water-critical by owner request): the throttle rate-limiter is RESET while the motor gate is shut. calcPWM() runs before the gate on every 10 ms pass, so through a link dropout - gate shut, no pulses leaving the board - the ramp kept winding its memory up toward the rider's last pre-dropout throttle byte, and a link that came back with the trigger still held stepped the motors straight to that value instead of easing in over motor_ramp_s. The same snapback a competitor's manual documents ("may jump to 100% if trigger still fully pressed"). FIX: calcPWM() mirrors the gate's own test and hands the ramp a target of 0 while it is shut, so the memory lands on 0 through the helper's existing instant-fall path - its only downward path - and the climb on recovery starts from 0, at motor_ramp_s whenever RTM and FM are inactive. No new state, no second timer (the gate's own failsafe_time already means a closure is never a micro glitch), nothing reaches inside OutputRampState, and Common/OutputRamp.h is not touched at all - so the separate ramp-OFF tracking fix inside the helper (rate 0 = track the target, no mid-session dip) is untouched: that one is about the RATE and lives in the helper, this one is about the GATE and lives in the caller. The gate line itself is unchanged, effective_thr and every cap are unchanged, and the terminal effective_thr == 0 clamp is still the last writer. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -17,6 +18,51 @@
 // V2.5-Evo - 2026-04-30 - calcPWM() applies rtm_approach_cap for RTM approach decel zone
 // V2.5-Evo - 2026-04-25 - P7: calcPWM() applies RTM emergency stop and steering override via effective_thr/steer
 // V2.5-Evo - 2026-04-28 - Security: gate steer override on thr_received>=25 (belt-and-suspenders)
+// ============================================================
+// V2.5-Evo - 2026-10-03 - THE ENABLE-SWAP STARVATION STATE, owned entirely by this file
+// ============================================================
+//
+// g_swap_starved is the one control bit STEP 3 adds. true = the enable swap has failed
+// kSwapStarveTicks times in a row, so NEITHER channel is pulsed: both VESCs time out together and
+// the buggy COASTS, instead of one motor holding the rider's commanded throttle while the other
+// has been released. It is read by exactly two places - the pulse test in generatePWM() and the
+// gate mirror in calcPWM() - and it is written only here, by the swap outcome.
+//
+// g_swap_ok_run is the recovery counter and is internal to this state machine. Nothing outside
+// this file reads it; the failure counters that DO have external readers (?diag, the deep log) are
+// g_swap_fail_* in BREmote_V2_Rx.h.
+//
+// WHY BOTH ARE volatile: same reason as every other observer in this project. Single writer
+// (generatePWM, which is also the only caller of calcPWM, so this is one task), single core, and
+// volatile is the part that matters - the compiler must not cache them in a register across the
+// two functions.
+//
+// IT IS A SCHMITT TRIGGER, NOT A SWITCH: kSwapStarveTicks (25) failures in to cut, and
+// kSwapRecoverTicks (5) successes in a row to clear. Derivations for both are at their
+// declarations in BREmote_V2_Rx.h. The short version of why recovery is not "the first successful
+// swap": M-3 drives the throttle ramp's target to 0 whenever the motor gate is shut, so a gate
+// that FLAPS costs a full re-ramp every time it reopens, and a marginal bus could have cut and
+// resumed on alternate ticks and PINNED THE THROTTLE near the bottom of the ramp - the buggy would
+// crawl rather than stop, a failure with no clear signature. That is F-1 of the 2026-10-02 M-3
+// delta audit, and five consecutive good swaps is what closes it.
+//
+// NOT A LATCH, DELIBERATELY. A hard latch turns a transient bus glitch into a dead ride, with a
+// rider on a rope and no way to restore propulsion without a power cycle he cannot perform on the
+// water. That is a worse outcome than the fault being fixed.
+//
+// ONE HONEST EDGE CASE, STATED RATHER THAN PAPERED OVER: the swap is only attempted while link_ok,
+// so if the link drops while starved, the state persists until the link returns and then clears
+// 50 ms later. That is harmless - through a link dropout the link gate already holds the motors
+// off and the ramp memory is already at 0, so the starved flag is not what is stopping anything,
+// and the 50 ms it costs on recovery is inside the soft ramp. It is deliberately NOT cleared on a
+// link drop: that would be a second clearing rule for one decision.
+// AND A SECOND: ?diagz zeroes g_swap_fail_run, so running it during a failure run restarts the
+// count and can delay a trip by up to 250 ms. It is a bench diagnostic typed by hand on the
+// serial console and it cannot clear g_swap_starved (only five good swaps do that), so the
+// consequence is bounded and acceptable.
+volatile bool     g_swap_starved = false;   // true = enable swap starved; BOTH channels stop pulsing (fail symmetric)
+volatile uint16_t g_swap_ok_run  = 0;       // consecutive SUCCESSFUL swaps; recovery needs kSwapRecoverTicks of them
+
 void generatePWM(void *parameter) {
   TickType_t xLastWakeTime = xTaskGetTickCount();
   const TickType_t xFrequency = pdMS_TO_TICKS(10);
@@ -58,7 +104,14 @@ void generatePWM(void *parameter) {
     // far inside failsafe_time, so this gate behaves IDENTICALLY to today in normal operation. The
     // only behaviour that changes is the failure case above. Full write-up at the declaration in
     // BREmote_V2_Rx.h.
-    if(PWM_active && millis()-last_control_packet < usrConf.failsafe_time)
+    // V2.5-Evo - 2026-10-03 - STEP 3: the gate test is HOISTED into link_ok and nothing else about
+    // it moves - not one token of the expression changed. It is hoisted because the pulse and the
+    // swap now need it separately: the pulse must stop while the swap is starved, and the swap must
+    // keep being ATTEMPTED so it can recover. The full gate for PULSING is link_ok && !starved, and
+    // its mirror in calcPWM() carries the identical pair of terms - there are still exactly TWO
+    // copies of that expression and the warning at both sites still says so.
+    const bool link_ok = (PWM_active && millis()-last_control_packet < usrConf.failsafe_time);
+    if(link_ok)
     {
 
       // V2.5-Evo - 2026-07-22 - <Rex HIGH> WDT self-preservation on i2cMutex.
@@ -86,10 +139,26 @@ void generatePWM(void *parameter) {
       // them back, and no gate, channel index, cap, ramp or PWM value is touched. g_swap_fail_run
       // in particular is a PURE OBSERVER here - it becomes a control input in STEP 3, in its own
       // commit, so that the two changes can be audited and reverted independently.
+      // V2.5-Evo - 2026-10-03 - STEP 3: PULSE ONLY WHILE THE SWAP IS HEALTHY. The pulse is lifted
+      // out of the two channel branches so this one test covers both; the ternary selects exactly
+      // the width each branch used to pulse (channel index 1 -> PWM0_time, 0 -> PWM1_time) and the
+      // pulse-then-2 ms-then-swap ordering on every tick that pulses is unchanged. On a starved
+      // tick there is no pulse, so there is nothing for an enable change to corrupt.
+      if(!g_swap_starved)
+      {
+        generate_pulse(alternatePWMChannel ? PWM0_time : PWM1_time);
+        vTaskDelay(pdMS_TO_TICKS(2));
+      }
+
+      // V2.5-Evo - 2026-10-03 - STEP 3: THE SWAP IS ATTEMPTED ON EVERY link_ok TICK, INCLUDING
+      // WHILE STARVED. This is not an optimisation, it is the thing that makes recovery possible:
+      // if the attempt sat inside the pulse gate, then once the gate closed for starvation the swap
+      // would never be retried, the success run could never accumulate, and the "no latch" promise
+      // would be an accidental PERMANENT latch - unrecoverable propulsion loss mid-ride. The rate
+      // is IDENTICAL to before (the swap already ran once per 10 ms tick whenever link_ok), so this
+      // adds no I2C traffic anywhere.
       if(alternatePWMChannel)
       {
-        generate_pulse(PWM0_time);
-        vTaskDelay(pdMS_TO_TICKS(2));
         if(xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(10)) == pdTRUE)
         {
           aw.pinMode(AP_EN_PWM0, INPUT);
@@ -97,6 +166,9 @@ void generatePWM(void *parameter) {
           xSemaphoreGive(i2cMutex);
           alternatePWMChannel = 0;  // advance only on a successful enable swap
           g_swap_fail_run = 0;      // STEP 2: the run ends on any successful swap
+          // STEP 3 hysteresis: kSwapRecoverTicks consecutive GOOD swaps to resume, not one.
+          if(g_swap_ok_run < 0xFFFFU) g_swap_ok_run++;
+          if(g_swap_ok_run >= kSwapRecoverTicks) g_swap_starved = false;
         }
         else
         {
@@ -104,12 +176,12 @@ void generatePWM(void *parameter) {
           // PWM0 keeps its pulses, so PWM1 is the channel being starved on this tick.
           if(g_swap_fail_ch0 < 0xFFFFU) g_swap_fail_ch0++;   // saturate: a wrapped counter reads as healthy
           if(g_swap_fail_run < 0xFFFFU) g_swap_fail_run++;
+          g_swap_ok_run = 0;        // STEP 3: one failure ends the recovery run
+          if(g_swap_fail_run >= kSwapStarveTicks) g_swap_starved = true;
         }
       }
       else
       {
-        generate_pulse(PWM1_time);
-        vTaskDelay(pdMS_TO_TICKS(2));
         if(xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(10)) == pdTRUE)
         {
           aw.pinMode(AP_EN_PWM1, INPUT);
@@ -117,6 +189,8 @@ void generatePWM(void *parameter) {
           xSemaphoreGive(i2cMutex);
           alternatePWMChannel = 1;  // advance only on a successful enable swap
           g_swap_fail_run = 0;      // STEP 2: the run ends on any successful swap
+          if(g_swap_ok_run < 0xFFFFU) g_swap_ok_run++;
+          if(g_swap_ok_run >= kSwapRecoverTicks) g_swap_starved = false;
         }
         else
         {
@@ -124,6 +198,8 @@ void generatePWM(void *parameter) {
           // PWM1 keeps its pulses, so PWM0 is the channel being starved on this tick.
           if(g_swap_fail_ch1 < 0xFFFFU) g_swap_fail_ch1++;
           if(g_swap_fail_run < 0xFFFFU) g_swap_fail_run++;
+          g_swap_ok_run = 0;
+          if(g_swap_fail_run >= kSwapStarveTicks) g_swap_starved = true;
         }
       }
     }
@@ -265,7 +341,29 @@ void calcPWM()
   const bool  auto_ramp_owner = (rtm_rx_active || fm_rx_active) && (usrConf.auto_ramp_s > 0.001f);
   const float ramp_s          = auto_ramp_owner ? usrConf.auto_ramp_s : usrConf.motor_ramp_s;
   // Mirror of the motor gate in generatePWM() - keep the two expressions identical if either moves.
-  const bool  motor_gate_open = (PWM_active && (millis() - last_control_packet) < usrConf.failsafe_time);
+  // V2.5-Evo - 2026-10-03 - STEP 3: AND THE SECOND TERM IS WHY THIS IS A GATE TERM AND NOT A
+  // SKIPPED PULSE. !g_swap_starved is added here as well as at the pulse site, so the two copies of
+  // the expression stay identical - one new && token at each site, and still exactly TWO copies.
+  // WHAT GOES WRONG IF THIS LINE IS NOT CHANGED: generatePWM() would stop pulsing while this mirror
+  // still reported the gate OPEN, so ramp_target below would keep being handed the rider's live
+  // throttle, the ramp memory would keep climbing, and on recovery THE MOTORS WOULD STEP STRAIGHT
+  // TO THE COMMANDED VALUE. That is the exact M-3 snapback this file was changed to cure two days
+  // ago ("may jump to 100% if trigger still fully pressed"), reintroduced by the safety fix and at
+  // the worst possible moment: a rider on a rope, trigger held, buggy that just stopped.
+  // WHAT THIS ONE TOKEN BUYS, all of it for free:
+  //   - ramp_target goes to 0 while starved, the helper's instant-fall branch lands the memory on
+  //     exactly 0, and recovery is a FULL SOFT RAMP FROM 0 over motor_ramp_s - the slow manual
+  //     ramp, because RTM and FM are inactive on a hand-back. A ramp, not a step.
+  //   - BOTH channels resume together and the channel alternation continues normally, because the
+  //     swap never stopped being attempted and alternatePWMChannel is still advanced by it.
+  //   - the effective_thr == 0 clamp at the end of this function is untouched and is still the
+  //     last writer of the stopped state.
+  //   - g_motor_gate_open below publishes 0 while starved, so ?diag's "motor gate" line,
+  //     ?printpwm's (GATED ...) marker and the deep log's motor_gate_open column ALL report a
+  //     starvation with zero new code. That dividend is the whole point of the M-2 observer, and
+  //     it depends on this term being here: a future refactor that moves the starvation test out
+  //     of this expression silently blinds all three instruments.
+  const bool  motor_gate_open = (PWM_active && (millis() - last_control_packet) < usrConf.failsafe_time) && !g_swap_starved;
   // V2.5-Evo - 2026-10-01 - M-2: publish that verdict for the instruments (g_motor_gate_open,
   // declared in BREmote_V2_Rx.h). ?diag, ?printpwm and the deep log read this ONE value instead of
   // each evaluating the gate test again, which is why adding three readers does not add a third copy

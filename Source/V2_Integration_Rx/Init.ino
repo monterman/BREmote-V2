@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 1 of 4 (see Compass.ino, System.ino): the two lines in initHardware() that bound EVERY I2C hold on this board. BACKGROUND: there is one PPM output (GPIO 9, one RMT channel) and two motors, time-multiplexed by swapping the optocoupler enables over the AW9523 on I2C - so the enable swap is ON the motor control path, and it takes i2cMutex with a 10 ms bound (PWM.ino). Other holders take the same mutex with portMAX_DELAY and hold it for Wire time, which was capped at 20 ms PER TRANSACTION; a single physical-layer stall therefore blew the swap's whole budget, the channel index correctly did not advance, and THE OTHER MOTOR RECEIVED ZERO PULSES - asymmetric thrust under power. (1) Wire.setClock(400000) -> 100000. The RX pulls SDA/SCL up with 10k (R24/R28, Electronics/.../Rx_V2-2.sch) and the compass hangs off two hand-soldered pads on flying leads: Fast-mode's 300 ns rise-time limit permits only ~35 pF of total bus capacitance, which the module's own pads and leads exceed on their own, while Standard-mode's 1000 ns limit is met with ~1.9x margin. That rise-time violation is what makes a 20 ms timeout reachable at all. COST: the longest routine hold goes ~0.6 ms -> ~2.4 ms against the PWM task's 10 ms budget (17x headroom -> 4x), which is the cheap side of the trade. (2) Wire.setTimeOut MOVED HERE from initCompass() and lowered 20 -> 3 ms. WHY THE MOVE MATTERS AND IS NOT COSMETIC: setTimeOut is GLOBAL to the Wire instance but was being set by a compass-specific function, so a board with NO compass fitted never reached that line and silently ran the arduino-esp32 default of 50 ms - 2.5x WORSE than the 20 ms everyone believed was the ceiling, in exactly the configuration created by unplugging the compass as a stopgap. Setting it in initHardware() makes the bound unconditional and present from the first transaction. EFFECT: worst-case hold for setUartMux() drops ~200 -> ~30 ms and the enable swap's own worst wait 80 -> 12 ms. 3 ms is 3.5x the longest legitimate transaction on this bus (a 6-byte compass read at 100 kHz is ~840 us). CHECKED, because moving it changes who sees it: startupAW() below now runs UNDER the 3 ms ceiling, and its aw.begin(0x58) failure path is a hard hang (while(1) delay(10), System.ino). A NACK still returns immediately, so a healthy bus is unaffected and a dead bus fails the same way it always did, only faster - the verdict does not change, only the time spent reaching it. No confStruct change, sizeof stays 200, SW_VERSION stays 36, no log format change.
 // V2.5-Evo - 2026-08-16 - initWatchdog() no longer returns early on config_version_error, so the task watchdog is armed on EVERY boot — including the first boot after a version bump, which used to run with no watchdog at all. A version mismatch is a self-healing condition (defaults are re-baked and re-read); a genuine config failure halts in spiffsErrorHalt() and never reaches this function. The flag itself is left set and untouched — it is shared with the TX, where it drives a whole-boot safe mode. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-07-25 - STAGE 1 (GPS repair): Serial1.setRxBufferSize(2048) added in runBootSequence() immediately BEFORE the first Serial1.begin(). The old setRxBufferSize(512) lived in configureGPS() (GPS.ino), which runs AFTER this begin() — and arduino-esp32 refuses a resize once the UART driver is installed, so the ring has always silently been the 256-byte default. No confStruct change, SW_VERSION stays 34.
 
@@ -7,7 +8,17 @@ void initHardware()
 {
   i2cMutex = xSemaphoreCreateMutex();
   Wire.begin(P_I2C_SDA, P_I2C_SCL);
-  Wire.setClock(400000);
+  // V2.5-Evo - 2026-10-03 - 100 kHz, not 400 kHz: the 10k pull-ups on this board size the bus for
+  // ~35 pF at Fast-mode rise times and the compass sits on flying leads well past that. Standard
+  // mode is the speed this bus is actually built for. Full reasoning in the file header above.
+  Wire.setClock(100000);
+  // V2.5-Evo - 2026-10-03 - the per-transaction ceiling for EVERY holder on this bus, and it lives
+  // HERE rather than in initCompass() so it is unconditional: it is a property of the bus, not of
+  // the compass, and a board with no compass fitted used to run the 50 ms Wire default instead.
+  // 3 ms is 3.5x the longest legitimate transaction here; it is what turns the worst routine hold
+  // from ~200 ms into ~30 ms. It must stay BELOW the PWM task's 10 ms enable-swap budget - if this
+  // number is ever raised, re-check kSwapStarveTicks in BREmote_V2_Rx.h, which is derived from it.
+  Wire.setTimeOut(3);
   startupAW();
 }
 

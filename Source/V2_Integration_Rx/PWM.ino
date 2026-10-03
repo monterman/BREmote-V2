@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 5 of 5 - THE SWAP NOW CHECKS THE BUS, NOT JUST THE SEMAPHORE (Rex delta audit C-1; see Init.ino, System.ino, Logger.ino). WHAT WAS STILL BROKEN AFTER STEPS 1-4: Adafruit_AW9523::pinMode() returns void (Adafruit_AW9523.cpp:253-279), so the two enable writes could fail silently ON THE BUS while xSemaphoreTake() reported success - which is exactly what happens on a wedged bus with LOW contention, and STEP 4 made that case MORE reachable by removing contention. The enable lines never moved, alternatePWMChannel was advanced anyway, g_swap_fail_run was ZEROED and g_swap_ok_run incremented: the firmware reported a healthy bus and an OPEN motor gate while ONE VESC RECEIVED BOTH CHANNELS' WIDTHS ALTERNATELY AT 50 Hz AND THE OTHER RECEIVED NOTHING. That is the original asymmetric-thrust failure, undetected, with STEP 2's counters reading clean and STEP 3 unable to help because g_swap_starved could never become true. THE FIX: the two aw.pinMode() calls at each swap site are replaced by ONE CHECKED WRITE of the AW9523's CONFIG1 direction register (awSetEnableDirections() below) - both enables are port-1 pins (AP_EN_PWM0 13, AP_EN_PWM1 12), so both direction bits live in that single register - and the bus result is treated EXACTLY as a semaphore timeout already was: alternatePWMChannel is NOT advanced, the per-channel and consecutive failure counters increment, g_swap_ok_run is cleared. The state machine cannot tell the two failure kinds apart, so kSwapStarveTicks (25) and kSwapRecoverTicks (5) keep working unchanged and a silent bus failure now reaches the symmetric stop in 250 ms instead of never. COST, and it is in the right direction: the swap drops from four register read-modify-writes (~8-12 Wire transactions, ~28 bytes on the wire, ~2.5 ms at 100 kHz) to ONE 3-byte write (~0.3 ms), because half of what pinMode() did was rewriting the LEDMODE register identically 100 times a second. Every hold-time margin in the STEP 1-3 derivations widens by roughly 8x. NOT CHANGED: the pulse-then-2 ms-then-swap ordering, the swap being attempted on every link_ok tick, the channel index advancing only on a verified swap, and the count of gate-expression copies - still exactly TWO, and as of this commit textually identical again (Rex L-2). ALSO IN THIS COMMIT: Init.ino's STEP 1 justification is corrected (Rex M-2), ?diag names the third cause of a CLOSED motor gate and prints g_swap_starved (Rex M-6), and the logger's delta snapshot is seeded on its first call (Rex L-3). No confStruct change, sizeof stays 200, SW_VERSION stays 36, no log format change.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 4 of 4 - COMMENT ONLY in this file, no code touched (see Compass.ino, Logger.ino, System.ino): the 2026-07-22 note listed the i2cMutex sharers as "compass/ADS1115/AW9523-LED/logger". THERE IS NO ADS1115 ON THE RX. It is a TX part (0x48, Display.ino / Analog.ino) and appears nowhere in the RX firmware or on the RX schematic; the RX's AP_BMS_MEAS is a plain AW9523 pin given pinMode(INPUT) in startupAW() and then never read anywhere, and getUbatLoop() measures the battery with the ESP32's own analogRead() on GPIO 0, with no I2C involved. The stale name cost real time - it sent the 2026-10-03 audit hunting for an ADC conversion wait held inside this lock, and no such holder exists on this board. The list now names the real sharers: the compass, the AW9523 LED and UART-mux writes, the button reads and the logger. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 3 of 4 - FAIL SYMMETRIC, NOT ASYMMETRIC. THIS IS THE SAFETY FIX AND IT IS CONFINED TO THIS FILE. WHAT WAS WRONG: when the enable swap loses i2cMutex, one motor keeps being pulsed and the other gets nothing; the starved VESC waits out its own timeout_msec (1000 ms) and releases while the other HOLDS THE RIDER'S COMMANDED THROTTLE. A differential-drive buggy in that state does not stop - it turns hard under power, toward the rider and the trailing rope. The owner has already been hit by this buggy once. WHAT IT DOES NOW: after kSwapStarveTicks (25 ticks = 250 ms) of consecutive failures, NEITHER channel is pulsed. Both VESCs time out together and the buggy COASTS - the failure direction this system already has and the rider has already met (trigger release, link failsafe, VESC timeout all produce it), rather than an uncommanded yaw at power he has no training for. 250 ms is one quarter of the VESC's 1000 ms timeout, so the symmetric stop lands ~750 ms BEFORE the starved VESC would have released and the asymmetry never becomes mechanical at all. HOW IT IS IMPLEMENTED, and this part is non-negotiable: as a TERM IN THE GATE EXPRESSION (!g_swap_starved, added at the pulse site AND at the calcPWM() mirror - one new && token each, still exactly TWO copies of that expression), NOT as a skipped generate_pulse() call. A skipped pulse would leave motor_gate_open true, M-3's ramp target would keep climbing on the rider's live throttle, and recovery would STEP STRAIGHT TO FULL COMMANDED THROTTLE - the M-3 snapback, reintroduced by the safety fix at the worst possible moment. As a gate term the ramp target goes to 0, recovery is a full soft ramp from 0 over motor_ramp_s, BOTH channels resume together with normal alternation, the effective_thr == 0 clamp is untouched, and ?diag / ?printpwm / the log's motor_gate_open column all report the starvation with no new code. RECOVERY IS A SCHMITT TRIGGER, NOT A LATCH: 25 failures in, kSwapRecoverTicks (5) consecutive successes out. One lucky swap must not resume output - because M-3 resets the ramp whenever the gate shuts, a flapping cut/resume would re-ramp every time and PIN THE THROTTLE near zero, which is F-1 of the 2026-10-02 M-3 delta audit. No hard latch either: a latch turns a transient into a dead ride a rider cannot recover from on the water. THE SWAP IS STILL ATTEMPTED ON EVERY link_ok TICK, starved or not - identical frequency to before, zero new I2C traffic - because an attempt left inside the pulse gate could never clear the counter and would have been an accidental permanent latch. No reordering of the pulse-then-2 ms-then-swap sequence. Two new file-scope volatiles and two new && tokens; no confStruct change, sizeof stays 200, SW_VERSION stays 36, no log format change.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 2 of 4 - THE INSTRUMENT (see BREmote_V2_Rx.h, System.ino, Logger.ino): the two enable-swap timeout paths at :75-100 now COUNT. On a timeout the swap does not happen, alternatePWMChannel is deliberately left where it is, the still-enabled motor is re-pulsed and THE OTHER MOTOR RECEIVES NO PULSES AT ALL - the starved VESC then times out and releases while the other holds the rider's commanded throttle, which on a differential drive is uncommanded yaw at power. That path has existed and been correct since 2026-07-22 and was completely silent: three half-days of field work on an asymmetric-thrust failure could not establish whether it had ever fired, because ?printpwm reads PWM0_time / PWM1_time, which calcPWM() computes unconditionally whether a pulse leaves the board or not. ADDED: g_swap_fail_ch0++ / g_swap_fail_ch1++ (saturating at 0xFFFF) in the two else-branches, g_swap_fail_run++ beside them, and g_swap_fail_run = 0 on each successful swap. Read them the right way round - a run of ch0 failures means PWM0 kept its pulses and PWM1 was the starved channel. DIAGNOSTIC ONLY: three counter writes are the whole change; nothing reads them back, g_swap_fail_run is a PURE OBSERVER until STEP 3, and no gate, channel index, cap, ramp or PWM value moves. The pulse-then-2 ms-then-swap ordering is byte-for-byte unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36, no log format change.
@@ -26,8 +27,11 @@
 // g_swap_starved is the one control bit STEP 3 adds. true = the enable swap has failed
 // kSwapStarveTicks times in a row, so NEITHER channel is pulsed: both VESCs time out together and
 // the buggy COASTS, instead of one motor holding the rider's commanded throttle while the other
-// has been released. It is read by exactly two places - the pulse test in generatePWM() and the
-// gate mirror in calcPWM() - and it is written only here, by the swap outcome.
+// has been released. It is read by exactly two CONTROL paths - the pulse test in generatePWM()
+// and the gate mirror in calcPWM() - and it is written only here, by the swap outcome.
+// V2.5-Evo - 2026-10-03 - STEP 5 (Rex M-6): ?diag (System.ino) now also PRINTS it, read-only, on
+// the "swap fails" line, because a CLOSED motor gate has three causes and this is the third one.
+// That is an observer, not a control path: it prints the flag and sets nothing.
 //
 // g_swap_ok_run is the recovery counter and is internal to this state machine. Nothing outside
 // this file reads it; the failure counters that DO have external readers (?diag, the deep log) are
@@ -63,6 +67,69 @@
 // consequence is bounded and acceptable.
 volatile bool     g_swap_starved = false;   // true = enable swap starved; BOTH channels stop pulsing (fail symmetric)
 volatile uint16_t g_swap_ok_run  = 0;       // consecutive SUCCESSFUL swaps; recovery needs kSwapRecoverTicks of them
+
+// ============================================================
+// V2.5-Evo - 2026-10-03 - STEP 5 - awSetEnableDirections(): ONE CHECKED I2C WRITE FOR THE SWAP
+// ============================================================
+//
+// What it does: writes the AW9523's CONFIG1 register (0x05) - the DIRECTION bits for pins 8-15 -
+//               so that exactly one of the two PPM enable pins is driven and the other is left
+//               high-impedance, which is how this board selects which optocoupler is live.
+// Inputs:       cfg1 - the COMPLETE CONFIG1 byte to write, one of the two kAwCfg1Pulse* constants
+//               below. THE CALLER MUST ALREADY HOLD i2cMutex: this function does not take it, so
+//               the swap's existing 10 ms bounded take stays the only take anywhere on this path.
+// Outputs:      true only if the I2C transaction was acknowledged end to end (address, register
+//               pointer and data byte). false on NACK, on a Wire.setTimeOut(3) timeout, or on any
+//               other bus error - i.e. on exactly the silent failures pinMode() could not report.
+// Side effects: one I2C transaction on Wire. No global is written, no delay, no mutex touched.
+//
+// WHY A RAW REGISTER WRITE AND NOT THE LIBRARY. Adafruit_AW9523::pinMode() returns void, so the bus
+// outcome is unreachable - that is Rex's C-1 and the whole reason this function exists. The
+// library's configureDirection() does return bool, but it writes CONFIG0 **and** CONFIG1 (two
+// transactions, not one) and would therefore rewrite port 0's directions - the BIND button, the
+// BIND LED, AP_EN_BMS_MEAS - from the top-priority motor task 100 times a second, and would need a
+// second copy of the whole 16-bit direction map to do it, which is a second source of truth on the
+// motor path. One CONFIG1 write touches only the register holding the two bits this swap owns.
+//
+// WHY DROPPING THE LEDMODE WRITE IS SAFE. pinMode() also wrote the LEDMODE bit for the pin on every
+// call. startupAW() (System.ino) already puts both enable pins in GPIO mode at boot, and NOTHING in
+// this firmware writes LEDMODE again - there is no configureLEDMode() and no aw.analogWrite() call
+// anywhere on the RX - so those writes were re-asserting a constant 100 times a second. Dropping
+// them is where most of the ~8x bus saving comes from.
+//
+// WHY THE WRITE IS ABSOLUTE AND NOT A TOGGLE, which is what makes even a MIS-REPORTED outcome safe:
+// each constant is the full intended direction byte, so if a transaction ever lands on the part but
+// is reported as failed (a timeout during the stop condition, say), the next tick re-asserts the
+// identical byte for the same alternatePWMChannel value and the enable/index pairing is restored.
+// The worst cost of that rare case is ONE tick - 10 ms, one pulse - of one channel's width on the
+// other channel's enable, against the previous behaviour of 50 Hz cross-routing forever with every
+// instrument on the board reading healthy.
+static const uint8_t kAwCfg1Reg = AW9523_REG_CONFIG0 + 1;  // CONFIG1 = 0x05: direction bits, pins 8-15
+
+// CONFIG1 bit n is pin (n + 8); 1 = INPUT (high-Z), 0 = OUTPUT (driven). The FIXED half of the byte
+// is the port-1 direction map startupAW() (System.ino) sets at boot and that no runtime code
+// changes: AP_S_AUX (10) and AP_WET_MEAS (15) are inputs; AP_U1_MUX_0 (8), AP_U1_MUX_1 (9),
+// AP_L_AUX (11) and AP_EN_WET_MEAS (14) are outputs. (initLogger()'s aw.pinMode(AP_S_AUX,
+// INPUT_PULLUP) matches none of the library's three mode branches and is a no-op, so pin 10 keeps
+// the INPUT startupAW() gave it either way.) Built from the AP_* defines rather than written as a
+// literal so that a pin-map edit in BREmote_V2_Rx.h cannot silently desynchronise this byte.
+static const uint8_t kAwCfg1PortInputs = (uint8_t)((1u << (AP_S_AUX - 8)) | (1u << (AP_WET_MEAS - 8)));
+// ...and the swap's own two bits: the channel about to be PULSED is driven, the other is high-Z.
+static const uint8_t kAwCfg1PulsePwm1  = (uint8_t)(kAwCfg1PortInputs | (1u << (AP_EN_PWM0 - 8)));
+static const uint8_t kAwCfg1PulsePwm0  = (uint8_t)(kAwCfg1PortInputs | (1u << (AP_EN_PWM1 - 8)));
+
+static_assert(AP_EN_PWM0 >= 8 && AP_EN_PWM0 <= 15 && AP_EN_PWM1 >= 8 && AP_EN_PWM1 <= 15,
+              "Both PPM enables must be AW9523 port-1 pins or they no longer share CONFIG1, and the "
+              "single checked write in awSetEnableDirections() would move the wrong pin");
+
+static bool awSetEnableDirections(uint8_t cfg1)
+{
+  // AW9523_DEFAULT_ADDR is 0x58, the address startupAW() passes to aw.begin().
+  Wire.beginTransmission(AW9523_DEFAULT_ADDR);
+  Wire.write(kAwCfg1Reg);
+  Wire.write(cfg1);
+  return (Wire.endTransmission() == 0);  // 0 = address, register and data all ACKed
+}
 
 void generatePWM(void *parameter) {
   TickType_t xLastWakeTime = xTaskGetTickCount();
@@ -105,13 +172,19 @@ void generatePWM(void *parameter) {
     // far inside failsafe_time, so this gate behaves IDENTICALLY to today in normal operation. The
     // only behaviour that changes is the failure case above. Full write-up at the declaration in
     // BREmote_V2_Rx.h.
-    // V2.5-Evo - 2026-10-03 - STEP 3: the gate test is HOISTED into link_ok and nothing else about
-    // it moves - not one token of the expression changed. It is hoisted because the pulse and the
-    // swap now need it separately: the pulse must stop while the swap is starved, and the swap must
-    // keep being ATTEMPTED so it can recover. The full gate for PULSING is link_ok && !starved, and
-    // its mirror in calcPWM() carries the identical pair of terms - there are still exactly TWO
-    // copies of that expression and the warning at both sites still says so.
-    const bool link_ok = (PWM_active && millis()-last_control_packet < usrConf.failsafe_time);
+    // V2.5-Evo - 2026-10-03 - STEP 3: the gate test is HOISTED into link_ok and its MEANING does
+    // not move. It is hoisted because the pulse and the swap now need it separately: the pulse must
+    // stop while the swap is starved, and the swap must keep being ATTEMPTED so it can recover. The
+    // full gate for PULSING is link_ok && !starved, and its mirror in calcPWM() carries the
+    // identical pair of terms - there are still exactly TWO copies of that expression and the
+    // warning at both sites still says so.
+    // V2.5-Evo - 2026-10-03 - STEP 5 (Rex L-2): the subexpression below is now CHARACTER-IDENTICAL
+    // to its mirror in calcPWM(). The STEP 3 hoist had left this copy as millis()-x while the
+    // mirror reads (millis() - x) - identical by precedence, but the entire maintenance rule at
+    // both sites is "a human eyeballs the two lines for sameness", and a diff-by-eye that has to
+    // forgive one cosmetic difference is a diff-by-eye that will forgive a real one. No behaviour
+    // change: the added parentheses only make explicit the precedence the compiler already applied.
+    const bool link_ok = (PWM_active && (millis() - last_control_packet) < usrConf.failsafe_time);
     if(link_ok)
     {
 
@@ -166,14 +239,24 @@ void generatePWM(void *parameter) {
       // would be an accidental PERMANENT latch - unrecoverable propulsion loss mid-ride. The rate
       // is IDENTICAL to before (the swap already ran once per 10 ms tick whenever link_ok), so this
       // adds no I2C traffic anywhere.
+      // V2.5-Evo - 2026-10-03 - STEP 5: THE SWAP CHECKS THE BUS, NOT JUST THE SEMAPHORE. swap_ok
+      // is true only if the mutex was obtained AND the AW9523 acknowledged the CONFIG1 write. A bus
+      // failure then falls through to the SAME else-branch a semaphore timeout already took, which
+      // is the whole point: the state machine below must not be able to tell the two apart, or
+      // kSwapStarveTicks / kSwapRecoverTicks would need a second set of rules to stay correct.
+      // The mutex is released BEFORE the outcome is acted on, so the hold is still one transaction.
       if(alternatePWMChannel)
       {
+        bool swap_ok = false;
         if(xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(10)) == pdTRUE)
         {
-          aw.pinMode(AP_EN_PWM0, INPUT);
-          aw.pinMode(AP_EN_PWM1, OUTPUT);
+          // One transaction: PWM0 high-Z, PWM1 driven - the pairing next tick's PWM1_time needs.
+          swap_ok = awSetEnableDirections(kAwCfg1PulsePwm1);
           xSemaphoreGive(i2cMutex);
-          alternatePWMChannel = 0;  // advance only on a successful enable swap
+        }
+        if(swap_ok)
+        {
+          alternatePWMChannel = 0;  // advance only on a VERIFIED enable swap
           g_swap_fail_run = 0;      // STEP 2: the run ends on any successful swap
           // STEP 3 hysteresis: kSwapRecoverTicks consecutive GOOD swaps to resume, not one.
           if(g_swap_ok_run < 0xFFFFU) g_swap_ok_run++;
@@ -181,8 +264,10 @@ void generatePWM(void *parameter) {
         }
         else
         {
-          // timeout: keep alternatePWMChannel=1 so PWM0 (still enabled) re-pulses next cycle.
-          // PWM0 keeps its pulses, so PWM1 is the channel being starved on this tick.
+          // mutex timeout OR a NACKed/timed-out CONFIG1 write: keep alternatePWMChannel=1 so PWM0
+          // (still enabled) re-pulses next cycle. PWM0 keeps its pulses, so PWM1 is the channel
+          // being starved on this tick - and that is true of both failure kinds, which is why they
+          // share this branch and this counter.
           if(g_swap_fail_ch0 < 0xFFFFU) g_swap_fail_ch0++;   // saturate: a wrapped counter reads as healthy
           if(g_swap_fail_run < 0xFFFFU) g_swap_fail_run++;
           g_swap_ok_run = 0;        // STEP 3: one failure ends the recovery run
@@ -191,20 +276,25 @@ void generatePWM(void *parameter) {
       }
       else
       {
+        bool swap_ok = false;
         if(xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(10)) == pdTRUE)
         {
-          aw.pinMode(AP_EN_PWM1, INPUT);
-          aw.pinMode(AP_EN_PWM0, OUTPUT);
+          // One transaction: PWM1 high-Z, PWM0 driven - the pairing next tick's PWM0_time needs.
+          swap_ok = awSetEnableDirections(kAwCfg1PulsePwm0);
           xSemaphoreGive(i2cMutex);
-          alternatePWMChannel = 1;  // advance only on a successful enable swap
+        }
+        if(swap_ok)
+        {
+          alternatePWMChannel = 1;  // advance only on a VERIFIED enable swap
           g_swap_fail_run = 0;      // STEP 2: the run ends on any successful swap
           if(g_swap_ok_run < 0xFFFFU) g_swap_ok_run++;
           if(g_swap_ok_run >= kSwapRecoverTicks) g_swap_starved = false;
         }
         else
         {
-          // timeout: keep alternatePWMChannel=0 so PWM1 (still enabled) re-pulses next cycle.
-          // PWM1 keeps its pulses, so PWM0 is the channel being starved on this tick.
+          // mutex timeout OR a NACKed/timed-out CONFIG1 write: keep alternatePWMChannel=0 so PWM1
+          // (still enabled) re-pulses next cycle. PWM1 keeps its pulses, so PWM0 is the channel
+          // being starved on this tick.
           if(g_swap_fail_ch1 < 0xFFFFU) g_swap_fail_ch1++;
           if(g_swap_fail_run < 0xFFFFU) g_swap_fail_run++;
           g_swap_ok_run = 0;

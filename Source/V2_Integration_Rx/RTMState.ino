@@ -1,3 +1,13 @@
+// V2.5-Evo - 2026-10-04 - TWO VALUES, both one token, both owner-approved and audited. (1) kSteerTakeoverMaxMs 10000 -> 30000: the owner runs
+//   steer_during_auto = 1 so that he can steer the buggy around while surfing a wave, and at 10 s the cap was firing on a legitimate hold - which in FM
+//   following means FM_HOLD with fm_throttle_cap = 0 under a HELD TRIGGER, i.e. the motor dies mid-wave until a full trigger release. 30 s matches the
+//   action. The cap's one remaining job (a stick that jams mid-run, after centre-seen is already satisfied) is 3x slower to detect: 54 -> 161 m at
+//   12 mph. The other five takeover guards are untouched and unreachable from here - max_active_ms is read at exactly one place in
+//   Common/SteerArbitration.h. (2) BOOTSTRAP-1's DECLINED FALLBACK now reads fmAlignCapValue() instead of a hardcoded 13: the 2026-09-19 pass moved the
+//   align cap to the SW36 field usrConf.fm_align_cap at three sites and missed this fourth one, so a COG-only rider - who meets the no-heading path most
+//   often - got no effect at all from raising fm_align_cap. The block's own comments already name its target as "the align cap" in three places; 13 was
+//   left behind, not pinned. Identical behaviour at the default 13, and it only ever LOWERS rtm_approach_cap, so the approach ramp and Gate 9 still bind
+//   near the rider. Comments only elsewhere. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG level 5: fmPublishLogSnapshot() also publishes the level-5 block (rider position + fix seq/age, rtm_approach_cap, the RTM phase code,
 //   the align cap / align influence / mixer influence in force, the auto-return override state, fm_flags as sent, the keepalive age) - all copies of published
 //   state. The RTM phase code is a new static (rtm_log_phase) written by runRtmLoopBody() at the branch it takes (reset to 0 at the top of each runRtmLoop() tick,
@@ -1751,11 +1761,40 @@ static const uint32_t kSteerTakeoverGraceMs         = kFmEngageGraceMs;         
 static const uint8_t  kSteerTakeoverReleaseDeadband = 30;      // counts from 127
 static const uint32_t kSteerTakeoverReleaseMs       = 200;     // ms
 // Maximum takeover. Beyond it the episode ends through the mode's CANCEL path: a rider who has
-// steered for 10 s is driving manually and a stick that never comes back is most likely a drifted
+// steered for 30 s is driving manually and a stick that never comes back is most likely a drifted
 // centre; resuming the controller against a still-deflected stick would override a deliberate hand.
+//
+// WHAT THIS CAP DEFENDS, and it is the only thing it defends: a MECHANICAL STICK FAILURE MID-RUN -
+// a remote that WAS read centred at the start of the run (so centre-seen is satisfied and cannot
+// help) and whose stick then jams, drifts, or is thumb-rested past the 40-count engage band and
+// never comes back. For that one failure this timeout is the only detector. Every other way a
+// takeover can be wrong is already caught by a different guard: a remote whose rest position has
+// drifted before the run never earns a takeover at all (centre-seen), chop cannot flip the source
+// (the 30-39 hysteresis band), a blip cannot engage one (40 counts for 500 ms, after a 2 s grace),
+// the throttle caps keep applying on every tick while the stick steers, and a trigger release ends
+// the episode within one tick (no owner -> the memory is zeroed).
+//
+// SHARED BY ALL THREE TAKEOVER OWNERS. kSteerTakeoverParams below is the single tuning block passed
+// by Follow-Me following (steerTakeoverTick(..., "FM") in runFmLoop), FM_RETURN (..., "RETURN") and
+// classic RTM (..., "RTM" in runRtmLoop). There is no per-mode value today, so this number moves
+// the exposure uniformly in all three.
+//
 // V2.5-Evo - 2026-09-19 - fix round 2: was 20 s. A deliberate dodge is 2-5 s; 10 s halves the
 // exposure of a buggy being steered by a drifted stick (108 -> 54 m at 12 mph).
-static const uint32_t kSteerTakeoverMaxMs           = 10000;   // ms
+// V2.5-Evo - 2026-10-04 - 10 s -> 30 s (owner decision, audited). WHY: the owner now runs
+// steer_during_auto = 1 - the stick TAKES OVER instead of cancelling - so that he can steer the
+// buggy around while surfing a wave without Follow-Me dropping out. The 10 s above was sized for
+// "a deliberate dodge is 2-5 s", not for working a wave. And a FALSE TIMEOUT IS NOT BENIGN: in FM
+// following the STO_TIMED_OUT branch writes FM_HOLD with fm_throttle_cap = 0 UNDER A HELD TRIGGER,
+// so the motor dies mid-wave and stays dead until one full trigger release. A rider steering around
+// while surfing was getting that every 10 s. 30 s matches the action; 10 s matched a dodge.
+// THE PRICE, measured and accepted: for the jammed-stick failure above the detector is 3x slower, so
+// the exposure quoted in the 2026-09-19 line rises 54 -> 161 m at 12 mph (5.36 m/s x 30 s). Also
+// parked for the whole 30 s: FM's divergence net (FM's only upper distance bound) and RTM Phase C
+// convergence check 1, which re-bases on release. Nothing else changes - max_active_ms is read at
+// exactly ONE place (Common/SteerArbitration.h), so this number structurally cannot reach the five
+// guards listed above, each of which is a separate field of the struct below.
+static const uint32_t kSteerTakeoverMaxMs           = 30000;   // ms
 static const SteerTakeoverParams kSteerTakeoverParams = {
   kSteerTakeoverEngageDeadband, kSteerTakeoverReleaseDeadband,
   kSteerTakeoverEngageMs, kSteerTakeoverReleaseMs, kSteerTakeoverGraceMs, kSteerTakeoverMaxMs
@@ -2127,7 +2166,7 @@ static unsigned long steer_takeover_notice_ms  = 0;    // rate limit for the not
 enum SteerTakeoverEnd : uint8_t {
   STO_END_NONE      = 0,   // no takeover has ended since boot
   STO_END_RELEASED  = 1,   // the rider centred the stick: the controller resumed
-  STO_END_TIMED_OUT = 2,   // 10 s standing: the mode's cancel path ran
+  STO_END_TIMED_OUT = 2,   // 30 s standing: the mode's cancel path ran
   STO_END_OWNER     = 3    // the owner ended under it (trigger released, stop, arrival, fault, disarm)
 };
 static uint8_t       steer_takeover_last_end   = STO_END_NONE;
@@ -2136,7 +2175,7 @@ static const char* steerTakeoverEndName(uint8_t e)
   switch (e) {
     case STO_END_NONE:      return "none yet";
     case STO_END_RELEASED:  return "released (stick centred, controller resumed)";
-    case STO_END_TIMED_OUT: return "timed out after 10 s -> cancel path";
+    case STO_END_TIMED_OUT: return "timed out after 30 s -> cancel path";
     case STO_END_OWNER:     return "owner ended under it (release / stop / arrival / fault / disarm)";
     default:                return "unknown";
   }
@@ -3441,7 +3480,7 @@ static void runRtmLoopBody(unsigned long now)
   //     governor and BOOTSTRAP-1 keep running exactly as they do below - a takeover during the
   //     bootstrap is the rider steering a heading-blind buggy at <= 24 % under its own abort
   //     radius and timeout.
-  //   TIMED OUT (10 s): the Gate-9-shaped clean handoff - rtm_rx_active false, no emergency stop,
+  //   TIMED OUT (30 s): the Gate-9-shaped clean handoff - rtm_rx_active false, no emergency stop,
   //     cap 255, manual at the held trigger with the stick the rider was already using. The print
   //     comes after those writes (F7). The remote learns of it the way it does of Gate 9 today.
   // ============================================================
@@ -3581,8 +3620,30 @@ static void runRtmLoopBody(unsigned long now)
       const bool timed_out    = (millis() - rtm_bootstrap_since_ms) >= kBootstrapMaxMs;
 
       if (too_close || timed_out) {
-        const uint8_t kAlignCap = 13;                      // unchanged fallback
-        if (rtm_approach_cap > kAlignCap) rtm_approach_cap = kAlignCap;
+        // V2.5-Evo - 2026-10-04 - M-3: this was `const uint8_t kAlignCap = 13;  // unchanged
+        // fallback` - a compile-time literal that ignored usrConf.fm_align_cap. WHAT WAS WRONG: the
+        // 2026-09-19 pass retired kFmAlignCap and moved the align cap to the SW36 SPIFFS field at
+        // three sites (Follow-Me's cap 4, FM_RETURN's align cap, classic RTM's Phase 1) and missed
+        // this fourth one, so two different numbers both meant "the align cap". It bites a COG-only
+        // rider hardest, because this no-heading path is the one he meets most often, and raising
+        // fm_align_cap did nothing here at all. NOT A DELIBERATE PINNING: this block's own three
+        // statements of intent all name its target as "the align cap", not 13 - the BOUNDS comment
+        // above ("fall back to the align cap and stop trying"), the R-5 comment ("Unknown now aborts
+        // to the align cap, which is the pre-bootstrap behaviour") and the print below ("holding
+        // align cap %u/255"). The `// unchanged fallback` note was change-pass bookkeeping, not a
+        // reason. Nor is this the branch kBootstrapMaxCap (60) governs: that ceiling belongs to the
+        // PERMISSIVE branch below, where the buggy is licensed to run heading-blind in a straight
+        // line because the rider is confirmed OUTSIDE the abort radius. This branch is the opposite
+        // - the licence was declined - and its envelope is, by its own words, ordinary align.
+        // STILL SUBTRACT-ONLY AND STILL BOUNDED: the line below only ever LOWERS rtm_approach_cap,
+        // so wherever the approach decel ramp has already set a smaller cap (i.e. near the rider)
+        // the ramp binds and no align-cap value can lift it; Gate 9 fired earlier in this same
+        // function at rtm_stop_distance_m; and output is still min(rider_throttle, cap), so this
+        // reduces what is SUBTRACTED from the trigger and can never add throttle. At the shipped
+        // default 13 the behaviour is byte-identical. Range is the field's own 8-80 with
+        // fmAlignCapValue()'s read-site clamp, so a corrupt stored value still lands on 13.
+        const uint8_t align_cap = fmAlignCapValue();
+        if (rtm_approach_cap > align_cap) rtm_approach_cap = align_cap;
 
         // REX B-2: name the reason. This fallback returns the buggy to precisely the behaviour a
         // beta tester reported as "did not start any steering at all", and it took a full trace to
@@ -3595,7 +3656,7 @@ static void runRtmLoopBody(unsigned long now)
                         "No heading, so the buggy may only crawl until COG appears.\n",
                         dist_unknown ? "rider position unknown" :
                         (too_close   ? "rider inside the abort radius" : "3 s timeout, COG never arrived"),
-                        (unsigned)kAlignCap);
+                        (unsigned)align_cap);
         }
       } else {
         float speed_frac = gps_last_speed_kmh / kBootstrapSpeedKmh;
@@ -4584,7 +4645,7 @@ static void runFmReturnTick(unsigned long now)
     // the rider-moving cancel and the trigger gate have already had, or still get, priority over
     // the stick on this tick. While parked (no motion clock) the tick sees no owner and keeps the
     // memory zero, so a twitch during the proof or before the first squeeze can never count.
-    // TIMED OUT (10 s): the cancel path this mode already has - fmReturnExitToHold(FM_RET_STEERED),
+    // TIMED OUT (30 s): the cancel path this mode already has - fmReturnExitToHold(FM_RET_STEERED),
     // cap 0 and FM_HOLD - then the print, after the motor writes (F7).
     const uint8_t sto = steerTakeoverTick(now, fm_return_motion_ms, "RETURN");
     fm_steer_takeover_req = steer_takeover.active;
@@ -5694,10 +5755,10 @@ static void runFmLoopBody(unsigned long now)
       // latch, fm_engage_ms and needs-D_engage are untouched (a takeover is not a cancel), HOLD /
       // faults / the RETURN candidate were evaluated above and independent of the stick, and any
       // exit from FM_ACTIVE ends the owner (the not-eligible branch resets the memory).
-      // TIMED OUT (10 s): through the HOLD SURGE GUARD, the shape FM_RETURN's exits already use
+      // TIMED OUT (30 s): through the HOLD SURGE GUARD, the shape FM_RETURN's exits already use
       // (fix round 1, review M-1). NOT the mode-0 cancel block's writes: that block ends in ARMED
       // with cap 255 because the rider caused it half a second earlier and is expecting manual;
-      // the timeout is a different event - 10 s after the push, on a stick that may be a drifted
+      // the timeout is a different event - 30 s after the push, on a stick that may be a drifted
       // centre with the buggy veering under it - and lifting the governor's cap to the raw held
       // trigger at that instant is a surprise un-clamp. So: FM_HOLD with cap 0 under the held
       // trigger, latch cleared, needs-D_engage set; the ordinary HOLD branch keeps cap 0 while the

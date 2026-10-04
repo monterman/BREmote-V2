@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-04 - the RX's maximum takeover is now 30 s (was 10 s): the owner steers the buggy around while surfing a wave, and at 10 s a
+//   legitimate hold was timing out - which in Follow-Me means a cap-0 HOLD under a held trigger, i.e. the motor stops mid-wave. This header takes the
+//   cap as a parameter (max_active_ms) and its CODE IS UNCHANGED; only the quoted values in the comments below move. See RTMState.ino for the reasoning.
 // V2.5-Evo - 2026-09-19 - fix round 2 (owner + review): the RX's numbers are now release band 30 counts (was 20) and maximum takeover 10 s (was 20 s);
 //   the header takes both as parameters and changes no code - the comments below quote the new values. See RTMState.ino for the reasoning.
 // V2.5-Evo - 2026-09-19 - The stick during automatic steering: the TAKEOVER arbitration, pure and host-testable.
@@ -17,8 +20,8 @@
 //                releases: that is the hysteresis that keeps chop from flipping the source.
 //     RELEASE  - the stick has been inside release_deadband for release_persist_ms (200 ms): the
 //                automatic steering resumes. Nothing was cancelled.
-//     TIMEOUT  - a takeover that stands for max_active_ms (10 s) ends; the caller runs its CANCEL
-//                path (a rider who has steered for 10 s is driving manually, and a stick that never
+//     TIMEOUT  - a takeover that stands for max_active_ms (30 s) ends; the caller runs its CANCEL
+//                path (a rider who has steered for 30 s is driving manually, and a stick that never
 //                comes back to centre is most likely a drifted centre). Centre-seen is cleared, so
 //                the stick must be read centred again before another takeover.
 //     NO OWNER - no mode is steering, the trigger is below 25 counts, or steering override is off:
@@ -40,7 +43,7 @@ struct SteerTakeoverParams {
   uint32_t engage_persist_ms;   // the deflection must stand this long to engage (500)
   uint32_t release_persist_ms;  // the centre must stand this long to release (200)
   uint32_t grace_ms;            // no engage this long after the owner's motion started (2000)
-  uint32_t max_active_ms;       // a takeover standing this long times out into the cancel path (10000)
+  uint32_t max_active_ms;       // a takeover standing this long times out into the cancel path (30000)
 };
 
 // The arbitration's memory between ticks. All zero = nothing seen, nothing standing.

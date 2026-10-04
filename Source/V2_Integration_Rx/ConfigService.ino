@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-04 - L-2: cfgValidateCrossField() now CLAMPS fm_align_cap too - outside the validated 8-80 range it falls back to the shipped default 13 (never 0, which would stop the buggy, and never above 80). It was the one of SW36's three fields with no cross-field load clamp while fm_return_mode and fm_align_influence had one. Same reasoning as those two: this validator runs on the LOAD path, so a range rejection there fails the load and falls back to defaults - the config/pairing/compass-calibration wipe this function exists to prevent. Not reachable from a valid stored value; consistency and the corrupt-blob case. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - DEEP LOG level 5: the log_level row's max is raised 4 -> 5 (5 = Everything, the 109 B test-session record), and cfgValidateCrossField() CLAMPS log_level > 5 down to 5 - a clamp, never a rejection, because this validator runs on the LOAD path and a range rejection there wipes the whole config (the 2026-09-03 lesson, same as fm_return_mode). Same u16 slot, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - SEPARATE RAMPS: the kCfgFields row "rsvd_f32_1" (float, RESERVED, -1e6..1e6) becomes "auto_ramp_s" (float, 0-4.0, 2 dp: 0 = the automatic modes ride motor_ramp_s as before, 0.2-4.0 = their own rise-limit), plus CLAMPS in cfgValidateCrossField(): (0, 0.2) -> 0.2 with a NOTE, NaN / negative -> 0, above 4.0 -> 4.0. The confStruct slot is the SAME slot renamed in place, so sizeof stays 200, SW_VERSION stays 36 and no config is wiped; every stored blob reads 0 = inherit there.
 // V2.5-Evo - 2026-09-19 - STICK DURING AUTO-STEER: the kCfgFields row "rsvd_u16_1" (u16, RESERVED, 0-65535) becomes "steer_during_auto" (u16, 0-1: 0 = the stick cancels automatic steering as before, 1 = it takes over while deflected and resumes on centring), plus a CLAMP in cfgValidateCrossField() (> 1 -> 1) next to the fm_return_mode clamp. The confStruct slot is the SAME slot renamed in place, so sizeof stays 200, SW_VERSION stays 36 and no config is wiped; every stored blob reads 0 = cancel there.
@@ -198,8 +199,8 @@ const CfgFieldSpec kCfgFields[] = {
   //   fm_align_cap       8-80  : throttle cap (0-255 scale) during FM align / FM_RETURN align+engage ramp; 13 = ~5 %.
   //   fm_align_influence 0-100 : mixer steering influence (%) during those align phases only; 100 = one-motor pivot,
   //                              0 = use steering_influence.
-  // fm_return_mode and fm_align_influence are additionally CLAMPED in cfgValidateCrossField() below, so a
-  // stored out-of-range value is corrected on load rather than failing the load.
+  // All three are additionally CLAMPED in cfgValidateCrossField() below, so a stored out-of-range value is
+  // corrected on load rather than failing the load. (fm_align_cap joined the other two 2026-10-04, L-2.)
   {"fm_return_mode",         CFG_U16,   offsetof(confStruct, fm_return_mode),         true, false, true, 0.0f,   1.0f,   0, false},
   {"fm_align_cap",           CFG_U16,   offsetof(confStruct, fm_align_cap),           true, false, true, 8.0f,  80.0f,   0, false},
   {"fm_align_influence",     CFG_U16,   offsetof(confStruct, fm_align_influence),     true, false, true, 0.0f, 100.0f,   0, false}
@@ -225,6 +226,16 @@ bool cfgValidateCrossField(confStruct &candidate, String &err)
   // so anything above 100 means full. Both corrections are silent and idempotent.
   if (candidate.fm_return_mode > 1)       candidate.fm_return_mode = 1;
   if (candidate.fm_align_influence > 100) candidate.fm_align_influence = 100;
+  // V2.5-Evo - 2026-10-04 - L-2: fm_align_cap gets the same treatment, so that all three SW36
+  // fields are now clamped on load rather than two of three. Out of the validated 8-80 range it
+  // falls back to the shipped default 13 - never to 0, which would stop the buggy, and never above
+  // 80. WHY BOTHER when the kCfgFields row already bounds 8-80 and the read site clamps again: this
+  // function runs on the LOAD path, where a range REJECTION fails the whole load and falls back to
+  // defaults - the config, pairing and compass-calibration wipe this function exists to prevent. A
+  // clamp here means a stored blob holding a stale or corrupt value is corrected in place and the
+  // rest of the config survives. Not reachable from a valid stored value; it is for consistency and
+  // for the corrupt-blob case.
+  if (candidate.fm_align_cap < 8 || candidate.fm_align_cap > 80) candidate.fm_align_cap = 13;
   // V2.5-Evo - 2026-09-19 - log_level: 5 (Everything) is the top level now; anything above it means
   // "the most detail there is", so it clamps to 5 rather than failing the load. Same reasoning.
   if (candidate.log_level > 5)            candidate.log_level = 5;

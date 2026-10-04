@@ -1243,6 +1243,22 @@ async function sendQuit(){
 // What it does: sends ?logstat, reads the "free  KB : <n>" line out of the reply, and only then
 // sends ?save. Below 1000 KB free it REFUSES and says why.
 //
+// V2.5-Evo - 2026-10-04 - the low-space refusal now NAMES THE WAY OUT instead of ending with
+// "Delete logs first", which told the owner nothing about where to go. It reports free vs needed
+// and points at this tool's own logs panel: the LOGS tab, then Delete All, or Delete on one file.
+//
+// THE TWO SURFACES NOW DIFFER ON PURPOSE. They were byte-identical until today, so do NOT re-sync
+// the text blindly. The RX embedded page says "Tap Manage Logs, use Delete Selected or Delete All"
+// because those are the labels on that page; this tool has no checkboxes and therefore no Delete
+// Selected, and its panel is a LOGS tab rather than a modal. What IS still identical: the logic,
+// the 1000 KB threshold, the fail-closed no-reading branch, and the "reports success but stores
+// nothing" clause - that clause is the reason the check exists and must survive any rewording.
+//
+// Also why the texts cannot simply be shared: ?deleteallogs is blocks_loop and NOT web_ok in
+// kCommands[] (System.ino:1756), so the embedded page must not suggest it - POST /api/cmd would
+// refuse it. It is safe to reach from HERE because this tool talks over Web Serial, not over the
+// board's web console, which is why deleteAllLogs() below can send it directly.
+//
 // Why the pre-check exists: ?save prints "OK config saved to SPIFFS" whether or not SPIFFS
 // actually stored the bytes. SPIFFS has no allocation table and needs spare erase blocks to
 // garbage-collect into; nearly full, it can still create the directory entry - which is what makes
@@ -1274,7 +1290,7 @@ async function consoleSave(){
     // Fail CLOSED: no reading means no save. A silent save is the thing being prevented.
     if(!m){finish('REFUSED: could not read free space from ?logstat, so nothing was saved.','err');return;}
     const kb=parseInt(m[1],10);
-    if(kb<1000){finish('REFUSED: only '+kb+' KB free. A save under 1000 KB can report success and store nothing. Delete logs first.','err');return;}
+    if(kb<1000){finish('REFUSED: '+kb+' KB free, need 1000 KB. A save below 1000 KB reports success but stores nothing. Open the LOGS tab, use Delete All or Delete on one file, then Save again.','err');return;}
     termWrite('\n'+kb+' KB free - saving.\n> ?save\n');
     await sendSerialCommand('?save',4000);
     btn.classList.add('success');setTimeout(()=>btn.classList.remove('success'),2500);

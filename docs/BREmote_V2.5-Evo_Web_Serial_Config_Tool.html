@@ -1179,7 +1179,16 @@ function showTermToast(){
 function updateSerialPanel(device){
   // Quick buttons
   const cmds=device==='tx'?['?conf','?reboot','?exitchg']:['?conf','?reboot','?compasscal','?logstat'];
-  document.getElementById('quickBtns').innerHTML=
+  // V2.5-Evo - 2026-10-04 - mirror of the RX embedded console (WebUiEmbedded.h): a prominent
+  // one-click Save that runs the free-SPIFFS pre-check first, and a ?get that only PREFILLS the
+  // input box. The Save button is RENDERED FOR RX ONLY, because the pre-check reads ?logstat and
+  // the TX has no ?logstat command - a Save button unable to run its own safety check would be
+  // worse than no button. The ?get prefill is shown for both boards; both have ?get.
+  const saveBtn=device==='rx'
+    ?`<button class="btn" id="csvBtn" onclick="consoleSave()" title="Checks free SPIFFS space, then sends ?save">Save (?save)</button>`
+    :'';
+  document.getElementById('quickBtns').innerHTML=saveBtn+
+    `<button class="btn sec" onclick="insertCmd('?get ')" title="Fills the box with '?get ' - add the field name, then Enter">?get</button>`+
     cmds.map(c=>`<button class="btn sec" onclick="insertCmd('${c}')">${c}</button>`).join('');
   // Command dropdown
   document.getElementById('cmdDrop').innerHTML=device==='tx'?TX_CMD_HTML:RX_CMD_HTML;
@@ -1223,6 +1232,54 @@ async function sendQuit(){
     try{await swriter.write(new TextEncoder().encode('quit\r\n'));termWrite('> quit (stop stream)\n');}
     catch(e){termWrite('[Send error: '+e.message+']\n');}
   }else{termWrite('[Not connected]\n');}
+}
+
+// ============================================================
+// consoleSave - one-click ?save, gated on free SPIFFS space (RX only)
+// ============================================================
+// Mirror of cSave() in Source/V2_Integration_Rx/WebUiEmbedded.h, kept behaviourally identical so
+// the two consoles cannot teach the owner two different things about the same command.
+//
+// What it does: sends ?logstat, reads the "free  KB : <n>" line out of the reply, and only then
+// sends ?save. Below 1000 KB free it REFUSES and says why.
+//
+// Why the pre-check exists: ?save prints "OK config saved to SPIFFS" whether or not SPIFFS
+// actually stored the bytes. SPIFFS has no allocation table and needs spare erase blocks to
+// garbage-collect into; nearly full, it can still create the directory entry - which is what makes
+// the command answer OK - and never complete the data write. RX1 lost its pairing and compass
+// calibration exactly this way on 2026-10-01 at ~500 KB free, and the identical write succeeded
+// first time at 1274 KB. 1000 KB is the working threshold that sits between the two.
+//
+// No confirmation dialog on purpose: the headroom check IS the safety here, and ?save only
+// persists values that are already live in RAM. (?magalign is the opposite case and stays
+// two-tap, because it OVERWRITES stored calibration.)
+//
+// Inputs: none. Output: writes to the terminal and the status line. Side effects: sends ?logstat,
+// and sends ?save only when the check passes.
+async function consoleSave(){
+  if(!sopen){setStatus('Not connected.','err');return;}
+  const btn=document.getElementById('csvBtn');
+  if(!btn||btn.disabled)return;
+  btn.disabled=true;btn.classList.add('active-save');btn.textContent='Checking space…';
+  // One exit path for every outcome, so the button can never be left stuck mid-check.
+  const finish=(msg,cls)=>{
+    termWrite('\n'+msg+'\n');setStatus(msg,cls);
+    btn.classList.remove('active-save');btn.textContent='Save (?save)';btn.disabled=false;
+  };
+  try{
+    // Echo the command only - readLoop() already writes every received byte to the terminal.
+    termWrite('> ?logstat\n');
+    const out=await sendSerialCommand('?logstat',4000);
+    const m=/free\s+KB\s*:\s*(\d+)/.exec(out);
+    // Fail CLOSED: no reading means no save. A silent save is the thing being prevented.
+    if(!m){finish('REFUSED: could not read free space from ?logstat, so nothing was saved.','err');return;}
+    const kb=parseInt(m[1],10);
+    if(kb<1000){finish('REFUSED: only '+kb+' KB free. A save under 1000 KB can report success and store nothing. Delete logs first.','err');return;}
+    termWrite('\n'+kb+' KB free - saving.\n> ?save\n');
+    await sendSerialCommand('?save',4000);
+    btn.classList.add('success');setTimeout(()=>btn.classList.remove('success'),2500);
+    finish(kb+' KB free - ?save sent.','ok');
+  }catch(e){finish('Save check failed: '+e.message,'err');}
 }
 
 // ============================================================

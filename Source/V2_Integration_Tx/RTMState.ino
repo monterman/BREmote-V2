@@ -1,3 +1,8 @@
+// V2.5-Evo - 2026-10-06 - F-label hold: every "F<n>" confirm (cycleFmMode() arm + pre-throttle cycle,
+//   cycleFmModeArmed(), fmStepStationFromMagnet()) now calls showFmLabelHeld() (Display.ino): held 2 s and
+//   NON-blocking. Was a blocking gpsKeepAliveDelay() of 2 s (toggle paths) or 1.2 s (magnet tap). The 0xF2 in
+//   the two cycleFmMode() paths now goes out immediately instead of after the 2 s hold. No confStruct change,
+//   sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-09-30 - MagFix (Rex delta audit of 98fb7a8), four changes here:
 //   1. RAM-ONLY ENFORCED. fmToggleRtmEnabledFromMagnet() no longer writes usrConf.rtm_enabled - it writes the new
 //      RAM rtm_enabled_session, and every gate now asks rtmEnabledEffective(). `?save` and the web-UI save persist
@@ -999,12 +1004,9 @@ void cycleFmMode()
       // above and the magnet toggle disarm are unaffected.
       last_fm_mode = (last_fm_mode < 3) ? last_fm_mode + 1 : 1;
 
-      // Large-font mode confirm: LET_F + mode digit (1/2/3). snprintf no longer needed.
-      DISP_LOCK();
-      displayDigits(LET_F, last_fm_mode);
-      updateDisplay();
-      DISP_UNLOCK();
-      gpsKeepAliveDelay(2000);
+      // Large-font mode confirm: LET_F + mode digit (1/2/3). V2.5-Evo - 2026-10-06 - held 2 s by
+      // showFmLabelHeld() (Display.ino) WITHOUT blocking loop(); was a blocking gpsKeepAliveDelay(2000).
+      showFmLabelHeld(last_fm_mode);
       queueMetaPacketBurst(0xF2, fmEncodeModeByte(last_fm_mode));   // V2.5-Evo - 2026-09-19 - carries the override bits
       fm_last_sync_ms = millis();
       fm_arm_ms       = millis();   // reset arm window — user is actively choosing a mode
@@ -1047,11 +1049,9 @@ void cycleFmMode()
 
   // V2.5-Evo - 2026-04-29 - Display: show actual mode being armed (F1/F2/F3) in large font
   // instead of the generic "FM" text. Uses large num0[] font via LET_F(15) + mode digit.
-  DISP_LOCK();
-  displayDigits(LET_F, last_fm_mode);
-  updateDisplay();
-  DISP_UNLOCK();
-  gpsKeepAliveDelay(2000);
+  // V2.5-Evo - 2026-10-06 - held 2 s by showFmLabelHeld() (Display.ino) WITHOUT blocking loop();
+  // was a blocking gpsKeepAliveDelay(2000). The 0xF2 below now goes out straight away, not 2 s later.
+  showFmLabelHeld(last_fm_mode);
 
   queueMetaPacketBurst(0xF2, fmEncodeModeByte(last_fm_mode));   // V2.5-Evo - 2026-09-19 - carries the override bits
 }
@@ -1071,12 +1071,9 @@ void cycleFmModeArmed()
   // Cycle 1→2→3→1: wrap, never 0.
   last_fm_mode = (last_fm_mode < 3) ? last_fm_mode + 1 : 1;
 
-  // Large-font mode confirm: LET_F + mode digit (1/2/3). snprintf no longer needed.
-  DISP_LOCK();
-  displayDigits(LET_F, last_fm_mode);
-  updateDisplay();
-  DISP_UNLOCK();
-  gpsKeepAliveDelay(2000);
+  // Large-font mode confirm: LET_F + mode digit (1/2/3). V2.5-Evo - 2026-10-06 - held 2 s by
+  // showFmLabelHeld() (Display.ino) WITHOUT blocking loop(); was a blocking gpsKeepAliveDelay(2000).
+  showFmLabelHeld(last_fm_mode);
   queueMetaPacketBurst(0xF2, fmEncodeModeByte(last_fm_mode));   // V2.5-Evo - 2026-09-19 - carries the override bits
   fm_last_sync_ms = millis();              // reset keepalive — just synced
   fm_arm_ms       = millis();             // reset arm window — user is actively choosing a mode
@@ -1202,8 +1199,12 @@ static uint8_t fmNextStationInSet(uint8_t from, uint16_t mask)
 // THE CLAMP IS KEPT EVEN THOUGH THE VALUE IS NOW A CONSTANT. It costs one comparison and it means no
 // future edit to kMagStationFlashMs - or any later decision to feed a config field in here again -
 // can hand this call site a multi-second block without someone also raising the ceiling on purpose.
-static const uint32_t kMagStationFlashMs    = 1200UL;   // how long "F<n>" stays on screen (owner's figure)
-static const uint32_t kMagStationFlashCapMs = 1200UL;   // hard ceiling on the blocking call, whatever is asked
+// V2.5-Evo - 2026-10-06 - SUPERSEDED: the 1.2 s blocking flash and its clamp are gone. In the field
+// (2026-10-05) the label read as under half a second and the owner asked for 2 s (1 s minimum), the
+// same as every other "F<n>" confirm. The label is now held by showFmLabelHeld() (Display.ino), which
+// does NOT block loop() at all, so there is no stall left to bound and kMagStationFlashMs /
+// kMagStationFlashCapMs were removed. The H-1 reasoning above still holds: no config field feeds the
+// hold time, it is the fixed kFmLabelHoldMs.
 
 // fmStepStationFromMagnet - act on a magnet TAP (mag_mode 4).
 //
@@ -1213,7 +1214,8 @@ static const uint32_t kMagStationFlashCapMs = 1200UL;   // hard ceiling on the b
 //
 // CONFIRMATIONS - two channels, as the design requires, and only when something actually changed:
 //   haptic  : N short taps = station number (Pattern 11, N taken from vib_pulse_count)
-//   display : the existing "F<n>" large-font confirm, held for a dedicated, clamped 1.2 s
+//   display : the existing "F<n>" large-font confirm, held 2 s without blocking (V2.5-Evo - 2026-10-06;
+//             was a blocking 1.2 s)
 // If the tap resolves to the station the buggy is already at, this function returns in silence: no
 // buzz, no flash, no packet. A confirmation for "nothing happened" teaches the rider to expect
 // feedback from accidental magnet contact, which is the opposite of what we want.
@@ -1221,8 +1223,8 @@ static const uint32_t kMagStationFlashCapMs = 1200UL;   // hard ceiling on the b
 // INPUTS: last_fm_mode, usrConf.mag_fm_set. (usrConf.gear_display_time is NO LONGER read here - see
 //   the constants above for why.)
 // SIDE EFFECTS: last_fm_mode updated, one 0xF2 burst to the buggy, keepalive + arm timers reset,
-//   Pattern 11 queued, and a BLOCKING display hold of at most 1.2 s via gpsKeepAliveDelay(), which
-//   keeps draining the GPS UART so no fix goes stale. Loop task only - never from a FreeRTOS task.
+//   Pattern 11 queued, and a NON-blocking 2 s "F<n>" hold via showFmLabelHeld() (V2.5-Evo -
+//   2026-10-06; was a blocking 1.2 s gpsKeepAliveDelay()). Loop task only - never from a FreeRTOS task.
 void fmStepStationFromMagnet()
 {
   if (!fmIsEngaged()) return;                        // the gate lives with the action too
@@ -1247,16 +1249,9 @@ void fmStepStationFromMagnet()
     current_vib_pattern = 11;
   }
 
-  // The same "F<n>" confirm the toggle path draws, held for 1.2 s instead of the toggle's 2 s.
-  // The hold is clamped at the call site so this blocking delay can never grow - see the
-  // kMagStationFlashMs / kMagStationFlashCapMs comment above.
-  DISP_LOCK();
-  displayDigits(LET_F, last_fm_mode);
-  updateDisplay();
-  DISP_UNLOCK();
-  uint32_t flash_ms = (kMagStationFlashMs < kMagStationFlashCapMs) ? kMagStationFlashMs
-                                                                  : kMagStationFlashCapMs;
-  gpsKeepAliveDelay(flash_ms);
+  // The same "F<n>" confirm the toggle path draws. V2.5-Evo - 2026-10-06 - held 2 s (was a blocking
+  // 1.2 s) by showFmLabelHeld() in Display.ino, which does not block loop() - see the note above.
+  showFmLabelHeld(last_fm_mode);
 }
 
 // fmToggleRtmEnabledFromMagnet - act on a 2.5 s magnet hold (mag_mode 4).

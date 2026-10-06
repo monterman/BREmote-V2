@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-06 - F-label hold: showFmLabelHeld() draws "F<n>" and renderOperationalDisplay() leaves the
+//   digit zone alone for kFmLabelHoldMs (2 s) afterwards, so a station/mode confirm stays readable WITHOUT blocking
+//   loop(). Used by all four F-label sites in RTMState.ino. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-09-30 - MagFix (Rex delta audit LOW): updateR5ProximityBar() now CALLS fmIsEngaged() instead of
 //   repeating its three-part test inline, so the engaged distance bar, the C7 R3/R4 FM dots and the magnet-tap
 //   safety gate all read one predicate and cannot drift apart. Presentation only: no confStruct change, sizeof
@@ -684,6 +687,52 @@ uint8_t getEffectiveFoilBat() {
   return last_known_foil_bat;
 }
 
+// ============================================================
+// FOLLOW-ME LABEL HOLD - keeps "F1"/"F2"/"F3" on screen for 2 s without blocking loop()
+//
+// THE BUG THIS FIXES (field report 2026-10-05): the Follow-Me station label was seen for under half a
+// second and was sometimes barely visible. The owner wants it on screen for 2 s (1 s minimum).
+// The old confirms held the label by BLOCKING loop() inside gpsKeepAliveDelay() (2 s on the toggle
+// paths, 1.2 s on the magnet station tap), which also froze GPS polling, the magnet sampler and the
+// FM/RTM state machines for that whole time. NOTE, STATED HONESTLY: no path in this source was found
+// that cut the label below those figures, so the "under half a second" reading is not explained by the
+// code here (a different fielded build is possible). This change guarantees the 2 s on every F-label path.
+// THE FIX: the label is drawn once and its time is stamped. While the stamp is younger than
+// kFmLabelHoldMs, renderOperationalDisplay() skips its own digit-zone redraw in the Follow-Me branch,
+// so nothing paints over the label, and loop() keeps running every ~110 ms. Everything else on the
+// screen (R5 proximity bar, battery bar, GPS/BT/FM dots, signal bar) keeps updating as normal.
+// Anything that draws its own full-screen message ("St", "A1"/"A0", "rn", RTM info) still wins, exactly
+// as before - the hold only stops the routine speed/distance readout from overwriting the label.
+// ============================================================
+static const uint32_t kFmLabelHoldMs   = 2000UL;  // how long "F<n>" stays up (owner: 2 s, never under 1 s)
+static bool           fm_label_pending = false;   // true while a label is being held on screen
+static uint32_t       fm_label_shown_ms = 0;      // millis() when the label was drawn
+
+// showFmLabelHeld - draw "F<mode>" in large font and hold it for kFmLabelHoldMs.
+// Inputs: mode 1-3 (the station). Outputs: none.
+// Side effects: writes the digit zone and pushes it to the display (takes displayMutex), starts the
+//   hold timer. Does NOT block. Loop task only (every caller is in RTMState.ino on the loop task).
+void showFmLabelHeld(uint8_t mode)
+{
+  DISP_LOCK();
+  displayDigits(LET_F, mode);
+  updateDisplay();
+  DISP_UNLOCK();
+  fm_label_shown_ms = millis();
+  fm_label_pending  = true;
+}
+
+// fmLabelHolding - is an "F<n>" label still inside its hold time?
+// Outputs: true = leave the digit zone alone. Side effects: clears the pending flag once the time is up.
+// Wrap-safe: compares an unsigned elapsed time, never two absolute millis() values.
+static bool fmLabelHolding()
+{
+  if (!fm_label_pending) return false;
+  if (millis() - fm_label_shown_ms < kFmLabelHoldMs) return true;
+  fm_label_pending = false;
+  return false;
+}
+
 void renderOperationalDisplay()
 {
   updateFoilDataCache();  // refresh digit cache once per render cycle, before mutex and switch
@@ -699,6 +748,9 @@ void renderOperationalDisplay()
     // Option 2: Distance to buggy decoded from telemetry.rtm_distance (same encoding as RTM bar).
     // Option 3: Buggy speed from RX telemetry (0xFF = not available → shows "--").
     // Option 4: Current throttle percentage 0-100.
+    // V2.5-Evo - 2026-10-06 - F-label hold: while an "F<n>" confirm is inside its 2 s hold, skip the
+    // digit-zone readout so it is not painted over. The R5 bar and the push below still run.
+    if (!fmLabelHolding())
     switch (usrConf.fm_display_mode)
     {
       case 2:

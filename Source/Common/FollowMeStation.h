@@ -414,6 +414,32 @@ static inline int fmFrontRetreatSide(float psi_live_deg, bool front_wanted, floa
   return 0;
 }
 
+// V2.5-Evo - 2026-10-06 - fmEngageSeedDeg - the live station angle at an ACTIVE edge (a first squeeze,
+// or HOLD -> ACTIVE after a release - which is how the rider normally changes mode: stop, float, switch,
+// squeeze). Audit M-8 / owner ruling R-1b.
+//   Modes 4/5: G-4 unchanged - the measured angle, clamped into the rear half (+/-90), so an engagement
+//              can never BEGIN with a front station already granted.
+//   Modes 1-3: 0, as SW36 (the first tick snaps to the preset) - UNLESS the buggy is measured ahead of
+//              abeam (|psi_meas| > 90). Then +/-90 on the BUGGY'S side, outside the rear band, so the
+//              station walks home on that side instead of stepping straight to a rear preset (possibly
+//              on the far side) with the buggy still ahead of the rider.
+//   No course, or any other mode: 0, directly behind.
+static inline float fmEngageSeedDeg(uint8_t mode, bool course_valid, float psi_meas_deg)
+{
+  if (!course_valid) return 0.0f;
+  if (mode == 4 || mode == 5) {
+    if (psi_meas_deg >  90.0f) return  90.0f;
+    if (psi_meas_deg < -90.0f) return -90.0f;
+    return psi_meas_deg;
+  }
+  if (mode >= 1 && mode <= 3) {
+    if (psi_meas_deg >  90.0f) return  90.0f;
+    if (psi_meas_deg < -90.0f) return -90.0f;
+    return 0.0f;
+  }
+  return 0.0f;
+}
+
 // V2.5-Evo - 2026-10-06 - fmRetreatSeedDeg - where the live angle is RE-SEEDED when H-1 retreats: the
 // buggy's MEASURED station angle, forced onto the buggy's side (so a rounding disagreement between the
 // angle and the cross-track sign can never put it on the far side) and clamped to the hard floor. The

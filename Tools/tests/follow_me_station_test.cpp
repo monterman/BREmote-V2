@@ -634,6 +634,69 @@ int main()
     printf("rear-only SW36 equivalence: %ld cases\n", cases);
   }
 
+  // ======================================================================================
+  // 14. AUDIT M-8: THE ACTIVE-EDGE SEED - HOLD -> SWITCH -> SQUEEZE, EVERY MODE PAIR
+  // ======================================================================================
+  {
+    // The rule.
+    assert(fmEngageSeedDeg(2, true,  +150.0f) == +90.0f);
+    assert(fmEngageSeedDeg(1, true,  -100.0f) == -90.0f);
+    assert(fmEngageSeedDeg(3, true,   +90.0f) ==   0.0f);   // abeam is not ahead: SW36
+    assert(fmEngageSeedDeg(3, true,   +30.0f) ==   0.0f);
+    assert(fmEngageSeedDeg(4, true,   +30.0f) == +30.0f);   // G-4 unchanged
+    assert(fmEngageSeedDeg(5, true,  +170.0f) == +90.0f);
+    assert(fmEngageSeedDeg(2, false, +150.0f) ==   0.0f);   // no course
+    assert(fmEngageSeedDeg(0, true,  +150.0f) ==   0.0f);
+
+    const float dF  = 9.0f, phi = kFrontDefault;
+    long seq = 0;
+    for (uint8_t prev = 1; prev <= 5; prev++) {            // the mode before the release
+      for (uint8_t next = 1; next <= 5; next++) {          // the mode switched to while floating
+        for (int nd_i = 0; nd_i < 3; nd_i++) {
+          const float nd = (nd_i == 0) ? 0.0f : (nd_i == 1) ? kNearDiag : 90.0f;
+          for (float meas = -179.0f; meas <= 180.0f; meas += 1.0f) {
+            // The previous engagement's live angle is irrelevant: the ACTIVE edge overwrites it.
+            (void)prev;
+            const float seed = fmEngageSeedDeg(next, true, meas);
+            assert(fabsf(seed) <= 90.0f);                  // never begins ahead of abeam
+            float bc;                                      // the buggy's cross-track side = sign(sin(meas))
+            fmStationAlongCrossM(meas, 10.0f, nullptr, &bc);
+            // Dead ahead (meas = 180, |bc| ~ 1e-7) has no side; judge only a buggy measurably off the line.
+            const bool sided = fabsf(bc) > 0.001f;
+            if (seed != 0.0f && sided) assert((seed > 0.0f) == (bc > 0.0f));   // on the buggy's side
+            // H-1 can never fire on the engage tick: the seed is on the buggy's side.
+            const bool fw = (next == 4 || next == 5);
+            if (sided) assert(fmFrontRetreatSide(seed, fw, bc) == 0);
+            if (next <= 3) {
+              if (fabsf(meas) <= 90.0f) assert(seed == 0.0f);          // SW36: snap on tick 1
+              // Walk it: monotone, on the buggy's side, then one snap behind the rider.
+              for (int sch = 0; sch <= 1; sch++) {
+                float lv = seed, prev_a = fabsf(seed);
+                bool snapped = false;
+                for (int t = 0; t < 200 && !snapped; t++) {
+                  const float before = lv;
+                  lv = rearTick(next, nd, sch != 0, phi, lv, &snapped);
+                  if (!snapped) {
+                    assert(fabsf(lv) <= prev_a + 0.001f);  // walking toward behind, never outward
+                    assert(lv == 0.0f || (lv > 0.0f) == (seed > 0.0f));
+                    prev_a = fabsf(lv);
+                  } else {
+                    assert(fabsf(before) <= (nd > 90.0f ? 90.0f : nd) + 0.001f);  // the step is from inside the rear band
+                  }
+                }
+                assert(snapped);
+                // Radius and side during the walk are the station schedule's; the station stays behind abeam.
+                (void)dF;
+              }
+            }
+            seq++;
+          }
+        }
+      }
+    }
+    printf("M-8 HOLD->switch->squeeze sequences: %ld\n", seq);
+  }
+
   printf("follow_me_station_test: all assertions passed\n");
   return 0;
 }

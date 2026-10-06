@@ -1,3 +1,8 @@
+// V2.5-Evo - 2026-10-06 - AUDIT M-8 (owner ruling R-1b): the ACTIVE-edge seed for modes 1-3. HOLD -> switch -> squeeze set the live angle to 0, so the
+//   first tick snapped to the rear preset - possibly on the far side - with the buggy still ahead of the rider after F4/F5. Now fmEngageSeedDeg() seeds
+//   modes 1-3 at +/-90 on the buggy's side when the measured angle is ahead of abeam (|psi_meas| > 90), and the station walks home (labelled kProfTransit,
+//   so the closing snap skips the D term); otherwise 0, as SW36. Modes 4/5 keep the G-4 seed. The ENGAGE print names the seed when one is applied.
+//   No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - AUDIT H-1 + M-7 + L-8 (front-station side test, walk-home profile). (H-1) PG-4's outward waypoint and the abeam waiting
 //   waypoint were always placed on the STATION'S side of the rider's line, so a rider turning toward a settled F4/F5 station (or jibing) left the buggy on
 //   the other side and both aimed it across his line, ahead of him; the header's promised retreat did not exist. Now computeFmTarget() runs
@@ -6510,15 +6515,18 @@ static void runFmLoopBody(unsigned long now)
       // (inside the rear band), so computeFmTarget() snaps it to the preset on the first tick,
       // exactly as SW36 did.
       // ====================================================================================
-      if ((m == 4 || m == 5) && fm_rider_course_deg >= 0.0f) {
+      //
+      // V2.5-Evo - 2026-10-06 - audit M-8 (owner ruling R-1b): modes 1-3 are seeded too, but ONLY when
+      // the buggy is measured ahead of abeam - then at +/-90 on the buggy's side, so the station walks
+      // home on that side. HOLD -> switch -> squeeze is the normal way to change mode, so this is the
+      // primary path out of F4/F5. Otherwise 0, exactly as above. fmEngageSeedDeg() holds the rule;
+      // modes 4/5 get the same clamp-to-the-rear-half seed as before.
+      if (fm_rider_course_deg >= 0.0f) {
         const float b_r2b = (float)TinyGPSPlus::courseTo(
             fm_filt_lat, fm_filt_lng, gps_last_lat, gps_last_lng);
-        float seed = fmMeasuredStationDeg(fm_rider_course_deg, b_r2b);
-        if (seed >  90.0f) seed =  90.0f;
-        if (seed < -90.0f) seed = -90.0f;
-        fm_station_live_deg = seed;
+        fm_station_live_deg = fmEngageSeedDeg(m, true, fmMeasuredStationDeg(fm_rider_course_deg, b_r2b));
       } else {
-        fm_station_live_deg = 0.0f;              // modes 1-3 (snapped to the preset on the first tick), or no course: directly behind, the safe geometry
+        fm_station_live_deg = 0.0f;              // no course: directly behind, the safe geometry
       }
       fm_station_prev_ms          = 0;           // the slew's dt starts fresh, never across the gap
       fm_transit_active           = false;
@@ -6530,7 +6538,7 @@ static void runFmLoopBody(unsigned long now)
       fm_state = FM_ACTIVE;
       // V2.5-Evo - 2026-10-06 - R-1: the "seeded at" wording only for front stations, which are the
       // only ones seeded; modes 1-3 print the SW36 line.
-      if (m == 4 || m == 5) {
+      if (m == 4 || m == 5 || fm_station_live_deg != 0.0f) {   // V2.5-Evo - 2026-10-06 - M-8: a seeded rear mode says so
         Serial.printf("FM [RX] ENGAGE mode %u: dist=%.1f m rider=%.1f km/h course=%.0f station seeded at %.0f deg (0 = behind you, + = your right)\n",
                       (unsigned)m, dist_m, fm_rider_speed_kmh, fm_rider_course_deg,
                       (double)fm_station_live_deg);

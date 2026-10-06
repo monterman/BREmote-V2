@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-06 - AUDIT M-12: kFmFrontAngleMaxDeg 80 -> 45, so a front station is never less far ahead than it is to the side (13 m ahead at the 13 m side floor). Comments: audit L-13 (stale angle + radius wording). Constant only - no confStruct change, sizeof STAYS 200, SW_VERSION STAYS 36.
 // V2.5-Evo - 2026-10-06 - FRONT STATIONS BY OFFSET (owner rule): the u16 fm_front_angle_deg is RENAMED IN PLACE to fm_front_ahead_extra_m - same offset, same type, sizeof STAYS 200, SW_VERSION STAYS 36, NO CONFIG WIPE. F4/F5 now sit the lateral floor (13 m) exactly to the side and d_follow + this many metres ahead; the angle and radius are derived (FollowMeStation.h fmFrontStationGeom). 0 = default 7 m, legal 4-10 m. kFmFrontAngleDefaultDeg is replaced by kFmFrontAheadExtraDefaultM / MinM / MaxM; kFmFrontAngleMinDeg (35) and MaxDeg (80) now bound the DERIVED angle.
 // V2.5-Evo - 2026-10-04 - COMMENTS ONLY, M-4: the fm_align_cap field comment now records that the VESC applies its OWN 3 % input deadband, which eats the first ~7.66 command counts - so below ~8 counts the motor does not turn at all, and every low-cap figure in these comments (the "13 is about 5 %" and the "at cap 13: motors 0 / 26" next to it included) overstates the thrust actually delivered. Measured against the owner's PPM map (span 852 us, l_current_max 95 A): 3 counts = inside the deadband = 0 A, 23 counts = 5.9 A. No declaration, default, struct, constant or range in this file is changed: sizeof(confStruct) stays 200, SW_VERSION stays 36, LOG_FILE_FORMAT_VER stays 2, record sizes stay 62 / 90 / 112.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 2 of 4 - THE INSTRUMENT (see PWM.ino, System.ino, Logger.ino, Tools/logreader/bremote_log.py). The enable swap that time-multiplexes the single PPM output between the two motors has never had an observer on it, which is why a failure that starves one channel entirely could not be confirmed or ruled out from the field. THIS FILE ADDS, all of it diagnostic: (1) three saturating volatile uint16_t counters beside g_motor_gate_open - g_swap_fail_ch0 / g_swap_fail_ch1 (per-channel session totals of swaps that lost the mutex) and g_swap_fail_run (the CONSECUTIVE run length right now). volatile, not std::atomic, because this is the g_diag_mux_errors shape exactly: single writer in generatePWM(), single core, read by ?diag and the logger, zeroed by ?diagz - full reasoning at the declaration. (2) kSwapStarveTicks (25) and kSwapRecoverTicks (5) beside the kPivot* block, with their derivations, so STEP 3 needs no confStruct field; kSwapStarveTicks is explicitly COUPLED to the Wire.setTimeOut(3) that landed in STEP 1 and is not justified without it. (3) FM_LOG_GATE_SWAP_FAIL_CH0/CH1_SHIFT+MASK for bits 23-30 of the existing fm_gate_flags word, which were free. NOTHING READS g_swap_fail_run BACK AT THIS STEP - it becomes a control input only in STEP 3, as a separate commit. ZERO log bytes, NO LOG_FILE_FORMAT_VER bump (stays 2), record sizes stay 62 / 90 / 112, every existing log file still parses, and no confStruct change: sizeof stays 200, SW_VERSION stays 36. Cost: 6 bytes of RAM.
@@ -896,7 +897,9 @@ static const float kFmEngageDistFloorM = 9.5f;   // metres; smallest legal non-z
 // These four live HERE, once, for exactly the reason kFmEngageDistFloorM does: TWO FILES READ THEM.
 // cfgValidateCrossField() in ConfigService.ino needs the bounds to clamp a stored
 // fm_front_angle_deg, and the read site in RTMState.ino needs the same numbers to resolve the angle
-// and the radius. ConfigService.ino is concatenated BEFORE RTMState.ino, so a constant defined in
+// and the radius. [V2.5-Evo - 2026-10-06 - audit L-13: since the offset change the validator clamps
+// fm_front_ahead_extra_m with the kFmFrontAheadExtra* values instead, and the read sites derive the
+// angle and radius from side + ahead.] ConfigService.ino is concatenated BEFORE RTMState.ino, so a constant defined in
 // RTMState.ino would be invisible to the validator; this header is included at the top of
 // V2_Integration_Rx.ino, which is concatenated first, so both see these. The rest of the P2 tuning
 // (the slew rate, the radius factor, the transit constants) is read only by RTMState.ino and lives
@@ -904,9 +907,10 @@ static const float kFmEngageDistFloorM = 9.5f;   // metres; smallest legal non-z
 //
 // kFmFrontLateralMinM IS THE SAFETY NUMBER OF THIS WHOLE FEATURE. 13 m = an 8 m carve radius plus
 // 5 m of TX-vs-RX relative GPS error (code review B2). It is the minimum distance a front station is
-// allowed to sit from the rider's course line, and it is honoured by growing the RADIUS rather than
-// by refusing the rider's angle - so a tighter angle buys a bigger front station, never a closer
-// one. The 5 m term is an assumption, not a measurement: measurement #5 in the plan (both boards
+// allowed to sit from the rider's course line. [V2.5-Evo - 2026-10-06 - audit L-13: it is no longer
+// honoured "by growing the radius against the rider's angle" - there is no angle setting now; the
+// front station sits exactly this far to the side and the angle and radius are derived. See the
+// FRONT STATIONS BY OFFSET note below.] The 5 m term is an assumption, not a measurement: measurement #5 in the plan (both boards
 // static at the dock, 5 min of fm_distance_dx10) is what pins it, and the floor moves roughly
 // 4 deg per metre of error, so this number must be revisited once that measurement exists.
 //
@@ -924,7 +928,13 @@ static const float kFmEngageDistFloorM = 9.5f;   // metres; smallest legal non-z
 // means "45 deg" any more); the three kFmFrontAheadExtra* values replace it. Read by both the
 // validator (ConfigService.ino) and the read sites (RTMState.ino), hence here.
 static const float kFmFrontAngleMinDeg       = 35.0f;   // degrees; floor on the DERIVED front angle (owner's 35, override of the review's 40)
-static const float kFmFrontAngleMaxDeg       = 80.0f;   // degrees; ceiling on the DERIVED angle - a front station is always genuinely ahead of abeam
+// V2.5-Evo - 2026-10-06 - audit M-12: kFmFrontAngleMaxDeg 80 -> 45, so `ahead` is never less than `side`
+// (13 m at side 13). WHAT WAS WRONG: at 80 the floor on ahead was side / tan80 = 2.3 m, so d_follow 6 +
+// extra 4 put the station only 10 m ahead. The 13 m side floor is a LATERAL argument: a rider carving
+// 90 deg toward the station on an 8 m radius also travels about 8 m FORWARD, and against a stopped buggy
+// the clearance is about sqrt((ahead - 8)^2 + 5^2) - 5.4 m at 10 m ahead, 7.1 m at 13, 9.4 m at 16. With
+// 45 the derived angle is 35-45 deg; d_follow 6 + 4 -> 13 m ahead x 13 m side at 45 deg.
+static const float kFmFrontAngleMaxDeg       = 45.0f;   // degrees; ceiling on the DERIVED angle - ahead >= side, never closer ahead than to the side
 static const float kFmFrontLateralMinM       = 13.0f;   // metres; carve 8 m + relative GPS 5 m. The front station's side offset IS this (or the pass minimum if larger), exactly
 static const float kFmFrontAheadExtraDefaultM = 7.0f;   // metres; what fm_front_ahead_extra_m == 0 means
 static const float kFmFrontAheadExtraMinM     = 4.0f;   // metres; smallest legal extra (1-3 are raised to this)

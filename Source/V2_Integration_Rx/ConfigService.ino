@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-06 - L-12: cfgValidateCrossField() CLAMPS zone_angle_exit_deg (and zone_angle_enter_deg, so enter can never sit above the capped exit) to 90 deg with a NOTE - above 90 the rear-diagonal Schmitt could stay engaged with the buggy ahead of the rider. A clamp, never a rejection (LOAD path). The kCfgFields rows keep 0-180 so old backups import. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-04 - L-2: cfgValidateCrossField() now CLAMPS fm_align_cap too - outside the validated 8-80 range it falls back to the shipped default 13 (never 0, which would stop the buggy, and never above 80). It was the one of SW36's three fields with no cross-field load clamp while fm_return_mode and fm_align_influence had one. Same reasoning as those two: this validator runs on the LOAD path, so a range rejection there fails the load and falls back to defaults - the config/pairing/compass-calibration wipe this function exists to prevent. Not reachable from a valid stored value; consistency and the corrupt-blob case. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - FRONT STATIONS BY OFFSET: the kCfgFields row fm_front_angle_deg becomes fm_front_ahead_extra_m (same u16, same offset - a rename in place, sizeof stays 200, SW_VERSION stays 36, no config wipe), row range 0-10 m. cfgValidateCrossField() swaps the angle clamps for the extra's: 0 = default 7 kept as 0; 1-3 raised to 4 with a NOTE; above 10 reset to 0 (the default) with a NOTE, since such a value can only be an old ANGLE (35-80) still in a blob. Clamps, never rejections (LOAD path). ?get / ?set use the new name.
 // V2.5-Evo - 2026-10-02 - P2 (FRONT STATIONS F4/F5), part 2 of 3: one new kCfgFields row, fm_front_angle_deg (u16, 0 = use the 45 deg default, else 35-80 deg off dead ahead), for the field that took the struct's 2 tail padding bytes - sizeof stays 200, SW_VERSION stays 36, no config is wiped. followme_mode's range goes 0-3 -> 0-5 (1 rear-right, 2 behind, 3 rear-left, 4 FRONT-RIGHT, 5 FRONT-LEFT; there is deliberately no 6 and no dead-ahead station). cfgValidateCrossField() gains the front-angle CLAMPS: (0, 35) is raised to 35 with a NOTE naming the 13 m lateral margin, and anything above 80 is lowered to 80 - clamps, never rejections, because this validator runs on the LOAD path and a range rejection there wipes the whole config (the 2026-09-03 lesson), and because the field lives in bytes an older firmware never wrote, so a stored blob may hold anything there. Both corrections move the front station FURTHER from the rider's line.
@@ -268,7 +269,7 @@ bool cfgValidateCrossField(confStruct &candidate, String &err)
   //               an angle is not a distance, so it reads as "default", not as "as far as allowed".
   //   1-3      -> 4, the nearest legal value.
   // NEITHER CORRECTION CHANGES THE SIDEWAYS CLEARANCE: that is the 13 m floor at the read site, not
-  // this field. The derived angle is held at 35-80 deg there too, by capping `ahead`.
+  // this field. The derived angle is held at 35-45 deg there too (45 since audit M-12), by moving `ahead`.
   if (candidate.fm_front_ahead_extra_m > (uint16_t)kFmFrontAheadExtraMaxM)
   {
     const unsigned stale = (unsigned)candidate.fm_front_ahead_extra_m;
@@ -285,6 +286,26 @@ bool cfgValidateCrossField(confStruct &candidate, String &err)
     candidate.fm_front_ahead_extra_m = (uint16_t)kFmFrontAheadExtraMinM;
     Serial.printf("NOTE: Front Station Extra Ahead %u m raised to the %u m minimum. Set 0 for the %u m default.\n",
                   asked, (unsigned)kFmFrontAheadExtraMinM, (unsigned)kFmFrontAheadExtraDefaultM);
+  }
+  // ---- V2.5-Evo - 2026-10-06 - audit L-12: the side-zone Schmitt angles are capped at 90 deg ----
+  // WHAT WAS WRONG: zone_angle_exit_deg validated 0-180, and above 90 the rear diagonal could stay
+  // ENGAGED with the buggy AHEAD of the rider - the Schmitt measures how far off "directly behind" the
+  // buggy is, and past 90 that is in front of him. FIX: above 90 is CLAMPED to 90 (never rejected - this
+  // runs on the LOAD path, where a rejection wipes pairing and the compass calibration over one number),
+  // with a NOTE so the rider sees his value moved. zone_angle_enter_deg gets the same cap: left above 90
+  // it would sit above the capped exit angle and the Schmitt would engage and release on alternate ticks.
+  // The kCfgFields rows keep their 0-180 range so an existing backup still imports; the clamp corrects it.
+  if (candidate.zone_angle_exit_deg > 90.0f)
+  {
+    Serial.printf("NOTE: Zone Angle Exit %.1f deg lowered to the 90 deg maximum (past 90 the buggy is ahead of you).\n",
+                  (double)candidate.zone_angle_exit_deg);
+    candidate.zone_angle_exit_deg = 90.0f;
+  }
+  if (candidate.zone_angle_enter_deg > 90.0f)
+  {
+    Serial.printf("NOTE: Zone Angle Enter %.1f deg lowered to the 90 deg maximum (past 90 the buggy is ahead of you).\n",
+                  (double)candidate.zone_angle_enter_deg);
+    candidate.zone_angle_enter_deg = 90.0f;
   }
   // V2.5-Evo - 2026-09-19 - log_level: 5 (Everything) is the top level now; anything above it means
   // "the most detail there is", so it clamps to 5 rather than failing the load. Same reasoning.

@@ -167,6 +167,8 @@ FM_LOG_GATE_BITS: list[tuple[int, str]] = [
     (16, "steer_takeover"),  # reserved for the steer-takeover branch; not set by any code path yet
     (17, "fm_aligning"),     # named to match the firmware's own standalone fm_aligning CSV column
     (18, "fm_boost"),        # named to match the firmware's own standalone fm_boost CSV column
+    (31, "aim_outward"),     # front stations: PG-4 escape standing - aim is an outward waypoint (2026-10-05;
+                             # bit 23 on the fm-stations-front branch, moved to 31 to clear the swap counters)
 ]
 FM_LOG_GATE_BIT_NAMES = [name for _, name in FM_LOG_GATE_BITS]
 
@@ -182,7 +184,7 @@ FM_LOG_GATE_BIT_NAMES = [name for _, name in FM_LOG_GATE_BITS]
 # READ THEM THE RIGHT WAY ROUND: swap_fail_ch0_q4 counts failures on ticks where PWM0 was the
 # ENABLED channel, so a non-zero ch0 means PWM0 kept its pulses and PWM1 was the STARVED one.
 # Both read 0 on a healthy bus. Firmware-side cumulative totals are on ?diag.
-# Bit 31 is free.
+# Bit 31 is the front-station aim_outward flag (single bit, decoded in FM_LOG_GATE_BITS above). The word is now full.
 # NOT IN THIS TABLE, DELIBERATELY: bits 19-22, the manual pivot assist depth (2026-09-25). This
 # tool has always reported them as the four anonymous columns bit_19..bit_22 and that behaviour is
 # left exactly as it is here - adding it would change existing output columns, which is outside the

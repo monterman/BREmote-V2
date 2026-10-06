@@ -1,6 +1,7 @@
 // V2.5-Evo - 2026-10-04 - COMMENTS ONLY, M-4: the fm_align_cap field comment now records that the VESC applies its OWN 3 % input deadband, which eats the first ~7.66 command counts - so below ~8 counts the motor does not turn at all, and every low-cap figure in these comments (the "13 is about 5 %" and the "at cap 13: motors 0 / 26" next to it included) overstates the thrust actually delivered. Measured against the owner's PPM map (span 852 us, l_current_max 95 A): 3 counts = inside the deadband = 0 A, 23 counts = 5.9 A. No declaration, default, struct, constant or range in this file is changed: sizeof(confStruct) stays 200, SW_VERSION stays 36, LOG_FILE_FORMAT_VER stays 2, record sizes stay 62 / 90 / 112.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 2 of 4 - THE INSTRUMENT (see PWM.ino, System.ino, Logger.ino, Tools/logreader/bremote_log.py). The enable swap that time-multiplexes the single PPM output between the two motors has never had an observer on it, which is why a failure that starves one channel entirely could not be confirmed or ruled out from the field. THIS FILE ADDS, all of it diagnostic: (1) three saturating volatile uint16_t counters beside g_motor_gate_open - g_swap_fail_ch0 / g_swap_fail_ch1 (per-channel session totals of swaps that lost the mutex) and g_swap_fail_run (the CONSECUTIVE run length right now). volatile, not std::atomic, because this is the g_diag_mux_errors shape exactly: single writer in generatePWM(), single core, read by ?diag and the logger, zeroed by ?diagz - full reasoning at the declaration. (2) kSwapStarveTicks (25) and kSwapRecoverTicks (5) beside the kPivot* block, with their derivations, so STEP 3 needs no confStruct field; kSwapStarveTicks is explicitly COUPLED to the Wire.setTimeOut(3) that landed in STEP 1 and is not justified without it. (3) FM_LOG_GATE_SWAP_FAIL_CH0/CH1_SHIFT+MASK for bits 23-30 of the existing fm_gate_flags word, which were free. NOTHING READS g_swap_fail_run BACK AT THIS STEP - it becomes a control input only in STEP 3, as a separate commit. ZERO log bytes, NO LOG_FILE_FORMAT_VER bump (stays 2), record sizes stay 62 / 90 / 112, every existing log file still parses, and no confStruct change: sizeof stays 200, SW_VERSION stays 36. Cost: 6 bytes of RAM.
 // V2.5-Evo - 2026-10-03 - RX WEB CONSOLE: #include "../Common/SerialTee.h" added immediately after <Arduino.h> and before every one of our own headers, which is where it has to be - it redefines what the word `Serial` means, so anything included ahead of it is silently left out of the capture. Include only; no declaration, default, struct or constant in this file is changed. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
+// V2.5-Evo - 2026-10-02 - P2 (FRONT STATIONS F4/F5), part 1 of 3 (see ConfigService.ino and WebUiEmbedded.h): the config layer only - no controller change in this file's commit. Adds (1) the confStruct field fm_front_angle_deg (u16, 0 = use the 45 deg default, else 35-80 deg off dead ahead for the two front stations) IN THE 2 BYTES OF TAIL PADDING the SW36 append left behind, so sizeof(confStruct) STAYS 200, the static_assert is untouched, SW_VERSION STAYS 36 and THE OWNER'S STORED CONFIG IS NOT WIPED BY THIS FLASH - the same trick mag_fm_set used on the TX and bt_enabled before it. The P2 plan had allocated this field to the banked reserved slot rsvd_f32_1 as a float; that slot no longer exists (it became auto_ramp_s on 2026-09-19, and rsvd_u16_1 became steer_during_auto the same day), so the field is a u16 in WHOLE DEGREES instead - 1 degree is 0.32 m at the 18.4 m front radius, far inside the 5 m relative GPS error the design already assumes. (2) The four shared constants kFmFrontAngleDefaultDeg (45), kFmFrontAngleMinDeg (35, the owner's override of the review's 40), kFmFrontAngleMaxDeg (80) and kFmFrontLateralMinM (13 m = carve 8 + relative GPS 5), defined here because the ConfigService validator and the RTMState read site both need them and ConfigService.ino is concatenated first. (3) The include of ../Common/FollowMeStation.h, the pure station arithmetic. defaultConf.fm_front_angle_deg is 0, which is what every fielded board already reads out of those padding bytes, so the flash changes no behaviour until the rider sets the field. Dead ahead stays unreachable at every value: |station| is clamped at 180 - the effective angle.
 // V2.5-Evo - 2026-10-01 - M-2 FIX, part 1 of 4 (see PWM.ino, Logger.ino, System.ino): THE MOTOR GATE BECOMES VISIBLE. There are now two link timestamps - last_packet ("is the remote alive?") and last_control_packet ("do I have a fresh throttle command?") - and the motor gate uses the second while EVERY instrument still read the first, so the motor could be gated off with the BIND LED solid, ?printrssi showing good signal and the log's link flag reading healthy, and nothing anywhere saying why the motors stopped. It cost a half-day on 2026-09-29: ?printpwm showed a live throttle value while the gate was shut, and remote_error stayed 0 through two confirmed outages of 5.4 s and 8.75 s. FOUR instruments, none of which could see the gate. THIS FILE ADDS: (1) the diagnostic observer g_motor_gate_open - calcPWM() publishes the verdict of the gate-mirror expression it already computes, so ?diag, ?printpwm and the logger read ONE published value instead of each growing a third copy of the gate test; (2) two columns at the tail of VescLogData, the BASE record: ctrl_pkt_age_ms (u16, capped 0xFFFE) and motor_gate_open (u8). They go in the base deliberately - the tiers are cumulative and levels 0-3 all record as level 3, so a field in the base appears at EVERY log level, 0 through 5, and an incident is never re-runnable at a higher level. sizeof(VescLogData) 59 -> 62, VescLogDataL4 87 -> 90, VescLogDataL5 109 -> 112, asserts updated. OLD LOGS DO NOT PARSE AFTER THIS FLASH and the per-file header does NOT rescue them: record_size tells a reader how far to step, but it cannot express that every block above byte 59 has moved 3 bytes, so a pre-flash level-4/5 file would have been accepted and silently mis-decoded - exactly the "convincing garbage" this format exists to prevent. LOG_FILE_FORMAT_VER is therefore bumped 1 -> 2, which both readers already test, so every pre-flash file is now refused in plain English instead. DOWNLOAD ANY LOGS WORTH KEEPING BEFORE FLASHING. This is the same accepted cost as the 51->52, 53->59 record growths. No confStruct change, sizeof(confStruct) stays 200, SW_VERSION stays 36, the owner's stored config is NOT wiped.
 // V2.5-Evo - 2026-09-28 - R-3 FIX, part 1 of 3 (see Radio.ino and PWM.ino): adds the plain global last_control_packet - a SECOND link timestamp, stamped only by the normal control-packet branch and read only by the motor gate in PWM.ino. last_packet means "the remote is alive" and is refreshed by the 0xF1 / 0xF2 / 0xF4 meta-packets too, none of which carries a throttle byte; the motor gate was testing it and so could reopen on a meta-packet with a stale thr_received and the trigger released. All four of last_packet's other readers (Logger.ino's link flag, RTMState.ino's RTM failsafe stop and FM_STOP_LINK, System.ino's connection status) are deliberately left exactly as they are - liveness is the right question for them. It is a plain global, NOT a confStruct field: no struct change, sizeof stays 200, SW_VERSION stays 36, and this flash does NOT wipe the owner's stored config.
 // V2.5-Evo - 2026-09-25 - MANUAL PIVOT ASSIST, FLOOR CORRECTION (review findings P-7 / P-6). kPivotFloorQ8 128 -> 64. WHY: at full lock the mixer's gain into the outer motor is exactly 2x, so a throttle-domain floor f lands the outer motor - and therefore ALL the thrust, since the inner motor is 0 - at min(2fT, 255). f = 1/2 is the EXACT RECIPROCAL of that gain, so it cancels it and cuts NOTHING at full trigger (outer 254 of 255): the single worst value the constant can take, worst precisely in the owner's trigger-pinned use case. 64 (f = 1/4) puts the outer motor at 126/255 at full trigger, a 51 % cut of total thrust. The min(2fT, 255) derivation, the floor table and the "do not go below 64 without water testing" bound are now written into the constants block; the old comment claimed the full-lock benefit was "reduced thrust", which at f = 1/2 and full trigger did not exist (254 vs 255) and would have hidden this from the next reader (P-7). Also corrects the "byte-for-byte no-op" wording: the depth BLEEDS OUT over 8 ticks, so RTM/FM taking over, crossing 5 km/h and straightening are inert WITHIN 80 ms, subtract-only throughout, not on the same tick (P-6). ONE code change - the constant; everything else is comment. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -166,7 +167,7 @@ static const uint16_t kTxGpsStaleFloorMs = 500;
 static const float kAutoRampMinS = 0.2f;   // s; smallest non-zero auto_ramp_s
 static const float kAutoRampMaxS = 4.0f;   // s; the ceiling, shared with motor_ramp_s
 
-#define SW_VERSION 36  // V2.5-Evo - 2026-09-19 - 36 = fm_return_mode / fm_align_cap / fm_align_influence appended at the tail; sizeof 192->200 (198 + 2 B alignment pad). Config is NOT reset by this flash: the 192-byte SW35 blob is migrated by prefix (every stored value keeps its offset and its value) and the three new fields default (1 / 13 / 80) - see the LEGACY CONFIG BLOB MIGRATION block in Common/SPIFFSEngine.h. 35 = mag_orientation appended (compass mounting rotation); sizeof 184->192 (mag_orientation + 2 reserved slots banked for future no-bump features), config IS reset by this flash. 34 = added fm_engage_dist_m / auton_runtime_cap_s / fm_steer_reposition_en reserved slots + defaultConf carries factory default config (compass cal, near_diag_offset 45); first flash resets all RX SPIFFS config to defaults. NOTE (2026-07-25, STAGE 0 PART A): the third of those slots has since been RENAMED IN PLACE to log_level — same offset, same uint16_t, sizeof(confStruct) still 184 — so this stays 34 and NO further config wipe happens.
+#define SW_VERSION 36  // V2.5-Evo - 2026-10-02 - STILL 36, AND THE TAIL PAD IS NOW SPENT: fm_front_angle_deg (P2 front stations) took the 2 B alignment pad named below, so sizeof is still 200, this flash does NOT reset config, and the NEXT new scalar field is a real SW37 bump with a real wipe - there is no free space left in this struct and both banked reserved slots went on 2026-09-19 (steer_during_auto, auto_ramp_s). When SW37 comes, bank four slots. // V2.5-Evo - 2026-09-19 - 36 = fm_return_mode / fm_align_cap / fm_align_influence appended at the tail; sizeof 192->200 (198 + 2 B alignment pad). Config is NOT reset by this flash: the 192-byte SW35 blob is migrated by prefix (every stored value keeps its offset and its value) and the three new fields default (1 / 13 / 80) - see the LEGACY CONFIG BLOB MIGRATION block in Common/SPIFFSEngine.h. 35 = mag_orientation appended (compass mounting rotation); sizeof 184->192 (mag_orientation + 2 reserved slots banked for future no-bump features), config IS reset by this flash. 34 = added fm_engage_dist_m / auton_runtime_cap_s / fm_steer_reposition_en reserved slots + defaultConf carries factory default config (compass cal, near_diag_offset 45); first flash resets all RX SPIFFS config to defaults. NOTE (2026-07-25, STAGE 0 PART A): the third of those slots has since been RENAMED IN PLACE to log_level — same offset, same uint16_t, sizeof(confStruct) still 184 — so this stays 34 and NO further config wipe happens.
 const char* CONF_FILE_PATH = "/data.txt";
 const char* BC_FILE_PATH = "/batconf.txt";
 
@@ -693,9 +694,54 @@ struct confStruct {
     uint16_t fm_return_mode;           // 0 = HOLD when the rider stops (as before); 1 = FM_RETURN. Range 0-1; default 1
     uint16_t fm_align_cap;             // throttle cap during FM align / FM_RETURN align+ramp, 0-255 scale; range 8-80; default 13
     uint16_t fm_align_influence;       // mixer steering influence during FM align / FM_RETURN align, %; range 0-100 (0 = use steering_influence); default 80
-    // (2 bytes of tail padding follow: 198 rounds up to 200 for the 4-byte float alignment.)
+
+    // ============================================================
+    // V2.5-Evo - 2026-10-02 - P2 (FRONT STATIONS): fm_front_angle_deg TAKES THE 2 TAIL PADDING
+    // BYTES. NO SW_VERSION BUMP, NO CONFIG WIPE.
+    //
+    // WHY IT IS HERE AND NOT A FLOAT. The P2 plan allocated this field to the banked RESERVED slot
+    // rsvd_f32_1, as a float with one decimal place. THAT SLOT IS GONE: it was renamed in place to
+    // auto_ramp_s on 2026-09-19, and rsvd_u16_1 went to steer_during_auto the same day, so both
+    // banked slots are spent. The remaining free space in this struct is the 2 bytes of tail padding
+    // the SW36 append left behind (198 used, sizeof 200 for the 4-byte float alignment), which is
+    // exactly one uint16_t. So this field is a uint16_t in WHOLE DEGREES, and sizeof(confStruct)
+    // stays 200, the static_assert below is untouched, SW_VERSION stays 36, and the owner's stored
+    // config is NOT wiped by this flash. It is the same trick mag_fm_set used on the TX (2026-09-30)
+    // and bt_enabled before it.
+    //
+    // WHAT WHOLE DEGREES COST: nothing that matters. At the 18.4 m front radius, 1 degree of station
+    // angle is 0.32 m of position - far inside the 5 m relative GPS error the 13 m lateral invariant
+    // is built on top of. A tenths-of-a-degree encoding was considered and rejected: a rider typing
+    // `?set fm_front_angle_deg 45` would be asking for 4.5 degrees, which the clamp would silently
+    // turn into 35, and a setting that surprises the person reading it back is worse than one with
+    // coarser resolution.
+    //
+    // fm_front_angle_deg - the angle of the FRONT stations (F4 front-right, F5 front-left) off dead
+    //   ahead, in degrees, measured at the rider.
+    //     0     = use kFmFrontAngleDefaultDeg (45). THIS IS WHAT EVERY BOARD IN THE FIELD READS
+    //             HERE TODAY (the padding bytes of a stored blob are zero in practice), so 0 must
+    //             mean the shipped default - rule 4 of the reserved-slot block above.
+    //     35-80 = the angle itself. 35 is the owner's settable minimum (his override of the code
+    //             review's 40 deg recommendation), accepted because the clearance is kept by the
+    //             RADIUS instead of by the angle: see the invariant below.
+    //   THE INVARIANT, ENFORCED BOTH WAYS AT THE READ SITE (not only in the validator):
+    //     r_front = max(kFmFrontRadiusFactor x d_follow, kFmFrontLateralMinM / sin(phi))
+    //     phi_eff = max(phi, asin(kFmFrontLateralMinM / r_front))
+    //   so r_front x sin(phi_eff) >= kFmFrontLateralMinM (13 m) at every setting. A SMALLER ANGLE
+    //   MAKES THE FRONT STATION FURTHER AWAY (35 deg -> 22.7 m, about 75 ft), NEVER CLOSER TO THE
+    //   RIDER'S LINE. A rider who tightens d_follow does not shrink the clearance either.
+    //   AND THERE IS NO DEAD-AHEAD STATION AT ANY VALUE: |station| is clamped at 180 - phi_eff, so
+    //   the whole arc within phi_eff of dead ahead is unreachable. A buggy directly ahead must
+    //   accelerate as the rider closes on it, and a failed motor stops it ON the rider's line - the
+    //   owner has already hit this buggy once, broke the propeller and limped home. Off axis, a dead
+    //   motor leaves the buggy beside the line, and the trailing rope stays off the line too.
+    //   Validator: 0, or 35-80; anything in (0, 35) is CLAMPED UP to 35 and says so, never rejected
+    //   (a range rejection on the LOAD path wipes the whole config - the 2026-09-03 lesson).
+    // ============================================================
+    uint16_t fm_front_angle_deg;       // 0 = use the 45 deg default; else 35-80 deg off dead ahead for F4/F5. Default 0
+    // (the 2 bytes of tail padding are now spent: 200 used, sizeof 200, nothing left for free.)
 };
-static_assert(sizeof(confStruct) == 200, "confStruct size mismatch — expected 200 bytes (SW36: 192 + fm_return_mode/fm_align_cap/fm_align_influence 3 x u16 = 198, padded to 200). Update this assert if you change the struct.");  // 192->200 SW35->36: +fm_return_mode(u16 2) +fm_align_cap(u16 2) +fm_align_influence(u16 2) appended at the tail, +2 B tail pad (2026-09-19). The SW35->36 boot-path migration in Common/SPIFFSEngine.h is pinned to 192 (legacy) and 200 (current) and disables itself if either stops matching.
+static_assert(sizeof(confStruct) == 200, "confStruct size mismatch — expected 200 bytes (SW36: 192 + fm_return_mode/fm_align_cap/fm_align_influence 3 x u16 = 198, + fm_front_angle_deg (u16) in the 2 B tail pad = 200, no padding left). Update this assert if you change the struct.");  // 2026-10-02 P2: +fm_front_angle_deg(u16 2) took the 2 B TAIL PAD, so sizeof STAYS 200, SW_VERSION STAYS 36 and no config is wiped — the mag_fm_set trick (TX, 2026-09-30). The tail is now FULL: the next scalar is a real SW37 bump. // 192->200 SW35->36: +fm_return_mode(u16 2) +fm_align_cap(u16 2) +fm_align_influence(u16 2) appended at the tail, +2 B tail pad (2026-09-19). The SW35->36 boot-path migration in Common/SPIFFSEngine.h is pinned to 192 (legacy) and 200 (current) and disables itself if either stops matching.
 // HISTORY of the size assert as it stood until 2026-09-19 (192 bytes), kept verbatim: 176->184: +fm_engage_dist_m(float 4) +auton_runtime_cap_s(u16 2) +fm_steer_reposition_en(u16 2), all naturally aligned, no tail pad (2026-07-20 SW34)  // 172->176 motor_ramp_s float (2026-06-05 SW33)  // 112->128 Phase A; 128->136 Phase B; 136->152 P7 RTM; 152->156 Bundle B; 156 unchanged BundleE; 156->160 rtm_approach_zone_m (uint16_t + 2-byte tail pad) (2026-04-30); D3 rtm_use_compass + rtm_cog_min_speed_kmh (2x uint8_t) fill the 2-byte tail pad — sizeof stays 160 (2026-05-06); D3-Fix: uint8_t→uint16_t for ConfigService compatibility, sizeof unchanged at 164 (2026-05-06); Bundle 1: dummy_delete_me renamed to rtm_steer_response in-place, sizeof unchanged at 164 (2026-05-08); STAGE 0 PART A: fm_steer_reposition_en renamed to log_level in-place — same offset, same uint16_t, sizeof STILL 184 and SW_VERSION STILL 34, so this flash does NOT reset SPIFFS config (2026-07-25); auton_runtime_cap_s renamed to gps_dyn_model in-place, sizeof STILL 184, SW_VERSION STILL 34 (2026-08-16); 184->192 SW34->35: +mag_orientation(u16 2) +rsvd_u16_1(u16 2) +rsvd_f32_1(float 4), appended at the tail, naturally aligned, no tail pad — the one intended config wipe for this bump (2026-08-16). THIS NUMBER IS THE SSOT: the SW34->35 config-backup migration is pinned to 184 (legacy) and 192 (current) and disables itself if either stops matching, so any prose elsewhere that disagrees with the 192 above is stale and must be corrected rather than trusted.
 confStruct usrConf;
   //The orginal confs were:  ##// confStruct defaultConf = {SW_VERSION, 1, 0, 0, 50, 0, 0, 1500, 2000, 1500, 2000, 1000, 10, 0, 1, 0, 0, 0, 0, 0, 25.0f, 10.0f, 10.0f, 5.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0, 1000, 1, 0, {0, 0, 0}, {0, 0, 0}, {'1','2','3','4','5','6','7','8'}};
@@ -773,7 +819,11 @@ confStruct defaultConf = {SW_VERSION, 2, 22, 1, 50 /*steering_influence: convent
   // migration writes into a migrated SW35 config (the tail of the struct is copied from HERE).
   1,            // fm_return_mode: 1 = auto-return ON (owner decision, session log item 32); 0 = HOLD as before
   13,           // fm_align_cap: ~5 % throttle while turning to face the target (same number kFmAlignCap held)
-  80            // fm_align_influence: 80 % steering split during the align phases (owner decision 2026-09-19; 100 = one-motor pivot, 0 = use steering_influence)
+  80,           // fm_align_influence: 80 % steering split during the align phases (owner decision 2026-09-19; 100 = one-motor pivot, 0 = use steering_influence)
+  // V2.5-Evo - 2026-10-02 - P2. The default STAYS 0 on purpose and that is load-bearing: 0 means
+  // "use kFmFrontAngleDefaultDeg (45)", and 0 is what every board in the field already reads out of
+  // the tail padding this field now occupies. So a flash changes nothing until the rider sets it.
+  0             // fm_front_angle_deg: 0 = the 45 deg default for the front stations F4/F5; else 35-80 deg off dead ahead
 };
 
 // ============================================================
@@ -815,6 +865,43 @@ confStruct defaultConf = {SW_VERSION, 2, 22, 1, 50 /*steering_influence: convent
 // concatenation order prevented sharing and used that to justify a duplicated literal. It was wrong.)
 // ============================================================
 static const float kFmEngageDistFloorM = 9.5f;   // metres; smallest legal non-zero fm_engage_dist_m (7.1 m rope x 1.31, rounded up)
+
+// ============================================================
+// V2.5-Evo - 2026-10-02 - P2: THE FRONT-STATION ANGLE BOUNDS AND THE LATERAL MINIMUM
+//
+// These four live HERE, once, for exactly the reason kFmEngageDistFloorM does: TWO FILES READ THEM.
+// cfgValidateCrossField() in ConfigService.ino needs the bounds to clamp a stored
+// fm_front_angle_deg, and the read site in RTMState.ino needs the same numbers to resolve the angle
+// and the radius. ConfigService.ino is concatenated BEFORE RTMState.ino, so a constant defined in
+// RTMState.ino would be invisible to the validator; this header is included at the top of
+// V2_Integration_Rx.ino, which is concatenated first, so both see these. The rest of the P2 tuning
+// (the slew rate, the radius factor, the transit constants) is read only by RTMState.ino and lives
+// there with the other kFm* values.
+//
+// kFmFrontLateralMinM IS THE SAFETY NUMBER OF THIS WHOLE FEATURE. 13 m = an 8 m carve radius plus
+// 5 m of TX-vs-RX relative GPS error (code review B2). It is the minimum distance a front station is
+// allowed to sit from the rider's course line, and it is honoured by growing the RADIUS rather than
+// by refusing the rider's angle - so a tighter angle buys a bigger front station, never a closer
+// one. The 5 m term is an assumption, not a measurement: measurement #5 in the plan (both boards
+// static at the dock, 5 min of fm_distance_dx10) is what pins it, and the floor moves roughly
+// 4 deg per metre of error, so this number must be revisited once that measurement exists.
+//
+// THE MINIMUM ANGLE IS 35, WHICH IS AN OWNER OVERRIDE ON THE RECORD. The code review recommended a
+// 40 deg minimum derived at a 20 m radius. The owner overrode it to 35 and kept the 13 m invariant,
+// which is self-consistent: at 35 deg the radius has to be 13/sin35 = 22.7 m (about 75 ft), and the
+// clearance is identical. Recorded as an override, not as a rejection of the finding.
+// ============================================================
+static const float kFmFrontAngleDefaultDeg = 45.0f;   // degrees off dead ahead; what fm_front_angle_deg == 0 means
+static const float kFmFrontAngleMinDeg     = 35.0f;   // degrees; owner's settable minimum (override of the review's 40)
+static const float kFmFrontAngleMaxDeg     = 80.0f;   // degrees; beyond this a "front" station is barely ahead of abeam
+static const float kFmFrontLateralMinM     = 13.0f;   // metres; carve 8 m + relative GPS 5 m. r_front x sin(phi) >= this, always
+
+// V2.5-Evo - 2026-10-02 - P2: the station arithmetic (presets, the hard floor, the radius schedule
+// and its pass-lateral floor, the rider-frame coordinates, the slew, the pass-geometry predicates
+// PG-1..PG-4 and the fade-bypass predicate) is pure in ../Common/FollowMeStation.h so
+// Tools/tests/follow_me_station_test.cpp runs the exact code computeFmTarget() and
+// fmComputeThrottleCap() call. Every constant is passed in; the header defines none of its own.
+#include "../Common/FollowMeStation.h"
 
 // V2.5-Evo - 2026-09-18 - P1-a: the trigger-free engage floor and the needs-D_engage rule are pure
 // functions in ../Common/FollowMeEngage.h so Tools/tests/follow_me_engage_test.cpp runs the exact
@@ -1600,6 +1687,17 @@ static_assert(sizeof(VescLogData) == 62, "VescLogData size mismatch — check bi
 #define FM_LOG_GATE_SWAP_FAIL_CH0_MASK  (0xFUL << FM_LOG_GATE_SWAP_FAIL_CH0_SHIFT)
 #define FM_LOG_GATE_SWAP_FAIL_CH1_SHIFT 27           // bits 27-30: the same for ch1
 #define FM_LOG_GATE_SWAP_FAIL_CH1_MASK  (0xFUL << FM_LOG_GATE_SWAP_FAIL_CH1_SHIFT)
+// V2.5-Evo - 2026-10-02 - P2: bit 31 (was bit 23 on the fm-stations-front branch - MOVED at the
+// 2026-10-05 integration onto SW36, because the I2C enable-swap fix had already claimed bits 23-30
+// for its two 4-bit failure counters and left bit 31 as the only free bit. Left at 23 it would have
+// OR-ed a 1 into the ch0 swap-failure count every tick the aim was outward, so the log would have
+// reported enable-swap failures that never happened.) The PG-4 escape is standing this tick - a FRONT station is
+// commanded but the buggy is not wide enough of the rider's line on that side to prove the aim line
+// clear, so the aim is an OUTWARD waypoint and both the closing allowance and the convergence fade
+// are withdrawn. Read it alongside bit 9 (fade bypass) and bit 10 (transit): 9 and 23 are mutually
+// exclusive by construction, so a row with both set is a bug. New bit in the existing u32 - the log
+// record size does not change and no column is added.
+#define FM_LOG_GATE_AIM_OUTWARD        (1UL << 31)
 
 struct __attribute__((packed)) VescLogDataL4 {
     VescLogData base;              // the complete level-3 record, unchanged and first — do not reorder

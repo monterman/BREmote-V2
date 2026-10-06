@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-02 - P2 (FRONT STATIONS F4/F5): comments and two RANGES, no struct change. followme_mode documents 1-5 (1 rear-right, 2 behind, 3 rear-left, 4 FRONT-RIGHT, 5 FRONT-LEFT; there is deliberately no 6, because a station directly ahead puts the buggy on the rider's line where a failed motor stops it in his path) and mag_fm_set grows two bits - bit3 = station 4, bit4 = station 5, range 1-31 - with the DEFAULT AND THE LOAD-PATH REPAIR VALUE BOTH LEFT AT 7, the three rear stations: the magnet is a single touch with no confirmation before the fact, so sending the buggy in front of the rider must be something he ticked rather than something he inherited. Both fields are the same uint16_t at the same offset, so sizeof(confStruct) STAYS 136, the static_assert is untouched, SW_VERSION STAYS 27 and this flash does NOT reset the TX config - the owner keeps his throttle calibration, his toggle calibration and his pairing. Worth stating because the TX tail is FULL (mag_fm_set took the last 2 padding bytes on 2026-09-30): any NEW TX field from here is a real bump and a real wipe, and P2 deliberately adds none.
 // V2.5-Evo - 2026-09-30 - MagFix (Rex delta audit of 98fb7a8) — SEVEN FOLLOW-UPS, NO STRUCT CHANGE. sizeof
 //   (confStruct) STAYS 136 and SW_VERSION STAYS 27: the tail is full, and a bump would wipe the owner's
 //   throttle calibration, so the one piece of new state (the Return-To-Me session override) is a RAM
@@ -294,7 +295,14 @@ struct confStruct {
 
     // GPS features related flags
     uint16_t gps_en;           // GPS runtime enable flag (0=disabled, 1=enabled)
-    uint16_t followme_mode; // Follow-me runtime mode flag (0=disabled, 1=near_right, 2=behind, 3=near_left)
+    // V2.5-Evo - 2026-10-02 - P2: the station set is 1-5 and CONTINUOUS round the rider. There is no
+    // 6 and there never will be: a station directly ahead puts the buggy on the rider's line, where
+    // it has to accelerate as he closes on it and where a failed motor stops it in his path. Off
+    // axis, a dead motor leaves it beside the line and the trailing rope with it. Range only - the
+    // field is the same uint16_t at the same offset, so sizeof(confStruct) stays 136 and SW_VERSION
+    // stays 27 (the tail is FULL - mag_fm_set took the last 2 padding bytes on 2026-09-30 - so any
+    // NEW TX field from here is a real bump and a real config wipe; this one is not a new field).
+    uint16_t followme_mode; // Follow-me starting station (0=disabled, 1=rear_right, 2=behind, 3=rear_left, 4=front_right, 5=front_left)
     uint16_t kalman_en;        // Kalman filter runtime enable flag (0=disabled, 1=enabled)
     uint16_t speed_src;   // 0=RX km/h, 1=RX knots, 2=TX km/h, 3=TX knots, 4=RX mph, 5=TX mph
     
@@ -434,17 +442,25 @@ struct confStruct {
     // ============================================================
     // Which Follow-Me stations a magnet TAP steps through when mag_mode == 4. One bit per
     // station, so "never send me to station 2" is simply bit 1 left clear:
-    //   bit 0 = station 1 (near right) | bit 1 = station 2 (behind) | bit 2 = station 3 (near left)
-    // Valid range 1-7 (at least one station must be selected); default 7 = all three, which
-    // is what the remote already does when the toggle cycles stations, so the default changes
-    // nothing. A remote flashed from an older build reads 0 out of the old padding bytes;
-    // cfgValidateCrossField() silently corrects 0 (and anything above 7) to 7 on load rather
+    //   bit 0 = station 1 (rear right) | bit 1 = station 2 (behind) | bit 2 = station 3 (rear left)
+    // V2.5-Evo - 2026-10-02 - P2: AND THE FRONT PAIR NOW EXISTS, so the mask grows two bits:
+    //   bit 3 = station 4 (FRONT RIGHT) | bit 4 = station 5 (FRONT LEFT)
+    // Valid range 1-31 (at least one station must be selected). The 2026-09-30 note that used to
+    // sit here said stations 4 and 5 "DO NOT EXIST in this firmware - the mode wrap in RTMState.ino
+    // is 1 -> 2 -> 3 -> 1 - so bits 3 and up are deliberately unused". That wrap is 1 -> 5 today,
+    // so the two bits are live and fmNextStationInSet() masks 0x1F instead of 0x07.
+    // THE DEFAULT STAYS 7 - THE THREE REAR STATIONS - AND THAT IS THE POINT. The magnet is a
+    // one-touch input with no "are you sure" and no display confirmation before the fact, so sending
+    // the buggy in front of the rider has to be something he TICKED, not something he inherited:
+    // every remote in the field stores a value in 1-7 (the old validator's range), so the magnet
+    // keeps stepping exactly the three rear stations it does today until he opts in.
+    // A remote flashed from a pre-2026-09-30 build reads 0 out of the old padding bytes;
+    // cfgValidateCrossField() silently corrects 0 (and anything above 31) to 7 on load rather
     // than rejecting the config, because a rejection on the load path would write defaultConf
-    // and wipe the calibration this whole field placement exists to protect.
-    // Stations 4 and 5 (the two FRONT stations) DO NOT EXIST in this firmware — the mode wrap
-    // in RTMState.ino is 1 -> 2 -> 3 -> 1 — so bits 3 and up are deliberately unused and are
-    // masked off by fmNextStationInSet() in case a future build ever stores them.
-    uint16_t mag_fm_set;       // magnet-tap station set, bitmask bit0=F1 bit1=F2 bit2=F3; 1-7; default 7 (all)
+    // and wipe the calibration this whole field placement exists to protect. The repair value is
+    // 7 and not 31 for the same reason the default is: a mask nobody chose must not be read as
+    // permission to go in front of him.
+    uint16_t mag_fm_set;       // magnet-tap station set, bitmask bit0=F1 bit1=F2 bit2=F3 bit3=F4 bit4=F5; 1-31; default 7 (the three REAR stations)
 };
 
 // V2.5-Evo - 2026-07-20 - MagGesture: 132 → 136. mag_mode is a uint16_t (+2 bytes = 134), but the

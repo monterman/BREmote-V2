@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-02 - P2 (FRONT STATIONS F4/F5), the remote side: the station wrap becomes 1 -> 2 -> 3 -> 4 -> 5 -> 1 in BOTH steppers - cycleFmMode()'s pre-throttle branch (LEFT tap + RIGHT hold) and cycleFmModeArmed() (the simple LEFT hold while armed) - and the first-arm seed from usrConf.followme_mode accepts 1-5. fmNextStationInSet(), the magnet-tap stepper, masks 0x1F instead of 0x07 and walks modulo 5, so bits 3 and 4 of mag_fm_set select the front pair; the 2026-09-30 note that said stations 4 and 5 do NOT exist in this firmware is corrected in place, and the hazard it named - a bit for an UNREACHABLE station stranding the tap - no longer applies because both new bits address reachable stations. The magnet DEFAULT is unchanged at the three rear stations: every remote in the field stores a mag_fm_set in 1-7, so the front pair is opt-in on that input. displayDigits(LET_F, last_fm_mode) already renders 4 and 5 (num0[] carries every digit) and the Pattern 11 counted-tap confirm was already clamped to 1-5, so neither needed a change. NOTHING ELSE MOVES: fmIsEngaged()'s four-condition tow gate, the 0xF2 encoding, the 30 s keepalive, the arm window, the disarm paths and every RTM path are untouched. No confStruct change: sizeof stays 136, SW_VERSION stays 27, and the owner's throttle and toggle calibration survive this flash.
 // V2.5-Evo - 2026-09-30 - MagFix (Rex delta audit of 98fb7a8), four changes here:
 //   1. RAM-ONLY ENFORCED. fmToggleRtmEnabledFromMagnet() no longer writes usrConf.rtm_enabled - it writes the new
 //      RAM rtm_enabled_session, and every gate now asks rtmEnabledEffective(). `?save` and the web-UI save persist
@@ -850,7 +851,7 @@ void runRtmLoop()
 
 volatile bool        fm_armed         = false;  // FM arm state; RAM only, cleared on power cycle. Not static — extern'd by Display.ino (R5 bar)
                                                  // volatile: read by updateBargraphs() (task), written by loop()
-static uint8_t       last_fm_mode     = 1;      // last active FM mode (1-3); defaults F1; RAM only
+static uint8_t       last_fm_mode     = 1;      // last active FM station (1-5 since 2026-10-02: 1 rear-right, 2 behind, 3 rear-left, 4 front-right, 5 front-left; no 6, there is no dead-ahead station); defaults F1; RAM only
 static unsigned long fm_arm_ms        = 0;      // time of arm, or time of last throttle >10 while armed
 static bool          fm_throttle_seen = false;  // becomes true once thr_scaled>10 after arming
 
@@ -991,15 +992,20 @@ void cycleFmMode()
     else
     {
       // No throttle yet — cycle to next mode. V2.5-Evo - 2026-09-19 (owner ruling 12:45): wraps
-      // 1 -> 2 -> 3 -> 1 and never lands on F0 any more, the same wrap cycleFmModeArmed() uses.
+      // and never lands on F0 any more, the same wrap cycleFmModeArmed() uses.
       // F0 had no purpose as a cycle-stop — bench testing showed the tap+hold combo landing on it
       // (an unwanted disarm) twice in five minutes before any throttle. The F0-disarm branch this
       // wrap used to reach (display "F0", 0xF2/0, reset to SPIFFS default) is removed; it is
       // unreachable now. To leave Follow-Me off, don't arm it — the combo-after-throttle disarm
       // above and the magnet toggle disarm are unaffected.
-      last_fm_mode = (last_fm_mode < 3) ? last_fm_mode + 1 : 1;
+      // V2.5-Evo - 2026-10-02 - P2: the wrap is 1 -> 2 -> 3 -> 4 -> 5 -> 1. The stations are
+      // continuous round the rider - 1 rear-right, 2 behind, 3 rear-left, 4 FRONT-RIGHT, 5
+      // FRONT-LEFT - and there is deliberately no 6: a station directly ahead would put the buggy
+      // on the rider's line, where a failed motor stops it in his path. Walking past 3 therefore
+      // steps to the front pair, which is the whole feature, not a new gesture.
+      last_fm_mode = (last_fm_mode < 5) ? last_fm_mode + 1 : 1;
 
-      // Large-font mode confirm: LET_F + mode digit (1/2/3). snprintf no longer needed.
+      // Large-font mode confirm: LET_F + mode digit (1-5). snprintf no longer needed.
       DISP_LOCK();
       displayDigits(LET_F, last_fm_mode);
       updateDisplay();
@@ -1029,11 +1035,16 @@ void cycleFmMode()
   }
 
   // V2.5-Evo - 2026-04-28 - Change B: On first arm this session, seed last_fm_mode from SPIFFS.
-  // usrConf.followme_mode is the user's configured starting mode (range 1-3; 0 is invalid here).
-  // After seeding, fm_session_init_done prevents overriding any mode the user cycled to mid-session.
+  // usrConf.followme_mode is the user's configured starting mode (range 1-5 since 2026-10-02; 0 is
+  // invalid here). After seeding, fm_session_init_done prevents overriding any mode the user cycled
+  // to mid-session.
+  // V2.5-Evo - 2026-10-02 - P2: the accepted range is 1-5, so a rider who wants to START on a front
+  // station can store it. The arm itself is unchanged - it is still a deliberate gesture, the RX
+  // still has to prove separation before anything engages, and a front station still has to earn
+  // its way past the abeam line before the buggy goes in front of him.
   if (!fm_session_init_done)
   {
-    if (usrConf.followme_mode >= 1 && usrConf.followme_mode <= 3)
+    if (usrConf.followme_mode >= 1 && usrConf.followme_mode <= 5)
       last_fm_mode = usrConf.followme_mode;
     fm_session_init_done = true;
   }
@@ -1068,10 +1079,15 @@ void cycleFmMode()
 void cycleFmModeArmed()
 {
   if (!fm_armed) return;
-  // Cycle 1→2→3→1: wrap, never 0.
-  last_fm_mode = (last_fm_mode < 3) ? last_fm_mode + 1 : 1;
+  // Cycle 1→2→3→4→5→1: wrap, never 0.
+  // V2.5-Evo - 2026-10-02 - P2: 1-3 becomes 1-5. The two extra steps are the FRONT stations; there
+  // is no 6 because there is no dead-ahead station. A miscounted hold can therefore land the rider
+  // on a front station he did not mean to pick - which is a WRONG STATION, never an unsafe one: the
+  // buggy still has to be measurably wide of his line before the station is allowed ahead of him,
+  // and the next hold steps on. That is the same trade the 1-3 wrap already made against F0.
+  last_fm_mode = (last_fm_mode < 5) ? last_fm_mode + 1 : 1;
 
-  // Large-font mode confirm: LET_F + mode digit (1/2/3). snprintf no longer needed.
+  // Large-font mode confirm: LET_F + mode digit (1-5). snprintf no longer needed.
   DISP_LOCK();
   displayDigits(LET_F, last_fm_mode);
   updateDisplay();
@@ -1150,36 +1166,47 @@ bool fmIsEngaged()
 
 // fmNextStationInSet - which station does a tap move to?
 //
-// INPUTS:  from = the station the buggy is at now (1-3; anything else counts as "outside the set")
-//          mask = usrConf.mag_fm_set, bit0 = station 1, bit1 = station 2, bit2 = station 3
-// OUTPUT:  the station to move to (1-3), or 0 for "there is nowhere to go, do nothing".
+// INPUTS:  from = the station the buggy is at now (1-5; anything else counts as "outside the set")
+//          mask = usrConf.mag_fm_set, bit0 = station 1 ... bit4 = station 5
+// OUTPUT:  the station to move to (1-5), or 0 for "there is nowhere to go, do nothing".
 // No side effects.
 //
 // Rules, straight from the design:
-//   - from IS in the set     -> the next set station going up, wrapping 3 -> 1
+//   - from IS in the set     -> the next set station going up, wrapping 5 -> 1
 //   - from is NOT in the set -> the LOWEST set station (the rider asked never to sit where he is)
 //   - the set holds only from -> returns from, which the caller treats as DO NOTHING. A tap never
 //     says "you are already there"; it either moves the buggy or it is silent.
-// Bits 3 and up are masked off: stations 4 and 5 (the front pair) DO NOT EXIST in this firmware -
-// the mode wrap is 1 -> 2 -> 3 -> 1 - and a bit for a station the buggy cannot reach would strand
-// the tap on a station it could never leave.
+//
+// V2.5-Evo - 2026-10-02 - P2: THE SET IS FIVE STATIONS NOW. The 2026-09-30 note here said "stations
+// 4 and 5 (the front pair) DO NOT EXIST in this firmware ... a bit for a station the buggy cannot
+// reach would strand the tap on a station it could never leave". They exist as of today, so the mask
+// widens to 0x1F and the walk is modulo 5. The reasoning in that note is why the widening is SAFE
+// rather than merely consistent: the hazard it named was a bit for an UNREACHABLE station, and both
+// new bits now address reachable ones. The tap's own safety gate is unchanged and is the important
+// one - fmIsEngaged() still requires all four of its conditions, so a tap is dead while the rider is
+// on the rope, which is exactly when a station change would drag him.
+//
+// A RIDER WHO DOES NOT WANT THE FRONT PAIR ON THE MAGNET SIMPLY LEAVES BITS 3 AND 4 UNTICKED, and
+// that is the default for every board in the field: mag_fm_set has been validated 1-7 and defaults
+// to 7, so a stored value can only hold bits 0-2 and the magnet keeps stepping exactly the three
+// rear stations it does today until he ticks more. The front pair is opt-in on this input.
 static uint8_t fmNextStationInSet(uint8_t from, uint16_t mask)
 {
-  mask &= 0x07;                 // stations 1-3 only
+  mask &= 0x1F;                 // stations 1-5
   if (mask == 0) return 0;      // nothing selected - validated against, but fail quietly anyway
 
   // Current station outside the chosen set -> go to the lowest station that IS in it.
-  if (from < 1 || from > 3 || !(mask & (1u << (from - 1))))
+  if (from < 1 || from > 5 || !(mask & (1u << (from - 1))))
   {
-    for (uint8_t s = 1; s <= 3; s++)
+    for (uint8_t s = 1; s <= 5; s++)
       if (mask & (1u << (s - 1))) return s;
     return 0;
   }
 
   // Current station inside the set -> walk forward and stop at the first set station.
-  for (uint8_t step = 1; step <= 3; step++)
+  for (uint8_t step = 1; step <= 5; step++)
   {
-    uint8_t s = (uint8_t)(((from - 1 + step) % 3) + 1);
+    uint8_t s = (uint8_t)(((from - 1 + step) % 5) + 1);
     if (mask & (1u << (s - 1))) return s;
   }
   return 0;

@@ -1202,7 +1202,8 @@ void vibrationTask(void *parameter) {
       if (current_vib_pattern == 10) current_vib_pattern = 0;
     }
     // V2.5-Evo - 2026-09-30 - MagStations: Pattern 11 — N short taps, where N IS THE ANSWER.
-    // vib_pulse_count carries the Follow-Me station number the magnet tap just moved to (1-3), so the rider
+    // vib_pulse_count carries the Follow-Me station number the magnet tap just moved to (1-5 since the
+    // front pair landed on 2026-10-02; the clamp below already allowed 5), so the rider
     // counts taps instead of reading the display: two taps means the buggy is heading to station 2.
     // The pulse shape (100 ms on / 150 ms off) is copied from Pattern 6 — this firmware's existing
     // "counted taps" shape — so a count reads as a count and not as a new signal to learn. Pattern 11 with

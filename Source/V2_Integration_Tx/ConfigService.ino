@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-02 - P2 (FRONT STATIONS F4/F5): two ranges WIDENED, nothing else. followme_mode 0-3 -> 0-5 (4 = front right, 5 = front left; no 6 - there is no dead-ahead station) and mag_fm_set 1-7 -> 1-31 (bit3 = station 4, bit4 = station 5). Widening only: every value any remote has ever stored is still in range and still means the same station, so no load path can reject an existing config and no magnet behaviour changes until the rider ticks a new box. cfgValidateCrossField()'s mag_fm_set repair accepts up to 0x1F now but still REPAIRS TO 0x07 - a mask that had to be repaired is a mask nobody chose, and the conservative reading of that is the three rear stations, not a set that lets one magnet tap send the buggy in front of him. No confStruct change: sizeof stays 136, SW_VERSION stays 27, no config wipe.
 // V2.5-Evo - 2026-09-30 - MagStations: mag_mode range widened 0-3 → 0-4 (4 = magnet tap steps Follow-Me stations,
 //   2.5 s hold toggles Return-To-Me). New field mag_fm_set (station bitmask, 1-7, default 7) added at the END of the
 //   table, filling the struct's 2 tail padding bytes — sizeof(confStruct) stays 136 and SW_VERSION stays 27, so this
@@ -60,7 +61,13 @@ const CfgFieldSpec kCfgFields[] = {
   {"gps_dyn_model", CFG_U16, offsetof(confStruct, gps_dyn_model), true, false, true, 0.0f, 5.0f, 0, false},
   {"ubat_cal", CFG_FLOAT, offsetof(confStruct, ubat_cal), true, false, true, 0.000001f, 1.0f, 9, false},
   {"gps_en", CFG_U16, offsetof(confStruct, gps_en), true, false, true, 0.0f, 1.0f, 0, false},
-  {"followme_mode", CFG_U16, offsetof(confStruct, followme_mode), true, false, true, 0.0f, 3.0f, 0, false},
+  // V2.5-Evo - 2026-10-02 - P2: range 0-3 → 0-5. The stations are continuous round the rider -
+  // 1 rear-right, 2 behind, 3 rear-left, 4 FRONT-RIGHT, 5 FRONT-LEFT - and there is deliberately no
+  // 6, because a station directly ahead would put the buggy on the rider's line. WIDENING ONLY:
+  // every stored value (0-3) is still in range and still means the same station, so no load path
+  // can reject an existing config. This is the station the FIRST arm of a session seeds from; the
+  // remote still sends it as a live 0xF2 declaration and the buggy still has to prove separation.
+  {"followme_mode", CFG_U16, offsetof(confStruct, followme_mode), true, false, true, 0.0f, 5.0f, 0, false},
   {"kalman_en", CFG_U16, offsetof(confStruct, kalman_en), true, false, true, 0.0f, 1.0f, 0, false},
   {"speed_src", CFG_U16, offsetof(confStruct, speed_src), true, false, true, 0.0f, 5.0f, 0, false},
   {"tx_gps_stale_timeout_ms", CFG_U16, offsetof(confStruct, tx_gps_stale_timeout_ms), true, false, true, 0.0f, 65535.0f, 0, false},
@@ -118,9 +125,14 @@ const CfgFieldSpec kCfgFields[] = {
   {"mag_mode",        CFG_U16, offsetof(confStruct, mag_mode),        true, false, true, 0.0f,    4.0f, 0, false},
   // V2.5-Evo - 2026-09-30 - MagStations: which Follow-Me stations a magnet tap steps through when
   // mag_mode == 4. Bitmask: bit0 = station 1 (near right), bit1 = station 2 (behind), bit2 = station 3
-  // (near left). Range 1-7 — at least one station must be selected, or the tap would have nowhere to
-  // go. Default 7 = all three. Stations 4 and 5 do not exist in this firmware, so there is no bit 3/4.
-  {"mag_fm_set",      CFG_U16, offsetof(confStruct, mag_fm_set),      true, false, true, 1.0f,    7.0f, 0, false},
+  // (near left). At least one station must be selected, or the tap would have nowhere to go.
+  // V2.5-Evo - 2026-10-02 - P2: range 1-7 → 1-31, because stations 4 (front right) and 5 (front
+  // left) now exist: bit3 = station 4, bit4 = station 5. WIDENING ONLY — every previously stored
+  // value (1-7) is still in range and still means exactly the same three rear stations, so no load
+  // path can reject an existing config and nobody's magnet behaviour changes until they tick a new
+  // box. Default stays 7 = the three REAR stations: the front pair is deliberately OPT-IN on the
+  // magnet, which is a one-touch input with no display confirmation before the fact.
+  {"mag_fm_set",      CFG_U16, offsetof(confStruct, mag_fm_set),      true, false, true, 1.0f,   31.0f, 0, false},
   {"paired", CFG_U16, offsetof(confStruct, paired), true, false, true, 0.0f, 1.0f, 0, false},
   {"own_address", CFG_ADDR3, offsetof(confStruct, own_address), true, false, false, 0.0f, 0.0f, 0, false},
   {"dest_address", CFG_ADDR3, offsetof(confStruct, dest_address), true, false, false, 0.0f, 0.0f, 0, false}
@@ -145,8 +157,13 @@ bool cfgValidateCrossField(confStruct &candidate, String &err)
   // ever held garbage, possibly to something above 7). Both are meaningless as a station set.
   // CLAMP, DO NOT REJECT: this validator also runs on the config LOAD path, and a range rejection
   // there falls back to defaultConf — which would wipe pairing and throttle calibration to fix one
-  // setting. 7 = all three stations, i.e. the behaviour the remote already has.
-  if (candidate.mag_fm_set == 0 || candidate.mag_fm_set > 0x07)
+  // setting. 7 = the three REAR stations, i.e. the behaviour the remote already has.
+  // V2.5-Evo - 2026-10-02 - P2: the legal mask is 0x1F now (stations 4 and 5 exist), but the REPAIR
+  // VALUE STAYS 0x07, deliberately. A mask that has to be repaired is a mask nobody chose, and the
+  // conservative reading of "nobody chose this" is the three rear stations - not a set that lets a
+  // single magnet tap send the buggy in front of the rider. Every other correction in this function
+  // moves toward the behaviour-preserving default, and that is what this one does too.
+  if (candidate.mag_fm_set == 0 || candidate.mag_fm_set > 0x1F)
   {
     candidate.mag_fm_set = 0x07;
   }

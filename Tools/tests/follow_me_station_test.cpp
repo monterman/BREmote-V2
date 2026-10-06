@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "../../Source/Common/FollowMeStation.h"
 
@@ -19,6 +20,32 @@ static const float kNearDiag       = 45.0f;    // usrConf.near_diag_offset_deg, 
 static const float kSlewRate       = 15.0f;    // kFmStationRateDegPerS (provisional)
 
 static bool near_eq(float a, float b, float tol) { return fabsf(a - b) <= tol; }
+
+// V2.5-Evo - 2026-10-06 - one REAR-MODE tick of computeFmTarget()'s station chain, in the order the RX
+// runs it (preset -> Schmitt gate -> clamp -> PG-2 ceiling -> fmRearSnap -> snap or slew -> clamp).
+// Every step is the header function the RX calls; only the sequencing is restated here.
+static float rearTick(uint8_t m_eff, float near_diag, bool schmitt, float phi_eff, float live,
+                      bool *snapped)
+{
+  const float lim = fmStationLimitDeg(phi_eff);
+  float psi_target = fmStationPresetDeg(m_eff, near_diag, phi_eff);
+  if ((m_eff == 1 || m_eff == 3) && !schmitt) psi_target = 0.0f;
+  psi_target = fmClampStationDeg(psi_target, phi_eff);
+  const float ceil_mag = fmStationTargetCeilingDeg(psi_target, 0.0f, kPassLateral, lim);
+  const float psi_eff_target = (psi_target >= 0.0f) ? ceil_mag : -ceil_mag;
+  const bool snap = fmRearSnap(m_eff, live, near_diag);
+  if (snapped) *snapped = snap;
+  live = snap ? psi_eff_target : fmStationSlewStep(live, psi_eff_target, kSlewRate, 0.1f);
+  return fmClampStationDeg(live, phi_eff);
+}
+
+// The 37f8b49 (SW36) rear offset: target bearing = course + 180 + offset.
+static float sw36Offset(uint8_t mode, float near_diag, bool schmitt)
+{
+  if (mode == 1 && schmitt) return -near_diag;
+  if (mode == 3 && schmitt) return +near_diag;
+  return 0.0f;
+}
 
 int main()
 {
@@ -440,6 +467,171 @@ int main()
     // Clamped both ways at the same ceiling the radial gap term uses.
     assert(near_eq(fmStationAlongGovKmh(13.0f, -200.0f, gain, maxk), +maxk, 0.001f));
     assert(near_eq(fmStationAlongGovKmh(13.0f, +200.0f, gain, maxk), -maxk, 0.001f));
+  }
+
+  // ======================================================================================
+  // 11. fmRearSnap - THE REAR-STATION STEP TEST (audit L-8: the shipped predicate, not a copy)
+  // ======================================================================================
+  {
+    // Rear modes inside the band snap; the band edge is inclusive.
+    for (uint8_t m = 1; m <= 3; m++) {
+      assert( fmRearSnap(m,   0.0f, 45.0f));
+      assert( fmRearSnap(m, +45.0f, 45.0f));
+      assert( fmRearSnap(m, -45.0f, 45.0f));
+      assert(!fmRearSnap(m, +45.1f, 45.0f));               // coming home from the front: walks
+      assert(!fmRearSnap(m, -135.0f, 45.0f));
+    }
+    // Front modes and unknown modes never snap.
+    assert(!fmRearSnap(4, 0.0f, 45.0f) && !fmRearSnap(5, 0.0f, 45.0f));
+    assert(!fmRearSnap(0, 0.0f, 45.0f) && !fmRearSnap(0xFF, 0.0f, 45.0f));
+    // near_diag 0: only exactly-behind snaps (no step exists anyway).
+    assert( fmRearSnap(2, 0.0f, 0.0f) && !fmRearSnap(2, 0.1f, 0.0f));
+    // near_diag >= 90 is clamped to 90 on both sides, as the presets are.
+    assert( fmRearSnap(1, 90.0f, 170.0f) && !fmRearSnap(1, 90.1f, 170.0f));
+    // Negative near_diag is clamped to 0.
+    assert( fmRearSnap(2, 0.0f, -5.0f) && !fmRearSnap(2, 1.0f, -5.0f));
+    // A snapped preset sits exactly on the band edge (the same float and clamp as the preset).
+    for (int nd = 0; nd <= 180; nd++) {
+      const float p1 = fmStationPresetDeg(1, (float)nd, kFrontDefault);
+      const float p3 = fmStationPresetDeg(3, (float)nd, kFrontDefault);
+      assert(fmRearSnap(1, p1, (float)nd) && fmRearSnap(3, p3, (float)nd));
+    }
+  }
+
+  // ======================================================================================
+  // 12. AUDIT H-1: THE BUGGY ON THE OTHER SIDE OF THE RIDER'S LINE - RETREAT ON THE BUGGY'S SIDE
+  // ======================================================================================
+  {
+    // ---- the side test itself ----
+    assert(fmFrontRetreatSide(+135.0f, true,  -13.0f) == -1);   // station right, buggy left
+    assert(fmFrontRetreatSide(-135.0f, true,  +13.0f) == +1);   // mirror
+    assert(fmFrontRetreatSide(+135.0f, true,  +2.0f)  ==  0);   // same side: PG-4 outward handles it
+    assert(fmFrontRetreatSide(+135.0f, true,   0.0f)  ==  0);   // on the line counts as station side
+    assert(fmFrontRetreatSide(+120.0f, false, -5.0f)  == -1);   // walking home from the front, rear target
+    // The abeam WAITING waypoint: counts only while a front station is wanted.
+    assert(fmFrontRetreatSide(+90.0f,  true,  -3.0f)  == -1);
+    assert(fmFrontRetreatSide(-90.0f,  true,  +3.0f)  == +1);
+    assert(fmFrontRetreatSide(+90.0f,  false, -3.0f)  ==  0);   // a rear preset at near_diag 90: SW36 path
+    // Behind abeam it never fires - that is every rear station.
+    for (float psi = -90.0f; psi <= 90.0f; psi += 0.5f) {
+      for (float c = -30.0f; c <= 30.0f; c += 1.0f) {
+        assert(fmFrontRetreatSide(psi, false, c) == 0);
+        if (fabsf(psi) < 90.0f) assert(fmFrontRetreatSide(psi, true, c) == 0);
+      }
+    }
+
+    // ---- the seed: the measured angle, on the buggy's side, clamped to the hard floor ----
+    assert(near_eq(fmRetreatSeedDeg(-1, -135.0f, 135.0f), -135.0f, 0.001f));
+    assert(near_eq(fmRetreatSeedDeg(-1, -170.0f, 135.0f), -135.0f, 0.001f));   // never past the floor
+    assert(near_eq(fmRetreatSeedDeg(+1, -0.0001f, 135.0f), +0.0001f, 0.0001f)); // sign forced to the side
+    assert(near_eq(fmRetreatSeedDeg(-1, +30.0f, 135.0f),  -30.0f, 0.001f));
+
+    // ---- THE AUDIT SCENARIO: rider turns 90 deg RIGHT toward a settled F4 (+135) station ----
+    const float dF   = 9.0f;
+    const float phi  = kFrontDefault;
+    const float lim  = fmStationLimitDeg(phi);
+    const float rF   = fmFrontRadiusM(dF, kRadiusFactor, phi, kLateralMin);
+    // Before the turn: course North, buggy settled on F4 = 13 m ahead, 13 m right = bearing 45.
+    float along, cross;
+    fmBuggyAlongCrossM(0.0f, 45.0f, rF, &along, &cross);
+    assert(cross > kPassLateral);                               // lawfully wide on the right
+    // After the turn: course East. Same world position, bearing 45 from the rider.
+    const float course = 90.0f;
+    fmBuggyAlongCrossM(course, 45.0f, rF, &along, &cross);
+    assert(along > 0.0f && cross < 0.0f);                       // ahead-LEFT of the new course
+    // The pre-fix escape put its waypoint on the station's (right) side: across the line, ahead of him.
+    assert(fmOutwardAimLateralM(+135.0f, cross, kPassLateral, dF) > 0.0f);
+    // The fix: the side test fires toward the buggy's side, and the seed is on that side.
+    const int side = fmFrontRetreatSide(+135.0f, true, cross);
+    assert(side == -1);
+    float live = fmRetreatSeedDeg(side, fmMeasuredStationDeg(course, 45.0f), lim);
+    assert(live < 0.0f && fabsf(live) <= lim + 0.001f);
+    // F4 retreats to the rear preset on the BUGGY'S side (mode 3); the side-zone Schmitt is disengaged
+    // with the buggy ahead, so the target is directly behind (0), and the walk must stay on the left.
+    for (int sch = 0; sch <= 1; sch++) {
+      float lv = live;
+      bool snapped = false;
+      int ticks = 0;
+      for (; ticks < 400; ticks++) {
+        lv = rearTick(3, kNearDiag, sch != 0, phi, lv, &snapped);
+        assert(lv <= 0.0f + 0.001f);                            // never on the far side of the line
+        const float rr = fmStationRadiusM(lv, dF, rF, kNearDiag, kPassLateral, phi);
+        float sa, sc;
+        fmStationAlongCrossM(lv, rr, &sa, &sc);
+        assert(sc <= 0.001f);                                   // the station point stays left
+        // If the escape stands this tick, its waypoint is on the buggy's side too.
+        if (fmAimOutwardNeeded(lv, cross, sc, kPassLateral)) {
+          assert(fmOutwardAimLateralM(lv, cross, kPassLateral, dF) < 0.0f);
+        }
+        // And the side test never flips it back while the buggy stays left.
+        assert(fmFrontRetreatSide(lv, false, cross) == 0);
+        if (snapped) break;
+      }
+      assert(snapped);                                          // it does get home
+      assert(ticks <= 70);                                      // 135 -> 45 at 15 deg/s = 60 ticks
+    }
+
+    // ---- the JIBE: rider reverses course with F4 settled; the buggy ends up BEHIND-left ----
+    {
+      const float c2 = 180.0f;
+      fmBuggyAlongCrossM(c2, 45.0f, rF, &along, &cross);
+      assert(along < 0.0f && cross < 0.0f);
+      assert(fmFrontRetreatSide(+135.0f, true, cross) == -1);   // fires without any along-track term
+      const float sd = fmRetreatSeedDeg(-1, fmMeasuredStationDeg(c2, 45.0f), lim);
+      assert(sd < 0.0f && fabsf(sd) <= 90.0f);                  // measured behind-left: a rear angle
+    }
+  }
+
+  // ======================================================================================
+  // 13. REAR-ONLY RIDING IS STILL SW36 (37f8b49): BEARING AND RADIUS, BITWISE
+  // ======================================================================================
+  {
+    long cases = 0;
+    const float phis[3] = { 35.0f, 45.0f, 80.0f };
+    for (int pi = 0; pi < 3; pi++) {
+      const float phi = phis[pi];
+      for (int nd = 0; nd <= 90; nd++) {
+        for (uint8_t m = 1; m <= 3; m++) {
+          for (int sch = 0; sch <= 1; sch++) {
+            // Every live angle rear-only riding can leave behind: 0 (the ACTIVE edge) and every
+            // rear preset of every mode/Schmitt combination at this near_diag.
+            const float priors[3] = { 0.0f, +(float)nd, -(float)nd };
+            for (int k = 0; k < 3; k++) {
+              bool snapped = false;
+              const float live = rearTick(m, (float)nd, sch != 0, phi, priors[k], &snapped);
+              assert(snapped);                                  // one tick, no walking
+              assert(fmFrontRetreatSide(live, false, -20.0f) == 0);   // H-1 never fires
+              assert(fmFrontRetreatSide(live, false, +20.0f) == 0);
+              for (float course = 0.0f; course < 360.0f; course += 7.5f) {
+                const float b_new  = course + 180.0f - live;
+                const float b_sw36 = course + 180.0f + sw36Offset(m, (float)nd, sch != 0);
+                assert(memcmp(&b_new, &b_sw36, sizeof(float)) == 0);   // bitwise
+                cases++;
+              }
+            }
+          }
+        }
+      }
+    }
+    // Mode / Schmitt sequences: every tick steps, from any rear state to any other.
+    float live = 0.0f;
+    unsigned seed = 12345u;
+    for (int i = 0; i < 200000; i++) {
+      seed = seed * 1103515245u + 12345u;
+      const uint8_t m  = (uint8_t)(1 + (seed >> 16) % 3);
+      const bool   sch = ((seed >> 20) & 1u) != 0;
+      const float  nd  = (float)((seed >> 8) % 91);
+      bool snapped = false;
+      live = rearTick(m, nd, sch, kFrontDefault, live, &snapped);
+      // Changing near_diag mid-run may leave the angle outside a SMALLER band (audit L-6 i); that walk
+      // is the accepted difference. Otherwise every tick snaps to the SW36 offset.
+      if (snapped) {
+        const float off = sw36Offset(m, nd, sch);
+        assert(live == -off);                                   // psi = -offset, exactly
+      }
+      cases++;
+    }
+    printf("rear-only SW36 equivalence: %ld cases\n", cases);
   }
 
   printf("follow_me_station_test: all assertions passed\n");

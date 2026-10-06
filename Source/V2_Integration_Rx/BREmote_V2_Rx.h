@@ -1711,11 +1711,11 @@ struct __attribute__((packed)) VescLogDataL4 {
     uint16_t fm_d_engage_dx10;     // the engage distance x 10 m in force this tick (manual or auto, after the tow-rope floor); 0xFFFF = not evaluated
     uint16_t fm_rider_speed_dx10;  // the rider's filtered speed x 10 km/h (fm_rider_speed_kmh)
     uint8_t  fm_sep_fix_count;     // rider GPS fixes counted toward the separation dwell (DWELL-1); OUR counter, not a dwell time
-    uint8_t  fm_mode;              // fm_mode_runtime: 1-3 declared, 0 off, 0xFF never declared this session
+    uint8_t  fm_mode;              // fm_mode_runtime: 1-5 declared (4/5 = front stations), 0 off, 0xFF never declared this session  // V2.5-Evo - 2026-10-06 - was "1-3 declared"
     uint8_t  fm_state;             // FmState: 0 IDLE, 1 ARMED, 2 ACTIVE, 3 HOLD, 4 STOPPING, 5 RETURN (2026-09-19)
     uint8_t  fm_block_reason;      // FmStopReason (P0-e): the live stop latch, non-zero for the whole FM_STOPPING ramp; 0 = no fault stop in progress
     uint8_t  fm_throttle_cap;      // FM's subtract-only throttle cap this tick (0-255; 255 = no cap)
-    int16_t  fm_station_deg_x10;   // P2 live station angle x 10 deg (0 = behind the rider, + = his right); written since the 2026-10-02 station work
+    int16_t  fm_station_deg_x10;   // P2 live station angle x 10 deg (0 = behind the rider, + = his right); written since the 2026-10-02 station work  // V2.5-Evo - 2026-10-06 - comment corrected (was "always 0")
     uint8_t  fm_return_reason;     // V2.5-Evo - 2026-09-19 - DEEP LOG (A): was fm_pad (always 0). FmReturnReason (RTMState.ino): why the last
                                    // RETURN candidate / RETURN ended. STICKY - a straight copy of fm_return_last_reason every tick, never
                                    // cleared: 0 = no event since boot; during a RETURN leg it reads 4 (ENTERED); the row where fm_state

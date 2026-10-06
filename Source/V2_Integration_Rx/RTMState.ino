@@ -1,3 +1,13 @@
+// V2.5-Evo - 2026-10-06 - AUDIT H-1 + M-7 + L-8 (front-station side test, walk-home profile). (H-1) PG-4's outward waypoint and the abeam waiting
+//   waypoint were always placed on the STATION'S side of the rider's line, so a rider turning toward a settled F4/F5 station (or jibing) left the buggy on
+//   the other side and both aimed it across his line, ahead of him; the header's promised retreat did not exist. Now computeFmTarget() runs
+//   fmFrontRetreatSide() every tick: with the station ahead of abeam (or holding abeam for a front target) and the buggy measured strictly on the other side,
+//   the live angle is re-seeded from the buggy's MEASURED angle on the buggy's side (fmRetreatSeedDeg) and F4/F5 retreat, latched, to the rear preset on
+//   the BUGGY'S side (fm_front_retreat_side); the station walks home on that side, so the aim never crosses ahead of the rider. The re-seed tick carries a
+//   new D-term profile kProfRetreat (10). (M-7) a rear station still walking home (effective mode 1-3, outside the rear band) is labelled kProfTransit, so the
+//   snap at the end of the walk changes profile and the D term skips it. (L-8) the rear_snap predicate moved to FollowMeStation.h as fmRearSnap(), same
+//   arithmetic. Rear-only riding is unchanged: there |psi| <= 90, no front target, the H-1 test never fires and every station snaps. No confStruct change,
+//   sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - R-1 (owner ruling "option B"): REAR MODES 1-3 BEHAVE EXACTLY AS SW36 AGAIN. The front-station merge had made every rear engagement
 //   start from a measured G-4 seed and walk to its preset at kFmStationRateDegPerS, and made every side-zone Schmitt flip walk instead of step - so mode 2
 //   could take 6 s to reach directly behind, contrary to the comments that called it bit-identical. Now: (1) the ACTIVE-edge seed runs for modes 4/5 only;
@@ -237,6 +247,10 @@ static const uint8_t kProfReturnDirect = 6; // FM_RETURN: straight at the rider'
 static const uint8_t kProfTransit   = 7;   // P2: the station is walking toward a FRONT preset and has not settled
 static const uint8_t kProfFront     = 8;   // P2: a settled FRONT station (mode 4/5), aim leading along the rider's course
 static const uint8_t kProfOutward   = 9;   // P2: PG-4 escape - aiming AWAY from the rider's line, not at a station
+// V2.5-Evo - 2026-10-06 - audit H-1 / M-7: the H-1 retreat re-seeds the live angle onto the buggy's side,
+// which moves the aim in one tick, so that tick carries its own label. A rear station still walking home
+// (outside the rear band) is labelled kProfTransit, so the snap at the end of the walk changes profile.
+static const uint8_t kProfRetreat   = 10;  // H-1: the one tick on which the station is re-seeded onto the buggy's side
 static uint8_t       fm_target_profile      = 0;
 static uint8_t       prev_fm_target_profile = 0;
 static double        tx_pos_filtered_lat       = 0.0;  // Filtered TX lat (degrees)
@@ -2118,6 +2132,10 @@ static bool          fm_aim_outward        = false;
 static bool          fm_transit_active     = false;
 static float         fm_transit_start_course_deg = -1.0f;
 static bool          fm_front_aborted      = false;
+// V2.5-Evo - 2026-10-06 - audit H-1: the side (+1 right, -1 left) the BUGGY was on when the H-1 retreat
+// fired; 0 = no H-1 retreat. While fm_front_aborted stands it picks the rear preset 4/5 retreat to, in
+// place of the station's own side. Cleared wherever fm_front_aborted is cleared.
+static int8_t        fm_front_retreat_side = 0;
 static unsigned long fm_station_prev_ms    = 0;
 static std::atomic<int16_t> fm_station_deg_x10{0};
 
@@ -4199,8 +4217,14 @@ static void computeFmTarget(double* out_lat, double* out_lng)
   // While fm_front_aborted stands, 4 and 5 read as 1 and 3: the nearest REAR station on the SAME
   // side. Never the opposite side - swapping sides under an abort would walk the station straight
   // across the rider's wake at the worst possible moment.
+  // V2.5-Evo - 2026-10-06 - audit H-1: after an H-1 retreat the rear station is the one on the side
+  // the BUGGY was on (fm_front_retreat_side), which is not necessarily the station's own side - the
+  // buggy is already there, so going to that side never crosses the rider's line.
   uint8_t m_eff = m_decl;
-  if (fm_front_aborted && (m_decl == 4 || m_decl == 5)) m_eff = (uint8_t)((m_decl == 4) ? 1 : 3);
+  if (fm_front_aborted && (m_decl == 4 || m_decl == 5)) {
+    if (fm_front_retreat_side != 0) m_eff = (uint8_t)((fm_front_retreat_side > 0) ? 1 : 3);
+    else                            m_eff = (uint8_t)((m_decl == 4) ? 1 : 3);
+  }
 
   float psi_target = fmStationPresetDeg(m_eff, near_diag, phi_eff);
   if ((m_eff == 1 || m_eff == 3) && !fm_diagonal_engaged) psi_target = 0.0f;   // today's Schmitt gate
@@ -4251,6 +4275,46 @@ static void computeFmTarget(double* out_lat, double* out_lng)
                   (double)fmAngleDiff(course, fm_transit_start_course_deg),
                   (double)kFmTransitAbortCourseDeg, (unsigned)m_eff);
   }
+
+  // ---- V2.5-Evo - 2026-10-06 - audit H-1: THE BUGGY IS ON THE OTHER SIDE OF THE RIDER'S LINE ----
+  // BUG: PG-4's outward waypoint and the abeam waiting waypoint were always placed on the STATION'S
+  // side. A rider turning toward a settled front station (or a jibe) leaves the buggy on the other
+  // side, and both waypoints then aimed it across the rider's line ahead of him; nothing retreated.
+  // FIX: when the station is ahead of abeam (or holding abeam for a front target) and the buggy is
+  // measured strictly on the other side, the live angle is RE-SEEDED from the buggy's measured angle,
+  // forced onto the buggy's side, and a front station (4/5) retreats - latched - to the rear preset on
+  // the BUGGY'S side. The station then walks home on that side, so the aim never crosses ahead of the
+  // rider. A declared rear mode coming home from the front is re-seeded the same way and keeps its own
+  // preset; it reaches the far side, if at all, only by the rear-band step behind the rider. Re-tested
+  // every tick, so a second turn re-seeds again. Never fires in rear-only riding (|psi| <= 90 there).
+  bool h1_retreat = false;
+  {
+    const int h1_side = fmFrontRetreatSide(fm_station_live_deg, fabsf(psi_target) > 90.0f,
+                                           fm_buggy_cross_m);
+    if (h1_side != 0) {
+      h1_retreat          = true;
+      fm_station_live_deg = fmRetreatSeedDeg(h1_side,
+                                             fmMeasuredStationDeg(course, b_rider_to_buggy), st_limit);
+      fm_transit_active   = false;
+      if (m_decl == 4 || m_decl == 5) {
+        fm_front_aborted      = true;
+        fm_front_retreat_side = (int8_t)h1_side;
+        m_eff      = (uint8_t)((h1_side > 0) ? 1 : 3);
+        psi_target = fmStationPresetDeg(m_eff, near_diag, phi_eff);
+        if (!fm_diagonal_engaged) psi_target = 0.0f;
+        psi_target = fmClampStationDeg(psi_target, phi_eff);
+      }
+      static const unsigned long kFmRetreatMsgMs = 2000UL;
+      static unsigned long fm_retreat_msg_ms = 0;
+      if (fm_retreat_msg_ms == 0 || (st_now - fm_retreat_msg_ms) >= kFmRetreatMsgMs) {
+        fm_retreat_msg_ms = st_now;
+        Serial.printf("FM [RX] PASS GEOMETRY: the buggy is on your %s, the station was on your %s - "
+                      "station moved to the buggy's side (%.0f deg) and retreating behind you (F%u)\n",
+                      (h1_side > 0) ? "RIGHT" : "LEFT", (h1_side > 0) ? "LEFT" : "RIGHT",
+                      (double)fm_station_live_deg, (unsigned)m_eff);
+      }
+    }
+  }
   fm_station_target_deg = psi_target;
 
   // ---- PG-2: THE SLEW CEILING. The station cannot go ahead of the rider until the BUGGY is wide ----
@@ -4269,10 +4333,9 @@ static void computeFmTarget(double* out_lat, double* out_lng)
   // AND the live angle is already inside the rear band (|psi| <= near_diag, clamped 0-90 like the
   // presets), the live angle is set straight to the target - the SW36 single-tick step. A station
   // still outside that band can only be one coming home from a front station, and it keeps walking.
-  float rear_band_deg = near_diag;
-  if (rear_band_deg < 0.0f)  rear_band_deg = 0.0f;
-  if (rear_band_deg > 90.0f) rear_band_deg = 90.0f;
-  const bool rear_snap = (m_eff >= 1 && m_eff <= 3) && (fabsf(fm_station_live_deg) <= rear_band_deg);
+  // V2.5-Evo - 2026-10-06 - audit L-8: the predicate now lives in FollowMeStation.h (fmRearSnap), same
+  // arithmetic, so the host test runs the shipped code.
+  const bool rear_snap = fmRearSnap(m_eff, fm_station_live_deg, near_diag);
 
   // ---- The slew (front only), then the clamp. The clamp is the belt: the slew cannot pass its own
   //      target, and every target has already been clamped, but a stored angle from a previous tick
@@ -4321,7 +4384,7 @@ static void computeFmTarget(double* out_lat, double* out_lng)
     // the buggy to keep-up with no closing allowance and no fade (fmComputeThrottleCap), and the
     // align cap pins the throttle while it swings its nose outward - so the escape is a crawl away
     // from the line, not a sprint across it.
-    fm_target_profile = kProfOutward;
+    fm_target_profile = h1_retreat ? kProfRetreat : kProfOutward;   // V2.5-Evo - 2026-10-06 - H-1: the re-seed tick is a step
     const float lat_off = fmOutwardAimLateralM(fm_station_live_deg, fm_buggy_cross_m,
                                                pass_lateral, d_follow);
     // Built in two legs from the rider's FILTERED position: along the course to the buggy's own
@@ -4412,11 +4475,16 @@ static void computeFmTarget(double* out_lat, double* out_lng)
     else if (fm_diagonal_engaged && m_eff == 3) fm_target_profile = kProfDiagLeft;
     else                                        fm_target_profile = kProfBehind;
   }
+  // V2.5-Evo - 2026-10-06 - audit M-7: a REAR station still walking home (not snapped) is in transit.
+  // Before this it took the same rear label it gets once snapped, so the snap at the end of the walk
+  // (up to 2 x near_diag) was a one-tick aim step the D-term guard could not see.
+  else if (m_eff >= 1 && m_eff <= 3) fm_target_profile = kProfTransit;
   else if (fabsf(psi_eff_target) > 90.0f) fm_target_profile = fm_transit_active ? kProfTransit : kProfFront;
   else if (fm_transit_active)        fm_target_profile = kProfTransit;
   else if (psi_eff_target > 0.5f)    fm_target_profile = kProfDiagRight;
   else if (psi_eff_target < -0.5f)   fm_target_profile = kProfDiagLeft;
   else                               fm_target_profile = kProfBehind;
+  if (h1_retreat) fm_target_profile = kProfRetreat;   // V2.5-Evo - 2026-10-06 - H-1: the re-seed tick is a step
 
   *out_lat = st_lat;
   *out_lng = st_lng;
@@ -4765,6 +4833,7 @@ static void fmEnterIdle()
   fm_transit_active     = false;
   fm_transit_start_course_deg = -1.0f;
   fm_front_aborted      = false;
+  fm_front_retreat_side = 0;            // V2.5-Evo - 2026-10-06 - H-1
   fm_station_prev_ms    = 0;
   fm_station_deg_x10.store(0, std::memory_order_relaxed);
   fm_filt_init        = false;
@@ -5398,6 +5467,7 @@ static void runFmLoopBody(unsigned long now)
       }
       fm_transit_active           = false;
       fm_transit_start_course_deg = -1.0f;
+      fm_front_retreat_side       = 0;   // V2.5-Evo - 2026-10-06 - H-1: a re-selection is a new decision
     }
   }
 
@@ -5470,6 +5540,7 @@ static void runFmLoopBody(unsigned long now)
         fm_transit_active     = false;
         fm_transit_start_course_deg = -1.0f;
         fm_front_aborted      = false;
+        fm_front_retreat_side = 0;            // V2.5-Evo - 2026-10-06 - H-1
         fm_station_prev_ms    = 0;
         fm_station_deg_x10.store(0, std::memory_order_relaxed);
         // V2.5-Evo - 2026-09-19 - a RETURN in progress or a pending candidate ends here too: RTM is
@@ -6453,6 +6524,7 @@ static void runFmLoopBody(unsigned long now)
       fm_transit_active           = false;
       fm_transit_start_course_deg = -1.0f;
       fm_front_aborted            = false;
+      fm_front_retreat_side       = 0;   // V2.5-Evo - 2026-10-06 - H-1
       fm_station_deg_x10.store((int16_t)(fm_station_live_deg * 10.0f), std::memory_order_relaxed);
 
       fm_state = FM_ACTIVE;

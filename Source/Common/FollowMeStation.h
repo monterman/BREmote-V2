@@ -49,7 +49,9 @@
 //         collapses while the station is still ahead - fmAimOutwardNeeded() reports it and the
 //         controller steers OUTWARD (a waypoint further from the line than the buggy is), withdraws
 //         the closing allowance and the convergence fade, and raises a geometry warning. It never
-//         steers across.
+//         steers across. V2.5-Evo - 2026-10-06 (audit H-1): if the buggy is on the OTHER side of the
+//         rider's line from the station, fmFrontRetreatSide() reports it and the controller re-seeds
+//         the live angle on the BUGGY'S side and retreats to the rear preset there.
 //   PG-5  Nothing in this header writes throttle. The station angle and the radius only move the
 //         TARGET POINT. The min_dist_m cap-0, the boogie_vmax clamp and the subtract-only cap chain
 //         are untouched in every mode.
@@ -377,6 +379,51 @@ static inline float fmOutwardAimLateralM(float psi_live_deg, float buggy_cross_m
   const float out  = fabsf(buggy_cross_m) + clear_m;
   float lat = (out > pass_lateral_m) ? out : pass_lateral_m;
   return right ? lat : -lat;
+}
+
+// V2.5-Evo - 2026-10-06 - fmRearSnap - the rear-station step test (moved here from RTMState.ino so the
+// host test exercises the shipped predicate, not a copy of it).
+// True when the effective mode is a REAR one (1-3) AND the live angle is already inside the rear band
+// |psi| <= near_diag (clamped 0-90 exactly as fmStationPresetDeg() clamps it): the live angle is then
+// set straight to its target in one tick, the SW36 behaviour. False for a station still outside the
+// band - one coming home from ahead of abeam - which keeps walking so it never steps across the line.
+static inline bool fmRearSnap(uint8_t m_eff, float psi_live_deg, float near_diag_deg)
+{
+  if (near_diag_deg < 0.0f)  near_diag_deg = 0.0f;
+  if (near_diag_deg > 90.0f) near_diag_deg = 90.0f;
+  return (m_eff >= 1 && m_eff <= 3) && (fabsf(psi_live_deg) <= near_diag_deg);
+}
+
+// V2.5-Evo - 2026-10-06 - fmFrontRetreatSide - the side test PG-4 was missing (audit H-1).
+// PG-3's endpoint argument assumes the buggy is on the STATION'S side of the rider's line. A rider who
+// turns toward a settled front station (or a jibe) breaks that: the buggy is now on the OTHER side, and
+// both the outward escape and the abeam waiting waypoint - always placed on the station's side - would
+// aim it across the rider's line, ahead of him.
+// Returns the side the BUGGY is on (+1 right, -1 left) when the station is ahead of abeam, or holding
+// abeam while a front station is wanted, AND the buggy is measured strictly on the other side of the
+// rider's line. Returns 0 otherwise (no retreat). A buggy exactly on the line (cross == 0) counts as the
+// station's side, where PG-4's outward escape already steers it off the line on that side.
+// Never true for a rear-only engagement: there |psi_live| <= 90 and no front station is wanted.
+static inline int fmFrontRetreatSide(float psi_live_deg, bool front_wanted, float buggy_cross_m)
+{
+  const float a = fabsf(psi_live_deg);
+  const bool at_or_ahead = (a > 90.0f) || (front_wanted && a >= 90.0f);
+  if (!at_or_ahead) return 0;
+  if (psi_live_deg > 0.0f && buggy_cross_m < 0.0f) return -1;
+  if (psi_live_deg < 0.0f && buggy_cross_m > 0.0f) return +1;
+  return 0;
+}
+
+// V2.5-Evo - 2026-10-06 - fmRetreatSeedDeg - where the live angle is RE-SEEDED when H-1 retreats: the
+// buggy's MEASURED station angle, forced onto the buggy's side (so a rounding disagreement between the
+// angle and the cross-track sign can never put it on the far side) and clamped to the hard floor. The
+// station then walks home to the rear preset on that side; every point of that walk is on the buggy's
+// side, so the aim never has to cross the rider's line to reach it.
+static inline float fmRetreatSeedDeg(int side, float psi_meas_deg, float station_limit_deg)
+{
+  float a = fabsf(psi_meas_deg);
+  if (a > station_limit_deg) a = station_limit_deg;
+  return (side < 0) ? -a : a;
 }
 
 // fmFadeBypass - the GOVERNOR-2 convergence-fade bypass, and invariant 2 of the plan: it is a

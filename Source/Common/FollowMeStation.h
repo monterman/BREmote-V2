@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-06 - SETTLED-ESCAPE TIMER: fmShieldSettledEscapeExpired() - a shield escape on a SETTLED F4/F5
+//   station lasting more than 3 s latches the abort (the RX owns the state and the latch).
 // V2.5-Evo - 2026-10-06 - SHIELD SIZING (audits M-16 b/c, M-15, M-18): fmShieldHalfAngleDeg() + the PROVISIONAL
 //   kFmShieldHalfAngle* knot table (the cone half-angle by rider speed, 30 deg falling to 15 deg, capped at 30 by owner
 //   ruling, never narrower than the 31-session data); fmShieldHoldBandM() (the escape hold = min(2 m, half the
@@ -920,6 +922,24 @@ static inline FmShieldDecision fmShieldDecide(const FmShield &s, bool prev_escap
                                                     min_lateral_m, clear_m)
                          : 0.0f;
   return d;
+}
+
+// V2.5-Evo - 2026-10-06 - fmShieldSettledEscapeExpired - THE SETTLED-ESCAPE TIMER (owner-approved rule, audit
+// M-16 / design choice 7). A shield escape on an F4/F5 station that is OUTBOUND (in transit) latches the abort at
+// once. One on a SETTLED station is allowed to ride out a wobble - but if it lasts MORE than limit_ms (the RX
+// passes kFmShieldSettledEscapeMs, 3000) the rider's path and the station keep meeting, and the caller latches
+// the F4/F5 abort to the rear preset on the buggy's side; the rider re-selects to try again.
+// Inputs: active - a shield escape stands THIS tick on a settled F4/F5 station; now_ms (millis); *since_ms - when
+//         the current unbroken run of such ticks began, 0 = not timing (state the caller owns); limit_ms.
+// Returns true on the one tick the run has lasted more than limit_ms. *since_ms goes back to 0 whenever the run
+// breaks (any tick with active false) and on expiry. A start at millis() == 0 is stored as 1 (0 is the sentinel).
+static inline bool fmShieldSettledEscapeExpired(bool active, uint32_t now_ms, uint32_t *since_ms,
+                                                uint32_t limit_ms)
+{
+  if (!active) { *since_ms = 0; return false; }
+  if (*since_ms == 0) { *since_ms = (now_ms != 0) ? now_ms : 1u; return false; }
+  if ((uint32_t)(now_ms - *since_ms) > limit_ms) { *since_ms = 0; return true; }
+  return false;
 }
 
 // V2.5-Evo - 2026-10-06 - fmEngageSeedDeg - the live station angle at an ACTIVE edge (a first squeeze,

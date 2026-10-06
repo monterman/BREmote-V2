@@ -1,3 +1,8 @@
+// V2.5-Evo - 2026-10-06 - SETTLED-ESCAPE LATCH + AUDITS M-13 + M-17 + L-17. (latch, owner-approved rule) a shield escape on a SETTLED F4/F5 station lasting
+//   more than kFmShieldSettledEscapeMs (3 s) latches the F4/F5 abort to the rear preset on the buggy's side; the rider re-selects. (M-13) a standing go-around
+//   that changes sides flags fm_aim_step (at psi 0 it re-seeds nothing and keeps its kind and label, yet the waypoint jumps ~20 m). (M-17) a seed that moves the
+//   live angle off 0 (the ACTIVE edge, the pending seed) sets fm_station_walking, so at near_diag 90 the first snap is checked against the shield. (L-17) the
+//   shield re-seed of a rear station (effective mode 1-3) is clamped to +/-90. No throttle, gate or PWM code changed. No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - SHIELD SIZING, AUDITS M-16 (b, c) + M-15 + M-14 + M-18 (owner-approved round). (M-16 b) the cone half-angle is speed-scaled from the
 //   31-session data, fmShieldHalfAngleDeg(): 30 deg up to 15 km/h, 28 to 20, 21 to 25, 15 from 27.5, continuous, capped at 30 by owner ruling (PROVISIONAL).
 //   (M-16 c) the escape hold is min(2 m, half the settled front station's clearance from the cone), so a settled F4/F5 station is always outside the held cone.
@@ -2043,6 +2048,11 @@ static const float    kFmShieldConeOffKmh    = 10.0f;   // km/h; ... and OFF onl
 //   (the cone's base sweeping past the full lookahead as the rider's speed changes, the cone toggling, a hold
 //   dropping) are 1.4 m and up. A false positive only costs one skipped D sample.
 static const float    kFmLookStepM           = 1.0f;    // metres per tick
+// V2.5-Evo - 2026-10-06 - kFmShieldSettledEscapeMs - THE SETTLED-ESCAPE LATCH (owner-approved rule). A shield escape
+//   on a SETTLED F4/F5 station that lasts longer than this latches the F4/F5 abort to the rear preset on the buggy's
+//   side (fmShieldSettledEscapeExpired). 3 s rides out an ordinary wobble (median 6 deg/s) but not a rider whose
+//   path keeps meeting the station. An escape on a station still OUTBOUND latches at once, as before.
+static const uint32_t kFmShieldSettledEscapeMs = 3000;  // ms
 static const float    kFmShieldCircleMinM    = 3.0f;    // metres; raised to min_dist_m if that is larger, never above d_follow
 static const float    kFmSideHysteresisM     = 2.0f;    // metres; side-test Schmitt band and escape hold
 
@@ -2230,6 +2240,10 @@ static bool          fm_shield_held_prev   = false;
 // V2.5-Evo - 2026-10-06 - audit M-14: the clipped lookahead the previous tick emitted (0 when that tick had none -
 // a snapped rear station, the PG-4 outward aim, a tick with no course, or a fresh engagement).
 static float         fm_look_prev_m        = 0.0f;
+// V2.5-Evo - 2026-10-06 - the settled-escape timer: millis() when the current unbroken shield escape on a SETTLED
+// F4/F5 station began, 0 = none (fmShieldSettledEscapeExpired). Cleared at every engagement boundary, a mode
+// change, and a tick with no course.
+static uint32_t      fm_shield_settled_since_ms = 0;
 // V2.5-Evo - 2026-10-06 - audit M-11: the ACTIVE edge had no rider course (the owner's normal mode change:
 // stopped and floating, switch, squeeze - the course needs >= 5 km/h), so the engage seed could not be
 // measured. computeFmTarget() applies fmEngageSeedDeg() on the first tick that has a course, then clears it.
@@ -4266,6 +4280,7 @@ static void computeFmTarget(double* out_lat, double* out_lng)
     fm_shield_cone_on     = false;     // V2.5-Evo - 2026-10-06 - M-15 / M-14: no frame, no cone, no hold
     fm_shield_held_prev   = false;
     fm_look_prev_m        = 0.0f;
+    fm_shield_settled_since_ms = 0;   // V2.5-Evo - 2026-10-06 - no escape, so no settled-escape run
     fm_station_target_deg = fmStationNearestRearPresetDeg(m_decl, near_diag);
     fm_station_radius_m   = d_follow;
     fm_station_deg_x10.store((int16_t)(fm_station_live_deg * 10.0f), std::memory_order_relaxed);
@@ -4375,6 +4390,8 @@ static void computeFmTarget(double* out_lat, double* out_lng)
     if (seed != fm_station_live_deg) {
       fm_station_live_deg = seed;
       fm_aim_step         = true;
+      // V2.5-Evo - 2026-10-06 - audit M-17: off 0 counts as walking, so the snap check below runs this very tick.
+      if (seed != 0.0f) fm_station_walking = true;
       Serial.printf("FM [RX] station seeded at %.0f deg on the first tick with a rider course "
                     "(0 = behind you, + = your right)\n", (double)seed);
     }
@@ -4636,6 +4653,7 @@ static void computeFmTarget(double* out_lat, double* out_lng)
   auto finishAim = [&]() {
     uint8_t kind   = aim_kind;
     bool    escape = false;
+    bool    settled_escape = false;   // V2.5-Evo - 2026-10-06 - an escape on a SETTLED F4/F5 station this tick
     if (!rear_snap) {
       const FmShieldDecision sd = fmShieldDecide(shield, fm_shield_escape, fm_shield_side,
                                                  kFmSideHysteresisM, sh_hold,
@@ -4644,12 +4662,44 @@ static void computeFmTarget(double* out_lat, double* out_lng)
       if (sd.escape) {
         escape = true;
         kind   = 2;
+        // V2.5-Evo - 2026-10-06 - audit M-13: A GO-AROUND THAT CHANGES SIDES IS AN AIM STEP. With the station
+        // exactly behind (psi 0) a side flip re-seeds nothing and keeps aim kind 2 and the same D-term label,
+        // yet the waypoint jumps across the rider's line (about 20 m). Flag it whenever a standing escape's
+        // side changes, whatever the station angle.
+        if (fm_shield_escape && fm_shield_side != 0 && sd.side != fm_shield_side) fm_aim_step = true;
         fm_shield_side = (int8_t)sd.side;
         if (sd.reseed) {
+          // V2.5-Evo - 2026-10-06 - audit L-17: a REAR station (effective mode 1-3) is re-seeded no further
+          // forward than abeam (+/-90). The measured angle of a buggy ahead of the rider can be up to the
+          // front floor, which put a rear-declared walking station into the front half - with the front
+          // lookahead and PG-4 machinery - for no reason: the walk home on the buggy's side starts from
+          // abeam just as well. F4/F5 keep the front floor (st_limit), as H-1 does.
+          const float rs_lim = (m_eff >= 1 && m_eff <= 3) ? 90.0f : st_limit;
           fm_station_live_deg = fmRetreatSeedDeg(sd.side,
-                                                 fmMeasuredStationDeg(course, b_rider_to_buggy), st_limit);
+                                                 fmMeasuredStationDeg(course, b_rider_to_buggy), rs_lim);
           fm_station_deg_x10.store((int16_t)(fm_station_live_deg * 10.0f), std::memory_order_relaxed);
           fm_aim_step = true;
+        }
+        // V2.5-Evo - 2026-10-06 - THE SETTLED-ESCAPE LATCH (owner-approved rule): an F4/F5 station that is NOT
+        // in transit (settled, or re-walking after a re-seed but not yet re-flagged) and not already aborted
+        // is timed; an unbroken escape longer than kFmShieldSettledEscapeMs latches the abort below, exactly
+        // as the outbound case does (rear preset on the buggy's side, the rider re-selects).
+        settled_escape = (m_decl == 4 || m_decl == 5) && !fm_front_aborted && !fm_transit_active;
+        const bool settled_expired = fmShieldSettledEscapeExpired(settled_escape, (uint32_t)st_now,
+                                                                  &fm_shield_settled_since_ms,
+                                                                  kFmShieldSettledEscapeMs);
+        if (settled_expired) {
+          fm_front_aborted      = true;
+          fm_front_retreat_side = (int8_t)sd.side;
+          const uint8_t m_rear  = (uint8_t)((sd.side > 0) ? 1 : 3);
+          float t = fmStationPresetDeg(m_rear, near_diag, phi_eff);
+          if (!fm_diagonal_engaged) t = 0.0f;
+          fm_station_target_deg = fmClampStationDeg(t, phi_eff);
+          Serial.printf("FM [RX] RIDER SHIELD: F%u held off its station by your path for more than %.0f s - "
+                        "giving it up for this engagement; retreating behind you on your %s (F%u). Re-select "
+                        "F%u to try again\n",
+                        (unsigned)m_decl, (double)(kFmShieldSettledEscapeMs / 1000.0f),
+                        (sd.side > 0) ? "RIGHT" : "LEFT", (unsigned)m_rear, (unsigned)m_decl);
         }
         if ((m_decl == 4 || m_decl == 5) && !fm_front_aborted && fm_transit_active) {
           fm_front_aborted      = true;
@@ -4687,6 +4737,7 @@ static void computeFmTarget(double* out_lat, double* out_lng)
     }
     fm_shield_escape = escape;
     if (!escape) fm_shield_side = 0;
+    if (!settled_escape) fm_shield_settled_since_ms = 0;   // V2.5-Evo - 2026-10-06 - the run must be unbroken
     if (kind != fm_aim_kind_prev) fm_aim_step = true;
     fm_aim_kind_prev = kind;
     *out_lat = aim_lat;
@@ -5189,6 +5240,7 @@ static void fmEnterIdle()
   fm_shield_cone_on     = false;        // V2.5-Evo - 2026-10-06 - M-15
   fm_shield_held_prev   = false;        // V2.5-Evo - 2026-10-06 - M-14
   fm_look_prev_m        = 0.0f;         // V2.5-Evo - 2026-10-06 - M-14
+  fm_shield_settled_since_ms = 0;       // V2.5-Evo - 2026-10-06 - settled-escape timer
   fm_station_prev_ms    = 0;
   fm_station_deg_x10.store(0, std::memory_order_relaxed);
   fm_filt_init        = false;
@@ -5823,6 +5875,7 @@ static void runFmLoopBody(unsigned long now)
       fm_transit_active           = false;
       fm_transit_start_course_deg = -1.0f;
       fm_front_retreat_side       = 0;   // V2.5-Evo - 2026-10-06 - H-1: a re-selection is a new decision
+      fm_shield_settled_since_ms  = 0;   // V2.5-Evo - 2026-10-06 - ... and starts no settled-escape run
     }
   }
 
@@ -5903,6 +5956,7 @@ static void runFmLoopBody(unsigned long now)
         fm_shield_cone_on     = false;        // V2.5-Evo - 2026-10-06 - M-15
         fm_shield_held_prev   = false;        // V2.5-Evo - 2026-10-06 - M-14
         fm_look_prev_m        = 0.0f;         // V2.5-Evo - 2026-10-06 - M-14
+        fm_shield_settled_since_ms = 0;       // V2.5-Evo - 2026-10-06 - settled-escape timer
         fm_station_prev_ms    = 0;
         fm_station_deg_x10.store(0, std::memory_order_relaxed);
         // V2.5-Evo - 2026-09-19 - a RETURN in progress or a pending candidate ends here too: RTM is
@@ -6892,10 +6946,15 @@ static void runFmLoopBody(unsigned long now)
       }
       fm_shield_escape            = false;       // V2.5-Evo - 2026-10-06 - H-2: a fresh engagement holds no escape
       fm_shield_side              = 0;
-      fm_station_walking          = false;       // ... and has not walked yet (a seed of 0 snaps exactly as SW36)
+      // V2.5-Evo - 2026-10-06 - audit M-17: a seed that moved the live angle OFF 0 counts as walking, so the first
+      // snap (near_diag 90: the +/-90 M-8 seed is already inside the rear band) is checked against the shield
+      // instead of stepping straight to the preset behind - back through the rider. A seed of 0 snaps exactly
+      // as SW36 (not walking).
+      fm_station_walking          = (fm_station_live_deg != 0.0f);
       fm_shield_cone_on           = false;       // V2.5-Evo - 2026-10-06 - M-15: the cone gate starts fresh
       fm_shield_held_prev         = false;       // V2.5-Evo - 2026-10-06 - M-14
       fm_look_prev_m              = 0.0f;        // V2.5-Evo - 2026-10-06 - M-14
+      fm_shield_settled_since_ms  = 0;           // V2.5-Evo - 2026-10-06 - settled-escape timer
       fm_station_prev_ms          = 0;           // the slew's dt starts fresh, never across the gap
       fm_transit_active           = false;
       fm_transit_start_course_deg = -1.0f;

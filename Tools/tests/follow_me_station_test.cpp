@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-06 - SETTLED-ESCAPE LATCH + M-13 + M-17 + L-17 (L-20): ctlTick() gains the 3 s settled-escape latch (a
+//   millis() stand-in in Ctl), the M-13 side-flip step, the M-17 walking-on-seed rule and the L-17 rear re-seed clamp; new
+//   engageEdge() restates the ACTIVE edge. New sections 29-32: the latch at phi 35 (fires at 3.1 s, never under 3 s), the psi 0
+//   side flip, near_diag 90 (the seed's first snap refused through the rider), and the rear re-seed clamp.
 // V2.5-Evo - 2026-10-06 - SHIELD SIZING (audits M-16 b/c, M-15, M-14, M-18, L-20): ctlTick() follows the RX - the speed-scaled
 //   half-angle, the 12 / 10 km/h cone Schmitt, the lag capsule (Ctl::shortfall), the hold band, and the M-14 aim steps (input
 //   edges + a > 1 m one-tick lookahead change). New sections 23-28: the half-angle curve against the band data, the Schmitt, the
@@ -109,6 +113,8 @@ struct Ctl {
   bool cone_on = false;  bool held_prev = false;  float shortfall = 0.0f;
   float look_prev = 0.0f;                                // the clipped lookahead last tick (M-14 output check)
   int ticks = 0;                                         // ticks run on this state (the first has no previous lookahead)
+  // V2.5-Evo - 2026-10-06 - the settled-escape latch: a millis() stand-in (advanced by dt each tick) and the timer.
+  uint32_t now_ms = 0;  uint32_t settled_since = 0;
 };
 struct Tick {
   bool snapped = false, escape = false, h1 = false, sh_reseed = false, step = false, latched = false;
@@ -120,6 +126,7 @@ struct Tick {
   float hold = 0, half = 0;        // V2.5-Evo - 2026-10-06 - the hold band and the half-angle used this tick
   bool cone_toggled = false;
   float look = 0, dlook = 0;       // the clipped lookahead this tick, and its change from last tick
+  bool settled_latched = false;    // the 3 s settled-escape latch fired this tick
 };
 static float g_dlook_max_quiet = 0.0f;   // the largest one-tick lookahead change on a tick nothing else flagged
 
@@ -128,6 +135,7 @@ static Tick ctlTick(Ctl &c, uint8_t m_decl, float near_diag, float d_follow, uin
                     float lag_m, float dt, float band)
 {
   Tick t;
+  c.now_ms += (uint32_t)(dt * 1000.0f + 0.5f);
   float pass = kPassLateral;  if (pass < min_dist) pass = min_dist;
   float latmin = kLateralMin; if (latmin < pass) latmin = pass;
   const float extra = fmFrontAheadExtraM(extra_stored, kExtraDefault, kExtraMin, kExtraMax);
@@ -149,7 +157,7 @@ static Tick ctlTick(Ctl &c, uint8_t m_decl, float near_diag, float d_follow, uin
   if (c.pending) {                                                   // M-11
     c.pending = false;
     const float sd = fmEngageSeedDeg(m_eff, true, meas);
-    if (sd != c.live) { c.live = sd; t.step = true; }
+    if (sd != c.live) { c.live = sd; t.step = true; if (sd != 0.0f) c.walking = true; }   // + M-17
   }
   float psi_target = fmStationPresetDeg(m_eff, near_diag, phi);
   if ((m_eff == 1 || m_eff == 3) && !c.diag) psi_target = 0.0f;
@@ -250,13 +258,22 @@ static Tick ctlTick(Ctl &c, uint8_t m_decl, float near_diag, float d_follow, uin
     if (h1) t.profile = kPrRetreat;
   }
 
-  bool esc = false;                                                    // finishAim
+  bool esc = false, settled = false;                                   // finishAim
   if (!snap) {
     const FmShieldDecision d = fmShieldDecide(t.sh, c.escape, c.shside, band, t.hold, c.live, t.b_al, b_cr,
                                               t.sh_al, t.sh_cr, pass, d_follow);
     if (d.escape) {
-      esc = true; kind = 2; c.shside = d.side;
-      if (d.reseed) { c.live = fmRetreatSeedDeg(d.side, meas, lim); t.step = true; t.sh_reseed = true; }
+      esc = true; kind = 2;
+      if (c.escape && c.shside != 0 && d.side != c.shside) t.step = true;           // M-13
+      c.shside = d.side;
+      if (d.reseed) {
+        const float rs_lim = (m_eff >= 1 && m_eff <= 3) ? 90.0f : lim;            // L-17
+        c.live = fmRetreatSeedDeg(d.side, meas, rs_lim); t.step = true; t.sh_reseed = true;
+      }
+      settled = (m_decl == 4 || m_decl == 5) && !c.aborted && !c.transit;         // the 3 s latch
+      if (fmShieldSettledEscapeExpired(settled, c.now_ms, &c.settled_since, 3000u)) {
+        c.aborted = true; c.rside = d.side; t.settled_latched = true;
+      }
       if ((m_decl == 4 || m_decl == 5) && !c.aborted && c.transit) {
         c.aborted = true; c.rside = d.side; c.transit = false; t.latched = true;
       }
@@ -267,12 +284,24 @@ static Tick ctlTick(Ctl &c, uint8_t m_decl, float near_diag, float d_follow, uin
   }
   c.escape = esc;
   if (!esc) c.shside = 0;
+  if (!settled) c.settled_since = 0;
   if (kind != c.kind_prev) t.step = true;
   c.kind_prev = kind;
   t.snapped = snap; t.escape = esc; t.kind = kind;
   if (c.ticks > 0 && !t.step && t.dlook > g_dlook_max_quiet) g_dlook_max_quiet = t.dlook;
   c.ticks++;
   return t;
+}
+
+// V2.5-Evo - 2026-10-06 - the ACTIVE edge as the RX runs it (station part only): the seed (or pending, with no
+// course), every shield latch cleared, and - audit M-17 - walking when the seed moved the live angle off 0.
+static void engageEdge(Ctl &c, uint8_t mode, bool course_valid, float meas)
+{
+  if (course_valid) { c.live = fmEngageSeedDeg(mode, true, meas); c.pending = false; }
+  else              { c.live = 0.0f; c.pending = true; }
+  c.escape = false; c.shside = 0; c.walking = (c.live != 0.0f);
+  c.cone_on = false; c.held_prev = false; c.look_prev = 0.0f; c.settled_since = 0;
+  c.transit = false; c.tcourse = -1.0f; c.aborted = false; c.rside = 0; c.diag = false;
 }
 
 // THE PROPERTY THE SHIELD EXISTS FOR, checked on one tick: the line the controller answers for (the
@@ -1959,6 +1988,164 @@ int main()
       assert(unflagged_jumps == 0);
       assert(toggles <= 14);                       // about one on and one off per 6 s cycle, not per tick
     }
+  }
+
+  // ======================================================================================
+  // 29. V2.5-Evo - 2026-10-06 - THE 3 s SETTLED-ESCAPE LATCH (owner-approved rule), AT PHI 35
+  // ======================================================================================
+  {
+    // The timer itself.
+    uint32_t since = 0;
+    assert(!fmShieldSettledEscapeExpired(true, 1000, &since, 3000) && since == 1000);
+    assert(!fmShieldSettledEscapeExpired(true, 4000, &since, 3000));            // exactly 3 s: not MORE than
+    assert( fmShieldSettledEscapeExpired(true, 4001, &since, 3000) && since == 0);
+    since = 0;
+    assert(!fmShieldSettledEscapeExpired(true, 0, &since, 3000) && since == 1);  // millis 0 is not the sentinel
+    assert(!fmShieldSettledEscapeExpired(false, 2000, &since, 3000) && since == 0);   // a break resets it
+    since = 0xFFFFFC00u;                                                          // across the millis() wrap:
+    assert(!fmShieldSettledEscapeExpired(true, 0x00000100u, &since, 3000));      // 1,280 ms in
+    assert( fmShieldSettledEscapeExpired(true, 0x00000C00u, &since, 3000));      // 4,096 ms in
+
+    // F4 settled at the 35 deg cap (d_follow 9 + extra 10: 18.6 m ahead x 13 m side, r 22.7 m), rider at
+    // 16 km/h (half-angle 29.2, cone 22.2 m). The buggy, a little wide of its station (24 m out), sees his
+    // course estimate swing 10 deg toward it: it now sits 25 deg off his course, inside the cone, while still
+    // 10.1 m off his line (so PG-2 keeps the station where it is - a buggy NOT that wide is pulled back to abeam,
+    // re-enters transit, and the old outbound rule latches within a few ticks). The go-around starts on a
+    // SETTLED station, so nothing latches at once ...
+    float ah, ph, rf;
+    frontGeom(9.0f, 10, kLateralMin, &ah, &ph, &rf);
+    assert(near_eq(ph, 35.0f, 0.01f));
+    const float lim = fmStationLimitDeg(ph);
+    const float b_al = 24.0f * cosf(25.0f * BREMOTE_FMS_DEG2RAD), b_cr = 24.0f * sinf(25.0f * BREMOTE_FMS_DEG2RAD);
+    assert(b_cr >= kPassLateral);
+    float s_al, s_cr;
+    fmStationAlongCrossM(lim, rf, &s_al, &s_cr);
+    {
+      Ctl c; c.live = lim; c.cone_on = true;
+      int latched_at = -1;
+      for (int i = 1; i <= 40 && latched_at < 0; i++) {
+        const Tick t = ctlTick(c, 4, kNearDiag, 9.0f, 10, 4.0f, 16.0f, 0.0f, b_al, b_cr, 0.0f, 0.1f, kSideBand);
+        assert(t.escape);
+        assert(shieldPropertyHolds(t, kSideBand));
+        if (t.settled_latched) latched_at = i;
+      }
+      // ... until it has stood for MORE than 3 s: tick 1 starts the run (100 ms), tick 32 is 3.1 s later.
+      printf("settled-escape latch at phi 35: latched on tick %d (%.1f s), side %s\n", latched_at,
+             (double)((latched_at - 1) * 0.1f), (c.rside > 0) ? "RIGHT" : "LEFT");
+      assert(latched_at == 32);
+      assert(c.aborted && c.rside == +1);                         // the buggy's (right) side
+      // From here it is F1's rear station, walked home on the right; the property holds all the way.
+      for (int i = 0; i < 120; i++) {
+        const Tick t = ctlTick(c, 4, kNearDiag, 9.0f, 10, 4.0f, 16.0f, 0.0f, -6.0f, 9.0f, 0.0f, 0.1f, kSideBand);
+        assert(shieldPropertyHolds(t, kSideBand));
+        assert(c.live >= -0.001f);                                // never crosses to the left
+      }
+    }
+    // A wobble SHORTER than 3 s never latches: 2.5 s in the cone, back on station (the escape clears the HELD
+    // cone - the M-16 c guarantee), 2.5 s in again. Two runs, neither long enough.
+    {
+      Ctl c; c.live = lim; c.cone_on = true;
+      bool latched = false, cleared = false;
+      for (int i = 0; i < 25; i++)
+        latched |= ctlTick(c, 4, kNearDiag, 9.0f, 10, 4.0f, 16.0f, 0.0f, b_al, b_cr, 0.0f, 0.1f, kSideBand).settled_latched;
+      for (int i = 0; i < 5; i++) {
+        const Tick t = ctlTick(c, 4, kNearDiag, 9.0f, 10, 4.0f, 16.0f, 0.0f, s_al, s_cr, 0.0f, 0.1f, kSideBand);
+        if (!t.escape) cleared = true;
+      }
+      for (int i = 0; i < 25; i++)
+        latched |= ctlTick(c, 4, kNearDiag, 9.0f, 10, 4.0f, 16.0f, 0.0f, b_al, b_cr, 0.0f, 0.1f, kSideBand).settled_latched;
+      assert(cleared && !latched && !c.aborted);
+    }
+  }
+
+  // ======================================================================================
+  // 30. V2.5-Evo - 2026-10-06 - AUDIT M-13: A GO-AROUND THAT CHANGES SIDES AT PSI 0 IS AN AIM STEP
+  // ======================================================================================
+  {
+    // F5 selected with the station walking through directly-behind (psi 0, dt 0 holds it there) and the buggy
+    // 10 m ahead in the cone, inside the 2 m band. The escape starts on the buggy's sign (left) and the outbound
+    // F5 latches (the old rule, unchanged). The station is still exactly behind, so it has no side.
+    Ctl c; c.live = 0.0f; c.cone_on = true;
+    Tick t = ctlTick(c, 5, kNearDiag, 6.0f, 0, 4.0f, 18.0f, 0.0f, 10.0f, -1.5f, 0.0f, 0.0f, kSideBand);
+    assert(t.escape && c.shside == -1 && c.live == 0.0f);
+    t = ctlTick(c, 5, kNearDiag, 6.0f, 0, 4.0f, 18.0f, 0.0f, 10.0f, -1.5f, 0.0f, 0.0f, kSideBand);
+    assert(t.escape && t.step);                                   // the hold switched on (M-14 input edge)
+    t = ctlTick(c, 5, kNearDiag, 6.0f, 0, 4.0f, 18.0f, 0.0f, 10.0f, -1.5f, 0.0f, 0.0f, kSideBand);
+    assert(t.escape && !t.step);                                  // steady: no step
+    // The buggy is pushed 2.5 m RIGHT: beyond the band the go-around follows it - and the waypoint jumps
+    // across his line. No re-seed (psi 0), same kind, same label: only M-13's flag can tell the D term.
+    t = ctlTick(c, 5, kNearDiag, 6.0f, 0, 4.0f, 18.0f, 0.0f, 10.0f, +2.5f, 0.0f, 0.0f, kSideBand);
+    assert(t.escape && c.shside == +1 && !t.sh_reseed && t.kind == 2 && c.live == 0.0f);
+    assert(t.step);
+    assert(shieldPropertyHolds(t, kSideBand));
+    t = ctlTick(c, 5, kNearDiag, 6.0f, 0, 4.0f, 18.0f, 0.0f, 10.0f, +2.5f, 0.0f, 0.0f, kSideBand);
+    assert(t.escape && !t.step);
+    printf("M-13 go-around side flip at psi 0: flagged, no re-seed\n");
+  }
+
+  // ======================================================================================
+  // 31. V2.5-Evo - 2026-10-06 - AUDIT M-17: near_diag 90 - THE SEED'S FIRST SNAP ANSWERS TO THE SHIELD
+  // ======================================================================================
+  {
+    // Mode 2 engaged (HOLD -> switch -> squeeze) with the buggy 12 m ahead, 3 m right of the rider's line,
+    // near_diag 90. The M-8 seed is +90 - already inside the rear band at nd 90 - so without M-17 the first
+    // tick snapped to 0 (directly behind), aiming the buggy straight back through the rider.
+    const float meas = fmMeasuredStationDeg(0.0f, atan2f(3.0f, 12.0f) / BREMOTE_FMS_DEG2RAD);
+    for (int pend = 0; pend <= 1; pend++) {
+      Ctl c;
+      engageEdge(c, 2, pend == 0, meas);
+      if (pend == 0) assert(c.live == 90.0f && c.walking);       // M-17: off 0 = walking
+      else           assert(c.live == 0.0f && c.pending && !c.walking);
+      const Tick t = ctlTick(c, 2, 90.0f, 6.0f, 0, 4.0f, 18.0f, 0.0f, 12.0f, 3.0f, 0.0f, 0.1f, kSideBand);
+      assert(!t.snapped);                                         // the snap through the rider is refused
+      assert(shieldPropertyHolds(t, kSideBand));
+      // The pre-M-17 behaviour, for the record: walking false, the same tick snaps.
+      Ctl o;
+      o.live = 90.0f; o.walking = false;
+      const Tick to = ctlTick(o, 2, 90.0f, 6.0f, 0, 4.0f, 18.0f, 0.0f, 12.0f, 3.0f, 0.0f, 0.1f, kSideBand);
+      assert(to.snapped && o.live == 0.0f);
+      float a, cc;
+      fmStationAlongCrossM(0.0f, 6.0f, &a, &cc);
+      assert(fmShieldSegmentHits(to.sh, to.b_al, to.b_cr, a, cc, 0.0f));   // ... and that line hit the shield
+    }
+    // Once the buggy is behind him, the next tick snaps - the SW36 station.
+    Ctl c;
+    engageEdge(c, 2, true, meas);
+    ctlTick(c, 2, 90.0f, 6.0f, 0, 4.0f, 18.0f, 0.0f, 12.0f, 3.0f, 0.0f, 0.1f, kSideBand);
+    const Tick t = ctlTick(c, 2, 90.0f, 6.0f, 0, 4.0f, 18.0f, 0.0f, -8.0f, 1.0f, 0.0f, 0.1f, kSideBand);
+    assert(t.snapped && c.live == 0.0f);
+    // A seed of 0 is not walking: rear-only engagements are exactly SW36.
+    Ctl z;
+    engageEdge(z, 1, true, 20.0f);
+    assert(z.live == 0.0f && !z.walking);
+    printf("M-17 near_diag 90: seed +90 walks (shield-checked) instead of snapping through the rider\n");
+  }
+
+  // ======================================================================================
+  // 32. V2.5-Evo - 2026-10-06 - AUDIT L-17: A REAR STATION'S SHIELD RE-SEED STOPS AT ABEAM
+  // ======================================================================================
+  {
+    // Mode 3 walking at -70, the buggy 10 m ahead / 3 m right (audit H-2's example): its measured angle is
+    // +163 deg. The re-seed puts the station on the buggy's side - at +90, not at the front floor.
+    Ctl c; c.live = -70.0f;
+    const Tick t = ctlTick(c, 3, kNearDiag, 9.0f, 0, 4.0f, 18.0f, 0.0f, 10.0f, 3.0f, 0.0f, 0.1f, kSideBand);
+    assert(t.escape && t.sh_reseed && c.live == 90.0f);
+    // Every rear mode, every buggy position ahead: a shield re-seed never leaves the rear half.
+    long n = 0;
+    for (uint8_t m = 1; m <= 3; m++) {
+      for (int ai = 2; ai <= 30; ai += 2) for (int ci = -12; ci <= 12; ci++) {
+        if (ci == 0) continue;
+        Ctl k; k.live = (ci > 0) ? -60.0f : 60.0f;               // walking on the far side
+        const Tick u = ctlTick(k, m, kNearDiag, 9.0f, 0, 4.0f, 18.0f, 0.0f, (float)ai, (float)ci, 0.0f, 0.1f, kSideBand);
+        if (u.sh_reseed) { assert(fabsf(k.live) <= 90.0f + 1e-4f); n++; }
+      }
+    }
+    // F4/F5 keep the front floor (as H-1): the clamp is for the rear modes only.
+    Ctl f; f.live = -70.0f; f.aborted = false;
+    const Tick tf = ctlTick(f, 4, kNearDiag, 9.0f, 0, 4.0f, 18.0f, 0.0f, 10.0f, 3.0f, 0.0f, 0.1f, kSideBand);
+    if (tf.sh_reseed) assert(f.live > 90.0f);
+    printf("L-17 rear re-seeds clamped to +/-90: %ld re-seeds checked\n", n);
+    assert(n > 50);
   }
 
   printf("largest one-tick lookahead change on an unflagged tick, all simulations: %.3f m\n", (double)g_dlook_max_quiet);

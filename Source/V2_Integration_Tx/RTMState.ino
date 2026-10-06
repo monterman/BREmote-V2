@@ -1324,6 +1324,17 @@ void fmStepStationFromMagnet()
 // Vibration matches the convention he has already learned from this gesture: Pattern 4 (two firm
 // taps) = ON, Pattern 12 (three firm taps) = OFF. Deliberately NOT Pattern 7, the long stop buzz,
 // which means "refused".
+//
+// V2.5-Evo - 2026-10-06 - INVARIANT: AN AUTO-RETURN FLIP NEVER CHANGES FOLLOW-ME ARMING. This function
+// writes last_fm_return_mode only. It never writes fm_armed, last_fm_mode or fm_throttle_seen, and the
+// keepalive it requests re-sends the SAME station with only bits 5-6 changed. Keep it that way: the
+// A1/A0 flip and the FM arm state are separate controls. (The same holds for the other two writers of
+// last_fm_return_mode: ceremonyCancelForReturnGesture() and returnGesture() state 3.)
+// Field check, 2026-10-05 ride, RX log RX1_2026-10-05_2346: the A0 at 557903 ms left the buggy in
+// FM ARMED, station 2, refreshed by keepalives for 6.7 minutes. Follow-Me ended later, at 968382 ms,
+// when the BUGGY stopped it for DIVERGENCE (fm_flags bit 3); runFmLoop() below then disarmed the
+// remote through fmDisarm(false) - "St" plus the long buzz. That fault-stop, not the A0, is what left
+// Follow-Me off for the rest of the ride.
 // ============================================================
 void fmToggleAutoReturnFromMagnet()
 {

@@ -1,3 +1,13 @@
+// V2.5-Evo - 2026-10-06 - R-1 (owner ruling "option B"): REAR MODES 1-3 BEHAVE EXACTLY AS SW36 AGAIN. The front-station merge had made every rear engagement
+//   start from a measured G-4 seed and walk to its preset at kFmStationRateDegPerS, and made every side-zone Schmitt flip walk instead of step - so mode 2
+//   could take 6 s to reach directly behind, contrary to the comments that called it bit-identical. Now: (1) the ACTIVE-edge seed runs for modes 4/5 only;
+//   modes 1-3 start at 0 and computeFmTarget() snaps the live angle to the preset on the first tick; (2) computeFmTarget() snaps (no slew) whenever the
+//   effective mode is 1-3 and the live angle is already inside the rear band |psi| <= near_diag - so Schmitt flips and 1/2/3 cycles step in one tick as
+//   in SW36 - and a station still outside that band, which can only be one coming home from F4/F5, keeps walking so it never steps across the rider's
+//   line; (3) a snapped rear station sits at d_follow (not the PG-1 floor at near_diag = 90), skips the G-5 twin and takes its D-term profile from
+//   mode + Schmitt exactly as SW36 did, so the aim point and the profile match 37f8b49 for modes 1-3 at every near_diag_offset_deg 0-90. Above 90 the
+//   merge's clamp of a rear preset to abeam stays (SW36 let 91-180 put the "rear" station ahead of the rider, up to dead ahead). Front stations 4/5 are unchanged. Comments that called mode 2 bit-identical, described rear walking, or named
+//   bit 23 for the PG-4 escape are corrected. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-04 - TWO VALUES, both one token, both owner-approved and audited. (1) kSteerTakeoverMaxMs 10000 -> 30000: the owner runs
 //   steer_during_auto = 1 so that he can steer the buggy around while surfing a wave, and at 10 s the cap was firing on a legitimate hold - which in FM
 //   following means FM_HOLD with fm_throttle_cap = 0 under a HELD TRIGGER, i.e. the motor dies mid-wave until a full trigger release. 30 s matches the
@@ -8,7 +18,7 @@
 //   often - got no effect at all from raising fm_align_cap. The block's own comments already name its target as "the align cap" in three places; 13 was
 //   left behind, not pinned. Identical behaviour at the default 13, and it only ever LOWERS rtm_approach_cap, so the approach ramp and Gate 9 still bind
 //   near the rider. Comments only elsewhere. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
-// V2.5-Evo - 2026-10-02 - P2 (FRONT STATIONS F4/F5): THE CONTROLLER. computeFmTarget() stops picking one of three offsets and runs ONE live station angle psi around the rider (0 = directly behind, + = the rider's right, bearing = course + 180 - psi, so today's mode 1 is psi = +45 and mode 2 is bit-identical), slewed at <= kFmStationRateDegPerS toward the preset the declared mode asks for. Modes 4 and 5 are the two FRONT presets at +/-(180 - the front angle). THERE IS NO DEAD-AHEAD STATION AND NO MODE 6: |psi| is clamped at 180 - the effective angle, so the whole arc either side of dead ahead is unreachable at every config value - a buggy on the rider's line must accelerate as he closes on it and a dead motor stops it in his path (he has hit this buggy once already), while off axis a dead motor leaves it beside the line and the rope with it. THE PASS GEOMETRY, as five checkable invariants: PG-1 the station's own cross-track offset is >= the pass minimum (rope 7.1 + 3 m, raised to min_dist_m) from abeam outward, floored inside the radius schedule so it survives degenerate tunings; PG-2 psi cannot exceed 90 deg unless the BUGGY'S measured cross-track offset has reached that minimum ON THE SAME SIDE as the station it is going to - the station does not move ahead of the rider until the buggy is physically wide, which is the two-waypoint pass as a ceiling on one variable; PG-3 cross-track offset is affine along a straight segment, so PG-1 and PG-2 put both ends of the aim line wide on one side and therefore every point between them, and the aim line cannot cross the rider's line let alone pass through him; PG-4 if that precondition breaks anyway (the rider turns into the pass) the aim becomes an OUTWARD waypoint further from the line than the buggy is, the closing allowance and the fade are both withdrawn, and the station retreats to the nearest REAR preset on the same side (latched for the engagement); PG-5 the min_dist_m cap-0, the boogie_vmax clamp, cap 2, cap 4, cap 5, the deadman and the subtract-only chain are untouched in every mode. GOVERNOR-2's fade is bypassed ONLY on the PG-3 predicate - course valid, station ahead, buggy MEASURABLY ahead, passing beside the line by the pass minimum - with no mode term in it, cleared at the top of every tick so it can never be inherited; and ahead of the rider the radial gap term is replaced by a SIGNED along-track term so a buggy past its station gives throttle back instead of being granted a standing closing allowance. Also: G-2 a front-half steering lookahead RAMPED in from abeam (never stepped, so the D term never sees a lookahead-sized jump); G-3 transit abort on 60 deg of rider course change, and on the course going invalid; G-4 the live angle re-seeded on every ACTIVE edge from the MEASURED angle, clamped into the rear half so an engagement can never BEGIN with a front station already granted; a G-5 twin that refuses to emit an aim point within kFmThetaMinSepM of the buggy (and keeps the buggy's own cross-track offset when it does, so PG-3 survives); the divergence ceiling raised to max(2 x D_engage, r(psi) + band) so a buggy sitting exactly on a 22.7 m front station is not judged to be running away; the mode gates widened 1-3 -> 1-5; kProfTransit / kProfFront / kProfOutward defined for the D-term profile guard; and fm_gate_flags bits 9 (fade bypass) and 10 (transit) filled at last plus a new bit 23 (PG-4 escape standing), with fm_station_deg_x10 written into the deep-log column that has been zero-filled since 2026-09-17. ONE DELIBERATE DELTA TO THE WATER-TESTED REAR MODES: a change of commanded rear station (a side-zone Schmitt flip, or the rider cycling 1 -> 2) now WALKS the station instead of stepping it, which removes one of the three phantom-rate steps the 2026-09-17 D-term profile guard was written for; the steady state at every rear station, and mode 2 entirely, are unchanged. No confStruct change in this commit, sizeof stays 200, SW_VERSION stays 36, the log record size is unchanged.
+// V2.5-Evo - 2026-10-02 - P2 (FRONT STATIONS F4/F5): THE CONTROLLER. computeFmTarget() stops picking one of three offsets and runs ONE live station angle psi around the rider (0 = directly behind, + = the rider's right, bearing = course + 180 - psi, so today's mode 1 is psi = +45 and mode 2 is psi = 0), slewed at <= kFmStationRateDegPerS toward the preset the declared mode asks for [CORRECTED 2026-10-06, R-1: as merged this slewed and seeded the REAR modes too, so mode 2 was NOT bit-identical; the slew and the seed now apply to the front stations 4 and 5 only, and modes 1-3 snap to their preset exactly as SW36 did - see the 2026-10-06 entry above]. Modes 4 and 5 are the two FRONT presets at +/-(180 - the front angle). THERE IS NO DEAD-AHEAD STATION AND NO MODE 6: |psi| is clamped at 180 - the effective angle, so the whole arc either side of dead ahead is unreachable at every config value - a buggy on the rider's line must accelerate as he closes on it and a dead motor stops it in his path (he has hit this buggy once already), while off axis a dead motor leaves it beside the line and the rope with it. THE PASS GEOMETRY, as five checkable invariants: PG-1 the station's own cross-track offset is >= the pass minimum (rope 7.1 + 3 m, raised to min_dist_m) from abeam outward, floored inside the radius schedule so it survives degenerate tunings; PG-2 psi cannot exceed 90 deg unless the BUGGY'S measured cross-track offset has reached that minimum ON THE SAME SIDE as the station it is going to - the station does not move ahead of the rider until the buggy is physically wide, which is the two-waypoint pass as a ceiling on one variable; PG-3 cross-track offset is affine along a straight segment, so PG-1 and PG-2 put both ends of the aim line wide on one side and therefore every point between them, and the aim line cannot cross the rider's line let alone pass through him; PG-4 if that precondition breaks anyway (the rider turns into the pass) the aim becomes an OUTWARD waypoint further from the line than the buggy is, the closing allowance and the fade are both withdrawn, and the station retreats to the nearest REAR preset on the same side (latched for the engagement); PG-5 the min_dist_m cap-0, the boogie_vmax clamp, cap 2, cap 4, cap 5, the deadman and the subtract-only chain are untouched in every mode. GOVERNOR-2's fade is bypassed ONLY on the PG-3 predicate - course valid, station ahead, buggy MEASURABLY ahead, passing beside the line by the pass minimum - with no mode term in it, cleared at the top of every tick so it can never be inherited; and ahead of the rider the radial gap term is replaced by a SIGNED along-track term so a buggy past its station gives throttle back instead of being granted a standing closing allowance. Also: G-2 a front-half steering lookahead RAMPED in from abeam (never stepped, so the D term never sees a lookahead-sized jump); G-3 transit abort on 60 deg of rider course change, and on the course going invalid; G-4 the live angle re-seeded on every ACTIVE edge from the MEASURED angle (front stations 4/5 only since 2026-10-06, R-1), clamped into the rear half so an engagement can never BEGIN with a front station already granted; a G-5 twin that refuses to emit an aim point within kFmThetaMinSepM of the buggy (not applied to a snapped rear station since 2026-10-06, R-1) (and keeps the buggy's own cross-track offset when it does, so PG-3 survives); the divergence ceiling raised to max(2 x D_engage, r(psi) + band) so a buggy sitting exactly on a 22.7 m front station is not judged to be running away; the mode gates widened 1-3 -> 1-5; kProfTransit / kProfFront / kProfOutward defined for the D-term profile guard; and fm_gate_flags bits 9 (fade bypass) and 10 (transit) filled at last plus a new bit 31 (PG-4 escape standing; it was bit 23 on the fm-stations-front branch and MOVED to 31 at the 2026-10-05 integration onto SW36, because bits 23-30 hold the I2C swap-failure counters), with fm_station_deg_x10 written into the deep-log column that has been zero-filled since 2026-09-17. [WITHDRAWN 2026-10-06, R-1, owner ruling "option B": this entry introduced walking for the rear modes - a Schmitt flip or a 1 -> 2 cycle walked the station instead of stepping it, and every engagement walked from a measured seed. That delta is gone: rear modes 1-3 step exactly as SW36 did, and the D-term profile guard covers the step as it always has.] No confStruct change in this commit, sizeof stays 200, SW_VERSION stays 36, the log record size is unchanged.
 // V2.5-Evo - 2026-09-19 - DEEP LOG level 5: fmPublishLogSnapshot() also publishes the level-5 block (rider position + fix seq/age, rtm_approach_cap, the RTM phase code,
 //   the align cap / align influence / mixer influence in force, the auto-return override state, fm_flags as sent, the keepalive age) - all copies of published
 //   state. The RTM phase code is a new static (rtm_log_phase) written by runRtmLoopBody() at the branch it takes (reset to 0 at the top of each runRtmLoop() tick,
@@ -215,6 +225,9 @@ static bool          prev_heading_src_valid    = false;
 // front one (the lookahead ramps in), a transit settling onto its station, and the PG-4 escape
 // swapping the station point for an outward waypoint. Those are steps, and a step is what the guard
 // exists for. The 2026-09-17 note's list of steps is unchanged otherwise.
+// V2.5-Evo - 2026-10-06 - R-1: only a FRONT-bound station slews. Rear stations (modes 1-3) step to
+// their preset in one tick exactly as SW36 did, so the Schmitt flip is still one of the steps this
+// guard catches, through the same kProfBehind / kProfDiagRight / kProfDiagLeft labels as before.
 static const uint8_t kProfDegraded  = 1;   // no trustworthy rider course: hold station on the rider->buggy bearing
 static const uint8_t kProfBehind    = 2;   // trailing point directly behind the rider (mode 2, or diagonal disengaged)
 static const uint8_t kProfDiagRight = 3;   // trailing point behind and to the rider's right (mode 1, diagonal engaged)
@@ -1928,7 +1941,8 @@ static const float    kFmPassLateralBaseM    = kFmRopeLenM + 3.0f;   // 10.1 m; 
 //   hazard). 15 deg/s is the review's upper bound, not a measured number: at it, a 45 -> 135 transit
 //   takes 6 s and a side change (F4 -> F5, 270 deg round the back) takes 18 s. The governor paces the
 //   real transit anyway - the slew is a ceiling on the TARGET, not a command to the motors - but this
-//   constant is a WATER BLOCKER until the spin is done.
+//   constant is a WATER BLOCKER until the spin is done. Since 2026-10-06 (R-1) it paces the FRONT
+//   stations only (and a station coming home from one); rear modes 1-3 do not walk.
 static const float    kFmStationRateDegPerS  = 15.0f;   // deg/s; PROVISIONAL - gated on the yaw-rate measurement
 // kFmTransitLookaheadFactor - G-2. In the front half the aim is the station point pushed this many
 //   d_follow further along the RIDER'S course, so the aim LEADS the station instead of being a point
@@ -2063,7 +2077,8 @@ static bool          fm_diagonal_engaged = false;
 // fm_station_live_deg / fm_station_target_deg - the station angle around the rider, 0 = directly
 //   behind, POSITIVE = the rider's RIGHT. The target is the preset the declared mode asks for (after
 //   the side-zone Schmitt and the PG-2 ceiling); the live angle slews toward it at no more than
-//   kFmStationRateDegPerS. Both are clamped to +/- (180 - the effective front angle), so dead ahead
+//   kFmStationRateDegPerS - except a rear station (modes 1-3) inside the rear band, which snaps to
+//   it in one tick as SW36 did (2026-10-06, R-1). Both are clamped to +/- (180 - the effective front angle), so dead ahead
 //   is unreachable at every config value.
 // fm_station_radius_m - the radius the schedule produced for this tick's live angle. Published
 //   because the DIVERGENCE CEILING reads it: the ceiling has to be measured against the geometry the
@@ -4159,16 +4174,18 @@ static void computeFmTarget(double* out_lat, double* out_lng)
   //     buggy lined up BEHIND the rider", and for a front station the question that matters is
   //     PG-2's "is the buggy wide of the rider's line", which is a different and stricter test.
   //   - the lag anchor, the radius at a rear station (d_follow) and the bearing arithmetic.
-  //   - mode 2 is bit-identical: psi_target is 0, the slew is a no-op at 0, the radius schedule
-  //     returns d_follow, and the bearing is course + 180.
-  //
-  // THE ONE DELIBERATE DELTA TO MODES 1 AND 3: a change of commanded rear station - a Schmitt flip,
-  // or the rider cycling 1 -> 2 - now WALKS the station at kFmStationRateDegPerS instead of stepping
-  // it by near_diag_offset_deg in a single tick. That step is one of the three phantom-rate events
-  // the 2026-09-17 D-term profile guard was written for ("the side-zone Schmitt flipping the diagonal
-  // on or off"); slewing removes it at source, and the profile guard stays as the belt. The steady
-  // state at every rear station is unchanged. Flagged here because it is a behaviour change on a
-  // water-tested path and a reviewer must see it rather than find it.
+  //   - V2.5-Evo - 2026-10-06 - R-1 (owner ruling "option B"): REAR STATIONS DO NOT WALK. For
+  //     effective modes 1, 2 and 3 the live angle SNAPS to the preset on the tick it is commanded,
+  //     exactly as the SW36 offset did: a side-zone Schmitt flip or a 1 -> 2 -> 3 cycle steps the
+  //     aim in one tick, the step is covered by the 2026-09-17 D-term profile guard as before, and
+  //     no G-4 seed is applied at the ACTIVE edge for modes 1-3. The seed and the slew belong to the
+  //     FRONT stations 4 and 5 only. The aim point for modes 1-3 is the SW36 one: anchor + d_follow
+  //     at course + 180 - psi, no lookahead, no G-5 twin, and the same three D-term profiles.
+  //     The one exception is a station COMING HOME FROM THE FRONT (an F4/F5 abort, or the rider
+  //     switching 4/5 -> 1-3 mid-engagement): it keeps walking until it is back inside the rear
+  //     band (|psi| <= near_diag), because a single-tick step from ahead of the rider to a rear
+  //     preset - possibly on the other side - would aim the buggy across his line. SW36 had no front
+  //     station, so this path has no SW36 behaviour to match.
   // ==========================================================================================
   // The buggy in the RIDER'S FRAME, measured. Taken against the FILTERED rider track, because that
   // is the track `course` was differentiated from - mixing the raw position with the filtered course
@@ -4245,17 +4262,38 @@ static void computeFmTarget(double* out_lat, double* out_lng)
                                                          pass_lateral, st_limit);
   const float psi_eff_target = (psi_target >= 0.0f) ? ceil_mag : -ceil_mag;
 
-  // ---- The slew, then the clamp. The clamp is the belt: the slew cannot pass its own target, and
-  //      every target has already been clamped, but a stored angle from a previous tick must still
-  //      be re-tested against this tick's limit in case the rider changed the setting mid-run. ----
-  fm_station_live_deg = fmStationSlewStep(fm_station_live_deg, psi_eff_target,
-                                          kFmStationRateDegPerS, st_dt_s);
+  // ---- V2.5-Evo - 2026-10-06 - R-1: REAR STATIONS SNAP, FRONT STATIONS WALK ----
+  // BUG: every rear-mode Schmitt flip and every engagement walked the station at 15 deg/s from a
+  // measured seed, so the water-tested rear modes 1-3 no longer stepped to their preset the way SW36
+  // did (mode 2 could take 6 s to reach directly behind). FIX: when the effective mode is a rear one
+  // AND the live angle is already inside the rear band (|psi| <= near_diag, clamped 0-90 like the
+  // presets), the live angle is set straight to the target - the SW36 single-tick step. A station
+  // still outside that band can only be one coming home from a front station, and it keeps walking.
+  float rear_band_deg = near_diag;
+  if (rear_band_deg < 0.0f)  rear_band_deg = 0.0f;
+  if (rear_band_deg > 90.0f) rear_band_deg = 90.0f;
+  const bool rear_snap = (m_eff >= 1 && m_eff <= 3) && (fabsf(fm_station_live_deg) <= rear_band_deg);
+
+  // ---- The slew (front only), then the clamp. The clamp is the belt: the slew cannot pass its own
+  //      target, and every target has already been clamped, but a stored angle from a previous tick
+  //      must still be re-tested against this tick's limit in case the rider changed the setting
+  //      mid-run. ----
+  if (rear_snap) {
+    fm_station_live_deg = psi_eff_target;
+  } else {
+    fm_station_live_deg = fmStationSlewStep(fm_station_live_deg, psi_eff_target,
+                                            kFmStationRateDegPerS, st_dt_s);
+  }
   fm_station_live_deg = fmClampStationDeg(fm_station_live_deg, phi_eff);
   fm_station_deg_x10.store((int16_t)(fm_station_live_deg * 10.0f), std::memory_order_relaxed);
 
   // ---- PG-1: the radius schedule, with the station's own cross-track floor inside it ----
-  fm_station_radius_m = fmStationRadiusM(fm_station_live_deg, d_follow, r_front,
-                                         near_diag, pass_lateral, phi_eff);
+  // V2.5-Evo - 2026-10-06 - R-1: a snapped rear station sits at d_follow, the SW36 radius. The
+  // schedule already returns exactly d_follow below abeam; this only matters at near_diag = 90,
+  // where the PG-1 floor (a front-station rule) would otherwise push a rear preset out to 10.1 m.
+  fm_station_radius_m = rear_snap ? d_follow
+                                  : fmStationRadiusM(fm_station_live_deg, d_follow, r_front,
+                                                     near_diag, pass_lateral, phi_eff);
   fmStationAlongCrossM(fm_station_live_deg, fm_station_radius_m,
                        &fm_station_along_m, &fm_station_cross_m);
 
@@ -4352,7 +4390,10 @@ static void computeFmTarget(double* out_lat, double* out_lng)
   // buggy's OWN cross-track offset exactly, so it can never be closer to the rider's line than the
   // buggy already is. It is also the only sane instruction in the degenerate case - keep going the
   // way the rider is going.
-  {
+  // V2.5-Evo - 2026-10-06 - R-1: skipped while a rear station is snapped (modes 1-3), so their aim
+  // stays the SW36 trailing point - SW36 had no such twin, and the owner ruled the rear modes must
+  // behave exactly as they did there.
+  if (!rear_snap) {
     const float aim_sep_m = (float)TinyGPSPlus::distanceBetween(
         gps_last_lat, gps_last_lng, st_lat, st_lng);
     if (aim_sep_m < kFmThetaMinSepM) {
@@ -4364,7 +4405,14 @@ static void computeFmTarget(double* out_lat, double* out_lng)
   // The live angle moves continuously and the D term is entitled to differentiate that; what it must
   // never differentiate is a single-tick change of which geometry is commanded. So the profile
   // tracks psi_eff_target (and the transit / settled-front distinction), never psi_live.
-  if (fabsf(psi_eff_target) > 90.0f) fm_target_profile = fm_transit_active ? kProfTransit : kProfFront;
+  // V2.5-Evo - 2026-10-06 - R-1: a snapped rear station picks its profile exactly as SW36 did - from
+  // the mode and the Schmitt, not from the angle - so even near_diag_offset_deg = 0 labels the same.
+  if (rear_snap) {
+    if (fm_diagonal_engaged && m_eff == 1)      fm_target_profile = kProfDiagRight;
+    else if (fm_diagonal_engaged && m_eff == 3) fm_target_profile = kProfDiagLeft;
+    else                                        fm_target_profile = kProfBehind;
+  }
+  else if (fabsf(psi_eff_target) > 90.0f) fm_target_profile = fm_transit_active ? kProfTransit : kProfFront;
   else if (fm_transit_active)        fm_target_profile = kProfTransit;
   else if (psi_eff_target > 0.5f)    fm_target_profile = kProfDiagRight;
   else if (psi_eff_target < -0.5f)   fm_target_profile = kProfDiagLeft;
@@ -6383,8 +6431,15 @@ static void runFmLoopBody(unsigned long now)
       // station always has to earn its way forward through the ceiling.
       //
       // The front-abort latch is cleared here too: a fresh engagement is a fresh decision.
+      //
+      // V2.5-Evo - 2026-10-06 - R-1 (owner ruling "option B"): THE SEED IS FOR FRONT STATIONS ONLY.
+      // BUG: modes 1-3 were seeded too, so every rear engagement - including every HOLD -> ACTIVE
+      // after a trigger release - started from the measured angle and walked to the preset, where
+      // SW36 aimed at the preset on the first tick. FIX: for modes 1-3 the live angle starts at 0
+      // (inside the rear band), so computeFmTarget() snaps it to the preset on the first tick,
+      // exactly as SW36 did.
       // ====================================================================================
-      if (fm_rider_course_deg >= 0.0f) {
+      if ((m == 4 || m == 5) && fm_rider_course_deg >= 0.0f) {
         const float b_r2b = (float)TinyGPSPlus::courseTo(
             fm_filt_lat, fm_filt_lng, gps_last_lat, gps_last_lng);
         float seed = fmMeasuredStationDeg(fm_rider_course_deg, b_r2b);
@@ -6392,7 +6447,7 @@ static void runFmLoopBody(unsigned long now)
         if (seed < -90.0f) seed = -90.0f;
         fm_station_live_deg = seed;
       } else {
-        fm_station_live_deg = 0.0f;              // no course: directly behind, the safe geometry
+        fm_station_live_deg = 0.0f;              // modes 1-3 (snapped to the preset on the first tick), or no course: directly behind, the safe geometry
       }
       fm_station_prev_ms          = 0;           // the slew's dt starts fresh, never across the gap
       fm_transit_active           = false;
@@ -6401,9 +6456,16 @@ static void runFmLoopBody(unsigned long now)
       fm_station_deg_x10.store((int16_t)(fm_station_live_deg * 10.0f), std::memory_order_relaxed);
 
       fm_state = FM_ACTIVE;
-      Serial.printf("FM [RX] ENGAGE mode %u: dist=%.1f m rider=%.1f km/h course=%.0f station seeded at %.0f deg (0 = behind you, + = your right)\n",
-                    (unsigned)m, dist_m, fm_rider_speed_kmh, fm_rider_course_deg,
-                    (double)fm_station_live_deg);
+      // V2.5-Evo - 2026-10-06 - R-1: the "seeded at" wording only for front stations, which are the
+      // only ones seeded; modes 1-3 print the SW36 line.
+      if (m == 4 || m == 5) {
+        Serial.printf("FM [RX] ENGAGE mode %u: dist=%.1f m rider=%.1f km/h course=%.0f station seeded at %.0f deg (0 = behind you, + = your right)\n",
+                      (unsigned)m, dist_m, fm_rider_speed_kmh, fm_rider_course_deg,
+                      (double)fm_station_live_deg);
+      } else {
+        Serial.printf("FM [RX] ENGAGE mode %u: dist=%.1f m rider=%.1f km/h course=%.0f\n",
+                      (unsigned)m, dist_m, fm_rider_speed_kmh, fm_rider_course_deg);
+      }
       if (m == 4 || m == 5) {
         // The front geometry, printed ONCE per engagement so the numbers that will be judged on the
         // water are on the record before the buggy moves (the plan asks for both per arm).

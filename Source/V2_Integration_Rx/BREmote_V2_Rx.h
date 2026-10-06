@@ -1576,8 +1576,8 @@ static_assert(sizeof(VescLogData) == 62, "VescLogData size mismatch — check bi
 //   bit 6 pivoting          PIVOT-SUSPEND-1 is suspending the divergence judgement
 //   bit 7 in_grace          inside the post-engage grace (kFmJudgeGraceMs, 6500 ms; until 2026-09-19 kFmEngageRampMs + kFmDivergeMs)
 //   bit 8 heading_disagree  the compass-vs-COG disagreement latch is standing
-//   bit 9 fade_bypass       P2 — always 0 until the station work lands
-//   bit 10 transit          P2 — always 0 until the station work lands
+//   bit 9 fade_bypass       P2 — the GOVERNOR-2 fade bypass is standing this tick (live since the 2026-10-02 station work)
+//   bit 10 transit          P2 — a station is in transit toward a FRONT preset this tick (live since the 2026-10-02 station work)
 //   bit 11 return_candidate P1-b (live since 2026-09-19): a RETURN candidate stands this tick - the
 //                           rider's raw speed is under the band and the entry proof is running
 //   bit 15 return_window    P1-b: the proof's relative-displacement window is open this tick
@@ -1644,7 +1644,7 @@ static_assert(sizeof(VescLogData) == 62, "VescLogData size mismatch — check bi
 //                           These fields are a RATE INDICATOR - a row reading 15/15 means "pinned",
 //                           which is all the CSV needs to say - and ?diag carries the exact
 //                           cumulative figures. Both fields read 0 on a healthy bus.
-//                           Bit 31 is free.
+//                           Bit 31 is the PG-4 escape (FM_LOG_GATE_AIM_OUTWARD, see below).
 // Bits 0-3, 5-7 are only evaluated on ticks that reach the condition block (FM_ARMED and beyond
 // with a live declaration); on IDLE / STOPPING / early-exit ticks the whole word is 0 apart from
 // bits 17-18, which describe the engaged controller and are therefore 0 on such ticks anyway.
@@ -1682,7 +1682,7 @@ static_assert(sizeof(VescLogData) == 62, "VescLogData size mismatch — check bi
 // LOG_FILE_FORMAT_VER 2 -> 3 and makes EVERY EXISTING LOG FILE undecodable - see the restated rule
 // at the format-version define below. Appending to the L5 tail would avoid the bump but would cover
 // level 5 only. These eight bits were free, cost ZERO bytes, need NO format bump, and are present at
-// levels 4 AND 5. Bit 31 is left free.
+// levels 4 AND 5. Bit 31 was left free here; the 2026-10-05 front-station integration took it for FM_LOG_GATE_AIM_OUTWARD.
 #define FM_LOG_GATE_SWAP_FAIL_CH0_SHIFT 23           // bits 23-26: FAILED ch0 enable swaps since the previous log row, saturating at 15
 #define FM_LOG_GATE_SWAP_FAIL_CH0_MASK  (0xFUL << FM_LOG_GATE_SWAP_FAIL_CH0_SHIFT)
 #define FM_LOG_GATE_SWAP_FAIL_CH1_SHIFT 27           // bits 27-30: the same for ch1
@@ -1694,7 +1694,7 @@ static_assert(sizeof(VescLogData) == 62, "VescLogData size mismatch — check bi
 // reported enable-swap failures that never happened.) The PG-4 escape is standing this tick - a FRONT station is
 // commanded but the buggy is not wide enough of the rider's line on that side to prove the aim line
 // clear, so the aim is an OUTWARD waypoint and both the closing allowance and the convergence fade
-// are withdrawn. Read it alongside bit 9 (fade bypass) and bit 10 (transit): 9 and 23 are mutually
+// are withdrawn. Read it alongside bit 9 (fade bypass) and bit 10 (transit): 9 and 31 are mutually
 // exclusive by construction, so a row with both set is a bug. New bit in the existing u32 - the log
 // record size does not change and no column is added.
 #define FM_LOG_GATE_AIM_OUTWARD        (1UL << 31)
@@ -1715,7 +1715,7 @@ struct __attribute__((packed)) VescLogDataL4 {
     uint8_t  fm_state;             // FmState: 0 IDLE, 1 ARMED, 2 ACTIVE, 3 HOLD, 4 STOPPING, 5 RETURN (2026-09-19)
     uint8_t  fm_block_reason;      // FmStopReason (P0-e): the live stop latch, non-zero for the whole FM_STOPPING ramp; 0 = no fault stop in progress
     uint8_t  fm_throttle_cap;      // FM's subtract-only throttle cap this tick (0-255; 255 = no cap)
-    int16_t  fm_station_deg_x10;   // P2 station angle x 10 deg — always 0 until the station work lands
+    int16_t  fm_station_deg_x10;   // P2 live station angle x 10 deg (0 = behind the rider, + = his right); written since the 2026-10-02 station work
     uint8_t  fm_return_reason;     // V2.5-Evo - 2026-09-19 - DEEP LOG (A): was fm_pad (always 0). FmReturnReason (RTMState.ino): why the last
                                    // RETURN candidate / RETURN ended. STICKY - a straight copy of fm_return_last_reason every tick, never
                                    // cleared: 0 = no event since boot; during a RETURN leg it reads 4 (ENTERED); the row where fm_state

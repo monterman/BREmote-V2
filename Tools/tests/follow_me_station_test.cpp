@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-06 - AUDIT M-19: degradedTick() restates the no-course tick (fmNoCourseAbortLatches); section 21's stopped
+//   F4 case now expects F4 to survive the wait; new section 33 rides F4 selected while stopped through 4 s of no course and out
+//   to the front station, and keeps the two cases that still latch.
 // V2.5-Evo - 2026-10-06 - SETTLED-ESCAPE LATCH + M-13 + M-17 + L-17 (L-20): ctlTick() gains the 3 s settled-escape latch (a
 //   millis() stand-in in Ctl), the M-13 side-flip step, the M-17 walking-on-seed rule and the L-17 rear re-seed clamp; new
 //   engageEdge() restates the ACTIVE edge. New sections 29-32: the latch at phi 35 (fires at 3.1 s, never under 3 s), the psi 0
@@ -302,6 +305,15 @@ static void engageEdge(Ctl &c, uint8_t mode, bool course_valid, float meas)
   c.escape = false; c.shside = 0; c.walking = (c.live != 0.0f);
   c.cone_on = false; c.held_prev = false; c.look_prev = 0.0f; c.settled_since = 0;
   c.transit = false; c.tcourse = -1.0f; c.aborted = false; c.rside = 0; c.diag = false;
+}
+
+// V2.5-Evo - 2026-10-06 - one NO-COURSE (degraded) tick of computeFmTarget(), station part only: the M-19 abort
+// rule, and the shield state that branch clears. The live angle is frozen there.
+static void degradedTick(Ctl &c, uint8_t m_decl)
+{
+  if (fmNoCourseAbortLatches(m_decl, c.aborted, c.live, c.tcourse >= 0.0f)) c.aborted = true;
+  c.transit = false; c.escape = false; c.shside = 0; c.kind_prev = 4;
+  c.cone_on = false; c.held_prev = false; c.look_prev = 0.0f; c.settled_since = 0;
 }
 
 // THE PROPERTY THE SHIELD EXISTS FOR, checked on one tick: the line the controller answers for (the
@@ -1591,11 +1603,20 @@ int main()
       }
     }
     {
-      // F4 selected while stopped: the no-course branch has already abandoned it (F4 reads as F1), so
-      // the pending seed follows the REAR rule on the effective mode: buggy ahead-left -> -90.
-      Ctl c; c.pending = true; c.aborted = true;
+      // F4 selected while stopped. V2.5-Evo - 2026-10-06 - audit M-19: the no-course ticks NO LONGER abandon it
+      // (station still behind, no transit begun), so the pending seed follows the F4/F5 rule - the measured angle,
+      // clamped to the rear half: buggy ahead-left -> -90. (Before M-19 it had been abandoned and read as F1, and
+      // seeded -90 by the rear rule: the same angle, but the front station was lost.)
+      Ctl c;
+      engageEdge(c, 4, false, 0.0f);
+      for (int i = 0; i < 20; i++) degradedTick(c, 4);
+      assert(!c.aborted && c.pending);
       ctlTick(c, 4, kNearDiag, 6.0f, 0, 4.0f, 6.0f, 0.0f, 10.0f, -4.0f, 0.0f, 0.1f, kSideBand);
-      assert(c.live < -85.0f);
+      assert(c.live < -85.0f && !c.aborted);
+      // The pre-M-19 path, for the record: once abandoned, the same seed lands on the rear rule.
+      Ctl o; o.pending = true; o.aborted = true;
+      ctlTick(o, 4, kNearDiag, 6.0f, 0, 4.0f, 6.0f, 0.0f, 10.0f, -4.0f, 0.0f, 0.1f, kSideBand);
+      assert(o.live < -85.0f);
     }
   }
 
@@ -2146,6 +2167,73 @@ int main()
     if (tf.sh_reseed) assert(f.live > 90.0f);
     printf("L-17 rear re-seeds clamped to +/-90: %ld re-seeds checked\n", n);
     assert(n > 50);
+  }
+
+  // ======================================================================================
+  // 33. V2.5-Evo - 2026-10-06 - AUDIT M-19: F4/F5 SELECTED WHILE STOPPED IS NOT ABANDONED
+  // ======================================================================================
+  {
+    // The rule.
+    assert(!fmNoCourseAbortLatches(4, false,   0.0f, false));    // stopped, station behind, nothing begun
+    assert(!fmNoCourseAbortLatches(5, false, -90.0f, false));    // abeam is still the rear half
+    assert( fmNoCourseAbortLatches(4, false,  91.0f, false));    // ahead of abeam: latch, as before
+    assert( fmNoCourseAbortLatches(5, false, -30.0f, true));     // a transit had begun: latch, as before
+    assert(!fmNoCourseAbortLatches(4, true,  140.0f, true));     // already latched: nothing to do
+    for (uint8_t m = 0; m <= 3; m++) assert(!fmNoCourseAbortLatches(m, false, 140.0f, true));   // rear modes: never
+
+    // THE OWNER'S MODE CHANGE: stopped and floating, switch to F4, squeeze. The ACTIVE edge has no course (seed
+    // pending); 3 s of no-course ticks; then he gets going - 0 to 18 km/h over 4 s - with the buggy 8 m behind
+    // and 3 m right. F4 survives the wait, seeds from the measured angle on the first course tick, walks out
+    // round the right under PG-2, and settles ahead - the property holding on every tick.
+    const float dt = 0.1f, d = 9.0f;
+    World w;
+    w.rc = 0.0f;
+    placeBuggy(w, -8.0f, 3.0f, 0.0f);
+    Ctl c;
+    engageEdge(c, 4, false, 0.0f);
+    for (int i = 0; i < 30; i++) degradedTick(c, 4);
+    assert(!c.aborted && c.pending && c.live == 0.0f);
+    float max_live = 0.0f;
+    int first_course_tick = -1;
+    for (int i = 0; i < 600; i++) {
+      float v = 18.0f * (float)i * dt / 4.0f;
+      if (v > 18.0f) v = 18.0f;
+      float al, cr;
+      toRiderFrame(w, &al, &cr);
+      if (v < 5.0f) {                                             // no course below kFmCourseValidSpeedKmh
+        degradedTick(c, 4);
+        assert(!c.aborted);
+      } else {
+        if (first_course_tick < 0) first_course_tick = i;
+        const Tick t = ctlTick(c, 4, kNearDiag, d, 0, 4.0f, v, 0.0f, al, cr, 0.0f, dt, kSideBand);
+        if (i == first_course_tick) assert(!c.pending && t.step && c.live > 0.0f);   // seeded, right side
+        assert(shieldPropertyHolds(t, kSideBand));
+        if (c.live > max_live) max_live = c.live;
+        buggyStep(w, t.aim_al, t.aim_cr, (v / 3.6f) * 1.3f, 90.0f, dt);
+      }
+      riderStep(w, v / 3.6f, dt);
+    }
+    float ah, ph, rf;
+    frontGeom(d, 0, kLateralMin, &ah, &ph, &rf);
+    printf("M-19 F4 selected while stopped: course from tick %d, aborted %s, station reached %.1f deg (front %.1f)\n",
+           first_course_tick, c.aborted ? "YES" : "no", (double)max_live, (double)fmStationLimitDeg(ph));
+    assert(!c.aborted);
+    assert(max_live > fmStationLimitDeg(ph) - 1.0f);             // it got to the front station
+
+    // And the two cases that still latch: the course lost after a transit began, and with the station ahead.
+    {
+      Ctl k;
+      engageEdge(k, 4, true, 30.0f);                             // moving: seeded +30, transit begins next tick
+      ctlTick(k, 4, kNearDiag, d, 0, 4.0f, 12.0f, 0.0f, -8.0f, 3.0f, 0.0f, dt, kSideBand);
+      assert(k.transit && k.tcourse >= 0.0f && fabsf(k.live) <= 90.0f);
+      degradedTick(k, 4);
+      assert(k.aborted);
+    }
+    {
+      Ctl k; k.live = 140.0f;
+      degradedTick(k, 5);
+      assert(k.aborted);
+    }
   }
 
   printf("largest one-tick lookahead change on an unflagged tick, all simulations: %.3f m\n", (double)g_dlook_max_quiet);

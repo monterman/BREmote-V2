@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-06 - AUDIT M-19: fmNoCourseAbortLatches() - F4/F5 selected while stopped is no longer abandoned on
+//   the first tick: no latch while |psi_live| <= 90 and no transit has started.
 // V2.5-Evo - 2026-10-06 - SETTLED-ESCAPE TIMER: fmShieldSettledEscapeExpired() - a shield escape on a SETTLED F4/F5
 //   station lasting more than 3 s latches the abort (the RX owns the state and the latch).
 // V2.5-Evo - 2026-10-06 - SHIELD SIZING (audits M-16 b/c, M-15, M-18): fmShieldHalfAngleDeg() + the PROVISIONAL
@@ -940,6 +942,25 @@ static inline bool fmShieldSettledEscapeExpired(bool active, uint32_t now_ms, ui
   if (*since_ms == 0) { *since_ms = (now_ms != 0) ? now_ms : 1u; return false; }
   if ((uint32_t)(now_ms - *since_ms) > limit_ms) { *since_ms = 0; return true; }
   return false;
+}
+
+// V2.5-Evo - 2026-10-06 - audit M-19 (owner-approved): fmNoCourseAbortLatches - does a tick with NO rider course
+// abandon a front station?
+// BUG: G-3's no-course clause latched the F4/F5 abort on any tick without a course. The owner changes mode
+// stopped (HOLD -> switch -> squeeze), so the first ACTIVE tick has no course, F4/F5 was abandoned before it ever
+// started, and F4/F5 as a Starting Station was dead - reachable only by re-selecting while moving.
+// FIX: no latch while the station is still in the rear half (|psi_live| <= 90) AND no transit has started this
+// engagement - there is nothing ahead of the rider to lose, and the degraded hold keeps the buggy at the follow
+// distance on its current bearing from him (as it does for every mode) until a course exists. From the first tick with a course the pending seed,
+// PG-2, H-1 and the shield govern the walk out, exactly as if F4/F5 had been selected while moving. A station
+// already ahead of abeam, or one whose transit has begun, still latches as before.
+// Inputs: m_decl (declared mode), aborted (latched already), psi_live_deg, transit_started (a transit began in
+// this engagement - the RX passes fm_transit_start_course_deg >= 0). Returns true = latch the abort now.
+static inline bool fmNoCourseAbortLatches(uint8_t m_decl, bool aborted, float psi_live_deg, bool transit_started)
+{
+  if (!(m_decl == 4 || m_decl == 5) || aborted) return false;
+  if (fabsf(psi_live_deg) <= 90.0f && !transit_started) return false;
+  return true;
 }
 
 // V2.5-Evo - 2026-10-06 - fmEngageSeedDeg - the live station angle at an ACTIVE edge (a first squeeze,

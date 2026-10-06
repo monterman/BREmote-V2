@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-06 - AUDIT M-19 (owner-approved): F4/F5 SELECTED WHILE STOPPED. The no-course clause no longer latches the F4/F5 abort while the station is
+//   in the rear half (|psi_live| <= 90) and no transit has started this engagement (fmNoCourseAbortLatches); it prints a rate-limited "waiting for a course"
+//   line instead. From the first tick with a course the pending seed, PG-2, H-1 and the shield govern. A station ahead of abeam, or a transit already begun,
+//   still latches. F4/F5 as a Starting Station works again. No throttle, gate or PWM code changed. No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - SETTLED-ESCAPE LATCH + AUDITS M-13 + M-17 + L-17. (latch, owner-approved rule) a shield escape on a SETTLED F4/F5 station lasting
 //   more than kFmShieldSettledEscapeMs (3 s) latches the F4/F5 abort to the rear preset on the buggy's side; the rider re-selects. (M-13) a standing go-around
 //   that changes sides flags fm_aim_step (at psi 0 it re-seeds nothing and keeps its kind and label, yet the waypoint jumps ~20 m). (M-17) a seed that moves the
@@ -4259,12 +4263,30 @@ static void computeFmTarget(double* out_lat, double* out_lng)
   // bypass. The existing degraded aim is unchanged.
   if (fm_rider_course_deg < 0.0f) {
     fm_target_profile = kProfDegraded;   // V2.5-Evo - 2026-09-17 - D-term target-profile guard
-    if ((m_decl == 4 || m_decl == 5) && !fm_front_aborted) {
+    // V2.5-Evo - 2026-10-06 - audit M-19 (owner-approved): F4/F5 SELECTED WHILE STOPPED IS NOT ABANDONED.
+    // BUG: this clause latched the abort on ANY tick without a course, so the owner's normal mode change -
+    // stopped, switch, squeeze - abandoned F4/F5 on its first tick and a 4/5 Starting Station never worked.
+    // FIX: no latch while the station is still in the rear half (|psi_live| <= 90) and no transit has started
+    // this engagement (fm_transit_start_course_deg is set only when one starts, and cleared at every ACTIVE
+    // edge, mode change, idle and RTM yield). Meanwhile this branch holds the buggy at d_follow on the bearing to
+    // the rider, exactly as for any mode; from the first tick with a course the pending seed, PG-2, H-1 and the
+    // shield govern the walk out. A station ahead of abeam, or a transit already begun, still latches.
+    if (fmNoCourseAbortLatches(m_decl, fm_front_aborted, fm_station_live_deg,
+                               fm_transit_start_course_deg >= 0.0f)) {
       fm_front_aborted = true;
       Serial.printf("FM [RX] front station F%u abandoned: no trustworthy rider course, so there is no "
                     "\"ahead\" to hold it in - falling back to the nearest REAR station (F%u) for this "
                     "engagement\n",
                     (unsigned)m_decl, (unsigned)(m_decl == 4 ? 1 : 3));
+    } else if ((m_decl == 4 || m_decl == 5) && !fm_front_aborted) {
+      static const unsigned long kFmFrontWaitMsgMs = 5000UL;
+      static unsigned long fm_front_wait_msg_ms = 0;
+      if (fm_front_wait_msg_ms == 0 || (st_now - fm_front_wait_msg_ms) >= kFmFrontWaitMsgMs) {
+        fm_front_wait_msg_ms = st_now;
+        Serial.printf("FM [RX] F%u selected with no rider course yet: the buggy only keeps its follow distance "
+                      "from you until you are moving on a steady line, then works out to the front station\n",
+                      (unsigned)m_decl);
+      }
     }
     fm_transit_active     = false;
     fm_frame_valid        = false;

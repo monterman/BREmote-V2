@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-06 - COMMENTS ONLY (audit L-19): the derived front angle is 35-45 deg (was written 35..80); the
+//   shield block no longer claims a settled F4/F5 station is "never in the rider's likely path" - it is 5 deg outside
+//   the cone at the 35 deg cap, which is why the hold band and the 3 s latch exist.
 // V2.5-Evo - 2026-10-06 - AUDIT M-19: fmNoCourseAbortLatches() - F4/F5 selected while stopped is no longer abandoned on
 //   the first tick: no latch while |psi_live| <= 90 and no transit has started.
 // V2.5-Evo - 2026-10-06 - SETTLED-ESCAPE TIMER: fmShieldSettledEscapeExpired() - a shield escape on a SETTLED F4/F5
@@ -17,6 +20,7 @@
 // V2.5-Evo - 2026-10-06 - FRONT STATIONS BY OFFSET: fmFrontStationGeom() / fmFrontAheadExtraM() replace
 //   fmFrontRadiusM() / fmFrontAngleEffDeg(). F4/F5 sit `side` (the lateral floor, exactly) to the side
 //   and d_follow + fm_front_ahead_extra_m ahead; phi and r are derived. phi stays in 35..80 deg.
+//   [CORRECTED 2026-10-06, audits M-12 / L-19: 35..45 deg - the ceiling went 80 -> 45 so ahead is never less than side.]
 // V2.5-Evo - 2026-10-02 - P2: the Follow-Me STATION MODEL - one live station angle around the
 //   rider, five presets, and the pass geometry that lets the buggy take a station AHEAD of the
 //   rider without ever crossing the rider's line.
@@ -550,8 +554,12 @@ static inline int fmBuggySideWithBand(int committed_side, float buggy_cross_m, f
 // filtered position pushed forward by v x tau, the same anchor every station is placed around), so the
 // shield and the stations agree on where the rider is.
 //
-// Front stations sit OUTSIDE the cone by design: the 35 deg no-go arc either side of dead ahead is wider
-// than the 30 deg cone, so a settled F4/F5 station point is never in the rider's likely path. The shield
+// Front stations sit OUTSIDE the cone by design - but V2.5-Evo - 2026-10-06 - audit L-19: NOT BY MUCH, and
+// "never in the rider's likely path" overstated it. At the 35 deg cap and a 30 deg cone the station is 5 deg
+// outside, 1.98 m from the cone's side at r 22.7 m; ordinary wobble (median 6 deg/s, p90 21) and a +/-10 deg
+// course error both reach that. What actually holds now: the cone narrows with speed (fmShieldHalfAngleDeg),
+// the escape hold is at most half the station's clearance (fmShieldHoldBandM), so an escape near a settled
+// station can always end, and the RX latches the F4/F5 abort if one stands for more than 3 s. The shield
 // governs the TRANSIT, the walks home, and the steering lookahead.
 // ==========================================================================================
 struct FmShield {

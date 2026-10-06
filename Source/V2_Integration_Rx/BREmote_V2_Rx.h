@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-06 - COMMENT ONLY (audit L-19): the fm_front_ahead_extra_m comment gives the derived front angle as 35-45 deg (it still said 35-80). No code, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - AUDIT M-12: kFmFrontAngleMaxDeg 80 -> 45, so a front station is never less far ahead than it is to the side (13 m ahead at the 13 m side floor). Comments: audit L-13 (stale angle + radius wording). Constant only - no confStruct change, sizeof STAYS 200, SW_VERSION STAYS 36.
 // V2.5-Evo - 2026-10-06 - FRONT STATIONS BY OFFSET (owner rule): the u16 fm_front_angle_deg is RENAMED IN PLACE to fm_front_ahead_extra_m - same offset, same type, sizeof STAYS 200, SW_VERSION STAYS 36, NO CONFIG WIPE. F4/F5 now sit the lateral floor (13 m) exactly to the side and d_follow + this many metres ahead; the angle and radius are derived (FollowMeStation.h fmFrontStationGeom). 0 = default 7 m, legal 4-10 m. kFmFrontAngleDefaultDeg is replaced by kFmFrontAheadExtraDefaultM / MinM / MaxM; kFmFrontAngleMinDeg (35) and MaxDeg (80) now bound the DERIVED angle.
 // V2.5-Evo - 2026-10-04 - COMMENTS ONLY, M-4: the fm_align_cap field comment now records that the VESC applies its OWN 3 % input deadband, which eats the first ~7.66 command counts - so below ~8 counts the motor does not turn at all, and every low-cap figure in these comments (the "13 is about 5 %" and the "at cap 13: motors 0 / 26" next to it included) overstates the thrust actually delivered. Measured against the owner's PPM map (span 852 us, l_current_max 95 A): 3 counts = inside the deadband = 0 A, 23 counts = 5.9 A. No declaration, default, struct, constant or range in this file is changed: sizeof(confStruct) stays 200, SW_VERSION stays 36, LOG_FILE_FORMAT_VER stays 2, record sizes stay 62 / 90 / 112.
@@ -756,7 +757,8 @@ struct confStruct {
     //     4-10 = the extra itself. Example: d_follow 9 + 7 = 16 m ahead, 13 m side -> 39 deg, 20.6 m.
     //   Clamped on load (cfgValidateCrossField), never rejected: 1-3 -> 4; above 10 -> 0 (default),
     //   because the only source of such a value is a blob that stored an ANGLE here (35-80).
-    //   The derived angle is held at 35-80 deg off dead ahead by capping `ahead` (side does not move,
+    //   The derived angle is held at 35-45 deg off dead ahead (45 since audit M-12; this line said 35-80 until
+    //   audit L-19) by moving `ahead` (side does not move,
     //   except that a follow distance over 22.7 m - longer than the capped radius - pushes the
     //   station out to d_follow at 35 deg, wider than 13 m: the safe direction),
     //   so dead ahead stays unreachable: |station| <= 180 - the derived angle.

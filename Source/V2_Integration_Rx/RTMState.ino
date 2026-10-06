@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-06 - COMMENTS ONLY (audits L-18, L-19): the G-5 twin's steered line is documented as never shield-tested and why that is negligible;
+//   the derived front angle is 35-45 deg (two comments still said 35-80); the lookahead comment no longer implies a wide margin between station and cone.
 // V2.5-Evo - 2026-10-06 - AUDIT M-19 (owner-approved): F4/F5 SELECTED WHILE STOPPED. The no-course clause no longer latches the F4/F5 abort while the station is
 //   in the rear half (|psi_live| <= 90) and no transit has started this engagement (fmNoCourseAbortLatches); it prints a rate-limited "waiting for a course"
 //   line instead. From the first tick with a course the pending seed, PG-2, H-1 and the shield govern. A station ahead of abeam, or a transit already begun,
@@ -29,7 +31,7 @@
 //   the only cap-side effect is that the fade bypass is withheld while the go-around stands (it can only lower the cap, as under PG-4).
 // V2.5-Evo - 2026-10-06 - FRONT STATIONS BY OFFSET (owner rule: side + ahead, not angle + radius). computeFmTarget() and the ENGAGE print resolve F4/F5
 //   with fmFrontStationGeom(): side = lateral_min EXACTLY up to d_follow 22.7 m (13 m, or the pass minimum if min_dist_m raises it), ahead = d_follow + fm_front_ahead_extra_m
-//   (0 = 7, legal 4-10), then phi = atan(side / ahead) and r = hypot(side, ahead), with phi held at 35-80 deg by capping ahead. phi_eff and r_front feed
+//   (0 = 7, legal 4-10), then phi = atan(side / ahead) and r = hypot(side, ahead), with phi held at 35-80 deg [35-45 since audit M-12 - corrected per L-19] by capping ahead. phi_eff and r_front feed
 //   the same downstream code as before (presets, clamp, st_limit, the radius schedule and PG-1, G-2 lookahead, PG-2/3/4, H-1, M-7, M-8, the divergence
 //   ceiling via fm_station_radius_m, the along-track governor via fm_station_along_m), so nothing downstream changed. kFmFrontRadiusFactor is removed
 //   (no longer used). No throttle path touched. No confStruct size change (field renamed in place), sizeof stays 200, SW_VERSION stays 36.
@@ -4840,7 +4842,8 @@ static void computeFmTarget(double* out_lat, double* out_lng)
     look_m = kFmTransitLookaheadFactor * d_follow * f;
   }
   // V2.5-Evo - 2026-10-06 - audit H-2: the lookahead may not carry the aim into the rider shield. The
-  // station point sits outside the cone by design (35 deg no-go arc > 30 deg cone), but pushing it along
+  // station point sits outside the cone by design (35 deg no-go arc > 30 deg cone - V2.5-Evo - 2026-10-06 - audit
+  // L-19: by as little as 5 deg, 1.98 m at the cap; see FollowMeStation.h), but pushing it along
   // the course narrows its angle - d_follow 9 + extra 7 puts F4 at 16 x 13 m (39 deg), and the full 9 m
   // lookahead at 25 x 13 m (27.5 deg), inside the cone once the rider passes about 16 km/h. So the
   // lookahead is SHORTENED to the longest that keeps the buggy -> aim line clear; it is never lengthened
@@ -4880,6 +4883,12 @@ static void computeFmTarget(double* out_lat, double* out_lng)
       projectPoint(gps_last_lat, gps_last_lng, course, kFmThetaMinSepM, &st_lat, &st_lng);
       // V2.5-Evo - 2026-10-06 - audit L-11: the twin's on/off edges are aim steps (fm_aim_step via the aim
       // kind in finishAim). The shield still tests the station this carrot stands in for (sh_al / sh_cr).
+      // V2.5-Evo - 2026-10-06 - audit L-18, DOCUMENTED NOT TESTED: the line actually steered along here (buggy ->
+      // this carrot) is never put to the shield. It runs PARALLEL to the rider's course, kFmThetaMinSepM (3 m)
+      // long, at the buggy's own cross-track offset - so it cannot move the buggy closer to the rider's line
+      // than it already is (PG-3), and it stays within the same 3 m of the buggy as the station segment the
+      // shield did test (the twin only fires when that segment is shorter than kFmThetaMinSepM). Not proven
+      // clear, but it can only matter with the buggy within 3 m of the shield already. Accepted as negligible.
       aim_kind = 3;
     }
   }

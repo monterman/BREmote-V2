@@ -18,7 +18,7 @@
 // V2.5-Evo - 2026-10-06 - FRONT STATIONS BY OFFSET: section 1 and the radius inputs of sections 4 and 12
 //   now come from fmFrontStationGeom() (side = the lateral floor exactly, ahead = d_follow + extra) instead
 //   of the removed fmFrontRadiusM() / fmFrontAngleEffDeg(); new section 15 covers the side/ahead rule, the
-//   35-80 deg derived-angle band and the fm_front_ahead_extra_m resolver (0 -> 7, 1-3 -> 4, > 10 -> 7).
+//   35-80 deg derived-angle band [35-45 since audit M-12; corrected per L-19] and the fm_front_ahead_extra_m resolver (0 -> 7, 1-3 -> 4, > 10 -> 7).
 // V2.5-Evo - 2026-10-02 - P2 host test for the Follow-Me station model.
 //   Runs on the PC (see SOP-012 "Host-side unit tests"), exercises the exact header the RX compiles,
 //   and is written so every assertion names the invariant it is defending.

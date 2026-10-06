@@ -1,3 +1,10 @@
+// V2.5-Evo - 2026-10-06 - SHIELD SIZING, AUDITS M-16 (b, c) + M-15 + M-14 + M-18 (owner-approved round). (M-16 b) the cone half-angle is speed-scaled from the
+//   31-session data, fmShieldHalfAngleDeg(): 30 deg up to 15 km/h, 28 to 20, 21 to 25, 15 from 27.5, continuous, capped at 30 by owner ruling (PROVISIONAL).
+//   (M-16 c) the escape hold is min(2 m, half the settled front station's clearance from the cone), so a settled F4/F5 station is always outside the held cone.
+//   (M-15) the cone gate is a Schmitt, on at 12 km/h and off below 10. (M-14) a non-snapped station flags fm_aim_step on the tick the lookahead clip's inputs
+//   step (the cone toggles, or an escape's hold drops) or its output moves more than kFmLookStepM (1 m). (M-18) the circle becomes a capsule reaching the real rider when the lag anchor is capped short of him
+//   (Soft / Very Soft presets at speed), and the cone is made that much deeper. Shield only: no station moves, no throttle, gate or PWM code changed; the
+//   shield still only withholds the fade bypass (lower cap only). Snapped rear stations never consult it (SW36). No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - AUDIT H-2 (THE RIDER SHIELD, owner's "bubble" rule) + H-3 + M-10 + L-11 + M-11 + M-12 + L-9 + L-13. (H-2) H-1 protected the rider's line only
 //   while a station was ahead of abeam; a station walking in the rear half (the walk home, the M-8 walk, an F4/F5 outbound walk round the back) could aim the
 //   buggy across the line ahead of him. Now every NON-SNAPPED station answers to a shield drawn round the lag-compensated rider position: a circle (3 m, or
@@ -2016,12 +2023,26 @@ static const float    kFmAlongGainKmhPerM    = 0.5f;    // km/h per metre of alo
 //   min_dist_m when that is larger, so the shield is never smaller than the hard stop.
 // kFmSideHysteresisM - the Schmitt band on "which side of the rider's line is the buggy on" (H-1's
 //   retreat and the shield's go-around). The strict sign test chattered on about +/-1 m of cross-track
-//   noise; inside +/-2 m the committed side stands. Also the band an escape is HELD by (the aim must
-//   clear the cone widened by 2 m before the escape ends; the circle is never widened). Revisit after the relative-GPS measurement
+//   noise; inside +/-2 m the committed side stands. Also the CEILING on the band an escape is HELD by
+//   (V2.5-Evo - 2026-10-06 - audit M-16 c: the hold is fmShieldHoldBandM = min(this, half the settled
+//   front station's clearance from the cone); the aim must clear the cone widened by the hold before the
+//   escape ends; the circle is never widened). Revisit after the relative-GPS measurement
 //   (audit M-2). Worst cost: about 2 m of measured line crossing, inside the assumed GPS error.
+// V2.5-Evo - 2026-10-06 - audit M-16 (b): kFmShieldHalfAngleDeg (a fixed 30 deg) is REMOVED. The half-angle is
+//   now fmShieldHalfAngleDeg(rider speed) from the PROVISIONAL kFmShieldHalfAngle* table in FollowMeStation.h
+//   (30 deg up to 15 km/h, falling to 15 deg from 27.5 km/h; the owner caps it at 30).
+// V2.5-Evo - 2026-10-06 - audit M-15: kFmShieldMinSpeedKmh is now the cone's ON threshold and
+//   kFmShieldConeOffKmh its OFF threshold - a Schmitt (fmShieldConeOn), so speed noise at 12 km/h cannot
+//   flick the cone on and off. Between 10 and 12 km/h a cone that is on stays on (more shield, never less).
 static const float    kFmShieldHorizonS      = 5.0f;    // s; cone depth = rider speed x this
-static const float    kFmShieldHalfAngleDeg  = 30.0f;   // degrees either side of the rider's course
-static const float    kFmShieldMinSpeedKmh   = 12.0f;   // km/h; below this only the circle applies
+static const float    kFmShieldMinSpeedKmh   = 12.0f;   // km/h; the cone switches ON at this speed (below: circle only)
+static const float    kFmShieldConeOffKmh    = 10.0f;   // km/h; ... and OFF only below this one (Schmitt, audit M-15)
+// V2.5-Evo - 2026-10-06 - audit M-14: kFmLookStepM - a change in the CLIPPED lookahead larger than this in one
+//   tick is a step, not motion, and skips the D term. Host-measured: the continuous changes (the abeam ramp at
+//   15 deg/s, the buggy and rider moving) stay under 0.31 m per tick at the owner's tunings; the clip's own jumps
+//   (the cone's base sweeping past the full lookahead as the rider's speed changes, the cone toggling, a hold
+//   dropping) are 1.4 m and up. A false positive only costs one skipped D sample.
+static const float    kFmLookStepM           = 1.0f;    // metres per tick
 static const float    kFmShieldCircleMinM    = 3.0f;    // metres; raised to min_dist_m if that is larger, never above d_follow
 static const float    kFmSideHysteresisM     = 2.0f;    // metres; side-test Schmitt band and escape hold
 
@@ -2200,6 +2221,15 @@ static bool          fm_aim_step           = false;
 static bool          fm_shield_escape      = false;
 static int8_t        fm_shield_side        = 0;   // the side that standing escape goes round on, 0 = none
 static uint8_t       fm_aim_kind_prev      = 0;
+// V2.5-Evo - 2026-10-06 - audit M-15: the cone gate's Schmitt state (on at 12 km/h, off below 10). Audit M-14:
+// whether the lookahead clip ran against the HELD (widened) shield last tick. The clip's inputs step when
+// either changes, so computeFmTarget() flags fm_aim_step on that tick for a non-snapped station. Both are
+// cleared at every engagement boundary and on a tick with no course, like fm_shield_escape.
+static bool          fm_shield_cone_on     = false;
+static bool          fm_shield_held_prev   = false;
+// V2.5-Evo - 2026-10-06 - audit M-14: the clipped lookahead the previous tick emitted (0 when that tick had none -
+// a snapped rear station, the PG-4 outward aim, a tick with no course, or a fresh engagement).
+static float         fm_look_prev_m        = 0.0f;
 // V2.5-Evo - 2026-10-06 - audit M-11: the ACTIVE edge had no rider course (the owner's normal mode change:
 // stopped and floating, switch, squeeze - the course needs >= 5 km/h), so the engage seed could not be
 // measured. computeFmTarget() applies fmEngageSeedDeg() on the first tick that has a course, then clears it.
@@ -4233,6 +4263,9 @@ static void computeFmTarget(double* out_lat, double* out_lng)
     fm_aim_kind_prev      = 4;
     fm_shield_escape      = false;
     fm_shield_side        = 0;
+    fm_shield_cone_on     = false;     // V2.5-Evo - 2026-10-06 - M-15 / M-14: no frame, no cone, no hold
+    fm_shield_held_prev   = false;
+    fm_look_prev_m        = 0.0f;
     fm_station_target_deg = fmStationNearestRearPresetDeg(m_decl, near_diag);
     fm_station_radius_m   = d_follow;
     fm_station_deg_x10.store((int16_t)(fm_station_live_deg * 10.0f), std::memory_order_relaxed);
@@ -4253,6 +4286,11 @@ static void computeFmTarget(double* out_lat, double* out_lng)
   float max_lag = 2.0f * d_follow;
   if (lag_m > max_lag) lag_m = max_lag;
   if (lag_m < 0.0f)    lag_m = 0.0f;
+  // V2.5-Evo - 2026-10-06 - audit M-18: how far the REAL rider is beyond the anchor when the push above was
+  // capped (Soft / Very Soft presets at speed). The shield only - the stations are still placed round the
+  // anchor exactly as before. 0 whenever the cap did not bind.
+  float lag_shortfall_m = v_ms * tau - lag_m;
+  if (!(lag_shortfall_m > 0.0f)) lag_shortfall_m = 0.0f;
 
   double anchor_lat, anchor_lng;
   projectPoint(fm_filt_lat, fm_filt_lng, course, lag_m, &anchor_lat, &anchor_lng);
@@ -4458,12 +4496,31 @@ static void computeFmTarget(double* out_lat, double* out_lng)
   // called on ticks whose fault check passed (TX GPS fresh, Phase A/B), so no stale fix is extended.
   // Snapped rear stations (modes 1-3 at their preset) never consult it: owner ruling, SW36 behaviour -
   // except the one tick a WALKING station would snap (the snap check just below).
-  // While an escape stands, the cone is tested widened by kFmSideHysteresisM (the Schmitt hold).
+  // While an escape stands, the cone is tested widened by the hold band (the Schmitt hold).
   // Set up here, before the snap decision, because that decision reads it.
-  const FmShield shield = fmShieldMake(fm_rider_speed_kmh, kFmShieldHorizonS, kFmShieldHalfAngleDeg,
-                                       kFmShieldMinSpeedKmh, kFmShieldCircleMinM, usrConf.min_dist_m,
-                                       d_follow);
-  const float sh_inflate  = fm_shield_escape ? kFmSideHysteresisM : 0.0f;
+  // V2.5-Evo - 2026-10-06 - THREE SIZING CHANGES, all in the shield only (no station moves, no cap changes):
+  //   audit M-16 (b): the half-angle is fmShieldHalfAngleDeg(rider speed) - 30 deg up to 15 km/h, 28 to
+  //     20, 21 to 25, 15 from 27.5, continuous between (PROVISIONAL, FollowMeStation.h) - not a fixed 30;
+  //   audit M-15: the cone is gated by a Schmitt, on at kFmShieldMinSpeedKmh (12), off below
+  //     kFmShieldConeOffKmh (10). fmShieldMake() is handed the threshold that matches the gate's state, so
+  //     its own "speed >= min" test reproduces the gate exactly (on: speed >= 10 is already true; off:
+  //     speed < 12 is already true);
+  //   audit M-18: the circle becomes a capsule reaching lag_shortfall_m ahead of the anchor, and the cone
+  //     is that much deeper, so the shield covers the real rider when the lag push is capped;
+  //   audit M-16 (c): the escape hold is min(2 m, half the settled front station's clearance from the cone)
+  //     (fmShieldHoldBandM), so a settled F4/F5 station is always outside the HELD cone. The 2 m side band
+  //     (kFmSideHysteresisM) is unchanged and still decides which side the go-around takes.
+  const bool  sh_cone_on = fmShieldConeOn(fm_shield_cone_on, fm_rider_speed_kmh,
+                                          kFmShieldMinSpeedKmh, kFmShieldConeOffKmh);
+  const bool  sh_cone_toggled = (sh_cone_on != fm_shield_cone_on);
+  fm_shield_cone_on = sh_cone_on;
+  const float sh_half_deg = fmShieldHalfAngleDeg(fm_rider_speed_kmh);
+  FmShield shield = fmShieldMake(fm_rider_speed_kmh, kFmShieldHorizonS, sh_half_deg,
+                                 sh_cone_on ? kFmShieldConeOffKmh : kFmShieldMinSpeedKmh,
+                                 kFmShieldCircleMinM, usrConf.min_dist_m, d_follow);
+  fmShieldExtendForLag(shield, lag_shortfall_m);
+  const float sh_hold     = fmShieldHoldBandM(r_front, phi_eff, sh_half_deg, kFmSideHysteresisM);
+  const float sh_inflate  = fm_shield_escape ? sh_hold : 0.0f;
   const float buggy_al_a  = fm_buggy_along_m - lag_m;    // the buggy, measured from the anchor
 
   // ---- V2.5-Evo - 2026-10-06 - R-1: REAR STATIONS SNAP, FRONT STATIONS WALK ----
@@ -4493,6 +4550,20 @@ static void computeFmTarget(double* out_lat, double* out_lng)
     }
   }
   fm_station_walking = !rear_snap;
+
+  // ---- V2.5-Evo - 2026-10-06 - audit M-14: THE LOOKAHEAD CLIP'S INPUTS STEPPED - a D-term step ----
+  // BUG: the clip (below) is tested against the shield as it stands this tick: with or without the cone, and
+  // with or without the escape hold. When either switches - the cone gate flips, or an escape that just ended
+  // drops the hold - the clipped lookahead can jump (up to about 4 m after a release, up to d_follow when the
+  // cone toggles), and nothing told the D term. FIX: on such a tick, a non-snapped station flags fm_aim_step.
+  // A snapped rear station never takes the clip or the shield, so it is never flagged (rear-only = SW36).
+  // The hold band itself moves continuously with speed (fmShieldHalfAngleDeg is continuous), so only the two
+  // on/off edges are steps.
+  {
+    const bool held_now = fm_shield_escape;
+    if (!rear_snap && (sh_cone_toggled || held_now != fm_shield_held_prev)) fm_aim_step = true;
+    fm_shield_held_prev = held_now;
+  }
 
   // ---- The slew (front only), then the clamp. The clamp is the belt: the slew cannot pass its own
   //      target, and every target has already been clamped, but a stored angle from a previous tick
@@ -4554,7 +4625,7 @@ static void computeFmTarget(double* out_lat, double* out_lng)
   //        cannot touch the shield unless the buggy is already inside it (then it is the shortest way
   //        out) or within the 2 m band across the line (the accepted residual). The fade bypass is
   //        withheld while it stands - only ever a LOWER cap, as with PG-4. No throttle code changed.
-  //   The escape is HELD (the Schmitt) until the aim clears the cone widened by kFmSideHysteresisM.
+  //   The escape is HELD (the Schmitt) until the aim clears the cone widened by sh_hold (audit M-16 c).
   //   Any change of aim kind (station / outward / go-around / twin / degraded) sets fm_aim_step, so the
   //   D term never differentiates across the swap (audit M-10, and L-11 for the twin's on/off edges).
   // Snapped rear stations never escape: the SW36 path, owner ruling.
@@ -4567,7 +4638,7 @@ static void computeFmTarget(double* out_lat, double* out_lng)
     bool    escape = false;
     if (!rear_snap) {
       const FmShieldDecision sd = fmShieldDecide(shield, fm_shield_escape, fm_shield_side,
-                                                 kFmSideHysteresisM,
+                                                 kFmSideHysteresisM, sh_hold,
                                                  fm_station_live_deg, buggy_al_a, fm_buggy_cross_m,
                                                  sh_al, sh_cr, pass_lateral, d_follow);
       if (sd.escape) {
@@ -4609,7 +4680,7 @@ static void computeFmTarget(double* out_lat, double* out_lng)
           Serial.printf("FM [RX] RIDER SHIELD: the buggy's line would cross your %s (%.0f m ahead x "
                         "+/-%.0f deg, circle %.1f m) - going round on your %s to %.1f m off your line\n",
                         (shield.cone_len_m > 0.0f) ? "path" : "circle", (double)shield.cone_len_m,
-                        (double)kFmShieldHalfAngleDeg, (double)shield.circle_r_m,
+                        (double)sh_half_deg, (double)shield.circle_r_m,
                         (sd.side > 0) ? "RIGHT" : "LEFT", (double)fabsf(sd.lateral_m));
         }
       }
@@ -4648,6 +4719,7 @@ static void computeFmTarget(double* out_lat, double* out_lng)
     aim_kind = 1;
     sh_al    = buggy_al_a;
     sh_cr    = lat_off;
+    fm_look_prev_m = 0.0f;   // V2.5-Evo - 2026-10-06 - M-14: this aim carries no lookahead
     // RATE-LIMITED: this branch runs at 10 Hz for as long as the escape stands, and an unlimited
     // printf here would flood the console at exactly the moment the console matters. 2 s between
     // repeats, the fm_heading_block_msg_ms pattern. The deep log carries every tick regardless
@@ -4705,6 +4777,14 @@ static void computeFmTarget(double* out_lat, double* out_lng)
     look_m = fmShieldClipLookaheadM(shield, sh_inflate, buggy_al_a, fm_buggy_cross_m,
                                     fm_station_along_m, fm_station_cross_m, look_m);
   }
+  // V2.5-Evo - 2026-10-06 - audit M-14 (the output side): the clip is NOT continuous in every input. With the
+  // buggy far behind, the set of lookaheads whose line touches the cone can be a MIDDLE interval - the full
+  // lookahead lies past the cone's base while a shorter one grazes its side - so as the base moves with the
+  // rider's speed the clipped value jumps (host sim: 7.2 -> 9.0 m in one tick with nothing toggling). Any
+  // one-tick change over kFmLookStepM on a non-snapped station is flagged as an aim step. This covers the
+  // input-side edges above as well; they stay, because they are cheap and name the cause.
+  if (!rear_snap && fabsf(look_m - fm_look_prev_m) > kFmLookStepM) fm_aim_step = true;
+  fm_look_prev_m = look_m;
   if (look_m > 0.0f) projectPoint(st_lat, st_lng, course, look_m, &st_lat, &st_lng);
   sh_al    = fm_station_along_m + look_m;
   sh_cr    = fm_station_cross_m;
@@ -5106,6 +5186,9 @@ static void fmEnterIdle()
   fm_shield_escape      = false;        // V2.5-Evo - 2026-10-06 - H-2
   fm_shield_side        = 0;            // V2.5-Evo - 2026-10-06 - H-2
   fm_station_walking    = false;        // V2.5-Evo - 2026-10-06 - H-2
+  fm_shield_cone_on     = false;        // V2.5-Evo - 2026-10-06 - M-15
+  fm_shield_held_prev   = false;        // V2.5-Evo - 2026-10-06 - M-14
+  fm_look_prev_m        = 0.0f;         // V2.5-Evo - 2026-10-06 - M-14
   fm_station_prev_ms    = 0;
   fm_station_deg_x10.store(0, std::memory_order_relaxed);
   fm_filt_init        = false;
@@ -5817,6 +5900,9 @@ static void runFmLoopBody(unsigned long now)
         fm_shield_escape      = false;        // V2.5-Evo - 2026-10-06 - H-2
         fm_shield_side        = 0;            // V2.5-Evo - 2026-10-06 - H-2
         fm_station_walking    = false;        // V2.5-Evo - 2026-10-06 - H-2
+        fm_shield_cone_on     = false;        // V2.5-Evo - 2026-10-06 - M-15
+        fm_shield_held_prev   = false;        // V2.5-Evo - 2026-10-06 - M-14
+        fm_look_prev_m        = 0.0f;         // V2.5-Evo - 2026-10-06 - M-14
         fm_station_prev_ms    = 0;
         fm_station_deg_x10.store(0, std::memory_order_relaxed);
         // V2.5-Evo - 2026-09-19 - a RETURN in progress or a pending candidate ends here too: RTM is
@@ -6807,6 +6893,9 @@ static void runFmLoopBody(unsigned long now)
       fm_shield_escape            = false;       // V2.5-Evo - 2026-10-06 - H-2: a fresh engagement holds no escape
       fm_shield_side              = 0;
       fm_station_walking          = false;       // ... and has not walked yet (a seed of 0 snaps exactly as SW36)
+      fm_shield_cone_on           = false;       // V2.5-Evo - 2026-10-06 - M-15: the cone gate starts fresh
+      fm_shield_held_prev         = false;       // V2.5-Evo - 2026-10-06 - M-14
+      fm_look_prev_m              = 0.0f;        // V2.5-Evo - 2026-10-06 - M-14
       fm_station_prev_ms          = 0;           // the slew's dt starts fresh, never across the gap
       fm_transit_active           = false;
       fm_transit_start_course_deg = -1.0f;

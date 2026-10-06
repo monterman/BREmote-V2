@@ -1,3 +1,9 @@
+// V2.5-Evo - 2026-10-06 - SHIELD SIZING (audits M-16 b/c, M-15, M-18): fmShieldHalfAngleDeg() + the PROVISIONAL
+//   kFmShieldHalfAngle* knot table (the cone half-angle by rider speed, 30 deg falling to 15 deg, capped at 30 by owner
+//   ruling, never narrower than the 31-session data); fmShieldHoldBandM() (the escape hold = min(2 m, half the
+//   settled front station's clearance from the cone)); fmShieldConeOn() (a 12 / 10 km/h Schmitt on the cone);
+//   fmShieldExtendForLag() + FmShield::circle_len_m (the circle becomes a capsule reaching the real rider when the
+//   lag anchor is capped short of him); fmShieldDecide() takes the hold separately from the 2 m side band.
 // V2.5-Evo - 2026-10-06 - THE RIDER SHIELD (audit H-2) + SIDE BAND (audit H-3): new FmShield / fmShieldMake /
 //   fmShieldSegmentHits / fmShieldHalfWidthM / fmShieldClipLookaheadM / fmShieldDecide - a circle round the rider
 //   always, plus a cone ahead of him along his course while he is foiling - and fmBuggySideWithBand(); the H-1 side
@@ -518,7 +524,10 @@ static inline int fmBuggySideWithBand(int committed_side, float buggy_cross_m, f
 //   - a CIRCLE round the rider, always: radius = the larger of circle_min_m (3 m) and min_dist_m, but
 //     never more than the follow distance (the rider's own rear station must stay outside it);
 //   - a CONE ahead of the rider, along his course, only while he is foiling (speed >= min_speed_kmh,
-//     12 km/h): depth = speed x horizon_s (5 s), half-angle half_angle_deg (30 deg).
+//     12 km/h): depth = speed x horizon_s (5 s), half-angle half_angle_deg. V2.5-Evo - 2026-10-06 - audit
+//     M-16 / M-15 / M-18: the RX passes the SPEED-SCALED half-angle (fmShieldHalfAngleDeg, 30 deg falling
+//     to 15 deg), switches the cone with a 12 / 10 km/h Schmitt (fmShieldConeOn), and turns the circle into
+//     a capsule when the lag anchor falls short of the rider (fmShieldExtendForLag).
 // Below the foiling speed only the circle applies: the rider is floating or slow and watching, and the
 // buggy may reposition freely around him.
 //
@@ -545,7 +554,104 @@ struct FmShield {
   float circle_r_m;   // radius of the always-on circle round the rider, metres
   float cone_len_m;   // depth of the cone ahead of the rider along his course, metres; 0 = cone off
   float cone_tan;     // tan(half-angle) of the cone
+  // V2.5-Evo - 2026-10-06 - audit M-18: the circle is swept this far AHEAD along the course, making it a
+  // capsule (a stadium: every point within circle_r_m of the segment from the anchor to circle_len_m
+  // ahead of it). 0 = the plain circle. Set only by fmShieldExtendForLag(); fmShieldMake() leaves it 0.
+  float circle_len_m;
 };
+
+// ==========================================================================================
+// V2.5-Evo - 2026-10-06 - audit M-16 (b): THE SPEED-SCALED CONE HALF-ANGLE. 🔴 PROVISIONAL.
+//
+// WHAT. The half-angle of the shield's cone as a function of the rider's speed, instead of one fixed
+// 30 deg. From the same 31 foil sessions (24,128 foiling seconds, 1 Hz wrist GPS): the p90 sideways
+// miss of a straight-line projection at 5 s, expressed as an angle from the rider, by speed band -
+//      10-15 km/h: 40 deg     15-20 km/h: 28 deg     20-25 km/h: 21 deg     25+ km/h: 15 deg
+// The faster the rider, the straighter he goes, so the cone can be narrower - which is what gives a
+// settled F4/F5 station (35-45 deg off dead ahead) room outside it.
+//
+// THE CURVE (the knot table below, linear between knots, flat beyond both ends):
+//   km/h  12    15    17.5   20    22.5   25    27.5 and up
+//   deg   30    30    28     28    21     21    15
+// - CONTINUOUS AND MONOTONE (never increases with speed, no steps), so the lookahead clip and the aim
+//   built from it move continuously as the rider's speed changes.
+// - NEVER NARROWER THAN THE DATA AT ANY SPEED. Each band's value holds across its WHOLE band, not only at
+//   its centre: 28 deg all the way to 20 km/h and 21 deg all the way to 25 km/h, and the drop to the next
+//   band happens inside that next band (whose own value is lower). Linear interpolation straight between
+//   band centres (17.5 -> 22.5) would dip under 28 deg at 18-20 km/h; this curve does not. The anchors
+//   asked for - 30 at 15, 28 at 17.5, 21 at 22.5, 15 at 27.5 - are all on it exactly.
+// - CAPPED AT 30 deg (owner ruling 2026-10-06): the 10-15 km/h data says 40 deg, but a cone that wide at
+//   the takeoff edge would swallow the 35 deg front stations. The 3 m circle covers the slow rider.
+//   Below 15 km/h the curve is therefore flat at 30 deg, which is also the low-end clamp at 12 km/h
+//   (the cone only exists from 12 km/h, or 10 km/h once on - see fmShieldConeOn).
+// Revisit with activity-tagged sessions and 10 Hz vest data (both expected to narrow it further).
+// ==========================================================================================
+static const float kFmShieldHalfAngleMaxDeg = 30.0f;   // deg; owner cap - never wider than this
+static const int   kFmShieldHalfAngleKnots  = 7;
+static const float kFmShieldHalfAngleKnotKmh[kFmShieldHalfAngleKnots] = { 12.0f, 15.0f, 17.5f, 20.0f, 22.5f, 25.0f, 27.5f };
+static const float kFmShieldHalfAngleKnotDeg[kFmShieldHalfAngleKnots] = { 30.0f, 30.0f, 28.0f, 28.0f, 21.0f, 21.0f, 15.0f };
+
+// fmShieldHalfAngleDeg - the cone half-angle for this rider speed, from the table above.
+// Input: rider speed, km/h (any value; non-finite reads as the slow end). Output: degrees, in
+// [15, 30], continuous and non-increasing in speed. No side effects.
+static inline float fmShieldHalfAngleDeg(float speed_kmh)
+{
+  const int n = kFmShieldHalfAngleKnots;
+  float h;
+  if (!(speed_kmh > kFmShieldHalfAngleKnotKmh[0])) {
+    h = kFmShieldHalfAngleKnotDeg[0];
+  } else if (speed_kmh >= kFmShieldHalfAngleKnotKmh[n - 1]) {
+    h = kFmShieldHalfAngleKnotDeg[n - 1];
+  } else {
+    h = kFmShieldHalfAngleKnotDeg[n - 1];
+    for (int i = 1; i < n; i++) {
+      if (speed_kmh <= kFmShieldHalfAngleKnotKmh[i]) {
+        const float x0 = kFmShieldHalfAngleKnotKmh[i - 1], x1 = kFmShieldHalfAngleKnotKmh[i];
+        const float y0 = kFmShieldHalfAngleKnotDeg[i - 1], y1 = kFmShieldHalfAngleKnotDeg[i];
+        h = y0 + (y1 - y0) * ((speed_kmh - x0) / (x1 - x0));
+        break;
+      }
+    }
+  }
+  if (h > kFmShieldHalfAngleMaxDeg) h = kFmShieldHalfAngleMaxDeg;
+  return h;
+}
+
+// V2.5-Evo - 2026-10-06 - audit M-15: fmShieldConeOn - THE CONE GATE, A SCHMITT. The cone switches ON at
+// on_kmh (12) and stays on until the rider drops BELOW off_kmh (10). A single 12 km/h threshold let the
+// cone flick on and off with the rider's speed noise near takeoff: the escape dropped, the aim swapped
+// and the lookahead clip jumped, tick after tick. Chosen over "keep the cone while an escape stands"
+// because that would hold the escape but still let the cone toggle under every NON-escaping aim, and
+// every toggle moves the lookahead clip (audit M-14); the Schmitt removes both, and between 10 and 12 km/h
+// it only ever keeps MORE shield, never less.
+// Inputs: prev_on (the gate's state last tick), the rider speed, the two thresholds. Returns the new state.
+static inline bool fmShieldConeOn(bool prev_on, float speed_kmh, float on_kmh, float off_kmh)
+{
+  if (speed_kmh >= on_kmh) return true;
+  return prev_on && speed_kmh >= off_kmh;
+}
+
+// V2.5-Evo - 2026-10-06 - audit M-16 (c): fmShieldHoldBandM - how far the cone is widened while an escape
+// stands (the Schmitt hold), tied to the front station's own clearance from the cone:
+//     hold = min(max_m, 0.5 x r x sin(phi - half_angle)), floored at 0
+// r x sin(phi - half) is the settled front station's perpendicular distance from the cone's side (the
+// station sits r from the rider at phi off his course; the side is at half_angle). A fixed 2 m hold was
+// LARGER than that distance at the 35 deg cap (1.98 m at r 22.7 m, 30 deg), so once any escape started
+// near a settled F4/F5 station it could never end while the rider stayed foiling. Half the clearance is
+// always strictly less than the clearance, so the settled station is always OUTSIDE the held cone, by at
+// least the hold band itself (host-asserted at every config). The difference phi - half is clamped to
+// 0..90 (past 90 the station is behind the cone's side and sin would fold back).
+// Inputs: r_m, phi_deg (the front station, fmFrontStationGeom), half_deg (fmShieldHalfAngleDeg), max_m (2).
+static inline float fmShieldHoldBandM(float r_m, float phi_deg, float half_deg, float max_m)
+{
+  float d = phi_deg - half_deg;
+  if (!(d > 0.0f) || !(r_m > 0.0f) || !(max_m > 0.0f)) return 0.0f;
+  if (d > 90.0f) d = 90.0f;
+  float b = 0.5f * r_m * sinf(d * BREMOTE_FMS_DEG2RAD);
+  if (b > max_m) b = max_m;
+  if (!(b > 0.0f)) b = 0.0f;
+  return b;
+}
 
 // fmShieldMake - build this tick's shield from the rider's (filtered) speed and the four constants.
 // Inputs: rider_speed_kmh; horizon_s (5); half_angle_deg (30, clamped 1..89); min_speed_kmh (12);
@@ -572,7 +678,51 @@ static inline FmShield fmShieldMake(float rider_speed_kmh, float horizon_s, floa
   if (rider_speed_kmh >= min_speed_kmh && horizon_s > 0.0f) {
     s.cone_len_m = (rider_speed_kmh / 3.6f) * horizon_s;
   }
+  s.circle_len_m = 0.0f;   // V2.5-Evo - 2026-10-06 - audit M-18: a plain circle unless extended for lag
   return s;
+}
+
+// V2.5-Evo - 2026-10-06 - audit M-18: fmShieldExtendForLag - cover the REAL rider when the lag anchor falls
+// short of him.
+// WHY. The shield is drawn round the ANCHOR: the filtered rider position pushed forward by v x tau to undo
+// the filter's lag. That push is capped at 2 x d_follow, so at the Soft and Very Soft steering presets
+// (tau 3 s and 5 s) a fast rider is really up to shortfall_m = v x tau - (the push actually applied) further
+// AHEAD than the anchor. At Very Soft he sat outside his own 3 m circle from about 10.5 km/h, and the cone's
+// reach past him shrank to about 12 m.
+// WHAT. The circle becomes a CAPSULE from the anchor to shortfall_m ahead of it along the course (the same
+// radius all the way), so it holds both the anchor and the real rider; and the cone, still drawn from the
+// anchor, is made shortfall_m deeper, so it still reaches speed x horizon past the real rider. The anchor
+// cone contains the cone drawn from the real rider (same angle, apex further back), so this only ever
+// ADDS shield. A shortfall of 0 or less changes nothing (the Normal preset at ordinary speeds).
+// Inputs: the shield (modified in place), shortfall_m (metres, along the course). No other side effects.
+static inline void fmShieldExtendForLag(FmShield &s, float shortfall_m)
+{
+  if (!(shortfall_m > 0.0f)) return;
+  s.circle_len_m = shortfall_m;
+  if (s.cone_len_m > 0.0f) s.cone_len_m += shortfall_m;
+}
+
+// fmsCoreDist2 - squared distance from the point (along, cross) to the capsule's core: the segment of the
+// course line from 0 to len_m ahead of the anchor. Internal to the capsule test.
+static inline float fmsCoreDist2(float along_m, float cross_m, float len_m)
+{
+  const float x = (along_m < 0.0f) ? along_m : ((along_m > len_m) ? (along_m - len_m) : 0.0f);
+  return x * x + cross_m * cross_m;
+}
+
+// fmsPointSegDist2 - squared distance from the point (px, py) to the segment A -> B. Internal.
+static inline float fmsPointSegDist2(float px, float py, float a_al, float a_cr, float b_al, float b_cr)
+{
+  const float dx = b_al - a_al, dy = b_cr - a_cr;
+  const float l2 = dx * dx + dy * dy;
+  float t = 0.0f;
+  if (l2 > 1e-9f) {
+    t = ((px - a_al) * dx + (py - a_cr) * dy) / l2;
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+  }
+  const float qx = a_al + t * dx - px, qy = a_cr + t * dy - py;
+  return qx * qx + qy * qy;
 }
 
 // fmsClipLB - one Liang-Barsky step: keep the part of the segment parameter range [*u0, *u1] that
@@ -610,7 +760,22 @@ static inline bool fmShieldSegmentHits(const FmShield &s, float a_al, float a_cr
 
   // ---- the circle: the closest point of the segment to the rider ----
   const float R = s.circle_r_m;
-  if (R > 0.0f) {
+  if (R > 0.0f && s.circle_len_m > 0.0f) {
+    // V2.5-Evo - 2026-10-06 - audit M-18: THE CAPSULE (the circle swept from the anchor to circle_len_m
+    // ahead). Contact = the segment comes closer than R to the core segment [0, L] of the course line.
+    // Two segments that do not cross are closest at one of the four endpoints, so: (1) does A -> B cross
+    // the core; (2) either end of A -> B against the core; (3) either end of the core against A -> B.
+    const float L  = s.circle_len_m;
+    const float R2 = R * R;
+    if (((a_cr <= 0.0f && b_cr >= 0.0f) || (a_cr >= 0.0f && b_cr <= 0.0f)) && fabsf(dy) > 1e-9f) {
+      const float x = a_al + dx * (a_cr / (a_cr - b_cr));
+      if (x >= 0.0f && x <= L) return true;
+    }
+    if (fmsCoreDist2(a_al, a_cr, L) < R2) return true;
+    if (fmsCoreDist2(b_al, b_cr, L) < R2) return true;
+    if (fmsPointSegDist2(0.0f, 0.0f, a_al, a_cr, b_al, b_cr) < R2) return true;
+    if (fmsPointSegDist2(L,    0.0f, a_al, a_cr, b_al, b_cr) < R2) return true;
+  } else if (R > 0.0f) {
     const float l2 = dx * dx + dy * dy;
     float t = 0.0f;
     if (l2 > 1e-9f) {
@@ -644,11 +809,15 @@ static inline bool fmShieldSegmentHits(const FmShield &s, float a_al, float a_cr
 // larger; 0 where neither reaches. The shield is symmetric about the course line and both parts are
 // convex, so at any along-track position its cross-section is the single interval [-w, +w]. That is
 // what makes the go-around provable: a point further out than w on one side is outside the shield.
+// V2.5-Evo - 2026-10-06 - audit M-18: with the capsule, the circle part is R wide all along [0, L] and rounds
+// off past either end; still symmetric and convex, so the single-interval argument is unchanged.
 static inline float fmShieldHalfWidthM(const FmShield &s, float along_m)
 {
   float w = 0.0f;
-  if (fabsf(along_m) < s.circle_r_m) {
-    w = sqrtf(s.circle_r_m * s.circle_r_m - along_m * along_m);
+  const float L  = (s.circle_len_m > 0.0f) ? s.circle_len_m : 0.0f;
+  const float da = (along_m < 0.0f) ? -along_m : ((along_m > L) ? (along_m - L) : 0.0f);
+  if (da < s.circle_r_m) {
+    w = sqrtf(s.circle_r_m * s.circle_r_m - da * da);
   }
   if (s.cone_len_m > 0.0f && along_m >= 0.0f && along_m <= s.cone_len_m) {
     const float cw = along_m * s.cone_tan;
@@ -712,8 +881,9 @@ static inline float fmShieldGoAroundLateralM(const FmShield &s, int side, float 
 // fmShieldDecide - the per-tick shield verdict for a NON-SNAPPED station (the RX never consults it for a
 // rear station snapped to its preset - that path is the SW36 one, unchanged by owner ruling).
 // Inputs: the shield; prev_escape (an escape was standing last tick: test with the cone widened
-//         by band_m, the Schmitt hold); prev_side (the side that standing escape went round on, 0 if
-//         none); band_m (kFmSideHysteresisM); psi_live_deg (the station angle, whose sign is the
+//         by hold_m, the Schmitt hold); prev_side (the side that standing escape went round on, 0 if
+//         none); band_m (kFmSideHysteresisM, the SIDE band); hold_m (V2.5-Evo - 2026-10-06 - audit M-16 c:
+//         the cone hold, fmShieldHoldBandM - it was band_m, 2 m, until then); psi_live_deg (the station angle, whose sign is the
 //         COMMITTED side); the buggy and this tick's aim point, rider frame; min_lateral_m and clear_m
 //         for the go-around (fmShieldGoAroundLateralM).
 // Outputs: .escape   - the aim line touches the shield: steer at the go-around waypoint instead;
@@ -733,14 +903,14 @@ struct FmShieldDecision {
   float lateral_m;
 };
 static inline FmShieldDecision fmShieldDecide(const FmShield &s, bool prev_escape, int prev_side,
-                                              float band_m, float psi_live_deg,
+                                              float band_m, float hold_m, float psi_live_deg,
                                               float buggy_along_m, float buggy_cross_m,
                                               float aim_along_m, float aim_cross_m,
                                               float min_lateral_m, float clear_m)
 {
   FmShieldDecision d;
   d.escape    = fmShieldSegmentHits(s, buggy_along_m, buggy_cross_m, aim_along_m, aim_cross_m,
-                                    prev_escape ? band_m : 0.0f);
+                                    prev_escape ? hold_m : 0.0f);
   const int station_side = (psi_live_deg > 0.0f) ? +1 : (psi_live_deg < 0.0f) ? -1 : 0;
   const int committed    = (station_side != 0) ? station_side
                          : (prev_escape && prev_side != 0) ? ((prev_side > 0) ? +1 : -1) : 0;

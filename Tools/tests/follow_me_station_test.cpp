@@ -1,3 +1,8 @@
+// V2.5-Evo - 2026-10-06 - SHIELD SIZING (audits M-16 b/c, M-15, M-14, M-18, L-20): ctlTick() follows the RX - the speed-scaled
+//   half-angle, the 12 / 10 km/h cone Schmitt, the lag capsule (Ctl::shortfall), the hold band, and the M-14 aim steps (input
+//   edges + a > 1 m one-tick lookahead change). New sections 23-28: the half-angle curve against the band data, the Schmitt, the
+//   settled-station clearance sweep against the HELD cone (855,470 configs, plus the report table and the capsule contacts), the
+//   capsule geometry, the clip after a release, and a 12 km/h crossing sweep with lag and varying speed. stdout is unbuffered.
 // V2.5-Evo - 2026-10-06 - RIDER SHIELD + SIDE BAND + AIM STEP + PENDING SEED + 45 DEG CEILING (audits H-2, H-3, M-10, L-11,
 //   M-11, M-12, L-10): kFrontMax 80 -> 45 (ahead >= side) with section 15 asserting the 13 m ahead floor; every
 //   fmFrontRetreatSide() call passes the 2 m band; new sections 16-22 - the band, the shield geometry, the D-term gate,
@@ -82,8 +87,9 @@ static float sw36Offset(uint8_t mode, float near_diag, bool schmitt)
 // is lag_m ahead of it; every output coordinate is in the anchor frame.
 // ======================================================================================
 static const float kShHorizonS  = 5.0f;    // kFmShieldHorizonS
-static const float kShHalfDeg   = 30.0f;   // kFmShieldHalfAngleDeg
-static const float kShMinKmh    = 12.0f;   // kFmShieldMinSpeedKmh
+static const float kShHalfDeg   = 30.0f;   // the fixed half-angle before audit M-16 b (still used by the geometry-only sections)
+static const float kShMinKmh    = 12.0f;   // kFmShieldMinSpeedKmh (the cone's ON threshold)
+static const float kShOffKmh    = 10.0f;   // kFmShieldConeOffKmh  (the cone's OFF threshold, audit M-15)
 static const float kShCircleM   = 3.0f;    // kFmShieldCircleMinM
 static const float kThetaMinM   = 3.0f;    // kFmThetaMinSepM
 static const float kSettleDeg   = 5.0f;    // kFmStationSettleDeg
@@ -91,12 +97,18 @@ static const float kAbortDeg    = 60.0f;   // kFmTransitAbortCourseDeg
 static const float kZoneEnter   = 35.0f;   // usrConf.zone_angle_enter_deg, owner default
 static const float kZoneExit    = 45.0f;   // usrConf.zone_angle_exit_deg, owner default
 static const uint8_t kPrRetreat = 10, kPrOutward = 9, kPrTransit = 7, kPrFront = 8;
+static const float kLookStepM   = 1.0f;    // kFmLookStepM (audit M-14): a bigger one-tick lookahead change is a step
 
 struct Ctl {
   float live = 0.0f;  bool aborted = false;  int rside = 0;
   bool transit = false;  float tcourse = -1.0f;
   bool escape = false;  int kind_prev = 0;  bool pending = false;  bool diag = false;
   bool walking = false;  int shside = 0;
+  // V2.5-Evo - 2026-10-06 - audits M-15 / M-14 / M-18: the cone gate's Schmitt state, last tick's hold state,
+  // and the lag shortfall the shield is extended by (an input - the RX computes it from the preset's tau).
+  bool cone_on = false;  bool held_prev = false;  float shortfall = 0.0f;
+  float look_prev = 0.0f;                                // the clipped lookahead last tick (M-14 output check)
+  int ticks = 0;                                         // ticks run on this state (the first has no previous lookahead)
 };
 struct Tick {
   bool snapped = false, escape = false, h1 = false, sh_reseed = false, step = false, latched = false;
@@ -105,7 +117,11 @@ struct Tick {
   float sh_al = 0, sh_cr = 0;      // the segment end the shield tested
   float aim_al = 0, aim_cr = 0;    // the aim steered at, anchor frame
   FmShield sh{};
+  float hold = 0, half = 0;        // V2.5-Evo - 2026-10-06 - the hold band and the half-angle used this tick
+  bool cone_toggled = false;
+  float look = 0, dlook = 0;       // the clipped lookahead this tick, and its change from last tick
 };
+static float g_dlook_max_quiet = 0.0f;   // the largest one-tick lookahead change on a tick nothing else flagged
 
 static Tick ctlTick(Ctl &c, uint8_t m_decl, float near_diag, float d_follow, uint16_t extra_stored,
                     float min_dist, float speed_kmh, float course, float b_al_f, float b_cr,
@@ -169,10 +185,17 @@ static Tick ctlTick(Ctl &c, uint8_t m_decl, float near_diag, float d_follow, uin
 
   const float cm  = fmStationTargetCeilingDeg(psi_target, b_cr, pass, lim);               // PG-2
   const float pet = (psi_target >= 0.0f) ? cm : -cm;
-  t.sh   = fmShieldMake(speed_kmh, kShHorizonS, kShHalfDeg, kShMinKmh, kShCircleM, min_dist, d_follow);
+  // V2.5-Evo - 2026-10-06 - audits M-16 b / M-15 / M-18 / M-16 c, in the RX's order.
+  const bool cone_on = fmShieldConeOn(c.cone_on, speed_kmh, kShMinKmh, kShOffKmh);
+  t.cone_toggled = (cone_on != c.cone_on);
+  c.cone_on = cone_on;
+  t.half = fmShieldHalfAngleDeg(speed_kmh);
+  t.sh   = fmShieldMake(speed_kmh, kShHorizonS, t.half, cone_on ? kShOffKmh : kShMinKmh, kShCircleM, min_dist, d_follow);
+  fmShieldExtendForLag(t.sh, c.shortfall);
+  t.hold = fmShieldHoldBandM(rf, phi, t.half, band);
   t.b_al = b_al_f - lag_m;
   t.b_cr = b_cr;
-  const float infl = c.escape ? band : 0.0f;
+  const float infl = c.escape ? t.hold : 0.0f;
   bool snap = fmRearSnap(m_eff, c.live, near_diag);
   if (snap && c.walking) {                                    // a walk's first snap answers to the shield
     float s_al, s_cr;
@@ -180,6 +203,8 @@ static Tick ctlTick(Ctl &c, uint8_t m_decl, float near_diag, float d_follow, uin
     if (fmShieldSegmentHits(t.sh, t.b_al, b_cr, s_al, s_cr, infl)) snap = false;
   }
   c.walking = !snap;
+  if (!snap && (t.cone_toggled || c.escape != c.held_prev)) t.step = true;   // M-14
+  c.held_prev = c.escape;
   c.live = snap ? pet : fmStationSlewStep(c.live, pet, kSlewRate, dt);
   c.live = fmClampStationDeg(c.live, phi);
   const float r = snap ? d_follow : fmStationRadiusM(c.live, d_follow, rf, near_diag, pass, phi);
@@ -194,6 +219,7 @@ static Tick ctlTick(Ctl &c, uint8_t m_decl, float near_diag, float d_follow, uin
     t.aim_cr = t.sh_cr = lat;
     kind = 1;
     t.profile = h1 ? kPrRetreat : kPrOutward;
+    c.look_prev = 0.0f;                                                 // M-14: no lookahead on this aim
   } else {
     float look = 0.0f;
     const float a_live = fabsf(c.live);
@@ -203,6 +229,10 @@ static Tick ctlTick(Ctl &c, uint8_t m_decl, float near_diag, float d_follow, uin
       look = 1.0f * d_follow * f;
     }
     if (look > 0.0f && !snap) look = fmShieldClipLookaheadM(t.sh, infl, t.b_al, b_cr, sa, sc, look);
+    t.look  = look;                                                     // M-14: an output step is an aim step
+    t.dlook = fabsf(look - c.look_prev);
+    if (!snap && t.dlook > kLookStepM) t.step = true;
+    c.look_prev = look;
     t.aim_al = t.sh_al = sa + look;
     t.aim_cr = t.sh_cr = sc;
     if (!snap) {
@@ -222,7 +252,7 @@ static Tick ctlTick(Ctl &c, uint8_t m_decl, float near_diag, float d_follow, uin
 
   bool esc = false;                                                    // finishAim
   if (!snap) {
-    const FmShieldDecision d = fmShieldDecide(t.sh, c.escape, c.shside, band, c.live, t.b_al, b_cr,
+    const FmShieldDecision d = fmShieldDecide(t.sh, c.escape, c.shside, band, t.hold, c.live, t.b_al, b_cr,
                                               t.sh_al, t.sh_cr, pass, d_follow);
     if (d.escape) {
       esc = true; kind = 2; c.shside = d.side;
@@ -240,6 +270,8 @@ static Tick ctlTick(Ctl &c, uint8_t m_decl, float near_diag, float d_follow, uin
   if (kind != c.kind_prev) t.step = true;
   c.kind_prev = kind;
   t.snapped = snap; t.escape = esc; t.kind = kind;
+  if (c.ticks > 0 && !t.step && t.dlook > g_dlook_max_quiet) g_dlook_max_quiet = t.dlook;
+  c.ticks++;
   return t;
 }
 
@@ -299,6 +331,7 @@ static void placeBuggy(World &w, float along, float cross, float heading)
 
 int main()
 {
+  setvbuf(stdout, nullptr, _IONBF, 0);   // V2.5-Evo - 2026-10-06 - a failing assert must not swallow the lines before it
   // ======================================================================================
   // 1. THE FRONT STATION FROM ITS OFFSETS: SIDE = THE FLOOR, AHEAD = d_follow + EXTRA
   // ======================================================================================
@@ -1277,27 +1310,27 @@ int main()
       // Audit H-2's own example: the buggy 10 m ahead / 3 m RIGHT, a station walking at psi -70 (left).
       float sa, sc;
       fmStationAlongCrossM(-70.0f, 12.0f, &sa, &sc);
-      FmShieldDecision d = fmShieldDecide(s, false, 0, kSideBand, -70.0f, 10.0f, 3.0f, sa, sc, kPassLateral, 6.0f);
+      FmShieldDecision d = fmShieldDecide(s, false, 0, kSideBand, kSideBand, -70.0f, 10.0f, 3.0f, sa, sc, kPassLateral, 6.0f);
       assert(d.escape && d.side == +1 && d.reseed && d.lateral_m > 0.0f);
       // Inside the band the committed (station) side stands: no re-seed across the line on noise.
-      d = fmShieldDecide(s, false, 0, kSideBand, -70.0f, 10.0f, 1.5f, sa, sc, kPassLateral, 6.0f);
+      d = fmShieldDecide(s, false, 0, kSideBand, kSideBand, -70.0f, 10.0f, 1.5f, sa, sc, kPassLateral, 6.0f);
       assert(d.escape && d.side == -1 && !d.reseed && d.lateral_m < 0.0f);
       // Directly behind (psi 0), near the line: the buggy's own sign, and NO re-seed - a station exactly
       // behind the rider has no side to be wrong about (re-seeding would send it back out ahead).
-      d = fmShieldDecide(s, false, 0, kSideBand, 0.0f, 10.0f, -0.5f, -9.0f, 0.0f, kPassLateral, 6.0f);
+      d = fmShieldDecide(s, false, 0, kSideBand, kSideBand, 0.0f, 10.0f, -0.5f, -9.0f, 0.0f, kPassLateral, 6.0f);
       assert(d.escape && d.side == -1 && !d.reseed);
       // ... and while that escape stands, its side is held against noise inside the band.
-      d = fmShieldDecide(s, true, -1, kSideBand, 0.0f, 10.0f, +1.5f, -9.0f, 0.0f, kPassLateral, 6.0f);
+      d = fmShieldDecide(s, true, -1, kSideBand, kSideBand, 0.0f, 10.0f, +1.5f, -9.0f, 0.0f, kPassLateral, 6.0f);
       assert(d.escape && d.side == -1 && !d.reseed);
-      d = fmShieldDecide(s, true, -1, kSideBand, 0.0f, 10.0f, +2.5f, -9.0f, 0.0f, kPassLateral, 6.0f);
+      d = fmShieldDecide(s, true, -1, kSideBand, kSideBand, 0.0f, 10.0f, +2.5f, -9.0f, 0.0f, kPassLateral, 6.0f);
       assert(d.escape && d.side == +1);                       // beyond the band it follows the buggy
       // A clear aim: nothing to do.
-      d = fmShieldDecide(s, false, 0, kSideBand, +45.0f, -9.0f, 7.0f, -6.0f, 6.0f, kPassLateral, 6.0f);
+      d = fmShieldDecide(s, false, 0, kSideBand, kSideBand, +45.0f, -9.0f, 7.0f, -6.0f, 6.0f, kPassLateral, 6.0f);
       assert(!d.escape && !d.reseed && d.lateral_m == 0.0f);
       // THE HOLD: an aim 1 m outside the cone does not start an escape, but holds one that stands.
-      d = fmShieldDecide(s, false, 0, kSideBand, +100.0f, 12.0f, 8.0f, 12.0f, 7.93f, kPassLateral, 6.0f);
+      d = fmShieldDecide(s, false, 0, kSideBand, kSideBand, +100.0f, 12.0f, 8.0f, 12.0f, 7.93f, kPassLateral, 6.0f);
       assert(!d.escape);
-      d = fmShieldDecide(s, true, 0, kSideBand, +100.0f, 12.0f, 8.0f, 12.0f, 7.93f, kPassLateral, 6.0f);
+      d = fmShieldDecide(s, true, 0, kSideBand, kSideBand, +100.0f, 12.0f, 8.0f, 12.0f, 7.93f, kPassLateral, 6.0f);
       assert(d.escape);
     }
   }
@@ -1563,6 +1596,372 @@ int main()
     printf("rear-only through the shield chain, SW36 equivalence: %ld ticks\n", n);
   }
 
+  // ======================================================================================
+  // 23. V2.5-Evo - 2026-10-06 - AUDIT M-16 (b): THE SPEED-SCALED CONE HALF-ANGLE
+  // ======================================================================================
+  {
+    // The anchors asked for, exactly.
+    assert(fmShieldHalfAngleDeg(12.0f) == 30.0f && fmShieldHalfAngleDeg(15.0f) == 30.0f);
+    assert(near_eq(fmShieldHalfAngleDeg(17.5f), 28.0f, 1e-4f));
+    assert(near_eq(fmShieldHalfAngleDeg(22.5f), 21.0f, 1e-4f));
+    assert(near_eq(fmShieldHalfAngleDeg(27.5f), 15.0f, 1e-4f));
+    assert(fmShieldHalfAngleDeg(40.0f) == 15.0f && fmShieldHalfAngleDeg(0.0f) == 30.0f);
+    assert(fmShieldHalfAngleDeg(-5.0f) == 30.0f && fmShieldHalfAngleDeg(NAN) == 30.0f);
+    // Continuous, monotone, inside [15, 30], and NEVER NARROWER THAN THE DATA anywhere in a band (the
+    // owner's 30 deg cap stands in for the 40 deg the 10-15 km/h band measured).
+    float prev = fmShieldHalfAngleDeg(0.0f);
+    long n = 0;
+    for (int i = 0; i <= 6000; i++) {
+      const float v = 0.01f * (float)i;
+      const float h = fmShieldHalfAngleDeg(v);
+      assert(h <= kFmShieldHalfAngleMaxDeg && h >= 15.0f);
+      assert(h <= prev + 1e-4f);                                 // never widens with speed
+      assert(fabsf(h - prev) <= 0.01f * (7.0f / 2.5f) + 1e-3f);  // no step: at most the steepest knot slope
+      float data;                                                // the band's p90 angle at 5 s
+      if (v < 10.0f)       data = 0.0f;                          // not foiling: no data, no cone
+      else if (v < 15.0f)  data = 30.0f;                         // 40 measured, capped at 30 (owner ruling)
+      else if (v <= 20.0f) data = 28.0f;
+      else if (v <= 25.0f) data = 21.0f;
+      else                 data = 15.0f;
+      assert(h >= data - 1e-4f);
+      prev = h;
+      n++;
+    }
+    printf("M-16 b half-angle curve: %ld speeds, 30/28/21/15 deg held across each band\n", n);
+  }
+
+  // ======================================================================================
+  // 24. V2.5-Evo - 2026-10-06 - AUDIT M-15: THE CONE GATE IS A SCHMITT (on at 12, off below 10)
+  // ======================================================================================
+  {
+    assert(!fmShieldConeOn(false, 11.99f, kShMinKmh, kShOffKmh));
+    assert( fmShieldConeOn(false, 12.0f,  kShMinKmh, kShOffKmh));
+    assert( fmShieldConeOn(true,  10.0f,  kShMinKmh, kShOffKmh));   // on stays on down to 10
+    assert(!fmShieldConeOn(true,   9.99f, kShMinKmh, kShOffKmh));
+    assert(!fmShieldConeOn(false, 11.0f,  kShMinKmh, kShOffKmh));   // off stays off up to 12
+    // The rider hovering at the takeoff edge: 11.5 +/- 1.2 km/h of noise. A single threshold flicks the cone
+    // tens of times; the Schmitt only once on, and never off while he stays above 10.
+    unsigned seed = 31u;
+    bool sch = false, single = false;
+    int t_sch = 0, t_single = 0;
+    for (int i = 0; i < 600; i++) {
+      seed = seed * 1103515245u + 12345u;
+      const float v = 11.5f + (((float)((seed >> 8) % 2401u) / 1000.0f) - 1.2f);
+      const bool s2 = fmShieldConeOn(sch, v, kShMinKmh, kShOffKmh);
+      const bool s1 = (v >= kShMinKmh);
+      if (s2 != sch) t_sch++;
+      if (s1 != single) t_single++;
+      sch = s2; single = s1;
+    }
+    printf("M-15 hovering at 11.5 +/- 1.2 km/h: cone toggles %d with the Schmitt, %d with one threshold\n",
+           t_sch, t_single);
+    assert(t_sch == 1 && t_single >= 20);
+  }
+
+  // ======================================================================================
+  // 25. V2.5-Evo - 2026-10-06 - AUDIT M-16 (c): THE HOLD BAND, AND A SETTLED F4/F5 STATION CLEARS THE
+  //     HELD CONE AT EVERY CONFIG
+  // ======================================================================================
+  {
+    // The formula: min(2 m, 0.5 r sin(phi - half)), floored at 0.
+    assert(near_eq(fmShieldHoldBandM(22.67f, 35.0f, 30.0f, kSideBand), 0.5f * 22.67f * sinf(5.0f * BREMOTE_FMS_DEG2RAD), 1e-4f));
+    assert(fmShieldHoldBandM(18.38f, 45.0f, 15.0f, kSideBand) == kSideBand);          // capped at 2 m
+    assert(fmShieldHoldBandM(18.38f, 30.0f, 30.0f, kSideBand) == 0.0f);               // no clearance: no hold
+    assert(fmShieldHoldBandM(18.38f, 25.0f, 30.0f, kSideBand) == 0.0f);               // floored at 0
+    assert(fmShieldHoldBandM(18.38f, 45.0f, 30.0f, 0.0f) == 0.0f);
+
+    // THE SWEEP. The RX's own geometry chain for every config: min_dist_m and the smoothing band (so
+    // d_follow AND the side floor move together, as they do on the board), every stored extra 0-10, every
+    // steering preset (the lag shortfall the capsule adds), and the rider at 10-35 km/h WITH THE CONE ON
+    // (12-35 asked; 10-12 is where the Schmitt keeps it on). The settled station - F4 and F5 at their
+    // presets, at the radius the schedule gives them - must be OUTSIDE the shield with the cone widened
+    // by the hold band. A failing config is printed before the assert fires.
+    const float taus[5] = { 5.0f, 3.0f, 2.0f, 1.0f, 0.5f };        // kSteerPresets[].target_filter_tau_s
+    const float mds[11] = { 1.0f, 2.0f, 3.0f, 4.0f, 6.0f, 8.0f, 10.1f, 12.0f, 13.0f, 15.0f, 20.0f };
+    const float sbs[7]  = { 0.0f, 1.0f, 2.0f, 3.0f, 5.0f, 8.0f, 12.0f };
+    // The cone and the circle/capsule are judged SEPARATELY, because they answer different findings: the
+    // held CONE is M-16's requirement and must clear at every config (asserted). The CAPSULE (M-18) is
+    // reported: when min_dist_m >= 13 the side floor IS min_dist_m, which is also the circle radius, so a
+    // capsule reaching level with the station puts the station exactly on its edge (zero margin). Those
+    // configs are counted, characterised and printed - not hidden - and the characterisation is asserted.
+    long cfgs = 0, cone_fails = 0, cap_contacts = 0;
+    float worst = 1e9f, worst_phi = 0, worst_h = 0, worst_d = 0, worst_v = 0;
+    float cap_md_min = 1e9f, cap_tau_min = 1e9f, cap_v_min = 1e9f, cap_clear_min = 1e9f;
+    for (int mi = 0; mi < 11; mi++) for (int bi = 0; bi < 7; bi++) for (int ex = 0; ex <= 10; ex++) {
+      const float md = mds[mi], d = md + sbs[bi];
+      float pass = kPassLateral; if (pass < md) pass = md;
+      float latmin = kLateralMin; if (latmin < pass) latmin = pass;
+      float ah, phi, rf;
+      frontGeom(d, (uint16_t)ex, latmin, &ah, &phi, &rf);
+      const float lim = fmStationLimitDeg(phi);
+      for (int vi = 0; vi <= 100; vi++) {
+        const float v    = 10.0f + 0.25f * (float)vi;
+        const float h    = fmShieldHalfAngleDeg(v);
+        const float hold = fmShieldHoldBandM(rf, phi, h, kSideBand);
+        for (int ti = 0; ti < 5; ti++) {
+          const float raw = (v / 3.6f) * taus[ti];
+          float lag = raw; if (lag > 2.0f * d) lag = 2.0f * d;
+          FmShield sh = fmShieldMake(v, kShHorizonS, h, kShOffKmh, kShCircleM, md, d);
+          fmShieldExtendForLag(sh, raw - lag);
+          FmShield cone_only = sh;  cone_only.circle_r_m = 0.0f;  cone_only.circle_len_m = 0.0f;
+          FmShield circ_only = sh;  circ_only.cone_len_m = 0.0f;
+          for (int side = -1; side <= 1; side += 2) {
+            const float psi = side * lim;
+            const float rr  = fmStationRadiusM(psi, d, rf, kNearDiag, pass, phi);
+            float sa, sc;
+            fmStationAlongCrossM(psi, rr, &sa, &sc);
+            const float margin = rr * sinf((phi - h) * BREMOTE_FMS_DEG2RAD) - hold;   // to the held cone's side
+            if (fmShieldSegmentHits(cone_only, sa, sc, sa, sc, hold) || !(margin > 0.0f)) {
+              if (cone_fails < 10) printf("  M-16 HELD-CONE FAIL: md %.1f d %.1f extra %d v %.2f tau %.1f: phi %.2f h %.2f hold %.2f margin %.3f\n",
+                                          (double)md, (double)d, ex, (double)v, (double)taus[ti], (double)phi, (double)h,
+                                          (double)hold, (double)margin);
+              cone_fails++;
+            }
+            if (fmShieldSegmentHits(circ_only, sa, sc, sa, sc, 0.0f)) {
+              cap_contacts++;
+              if (md < cap_md_min) cap_md_min = md;
+              if (taus[ti] < cap_tau_min) cap_tau_min = taus[ti];
+              if (v < cap_v_min) cap_v_min = v;
+              const float L = sh.circle_len_m;
+              const float cx = (sa < 0.0f) ? sa : ((sa > L) ? sa - L : 0.0f);
+              const float clear = sqrtf(cx * cx + sc * sc) - sh.circle_r_m;
+              if (clear < cap_clear_min) cap_clear_min = clear;
+            }
+            if (margin < worst) { worst = margin; worst_phi = phi; worst_h = h; worst_d = d; worst_v = v; }
+            cfgs++;
+          }
+        }
+      }
+    }
+    printf("M-16 settled F4/F5 vs the HELD cone: %ld configs, %ld fail, tightest margin %.2f m "
+           "(phi %.1f, half-angle %.1f, d_follow %.1f, %.2f km/h)\n",
+           cfgs, cone_fails, (double)worst, (double)worst_phi, (double)worst_h, (double)worst_d, (double)worst_v);
+    printf("M-18 REPORT - settled F4/F5 touching the lag CAPSULE: %ld of %ld configs; all have min_dist >= %.1f m, "
+           "tau >= %.1f s, rider >= %.2f km/h; worst clearance %.3f m (the station on the edge)\n",
+           cap_contacts, cfgs, (double)cap_md_min, (double)cap_tau_min, (double)cap_v_min, (double)cap_clear_min);
+    assert(cone_fails == 0);
+    // The capsule contacts are exactly the case named above, and nothing else: min_dist >= 13 (side floor ==
+    // circle radius), the two soft presets only, and the station ON the edge (zero clearance, not inside).
+    if (cap_contacts > 0) {
+      assert(cap_md_min >= kLateralMin - 0.001f);
+      assert(cap_tau_min >= 3.0f);
+      assert(cap_clear_min > -0.01f);
+    }
+
+    // THE TABLE for the report: min_dist 4, smoothing 2 / 5 / 8 (d_follow 6 / 9 / 12), stored extra
+    // 0 (= the 7 m default) / 4 / 7 / 10. clear = r sin(phi - h) to the cone's side; margin = clear - hold.
+    printf("M-16 settled-station clearance table (side 13 m; h = half-angle, all metres):\n");
+    printf("   d  extra ahead   phi  |  15 km/h:  h  clear hold margin |  20 km/h:  h  clear hold margin |  25 km/h:  h  clear hold margin\n");
+    const float dts[3] = { 6.0f, 9.0f, 12.0f };
+    const int   exs[4] = { 0, 4, 7, 10 };
+    for (int di = 0; di < 3; di++) for (int ei = 0; ei < 4; ei++) {
+      float ah, phi, rf;
+      frontGeom(dts[di], (uint16_t)exs[ei], kLateralMin, &ah, &phi, &rf);
+      printf("  %2.0f  %2d%s %5.2f %5.2f |", (double)dts[di], exs[ei], exs[ei] == 0 ? "=7" : "  ",
+             (double)ah, (double)phi);
+      const float vs[3] = { 15.0f, 20.0f, 25.0f };
+      for (int vi = 0; vi < 3; vi++) {
+        const float h = fmShieldHalfAngleDeg(vs[vi]);
+        const float hold = fmShieldHoldBandM(rf, phi, h, kSideBand);
+        const float clear = rf * sinf((phi - h) * BREMOTE_FMS_DEG2RAD);
+        printf("          %4.1f %5.2f %4.2f %5.2f  |", (double)h, (double)clear, (double)hold, (double)(clear - hold));
+        assert(clear - hold > 0.0f);
+      }
+      printf("\n");
+    }
+  }
+
+  // ======================================================================================
+  // 26. V2.5-Evo - 2026-10-06 - AUDIT M-18: THE CAPSULE (the lag anchor capped short of the rider)
+  // ======================================================================================
+  {
+    // Very Soft (tau 5 s), d_follow 6 (lag cap 12 m), 11 km/h: the real rider is 15.3 m beyond the filtered
+    // position but the anchor only 12 m - 3.3 m short. A line crossing his course 2 m in front of HIM is
+    // 5.3 m from the anchor: the plain 4 m circle missed it, the capsule does not.
+    const float v = 11.0f, tau = 5.0f, d = 6.0f;
+    const float raw = (v / 3.6f) * tau, lag = 2.0f * d, sf = raw - lag;
+    assert(near_eq(sf, 3.28f, 0.01f));
+    FmShield plain = fmShieldMake(v, kShHorizonS, 30.0f, kShMinKmh, kShCircleM, 4.0f, d);
+    FmShield cap = plain;
+    fmShieldExtendForLag(cap, sf);
+    assert(near_eq(cap.circle_len_m, sf, 1e-5f) && cap.cone_len_m == 0.0f);   // cone still off at 11
+    assert(!fmShieldSegmentHits(plain, sf + 2.0f, -8.0f, sf + 2.0f, 8.0f, 0.0f));
+    assert( fmShieldSegmentHits(cap,   sf + 2.0f, -8.0f, sf + 2.0f, 8.0f, 0.0f));
+    // The cone is deepened by the same amount, so its reach past the real rider is speed x horizon.
+    FmShield f = fmShieldMake(18.0f, kShHorizonS, 28.0f, kShMinKmh, kShCircleM, 4.0f, d);
+    const float len0 = f.cone_len_m;
+    fmShieldExtendForLag(f, 7.0f);
+    assert(near_eq(f.cone_len_m, len0 + 7.0f, 1e-4f) && f.circle_len_m == 7.0f);
+    // No shortfall: nothing changes (bitwise), which is the Normal preset at ordinary speeds.
+    FmShield g = fmShieldMake(18.0f, kShHorizonS, 28.0f, kShMinKmh, kShCircleM, 4.0f, d);
+    fmShieldExtendForLag(g, 0.0f);
+    fmShieldExtendForLag(g, -3.0f);
+    assert(g.circle_len_m == 0.0f && g.cone_len_m == len0);
+    // The rider's own rear station (d_follow behind the anchor) is still reachable: the capsule only grows ahead.
+    assert(!fmShieldSegmentHits(cap, -d - 6.0f, 0.0f, -d, 0.0f, 0.0f));
+    // Half-width: R all along the core, rounding off past both ends.
+    assert(near_eq(fmShieldHalfWidthM(cap, 1.5f), 4.0f, 1e-4f));
+    assert(near_eq(fmShieldHalfWidthM(cap, sf + 1.0f), sqrtf(15.0f), 1e-3f));
+    assert(near_eq(fmShieldHalfWidthM(cap, -1.0f), sqrtf(15.0f), 1e-3f));
+
+    // The capsule segment test against brute-force sampling, 20,000 random segments x 4 shields, and the
+    // go-around proof on each (its cross-section is still one interval).
+    {
+      const float sfs[4] = { 0.5f, 3.3f, 8.0f, 20.0f };
+      const float vs[4]  = { 8.0f, 11.0f, 18.0f, 30.0f };
+      unsigned seed = 5151u;
+      long checked = 0, ga = 0;
+      for (int si = 0; si < 4; si++) {
+        FmShield sh = fmShieldMake(vs[si], kShHorizonS, fmShieldHalfAngleDeg(vs[si]), kShMinKmh, kShCircleM, 4.0f, 100.0f);
+        fmShieldExtendForLag(sh, sfs[si]);
+        const float L = sh.circle_len_m;
+        for (int k = 0; k < 20000; k++) {
+          float p[4];
+          for (int j = 0; j < 4; j++) {
+            seed = seed * 1103515245u + 12345u;
+            p[j] = ((float)((seed >> 8) % 8001u) / 100.0f) - 40.0f;
+          }
+          bool sampled = false, near = false;
+          for (int nn = 0; nn <= 400; nn++) {
+            const float u = (float)nn / 400.0f;
+            const float x = p[0] + u * (p[2] - p[0]), y = p[1] + u * (p[3] - p[1]);
+            const float cx = (x < 0.0f) ? x : ((x > L) ? x - L : 0.0f);
+            const bool inC = (cx * cx + y * y) < sh.circle_r_m * sh.circle_r_m;
+            const bool inT = sh.cone_len_m > 0.0f && x >= 0.0f && x <= sh.cone_len_m && fabsf(y) <= x * sh.cone_tan;
+            if (inC || inT) sampled = true;
+            const float rc = sh.circle_r_m + 0.3f;
+            const bool nC = (cx * cx + y * y) <= rc * rc;
+            const bool nT = sh.cone_len_m > 0.0f && x >= -0.6f && x <= sh.cone_len_m + 0.3f &&
+                            fabsf(y) <= (x + 0.6f) * sh.cone_tan;
+            if (nC || nT) near = true;
+          }
+          const bool hit = fmShieldSegmentHits(sh, p[0], p[1], p[2], p[3], 0.0f);
+          if (sampled) assert(hit);
+          if (hit)     assert(near);
+          checked++;
+        }
+        for (int ai = -30; ai <= 50; ai++) {
+          for (int ci = -30; ci <= 30; ci++) {
+            const float a = (float)ai, c = (float)ci;
+            if (fabsf(c) <= kSideBand) continue;
+            if (fmShieldSegmentHits(sh, a, c, a, c, 0.0f)) continue;
+            const int side = (c > 0.0f) ? +1 : -1;
+            const float lat = fmShieldGoAroundLateralM(sh, side, a, c, kPassLateral, 6.0f);
+            assert(!fmShieldSegmentHits(sh, a, c, a, lat, 0.0f));
+            ga++;
+          }
+        }
+      }
+      printf("M-18 capsule segment test vs sampling: %ld segments; go-around proof: %ld buggy positions\n", checked, ga);
+    }
+  }
+
+  // ======================================================================================
+  // 27. V2.5-Evo - 2026-10-06 - AUDIT M-14: THE CLIP AFTER A RELEASE, AND A CONE TOGGLE, ARE AIM STEPS
+  // ======================================================================================
+  {
+    // The owner's F4 (d_follow 9 + 7: 16 m ahead x 13 m side, 39.1 deg) settled at 18 km/h (half-angle 28):
+    // the 9 m lookahead (25 x 13 m, 27.5 deg) is clipped. A buggy swung inside the cone starts an escape;
+    // it then returns to the station and the escape ends. On the release tick the clip still runs against
+    // the HELD cone; the tick after, against the plain one - the lookahead jumps. Both ticks skip the D term.
+    float ah, ph, rf;
+    frontGeom(9.0f, 0, kLateralMin, &ah, &ph, &rf);
+    const float lim = fmStationLimitDeg(ph);
+    float sa, sc;
+    fmStationAlongCrossM(lim, rf, &sa, &sc);
+    Ctl c; c.live = lim; c.cone_on = true;
+    Tick t = ctlTick(c, 4, kNearDiag, 9.0f, 0, 4.0f, 18.0f, 0.0f, sa, sc, 0.0f, 0.1f, kSideBand);
+    assert(!t.escape && t.kind == 0);
+    const float look_plain = t.aim_al - sa;
+    assert(look_plain > 4.0f && look_plain < 9.0f);                  // clipped, not zero
+    t = ctlTick(c, 4, kNearDiag, 9.0f, 0, 4.0f, 18.0f, 0.0f, 20.0f, 6.0f, 0.0f, 0.1f, kSideBand);
+    assert(t.escape && t.step);                                     // inside the cone: escape, aim swap
+    t = ctlTick(c, 4, kNearDiag, 9.0f, 0, 4.0f, 18.0f, 0.0f, sa, sc, 0.0f, 0.1f, kSideBand);
+    assert(!t.escape && t.step);                                    // release: kind change
+    const float look_held = t.aim_al - sa;
+    assert(look_held < look_plain - 0.5f);                          // clipped against the held cone
+    t = ctlTick(c, 4, kNearDiag, 9.0f, 0, 4.0f, 18.0f, 0.0f, sa, sc, 0.0f, 0.1f, kSideBand);
+    assert(!t.escape && near_eq(t.aim_al - sa, look_plain, 0.02f)); // the jump ...
+    assert(t.step);                                                 // ... is flagged (M-14)
+    t = ctlTick(c, 4, kNearDiag, 9.0f, 0, 4.0f, 18.0f, 0.0f, sa, sc, 0.0f, 0.1f, kSideBand);
+    assert(!t.step);                                                // and steady state is not
+    printf("M-14 clip after a release: %.2f m held -> %.2f m plain, both ticks flagged\n",
+           (double)look_held, (double)look_plain);
+    // The cone switching on under a settled station: the clip goes from the full 9 m to clipped - flagged.
+    Ctl c2; c2.live = lim;
+    t = ctlTick(c2, 4, kNearDiag, 9.0f, 0, 4.0f, 9.0f, 0.0f, sa, sc, 0.0f, 0.1f, kSideBand);
+    assert(!c2.cone_on && near_eq(t.aim_al - sa, 9.0f, 0.01f));
+    t = ctlTick(c2, 4, kNearDiag, 9.0f, 0, 4.0f, 9.0f, 0.0f, sa, sc, 0.0f, 0.1f, kSideBand);
+    assert(!t.step);
+    t = ctlTick(c2, 4, kNearDiag, 9.0f, 0, 4.0f, 18.0f, 0.0f, sa, sc, 0.0f, 0.1f, kSideBand);
+    assert(c2.cone_on && t.cone_toggled && t.step && t.aim_al - sa < 8.9f);
+  }
+
+  // ======================================================================================
+  // 28. V2.5-Evo - 2026-10-06 - AUDITS M-15 / M-14 / M-18 / L-20: A 12 km/h CROSSING SWEEP WITH LAG AND
+  //     VARYING SPEED (kinematic simulation)
+  // ======================================================================================
+  {
+    // The rider's speed swings 9-15 km/h (a 6 s cycle plus +/-0.7 km/h noise, low-passed as the RX's speed is -
+    // it comes off the EMA-filtered track, never a raw per-fix value) with a +/-8 deg wobble, at the
+    // Very Soft preset (tau 5 s, so the lag push hits its 2 x d_follow cap and the capsule is in play), and
+    // the buggy runs two jobs: the F4 transit from behind-right, and mode 2 walking home from a settled F4.
+    // Every tick: the shield property holds; every cone toggle on a non-snapped station carries the aim
+    // step; and the aim never jumps more than 2 m in the world without the step.
+    const float dt = 0.1f, tau = 5.0f, d = 9.0f;
+    for (int job = 0; job < 2; job++) {
+      World w;
+      w.rc = 0.0f;
+      float ah, ph, rf;
+      frontGeom(d, 0, kLateralMin, &ah, &ph, &rf);
+      Ctl c;
+      uint8_t mode;
+      if (job == 0) { placeBuggy(w, -9.0f, 4.0f, 0.0f); c.live = 25.0f; mode = 4; }
+      else          { placeBuggy(w, ah, 13.0f, 0.0f);   c.live = fmStationLimitDeg(ph); mode = 2; }
+      unsigned seed = 2026u + (unsigned)job;
+      int toggles = 0, unflagged_jumps = 0, escapes = 0;
+      float px = 0, py = 0, max_sf = 0.0f, max_jump = 0.0f, v_filt = 9.0f;
+      bool have_prev = false;
+      for (int i = 0; i < 400; i++) {
+        seed = seed * 1103515245u + 12345u;
+        const float noise = ((float)((seed >> 8) % 1401u) / 1000.0f) - 0.7f;
+        v_filt += 0.15f * ((12.0f + 3.0f * sinf(2.0f * 3.14159265f * (float)i * dt / 6.0f) + noise) - v_filt);
+        const float v = v_filt;
+        w.rc = 8.0f * sinf(2.0f * 3.14159265f * (float)i * dt / 9.0f);
+        if (w.rc < 0.0f) w.rc += 360.0f;
+        const float raw = (v / 3.6f) * tau;
+        const float lag = (raw > 2.0f * d) ? 2.0f * d : raw;
+        c.shortfall = raw - lag;
+        if (c.shortfall > max_sf) max_sf = c.shortfall;
+        float al, cr;
+        toRiderFrame(w, &al, &cr);
+        const Tick t = ctlTick(c, mode, kNearDiag, d, 0, 4.0f, v, w.rc, al, cr, lag, dt, kSideBand);
+        assert(shieldPropertyHolds(t, kSideBand));
+        if (t.cone_toggled) { toggles++; if (!t.snapped) assert(t.step); }
+        if (t.escape) escapes++;
+        // the aim in the world (anchor frame -> world: the anchor is lag ahead of the filtered rider)
+        const float cr_ = w.rc * BREMOTE_FMS_DEG2RAD;
+        const float ax = w.rx + (t.aim_al + lag) * sinf(cr_) + t.aim_cr * cosf(cr_);
+        const float ay = w.ry + (t.aim_al + lag) * cosf(cr_) - t.aim_cr * sinf(cr_);
+        if (have_prev && !t.step && !t.snapped) {
+          const float jmp = sqrtf((ax - px) * (ax - px) + (ay - py) * (ay - py));
+          if (jmp > max_jump) max_jump = jmp;
+          if (jmp > 2.0f) unflagged_jumps++;
+        }
+        px = ax; py = ay; have_prev = true;
+        buggyStep(w, t.aim_al + lag, t.aim_cr, (v / 3.6f) * 1.2f, 90.0f, dt);
+        riderStep(w, v / 3.6f, dt);
+      }
+      printf("12 km/h crossing sweep, %s: %d cone toggles (Schmitt), %d escape ticks, lag shortfall up to %.1f m, "
+             "%d unflagged aim jumps > 2 m (largest unflagged move %.2f m)\n",
+             job == 0 ? "F4 transit" : "mode 2 walk home from F4",
+             toggles, escapes, (double)max_sf, unflagged_jumps, (double)max_jump);
+      assert(unflagged_jumps == 0);
+      assert(toggles <= 14);                       // about one on and one off per 6 s cycle, not per tick
+    }
+  }
+
+  printf("largest one-tick lookahead change on an unflagged tick, all simulations: %.3f m\n", (double)g_dlook_max_quiet);
   printf("follow_me_station_test: all assertions passed\n");
   return 0;
 }

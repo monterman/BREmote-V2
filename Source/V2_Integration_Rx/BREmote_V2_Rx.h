@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-06 - FRONT STATIONS BY OFFSET (owner rule): the u16 fm_front_angle_deg is RENAMED IN PLACE to fm_front_ahead_extra_m - same offset, same type, sizeof STAYS 200, SW_VERSION STAYS 36, NO CONFIG WIPE. F4/F5 now sit the lateral floor (13 m) exactly to the side and d_follow + this many metres ahead; the angle and radius are derived (FollowMeStation.h fmFrontStationGeom). 0 = default 7 m, legal 4-10 m. kFmFrontAngleDefaultDeg is replaced by kFmFrontAheadExtraDefaultM / MinM / MaxM; kFmFrontAngleMinDeg (35) and MaxDeg (80) now bound the DERIVED angle.
 // V2.5-Evo - 2026-10-04 - COMMENTS ONLY, M-4: the fm_align_cap field comment now records that the VESC applies its OWN 3 % input deadband, which eats the first ~7.66 command counts - so below ~8 counts the motor does not turn at all, and every low-cap figure in these comments (the "13 is about 5 %" and the "at cap 13: motors 0 / 26" next to it included) overstates the thrust actually delivered. Measured against the owner's PPM map (span 852 us, l_current_max 95 A): 3 counts = inside the deadband = 0 A, 23 counts = 5.9 A. No declaration, default, struct, constant or range in this file is changed: sizeof(confStruct) stays 200, SW_VERSION stays 36, LOG_FILE_FORMAT_VER stays 2, record sizes stay 62 / 90 / 112.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 2 of 4 - THE INSTRUMENT (see PWM.ino, System.ino, Logger.ino, Tools/logreader/bremote_log.py). The enable swap that time-multiplexes the single PPM output between the two motors has never had an observer on it, which is why a failure that starves one channel entirely could not be confirmed or ruled out from the field. THIS FILE ADDS, all of it diagnostic: (1) three saturating volatile uint16_t counters beside g_motor_gate_open - g_swap_fail_ch0 / g_swap_fail_ch1 (per-channel session totals of swaps that lost the mutex) and g_swap_fail_run (the CONSECUTIVE run length right now). volatile, not std::atomic, because this is the g_diag_mux_errors shape exactly: single writer in generatePWM(), single core, read by ?diag and the logger, zeroed by ?diagz - full reasoning at the declaration. (2) kSwapStarveTicks (25) and kSwapRecoverTicks (5) beside the kPivot* block, with their derivations, so STEP 3 needs no confStruct field; kSwapStarveTicks is explicitly COUPLED to the Wire.setTimeOut(3) that landed in STEP 1 and is not justified without it. (3) FM_LOG_GATE_SWAP_FAIL_CH0/CH1_SHIFT+MASK for bits 23-30 of the existing fm_gate_flags word, which were free. NOTHING READS g_swap_fail_run BACK AT THIS STEP - it becomes a control input only in STEP 3, as a separate commit. ZERO log bytes, NO LOG_FILE_FORMAT_VER bump (stays 2), record sizes stay 62 / 90 / 112, every existing log file still parses, and no confStruct change: sizeof stays 200, SW_VERSION stays 36. Cost: 6 bytes of RAM.
 // V2.5-Evo - 2026-10-03 - RX WEB CONSOLE: #include "../Common/SerialTee.h" added immediately after <Arduino.h> and before every one of our own headers, which is where it has to be - it redefines what the word `Serial` means, so anything included ahead of it is silently left out of the capture. Include only; no declaration, default, struct or constant in this file is changed. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -738,10 +739,31 @@ struct confStruct {
     //   Validator: 0, or 35-80; anything in (0, 35) is CLAMPED UP to 35 and says so, never rejected
     //   (a range rejection on the LOAD path wipes the whole config - the 2026-09-03 lesson).
     // ============================================================
-    uint16_t fm_front_angle_deg;       // 0 = use the 45 deg default; else 35-80 deg off dead ahead for F4/F5. Default 0
+    // ============================================================
+    // V2.5-Evo - 2026-10-06 - RENAMED IN PLACE: fm_front_angle_deg -> fm_front_ahead_extra_m.
+    // EVERYTHING ABOVE ABOUT THE ANGLE IS HISTORY (kept as the record of why these 2 bytes exist).
+    // Owner rule: the front stations are placed by SIDE + AHEAD offsets, not angle + radius, so the
+    // angle is now derived and this field became obsolete. It is reused, not replaced: same offset,
+    // same uint16_t, sizeof STAYS 200, SW_VERSION STAYS 36, the stored config is NOT wiped.
+    //
+    // fm_front_ahead_extra_m - how much further AHEAD of the rider a front station (F4/F5) sits,
+    //   beyond the follow distance, in WHOLE METRES. ahead = d_follow + this. Sideways is NOT set
+    //   here: it is the lateral floor exactly (kFmFrontLateralMinM 13 m, or the pass minimum if
+    //   min_dist_m makes that larger) and never more.
+    //     0    = use kFmFrontAheadExtraDefaultM (7). What every fielded board reads in these bytes
+    //            (SW36 without the field: padding = 0), so the default is what they get.
+    //     4-10 = the extra itself. Example: d_follow 9 + 7 = 16 m ahead, 13 m side -> 39 deg, 20.6 m.
+    //   Clamped on load (cfgValidateCrossField), never rejected: 1-3 -> 4; above 10 -> 0 (default),
+    //   because the only source of such a value is a blob that stored an ANGLE here (35-80).
+    //   The derived angle is held at 35-80 deg off dead ahead by capping `ahead` (side does not move,
+    //   except that a follow distance over 22.7 m - longer than the capped radius - pushes the
+    //   station out to d_follow at 35 deg, wider than 13 m: the safe direction),
+    //   so dead ahead stays unreachable: |station| <= 180 - the derived angle.
+    // ============================================================
+    uint16_t fm_front_ahead_extra_m;   // metres ahead of d_follow for F4/F5; 0 = default 7; range 4-10. Default 0 (was fm_front_angle_deg, renamed in place 2026-10-06)
     // (the 2 bytes of tail padding are now spent: 200 used, sizeof 200, nothing left for free.)
 };
-static_assert(sizeof(confStruct) == 200, "confStruct size mismatch — expected 200 bytes (SW36: 192 + fm_return_mode/fm_align_cap/fm_align_influence 3 x u16 = 198, + fm_front_angle_deg (u16) in the 2 B tail pad = 200, no padding left). Update this assert if you change the struct.");  // 2026-10-02 P2: +fm_front_angle_deg(u16 2) took the 2 B TAIL PAD, so sizeof STAYS 200, SW_VERSION STAYS 36 and no config is wiped — the mag_fm_set trick (TX, 2026-09-30). The tail is now FULL: the next scalar is a real SW37 bump. // 192->200 SW35->36: +fm_return_mode(u16 2) +fm_align_cap(u16 2) +fm_align_influence(u16 2) appended at the tail, +2 B tail pad (2026-09-19). The SW35->36 boot-path migration in Common/SPIFFSEngine.h is pinned to 192 (legacy) and 200 (current) and disables itself if either stops matching.
+static_assert(sizeof(confStruct) == 200, "confStruct size mismatch — expected 200 bytes (SW36: 192 + fm_return_mode/fm_align_cap/fm_align_influence 3 x u16 = 198, + fm_front_ahead_extra_m (u16, was fm_front_angle_deg) in the 2 B tail pad = 200, no padding left). Update this assert if you change the struct.");  // 2026-10-06: fm_front_angle_deg renamed in place to fm_front_ahead_extra_m, sizeof unchanged.  // 2026-10-02 P2: +fm_front_angle_deg(u16 2) took the 2 B TAIL PAD, so sizeof STAYS 200, SW_VERSION STAYS 36 and no config is wiped — the mag_fm_set trick (TX, 2026-09-30). The tail is now FULL: the next scalar is a real SW37 bump. // 192->200 SW35->36: +fm_return_mode(u16 2) +fm_align_cap(u16 2) +fm_align_influence(u16 2) appended at the tail, +2 B tail pad (2026-09-19). The SW35->36 boot-path migration in Common/SPIFFSEngine.h is pinned to 192 (legacy) and 200 (current) and disables itself if either stops matching.
 // HISTORY of the size assert as it stood until 2026-09-19 (192 bytes), kept verbatim: 176->184: +fm_engage_dist_m(float 4) +auton_runtime_cap_s(u16 2) +fm_steer_reposition_en(u16 2), all naturally aligned, no tail pad (2026-07-20 SW34)  // 172->176 motor_ramp_s float (2026-06-05 SW33)  // 112->128 Phase A; 128->136 Phase B; 136->152 P7 RTM; 152->156 Bundle B; 156 unchanged BundleE; 156->160 rtm_approach_zone_m (uint16_t + 2-byte tail pad) (2026-04-30); D3 rtm_use_compass + rtm_cog_min_speed_kmh (2x uint8_t) fill the 2-byte tail pad — sizeof stays 160 (2026-05-06); D3-Fix: uint8_t→uint16_t for ConfigService compatibility, sizeof unchanged at 164 (2026-05-06); Bundle 1: dummy_delete_me renamed to rtm_steer_response in-place, sizeof unchanged at 164 (2026-05-08); STAGE 0 PART A: fm_steer_reposition_en renamed to log_level in-place — same offset, same uint16_t, sizeof STILL 184 and SW_VERSION STILL 34, so this flash does NOT reset SPIFFS config (2026-07-25); auton_runtime_cap_s renamed to gps_dyn_model in-place, sizeof STILL 184, SW_VERSION STILL 34 (2026-08-16); 184->192 SW34->35: +mag_orientation(u16 2) +rsvd_u16_1(u16 2) +rsvd_f32_1(float 4), appended at the tail, naturally aligned, no tail pad — the one intended config wipe for this bump (2026-08-16). THIS NUMBER IS THE SSOT: the SW34->35 config-backup migration is pinned to 184 (legacy) and 192 (current) and disables itself if either stops matching, so any prose elsewhere that disagrees with the 192 above is stale and must be corrected rather than trusted.
 confStruct usrConf;
   //The orginal confs were:  ##// confStruct defaultConf = {SW_VERSION, 1, 0, 0, 50, 0, 0, 1500, 2000, 1500, 2000, 1000, 10, 0, 1, 0, 0, 0, 0, 0, 25.0f, 10.0f, 10.0f, 5.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0, 1000, 1, 0, {0, 0, 0}, {0, 0, 0}, {'1','2','3','4','5','6','7','8'}};
@@ -823,7 +845,9 @@ confStruct defaultConf = {SW_VERSION, 2, 22, 1, 50 /*steering_influence: convent
   // V2.5-Evo - 2026-10-02 - P2. The default STAYS 0 on purpose and that is load-bearing: 0 means
   // "use kFmFrontAngleDefaultDeg (45)", and 0 is what every board in the field already reads out of
   // the tail padding this field now occupies. So a flash changes nothing until the rider sets it.
-  0             // fm_front_angle_deg: 0 = the 45 deg default for the front stations F4/F5; else 35-80 deg off dead ahead
+  // V2.5-Evo - 2026-10-06 - the field is now fm_front_ahead_extra_m; 0 still means "the default"
+  // (7 m), for the same load-bearing reason.
+  0             // fm_front_ahead_extra_m: 0 = default 7 m ahead of d_follow for F4/F5; else 4-10 m
 };
 
 // ============================================================
@@ -891,10 +915,20 @@ static const float kFmEngageDistFloorM = 9.5f;   // metres; smallest legal non-z
 // which is self-consistent: at 35 deg the radius has to be 13/sin35 = 22.7 m (about 75 ft), and the
 // clearance is identical. Recorded as an override, not as a rejection of the finding.
 // ============================================================
-static const float kFmFrontAngleDefaultDeg = 45.0f;   // degrees off dead ahead; what fm_front_angle_deg == 0 means
-static const float kFmFrontAngleMinDeg     = 35.0f;   // degrees; owner's settable minimum (override of the review's 40)
-static const float kFmFrontAngleMaxDeg     = 80.0f;   // degrees; beyond this a "front" station is barely ahead of abeam
-static const float kFmFrontLateralMinM     = 13.0f;   // metres; carve 8 m + relative GPS 5 m. r_front x sin(phi) >= this, always
+// V2.5-Evo - 2026-10-06 - FRONT STATIONS BY OFFSET. The angle above is no longer a setting: F4/F5
+// sit kFmFrontLateralMinM (or the pass minimum, if larger) EXACTLY to the side and d_follow +
+// fm_front_ahead_extra_m ahead, and the angle is derived (FollowMeStation.h fmFrontStationGeom).
+// kFmFrontAngleMinDeg / MaxDeg now bound that DERIVED angle, by capping `ahead` - side does not move
+// (except past d_follow 22.7 m, where the radius is d_follow and side grows - see fmFrontStationGeom).
+// At side 13 m the 35 deg minimum caps ahead at 18.6 m. kFmFrontAngleDefaultDeg is gone (nothing
+// means "45 deg" any more); the three kFmFrontAheadExtra* values replace it. Read by both the
+// validator (ConfigService.ino) and the read sites (RTMState.ino), hence here.
+static const float kFmFrontAngleMinDeg       = 35.0f;   // degrees; floor on the DERIVED front angle (owner's 35, override of the review's 40)
+static const float kFmFrontAngleMaxDeg       = 80.0f;   // degrees; ceiling on the DERIVED angle - a front station is always genuinely ahead of abeam
+static const float kFmFrontLateralMinM       = 13.0f;   // metres; carve 8 m + relative GPS 5 m. The front station's side offset IS this (or the pass minimum if larger), exactly
+static const float kFmFrontAheadExtraDefaultM = 7.0f;   // metres; what fm_front_ahead_extra_m == 0 means
+static const float kFmFrontAheadExtraMinM     = 4.0f;   // metres; smallest legal extra (1-3 are raised to this)
+static const float kFmFrontAheadExtraMaxM     = 10.0f;  // metres; largest legal extra (above it reads as the default)
 
 // V2.5-Evo - 2026-10-02 - P2: the station arithmetic (presets, the hard floor, the radius schedule
 // and its pass-lateral floor, the rider-frame coordinates, the slew, the pass-geometry predicates

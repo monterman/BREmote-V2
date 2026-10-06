@@ -1,3 +1,9 @@
+// V2.5-Evo - 2026-10-06 - FRONT STATIONS BY OFFSET (owner rule: side + ahead, not angle + radius). computeFmTarget() and the ENGAGE print resolve F4/F5
+//   with fmFrontStationGeom(): side = lateral_min EXACTLY up to d_follow 22.7 m (13 m, or the pass minimum if min_dist_m raises it), ahead = d_follow + fm_front_ahead_extra_m
+//   (0 = 7, legal 4-10), then phi = atan(side / ahead) and r = hypot(side, ahead), with phi held at 35-80 deg by capping ahead. phi_eff and r_front feed
+//   the same downstream code as before (presets, clamp, st_limit, the radius schedule and PG-1, G-2 lookahead, PG-2/3/4, H-1, M-7, M-8, the divergence
+//   ceiling via fm_station_radius_m, the along-track governor via fm_station_along_m), so nothing downstream changed. kFmFrontRadiusFactor is removed
+//   (no longer used). No throttle path touched. No confStruct size change (field renamed in place), sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - AUDIT M-8 (owner ruling R-1b): the ACTIVE-edge seed for modes 1-3. HOLD -> switch -> squeeze set the live angle to 0, so the
 //   first tick snapped to the rear preset - possibly on the far side - with the buggy still ahead of the rider after F4/F5. Now fmEngageSeedDeg() seeds
 //   modes 1-3 at +/-90 on the buggy's side when the measured angle is ahead of abeam (|psi_meas| > 90), and the station walks home (labelled kProfTransit,
@@ -1933,17 +1939,16 @@ static const float    kFmGapGainKmhPerM      = 0.5f;    // km/h per metre outsid
 static const float    kFmGapMaxKmh           = 15.0f;   // km/h ceiling on the gap term
 
 // ---- P2 STATION CONSTANTS (V2.5-Evo - 2026-10-02) ----
-// Compile-time, like every other kFm* above: the ONE P2 config field is fm_front_angle_deg, which
-// took the struct's tail padding, so there is still no SW_VERSION bump and no SPIFFS reset. The four
-// numbers the ConfigService validator also needs (the angle default / min / max and the 13 m lateral
+// Compile-time, like every other kFm* above: the ONE P2 config field is fm_front_ahead_extra_m
+// (was fm_front_angle_deg, renamed in place 2026-10-06), which took the struct's tail padding, so
+// there is still no SW_VERSION bump and no SPIFFS reset. The numbers the ConfigService validator
+// also needs (the extra's default / min / max, the derived-angle min / max and the 13 m lateral
 // minimum) live in BREmote_V2_Rx.h for the concatenation-order reason stated there; these are read
 // only by this file.
 //
-// kFmFrontRadiusFactor - the beta tester's water-tested front radius, used here as the FLOOR of
-//   r_front rather than as its value: r_front = max(factor x d_follow, kFmFrontLateralMinM / sin phi).
-//   At the owner's 9 m follow distance and 45 deg the lateral term wins (18.4 m vs 18.0 m), and at
-//   35 deg it wins outright (22.7 m, about 75 ft).
-static const float    kFmFrontRadiusFactor   = 2.0f;    // x d_follow; the floor of the front radius
+// V2.5-Evo - 2026-10-06 - kFmFrontRadiusFactor (2 x d_follow, the floor of the old front radius) is
+// REMOVED: the front station is now placed by its side and ahead offsets (fmFrontStationGeom) and
+// the radius is derived from them, so there is no radius factor left to apply.
 // kFmRopeLenM / kFmPassLateralBaseM - the pass minimum. The rope is 7.10 m measured (20 ft plus a
 //   1 m tail, owner 2026-08-28) and the pass adds 3 m to it, so a buggy overtaking the rider is
 //   never closer to his line than the rope is long plus a margin - which is also what keeps the
@@ -4103,16 +4108,23 @@ static void computeFmTarget(double* out_lat, double* out_lng)
   // to the side" is true at every tuning; lateral_min is the 13 m carve-plus-GPS margin, raised to
   // pass_lateral for the same reason.
   // ==========================================================================================
-  float phi = (usrConf.fm_front_angle_deg != 0) ? (float)usrConf.fm_front_angle_deg
-                                                : kFmFrontAngleDefaultDeg;
-  if (phi < kFmFrontAngleMinDeg) phi = kFmFrontAngleMinDeg;
-  if (phi > kFmFrontAngleMaxDeg) phi = kFmFrontAngleMaxDeg;
+  // V2.5-Evo - 2026-10-06 - FRONT STATIONS BY OFFSET (owner rule). The angle + radius lines above
+  // are history: the front station is now placed by two offsets and phi / r are DERIVED -
+  //   side    = lateral_min, EXACTLY (13 m, or the pass minimum when min_dist_m raises it)
+  //   ahead   = d_follow + fm_front_ahead_extra_m (0 = 7 m, legal 4-10), capped so 35 <= phi <= 80
+  //             (past d_follow 22.7 m the radius is d_follow and side grows with it - see the helper)
+  //   phi_eff = atan(side / ahead), r_front = hypot(side, ahead)
+  //   limit   = 180 - phi_eff, the hard floor, unchanged: dead ahead is unreachable, no mode 6
+  // Everything below consumes phi_eff / r_front / st_limit exactly as before.
+  const float ahead_extra = fmFrontAheadExtraM(usrConf.fm_front_ahead_extra_m, kFmFrontAheadExtraDefaultM,
+                                               kFmFrontAheadExtraMinM, kFmFrontAheadExtraMaxM);
   float pass_lateral = kFmPassLateralBaseM;
   if (pass_lateral < usrConf.min_dist_m) pass_lateral = usrConf.min_dist_m;
   float lateral_min = kFmFrontLateralMinM;
   if (lateral_min < pass_lateral) lateral_min = pass_lateral;
-  const float r_front = fmFrontRadiusM(d_follow, kFmFrontRadiusFactor, phi, lateral_min);
-  const float phi_eff = fmFrontAngleEffDeg(phi, r_front, lateral_min);
+  float front_ahead = 0.0f, phi_eff = 0.0f, r_front = 0.0f, front_side = 0.0f;
+  fmFrontStationGeom(d_follow, ahead_extra, lateral_min, kFmFrontAngleMinDeg, kFmFrontAngleMaxDeg,
+                     &front_ahead, &phi_eff, &r_front, &front_side);
   const float st_limit = fmStationLimitDeg(phi_eff);
 
   const uint8_t m_decl   = fm_mode_runtime.load(std::memory_order_relaxed);
@@ -4256,11 +4268,10 @@ static void computeFmTarget(double* out_lat, double* out_lng)
       if (fm_transit_msg_ms == 0 || (st_now - fm_transit_msg_ms) >= kFmTransitMsgMs) {
         fm_transit_msg_ms = st_now;
         Serial.printf("FM [RX] station transit: F%u, psi %.0f -> %.0f deg at <= %.0f deg/s, "
-                      "radius %.1f -> %.1f m, front angle %.0f deg (effective %.0f), clearance %.1f m\n",
+                      "radius %.1f -> %.1f m, front station %.1f m ahead x %.1f m side (%.0f deg off dead ahead)\n",
                       (unsigned)m_eff, (double)fm_station_live_deg, (double)psi_target,
                       (double)kFmStationRateDegPerS, (double)d_follow, (double)r_front,
-                      (double)phi, (double)phi_eff,
-                      (double)(r_front * sinf(phi_eff * BREMOTE_FMS_DEG2RAD)));
+                      (double)front_ahead, (double)front_side, (double)phi_eff);
       }
     }
   } else {
@@ -6551,21 +6562,22 @@ static void runFmLoopBody(unsigned long now)
         // water are on the record before the buggy moves (the plan asks for both per arm).
         float d_f = usrConf.min_dist_m + usrConf.followme_smoothing_band_m;
         if (d_f < 0.5f) d_f = 0.5f;
-        float phi_p = (usrConf.fm_front_angle_deg != 0) ? (float)usrConf.fm_front_angle_deg
-                                                        : kFmFrontAngleDefaultDeg;
-        if (phi_p < kFmFrontAngleMinDeg) phi_p = kFmFrontAngleMinDeg;
-        if (phi_p > kFmFrontAngleMaxDeg) phi_p = kFmFrontAngleMaxDeg;
+        // V2.5-Evo - 2026-10-06 - side + ahead, resolved by the same helper and inputs as computeFmTarget().
+        const float extra_p = fmFrontAheadExtraM(usrConf.fm_front_ahead_extra_m, kFmFrontAheadExtraDefaultM,
+                                                 kFmFrontAheadExtraMinM, kFmFrontAheadExtraMaxM);
         float pass_p = kFmPassLateralBaseM;
         if (pass_p < usrConf.min_dist_m) pass_p = usrConf.min_dist_m;
         float latmin_p = kFmFrontLateralMinM;
         if (latmin_p < pass_p) latmin_p = pass_p;
-        const float rf_p   = fmFrontRadiusM(d_f, kFmFrontRadiusFactor, phi_p, latmin_p);
-        const float phie_p = fmFrontAngleEffDeg(phi_p, rf_p, latmin_p);
-        Serial.printf("FM [RX] FRONT STATION F%u: angle %.0f deg (effective %.1f), radius %.1f m, "
-                      "clearance beside your line %.1f m, pass minimum %.1f m, no-go arc +/-%.1f deg "
-                      "of dead ahead, station walks at <= %.0f deg/s\n",
-                      (unsigned)m, (double)phi_p, (double)phie_p, (double)rf_p,
-                      (double)(rf_p * sinf(phie_p * BREMOTE_FMS_DEG2RAD)), (double)pass_p,
+        float ahead_p = 0.0f, phie_p = 0.0f, rf_p = 0.0f, side_p = 0.0f;
+        fmFrontStationGeom(d_f, extra_p, latmin_p, kFmFrontAngleMinDeg, kFmFrontAngleMaxDeg,
+                           &ahead_p, &phie_p, &rf_p, &side_p);
+        Serial.printf("FM [RX] FRONT STATION F%u: %.1f m ahead (follow %.1f + extra %.0f%s) x %.1f m beside "
+                      "your line, radius %.1f m, %.1f deg off dead ahead, pass minimum %.1f m, no-go arc "
+                      "+/-%.1f deg of dead ahead, station walks at <= %.0f deg/s\n",
+                      (unsigned)m, (double)ahead_p, (double)d_f, (double)extra_p,
+                      (fabsf(ahead_p - (d_f + extra_p)) > 0.05f) ? ", held at the 35 deg minimum" : "",
+                      (double)side_p, (double)rf_p, (double)phie_p, (double)pass_p,
                       (double)phie_p, (double)kFmStationRateDegPerS);
       }
     }

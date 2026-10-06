@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-06 - FRONT STATIONS BY OFFSET: section 1 and the radius inputs of sections 4 and 12
+//   now come from fmFrontStationGeom() (side = the lateral floor exactly, ahead = d_follow + extra) instead
+//   of the removed fmFrontRadiusM() / fmFrontAngleEffDeg(); new section 15 covers the side/ahead rule, the
+//   35-80 deg derived-angle band and the fm_front_ahead_extra_m resolver (0 -> 7, 1-3 -> 4, > 10 -> 7).
 // V2.5-Evo - 2026-10-02 - P2 host test for the Follow-Me station model.
 //   Runs on the PC (see SOP-012 "Host-side unit tests"), exercises the exact header the RX compiles,
 //   and is written so every assertion names the invariant it is defending.
@@ -11,15 +15,29 @@
 #include "../../Source/Common/FollowMeStation.h"
 
 // The RX's own P2 constants (RTMState.ino), repeated here so the test states the numbers it claims.
-static const float kFrontDefault   = 45.0f;    // kFmFrontAngleDefaultDeg
-static const float kFrontMin       = 35.0f;    // kFmFrontAngleMinDeg (owner override of Rex's 40)
+// kFrontDefault: a representative front angle. It was kFmFrontAngleDefaultDeg until 2026-10-06; it is
+// now what the side/ahead rule DERIVES whenever ahead == side, e.g. d_follow 6 + extra 7 = 13 m ahead.
+static const float kFrontDefault   = 45.0f;    // derived angle at ahead == side (13 m x 13 m)
+static const float kFrontMin       = 35.0f;    // kFmFrontAngleMinDeg - floor on the DERIVED angle
+static const float kFrontMax       = 80.0f;    // kFmFrontAngleMaxDeg - ceiling on the DERIVED angle
 static const float kLateralMin     = 13.0f;    // kFmFrontLateralMinM  (carve 8 m + relative GPS 5 m)
 static const float kPassLateral    = 10.1f;    // kFmPassLateralM      (rope 7.1 m + 3 m)
-static const float kRadiusFactor   = 2.0f;     // kFmFrontRadiusFactor
+static const float kExtraDefault   = 7.0f;     // kFmFrontAheadExtraDefaultM
+static const float kExtraMin       = 4.0f;     // kFmFrontAheadExtraMinM
+static const float kExtraMax       = 10.0f;    // kFmFrontAheadExtraMaxM
 static const float kNearDiag       = 45.0f;    // usrConf.near_diag_offset_deg, owner default
 static const float kSlewRate       = 15.0f;    // kFmStationRateDegPerS (provisional)
 
 static bool near_eq(float a, float b, float tol) { return fabsf(a - b) <= tol; }
+
+// V2.5-Evo - 2026-10-06 - the read-site resolution, exactly as computeFmTarget() runs it: resolve the
+// stored extra, then the side/ahead geometry with the RX's own angle band.
+static void frontGeom(float d_follow, uint16_t stored_extra, float side,
+                      float *ahead, float *phi, float *r, float *side_out = nullptr)
+{
+  const float extra = fmFrontAheadExtraM(stored_extra, kExtraDefault, kExtraMin, kExtraMax);
+  fmFrontStationGeom(d_follow, extra, side, kFrontMin, kFrontMax, ahead, phi, r, side_out);
+}
 
 // V2.5-Evo - 2026-10-06 - one REAR-MODE tick of computeFmTarget()'s station chain, in the order the RX
 // runs it (preset -> Schmitt gate -> clamp -> PG-2 ceiling -> fmRearSnap -> snap or slew -> clamp).
@@ -50,46 +68,44 @@ static float sw36Offset(uint8_t mode, float near_diag, bool schmitt)
 int main()
 {
   // ======================================================================================
-  // 1. THE FRONT RADIUS AND THE LATERAL INVARIANT, ENFORCED BOTH WAYS
+  // 1. THE FRONT STATION FROM ITS OFFSETS: SIDE = THE FLOOR, AHEAD = d_follow + EXTRA
   // ======================================================================================
   {
-    // Owner's tuning: min_dist 5 + band 4 = 9 m follow distance.
-    const float dFollow = 9.0f;
+    float ahead, phi, r;
+    // The owner's example: d_follow 9 + default extra 7 -> 16 m ahead, 13 m side, 39.1 deg, 20.6 m.
+    frontGeom(9.0f, 0, kLateralMin, &ahead, &phi, &r);
+    assert(near_eq(ahead, 16.0f, 0.001f));
+    assert(near_eq(phi, 39.09f, 0.02f));
+    assert(near_eq(r, 20.62f, 0.02f));
+    assert(near_eq(r * sinf(phi * BREMOTE_FMS_DEG2RAD), kLateralMin, 0.01f));   // side is the floor, exactly
 
-    // 45 deg default -> max(2 x 9, 13/sin45) = max(18.0, 18.38) = 18.38 m, cross exactly 13.0 m.
-    const float r45 = fmFrontRadiusM(dFollow, kRadiusFactor, kFrontDefault, kLateralMin);
-    assert(near_eq(r45, 18.38f, 0.05f));
-    assert(r45 * sinf(kFrontDefault * BREMOTE_FMS_DEG2RAD) >= kLateralMin - 0.01f);
+    // Extra 4 at d_follow 9 reproduces the old 45 deg station: 13 m ahead x 13 m side, r 18.38.
+    frontGeom(9.0f, 4, kLateralMin, &ahead, &phi, &r);
+    assert(near_eq(ahead, 13.0f, 0.001f) && near_eq(phi, 45.0f, 0.01f) && near_eq(r, 18.38f, 0.01f));
 
-    // 35 deg minimum -> 13/sin35 = 22.67 m (about 75 ft). A TIGHTER ANGLE BUYS A BIGGER RADIUS,
-    // never less clearance: this is the owner's override of Rex's 40 deg recommendation, kept safe
-    // by the radius rather than by refusing the angle.
-    const float r35 = fmFrontRadiusM(dFollow, kRadiusFactor, kFrontMin, kLateralMin);
-    assert(near_eq(r35, 22.67f, 0.05f));
-    assert(r35 * sinf(kFrontMin * BREMOTE_FMS_DEG2RAD) >= kLateralMin - 0.01f);
-    assert(r35 > r45);
+    // Factory tuning 4 + 2 = 6 m with the default 7: 13 m ahead, the same 45 deg station.
+    frontGeom(6.0f, 0, kLateralMin, &ahead, &phi, &r);
+    assert(near_eq(ahead, 13.0f, 0.001f) && near_eq(phi, 45.0f, 0.01f));
 
-    // Factory tuning 4 + 2 = 6 m: the lateral invariant binds, not the 2x factor.
-    const float rFactory = fmFrontRadiusM(6.0f, kRadiusFactor, kFrontDefault, kLateralMin);
-    assert(near_eq(rFactory, 18.38f, 0.05f));
+    // A long follow distance does NOT widen the side and does NOT drop the angle under 35: ahead is
+    // capped at 13 / tan35 = 18.57 m. d_follow 9 + extra 10 = 19 is just over that cap.
+    frontGeom(9.0f, 10, kLateralMin, &ahead, &phi, &r);
+    assert(near_eq(ahead, 18.57f, 0.01f) && near_eq(phi, kFrontMin, 0.001f));
+    assert(near_eq(r * sinf(phi * BREMOTE_FMS_DEG2RAD), kLateralMin, 0.01f));
+    frontGeom(22.0f, 0, kLateralMin, &ahead, &phi, &r);
+    assert(near_eq(ahead, 18.57f, 0.01f) && near_eq(r, 22.67f, 0.02f));       // the old 35 deg radius
+    // Past d_follow 22.67 m the radius cannot go inside the follow distance: r = d_follow, the angle
+    // stays 35, and side grows with it - the safe direction, and reported, never hidden.
+    float sideOut;
+    frontGeom(40.0f, 0, kLateralMin, &ahead, &phi, &r, &sideOut);
+    assert(near_eq(r, 40.0f, 0.001f) && near_eq(phi, kFrontMin, 0.001f));
+    assert(near_eq(sideOut, 40.0f * sinf(kFrontMin * BREMOTE_FMS_DEG2RAD), 0.01f) && sideOut > kLateralMin);
+    assert(near_eq(ahead, 40.0f * cosf(kFrontMin * BREMOTE_FMS_DEG2RAD), 0.01f));
 
-    // A rider who tightens the follow distance does NOT shrink the clearance.
-    const float rTight = fmFrontRadiusM(2.0f, kRadiusFactor, kFrontDefault, kLateralMin);
-    assert(rTight * sinf(kFrontDefault * BREMOTE_FMS_DEG2RAD) >= kLateralMin - 0.01f);
-
-    // A rider who widens it does not lose the 2x shape.
-    const float rWide = fmFrontRadiusM(20.0f, kRadiusFactor, kFrontDefault, kLateralMin);
-    assert(near_eq(rWide, 40.0f, 0.01f));
-
-    // ---- The invariant the OTHER way: a bounded radius raises the ANGLE ----
-    // With the radius computed above, phi_eff == phi (a no-op).
-    assert(near_eq(fmFrontAngleEffDeg(kFrontDefault, r45, kLateralMin), kFrontDefault, 0.01f));
-    assert(near_eq(fmFrontAngleEffDeg(kFrontMin,     r35, kLateralMin), kFrontMin,     0.01f));
-    // If the radius were ever bounded at 20 m, 35 deg is no longer enough and the angle rises to
-    // asin(13/20) = 40.54 deg - Rex's B2 figure, arrived at from the other side.
-    assert(near_eq(fmFrontAngleEffDeg(kFrontMin, 20.0f, kLateralMin), 40.54f, 0.05f));
-    // And the clearance is then honoured by the angle: 20 * sin(40.54) = 13.0 m.
-    assert(20.0f * sinf(40.54f * BREMOTE_FMS_DEG2RAD) >= kLateralMin - 0.02f);
+    // min_dist_m raising the pass minimum above 13 m raises the side with it - and nothing more.
+    frontGeom(9.0f, 0, 20.0f, &ahead, &phi, &r);
+    assert(near_eq(ahead, 16.0f, 0.001f));
+    assert(near_eq(r * sinf(phi * BREMOTE_FMS_DEG2RAD), 20.0f, 0.01f));
   }
 
   // ======================================================================================
@@ -152,10 +168,12 @@ int main()
   {
     const float phi = kFrontDefault;
 
-    // ---- Owner's tuning: d_follow 9, r_front 18.38 ----
+    // ---- d_follow 9, extra 4: 13 x 13 m, r_front 18.38 (V2.5-Evo - 2026-10-06: from fmFrontStationGeom) ----
     {
       const float d = 9.0f;
-      const float r = fmFrontRadiusM(d, kRadiusFactor, phi, kLateralMin);
+      float ah, ph, r;
+      frontGeom(d, 4, kLateralMin, &ah, &ph, &r);
+      assert(near_eq(ph, phi, 0.01f));
       // Rear presets sit at exactly d_follow - today's geometry, unchanged.
       assert(near_eq(fmStationRadiusM(  0.0f, d, r, kNearDiag, kPassLateral, phi), d, 0.001f));
       assert(near_eq(fmStationRadiusM(+45.0f, d, r, kNearDiag, kPassLateral, phi), d, 0.001f));
@@ -169,10 +187,12 @@ int main()
       assert(rAbeam >= kPassLateral);
     }
 
-    // ---- Factory tuning 4 + 2 = 6: abeam 12.2 m, still over the pass minimum ----
+    // ---- Factory tuning 4 + 2 = 6, default extra 7 (13 x 13 m): abeam 12.2 m, still over the pass minimum ----
     {
       const float d = 6.0f;
-      const float r = fmFrontRadiusM(d, kRadiusFactor, phi, kLateralMin);
+      float ah, ph, r;
+      frontGeom(d, 0, kLateralMin, &ah, &ph, &r);
+      assert(near_eq(ph, phi, 0.01f));
       const float rAbeam = fmStationRadiusM(90.0f, d, r, kNearDiag, kPassLateral, phi);
       assert(near_eq(rAbeam, 12.19f, 0.05f));
       assert(rAbeam >= kPassLateral);
@@ -180,25 +200,29 @@ int main()
 
     // ---- Degenerate tuning d_follow 0.5: the RAMP alone would be 9.44 m at abeam, UNDER the
     //      10.1 m pass minimum. PG-1's floor is what stops the station inviting a close pass. ----
+    // V2.5-Evo - 2026-10-06: at d 0.5 + extra 4 the derived station is 4.5 m ahead x 13 m side (70.9 deg,
+    //   r 13.76); the ramp is shallower than at 45 deg but still under the minimum at abeam.
     {
       const float d = 0.5f;
-      const float r = fmFrontRadiusM(d, kRadiusFactor, phi, kLateralMin);
-      const float ramp_only = d + (r - d) * ((90.0f - kNearDiag) / (135.0f - kNearDiag));
+      float ah, ph, r;
+      frontGeom(d, 4, kLateralMin, &ah, &ph, &r);
+      const float lim0 = fmStationLimitDeg(ph);
+      const float ramp_only = d + (r - d) * ((90.0f - kNearDiag) / (lim0 - kNearDiag));
       assert(ramp_only < kPassLateral);                       // the hazard is real at this tuning
-      const float rAbeam = fmStationRadiusM(90.0f, d, r, kNearDiag, kPassLateral, phi);
+      const float rAbeam = fmStationRadiusM(90.0f, d, r, kNearDiag, kPassLateral, ph);
       assert(near_eq(rAbeam, kPassLateral, 0.01f));           // floored to exactly the minimum
     }
 
     // ---- PG-1 as a sweep: every station from abeam to the floor keeps cross >= pass_lateral,
-    //      at every one of these tunings and at both front angles. ----
+    //      at every one of these tunings and at every legal extra (V2.5-Evo - 2026-10-06: the angle
+    //      and radius are DERIVED per tuning by fmFrontStationGeom, as the RX does). ----
     const float dFollows[5] = { 0.5f, 2.0f, 6.0f, 9.0f, 20.0f };
-    const float angles[2]   = { kFrontDefault, kFrontMin };
-    for (int ai = 0; ai < 2; ai++) {
-      const float a   = angles[ai];
-      const float lim = fmStationLimitDeg(a);
+    for (int ai = 4; ai <= 10; ai++) {
       for (int di = 0; di < 5; di++) {
         const float d = dFollows[di];
-        const float r = fmFrontRadiusM(d, kRadiusFactor, a, kLateralMin);
+        float ah, a, r;
+        frontGeom(d, (uint16_t)ai, kLateralMin, &ah, &a, &r);
+        const float lim = fmStationLimitDeg(a);
         assert(r >= d);                                        // the radius never goes inward
         float prev = -1.0f;
         for (float psi = 0.0f; psi <= lim + 0.001f; psi += 1.0f) {
@@ -223,6 +247,8 @@ int main()
         float alongL, crossL;
         fmStationAlongCrossM(lim, rLim, &alongL, &crossL);
         assert(crossL >= kLateralMin - 0.02f);
+        assert(near_eq(crossL, kLateralMin, 0.02f));           // 2026-10-06: and never MORE than the floor
+        assert(near_eq(alongL, ah, 0.02f));                    // ahead is what the geometry said
         assert(alongL > 0.0f);                                 // a front station really is ahead
       }
     }
@@ -530,7 +556,10 @@ int main()
     const float dF   = 9.0f;
     const float phi  = kFrontDefault;
     const float lim  = fmStationLimitDeg(phi);
-    const float rF   = fmFrontRadiusM(dF, kRadiusFactor, phi, kLateralMin);
+    // V2.5-Evo - 2026-10-06: d_follow 9 + extra 4 = 13 m ahead x 13 m side, the scenario's 45 deg station.
+    float aF, phF, rF;
+    frontGeom(dF, 4, kLateralMin, &aF, &phF, &rF);
+    assert(near_eq(phF, phi, 0.01f));
     // Before the turn: course North, buggy settled on F4 = 13 m ahead, 13 m right = bearing 45.
     float along, cross;
     fmBuggyAlongCrossM(0.0f, 45.0f, rF, &along, &cross);
@@ -695,6 +724,89 @@ int main()
       }
     }
     printf("M-8 HOLD->switch->squeeze sequences: %ld\n", seq);
+  }
+
+  // ======================================================================================
+  // 15. V2.5-Evo - 2026-10-06 - FRONT STATIONS BY OFFSET: SIDE = FLOOR, AHEAD = FORMULA, ANGLE BAND
+  // ======================================================================================
+  {
+    // ---- the stored-field resolver: 0 -> 7, 1-3 -> 4, 4-10 as is, above 10 -> 7 ----
+    assert(fmFrontAheadExtraM(0, kExtraDefault, kExtraMin, kExtraMax) == 7.0f);   // every fielded SW36 board
+    for (uint16_t v = 1; v <= 3; v++) assert(fmFrontAheadExtraM(v, kExtraDefault, kExtraMin, kExtraMax) == 4.0f);
+    for (uint16_t v = 4; v <= 10; v++) assert(fmFrontAheadExtraM(v, kExtraDefault, kExtraMin, kExtraMax) == (float)v);
+    for (uint32_t v = 11; v <= 65535; v++) {
+      assert(fmFrontAheadExtraM((uint16_t)v, kExtraDefault, kExtraMin, kExtraMax) == 7.0f);
+    }
+    // An old Front Station Angle still in the blob (0 or 35-80 deg) never reads as a distance.
+    assert(fmFrontAheadExtraM(45, kExtraDefault, kExtraMin, kExtraMax) == 7.0f);
+    assert(fmFrontAheadExtraM(35, kExtraDefault, kExtraMin, kExtraMax) == 7.0f);
+    assert(fmFrontAheadExtraM(80, kExtraDefault, kExtraMin, kExtraMax) == 7.0f);
+
+    // ---- the geometry, swept: every d_follow 0.5..60 m, every stored extra 0..12, four side floors ----
+    const float ahead_hi_13 = kLateralMin / tanf(kFrontMin * BREMOTE_FMS_DEG2RAD);   // 18.57 m
+    assert(near_eq(ahead_hi_13, 18.566f, 0.01f));
+    const float sides[4] = { kLateralMin, 15.0f, 20.0f, 30.0f };
+    long cases = 0;
+    for (int si = 0; si < 4; si++) {
+      const float side = sides[si];
+      const float hi = side / tanf(kFrontMin * BREMOTE_FMS_DEG2RAD);
+      const float lo = side / tanf(kFrontMax * BREMOTE_FMS_DEG2RAD);
+      for (int stored = 0; stored <= 12; stored++) {
+        const float extra = fmFrontAheadExtraM((uint16_t)stored, kExtraDefault, kExtraMin, kExtraMax);
+        float prev_ahead = -1.0f;
+        const float r_cap = side / sinf(kFrontMin * BREMOTE_FMS_DEG2RAD);   // 22.67 m at side 13
+        for (float d = 0.5f; d <= 60.0f; d += 0.5f) {
+          float ahead, phi, r, sd;
+          frontGeom(d, (uint16_t)stored, side, &ahead, &phi, &r, &sd);
+          assert(near_eq(r * sinf(phi * BREMOTE_FMS_DEG2RAD), sd, 0.01f));   // side output is the real one
+          assert(r >= d - 0.0001f);                                     // never inside the follow distance
+          if (d <= r_cap) {
+            // SIDE IS THE FLOOR, EXACTLY: never less (clearance) and never more (owner: "no more than 13 m").
+            assert(near_eq(sd, side, 0.01f));
+            // AHEAD IS THE FORMULA, held only by the angle band.
+            const float want = d + extra;
+            if (want <= hi && want >= lo) assert(near_eq(ahead, want, 0.0001f));
+            else if (want > hi)           assert(near_eq(ahead, hi, 0.001f) && ahead < want);
+            else                          assert(near_eq(ahead, lo, 0.001f));
+            // phi / r CONSISTENT with side and ahead.
+            assert(near_eq(phi, atan2f(side, ahead) / BREMOTE_FMS_DEG2RAD, 0.01f));
+            assert(near_eq(r, sqrtf(side * side + ahead * ahead), 0.001f));
+          } else {
+            // Long follow distance: r = d_follow at the 35 deg angle, side WIDER than the floor.
+            assert(near_eq(r, d, 0.0001f) && near_eq(phi, kFrontMin, 0.0001f));
+            assert(sd >= side - 0.001f);
+          }
+          assert(ahead >= lo - 0.001f);                                 // genuinely ahead of abeam
+          assert(near_eq(r * cosf(phi * BREMOTE_FMS_DEG2RAD), ahead, 0.01f));
+          // THE ANGLE BAND: dead ahead stays unreachable (35 deg floor), and the station is never abeam.
+          assert(phi >= kFrontMin - 0.0001f && phi <= kFrontMax + 0.0001f);
+          assert(fmStationLimitDeg(phi) <= 180.0f - kFrontMin + 0.0001f);
+          // Ahead never shrinks as the follow distance grows.
+          assert(ahead >= prev_ahead - 0.0001f);
+          prev_ahead = ahead;
+          // THE FULL CHAIN: preset 4/5 at the derived angle, radius schedule at the limit, station point.
+          for (uint8_t m = 4; m <= 5; m++) {
+            const float pre = fmStationPresetDeg(m, kNearDiag, phi);
+            assert(near_eq(fmClampStationDeg(pre, phi), pre, 0.0001f));
+            const float pass = (side > kLateralMin) ? side : kPassLateral;   // the RX: side > 13 only when min_dist_m raised the pass minimum to it
+            const float rr = fmStationRadiusM(pre, d, r, kNearDiag, pass, phi);
+            float sa, sc;
+            fmStationAlongCrossM(pre, rr, &sa, &sc);
+            assert(near_eq(fabsf(sc), sd, 0.02f));                      // the station is `side` to the side
+            assert(fabsf(sc) >= side - 0.02f);                          // and never inside the floor
+            assert(near_eq(sa, ahead, 0.02f));                          // and `ahead` ahead
+            assert((m == 4) ? (sc > 0.0f) : (sc < 0.0f));               // F4 right, F5 left
+          }
+          cases++;
+        }
+      }
+    }
+    // Degenerate inputs stay inside the band.
+    float ah, ph, rr;
+    fmFrontStationGeom(-5.0f, -3.0f, 0.0f, kFrontMin, kFrontMax, &ah, &ph, &rr, nullptr);
+    assert(ph >= kFrontMin - 0.0001f && ph <= kFrontMax + 0.0001f && ah > 0.0f && rr > 0.0f);
+    fmFrontStationGeom(9.0f, 7.0f, 13.0f, kFrontMin, kFrontMax, nullptr, nullptr, nullptr, nullptr);   // null-safe
+    printf("front station side/ahead: %ld cases\n", cases);
   }
 
   printf("follow_me_station_test: all assertions passed\n");

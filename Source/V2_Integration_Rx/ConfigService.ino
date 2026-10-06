@@ -1,4 +1,5 @@
 // V2.5-Evo - 2026-10-04 - L-2: cfgValidateCrossField() now CLAMPS fm_align_cap too - outside the validated 8-80 range it falls back to the shipped default 13 (never 0, which would stop the buggy, and never above 80). It was the one of SW36's three fields with no cross-field load clamp while fm_return_mode and fm_align_influence had one. Same reasoning as those two: this validator runs on the LOAD path, so a range rejection there fails the load and falls back to defaults - the config/pairing/compass-calibration wipe this function exists to prevent. Not reachable from a valid stored value; consistency and the corrupt-blob case. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
+// V2.5-Evo - 2026-10-06 - FRONT STATIONS BY OFFSET: the kCfgFields row fm_front_angle_deg becomes fm_front_ahead_extra_m (same u16, same offset - a rename in place, sizeof stays 200, SW_VERSION stays 36, no config wipe), row range 0-10 m. cfgValidateCrossField() swaps the angle clamps for the extra's: 0 = default 7 kept as 0; 1-3 raised to 4 with a NOTE; above 10 reset to 0 (the default) with a NOTE, since such a value can only be an old ANGLE (35-80) still in a blob. Clamps, never rejections (LOAD path). ?get / ?set use the new name.
 // V2.5-Evo - 2026-10-02 - P2 (FRONT STATIONS F4/F5), part 2 of 3: one new kCfgFields row, fm_front_angle_deg (u16, 0 = use the 45 deg default, else 35-80 deg off dead ahead), for the field that took the struct's 2 tail padding bytes - sizeof stays 200, SW_VERSION stays 36, no config is wiped. followme_mode's range goes 0-3 -> 0-5 (1 rear-right, 2 behind, 3 rear-left, 4 FRONT-RIGHT, 5 FRONT-LEFT; there is deliberately no 6 and no dead-ahead station). cfgValidateCrossField() gains the front-angle CLAMPS: (0, 35) is raised to 35 with a NOTE naming the 13 m lateral margin, and anything above 80 is lowered to 80 - clamps, never rejections, because this validator runs on the LOAD path and a range rejection there wipes the whole config (the 2026-09-03 lesson), and because the field lives in bytes an older firmware never wrote, so a stored blob may hold anything there. Both corrections move the front station FURTHER from the rider's line.
 // V2.5-Evo - 2026-09-19 - DEEP LOG level 5: the log_level row's max is raised 4 -> 5 (5 = Everything, the 109 B test-session record), and cfgValidateCrossField() CLAMPS log_level > 5 down to 5 - a clamp, never a rejection, because this validator runs on the LOAD path and a range rejection there wipes the whole config (the 2026-09-03 lesson, same as fm_return_mode). Same u16 slot, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - SEPARATE RAMPS: the kCfgFields row "rsvd_f32_1" (float, RESERVED, -1e6..1e6) becomes "auto_ramp_s" (float, 0-4.0, 2 dp: 0 = the automatic modes ride motor_ramp_s as before, 0.2-4.0 = their own rise-limit), plus CLAMPS in cfgValidateCrossField(): (0, 0.2) -> 0.2 with a NOTE, NaN / negative -> 0, above 4.0 -> 4.0. The confStruct slot is the SAME slot renamed in place, so sizeof stays 200, SW_VERSION stays 36 and no config is wiped; every stored blob reads 0 = inherit there.
@@ -221,7 +222,11 @@ const CfgFieldSpec kCfgFields[] = {
   // this function runs on the LOAD path and a range rejection there wipes the whole config (the
   // 2026-09-03 lesson). The clamp only ever RAISES the angle, and a larger angle puts the front
   // station further from the rider's line, so there is no version of it that makes the water worse.
-  {"fm_front_angle_deg",     CFG_U16,   offsetof(confStruct, fm_front_angle_deg),     true, false, true, 0.0f, kFmFrontAngleMaxDeg, 0, false}
+  // V2.5-Evo - 2026-10-06 - RENAMED IN PLACE to fm_front_ahead_extra_m (the comment above is the
+  // history of the slot). Whole metres a front station sits AHEAD beyond d_follow; sideways is the
+  // 13 m floor, not a setting. 0 = default 7; legal 4-10. The row accepts 0-10 so 0 round-trips; the
+  // 1-3 gap and any stored value above 10 are CLAMPED in cfgValidateCrossField(), never rejected.
+  {"fm_front_ahead_extra_m", CFG_U16,   offsetof(confStruct, fm_front_ahead_extra_m), true, false, true, 0.0f, kFmFrontAheadExtraMaxM, 0, false}
 };
 
 const size_t kCfgFieldCount = sizeof(kCfgFields) / sizeof(kCfgFields[0]);
@@ -254,35 +259,32 @@ bool cfgValidateCrossField(confStruct &candidate, String &err)
   // rest of the config survives. Not reachable from a valid stored value; it is for consistency and
   // for the corrupt-blob case.
   if (candidate.fm_align_cap < 8 || candidate.fm_align_cap > 80) candidate.fm_align_cap = 13;
-  // ---- V2.5-Evo - 2026-10-02 - P2: fm_front_angle_deg, clamped on the same terms ----
-  // Legal shapes: exactly 0 (= use the 45 deg default) or kFmFrontAngleMinDeg..kFmFrontAngleMaxDeg.
-  // Anything in the (0, 35) gap is RAISED to 35 and announced; anything above the ceiling is lowered
-  // to it silently (that one can only arrive from a stored blob - the row and the web page refuse it
-  // first). CLAMPS, NEVER REJECTIONS: this runs on the LOAD path, and the field lives in what used
-  // to be the struct's tail padding, so a blob written by an older firmware can legitimately hold
-  // anything at all in those two bytes. Rejecting would wipe pairing and the compass calibration
-  // over a field the older firmware never even had.
-  // THE CORRECTION IS ALWAYS IN THE SAFE DIRECTION, in both branches. Raising a too-small angle
-  // moves the front station further off the rider's line. Lowering a too-large one moves it further
-  // from dead ahead, i.e. closer to abeam, which is also further from the rider's path. Neither can
-  // put the station inside the no-go arc, which is separately and unconditionally clamped at the
-  // read site (|station| <= 180 - the effective angle).
-  if (candidate.fm_front_angle_deg > (uint16_t)kFmFrontAngleMaxDeg)
-    candidate.fm_front_angle_deg = (uint16_t)kFmFrontAngleMaxDeg;
-  if (candidate.fm_front_angle_deg != 0 &&
-      candidate.fm_front_angle_deg < (uint16_t)kFmFrontAngleMinDeg)
+  // ---- V2.5-Evo - 2026-10-06 - fm_front_ahead_extra_m (was fm_front_angle_deg), clamped on the same terms ----
+  // Legal shapes: exactly 0 (= use the 7 m default) or kFmFrontAheadExtraMinM..kFmFrontAheadExtraMaxM.
+  // CLAMPS, NEVER REJECTIONS: this runs on the LOAD path, and these two bytes were the struct's tail
+  // padding until 2026-10-02 and an ANGLE (0 or 35-80) until 2026-10-06, so a stored blob may hold
+  // anything. Rejecting would wipe pairing and the compass calibration over one obsolete number.
+  //   above 10 -> 0 (the default). Only an old angle can be here (the row refuses 11+ on ?set), and
+  //               an angle is not a distance, so it reads as "default", not as "as far as allowed".
+  //   1-3      -> 4, the nearest legal value.
+  // NEITHER CORRECTION CHANGES THE SIDEWAYS CLEARANCE: that is the 13 m floor at the read site, not
+  // this field. The derived angle is held at 35-80 deg there too, by capping `ahead`.
+  if (candidate.fm_front_ahead_extra_m > (uint16_t)kFmFrontAheadExtraMaxM)
   {
-    const unsigned asked = (unsigned)candidate.fm_front_angle_deg;
-    candidate.fm_front_angle_deg = (uint16_t)kFmFrontAngleMinDeg;
-    Serial.printf("NOTE: Front Station Angle %u deg raised to the %u deg minimum.\n",
-                  asked, (unsigned)kFmFrontAngleMinDeg);
-    Serial.printf("      The buggy always keeps at least %.0f m beside your line, and it keeps it by\n",
-                  (double)kFmFrontLateralMinM);
-    Serial.printf("      sitting FURTHER AWAY at a smaller angle (%u deg is about %.0f m out), never closer.\n",
-                  (unsigned)kFmFrontAngleMinDeg,
-                  (double)(kFmFrontLateralMinM / sinf(kFmFrontAngleMinDeg * 0.01745329f)));
-    Serial.println("      Below the minimum that margin would need a radius beyond radio and GPS");
-    Serial.println("      confidence, so the angle is held instead. Set 0 for the 45 deg default.");
+    const unsigned stale = (unsigned)candidate.fm_front_ahead_extra_m;
+    candidate.fm_front_ahead_extra_m = 0;
+    Serial.printf("NOTE: Front Station Extra Ahead %u m is above the %u m maximum (an old Front Station\n",
+                  stale, (unsigned)kFmFrontAheadExtraMaxM);
+    Serial.printf("      Angle value) - reset to 0 = the %u m default. Sideways stays %.0f m.\n",
+                  (unsigned)kFmFrontAheadExtraDefaultM, (double)kFmFrontLateralMinM);
+  }
+  if (candidate.fm_front_ahead_extra_m != 0 &&
+      candidate.fm_front_ahead_extra_m < (uint16_t)kFmFrontAheadExtraMinM)
+  {
+    const unsigned asked = (unsigned)candidate.fm_front_ahead_extra_m;
+    candidate.fm_front_ahead_extra_m = (uint16_t)kFmFrontAheadExtraMinM;
+    Serial.printf("NOTE: Front Station Extra Ahead %u m raised to the %u m minimum. Set 0 for the %u m default.\n",
+                  asked, (unsigned)kFmFrontAheadExtraMinM, (unsigned)kFmFrontAheadExtraDefaultM);
   }
   // V2.5-Evo - 2026-09-19 - log_level: 5 (Everything) is the top level now; anything above it means
   // "the most detail there is", so it clamps to 5 rather than failing the load. Same reasoning.

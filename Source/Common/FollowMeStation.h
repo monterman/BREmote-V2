@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-06 - FRONT STATIONS BY OFFSET: fmFrontStationGeom() / fmFrontAheadExtraM() replace
+//   fmFrontRadiusM() / fmFrontAngleEffDeg(). F4/F5 sit `side` (the lateral floor, exactly) to the side
+//   and d_follow + fm_front_ahead_extra_m ahead; phi and r are derived. phi stays in 35..80 deg.
 // V2.5-Evo - 2026-10-02 - P2: the Follow-Me STATION MODEL - one live station angle around the
 //   rider, five presets, and the pass geometry that lets the buggy take a station AHEAD of the
 //   rider without ever crossing the rider's line.
@@ -90,54 +93,96 @@ static inline bool fmStationIsFront(float psi_deg)
   return fabsf(psi_deg) > 90.0f;
 }
 
-// fmFrontRadiusM - the radius of a FRONT station, in metres.
-//
-// Two requirements, and the larger wins:
-//   1. Robert's water-tested shape: at least radius_factor (2.0) x the follow distance, so the
-//      front station is genuinely further out than the rear one.
-//   2. THE LATERAL INVARIANT: r * sin(front_angle) >= lateral_min_m. At the default 45 deg and the
-//      owner's 9 m follow distance that is max(18.0, 13/sin45) = 18.4 m, giving exactly 13.0 m of
-//      clearance beside the rider's line. At the 35 deg minimum it is max(18.0, 13/sin35) = 22.7 m
-//      (about 75 ft): a RIDER WHO ASKS FOR A TIGHTER ANGLE GETS A BIGGER RADIUS, never less
-//      clearance. lateral_min_m is Rex B2's 13 m = an 8 m carve plus 5 m of relative GPS error.
-//
-// Inputs: d_follow_m > 0; radius_factor >= 1; front_angle_deg in (0, 90]; lateral_min_m >= 0.
-// Returns: the radius in metres, never below d_follow_m.
-static inline float fmFrontRadiusM(float d_follow_m, float radius_factor,
-                                   float front_angle_deg, float lateral_min_m)
-{
-  if (d_follow_m < 0.5f)      d_follow_m = 0.5f;
-  if (radius_factor < 1.0f)   radius_factor = 1.0f;
-  if (front_angle_deg < 1.0f) front_angle_deg = 1.0f;
-  if (front_angle_deg > 90.0f) front_angle_deg = 90.0f;
+// V2.5-Evo - 2026-10-06 - fmFrontAheadExtraM / fmFrontStationGeom REPLACE fmFrontRadiusM and
+// fmFrontAngleEffDeg. OWNER RULE: a front station is placed by two OFFSETS from the rider, not by an
+// angle and a radius - SIDEWAYS = the lateral clearance floor exactly (13 m, or the pass minimum if
+// that is larger), never more; AHEAD = d_follow + fm_front_ahead_extra_m. The angle and the radius
+// the rest of this header works in are DERIVED from those two numbers.
 
-  float r = radius_factor * d_follow_m;
-  const float s = sinf(front_angle_deg * BREMOTE_FMS_DEG2RAD);
-  if (s > 0.0001f) {
-    const float r_lat = lateral_min_m / s;
-    if (r_lat > r) r = r_lat;
-  }
-  if (r < d_follow_m) r = d_follow_m;
-  return r;
+// fmFrontAheadExtraM - resolve the stored fm_front_ahead_extra_m (whole metres) to the metres used.
+//   0                   -> default_m (7). Every board in the field reads 0 in these bytes.
+//   1 .. min_m-1        -> min_m (4): the nearest legal value.
+//   above max_m (10)    -> default_m. Not "max": the only way such a value can be here is a blob
+//                          written while these two bytes were fm_front_angle_deg (0 or 35-80 deg),
+//                          and an angle is not a distance - it reads as "use the default".
+// Inputs: the raw u16 and the three bounds (the controller supplies them). Returns metres.
+static inline float fmFrontAheadExtraM(uint16_t stored_m, float default_m, float min_m, float max_m)
+{
+  if (stored_m == 0) return default_m;
+  const float x = (float)stored_m;
+  if (x > max_m) return default_m;
+  if (x < min_m) return min_m;
+  return x;
 }
 
-// fmFrontAngleEffDeg - the front angle actually used, after the lateral invariant is enforced THE
-// OTHER WAY. fmFrontRadiusM() honours the rider's angle by growing the radius; if the radius is
-// ever bounded for some other reason, the ANGLE has to rise instead so the clearance is kept:
-// phi_eff = max(phi, asin(lateral_min / r_front)). With the radius computed by the function above
-// this is a no-op (asin(lateral_min / r_front) <= phi by construction); it exists so that a future
-// radius ceiling cannot silently shrink the clearance. At a 20 m bounded radius it reads 40.5 deg,
-// which is Rex's B2 recommendation arrived at from the other side.
-static inline float fmFrontAngleEffDeg(float front_angle_deg, float r_front_m, float lateral_min_m)
+// fmFrontStationGeom - the FRONT station from its two offsets, in the rider's frame.
+//   side  = side_m, EXACTLY. The caller passes the lateral clearance floor (13 m carve + GPS, raised
+//           to the pass minimum when min_dist_m makes that larger). Never narrowed; widened only in
+//           the one case named below (a follow distance over 22.7 m).
+//   ahead = d_follow_m + ahead_extra_m, then held inside the angle band (below).
+//   phi   = atan(side / ahead), degrees off dead ahead, measured at the rider.
+//   r     = sqrt(side^2 + ahead^2).
+// So r * sin(phi) == side and r * cos(phi) == ahead: the station point fmStationAlongCrossM() makes
+// at psi = 180 - phi, radius r is exactly `ahead` ahead and `side` to the side.
+// Example: d_follow 9 + extra 7 -> ahead 16, side 13 -> phi 39.1 deg, r 20.6 m.
+//
+// THE ANGLE BAND, AND WHY IT IS HELD BY MOVING `AHEAD`, NOT `SIDE`. The owner's rule fixes side, so
+// the only free number is ahead:
+//   phi >= phi_min_deg (35, the owner's minimum): ahead <= side / tan(35) = 18.6 m at side 13. A long
+//          follow distance or a large extra is capped there. Two reasons. (1) The "dead ahead is
+//          unreachable" floor (|psi| <= 180 - phi) stays where the owner set it. (2) An error of theta
+//          in the rider's course estimate swings the station about the rider and moves its true
+//          side offset by about ahead x sin(theta) - so the clearance a course error can eat grows
+//          with `ahead`, not with `side`. Holding ahead <= 1.43 x side keeps that ratio exactly where
+//          the old 35 deg minimum held it (10 deg of course error costs at most 3.2 m of the 13).
+//   phi <= phi_max_deg (80): ahead >= side / tan(80) = 2.3 m at side 13, so a front station is always
+//          genuinely ahead of abeam. Unreachable from the legal config (d_follow >= 0.5, extra >= 4);
+//          it is the belt for a degenerate caller.
+//
+// THE ONE CASE WHERE SIDE IS NOT EXACTLY THE FLOOR. If d_follow is longer than the capped radius
+// (side / sin(35) = 22.7 m, about 74 ft, at side 13), the radius is raised to d_follow, because the
+// station radius schedule (fmStationRadiusM) never puts any station inside the follow distance and
+// is monotone from the rear station out to the front one. The angle stays at 35, so side and ahead
+// both grow in proportion: side > the floor, the SAFE direction. This function returns those real
+// numbers (*side_out_m, *ahead_m, *r_m are the station fmStationRadiusM will actually produce), so
+// nothing prints a 13 m that is not true. The owner's 9 m follow distance is nowhere near it.
+// Inputs: d_follow_m (floored 0.5), ahead_extra_m (floored 0), side_m (floored 0.5),
+//         phi_min_deg / phi_max_deg (clamped to 1..89, max >= min).
+// Outputs (any may be null): *ahead_m, *phi_deg, *r_m, *side_out_m. No side effects.
+static inline void fmFrontStationGeom(float d_follow_m, float ahead_extra_m, float side_m,
+                                      float phi_min_deg, float phi_max_deg,
+                                      float *ahead_m, float *phi_deg, float *r_m, float *side_out_m)
 {
-  if (front_angle_deg < 1.0f)  front_angle_deg = 1.0f;
-  if (front_angle_deg > 90.0f) front_angle_deg = 90.0f;
-  if (r_front_m <= 0.0f || lateral_min_m <= 0.0f) return front_angle_deg;
+  if (d_follow_m < 0.5f)    d_follow_m = 0.5f;
+  if (ahead_extra_m < 0.0f) ahead_extra_m = 0.0f;
+  if (side_m < 0.5f)        side_m = 0.5f;
+  if (phi_min_deg < 1.0f)   phi_min_deg = 1.0f;
+  if (phi_min_deg > 89.0f)  phi_min_deg = 89.0f;
+  if (phi_max_deg < phi_min_deg) phi_max_deg = phi_min_deg;
+  if (phi_max_deg > 89.0f)  phi_max_deg = 89.0f;
 
-  float ratio = lateral_min_m / r_front_m;
-  if (ratio > 1.0f) ratio = 1.0f;              // clearance unreachable at this radius: 90 deg, i.e. abeam
-  const float need_deg = asinf(ratio) / BREMOTE_FMS_DEG2RAD;
-  return (need_deg > front_angle_deg) ? need_deg : front_angle_deg;
+  float ahead = d_follow_m + ahead_extra_m;
+  const float ahead_hi = side_m / tanf(phi_min_deg * BREMOTE_FMS_DEG2RAD);   // phi >= phi_min
+  const float ahead_lo = side_m / tanf(phi_max_deg * BREMOTE_FMS_DEG2RAD);   // phi <= phi_max
+  if (ahead > ahead_hi) ahead = ahead_hi;
+  if (ahead < ahead_lo) ahead = ahead_lo;
+
+  float phi = atan2f(side_m, ahead) / BREMOTE_FMS_DEG2RAD;
+  if (phi < phi_min_deg) phi = phi_min_deg;      // float rounding at the cap only (< 1e-4 deg)
+  if (phi > phi_max_deg) phi = phi_max_deg;
+
+  float r    = sqrtf(side_m * side_m + ahead * ahead);
+  float side = side_m;
+  if (r < d_follow_m) {                           // only past d_follow 22.7 m at side 13 (see above)
+    r     = d_follow_m;
+    ahead = r * cosf(phi * BREMOTE_FMS_DEG2RAD);
+    side  = r * sinf(phi * BREMOTE_FMS_DEG2RAD);
+  }
+
+  if (ahead_m)    *ahead_m    = ahead;
+  if (phi_deg)    *phi_deg    = phi;
+  if (r_m)        *r_m        = r;
+  if (side_out_m) *side_out_m = side;
 }
 
 // fmStationLimitDeg - the HARD FLOOR, as a ceiling on |psi|: 180 - the effective front angle.

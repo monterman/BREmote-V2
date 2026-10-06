@@ -1,3 +1,9 @@
+// V2.5-Evo - 2026-10-06 - THE RIDER SHIELD (audit H-2) + SIDE BAND (audit H-3): new FmShield / fmShieldMake /
+//   fmShieldSegmentHits / fmShieldHalfWidthM / fmShieldClipLookaheadM / fmShieldDecide - a circle round the rider
+//   always, plus a cone ahead of him along his course while he is foiling - and fmBuggySideWithBand(); the H-1 side
+//   test fmFrontRetreatSide() takes a band_m (a buggy within band_m of the rider's line keeps the committed side).
+//   Comment fixes: the derived front angle is now 35-45 deg (audit M-12), the retreat side (audit L-9), and the
+//   stale angle + radius wording (audit L-13). Pure arithmetic, no Arduino dependency, host-tested.
 // V2.5-Evo - 2026-10-06 - FRONT STATIONS BY OFFSET: fmFrontStationGeom() / fmFrontAheadExtraM() replace
 //   fmFrontRadiusM() / fmFrontAngleEffDeg(). F4/F5 sit `side` (the lateral floor, exactly) to the side
 //   and d_follow + fm_front_ahead_extra_m ahead; phi and r are derived. phi stays in 35..80 deg.
@@ -19,8 +25,8 @@
 //     1 = rear-right   psi = +near_diag_offset_deg   (45 by default)
 //     2 = behind       psi =  0
 //     3 = rear-left    psi = -near_diag_offset_deg
-//     4 = front-right  psi = +(180 - front_angle)    (+135 at the default 45 deg front angle)
-//     5 = front-left   psi = -(180 - front_angle)
+//     4 = front-right  psi = +(180 - phi)    phi = the angle DERIVED from the side and ahead offsets
+//     5 = front-left   psi = -(180 - phi)    (fmFrontStationGeom, 35-45 deg; +/-135 when ahead == side)
 //   There is no mode 6 and |psi| can never reach 180.
 //
 // ---- WHY THERE IS NO DEAD-AHEAD STATION (the load-bearing safety rationale) ----
@@ -58,6 +64,13 @@
 //   PG-5  Nothing in this header writes throttle. The station angle and the radius only move the
 //         TARGET POINT. The min_dist_m cap-0, the boogie_vmax clamp and the subtract-only cap chain
 //         are untouched in every mode.
+//   SHIELD V2.5-Evo - 2026-10-06 (audit H-2, the owner's "bubble" rule). PG-1..PG-4 protect the rider's
+//         LINE only while a station is ahead of abeam. The shield protects the rider himself at every
+//         station angle the controller walks (every non-snapped station): a circle round him always,
+//         plus a cone ahead of him along his course, speed x horizon long, while he is foiling. The
+//         buggy's aim line (buggy -> aim point, whatever the aim point is this tick) must not pass
+//         through it; if it would, the controller re-seeds the station onto the buggy's own side and
+//         steers outward on that side until the line clears (fmShieldDecide). PG-1..PG-5 are unchanged.
 #ifndef BREMOTE_FOLLOW_ME_STATION_H
 #define BREMOTE_FOLLOW_ME_STATION_H
 
@@ -135,9 +148,12 @@ static inline float fmFrontAheadExtraM(uint16_t stored_m, float default_m, float
 //          side offset by about ahead x sin(theta) - so the clearance a course error can eat grows
 //          with `ahead`, not with `side`. Holding ahead <= 1.43 x side keeps that ratio exactly where
 //          the old 35 deg minimum held it (10 deg of course error costs at most 3.2 m of the 13).
-//   phi <= phi_max_deg (80): ahead >= side / tan(80) = 2.3 m at side 13, so a front station is always
-//          genuinely ahead of abeam. Unreachable from the legal config (d_follow >= 0.5, extra >= 4);
-//          it is the belt for a degenerate caller.
+//   phi <= phi_max_deg: ahead >= side / tan(phi_max), so a front station is always genuinely ahead
+//          of abeam. V2.5-Evo - 2026-10-06 - audit M-12: the RX passes 45 (was 80), so ahead >= side -
+//          13 m at side 13. WHY: the 13 m side floor is a LATERAL argument, and a rider carving 90 deg
+//          toward the station on an 8 m radius also moves about 8 m FORWARD, so against a stopped buggy
+//          the clearance is about sqrt((ahead - 8)^2 + 5^2): 5.4 m at 10 m ahead, 7.1 m at 13. At d_follow
+//          6 + extra 4 (10 m) the old 80 deg ceiling allowed 10 m ahead; 45 raises it to 13.
 //
 // THE ONE CASE WHERE SIDE IS NOT EXACTLY THE FLOOR. If d_follow is longer than the capped radius
 // (side / sin(35) = 22.7 m, about 74 ft, at side 13), the radius is raised to d_follow, because the
@@ -230,8 +246,12 @@ static inline float fmStationPresetDeg(uint8_t mode, float near_diag_deg, float 
 
 // fmStationNearestRearPresetDeg - where a front station RETREATS to when the geometry stops
 // supporting it (the rider turns mid-transit, or the course goes invalid). 4 -> rear-right,
-// 5 -> rear-left, everything else is already rear. Never the opposite side: swapping sides under
-// an abort would walk the station across the rider's wake at the worst possible moment.
+// 5 -> rear-left, everything else is already rear. This function never picks the opposite side:
+// swapping sides under an abort would walk the station across the rider's wake at the worst moment.
+// V2.5-Evo - 2026-10-06 - audit L-9: the controller DOES pick the opposite side in one case - when the
+// H-1 retreat or the shield finds the BUGGY measurably on the other side of the rider's line, it goes
+// to the rear preset on the buggy's side (fm_front_retreat_side), because the buggy is already there.
+// That choice is made in RTMState.ino, not here.
 static inline float fmStationNearestRearPresetDeg(uint8_t mode, float near_diag_deg)
 {
   if (near_diag_deg < 0.0f)  near_diag_deg = 0.0f;
@@ -246,8 +266,10 @@ static inline float fmStationNearestRearPresetDeg(uint8_t mode, float near_diag_
 // fmStationRadiusM - how far from the rider the station sits, as a function of psi.
 //
 // A schedule, not a constant: d_follow in the rear-diagonal band, rising linearly to r_front at the
-// front limit. The ramp is what carries the buggy outward as the station walks round, so by the time
-// the station reaches abeam the radius is already 12-14 m at ordinary tunings.
+// front limit (r_front = hypot(side, ahead) from fmFrontStationGeom - V2.5-Evo - 2026-10-06, audit
+// L-13: it is derived from the two offsets, not set as a radius). The ramp is what carries the buggy
+// outward as the station walks round, so by the time the station reaches abeam the radius is already
+// about 12-15 m at ordinary tunings.
 //
 // PG-1 IS ENFORCED HERE. From the abeam line outward the result is floored so that
 // r * sin|psi| >= pass_lateral_m - the station's own cross-track offset. The ramp alone does NOT
@@ -449,14 +471,285 @@ static inline bool fmRearSnap(uint8_t m_eff, float psi_live_deg, float near_diag
 // rider's line. Returns 0 otherwise (no retreat). A buggy exactly on the line (cross == 0) counts as the
 // station's side, where PG-4's outward escape already steers it off the line on that side.
 // Never true for a rear-only engagement: there |psi_live| <= 90 and no front station is wanted.
-static inline int fmFrontRetreatSide(float psi_live_deg, bool front_wanted, float buggy_cross_m)
+// V2.5-Evo - 2026-10-06 - audit H-3: A SCHMITT BAND, NOT A STRICT SIGN TEST. The strict test flipped on
+// about +/-1 m of cross-track noise; every flip re-seeded the station to the other side, and the buggy
+// held ahead of the rider near his line with bang-bang steering. Now the buggy must be more than band_m
+// on the OTHER side before the retreat fires; inside +/-band_m the committed side (the station's side)
+// stands, and PG-4's outward escape steers off the line on that side. Once retreated, the station is on
+// the new side, so flipping back needs the buggy more than band_m on the opposite side again. The cost
+// is at most band_m of MEASURED line crossing, inside the GPS error the design already assumes.
+// Inputs: band_m (the RX passes kFmSideHysteresisM, 2 m; negative is read as 0 = the old strict test).
+static inline int fmFrontRetreatSide(float psi_live_deg, bool front_wanted, float buggy_cross_m,
+                                     float band_m)
 {
+  if (band_m < 0.0f) band_m = 0.0f;
   const float a = fabsf(psi_live_deg);
   const bool at_or_ahead = (a > 90.0f) || (front_wanted && a >= 90.0f);
   if (!at_or_ahead) return 0;
-  if (psi_live_deg > 0.0f && buggy_cross_m < 0.0f) return -1;
-  if (psi_live_deg < 0.0f && buggy_cross_m > 0.0f) return +1;
+  if (psi_live_deg > 0.0f && buggy_cross_m < -band_m) return -1;
+  if (psi_live_deg < 0.0f && buggy_cross_m >  band_m) return +1;
   return 0;
+}
+
+// V2.5-Evo - 2026-10-06 - fmBuggySideWithBand - which side of the rider's line the BUGGY counts as being on,
+// with the same Schmitt band as fmFrontRetreatSide (audit H-3), for the shield's go-around.
+//   buggy more than band_m right -> +1; more than band_m left -> -1;
+//   inside the band -> the COMMITTED side (the side the station is on, sign of psi_live), so cross-track
+//   noise near the line can never flip the go-around from one side to the other;
+//   inside the band with no committed side (psi_live exactly 0, directly behind, and no escape standing)
+//   -> the buggy's own sign, 0 counting as right. fmShieldDecide then remembers that side for as long as
+//   the escape stands, which commits it.
+// Inputs: committed_side (+1, -1 or 0), buggy_cross_m (rider frame, + = right), band_m (>= 0).
+static inline int fmBuggySideWithBand(int committed_side, float buggy_cross_m, float band_m)
+{
+  if (band_m < 0.0f) band_m = 0.0f;
+  if (buggy_cross_m >  band_m) return +1;
+  if (buggy_cross_m < -band_m) return -1;
+  if (committed_side > 0) return +1;
+  if (committed_side < 0) return -1;
+  return (buggy_cross_m < 0.0f) ? -1 : +1;
+}
+
+// ==========================================================================================
+// V2.5-Evo - 2026-10-06 - THE RIDER SHIELD (audit H-2, the owner's "bubble" rule)
+//
+// WHAT IT IS. A region around the rider that the buggy's AIM LINE (the straight segment from the buggy
+// to the point it is steering at this tick) may not pass through:
+//   - a CIRCLE round the rider, always: radius = the larger of circle_min_m (3 m) and min_dist_m, but
+//     never more than the follow distance (the rider's own rear station must stay outside it);
+//   - a CONE ahead of the rider, along his course, only while he is foiling (speed >= min_speed_kmh,
+//     12 km/h): depth = speed x horizon_s (5 s), half-angle half_angle_deg (30 deg).
+// Below the foiling speed only the circle applies: the rider is floating or slow and watching, and the
+// buggy may reposition freely around him.
+//
+// WHY A CONE AND NOT A STRIP. 31 foil sessions (24,128 foiling seconds, 1 Hz wrist GPS) show a straight-
+// line projection is only good for about 2 s; at 5 s the rider is 13 m off it one time in ten (p90). As
+// an ANGLE from the rider that p90 miss is nearly constant beyond 2-3 s - 28 deg at 15-20 km/h - so a
+// cone of about 30 deg holds where he really goes; a strip does not.
+//
+// THE CONE IS A TRIANGLE, deliberately. Apex at the rider, the base at `depth` along his course, sides
+// at +/-half-angle. That contains the circular sector of the same radius (the triangle reaches
+// depth / cos(half-angle) along its edges), so it errs larger, never smaller, and a triangle is a convex
+// polygon whose segment test is exact (three half-planes, Liang-Barsky clipping below).
+//
+// THE FRAME. Every coordinate here is in the rider's frame: along = ahead-positive along his course,
+// cross = right-positive, origin = the rider. The RX uses its lag-compensated rider estimate (the
+// filtered position pushed forward by v x tau, the same anchor every station is placed around), so the
+// shield and the stations agree on where the rider is.
+//
+// Front stations sit OUTSIDE the cone by design: the 35 deg no-go arc either side of dead ahead is wider
+// than the 30 deg cone, so a settled F4/F5 station point is never in the rider's likely path. The shield
+// governs the TRANSIT, the walks home, and the steering lookahead.
+// ==========================================================================================
+struct FmShield {
+  float circle_r_m;   // radius of the always-on circle round the rider, metres
+  float cone_len_m;   // depth of the cone ahead of the rider along his course, metres; 0 = cone off
+  float cone_tan;     // tan(half-angle) of the cone
+};
+
+// fmShieldMake - build this tick's shield from the rider's (filtered) speed and the four constants.
+// Inputs: rider_speed_kmh; horizon_s (5); half_angle_deg (30, clamped 1..89); min_speed_kmh (12);
+//         circle_min_m (3); min_dist_m (usrConf.min_dist_m - the circle grows to it if it is larger);
+//         d_follow_m - the circle is never larger than the follow distance. At any sane tuning this
+//         changes nothing (owner default: circle 4 m, follow 6 m); it exists so a degenerate tuning
+//         (min_dist_m under 3 m with no smoothing band) cannot put the rider's own follow station
+//         inside the circle, where no aim at it could ever clear and a walk home could never end.
+// Returns the shield. No side effects. A negative or non-finite radius input reads as 0.
+static inline FmShield fmShieldMake(float rider_speed_kmh, float horizon_s, float half_angle_deg,
+                                    float min_speed_kmh, float circle_min_m, float min_dist_m,
+                                    float d_follow_m)
+{
+  FmShield s;
+  float r = circle_min_m;
+  if (min_dist_m > r) r = min_dist_m;
+  if (d_follow_m > 0.0f && r > d_follow_m) r = d_follow_m;
+  if (!(r > 0.0f)) r = 0.0f;
+  s.circle_r_m = r;
+  if (half_angle_deg < 1.0f)  half_angle_deg = 1.0f;
+  if (half_angle_deg > 89.0f) half_angle_deg = 89.0f;
+  s.cone_tan = tanf(half_angle_deg * BREMOTE_FMS_DEG2RAD);
+  s.cone_len_m = 0.0f;
+  if (rider_speed_kmh >= min_speed_kmh && horizon_s > 0.0f) {
+    s.cone_len_m = (rider_speed_kmh / 3.6f) * horizon_s;
+  }
+  return s;
+}
+
+// fmsClipLB - one Liang-Barsky step: keep the part of the segment parameter range [*u0, *u1] that
+// satisfies p * u <= q. Returns false when nothing is left. Internal to fmShieldSegmentHits.
+static inline bool fmsClipLB(float p, float q, float *u0, float *u1)
+{
+  if (fabsf(p) < 1e-9f) return q >= 0.0f;        // parallel to this edge: all in or all out
+  const float r = q / p;
+  if (p < 0.0f) {                                 // entering
+    if (r > *u1) return false;
+    if (r > *u0) *u0 = r;
+  } else {                                        // leaving
+    if (r < *u0) return false;
+    if (r < *u1) *u1 = r;
+  }
+  return true;
+}
+
+// fmShieldSegmentHits - does the segment A -> B (rider frame) touch the shield?
+// THE CIRCLE is tested STRICTLY (closer than the radius), so a station sitting exactly at the radius -
+// the follow distance can equal it at a minimal tuning - is not a contact.
+// THE CONE is closed (touching counts - the conservative choice). inflate_m widens the CONE ONLY: its two
+// sides move outward by inflate_m (perpendicular) and its base inflate_m further ahead, but it never
+// reaches behind the rider (along >= 0 always). The controller uses that as a Schmitt band: an escape
+// that is standing is held until the aim clears the WIDENED cone, so an aim grazing its edge cannot flick
+// the escape on and off every tick. The circle is never widened: the rider's own rear station sits at the
+// follow distance, only a smoothing band outside the circle, and a widened circle could swallow it and
+// hold an escape that can never clear.
+// Inputs: the shield, the two endpoints, inflate_m (>= 0). Returns true on contact. No side effects.
+static inline bool fmShieldSegmentHits(const FmShield &s, float a_al, float a_cr,
+                                       float b_al, float b_cr, float inflate_m)
+{
+  if (!(inflate_m > 0.0f)) inflate_m = 0.0f;
+  const float dx = b_al - a_al, dy = b_cr - a_cr;
+
+  // ---- the circle: the closest point of the segment to the rider ----
+  const float R = s.circle_r_m;
+  if (R > 0.0f) {
+    const float l2 = dx * dx + dy * dy;
+    float t = 0.0f;
+    if (l2 > 1e-9f) {
+      t = -(a_al * dx + a_cr * dy) / l2;
+      if (t < 0.0f) t = 0.0f;
+      if (t > 1.0f) t = 1.0f;
+    }
+    const float px = a_al + t * dx, py = a_cr + t * dy;
+    if (px * px + py * py < R * R) return true;
+  }
+
+  // ---- the cone: a triangle (widened by inflate_m), four half-planes ----
+  if (!(s.cone_len_m > 0.0f)) return false;
+  const float k  = s.cone_tan;
+  const float w0 = inflate_m * sqrtf(1.0f + k * k);         // = inflate / cos(half-angle): sides out by inflate
+  const float xm = s.cone_len_m + inflate_m;                 // the base
+  float u0 = 0.0f, u1 = 1.0f;
+  //  -along <= 0                           (never behind the rider)
+  if (!fmsClipLB(-dx, a_al, &u0, &u1)) return false;
+  //   along <= xm
+  if (!fmsClipLB(dx, xm - a_al, &u0, &u1)) return false;
+  //   cross - k along <= w0                (inside the right-hand side)
+  if (!fmsClipLB(dy - k * dx, w0 - (a_cr - k * a_al), &u0, &u1)) return false;
+  //  -cross - k along <= w0                (inside the left-hand side)
+  if (!fmsClipLB(-dy - k * dx, w0 - (-a_cr - k * a_al), &u0, &u1)) return false;
+  return u0 <= u1;
+}
+
+// fmShieldHalfWidthM - how far either side of the rider's course line the (un-inflated) shield reaches
+// at a given along-track position: the circle's half-chord, or the cone's half-width, whichever is
+// larger; 0 where neither reaches. The shield is symmetric about the course line and both parts are
+// convex, so at any along-track position its cross-section is the single interval [-w, +w]. That is
+// what makes the go-around provable: a point further out than w on one side is outside the shield.
+static inline float fmShieldHalfWidthM(const FmShield &s, float along_m)
+{
+  float w = 0.0f;
+  if (fabsf(along_m) < s.circle_r_m) {
+    w = sqrtf(s.circle_r_m * s.circle_r_m - along_m * along_m);
+  }
+  if (s.cone_len_m > 0.0f && along_m >= 0.0f && along_m <= s.cone_len_m) {
+    const float cw = along_m * s.cone_tan;
+    if (cw > w) w = cw;
+  }
+  return w;
+}
+
+// fmShieldClipLookaheadM - G-2's steering lookahead pushes the aim along the rider's course, which can
+// carry it INTO the cone even though the station point itself is outside (example: d_follow 9 + extra 7
+// puts F4 at 16 m ahead x 13 m side, 39 deg; the full 9 m lookahead puts the aim at 25 m x 13 m, 27.5 deg
+// - inside a 30 deg cone once the rider is past about 16 km/h). Returns the largest lookahead in
+// [0, look_m] for which the segment buggy -> (station_along + look, station_cross) clears the shield
+// (inflated by inflate_m): look_m itself when that already clears, 0 when even no lookahead clears (the
+// caller's escape then decides), otherwise found by bisection to within about 1 cm. The result only
+// ever SHORTENS the lookahead; it never moves the aim across the course line (the lookahead is parallel
+// to it), so PG-3 is unaffected.
+static inline float fmShieldClipLookaheadM(const FmShield &s, float inflate_m,
+                                           float buggy_along_m, float buggy_cross_m,
+                                           float station_along_m, float station_cross_m, float look_m)
+{
+  if (!(look_m > 0.0f)) return 0.0f;
+  if (!fmShieldSegmentHits(s, buggy_along_m, buggy_cross_m,
+                           station_along_m + look_m, station_cross_m, inflate_m)) return look_m;
+  if (fmShieldSegmentHits(s, buggy_along_m, buggy_cross_m,
+                          station_along_m, station_cross_m, inflate_m)) return 0.0f;
+  float lo = 0.0f, hi = look_m;                    // lo clears, hi hits
+  for (int i = 0; i < 12; i++) {
+    const float mid = 0.5f * (lo + hi);
+    if (fmShieldSegmentHits(s, buggy_along_m, buggy_cross_m,
+                            station_along_m + mid, station_cross_m, inflate_m)) hi = mid;
+    else                                                                       lo = mid;
+  }
+  return lo;
+}
+
+// fmShieldGoAroundLateralM - the go-around waypoint, as a SIGNED cross-track offset on `side`, placed at
+// the BUGGY'S OWN along-track position (the caller builds it that way, as PG-4's outward waypoint is).
+// It is at least min_lateral_m from the rider's line (the RX passes the pass minimum), at least clear_m
+// further out than the buggy, and at least clear_m beyond the shield's edge at that along-track position.
+// PROOF THAT THE AIM LINE THEN CLEARS: the aim segment runs straight across the course at one along-track
+// position, where the shield's cross-section is [-w, +w]. If the buggy is on `side` and outside the shield
+// (side x cross > w), every point from the buggy out to the waypoint is further out than w, so none is
+// inside. The only ways the segment can still touch the shield are the two the design accepts: the buggy
+// is already inside it (then this is the shortest way out, square to the rider's line), or the buggy is
+// within the Schmitt band on the far side of the line (at most the band of measured crossing).
+static inline float fmShieldGoAroundLateralM(const FmShield &s, int side, float buggy_along_m,
+                                             float buggy_cross_m, float min_lateral_m, float clear_m)
+{
+  if (clear_m < 0.0f) clear_m = 0.0f;
+  const float sg = (side < 0) ? -1.0f : 1.0f;
+  float own = sg * buggy_cross_m;
+  if (own < 0.0f) own = 0.0f;
+  float lat = own + clear_m;
+  const float edge = fmShieldHalfWidthM(s, buggy_along_m) + clear_m;
+  if (edge > lat) lat = edge;
+  if (min_lateral_m > lat) lat = min_lateral_m;
+  return sg * lat;
+}
+
+// fmShieldDecide - the per-tick shield verdict for a NON-SNAPPED station (the RX never consults it for a
+// rear station snapped to its preset - that path is the SW36 one, unchanged by owner ruling).
+// Inputs: the shield; prev_escape (an escape was standing last tick: test with the cone widened
+//         by band_m, the Schmitt hold); prev_side (the side that standing escape went round on, 0 if
+//         none); band_m (kFmSideHysteresisM); psi_live_deg (the station angle, whose sign is the
+//         COMMITTED side); the buggy and this tick's aim point, rider frame; min_lateral_m and clear_m
+//         for the go-around (fmShieldGoAroundLateralM).
+// Outputs: .escape   - the aim line touches the shield: steer at the go-around waypoint instead;
+//          .side     - the side to go round on (fmBuggySideWithBand: the buggy's side beyond the band,
+//                      else the committed side - the station's side, or, for a station exactly behind
+//                      the rider, the side the standing escape already chose, so noise cannot flip it);
+//          .reseed   - the station is on the OTHER side of the rider's line from `side`: re-seed it onto
+//                      `side` - the H-1 retreat mechanism, extended to every non-snapped station. Never
+//                      for a station exactly behind (psi 0): it has no side to be wrong about, and moving
+//                      it to the buggy's measured angle would send a station walking home back out ahead;
+//          .lateral_m - the go-around waypoint's signed cross-track offset.
+// No side effects.
+struct FmShieldDecision {
+  bool  escape;
+  int   side;
+  bool  reseed;
+  float lateral_m;
+};
+static inline FmShieldDecision fmShieldDecide(const FmShield &s, bool prev_escape, int prev_side,
+                                              float band_m, float psi_live_deg,
+                                              float buggy_along_m, float buggy_cross_m,
+                                              float aim_along_m, float aim_cross_m,
+                                              float min_lateral_m, float clear_m)
+{
+  FmShieldDecision d;
+  d.escape    = fmShieldSegmentHits(s, buggy_along_m, buggy_cross_m, aim_along_m, aim_cross_m,
+                                    prev_escape ? band_m : 0.0f);
+  const int station_side = (psi_live_deg > 0.0f) ? +1 : (psi_live_deg < 0.0f) ? -1 : 0;
+  const int committed    = (station_side != 0) ? station_side
+                         : (prev_escape && prev_side != 0) ? ((prev_side > 0) ? +1 : -1) : 0;
+  d.side      = fmBuggySideWithBand(committed, buggy_cross_m, band_m);
+  d.reseed    = d.escape && station_side != 0 && station_side != d.side;
+  d.lateral_m = d.escape ? fmShieldGoAroundLateralM(s, d.side, buggy_along_m, buggy_cross_m,
+                                                    min_lateral_m, clear_m)
+                         : 0.0f;
+  return d;
 }
 
 // V2.5-Evo - 2026-10-06 - fmEngageSeedDeg - the live station angle at an ACTIVE edge (a first squeeze,
@@ -495,6 +788,18 @@ static inline float fmRetreatSeedDeg(int side, float psi_meas_deg, float station
   float a = fabsf(psi_meas_deg);
   if (a > station_limit_deg) a = station_limit_deg;
   return (side < 0) ? -a : a;
+}
+
+// V2.5-Evo - 2026-10-06 - fmDTermContinuous - may the steering D term differentiate this heading-error
+// sample against the previous one? Only when both come from the same continuous heading source, the
+// same commanded target geometry (profile label), AND - audit M-10 - the aim did not step this tick
+// (aim_stepped: a re-seed of the station angle or a swap of the aim point, whatever the labels say).
+// Moved here from updateRtmSteering() (same condition plus the new term) so the host test runs it.
+// Returns true = differentiate; false = skip D for this one sample.
+static inline bool fmDTermContinuous(bool prev_valid, uint32_t src_id, uint32_t prev_src_id,
+                                     uint8_t profile, uint8_t prev_profile, bool aim_stepped)
+{
+  return prev_valid && src_id == prev_src_id && profile == prev_profile && !aim_stepped;
 }
 
 // fmFadeBypass - the GOVERNOR-2 convergence-fade bypass, and invariant 2 of the plan: it is a

@@ -1,3 +1,16 @@
+// V2.5-Evo - 2026-10-06 - AUDIT H-2 (THE RIDER SHIELD, owner's "bubble" rule) + H-3 + M-10 + L-11 + M-11 + M-12 + L-9 + L-13. (H-2) H-1 protected the rider's line only
+//   while a station was ahead of abeam; a station walking in the rear half (the walk home, the M-8 walk, an F4/F5 outbound walk round the back) could aim the
+//   buggy across the line ahead of him. Now every NON-SNAPPED station answers to a shield drawn round the lag-compensated rider position: a circle (3 m, or
+//   min_dist_m if larger) always, plus a cone ahead along his course (speed x 5 s deep, +/-30 deg) while he is at or above 12 km/h. If the buggy -> aim line
+//   would touch it, computeFmTarget() re-seeds the station onto the BUGGY'S side (the H-1 mechanism, extended), latches the abort for an F4/F5 still outbound,
+//   and steers at a go-around waypoint square out on that side beyond the shield's edge; the escape is held until the aim clears the cone widened by 2 m. The
+//   front-half lookahead is shortened so it never carries the aim into the cone. Snapped rear stations (modes 1-3 at their preset) never consult it - SW36;
+//   a station that WALKED last tick snaps only when the line to its snapped point clears the shield, so a walk home cannot end in a snap through the rider.
+//   (H-3) the H-1 side test has a 2 m Schmitt band (kFmSideHysteresisM). (M-10 / L-11) a one-shot fm_aim_step, set on every re-seed and every change of aim
+//   kind (station / PG-4 outward / go-around / G-5 twin / degraded), makes updateRtmSteering() skip the D term whatever the labels say. (M-11) an ACTIVE edge
+//   with no rider course leaves the engage seed pending and applies it on the first tick with a course. (M-12) the ENGAGE print says when ahead was raised to
+//   the side offset. Constants only (kFmShield*, kFmSideHysteresisM): no confStruct change, sizeof stays 200, SW_VERSION stays 36. No throttle code changed:
+//   the only cap-side effect is that the fade bypass is withheld while the go-around stands (it can only lower the cap, as under PG-4).
 // V2.5-Evo - 2026-10-06 - FRONT STATIONS BY OFFSET (owner rule: side + ahead, not angle + radius). computeFmTarget() and the ENGAGE print resolve F4/F5
 //   with fmFrontStationGeom(): side = lateral_min EXACTLY up to d_follow 22.7 m (13 m, or the pass minimum if min_dist_m raises it), ahead = d_follow + fm_front_ahead_extra_m
 //   (0 = 7, legal 4-10), then phi = atan(side / ahead) and r = hypot(side, ahead), with phi held at 35-80 deg by capping ahead. phi_eff and r_front feed
@@ -1980,13 +1993,37 @@ static const float    kFmTransitLookaheadFactor = 1.0f; // x d_follow
 //   is ABANDONED for this engagement and the nearest REAR station (same side) is taken instead.
 static const float    kFmTransitAbortCourseDeg = 60.0f; // degrees of filtered course change
 // kFmStationSettleDeg - |target - live| below this counts as settled (it ends the transit and picks
-//   the front profile). 5 deg at the 18.4 m front radius is 1.6 m of station position.
+//   the front profile). 5 deg at an 18.4 m front radius (13 m ahead x 13 m side) is 1.6 m of station
+//   position. (V2.5-Evo - 2026-10-06 - audit L-13: the front radius is derived from the side and ahead
+//   offsets now, 18.4-22.7 m; it is no longer a setting.)
 static const float    kFmStationSettleDeg    = 5.0f;    // degrees
 // kFmAlongGainKmhPerM - the FRONT-station speed term: km/h of correction per metre of signed
 //   along-track error against the station. Same gain and the same ceiling (kFmGapMaxKmh) the radial
 //   gap term uses, but SIGNED, so a buggy that has run too far ahead gives throttle back instead of
 //   being granted a standing closing allowance for ever.
 static const float    kFmAlongGainKmhPerM    = 0.5f;    // km/h per metre of along-track error
+
+// ---- V2.5-Evo - 2026-10-06 - THE RIDER SHIELD (audit H-2) AND THE SIDE BAND (audit H-3) ----
+// All five are 🔴 PROVISIONAL compile-time constants, not settings (no confStruct change). The shield
+// geometry is in FollowMeStation.h (fmShieldMake / fmShieldDecide); these are its numbers.
+// kFmShieldHorizonS / kFmShieldHalfAngleDeg / kFmShieldMinSpeedKmh - the CONE ahead of a foiling rider:
+//   speed x 5 s long, +/-30 deg wide, only at or above 12 km/h. From 31 foil sessions (24,128 foiling
+//   seconds): a straight-line projection is 13 m off at 5 s one time in ten, but as an angle that p90
+//   miss is about 28 deg at 15-20 km/h and nearly constant past 2-3 s - hence a cone, not a strip.
+//   12 km/h is the foiling threshold that data was cut at. Revisit with activity-tagged sessions and
+//   10 Hz vest data (both should narrow the cone).
+// kFmShieldCircleMinM - the CIRCLE round the rider, at every speed; the read site raises it to
+//   min_dist_m when that is larger, so the shield is never smaller than the hard stop.
+// kFmSideHysteresisM - the Schmitt band on "which side of the rider's line is the buggy on" (H-1's
+//   retreat and the shield's go-around). The strict sign test chattered on about +/-1 m of cross-track
+//   noise; inside +/-2 m the committed side stands. Also the band an escape is HELD by (the aim must
+//   clear the cone widened by 2 m before the escape ends; the circle is never widened). Revisit after the relative-GPS measurement
+//   (audit M-2). Worst cost: about 2 m of measured line crossing, inside the assumed GPS error.
+static const float    kFmShieldHorizonS      = 5.0f;    // s; cone depth = rider speed x this
+static const float    kFmShieldHalfAngleDeg  = 30.0f;   // degrees either side of the rider's course
+static const float    kFmShieldMinSpeedKmh   = 12.0f;   // km/h; below this only the circle applies
+static const float    kFmShieldCircleMinM    = 3.0f;    // metres; raised to min_dist_m if that is larger, never above d_follow
+static const float    kFmSideHysteresisM     = 2.0f;    // metres; side-test Schmitt band and escape hold
 
 // ---- FM_RETURN constants (V2.5-Evo - 2026-09-19) ----
 // Compile-time, like every other kFm* above: no confStruct fields (the three SW36 fields that ARE
@@ -2123,7 +2160,10 @@ static bool          fm_diagonal_engaged = false;
 //   and the rider's course when it began (G-3 measures the turn against it).
 // fm_front_aborted - LATCHED: this engagement has given up on the front station (the rider turned
 //   mid-transit, or the course went invalid while a front station was held). While it stands, modes
-//   4 and 5 behave as 1 and 3 - the nearest REAR station on the SAME SIDE, never the opposite one.
+//   4 and 5 behave as 1 and 3 - the nearest REAR station on the SAME SIDE as the station, or (V2.5-Evo -
+//   2026-10-06, audit L-9) on the BUGGY'S side when the H-1 retreat or the shield latched it with the
+//   buggy measured on the other side of the rider's line (fm_front_retreat_side) - the buggy is
+//   already there, so that side is the one that never crosses ahead of him.
 //   Cleared only on a fresh ACTIVE edge, a mode change, and fmEnterIdle(). It can only ever move the
 //   station BEHIND the rider, so it is safe in one direction by construction.
 // fm_station_deg_x10 - the published copy for the deep log, single writer (the loop task, inside
@@ -2146,6 +2186,28 @@ static bool          fm_front_aborted      = false;
 // fired; 0 = no H-1 retreat. While fm_front_aborted stands it picks the rear preset 4/5 retreat to, in
 // place of the station's own side. Cleared wherever fm_front_aborted is cleared.
 static int8_t        fm_front_retreat_side = 0;
+// V2.5-Evo - 2026-10-06 - audit M-10 / L-11: ONE-SHOT "the aim stepped this tick". Set by computeFmTarget()
+// on every single-tick change of the aim that its D-term profile label may not show - every re-seed of
+// the live angle (H-1, the shield, the pending seed) and both edges of every substitute aim (PG-4 outward,
+// the shield go-around, the G-5 twin). Consumed (read and cleared) at the top of updateRtmSteering(),
+// which runs straight after it on the same tick and skips the D term when it was set, whatever the
+// labels say. Before this, two consecutive H-1 retreats both carried kProfRetreat, so a step of up to
+// 270 deg in the station angle was differentiated into a one-tick steering kick. Loop task only.
+static bool          fm_aim_step           = false;
+// V2.5-Evo - 2026-10-06 - audit H-2: the shield's go-around was standing on the previous tick (the
+// Schmitt hold - see fmShieldDecide), and which kind of aim the previous tick emitted (0 station,
+// 1 PG-4 outward, 2 shield go-around, 3 G-5 twin, 4 degraded hold) so a change of kind sets fm_aim_step.
+static bool          fm_shield_escape      = false;
+static int8_t        fm_shield_side        = 0;   // the side that standing escape goes round on, 0 = none
+static uint8_t       fm_aim_kind_prev      = 0;
+// V2.5-Evo - 2026-10-06 - audit M-11: the ACTIVE edge had no rider course (the owner's normal mode change:
+// stopped and floating, switch, squeeze - the course needs >= 5 km/h), so the engage seed could not be
+// measured. computeFmTarget() applies fmEngageSeedDeg() on the first tick that has a course, then clears it.
+static bool          fm_seed_pending       = false;
+// V2.5-Evo - 2026-10-06 - audit H-2: the station WALKED (was not snapped) on the previous tick. Only such a
+// station has its first snap checked against the shield (see the snap in computeFmTarget()). False at every
+// ACTIVE edge, in idle and in the RTM yield, so steady rear-only riding never takes the check.
+static bool          fm_station_walking    = false;
 static unsigned long fm_station_prev_ms    = 0;
 static std::atomic<int16_t> fm_station_deg_x10{0};
 
@@ -2843,6 +2905,11 @@ static double        fm_target_lng       = 0.0;
 // Filter state + D-term reset on invalid heading to satisfy the heading-filter rule.
 static void updateRtmSteering()
 {
+  // V2.5-Evo - 2026-10-06 - audit M-10: consume the one-shot aim-step flag FIRST, before any early return,
+  // so it can only ever describe the tick computeFmTarget() just ran. Used by the D-term gate below.
+  const bool aim_stepped = fm_aim_step;
+  fm_aim_step = false;
+
   if (!usrConf.rtm_rx_override_steering) {
     rtm_steer_override = 127;
     // Reset D-term continuity statics here too: with override disabled we produce no
@@ -2961,8 +3028,10 @@ static void updateRtmSteering()
 
   float d_error;
   // V2.5-Evo - 2026-09-17 - and the TARGET profile must match too (see kProf* above).
-  if (prev_heading_src_valid && heading_src_id == prev_heading_src_id &&
-      fm_target_profile == prev_fm_target_profile) {
+  // V2.5-Evo - 2026-10-06 - audit M-10: and no aim step this tick (fm_aim_step), whatever the labels say.
+  // The condition lives in FollowMeStation.h (fmDTermContinuous) so the host test runs this exact test.
+  if (fmDTermContinuous(prev_heading_src_valid, heading_src_id, prev_heading_src_id,
+                        fm_target_profile, prev_fm_target_profile, aim_stepped)) {
     // heading_error lives on a circle. Subtracting its normalized representations directly
     // creates a false +/-360 deg jump at the branch cut (for example +179 -> -179). Differentiate
     // the shortest signed angular delta instead, so that example is +2 deg rather than -358 deg.
@@ -2971,7 +3040,7 @@ static void updateRtmSteering()
     while (delta_error < -180.0f) delta_error += 360.0f;
     d_error = delta_error / dt_s;
   } else {
-    d_error = 0.0f;  // source switched, snapshot re-snapped or target profile changed — do not differentiate across the step
+    d_error = 0.0f;  // source switched, snapshot re-snapped, target profile changed or the aim stepped — do not differentiate across the step
   }
   float d_term = p.kd * d_error;
   prev_heading_error_deg = heading_error;
@@ -4111,7 +4180,7 @@ static void computeFmTarget(double* out_lat, double* out_lng)
   // V2.5-Evo - 2026-10-06 - FRONT STATIONS BY OFFSET (owner rule). The angle + radius lines above
   // are history: the front station is now placed by two offsets and phi / r are DERIVED -
   //   side    = lateral_min, EXACTLY (13 m, or the pass minimum when min_dist_m raises it)
-  //   ahead   = d_follow + fm_front_ahead_extra_m (0 = 7 m, legal 4-10), capped so 35 <= phi <= 80
+  //   ahead   = d_follow + fm_front_ahead_extra_m (0 = 7 m, legal 4-10), held so 35 <= phi <= 45 (2026-10-06, audit M-12: ahead >= side)
   //             (past d_follow 22.7 m the radius is d_follow and side grows with it - see the helper)
   //   phi_eff = atan(side / ahead), r_front = hypot(side, ahead)
   //   limit   = 180 - phi_eff, the hard floor, unchanged: dead ahead is unreachable, no mode 6
@@ -4157,6 +4226,13 @@ static void computeFmTarget(double* out_lat, double* out_lng)
     fm_frame_valid        = false;
     fm_fade_bypass        = false;
     fm_aim_outward        = false;
+    // V2.5-Evo - 2026-10-06 - audit M-10 / H-2: the hold-station aim is its own kind of aim (its label,
+    // kProfDegraded, already makes the D term skip the change; the flag makes it explicit), and no
+    // shield escape survives a tick with no course - there is no frame to draw the shield in.
+    if (fm_aim_kind_prev != 4) fm_aim_step = true;
+    fm_aim_kind_prev      = 4;
+    fm_shield_escape      = false;
+    fm_shield_side        = 0;
     fm_station_target_deg = fmStationNearestRearPresetDeg(m_decl, near_diag);
     fm_station_radius_m   = d_follow;
     fm_station_deg_x10.store((int16_t)(fm_station_live_deg * 10.0f), std::memory_order_relaxed);
@@ -4232,8 +4308,9 @@ static void computeFmTarget(double* out_lat, double* out_lng)
 
   // ---- The station the declared mode asks for ----
   // While fm_front_aborted stands, 4 and 5 read as 1 and 3: the nearest REAR station on the SAME
-  // side. Never the opposite side - swapping sides under an abort would walk the station straight
-  // across the rider's wake at the worst possible moment.
+  // side as the station - swapping sides under an ordinary abort would walk the station straight
+  // across the rider's wake at the worst possible moment. (V2.5-Evo - 2026-10-06 - audit L-9: the one
+  // exception, the buggy's side after an H-1 / shield retreat, is the paragraph below.)
   // V2.5-Evo - 2026-10-06 - audit H-1: after an H-1 retreat the rear station is the one on the side
   // the BUGGY was on (fm_front_retreat_side), which is not necessarily the station's own side - the
   // buggy is already there, so going to that side never crosses the rider's line.
@@ -4241,6 +4318,28 @@ static void computeFmTarget(double* out_lat, double* out_lng)
   if (fm_front_aborted && (m_decl == 4 || m_decl == 5)) {
     if (fm_front_retreat_side != 0) m_eff = (uint8_t)((fm_front_retreat_side > 0) ? 1 : 3);
     else                            m_eff = (uint8_t)((m_decl == 4) ? 1 : 3);
+  }
+
+  // ---- V2.5-Evo - 2026-10-06 - audit M-11: THE PENDING ENGAGE SEED ----
+  // BUG: the M-8 / G-4 engage seed needs a rider course, and the course needs >= 5 km/h, so in the
+  // owner's normal mode change (stopped and floating: HOLD -> switch -> squeeze) the ACTIVE edge had
+  // none, the seed was 0, and a rear station snapped to its preset on the first tick with a course -
+  // even with the buggy still ahead of the rider after F4/F5. FIX: the ACTIVE edge leaves the seed
+  // PENDING, and this - the first tick that has a course - applies fmEngageSeedDeg() exactly as the edge
+  // would have, from the buggy's MEASURED angle. It reads the EFFECTIVE mode, so an F4/F5 that the
+  // no-course branch has already abandoned seeds as the rear station it now is. Nothing else moves the
+  // live angle while there is no course (the degraded branch freezes it), so the buggy has not been
+  // aimed at a station yet; the step is flagged for the D term. Rear-only riding with the buggy behind
+  // abeam seeds 0, which is where the edge left it: no change, the SW36 snap.
+  if (fm_seed_pending) {
+    fm_seed_pending = false;
+    const float seed = fmEngageSeedDeg(m_eff, true, fmMeasuredStationDeg(course, b_rider_to_buggy));
+    if (seed != fm_station_live_deg) {
+      fm_station_live_deg = seed;
+      fm_aim_step         = true;
+      Serial.printf("FM [RX] station seeded at %.0f deg on the first tick with a rider course "
+                    "(0 = behind you, + = your right)\n", (double)seed);
+    }
   }
 
   float psi_target = fmStationPresetDeg(m_eff, near_diag, phi_eff);
@@ -4303,14 +4402,20 @@ static void computeFmTarget(double* out_lat, double* out_lng)
   // rider. A declared rear mode coming home from the front is re-seeded the same way and keeps its own
   // preset; it reaches the far side, if at all, only by the rear-band step behind the rider. Re-tested
   // every tick, so a second turn re-seeds again. Never fires in rear-only riding (|psi| <= 90 there).
+  // V2.5-Evo - 2026-10-06 - audit H-3: the side test now has a kFmSideHysteresisM (2 m) Schmitt band - the
+  // buggy must be more than 2 m on the other side before it fires; inside the band the committed side
+  // stands. The strict test flipped on GPS noise near the line and every flip re-seeded the station.
+  // Audit M-10: every re-seed sets fm_aim_step, so back-to-back retreats (both labelled kProfRetreat)
+  // can no longer hand the D term a step of up to 270 deg.
   bool h1_retreat = false;
   {
     const int h1_side = fmFrontRetreatSide(fm_station_live_deg, fabsf(psi_target) > 90.0f,
-                                           fm_buggy_cross_m);
+                                           fm_buggy_cross_m, kFmSideHysteresisM);
     if (h1_side != 0) {
       h1_retreat          = true;
       fm_station_live_deg = fmRetreatSeedDeg(h1_side,
                                              fmMeasuredStationDeg(course, b_rider_to_buggy), st_limit);
+      fm_aim_step         = true;
       fm_transit_active   = false;
       if (m_decl == 4 || m_decl == 5) {
         fm_front_aborted      = true;
@@ -4342,6 +4447,25 @@ static void computeFmTarget(double* out_lat, double* out_lng)
                                                          pass_lateral, st_limit);
   const float psi_eff_target = (psi_target >= 0.0f) ? ceil_mag : -ceil_mag;
 
+  // ---- V2.5-Evo - 2026-10-06 - audit H-2: THE RIDER SHIELD FOR THIS TICK ----
+  // A circle round the rider always (3 m, or min_dist_m if larger) and, while he is foiling (>= 12 km/h),
+  // a cone ahead of him along his course: speed x 5 s deep, +/-30 deg (FollowMeStation.h). It is drawn
+  // round the ANCHOR - the filtered rider position pushed forward by the filter lag, the same point every
+  // station is placed around - so the shield and the stations agree on where the rider is; the buggy is
+  // re-expressed from the filtered-position frame by subtracting lag_m along the course (the cross-track
+  // offset is the same in both). Data rules: the position, course and speed are the FILTERED track this
+  // function already uses; this branch runs only with a valid course, and computeFmTarget() is only
+  // called on ticks whose fault check passed (TX GPS fresh, Phase A/B), so no stale fix is extended.
+  // Snapped rear stations (modes 1-3 at their preset) never consult it: owner ruling, SW36 behaviour -
+  // except the one tick a WALKING station would snap (the snap check just below).
+  // While an escape stands, the cone is tested widened by kFmSideHysteresisM (the Schmitt hold).
+  // Set up here, before the snap decision, because that decision reads it.
+  const FmShield shield = fmShieldMake(fm_rider_speed_kmh, kFmShieldHorizonS, kFmShieldHalfAngleDeg,
+                                       kFmShieldMinSpeedKmh, kFmShieldCircleMinM, usrConf.min_dist_m,
+                                       d_follow);
+  const float sh_inflate  = fm_shield_escape ? kFmSideHysteresisM : 0.0f;
+  const float buggy_al_a  = fm_buggy_along_m - lag_m;    // the buggy, measured from the anchor
+
   // ---- V2.5-Evo - 2026-10-06 - R-1: REAR STATIONS SNAP, FRONT STATIONS WALK ----
   // BUG: every rear-mode Schmitt flip and every engagement walked the station at 15 deg/s from a
   // measured seed, so the water-tested rear modes 1-3 no longer stepped to their preset the way SW36
@@ -4351,7 +4475,24 @@ static void computeFmTarget(double* out_lat, double* out_lng)
   // still outside that band can only be one coming home from a front station, and it keeps walking.
   // V2.5-Evo - 2026-10-06 - audit L-8: the predicate now lives in FollowMeStation.h (fmRearSnap), same
   // arithmetic, so the host test runs the shipped code.
-  const bool rear_snap = fmRearSnap(m_eff, fm_station_live_deg, near_diag);
+  bool rear_snap = fmRearSnap(m_eff, fm_station_live_deg, near_diag);
+  // V2.5-Evo - 2026-10-06 - audit H-2: A WALK ENDS IN A SNAP ONLY WHEN THE SNAPPED AIM CLEARS THE SHIELD.
+  // A snapped station never consults the shield (the SW36 path), so the tick a walking station would
+  // snap is the last chance to check it: a walk home that reaches the rear band while the buggy is still
+  // ahead of the rider (lagging, or mid go-around) would otherwise snap to a preset behind him and aim
+  // the buggy straight through him. So, only for a station that WALKED last tick (fm_station_walking):
+  // if the line from the buggy to the snapped station point (anchor + d_follow at the target) touches
+  // the shield, the station keeps walking this tick and stays under the shield; it snaps on the first
+  // tick that line is clear. A station that was already snapped never takes this test, so steady
+  // rear-only riding - including every Schmitt flip and every 1/2/3 cycle - is exactly SW36.
+  if (rear_snap && fm_station_walking) {
+    float snap_al, snap_cr;
+    fmStationAlongCrossM(psi_eff_target, d_follow, &snap_al, &snap_cr);
+    if (fmShieldSegmentHits(shield, buggy_al_a, fm_buggy_cross_m, snap_al, snap_cr, sh_inflate)) {
+      rear_snap = false;
+    }
+  }
+  fm_station_walking = !rear_snap;
 
   // ---- The slew (front only), then the clamp. The clamp is the belt: the slew cannot pass its own
   //      target, and every target has already been clamped, but a stored angle from a previous tick
@@ -4391,6 +4532,96 @@ static void computeFmTarget(double* out_lat, double* out_lng)
   if (fm_transit_active) fm_log_gate_flags |= FM_LOG_GATE_TRANSIT;        // bit 10, reserved in 2026-09-17
   if (fm_aim_outward)    fm_log_gate_flags |= FM_LOG_GATE_AIM_OUTWARD;    // bit 31
 
+  double aim_lat = 0.0, aim_lng = 0.0;                   // this tick's aim point
+  uint8_t aim_kind = 0;                                  // 0 station, 1 PG-4 outward, 3 G-5 twin
+
+  // finishAim - the shield's verdict on this tick's aim, then the aim is published. Runs exactly once, at
+  // the end of both aim branches below, on the aim they built (aim_lat / aim_lng, and sh_al / sh_cr
+  // in the anchor frame). Every write is to state this function already owns.
+  //   NO ESCAPE: the aim stands.
+  //   ESCAPE (the buggy -> aim line touches the shield):
+  //     1. the side to deal with it on is the BUGGY'S side, with the H-3 band: beyond 2 m that is the
+  //        side the buggy is measured on, inside 2 m it is the side the station is committed to;
+  //     2. if the station is on the OTHER side of the rider's line, it is RE-SEEDED there from the
+  //        buggy's measured angle - the H-1 retreat, extended to every non-snapped station (rear-half
+  //        walks, the M-8 walk home, F4/F5 outbound). It then walks to its target on that side. A
+  //        station exactly behind the rider (psi 0) has no side and is not re-seeded; the side the
+  //        escape chose is remembered (fm_shield_side) while it stands, so noise cannot flip it;
+  //     3. an F4/F5 still OUTBOUND (in transit) gives up for this engagement - the abort latches to the
+  //        rear preset on that side, and the rider re-selects F4/F5 to try again;
+  //     4. this tick's aim is the GO-AROUND waypoint: at the buggy's own along-track position, square
+  //        out to that side, beyond the shield's edge there (fmShieldGoAroundLateralM). That line
+  //        cannot touch the shield unless the buggy is already inside it (then it is the shortest way
+  //        out) or within the 2 m band across the line (the accepted residual). The fade bypass is
+  //        withheld while it stands - only ever a LOWER cap, as with PG-4. No throttle code changed.
+  //   The escape is HELD (the Schmitt) until the aim clears the cone widened by kFmSideHysteresisM.
+  //   Any change of aim kind (station / outward / go-around / twin / degraded) sets fm_aim_step, so the
+  //   D term never differentiates across the swap (audit M-10, and L-11 for the twin's on/off edges).
+  // Snapped rear stations never escape: the SW36 path, owner ruling.
+  // The G-5 twin is tested on the STATION it stands in for (sh_al / sh_cr below), not on its own 3 m
+  // carrot: the carrot is only a heading carrier for a station the buggy is already sitting on, and a
+  // buggy sitting on a station directly behind the rider would otherwise always point it into the circle.
+  float sh_al = 0.0f, sh_cr = 0.0f;                      // the aim (anchor frame) the shield is tested on
+  auto finishAim = [&]() {
+    uint8_t kind   = aim_kind;
+    bool    escape = false;
+    if (!rear_snap) {
+      const FmShieldDecision sd = fmShieldDecide(shield, fm_shield_escape, fm_shield_side,
+                                                 kFmSideHysteresisM,
+                                                 fm_station_live_deg, buggy_al_a, fm_buggy_cross_m,
+                                                 sh_al, sh_cr, pass_lateral, d_follow);
+      if (sd.escape) {
+        escape = true;
+        kind   = 2;
+        fm_shield_side = (int8_t)sd.side;
+        if (sd.reseed) {
+          fm_station_live_deg = fmRetreatSeedDeg(sd.side,
+                                                 fmMeasuredStationDeg(course, b_rider_to_buggy), st_limit);
+          fm_station_deg_x10.store((int16_t)(fm_station_live_deg * 10.0f), std::memory_order_relaxed);
+          fm_aim_step = true;
+        }
+        if ((m_decl == 4 || m_decl == 5) && !fm_front_aborted && fm_transit_active) {
+          fm_front_aborted      = true;
+          fm_front_retreat_side = (int8_t)sd.side;
+          fm_transit_active     = false;
+          const uint8_t m_rear  = (uint8_t)((sd.side > 0) ? 1 : 3);
+          float t = fmStationPresetDeg(m_rear, near_diag, phi_eff);
+          if (!fm_diagonal_engaged) t = 0.0f;
+          fm_station_target_deg = fmClampStationDeg(t, phi_eff);
+          Serial.printf("FM [RX] RIDER SHIELD: F%u abandoned on the way out - its path would cross your "
+                        "%s; retreating behind you on your %s (F%u). Re-select F%u to try again\n",
+                        (unsigned)m_decl, (shield.cone_len_m > 0.0f) ? "path ahead" : "3 m circle",
+                        (sd.side > 0) ? "RIGHT" : "LEFT", (unsigned)m_rear, (unsigned)m_decl);
+        }
+        double p_lat, p_lng;
+        projectPoint(fm_filt_lat, fm_filt_lng,
+                     (fm_buggy_along_m >= 0.0f) ? course : (course + 180.0f),
+                     fabsf(fm_buggy_along_m), &p_lat, &p_lng);
+        projectPoint(p_lat, p_lng, course + ((sd.lateral_m >= 0.0f) ? 90.0f : -90.0f),
+                     fabsf(sd.lateral_m), &aim_lat, &aim_lng);
+        fm_target_profile = kProfOutward;
+        fm_fade_bypass    = false;
+        fm_log_gate_flags &= ~FM_LOG_GATE_FADE_BYPASS;
+        static const unsigned long kFmShieldMsgMs = 2000UL;
+        static unsigned long fm_shield_msg_ms = 0;
+        if (fm_shield_msg_ms == 0 || (st_now - fm_shield_msg_ms) >= kFmShieldMsgMs) {
+          fm_shield_msg_ms = st_now;
+          Serial.printf("FM [RX] RIDER SHIELD: the buggy's line would cross your %s (%.0f m ahead x "
+                        "+/-%.0f deg, circle %.1f m) - going round on your %s to %.1f m off your line\n",
+                        (shield.cone_len_m > 0.0f) ? "path" : "circle", (double)shield.cone_len_m,
+                        (double)kFmShieldHalfAngleDeg, (double)shield.circle_r_m,
+                        (sd.side > 0) ? "RIGHT" : "LEFT", (double)fabsf(sd.lateral_m));
+        }
+      }
+    }
+    fm_shield_escape = escape;
+    if (!escape) fm_shield_side = 0;
+    if (kind != fm_aim_kind_prev) fm_aim_step = true;
+    fm_aim_kind_prev = kind;
+    *out_lat = aim_lat;
+    *out_lng = aim_lng;
+  };
+
   // ---- THE AIM POINT ----
   if (fm_aim_outward) {
     // PG-4 escape. The waypoint sits at the BUGGY'S OWN along-track position and at least
@@ -4413,7 +4644,10 @@ static void computeFmTarget(double* out_lat, double* out_lng)
                  (fm_buggy_along_m >= 0.0f) ? course : (course + 180.0f),
                  fabsf(fm_buggy_along_m), &p_lat, &p_lng);
     projectPoint(p_lat, p_lng, course + ((lat_off >= 0.0f) ? 90.0f : -90.0f), fabsf(lat_off),
-                 out_lat, out_lng);
+                 &aim_lat, &aim_lng);
+    aim_kind = 1;
+    sh_al    = buggy_al_a;
+    sh_cr    = lat_off;
     // RATE-LIMITED: this branch runs at 10 Hz for as long as the escape stands, and an unlimited
     // printf here would flood the console at exactly the moment the console matters. 2 s between
     // repeats, the fm_heading_block_msg_ms pattern. The deep log carries every tick regardless
@@ -4430,6 +4664,7 @@ static void computeFmTarget(double* out_lat, double* out_lng)
                       (double)pass_lateral, (double)fabsf(lat_off));
       }
     }
+    finishAim();   // V2.5-Evo - 2026-10-06 - H-2: the outward waypoint answers to the shield too
     return;
   }
 
@@ -4459,7 +4694,20 @@ static void computeFmTarget(double* out_lat, double* out_lng)
     if (f > 1.0f) f = 1.0f;
     look_m = kFmTransitLookaheadFactor * d_follow * f;
   }
+  // V2.5-Evo - 2026-10-06 - audit H-2: the lookahead may not carry the aim into the rider shield. The
+  // station point sits outside the cone by design (35 deg no-go arc > 30 deg cone), but pushing it along
+  // the course narrows its angle - d_follow 9 + extra 7 puts F4 at 16 x 13 m (39 deg), and the full 9 m
+  // lookahead at 25 x 13 m (27.5 deg), inside the cone once the rider passes about 16 km/h. So the
+  // lookahead is SHORTENED to the longest that keeps the buggy -> aim line clear; it is never lengthened
+  // and never moved across the course line, so PG-3 is untouched. Continuous in the geometry, so the D
+  // term may differentiate it. If even no lookahead clears, finishAim()'s escape decides.
+  if (look_m > 0.0f && !rear_snap) {
+    look_m = fmShieldClipLookaheadM(shield, sh_inflate, buggy_al_a, fm_buggy_cross_m,
+                                    fm_station_along_m, fm_station_cross_m, look_m);
+  }
   if (look_m > 0.0f) projectPoint(st_lat, st_lng, course, look_m, &st_lat, &st_lng);
+  sh_al    = fm_station_along_m + look_m;
+  sh_cr    = fm_station_cross_m;
 
   // ---- G-5 TWIN: an aim point on top of the buggy is a noise source, so refuse to produce one ----
   // Below kFmThetaMinSepM the bearing from the buggy to the aim is not information. Rather than
@@ -4477,6 +4725,9 @@ static void computeFmTarget(double* out_lat, double* out_lng)
         gps_last_lat, gps_last_lng, st_lat, st_lng);
     if (aim_sep_m < kFmThetaMinSepM) {
       projectPoint(gps_last_lat, gps_last_lng, course, kFmThetaMinSepM, &st_lat, &st_lng);
+      // V2.5-Evo - 2026-10-06 - audit L-11: the twin's on/off edges are aim steps (fm_aim_step via the aim
+      // kind in finishAim). The shield still tests the station this carrot stands in for (sh_al / sh_cr).
+      aim_kind = 3;
     }
   }
 
@@ -4502,8 +4753,9 @@ static void computeFmTarget(double* out_lat, double* out_lng)
   else                               fm_target_profile = kProfBehind;
   if (h1_retreat) fm_target_profile = kProfRetreat;   // V2.5-Evo - 2026-10-06 - H-1: the re-seed tick is a step
 
-  *out_lat = st_lat;
-  *out_lng = st_lng;
+  aim_lat = st_lat;
+  aim_lng = st_lng;
+  finishAim();   // V2.5-Evo - 2026-10-06 - H-2: the shield verdict, then *out_lat / *out_lng
 }
 
 // ------------------------------------------------------------
@@ -4850,6 +5102,10 @@ static void fmEnterIdle()
   fm_transit_start_course_deg = -1.0f;
   fm_front_aborted      = false;
   fm_front_retreat_side = 0;            // V2.5-Evo - 2026-10-06 - H-1
+  fm_seed_pending       = false;        // V2.5-Evo - 2026-10-06 - M-11
+  fm_shield_escape      = false;        // V2.5-Evo - 2026-10-06 - H-2
+  fm_shield_side        = 0;            // V2.5-Evo - 2026-10-06 - H-2
+  fm_station_walking    = false;        // V2.5-Evo - 2026-10-06 - H-2
   fm_station_prev_ms    = 0;
   fm_station_deg_x10.store(0, std::memory_order_relaxed);
   fm_filt_init        = false;
@@ -5557,6 +5813,10 @@ static void runFmLoopBody(unsigned long now)
         fm_transit_start_course_deg = -1.0f;
         fm_front_aborted      = false;
         fm_front_retreat_side = 0;            // V2.5-Evo - 2026-10-06 - H-1
+        fm_seed_pending       = false;        // V2.5-Evo - 2026-10-06 - M-11
+        fm_shield_escape      = false;        // V2.5-Evo - 2026-10-06 - H-2
+        fm_shield_side        = 0;            // V2.5-Evo - 2026-10-06 - H-2
+        fm_station_walking    = false;        // V2.5-Evo - 2026-10-06 - H-2
         fm_station_prev_ms    = 0;
         fm_station_deg_x10.store(0, std::memory_order_relaxed);
         // V2.5-Evo - 2026-09-19 - a RETURN in progress or a pending candidate ends here too: RTM is
@@ -6536,9 +6796,17 @@ static void runFmLoopBody(unsigned long now)
         const float b_r2b = (float)TinyGPSPlus::courseTo(
             fm_filt_lat, fm_filt_lng, gps_last_lat, gps_last_lng);
         fm_station_live_deg = fmEngageSeedDeg(m, true, fmMeasuredStationDeg(fm_rider_course_deg, b_r2b));
+        fm_seed_pending     = false;
       } else {
         fm_station_live_deg = 0.0f;              // no course: directly behind, the safe geometry
+        // V2.5-Evo - 2026-10-06 - audit M-11: and the seed is applied on the first tick that has a
+        // course (computeFmTarget), instead of never - this is the owner's normal stopped-and-floating
+        // mode change, so it is the path the M-8 seed most needs to cover.
+        fm_seed_pending     = true;
       }
+      fm_shield_escape            = false;       // V2.5-Evo - 2026-10-06 - H-2: a fresh engagement holds no escape
+      fm_shield_side              = 0;
+      fm_station_walking          = false;       // ... and has not walked yet (a seed of 0 snaps exactly as SW36)
       fm_station_prev_ms          = 0;           // the slew's dt starts fresh, never across the gap
       fm_transit_active           = false;
       fm_transit_start_course_deg = -1.0f;
@@ -6576,7 +6844,10 @@ static void runFmLoopBody(unsigned long now)
                       "your line, radius %.1f m, %.1f deg off dead ahead, pass minimum %.1f m, no-go arc "
                       "+/-%.1f deg of dead ahead, station walks at <= %.0f deg/s\n",
                       (unsigned)m, (double)ahead_p, (double)d_f, (double)extra_p,
-                      (fabsf(ahead_p - (d_f + extra_p)) > 0.05f) ? ", held at the 35 deg minimum" : "",
+                      // V2.5-Evo - 2026-10-06 - audit M-12: ahead is now also RAISED, to the side offset
+                      // (45 deg maximum), when follow + extra is shorter than the side - say which.
+                      (ahead_p > (d_f + extra_p) + 0.05f) ? ", raised to match the side offset (45 deg maximum)"
+                      : (ahead_p < (d_f + extra_p) - 0.05f) ? ", held at the 35 deg minimum" : "",
                       (double)side_p, (double)rf_p, (double)phie_p, (double)pass_p,
                       (double)phie_p, (double)kFmStationRateDegPerS);
       }

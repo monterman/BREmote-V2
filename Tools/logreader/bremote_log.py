@@ -42,7 +42,10 @@ columns): 59 -> 31 (level 3), 65 -> 35 (level 4 diagnostics only), 83 -> 48
 (level 4 + Follow-Me block), 85 -> 49 (+ raw rider speed; never shipped
 alone, kept so a reader can still name it), 87 -> 51 (+ the two mixer
 outputs - the current everyday level-4 record), 109 -> 65 (level 5,
-"everything"). The record layout table (``RECORD_LAYOUTS``) is keyed by
+"everything"). Format 2 (since the M-2 flash, 2026-10-02) adds 3 bytes to the
+base record: 62 -> 33 (L3_V2), 90 -> 53 (L4_V2), 112 -> 67 (L5_V2), and since
+2026-10-06 126 -> 76 (L5_VESC2: level 5 + the second VESC's telemetry, read
+over CAN; -999 / empty = no data or stale). The record layout table (``RECORD_LAYOUTS``) is keyed by
 record size, so a future record size is one new table entry, not a
 rewrite; an unrecognized size decodes the largest known prefix that fits.
 
@@ -220,9 +223,10 @@ TIER_ORDER = ["L3", "L4_DIAG", "L4_83", "L4_RAW", "L4", "L5"]
 # ValueError on EVERY file written since the M-2 flash. Appended after the format-1 names - a file
 # never mixes the two formats, so their relative order only matters within each group.
 TIER_ORDER += ["L3_V2", "L4_V2", "L5_V2"]
+TIER_ORDER += ["L5_VESC2"]   # 2026-10-06: level 5 + the VESC 2 block (126 B)
 # Tiers that carry the Follow-Me block (decoded gate/state columns) and the level-5 block, by name.
-FM_BLOCK_TIERS = ("L4_83", "L4_RAW", "L4", "L5", "L4_V2", "L5_V2")
-L5_BLOCK_TIERS = ("L5", "L5_V2")
+FM_BLOCK_TIERS = ("L4_83", "L4_RAW", "L4", "L5", "L4_V2", "L5_V2", "L5_VESC2")
+L5_BLOCK_TIERS = ("L5", "L5_V2", "L5_VESC2")
 
 
 # ============================================================
@@ -401,6 +405,30 @@ L5_EXTRA_FIELDS = [
     F("l5_rsvd_takeover_end", "B", csv_prescaled=True, unit="reserved"),
 ]
 
+# ---- VESC 2 block (bytes 112-125) - the 126 B "L5_VESC2" tier, 2026-10-06. ----
+# The second motor controller, read by the RX over CAN through VESC 1 (COMM_FORWARD_CAN, 1 Hz).
+# Appended at the TAIL of the largest record, so format_ver stays 2 and the new record_size is
+# what says these columns are present - a 112 B file is still the plain L5_V2 tier.
+# Same units and clamps as VESC 1's base-record columns. FRESHNESS: the firmware writes the "no
+# data" sentinel in EVERY value field when VESC 2 has never answered or its last reply is older
+# than 2500 ms, so stale data never decodes as live; vesc2_age_ms is always the real age (sentinel
+# only for "never"). In the firmware's CSV every N/A prints -999 (outside every physical range).
+VESC2_EXTRA_FIELDS = [
+    F("vesc2_age_ms", "H", sentinel_raw=0xFFFF, csv_prescaled=True, sentinel_val=-999, unit="ms"),
+    F("vesc2_motor_current_A", "h", raw_scale=100.0, sentinel_raw=0x7FFF,
+      csv_prescaled=True, sentinel_val=-999.0, unit="A"),
+    F("vesc2_battery_current_A", "h", raw_scale=100.0, sentinel_raw=0x7FFF,
+      csv_prescaled=True, sentinel_val=-999.0, unit="A"),
+    F("vesc2_duty_cycle_%", "b", sentinel_raw=0x7F, csv_prescaled=True, sentinel_val=-999, unit="%"),
+    F("vesc2_voltage_V", "H", raw_scale=10.0, sentinel_raw=0xFFFF,
+      csv_prescaled=True, sentinel_val=-999.0, unit="V"),
+    F("vesc2_ERPM", "h", raw_scale=0.1, sentinel_raw=0x7FFF,
+      csv_prescaled=True, sentinel_val=-999, unit="erpm"),                   # struct stores ERPM/10
+    F("vesc2_temp_mos_C", "b", sentinel_raw=0x7F, csv_prescaled=True, sentinel_val=-999, unit="C"),
+    F("vesc2_temp_motor_C", "b", sentinel_raw=0x7F, csv_prescaled=True, sentinel_val=-999, unit="C"),
+    F("vesc2_fault_code", "B", sentinel_raw=0xFF, csv_prescaled=True, sentinel_val=-999, unit="code"),
+]
+
 # fm_aligning / fm_boost are spliced into the CSV header right after fm_return_reason in every
 # tier from L4_83 up - see the field-table note above for why they have no field-table entry.
 _VIRTUAL_GATE_COLUMNS = {"fm_return_reason": ["fm_aligning", "fm_boost"]}
@@ -451,9 +479,15 @@ LAYOUT_L5_V2 = _layout(5, "L5_V2",
                        L3_FIELDS_V2 + L4_DIAG_EXTRA_FIELDS + L4_83_EXTRA_FIELDS
                        + L4_RAW_EXTRA_FIELDS + L4_MOTORS_EXTRA_FIELDS + L5_EXTRA_FIELDS,
                        virtual_after=_VIRTUAL_GATE_COLUMNS)
+# ---- 2026-10-06: level 5 + the VESC 2 block (126 B), still format_ver 2. ----
+LAYOUT_L5_VESC2 = _layout(5, "L5_VESC2",
+                          L3_FIELDS_V2 + L4_DIAG_EXTRA_FIELDS + L4_83_EXTRA_FIELDS
+                          + L4_RAW_EXTRA_FIELDS + L4_MOTORS_EXTRA_FIELDS + L5_EXTRA_FIELDS
+                          + VESC2_EXTRA_FIELDS,
+                          virtual_after=_VIRTUAL_GATE_COLUMNS)
 
 LAYOUT_BY_NAME = {lay["name"]: lay for lay in (LAYOUT_L3, LAYOUT_L4_DIAG, LAYOUT_L4_83, LAYOUT_L4_RAW, LAYOUT_L4, LAYOUT_L5,
-                                               LAYOUT_L3_V2, LAYOUT_L4_V2, LAYOUT_L5_V2)}
+                                               LAYOUT_L3_V2, LAYOUT_L4_V2, LAYOUT_L5_V2, LAYOUT_L5_VESC2)}
 
 # Table-driven: keyed by on-disk record size. A future record (e.g. the steer-takeover branch
 # claiming bit 16 and its own bytes) is one new _layout() call and one new dict entry here.
@@ -474,7 +508,18 @@ assert LAYOUT_L3_V2["csv_header"] == _FW_CSV_HEADER_L3_V2, (
     + LAYOUT_L3_V2["csv_header"] + " / firmware " + _FW_CSV_HEADER_L3_V2
 )
 # 59/65/83/85/87/109 = format_ver 1 (pre-2026-10-02). 62/90/112 = format_ver 2, the M-2 base.
-assert RECORD_LAYOUTS.keys() == {59, 65, 83, 85, 87, 109, 62, 90, 112}, sorted(RECORD_LAYOUTS)
+# 126 = format_ver 2 + the VESC 2 block at the tail of level 5 (2026-10-06).
+assert RECORD_LAYOUTS.keys() == {59, 65, 83, 85, 87, 109, 62, 90, 112, 126}, sorted(RECORD_LAYOUTS)
+
+# BREmote_V2_Rx.h LOG_CSV_HEADER_L5_VESC2 is LOG_CSV_HEADER_L5 plus this suffix, copied verbatim.
+# (A test also reads the macro straight out of the firmware header, so the two cannot drift.)
+_FW_CSV_SUFFIX_VESC2 = (
+    ",vesc2_age_ms,vesc2_motor_current_A,vesc2_battery_current_A,vesc2_duty_cycle_%,vesc2_voltage_V,"
+    "vesc2_ERPM,vesc2_temp_mos_C,vesc2_temp_motor_C,vesc2_fault_code"
+)
+assert LAYOUT_L5_VESC2["csv_header"] == LAYOUT_L5_V2["csv_header"] + _FW_CSV_SUFFIX_VESC2, (
+    "generated VESC 2 header has drifted from the firmware macro"
+)
 
 # The six CSV headers the firmware itself can print (BREmote_V2_Rx.h LOG_CSV_HEADER_L3 /
 # _L4_DIAG / _L4_83 / _L4_RAW / _L4 / _L5). Copied verbatim so CSV-input detection is an exact
@@ -515,6 +560,7 @@ CSV_HEADER_TO_LAYOUT = {
     LAYOUT_L3_V2["csv_header"]: LAYOUT_L3_V2,
     LAYOUT_L4_V2["csv_header"]: LAYOUT_L4_V2,
     LAYOUT_L5_V2["csv_header"]: LAYOUT_L5_V2,
+    LAYOUT_L5_VESC2["csv_header"]: LAYOUT_L5_VESC2,   # 2026-10-06
 }
 
 

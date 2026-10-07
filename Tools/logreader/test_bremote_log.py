@@ -630,5 +630,142 @@ class TestExpandedCsvOutput(unittest.TestCase):
                 self.assertEqual(as_dict["rtm_phase_name"], "run", layout["name"])
 
 
+# ============================================================
+# VESC 2 over CAN (2026-10-06): the 126 B L5_VESC2 tier
+# ============================================================
+
+_FW_HEADER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "..", "..", "Source", "V2_Integration_Rx", "BREmote_V2_Rx.h")
+
+# One fresh VESC 2 reading, as raw struct values (what fillVesc2Block() writes).
+_VESC2_FRESH_RAW = {
+    "vesc2_age_ms": 412,
+    "vesc2_motor_current_A": 1234,      # 12.34 A
+    "vesc2_battery_current_A": -567,    # -5.67 A (regen)
+    "vesc2_duty_cycle_%": 45,
+    "vesc2_voltage_V": 502,             # 50.2 V
+    "vesc2_ERPM": -1200,                # -12000 ERPM
+    "vesc2_temp_mos_C": 31,
+    "vesc2_temp_motor_C": 28,
+    "vesc2_fault_code": 0,
+}
+# What the firmware writes when VESC 2 is stale (real age, every value N/A).
+_VESC2_STALE_RAW = {
+    "vesc2_age_ms": 3400,
+    "vesc2_motor_current_A": 0x7FFF,
+    "vesc2_battery_current_A": 0x7FFF,
+    "vesc2_duty_cycle_%": 0x7F,
+    "vesc2_voltage_V": 0xFFFF,
+    "vesc2_ERPM": 0x7FFF,
+    "vesc2_temp_mos_C": 0x7F,
+    "vesc2_temp_motor_C": 0x7F,
+    "vesc2_fault_code": 0xFF,
+}
+
+
+class TestVesc2Tier(unittest.TestCase):
+    def test_record_size_and_column_count(self):
+        self.assertEqual(bl.LAYOUT_L5_VESC2["record_size"], 126)
+        self.assertEqual(len(bl.LAYOUT_L5_VESC2["csv_header_cols"]), 76)
+        self.assertEqual(len(bl.LAYOUT_L5_V2["csv_header_cols"]), 67)
+        # the first 112 bytes are byte-identical to the format-2 level-5 record
+        self.assertEqual(bl.LAYOUT_L5_VESC2["fields"][:len(bl.LAYOUT_L5_V2["fields"])], bl.LAYOUT_L5_V2["fields"])
+
+    def test_firmware_header_matches(self):
+        # Read the macro and the static_asserts straight out of the firmware header, so the reader
+        # cannot drift from what the RX actually writes.
+        with open(_FW_HEADER_PATH, "r", encoding="utf-8") as f:
+            text = f.read()
+        prefix = '#define LOG_CSV_HEADER_L5_VESC2 LOG_CSV_HEADER_L5 "'
+        start = text.index(prefix) + len(prefix)
+        suffix = text[start:text.index('"', start)]
+        self.assertEqual(bl.LAYOUT_L5_V2["csv_header"] + suffix, bl.LAYOUT_L5_VESC2["csv_header"])
+        self.assertIn("static_assert(sizeof(VescLogDataL5) == 126,", text)
+        self.assertIn("static_assert(offsetof(VescLogDataL5, vesc2_age_ms) == 112,", text)
+        self.assertIn("#define LOG_FILE_FORMAT_VER  2 ", text)   # tail append: format version NOT bumped
+
+    def test_fresh_binary_record_decodes(self):
+        rec_bytes = pack_record(bl.LAYOUT_L5_VESC2, dict(_VESC2_FRESH_RAW, rider_fix_seq=7))
+        self.assertEqual(len(rec_bytes), 126)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "v2fresh.log")
+            write_binary_log(path, 5, 126, [rec_bytes])
+            rec = list(bl.iter_binary_records(path))[0]
+        self.assertEqual(rec["_layout_name"], "L5_VESC2")
+        self.assertEqual(rec["rider_fix_seq"], 7)                 # level-5 block unaffected
+        self.assertEqual(rec["vesc2_age_ms"], 412)
+        self.assertAlmostEqual(rec["vesc2_motor_current_A"], 12.34, places=3)
+        self.assertAlmostEqual(rec["vesc2_battery_current_A"], -5.67, places=3)
+        self.assertEqual(rec["vesc2_duty_cycle_%"], 45)
+        self.assertAlmostEqual(rec["vesc2_voltage_V"], 50.2, places=3)
+        self.assertAlmostEqual(rec["vesc2_ERPM"], -12000, places=3)
+        self.assertEqual(rec["vesc2_temp_mos_C"], 31)
+        self.assertEqual(rec["vesc2_temp_motor_C"], 28)
+        self.assertEqual(rec["vesc2_fault_code"], 0)              # 0 = no fault is a real value, not N/A
+
+    def test_stale_and_never_binary_records_decode_as_none(self):
+        never = dict(_VESC2_STALE_RAW, vesc2_age_ms=0xFFFF)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "v2stale.log")
+            write_binary_log(path, 5, 126, [pack_record(bl.LAYOUT_L5_VESC2, _VESC2_STALE_RAW),
+                                            pack_record(bl.LAYOUT_L5_VESC2, never)])
+            stale, nev = list(bl.iter_binary_records(path))
+        self.assertEqual(stale["vesc2_age_ms"], 3400)             # the real age survives
+        self.assertIsNone(nev["vesc2_age_ms"])
+        for rec in (stale, nev):
+            for f in bl.VESC2_EXTRA_FIELDS[1:]:
+                self.assertIsNone(rec[f["name"]], f["name"])
+
+    def test_old_112_byte_level5_file_still_decodes_without_vesc2(self):
+        rec_bytes = pack_record(bl.LAYOUT_L5_V2, {"rtm_phase": 1, "rider_fix_seq": 3})
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "old112.log")
+            write_binary_log(path, 5, 112, [rec_bytes])
+            rec = list(bl.iter_binary_records(path))[0]
+        self.assertEqual(rec["_layout_name"], "L5_V2")
+        self.assertEqual(rec["rtm_phase_name"], "align")
+        self.assertEqual(rec["rider_fix_seq"], 3)
+        self.assertNotIn("vesc2_age_ms", rec)
+
+    def test_device_csv_input_with_sentinels(self):
+        base_cells = ["0"] * len(bl.LAYOUT_L5_V2["csv_header_cols"])
+        fresh = base_cells + ["412", "12.34", "-5.67", "45", "50.2", "-12000", "31", "28", "0"]
+        stale = base_cells + ["3400", "-999.00", "-999.00", "-999", "-999.0", "-999", "-999", "-999", "-999"]
+        never = base_cells + ["-999", "-999.00", "-999.00", "-999", "-999.0", "-999", "-999", "-999", "-999"]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "v2.csv")
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                f.write(bl.LAYOUT_L5_VESC2["csv_header"] + "\n")
+                for row in (fresh, stale, never):
+                    f.write(",".join(row) + "\n")
+            r_fresh, r_stale, r_never = list(bl.iter_csv_records(path))
+        self.assertAlmostEqual(r_fresh["vesc2_motor_current_A"], 12.34, places=3)
+        self.assertEqual(r_fresh["vesc2_ERPM"], -12000)
+        self.assertEqual(r_fresh["vesc2_fault_code"], 0)
+        self.assertEqual(r_stale["vesc2_age_ms"], 3400)
+        self.assertIsNone(r_never["vesc2_age_ms"])
+        for rec in (r_stale, r_never):
+            for f in bl.VESC2_EXTRA_FIELDS[1:]:
+                self.assertIsNone(rec[f["name"]], f["name"])
+
+    def test_expanded_csv_carries_vesc2_columns_and_blanks_na(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = os.path.join(tmp, "v2.log")
+            write_binary_log(log_path, 5, 126, [pack_record(bl.LAYOUT_L5_VESC2, dict(_VESC2_FRESH_RAW, rtm_phase=2)),
+                                                pack_record(bl.LAYOUT_L5_VESC2, _VESC2_STALE_RAW)])
+            records = list(bl.iter_binary_records(log_path))
+            out_path = os.path.join(tmp, "expanded.csv")
+            bl.write_expanded_csv(records, out_path)
+            with open(out_path, "r", encoding="utf-8") as f:
+                header = f.readline().strip().split(",")
+                row1 = dict(zip(header, f.readline().strip().split(",")))
+                row2 = dict(zip(header, f.readline().strip().split(",")))
+        self.assertEqual(row1["rtm_phase_name"], "run")
+        self.assertEqual(row1["vesc2_voltage_V"], "50.2")
+        self.assertEqual(row1["vesc2_ERPM"], "-12000")
+        self.assertEqual(row2["vesc2_age_ms"], "3400")
+        self.assertEqual(row2["vesc2_voltage_V"], "")              # N/A -> empty cell, never a number
+
+
 if __name__ == "__main__":
     unittest.main()

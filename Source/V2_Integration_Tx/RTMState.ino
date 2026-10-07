@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-07 - R-1: in runDoubleSqueezeArm() a squeeze counts only after the trigger has been seen
+//   released (thr_scaled < 10) since the ceremony started, and again between squeeze 1 and squeeze 2. A trigger
+//   held through a magnet hold can no longer complete the ceremony on its own. No confStruct change, sizeof
+//   stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-06 - mag_mode 4 rulings (see Hall.ino): fmStepStationFromMagnet() now returns true when the
 //   station actually moved, so runMagGesture() can start its 1 s tap lockout (audit M-1). fmToggleAutoReturnFromMagnet()
 //   is no longer called: the 2.5 s magnet hold always starts the manual Return-To-Me. Its body is unchanged. No
@@ -172,6 +176,25 @@ static void gpsKeepAliveDelay(uint32_t ms)
     while (Serial1.available()) gps_tx.encode(Serial1.read());
     delay(10);
   }
+}
+
+// ceremonyDelaySeeRelease - V2.5-Evo - 2026-10-07 - R-1: gpsKeepAliveDelay() that also watches the trigger.
+// Used only for the two pauses between squeeze 1 and squeeze 2 in runDoubleSqueezeArm(), so a release that
+// happens while the ceremony is pausing is not missed.
+// Inputs:  ms - how long to wait. Reads thr_scaled (written by the 10 ms measBufCalc task).
+// Returns: true if the trigger read released (thr_scaled < 10) at any 10 ms sample during the wait.
+// Side effects: same as gpsKeepAliveDelay() (drains Serial1 into gps_tx). Loop task only. Blocks for ms.
+static bool ceremonyDelaySeeRelease(uint32_t ms)
+{
+  bool seen = false;
+  unsigned long start = millis();
+  while (millis() - start < ms)
+  {
+    while (Serial1.available()) gps_tx.encode(Serial1.read());
+    if (thr_scaled < 10) seen = true;
+    delay(10);
+  }
+  return seen;
 }
 
 // ============================================================
@@ -559,13 +582,27 @@ static void runDoubleSqueezeArm()
 
   returnGestureCeremonyPoll(true);   // V2.5-Evo - 2026-09-19 - fresh detector; the arming hold is still down
 
+  // V2.5-Evo - 2026-10-07 - RELEASE-FIRST SQUEEZES (audit R-1). THE BUG: the waits below accepted any
+  // trigger above 30% held for 500 ms and never asked whether the trigger had been let go first. A rider
+  // who kept the trigger held through a magnet hold therefore completed the whole ceremony with no
+  // deliberate squeeze at all: squeeze 1 was "met" about 0.6 s after the magnet came off, squeeze 2
+  // about 1.3 s later, and RTM went ACTIVE about 5 s after the hold - with Follow-Me armed, possibly
+  // while he was still on the rope. THE FIX: a squeeze only counts after the trigger has been SEEN
+  // RELEASED (thr_scaled < 10, the same "released" test the toggle gestures use) since the ceremony
+  // started, and again between squeeze 1 and squeeze 2. A deliberate squeeze - release, squeeze, hold
+  // half a second - works exactly as before; the toggle route always starts released, so nothing
+  // changes there. Throttle is still forced to 0 for the whole ceremony (rtm_thr_cap_tx = 0 and
+  // rtmIsArming() in Radio.ino), so this only decides WHEN the ceremony may complete.
+  bool          thr_released_seen = false;
+
   // Wait for first squeeze: thr > 30% (thr_scaled > 76) held for 500ms continuous
   bool          first_ok = false;
   unsigned long hold_ms  = 0;
   while (millis() - rtm_arm_start_ms < (unsigned long)usrConf.rtm_arm_window_s * 1000UL)
   {
     advanceArrow();   // bob arrow every 100ms while waiting for squeeze
-    if (thr_scaled > 76)
+    if (thr_scaled < 10) thr_released_seen = true;   // V2.5-Evo - 2026-10-07 - R-1: release seen
+    if (thr_released_seen && thr_scaled > 76)        // V2.5-Evo - 2026-10-07 - R-1: counts only after a release
     {
       if (hold_ms == 0) hold_ms = millis();
       if (millis() - hold_ms >= 500UL) { first_ok = true; hold_ms = 0; break; }
@@ -598,10 +635,14 @@ static void runDoubleSqueezeArm()
   else
   {
     // Double-squeeze: first unlock (no P4 yet), pause, then black screen, then wait for second squeeze
+    // V2.5-Evo - 2026-10-07 - R-1: squeeze 2 needs its OWN release after squeeze 1. The two pauses
+    // below watch the trigger too (ceremonyDelaySeeRelease()), so a rider who lets go and squeezes
+    // again while the unlock animation is still playing is counted exactly as before.
+    thr_released_seen = false;
     unlockAnimation();
-    gpsKeepAliveDelay(250);
+    if (ceremonyDelaySeeRelease(250)) thr_released_seen = true;
     DISP_LOCK(); for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000; updateDisplay(); DISP_UNLOCK();
-    gpsKeepAliveDelay(800);
+    if (ceremonyDelaySeeRelease(800)) thr_released_seen = true;
 
     bool second_ok = false;
     hold_ms = 0;
@@ -609,7 +650,8 @@ static void runDoubleSqueezeArm()
     while (millis() - rtm_arm_start_ms < (unsigned long)usrConf.rtm_arm_window_s * 1000UL)
     {
       advanceArrow();   // bob arrow every 100ms while waiting for second squeeze
-      if (thr_scaled > 76)
+      if (thr_scaled < 10) thr_released_seen = true;   // V2.5-Evo - 2026-10-07 - R-1: release seen
+      if (thr_released_seen && thr_scaled > 76)        // V2.5-Evo - 2026-10-07 - R-1: counts only after a release
       {
         if (hold_ms == 0) hold_ms = millis();
         if (millis() - hold_ms >= 500UL) { second_ok = true; hold_ms = 0; break; }

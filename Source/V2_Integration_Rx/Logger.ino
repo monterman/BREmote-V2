@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-06 - LOG FORMAT 3 (see BREmote_V2_Rx.h): fillVesc2Block() fills the VESC 2 block in the LEVEL-4 record now (owner ruling: both VESCs at level 4), so loggerTask() calls it for level 4 AND level 5 (logData5.l4). ?download refuses a file of another log format with a plain-English message that says which firmware wrote it and what to do (download before flashing; the PC log reader still decodes it). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - VESC 2 OVER CAN, part 2 (see BREmote_V2_Rx.h): loggerTask() fills the new 14 B VESC 2 block at the tail of the level-5 record (fillVesc2Block()), deciding freshness at log time against VESC 2's own age stamp: never answered or older than kVesc2StaleMs = every value field written as its N/A sentinel, age logged as the real age. Level 5 only; levels 3 and 4 unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 5 of 5 (Rex delta audit L-3; the code fix is in PWM.ino): fillLevel4Diag()'s two swap-failure delta statics are SEEDED FROM THE LIVE COUNTERS ON THE FIRST CALL instead of starting at 0. Starting at 0 made the first level-4 row of a session report the whole boot's accumulated failure count as if it had happened inside that one ~333 ms row, and because the nibbles saturate at 15 a board that had seen any swap failures before logging started wrote a first row reading 15/15 - "pinned" - from a healthy bus. Seeded inside loggerTask, so the single-writer contract is untouched: this task still reads the PWM task's volatiles and writes only its own statics. ZERO log bytes, no LOG_FILE_FORMAT_VER bump (stays 2), record sizes stay 62 / 90 / 112, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 4 of 4 (see Compass.ino, System.ino, PWM.ino): convertToLogData() STOPS READING THE COMPASS OVER I2C. It used to call getCompassHeading() on EVERY log record - ~2.89 Hz at the default rate - which is two chained Wire transactions inside one portMAX_DELAY mutex hold, from loggerTask, with NO throttle gate, NO rtm_use_compass gate and NO heading-latch gate. So whenever logging was on, the RX hit the compass about three times a second at ANY throttle, including full throttle with a rider on the rope, contending for the same mutex as the 100 Hz enable swap that decides which of the two motors receives the single PPM output; and loggerTask is not registered with the task watchdog, so a hold that never returned would not have panicked anything. This was the compass starver nobody had found. IT IS NOT AN ARBITRATION PROBLEM: the logger and the compass were never two competing bus users - the logger's I2C traffic WAS a compass read - so the fix is a cache, not a referee. getCompassHeading() (Compass.ino) now publishes its last successful result, and this file reads that, with an age test: past kCompassLiveCacheMaxAgeMs the column records the 0xFFFF invalid sentinel it has always had. Zero transactions, zero mutex takes, zero contention. The column's contract is unchanged - same field, same size, same scaling, same 0xFFFF-means-invalid semantics - and the mode-2 heading mirror below is unaffected because in that mode getRtmHeading() reads live at 10 Hz, so the cached value is never more than ~100 ms behind what the controller actually used. No record-size change, no LOG_FILE_FORMAT_VER bump, no confStruct change: sizeof stays 200, SW_VERSION stays 36.
@@ -732,21 +733,23 @@ static void fillLevel5Extra(VescLogDataL5 &rec, const FmLogSnapshot &s)
 }
 
 // ============================================================
-// V2.5-Evo - 2026-10-06 - fillVesc2Block - add the VESC 2 block to a level-5 log record
+// V2.5-Evo - 2026-10-06 - fillVesc2Block - add the VESC 2 block to a level-4 (or level-5) log record
+// (LOG FORMAT 3: the block moved from the tail of VescLogDataL5 into VescLogDataL4, so a level-5 row passes
+// its .l4 and both levels carry it.)
 //
 // What it does: copies VESC 2's last validated telemetry (vesc2, written by pollVesc2IfDue() in
-// VESC.ino) into the 14-byte block at the tail of VescLogDataL5, in the same units and clamps the
+// VESC.ino) into the 14-byte block at the tail of VescLogDataL4, in the same units and clamps the
 // base record uses for VESC 1. FRESHNESS IS DECIDED HERE, at log time, against VESC 2's OWN age
 // stamp: if VESC 2 has never answered this session, or its last reply is older than kVesc2StaleMs,
 // every value field gets its "no data" sentinel instead of the old numbers - stale data is never
 // written as live (project GPS/telemetry rule 1, by analogy). vesc2_age_ms is always the real age
 // (0xFFFF only for "never"), so a reader can see WHY a row is N/A.
-// Inputs:  rec - a VescLogDataL5 whose earlier blocks are already filled
+// Inputs:  rec - a VescLogDataL4 whose earlier blocks are already filled
 // Outputs: none (rec is filled in place).
 // Side effects: takes vescMutex for a struct copy (the same 50 ms bound convertToLogData() uses);
 //   if the take fails the block is written as N/A rather than torn. No I/O, no globals written.
 // ============================================================
-static void fillVesc2Block(VescLogDataL5 &rec)
+static void fillVesc2Block(VescLogDataL4 &rec)
 {
   // Start from "no data" in every field; only a fresh copy overwrites it.
   rec.vesc2_age_ms          = 0xFFFF;
@@ -946,8 +949,8 @@ void loggerTask(void* parameter) {
         logData5.l4.base = convertToLogData();
         const FmLogSnapshot snap = logTakeFmSnapshot();
         fillLevel4Diag(logData5.l4, snap);
+        fillVesc2Block(logData5.l4);   // V2.5-Evo - 2026-10-06 - VESC 2 over CAN, with its own freshness test (in the level-4 record since log format 3)
         fillLevel5Extra(logData5, snap);
-        fillVesc2Block(logData5);   // V2.5-Evo - 2026-10-06 - VESC 2 over CAN, with its own freshness test
         memcpy(rec_buf, &logData5, sizeof(logData5));
         rec_len = (uint16_t)sizeof(logData5);
       } else if (active_log_level >= 4) {
@@ -955,6 +958,7 @@ void loggerTask(void* parameter) {
         logData4.base = convertToLogData();
         const FmLogSnapshot snap = logTakeFmSnapshot();
         fillLevel4Diag(logData4, snap);
+        fillVesc2Block(logData4);      // V2.5-Evo - 2026-10-06 - LOG FORMAT 3: level 4 carries both VESCs (owner ruling)
         memcpy(rec_buf, &logData4, sizeof(logData4));
         rec_len = (uint16_t)sizeof(logData4);
       } else {
@@ -1102,6 +1106,19 @@ void downloadLogFile(const char* filename) {
     Serial.println("LOG: this file has no BRLG header, so its record layout is unknown.");
     Serial.println("LOG: it was written before the self-describing log format (or is corrupt).");
     Serial.println("LOG: nothing printed — a wrong record size produces convincing garbage. Delete it with ?deletelog.");
+    return;
+  }
+  // V2.5-Evo - 2026-10-06 - LOG FORMAT 3: a file from OLDER firmware gets its own plain-English answer. Its bytes
+  // are not garbage - they follow an older layout this firmware no longer decodes (a format-2 126 B record and a
+  // format-3 126 B record are the same size with different contents), so nothing is printed rather than wrong
+  // columns, and the rider is told what happened and where the file CAN be read.
+  if (hdr.format_ver < LOG_FILE_FORMAT_VER) {
+    file.close();
+    Serial.printf("LOG: this log was recorded by older firmware (log format %u). This firmware writes log format %u\n",
+                  (unsigned)hdr.format_ver, (unsigned)LOG_FILE_FORMAT_VER);
+    Serial.println("LOG: and cannot turn an older file into CSV, so nothing was printed. The file is NOT damaged.");
+    Serial.println("LOG: Logs should be downloaded BEFORE flashing new firmware. To read this one, flash the previous");
+    Serial.println("LOG: firmware and download it, or decode the raw file on a PC with Tools/logreader/bremote_log.py.");
     return;
   }
   if (hdr.format_ver != LOG_FILE_FORMAT_VER ||

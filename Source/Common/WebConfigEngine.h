@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-06 - (RX only, inside ENABLE_WEB_LOG_DOWNLOAD) LOG FORMAT 3: a log recorded by OLDER firmware (an older format_ver) is refused with its own plain-English ERR_LOG_FORMAT detail - recorded by older firmware, not damaged, download before flashing - instead of "predates the self-describing log format or is corrupt", which was wrong for it. The row-buffer comment no longer quotes the stale 2026-07-25 sizing.
 // V2.5-Evo - 2026-10-03 - (RX only, inside SERIAL_TEE_RING_SIZE - the TX does not include the serial capture ring, so none of this is compiled there) WiFi COMMAND CONSOLE: three routes (POST /api/cmd, GET /api/cmd/out, GET /api/cmd/list), a deferred runner called from webCfgLoop() so a command never executes inside the request that asked for it, and webCfgPumpWhileBlocked() so the four bounded blocking commands the console permits can answer HTTP from inside their own loops. The permitted set, the confirm requirement and the connection-dropping class are all read out of the RX's kCommands[] table through rxWebCommandInfo() / rxWebCommandListJson() - there is no second command list anywhere. The log-download route gains a 409 while a command is running, because the pump makes it reachable from inside one. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - (RX only, inside ENABLE_WEB_LOG_DOWNLOAD) the WiFi log download accepts and buffers the level-5 record (109 B, VescLogDataL5) - the record-size ceiling and the raw buffer are sizeof(VescLogDataL5) now, the largest record the RX writes; logCsvHeaderFor() / logFormatCsvRow() already select the level-5 columns by record_size. No TX impact, no confStruct change.
 // V2.5-Evo - 2026-09-17 - (RX only, inside ENABLE_WEB_LOG_DOWNLOAD) the WiFi log download picks the CSV column header by the file's own record_size as well as its level (logCsvHeaderFor in BREmote_V2_Rx.h), so 65 B level-4 files written before the Follow-Me audit block still download with exactly their 35 columns and new 83 B files get all 45. No TX impact, no confStruct change.
@@ -685,9 +686,20 @@ static void webCfgHandleDownloadLog()
   // after the 53 -> 59 byte record change (F9, 2026-07-24).
   // ============================================================
   LogFileHeader hdr;
-  bool hdrOk = (file.size() >= sizeof(LogFileHeader)) &&
-               (file.read((uint8_t*)&hdr, sizeof(hdr)) == sizeof(hdr)) &&
-               (hdr.magic == LOG_FILE_MAGIC) &&
+  bool hdrRead = (file.size() >= sizeof(LogFileHeader)) &&
+                 (file.read((uint8_t*)&hdr, sizeof(hdr)) == sizeof(hdr)) &&
+                 (hdr.magic == LOG_FILE_MAGIC);
+  // V2.5-Evo - 2026-10-06 - LOG FORMAT 3: a valid header from OLDER firmware is not "corrupt" - its records follow
+  // an older layout this firmware no longer decodes (format 2 and format 3 level-5 records are both 126 B), so it
+  // is refused with an answer that says what happened and what to do.
+  if(hdrRead && hdr.format_ver < LOG_FILE_FORMAT_VER)
+  {
+    file.close();
+    webCfgMarkErr("ERR_LOG_FORMAT");
+    webCfgSendJson(400, "{\"ok\":0,\"err\":\"ERR_LOG_FORMAT\",\"detail\":\"this log was recorded by older firmware (an older log format) and this firmware cannot turn it into CSV. The file is not damaged. Download logs before flashing new firmware; to read this one, flash the previous firmware and download it there.\"}");
+    return;
+  }
+  bool hdrOk = hdrRead &&
                (hdr.format_ver == LOG_FILE_FORMAT_VER) &&
                (hdr.record_size >= (uint16_t)sizeof(VescLogData)) &&
                (hdr.record_size <= (uint16_t)sizeof(VescLogDataL5));   // V2.5-Evo - 2026-09-19 - level 5 is the largest record
@@ -726,8 +738,8 @@ static void webCfgHandleDownloadLog()
   uint8_t rec_buf[sizeof(VescLogDataL5)];
   // V2.5-Evo - 2026-07-25 - F-WEBCSV: row buffer resized 400 -> 512 for the 31-column CSV.
   // V2.5-Evo - 2026-07-25 - STAGE 0: the buffer size and the sizing arithmetic behind it now live
-  // once, as LOG_CSV_ROW_BUF in BREmote_V2_Rx.h (640 B: the ~282 B pathological level-3 row plus
-  // the ~20 B level-4 block, with margin). It is a stack local in the Arduino loop task (8 KB).
+  // once, as LOG_CSV_ROW_BUF in BREmote_V2_Rx.h (640 B; the worst-case sizing is stated there - V2.5-Evo -
+  // 2026-10-06: ~602 B for a level-5 row). It is a stack local in the Arduino loop task (8 KB).
   char row[LOG_CSV_ROW_BUF];
   uint16_t recordCount = 0;
   while (file.available())

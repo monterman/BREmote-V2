@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-06 - LOG FORMAT 3 (owner ruling: "level 4 should have both VESCs"): the 14 B VESC 2 block MOVES from the tail of VescLogDataL5 to the tail of VescLogDataL4 (L4 90 -> 104 B, static_assert 104, offsetof(vesc2_age_ms) == 90), so level 4 AND level 5 both carry it; the level-5 block now starts at byte 104 (L5 stays 126 B, offsetof(rider_lat) == 104). A field moved, so LOG_FILE_FORMAT_VER 2 -> 3 and the on-board readers refuse older files with a plain-English message (download logs BEFORE flashing; the PC log reader still decodes formats 1 and 2). CSV: LOG_CSV_HEADER_L4 = the 90 B column set (now LOG_CSV_HEADER_L4_MOTORS) + the 9 VESC 2 columns (62 columns); LOG_CSV_HEADER_L5 = L4 + the 14 level-5 columns (76); LOG_CSV_HEADER_L5_VESC2 is gone. Capacity restated for 62 / 104 / 126 B. Also (audit LOWs): "VESC 1 must not be CAN ID 2" at kVesc2CanId; the vescRelayBuffer comment; the LOG_CSV_ROW_BUF sizing comment (worst case ~602 B, 640 kept). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - COMMENTS ONLY (audit M-20): the fm_front_ahead_extra_m and kFmFrontLateralMinM comments name the new side floor (min_dist_m + 2 m above 11 m, fmFrontSideFloorM). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - VESC 2 OVER CAN, part 2 (see Logger.ino): a 14 B VESC 2 block APPENDED AT THE TAIL of VescLogDataL5 (112 -> 126 B, static_assert 126, new offsetof assert 112): age, motor + battery current, duty, voltage, ERPM, FET + motor temperature, fault code, with non-zero N/A sentinels written whenever VESC 2 has never answered or its data is older than kVesc2StaleMs. Level 5 only; the base record and level 4 are untouched, so LOG_FILE_FORMAT_VER STAYS 2 and every existing 62 / 90 / 112 B log still parses by its own record_size. CSV: LOG_CSV_HEADER_L5_VESC2 (+9 columns, 76 total), every N/A prints -999. logCsvHeaderFor() / logFormatCsvRow() tier the L4/L5 boundaries by OFFSET now, so a 112 B file keeps its level-5 columns. Capacity notes restated: level 5 about 1 h 19 min at 3 Hz / 48 min at 5 Hz. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - VESC 2 OVER CAN, part 1 (see VESC.ino, System.ino): vesc2_struct + extern vesc2 (VESC 2 telemetry with its OWN age stamp last_ok_ms and an ever_ok validity flag), the kVesc2* constants (CAN ID 2, 1 Hz, 10 s backoff after 3 misses, 50 ms reply cap, 2500 ms freshness limit), VESC2_PACK_LEN 27, and the g_diag_vesc2_polls / g_diag_vesc2_ok / g_vesc2_miss_streak counters. Read by nothing in the control path. No confStruct change, sizeof stays 200, SW_VERSION stays 36; no log-record change in this part.
@@ -1555,6 +1556,10 @@ extern vesc_struct vesc;
 // "no data" sentinels whenever no reply has ever arrived or the last one is older than kVesc2StaleMs.
 // ============================================================
 static const uint8_t  kVesc2CanId           = 2;     // CAN controller ID of VESC 2 (owner's setup: VESC 1 = ID 1 on the UART, VESC 2 = ID 2). Hard-coded on purpose - no confStruct change this round.
+// V2.5-Evo - 2026-10-06 - audit LOW: VESC 1 (the one on the UART) MUST NOT be CAN ID 2. The reply is accepted as
+// VESC 2's when its controller-ID byte reads kVesc2CanId; if VESC 1 itself were set to ID 2 it could answer the
+// forwarded poll and VESC 1's numbers would be logged as VESC 2's. Telemetry only - no motor effect - but the log
+// would be wrong. Keep VESC 1 = ID 1 and VESC 2 = ID 2 in VESC Tool (App Settings > General > VESC ID).
 static const uint8_t  kVesc2PollEvery       = 2;     // poll VESC 2 on every 2nd successful VESC 1 visit: 2 Hz / 2 = 1 Hz
 static const uint8_t  kVesc2BackoffEvery    = 20;    // after repeated misses: every 20th visit = once per 10 s
 static const uint8_t  kVesc2MissesToBackoff = 3;     // consecutive unanswered polls before the backoff starts; one good reply ends it
@@ -1828,8 +1833,28 @@ struct __attribute__((packed)) VescLogDataL4 {
                                    //     or no meta-packet ever); saturates at 0xFFFE. fm_rider_speed_dx10 above is the FILTERED track.
     uint8_t  motor0_cmd;           // (C) g_motor0_cmd: motor 0 command out of the differential mixer, 0-255 counts, post-mixer pre-map
     uint8_t  motor1_cmd;           // (C) g_motor1_cmd: motor 1 command, same scale. Both 0 on a non-diff steering_type.
+    // ---- V2.5-Evo - 2026-10-06 - LOG FORMAT 3: the VESC 2 block, byte 90 onward (14 B). MOVED HERE from the tail ----
+    // of VescLogDataL5 (owner ruling: "level 4 should have both VESCs"), so level 4 and level 5 both carry it.
+    // VESC 2 is the second motor controller, read over CAN through VESC 1 (VESC.ino pollVesc2IfDue(), 1 Hz).
+    // Same units and clamps as VESC 1's base-record columns. SENTINELS (non-zero, Section 14): the "no data"
+    // value is written in EVERY value field when VESC 2 has never answered this session OR its last reply is
+    // older than kVesc2StaleMs (2500 ms) - stale data is never logged as live. vesc2_age_ms itself is always the
+    // real age (0xFFFF only when there has never been a reply), so a reader can tell "stale" from "never".
+    // In the CSV every VESC 2 N/A prints as -999. Byte offsets:
+    //    90 vesc2_age_ms u16 | 92 motor A i16 | 94 battery A i16 | 96 duty i8 | 97 voltage u16 | 99 ERPM i16
+    //   101 FET C i8 | 102 motor C i8 | 103 fault u8 | 104 = sizeof
+    uint16_t vesc2_age_ms;               // ms since VESC 2's last validated reply; 0xFFFF = never; capped 0xFFFE
+    int16_t  vesc2_current_motor;        // motor current, 0.01 A, clamped +-300 A; 0x7FFF = N/A (never or stale)
+    int16_t  vesc2_current_battery;      // input (battery) current, 0.01 A, clamped +-300 A; 0x7FFF = N/A
+    int8_t   vesc2_duty_cycle;           // duty, %, clamped +-101; 0x7F (127) = N/A
+    uint16_t vesc2_voltage;              // input voltage, 0.1 V; 0xFFFF = N/A
+    int16_t  vesc2_ERPM;                 // ERPM / 10, clamped +-30000; 0x7FFF = N/A
+    int8_t   vesc2_temp_mos;             // FET temperature, C, clamped +-120; 0x7F = N/A
+    int8_t   vesc2_temp_motor;           // motor temperature, C, clamped +-120; 0x7F = N/A (meaningless without a motor NTC)
+    uint8_t  vesc2_fault_code;           // mc_fault_code, 0 = none; 0xFF = N/A
 };
-static_assert(sizeof(VescLogDataL4) == 90, "VescLogDataL4 size mismatch — expected 62 (VescLogData, which carries the 3 B M-2 motor-gate block since 2026-10-01) + 6 (level-4 diagnostics) + 18 (Follow-Me audit block, 2026-09-17) + 2 (fm_rider_raw_dx10) + 2 (motor0_cmd, motor1_cmd) (2026-09-19).");  // 83 -> 87: +fm_rider_raw_dx10 (u16) +motor0_cmd +motor1_cmd (u8 x 2), appended 2026-09-19
+static_assert(sizeof(VescLogDataL4) == 104, "VescLogDataL4 size mismatch — expected 62 (VescLogData, which carries the 3 B M-2 motor-gate block since 2026-10-01) + 6 (level-4 diagnostics) + 18 (Follow-Me audit block, 2026-09-17) + 2 (fm_rider_raw_dx10) + 2 (motor0_cmd, motor1_cmd) (2026-09-19) + 14 (VESC 2 block, log format 3, 2026-10-06).");  // 83 -> 87: +fm_rider_raw_dx10 (u16) +motor0_cmd +motor1_cmd (u8 x 2), appended 2026-09-19; 90 -> 104: VESC 2 block, 2026-10-06
+static_assert(offsetof(VescLogDataL4, vesc2_age_ms) == 90, "VESC 2 block must start right after motor1_cmd (byte 90) - log format 3");
 
 // ============================================================
 // V2.5-Evo - 2026-09-19 - LEVEL-5 ("Everything") LOG RECORD - 109 B
@@ -1851,6 +1876,12 @@ static_assert(sizeof(VescLogDataL4) == 90, "VescLogDataL4 size mismatch — expe
 //   motor split the pivot boost actually asked for; fm_return_override / fm_flags_sent /
 //   fm_keepalive_age -> what the remote declared and what the RX echoed back.
 //
+// V2.5-Evo - 2026-10-06 - LOG FORMAT 3: the VESC 2 block moved INTO the level-4 record (bytes 90-103, see
+// VescLogDataL4), so this level-5 block now starts at byte 104 and ends at 125; the record is still 126 B.
+// The table below is the 2026-09-19 original, kept as history: add 17 to every offset for format 3
+// (rider_lat 104, rider_lng 108, rider_fix_seq 112, rider_fix_age_div10 114, rtm_approach_cap 116,
+// rtm_phase 117, align_cap 118, align_influence 119, mix_influence 120, fm_return_override 121,
+// fm_flags_sent 122, fm_keepalive_age_div100 123, l5_rsvd_takeover_active 124, l5_rsvd_takeover_end 125).
 // BYTE OFFSETS (from the start of the record; the Python reader is built from this table):
 //    87  rider_lat            f32   rider (TX) latitude, degrees, as the RX holds it (rx_tx_gps_lat cast to float:
 //                                   ~0.5 m resolution at mid latitudes, the same precision the base record's own
@@ -1879,6 +1910,8 @@ static_assert(sizeof(VescLogDataL4) == 90, "VescLogDataL4 size mismatch — expe
 //   109 = sizeof (2026-09-19). Every offset above is +3 since the M-2 base growth (2026-10-01): the
 //         level-5 block starts at 90 and ends at 111, so the record was 112 B until the VESC 2 block.
 //
+// [SUPERSEDED the same day by LOG FORMAT 3: the block below now lives at the tail of VescLogDataL4, bytes 90-103.
+// The paragraph and offsets are the format-2 layout, kept as history for the PC reader.]
 // V2.5-Evo - 2026-10-06 - VESC 2 BLOCK (14 B), appended at the TAIL of this, the largest record, so no
 // existing field moves and LOG_FILE_FORMAT_VER stays 2 (see the rule beside it): a 112 B level-5 file
 // written before today is still read by its own record_size and prints its own 67 columns. Level 5
@@ -1910,10 +1943,14 @@ static_assert(sizeof(VescLogDataL4) == 90, "VescLogDataL4 size mismatch — expe
 // level 5 at 126 B: about 1 h 19 min at 3 Hz, about 48 min at 5 Hz (112 B before the VESC 2 block:
 // 1 h 29 min / 54 min). Level 4 at 90 B: about 1 h 51 min / 1 h 07 min. Level 3 at 62 B: about
 // 2 h 41 min / 1 h 37 min.
+// V2.5-Evo - 2026-10-06 - LOG FORMAT 3, same basis (1757 KB, reserve not subtracted):
+//   level 3 at  62 B: about 2 h 41 min at 3 Hz, about 1 h 37 min at 5 Hz (unchanged)
+//   level 4 at 104 B: about 1 h 36 min at 3 Hz, about    58 min at 5 Hz (was 90 B: 1 h 51 min / 1 h 07 min)
+//   level 5 at 126 B: about 1 h 19 min at 3 Hz, about    48 min at 5 Hz (same size as before)
 // ============================================================
 struct __attribute__((packed)) VescLogDataL5 {
-    VescLogDataL4 l4;                    // the complete 87 B level-4 record, unchanged and first — do not reorder
-    // ---- level-5 block, byte 87 onward (22 B) ----
+    VescLogDataL4 l4;                    // the complete level-4 record (104 B since log format 3, VESC 2 block included), first — do not reorder
+    // ---- level-5 block, byte 104 onward since log format 3 (22 B) ----
     float    rider_lat;                  // rider latitude, deg (rx_tx_gps_lat)
     float    rider_lng;                  // rider longitude, deg (rx_tx_gps_lng)
     uint16_t rider_fix_seq;              // rx_tx_gps_fix_seq & 0xFFFF
@@ -1928,20 +1965,10 @@ struct __attribute__((packed)) VescLogDataL5 {
     uint8_t  fm_keepalive_age_div100;    // ms / 100; 0xFF = none
     uint8_t  l5_rsvd_takeover_active;    // RESERVED (takeover branch), 0
     uint8_t  l5_rsvd_takeover_end;       // RESERVED (takeover branch), 0
-    // ---- V2.5-Evo - 2026-10-06 - VESC 2 block, byte 112 onward (14 B), see the table above ----
-    uint16_t vesc2_age_ms;               // ms since VESC 2's last validated reply; 0xFFFF = never; capped 0xFFFE
-    int16_t  vesc2_current_motor;        // 0.01 A; 0x7FFF = N/A (never or stale)
-    int16_t  vesc2_current_battery;      // 0.01 A; 0x7FFF = N/A
-    int8_t   vesc2_duty_cycle;           // %; 0x7F = N/A
-    uint16_t vesc2_voltage;              // 0.1 V; 0xFFFF = N/A
-    int16_t  vesc2_ERPM;                 // ERPM / 10; 0x7FFF = N/A
-    int8_t   vesc2_temp_mos;             // C; 0x7F = N/A
-    int8_t   vesc2_temp_motor;           // C; 0x7F = N/A
-    uint8_t  vesc2_fault_code;           // mc_fault_code; 0xFF = N/A
+    // V2.5-Evo - 2026-10-06 - LOG FORMAT 3: the VESC 2 block that sat here (bytes 112-125) moved into l4 (bytes 90-103).
 };
-static_assert(sizeof(VescLogDataL5) == 126, "VescLogDataL5 size mismatch — expected 90 (VescLogDataL4) + 22 (level-5 block, 2026-09-19) + 14 (VESC 2 block, 2026-10-06).");  // 112 -> 126: VESC 2 block appended at the tail 2026-10-06
-static_assert(offsetof(VescLogDataL5, rider_lat) == 90, "level-5 block must start right after the 90 B level-4 record");
-static_assert(offsetof(VescLogDataL5, vesc2_age_ms) == 112, "VESC 2 block must start right after the 112 B level-5 record it extends - a 112 B file is decoded as that prefix");
+static_assert(sizeof(VescLogDataL5) == 126, "VescLogDataL5 size mismatch — expected 104 (VescLogDataL4, with the VESC 2 block since log format 3) + 22 (level-5 block, 2026-09-19).");  // 2026-10-06: still 126 B, but the VESC 2 block is inside l4 now (log format 3)
+static_assert(offsetof(VescLogDataL5, rider_lat) == 104, "level-5 block must start right after the 104 B level-4 record (log format 3)");
 
 // ============================================================
 // V2.5-Evo - 2026-09-17 - FmLogSnapshot: the controller -> logger hand-off
@@ -2024,7 +2051,14 @@ portMUX_TYPE  g_fm_log_mux      = portMUX_INITIALIZER_UNLOCKED;
 // every format-2 file on a board - 62 / 90 / 112 B - is still read by its own record_size, and the new
 // size is the marker that tells a reader the VESC 2 columns are present. Bumping it here would make
 // both readers REFUSE every existing log, the opposite of what a marker is for.
-#define LOG_FILE_FORMAT_VER  2             // 2 = M-2 motor-gate block in the base record (2026-10-01); 1 = the original STAGE 0 PART B layout (2026-07-25)
+// V2.5-Evo - 2026-10-06 - LOG FORMAT 3: BUMPED 2 -> 3, by the rule above. The owner asked for both VESCs at
+// level 4, so the VESC 2 block moved from the tail of the level-5 record into the level-4 record - and that
+// MOVES the level-5 block from byte 90 to byte 104. A format-2 126 B file (VESC 2 at 112) and a format-3
+// 126 B file (level-5 block at 104) are the SAME SIZE with DIFFERENT layouts, so record_size cannot tell
+// them apart; only this number can. Both on-board readers refuse a mismatch in plain English, so files
+// recorded before this flash cannot be downloaded by this firmware: DOWNLOAD THEM BEFORE FLASHING. The PC
+// log reader (Tools/logreader/bremote_log.py) still decodes formats 1, 2 and 3.
+#define LOG_FILE_FORMAT_VER  3             // 3 = VESC 2 block in the level-4 record (2026-10-06); 2 = M-2 motor-gate block in the base record (2026-10-01); 1 = the original STAGE 0 PART B layout (2026-07-25)
 
 struct __attribute__((packed)) LogFileHeader {
     uint32_t magic;        // LOG_FILE_MAGIC — absent/mismatched means "not a BREmote log of this era"
@@ -2088,11 +2122,13 @@ static inline uint16_t logRecordSizeForLevel(uint8_t level)
 // current 87 B layout with motor0_cmd / motor1_cmd (51 columns).
 #define LOG_CSV_HEADER_L4_83 LOG_CSV_HEADER_L4_DIAG ",fm_gate_flags,fm_distance_m,fm_d_engage_m,fm_rider_speed_kmh,fm_sep_fix_count,fm_mode,fm_state,fm_block_reason,fm_throttle_cap,fm_station_deg,fm_return_reason,fm_aligning,fm_boost"
 #define LOG_CSV_HEADER_L4_RAW LOG_CSV_HEADER_L4_83 ",fm_rider_raw_kmh"
-#define LOG_CSV_HEADER_L4 LOG_CSV_HEADER_L4_RAW ",motor0_cmd,motor1_cmd"
-// V2.5-Evo - 2026-09-19 - level 5: the 14 level-5 columns after the full level-4 set (65 columns, 109 B files).
+// V2.5-Evo - 2026-10-06 - LOG FORMAT 3: what was LOG_CSV_HEADER_L4 (the 90 B set, 53 columns) is now _L4_MOTORS;
+// LOG_CSV_HEADER_L4 is that plus the 9 VESC 2 columns (104 B, 62 columns), and LOG_CSV_HEADER_L5 is L4 plus the 14
+// level-5 columns (126 B, 76 columns). The old LOG_CSV_HEADER_L5_VESC2 (level 5 THEN VESC 2) is gone with the layout.
+#define LOG_CSV_HEADER_L4_MOTORS LOG_CSV_HEADER_L4_RAW ",motor0_cmd,motor1_cmd"
+#define LOG_CSV_HEADER_L4 LOG_CSV_HEADER_L4_MOTORS ",vesc2_age_ms,vesc2_motor_current_A,vesc2_battery_current_A,vesc2_duty_cycle_%,vesc2_voltage_V,vesc2_ERPM,vesc2_temp_mos_C,vesc2_temp_motor_C,vesc2_fault_code"
+// V2.5-Evo - 2026-09-19 - level 5: the 14 level-5 columns after the full level-4 set.
 #define LOG_CSV_HEADER_L5 LOG_CSV_HEADER_L4 ",rider_lat,rider_lng,rider_fix_seq,rider_fix_age_ms,rtm_approach_cap,rtm_phase,align_cap,align_influence,mix_influence,fm_return_override,fm_flags_sent,fm_keepalive_age_s,l5_rsvd_takeover_active,l5_rsvd_takeover_end"
-// V2.5-Evo - 2026-10-06 - level 5 + the VESC 2 block: 9 more columns after the 67 of a 112 B file (76 columns, 126 B files).
-#define LOG_CSV_HEADER_L5_VESC2 LOG_CSV_HEADER_L5 ",vesc2_age_ms,vesc2_motor_current_A,vesc2_battery_current_A,vesc2_duty_cycle_%,vesc2_voltage_V,vesc2_ERPM,vesc2_temp_mos_C,vesc2_temp_motor_C,vesc2_fault_code"
 
 // V2.5-Evo - 2026-10-01 - M-2: 31 level-3 columns -> 33 (+ctrl_pkt_age_ms, +motor_gate_open).
 #define LOG_CSV_ROW_FMT_L3 "%u,%.2f,%.2f,%d,%.1f,%d,%u,%u,%.1f,%.6f,%.6f,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%d,%d,%u,%u,%.1f,%d,%.1f,%u,%u"
@@ -2101,21 +2137,20 @@ static inline uint16_t logRecordSizeForLevel(uint8_t level)
 #define LOG_CSV_ROW_EXT_L4_RAW ",%.1f"        // (B) fm_rider_raw_kmh; -1.0 = unknown
 #define LOG_CSV_ROW_EXT_L4_MOTORS ",%u,%u"    // (C) motor0_cmd, motor1_cmd
 #define LOG_CSV_ROW_EXT_L5 ",%.6f,%.6f,%u,%d,%u,%u,%u,%u,%u,%u,%u,%.1f,%u,%u"   // level 5: lat, lng, seq, age ms (-1 never), cap, phase, align cap, align infl, mix infl, return override, fm_flags, keepalive s (-1.0 none), rsvd x 2
-#define LOG_CSV_ROW_EXT_L5_VESC2 ",%d,%.2f,%.2f,%d,%.1f,%d,%d,%d,%d"   // V2.5-Evo - 2026-10-06 - VESC 2: age ms, motor A, battery A, duty %, V, ERPM, FET C, motor C, fault; every N/A prints -999
+#define LOG_CSV_ROW_EXT_L4_VESC2 ",%d,%.2f,%.2f,%d,%.1f,%d,%d,%d,%d"   // V2.5-Evo - 2026-10-06 - VESC 2 (level 4 and up since log format 3): age ms, motor A, battery A, duty %, V, ERPM, FET C, motor C, fault; every N/A prints -999
 
-// Row buffer size. Sizing arithmetic for the 31 level-3 columns is unchanged from F-WEBCSV:
-//   ~178 field chars + 30 commas + newline + NUL = ~210 bytes for normal data, and a corrupt
-//   latitude/longitude printed via "%.6f" can reach ~282. The 4 level-4 diagnostic columns add
-//   at most 3+3+5+5 chars plus 4 commas = 20. The 10 Follow-Me columns (2026-09-17) add at most
-//   ~60 more (a u32 flag word, three "%.1f" distances/speeds, five u8s, one signed "%.1f"); the
-//   three 2026-09-19 (A) columns (a u8 and two 0/1 flags) at most 9 more, and the (B)+(C) columns (one
-//   "%.1f" speed, two u8s) at most 15 more. The 14 level-5 columns add at most ~80 (two "%.6f"
-//   coordinates, one "%.1f", eleven small integers, 14 commas). The two 2026-10-01 motor-gate
-//   columns (a 5-digit capped age and a single 0/1) add at most 8: pathological total ~478. The nine
-//   2026-10-06 VESC 2 columns add at most ~65 (two "%.2f" currents, one "%.1f" voltage, six small
-//   signed integers, 9 commas): ~543. 640
-//   clears the pathological ~362 by ~1.8x. It is a stack local in the Arduino loop task (8 KB
-//   stack), which is where both readers run.
+// Row buffer size. V2.5-Evo - 2026-10-06 - audit LOW: the old running estimate here had drifted (it ended
+// "640 clears the pathological ~362"), so this is the WORST CASE recounted field by field from the format
+// strings, for the largest row (level 5, log format 3, 76 columns), every field at its widest printable value:
+//   level 3 (33 columns): 290 chars incl. 32 commas. The two "%.6f" coordinates are 47 chars each when the
+//     float is corrupt (-FLT_MAX); temp_mos goes through "%u", so a negative reads as 10 digits.
+//   level-4 diagnostics (4): 20.  Follow-Me block (13): 65.  raw rider speed (1): 7.  motors (2): 8.
+//   VESC 2 block (9): 57 (two "%.2f" currents of 7, "%.1f" voltage of 6, ERPM of 7, small ints, 9 commas).
+//   level-5 block (14): 153 (two more 47-char "%.6f" coordinates, the rest small).
+//   + newline + NUL = ~602 B. 640 holds it with ~38 B to spare (normal data is under 400), so it is NOT raised:
+//   the column set is the same as the 2026-10-06 L5 + VESC 2 row, only reordered. Writes are clamped to the
+//   buffer anyway, so even an overrun would only truncate the row. A stack local in the Arduino loop task
+//   (8 KB stack), which is where both readers run.
 #define LOG_CSV_ROW_BUF 640
 
 // ============================================================
@@ -2136,11 +2171,12 @@ static inline const char* logCsvHeaderFor(uint8_t level, uint16_t record_size)
   if (record_size < (uint16_t)offsetof(VescLogDataL4, fm_rider_raw_dx10))                              return LOG_CSV_HEADER_L4_DIAG;  // 65 B: diagnostics only
   if (record_size < (uint16_t)(offsetof(VescLogDataL4, fm_rider_raw_dx10) + sizeof(uint16_t)))         return LOG_CSV_HEADER_L4_83;    // 83 B: + Follow-Me block
   if (record_size < (uint16_t)(offsetof(VescLogDataL4, motor1_cmd) + sizeof(uint8_t)))                 return LOG_CSV_HEADER_L4_RAW;   // 85 B: + raw rider speed
-  // V2.5-Evo - 2026-10-06 - the L4 / L5 bounds are now OFFSETS too, for the same reason as above: sizeof(VescLogDataL5)
-  // grew 112 -> 126, and "< sizeof" would have labelled every 112 B level-5 file as level 4.
-  if (record_size < (uint16_t)offsetof(VescLogDataL5, vesc2_age_ms))                                    return LOG_CSV_HEADER_L4;       // 90 B: + motor commands
-  if (record_size < (uint16_t)sizeof(VescLogDataL5))                                                    return LOG_CSV_HEADER_L5;       // 112 B: + the level-5 block (2026-09-19)
-  return LOG_CSV_HEADER_L5_VESC2;                                                                                                       // 126 B: + the VESC 2 block (2026-10-06)
+  // V2.5-Evo - 2026-10-06 - LOG FORMAT 3: each bound is where the NEXT block ends. Only format-3 files reach this
+  // function (both readers refuse any other format_ver), and format 3 writes 62 / 104 / 126 B; the bounds in between
+  // stay so a truncated or odd-sized file still gets exactly the columns its bytes hold.
+  if (record_size < (uint16_t)sizeof(VescLogDataL4))                                                    return LOG_CSV_HEADER_L4_MOTORS; // 90 B: + motor commands
+  if (record_size < (uint16_t)sizeof(VescLogDataL5))                                                    return LOG_CSV_HEADER_L4;        // 104 B: + the VESC 2 block (format 3)
+  return LOG_CSV_HEADER_L5;                                                                                                              // 126 B: + the level-5 block
 }
 
 // ============================================================
@@ -2293,16 +2329,35 @@ static int logFormatCsvRow(char* out, size_t out_len, const uint8_t* rec_bytes, 
         if ((size_t)n >= out_len) n = (int)out_len - 1;
       }
     }
-    // V2.5-Evo - 2026-09-19 - the level-5 block: present only in a full 109 B record. Sentinels print
-    // as -1 (fix age never received) / -1.0 (no keepalive this session), the same convention as above.
-    // V2.5-Evo - 2026-10-06 - guarded on the OFFSET where the VESC 2 block starts (112), not sizeof (126 now),
-    // and only the bytes actually present are copied into a zeroed struct - otherwise every 112 B file would
-    // lose its level-5 columns, or a 112 B record would read 14 bytes past its own end.
-    if (rec_size >= (uint16_t)offsetof(VescLogDataL5, vesc2_age_ms) && (size_t)n < (out_len - 1))
+    // V2.5-Evo - 2026-10-06 - LOG FORMAT 3: the VESC 2 block, now at the tail of the LEVEL-4 record (bytes 90-103),
+    // so it prints for level 4 and level 5 alike. Present only in a record that reaches sizeof(VescLogDataL4).
+    // Every N/A prints -999.
+    if (rec_size >= (uint16_t)sizeof(VescLogDataL4) && (size_t)n < (out_len - 1))
+    {
+      int v = snprintf(out + n, out_len - (size_t)n, LOG_CSV_ROW_EXT_L4_VESC2,
+                       (d4.vesc2_age_ms          == 0xFFFF) ? -999    : (int)d4.vesc2_age_ms,
+                       (d4.vesc2_current_motor   == 0x7FFF) ? -999.0f : (d4.vesc2_current_motor / 100.0f),
+                       (d4.vesc2_current_battery == 0x7FFF) ? -999.0f : (d4.vesc2_current_battery / 100.0f),
+                       (d4.vesc2_duty_cycle      == 0x7F)   ? -999    : (int)d4.vesc2_duty_cycle,
+                       (d4.vesc2_voltage         == 0xFFFF) ? -999.0f : (d4.vesc2_voltage / 10.0f),
+                       (d4.vesc2_ERPM            == 0x7FFF) ? -999    : (int)d4.vesc2_ERPM * 10,
+                       (d4.vesc2_temp_mos        == 0x7F)   ? -999    : (int)d4.vesc2_temp_mos,
+                       (d4.vesc2_temp_motor      == 0x7F)   ? -999    : (int)d4.vesc2_temp_motor,
+                       (d4.vesc2_fault_code      == 0xFF)   ? -999    : (int)d4.vesc2_fault_code);
+      if (v > 0)
+      {
+        n += v;
+        if ((size_t)n >= out_len) n = (int)out_len - 1;
+      }
+    }
+    // V2.5-Evo - 2026-09-19 - the level-5 block. Sentinels print as -1 (fix age never received) / -1.0 (no
+    // keepalive this session), the same convention as above.
+    // V2.5-Evo - 2026-10-06 - LOG FORMAT 3: it is the TAIL of the record again (bytes 104-125), so it is present
+    // only in a full sizeof(VescLogDataL5) record.
+    if (rec_size >= (uint16_t)sizeof(VescLogDataL5) && (size_t)n < (out_len - 1))
     {
       VescLogDataL5 d5;
-      memset(&d5, 0, sizeof(d5));
-      memcpy(&d5, rec_bytes, (rec_size < (uint16_t)sizeof(VescLogDataL5)) ? rec_size : (uint16_t)sizeof(VescLogDataL5));
+      memcpy(&d5, rec_bytes, sizeof(VescLogDataL5));
       int f = snprintf(out + n, out_len - (size_t)n, LOG_CSV_ROW_EXT_L5,
                        d5.rider_lat,
                        d5.rider_lng,
@@ -2322,25 +2377,6 @@ static int logFormatCsvRow(char* out, size_t out_len, const uint8_t* rec_bytes, 
       {
         n += f;
         if ((size_t)n >= out_len) n = (int)out_len - 1;
-      }
-      // V2.5-Evo - 2026-10-06 - the VESC 2 block: present only in a full 126 B record. Every N/A prints -999.
-      if (rec_size >= (uint16_t)sizeof(VescLogDataL5) && (size_t)n < (out_len - 1))
-      {
-        int v = snprintf(out + n, out_len - (size_t)n, LOG_CSV_ROW_EXT_L5_VESC2,
-                         (d5.vesc2_age_ms          == 0xFFFF) ? -999    : (int)d5.vesc2_age_ms,
-                         (d5.vesc2_current_motor   == 0x7FFF) ? -999.0f : (d5.vesc2_current_motor / 100.0f),
-                         (d5.vesc2_current_battery == 0x7FFF) ? -999.0f : (d5.vesc2_current_battery / 100.0f),
-                         (d5.vesc2_duty_cycle      == 0x7F)   ? -999    : (int)d5.vesc2_duty_cycle,
-                         (d5.vesc2_voltage         == 0xFFFF) ? -999.0f : (d5.vesc2_voltage / 10.0f),
-                         (d5.vesc2_ERPM            == 0x7FFF) ? -999    : (int)d5.vesc2_ERPM * 10,
-                         (d5.vesc2_temp_mos        == 0x7F)   ? -999    : (int)d5.vesc2_temp_mos,
-                         (d5.vesc2_temp_motor      == 0x7F)   ? -999    : (int)d5.vesc2_temp_motor,
-                         (d5.vesc2_fault_code      == 0xFF)   ? -999    : (int)d5.vesc2_fault_code);
-        if (v > 0)
-        {
-          n += v;
-          if ((size_t)n >= out_len) n = (int)out_len - 1;
-        }
       }
     }
   }
@@ -2600,6 +2636,9 @@ unsigned long percent_last_thr_change = 0;
 #define VESC_MORE_VALUES
 #ifdef VESC_MORE_VALUES
   #define VESC_PACK_LEN 27  // +4 bytes for watt_hours (float32_auto)
+  // V2.5-Evo - 2026-10-06 - audit LOW: receiveFromVESC() copies EVERY valid-CRC frame in here (clamped to 34 B),
+  // and since the VESC 2 poll (VESC.ino pollVesc2IfDue) that includes VESC 2's forwarded replies, not only VESC 1's.
+  // Nothing in this firmware reads it today; any future relay feature must check which controller a frame is from.
   uint8_t vescRelayBuffer[34];
 #else
   #define VESC_PACK_LEN 9

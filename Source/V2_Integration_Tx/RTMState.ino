@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - defects b / c: during the RTM arm wait "rn" alternates with the arrow (it was overdrawn every
+//   100 ms); fmDisarm() and fmSilentDisarm() clear the whole R5 row (no leftover C7-C9 pixels). No confStruct change.
 // V2.5-Evo - 2026-10-07 - F-1 / F-7: a Follow-Me fault-stop edge handled during an active return disarms Follow-Me
 //   silently at once and defers "St" + the stop buzz to the return's end (rtmDisengage()); a fresh Follow-Me arm clears a
 //   stale fm_fault_latched. No confStruct change.
@@ -807,6 +809,31 @@ static void ceremonyCancelToManual()
 //
 // On return: rtm_tx_state == RTM_ACTIVE (success) or RTM_IDLE (timeout / rejected).
 // ============================================================
+// ============================================================
+// V2.5-Evo - 2026-10-07 - DEFECT b: "rn" MUST BE VISIBLE WHILE THE CEREMONY WAITS FOR THE SQUEEZE
+// THE BUG: the wait drew "r n" once and then called advanceArrow() every 100 ms; advanceArrow() clears the whole
+// digit zone and draws the bobbing arrow, so "rn" was overdrawn on the very first tick and the rider only ever saw
+// the arrow (SOP-041 table: manual RTM window = "rn", must be visible). THE FIX: the two ALTERNATE in a fixed
+// cycle - "r n" steady for kCeremonyRnShowMs, then the bobbing arrow (the "squeeze" prompt) for the rest of
+// kCeremonyCycleMs. Same glyphs and same digit zone as before; nothing new is drawn and R5 / C7-C9 are untouched.
+// Inputs: phase_start_ms - millis() when this wait began (the cycle starts on "r n"). Side effects: draws the
+// digit zone (takes displayMutex via DISP_LOCK / advanceArrow()). Loop task only; called every ~100 ms.
+// ============================================================
+static const unsigned long kCeremonyRnShowMs = 1000UL;   // "r n" shown this long...
+static const unsigned long kCeremonyCycleMs  = 1500UL;   // ...out of every cycle; the arrow fills the remaining 500 ms
+
+static void ceremonyWaitFrame(unsigned long phase_start_ms)
+{
+  if (((millis() - phase_start_ms) % kCeremonyCycleMs) < kCeremonyRnShowMs)
+  {
+    DISP_LOCK(); displayDigitZone("r n"); updateDisplay(); DISP_UNLOCK();
+  }
+  else
+  {
+    advanceArrow();   // bob the arrow (it redraws the digit zone and calls updateDisplay() itself)
+  }
+}
+
 static void runDoubleSqueezeArm()
 {
   // Relax the GPS staleness threshold (Gate 2) for the duration of this blocking ceremony.
@@ -815,8 +842,10 @@ static void runDoubleSqueezeArm()
   rtm_arm_gps_timeout_override = (uint32_t)usrConf.rtm_gps_timeout_ms * 4UL;
 
   // Show "r n" while waiting for first squeeze
-  displayDigitZone("r n");
-  advanceArrow();   // prime arrow before loop; advanceArrow() calls updateDisplay() internally
+  // V2.5-Evo - 2026-10-07 - defect b: "r n" alternates with the arrow (ceremonyWaitFrame()); it used to be drawn
+  // here and overdrawn at once by advanceArrow().
+  const unsigned long wait1_start_ms = millis();
+  ceremonyWaitFrame(wait1_start_ms);
 
   returnGestureCeremonyPoll(true);   // V2.5-Evo - 2026-09-19 - fresh detector; the arming hold is still down
   ceremonyLeftCancelPoll(true);      // V2.5-Evo - 2026-10-07 - M-3: fresh 1 s LEFT-hold cancel detector
@@ -845,7 +874,7 @@ static void runDoubleSqueezeArm()
   while (millis() - rtm_arm_start_ms < (unsigned long)usrConf.rtm_arm_window_s * 1000UL ||
          (return_gesture_in_progress && ceremonyExtensionAllowed()))   // R-3: a started tap -> hold may finish; F-3: hard ceiling
   {
-    advanceArrow();   // bob arrow every 100ms while waiting for squeeze
+    ceremonyWaitFrame(wait1_start_ms);   // V2.5-Evo - 2026-10-07 - defect b: "r n" / arrow alternate (was advanceArrow() only)
     if (thr_scaled < 10) thr_released_seen = true;   // V2.5-Evo - 2026-10-07 - R-1: release seen
     if (thr_released_seen && thr_scaled > 76 &&     // V2.5-Evo - 2026-10-07 - R-1: counts only after a release
         millis() - rtm_arm_start_ms < (unsigned long)usrConf.rtm_arm_window_s * 1000UL)   // R-3: never past the window
@@ -895,11 +924,12 @@ static void runDoubleSqueezeArm()
 
     bool second_ok = false;
     hold_ms = 0;
-    advanceArrow();   // prime arrow for second wait
+    const unsigned long wait2_start_ms = millis();   // V2.5-Evo - 2026-10-07 - defect b: second wait, cycle restarts on "r n"
+    ceremonyWaitFrame(wait2_start_ms);
     while (millis() - rtm_arm_start_ms < (unsigned long)usrConf.rtm_arm_window_s * 1000UL ||
            (return_gesture_in_progress && ceremonyExtensionAllowed()))   // R-3: a started tap -> hold may finish; F-3: hard ceiling
     {
-      advanceArrow();   // bob arrow every 100ms while waiting for second squeeze
+      ceremonyWaitFrame(wait2_start_ms);   // V2.5-Evo - 2026-10-07 - defect b: "r n" / arrow alternate (was advanceArrow() only)
       if (thr_scaled < 10) thr_released_seen = true;   // V2.5-Evo - 2026-10-07 - R-1: release seen
       if (thr_released_seen && thr_scaled > 76 &&     // V2.5-Evo - 2026-10-07 - R-1: counts only after a release
           millis() - rtm_arm_start_ms < (unsigned long)usrConf.rtm_arm_window_s * 1000UL)   // R-3: never past the window
@@ -1315,6 +1345,9 @@ static void fmSilentDisarm()
   fm_last_sync_ms  = 0;
   last_fm_return_mode = 0xFF;      // V2.5-Evo - 2026-09-19 - the override ends with the declaration (bits 5-6 = 00)
   queueMetaPacketBurst(0xF2, fmEncodeModeByte(0));   // mode 0 = FM disabled on RX
+  // V2.5-Evo - 2026-10-07 - defect c: clear the whole R5 row here too (arm-timeout and the F-1 silent disarm), so no
+  // C7-C9 scanner/bar pixel outlives Follow-Me. During an active return the RTM bar redraws R5 on the next render.
+  DISP_LOCK(); displayBuffer[6] = 0x0000; DISP_UNLOCK();
 }
 
 // Internal disarm: clears state, notifies RX, shows "St" full-screen, buzzes only on a FAULT.
@@ -1349,7 +1382,11 @@ static void fmDisarm(bool commanded)
   if (!commanded) vib_stop_pending = true;   // Pattern 7: one long buzz = a FAULT stopped the system
 
   // Large-font stop confirm on FM disarm.
-  DISP_LOCK(); displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
+  // V2.5-Evo - 2026-10-07 - DEFECT c: THE BUG - displayDigits() clears only C0-C6 of the R5 row (displayBuffer[6]),
+  // and the Follow-Me R5 bar / scanner also lights C7-C9 there. Nothing redraws R5 once Follow-Me is off, so those
+  // pixels stayed lit on the normal screen after a disarm - a leftover "following" look (SOP-041 rule 5). THE FIX:
+  // clear the whole R5 row (as rtmDisengage() already does for the RTM bar) before the "St".
+  DISP_LOCK(); displayBuffer[6] = 0x0000; displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
   gpsKeepAliveDelay(2000);
 }
 

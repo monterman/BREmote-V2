@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - P-10: measBufCalc() seeds thr_raw[] with thr_idle before its first pass.
 // V2.5-Evo - 2026-10-07 - P-3: measureAndBuffer() accepts a conversion only if the config register reads OS = 1 AND
 //   its MUX matches the channel this pass expects; a wrong-channel result is discarded and not stamped.
 // V2.5-Evo - 2026-10-07 - P-2 / P-11: the plausibility exemption is now (checkCal() running) || (in_setup && locked);
@@ -290,6 +291,11 @@ void measBufCalc(void *parameter)
   const TickType_t xFrequency = pdMS_TO_TICKS(10);
   // V2.5-Evo - 2026-10-07 - C-1: start the conversion deadline when the task starts, not at millis() 0.
   last_ads_ok_ms = millis();
+  // V2.5-Evo - 2026-10-07 - P-10: THE BUG - thr_raw[] starts as zeros, and with an inverted calibration
+  // (thr_idle > thr_pull, as on the owner's remote) calcFilter() turns 0 counts into FULL throttle until six real
+  // samples have landed. The locked boot masked it. THE FIX: seed every slot with thr_idle (usrConf is loaded in
+  // initStorage(), before initTasks() creates this task), so the empty buffer reads as a released trigger.
+  for (int i = 0; i < BUFFSZ; i++) thr_raw[i] = usrConf.thr_idle;
 
   while (1)
   {

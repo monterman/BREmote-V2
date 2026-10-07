@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - P-4: measBufCalc task stack 2048 -> 3072 bytes (serial prints added by the C-1 fault path).
 // V2.5-Evo - 2026-04-21 - Added initTxGPS() call in applyConfigSettings() for TX GPS speed display
 // V2.5-Evo - 2026-04-22 - Simplified initTxGPS() call site: speed_src guard moved into initTxGPS() itself
 // V2.5-Evo - 2026-04-27 - P8: applyConfigSettings() always boots unlocked (lock feature removed)
@@ -123,7 +124,10 @@ void initTasks()
   configASSERT(i2cMutex != NULL);
   xTaskCreatePinnedToCore(sendData, "Send_Data_100ms", 2048, NULL, 5, &sendDataHandle, 0);
   xTaskCreatePinnedToCore(waitForTelemetry, "wait_for_telem_triggered", 2048, NULL, 4, &triggeredWaitForTelemetryHandle, 0);
-  xTaskCreatePinnedToCore(measBufCalc, "wait_for_telem_triggered_10ms", 2048, NULL, 6, &measBufCalcHandle, 0);
+  // V2.5-Evo - 2026-10-07 - P-4: measBufCalc stack 2048 -> 3072. The C-1 input-fault code added Serial.println()
+  // calls to this task (the fault and recovery lines) and its high-water mark was never measured; a print on a
+  // nearly full stack would crash the task that zeroes the throttle. 1 KB of headroom is cheap on this heap.
+  xTaskCreatePinnedToCore(measBufCalc, "wait_for_telem_triggered_10ms", 3072, NULL, 6, &measBufCalcHandle, 0);
   xTaskCreatePinnedToCore(updateBargraphs, "wait_for_telem_triggered_200ms", 2048, NULL, 6, &updateBargraphsHandle, 0);
   xTaskCreatePinnedToCore(vibrationTask, "Vibration_Task_BG", 2048, NULL, 3, &vibrationTaskHandle, 0);
   // Finding 4-1: stack 1024→2048 words; handle saved so ?printtasks can report HWM

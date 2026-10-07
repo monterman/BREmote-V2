@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-07 - R-6: the telemetry unpack also latches the Follow-Me fault-stop rising edge (fm_flags bit 3)
+//   into fm_fault_latched on the arrival of the byte, so runFmLoop() can act on it even after a long loop() stall
+//   (the blocking RTM arm ceremony). Flag only - no packet format change, no confStruct change, sizeof stays 136.
 // V2.5-Evo - 2026-09-30 - MagFix (Rex delta audit): the telemetry unpack in waitForTelemetry() now counts
 //   consecutive arrivals of the fm_flags byte that claim Follow-Me ARMED + ENGAGED (fm_engaged_streak).
 //   fmIsEngaged() requires two of them before it lets a magnet tap move a Follow-Me station, so the
@@ -566,6 +569,17 @@ void waitForTelemetry(void *parameter)
             {
               fm_engaged_streak = 0;
             }
+
+            // V2.5-Evo - 2026-10-07 - R-6: latch the Follow-Me FAULT-STOP rising edge HERE, on the arrival
+            // of the byte, so it survives any loop() stall (see fm_fault_latched in BREmote_V2_Tx.h).
+            // Compared against the previous ARRIVAL of this byte (not against telemetry.fm_flags, which was
+            // already overwritten above). runFmLoop() clears the latch when it acts on it.
+            static uint8_t fm_flags_prev_arrival = 0;
+            if ((rcvArray[4] & FM_FLAG_FAULT) && !(fm_flags_prev_arrival & FM_FLAG_FAULT))
+            {
+              fm_fault_latched = true;
+            }
+            fm_flags_prev_arrival = rcvArray[4];
           }
 
           // Speed conversion: RX sends speed in km/h; convert to the unit selected in web config.

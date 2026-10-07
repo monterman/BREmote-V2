@@ -1,3 +1,8 @@
+// V2.5-Evo - 2026-10-07 - R-6: runFmLoop() takes the Follow-Me fault-stop edge from fm_fault_latched (set in Radio.ino on
+//   the byte's arrival) instead of comparing telemetry.fm_flags tick to tick, so a fault that rose and fell during the
+//   blocking RTM arm ceremony is still handled: Follow-Me disarms, "St", stop buzz (fmDisarm(false)). The handling
+//   waits while the single-slot burst queue is busy so it can never overwrite a just-queued 0xF1/1. No confStruct
+//   change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-07 - FM warning-distance haptic REMOVED (owner ruling, minimal-buzz rule): runFmLoop() no longer
 //   queues Pattern 8, and its scheduler state is gone. fm_warn_distance_m itself stays - the R5 proximity bar
 //   uses it as the distance full-scale. No struct change.
@@ -954,10 +959,10 @@ static bool          fm_throttle_seen = false;  // becomes true once thr_scaled>
 // Returns true if FM is currently armed; called by Hall.ino to intercept LEFT hold 2s
 bool isFmArmed() { return fm_armed; }
 
-// V2.5-Evo - 2026-07-20 - Batch T: previous telemetry.fm_flags snapshot for bit3 (fault-stop)
-// rising-edge detection in runFmLoop(). Updated every runFmLoop() tick so re-arming always
-// starts from a fresh baseline (no stale edge). RAM only.
-static uint8_t fm_flags_prev = 0;
+// V2.5-Evo - 2026-07-20 - Batch T: a previous telemetry.fm_flags snapshot (fm_flags_prev) lived here for the
+// bit3 (fault-stop) rising-edge test in runFmLoop().
+// V2.5-Evo - 2026-10-07 - R-6: removed. The edge is now latched on the byte's arrival in Radio.ino
+// (fm_fault_latched, BREmote_V2_Tx.h), so a long loop() stall can no longer hide it.
 
 // V2.5-Evo - 2026-10-07 - the FM warning-distance haptic (Pattern 8, one 300 ms pulse every 2 s while the buggy
 // was at or beyond fm_warn_distance_m) is REMOVED by owner ruling (minimal-buzz rule), together with its
@@ -1393,11 +1398,23 @@ void runFmLoop()
   // (belt-and-suspenders — RX already idle), and shows the stop as "St" + Pattern 7. bit3 is
   // already surprise-gated on the RX, so it is only set when the alarm is warranted — no TX
   // re-gating needed. fm_flags_prev is updated every tick (armed or not) so a re-arm starts clean.
-  uint8_t fm_flags_now = telemetry.fm_flags;
-  bool fault_rising = (fm_flags_now & FM_FLAG_FAULT) && !(fm_flags_prev & FM_FLAG_FAULT);
-  fm_flags_prev = fm_flags_now;
-  if (fm_armed && fault_rising)
+  // V2.5-Evo - 2026-10-07 - R-6: THE EDGE NOW COMES FROM A LATCH. Comparing telemetry.fm_flags tick to tick
+  // (the fm_flags_prev code that was here) missed a fault whose ~6 s sticky bit rose and fell while loop()
+  // was blocked in the RTM arm ceremony (up to the arm window + ~4 s). Radio.ino now latches the rising
+  // edge on the byte's arrival (fm_fault_latched); it is handled here however late: the remote disarms
+  // Follow-Me, shows "St" and fires the stop buzz through fmDisarm(false) -> vib_stop_pending, exactly as
+  // an on-time edge always did. Latched while NOT armed -> simply cleared, as an edge was ignored before.
+  // ONE GUARD: fmDisarm() queues 0xF2/0 into the SINGLE-SLOT burst queue. Handled late, right after a
+  // ceremony that just queued 0xF1/1 (RTM ACTIVE), it would overwrite that burst and the buggy would never
+  // learn RTM is on (the 2026-09-18 keepalive bug). So while a burst is still going out the latch is kept
+  // and retried next tick (~110 ms; a burst drains in ~300 ms), the same rule the keepalive below follows.
+  if (fm_fault_latched && !fm_armed)
   {
+    fm_fault_latched = false;   // nothing armed on this side to disarm
+  }
+  else if (fm_fault_latched && rtm_meta_count.load(std::memory_order_acquire) == 0)
+  {
+    fm_fault_latched = false;
     // FAULT — and since the 2026-08-17 revision this is the ONLY FM path that buzzes. The RX
     // faulted and stopped following by itself: the rider asked for nothing, no timer explains it,
     // and he has no other way to learn the buggy is no longer steering for him. → commanded =

@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - R-6: new RAM flag fm_fault_latched (set by the telemetry unpack on the Follow-Me fault-stop
+//   rising edge, cleared by runFmLoop()). A global, not a confStruct field: sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-07 - comments only: fm_warn_distance_m no longer drives a vibration (the Pattern 8 FM warning
 //   haptic was removed, owner ruling); it remains the R5 proximity-bar full-scale. The FollowMeDistanceWarning.h include
 //   stays for kFmDistanceTelemetryMaxM. No struct change: sizeof stays 136, SW_VERSION stays 27.
@@ -689,6 +691,20 @@ struct __attribute__((packed)) TelemetryPacket {
 // one instruction on this RISC-V core, so no read can tear.
 // ============================================================
 volatile uint8_t fm_engaged_streak = 0;   // consecutive fm_flags arrivals with ARMED+ENGAGED both set
+
+// ============================================================
+// V2.5-Evo - 2026-10-07 - fm_fault_latched: the RX Follow-Me FAULT-STOP edge, latched where it arrives
+// (audit R-6). Set true by the telemetry unpack in Radio.ino (waitForTelemetry task) when an fm_flags byte
+// arrives with FM_FLAG_FAULT set and the previous arrival had it clear. Cleared only by runFmLoop()
+// (RTMState.ino, loop task) when it handles the edge.
+// WHY: runFmLoop() used to look for the rising edge itself, by comparing telemetry.fm_flags tick to tick.
+// The RX holds bit 3 for only ~6 s, and the blocking RTM arm ceremony can stall loop() for the arm window
+// plus ~4 s, so a fault that rose and fell inside one stall was never seen: the remote stayed fm_armed
+// and kept re-declaring Follow-Me to a buggy that had stopped it. A latch cannot be missed, however late
+// loop() gets to it. volatile bool: one writer task, one reader/clearer task; single-byte accesses do not
+// tear on this core, and the RX holds the bit for seconds, so two edges can never race one clear.
+// ============================================================
+volatile bool fm_fault_latched = false;
 
 /*
 ** FreeRTOS/Task handles

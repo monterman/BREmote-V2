@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-07 - M-3 / F-2: inside the RTM arm ceremony a plain 1 s LEFT hold (trigger held or released)
+//   cancels at once to full manual: 0xF1/0, cap 255, "St" + stop buzz. A RIGHT tap first still makes it A1/A0.
+//   No magnet cancel. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-07 - H-1 (TX part): rtmRxStateWatch() re-sends 0xF1/0 while the buggy reports Return-To-Me
 //   (fm_status bit 1) and this remote is not running one; rtmFmStopFlush() sends 0xF1/0 + 0xF2/0 and waits >= 400 ms,
 //   used by deepSleep() and the lock gesture. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
@@ -601,6 +604,62 @@ static void ceremonyCancelForReturnGesture()
 }
 
 // ============================================================
+// V2.5-Evo - 2026-10-07 - M-3 / F-2: A 1 s LEFT HOLD CANCELS THE ARM CEREMONY BACK TO FULL MANUAL
+// THE BUG: while "rn" blinks the remote sends zero throttle for up to rtm_arm_window_s (15 s on the owner's
+// remote) and there was no way out except waiting: the only in-ceremony gesture was the A1/A0 combo, and a
+// rider who kept the trigger held through a magnet hold had no action at all that returned power.
+// THE FIX: hold the toggle LEFT for kCeremonyLeftCancelMs (1 s) -> the arm is cancelled AT ONCE: 0xF1/0 to the
+// buggy, throttle cap back to 255 (full manual), "St" with the normal stop buzz (vib_stop_pending, SOP-040).
+// DETAILS THAT MATTER:
+//   - LEFT is read from tog_scaled, not ctminus(): with the trigger squeezed calcFilter() hands the toggle to
+//     steering and tog_input reads 0, but tog_scaled still shows the push. So the cancel works trigger held
+//     or released - the held-trigger case is exactly F-2.
+//   - The LEFT hold that STARTED the ceremony (toggle route) must be released first; it never counts.
+//   - A RIGHT tap first makes the LEFT hold the A1/A0 auto-return switch instead (return_gesture_in_progress,
+//     set by returnGestureCeremonyPoll() on the same tick), so that existing gesture still works.
+//   - After the cancel the LEFT toggle may still be held; ceremony_toggle_latch (Hall.ino) keeps it from
+//     becoming a lock or a gear step until it is centred.
+//   - No magnet cancel (owner still deciding).
+// ============================================================
+static const unsigned long kCeremonyLeftCancelMs = 1000UL;
+
+// ceremonyLeftCancelPoll - 1 s LEFT-hold detector for the blocking arm ceremony. Call AFTER
+// returnGestureCeremonyPoll(false) on the same tick.
+// Inputs: reset - true at ceremony start. Reads tog_scaled, usrConf.tog_diff, return_gesture_in_progress.
+// Returns: true once the hold has lasted kCeremonyLeftCancelMs. Side effects: its own static state only.
+static bool ceremonyLeftCancelPoll(bool reset)
+{
+  static bool          released_seen = false;   // LEFT seen not pushed since the ceremony started
+  static bool          holding       = false;
+  static unsigned long hold_start_ms = 0;
+  if (reset) { released_seen = false; holding = false; return false; }
+
+  const bool left = ((int)tog_scaled < 127 - (int)usrConf.tog_diff);
+  if (!left)                      { released_seen = true; holding = false; return false; }
+  if (!released_seen)             return false;                       // still the arming hold
+  if (return_gesture_in_progress) { holding = false; return false; }  // RIGHT tap first: this is A1/A0
+  if (!holding) { holding = true; hold_start_ms = millis(); }
+  return (millis() - hold_start_ms) >= kCeremonyLeftCancelMs;
+}
+
+// ceremonyCancelToManual - end the arm ceremony and hand back full manual throttle at once.
+// Inputs: none. Side effects: rtm_tx_state -> RTM_IDLE (so rtmIsArming() stops zeroing the throttle byte),
+//   rtm_thr_cap_tx 255, GPS override cleared, 0xF1/0 queued, stop buzz requested, then a 2 s "St" hold
+//   (BLOCKING, like every other "St"; the radio task passes the trigger during it). Loop task only.
+static void ceremonyCancelToManual()
+{
+  rtm_arm_gps_timeout_override = 0;
+  rtm_thr_cap_tx = 255;
+  rtm_tx_state   = RTM_IDLE;
+  rtm_tx_active  = false;
+  queueMetaPacketBurst(0xF1, 0);
+  Serial.println("RTM [TX] arm cancelled: LEFT hold 1 s -> full manual (0xF1/0)");
+  vib_stop_pending = true;   // Pattern 7, the normal stop buzz
+  DISP_LOCK(); displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
+  gpsKeepAliveDelay(2000);
+}
+
+// ============================================================
 // V2.5-Evo - 2026-04-28 - Bug4: Full rewrite. Handles both single and double squeeze.
 // Always called blocking from setRtmArmed(). Uses rtm_arm_start_ms as shared arm-window ref.
 // "A r" and "rn ×2" ceremony removed. Arm confirmation is unlockAnimation() + "r n" 2s.
@@ -626,6 +685,7 @@ static void runDoubleSqueezeArm()
   advanceArrow();   // prime arrow before loop; advanceArrow() calls updateDisplay() internally
 
   returnGestureCeremonyPoll(true);   // V2.5-Evo - 2026-09-19 - fresh detector; the arming hold is still down
+  ceremonyLeftCancelPoll(true);      // V2.5-Evo - 2026-10-07 - M-3: fresh 1 s LEFT-hold cancel detector
 
   // V2.5-Evo - 2026-10-07 - R-3: from here on, a toggle must be seen centred before runMenu() (Hall.ino)
   // acts on it again. Set at the start so EVERY exit below (squeeze timeout, A1/A0 cancel, pre-arm refusal,
@@ -662,6 +722,8 @@ static void runDoubleSqueezeArm()
     else { hold_ms = 0; }
     // V2.5-Evo - 2026-09-19 - the return gesture done again while waiting = cancel + flip (state 2).
     if (returnGestureCeremonyPoll(false)) { ceremonyCancelForReturnGesture(); return; }
+    // V2.5-Evo - 2026-10-07 - M-3 / F-2: a plain 1 s LEFT hold = cancel to full manual, "St" + stop buzz.
+    if (ceremonyLeftCancelPoll(false)) { ceremonyCancelToManual(); return; }
     delay(100);
     checkSerial();
   }
@@ -713,6 +775,8 @@ static void runDoubleSqueezeArm()
       else { hold_ms = 0; }
       // V2.5-Evo - 2026-09-19 - the return gesture done again while waiting = cancel + flip (state 2).
       if (returnGestureCeremonyPoll(false)) { ceremonyCancelForReturnGesture(); return; }
+      // V2.5-Evo - 2026-10-07 - M-3 / F-2: a plain 1 s LEFT hold = cancel to full manual, "St" + stop buzz.
+      if (ceremonyLeftCancelPoll(false)) { ceremonyCancelToManual(); return; }
       delay(100);
       checkSerial();
     }

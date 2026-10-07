@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-07 - H-1 / L-1: the meta-packet queue is 2 deep (same type updates in place; 0xF1 has priority
+//   for the second slot); sendData() stamps rtm_stop_sent_ms on every 0xF1/0 sent; waitForTelemetry() stamps
+//   fm_status_arrival_ms. No packet format change.
 // V2.5-Evo - 2026-10-07 - C-1: sendData() sends zero throttle and centred steering when adsInputFaultNow() reports a
 //   dead or implausible throttle input (no ADS1115 conversion for 50 ms). Can only lower throttle. No format change.
 // V2.5-Evo - 2026-10-07 - R-6: the telemetry unpack also latches the Follow-Me fault-stop rising edge (fm_flags bit 3)
@@ -231,6 +234,8 @@ void checkPairing()
 // V2.5-Evo - 2026-04-24 - Added 0xF3 GPS meta-packet burst at 2Hz for Phase B anti-spoofing.
 //                   THR capped at 0xF2: 0xF3 is reserved as the GPS meta-packet marker.
 // V2.5-Evo - 2026-07-14 - Feature A: adaptive RF collision backoff (adapted from Ludwig 2.2.7).
+// V2.5-Evo - 2026-10-07 - H-1 / L-1: meta queue consumer, defined further down this file.
+static bool metaQueueTake(uint8_t &type, uint8_t &value);
 void sendData(void *parameter)
 {
   TickType_t xLastWakeTime = xTaskGetTickCount();
@@ -287,12 +292,15 @@ void sendData(void *parameter)
       // 3 bursts × 100ms cycle = 300ms total. Type/value written before count by loop task.
       // V2.5-Evo - 2026-05-13 - SW32 M3: acquire load on count pairs with release store in
       // queueMetaPacketBurst(); guarantees type/value are visible before count reads as >0.
-      if (rtm_meta_count.load(std::memory_order_acquire) > 0)
+      // V2.5-Evo - 2026-10-07 - H-1 / L-1: the packet now comes from the 2-deep queue (metaQueueTake(), which
+      // also counts it off). Same one-packet-per-cycle cadence as before.
+      uint8_t meta_type = 0, meta_value = 0;
+      if (metaQueueTake(meta_type, meta_value))
       {
         uint8_t metaPkt[6];
         memcpy(metaPkt, usrConf.dest_address, 3);
-        metaPkt[3] = rtm_meta_type.load(std::memory_order_relaxed);
-        metaPkt[4] = rtm_meta_value.load(std::memory_order_relaxed);
+        metaPkt[3] = meta_type;
+        metaPkt[4] = meta_value;
         metaPkt[5] = esp_crc8(metaPkt, 5);
 
         rxprint("RTM meta-pkt: ");
@@ -306,7 +314,9 @@ void sendData(void *parameter)
           if (_txErr != RADIOLIB_ERR_NONE)
             Serial.printf("[Radio] startTransmit error %d at line %d\n", _txErr, __LINE__);
         }
-        rtm_meta_count.fetch_sub(1, std::memory_order_relaxed);
+        // V2.5-Evo - 2026-10-07 - H-1: remember when an "RTM off" went on the air, so the loop task can tell a
+        // fresh "buggy still in RTM" report from the cached one that predates this stop.
+        if (meta_type == 0xF1 && meta_value == 0) rtm_stop_sent_ms = millis();
         num_sent_packets++;
         vTaskDelay(pdMS_TO_TICKS(10));
         radio.implicitHeader(6);
@@ -549,6 +559,11 @@ void waitForTelemetry(void *parameter)
             ptr[rcvArray[3]] = rcvArray[4];
           }
 
+          // V2.5-Evo - 2026-10-07 - H-1: stamp each ARRIVAL of the fm_status byte (index 15). The cached byte only
+          // changes when its index comes round, so runRtmLoop() acts on its RTM bit only when it arrived after
+          // the last 0xF1/0 went out.
+          if (rcvArray[3] == offsetof(TelemetryPacket, fm_status)) fm_status_arrival_ms = millis();
+
           // ---- V2.5-Evo - 2026-09-30 - FOLLOW-ME "ENGAGED" CORROBORATION COUNTER ----
           // WHY THIS IS HERE. The magnet tap may only move a Follow-Me station while the buggy is
           // actively following - never while the rider is on the tow rope, where he is attached to the
@@ -644,11 +659,89 @@ void waitForTelemetry(void *parameter)
 // sendData() FreeRTOS task consumes the queue.
 // type: 0xF1=RTM state, 0xF2=FM override, 0xF4=aux control
 // value: for 0xF1: 0=inactive 1=active; for 0xF2: 0-3 FM mode; for 0xF4: aux flags byte
+// ============================================================
+// V2.5-Evo - 2026-10-07 - H-1 / L-1: TWO-DEEP META-PACKET QUEUE
+// THE BUG: the queue was ONE slot. Any new burst overwrote the one still going out, so a keepalive or a
+// Follow-Me disarm could wipe a just-queued 0xF1 Return-To-Me state change (only the call sites' own "wait
+// until empty" checks prevented it), and deepSleep() could not queue "RTM off" and "FM off" together.
+// THE FIX: a second slot. Each packet TYPE is a state channel, so the rules are:
+//   1. a type already queued (head or second slot) is UPDATED IN PLACE: the newest value wins and its three
+//      sends restart (exactly what the single slot did for a repeat of the same type);
+//   2. otherwise it goes into the first empty slot, head first;
+//   3. if both slots hold OTHER types, an 0xF1 (Return-To-Me state) always takes the second slot, and any
+//      other type takes it only when the second slot is not an 0xF1. State packets beat keepalives and aux.
+// The head is the rtm_meta_* atomics sendData() already read; the second slot is promoted the moment the
+// head empties, inside the same critical section, so rtm_meta_count == 0 still means "queue empty" for the
+// existing callers that wait for an empty queue.
+// Callers: loop task (RTM/FM state machines), possibly the BLE/web tasks via sendAuxCommand(). Consumer:
+// sendData task through metaQueueTake(). A critical section (interrupts off for a few instructions on this
+// single-core part) makes every queue change atomic.
+// ============================================================
+static portMUX_TYPE metaQueueMux     = portMUX_INITIALIZER_UNLOCKED;
+static uint8_t      meta_next_type   = 0;   // second slot: packet type (0xF1/0xF2/0xF4)
+static uint8_t      meta_next_value  = 0;   // second slot: value byte
+static uint8_t      meta_next_count  = 0;   // second slot: sends remaining, 0 = empty
+
 void queueMetaPacketBurst(uint8_t type, uint8_t value)
 {
-  rtm_meta_type.store(type, std::memory_order_relaxed);
-  rtm_meta_value.store(value, std::memory_order_relaxed);
-  rtm_meta_count.store(3, std::memory_order_release);  // release: type/value visible before count
+  portENTER_CRITICAL(&metaQueueMux);
+  const uint8_t head_count = rtm_meta_count.load(std::memory_order_relaxed);
+  const uint8_t head_type  = rtm_meta_type.load(std::memory_order_relaxed);
+  if (head_count > 0 && head_type == type)
+  {
+    rtm_meta_value.store(value, std::memory_order_relaxed);   // rule 1, head
+    rtm_meta_count.store(3, std::memory_order_release);
+  }
+  else if (meta_next_count > 0 && meta_next_type == type)
+  {
+    meta_next_value = value;                                    // rule 1, second slot
+    meta_next_count = 3;
+  }
+  else if (head_count == 0)
+  {
+    rtm_meta_type.store(type, std::memory_order_relaxed);      // rule 2, head
+    rtm_meta_value.store(value, std::memory_order_relaxed);
+    rtm_meta_count.store(3, std::memory_order_release);        // release: type/value visible before count
+  }
+  else if (meta_next_count == 0 || type == 0xF1 || meta_next_type != 0xF1)
+  {
+    meta_next_type  = type;                                     // rule 2 / rule 3, second slot
+    meta_next_value = value;
+    meta_next_count = 3;
+  }
+  // else: both slots busy with other types and the second holds an 0xF1 - this lower-priority burst is
+  // dropped. Its senders re-send (the FM keepalive retries, aux is a user action).
+  portEXIT_CRITICAL(&metaQueueMux);
+}
+
+// metaQueueTake - hand sendData() the next meta packet to transmit, if any.
+// Outputs: type/value of the packet. Returns true if there is one. Side effects: counts it off the head
+// and promotes the second slot when the head empties. Called only by the sendData task.
+static bool metaQueueTake(uint8_t &type, uint8_t &value)
+{
+  bool have = false;
+  portENTER_CRITICAL(&metaQueueMux);
+  uint8_t c = rtm_meta_count.load(std::memory_order_acquire);
+  if (c > 0)
+  {
+    type  = rtm_meta_type.load(std::memory_order_relaxed);
+    value = rtm_meta_value.load(std::memory_order_relaxed);
+    have  = true;
+    c--;
+    if (c == 0 && meta_next_count > 0)
+    {
+      rtm_meta_type.store(meta_next_type, std::memory_order_relaxed);
+      rtm_meta_value.store(meta_next_value, std::memory_order_relaxed);
+      rtm_meta_count.store(meta_next_count, std::memory_order_release);
+      meta_next_count = 0;
+    }
+    else
+    {
+      rtm_meta_count.store(c, std::memory_order_release);
+    }
+  }
+  portEXIT_CRITICAL(&metaQueueMux);
+  return have;
 }
 
 // Queue a 0xF4 aux control burst to RX (3× for reliability).

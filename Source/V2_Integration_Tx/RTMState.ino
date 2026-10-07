@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-07 - H-1 (TX part): rtmRxStateWatch() re-sends 0xF1/0 while the buggy reports Return-To-Me
+//   (fm_status bit 1) and this remote is not running one; rtmFmStopFlush() sends 0xF1/0 + 0xF2/0 and waits >= 400 ms,
+//   used by deepSleep() and the lock gesture. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-07 - R-6: runFmLoop() takes the Follow-Me fault-stop edge from fm_fault_latched (set in Radio.ino on
 //   the byte's arrival) instead of comparing telemetry.fm_flags tick to tick, so a fault that rose and fell during the
 //   blocking RTM arm ceremony is still handled: Follow-Me disarms, "St", stop buzz (fmDisarm(false)). The handling
@@ -786,9 +789,75 @@ static void runDoubleSqueezeArm()
   if (fm_last_sync_ms > 0) fm_last_sync_ms = millis();
 }
 
+// ============================================================
+// V2.5-Evo - 2026-10-07 - H-1 (TX part): THE BUGGY IS STILL IN RETURN-TO-ME BUT THIS REMOTE IS NOT
+// THE BUG: the buggy's RTM flag (rtm_rx_active) is set and cleared only by 0xF1 bursts, with no expiry. If
+// the stop never arrived - link lost mid-return, the remote rebooted or slept mid-return, or all three burst
+// packets were lost - the buggy stayed in RTM while the remote showed manual: with GPS fine a squeeze steered
+// on its own with the stick ignored, with GPS dead the motor stayed at 0. Nothing on the remote could see it.
+// THE FIX: the buggy reports the flag in telemetry.fm_status bit 1. While this remote is NOT running a return
+// (IDLE or COOLDOWN, never ARMED or ACTIVE) and the link is fresh, a set bit that ARRIVED after our last 0xF1/0
+// went on the air (plus kRtmStopEchoMarginMs for the buggy to process it) means the buggy did not hear the
+// stop: queue 0xF1/0 again. The arrival test makes the retry follow the telemetry rotation (one try per fresh
+// report, ~2-3 s) instead of re-sending every loop tick, and it keeps retrying until the bit clears.
+// Runs whatever the remote's own RTM enable says, and while locked, because a stuck buggy is the problem
+// either way. Can only ever send "RTM off". Loop task only.
+// Inputs: rtm_tx_state, usrConf.paired, radio activity, last_packet, telemetry.fm_status,
+//   fm_status_arrival_ms, rtm_stop_sent_ms. Side effects: may queue 0xF1/0 and print one line.
+// ============================================================
+static const unsigned long kRtmStopEchoMarginMs = 300UL;   // buggy handles 0xF1 at once; telemetry refresh is 100 ms
+
+static void rtmRxStateWatch(unsigned long now)
+{
+  if (rtm_tx_state == RTM_ACTIVE || rtm_tx_state == RTM_ARMED) return;     // our own return, or its ceremony
+  if (!usrConf.paired || !isRadioActivityEnabled()) return;
+  if (last_packet == 0 || (now - last_packet) >= FM_LINK_HEALTHY_MS) return; // link not fresh: nothing to trust
+  if ((telemetry.fm_status & FM_STATUS_RTM_ACTIVE) == 0) return;              // the buggy is not in RTM
+  const unsigned long arrived = fm_status_arrival_ms;
+  const unsigned long sent    = rtm_stop_sent_ms;
+  if (arrived == 0) return;                                                   // never actually received the byte
+  if (sent != 0 && (long)(arrived - sent) < (long)kRtmStopEchoMarginMs) return; // report predates our last stop
+  Serial.println("RTM [TX] the buggy reports Return-To-Me active but this remote is not running it -> 0xF1/0");
+  queueMetaPacketBurst(0xF1, 0);
+  rtm_stop_sent_ms = now;   // hold off the next try until this burst is out and a fresh report arrives
+}
+
+// ============================================================
+// V2.5-Evo - 2026-10-07 - H-1 (TX part): FLUSH "RTM OFF" AND "FOLLOW-ME OFF" BEFORE GOING QUIET
+// THE BUG: deepSleep() switched the radio off with nothing sent, so a buggy in Return-To-Me or Follow-Me
+// kept that state with no remote behind it (contrary to the 2026-07-20 "flush 0xF1/0 before radio teardown").
+// THE FIX: queue 0xF1/0 and 0xF2/0 (both fit in the 2-deep queue) and wait until they have gone out:
+// at least kStopFlushMinMs (400 ms), until the queue is empty, at most kStopFlushMaxMs. Two bursts of three
+// packets at the 100 ms cadence take about 600 ms. Used by deepSleep() (System.ino) and the lock gesture
+// (Hall.ino). The 0xF2 value goes through fmEncodeModeByte(0) like every other Follow-Me disarm.
+// Does nothing if the remote is unpaired or its radio is off (nothing can be sent).
+// BLOCKING up to kStopFlushMaxMs on the loop task. The radio and ADC tasks keep running; throttle is not
+// affected (meta packets replace control packets for those cycles, exactly as any burst does).
+// Not static: Hall.ino and System.ino call it.
+// ============================================================
+static const unsigned long kStopFlushMinMs = 400UL;
+static const unsigned long kStopFlushMaxMs = 1000UL;
+
+void rtmFmStopFlush()
+{
+  if (!usrConf.paired || !isRadioActivityEnabled()) return;
+  queueMetaPacketBurst(0xF1, 0);
+  queueMetaPacketBurst(0xF2, fmEncodeModeByte(0));
+  unsigned long start = millis();
+  while (millis() - start < kStopFlushMaxMs)
+  {
+    if (millis() - start >= kStopFlushMinMs && rtm_meta_count.load(std::memory_order_acquire) == 0) break;
+    delay(10);
+  }
+  Serial.println("RTM [TX] stop flush: 0xF1/0 + 0xF2/0 sent before going quiet");
+}
+
 // ---- Called from loop() every ~110ms ----
 void runRtmLoop()
 {
+  // V2.5-Evo - 2026-10-07 - H-1: runs BEFORE the enable check below, on purpose - see rtmRxStateWatch().
+  rtmRxStateWatch(millis());
+
   // V2.5-Evo - 2026-09-30 - the EFFECTIVE enable (see rtmEnabledEffective()). A session override that
   // says OFF parks this whole state machine exactly as a stored 0 always did; it cannot leave a run
   // half-supervised, because the flip is refused outright while RTM is active or arming.
@@ -1487,6 +1556,8 @@ void runFmLoop()
   // Belt: runDoubleSqueezeArm() also refreshes fm_last_sync_ms at the end of a successful
   // ceremony, so the keepalive is not overdue on resume in the first place.
   // (A 2-deep queue and a TX check of fm_status bit 1 are the longer-term answer; not built here.)
+  // V2.5-Evo - 2026-10-07 - H-1 / L-1: both now exist (queueMetaPacketBurst() in Radio.ino, rtmRxStateWatch()
+  // above). This empty-queue wait is kept anyway: it costs at most ~600 ms and never loses a state burst.
   if (fm_last_sync_ms > 0 && now - fm_last_sync_ms >= 30000UL)
   {
     if (rtm_meta_count.load(std::memory_order_acquire) == 0)

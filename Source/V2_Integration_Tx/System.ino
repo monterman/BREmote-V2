@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - H-1 (TX part): deepSleep() flushes 0xF1/0 + 0xF2/0 (rtmFmStopFlush(), >= 400 ms) before the
+//   radio is switched off. No confStruct change.
 // V2.5-Evo - 2026-10-07 - Pattern 8 REMOVED: the FM warning-distance haptic is gone (owner ruling, minimal-buzz
 //   rule); its executor branch is deleted and number 8 is retired.
 // V2.5-Evo - 2026-10-07 - Pattern 11 and vib_pulse_count REMOVED: a magnet station change no longer buzzes (owner
@@ -65,6 +67,11 @@ void deepSleep()
   updateDisplay();
   DISP_UNLOCK();
   setBrightness(0x00);
+  // V2.5-Evo - 2026-10-07 - H-1 (TX part): tell the buggy "Return-To-Me off" and "Follow-Me off" and let both
+  // bursts go out (>= 400 ms) BEFORE the radio is switched off, so a buggy mid-return or mid-follow is never
+  // left in that state with no remote behind it. rtmFmStopFlush() is in RTMState.ino; it skips itself when
+  // the radio is already off or the remote is unpaired.
+  rtmFmStopFlush();
   Serial.println("Going to sleep now");
   setRadioActivityEnabled(false);
   Serial.flush();

@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - H-1 (TX part): fm_status_arrival_ms, rtm_stop_sent_ms, FM_STATUS_RTM_ACTIVE, and a note that
+//   the meta-packet atomics are now the head of a 2-deep queue. RAM only: sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-07 - C-1: throttle-input health globals (last_ads_ok_ms, ads_input_fault, ads_thr_out_of_range,
 //   ads_thr_good_samples), ADS_STALE_MS and the TX-local error code REMOTE_ERR_INPUT_FAULT (72). RAM only, no confStruct
 //   change: sizeof stays 136, SW_VERSION stays 27.
@@ -855,6 +857,24 @@ volatile uint8_t steer_sent = 0; // Steering value actually sent over radio
 std::atomic<uint8_t> rtm_meta_type  {0};    // 0xF1=RTM state, 0xF2=FM override
 std::atomic<uint8_t> rtm_meta_value {0};    // for 0xF1: 0=inactive 1=active; for 0xF2: 0-3 FM mode
 std::atomic<uint8_t> rtm_meta_count {0};    // bursts remaining; 0 = idle (value is always 0 or 3)
+// V2.5-Evo - 2026-10-07 - H-1 / L-1: the three atomics above are now the HEAD of a 2-deep queue (a second slot
+// lives in Radio.ino). rtm_meta_count == 0 still means "nothing queued at all", because the second slot is
+// promoted into the head the moment the head empties. See queueMetaPacketBurst().
+
+// ============================================================
+// V2.5-Evo - 2026-10-07 - H-1 (TX part): "the buggy is still in Return-To-Me but this remote is not".
+// The buggy reports its RTM state in telemetry.fm_status bit 1 (RX RTMState.ino: rtm_rx_active). If the
+// remote missed sending, or the buggy missed hearing, the 0xF1/0 that ends a return (link loss, a remote
+// reboot or sleep mid-return, all three burst packets lost), the buggy kept running RTM with the remote
+// showing manual. runRtmLoop() now watches that bit and re-sends 0xF1/0 until it clears.
+//   fm_status_arrival_ms - millis() when the fm_status byte (telemetry index 15) last ARRIVED. The byte is
+//                          cached between arrivals, so only an arrival after our stop went out is evidence.
+//                          Written by waitForTelemetry (Radio.ino), read by the loop task.
+//   rtm_stop_sent_ms     - millis() when an 0xF1/0 packet last went on the air. Written by sendData.
+// ============================================================
+#define FM_STATUS_RTM_ACTIVE 0x02                 // telemetry.fm_status bit 1: the buggy has rtm_rx_active set
+volatile unsigned long fm_status_arrival_ms = 0;
+volatile unsigned long rtm_stop_sent_ms     = 0;
 
 // V2.5-Evo - 2026-04-25 - P7 RTM throttle cap.
 // V2.5-Evo - 2026-05-13 - SW32 M3: changed volatile→std::atomic<T>.

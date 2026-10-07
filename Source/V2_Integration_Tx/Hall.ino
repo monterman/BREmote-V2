@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - H-1 (TX part): the LEFT-hold lock now flushes 0xF1/0 + 0xF2/0 (rtmFmStopFlush()).
 // V2.5-Evo - 2026-10-07 - C-1: runMagGesture() ignores every magnet gesture while the throttle input fault is latched
 //   (ads_input_fault). The toggle is already blocked by the ADC task (tog_input forced to 0). No confStruct change.
 // V2.5-Evo - 2026-10-07 - comment only: a station step no longer buzzes (Pattern 11 removed, RTMState.ino); the tap
@@ -323,6 +324,8 @@ bool ctminus()
 // ============================================================
 // V2.5-Evo - 2026-09-19 - defined in RTMState.ino (concatenated after this file).
 void returnGesture();
+// V2.5-Evo - 2026-10-07 - H-1: defined in RTMState.ino (concatenated after this file); used by the lock branch.
+void rtmFmStopFlush();
 static int           last_tap_dir   = 0;    // last recorded tap direction: +1=right, -1=left, 0=none
 static unsigned long last_tap_ms    = 0;    // millis() when last tap was recorded
 static const unsigned long COMBO_WINDOW_MS  = 3000UL;  // max gap between tap and hold for combo
@@ -433,6 +436,10 @@ void handleGearToggle(int direction)
             // FM not armed: LEFT hold 2s → lock remote
             system_locked = 1;
             DISP_LOCK(); displayLock(); DISP_UNLOCK();
+            // V2.5-Evo - 2026-10-07 - H-1 (TX part): a locked remote sends zero throttle, but a buggy left in
+            // Return-To-Me or Follow-Me would stay there. Send "RTM off" + "FM off" and let them go out
+            // (>= 400 ms, RTMState.ino). Follow-Me is never armed here (that branch is above).
+            rtmFmStopFlush();
           }
         }
         last_tap_dir   = 0;  // consume the tap after any long-press action

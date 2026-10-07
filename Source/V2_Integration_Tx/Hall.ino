@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - P-7: the LEFT-hold lock during an active Return-To-Me ends the remote's own RTM
+//   (setRtmDisarmed() -> silent "St") before the stop flush. No confStruct change.
 // V2.5-Evo - 2026-10-07 - F-4: runMenu()'s post-ceremony latch hands the toggle back to steering on a squeeze (in_menu 0).
 // V2.5-Evo - 2026-10-07 - SOP-040 gesture rule: the mag_mode 4 2.5 s hold acts only with the trigger fully released
 //   (checked at 2.5 s and at removal; held -> ignored silently, one serial line). The toggle RIGHT tap + LEFT hold logs
@@ -442,6 +444,17 @@ void handleGearToggle(int direction)
           {
             // FM not armed: LEFT hold 2s → lock remote
             system_locked = 1;
+            // V2.5-Evo - 2026-10-07 - P-7: THE BUG - a lock during an active Return-To-Me flushed 0xF1/0 to the buggy
+            // but left THIS remote in RTM_ACTIVE (RTM screen, ramp cap, gates) until Gate 3 after the unlock, so the
+            // two sides disagreed. THE FIX (chosen over refusing the lock - locking is the rider's own stop and must
+            // always work): end the remote's own return through the deliberate-stop path, setRtmDisarmed() ->
+            // rtmDisengage(true): silent "St" for 2 s, cap back to 255, COOLDOWN. system_locked is already set
+            // above, so the radio sends 0 throughout. The flush below then repeats 0xF1/0 with 0xF2/0.
+            if (rtm_tx_active)
+            {
+              Serial.println("RTM [TX] lock during an active Return-To-Me: ending it on this remote too (silent St)");
+              setRtmDisarmed();
+            }
             DISP_LOCK(); displayLock(); DISP_UNLOCK();
             // V2.5-Evo - 2026-10-07 - H-1 (TX part): a locked remote sends zero throttle, but a buggy left in
             // Return-To-Me or Follow-Me would stay there. Send "RTM off" + "FM off" and let them go out

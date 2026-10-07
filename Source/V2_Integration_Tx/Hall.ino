@@ -1,3 +1,10 @@
+// V2.5-Evo - 2026-10-07 - mag_mode 4 hold, two owner rulings (audits R-2 and R-7). The 2.5 s hold now decides at the
+//   2.5 s mark what removal will do (magHoldVerdict(), latched): (1) a Return-To-Me ALREADY ACTIVE -> the hold is
+//   ignored, no buzz, the return continues (it used to restart the arm ceremony with no "St" and no cooldown);
+//   (2) Return-To-Me cannot start (disabled or GPS off) -> one short refusal blip (Pattern 5) instead of the
+//   Pattern 10 success cue, and "n0" for 2 s on removal (it used to promise with Pattern 10 and then do nothing);
+//   (3) otherwise Pattern 10 and the manual Return-To-Me ceremony, as before. No confStruct change, sizeof stays
+//   136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-06 - mag_mode 4, two owner rulings. (1) M-1 TAP LOCKOUT: after a magnet tap actually steps the
 //   Follow-Me station, any tap whose magnet ARRIVES within kMagStepLockoutMs (1000 ms) is ignored completely - no
 //   step, no arm, no buzz. Since the F-label hold stopped blocking loop(), two quick taps (or one wobbly one) could
@@ -537,6 +544,9 @@ void handleGearToggle(int direction)
 //     >= 2.5s            TWO medium pulses (Pattern 10)  start the MANUAL Return-To-Me ("rn", squeeze to confirm)
 //     (V2.5-Evo - 2026-10-06: the hold row used to read "toggle Return-To-Me on/off", and from 2026-10-02 it
 //     toggled auto-return instead while Follow-Me was armed. Owner ruling: it ALWAYS starts the manual recall.)
+//     V2.5-Evo - 2026-10-07 - two exceptions to that row (audits R-2, R-7): while a Return-To-Me is ALREADY
+//     ACTIVE the hold is ignored (no buzz, no action); when Return-To-Me cannot start (disabled, or GPS off)
+//     the 2.5 s buzz is ONE short blip (Pattern 5) instead of Pattern 10, and removal shows "n0" for 2 s.
 //     TAP LOCKOUT (V2.5-Evo - 2026-10-06, audit M-1): after a tap that actually stepped the station, a tap
 //     whose magnet arrives within kMagStepLockoutMs (1 s) is ignored completely. See the constant.
 //
@@ -741,6 +751,39 @@ static const uint32_t kMagTapDebounceMs = 40UL;
 // Only taps are locked out. The 2.5 s hold is untouched: it cannot complete inside the window anyway.
 static const uint32_t kMagStepLockoutMs = 1000UL;
 
+// ---- V2.5-Evo - 2026-10-07 - WHAT A mag_mode 4 HOLD WILL DO (audits R-2 and R-7, owner rulings) ----
+// The 2.5 s hold has three possible outcomes, decided ONCE, at the moment the hold crosses 2.5 s, so the
+// buzz the rider feels while holding and the action on removal always agree:
+//   kMagHoldStartRtm - start the manual Return-To-Me ceremony (Pattern 10 while holding, "rn" on removal).
+//   kMagHoldIgnored  - a Return-To-Me is ALREADY ACTIVE. R-2: the hold is ignored completely - no buzz, no
+//                      action - and the return carries on. (It used to re-enter the arm ceremony, which cut
+//                      the buggy to 0 and restarted the return with no "St" and no cooldown.) Releasing the
+//                      trigger still ends the return through Gate 3, exactly as before.
+//   kMagHoldRefused  - Return-To-Me cannot start (RTM disabled or GPS off). R-7: the success cue used to
+//                      play and then nothing happened. Now the rider gets a refusal instead: ONE short
+//                      150 ms blip (Pattern 5) while holding, and "n0" ("no") on the display for 2 s on
+//                      removal. Not Pattern 10 (that is the success cue) and not Pattern 7 (the long fault
+//                      buzz - nothing faulted, the feature is simply off).
+// Latched in runMagGesture() so a state change between the 2.5 s mark and the removal (for example Gate 3
+// ending an active return while the magnet is still held) cannot turn an ignored hold into a new ceremony.
+static const uint8_t kMagHoldStartRtm = 0;
+static const uint8_t kMagHoldIgnored  = 1;
+static const uint8_t kMagHoldRefused  = 2;
+
+// magHoldVerdict - decide what a mag_mode 4 2.5 s hold will do right now (see the block above).
+// Inputs: rtm_tx_active, rtmIsArming(), rtmEnabledEffective(), usrConf.gps_en.
+// Output: kMagHoldStartRtm, kMagHoldIgnored or kMagHoldRefused. No side effects, never blocks.
+static uint8_t magHoldVerdict()
+{
+  if (rtm_tx_active || rtmIsArming())                return kMagHoldIgnored;   // R-2: the return continues
+  if (!(rtmEnabledEffective() && usrConf.gps_en))    return kMagHoldRefused;   // R-7: say no, clearly
+  return kMagHoldStartRtm;
+}
+
+// gpsKeepAliveDelay() is defined in RTMState.ino (concatenated after this file). Declared static here to
+// match its definition; used for the 2 s "n0" refusal hold below.
+static void gpsKeepAliveDelay(uint32_t ms);
+
 // ---- Called from loop() every cycle; self-rate-limits to kMagPollMs ----
 void runMagGesture()
 {
@@ -762,6 +805,9 @@ void runMagGesture()
   // value counts). Loop task only, like every other static here.
   static uint32_t mag_last_step_ms   = 0;
   static bool     mag_step_seen      = false;
+  // V2.5-Evo - 2026-10-07 - R-2 / R-7: what this mag_mode 4 hold will do, latched when it crosses 2.5 s
+  // (kMagHold* above). Meaningful only while rtm_advised is true for the same hold.
+  static uint8_t  mag_hold_verdict   = 0;
 
   // Role gate. With mag_mode == 0 (the default — no Hall sensor fitted) the gesture does not
   // exist: bail out before touching any state, so the Hall behaves exactly as it did before
@@ -895,7 +941,19 @@ void runMagGesture()
       if (!rtm_advised && held >= kMagRtmToggleHoldMs)
       {
         rtm_advised = true;
-        if (current_vib_pattern == 0) current_vib_pattern = 10;
+        // V2.5-Evo - 2026-10-07 - R-2 / R-7: decide now what removal will do, and only promise what it
+        // will deliver. Pattern 10 only when the hold will really start the ceremony; Pattern 5 (one short
+        // blip) when Return-To-Me cannot start; nothing at all while a return is already active.
+        mag_hold_verdict = magHoldVerdict();
+        if (mag_hold_verdict == kMagHoldStartRtm)
+        {
+          if (current_vib_pattern == 0) current_vib_pattern = 10;
+        }
+        else if (mag_hold_verdict == kMagHoldRefused)
+        {
+          if (current_vib_pattern == 0) current_vib_pattern = 5;
+        }
+        // kMagHoldIgnored: no buzz - the hold does nothing.
       }
       return;
     }
@@ -924,6 +982,10 @@ void runMagGesture()
     // the arrival edge is used above.
     uint32_t held = mag_raw_since - mag_hold_start;
     bool     was_abandoned = hold_abandoned;
+    // V2.5-Evo - 2026-10-07 - R-2 / R-7: the mode 4 hold verdict latched at the 2.5 s mark. If no
+    // advisory pass ran for this hold (it always does in practice - the sample that first sees the
+    // magnet gone evaluates the same held value), decide it now instead.
+    uint8_t  hold_verdict  = rtm_advised ? mag_hold_verdict : magHoldVerdict();
 
     // Clear per-hold state before doing anything blocking.
     fm_advised     = false;
@@ -988,7 +1050,27 @@ void runMagGesture()
         // ceremonyCancelForReturnGesture() in RTMState.ino). That detector does not need the arming
         // LEFT hold the toggle route starts with: on the magnet route the LEFT toggle is already up,
         // so it is live from the first poll. fmToggleAutoReturnFromMagnet() is no longer called.
-        setRtmArmed();
+        //
+        // V2.5-Evo - 2026-10-07 - R-2 / R-7: the verdict latched at 2.5 s decides (see magHoldVerdict()).
+        if (hold_verdict == kMagHoldIgnored)
+        {
+          // R-2: a Return-To-Me is already running. Ignore the hold; the return continues untouched.
+          Serial.println("MAG [TX] hold ignored: Return-To-Me is already active, the return continues");
+        }
+        else if (hold_verdict == kMagHoldRefused)
+        {
+          // R-7: Return-To-Me cannot start. The one-blip refusal buzz played at 2.5 s; now show "n0"
+          // ("no") for 2 s so the rider is never left guessing. LET_N renders as a lowercase-style n.
+          // BLOCKING 2 s, the same hold every other confirm on this path uses; the resync below covers it.
+          Serial.printf("MAG [TX] hold refused: Return-To-Me cannot start (rtm enabled %d, gps_en %d)\n",
+                        rtmEnabledEffective() ? 1 : 0, (int)usrConf.gps_en);
+          DISP_LOCK(); displayDigits(LET_N, 0); updateDisplay(); DISP_UNLOCK();
+          gpsKeepAliveDelay(2000);
+        }
+        else
+        {
+          setRtmArmed();
+        }
       }
       else if (held >= kMagTapMinMs && held <= kMagTapMaxMs)
       {

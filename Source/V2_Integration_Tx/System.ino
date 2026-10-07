@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - R-7: Pattern 5 (one short blip) gains a caller - the mag_mode 4 hold refusal when
+//   Return-To-Me cannot start. Comment only in this file; no pattern changed, no confStruct change.
 // V2.5-Evo - 2026-09-30 - MagFix (Rex delta audit): haptic Pattern 12 added — THREE FIRM taps (130 ms on /
 //   250 ms off, the Pattern 4 shape) = a mag_mode 4 magnet hold switched Return-To-Me OFF for the session.
 //   It replaces the vib_stop_pending / Pattern 7 long buzz that confirm used to borrow: Pattern 7 means "a
@@ -1101,6 +1103,11 @@ void vibrationTask(void *parameter) {
     // Deliberately a single pulse so it cannot be confused by feel with Pattern 4 (two pulses),
     // which is the 5s RTM advisory and every arm/disarm confirm. 150ms matches the "short"
     // pulse length already used by Patterns A and B.
+    // V2.5-Evo - 2026-10-07 - R-7: THIRD CALLER. runMagGesture() (mag_mode 4) plays it at the 2.5 s mark
+    // INSTEAD of the Pattern 10 "let go now" cue when Return-To-Me cannot start (disabled or GPS off); removal
+    // then shows "n0". One short blip is the least confusing existing shape for "no": it is not the two-medium
+    // success cue (10), not the long fault buzz (7), and its other callers are the mag_mode 1-3 advisory (a
+    // different mag_mode, so never on the same remote) and the fm_arm_timeout_s nudge (off by default).
     else if (current_vib_pattern == 5) {
       digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(150));
       digitalWrite(P_MOT, LOW);

@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-07 - F-1 / F-7: a Follow-Me fault-stop edge handled during an active return disarms Follow-Me
+//   silently at once and defers "St" + the stop buzz to the return's end (rtmDisengage()); a fresh Follow-Me arm clears a
+//   stale fm_fault_latched. No confStruct change.
 // V2.5-Evo - 2026-10-07 - A-1 (TX part): while RTM_ACTIVE, if the buggy (having confirmed RTM this run) reports fm_status
 //   bit 1 OFF on 2 consecutive arrivals, the remote ends its own RTM: silent "St", and per SOP-040 the throttle cap stays
 //   in force until the trigger is fully released once, then full manual. Hook left for the buggy's future RTM-fault bit.
@@ -280,6 +283,21 @@ static bool rtm_gate4_takeover_printed = false;
 static bool rtm_end_keep_cap     = false;
 static bool rtm_arrival_cap_hold = false;
 
+// ============================================================
+// V2.5-Evo - 2026-10-07 - F-1: A FOLLOW-ME FAULT THAT ARRIVES DURING AN ACTIVE RETURN IS ANNOUNCED AT THE RETURN'S END
+// THE BUG: runFmLoop() handled a Follow-Me fault-stop edge with fmDisarm(false): "St" + the stop buzz and a 2 s
+// BLOCKING hold. Handled while RTM was ACTIVE (typically ~300 ms after the ceremony's 0xF1/1), it showed "St" on
+// top of a working return - a rider reads "stopped" when the buggy is coming back - and froze Gates 3/4 and the
+// ramp cap for 2 s. THE FIX: while RTM is active only the SILENT half runs at once (fmSilentDisarm(): fm_armed
+// false, keepalive stopped, 0xF2/0 queued - the 2-deep queue never lets it evict the 0xF1 burst), and this flag is
+// set. Every RTM end goes through rtmDisengage(), which then upgrades its "St" to carry the stop buzz and clears
+// the flag: ONE "St", ONE buzz, and the screen afterwards is the true state (normal screen, Follow-Me is off).
+// If RTM ends on its own fault the buzz fires anyway and the flag is simply cleared. A fault handled when no
+// return is active (including a ceremony that ended without going ACTIVE) takes today's fmDisarm(false) path.
+// Loop task only.
+// ============================================================
+static bool fm_fault_deferred = false;
+
 // FM session-init and keepalive state (Changes B + E)
 static bool          fm_session_init_done = false;  // Change B: true once last_fm_mode seeded from SPIFFS this session
 static unsigned long fm_last_sync_ms      = 0;      // Change E: millis() of last 0xF2 keepalive; 0 when FM disarmed
@@ -480,6 +498,14 @@ static void rtmDisengage(bool commanded)
   //   255, so that step to raw manual throttle is always real, and the sendData task keeps
   //   transmitting it throughout the blocking 2s hold below. That transition earns a warning;
   //   the two release-driven timeouts, where the trigger is already at rest, do not.
+  // V2.5-Evo - 2026-10-07 - F-1: a Follow-Me fault deferred during this return is announced now - this "St" gets
+  // the stop buzz even if the return itself ended quietly. If the return ended on its own fault it buzzes anyway.
+  if (fm_fault_deferred)
+  {
+    fm_fault_deferred = false;
+    if (commanded) Serial.println("FM [TX] the Follow-Me fault stop deferred during Return-To-Me is announced now: St + stop buzz");
+    commanded = false;
+  }
   if (!commanded) vib_stop_pending = true;   // Pattern 7: one long buzz = a FAULT stopped the system
 
   // Large-font stop confirm: LET_S(32) renders as "5", LET_T(20) renders as "t".
@@ -1389,6 +1415,12 @@ void cycleFmMode()
     fm_session_init_done = true;
   }
 
+  // V2.5-Evo - 2026-10-07 - F-7: THE BUG - a fault-stop edge latched while Follow-Me was disarmed stayed latched
+  // until the next runFmLoop() pass, so an arm made in between (the toggle combo runs inside runMenu(), before
+  // runFmLoop() in loop()) was disarmed again at once with "St". THE FIX: a fresh arm starts with no stale latch.
+  // A fault that arrives AFTER this point latches again and is handled normally.
+  fm_fault_latched = false;
+
   // Arm at last used mode (never arms at F0 = disabled; last_fm_mode defaults to 1)
   fm_armed         = true;
   fm_arm_ms        = millis();
@@ -1721,6 +1753,16 @@ void runFmLoop()
   if (fm_fault_latched && !fm_armed)
   {
     fm_fault_latched = false;   // nothing armed on this side to disarm
+  }
+  else if (fm_fault_latched && rtm_tx_active)
+  {
+    // V2.5-Evo - 2026-10-07 - F-1: a return is running - do the SILENT half now and defer the "St" + buzz to the
+    // return's end (see fm_fault_deferred). No blocking hold, so RTM's gates and ramp keep running.
+    fm_fault_latched = false;
+    Serial.println("FM [TX] the buggy reported a Follow-Me fault stop during Return-To-Me -> Follow-Me off now (0xF2/0, silent); St + stop buzz when the return ends");
+    fmSilentDisarm();
+    fm_fault_deferred = true;
+    return;
   }
   else if (fm_fault_latched && rtm_meta_count.load(std::memory_order_acquire) == 0)
   {

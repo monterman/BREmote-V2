@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - P-6: the 1 s LEFT ceremony cancel needs a push past half of the calibrated left travel
+//   (tog_mid -> tog_left), so an ordinary LEFT steer cannot cancel a return. No confStruct change.
 // V2.5-Evo - 2026-10-07 - SOP-040 gesture rule: returnGesture() is ignored (serial line only) while Return-To-Me is active
 //   on this remote or arming, and whenever the trigger is not fully released. No confStruct change.
 // V2.5-Evo - 2026-10-07 - SOP-040: returnGesture() (the toggle RIGHT tap + LEFT hold) now shows "St" + the stop buzz when
@@ -627,10 +629,33 @@ static void ceremonyCancelForReturnGesture()
 // ============================================================
 static const unsigned long kCeremonyLeftCancelMs = 1000UL;
 
+// ceremonyLeftPastHalf - V2.5-Evo - 2026-10-07 - P-6: is the toggle pushed LEFT by MORE THAN HALF of its
+// calibrated left travel (tog_mid -> tog_left)?
+// THE BUG: the cancel counted any LEFT push past tog_diff (a few percent). In a held-trigger ceremony the toggle
+// is also the steering stick, so an ordinary LEFT steer held for 1 s cancelled the return the rider had asked for.
+// THE FIX: a deliberate push past the halfway point is required. Read from the raw averaged toggle counts against
+// the stored calibration, which works for either calibration direction (tog_left above or below tog_mid).
+// Inputs: tog_raw[] via readFilteredInputs() (Hall.ino), usrConf.tog_left / tog_mid, ads_input_fault (a frozen
+// buffer during an input fault is not a rider's push). Output: true = past half. No side effects. Loop task.
+static bool ceremonyLeftPastHalf()
+{
+  if (ads_input_fault) return false;
+  uint16_t thr_f = 0, tog_f = 0;
+  readFilteredInputs(thr_f, tog_f);
+  const int32_t span = (int32_t)usrConf.tog_left - (int32_t)usrConf.tog_mid;   // signed left travel
+  if (span == 0) return false;                                                 // no calibration to judge by
+  const int32_t d = (int32_t)tog_f - (int32_t)usrConf.tog_mid;                 // signed deflection now
+  return (span > 0) ? (2 * d > span) : (2 * d < span);                         // same side, beyond half
+}
+
 // ceremonyLeftCancelPoll - 1 s LEFT-hold detector for the blocking arm ceremony. Call AFTER
 // returnGestureCeremonyPoll(false) on the same tick.
-// Inputs: reset - true at ceremony start. Reads tog_scaled, usrConf.tog_diff, return_gesture_in_progress.
+// Inputs: reset - true at ceremony start. Reads tog_scaled, usrConf.tog_diff, ceremonyLeftPastHalf(),
+//   return_gesture_in_progress.
 // Returns: true once the hold has lasted kCeremonyLeftCancelMs. Side effects: its own static state only.
+// V2.5-Evo - 2026-10-07 - P-6: "released" still means the toggle is back near centre (the old tog_diff test, so
+// the arming LEFT hold must really be let go), but the 1 s hold only counts while the push is past half travel
+// (ceremonyLeftPastHalf()); dropping below half restarts the second.
 static bool ceremonyLeftCancelPoll(bool reset)
 {
   static bool          released_seen = false;   // LEFT seen not pushed since the ceremony started
@@ -642,6 +667,7 @@ static bool ceremonyLeftCancelPoll(bool reset)
   if (!left)                      { released_seen = true; holding = false; return false; }
   if (!released_seen)             return false;                       // still the arming hold
   if (return_gesture_in_progress) { holding = false; return false; }  // RIGHT tap first: this is A1/A0
+  if (!ceremonyLeftPastHalf())    { holding = false; return false; }  // P-6: a light push / steer does not count
   if (!holding) { holding = true; hold_start_ms = millis(); }
   return (millis() - hold_start_ms) >= kCeremonyLeftCancelMs;
 }

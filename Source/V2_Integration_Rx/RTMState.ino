@@ -170,7 +170,7 @@
 // V2.5-Evo - 2026-09-18 - P1-a: FOLLOW-ME ENGAGES ON SEPARATION ALONE. The separation proof (distance, conditions 8/9, the R-4 fix-counted dwell, the latch) is gated by proof_ok = fault_ok instead of hard_ok = thr_held && fault_ok, so it runs with the trigger released and a rider who whips, releases and rides away has the latch standing on the first squeeze; hard_ok stays the authority term in can_be_active and still gates the divergence/pivot bookkeeping, and the no-trustworthy-distance branch resets the dwell only on !fault_ok. The engage edge for a non-ACTIVE Follow-Me is now dist > max(min_dist + band, kFmEngageDistFloorM) (8 m at factory 4+2, was 6 m - below the 7.1 m rope), and after a trigger release of kFmEngageGraceMs (2 s) or more the new static fm_reengage_needs_dengage raises it to d_engage (12 m owner / 8 m floor) until the next ACTIVE edge, so a latch earned off the trigger can never engage on the rope at the re-rig. Both rules are pure functions in Common/FollowMeEngage.h with a host test. kFmSepDwellFixes / kFmSepDwellFloorMs / rx_tx_gps_fix_seq and the 10 s release clear are unchanged; fm_flags bit 2 semantics unchanged. Deep log: FM_LOG_GATE_PROOF_OK / _NEEDS_DENGAGE (bits 12/13), fm_distance logged whenever proof_ok. Nothing new moves the buggy without the trigger. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-17 - DEEP-LOG PUBLISH-FROM-CONTROLLER (P0-g): runFmLoop() is now a thin wrapper — 10 Hz rate limit, reset this tick's log fields, run the body, then fmPublishLogSnapshot() fills g_fm_log_snapshot under taskENTER_CRITICAL exactly once per tick whatever path the body took. The body (runFmLoopBody) records its gate verdicts into fm_log_gate_flags / fm_log_dist_dx10 / fm_log_d_engage_dx10 at the point each is evaluated. The logger copies the snapshot and never recomputes a gate. Instrumentation only: no control decision reads any of these, no confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-09-17 - FM STOP-REASON latch (comparison row 19): checkFmFaultConditions() now names which of conditions 2-7 failed through an out-param; the FAULT branch latches fm_stop_reason AFTER fm_throttle_cap = 0 (F7 order) and prints it; fmEnterIdle() clears the live latch at the end of the stop ramp. fm_last_stop_reason / fm_last_stop_ms keep the most recent stop for ?diag (System.ino) until the next one or a reboot. Read-only accessors, no control-path change, no confStruct change, sizeof stays 192, SW_VERSION stays 35.
-// V2.5-Evo - 2026-09-17 - D-term TARGET-PROFILE guard (Rex A9): the D term now also requires the steering TARGET geometry to be continuous, not only the heading source. computeFmTarget() publishes fm_target_profile (kProfDegraded / kProfBehind / kProfDiagRight / kProfDiagLeft) where it picks the branch; the RTM direct-to-rider path publishes kProfRtmDirect. updateRtmSteering() skips one D tick whenever the profile differs from the previous sample, so a side-zone Schmitt flip, a degraded<->trailing switch or an RTM/FM handover can no longer inject a phantom rate into Kd. Steering output only; no throttle path touched. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
+// V2.5-Evo - 2026-09-17 - D-term TARGET-PROFILE guard (audit A9): the D term now also requires the steering TARGET geometry to be continuous, not only the heading source. computeFmTarget() publishes fm_target_profile (kProfDegraded / kProfBehind / kProfDiagRight / kProfDiagLeft) where it picks the branch; the RTM direct-to-rider path publishes kProfRtmDirect. updateRtmSteering() skips one D tick whenever the profile differs from the previous sample, so a side-zone Schmitt flip, a degraded<->trailing switch or an RTM/FM handover can no longer inject a phantom rate into Kd. Steering output only; no throttle path touched. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-08-25 - RX RTM/FM D-term wrap fix. heading_error itself was normalized to +/-180 deg, but the derivative subtracted two normalized samples directly. Crossing the branch cut (for example +179 -> -179) therefore looked like a -358 deg step instead of the physical +2 deg change and Kd could saturate steering for one control tick. Normalize the same-source error delta to +/-180 before dividing by dt; source-switch/re-snap suppression, P term, gains, logging and config stay unchanged. No confStruct change; SW_VERSION stays 35.
 // V2.5-Evo - 2026-08-17 - THREE FOLLOW-UPS TO THE PASS BELOW, ALL OF THEM NOTIFICATION, NONE OF THEM CONTROL. (1) THE DEGRADATION NOTICE COULD BE LOST ENTIRELY, NOT MERELY DEFERRED. headingDisagreeAnnounceDegraded() rightly returns without setting its one-shot flag while thr_received >= 25 — four Serial lines upstream of a hard stop would break the motor-to-zero-first rule — but its ONLY call site was inside the if (disagree_now) branch, so the retry needed another MEASURED disagreement. A measurement needs a live COG plus a compass snapshot younger than kHeadingCompareSnapMs, and that snapshot only refreshes while the trigger is released, so a dwell that completed inside the ~1 s window after a squeeze was silenced — and a rider who then finished the session under power and never coasted above rtm_cog_min_speed_kmh again rode the WHOLE SESSION with the compass withdrawn and Follow-Me refusing to engage, announced nowhere but a manual ?diag. getRtmHeading() now offers the notice on EVERY tick while the verdict stands, so the retry no longer depends on the evidence coming back; the deferral guard itself is untouched, and the print still cannot land between a proven fault and a motor-stopping write, because it can only fire below 25 counts where the deadman already holds the motor at 0. (2) A FAULT PROVEN WHILE COASTING NOW REACHES THE REMOTE. fm_fault_alarm_ms was set only if (thr_held), but the heading-disagree latch can only complete with the trigger RELEASED — so for this one fault the sticky fm_flags bit 3 never rose, the TX never learned the run had ended on a fault, and Follow-Me silently re-armed on the next keepalive into a blocked ARMED state whose only field signal was the not-ready flag. The alarm is now also set for a standing heading-disagree fault; every other fault keeps the surprise gating exactly as it was. (3) COMMENT-ONLY: the note in front of the restored FM fault term claimed a HOLD-parked Follow-Me would sit at cap 0 "for the rest of the session". The throttle-release clear rescues FM_HOLD back to FM_ARMED after 10 continuous seconds below 25 counts, so the accurate hazard is narrower — a rider FEATHERING the trigger restarts that timer on every squeeze, never accumulates the 10 s, and gets a dead motor on every squeeze with no explanation. Plus heading_disagree_fault is now volatile: it is read cross-task by Logger.ino through headingDisagreeLatched(), and as a file-scope static whose address never escapes the compiler may cache it. Read-only, log columns only, no control impact. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-08-17 - THREE CORRECTIONS TO THE DEGRADATION PASS BELOW, WHICH ASSUMED THE COMPASS WAS THE LIAR. The cross-check proves only that the compass and the GPS course CANNOT BOTH BE RIGHT. It does not say which one is wrong — the guard says so itself in guard 2's own header: "It deliberately does NOT pick a winner." Degrading the session onto GPS course alone picks one anyway, and it picks the compass as the culprit; if the RX's course is the bad source instead (marina multipath, a wrong dynamic platform model, a lagged COG at low speed) the degradation withdraws the GOOD sensor and operates on the bad one. (1) FOLLOW-ME REFUSES AGAIN — RELEASE BLOCKER. !heading_disagree_fault is back in can_be_active, and back in the FM fault-stop classifier it was deleted with, so a disagreement proven mid-engagement ends the run through the existing FM_STOPPING ramp (back to manual, re-arm required) instead of parking FM in FM_HOLD at cap 0 for the rest of the session. RTM KEEPS DEGRADING, and that part was sound: RTM's degraded behaviour is BOUNDED — with no heading the steering override is pinned at 127 and the align cap holds the throttle at 13/255 on the 180 deg sentinel — and the alternative was a genuinely dangerous half-armed state, buggy dead with the throttle at 0 while the TX still displayed RTM as ACTIVE. FOLLOW-ME IS NOT BOUNDED LIKE THAT: it engages autonomously at rider speed plus a margin, its steering authority is continuous, its only backstops are the divergence fault (about a 6.5 s grace plus a 3 s dwell) and the deadman — and the disagreement is UNMEASURABLE during the engagement, because compare_possible needs a compass snapshot younger than kHeadingCompareSnapMs and the snapshot only refreshes while thr_received < 25, so about a second into the run the comparison goes dormant and COG is served at confidence 3 unchallenged. Refusing to engage is the right answer to "one of my two heading sources is lying and I cannot tell which", and it is the same answer guard 1 already gives a few lines up: HOLDING STRAIGHT IS SAFER THAN STEERING ON THE SURVIVOR. The rider is not left guessing: the one-shot degradation notice still prints, the rate-limited "ARMED, NOT ENGAGING" explanation is restored, fm_flags bit 2 (armed-not-ready) carries the fault again so the TX cannot render "ready" for a Follow-Me that will not engage, and ?diag now reports the latch on demand. (2) THE kCogHoldMs COG HOLD SURVIVES DEGRADATION. The fault term moved back BELOW the hold, to the site it occupied before. The hold serves a last-good GPS COURSE, and the latch is evidence about the COMPASS, so withdrawing a GPS-derived value on compass evidence was outside this guard's charter — and it cost real behaviour twice over: a COG dropout longer than 1.5 s failed FM's condition 6 and forced a stop-and-re-arm the hold would have bridged, and on the RTM side the documented cog_valid flicker in the 3-4 km/h approach band (rtm_target_speed_kmh 4.0 against rtm_cog_min_speed_kmh 3) alternated the steering override between centre and bearing at 10 Hz. Degraded now means precisely "mode 1 minus the compass", which is what the evidence supports. (3) THE CLEAR IS AS STRICT AS THE SET. Setting the fault needs at least four measured samples spanning 5 s of continuity; clearing it took ONE agreeing tick. For a MIRRORED module the reported heading is theta - h_true, so the gap is 2*h_true - theta, which passes below 45 deg in two 45-deg-wide windows per revolution — a rider coasting near one of them cleared the latch instantly with the module still mirrored, and that is exactly the fault ?magalign cannot detect. Agreement must now hold continuously for kHeadingDisagreeMs with measured samples no more than kHeadingDisagreeGapMaxMs apart, mirroring the set. No new config field, no threshold retuned, no confStruct change, sizeof stays 192, SW_VERSION stays 35.
@@ -182,12 +182,12 @@
 // V2.5-Evo - 2026-07-25 - STAGE 2 (RX heading-source trust guards, RTM + FM): the bench ?diag on the repaired board read "COG : 7.4 timestamp-updates/s vs 0.0 value-changes/s [value frozen 533 s]" — the GPS repeated ONE course seven times a second for nine minutes while gps_last_course_ms kept refreshing, so getRtmHeading()'s 1500 ms freshness gate passed the whole time and the ladder steered on a dead number, then fell back to the EMI-biased compass. That is the Follow-Me veer. GUARD 1: the COG branch now also requires the course VALUE to have moved within kRtmCogFrozenMs (3 s), read from the existing Stage 0 tracker g_diag_cog_change_ms — and it is SPEED-GATED to the same gps_last_speed_kmh >= rtm_cog_min_speed_kmh term the branch already used, so a stationary buggy (whose constant course is correct, not faulty) is never touched. A COG frozen WHILE MOVING additionally suppresses the mode-1 compass promotion: one source is provably dead and the other unverifiable, so we hold straight instead of steering on the survivor. GUARD 2: when a live COG and a simultaneous (< kHeadingCompareSnapMs) compass snapshot are both available in hybrid mode, a shortest-angular-distance gap > kHeadingDisagreeDeg (45) returns NO heading (confidence 0) so updateRtmSteering() holds straight; sustained past kHeadingDisagreeMs (5 s) it sets heading_disagree_fault, which joins the EXISTING FM fault chain alongside A3's diverge_fault (FM_STOPPING -> cap 0 -> ramp -> FM_IDLE, re-arm required) — no new state, no new exit path. Both guards can only REMOVE eligibility: no throttle cap is raised, no engagement extended, the deadman (thr_received < 25) is untouched. Logger.ino's inline getRtmHeading() duplicate is updated in lockstep so rtm_source/rtm_confidence keep telling the truth. All compile-time constants (shared, in BREmote_V2_Rx.h); no confStruct change, sizeof stays 184, SW_VERSION stays 34.
 // V2.5-Evo - 2026-07-25 - F3-c (RX FM): the 8 m engage-distance floor guarded ONLY the manual fm_engage_dist_m value. The AUTO branch — kFmEngageFactor (1.5) x (min_dist_m + followme_smoothing_band_m) — used its product raw, and neither of those two SPIFFS fields has a lower bound, so a small tuning such as min_dist 1 + band 1 produced d_engage = 3 m: BELOW the measured 20 ft / 6.10 m tow rope, letting Follow-Me latch and engage with the rider still ON the rope. Same hazard the floor exists to prevent, reached through the other branch. FIX: each branch now only computes its candidate and ONE kFmEngageDistFloorM clamp is applied to the final d_engage regardless of origin. The clamp can only RAISE d_engage (engage later, never earlier), and it is a no-op at the owner's 4+2 tuning, which yields 9.0 m. Also swept the stale "6.7-7.6 m" tow-rope prose in this file to the measured 6.10 m. No confStruct change, sizeof stays 184, SW_VERSION stays 34.
 // V2.5-Evo - 2026-07-25 - F3-b (RX FM; comment + shared-constant move, no behaviour change): kFmEngageDistFloorM is no longer DEFINED in this file. It now has exactly one definition, in BREmote_V2_Rx.h, raised 5.0 -> 8.0 m — 5.0 m sat below the tow rope it exists to clear (the owner's rope is 20 ft = 6.10 m), so a manual fm_engage_dist_m of 5.0-6.1 m was legal and let FM engage with the rider still ON the rope. ConfigService.ino's duplicate bare 5.0f literal is gone with it; both the validator and the read-site clamp in runFmLoop() now reference the one shared constant. The clamp itself is unchanged in shape — legacy stored values still clamp UP to the floor, now 8.0 m. No confStruct change, sizeof stays 184, SW_VERSION stays 34.
-// V2.5-Evo - 2026-07-25 - Batch A follow-up (Rex A3 NO-GO: F1/F3/F5/F7), RX FM only. (F1) the A3 divergence detector was a BARE THRESHOLD on a 3000 ms dwell while the engage ramp is 3500 ms, so it could fire BEFORE the ramp even finished and aborted ordinary engagements (at engage, dist_m is typically 13-21 m against an 18 m ceiling, and the align cap of 13/255 means the gap GROWS first). It now mirrors runPhaseC()'s actual shape: the distance at dwell start is captured (fm_diverge_start_dist_m) and the fault is raised at dwell expiry ONLY if the buggy is not closing (dist_m >= start - kFmDivergeCloseEpsM 2.0 m); if it has closed by more than that it IS following, just far, so the timer clears and no fault fires. Plus an engage grace: the detector is skipped and its dwell parked for kFmEngageRampMs + kFmDivergeMs (6.5 s) after every engagement so the buggy is allowed to ramp and align before it is judged. (F3) fm_engage_dist_m gained a 5 m floor — a stored value of, say, 3 m IS the engage distance in metres and is SHORTER than the 6.7-7.6 m tow rope, which defeated the separation interlock entirely; cfgValidateCrossField() now accepts only 0 (auto) or >= 5.0 m, and the use site clamps defensively so a pre-existing stored value cannot slip through. (F5) corrected the A2 comment that claimed d_engage feeds the distance Schmitt hysteresis - it does not; the Schmitt uses min_dist / min_dist+band. (F7) the divergence Serial.printf now runs AFTER fm_throttle_cap = 0 so UART backpressure can never defer the hard stop. All compile-time constants; no confStruct change, sizeof stays 184, SW_VERSION stays 34.
+// V2.5-Evo - 2026-07-25 - Batch A follow-up (audit A3 NO-GO: F1/F3/F5/F7), RX FM only. (F1) the A3 divergence detector was a BARE THRESHOLD on a 3000 ms dwell while the engage ramp is 3500 ms, so it could fire BEFORE the ramp even finished and aborted ordinary engagements (at engage, dist_m is typically 13-21 m against an 18 m ceiling, and the align cap of 13/255 means the gap GROWS first). It now mirrors runPhaseC()'s actual shape: the distance at dwell start is captured (fm_diverge_start_dist_m) and the fault is raised at dwell expiry ONLY if the buggy is not closing (dist_m >= start - kFmDivergeCloseEpsM 2.0 m); if it has closed by more than that it IS following, just far, so the timer clears and no fault fires. Plus an engage grace: the detector is skipped and its dwell parked for kFmEngageRampMs + kFmDivergeMs (6.5 s) after every engagement so the buggy is allowed to ramp and align before it is judged. (F3) fm_engage_dist_m gained a 5 m floor — a stored value of, say, 3 m IS the engage distance in metres and is SHORTER than the 6.7-7.6 m tow rope, which defeated the separation interlock entirely; cfgValidateCrossField() now accepts only 0 (auto) or >= 5.0 m, and the use site clamps defensively so a pre-existing stored value cannot slip through. (F5) corrected the A2 comment that claimed d_engage feeds the distance Schmitt hysteresis - it does not; the Schmitt uses min_dist / min_dist+band. (F7) the divergence Serial.printf now runs AFTER fm_throttle_cap = 0 so UART backpressure can never defer the hard stop. All compile-time constants; no confStruct change, sizeof stays 184, SW_VERSION stays 34.
 // V2.5-Evo - 2026-07-25 - Batch A (A2+A3), RX FM only. (A2) fm_engage_dist_m is now READ: >0 sets the FM engage distance directly in metres (rope x ~1.15), 0 keeps the previous auto behaviour (kFmEngageFactor x d_follow) bit-for-bit; latch, dwell and Schmitt hysteresis untouched. (A3) FM divergence FAULT — runFmLoop() gained the upper distance bound it never had: condition 8 is a lower bound only, and runPhaseC()'s convergence check is RTM-only (called from runRtmLoop, never runFmLoop), so a wrong heading let FM steer away indefinitely. dist_m > kFmDivergeFactor(2.0) x D_engage sustained kFmDivergeMs(3000) while FM_ACTIVE now routes through the EXISTING fault path (FM_STOPPING ramp -> FM_IDLE, re-arm required, same haptic/St semantics as conditions 2-7). Non-blocking first-exceed timestamp, cleared on any condition/state/data-trust change. Subtract-only: adds no throttle, extends no engagement, does not touch the deadman. All compile-time constants; no confStruct change; SW_VERSION stays 34.
 // V2.5-Evo - 2026-07-19 - P3 FM (DESIGN_FOLLOW_ME.md sections 4-7): Follow-Me autonomous following. Adds runFmLoop() 10Hz state machine (IDLE/ARMED/ACTIVE/DEMOTED incl. the missing 0xFF->usrConf.followme_mode fallback — SUPERSEDED 2026-07-20, see R0 below), all 9 activation/hold conditions with Schmitt hysteresis on distance and side-zone, the lag-anchor trailing target-point geometry, and the 5-stage subtract-only throttle cap chain. Reuses the existing EMA filter / P+D / heading ladder / authority / wrap pipeline unchanged - updateRtmSteering() only gains a target selector (RTM = rider position, FM = trailing point). telemetry.fm_status bit0 now reports FM engaged rather than FM mode selected. No confStruct change; SW_VERSION stays 33.
 // V2.5-Evo - 2026-07-20 - FM engagement semantics (R0/R1/R2): (R0) BOTH 0xFF->usrConf.followme_mode fallbacks removed — 0xFF now means FM_IDLE always, killing the latently-armed factory boot; usrConf.followme_mode is the TX arm-gesture seed only. (R1) separation latch: FM's FIRST entry into ACTIVE now also requires dist > kFmEngageFactor(1.5) x d_follow sustained kFmSepDwellMs(2000) — the tow rope (6.7-7.6 m) is longer than the old engage distance, so FM could engage mid-tow; existing Schmitt hysteresis governs after the latch sets. (R2) two clears: thr_received<25 for kFmThrReleaseClearMs(10 s) clears the latch (ARMED-unlatched, mode memory kept); no 0xF2 refresh for kFmModeAgeMs(95 s) -> FM_IDLE. P3 geometry/cap/steering untouched. No confStruct change; SW_VERSION stays 33.
 // V2.5-Evo - 2026-07-20 - FM control "brain" (Fable v1.4): (A) holds-vs-faults — condition 1=DEADMAN (throttle, never a fault), 8/9=HOLD (cap 0, stays ARMED, auto-resume, +kFmSpeedHystKmh speed hysteresis), 2-7=FAULT (FM_STOPPING ramp 0->255 over kFmStopRampMs -> FM_IDLE, re-arm required); heading loss (cond 6) is now ALWAYS a fault regardless of rtm_compass_required. (C) steer-cancel while ACTIVE -> ARMED-UNLATCHED (latch cleared, no alarm) guarded by kFmEngageGraceMs grace + kFmSteerPersistMs persistence; ARMED has no steer-cancel by construction. (D) fm_flags telemetry byte (repurposed reserved_tx_imu): armed/engaged/armed-not-ready/fault-stop-sticky(kFmFaultStickyMs). FM_DEMOTED renamed FM_HOLD; FM_STOPPING added. All compile-time constants; no confStruct change; SW_VERSION stays 33.
-// V2.5-Evo - 2026-07-19 - Rex hardening: reset D-term continuity statics (prev_heading_src_valid/prev_heading_error_deg/prev_steering_update_ms) in the override-disabled early return so an off->on toggle can't differentiate a stale error across the gap
+// V2.5-Evo - 2026-07-19 - audit hardening: reset D-term continuity statics (prev_heading_src_valid/prev_heading_error_deg/prev_steering_update_ms) in the override-disabled early return so an off->on toggle can't differentiate a stale error across the gap
 // V2.5-Evo - 2026-07-19 - FM triage (Fable audit §5): (1) no-fix engagement guard — getRtmHeading() returns confidence 0 unless a fresh RX GPS fix exists, so RTM/FM cannot report confidence 2 or engage with datetime_unix=0; (2) D-term differentiated only across consecutive same heading-source samples — skip the step on a source switch (COG<->compass) or a compass-snapshot re-snap to kill the ±300°/s Kd spikes
 // V2.5-Evo - 2026-05-22 - SW32: Two-phase RTM throttle — align phase suppresses throttle until heading < rtm_align_threshold_deg; run phase GPS speed governor
 // V2.5-Evo - 2026-05-11 - Phase C fix: VESC ERPM check now verifies data freshness via vesc.last_packet before comparing to GPS speed
@@ -263,7 +263,7 @@ static unsigned long prev_steering_update_ms   = 0;
 // AND on a compass-snapshot re-snap; prev_heading_src_valid gates the very first sample.
 static uint32_t      prev_heading_src_id       = 0;
 static bool          prev_heading_src_valid    = false;
-// V2.5-Evo - 2026-09-17 - TARGET-PROFILE continuity (Rex A9). The D term must also stay within one
+// V2.5-Evo - 2026-09-17 - TARGET-PROFILE continuity (audit A9). The D term must also stay within one
 // continuous TARGET geometry. A live COG can remain the same heading source while the requested
 // bearing jumps in a single tick — the side-zone Schmitt flipping the diagonal on or off, the
 // rider course dropping out (trailing -> degraded hold-station), or an RTM/FM handover swapping
@@ -738,7 +738,7 @@ static void headingDisagreeRestore()
   // ==========================================================================================
   // V2.5-Evo - 2026-08-20 - LATCH-2. ONLY RESTORE A VERDICT THE RIDER CAN STILL CLEAR.
   //
-  // Found by Rex auditing LATCH-1 (shipped the same day, 2026-08-18). LATCH-1 made the latch
+  // Found by the audit of LATCH-1 (shipped the same day, 2026-08-18). LATCH-1 made the latch
   // survive a reboot, and in doing so removed clear route 3 — the reboot itself. That is correct
   // in mode 1 with a compass fitted, where routes 1 and 2 both work. It is a TRAP everywhere
   // else, because BOTH remaining routes need a working compass in hybrid mode:
@@ -759,7 +759,7 @@ static void headingDisagreeRestore()
   // to regather, which is exactly why it is safe to drop a verdict that can no longer be tested.
   //
   // TRADE-OFF, STATED PLAINLY: a rider could dodge a legitimate latch by setting
-  // rtm_use_compass 0. That is not a new hole. Rex confirmed a mode-0 board cannot set the latch
+  // rtm_use_compass 0. That is not a new hole. The audit confirmed a mode-0 board cannot set the latch
   // in the first place, and cfgValidateCrossField() already force-zeroes rtm_compass_required for
   // that rider class — COG-only is a deliberate, documented, supported configuration, and a rider
   // who selects it has explicitly said the compass is not in use. This removes an unrecoverable
@@ -1950,12 +1950,12 @@ static const float    kFmPivotExitHystDeg    = 10.0f;   // degrees
 // stalled and the suspension is latched off for the rest of it (P-1/P-3).
 static const uint32_t kFmPivotStallMs        = 2000;    // ms
 // How far the heading error may go back OUT past the best-so-far ratchet before the episode is
-// judged failed immediately, without waiting for kFmPivotStallMs (Rex PV-2). Generous, because a
+// judged failed immediately, without waiting for kFmPivotStallMs (audit PV-2). Generous, because a
 // moving target makes small excursions normal; it is the large ones that mean "not pivoting".
 static const float    kFmPivotWorseDeg       = 15.0f;   // degrees
 // Minimum separation between the buggy and the FILTERED rider track before the theta bearing
 // between them is trusted. Below this the two points are close enough that the bearing is noise
-// (Rex G-5), which matters precisely during a hard rider reversal.
+// (audit G-5), which matters precisely during a hard rider reversal.
 static const float    kFmThetaMinSepM        = 3.0f;    // metres
 // Noise tolerance on the "is the error still improving?" ratchet. Compass and COG both jitter;
 // without this a single noisy sample would end a legitimate suspension.
@@ -1964,7 +1964,7 @@ static const float    kFmPivotErrEpsDeg      = 2.0f;    // degrees
 // buggy is not turning, it is broken, and divergence must be allowed to judge it again.
 static const uint32_t kFmPivotSuspendMaxMs   = 15000;   // ms
 // Governor floor. At or below this target speed the governor stops regulating and simply stops
-// the motor - below it the P-law's gain exceeds what gps_last_speed_kmh can resolve (Rex GV-2).
+// the motor - below it the P-law's gain exceeds what gps_last_speed_kmh can resolve (audit GV-2).
 static const float    kFmGovFloorKmh         = 3.0f;    // km/h
 // GOVERNOR-2 gap term: how much extra closing speed the buggy is allowed per metre it sits
 // outside its follow station, and the ceiling on that allowance. 0.5 km/h/m reaches the cap at
@@ -2307,7 +2307,7 @@ static unsigned long fm_sep_over_since_ms = 0;
 // bumped once per DISTINCT rider position by processMetaGpsPacket(), so comparing against it is
 // what makes a genuinely new fix distinguishable from a re-broadcast of the previous one.
 //
-// R-4, FOUND BY REX: the discriminator used to be rx_tx_gps_timestamp, which is stamped with
+// R-4, FOUND BY THE AUDIT: the discriminator used to be rx_tx_gps_timestamp, which is stamped with
 // millis() at PACKET RECEIPT (see processMetaGpsPacket), not at fix acquisition. The TX transmits
 // its position at 2 Hz off a GPS producing 1 Hz fixes - and the beta logs measure 3.0 Hz against a
 // 1 Hz module - so roughly every OTHER packet re-broadcasts a position the RX has already seen.
@@ -2320,14 +2320,14 @@ static unsigned long fm_sep_over_since_ms = 0;
 // wire, and degrades the safe way: a stationary rider stops accumulating fixes, so the dwell
 // simply does not complete.
 //
-// REX R4-1 - WHY A COUNTER AND NOT THE POSITION ITSELF. The first version of this fix compared
+// AUDIT R4-1 - WHY A COUNTER AND NOT THE POSITION ITSELF. The first version of this fix compared
 // rx_tx_gps_lat/lng directly. Correct arithmetic, wrong concurrency: those are doubles written on
 // the radio task and read here on the loop task, and a double is two 32-bit stores on RV32. A read
 // preempted between them counts the torn value as a new fix AND counts the complete value as
 // another one on the next tick - two phantom fixes in a three-fix interlock. A uint32_t is a
 // single aligned access and cannot tear.
 //
-// REX R4-2 - RESET DISCIPLINE, STATED ACCURATELY. fm_sep_last_seq is NOT reset anywhere, unlike
+// AUDIT R4-2 - RESET DISCIPLINE, STATED ACCURATELY. fm_sep_last_seq is NOT reset anywhere, unlike
 // its two companions. It does not need to be, and that is worth spelling out because the invariant
 // is not local: the only read of it sits in an `else if` reachable only while
 // fm_sep_over_since_ms != 0, and every one of the five reset sites zeroes that. So the next pass
@@ -3119,7 +3119,7 @@ static void updateRtmSteering()
 
   // ============================================================================================
   // V2.5-Evo - 2026-08-26 - D-SIGN. This was `p_term - d_term`, and that sign was WRONG. Found by
-  // Rex auditing beta tester robertzach's fork; robertzach's own branch does not fix it either,
+  // Audit of beta tester robertzach's fork; robertzach's own branch does not fix it either,
   // so it has been live in every build since the D term was introduced.
   //
   // p_term is positive in heading_error (line ~1796). d_error is the positive DERIVATIVE of that
@@ -3692,7 +3692,7 @@ static void runRtmLoopBody(unsigned long now)
   {
     rtm_rx_active         = false;
     rtm_rx_emergency_stop = false;
-    // REX R-1, third exit. Benign on its own - only a mid-session toggle of rtm_rx_enabled can
+    // AUDIT R-1, third exit. Benign on its own - only a mid-session toggle of rtm_rx_enabled can
     // strand the timer here, and the Gate 1 reset clears it on the next trigger release anyway.
     // Added so the invariant is "zero whenever RTM is not actively running", without exception,
     // rather than "zero on the two paths that matter". Reasoning about the second kind is what
@@ -3724,7 +3724,7 @@ static void runRtmLoopBody(unsigned long now)
       g_heading_error_dx10      = 0x7FFF;
       g_d_error_dx10            = 0x7FFF;
     }
-    // REX R-1: the bootstrap window closes when RTM is not running. Without this the 3 s timer
+    // AUDIT R-1: the bootstrap window closes when RTM is not running. Without this the 3 s timer
     // was started once and never reset on any path that leaves RTM idle, so it was effectively
     // ONE-SHOT PER BOOT: the first heading-blind engagement consumed the whole window, and every
     // later attempt in that session found it already expired and fell straight back to the 13/255
@@ -3744,7 +3744,7 @@ static void runRtmLoopBody(unsigned long now)
     // Gate 9: stop distance reached — clean disengagement, rtm_rx_active set false, no emergency stop.
     // Gates 2-8: safety failure — rtm_rx_emergency_stop=true, calcPWM() forces throttle to 0.
     //
-    // REX R-1, second half — SCOPED TO GATE 1 PER REX B-3. Resetting here is what makes each
+    // AUDIT R-1, second half — SCOPED TO GATE 1 PER AUDIT B-3. Resetting here is what makes each
     // fresh squeeze get a fresh bootstrap window instead of inheriting a clock that started on the
     // first attempt and expired seconds later; a rider feathering the trigger to get a COG-only
     // buggy moving would otherwise burn the window on their first touch and never see it again.
@@ -3891,7 +3891,7 @@ static void runRtmLoopBody(unsigned long now)
       // Same freshness discipline as the telemetry distance a few screens up: a stale rider fix
       // must read as "unknown" (-1), never as "far away", or the abort would be skipped on exactly
       // the data we cannot trust.
-      // REX B-1: this window is DERIVED from tx_gps_stale_timeout_ms, not hardcoded. It used to
+      // AUDIT B-1: this window is DERIVED from tx_gps_stale_timeout_ms, not hardcoded. It used to
       // be a flat 5000 ms sitting inside Gate 4, which enforces the user-configurable value and
       // accepts 0-65535. At the 3000 default the gate binds first and this test is redundant - but
       // set the timeout ABOVE 5000 and the relationship inverts: Gate 4 admits a 10 s old rider
@@ -3908,7 +3908,7 @@ static void runRtmLoopBody(unsigned long now)
 
       if (rtm_bootstrap_since_ms == 0) rtm_bootstrap_since_ms = millis();
 
-      // REX R-5. THIS TEST USED TO CONTRADICT THE COMMENT DIRECTLY ABOVE IT. That comment says a
+      // AUDIT R-5. THIS TEST USED TO CONTRADICT THE COMMENT DIRECTLY ABOVE IT. That comment says a
       // stale rider fix "must read as unknown (-1), never as far away, or the abort would be
       // skipped on exactly the data we cannot trust" - and then the test was
       // `rider_dist >= 0.0f && rider_dist < abort_radius`, which evaluates FALSE when rider_dist
@@ -3954,7 +3954,7 @@ static void runRtmLoopBody(unsigned long now)
         const uint8_t align_cap = fmAlignCapValue();
         if (rtm_approach_cap > align_cap) rtm_approach_cap = align_cap;
 
-        // REX B-2: name the reason. This fallback returns the buggy to precisely the behaviour a
+        // AUDIT B-2: name the reason. This fallback returns the buggy to precisely the behaviour a
         // beta tester reported as "did not start any steering at all", and it took a full trace to
         // diagnose the first time. Silent is not acceptable for a path that reproduces a known
         // symptom. Rate-limited so it cannot flood the log or hold the loop.
@@ -5096,13 +5096,13 @@ static uint16_t fmComputeThrottleCap(float dist_m, unsigned long now)
   // a station that is itself moving, whatever the geometry - plus the closing allowance for
   // however far outside that station it currently sits.
   //
-  // REX G-2/G-3: an earlier draft projected the rider's speed onto the range axis and used THAT
+  // AUDIT G-2/G-3: an earlier draft projected the rider's speed onto the range axis and used THAT
   // as the target. It was wrong in both directions and for the same reason - it conflated "how
   // fast must I travel to keep up?" (which needs the rider's speed) with "am I closing?" (which
   // needs the range rate). Abeam the rider it produced a target of 5 km/h and therefore a HARD
   // CAP-0 STALL at station; in Near-Right / Near-Left, where the steady state sits 35-45 deg off
   // axis, it silently lost 18-29% of the target and let the station droop.
-  // REX GV-3: when theta is untrustworthy the gap term is withdrawn. "I cannot measure the
+  // AUDIT GV-3: when theta is untrustworthy the gap term is withdrawn. "I cannot measure the
   // angle" must not be read as "the angle is safe" - and the window where the bearing goes
   // untrustworthy is precisely a hard rider reversal, i.e. the start of a convergence. Without
   // this, an unmeasurable geometry bought the FULL sprint allowance with no information about
@@ -5127,7 +5127,7 @@ static uint16_t fmComputeThrottleCap(float dist_m, unsigned long now)
   //       forward until the along-track term had grown enough to cancel it, settling about 10 m past
   //       its station. Without it the station actually holds.
   //   (c) EVERY REAR STATION - byte-identical to the line this replaces: keep-up, the closing
-  //       margin, and the radial gap term withdrawn when theta is untrustworthy (REX GV-3).
+  //       margin, and the radial gap term withdrawn when theta is untrustworthy (AUDIT GV-3).
   //
   // ALL THREE ARE STILL CAPS. The result is clamped to boogie_vmax_in_followme_kmh below exactly as
   // before (GV-1, before the fade), floored at kFmGovFloorKmh, and returned as a cap the rider's own
@@ -5150,7 +5150,7 @@ static uint16_t fmComputeThrottleCap(float dist_m, unsigned long now)
   // governor did the opposite: a rider converging at 20 km/h was granted the buggy 25, for a
   // combined closure of 45 km/h at the one geometry where every limit in the design assumed the
   // rider was running away.
-  // REX GV-1: clamp to the rider's ceiling BEFORE the fade, not after. Faded first, the gap term
+  // AUDIT GV-1: clamp to the rider's ceiling BEFORE the fade, not after. Faded first, the gap term
   // absorbed the fade at range - at 30 m the pre-clamp target was 37 km/h against a 25 km/h
   // ceiling, so the fade did not bind until theta passed ~119 deg and the buggy still received
   // FULL boogie_vmax toward a converging rider through the whole 90-120 deg band. Clamping first
@@ -5180,7 +5180,7 @@ static uint16_t fmComputeThrottleCap(float dist_m, unsigned long now)
     gov *= frac;
   }
 
-  // REX G-1, AND THIS LINE IS THE WHOLE REASON THE FIRST DRAFT WAS UNSHIPPABLE. The old guard was
+  // AUDIT G-1, AND THIS LINE IS THE WHOLE REASON THE FIRST DRAFT WAS UNSHIPPABLE. The old guard was
   // `if (gov > 0.1f) { ...apply cap... }`, a divide-by-zero guard inherited from a formula whose
   // output could never approach zero (gov was always >= kFmClosingMarginKmh). The moment the
   // governor was allowed to target zero, that guard stopped meaning "avoid dividing by zero" and
@@ -5188,7 +5188,7 @@ static uint16_t fmComputeThrottleCap(float dist_m, unsigned long now)
   // 255-count discontinuity, and full commanded throttle at a converging rider. Strictly worse
   // than the code it replaced, and reachable ONLY in the head-on geometry it was written to fix.
   // A target of zero must mean a cap of zero.
-  // REX GV-2: the floor is kFmGovFloorKmh, not a bare divide-by-zero epsilon. cap = (1 -
+  // AUDIT GV-2: the floor is kFmGovFloorKmh, not a bare divide-by-zero epsilon. cap = (1 -
   // v_buggy/gov) * 255 is a P-controller with gain 255/gov, so as gov shrinks the gain runs away
   // - and below roughly 3 km/h the feedback variable is under its own sensor's noise floor. GPS
   // speed is good to ~0.4-1.8 km/h at low speed and gps_last_speed_kmh may be up to 6 s old and
@@ -5342,7 +5342,7 @@ static void fmEnterIdle()
   // engagement must never be the yardstick for the next one.
   fm_diverge_since_ms     = 0;
   fm_diverge_start_dist_m = -1.0f;
-  // REX P-5 parity: PIVOT-SUSPEND-1's statics reset alongside the divergence dwell. Today every
+  // AUDIT P-5 parity: PIVOT-SUSPEND-1's statics reset alongside the divergence dwell. Today every
   // entry into FM_ACTIVE happens to pass through the pivot block's own reset branch, so this is
   // belt-and-braces - but that correctness is an accident of statement ORDER inside runFmLoop(),
   // and a future reorder would break it silently. Resetting here makes it structural.
@@ -6347,7 +6347,7 @@ static void runFmLoopBody(unsigned long now)
     //
     // COUNTING FIXES, NOT LOOP TICKS. runFmLoop() runs at 10 Hz while rider position arrives at
     // ~3 Hz, so a tick counter would reach three in 300 ms off a SINGLE fix and defeat the guard
-    // entirely. REX R4-3: this paragraph used to claim rx_tx_gps_timestamp changes only when a
+    // entirely. AUDIT R4-3: this paragraph used to claim rx_tx_gps_timestamp changes only when a
     // genuinely new rider position arrives. IT DOES NOT - it is stamped with millis() at PACKET
     // RECEIPT, so every re-broadcast moved it and every re-broadcast was counted as a fix. The
     // discriminator is now rx_tx_gps_fix_seq, bumped once per DISTINCT position by the producer.
@@ -6357,7 +6357,7 @@ static void runFmLoopBody(unsigned long now)
     // keeps a minimum wall-clock window under the count without reintroducing the drift, because
     // it binds only in that abnormal case and never in normal operation (3 fixes at 3 Hz ~= 1 s).
     // ==========================================================================================
-    // REX S-2: ONE read of the volatile, reused for both the compare and the store. Reading it
+    // AUDIT S-2: ONE read of the volatile, reused for both the compare and the store. Reading it
     // twice let the radio task increment in between, so fm_sep_last_seq absorbed two increments
     // and a fix was silently skipped. Under-counts, so the safe direction, but free to remove.
     const uint32_t seq_now = rx_tx_gps_fix_seq;
@@ -6584,7 +6584,7 @@ static void runFmLoopBody(unsigned long now)
                            ((now - fm_engage_ms) < kFmJudgeGraceMs);   // V2.5-Evo - 2026-09-19 - pinned 6500 (was the ramp + the dwell)
     if (in_engage_grace) fm_log_gate_flags |= FM_LOG_GATE_IN_GRACE;   // P0-g
 
-    // ---- PIVOT-SUSPEND-1 (V2.5-Evo - 2026-08-26; hardened same day against Rex P-1..P-4) ----
+    // ---- PIVOT-SUSPEND-1 (V2.5-Evo - 2026-08-26; hardened same day against audit P-1..P-4) ----
     // WHY: the divergence detector asks "is the distance shrinking?", but a buggy still swinging
     // its nose toward the target closes NOTHING by definition. Measured pivots from the beta logs
     // take 8.6-11.6 s; the engage grace is kFmJudgeGraceMs 6500 ms (pinned 2026-09-19; was written as the ramp + the dwell), and
@@ -6592,7 +6592,7 @@ static void runFmLoopBody(unsigned long now)
     // pivot and condemned a healthy long-range recall for the crime of turning round. Owner's
     // call: suspend the judgement until the turn is done.
     //
-    // WHY IT IS NOT A BLANKET DISABLE - four separate guards, each closing a hole Rex found in
+    // WHY IT IS NOT A BLANKET DISABLE - four separate guards, each closing a hole the audit found in
     // the first version of this block:
     //
     //   PROGRESS (P-3). The suspension needs MEASURABLE improvement: pivot_err must beat the
@@ -6621,7 +6621,7 @@ static void runFmLoopBody(unsigned long now)
     float pivot_err = (g_heading_error_dx10 != 0x7FFF) ?
         fabsf((float)g_heading_error_dx10 / 10.0f) : 180.0f;
 
-    // REX P-4 + PV-3, REWORKED against the owner's ACTUAL config. The first version derived
+    // AUDIT P-4 + PV-3, REWORKED against the owner's ACTUAL config. The first version derived
     // pivot_enter from rtm_align_threshold_deg and then subtracted the hysteresis to get
     // pivot_exit, floored at the align threshold. At the owner's stored rtm_align_threshold_deg
     // of 45 - which is also kFmPivotSuspendDeg - that produced enter = 45 and exit = max(35, 45)
@@ -6650,7 +6650,7 @@ static void runFmLoopBody(unsigned long now)
         fm_pivot_stall_ms     = now;
         fm_pivot_failed       = false;
       }
-      // REX PV-1, AND THIS WAS THE ONE BLOCKER ON THIS BLOCK. The stall clock must not run during
+      // AUDIT PV-1, AND THIS WAS THE ONE BLOCKER ON THIS BLOCK. The stall clock must not run during
       // the engage grace. For the first kFmJudgeGraceMs the buggy is deliberately
       // DENIED the throttle it needs to yaw at all - cap 5 is ramping 0->255 and cap 4 pins it at
       // kFmAlignCap 13/255 - so judging it for failing to make 2 deg of progress in that window
@@ -6670,7 +6670,7 @@ static void runFmLoopBody(unsigned long now)
       } else if (!fm_pivot_failed &&
                  (pivot_err > (fm_pivot_best_err_deg + kFmPivotWorseDeg) ||
                   (now - fm_pivot_stall_ms) >= kFmPivotStallMs)) {
-        // REX PV-2: fail on a WORSENING error immediately, not only on a stall. The latch is
+        // AUDIT PV-2: fail on a WORSENING error immediately, not only on a stall. The latch is
         // per-episode and an episode ends below pivot_exit, so a buggy spinning the wrong way
         // fast enough to sweep the whole band inside kFmPivotStallMs (about 68 deg/s) used to
         // re-arm a fresh episode every revolution and never latch. Testing the error against the
@@ -6768,7 +6768,7 @@ static void runFmLoopBody(unsigned long now)
     // F1: the closure baseline goes with it; a baseline must never outlive the dwell that set it.
     fm_diverge_since_ms     = 0;
     fm_diverge_start_dist_m = -1.0f;
-    // REX P-5 parity: the pivot episode goes with the dwell it suspends. Without this the ratchet,
+    // AUDIT P-5 parity: the pivot episode goes with the dwell it suspends. Without this the ratchet,
     // the stall clock and the failed latch would outlive the data gap that killed the dwell, and a
     // stale best-so-far could suspend divergence on the far side of it.
     fm_pivot_since_ms     = 0;
@@ -7170,7 +7170,7 @@ static void runFmLoopBody(unsigned long now)
       // ========================================================================================
       // V2.5-Evo - 2026-08-26 - HOLD-ESCAPE-2, replacing HOLD-ESCAPE-1 which was broken twice over.
       //
-      // WHAT HOLD-ESCAPE-1 GOT WRONG (both found by Rex):
+      // WHAT HOLD-ESCAPE-1 GOT WRONG (both found by the audit):
       //   1. IT DID NOT WORK. It wrote fm_throttle_cap = 255 only on ticks where the trigger was
       //      RELEASED, while the line above it wrote fm_throttle_cap = 0 on EVERY tick. So the
       //      instant the rider actually squeezed, the next 10 Hz tick put the cap straight back

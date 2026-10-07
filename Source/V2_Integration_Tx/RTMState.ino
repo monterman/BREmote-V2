@@ -1,5 +1,5 @@
 // V2.5-Evo - 2026-10-02 - P2 (FRONT STATIONS F4/F5), the remote side: the station wrap becomes 1 -> 2 -> 3 -> 4 -> 5 -> 1 in BOTH steppers - cycleFmMode()'s pre-throttle branch (LEFT tap + RIGHT hold) and cycleFmModeArmed() (the simple LEFT hold while armed) - and the first-arm seed from usrConf.followme_mode accepts 1-5. fmNextStationInSet(), the magnet-tap stepper, masks 0x1F instead of 0x07 and walks modulo 5, so bits 3 and 4 of mag_fm_set select the front pair; the 2026-09-30 note that said stations 4 and 5 do NOT exist in this firmware is corrected in place, and the hazard it named - a bit for an UNREACHABLE station stranding the tap - no longer applies because both new bits address reachable stations. The magnet DEFAULT is unchanged at the three rear stations: every remote in the field stores a mag_fm_set in 1-7, so the front pair is opt-in on that input. displayDigits(LET_F, last_fm_mode) already renders 4 and 5 (num0[] carries every digit) and the Pattern 11 counted-tap confirm was already clamped to 1-5, so neither needed a change. NOTHING ELSE MOVES: fmIsEngaged()'s four-condition tow gate, the 0xF2 encoding, the 30 s keepalive, the arm window, the disarm paths and every RTM path are untouched. No confStruct change: sizeof stays 136, SW_VERSION stays 27, and the owner's throttle and toggle calibration survive this flash.
-// V2.5-Evo - 2026-09-30 - MagFix (Rex delta audit of 98fb7a8), four changes here:
+// V2.5-Evo - 2026-09-30 - MagFix (delta audit of 98fb7a8), four changes here:
 //   1. RAM-ONLY ENFORCED. fmToggleRtmEnabledFromMagnet() no longer writes usrConf.rtm_enabled - it writes the new
 //      RAM rtm_enabled_session, and every gate now asks rtmEnabledEffective(). `?save` and the web-UI save persist
 //      the live usrConf wholesale, so the old code let a session flip become permanent at the next save, which is
@@ -72,7 +72,7 @@
 //   No throttle gate. Never overwrites a playing pattern or a pending STOP. Pure logic in Common/FollowMeDistanceWarning.h.
 // V2.5-Evo - 2026-09-17 - ArmTimeout: fm_arm_window_s → fm_arm_timeout_s; the arm-window auto-disarm in runFmLoop() now
 //   runs only when usrConf.fm_arm_timeout_s > 0 (0 = never, the new default). fm_throttle_seen is unchanged.
-// V2.5-Evo - 2026-09-17 - Gate1-REMOVED (Rex A2-TX, owner decision 2026-09-14): the TX 30 s throttle-release
+// V2.5-Evo - 2026-09-17 - Gate1-REMOVED (audit A2-TX, owner decision 2026-09-14): the TX 30 s throttle-release
 //   disarm (kFmGate1ReleaseMs) is gone. Follow-Me is meant to stay armed for the whole session; the RX 10 s
 //   latch clear and the RX 95 s mode-age expiry remain the backstops. The 30 s 0xF2 keepalive is unchanged.
 // V2.5-Evo - 2026-04-25 - P7: TX RTM and FM state machines.
@@ -217,7 +217,7 @@ static unsigned long fm_last_sync_ms      = 0;      // Change E: millis() of las
 static uint8_t       last_fm_return_mode  = 0xFF;   // 0xFF none, 0 OFF, 1 ON; RAM only
 
 // ============================================================
-// V2.5-Evo - 2026-09-30 - RETURN-TO-ME SESSION OVERRIDE (Rex delta audit: the RAM-only claim enforced)
+// V2.5-Evo - 2026-09-30 - RETURN-TO-ME SESSION OVERRIDE (delta audit: the RAM-only claim enforced)
 //
 // THE BUG THIS FIXES. fmToggleRtmEnabledFromMagnet() used to write usrConf.rtm_enabled directly and call
 // that "RAM only" because it never wrote SPIFFS itself. It is not RAM only: `?save` and the web-UI save
@@ -1123,7 +1123,7 @@ void cycleFmModeArmed()
 // rider is riding independently - a station transit there pulls nobody. So armed-but-not-engaged is
 // exactly the tow state, and the magnet tap must be dead in it.
 //
-// ---- V2.5-Evo - 2026-09-30 - CORROBORATION (Rex delta audit: the tow gate rested on ONE bit) ----
+// ---- V2.5-Evo - 2026-09-30 - CORROBORATION (delta audit: the tow gate rested on ONE bit) ----
 // WHAT WAS WRONG. The owner's hard rule - the buggy must never reposition while he is on the rope -
 // was carried by a SINGLE un-debounced bit (FM_FLAG_ENGAGED) arriving over a 1-byte-per-packet
 // telemetry stream protected only by CRC8. A CRC8 lets roughly 1 in 256 random corruptions through,
@@ -1220,7 +1220,7 @@ static uint8_t fmNextStationInSet(uint8_t from, uint16_t mask)
 //      ConfigService.ino). A rider who sets it to 5000 for a comfortably readable gear flash would
 //      have bought a 5 SECOND loop() stall on every magnet station change. That is not merely slow:
 //      a long stall is exactly what the sample-gap guard in runMagGesture() exists to defend against,
-//      so an unclamped blocking delay at this call site actively feeds the bug Rex filed as H-1.
+//      so an unclamped blocking delay at this call site actively feeds the bug the audit filed as H-1.
 // BLOCKING CALL - freezes GPS polling, FreeRTOS task scheduling and Serial1 reads for its duration
 // (the blocking-call rule). It is bounded at 1.2 s, it is far shorter than the 2 s the toggle's own
 // station confirm already blocks for, and the throttle path is untouched by it: the throttle is read
@@ -1290,7 +1290,7 @@ void fmStepStationFromMagnet()
 //
 // Flips the EFFECTIVE Return-To-Me enable for this session by writing rtm_enabled_session.
 //
-// ---- V2.5-Evo - 2026-09-30 - GENUINELY RAM ONLY NOW (Rex delta audit) ----
+// ---- V2.5-Evo - 2026-09-30 - GENUINELY RAM ONLY NOW (delta audit) ----
 // WHAT WAS WRONG BEFORE. This function used to write usrConf.rtm_enabled and describe itself as "RAM
 // only" because it never called the SPIFFS writer itself. That was not enough: `?save` and the web-UI
 // save both persist the LIVE usrConf wholesale, so a magnet flip on the water plus any later config
@@ -1309,7 +1309,7 @@ void fmStepStationFromMagnet()
 // initiative later, so it must not be possible to do by accident while riding. thr_scaled < 10 is
 // the same "trigger released" test the toggle gestures use.
 //
-// ---- CONFIRMATIONS, AND WHY "OFF" IS NO LONGER THE STOP BUZZ (Rex delta audit) ----
+// ---- CONFIRMATIONS, AND WHY "OFF" IS NO LONGER THE STOP BUZZ (delta audit) ----
 // Pattern 4 (two firm taps) = ON, as before. Pattern 12 (THREE firm taps) = OFF, NEW.
 // WHAT WAS WRONG BEFORE. OFF used to raise vib_stop_pending, i.e. Pattern 7, the one long buzz. That
 // broke Pattern 7's documented contract (System.ino: it means "a FAULT stopped the system" and it
@@ -1573,7 +1573,7 @@ void runFmLoop()
 
   // V2.5-Evo - 2026-09-17 - Gate1-REMOVED. The block that lived here disarmed FM after
   // kFmGate1ReleaseMs (30 s) of thr_scaled < 5 once fm_throttle_seen was set. Deleted on the
-  // owner's decision (Rex A2-TX): the TX keeps its arm across any length of release. The RX
+  // owner's decision (audit A2-TX): the TX keeps its arm across any length of release. The RX
   // side is unchanged and still owns the motion path — its 10 s latch clear and 95 s mode-age
   // expiry are the backstops.
 

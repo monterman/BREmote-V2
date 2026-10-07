@@ -55,7 +55,7 @@
 //   stations are a PAIR either side of dead-ahead with a hard floor between them, and why no
 //   reachable combination of config values can put the station inside that floor.
 //
-// ---- THE PASS-GEOMETRY INVARIANTS (PG-1..PG-5) - what Rex can check ----
+// ---- THE PASS-GEOMETRY INVARIANTS (PG-1..PG-5) - what an audit can check ----
 //   PG-1  The station's own CROSS-TRACK offset from the rider's course line is at least
 //         pass_lateral_m whenever the station is ahead of the rider (|psi| >= 90). Enforced by the
 //         radius floor inside fmStationRadiusM(), not by the preset table, so it holds at every
@@ -63,7 +63,7 @@
 //   PG-2  psi may not exceed 90 deg in magnitude unless the BUGGY'S OWN measured cross-track offset
 //         is at least pass_lateral_m AND ON THE SAME SIDE as the station it is heading for. This is
 //         fmStationTargetCeilingDeg(): the station does not move ahead of the rider until the buggy
-//         is physically wide of the rider's line. It is Rex's two-waypoint pass, expressed as a
+//         is physically wide of the rider's line. It is the audit's two-waypoint pass, expressed as a
 //         ceiling on one variable instead of a second state machine.
 //   PG-3  Cross-track offset is an AFFINE function of position along a straight line, so its minimum
 //         over a segment is attained at one of the two endpoints. PG-1 and PG-2 together put BOTH

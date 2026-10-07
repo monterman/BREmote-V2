@@ -1302,7 +1302,7 @@ double        rx_tx_gps_lat       = 0.0;  // TX latitude (degrees, WGS84)
 double        rx_tx_gps_lng       = 0.0;  // TX longitude (degrees, WGS84)
 unsigned long rx_tx_gps_timestamp = 0;    // millis() when last meta-packet received; 0 = never
 
-// V2.5-Evo - 2026-08-29 - REX R4-1. Bumped once per DISTINCT rider position by
+// V2.5-Evo - 2026-08-29 - AUDIT R4-1. Bumped once per DISTINCT rider position by
 // processMetaGpsPacket(), and read by everything downstream that needs to tell a genuinely new fix
 // from a re-broadcast. The TX transmits at 2 Hz off a 1 Hz GPS (3.0 Hz measured against 1 Hz in
 // the beta logs), so roughly every other meta packet repeats a position already seen.
@@ -1662,7 +1662,7 @@ static_assert(sizeof(VescLogData) == 62, "VescLogData size mismatch — check bi
 // WHY: a Follow-Me run that stops, holds, or refuses to engage leaves no record of WHICH gate did
 // it. These columns are the controller's own verdicts, copied out once per tick — not recomputed
 // by the logger from raw inputs — so a log row says what runFmLoop() actually decided at that
-// instant (Rex positive finding on robertzach's snapshot design).
+// instant (audit positive finding on robertzach's snapshot design).
 //
 // LAYOUT (history: 'LAYOUT IS FINAL' as written 2026-09-17; the record grew 83 -> 87 B on 2026-09-19,
 // see below). The P1 (return_candidate) and P2 (fade_bypass, transit, fm_station_deg_x10) fields

@@ -1,4 +1,4 @@
-// V2.5-Evo - 2026-09-30 - MagFix (Rex delta audit): haptic Pattern 12 added — THREE FIRM taps (130 ms on /
+// V2.5-Evo - 2026-09-30 - MagFix (delta audit): haptic Pattern 12 added — THREE FIRM taps (130 ms on /
 //   250 ms off, the Pattern 4 shape) = a mag_mode 4 magnet hold switched Return-To-Me OFF for the session.
 //   It replaces the vib_stop_pending / Pattern 7 long buzz that confirm used to borrow: Pattern 7 means "a
 //   FAULT stopped the system", its own contract says it does not fire on a deliberate disarm, and it preempts
@@ -1144,7 +1144,7 @@ void vibrationTask(void *parameter) {
     //     "St" already shows it. (The FM Gate 1 release backstop that used to sit alongside it here
     //     was removed 2026-09-17 — it no longer exists, so it is not listed either way.)
     //   - Any deliberate disarm — gesture disarm, magnet-toggle disarm, steer-exit, F0 select.
-    //   - The mag_mode 4 magnet hold that switches Return-To-Me OFF. V2.5-Evo - 2026-09-30 (Rex delta
+    //   - The mag_mode 4 magnet hold that switches Return-To-Me OFF. V2.5-Evo - 2026-09-30 (delta
     //     audit): that confirm DID route through vib_stop_pending for one commit and it should not have.
     //     It is a deliberate two-state decision, not a fault and not even a stop — nothing was running —
     //     and borrowing the fault buzz for it invited a rider with mag_mode 3 muscle memory to read
@@ -1221,7 +1221,7 @@ void vibrationTask(void *parameter) {
       }
       if (current_vib_pattern == 11) current_vib_pattern = 0;
     }
-    // V2.5-Evo - 2026-09-30 - MagFix (Rex delta audit): Pattern 12 — THREE FIRM taps, the Pattern 4 shape
+    // V2.5-Evo - 2026-09-30 - MagFix (delta audit): Pattern 12 — THREE FIRM taps, the Pattern 4 shape
     // (130 ms on / 250 ms off). Fired by fmToggleRtmEnabledFromMagnet() when a mag_mode 4 magnet hold turns
     // Return-To-Me OFF for the session.
     // WHY THIS PATTERN EXISTS AT ALL. OFF used to raise vib_stop_pending, i.e. Pattern 7, the one long buzz.

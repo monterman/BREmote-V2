@@ -1,4 +1,4 @@
-// V2.5-Evo - 2026-09-30 - MagFix (Rex delta audit): the telemetry unpack in waitForTelemetry() now counts
+// V2.5-Evo - 2026-09-30 - MagFix (delta audit): the telemetry unpack in waitForTelemetry() now counts
 //   consecutive arrivals of the fm_flags byte that claim Follow-Me ARMED + ENGAGED (fm_engaged_streak).
 //   fmIsEngaged() requires two of them before it lets a magnet tap move a Follow-Me station, so the
 //   "never reposition the buggy while the rider is on the rope" rule no longer rests on a single
@@ -450,7 +450,7 @@ void sendData(void *parameter)
       // it off during active FM/RTM (req#3, >=2Hz meta floor).
       // The 30ms reply window lets the RX telemetry reply land and update last_packet BEFORE we
       // test it — without it, last_packet would still be from the previous cycle and every cycle
-      // would read as a miss (Rex caution #1). Window + >40ms threshold match Ludwig 1:1.
+      // would read as a miss (audit caution #1). Window + >40ms threshold match Ludwig 1:1.
       // ---------------------------------------------------------------
       if (!send_gps_meta && backoff_allowed && last_packet > 0)
       {

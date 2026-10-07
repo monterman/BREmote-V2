@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - S-3: the auto-return candidate may also form in FM_ARMED (the state a trigger release leaves, HOLD-ESCAPE-2) when Follow-Me has engaged since the declaration (fm_engaged_this_run, set on the ACTIVE edge, cleared by fmResetReturnState() on disarm / expiry / fault end / reboot / RTM yield), and only beyond D_engage, on every tick for such a candidate (fm_return_from_armed). The proof is unchanged. "Release, surf or stop, squeeze later" now earns the return. No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - AUTO-RETURN WAITS FOR THE RIDER (audits S-1, S-2, S-4, S-5, S-6): a PARKED return is no longer cancelled by the rider moving (S-1) and waits through a stale remote GPS / revoked handshake, and through a link loss when the remote sends a boot ID (S-2, fmFailingConditionsMask + fmReturnParkedTolerates); every return fault now raises fm_flags bit 3 whatever the trigger (S-2); the 60 s motion cap is gone (S-4, FmReturnReason 8 retired); a 30 s stick takeover hands the steering back and the return continues (S-5); the not-closing net stays suspended while a slow pivot is still making progress (to 45 s) and a not-closing verdict inside rtm_approach_zone_m is an arrival with the hand-back cap, not a fault (S-6, FmReturnReason 13). No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - S-8 + H-1 + M-1 (wire formats in Common/AutoReturnRules.h, decoding in Radio.ino): a remote boot-ID change (rx_tx_boot_change_seq) ends a standing RTM (hand-back cap first, no fault bit) and drops Follow-Me to IDLE with its declaration (auto-return cancelled, new FmReturnReason 12); H-1: an RTM run whose remote has refreshed (0xF1/2) ends on a fault after 5 s without a refresh (never for a remote that does not refresh); M-1: both Follow-Me fault entries set fm_redeclare_blocked; rx_state_flags bits 3 (boot ID held) and 4 (refresh armed); ?diag second line. No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - S-7 + A-1 + H-2 + D-1: fm_flags bit 6 = auto-return standing (bit 1 tells returning from waiting); rx_state_flags (index 19) carries the sticky RTM fault end (Phase C, H-2) and RTM arrival (Gate 9) and the hand-back cap; H-2: gates 2-7 failing 1.5 s of held trigger (a release pauses, only a pass resets) end RTM with the hand-back cap at 0 and the fault bit; D-1: the distance byte goes 0xFF after 10 s with no valid distance and needs 1 s valid to come back (telemetry only); printReturnEndDiag() for ?diag; two wrong 0xFF comments fixed. No confStruct change, SW_VERSION stays 36.
@@ -2475,6 +2476,17 @@ static double        fm_return_win_buggy_lat = 0.0, fm_return_win_buggy_lng = 0.
 //   Without it the arrival HOLD (rider still stopped) would immediately be a new candidate.
 static bool          fm_return_pending      = false;
 static bool          fm_return_spent        = false;
+// V2.5-Evo - 2026-10-07 - S-3: fm_engaged_this_run - Follow-Me has entered FM_ACTIVE since this
+//   declaration (or since the last RTM yield). Set on the ARMED/HOLD -> ACTIVE edge; cleared by
+//   fmResetReturnState(), i.e. by fmEnterIdle() (disarm, the 95 s expiry, a fault ramp's end, a remote
+//   reboot - so a NEW declaration starts with it clear) and by the RTM yield. While it stands, the
+//   auto-return candidate may also form in FM_ARMED (the state a release leaves behind, HOLD-ESCAPE-2),
+//   but only beyond D_engage - see fmReturnCandidateMayForm() in Common/AutoReturnRules.h.
+// fm_return_from_armed - the standing candidate FORMED in ARMED; it must then stay beyond D_engage on
+//   every tick (a rider swimming back to the rope drops it). Candidates formed in ACTIVE / HOLD keep
+//   exactly the rules they always had.
+static bool          fm_engaged_this_run    = false;
+static bool          fm_return_from_armed   = false;
 static uint8_t       fm_return_last_verdict = 0;      // last FmReturnProofVerdict, for ?diag
 static uint8_t       fm_return_last_reason  = 0;      // FmReturnReason below: why the last candidate / RETURN ended, for ?diag
 static unsigned long fm_return_motion_ms    = 0;      // millis() the current held-trigger stretch of RETURN motion began; 0 = parked (trigger released)
@@ -2730,6 +2742,8 @@ static void fmResetReturnState()
   fmClearReturnProof();
   fm_return_pending         = false;
   fm_return_spent           = false;
+  fm_engaged_this_run       = false;   // V2.5-Evo - 2026-10-07 - S-3: a new declaration / the RTM yield starts with no engagement
+  fm_return_from_armed      = false;
   fm_return_motion_ms       = 0;
   fm_return_check_ms        = 0;
   fm_return_check_dist_m    = -1.0f;
@@ -5764,6 +5778,7 @@ static void fmEnterReturn(unsigned long now, float dist_m)
   fm_pivot_failed       = false;
 
   fm_return_pending         = false;
+  fm_return_from_armed      = false;   // V2.5-Evo - 2026-10-07 - S-3
   fm_return_spent           = true;
   fm_return_motion_ms       = 0;
   fm_return_check_ms        = 0;
@@ -5823,6 +5838,7 @@ static void fmReturnExitToHold(uint8_t reason, unsigned long now, float dist_m)
   fm_steer_input_since_ms   = 0;      // fix round 1 (M-1): the steer-cancel persistence timer ends with the return
   fm_return_spent           = true;
   fm_return_pending         = false;
+  fm_return_from_armed      = false;   // V2.5-Evo - 2026-10-07 - S-3
   fm_return_motion_ms       = 0;
   fm_return_check_ms        = 0;
   fm_return_check_dist_m    = -1.0f;
@@ -5869,6 +5885,7 @@ static void fmReturnFault(uint8_t stop_reason, unsigned long now, bool thr_held)
 
   fm_return_spent           = true;
   fm_return_pending         = false;
+  fm_return_from_armed      = false;   // V2.5-Evo - 2026-10-07 - S-3
   fm_return_motion_ms       = 0;
   fm_return_check_ms        = 0;
   fm_return_check_dist_m    = -1.0f;
@@ -6853,12 +6870,26 @@ static void runFmLoopBody(unsigned long now)
   // ============================================================
   bool return_candidate = false;
   if (fm_return_mode_effective == 1 && !fm_return_spent) {
-    const bool cand_now = proof_ok && followMeReturnCandidate(fm_rider_raw_kmh, kFmReturnRiderRawMaxKmh);
+    // V2.5-Evo - 2026-10-07 - S-3: a candidate that FORMED in ARMED must stay beyond D_engage
+    // (dist_m and d_engage are both valid here: cand_now requires proof_ok, which computed them).
+    const bool cand_now = proof_ok && followMeReturnCandidate(fm_rider_raw_kmh, kFmReturnRiderRawMaxKmh) &&
+                          (!fm_return_from_armed || dist_m > d_engage);
     if (cand_now) {
-      if (!fm_return_pending && (fm_state == FM_ACTIVE || fm_state == FM_HOLD)) {
-        fm_return_pending = true;
+      // V2.5-Evo - 2026-10-07 - S-3: the candidate may now also form in FM_ARMED after an engagement
+      // this run (fm_engaged_this_run), beyond D_engage. Before, it formed only in ACTIVE / HOLD, i.e.
+      // only if the rider stopped WITH THE TRIGGER HELD; the normal "release, surf or stop, squeeze
+      // later" flow went through HOLD-ESCAPE-2 to ARMED and never earned a return. The proof itself is
+      // untouched: raw rider speed under 4 km/h, the cap (or released trigger) proven 0 for 3 s, the
+      // buggy under 3 km/h, then the 4 s relative-displacement window. D_engage keeps a rider stopped
+      // on the rope (7.1 m) or swimming back to it from ever becoming a candidate from ARMED.
+      if (!fm_return_pending &&
+          fmReturnCandidateMayForm(fm_state == FM_ACTIVE || fm_state == FM_HOLD, fm_state == FM_ARMED,
+                                   fm_engaged_this_run, dist_m, d_engage)) {
+        fm_return_pending    = true;
+        fm_return_from_armed = (fm_state == FM_ARMED);
         fmClearReturnProof();
-        Serial.printf("FM [RX] RETURN candidate: rider raw %.1f km/h (< %.1f), dist=%.1f m - Follow-Me stops steering, proving both stopped\n",
+        Serial.printf("FM [RX] RETURN candidate%s: rider raw %.1f km/h (< %.1f), dist=%.1f m - Follow-Me stops steering, proving both stopped\n",
+                      fm_return_from_armed ? " (from ARMED, after an engagement this run, beyond D_engage)" : "",
                       (double)fm_rider_raw_kmh, (double)kFmReturnRiderRawMaxKmh, (double)dist_m);
         if (m == 2) {
           Serial.println("FM [RX] WARNING: station is F2 (directly behind) - the cap-0 coast from here is on the rider's line; F1/F3 pair better with auto-return");
@@ -6866,6 +6897,7 @@ static void runFmLoopBody(unsigned long now)
       }
     } else if (fm_return_pending) {
       fm_return_pending = false;
+      fm_return_from_armed = false;   // V2.5-Evo - 2026-10-07 - S-3
       fmClearReturnProof();
       fm_return_last_reason = proof_ok ? FM_RET_RIDER_MOVED : FM_RET_SENSORS;
       Serial.printf("FM [RX] RETURN candidate dropped: %s (rider raw %.1f km/h)\n",
@@ -6874,6 +6906,7 @@ static void runFmLoopBody(unsigned long now)
     return_candidate = fm_return_pending;
   } else if (fm_return_pending) {
     fm_return_pending = false;
+    fm_return_from_armed = false;   // V2.5-Evo - 2026-10-07 - S-3
     fmClearReturnProof();
     fm_return_last_reason = FM_RET_MODE_OFF;
     Serial.println("FM [RX] RETURN candidate dropped: auto-return is off for this session");
@@ -6920,6 +6953,7 @@ static void runFmLoopBody(unsigned long now)
           Serial.println("FM [RX] RETURN declined: Heading Source is GPS COG only, so there is no heading at a standstill and the buggy will not creep blind. Use return-to-me (RTM) to recall it, or set rtm_use_compass 1.");
         }
         fm_return_pending     = false;
+        fm_return_from_armed      = false;   // V2.5-Evo - 2026-10-07 - S-3
         fm_return_spent       = true;
         fm_return_last_reason = FM_RET_DECLINED_COG;
         fmClearReturnProof();
@@ -7355,6 +7389,7 @@ static void runFmLoopBody(unsigned long now)
       // V2.5-Evo - 2026-09-19 - a new engagement earns a new auto-return opportunity.
       fm_return_spent           = false;
       fm_return_cogonly_printed = false;
+      fm_engaged_this_run       = true;   // V2.5-Evo - 2026-10-07 - S-3: a later stop from ARMED may now become a candidate
 
       // ====================================================================================
       // V2.5-Evo - 2026-10-02 - P2: G-4 RE-SEED. The live station angle is set from the angle the

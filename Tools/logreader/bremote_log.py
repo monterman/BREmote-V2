@@ -134,11 +134,12 @@ FM_RETURN_REASON_NAMES = {
     5: "proof confirmed but declined - COG-only heading, use RTM",
     6: "RETURN arrived at the stop radius",
     7: "RETURN cancelled - rider moving",
-    8: "RETURN timed out (60 s of motion)",
+    8: "RETURN timed out (60 s of motion; retired 2026-10-07)",
     9: "RETURN fault -> STOPPING",
     10: "RETURN / candidate ended - Follow-Me left or yielded",
     11: "RETURN cancelled - rider steered",
     12: "RETURN / candidate cancelled - remote switched off and on",   # 2026-10-07, S-8 boot ID
+    13: "RETURN arrived - stopped closing inside the approach zone",   # 2026-10-07, S-6
 }
 
 # RTMState.ino: the classic-RTM rtm_phase codes copied into VescLogDataL5.rtm_phase (level 5

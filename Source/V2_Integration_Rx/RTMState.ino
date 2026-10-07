@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - AUTO-RETURN WAITS FOR THE RIDER (audits S-1, S-2, S-4, S-5, S-6): a PARKED return is no longer cancelled by the rider moving (S-1) and waits through a stale remote GPS / revoked handshake, and through a link loss when the remote sends a boot ID (S-2, fmFailingConditionsMask + fmReturnParkedTolerates); every return fault now raises fm_flags bit 3 whatever the trigger (S-2); the 60 s motion cap is gone (S-4, FmReturnReason 8 retired); a 30 s stick takeover hands the steering back and the return continues (S-5); the not-closing net stays suspended while a slow pivot is still making progress (to 45 s) and a not-closing verdict inside rtm_approach_zone_m is an arrival with the hand-back cap, not a fault (S-6, FmReturnReason 13). No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - S-8 + H-1 + M-1 (wire formats in Common/AutoReturnRules.h, decoding in Radio.ino): a remote boot-ID change (rx_tx_boot_change_seq) ends a standing RTM (hand-back cap first, no fault bit) and drops Follow-Me to IDLE with its declaration (auto-return cancelled, new FmReturnReason 12); H-1: an RTM run whose remote has refreshed (0xF1/2) ends on a fault after 5 s without a refresh (never for a remote that does not refresh); M-1: both Follow-Me fault entries set fm_redeclare_blocked; rx_state_flags bits 3 (boot ID held) and 4 (refresh armed); ?diag second line. No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - S-7 + A-1 + H-2 + D-1: fm_flags bit 6 = auto-return standing (bit 1 tells returning from waiting); rx_state_flags (index 19) carries the sticky RTM fault end (Phase C, H-2) and RTM arrival (Gate 9) and the hand-back cap; H-2: gates 2-7 failing 1.5 s of held trigger (a release pauses, only a pass resets) end RTM with the hand-back cap at 0 and the fault bit; D-1: the distance byte goes 0xFF after 10 s with no valid distance and needs 1 s valid to come back (telemetry only); printReturnEndDiag() for ?diag; two wrong 0xFF comments fixed. No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - ARRIVAL HAND-BACK CAP (owner rule: auto-return and manual return-to-me arrive the same way). handbackCapArm() keeps the cap in force at arrival in arrival_handback_cap (cleared by calcPWM() on one full trigger release). Gate 9 arms it from rtm_approach_cap before rtm_rx_active goes false (its print moved after the writes); FM_RETURN arrival now ends the return straight to ARMED-unlatched with the steering handed back and arms it from fm_throttle_cap (was FM_HOLD cap 0). Comment fix (audit D-1): the Gate 9 note no longer claims the inactive path writes rtm_distance 0xFF. No confStruct change, SW_VERSION stays 36.
@@ -2161,7 +2162,13 @@ static const float    kFmReturnBuggyMaxKmh    = 3.0f;    // km/h; the buggy's ow
 static const uint32_t kFmReturnWindowMs       = 4000;    // ms; the relative-displacement window from raw positions (A5-2)
 static const float    kFmReturnCancelKmh      = 5.0f;    // km/h; raw rider speed above this for kFmReturnCancelMs ends RETURN -> HOLD/ARMED
 static const uint32_t kFmReturnCancelMs       = 1000;    // ms
-static const uint32_t kFmReturnMaxMs          = 60000;   // ms; held-trigger RETURN motion beyond this -> HOLD/ARMED (not a fault)
+// V2.5-Evo - 2026-10-07 - S-4: kFmReturnMaxMs (60 000 ms of held-trigger RETURN motion -> HOLD) is GONE.
+// 60 s of continuous squeeze is about 67 m at 4 km/h - an ordinary long return - and it ended the
+// return silently. A runaway is caught by the not-closing net, which judges motion, not time.
+// S-6: the absolute ceiling on the slow-pivot extension of the not-closing net's align suspension
+// (fmReturnPivotSuspend, Common/AutoReturnRules.h): past kFmPivotSuspendMaxMs (15 s) the suspension
+// continues only while the heading error keeps falling, and never past this.
+static const uint32_t kFmReturnPivotCeilingMs = 45000;   // ms from the motion start (or the last takeover release)
 static const float    kFmReturnNotClosingM    = 0.5f;    // m; the distance must close by at least this ...
 static const uint32_t kFmReturnNotClosingMs   = 5000;    // ms; ... over each window of this length while moving and aligned, else FM_STOPPING
 static const float    kFmReturnStopMinM       = 1.0f;    // m; sanity minimum on the stop radius (matches the field's validator floor)
@@ -2510,6 +2517,9 @@ static unsigned long rtm_motion_ms             = 0;
 // takeover release, so a nudge 20 s into a return that leaves the buggy 60 deg off its aim gets a
 // fresh kFmPivotSuspendMaxMs to turn back at the align cap before the net may judge it.
 static unsigned long fm_return_judge_base_ms   = 0;
+// V2.5-Evo - 2026-10-07 - S-6: the slow-pivot episode for RETURN's not-closing net (best heading error
+// and when it last improved). Reset wherever fm_return_judge_base_ms is (re)based and while parked.
+static FmReturnPivotState fm_return_pivot      = {180.0f, 0};
 // For ?diag: engagements since boot, and how the last one ended.
 static uint16_t      steer_takeover_episodes   = 0;
 static unsigned long steer_takeover_notice_ms  = 0;    // rate limit for the not-centred notice
@@ -2636,11 +2646,12 @@ enum FmReturnReason : uint8_t {
   FM_RET_DECLINED_COG  = 5,   // proof confirmed but rtm_use_compass is 0: no heading at a standstill, no RETURN motion
   FM_RET_ARRIVED       = 6,   // RETURN: inside the stop radius -> HOLD
   FM_RET_CANCELLED     = 7,   // RETURN: rider moving > kFmReturnCancelKmh for 1 s -> HOLD
-  FM_RET_TIMEOUT       = 8,   // RETURN: kFmReturnMaxMs of held-trigger motion -> HOLD
+  FM_RET_TIMEOUT       = 8,   // RETURN: kFmReturnMaxMs of held-trigger motion -> HOLD. RETIRED 2026-10-07 (S-4): never produced now; the code stays reserved for old logs
   FM_RET_FAULT         = 9,   // RETURN: a fault (conditions 2-7 or not closing) -> STOPPING
   FM_RET_LEFT          = 10,  // RETURN / candidate ended because FM left or yielded
   FM_RET_STEERED       = 11,  // RETURN: the rider steered (deadband + persistence past the motion grace) -> HOLD (fix round 1, M-1)
-  FM_RET_REMOTE_REBOOT = 12   // V2.5-Evo - 2026-10-07 - S-8: RETURN / candidate cancelled - the remote was switched off and on (boot ID changed)
+  FM_RET_REMOTE_REBOOT = 12,  // V2.5-Evo - 2026-10-07 - S-8: RETURN / candidate cancelled - the remote was switched off and on (boot ID changed)
+  FM_RET_ARRIVED_ZONE  = 13   // V2.5-Evo - 2026-10-07 - S-6: inside rtm_approach_zone_m the buggy stopped closing -> treated as ARRIVAL (hand-back), not a fault
 };
 static const char* fmReturnReasonName(uint8_t r)
 {
@@ -2653,11 +2664,12 @@ static const char* fmReturnReasonName(uint8_t r)
     case FM_RET_DECLINED_COG: return "proof confirmed but declined - COG-only heading, use RTM";
     case FM_RET_ARRIVED:      return "RETURN arrived at the stop radius";
     case FM_RET_CANCELLED:    return "RETURN cancelled - rider moving";
-    case FM_RET_TIMEOUT:      return "RETURN timed out (60 s of motion)";
+    case FM_RET_TIMEOUT:      return "RETURN timed out (60 s of motion; retired 2026-10-07)";
     case FM_RET_FAULT:        return "RETURN fault -> STOPPING";
     case FM_RET_LEFT:         return "RETURN / candidate ended - Follow-Me left or yielded";
     case FM_RET_STEERED:      return "RETURN cancelled - rider steered";
     case FM_RET_REMOTE_REBOOT: return "RETURN / candidate cancelled - remote switched off and on";
+    case FM_RET_ARRIVED_ZONE: return "RETURN arrived - stopped closing inside the approach zone";
     default:                  return "unknown";
   }
 }
@@ -5232,6 +5244,30 @@ static bool checkFmFaultConditions(uint8_t* out_reason)
 }
 
 // ------------------------------------------------------------
+// fmFailingConditionsMask - V2.5-Evo - 2026-10-07 - S-2: EVERY failing condition 2-7, as kFmCond* bits.
+// ------------------------------------------------------------
+// checkFmFaultConditions() stops at the first failure, which is right for a stop reason but cannot
+// answer "is it ONLY the remote side that is missing?" - the question a PARKED auto-return asks before
+// it decides to wait instead of ending (fmReturnParkedTolerates(), Common/AutoReturnRules.h). Same six
+// tests, same thresholds, nothing short-circuited. Input: now. Returns: the mask (0 = all hold).
+// Side effects: none on control state (getRtmHeading() is called here exactly as in the function above).
+static uint8_t fmFailingConditionsMask(unsigned long now)
+{
+  uint8_t mask = 0;
+  if (gps_rejected)                                                        mask |= kFmCondPhaseA;
+  if (!gps_phase_b_ok)                                                     mask |= kFmCondPhaseB;
+  if (rx_tx_gps_timestamp == 0 ||
+      (now - rx_tx_gps_timestamp) > (uint32_t)usrConf.tx_gps_stale_timeout_ms) mask |= kFmCondTxStale;
+  if (gps_last_ms == 0 || (now - gps_last_ms) > 6000UL)                    mask |= kFmCondRxStale;
+  {
+    float h_unused; uint8_t conf_unused;
+    if (!getRtmHeading(&h_unused, &conf_unused))                           mask |= kFmCondHeading;
+  }
+  if (now - last_packet > usrConf.failsafe_time)                           mask |= kFmCondLink;
+  return mask;
+}
+
+// ------------------------------------------------------------
 // fmComputeThrottleCap - the FM throttle cap chain
 // ------------------------------------------------------------
 // What it does (DESIGN_FOLLOW_ME.md section 7):
@@ -5772,7 +5808,7 @@ static void fmEnterReturn(unsigned long now, float dist_m)
 static void fmReturnExitToHold(uint8_t reason, unsigned long now, float dist_m)
 {
   (void)now;
-  const bool arrived = (reason == FM_RET_ARRIVED);
+  const bool arrived = (reason == FM_RET_ARRIVED || reason == FM_RET_ARRIVED_ZONE);   // V2.5-Evo - 2026-10-07 - S-6: a stalled approach inside the zone arrives the same way
   if (arrived) handbackCapArm(fm_throttle_cap.load());   // FIRST: the cap in force at arrival stays
   fm_rx_active       = false;
   fm_throttle_cap    = arrived ? 255 : 0;
@@ -5812,12 +5848,18 @@ static void fmReturnExitToHold(uint8_t reason, unsigned long now, float dist_m)
 
 // fmReturnFault - a fault on the return leg (conditions 2-7, or not closing) -> FM_STOPPING.
 // Same F7 order as the following FAULT branch: cap 0 first, then the latch, then the prints.
+// V2.5-Evo - 2026-10-07 - S-2: the alarm is set WHATEVER THE TRIGGER. It used to be surprise-gated on
+// thr_held like following's faults, so a return that ended on a fault while parked (trigger released)
+// ended in silence: the remote never saw fm_flags bit 3, showed no "St", and its keepalive re-declared
+// Follow-Me. A standing auto-return is a mode the rider is relying on and waiting for; ending it is
+// always news (SOP "auto-return waits for the rider" rule 4: a fault shows "St" and the stop buzz).
 static void fmReturnFault(uint8_t stop_reason, unsigned long now, bool thr_held)
 {
   fm_rx_active       = false;
   fm_throttle_cap    = 0;
   rtm_steer_override = 127;
-  if (thr_held) fm_fault_alarm_ms = now;   // the sticky St + stop buzz, surprise-gated as always
+  fm_fault_alarm_ms  = (now != 0) ? now : 1;   // S-2: the sticky St + stop buzz, whatever the trigger
+
   fm_stop_ms          = now;
   fm_state            = FM_STOPPING;
   fm_redeclare_blocked = true;             // V2.5-Evo - 2026-10-07 - M-1: a keepalive may not re-arm after this fault (Radio.ino)
@@ -5849,15 +5891,55 @@ static void fmReturnFault(uint8_t stop_reason, unsigned long now, bool thr_held)
 // Inputs: now; the GPS/link globals; usrConf. Outputs: fm_rx_active, fm_throttle_cap,
 //   rtm_steer_override (via updateRtmSteering), fm_target_*, fm_align_influence_req, the state.
 // Side effects: MOTOR-RELEVANT, in the same subtract-only way as following - and ONLY while the
-//   trigger is held. Order per tick: faults, distance, arrival, cancel, the trigger, the runtime
-//   cap, then steering + cap, then the not-closing judgement.
+//   trigger is held. Order per tick: faults (a parked return waits through a stale remote side,
+//   S-2), distance, arrival, the rider-moving cancel (moving only, S-1), the stick, the trigger, then
+//   steering + cap, then the not-closing judgement (slow-pivot extension and in-zone arrival, S-6).
+//   V2.5-Evo - 2026-10-07 - the 60 s runtime cap is gone (S-4); a 30 s stick takeover hands the
+//   steering back and the return continues (S-5).
 static void runFmReturnTick(unsigned long now)
 {
   const bool thr_held = (thr_received >= 25);
 
   // Conditions 2-7 hold in RETURN exactly as in following: a broken input ends the run.
+  // V2.5-Evo - 2026-10-07 - S-2: EXCEPT WHILE PARKED, WHEN ONLY THE REMOTE'S SIDE IS MISSING.
+  // SOP "auto-return waits for the rider" rule 1: parked means waiting, and the rider is in the water
+  // with the remote - a few seconds under a wave or out of radio range is normal while surfing. A
+  // stale remote GPS or a link dropout of more than a second used to end a parked return through
+  // FM_STOPPING with no "St" at all. Now fmReturnParkedTolerates() (Common/AutoReturnRules.h,
+  // host-tested) keeps it PARKED - cap 0, steering neutral, no motion, nothing judged - when the
+  // failing conditions are only the remote's GPS (4), the link (7) and the handshake (3, which the RX
+  // revokes by itself once the remote's GPS is stale, so only together with 4 or 7). The buggy's OWN
+  // sensors (2, 5, 6) still end it, and MOTION still needs every input fresh: a held trigger with
+  // anything failing is a fault, exactly as before.
+  // THE LINK PART IS PAIRED WITH S-8. Until now a link-loss fault was the only way a remote that was
+  // switched off and on cancelled a parked return (SOP rule 5). So a link loss is tolerated only when
+  // this remote sends a boot ID (rx_tx_boot_id held), which cancels the return on a reboot by itself
+  // (runFmLoopBody). A remote without the boot ID keeps today's behaviour for the link: it ends the
+  // return - now WITH the alarm (fmReturnFault).
   uint8_t fault_reason = FM_STOP_NONE;
   if (!checkFmFaultConditions(&fault_reason)) {
+    const uint8_t failing = fmFailingConditionsMask(now);
+    if (fmReturnParkedTolerates(failing, fm_return_motion_ms == 0, thr_held,
+                                rx_tx_boot_id.load() != kTxBootIdNone)) {
+      fm_rx_active              = false;   // parked posture, as in the released-trigger branch below
+      rtm_steer_override        = 127;
+      fm_throttle_cap           = 0;
+      fm_align_influence_req    = 0;
+      fm_return_check_ms        = 0;
+      fm_return_check_dist_m    = -1.0f;
+      fm_return_cancel_since_ms = 0;
+      steerTakeoverReset();
+      fmReturnPivotReset(&fm_return_pivot);
+      static unsigned long fm_return_wait_msg_ms = 0;   // rate limit: one line per 5 s
+      if (fm_return_wait_msg_ms == 0 || (now - fm_return_wait_msg_ms) >= 5000UL) {
+        fm_return_wait_msg_ms = (now != 0) ? now : 1;
+        Serial.printf("FM [RX] RETURN waiting (parked): the remote's side is not fresh (%s%s%s) - auto-return stays parked and moves again only with every input fresh\n",
+                      (failing & kFmCondTxStale) ? "rider GPS stale " : "",
+                      (failing & kFmCondLink)    ? "link down " : "",
+                      (failing & kFmCondPhaseB)  ? "handshake revoked" : "");
+      }
+      return;
+    }
     fmReturnFault(fault_reason, now, thr_held);
     return;
   }
@@ -5884,7 +5966,12 @@ static void runFmReturnTick(unsigned long now)
   }
 
   // The rider moving off (raw speed above the cancel band for 1 s) ends the return - not a fault.
-  if (fm_rider_raw_kmh > kFmReturnCancelKmh) {
+  // V2.5-Evo - 2026-10-07 - S-1: ONLY WHILE THE RETURN IS MOVING (fm_return_motion_ms != 0). Parked,
+  // the rider surfing a wave or pumping back is exactly what the buggy is waiting through (SOP "auto-
+  // return waits for the rider" rule 1); it used to cancel a parked return after 1 s above 5 km/h.
+  // Moving, it still ends the return (rule 7: the rider caught a wave while the buggy was coming back;
+  // release fully, squeeze, and the separation proof hands over to following).
+  if (fm_return_motion_ms != 0 && fm_rider_raw_kmh > kFmReturnCancelKmh) {
     if (fm_return_cancel_since_ms == 0) fm_return_cancel_since_ms = now;
     else if ((now - fm_return_cancel_since_ms) >= kFmReturnCancelMs) {
       fmReturnExitToHold(FM_RET_CANCELLED, now, dist_m);
@@ -5943,25 +6030,32 @@ static void runFmReturnTick(unsigned long now)
     // the rider-moving cancel and the trigger gate have already had, or still get, priority over
     // the stick on this tick. While parked (no motion clock) the tick sees no owner and keeps the
     // memory zero, so a twitch during the proof or before the first squeeze can never count.
-    // TIMED OUT (30 s): the cancel path this mode already has - fmReturnExitToHold(FM_RET_STEERED),
-    // cap 0 and FM_HOLD - then the print, after the motor writes (F7).
+    // TIMED OUT (30 s): V2.5-Evo - 2026-10-07 - S-5: the steering goes BACK TO THE CONTROLLER and the
+    // RETURN CONTINUES. It used to exit the return through HOLD (fmReturnExitToHold(FM_RET_STEERED)).
+    // SOP "auto-return waits for the rider" rule 3: in auto-return the stick is an aid, never an exit;
+    // only arrival, a fault or a remote power cycle ends it. steerTakeoverStep() has already dropped
+    // the takeover and cleared centre_seen on the timeout tick, so the stick must be read centred
+    // again before it can take over again - a drifted remote centre cannot keep re-taking it. The
+    // not-closing net restarts from this tick exactly as after a release (fresh align suspension).
     const uint8_t sto = steerTakeoverTick(now, fm_return_motion_ms, "RETURN");
     fm_steer_takeover_req = steer_takeover.active;
     if (steer_takeover.active) fm_log_gate_flags |= FM_LOG_GATE_STEER_TAKEOVER;   // deep log bit 16
-    if (sto == STO_RELEASED) {
+    if (sto == STO_RELEASED || sto == STO_TIMED_OUT) {
       fm_return_judge_base_ms = now;   // the not-closing net's align suspension runs from the resume, not from the motion start
+      fmReturnPivotReset(&fm_return_pivot);   // V2.5-Evo - 2026-10-07 - S-6: a fresh pivot episode from the resume
+      fm_return_check_ms      = 0;     // and a fresh not-closing window
+      fm_return_check_dist_m  = -1.0f;
     }
     if (sto == STO_TIMED_OUT) {
       const unsigned long motion_ms = (fm_return_motion_ms != 0) ? (now - fm_return_motion_ms) : 0UL;
-      fmReturnExitToHold(FM_RET_STEERED, now, dist_m);   // motor posture first; it prints the HOLD line; resets the arbitration
-      Serial.printf("STEER [RX] RETURN: takeover held %lu s (%lu ms into the motion) - return ended through HOLD, no alarm; a stick that never comes back to centre is most likely a drifted remote centre - check it\n",
+      Serial.printf("STEER [RX] RETURN: takeover held %lu s (%lu ms into the motion) - steering handed back to the auto-return, which CONTINUES; centre the stick before it can take over again (a stick that never centres is most likely a drifted remote centre - check it)\n",
                     (unsigned long)(kSteerTakeoverMaxMs / 1000UL), motion_ms);
-      return;
     }
   }
 
   // INVARIANT: motion only while the trigger is held. Released = parked: no steering, cap 0, the
-  // engage ramp and the runtime cap restart on the next squeeze, the not-closing window is dropped.
+  // engage ramp restarts on the next squeeze, the not-closing window is dropped. (V2.5-Evo -
+  // 2026-10-07 - S-4: there is no runtime cap to restart any more.)
   if (!thr_held) {
     fm_rx_active           = false;
     rtm_steer_override     = 127;
@@ -5972,11 +6066,13 @@ static void runFmReturnTick(unsigned long now)
     fm_align_influence_req = 0;
     steerTakeoverReset();              // V2.5-Evo - 2026-09-19 - parked: no owner, no takeover; the next squeeze starts a fresh grace and needs centre-seen again
     fm_return_judge_base_ms = 0;
+    fmReturnPivotReset(&fm_return_pivot);   // V2.5-Evo - 2026-10-07 - S-6
     return;
   }
   if (fm_return_motion_ms == 0) {
     fm_return_motion_ms    = now;
     fm_return_judge_base_ms = now;     // V2.5-Evo - 2026-09-19 - the align-suspension base starts with the motion (re-based on every takeover release)
+    fmReturnPivotReset(&fm_return_pivot);   // V2.5-Evo - 2026-10-07 - S-6: a fresh pivot episode with each squeeze
     fm_return_check_ms     = 0;
     fm_return_check_dist_m = -1.0f;
     fm_steer_input_since_ms = 0;       // fix round 1 (M-1): a deflection from before this squeeze never counts; the grace starts now
@@ -5987,11 +6083,9 @@ static void runFmReturnTick(unsigned long now)
                   (double)dist_m, (double)stop_m, (unsigned long)kFmEngageRampMs);
   }
 
-  // Runtime cap on held-trigger motion: a return that has not arrived in 60 s of motion ends.
-  if ((now - fm_return_motion_ms) >= kFmReturnMaxMs) {
-    fmReturnExitToHold(FM_RET_TIMEOUT, now, dist_m);
-    return;
-  }
+  // V2.5-Evo - 2026-10-07 - S-4: the 60 s runtime cap on held-trigger motion that sat here is
+  // REMOVED. It ended a long return (about 67 m at 4 km/h) silently through HOLD. A buggy that is not
+  // coming back is caught by the not-closing net below, which judges progress, not elapsed time.
 
   // Steer straight at the rider's RAW position (not fm_filt_*): the rider is stopped, the filter
   // only adds lag. updateRtmSteering() reads fm_target_* while fm_rx_active && !rtm_rx_active.
@@ -6016,9 +6110,31 @@ static void runFmReturnTick(unsigned long now)
   // a fresh kFmPivotSuspendMaxMs to turn back at the align cap before it is judged; without that
   // a 20 s-old motion start would have expired the suspension and the re-align at cap 13, closing
   // nothing in 5 s, would have tripped RETURN_NOT_CLOSING. In mode 0 judge_base == motion start.
+  // V2.5-Evo - 2026-10-07 - S-6, TWO CHANGES, both against a false "St" on a healthy return:
+  //   (a) THE SLOW PIVOT. The align suspension used to end kFmPivotSuspendMaxMs (15 s) after the
+  //       judge base whatever the heading did, so a slow pivot at the align cap could be judged
+  //       "not closing" mid-turn. fmReturnPivotSuspend() (Common/AutoReturnRules.h, host-tested)
+  //       keeps it suspended past 15 s for as long as the heading error keeps FALLING (by
+  //       kFmPivotErrEpsDeg within every kFmPivotStallMs), up to kFmReturnPivotCeilingMs (45 s); a
+  //       stalled or wrong-way pivot is judged as before.
+  //   (b) THE APPROACH CRAWL. Inside rtm_approach_zone_m the approach ramp takes the cap toward 0 at
+  //       the stop radius (about 28/255 at 4 m), so the last metres are a crawl that can fail to close
+  //       0.5 m in 5 s - and the VESC's own deadband can stop the motor short of the stop radius
+  //       altogether. A not-closing verdict INSIDE the zone is now treated as ARRIVAL
+  //       (FM_RET_ARRIVED_ZONE, the arrival hand-back: steering back, cap in force kept until one full
+  //       release) instead of a fault. It ends the return either way; outside the zone it is still
+  //       RETURN_NOT_CLOSING with "St" + the stop buzz. Treating it as arrival rather than pausing the
+  //       net matters: a paused net would leave a buggy stalled short of the stop radius in a return
+  //       the rider cannot leave by releasing and squeezing.
   const bool in_grace      = (now - fm_return_motion_ms) < kFmReturnJudgeGraceMs;   // V2.5-Evo - 2026-09-19 - pinned 8500 (was the ramp + 5 s)
   const unsigned long judge_base = (fm_return_judge_base_ms != 0) ? fm_return_judge_base_ms : fm_return_motion_ms;
-  const bool align_suspend = aligning && (now - judge_base) < kFmPivotSuspendMaxMs;
+  const float pivot_err_deg = (g_heading_error_dx10 != 0x7FFF) ? fabsf((float)g_heading_error_dx10 / 10.0f) : 180.0f;
+  const bool align_suspend = fmReturnPivotSuspend(&fm_return_pivot, (uint32_t)now, aligning, pivot_err_deg,
+                                                  (uint32_t)judge_base, kFmPivotSuspendMaxMs, kFmPivotStallMs,
+                                                  kFmPivotErrEpsDeg, kFmReturnPivotCeilingMs);
+  const bool in_approach_zone = (usrConf.rtm_approach_zone_m > 0) &&
+                                ((float)usrConf.rtm_approach_zone_m > stop_m) &&
+                                (dist_m < (float)usrConf.rtm_approach_zone_m);
   if (in_grace || align_suspend || steer_takeover.active) {
     fm_return_check_ms     = 0;
     fm_return_check_dist_m = -1.0f;
@@ -6027,6 +6143,13 @@ static void runFmReturnTick(unsigned long now)
     fm_return_check_dist_m = dist_m;
   } else if ((now - fm_return_check_ms) >= kFmReturnNotClosingMs) {
     if (dist_m >= (fm_return_check_dist_m - kFmReturnNotClosingM)) {
+      if (in_approach_zone) {
+        const float was_m = fm_return_check_dist_m;   // captured before the exit clears it
+        fmReturnExitToHold(FM_RET_ARRIVED_ZONE, now, dist_m);   // motor posture first; prints the ARMED line
+        Serial.printf("FM [RX] RETURN stopped closing inside the approach zone (dist=%.1f m, was %.1f m %lu ms ago, zone %u m) - treated as ARRIVAL, no alarm\n",
+                      (double)dist_m, (double)was_m, (unsigned long)kFmReturnNotClosingMs, (unsigned)usrConf.rtm_approach_zone_m);
+        return;
+      }
       fmReturnFault(FM_STOP_RETURN_NOT_CLOSING, now, thr_held);
       Serial.printf("FM [RX] RETURN not closing: dist=%.1f m (was %.1f m %lu ms ago, closed < %.1f m)\n",
                     (double)dist_m, (double)fm_return_check_dist_m, (unsigned long)kFmReturnNotClosingMs, (double)kFmReturnNotClosingM);
@@ -6419,7 +6542,7 @@ static void runFmLoopBody(unsigned long now)
         fm_sep_fix_count     = 0;   // DWELL-1: the fix count resets with the dwell
         // V2.5-Evo - 2026-09-19 - FM_RETURN is exempt from the state write: a return parked with
         // the trigger released is exactly the "stop, wait, squeeze" the owner asked for, and its
-        // latch is already clear. It keeps its own runtime cap (60 s of held-trigger motion).
+        // latch is already clear. (V2.5-Evo - 2026-10-07 - S-4: its 60 s runtime cap is gone.)
         if (fm_state != FM_IDLE && fm_state != FM_RETURN) {
           fm_state        = FM_ARMED;
           fm_throttle_cap = 255;   // back to fully manual; trigger is released, so no motion

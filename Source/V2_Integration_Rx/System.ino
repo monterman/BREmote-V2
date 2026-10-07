@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-06 - VESC 2 OVER CAN: ?diag gains a "VESC 2 CAN" line under "VESC poll" - VESC 2's poll success in the window, backoff state, data age vs the logger's freshness limit and its last values; ?diagz zeroes the two VESC 2 counters. No new ?command, so the web quick-commands and config tool need no change. Read-only. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 5 of 5 - ?diag TELLS THE OPERATOR THE TRUTH ABOUT A CLOSED MOTOR GATE (Rex delta audit M-6; the code fix is in PWM.ino). The motor-gate explanation here enumerated TWO causes of CLOSED - control-packet age past failsafe_time, or PWM_active down - and since STEP 3 there have been THREE, the third being enable-swap starvation. A bench operator following the old line would read a starvation trip as a PWM_active problem and chase the wrong fault, which is exactly the misdiagnosis the STEP 2 instrumentation existed to prevent. The comment now names the third cause, and the "swap fails" line directly under it PRINTS g_swap_starved, so the cause is read rather than inferred from a run length against kSwapStarveTicks. Print-only: read-only accessors, no control state touched, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 4 of 4 - THE BUTTON READER STOPS SPENDING THE MOTOR'S BUS (see Compass.ino, Logger.ino, PWM.ino). checkButtons() was taking i2cMutex TWICE PER loop() PASS with portMAX_DELAY - 120 to 180 unbounded holds per second, ungated, at any throttle, forever - which makes it by a wide margin the highest-frequency unbounded holder on this board and gives it 120-180 chances a second to blow the 10 ms budget of the enable swap that decides which of the two motors receives the single PPM output. The 2026-10-03 audit's verdict: with the compass removed entirely, this alone would still reproduce the asymmetric-thrust failure. TWO CHANGES. (1) The whole function is RATE-LIMITED TO 20 Hz on a millis() guard. A human press lasts hundreds of milliseconds, so sampling it ~150 times a second does not make it more detectable - it just spends the bus. 50 ms preserves the current feel exactly (a 400 ms press still gives 8 samples, a brisk 100 ms tap gives 2), so nobody has to press anything differently; 10 Hz would have cut a little more but needs a deliberate ~300 ms tap, and buying that by changing how the rider presses was explicitly declined. Net: ~120-180 unbounded holds/s become 20 BOUNDED holds/s, about an 88 % reduction. THE FIRST CALL IS NEVER SKIPPED - it comes from runBootSequence() and owns boot-time pairing and factory reset - which is what the primed flag guarantees. CHECKED BEFORE TOUCHING THE RATE: nothing in this function counts samples or loop iterations. The 50 ms debounce is a vTaskDelay, the hold-for-release loops are vTaskDelay loops that complete inside one call, the boot re-reads use delay(10), the 45 s calibration owns its own clock, and the BIND calibration fires on a single debounced falling edge rather than N consecutive LOW samples - so there was no sample-count timing to convert and no duration moves. (2) The two per-pass takes become pdMS_TO_TICKS(2) and the poll is SKIPPED on a miss (return, leaving the edge-detector statics untouched - no phantom edge, no lost held state). It also fails safe if the transaction itself fails, verified in the library rather than assumed: Adafruit_BusIO's register read returns -1 (all ones) on an I2C error, so aw.digitalRead() yields HIGH and these active-LOW buttons read as NOT PRESSED - no accidental log toggle, no accidental 45 s calibration. The press-conditional takes (boot-time reset, the 50 ms debounce re-reads, the hold-for-release loops) are deliberately left unbounded: they are not on the 120-180/s path, they only run when a button is actually down, and bounding them is a separate question from this one. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 2 of 4 - THE INSTRUMENT (see BREmote_V2_Rx.h, PWM.ino, Logger.ino): the serial surface for the enable-swap failure counters. (1) ?diag gains ONE line, "swap fails", directly under the "motor gate" line it belongs beside - the gate line answers "are pulses leaving the board?" and this one answers "are they reaching BOTH ESCs?". It prints the two per-channel session totals, the live consecutive-failure run length and the current channel index, and it spells out the direction a reader gets wrong otherwise: ch0 counts failures while PWM0 was the enabled channel, so a non-zero ch0 means PWM1 was the STARVED one. (2) ?diagz zeroes all three alongside the existing counters, so a bench run reports its window rather than the session. DELIBERATELY NO NEW ?command: the standing rule is that any new command must ship simultaneously in the firmware, the web quick-commands dropdown and the relevant UI panel, and none of that is needed here because ?diag already exists on all three surfaces. Read-only, no control path, no confStruct change: sizeof stays 200, SW_VERSION stays 36.
@@ -1310,13 +1311,15 @@ struct DiagSnapshot {
   uint32_t mux_errors;
   uint32_t vesc_polls;
   uint32_t vesc_ok;
+  uint32_t vesc2_polls;   // V2.5-Evo - 2026-10-06 - VESC 2 over CAN
+  uint32_t vesc2_ok;
   uint32_t loop_count;
   uint32_t loop_us_sum;
   uint8_t  origin;   // 0 = boot (no previous call), 1 = previous ?diag, 2 = ?diagz
 };
 // Zero-initialised on purpose: the very first ?diag then differences against "boot", which is
 // exactly right — its window is millis() and its deltas are the totals since power-on.
-static DiagSnapshot g_diag_prev = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+static DiagSnapshot g_diag_prev = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 // ============================================================
 // cmdDiag - one-shot RX instrumentation snapshot (?diag)
@@ -1362,6 +1365,8 @@ void cmdDiag(const String& params) {
   cur.mux_errors      = g_diag_mux_errors;
   cur.vesc_polls      = g_diag_vesc_polls;
   cur.vesc_ok         = g_diag_vesc_ok;
+  cur.vesc2_polls     = g_diag_vesc2_polls;
+  cur.vesc2_ok        = g_diag_vesc2_ok;
   cur.loop_count      = g_diag_loop_count;
   cur.loop_us_sum     = g_diag_loop_us_sum;
   cur.origin          = 1;   // this call becomes "the previous ?diag" for the next one
@@ -1383,6 +1388,8 @@ void cmdDiag(const String& params) {
   const uint32_t d_mux_err   = cur.mux_errors      - g_diag_prev.mux_errors;
   const uint32_t d_vesc_p    = cur.vesc_polls      - g_diag_prev.vesc_polls;
   const uint32_t d_vesc_ok   = cur.vesc_ok         - g_diag_prev.vesc_ok;
+  const uint32_t d_vesc2_p   = cur.vesc2_polls     - g_diag_prev.vesc2_polls;
+  const uint32_t d_vesc2_ok  = cur.vesc2_ok        - g_diag_prev.vesc2_ok;
   const uint32_t d_loop_n    = cur.loop_count      - g_diag_prev.loop_count;
   const uint32_t d_loop_us   = cur.loop_us_sum     - g_diag_prev.loop_us_sum;
 
@@ -1546,6 +1553,42 @@ void cmdDiag(const String& params) {
                 (float)d_mux_sw / win_s, (unsigned)d_mux_err, (unsigned)cur.mux_errors);
   Serial.printf("VESC poll  : %u/%u ok (%.1f%%)\n",
                 (unsigned)d_vesc_ok, (unsigned)d_vesc_p, vesc_pct);
+  // V2.5-Evo - 2026-10-06 - VESC 2 over CAN: ONE line (two when it has data), directly under VESC 1's.
+  // The poll success in this window, the backoff state, the age of VESC 2's own data against the
+  // kVesc2StaleMs freshness limit the logger uses (so "STALE" here means the log is writing -999 for
+  // VESC 2 right now), and the last values it reported. A copy of vesc2 is taken under vescMutex so
+  // the numbers belong to one reply. No new ?command - ?diag already ships on every surface
+  // (firmware, web quick-commands, config tool), so the serial command sync rule needs no other
+  // edit. Read-only.
+  {
+    extern SemaphoreHandle_t vescMutex;
+    vesc2_struct v2;
+    bool v2_copied = false;
+    if (vescMutex && xSemaphoreTake(vescMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+      v2 = vesc2;
+      xSemaphoreGive(vescMutex);
+      v2_copied = true;
+    }
+    const float v2_pct = (d_vesc2_p > 0) ? (100.0f * (float)d_vesc2_ok / (float)d_vesc2_p) : -1.0f;
+    const bool  backed_off = (g_vesc2_miss_streak >= kVesc2MissesToBackoff);
+    Serial.printf("VESC 2 CAN : id %u via VESC 1, %u/%u ok (%.1f%%), %s, %u misses in a row\n",
+                  (unsigned)kVesc2CanId, (unsigned)d_vesc2_ok, (unsigned)d_vesc2_p, v2_pct,
+                  backed_off ? "BACKED OFF to 1 poll / 10 s (no reply - is a VESC on CAN ID 2?)"
+                             : "polling 1 Hz",
+                  (unsigned)g_vesc2_miss_streak);
+    if (!v2_copied) {
+      Serial.println("             values busy (vescMutex held) - run ?diag again");
+    } else if (!v2.ever_ok) {
+      Serial.println("             no reply this session - the log writes -999 (no data)");
+    } else {
+      const uint32_t age = now_ms - v2.last_ok_ms;
+      Serial.printf("             age %lu ms (%s), Vin %.1f V, Ibat %.2f A, Imot %.2f A, duty %.1f %%, ERPM %ld, FET %.1f C, motor %.1f C, fault %u\n",
+                    (unsigned long)age,
+                    (age > kVesc2StaleMs) ? "STALE - the log writes -999" : "fresh",
+                    v2.batVolt / 10.0f, v2.batCur / 100.0f, v2.motCur / 100.0f, v2.duty / 10.0f,
+                    (long)v2.erpm, v2.fetTemp / 10.0f, v2.motorTemp / 10.0f, (unsigned)v2.fault_code);
+    }
+  }
   Serial.printf("loop()     : min %.2f ms, mean %.2f ms, max %.2f ms   [%u loops]\n",
                 loop_min_ms, loop_mean_ms, loop_max_ms, (unsigned)d_loop_n);
   Serial.println("HOW TO READ IT:");
@@ -1650,12 +1693,14 @@ void cmdDiagZ(const String& params) {
   g_swap_fail_run        = 0;
   g_diag_vesc_polls      = 0;
   g_diag_vesc_ok         = 0;
+  g_diag_vesc2_polls     = 0;   // V2.5-Evo - 2026-10-06 - VESC 2 over CAN (the miss streak is live state, not a total - left alone)
+  g_diag_vesc2_ok        = 0;
   g_diag_loop_count      = 0;
   g_diag_loop_us_sum     = 0;
   g_diag_loop_min_us     = 0xFFFFFFFF;
   g_diag_loop_max_us     = 0;
 
-  DiagSnapshot fresh = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  DiagSnapshot fresh = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
   fresh.t_ms   = millis();
   fresh.origin = 2;   // so the next ?diag says "since ?diagz"
   g_diag_prev  = fresh;

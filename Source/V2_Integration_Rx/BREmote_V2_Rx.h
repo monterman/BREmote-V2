@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-06 - VESC 2 OVER CAN, part 1 (see VESC.ino, System.ino): vesc2_struct + extern vesc2 (VESC 2 telemetry with its OWN age stamp last_ok_ms and an ever_ok validity flag), the kVesc2* constants (CAN ID 2, 1 Hz, 10 s backoff after 3 misses, 50 ms reply cap, 2500 ms freshness limit), VESC2_PACK_LEN 27, and the g_diag_vesc2_polls / g_diag_vesc2_ok / g_vesc2_miss_streak counters. Read by nothing in the control path. No confStruct change, sizeof stays 200, SW_VERSION stays 36; no log-record change in this part.
 // V2.5-Evo - 2026-10-06 - COMMENT ONLY (audit L-19): the fm_front_ahead_extra_m comment gives the derived front angle as 35-45 deg (it still said 35-80). No code, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - AUDIT M-12: kFmFrontAngleMaxDeg 80 -> 45, so a front station is never less far ahead than it is to the side (13 m ahead at the 13 m side floor). Comments: audit L-13 (stale angle + radius wording). Constant only - no confStruct change, sizeof STAYS 200, SW_VERSION STAYS 36.
 // V2.5-Evo - 2026-10-06 - FRONT STATIONS BY OFFSET (owner rule): the u16 fm_front_angle_deg is RENAMED IN PLACE to fm_front_ahead_extra_m - same offset, same type, sizeof STAYS 200, SW_VERSION STAYS 36, NO CONFIG WIPE. F4/F5 now sit the lateral floor (13 m) exactly to the side and d_follow + this many metres ahead; the angle and radius are derived (FollowMeStation.h fmFrontStationGeom). 0 = default 7 m, legal 4-10 m. kFmFrontAngleDefaultDeg is replaced by kFmFrontAheadExtraDefaultM / MinM / MaxM; kFmFrontAngleMinDeg (35) and MaxDeg (80) now bound the DERIVED angle.
@@ -1452,6 +1453,11 @@ volatile uint32_t g_diag_mux_errors   = 0;    // read-back mismatches inside set
 // --- VESC polling ---
 volatile uint32_t g_diag_vesc_polls = 0;      // getVescLoop() query attempts
 volatile uint32_t g_diag_vesc_ok    = 0;      // of those, replies that parsed and validated
+// V2.5-Evo - 2026-10-06 - VESC 2 over CAN (see vesc2_struct below): the same pair for the forwarded
+// poll, plus the miss streak that drives its backoff. All three written only by the loop task.
+volatile uint32_t g_diag_vesc2_polls = 0;     // forwarded VESC 2 requests sent
+volatile uint32_t g_diag_vesc2_ok    = 0;     // of those, replies that parsed and validated (incl. the controller-ID check)
+volatile uint8_t  g_vesc2_miss_streak = 0;    // consecutive unanswered VESC 2 polls, saturates at 255; >= kVesc2MissesToBackoff = backed off
 
 // --- loop() timing (microseconds, derived from the CPU cycle counter) ---
 volatile uint32_t g_diag_loop_count      = 0;          // completed loop() bodies
@@ -1522,6 +1528,48 @@ struct vesc_struct {
   unsigned long last_packet = 0;
 };
 extern vesc_struct vesc;
+
+// ============================================================
+// V2.5-Evo - 2026-10-06 - VESC 2 OVER CAN - the second motor controller's telemetry
+//
+// WHY: the RX UART is wired to VESC 1's COMM port only. VESC 2 has no UART, but the two VESCs share
+// a CAN bus (IDs 1 and 2). VESC firmware lets a UART client ask VESC 1 to FORWARD any command to
+// another CAN ID (COMM_FORWARD_CAN, packet id 34) and relays that controller's reply back down the
+// same UART unchanged. So VESC 2's numbers reach the RX with no new wiring. Telemetry only - the
+// motors are driven by PPM, nothing here is read by throttle, steering, PWM or any FM/RTM gate.
+//
+// HOW (VESC.ino pollVesc2IfDue()): piggybacked on VESC 1's existing mux visit, after VESC 1 has
+// answered, on every kVesc2PollEvery-th visit (2 -> 1 Hz against VESC 1's 2 Hz). No extra mux
+// switch and so no extra I2C traffic on the bus the motor enable swap uses. Reply wait is capped at
+// kVesc2ReplyTimeoutMs, and after kVesc2MissesToBackoff misses in a row (no VESC on CAN ID 2, CAN
+// down) it backs off to every kVesc2BackoffEvery-th visit (10 s) so a single-VESC buggy pays ~5 ms
+// every 10 s for this, not 50 ms every second.
+//
+// FRESHNESS (project GPS/telemetry rule 1 by analogy - stale data is never logged as live): VESC 2
+// has its OWN age stamp (last_ok_ms), separate from VESC 1's last_uart_packet. The logger writes the
+// "no data" sentinels whenever no reply has ever arrived or the last one is older than kVesc2StaleMs.
+// ============================================================
+static const uint8_t  kVesc2CanId           = 2;     // CAN controller ID of VESC 2 (owner's setup: VESC 1 = ID 1 on the UART, VESC 2 = ID 2). Hard-coded on purpose - no confStruct change this round.
+static const uint8_t  kVesc2PollEvery       = 2;     // poll VESC 2 on every 2nd successful VESC 1 visit: 2 Hz / 2 = 1 Hz
+static const uint8_t  kVesc2BackoffEvery    = 20;    // after repeated misses: every 20th visit = once per 10 s
+static const uint8_t  kVesc2MissesToBackoff = 3;     // consecutive unanswered polls before the backoff starts; one good reply ends it
+static const uint32_t kVesc2ReplyTimeoutMs  = 50;    // ms to wait for the forwarded reply. Expected ~5-10 ms (12 B out + CAN round trip + 32 B back at 115200)
+static const uint32_t kVesc2StaleMs         = 2500;  // ms; older VESC 2 data is logged as "no data". 2.5 poll periods: one lost poll is tolerated, two are not
+#define VESC2_PACK_LEN 27  // reply payload: id 1 + mask 4 + FET temp 2 + motor temp 2 + motor I 4 + input I 4 + duty 2 + ERPM 4 + Vin 2 + fault 1 + controller id 1
+
+struct vesc2_struct {
+  int16_t  fetTemp    = 0;   // FET temperature, 0.1 C
+  int16_t  motorTemp  = 0;   // motor temperature, 0.1 C (reads the VESC's motor NTC; meaningless if none is fitted)
+  int32_t  motCur     = 0;   // motor current, 0.01 A
+  int32_t  batCur     = 0;   // input (battery) current, 0.01 A
+  int16_t  duty       = 0;   // duty cycle, 0.1 % (VESC sends duty x 1000)
+  int32_t  erpm       = 0;   // electrical RPM
+  int16_t  batVolt    = 0;   // input voltage, 0.1 V
+  uint8_t  fault_code = 0;   // mc_fault_code (0 = none)
+  bool     ever_ok    = false; // VALIDITY FLAG (Section 14): false = VESC 2 has never answered this session, every field above is meaningless
+  uint32_t last_ok_ms = 0;   // millis() of the last VALIDATED reply - VESC 2's own age stamp. Meaningful only when ever_ok.
+};
+extern vesc2_struct vesc2;   // defined in VESC.ino; written by the loop task, read by loggerTask - both under vescMutex
 
 struct __attribute__((packed)) VescLogData {
     uint32_t timestamp;           // Local Timestamp in ms

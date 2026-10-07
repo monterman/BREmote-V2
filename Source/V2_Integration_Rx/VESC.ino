@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-06 - VESC 2 OVER CAN: pollVesc2IfDue() asks VESC 1 to forward a COMM_GET_VALUES_SELECTIVE to CAN ID 2 (COMM_FORWARD_CAN) inside getVescLoop()'s existing mux visit, after VESC 1 has answered, at 1 Hz (10 s backoff after 3 misses), 50 ms reply cap; reply accepted only with our mask echoed and controller ID 2. receiveFromVESC() takes its timeout as a parameter (VESC 1 still 200 ms). Telemetry only: no throttle/PWM/mux/I2C change. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-07-25 - STAGE 1 (GPS repair): getVescLoop() now ENDS with setUartMux(1), handing the UART line back to the GPS. The mux's resting position is now GPS, not the VESC — getGPSLoop() no longer switches at all, so getVescLoop() is the only function that moves the mux in normal operation (2 switches per poll at 2 Hz = 4 switches/s, DOWN from 6/s). The leading setUartMux(0), the 20 ms SW54 settle, the pre-query drain, the 200 ms receive timeout and the whole VESC protocol path are UNTOUCHED. No confStruct change, SW_VERSION stays 34.
 // V2.5-Evo - 2026-07-25 - STAGE 0 (instrumentation only): getVescLoop() bumps g_diag_vesc_polls / g_diag_vesc_ok so ?diag can report a VESC poll success rate. Two counter increments; no protocol, timing, mux, mutex or telemetry change.
 // V2.5-Evo - 2026-07-19 - SW56 F1+F2 (Rex CRITICAL + HIGH / Fable F1+F2, applied post-audit): (F1) clamp the vescRelayBuffer relay memcpy to sizeof(vescRelayBuffer) — SW56 raised the guard ceiling 30→48 but vescRelayBuffer is still 34, so a valid-CRC 35–48 B frame (which fa99429 is designed to ACCEPT from newer VESC FW) overflowed a global by up to 14 B into the adjacent volatile motor-command state (thr_received/PWM_active/PWM0_time/PWM1_time) = motor-safety class, NO-GO for field until fixed. (F2, pre-existing) validate the RAW length byte before the uint8_t `eom = raw_message[1]+5` addition — len 251–255 wrapped eom to 0–4, bypassed the guard, and let the payload copy (which uses raw_message[1], not eom) write up to 255 B into the caller's 48 B buffer. Both fixes are bounds-only; no protocol/offset/CRC/mutex change; confStruct/SW_VERSION unchanged
@@ -14,6 +15,7 @@
 // V2.5-Evo - 2026-05-06 - Drain Serial1 RX buffer in getVescLoop() to prevent stale GPS NMEA from corrupting VESC frame parsing
 // Define the global struct
 vesc_struct vesc;
+vesc2_struct vesc2;   // V2.5-Evo - 2026-10-06 - VESC 2 over CAN; see vesc2_struct in BREmote_V2_Rx.h
 
 void getVescLoop()
 {
@@ -46,6 +48,12 @@ void getVescLoop()
     g_diag_vesc_ok++;
     last_uart_packet = millis();
     vesc.last_packet = last_uart_packet;
+
+    // V2.5-Evo - 2026-10-06 - VESC 2 over CAN rides in THIS mux visit, and only after VESC 1 has
+    // just answered (a dead UART cannot carry a forwarded request either, so there is no point
+    // adding a second timeout on top of the first). Reusing the visit means no extra mux switch and
+    // no extra I2C traffic. pollVesc2IfDue() decides the rate itself (1 Hz, 10 s when backed off).
+    pollVesc2IfDue(&Serial1);
   }
   get_vesc_timer = millis();
   
@@ -128,7 +136,7 @@ bool getValuesSelective(Stream* interface)
   // of any trailing bytes a newer firmware adds. A short or mismatched reply is rejected
   // (never misparsed). Telemetry-only path; no motor/safety impact. (Previously == VESC_PACK_LEN,
   // which would silently drop a valid reply if any future VESC FW changed the total length.)
-  int vescRxLen = receiveFromVESC(message, interface);
+  int vescRxLen = receiveFromVESC(message, interface, 200);   // V2.5-Evo - 2026-10-06 - timeout now a parameter; 200 ms is VESC 1's unchanged value
   bool vescReplyValid = (vescRxLen >= VESC_PACK_LEN) &&
                         (message[0] == vesc_command[0]) &&   // COMM_GET_VALUES_SELECTIVE echoed
                         (message[1] == vesc_command[1]) &&   // 4-byte mask echoed back...
@@ -207,7 +215,10 @@ bool getValuesSelective(Stream* interface)
   }
 }
 
-int receiveFromVESC(uint8_t * buf, Stream* interface)
+// V2.5-Evo - 2026-10-06 - timeout_ms is now a PARAMETER (was a hard-coded 200 ms). VESC 1 still
+// passes 200, so its behaviour is unchanged; the forwarded VESC 2 poll passes kVesc2ReplyTimeoutMs
+// (50 ms) so a missing VESC 2 cannot hold the loop task and the GPS-deaf mux window for 200 ms.
+int receiveFromVESC(uint8_t * buf, Stream* interface, uint32_t timeout_ms)
 {
   uint8_t cnt = 0;
   uint8_t eom = 48; // SW56: was 30; 32-byte VESC_MORE_VALUES selective frame (eom=raw_message[1]+5=32) overflowed the old 30-byte guard and was rejected. 48 > VESC_PACK_LEN+5
@@ -218,7 +229,7 @@ int receiveFromVESC(uint8_t * buf, Stream* interface)
 
   unsigned long started = millis();
 
-  while( ((millis() - started) < 200) && cnt != eom)
+  while( ((millis() - started) < timeout_ms) && cnt != eom)
   {
     if(interface->available())
     {
@@ -302,6 +313,96 @@ int receiveFromVESC(uint8_t * buf, Stream* interface)
   {
     VESC_DEBUG_PRINTLN("Message Error");
     return 0;
+  }
+}
+
+// ============================================================
+// pollVesc2IfDue - read VESC 2's telemetry through VESC 1, over CAN (COMM_FORWARD_CAN)
+// ============================================================
+// What it does:
+//   On every kVesc2PollEvery-th call (every kVesc2BackoffEvery-th while backed off) it sends ONE
+//   request down the VESC UART that tells VESC 1 "forward this to CAN ID kVesc2CanId":
+//     [COMM_FORWARD_CAN 34][kVesc2CanId][COMM_GET_VALUES_SELECTIVE 50][mask, 4 bytes big-endian]
+//   VESC 2 executes the inner command and VESC 1 relays its reply back down the UART as an ordinary
+//   COMM_GET_VALUES_SELECTIVE reply (VESC FW 6.06 commands.c COMM_FORWARD_CAN -> comm_can.c
+//   send_packet_wrapper -> commands_send_packet_can_last). The reply is accepted only if it echoes
+//   our command id and our exact mask AND its controller-ID field reads kVesc2CanId - so a reply
+//   from VESC 1 itself, a stray VESC 1 frame or a mis-set CAN ID can never be stored as VESC 2.
+//
+// Mask (bit = field, in the order the VESC appends them; all verified against release_6_06):
+//   0 FET temp (float16 x10)   1 motor temp (float16 x10)   2 motor current (float32 x100)
+//   3 input current (float32 x100)   6 duty (float16 x1000)   7 ERPM (float32 x1)
+//   8 input voltage (float16 x10)   15 fault code (u8)   17 controller ID (u8)
+//   = 0x000281CF.
+//
+// Inputs:  interface - the VESC UART. MUST already be switched to the VESC: call only from inside
+//          getVescLoop()'s mux visit, which also hands the line back to the GPS afterwards.
+// Outputs: none.
+// Side effects: writes vesc2 (under vescMutex) on a valid reply; bumps g_diag_vesc2_polls /
+//   g_diag_vesc2_ok and g_vesc2_miss_streak. When it polls, it blocks the loop task for the reply:
+//   ~5-10 ms expected, kVesc2ReplyTimeoutMs (50 ms) worst case. Touches no throttle, steering,
+//   PWM, mux or I2C state.
+// ============================================================
+void pollVesc2IfDue(Stream* interface)
+{
+  // Rate: count VESC 1 visits and poll on every Nth. A counter rather than a millis() interval,
+  // because the visits themselves are already timed (500 ms) and jitter on a time test would make
+  // the rate wander between 0.67 and 1 Hz.
+  static uint8_t visits = 0;
+  const uint8_t every = (g_vesc2_miss_streak >= kVesc2MissesToBackoff) ? kVesc2BackoffEvery : kVesc2PollEvery;
+  if (++visits < every) return;
+  visits = 0;
+
+  // Anything still in the RX ring belongs to VESC 1's reply that was just parsed - drop it so it
+  // cannot prefix the forwarded reply. Non-blocking: only reads bytes already received.
+  while (interface->available()) interface->read();
+
+  uint8_t fwd[7];
+  fwd[0] = COMM_FORWARD_CAN;            // 34 - VESC 1: pass the rest of this packet to a CAN ID
+  fwd[1] = kVesc2CanId;                 // target controller
+  fwd[2] = COMM_GET_VALUES_SELECTIVE;   // 50 - the command VESC 2 runs
+  fwd[3] = 0x00;                        // mask bits 31-24
+  fwd[4] = 0x02;                        // mask bits 23-16: bit 17 controller ID
+  fwd[5] = 0x81;                        // mask bits 15-8:  bit 15 fault, bit 8 input voltage
+  fwd[6] = 0xCF;                        // mask bits 7-0:   bits 0,1,2,3,6,7 = FET T, motor T, motor I, input I, duty, ERPM
+
+  g_diag_vesc2_polls++;
+  sendToVESC(fwd, sizeof(fwd), interface);
+
+  uint8_t message[48];   // same size as receiveFromVESC()'s frame ceiling
+  int rxLen = receiveFromVESC(message, interface, kVesc2ReplyTimeoutMs);
+
+  bool valid = (rxLen >= VESC2_PACK_LEN) &&
+               (message[0] == COMM_GET_VALUES_SELECTIVE) &&
+               (message[1] == fwd[3]) && (message[2] == fwd[4]) &&
+               (message[3] == fwd[5]) && (message[4] == fwd[6]) &&
+               (message[VESC2_PACK_LEN - 1] == kVesc2CanId);   // controller-ID field: it really is VESC 2
+  if (!valid)
+  {
+    if (g_vesc2_miss_streak < 255) g_vesc2_miss_streak++;
+    return;
+  }
+
+  // Same mutex and the same "skip this update rather than tear it" rule as VESC 1's fields: the
+  // logger reads vesc2 from loggerTask, which can preempt this task mid-write.
+  extern SemaphoreHandle_t vescMutex;
+  if (vescMutex && xSemaphoreTake(vescMutex, pdMS_TO_TICKS(50)) == pdTRUE)
+  {
+    int32_t cnt = 5;
+    vesc2.fetTemp    = buffer_get_int16(message, &cnt);
+    vesc2.motorTemp  = buffer_get_int16(message, &cnt);
+    vesc2.motCur     = buffer_get_int32(message, &cnt);
+    vesc2.batCur     = buffer_get_int32(message, &cnt);
+    vesc2.duty       = buffer_get_int16(message, &cnt);
+    vesc2.erpm       = buffer_get_int32(message, &cnt);
+    vesc2.batVolt    = buffer_get_int16(message, &cnt);
+    vesc2.fault_code = message[cnt++];
+    // message[cnt] is the controller ID, already checked above.
+    vesc2.last_ok_ms = millis();
+    vesc2.ever_ok    = true;
+    xSemaphoreGive(vescMutex);
+    g_diag_vesc2_ok++;
+    g_vesc2_miss_streak = 0;
   }
 }
 

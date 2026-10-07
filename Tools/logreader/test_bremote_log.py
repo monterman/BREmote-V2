@@ -298,13 +298,14 @@ class TestBinaryDecodeRoundtrip(unittest.TestCase):
                 list(bl.iter_binary_records(path))
 
     def test_unrecognized_record_size_decodes_known_prefix(self):
-        # 90 bytes: between the 87 B "L4" tier and the 109 B "L5" tier - firmware's own
-        # logCsvHeaderFor() would read this range as the L4 (87 B) tier too.
+        # 88 bytes: between the 87 B "L4" tier and the 90 B "L4_V2" tier, so the largest known
+        # prefix that fits is L4 (87 B). (2026-10-06: was 90, which stopped being "unrecognized"
+        # when the M-2 base growth made 90 B the real L4_V2 size.)
         raw = {"fm_state": 3, "fm_mode": 2}
-        rec_bytes = pack_record(bl.LAYOUT_L4, raw) + b"\x00\x00\x00"  # 3 trailing bytes, size 90
+        rec_bytes = pack_record(bl.LAYOUT_L4, raw) + b"\x00"  # 1 trailing byte, size 88
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "future.log")
-            write_binary_log(path, 4, 90, [rec_bytes])
+            write_binary_log(path, 4, 88, [rec_bytes])
             records = list(bl.iter_binary_records(path))
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["fm_state_name"], "HOLD")
@@ -603,6 +604,30 @@ class TestExpandedCsvOutput(unittest.TestCase):
         self.assertEqual(as_dict["fm_flags_armed"], "1")
         self.assertEqual(as_dict["fm_flags_engaged"], "1")
         self.assertEqual(as_dict["fm_flags_fault_sticky"], "0")
+
+    def test_write_expanded_csv_format2_layouts_do_not_crash(self):
+        # 2026-10-06: the post-M-2 (format 2) layouts were missing from TIER_ORDER, so --csv raised
+        # ValueError on every log written since the M-2 flash. Each one must now produce its
+        # decoded columns like its format-1 counterpart.
+        for layout, level in ((bl.LAYOUT_L3_V2, 3), (bl.LAYOUT_L4_V2, 4), (bl.LAYOUT_L5_V2, 5)):
+            raw = dict(fm_state=2, rtm_phase=2) if level >= 4 else {}
+            raw = {k: v for k, v in raw.items() if any(f["name"] == k for f in layout["fields"])}
+            rec_bytes = pack_record(layout, raw)
+            with tempfile.TemporaryDirectory() as tmp:
+                log_path = os.path.join(tmp, "v2.log")
+                write_binary_log(log_path, level, layout["record_size"], [rec_bytes])
+                records = list(bl.iter_binary_records(log_path))
+                out_path = os.path.join(tmp, "expanded_v2.csv")
+                bl.write_expanded_csv(records, out_path)
+                with open(out_path, "r", encoding="utf-8") as f:
+                    header = f.readline().strip()
+                    row = f.readline().strip()
+            as_dict = dict(zip(header.split(","), row.split(",")))
+            self.assertIn("motor_gate_open", as_dict, layout["name"])
+            if level >= 4:
+                self.assertEqual(as_dict["fm_state_name"], "ACTIVE", layout["name"])
+            if level >= 5:
+                self.assertEqual(as_dict["rtm_phase_name"], "run", layout["name"])
 
 
 if __name__ == "__main__":

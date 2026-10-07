@@ -216,6 +216,13 @@ TIMELINE_GATE_BITS = ["sep_latched", "needs_dengage", "return_candidate", "retur
 # should use when a file's records are not all the same size (should not happen in practice: the
 # level is latched once per FILE by createNewLogFile()), and by the CLI's file-type detection.
 TIER_ORDER = ["L3", "L4_DIAG", "L4_83", "L4_RAW", "L4", "L5"]
+# 2026-10-06: the format-2 (post-M-2) layouts were never added here, so write_expanded_csv() raised
+# ValueError on EVERY file written since the M-2 flash. Appended after the format-1 names - a file
+# never mixes the two formats, so their relative order only matters within each group.
+TIER_ORDER += ["L3_V2", "L4_V2", "L5_V2"]
+# Tiers that carry the Follow-Me block (decoded gate/state columns) and the level-5 block, by name.
+FM_BLOCK_TIERS = ("L4_83", "L4_RAW", "L4", "L5", "L4_V2", "L5_V2")
+L5_BLOCK_TIERS = ("L5", "L5_V2")
 
 
 # ============================================================
@@ -748,14 +755,14 @@ def csv_field_order_for_layout(layout_name: str) -> list[str]:
     layout = LAYOUT_BY_NAME[layout_name]
     base = [f["name"] for f in layout["fields"] if not f["skip"]]
     extra = ["rtm_source_name", "rtm_confidence_name"]
-    if layout_name in ("L4_83", "L4_RAW", "L4", "L5"):
+    if layout_name in FM_BLOCK_TIERS:
         extra += ["fm_mode_name", "fm_state_name", "fm_block_reason_name", "fm_return_reason_name"]
         extra += FM_LOG_GATE_BIT_NAMES
         # 2026-10-03: the multi-bit numeric fields that ride in the same word (the two enable-swap
         # failure deltas). Appended AFTER the flag columns so every column that existed before this
         # change keeps its position - anything consuming this CSV by index still works.
         extra += FM_LOG_GATE_FIELD_NAMES
-    if layout_name == "L5":
+    if layout_name in L5_BLOCK_TIERS:
         extra += ["rtm_phase_name"]
         extra += FM_FLAGS_SENT_BIT_NAMES
     return base + extra

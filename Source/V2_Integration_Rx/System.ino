@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - ?diag gains one "Return end" line (printReturnEndDiag() in RTMState.ino): the arrival hand-back cap, the last RTM fault end / arrival, the H-2 gate-fault time and rx_state_flags. Read-only. No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - audit LOW: ?printtasks also reports the loggerTask stack high-water mark (it was the one task not measured).
 // V2.5-Evo - 2026-10-06 - VESC 2 OVER CAN: ?diag gains a "VESC 2 CAN" line under "VESC poll" - VESC 2's poll success in the window, backoff state, data age vs the logger's freshness limit and its last values; ?diagz zeroes the two VESC 2 counters. No new ?command, so the web quick-commands and config tool need no change. Read-only. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 5 of 5 - ?diag TELLS THE OPERATOR THE TRUTH ABOUT A CLOSED MOTOR GATE (delta audit M-6; the code fix is in PWM.ino). The motor-gate explanation here enumerated TWO causes of CLOSED - control-packet age past failsafe_time, or PWM_active down - and since STEP 3 there have been THREE, the third being enable-swap starvation. A bench operator following the old line would read a starvation trip as a PWM_active problem and chase the wrong fault, which is exactly the misdiagnosis the STEP 2 instrumentation existed to prevent. The comment now names the third cause, and the "swap fails" line directly under it PRINTS g_swap_starved, so the cause is read rather than inferred from a run length against kSwapStarveTicks. Print-only: read-only accessors, no control state touched, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -1550,6 +1551,7 @@ void cmdDiag(const String& params) {
                 steerTakeoverCentreSeen() ? "yes" : "no",
                 (unsigned)steerTakeoverEpisodes(),
                 steerTakeoverLastEndText());
+  printReturnEndDiag(now_ms);   // V2.5-Evo - 2026-10-07 - hand-back cap, RTM fault/arrival ends, H-2 time (RTMState.ino)
   Serial.printf("UART mux   : %.1f switches/s, %u read-back failures   [%u total since boot]\n",
                 (float)d_mux_sw / win_s, (unsigned)d_mux_err, (unsigned)cur.mux_errors);
   Serial.printf("VESC poll  : %u/%u ok (%.1f%%)\n",

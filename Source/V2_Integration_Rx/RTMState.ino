@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - S-7 + A-1 + H-2 + D-1: fm_flags bit 6 = auto-return standing (bit 1 tells returning from waiting); rx_state_flags (index 19) carries the sticky RTM fault end (Phase C, H-2) and RTM arrival (Gate 9) and the hand-back cap; H-2: gates 2-7 failing 1.5 s of held trigger (a release pauses, only a pass resets) end RTM with the hand-back cap at 0 and the fault bit; D-1: the distance byte goes 0xFF after 10 s with no valid distance and needs 1 s valid to come back (telemetry only); printReturnEndDiag() for ?diag; two wrong 0xFF comments fixed. No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - ARRIVAL HAND-BACK CAP (owner rule: auto-return and manual return-to-me arrive the same way). handbackCapArm() keeps the cap in force at arrival in arrival_handback_cap (cleared by calcPWM() on one full trigger release). Gate 9 arms it from rtm_approach_cap before rtm_rx_active goes false (its print moved after the writes); FM_RETURN arrival now ends the return straight to ARMED-unlatched with the steering handed back and arms it from fm_throttle_cap (was FM_HOLD cap 0). Comment fix (audit D-1): the Gate 9 note no longer claims the inactive path writes rtm_distance 0xFF. No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - AUDIT M-20 + L-25 (owner-approved) + L-26: the front side floor is max(13, pass minimum, min_dist_m + 2 m),
 //   resolved by the one header helper fmFrontSideFloorM() at computeFmTarget(), the F4/F5 engage print and (through fmFrontSideFloorForConfigM)
@@ -312,6 +313,36 @@ int16_t g_d_error_dx10       = 0x7FFF;  // Last derivative × 10 deg/s; 0x7FFF =
 static double        rtm_prev_dist_m = -1.0;   // distance to TX at last Phase C check
 static unsigned long rtm_phase_c_ms  = 0;       // last Phase C check time
 
+// ============================================================
+// V2.5-Evo - 2026-10-07 - HOW A RETURN-TO-ME ENDED, FOR THE REMOTE (audits A-1, H-2)
+// ============================================================
+// The remote never learned that the BUGGY ended RTM (Gate 9 arrival, a Phase C stop), so it kept
+// showing RTM and keeping its own RTM cap. telemetry.rx_state_flags (index 19, BREmote_V2_Rx.h) now
+// carries two STICKY bits so the remote cannot miss them across the ~2 s telemetry rotation:
+//   rtm_fault_alarm_ms   - millis() RTM was ended BY A FAULT on the buggy (Phase C, the H-2 gate
+//                          timeout below, the H-1 refresh expiry); bit 0 for kRtmEndStickyMs.
+//                          The remote shows "St" + the stop buzz (the RTM twin of fm_flags bit 3).
+//   rtm_arrival_alarm_ms - millis() RTM ended by ARRIVING (Gate 9); bit 1 for kRtmEndStickyMs.
+//                          The remote shows the silent "St" and drops its own RTM.
+// 0 = none since boot. Loop task only.
+static unsigned long rtm_fault_alarm_ms   = 0;
+static unsigned long rtm_arrival_alarm_ms = 0;
+static const uint32_t kRtmEndStickyMs     = 6000;   // ms; same as kFmFaultStickyMs, > 2 telemetry rotations
+
+// H-2: gates 2-7 used to raise the emergency stop and leave rtm_rx_active TRUE - RTM half on, the
+// motor dead under a held trigger, the remote still showing RTM, and feathering never escaped it.
+// rtmGateFaultStep() (Common/AutoReturnRules.h) counts held-trigger time with a gate 2-7 failing,
+// PAUSED (not reset) by a release and reset only by a tick on which the gates pass; at
+// kRtmGateFaultMs RTM is ended on a fault (see runRtmLoopBody()).
+static RtmGateFaultState rtm_gate_fault   = {0, 0};
+static const uint32_t kRtmGateFaultMs     = 1500;   // ms of held-trigger gate failure that ends RTM
+static const uint32_t kRtmGateFaultMaxDtMs = 200;   // ms; one step can add at most two 10 Hz ticks
+
+// D-1: the distance byte's freshness rule (distBlankStep, Common/AutoReturnRules.h). Starts blanked.
+static DistBlankState rtm_dist_blank      = {0, 0, true};
+static const uint32_t kDistBlankStaleMs   = 10000;  // ms without a valid distance -> 0xFF ("--" on the remote)
+static const uint32_t kDistBlankRecoverMs = 1000;   // ms of valid inputs before a blanked byte shows a number again
+
 // V2.5-Evo - 2026-08-17 - Read-only accessor for the heading-disagreement latch, forward-declared
 // here so gate 6 below can ask whether the compass has been withdrawn from the heading ladder —
 // while it has, that gate stands aside instead of refusing the run (see the note at the gate).
@@ -521,6 +552,7 @@ static bool checkRtmSafetyGates()
     rtm_rx_active         = false;   // disarm — enter inactive path next tick
     rtm_rx_emergency_stop = false;   // no emergency
     rtm_approach_cap      = 255;     // RTM's own cap goes with the mode; the hand-back cap carries the limit
+    rtm_arrival_alarm_ms  = (now != 0) ? now : 1;   // V2.5-Evo - 2026-10-07 - A-1: rx_state_flags bit 1 (sticky) tells the remote
     Serial.printf("RTM [RX] Gate 9: reached stop distance (%.1f m < %u m) — RTM ended, steering is yours; throttle held at the arrival cap %u/255 until you let go of the trigger fully once\n",
                   dist_m, stop_dist_m, (unsigned)arrival_cap);
     return false;
@@ -3232,6 +3264,7 @@ static void runPhaseC()
                     dist_m, rtm_prev_dist_m);
       rtm_rx_emergency_stop = true;
       rtm_rx_active = false;
+      rtm_fault_alarm_ms = (now != 0) ? now : 1;   // V2.5-Evo - 2026-10-07 - A-1: RTM ended on a fault -> rx_state_flags bit 0
       return;
     }
     rtm_prev_dist_m = dist_m;
@@ -3268,6 +3301,7 @@ static void runPhaseC()
                         vesc_speed_kmh, gps_last_speed_kmh, speed_diff);
           rtm_rx_emergency_stop = true;
           rtm_rx_active = false;
+          rtm_fault_alarm_ms = (now != 0) ? now : 1;   // V2.5-Evo - 2026-10-07 - A-1: RTM ended on a fault -> rx_state_flags bit 0
           return;
         }
       }
@@ -3284,6 +3318,7 @@ static void runPhaseC()
     Serial.println("RTM [PhC] FAIL TX GPS freshness");
     rtm_rx_emergency_stop = true;
     rtm_rx_active = false;
+    rtm_fault_alarm_ms = (now != 0) ? now : 1;   // V2.5-Evo - 2026-10-07 - A-1: RTM ended on a fault -> rx_state_flags bit 0
     return;
   }
 
@@ -3291,6 +3326,26 @@ static void runPhaseC()
     Serial.printf("RTM [PhC] PASS: dist=%.0f m (convergence check parked: the rider is steering)\n", dist_m);
   else
     Serial.printf("RTM [PhC] PASS: dist=%.0f m, converging\n", dist_m);
+}
+
+// ------------------------------------------------------------
+// printReturnEndDiag - V2.5-Evo - 2026-10-07 - the ?diag line for how returns end (System.ino calls it).
+// ------------------------------------------------------------
+// Prints, on one line: whether the arrival hand-back cap is standing (and its value), the age of the
+// last RTM fault end and RTM arrival (the two sticky telemetry bits), the H-2 held-trigger gate-fault
+// time accumulated so far, and the telemetry byte as sent. Read-only. Input: now_ms. Output: Serial.
+static void printReturnEndDiag(unsigned long now_ms)
+{
+  const uint8_t hb = arrival_handback_cap.load(std::memory_order_relaxed);
+  char hb_txt[24];
+  if (hb == kHandbackNone) snprintf(hb_txt, sizeof(hb_txt), "none");
+  else                     snprintf(hb_txt, sizeof(hb_txt), "STANDING at %u/255", (unsigned)hb);
+  Serial.printf("Return end : hand-back cap %s (clears on a full release); RTM fault end %s%lu s ago, RTM arrival %s%lu s ago; H-2 gate-fault time %lu ms; rx_state_flags 0x%02X\n",
+                hb_txt,
+                rtm_fault_alarm_ms   ? "" : "never/", rtm_fault_alarm_ms   ? (unsigned long)((now_ms - rtm_fault_alarm_ms)   / 1000UL) : 0UL,
+                rtm_arrival_alarm_ms ? "" : "never/", rtm_arrival_alarm_ms ? (unsigned long)((now_ms - rtm_arrival_alarm_ms) / 1000UL) : 0UL,
+                (unsigned long)rtm_gate_fault.accum_ms,
+                (unsigned)telemetry.rx_state_flags);
 }
 
 // ---- Main RTM loop — call from RX loop() ----
@@ -3556,17 +3611,41 @@ static void runRtmLoopBody(unsigned long now)
     // V2.5-Evo - 2026-09-19 - bit 7: the EFFECTIVE auto-return mode, echoed in every FM state
     // (IDLE included - with no override standing it is simply the stored default). The remote's
     // return gesture reads this bit to set its session override to the OPPOSITE value, and the
-    // remote's display shows it. Bits 4-6 stay free for the accepted-mode echo. fmResolveReturnMode()
+    // remote's display shows it. (Bits 4-6 were free then; 4 and 5 went to the stick, 6 to S-7.) fmResolveReturnMode()
     // (runFmLoop) is the single writer of the value; this is a read.
     if (fm_return_mode_effective) f |= (1 << 7);
     // V2.5-Evo - 2026-09-19 - bit 4: the buggy's steer_during_auto setting, echoed every tick in
     // every FM state so the remote knows whether its classic-RTM Gate 4 steer-exit must stand
     // (0 = cancel) or stand down (1 = take over). Bit 5: a takeover is STANDING on this tick, for
     // the remote's display only - read from the published atomic (last tick's value at this point
-    // in the loop, one 10 Hz tick of lag, display only). Bit 6 stays free.
+    // in the loop, one 10 Hz tick of lag, display only). Bit 6 is auto-return standing since 2026-10-07 (below).
     if (usrConf.steer_during_auto != 0)                              f |= (1 << 4);
     if (steer_takeover_active.load(std::memory_order_relaxed))        f |= (1 << 5);
+    // V2.5-Evo - 2026-10-07 - bit 6 (audit S-7): AUTO-RETURN STANDING - fm_state is FM_RETURN, parked or
+    // moving. Before this an auto-return looked exactly like "armed" (parked) or "following" (moving)
+    // on the remote. PARKED vs MOVING needs no further bit: bit 1 (engaged) is set in FM_RETURN only
+    // while it moves (fm_rx_active), so bit 6 + bit 1 = returning (moving), bit 6 alone = waiting
+    // (parked). Bit 6 drops on every end: arrival (-> ARMED, bit 0 stays), the rider moving off or the
+    // stick (-> HOLD), a fault (-> STOPPING, bit 3 rises), Follow-Me leaving (-> IDLE, bit 0 drops).
+    if (s == FM_RETURN)                                              f |= (1 << 6);
     telemetry.fm_flags = f;
+  }
+
+  // V2.5-Evo - 2026-10-07 - rx_state_flags (index 19, audits A-1 / H-2; layout in BREmote_V2_Rx.h).
+  // A byte the remote did not have before: an older remote ignores it (it drops any index at or past
+  // its own sizeof(TelemetryPacket)), so nothing it does today changes.
+  //   bit 0 RTM fault-stop, sticky kRtmEndStickyMs: the BUGGY ended return-to-me on a fault
+  //         (Phase C, the H-2 gate timeout, the H-1 refresh expiry). Remote: end RTM, "St" + stop buzz.
+  //   bit 1 RTM arrived, sticky kRtmEndStickyMs: the buggy ended return-to-me at Gate 9.
+  //         Remote: end RTM, silent "St", keep no RTM cap of its own (the buggy holds the hand-back cap).
+  //   bit 2 hand-back cap standing: the buggy is holding the arrival cap until the trigger is fully
+  //         released once (manual RTM or auto-return arrival, or an RTM fault end). Display only.
+  {
+    uint8_t r = 0;
+    if (rtm_fault_alarm_ms   != 0 && (now - rtm_fault_alarm_ms)   < kRtmEndStickyMs) r |= (1 << 0);
+    if (rtm_arrival_alarm_ms != 0 && (now - rtm_arrival_alarm_ms) < kRtmEndStickyMs) r |= (1 << 1);
+    if (arrival_handback_cap.load(std::memory_order_relaxed) != kHandbackNone)        r |= (1 << 2);
+    telemetry.rx_state_flags = r;
   }
 
   // Finding 6-2: auto-expire Phase B approval when TX GPS goes stale.
@@ -3603,14 +3682,30 @@ static void runRtmLoopBody(unsigned long now)
     bool gps_tx_ok = (rx_tx_gps_timestamp > 0) &&
                      ((millis() - rx_tx_gps_timestamp) < (rtm_rx_active ? 5000UL : 10000UL));
 
+    // V2.5-Evo - 2026-10-07 - D-1: THE DISTANCE BYTE GOES TO 0xFF ("--" on the remote) AFTER 10 s
+    // WITHOUT A VALID DISTANCE. It used to keep the last value forever once either GPS went stale, so
+    // the remote showed a frozen number as if it were live (SOP-041 rule 4). It must NOT blank on every
+    // short gap either - that is why the active 0xFF write was taken out once (the FM bar went dark on
+    // every hiccup) - so distBlankStep() (Common/AutoReturnRules.h, host-tested) blanks only after
+    // kDistBlankStaleMs with no valid tick, and once blanked publishes a number again only after
+    // kDistBlankRecoverMs of continuously valid inputs (the hysteresis). It gates the TELEMETRY BYTE
+    // ONLY: the approach cap below is computed from the live distance exactly as before.
+    const bool dist_blank = distBlankStep(&rtm_dist_blank, (uint32_t)now, gps_rx_ok && gps_tx_ok,
+                                          kDistBlankStaleMs, kDistBlankRecoverMs);
+
     if (gps_rx_ok && gps_tx_ok)
     {
       float d = (float)TinyGPSPlus::distanceBetween(
           gps_last_lat, gps_last_lng, rx_tx_gps_lat, rx_tx_gps_lng);
 
-      // Always encode real distance when both GPS sources are valid.
+      // Encode the real distance when both GPS sources are valid (and the D-1 rule is not
+      // still holding the byte blank after a long gap).
       // 0-99: tenths of metre (0.0-9.9 m); 100-254: whole metres offset by 90 (10-164 m)
-      if (d < 10.0f)
+      if (dist_blank)
+      {
+        telemetry.rtm_distance = 0xFF;
+      }
+      else if (d < 10.0f)
       {
         telemetry.rtm_distance = (uint8_t)(d * 10.0f);
       }
@@ -3664,13 +3759,16 @@ static void runRtmLoopBody(unsigned long now)
     }
     else if (!rtm_rx_active)
     {
-      // FM/idle: never actively write 0xFF here. The struct field initialises to 0xFF;
-      // Fix B above updates it to real distance once gps_rx_ok && gps_tx_ok is satisfied.
-      // Actively resetting to 0xFF on any GPS hiccup caused the FM bar to stay dark.
+      // FM/idle: no 0xFF on a short GPS hiccup - actively resetting to 0xFF on any gap caused the
+      // FM bar to stay dark. V2.5-Evo - 2026-10-07 - D-1: but after kDistBlankStaleMs the byte IS set
+      // to 0xFF, by the dist_blank write after this if/else (the old "never actively write 0xFF"
+      // wording is history).
       // rtm_approach_cap must be 255 when RTM is inactive — no throttle capping outside RTM.
       rtm_approach_cap = 255;
     }
-    // GPS conditions failed (RTM active or inactive): keep last known distance and cap.
+    // GPS conditions failed (RTM active or inactive): keep the last cap; keep the last distance for
+    // up to kDistBlankStaleMs, then report it as unknown (D-1).
+    if (!(gps_rx_ok && gps_tx_ok) && dist_blank) telemetry.rtm_distance = 0xFF;
   }
 
   // ============================================================
@@ -3765,8 +3863,12 @@ static void runRtmLoopBody(unsigned long now)
     // the two heading-VALID branches, which by definition are the branches that do not need it.
     rtm_bootstrap_since_ms = 0;
     rtm_motion_ms          = 0;   // V2.5-Evo - 2026-09-19 - same reset sites as the bootstrap clock (the takeover memory itself is zeroed on the edge above, never here: Follow-Me may own it)
+    rtmGateFaultReset(&rtm_gate_fault);   // V2.5-Evo - 2026-10-07 - H-2: a new RTM run starts with no gate-fault time
 
-    // telemetry.rtm_distance already set to 0xFF by the block above (inactive path)
+    // V2.5-Evo - 2026-10-07 - comment fix (audit D-1): the block above does NOT set
+    // telemetry.rtm_distance to 0xFF on the inactive path - it reports the real distance while both
+    // fixes are fresh (Follow-Me and the remote's pre-arm check use it) and 0xFF only after
+    // kDistBlankStaleMs without a valid distance.
     return;
   }
 
@@ -3800,11 +3902,46 @@ static void runRtmLoopBody(unsigned long now)
     // fault, so a fault flapping in and out cannot hand the stick a fresh 2 s grace each time.
     steerTakeoverReset();
     if (thr_received < 25) rtm_motion_ms = 0;
+
+    // ============================================================
+    // V2.5-Evo - 2026-10-07 - H-2: GATES 2-7 FAILING UNDER A HELD TRIGGER END RTM.
+    // A failing gate 2-7 raises the emergency stop (motor 0) and used to leave rtm_rx_active TRUE for
+    // as long as the fault lasted: RTM half on, the motor dead under the rider's trigger, the remote
+    // still showing RTM, and no cue. Feathering never escaped it (the RTM twin of the FM_HOLD trap;
+    // SOP "manual control always wins" rule 2: a failure turns automation OFF). Now, once a gate 2-7
+    // has been failing for kRtmGateFaultMs of HELD-trigger time with no passing tick in between
+    // (rtmGateFaultStep: a release pauses the count, only a pass resets it), RTM ends on a fault:
+    //   - handbackCapArm(0) FIRST: the cap in force was 0 (the emergency stop), and it stays 0 until
+    //     the rider lets go of the trigger fully once - the arrival-style hand-back, so dropping the
+    //     emergency stop below can never give the motor the held trigger;
+    //   - rtm_rx_active false, emergency stop cleared, RTM's own cap back to 255;
+    //   - rtm_fault_alarm_ms: rx_state_flags bit 0 (sticky) so the remote ends RTM with "St" + the
+    //     stop buzz.
+    // A link loss (gate 7) counts too: the trigger byte is then the last one heard, so a rider who was
+    // squeezing when the link went has RTM ended 1.5 s later and gets manual back (after one release)
+    // when the link returns. A rider who was RELEASED when it went is not counted (gate 1 first).
+    // ============================================================
+    {
+      const bool held = (thr_received >= 25);
+      if (rtmGateFaultStep(&rtm_gate_fault, (uint32_t)now, held,
+                           rtm_rx_active && rtm_rx_emergency_stop, kRtmGateFaultMs, kRtmGateFaultMaxDtMs))
+      {
+        handbackCapArm(0);                 // FIRST: the motor stays at 0 until one full release
+        rtm_rx_active         = false;     // RTM ends - the inactive path from the next tick
+        rtm_rx_emergency_stop = false;
+        rtm_approach_cap      = 255;
+        rtm_fault_alarm_ms    = (now != 0) ? now : 1;
+        rtmGateFaultReset(&rtm_gate_fault);
+        Serial.printf("RTM [RX] H-2: a safety gate failed for %lu ms with the trigger held - return-to-me ENDED on a fault; throttle held at 0 until you let go of the trigger fully once, then manual\n",
+                      (unsigned long)kRtmGateFaultMs);
+      }
+    }
     return;
   }
 
   // All gates pass: clear emergency stop, update steering
   rtm_rx_emergency_stop = false;
+  rtmGateFaultReset(&rtm_gate_fault);   // V2.5-Evo - 2026-10-07 - H-2: a passing tick under a held trigger resets the count
   updateRtmSteering();
 
   // ============================================================

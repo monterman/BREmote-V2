@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - TELEMETRY (audits S-7, A-1, H-2): telemetry.fm_flags bit 6 = auto-return standing (FM_RETURN; with bit 1 = returning, without = waiting); TelemetryPacket gains index 19 rx_state_flags ([0] RTM fault-stop sticky, [1] RTM arrived sticky, [2] hand-back cap standing, [3] boot ID held, [4] RTM refresh armed) - appended, an older remote ignores it. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - ARRIVAL HAND-BACK CAP (owner rule): includes ../Common/AutoReturnRules.h and adds the arrival_handback_cap atomic (255 = none) + kHandbackReleaseThr (8 counts): manual RTM Gate 9 and auto-return arrival end the mode at once but keep the cap in force at arrival until one full trigger release. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - LOG FORMAT 3 (owner ruling: "level 4 should have both VESCs"): the 14 B VESC 2 block MOVES from the tail of VescLogDataL5 to the tail of VescLogDataL4 (L4 90 -> 104 B, static_assert 104, offsetof(vesc2_age_ms) == 90), so level 4 AND level 5 both carry it; the level-5 block now starts at byte 104 (L5 stays 126 B, offsetof(rider_lat) == 104). A field moved, so LOG_FILE_FORMAT_VER 2 -> 3 and the on-board readers refuse older files with a plain-English message (download logs BEFORE flashing; the PC log reader still decodes formats 1 and 2). CSV: LOG_CSV_HEADER_L4 = the 90 B column set (now LOG_CSV_HEADER_L4_MOTORS) + the 9 VESC 2 columns (62 columns); LOG_CSV_HEADER_L5 = L4 + the 14 level-5 columns (76); LOG_CSV_HEADER_L5_VESC2 is gone. Capacity restated for 62 / 104 / 126 B. Also (audit LOWs): "VESC 1 must not be CAN ID 2" at kVesc2CanId; the vescRelayBuffer comment; the LOG_CSV_ROW_BUF sizing comment (worst case ~602 B, 640 kept). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - COMMENTS ONLY (audit M-20): the fm_front_ahead_extra_m and kFmFrontLateralMinM comments name the new side floor (min_dist_m + 2 m above 11 m, fmFrontSideFloorM). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -2451,9 +2452,30 @@ struct __attribute__((packed)) TelemetryPacket {
     uint8_t rx_heading = 0xFF;        // index 13 — GPS COG÷2 (0-179→0-358°); 0xFF = N/A
     uint8_t fm_heading_err = 127;     // index 14 — bearing error+127; 127 = no data
     uint8_t fm_status = 0;            // index 15 — [7]=aux2_on [6]=aux1_on [5]=vesc_online [4]=rx_wetness [3:2]=heading_conf [1]=rtm_active [0]=fm_active
-    uint8_t fm_flags = 0;             // index 16 — Follow-Me engagement sub-state (assembled in RTMState.ino runRtmLoop): [7]=effective auto-return mode echo (1 = ON; V2.5-Evo 2026-09-19, read by the remote's display and return gesture) [6]=reserved [5]=steer takeover STANDING this tick (the stick is steering an auto-steer run; display only) [4]=steer_during_auto echo (1 = take over: the remote's Gate 4 steer-exit stands down; 0 = cancel) - both V2.5-Evo 2026-09-19, sent every tick in every FM state [3]=fault-stop-sticky [2]=armed-not-ready [1]=engaged (FM_ACTIVE, or FM_RETURN while it moves) [0]=armed. Was reserved_tx_imu (unused reserved byte).
+    uint8_t fm_flags = 0;             // index 16 — Follow-Me engagement sub-state (assembled in RTMState.ino runRtmLoop): [7]=effective auto-return mode echo (1 = ON; V2.5-Evo 2026-09-19, read by the remote's display and return gesture) [6]=AUTO-RETURN STANDING (V2.5-Evo 2026-10-07, audit S-7: fm_state is FM_RETURN; with [1] set it is RETURNING (moving), with [1] clear it is WAITING (parked); drops on every end of the return) [5]=steer takeover STANDING this tick (the stick is steering an auto-steer run; display only) [4]=steer_during_auto echo (1 = take over: the remote's Gate 4 steer-exit stands down; 0 = cancel) - both V2.5-Evo 2026-09-19, sent every tick in every FM state [3]=fault-stop-sticky [2]=armed-not-ready [1]=engaged (FM_ACTIVE, or FM_RETURN while it moves) [0]=armed. Was reserved_tx_imu (unused reserved byte).
     uint8_t rx_bearing_to_tx = 0xFF;  // index 17 — bearing from buggy toward rider÷2; 0xFF = N/A
-    uint8_t link_quality = 0;         // index 18 (must be last)
+    uint8_t link_quality = 0;         // index 18 (was "must be last"; it is only rotated like every other index, and the remote reads it by name)
+    // V2.5-Evo - 2026-10-07 - index 19 - rx_state_flags: how the BUGGY ended a return, for the remote
+    // (audits A-1, H-2; assembled in RTMState.ino runRtmLoopBody next to fm_flags). APPENDED, so every
+    // older index keeps its place; an older remote drops it (it keeps only indices below its own
+    // sizeof(TelemetryPacket), Radio.ino waitForTelemetry), and the rotation grows 19 -> 20 slots
+    // (about 2.0 s at 10 Hz). Bits:
+    //   [0] RTM FAULT-STOP, sticky 6 s: the buggy ended return-to-me on a fault (Phase C, the H-2 gate
+    //       timeout, the H-1 refresh expiry). REMOTE TO DO: on the rising edge while RTM is ACTIVE, end
+    //       RTM at once with "St" + the stop buzz (the RTM twin of fm_flags bit 3), send 0xF1/0, and
+    //       drop its own RTM cap (the buggy holds the throttle at 0 until one full release).
+    //   [1] RTM ARRIVED, sticky 6 s: the buggy ended return-to-me at Gate 9. REMOTE TO DO: end RTM with
+    //       the silent "St", send 0xF1/0, drop its own RTM cap (the buggy holds the arrival cap).
+    //   [2] HAND-BACK CAP STANDING: the buggy is holding the cap that was in force at an arrival (manual
+    //       RTM or auto-return) or an RTM fault end, until the trigger is fully released once. Display
+    //       only - the remote must not add a cap of its own for it.
+    //   [3] REMOTE BOOT ID HELD (S-8): the buggy has heard a boot ID from this remote (0xF1 value
+    //       0x80 | id), so a remote power cycle cancels a standing return and a parked auto-return
+    //       waits through a link loss. Set from the S-8 commit on; 0 before it.
+    //   [4] RTM REFRESH ARMED (H-1): the current RTM run has heard an 0xF1/2 refresh, so the buggy will
+    //       end RTM if refreshes stop for 5 s. Set from the H-1 commit on; 0 before it.
+    //   [5..7] reserved, 0.
+    uint8_t rx_state_flags = 0;       // index 19 - see above
 } telemetry;
 
 /*

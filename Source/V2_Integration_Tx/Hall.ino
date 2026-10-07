@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-07 - R-3: runMenu() ignores the toggle after an RTM arm ceremony until it has been seen
+//   centred (ceremony_toggle_latch, set by runDoubleSqueezeArm()), so a LEFT toggle still held for the in-ceremony
+//   RIGHT tap -> LEFT hold can no longer fall through into a gear step, station change or lock when the ceremony
+//   ends. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-07 - mag_mode 4 hold, two owner rulings (audits R-2 and R-7). The 2.5 s hold now decides at the
 //   2.5 s mark what removal will do (magHoldVerdict(), latched): (1) a Return-To-Me ALREADY ACTIVE -> the hold is
 //   ignored, no buzz, the return continues (it used to restart the arm ceremony with no "St" and no cooldown);
@@ -1214,8 +1218,28 @@ void runMagGesture()
   }
 }
 
+// ---- V2.5-Evo - 2026-10-07 - R-3: IGNORE THE TOGGLE UNTIL IT IS RELEASED AFTER AN RTM CEREMONY ----
+// THE BUG: the blocking RTM arm ceremony (runDoubleSqueezeArm(), RTMState.ino) can end - window expiry, an
+// A1/A0 cancel, a refusal, or RTM going ACTIVE - while the rider is still holding the LEFT toggle for the
+// in-ceremony RIGHT tap -> LEFT hold. That held toggle then reached handleGearToggle() as a brand-new press:
+// a gear-down step at once and, after 2 s, a Follow-Me station change (FM armed) or a remote lock.
+// THE FIX: the ceremony sets this latch when it starts; while it is set, runMenu() ignores the toggle, and
+// the first pass that sees the toggle centred clears it. A toggle that is held when the ceremony ends can
+// therefore never become a gear, station or lock action. Non-blocking: loop() keeps running, so RTM's gates
+// run normally if the ceremony ended in RTM ACTIVE. Written by the loop task only (runDoubleSqueezeArm()
+// and runMenu() both run on it). The toggle route is unaffected: handleGearToggle() already waits for its
+// own release after the ceremony returns, so the latch is clear on the very next pass.
+static bool ceremony_toggle_latch = false;
+
 void runMenu()
 {
+  // V2.5-Evo - 2026-10-07 - R-3: see ceremony_toggle_latch above.
+  if (ceremony_toggle_latch)
+  {
+    if (ctminus() || ctplus()) return;   // still held since the ceremony - not a new press
+    ceremony_toggle_latch = false;       // released: from here the toggle is a fresh input again
+  }
+
   if(remote_error == 0 || remote_error_blocked == 1)
   {
     if(system_locked)

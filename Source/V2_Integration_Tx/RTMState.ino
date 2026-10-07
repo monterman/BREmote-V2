@@ -1,3 +1,9 @@
+// V2.5-Evo - 2026-10-07 - R-3: rtm_arm_window_s itself is unchanged, but once a valid RIGHT tap -> LEFT hold has
+//   started inside it, the ceremony keeps waiting until that sequence completes or ends
+//   (return_gesture_in_progress, set by returnGestureCeremonyPoll()); no squeeze counts past the window. The
+//   ceremony also sets ceremony_toggle_latch (Hall.ino) so a toggle still held when it exits is ignored until
+//   released and can never become a gear, station or lock action. No confStruct change, sizeof stays 136,
+//   SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-07 - R-1: in runDoubleSqueezeArm() a squeeze counts only after the trigger has been seen
 //   released (thr_scaled < 10) since the ceremony started, and again between squeeze 1 and squeeze 2. A trigger
 //   held through a magnet hold can no longer complete the ceremony on its own. No confStruct change, sizeof
@@ -471,6 +477,13 @@ static float decodeRtmDistanceM()
 //   RETURN [TX] print style, added because the owner could not get the in-ceremony second gesture
 //   to fire on the bench and the remote was not on USB. Detector timing, thresholds and ordering
 //   are untouched.
+// V2.5-Evo - 2026-10-07 - R-3: true while a valid RIGHT tap -> LEFT hold sequence is under way inside the
+// ceremony (written by returnGestureCeremonyPoll() on every call). runDoubleSqueezeArm() keeps waiting past
+// rtm_arm_window_s while it is true, so a sequence started inside the window is allowed to finish instead of
+// being cut off mid-hold. It is bounded: a pending tap expires COMBO_WINDOW_MS after the tap, a started hold
+// ends on release, completion or a squeeze, so the extension is at most COMBO_WINDOW_MS + rtm_hold_duration_s.
+static bool return_gesture_in_progress = false;
+
 static bool returnGestureCeremonyPoll(bool reset)
 {
   static bool          arm_hold_released = false;   // the LEFT hold that started the ceremony has been let go
@@ -479,6 +492,7 @@ static bool returnGestureCeremonyPoll(bool reset)
   static unsigned long right_down_ms     = 0;
   static unsigned long right_tap_ms      = 0;       // millis() of the last RIGHT tap; 0 = none pending
   static unsigned long left_down_ms      = 0;
+  return_gesture_in_progress = false;   // V2.5-Evo - 2026-10-07 - R-3: recomputed below on every live call
   if (reset) {
     arm_hold_released = false;
     right_was_down = left_was_down = false;
@@ -519,6 +533,15 @@ static bool returnGestureCeremonyPoll(bool reset)
     right_tap_ms = 0;   // consumed: the same hold cannot fire twice
     Serial.println("RETURN [TX] ceremony poll: gesture fired (tap+hold combo complete)");   // V2.5-Evo - 2026-09-19 - diagnostic only
     return true;
+  }
+
+  // V2.5-Evo - 2026-10-07 - R-3: is a valid sequence under way? A RIGHT tap is pending and either (a) the
+  // LEFT hold has started within COMBO_WINDOW_MS of it and is still down, or (b) LEFT is not down yet and
+  // the tap is still young enough for a LEFT hold to qualify. The trigger must be released, because the
+  // gesture can only fire with thr_scaled < 10; a squeeze ends the extension at once.
+  if (right_tap_ms != 0 && thr_scaled < 10) {
+    if (left) return_gesture_in_progress = (left_down_ms - right_tap_ms) < COMBO_WINDOW_MS;
+    else      return_gesture_in_progress = (now - right_tap_ms) < COMBO_WINDOW_MS;
   }
   return false;
 }
@@ -582,6 +605,11 @@ static void runDoubleSqueezeArm()
 
   returnGestureCeremonyPoll(true);   // V2.5-Evo - 2026-09-19 - fresh detector; the arming hold is still down
 
+  // V2.5-Evo - 2026-10-07 - R-3: from here on, a toggle must be seen centred before runMenu() (Hall.ino)
+  // acts on it again. Set at the start so EVERY exit below (squeeze timeout, A1/A0 cancel, pre-arm refusal,
+  // RTM ACTIVE) is covered without touching each return path; nothing reads it while this function blocks.
+  ceremony_toggle_latch = true;
+
   // V2.5-Evo - 2026-10-07 - RELEASE-FIRST SQUEEZES (audit R-1). THE BUG: the waits below accepted any
   // trigger above 30% held for 500 ms and never asked whether the trigger had been let go first. A rider
   // who kept the trigger held through a magnet hold therefore completed the whole ceremony with no
@@ -598,11 +626,13 @@ static void runDoubleSqueezeArm()
   // Wait for first squeeze: thr > 30% (thr_scaled > 76) held for 500ms continuous
   bool          first_ok = false;
   unsigned long hold_ms  = 0;
-  while (millis() - rtm_arm_start_ms < (unsigned long)usrConf.rtm_arm_window_s * 1000UL)
+  while (millis() - rtm_arm_start_ms < (unsigned long)usrConf.rtm_arm_window_s * 1000UL ||
+         return_gesture_in_progress)   // V2.5-Evo - 2026-10-07 - R-3: a started RIGHT tap -> LEFT hold may finish
   {
     advanceArrow();   // bob arrow every 100ms while waiting for squeeze
     if (thr_scaled < 10) thr_released_seen = true;   // V2.5-Evo - 2026-10-07 - R-1: release seen
-    if (thr_released_seen && thr_scaled > 76)        // V2.5-Evo - 2026-10-07 - R-1: counts only after a release
+    if (thr_released_seen && thr_scaled > 76 &&     // V2.5-Evo - 2026-10-07 - R-1: counts only after a release
+        millis() - rtm_arm_start_ms < (unsigned long)usrConf.rtm_arm_window_s * 1000UL)   // R-3: never past the window
     {
       if (hold_ms == 0) hold_ms = millis();
       if (millis() - hold_ms >= 500UL) { first_ok = true; hold_ms = 0; break; }
@@ -647,11 +677,13 @@ static void runDoubleSqueezeArm()
     bool second_ok = false;
     hold_ms = 0;
     advanceArrow();   // prime arrow for second wait
-    while (millis() - rtm_arm_start_ms < (unsigned long)usrConf.rtm_arm_window_s * 1000UL)
+    while (millis() - rtm_arm_start_ms < (unsigned long)usrConf.rtm_arm_window_s * 1000UL ||
+           return_gesture_in_progress)   // V2.5-Evo - 2026-10-07 - R-3: a started RIGHT tap -> LEFT hold may finish
     {
       advanceArrow();   // bob arrow every 100ms while waiting for second squeeze
       if (thr_scaled < 10) thr_released_seen = true;   // V2.5-Evo - 2026-10-07 - R-1: release seen
-      if (thr_released_seen && thr_scaled > 76)        // V2.5-Evo - 2026-10-07 - R-1: counts only after a release
+      if (thr_released_seen && thr_scaled > 76 &&     // V2.5-Evo - 2026-10-07 - R-1: counts only after a release
+          millis() - rtm_arm_start_ms < (unsigned long)usrConf.rtm_arm_window_s * 1000UL)   // R-3: never past the window
       {
         if (hold_ms == 0) hold_ms = millis();
         if (millis() - hold_ms >= 500UL) { second_ok = true; hold_ms = 0; break; }

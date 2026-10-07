@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-06 - AUDIT M-20 + L-25: fmFrontSideFloorM() - the front side floor is now
+//   max(13, pass minimum, min_dist_m + 2), resolved once here for every RX site. No change for min_dist_m <= 11 m.
+//   L-26: the fmShieldMake input comment no longer says the half-angle is a fixed 30 deg.
 // V2.5-Evo - 2026-10-06 - COMMENTS ONLY (audit L-19): the derived front angle is 35-45 deg (was written 35..80); the
 //   shield block no longer claims a settled F4/F5 station is "never in the rider's likely path" - it is 5 deg outside
 //   the cone at the 35 deg cap, which is why the hold band and the 3 s latch exist.
@@ -144,7 +147,8 @@ static inline float fmFrontAheadExtraM(uint16_t stored_m, float default_m, float
 
 // fmFrontStationGeom - the FRONT station from its two offsets, in the rider's frame.
 //   side  = side_m, EXACTLY. The caller passes the lateral clearance floor (13 m carve + GPS, raised
-//           to the pass minimum when min_dist_m makes that larger). Never narrowed; widened only in
+//           to the pass minimum when min_dist_m makes that larger, and since audit M-20 to min_dist_m + 2 m:
+//           fmFrontSideFloorM). Never narrowed; widened only in
 //           the one case named below (a follow distance over 22.7 m).
 //   ahead = d_follow_m + ahead_extra_m, then held inside the angle band (below).
 //   phi   = atan(side / ahead), degrees off dead ahead, measured at the rider.
@@ -213,6 +217,30 @@ static inline void fmFrontStationGeom(float d_follow_m, float ahead_extra_m, flo
   if (phi_deg)    *phi_deg    = phi;
   if (r_m)        *r_m        = r;
   if (side_out_m) *side_out_m = side;
+}
+
+// V2.5-Evo - 2026-10-06 - audit M-20 + L-25: fmFrontSideFloorM - THE FRONT STATION'S SIDE FLOOR, resolved
+// in ONE place (it was written out by hand at three sites in the RX).
+//     side floor = max(lateral_min_m, pass_lateral_m, min_dist_m + margin_m)
+// WHY THE THIRD TERM. Before it, the floor was max(13 m, pass minimum), and the pass minimum is min_dist_m
+// once that is over 10.1 m. So with min_dist_m above 11 m a settled F4/F5 station sat only 0-2 m outside
+// the min_dist_m circle round the rider - and EXACTLY on it from 13 m up. That circle is two things at once:
+// the shield's circle (capsule) and the min_dist_m hard-stop radius (cap 0). A station on its edge makes
+// shield escapes start and stop, and cap 0 flick on and off, ahead of a fast rider. Adding the margin
+// (the RX passes kFmSideHysteresisM, 2 m - the same band that holds an escape) keeps the station at least
+// that far outside the circle at every min_dist_m. It only ever WIDENS the side (the safe direction).
+// For min_dist_m up to lateral_min_m - margin_m (11 m) nothing changes: the owner's 4 m gives 13 m, the
+// same float, bit for bit.
+// Inputs: lateral_min_m (13, carve + GPS), pass_lateral_m (the pass minimum, already raised to min_dist_m),
+//         min_dist_m (usrConf.min_dist_m), margin_m (2). Returns metres. No side effects.
+static inline float fmFrontSideFloorM(float lateral_min_m, float pass_lateral_m, float min_dist_m,
+                                      float margin_m)
+{
+  float side = lateral_min_m;
+  if (side < pass_lateral_m) side = pass_lateral_m;
+  const float clear = min_dist_m + margin_m;
+  if (side < clear) side = clear;
+  return side;
 }
 
 // fmStationLimitDeg - the HARD FLOOR, as a ceiling on |psi|: 180 - the effective front angle.
@@ -666,7 +694,8 @@ static inline float fmShieldHoldBandM(float r_m, float phi_deg, float half_deg, 
 }
 
 // fmShieldMake - build this tick's shield from the rider's (filtered) speed and the four constants.
-// Inputs: rider_speed_kmh; horizon_s (5); half_angle_deg (30, clamped 1..89); min_speed_kmh (12);
+// Inputs: rider_speed_kmh; horizon_s (5); half_angle_deg (the RX passes fmShieldHalfAngleDeg(speed),
+//         15-30 deg - audit L-26; clamped 1..89 here); min_speed_kmh (12, or 10 while the cone is on);
 //         circle_min_m (3); min_dist_m (usrConf.min_dist_m - the circle grows to it if it is larger);
 //         d_follow_m - the circle is never larger than the follow distance. At any sane tuning this
 //         changes nothing (owner default: circle 4 m, follow 6 m); it exists so a degenerate tuning

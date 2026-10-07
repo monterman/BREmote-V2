@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-06 - COMMENTS ONLY (audit M-20): the fm_front_ahead_extra_m and kFmFrontLateralMinM comments name the new side floor (min_dist_m + 2 m above 11 m, fmFrontSideFloorM). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - VESC 2 OVER CAN, part 2 (see Logger.ino): a 14 B VESC 2 block APPENDED AT THE TAIL of VescLogDataL5 (112 -> 126 B, static_assert 126, new offsetof assert 112): age, motor + battery current, duty, voltage, ERPM, FET + motor temperature, fault code, with non-zero N/A sentinels written whenever VESC 2 has never answered or its data is older than kVesc2StaleMs. Level 5 only; the base record and level 4 are untouched, so LOG_FILE_FORMAT_VER STAYS 2 and every existing 62 / 90 / 112 B log still parses by its own record_size. CSV: LOG_CSV_HEADER_L5_VESC2 (+9 columns, 76 total), every N/A prints -999. logCsvHeaderFor() / logFormatCsvRow() tier the L4/L5 boundaries by OFFSET now, so a 112 B file keeps its level-5 columns. Capacity notes restated: level 5 about 1 h 19 min at 3 Hz / 48 min at 5 Hz. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - VESC 2 OVER CAN, part 1 (see VESC.ino, System.ino): vesc2_struct + extern vesc2 (VESC 2 telemetry with its OWN age stamp last_ok_ms and an ever_ok validity flag), the kVesc2* constants (CAN ID 2, 1 Hz, 10 s backoff after 3 misses, 50 ms reply cap, 2500 ms freshness limit), VESC2_PACK_LEN 27, and the g_diag_vesc2_polls / g_diag_vesc2_ok / g_vesc2_miss_streak counters. Read by nothing in the control path. No confStruct change, sizeof stays 200, SW_VERSION stays 36; no log-record change in this part.
 // V2.5-Evo - 2026-10-06 - COMMENT ONLY (audit L-19): the fm_front_ahead_extra_m comment gives the derived front angle as 35-45 deg (it still said 35-80). No code, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -755,7 +756,8 @@ struct confStruct {
     // fm_front_ahead_extra_m - how much further AHEAD of the rider a front station (F4/F5) sits,
     //   beyond the follow distance, in WHOLE METRES. ahead = d_follow + this. Sideways is NOT set
     //   here: it is the lateral floor exactly (kFmFrontLateralMinM 13 m, or the pass minimum if
-    //   min_dist_m makes that larger) and never more.
+    //   min_dist_m makes that larger, or min_dist_m + 2 m above 11 m - audit M-20, fmFrontSideFloorM)
+    //   and never more.
     //     0    = use kFmFrontAheadExtraDefaultM (7). What every fielded board reads in these bytes
     //            (SW36 without the field: padding = 0), so the default is what they get.
     //     4-10 = the extra itself. Example: d_follow 9 + 7 = 16 m ahead, 13 m side -> 39 deg, 20.6 m.
@@ -941,7 +943,7 @@ static const float kFmFrontAngleMinDeg       = 35.0f;   // degrees; floor on the
 // the clearance is about sqrt((ahead - 8)^2 + 5^2) - 5.4 m at 10 m ahead, 7.1 m at 13, 9.4 m at 16. With
 // 45 the derived angle is 35-45 deg; d_follow 6 + 4 -> 13 m ahead x 13 m side at 45 deg.
 static const float kFmFrontAngleMaxDeg       = 45.0f;   // degrees; ceiling on the DERIVED angle - ahead >= side, never closer ahead than to the side
-static const float kFmFrontLateralMinM       = 13.0f;   // metres; carve 8 m + relative GPS 5 m. The front station's side offset IS this (or the pass minimum if larger), exactly
+static const float kFmFrontLateralMinM       = 13.0f;   // metres; carve 8 m + relative GPS 5 m. The front station's side offset IS this (or the pass minimum / min_dist_m + 2 m if larger - fmFrontSideFloorM, audit M-20), exactly
 static const float kFmFrontAheadExtraDefaultM = 7.0f;   // metres; what fm_front_ahead_extra_m == 0 means
 static const float kFmFrontAheadExtraMinM     = 4.0f;   // metres; smallest legal extra (1-3 are raised to this)
 static const float kFmFrontAheadExtraMaxM     = 10.0f;  // metres; largest legal extra (above it reads as the default)

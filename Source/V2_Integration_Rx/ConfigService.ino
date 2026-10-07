@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-06 - audit M-20 + L-25: the fm_front_ahead_extra_m NOTE prints the real side floor (fmFrontSideFloorForConfigM), not a fixed 13 m.
 // V2.5-Evo - 2026-10-06 - L-12: cfgValidateCrossField() CLAMPS zone_angle_exit_deg (and zone_angle_enter_deg, so enter can never sit above the capped exit) to 90 deg with a NOTE - above 90 the rear-diagonal Schmitt could stay engaged with the buggy ahead of the rider. A clamp, never a rejection (LOAD path). The kCfgFields rows keep 0-180 so old backups import. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-04 - L-2: cfgValidateCrossField() now CLAMPS fm_align_cap too - outside the validated 8-80 range it falls back to the shipped default 13 (never 0, which would stop the buggy, and never above 80). It was the one of SW36's three fields with no cross-field load clamp while fm_return_mode and fm_align_influence had one. Same reasoning as those two: this validator runs on the LOAD path, so a range rejection there fails the load and falls back to defaults - the config/pairing/compass-calibration wipe this function exists to prevent. Not reachable from a valid stored value; consistency and the corrupt-blob case. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - FRONT STATIONS BY OFFSET: the kCfgFields row fm_front_angle_deg becomes fm_front_ahead_extra_m (same u16, same offset - a rename in place, sizeof stays 200, SW_VERSION stays 36, no config wipe), row range 0-10 m. cfgValidateCrossField() swaps the angle clamps for the extra's: 0 = default 7 kept as 0; 1-3 raised to 4 with a NOTE; above 10 reset to 0 (the default) with a NOTE, since such a value can only be an old ANGLE (35-80) still in a blob. Clamps, never rejections (LOAD path). ?get / ?set use the new name.
@@ -277,7 +278,9 @@ bool cfgValidateCrossField(confStruct &candidate, String &err)
     Serial.printf("NOTE: Front Station Extra Ahead %u m is above the %u m maximum (an old Front Station\n",
                   stale, (unsigned)kFmFrontAheadExtraMaxM);
     Serial.printf("      Angle value) - reset to 0 = the %u m default. Sideways stays %.0f m.\n",
-                  (unsigned)kFmFrontAheadExtraDefaultM, (double)kFmFrontLateralMinM);
+                  (unsigned)kFmFrontAheadExtraDefaultM,
+                  // V2.5-Evo - 2026-10-06 - audit M-20 + L-25: the real side floor (13 m, or more at a large min_dist_m)
+                  (double)fmFrontSideFloorForConfigM(candidate.min_dist_m));
   }
   if (candidate.fm_front_ahead_extra_m != 0 &&
       candidate.fm_front_ahead_extra_m < (uint16_t)kFmFrontAheadExtraMinM)

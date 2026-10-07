@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-06 - AUDIT M-20 + L-25 (owner-approved) + L-26: the front side floor is max(13, pass minimum, min_dist_m + 2 m),
+//   resolved by the one header helper fmFrontSideFloorM() at computeFmTarget(), the F4/F5 engage print and (through fmFrontSideFloorForConfigM)
+//   the ConfigService note. Bitwise unchanged for min_dist_m <= 11 m (the owner's 4 m gives 13 m). L-26: two stale "+/-30 deg" cone comments fixed.
 // V2.5-Evo - 2026-10-06 - COMMENTS ONLY (audits L-18, L-19): the G-5 twin's steered line is documented as never shield-tested and why that is negligible;
 //   the derived front angle is 35-45 deg (two comments still said 35-80); the lookahead comment no longer implies a wide margin between station and cone.
 // V2.5-Evo - 2026-10-06 - AUDIT M-19 (owner-approved): F4/F5 SELECTED WHILE STOPPED. The no-course clause no longer latches the F4/F5 abort while the station is
@@ -2025,7 +2028,8 @@ static const float    kFmAlongGainKmhPerM    = 0.5f;    // km/h per metre of alo
 // All five are 🔴 PROVISIONAL compile-time constants, not settings (no confStruct change). The shield
 // geometry is in FollowMeStation.h (fmShieldMake / fmShieldDecide); these are its numbers.
 // kFmShieldHorizonS / kFmShieldHalfAngleDeg / kFmShieldMinSpeedKmh - the CONE ahead of a foiling rider:
-//   speed x 5 s long, +/-30 deg wide, only at or above 12 km/h. From 31 foil sessions (24,128 foiling
+//   speed x 5 s long, +/-15-30 deg wide by speed (fmShieldHalfAngleDeg; a fixed 30 until audit M-16 b - comment
+//   corrected per audit L-26), only at or above 12 km/h. From 31 foil sessions (24,128 foiling
 //   seconds): a straight-line projection is 13 m off at 5 s one time in ten, but as an angle that p90
 //   miss is about 28 deg at 15-20 km/h and nearly constant past 2-3 s - hence a cone, not a strip.
 //   12 km/h is the foiling threshold that data was cut at. Revisit with activity-tagged sessions and
@@ -2061,6 +2065,18 @@ static const float    kFmLookStepM           = 1.0f;    // metres per tick
 static const uint32_t kFmShieldSettledEscapeMs = 3000;  // ms
 static const float    kFmShieldCircleMinM    = 3.0f;    // metres; raised to min_dist_m if that is larger, never above d_follow
 static const float    kFmSideHysteresisM     = 2.0f;    // metres; side-test Schmitt band and escape hold
+
+// V2.5-Evo - 2026-10-06 - audit M-20 + L-25: fmFrontSideFloorForConfigM - the front station's side floor for a
+// given min_dist_m, for ConfigService.ino. That file is concatenated BEFORE this one, so it cannot see the
+// file-local constants above (kFmPassLateralBaseM, kFmSideHysteresisM); the Arduino build hoists this
+// function's prototype, so it can call this. Same resolution and same header helper as computeFmTarget().
+// Input: min_dist_m (metres). Returns the side floor, metres. No side effects; used for a printed note only.
+float fmFrontSideFloorForConfigM(float min_dist_m)
+{
+  float pass = kFmPassLateralBaseM;
+  if (pass < min_dist_m) pass = min_dist_m;
+  return fmFrontSideFloorM(kFmFrontLateralMinM, pass, min_dist_m, kFmSideHysteresisM);
+}
 
 // ---- FM_RETURN constants (V2.5-Evo - 2026-09-19) ----
 // Compile-time, like every other kFm* above: no confStruct fields (the three SW36 fields that ARE
@@ -4229,7 +4245,7 @@ static void computeFmTarget(double* out_lat, double* out_lng)
   // ==========================================================================================
   // V2.5-Evo - 2026-10-06 - FRONT STATIONS BY OFFSET (owner rule). The angle + radius lines above
   // are history: the front station is now placed by two offsets and phi / r are DERIVED -
-  //   side    = lateral_min, EXACTLY (13 m, or the pass minimum when min_dist_m raises it)
+  //   side    = lateral_min, EXACTLY (13 m, or the pass minimum / min_dist_m + 2 m when min_dist_m raises it - audit M-20)
   //   ahead   = d_follow + fm_front_ahead_extra_m (0 = 7 m, legal 4-10), held so 35 <= phi <= 45 (2026-10-06, audit M-12: ahead >= side)
   //             (past d_follow 22.7 m the radius is d_follow and side grows with it - see the helper)
   //   phi_eff = atan(side / ahead), r_front = hypot(side, ahead)
@@ -4239,8 +4255,10 @@ static void computeFmTarget(double* out_lat, double* out_lng)
                                                kFmFrontAheadExtraMinM, kFmFrontAheadExtraMaxM);
   float pass_lateral = kFmPassLateralBaseM;
   if (pass_lateral < usrConf.min_dist_m) pass_lateral = usrConf.min_dist_m;
-  float lateral_min = kFmFrontLateralMinM;
-  if (lateral_min < pass_lateral) lateral_min = pass_lateral;
+  // V2.5-Evo - 2026-10-06 - audit M-20 + L-25: the side floor is max(13, pass, min_dist_m + 2 m), resolved by
+  // the one header helper (also used by the engage print and ConfigService). Unchanged for min_dist_m <= 11 m.
+  const float lateral_min = fmFrontSideFloorM(kFmFrontLateralMinM, pass_lateral, usrConf.min_dist_m,
+                                              kFmSideHysteresisM);
   float front_ahead = 0.0f, phi_eff = 0.0f, r_front = 0.0f, front_side = 0.0f;
   fmFrontStationGeom(d_follow, ahead_extra, lateral_min, kFmFrontAngleMinDeg, kFmFrontAngleMaxDeg,
                      &front_ahead, &phi_eff, &r_front, &front_side);
@@ -4528,7 +4546,8 @@ static void computeFmTarget(double* out_lat, double* out_lng)
 
   // ---- V2.5-Evo - 2026-10-06 - audit H-2: THE RIDER SHIELD FOR THIS TICK ----
   // A circle round the rider always (3 m, or min_dist_m if larger) and, while he is foiling (>= 12 km/h),
-  // a cone ahead of him along his course: speed x 5 s deep, +/-30 deg (FollowMeStation.h). It is drawn
+  // a cone ahead of him along his course: speed x 5 s deep, +/-15-30 deg by speed (FollowMeStation.h; see
+  // M-16 b below - comment corrected per audit L-26). It is drawn
   // round the ANCHOR - the filtered rider position pushed forward by the filter lag, the same point every
   // station is placed around - so the shield and the stations agree on where the rider is; the buggy is
   // re-expressed from the filtered-position frame by subtracting lag_m along the course (the cross-track
@@ -7014,8 +7033,9 @@ static void runFmLoopBody(unsigned long now)
                                                  kFmFrontAheadExtraMinM, kFmFrontAheadExtraMaxM);
         float pass_p = kFmPassLateralBaseM;
         if (pass_p < usrConf.min_dist_m) pass_p = usrConf.min_dist_m;
-        float latmin_p = kFmFrontLateralMinM;
-        if (latmin_p < pass_p) latmin_p = pass_p;
+        // V2.5-Evo - 2026-10-06 - audit M-20 + L-25: the same header helper as computeFmTarget().
+        const float latmin_p = fmFrontSideFloorM(kFmFrontLateralMinM, pass_p, usrConf.min_dist_m,
+                                                 kFmSideHysteresisM);
         float ahead_p = 0.0f, phie_p = 0.0f, rf_p = 0.0f, side_p = 0.0f;
         fmFrontStationGeom(d_f, extra_p, latmin_p, kFmFrontAngleMinDeg, kFmFrontAngleMaxDeg,
                            &ahead_p, &phie_p, &rf_p, &side_p);

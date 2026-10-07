@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-06 - AUDIT M-20 + L-23: ctlTick() and section 25 resolve the side floor with fmFrontSideFloorM (max(13, pass,
+//   min_dist + 2)); section 1 pins it (bitwise unchanged up to 11 m); section 25's min_dist grid is dense across 10-15 m in 0.1 m
+//   steps and asserts every settled station is at least the hold band clear of the circle/capsule; the largest unflagged one-tick
+//   lookahead change is asserted < 0.5 m.
 // V2.5-Evo - 2026-10-06 - AUDIT M-19: degradedTick() restates the no-course tick (fmNoCourseAbortLatches); section 21's stopped
 //   F4 case now expects F4 to survive the wait; new section 33 rides F4 selected while stopped through 4 s of no course and out
 //   to the front station, and keeps the two cases that still latch.
@@ -140,7 +144,7 @@ static Tick ctlTick(Ctl &c, uint8_t m_decl, float near_diag, float d_follow, uin
   Tick t;
   c.now_ms += (uint32_t)(dt * 1000.0f + 0.5f);
   float pass = kPassLateral;  if (pass < min_dist) pass = min_dist;
-  float latmin = kLateralMin; if (latmin < pass) latmin = pass;
+  const float latmin = fmFrontSideFloorM(kLateralMin, pass, min_dist, kSideBand);   // audit M-20, as the RX
   const float extra = fmFrontAheadExtraM(extra_stored, kExtraDefault, kExtraMin, kExtraMax);
   float ahead, phi, rf;
   fmFrontStationGeom(d_follow, extra, latmin, kFrontMin, kFrontMax, &ahead, &phi, &rf, nullptr);
@@ -413,6 +417,30 @@ int main()
     frontGeom(9.0f, 0, 20.0f, &ahead, &phi, &r);
     assert(near_eq(ahead, 20.0f, 0.001f) && near_eq(phi, 45.0f, 0.01f));
     assert(near_eq(r * sinf(phi * BREMOTE_FMS_DEG2RAD), 20.0f, 0.01f));
+
+    // V2.5-Evo - 2026-10-06 - audit M-20: fmFrontSideFloorM = max(13, pass, min_dist + 2). The owner's
+    // min_dist 4 gives 13 m BIT FOR BIT (the same float the old two-term floor gave), and so does every
+    // min_dist up to 11 m; above that the side is min_dist + 2.
+    {
+      auto oldFloor = [](float md) { float p = kPassLateral; if (p < md) p = md;
+                                     float l = kLateralMin; if (l < p) l = p; return l; };
+      auto newFloor = [](float md) { float p = kPassLateral; if (p < md) p = md;
+                                     return fmFrontSideFloorM(kLateralMin, p, md, kSideBand); };
+      const float f4 = newFloor(4.0f), o4 = oldFloor(4.0f);
+      assert(memcmp(&f4, &o4, sizeof(float)) == 0 && f4 == 13.0f);
+      for (int i = 0; i <= 1100; i++) {                       // 0.00 .. 11.00 m in 1 cm steps: unchanged
+        const float md = 0.01f * (float)i;
+        const float a = newFloor(md), b = oldFloor(md);
+        assert(memcmp(&a, &b, sizeof(float)) == 0);
+      }
+      assert(near_eq(newFloor(11.5f), 13.5f, 1e-5f));
+      assert(near_eq(newFloor(13.0f), 15.0f, 1e-5f));
+      assert(near_eq(newFloor(20.0f), 22.0f, 1e-5f));
+      for (int i = 0; i <= 3000; i++) {                       // never narrower than the old floor, never inside min_dist + 2
+        const float md = 0.01f * (float)i;
+        assert(newFloor(md) >= oldFloor(md) && newFloor(md) >= md + kSideBand - 1e-5f);
+      }
+    }
   }
 
   // ======================================================================================
@@ -1727,20 +1755,27 @@ int main()
     // presets, at the radius the schedule gives them - must be OUTSIDE the shield with the cone widened
     // by the hold band. A failing config is printed before the assert fires.
     const float taus[5] = { 5.0f, 3.0f, 2.0f, 1.0f, 0.5f };        // kSteerPresets[].target_filter_tau_s
-    const float mds[11] = { 1.0f, 2.0f, 3.0f, 4.0f, 6.0f, 8.0f, 10.1f, 12.0f, 13.0f, 15.0f, 20.0f };
+    // V2.5-Evo - 2026-10-06 - audit M-20: the min_dist grid is DENSE across 10-15 m (0.1 m steps), the band
+    // where the side floor used to meet the capsule; the sparse points either side are kept.
+    float mds[64]; int n_md = 0;
+    { const float lo[6] = { 1.0f, 2.0f, 3.0f, 4.0f, 6.0f, 8.0f };
+      for (int i = 0; i < 6; i++) mds[n_md++] = lo[i];
+      for (int i = 0; i <= 50; i++) mds[n_md++] = 10.0f + 0.1f * (float)i;
+      mds[n_md++] = 20.0f; }
     const float sbs[7]  = { 0.0f, 1.0f, 2.0f, 3.0f, 5.0f, 8.0f, 12.0f };
     // The cone and the circle/capsule are judged SEPARATELY, because they answer different findings: the
-    // held CONE is M-16's requirement and must clear at every config (asserted). The CAPSULE (M-18) is
-    // reported: when min_dist_m >= 13 the side floor IS min_dist_m, which is also the circle radius, so a
-    // capsule reaching level with the station puts the station exactly on its edge (zero margin). Those
-    // configs are counted, characterised and printed - not hidden - and the characterisation is asserted.
-    long cfgs = 0, cone_fails = 0, cap_contacts = 0;
+    // held CONE is M-16's requirement and must clear at every config (asserted). The CAPSULE (M-18):
+    // V2.5-Evo - 2026-10-06 - audit M-20: before the min_dist + 2 m side floor, min_dist_m >= 13 put the
+    // station EXACTLY on the capsule's edge (92 configs at zero clearance). Now the station's clearance from
+    // the capsule (and so from the min_dist_m hard-stop radius) must be AT LEAST THE HOLD BAND at every
+    // config - asserted for all of them, contact or not - and no config may touch it.
+    long cfgs = 0, cone_fails = 0, cap_contacts = 0, cap_fails = 0;
     float worst = 1e9f, worst_phi = 0, worst_h = 0, worst_d = 0, worst_v = 0;
-    float cap_md_min = 1e9f, cap_tau_min = 1e9f, cap_v_min = 1e9f, cap_clear_min = 1e9f;
-    for (int mi = 0; mi < 11; mi++) for (int bi = 0; bi < 7; bi++) for (int ex = 0; ex <= 10; ex++) {
+    float cap_margin_min = 1e9f, cap_mm_md = 0, cap_mm_d = 0, cap_mm_v = 0, cap_mm_tau = 0;
+    for (int mi = 0; mi < n_md; mi++) for (int bi = 0; bi < 7; bi++) for (int ex = 0; ex <= 10; ex++) {
       const float md = mds[mi], d = md + sbs[bi];
       float pass = kPassLateral; if (pass < md) pass = md;
-      float latmin = kLateralMin; if (latmin < pass) latmin = pass;
+      const float latmin = fmFrontSideFloorM(kLateralMin, pass, md, kSideBand);   // audit M-20, as the RX
       float ah, phi, rf;
       frontGeom(d, (uint16_t)ex, latmin, &ah, &phi, &rf);
       const float lim = fmStationLimitDeg(phi);
@@ -1767,15 +1802,19 @@ int main()
                                           (double)hold, (double)margin);
               cone_fails++;
             }
-            if (fmShieldSegmentHits(circ_only, sa, sc, sa, sc, 0.0f)) {
-              cap_contacts++;
-              if (md < cap_md_min) cap_md_min = md;
-              if (taus[ti] < cap_tau_min) cap_tau_min = taus[ti];
-              if (v < cap_v_min) cap_v_min = v;
+            if (fmShieldSegmentHits(circ_only, sa, sc, sa, sc, 0.0f)) cap_contacts++;
+            {
+              // The station's clearance from the circle/capsule: distance to its core segment minus the radius.
               const float L = sh.circle_len_m;
               const float cx = (sa < 0.0f) ? sa : ((sa > L) ? sa - L : 0.0f);
-              const float clear = sqrtf(cx * cx + sc * sc) - sh.circle_r_m;
-              if (clear < cap_clear_min) cap_clear_min = clear;
+              const float cap_clear = sqrtf(cx * cx + sc * sc) - sh.circle_r_m;
+              const float cap_margin = cap_clear - hold;
+              if (cap_margin < -1e-3f) {
+                if (cap_fails < 10) printf("  M-20 CAPSULE FAIL: md %.1f d %.1f extra %d v %.2f tau %.1f: clear %.3f hold %.2f\n",
+                                           (double)md, (double)d, ex, (double)v, (double)taus[ti], (double)cap_clear, (double)hold);
+                cap_fails++;
+              }
+              if (cap_margin < cap_margin_min) { cap_margin_min = cap_margin; cap_mm_md = md; cap_mm_d = d; cap_mm_v = v; cap_mm_tau = taus[ti]; }
             }
             if (margin < worst) { worst = margin; worst_phi = phi; worst_h = h; worst_d = d; worst_v = v; }
             cfgs++;
@@ -1786,17 +1825,13 @@ int main()
     printf("M-16 settled F4/F5 vs the HELD cone: %ld configs, %ld fail, tightest margin %.2f m "
            "(phi %.1f, half-angle %.1f, d_follow %.1f, %.2f km/h)\n",
            cfgs, cone_fails, (double)worst, (double)worst_phi, (double)worst_h, (double)worst_d, (double)worst_v);
-    printf("M-18 REPORT - settled F4/F5 touching the lag CAPSULE: %ld of %ld configs; all have min_dist >= %.1f m, "
-           "tau >= %.1f s, rider >= %.2f km/h; worst clearance %.3f m (the station on the edge)\n",
-           cap_contacts, cfgs, (double)cap_md_min, (double)cap_tau_min, (double)cap_v_min, (double)cap_clear_min);
+    printf("M-20 settled F4/F5 vs the lag CAPSULE: %ld of %ld configs touch it, %ld below the hold band; "
+           "tightest (clearance - hold) %.3f m (min_dist %.1f, d_follow %.1f, %.2f km/h, tau %.1f s)\n",
+           cap_contacts, cfgs, cap_fails, (double)cap_margin_min, (double)cap_mm_md, (double)cap_mm_d,
+           (double)cap_mm_v, (double)cap_mm_tau);
     assert(cone_fails == 0);
-    // The capsule contacts are exactly the case named above, and nothing else: min_dist >= 13 (side floor ==
-    // circle radius), the two soft presets only, and the station ON the edge (zero clearance, not inside).
-    if (cap_contacts > 0) {
-      assert(cap_md_min >= kLateralMin - 0.001f);
-      assert(cap_tau_min >= 3.0f);
-      assert(cap_clear_min > -0.01f);
-    }
+    assert(cap_contacts == 0);    // audit M-20: no settled station on (or in) the circle/capsule, at any config
+    assert(cap_fails == 0);       // ... and every one at least the hold band clear of it
 
     // THE TABLE for the report: min_dist 4, smoothing 2 / 5 / 8 (d_follow 6 / 9 / 12), stored extra
     // 0 (= the 7 m default) / 4 / 7 / 10. clear = r sin(phi - h) to the cone's side; margin = clear - hold.
@@ -2237,6 +2272,9 @@ int main()
   }
 
   printf("largest one-tick lookahead change on an unflagged tick, all simulations: %.3f m\n", (double)g_dlook_max_quiet);
+  // V2.5-Evo - 2026-10-06 - audit L-23: the M-14 output check (kFmLookStepM, 1 m) only catches steps over 1 m, so
+  // the continuous changes must stay well under it - asserted, not just printed.
+  assert(g_dlook_max_quiet < 0.5f);
   printf("follow_me_station_test: all assertions passed\n");
   return 0;
 }

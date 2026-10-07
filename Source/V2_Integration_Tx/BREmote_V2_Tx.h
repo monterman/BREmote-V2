@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-07 - comments only: fm_warn_distance_m no longer drives a vibration (the Pattern 8 FM warning
+//   haptic was removed, owner ruling); it remains the R5 proximity-bar full-scale. The FollowMeDistanceWarning.h include
+//   stays for kFmDistanceTelemetryMaxM. No struct change: sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-09-30 - MagFix (Rex delta audit of 98fb7a8) — SEVEN FOLLOW-UPS, NO STRUCT CHANGE. sizeof
 //   (confStruct) STAYS 136 and SW_VERSION STAYS 27: the tail is full, and a bump would wipe the owner's
 //   throttle calibration, so the one piece of new state (the Return-To-Me session override) is a RAM
@@ -119,7 +122,7 @@
 */
 #include <Arduino.h>
 #include <atomic>
-#include "../Common/FollowMeDistanceWarning.h"   // V2.5-Evo - 2026-09-17 - FM warning-distance haptic (pure header, host-testable)
+#include "../Common/FollowMeDistanceWarning.h"   // V2.5-Evo - 2026-09-17 - pure header, host-testable. Since 2026-10-07 the TX uses only kFmDistanceTelemetryMaxM from it (ConfigService.ino); the haptic it fed is removed
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -352,7 +355,8 @@ struct confStruct {
     // First flash of P8 firmware resets all TX settings to defaults.
     // ============================================================
     uint16_t rtm_display_mode;         // RTM/FM active info display: 0=distance(default), 1=speed, 2=alternating 2.5s each
-    uint16_t fm_warn_distance_m;       // TX-RX distance to trigger FM proximity warning vibration (Pattern 8); 50-164 m; default 150.
+    uint16_t fm_warn_distance_m;       // TX-RX distance used as the R5 proximity-bar full-scale while Follow-Me is engaged; 50-164 m; default 150.
+                                       // V2.5-Evo - 2026-10-07: no longer drives a vibration - the Pattern 8 warning haptic was removed.
                                        // V2.5-Evo - 2026-09-17: ceiling 1000 → 164 = kFmDistanceTelemetryMaxM, the largest value
                                        // the one-byte rtm_distance telemetry can carry; a stored value above it is clamped on load.
     // V2.5-Evo - 2026-09-19 - DEPRECATED, no longer read by the remote. Whether the stick cancels

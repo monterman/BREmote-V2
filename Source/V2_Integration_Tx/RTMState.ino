@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-07 - FM warning-distance haptic REMOVED (owner ruling, minimal-buzz rule): runFmLoop() no longer
+//   queues Pattern 8, and its scheduler state is gone. fm_warn_distance_m itself stays - the R5 proximity bar
+//   uses it as the distance full-scale. No struct change.
 // V2.5-Evo - 2026-10-07 - Station buzz REMOVED (owner ruling, minimal-buzz rule; audit R-4): fmStepStationFromMagnet()
 //   no longer queues the N-tap Pattern 11. The F<n> display label is the only station-change confirm.
 // V2.5-Evo - 2026-10-07 - R-4: the dead fmToggleRtmEnabledFromMagnet() and fmToggleAutoReturnFromMagnet() are
@@ -956,36 +959,11 @@ bool isFmArmed() { return fm_armed; }
 // starts from a fresh baseline (no stale edge). RAM only.
 static uint8_t fm_flags_prev = 0;
 
-// ============================================================
-// V2.5-Evo - 2026-09-17 - WarnDist: FM warning-distance haptic scheduler state.
-//
-// WHAT IT DOES: while Follow-Me is live on BOTH sides (TX armed, RX reports FM_FLAG_ARMED, link
-// fresh within FM_LINK_HEALTHY_MS) and the decoded RX→TX distance is at or beyond
-// usrConf.fm_warn_distance_m, the remote gives one medium buzz (Pattern 8, 300 ms) immediately
-// and then one every kFmDistanceWarningPeriodMs while the condition holds. It stops when the
-// distance drops below the threshold, on FM disarm, or on link loss.
-//
-// WHY NO THROTTLE GATE: releasing the trigger withdraws motor authority, but it must not hide
-// that the buggy has reached the configured separation — that is exactly when the rider, off the
-// trigger and looking at the water, needs to be told. The warning belongs to the live FM
-// declaration, not to trigger posture.
-//
-// The decision logic (followMeDistanceWarningActive / followMeWarningPulseDue) lives in
-// Common/FollowMeDistanceWarning.h so the host unit test in Tools/tests exercises the same code.
-// Geometry warnings (his fm_flags bits 6/7) are NOT adopted here — they come with the P2 station work.
-// ============================================================
-static const unsigned long kFmDistanceWarningPeriodMs = 2000UL;  // repeat interval while the condition holds
-static unsigned long fm_warning_last_ms = 0;      // millis() of the last Pattern 8 actually queued
-static bool          fm_warning_sent    = false;  // true once a pulse has been queued for the current episode
-
-// Clears the scheduler so the next episode starts with an immediate pulse. Called every tick
-// that FM is not armed and every tick the condition is false — runFmLoop() runs every ~110 ms,
-// so every disarm path (gesture, F0, fault, silent) is covered within one tick.
-static void fmResetWarningScheduler()
-{
-  fm_warning_last_ms = 0;
-  fm_warning_sent    = false;
-}
+// V2.5-Evo - 2026-10-07 - the FM warning-distance haptic (Pattern 8, one 300 ms pulse every 2 s while the buggy
+// was at or beyond fm_warn_distance_m) is REMOVED by owner ruling (minimal-buzz rule), together with its
+// scheduler state (kFmDistanceWarningPeriodMs, fm_warning_last_ms, fm_warning_sent, fmResetWarningScheduler()).
+// usrConf.fm_warn_distance_m STAYS: the R5 proximity bar uses it as its distance full-scale (Display.ino,
+// updateR5ProximityBar()), and ConfigService.ino still validates it. No struct change.
 
 // ============================================================
 // V2.5-Evo - 2026-07-20 - Batch T (Fable FM v1.4): FM arm-time and display readiness gating.
@@ -1429,43 +1407,10 @@ void runFmLoop()
     return;
   }
 
-  if (!fm_armed)
-  {
-    fmResetWarningScheduler();   // WarnDist: a fresh arm always starts with an immediate pulse
-    return;
-  }
+  if (!fm_armed) return;   // V2.5-Evo - 2026-10-07 - the warning-scheduler reset that sat here went with Pattern 8
 
-  // V2.5-Evo - 2026-09-17 - WarnDist: FM warning-distance haptic. See the scheduler comment block
-  // above for what it does and why there is deliberately no throttle gate. Pattern 8 is
-  // informational: it is queued only when no other pattern is playing and no STOP is pending, so
-  // it can never mask a fault buzz. If the haptic is busy the pulse is simply retried next tick
-  // (fm_warning_sent stays as it was), so a due warning is deferred, never dropped.
-  {
-    const bool link_fresh = (last_packet != 0) && ((now - last_packet) < FM_LINK_HEALTHY_MS);
-    // V2.5-Evo - 2026-09-18 - Follow-Me now stays armed THROUGH a Return-to-Me (setRtmArmed() no
-    // longer disarms it), and the RX reports FM_FLAG_ARMED while it yields - so without this term
-    // every RTM run would buzz the warning-distance pulse all the way in (the buggy is far by
-    // definition when the rider calls it back). The warning belongs to a live Follow-Me that is
-    // actually following; while RTM owns the buggy it is parked, and the RTM display says so.
-    const bool distance_warning_now = followMeDistanceWarningActive(
-        fm_armed && !rtm_tx_active,
-        (fm_flags_now & FM_FLAG_ARMED) != 0,
-        link_fresh,
-        telemetry.rtm_distance,
-        usrConf.fm_warn_distance_m);
-
-    if (!distance_warning_now)
-    {
-      fmResetWarningScheduler();
-    }
-    else if (followMeWarningPulseDue(true, fm_warning_sent, fm_warning_last_ms, now, kFmDistanceWarningPeriodMs)
-             && current_vib_pattern == 0 && !vib_stop_pending)
-    {
-      current_vib_pattern = 8;   // Pattern 8: one 300 ms pulse (System.ino vibrationTask)
-      fm_warning_last_ms  = now;
-      fm_warning_sent     = true;
-    }
-  }
+  // V2.5-Evo - 2026-10-07 - the FM warning-distance haptic block (Pattern 8 every 2 s beyond
+  // fm_warn_distance_m) that ran here is REMOVED by owner ruling - see the note above fmFundamentalReject().
 
   // Arm-timeout auto-disarm: if the rider never applied throttle since arming, disarm after
   // fm_arm_timeout_s. V2.5-Evo - 2026-09-17: gated on fm_arm_timeout_s > 0 — 0 means NEVER, and is

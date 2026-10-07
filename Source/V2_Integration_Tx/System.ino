@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - Pattern 8 REMOVED: the FM warning-distance haptic is gone (owner ruling, minimal-buzz
+//   rule); its executor branch is deleted and number 8 is retired.
 // V2.5-Evo - 2026-10-07 - Pattern 11 and vib_pulse_count REMOVED: a magnet station change no longer buzzes (owner
 //   ruling, minimal-buzz rule). Its executor branch and the count variable are gone; number 11 is retired.
 // V2.5-Evo - 2026-10-07 - R-4: comments corrected - Pattern 10's mag_mode 4 meaning ("Return-To-Me will toggle"
@@ -938,7 +940,7 @@ void checkCharger()
   setBrightness(0x0F);
 }
 
-volatile uint8_t current_vib_pattern = 0;  // active haptic pattern: 0=none, 1=2 short, 2=5 short, 3=5 long, 4=2 fast short (RTM/FM ARM confirm), 5=1 short (magnet 2s "release for FM" advisory), 6=3 fast short (magnet 5s "release for RTM" advisory), 7=1 long (UNCOMMANDED RTM/FM stop, or an arm refusal — request it via vib_stop_pending, never by writing 7 here), 8=1 medium 300ms (FM warning-distance reached; repeats every 2s from runFmLoop), 9=4 quick 80ms taps (return gesture: auto-return override SET for the session), 10=2 medium 300ms pulses (return gesture: override CLEARED, back to the stored default), 11=RETIRED 2026-10-07 (was the magnet station-change tap count; a station change no longer buzzes), 12=3 firm 130ms taps (magnet hold turned Return-To-Me OFF for the session — deliberately NOT the Pattern 7 stop buzz; see the note on Pattern 12 below)
+volatile uint8_t current_vib_pattern = 0;  // active haptic pattern: 0=none, 1=2 short, 2=5 short, 3=5 long, 4=2 fast short (RTM/FM ARM confirm), 5=1 short (magnet 2s "release for FM" advisory), 6=3 fast short (magnet 5s "release for RTM" advisory), 7=1 long (UNCOMMANDED RTM/FM stop, or an arm refusal — request it via vib_stop_pending, never by writing 7 here), 8=RETIRED 2026-10-07 (was the FM warning-distance pulse; that haptic is removed), 9=4 quick 80ms taps (return gesture: auto-return override SET for the session), 10=2 medium 300ms pulses (return gesture: override CLEARED, back to the stored default), 11=RETIRED 2026-10-07 (was the magnet station-change tap count; a station change no longer buzzes), 12=3 firm 130ms taps (magnet hold turned Return-To-Me OFF for the session — deliberately NOT the Pattern 7 stop buzz; see the note on Pattern 12 below)
 // V2.5-Evo - 2026-10-07 - vib_pulse_count (the tap count for Pattern 11) was removed with Pattern 11 itself:
 // a station change no longer buzzes (owner ruling). Pattern 11 in the list above is retired.
 
@@ -1168,17 +1170,8 @@ void vibrationTask(void *parameter) {
       digitalWrite(P_MOT, LOW);
       if (current_vib_pattern == 7) current_vib_pattern = 0;
     }
-    // V2.5-Evo - 2026-09-17 - WarnDist: Pattern 8 — ONE medium 300 ms pulse = the FM warning-distance
-    // haptic. runFmLoop() (RTMState.ino) queues it the moment the buggy reaches fm_warn_distance_m
-    // and then every 2 s while it stays at or beyond it, including with the trigger released.
-    // 300 ms sits between the 150 ms advisory (Pattern 5) and the 750 ms STOP (Pattern 7), so all
-    // three stay distinct by feel. It is queued only when nothing else is playing and no STOP is
-    // pending, and the pulse is bounded, so a STOP that arrives during it is promoted right after.
-    else if (current_vib_pattern == 8) {
-      digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(300));
-      digitalWrite(P_MOT, LOW);
-      if (current_vib_pattern == 8) current_vib_pattern = 0;
-    }
+    // V2.5-Evo - 2026-10-07 - Pattern 8 (one medium 300 ms pulse = the FM warning-distance haptic) REMOVED
+    // with its only caller in runFmLoop(): owner ruling, minimal-buzz rule. Number 8 is retired.
     // V2.5-Evo - 2026-09-19 - Return gesture: Pattern 9 — FOUR quick 80 ms taps, 80 ms gaps (a trill).
     // Fired by returnGesture() when the RTM arm is cancelled and the auto-return override is SET
     // (to the opposite of what the buggy reported). Four fast taps are a new shape: the arm confirm

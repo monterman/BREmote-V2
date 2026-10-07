@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - comment only: the fm_warn_distance_m row no longer describes a haptic (removed); range unchanged.
 // V2.5-Evo - 2026-09-30 - MagStations: mag_mode range widened 0-3 → 0-4 (4 = magnet tap steps Follow-Me stations,
 //   2.5 s hold toggles Return-To-Me). New field mag_fm_set (station bitmask, 1-7, default 7) added at the END of the
 //   table, filling the struct's 2 tail padding bytes — sizeof(confStruct) stays 136 and SW_VERSION stays 27, so this
@@ -92,7 +93,7 @@ const CfgFieldSpec kCfgFields[] = {
   // higher threshold could never be reached and the warning would silently never fire. Values
   // above 164 already stored are clamped in cfgValidateCrossField() (which every load path runs
   // BEFORE this range check), so no existing config is rejected.
-  {"fm_warn_distance_m",       CFG_U16, offsetof(confStruct, fm_warn_distance_m),       true, false, true, 50.0f, (float)kFmDistanceTelemetryMaxM, 0, false},  // FM warning-distance haptic threshold, metres
+  {"fm_warn_distance_m",       CFG_U16, offsetof(confStruct, fm_warn_distance_m),       true, false, true, 50.0f, (float)kFmDistanceTelemetryMaxM, 0, false},  // R5 proximity-bar full-scale, metres (V2.5-Evo - 2026-10-07: the warning haptic it fed is removed)
   // V2.5-Evo - 2026-09-19 - DEPRECATED, unread by the remote: the buggy's steer_during_auto (RX) decides whether the stick
   // cancels or takes over an automatic return, echoed in fm_flags bit 4. Row kept so stored settings load; delete at the next TX struct bump.
   {"rtm_steer_exit_on_input",  CFG_U16, offsetof(confStruct, rtm_steer_exit_on_input),  true, false, true,  0.0f,   1.0f,    0, false},  // DEPRECATED (2026-09-19): unread. Was 1=steering exits RTM, 0=blend only

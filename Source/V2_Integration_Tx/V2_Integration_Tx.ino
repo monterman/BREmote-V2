@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - H-4: auto-sleep on buggy silence now also needs 30 s with no rider input and the trigger
+//   at or below 20; the user-idle sleep is unchanged. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-07-20 - BLE re-enable deep-fix (Rex): the per-loop bleTelemetryLoop()/extTelemNotify() pushes are REMOVED from loop(); the periodic BLE telemetry push now lives in the dedicated Core-0 bleNotifyTask (see Init.ino/BLE.ino) so BLE cadence can't couple to display-render timing.
 // V2.5-Evo - 2026-07-20 - MagGesture FIX1: with mag_mode>0 the Hall is EXCLUSIVELY the FM/RTM gesture input — the SW33b tap→bt_dot_state (BLE-session) toggle is gated OFF and the BT dot is instead driven from BLE state (bt_enabled==2/boot-gesture). mag_mode==0 SW33b behaviour is byte-identical to baseline.
 // V2.5-Evo - 2026-07-20 - MagGesture: runMagGesture() called from loop() after the SW33b Hall block; prototype added
@@ -273,7 +275,8 @@ void loop()
 
   // Auto-sleep: fires when EITHER condition is true for sleep_timeout_s seconds.
   // Primary:  no intentional user input (throttle or toggle above deadzone).
-  // Fallback: no LoRa packet received from RX (RX off or out of range).
+  // Fallback: no LoRa packet received from RX (RX off or out of range) - since 2026-10-07 (H-4) only
+  //           together with 30 s of no input and the trigger released.
   // Both use the same timeout. sleep_timeout_s == 0 disables auto-sleep entirely.
   // Pocket-safe: thr_scaled ≤ 20 and steer within 15 counts of centre do not count as input.
   if (usrConf.sleep_timeout_s > 0)
@@ -281,7 +284,15 @@ void loop()
     uint32_t sleep_ms   = (uint32_t)usrConf.sleep_timeout_s * 1000UL;
     bool     user_idle  = (millis() - last_user_input_ms > sleep_ms);
     bool     rx_silent  = (millis() - last_packet        > sleep_ms);
-    if (user_idle || rx_silent)
+    // V2.5-Evo - 2026-10-07 - H-4: THE BUG - the rule was user_idle || rx_silent, so on a one-way link (control
+    // packets reach the buggy, its replies do not reach the remote) the remote went to sleep after
+    // sleep_timeout_s WHILE THE RIDER WAS DRIVING. The fix: buggy silence alone is no longer enough - the rider
+    // must also have left the remote untouched for a short time (kRxSilentSleepIdleMs, 30 s), and never with
+    // the trigger above 20. The normal user-idle sleep is unchanged.
+    const uint32_t kRxSilentSleepIdleMs = 30000UL;
+    bool     user_idle_short  = (millis() - last_user_input_ms > kRxSilentSleepIdleMs);
+    bool     trigger_released = (thr_scaled <= 20);
+    if (user_idle || (rx_silent && user_idle_short && trigger_released))
     {
       deepSleep();
     }

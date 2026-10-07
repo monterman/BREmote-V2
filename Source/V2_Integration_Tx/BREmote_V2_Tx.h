@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-07 - C-1: throttle-input health globals (last_ads_ok_ms, ads_input_fault, ads_thr_out_of_range,
+//   ads_thr_good_samples), ADS_STALE_MS and the TX-local error code REMOTE_ERR_INPUT_FAULT (72). RAM only, no confStruct
+//   change: sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-07 - R-6: new RAM flag fm_fault_latched (set by the telemetry unpack on the Follow-Me fault-stop
 //   rising edge, cleared by runFmLoop()). A global, not a confStruct field: sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-07 - comments only: fm_warn_distance_m no longer drives a vibration (the Pattern 8 FM warning
@@ -807,6 +810,30 @@ volatile uint16_t intbat_raw[BUFFSZ];
 volatile int filter_count = 0;
 volatile int bat_filter_count = 0;
 volatile int last_channel = 0;
+
+// ============================================================
+// V2.5-Evo - 2026-10-07 - C-1: THROTTLE INPUT HEALTH (frozen-throttle fix)
+// THE BUG: measureAndBuffer() (Analog.ino) only writes thr_raw[] when the ADS1115 reports a finished
+// conversion. If the I2C bus or the ADS1115 fails (SDA held low after water ingress, a loose wire, a
+// display fault that wedges the shared bus) no conversion ever finishes, the buffer stops changing,
+// and calcFilter() keeps producing the LAST throttle value. sendData() keeps sending it, so the buggy
+// keeps driving after the rider lets go. Only a hard power-off ended it.
+// THE FIX: every finished conversion stamps last_ads_ok_ms. If none has finished for ADS_STALE_MS while
+// hall sampling is on, or a raw throttle reading lands far outside the calibrated idle..pull band, the
+// input is declared faulty: throttle 0, steering centred, toggle (and every gesture) blocked, and the
+// remote shows error 72 as a blinking "St" with the stop buzz. The fault clears only after fresh, in-band
+// readings fill the whole filter buffer AND they show the trigger released, so throttle can never jump
+// back to a held position when the bus recovers.
+// Writers: measBufCalc task (prio 6) for all four; sendData task (prio 5) may also SET ads_input_fault
+// when it sees the deadline missed while measBufCalc is itself stuck inside a slow I2C transaction.
+// Every variable is one aligned word or byte, so no read can tear on this single-core RISC-V part.
+// ============================================================
+#define ADS_STALE_MS 50UL                       // ms with no finished ADS1115 conversion before the input is untrusted
+#define REMOTE_ERR_INPUT_FAULT 72               // TX-local remote_error code: throttle/toggle input fault (screen: blinking "St")
+volatile unsigned long last_ads_ok_ms = 0;      // millis() of the last finished ADS1115 conversion (any channel)
+volatile bool    ads_input_fault      = false;  // latched: throttle input untrusted; outputs forced safe until recovery
+volatile bool    ads_thr_out_of_range = false;  // set by measureAndBuffer() when a raw throttle sample is implausible
+volatile uint8_t ads_thr_good_samples = 0;      // in-band throttle samples stored since the last bad event (saturates)
 
 volatile int gear = 0;
 volatile uint8_t max_power_cap = 85;  // Runtime cap for throttle_mode 2

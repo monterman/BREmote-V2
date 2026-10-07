@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - C-1: sendData() sends zero throttle and centred steering when adsInputFaultNow() reports a
+//   dead or implausible throttle input (no ADS1115 conversion for 50 ms). Can only lower throttle. No format change.
 // V2.5-Evo - 2026-10-07 - R-6: the telemetry unpack also latches the Follow-Me fault-stop rising edge (fm_flags bit 3)
 //   into fm_fault_latched on the arrival of the byte, so runFmLoop() can act on it even after a long loop() stall
 //   (the blocking RTM arm ceremony). Flag only - no packet format change, no confStruct change, sizeof stays 136.
@@ -410,11 +412,18 @@ void sendData(void *parameter)
           // V2.5-Evo - 2026-06-05 - C-1: 2nd independent gate — hard-zero throttle during the RTM
           // arm ceremony, regardless of rtm_thr_cap_tx. Both gates must fail to pass throttle while arming.
           if (rtmIsArming()) thr = 0;
+          // V2.5-Evo - 2026-10-07 - C-1: frozen-throttle guard at the point of sending. If the ADS1115 has
+          // finished no conversion for ADS_STALE_MS (or the input fault is already latched), send zero throttle
+          // and centred steering. The ADC task forces the same values, but it can be stuck inside a slow I2C
+          // transaction when the bus fails, so the radio checks the deadline itself (adsInputFaultNow(),
+          // Analog.ino). Can only zero the throttle, never raise it.
+          bool input_fault = adsInputFaultNow();
+          if (input_fault) thr = 0;
           // V2.5-Evo - 2026-04-25 - P7: cap at 0xF0 (240=94.1%) to reserve 0xF1-0xFF for all meta-packet types.
           // 0xF1=RTM state, 0xF2=FM override, 0xF3=GPS coord. Was 0xF2 cap before P7.
           // 0xF1 and 0xF2 are intentionally reserved packet type bytes — do not assign.
           sendArray[3] = (thr > 0xF0) ? 0xF0 : thr;
-          sendArray[4] = steer_scaled;
+          sendArray[4] = input_fault ? 127 : steer_scaled;
         }
 
         thr_sent   = sendArray[3];

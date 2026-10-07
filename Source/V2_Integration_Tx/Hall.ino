@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - C-1: runMagGesture() ignores every magnet gesture while the throttle input fault is latched
+//   (ads_input_fault). The toggle is already blocked by the ADC task (tog_input forced to 0). No confStruct change.
 // V2.5-Evo - 2026-10-07 - comment only: a station step no longer buzzes (Pattern 11 removed, RTMState.ino); the tap
 //   lockout note is updated. The 1 s lockout itself is unchanged.
 // V2.5-Evo - 2026-10-07 - R-4: stale comments corrected (the 2.5 s hold "toggles Return-To-Me", Pattern 10 "will
@@ -1009,6 +1011,9 @@ void runMagGesture()
     if (system_locked) return;                      // remote locked — no gesture from a stowed remote
     if (in_setup) return;                           // mid-calibration / setup
     if (remote_error && !remote_error_blocked) return;  // unacknowledged error on screen
+    // V2.5-Evo - 2026-10-07 - C-1: no magnet gesture while the throttle input is faulted. remote_error 72 above
+    // already covers it; this line holds even if water-ingress E71 has replaced the 72 on screen.
+    if (ads_input_fault) return;
 
     // ============================================================
     // V2.5-Evo - 2026-09-30 - MagStations: MAG_ROLE_FMSET (mag_mode 4) removal handling.

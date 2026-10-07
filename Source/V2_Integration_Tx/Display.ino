@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - C-1: renderInputFaultBlink() - remote_error 72 (throttle input fault) shows a blinking "St"
+//   in both render paths, right after E71. Display only. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-07 - E71 visible in every mode: the "E 7" water-ingress blink moved into renderE71Blink() and both
 //   renderOperationalDisplay() and renderRtmInfoDisplay() call it FIRST when remote_error == 71, so it now shows while
 //   Follow-Me is armed or Return-To-Me is active (it was hidden there; the buzz always fired). Detection, buzz and
@@ -781,6 +783,31 @@ static void renderE71Blink()
   }
 }
 
+// ============================================================
+// V2.5-Evo - 2026-10-07 - C-1: THROTTLE INPUT FAULT SCREEN (remote_error 72)
+// The trigger/toggle ADC stopped answering, or gave a reading far outside calibration, so the remote is
+// sending zero throttle (Analog.ino, adsInputFaultUpdate()). The screen is "St" - the one "not working"
+// signal riders already know (SOP-040) - BLINKING at the E71 cadence (250 ms) so it reads as a standing
+// fault rather than the steady 2 s "St" of an ordinary stop. The stop buzz fires once when it starts.
+// Shown first in both render paths (after E71), so Follow-Me or Return-To-Me screens cannot hide it.
+// Uses only the existing large-font S and t glyphs. NOTE: the display shares the I2C bus with the ADC, so
+// when the bus itself is dead this screen cannot be drawn; the buzz is the cue that always gets through.
+// Inputs: none (millis()). Side effects: writes displayBuffer and pushes it. CALLER MUST HOLD displayMutex.
+// ============================================================
+static void renderInputFaultBlink()
+{
+  static unsigned long blink_ms    = 0;
+  static bool          blink_state = false;
+  if (millis() - blink_ms >= 250)
+  {
+    blink_state = !blink_state;
+    blink_ms    = millis();
+    if (blink_state) displayDigits(LET_S, LET_T);
+    else             displayDigits(BLANK, BLANK);
+    updateDisplay();
+  }
+}
+
 void renderOperationalDisplay()
 {
   updateFoilDataCache();  // refresh digit cache once per render cycle, before mutex and switch
@@ -790,6 +817,13 @@ void renderOperationalDisplay()
   if (remote_error == 71)
   {
     renderE71Blink();
+    xSemaphoreGive(displayMutex);
+    return;
+  }
+  // V2.5-Evo - 2026-10-07 - C-1: the throttle input fault comes next. See renderInputFaultBlink().
+  if (remote_error == REMOTE_ERR_INPUT_FAULT)
+  {
+    renderInputFaultBlink();
     xSemaphoreGive(displayMutex);
     return;
   }
@@ -1495,6 +1529,13 @@ void renderRtmInfoDisplay()
   if (remote_error == 71)
   {
     renderE71Blink();
+    xSemaphoreGive(displayMutex);
+    return;
+  }
+  // V2.5-Evo - 2026-10-07 - C-1: throttle input fault next, as in renderOperationalDisplay().
+  if (remote_error == REMOTE_ERR_INPUT_FAULT)
+  {
+    renderInputFaultBlink();
     xSemaphoreGive(displayMutex);
     return;
   }

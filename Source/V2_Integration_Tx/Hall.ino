@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - SOP-040: the mag_mode 4 hold refusal (Return-To-Me disabled or GPS off) is now "St" + the
+//   normal stop buzz on removal, replacing the "n0" screen and the Pattern 5 blip at 2.5 s. No confStruct change.
 // V2.5-Evo - 2026-10-07 - H-1 (TX part): the LEFT-hold lock now flushes 0xF1/0 + 0xF2/0 (rtmFmStopFlush()).
 // V2.5-Evo - 2026-10-07 - C-1: runMagGesture() ignores every magnet gesture while the throttle input fault is latched
 //   (ads_input_fault). The toggle is already blocked by the ADC task (tog_input forced to 0). No confStruct change.
@@ -564,6 +566,7 @@ void handleGearToggle(int direction)
 //     V2.5-Evo - 2026-10-07 - two exceptions to that row (audits R-2, R-7): while a Return-To-Me is ALREADY
 //     ACTIVE the hold is ignored (no buzz, no action); when Return-To-Me cannot start (disabled, or GPS off)
 //     the 2.5 s buzz is ONE short blip (Pattern 5) instead of Pattern 10, and removal shows "n0" for 2 s.
+//     V2.5-Evo - 2026-10-07 - SOP-040: superseded - no buzz while holding, and removal shows "St" with the stop buzz.
 //     TAP LOCKOUT (V2.5-Evo - 2026-10-06, audit M-1): after a tap that actually stepped the station, a tap
 //     whose magnet arrives within kMagStepLockoutMs (1 s) is ignored completely. See the constant.
 //
@@ -664,6 +667,7 @@ void handleGearToggle(int direction)
 // current_vib_pattern is defined in System.ino, which the Arduino build concatenates
 // AFTER Hall.ino, so it needs an extern here.
 extern volatile uint8_t current_vib_pattern;
+extern volatile bool    vib_stop_pending;   // V2.5-Evo - 2026-10-07 - the stop-buzz request flag (System.ino)
 // rtmIsArming() is defined in RTMState.ino (also concatenated after this file).
 bool rtmIsArming();
 // V2.5-Evo - 2026-09-30 - rtmEnabledEffective() is the ONE place that answers "is Return-To-Me enabled
@@ -778,6 +782,8 @@ static const uint32_t kMagStepLockoutMs = 1000UL;
 //                      150 ms blip (Pattern 5) while holding, and "n0" ("no") on the display for 2 s on
 //                      removal. Not Pattern 10 (that is the success cue) and not Pattern 7 (the long fault
 //                      buzz - nothing faulted, the feature is simply off).
+//                      V2.5-Evo - 2026-10-07 - SUPERSEDED by SOP-040 ("St" is the only "not working" signal):
+//                      no buzz while holding; on removal "St" for 2 s with the normal stop buzz (Pattern 7).
 // Latched in runMagGesture() so a state change between the 2.5 s mark and the removal (for example Gate 3
 // ending an active return while the magnet is still held) cannot turn an ignored hold into a new ceremony.
 static const uint8_t kMagHoldStartRtm = 0;
@@ -964,11 +970,9 @@ void runMagGesture()
         {
           if (current_vib_pattern == 0) current_vib_pattern = 10;
         }
-        else if (mag_hold_verdict == kMagHoldRefused)
-        {
-          if (current_vib_pattern == 0) current_vib_pattern = 5;
-        }
-        // kMagHoldIgnored: no buzz - the hold does nothing.
+        // V2.5-Evo - 2026-10-07 - SOP-040 ("St" is the only refusal signal): kMagHoldRefused no longer plays the
+        // Pattern 5 blip here; the refusal is "St" + the stop buzz on removal (see below).
+        // kMagHoldRefused and kMagHoldIgnored: no buzz while holding.
       }
       return;
     }
@@ -1077,12 +1081,14 @@ void runMagGesture()
         }
         else if (hold_verdict == kMagHoldRefused)
         {
-          // R-7: Return-To-Me cannot start. The one-blip refusal buzz played at 2.5 s; now show "n0"
-          // ("no") for 2 s so the rider is never left guessing. LET_N renders as a lowercase-style n.
-          // BLOCKING 2 s, the same hold every other confirm on this path uses; the resync below covers it.
+          // R-7: Return-To-Me cannot start.
+          // V2.5-Evo - 2026-10-07 - SOP-040: "St" with the normal stop buzz is the ONLY refusal signal. This used
+          // to be "n0" plus a Pattern 5 blip at 2.5 s; a rider knows "St" and never misses it, and reads the
+          // context from what he was trying to do. BLOCKING 2 s, like every other "St"; the resync below covers it.
           Serial.printf("MAG [TX] hold refused: Return-To-Me cannot start (rtm enabled %d, gps_en %d)\n",
                         rtmEnabledEffective() ? 1 : 0, (int)usrConf.gps_en);
-          DISP_LOCK(); displayDigits(LET_N, 0); updateDisplay(); DISP_UNLOCK();
+          vib_stop_pending = true;   // Pattern 7, the normal stop buzz
+          DISP_LOCK(); displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
           gpsKeepAliveDelay(2000);
         }
         else

@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - SOP-040: returnGesture() (the toggle RIGHT tap + LEFT hold) now shows "St" + the stop buzz when
+//   Return-To-Me cannot start (disabled or GPS off); it was silent. No confStruct change.
 // V2.5-Evo - 2026-10-07 - M-3 / F-2: inside the RTM arm ceremony a plain 1 s LEFT hold (trigger held or released)
 //   cancels at once to full manual: 0xF1/0, cap 255, "St" + stop buzz. A RIGHT tap first still makes it A1/A0.
 //   No magnet cancel. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
@@ -1511,7 +1513,21 @@ void returnGesture()
   // V2.5-Evo - 2026-09-30 - the EFFECTIVE enable (see rtmEnabledEffective()), so the toggle combo and the
   // magnet gesture agree about whether Return-To-Me is available this session. setRtmArmed() re-checks it.
   if (rtmEnabledEffective() && usrConf.gps_en)
+  {
     setRtmArmed();
+  }
+  else
+  {
+    // V2.5-Evo - 2026-10-07 - SOP-040: manual Return-To-Me cannot start (disabled or GPS off). This refusal was
+    // completely silent on the toggle route, so the rider could not tell the gesture failed. "St" with the
+    // normal stop buzz is the one "not working" signal - the same refusal the magnet hold now gives.
+    // BLOCKING 2 s like every other "St"; nothing was armed, throttle is untouched.
+    Serial.printf("RTM [TX] arm refused: Return-To-Me cannot start (rtm enabled %d, gps_en %d)\n",
+                  rtmEnabledEffective() ? 1 : 0, (int)usrConf.gps_en);
+    vib_stop_pending = true;
+    DISP_LOCK(); displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
+    gpsKeepAliveDelay(2000);
+  }
 }
 
 // Called from loop() every ~110ms.

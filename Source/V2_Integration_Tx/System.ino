@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - SOP-040: comment only - Pattern 5 lost its mag_mode 4 refusal caller ("St" + Pattern 7 now).
 // V2.5-Evo - 2026-10-07 - H-1 (TX part): deepSleep() flushes 0xF1/0 + 0xF2/0 (rtmFmStopFlush(), >= 400 ms) before the
 //   radio is switched off. No confStruct change.
 // V2.5-Evo - 2026-10-07 - Pattern 8 REMOVED: the FM warning-distance haptic is gone (owner ruling, minimal-buzz
@@ -1117,6 +1118,8 @@ void vibrationTask(void *parameter) {
     // then shows "n0". One short blip is the least confusing existing shape for "no": it is not the two-medium
     // success cue (10), not the long fault buzz (7), and its other callers are the mag_mode 1-3 advisory (a
     // different mag_mode, so never on the same remote) and the fm_arm_timeout_s nudge (off by default).
+    // V2.5-Evo - 2026-10-07 - SOP-040: that third caller is GONE - the refusal is now "St" + Pattern 7 (via
+    // vib_stop_pending). Pattern 5 keeps its mag_mode 1-3 advisory and fm_arm_timeout_s nudge callers.
     else if (current_vib_pattern == 5) {
       digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(150));
       digitalWrite(P_MOT, LOW);

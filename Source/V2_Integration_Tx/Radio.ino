@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - P-8: the meta queue's second slot follows an explicit priority 0xF1 > 0xF2 > 0xF4; a burst
+//   never evicts an equal- or higher-priority one. No packet format change.
 // V2.5-Evo - 2026-10-07 - P-1: comment only - sendData()'s input-fault check zeroes the current packet and no longer latches.
 // V2.5-Evo - 2026-10-07 - H-1 / L-1: the meta-packet queue is 2 deep (same type updates in place; 0xF1 has priority
 //   for the second slot); sendData() stamps rtm_stop_sent_ms on every 0xF1/0 sent; waitForTelemetry() stamps
@@ -671,8 +673,9 @@ void waitForTelemetry(void *parameter)
 //   1. a type already queued (head or second slot) is UPDATED IN PLACE: the newest value wins and its three
 //      sends restart (exactly what the single slot did for a repeat of the same type);
 //   2. otherwise it goes into the first empty slot, head first;
-//   3. if both slots hold OTHER types, an 0xF1 (Return-To-Me state) always takes the second slot, and any
-//      other type takes it only when the second slot is not an 0xF1. State packets beat keepalives and aux.
+//   3. if both slots hold OTHER types, the new burst takes the second slot only if its type has a HIGHER
+//      priority than the one queued there: 0xF1 > 0xF2 > 0xF4 (metaTypePriority(), V2.5-Evo - 2026-10-07 - P-8).
+//      A higher type is never evicted.
 // The head is the rtm_meta_* atomics sendData() already read; the second slot is promoted the moment the
 // head empties, inside the same critical section, so rtm_meta_count == 0 still means "queue empty" for the
 // existing callers that wait for an empty queue.
@@ -684,6 +687,20 @@ static portMUX_TYPE metaQueueMux     = portMUX_INITIALIZER_UNLOCKED;
 static uint8_t      meta_next_type   = 0;   // second slot: packet type (0xF1/0xF2/0xF4)
 static uint8_t      meta_next_value  = 0;   // second slot: value byte
 static uint8_t      meta_next_count  = 0;   // second slot: sends remaining, 0 = empty
+
+// metaTypePriority - V2.5-Evo - 2026-10-07 - P-8: explicit priority of a meta packet type for the second slot.
+// 0xF1 (Return-To-Me state) > 0xF2 (Follow-Me declaration / stop) > 0xF4 (aux) > anything else.
+// THE BUG: rule 3 below used to let ANY type take the second slot unless it held an 0xF1, so an 0xF4 (aux) or a
+// new 0xF1 could evict a queued 0xF2 - including a Follow-Me "off". Latent (there is no 0xF4 caller today), but
+// the rule now says what it means: a burst may only replace a LOWER-priority burst, never an equal or higher one.
+// Input: type. Output: 3/2/1/0. No side effects.
+static uint8_t metaTypePriority(uint8_t type)
+{
+  if (type == 0xF1) return 3;
+  if (type == 0xF2) return 2;
+  if (type == 0xF4) return 1;
+  return 0;
+}
 
 void queueMetaPacketBurst(uint8_t type, uint8_t value)
 {
@@ -706,14 +723,15 @@ void queueMetaPacketBurst(uint8_t type, uint8_t value)
     rtm_meta_value.store(value, std::memory_order_relaxed);
     rtm_meta_count.store(3, std::memory_order_release);        // release: type/value visible before count
   }
-  else if (meta_next_count == 0 || type == 0xF1 || meta_next_type != 0xF1)
+  else if (meta_next_count == 0 || metaTypePriority(type) > metaTypePriority(meta_next_type))
   {
-    meta_next_type  = type;                                     // rule 2 / rule 3, second slot
+    meta_next_type  = type;                                     // rule 2 / rule 3 (P-8), second slot
     meta_next_value = value;
     meta_next_count = 3;
   }
-  // else: both slots busy with other types and the second holds an 0xF1 - this lower-priority burst is
-  // dropped. Its senders re-send (the FM keepalive retries, aux is a user action).
+  // else: both slots busy with other types and the second holds an equal- or higher-priority burst - this
+  // burst is dropped. Its senders re-send (the FM keepalive retries, aux is a user action, the H-1 watch
+  // re-sends 0xF1/0 on the next report).
   portEXIT_CRITICAL(&metaQueueMux);
 }
 

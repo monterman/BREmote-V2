@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - fm_display_mode DEFAULT 1 -> 2 (distance to the buggy in metres; owner ruling). defaultConf
+//   value only - no struct change, sizeof stays 136, SW_VERSION stays 27; remotes keep their stored value.
 // V2.5-Evo - 2026-10-07 - H-1 (TX part): fm_status_arrival_ms, rtm_stop_sent_ms, FM_STATUS_RTM_ACTIVE, and a note that
 //   the meta-packet atomics are now the head of a 2-deep queue. RAM only: sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-07 - C-1: throttle-input health globals (last_ads_ok_ms, ads_input_fault, ads_thr_out_of_range,
@@ -280,7 +282,7 @@ struct confStruct {
     uint16_t steer_enabled; //If steering feature is enabled
     
     uint16_t thr_expo; //Exponential function, 50 = linear
-    uint16_t fm_display_mode;  // FM digit zone display: 1=TX speed (default), 2=distance to buggy,
+    uint16_t fm_display_mode;  // FM digit zone display: 1=TX speed, 2=distance to buggy (default since 2026-10-07),
                                // 3=buggy speed (RX telemetry), 4=throttle %; range 1-4
 
     uint16_t steer_expo; //currently unused
@@ -548,7 +550,7 @@ confStruct defaultConf = {  // V2.5-Evo — factory default configuration
   1,             // steer_enabled
   100,           // thr_expo (50 = linear; 100 = fully exponential — gentle at low throttle, aggressive at high;
                  //           0 = the opposite curve — aggressive at low throttle. See expoThrCurve() in Hall.ino)
-  1,             // fm_display_mode (1 = TX speed; range 1-4)
+  2,             // fm_display_mode (2 = distance to the buggy in metres; range 1-4). V2.5-Evo - 2026-10-07: default was 1 (TX speed)
   50,            // steer_expo
   0,             // gps_dyn_model (was steer_expo1; 0 = default = Sea, unchanged behaviour)
   0.000185662f,  // ubat_cal

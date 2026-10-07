@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - D-1 (TX part): the distance readout shows "0.X" under 1 m, and "--" for a 0x00 byte or a stale
+//   link as well as for 0xFF (rtmDistanceShowable()). Digit zone only; bars and dots untouched. No confStruct change.
 // V2.5-Evo - 2026-10-07 - F-8: unlockAnimation() samples the trigger during its frame waits (unlock_anim_release_seen),
 //   for the RTM double-squeeze ceremony. Same frames and timing. No confStruct change.
 // V2.5-Evo - 2026-10-07 - C-1: renderInputFaultBlink() - remote_error 72 (throttle input fault) shows a blinking "St"
@@ -518,6 +520,20 @@ static void displayShowTwoDigitOrDash(uint8_t value)
   }
 }
 
+// rtmDistanceShowable - V2.5-Evo - 2026-10-07 - D-1 (TX part): may this telemetry.rtm_distance byte be drawn as a
+// number? THE BUG: only 0xFF showed "--". 0x00 is also a no-data value (decodeRtmDistanceM() and the RTM pre-arm
+// check already treat it so - see the BugA note there), but the readout drew it as a real distance; and with the
+// link gone the last value stayed on screen as if live. SOP-041 rule 4: old data is never
+// shown as live. THE FIX: "--" for 0xFF, for 0x00, and whenever no packet has landed within FM_LINK_HEALTHY_MS.
+// (A buggy-side stale GPS still needs the RX to write 0xFF - RX part of D-1.)
+// Input: d - the raw byte. Reads last_packet. Output: true = draw the distance. No side effects.
+static bool rtmDistanceShowable(uint8_t d)
+{
+  if (d == 0xFF || d == 0x00) return false;
+  if (last_packet == 0 || (millis() - last_packet) >= FM_LINK_HEALTHY_MS) return false;
+  return true;
+}
+
 // ============================================================
 // V2.5-Evo - 2026-04-28 - P9: COMPACT 3×7 FONT
 // Source: docs/Dot_Matrix_Display_10x7_Render.html — fontCompact JavaScript object.
@@ -848,7 +864,7 @@ void renderOperationalDisplay()
       case 2:
       {
         uint8_t d = telemetry.rtm_distance;
-        if (d == 0xFF)
+        if (!rtmDistanceShowable(d))   // V2.5-Evo - 2026-10-07 - D-1: also 0x00 and a stale link (was d == 0xFF only)
           displayDigits(DASH, DASH);
         else
         {
@@ -1433,8 +1449,9 @@ void updateBargraphs(void *parameter)
 //
 // Inputs: dist_m in metres (float). Metres are rendered for BOTH unit settings this version.
 // Rules (metres):
-//   <1 m     → "00"
-//   0-9.9 m  → "X.X" with the true-decimal dot at C3 R3   (1.7 = 1.7 m)
+//   0-9.9 m  → "X.X" with the true-decimal dot at C3 R3   (1.7 = 1.7 m; 0.4 = 0.4 m - V2.5-Evo - 2026-10-07 - D-1,
+//              under 1 m used to show "00")
+//   no data (byte 0xFF or 0x00) or a stale link → "--" (decided by the callers, see rtmDistanceShowable())
 //   10-99 m  → "XX" whole metres, no dot
 //   >=100 m  → scrolling "FAR"
 // displayDigits() must be called before setting the decimal dot (it clears R0-R5, R3 included).
@@ -1491,25 +1508,22 @@ static void scrollFarStep()
       displayBuffer[j] |= ((buf[(i + far_scroll_pos) % FAR_LEN] >> (5 - j)) & 0x01) << i;
 }
 
+// V2.5-Evo - 2026-10-07 - D-1: under 1 m now shows "0.X" with the decimal dot (it showed "00" with no dot, unlike
+//   every other sub-10 m value). The "00" branch is gone; 0.0-9.9 m all take the tenths path below.
 static void displayDistanceInUnits(float dist_m)
 {
   // FEET NOT IMPLEMENTED on TX display this version — renders metres. Parked: full feet/yards
   // far-range solution. usrConf.dist_unit is retained in confStruct/SPIFFS (no schema change,
   // no config wipe); a future version can branch here on dist_unit==1. Metres are rendered for
   // both settings for now.
-  if (dist_m < 1.0f)
-  {
-    scrollFarReset();
-    displayDigits(0, 0);
-  }
-  else if (dist_m < 100.0f)
+  if (dist_m < 100.0f)
   {
     scrollFarReset();
     if (dist_m < 10.0f)
     {
-      // 0-9.9 m: "X.X" with the C3 R3 dot meaning a TRUE decimal (1.7 = 1.7 m). Same dot
+      // 0-9.9 m: "X.X" with the C3 R3 dot meaning a TRUE decimal (1.7 = 1.7 m, 0.4 = 0.4 m). Same dot
       // mechanism the kW readout uses. Work in integer tenths to avoid float-rounding glitches.
-      uint16_t tenths = (uint16_t)(dist_m * 10.0f + 0.5f);  // 10..99 for 1.0-9.9 m
+      uint16_t tenths = (uint16_t)(dist_m * 10.0f + 0.5f);  // 0..99 for 0.0-9.9 m (D-1: was 10..99, <1 m showed "00")
       if (tenths > 99) tenths = 99;                         // guard 9.95-9.99 rounding to 10.0
       displayDigits(tenths / 10, tenths % 10);
       // V2.5-Evo - 2026-07-25 - Decimal dot raised R4 -> R3 (owner: one row up off the bottom of the
@@ -1585,7 +1599,7 @@ void renderRtmInfoDisplay()
   {
     // Distance mode — decode telemetry.rtm_distance then convert to selected unit
     uint8_t d = telemetry.rtm_distance;
-    if (d == 0xFF)
+    if (!rtmDistanceShowable(d))   // V2.5-Evo - 2026-10-07 - D-1: also 0x00 and a stale link (was d == 0xFF only)
     {
       displayDigits(DASH, DASH);
     }

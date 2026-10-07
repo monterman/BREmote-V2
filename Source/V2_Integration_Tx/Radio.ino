@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - P-1: comment only - sendData()'s input-fault check zeroes the current packet and no longer latches.
 // V2.5-Evo - 2026-10-07 - H-1 / L-1: the meta-packet queue is 2 deep (same type updates in place; 0xF1 has priority
 //   for the second slot); sendData() stamps rtm_stop_sent_ms on every 0xF1/0 sent; waitForTelemetry() stamps
 //   fm_status_arrival_ms. No packet format change.
@@ -427,6 +428,8 @@ void sendData(void *parameter)
           // and centred steering. The ADC task forces the same values, but it can be stuck inside a slow I2C
           // transaction when the bus fails, so the radio checks the deadline itself (adsInputFaultNow(),
           // Analog.ino). Can only zero the throttle, never raise it.
+          // V2.5-Evo - 2026-10-07 - P-1: a missed deadline here zeroes THIS packet only; it no longer latches
+          // the fault (a CPU stall is not an input failure). The ADC task latches from its own deadline.
           bool input_fault = adsInputFaultNow();
           if (input_fault) thr = 0;
           // V2.5-Evo - 2026-04-25 - P7: cap at 0xF0 (240=94.1%) to reserve 0xF1-0xFF for all meta-packet types.

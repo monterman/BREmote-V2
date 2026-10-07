@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-07 - P-1 / P-5: adsInputFaultNow() (the radio-side deadline check) zeroes only the packet being
+//   sent and no longer latches the fault, so a CPU stall cannot cut power until a release; the ADC task latches from
+//   its own deadline. On the fault's rising edge the outputs are forced safe before the serial line. No confStruct change.
 // V2.5-Evo - 2026-10-07 - C-1: frozen-throttle fix. Every finished ADS1115 conversion stamps last_ads_ok_ms; a
 //   raw throttle sample far outside the calibrated band is rejected and flagged; measBufCalc() runs
 //   adsInputFaultUpdate() after calcFilter(), which forces throttle 0 / steering centre / toggle blocked, raises
@@ -121,22 +124,40 @@ static bool adsInputStale()
   return (millis() - stamp) > ADS_STALE_MS;
 }
 
+// adsTaskPassStale - V2.5-Evo - 2026-10-07 - P-1: the ADC task's own deadline test, judged against the moment
+// its current pass STARTED rather than against "now". A pass that got a conversion stamped it after pass_start,
+// so it is never stale, however long a CPU stall (flash write, BLE) delayed the end of the pass. A pass that got
+// none is stale only if the last conversion was already older than ADS_STALE_MS when the pass began - i.e. the
+// task had the CPU, asked the ADC, and nothing came back. That is the evidence a latch needs.
+// Inputs: pass_start (millis() captured by measBufCalc() before measureAndBuffer()). Output: true = stale.
+// No side effects. ADC task only.
+static bool adsTaskPassStale(unsigned long pass_start)
+{
+  if (!isHallActivityEnabled()) return false;
+  unsigned long stamp = last_ads_ok_ms;
+  if ((long)(stamp - pass_start) >= 0) return false;   // a conversion landed during this pass
+  return (pass_start - stamp) > ADS_STALE_MS;
+}
+
 // adsInputFaultNow - should the throttle byte about to be sent be forced to 0?
 // Called by sendData() (Radio.ino) for every control packet. It applies the same deadline as the ADC task,
 // because when the bus is stuck the ADC task can sit inside one slow I2C transaction (the Wire timeout is
-// 50 ms per transaction) and cannot zero thr_scaled itself. A missed deadline seen here LATCHES the fault;
-// the ADC task announces it and owns the recovery.
+// 50 ms per transaction) and cannot zero thr_scaled itself.
+// V2.5-Evo - 2026-10-07 - P-1: THIS CHECK NO LONGER LATCHES. THE BUG: a missed deadline seen here used to
+// latch the whole fault. A CPU-wide stall longer than ~40 ms (a SPIFFS or web-config save, an NVS write, BLE
+// bonding) also stops conversions being stamped, so a busy remote cut power mid-squeeze until a full release,
+// with "St" and the stop buzz, although the trigger and the ADC were fine. THE FIX: here the deadline only
+// zeroes THIS packet. The latch is set by the ADC task alone, from its own deadline, at the end of a pass in
+// which it actually asked the ADC and got no conversion (adsInputFaultUpdate()). After a stall the ADC task
+// (priority 6) runs before the radio (5), finds the finished conversion and stamps it, so nothing latches;
+// on a dead bus its pass ends without a conversion (at most ~150 ms of Wire timeouts) and it latches then.
+// Throttle is zero in the gap either way, because every packet sent while the deadline is missed is zeroed.
 // Inputs: ads_input_fault, adsInputStale(). Output: true = send zero throttle and centred steering.
-// Side effects: may set ads_input_fault. Never blocks.
+// Side effects: none. Never blocks.
 bool adsInputFaultNow()
 {
   if (ads_input_fault) return true;
-  if (adsInputStale())
-  {
-    ads_input_fault = true;
-    return true;
-  }
-  return false;
+  return adsInputStale();   // P-1: zero this packet only - never latch from the radio task
 }
 
 // adsThrReadingPlausible - is this raw throttle sample inside the calibrated band plus a margin?
@@ -174,11 +195,13 @@ static bool adsThrReadingPlausible(int16_t raw)
 //   throttle samples since the fault (so every slot of the averaging buffer is new), and that fresh average
 //   reading released (<= kAdsReleasedMax). A trigger still held when the bus comes back keeps throttle at 0
 //   until it is let go, so throttle can never jump to a held position.
-static void adsInputFaultUpdate()
+// V2.5-Evo - 2026-10-07 - P-1: takes pass_start and judges staleness with adsTaskPassStale(); this task is now
+//   the ONLY writer that sets ads_input_fault (the radio no longer latches it).
+static void adsInputFaultUpdate(unsigned long pass_start)
 {
   static bool announced = false;
   const uint8_t thr_fresh = thr_scaled;           // what calcFilter() just computed from the buffer
-  const bool    stale     = adsInputStale();
+  const bool    stale     = adsTaskPassStale(pass_start);
   const bool    bad_now   = stale || ads_thr_out_of_range;
   ads_thr_out_of_range = false;                   // consumed
 
@@ -195,8 +218,16 @@ static void adsInputFaultUpdate()
 
   if (!announced)
   {
+    // V2.5-Evo - 2026-10-07 - P-5: force the outputs safe FIRST. The serial line below can take a few ms, and
+    // until this pass returns the values calcFilter() just wrote (possibly from a garbage sample) would sit in
+    // thr_scaled / steer_scaled / tog_input. The radio was already protected by adsInputFaultNow(); the loop
+    // task (gestures, display) was not.
+    thr_scaled   = 0;
+    tog_scaled   = 127;
+    steer_scaled = 127;
+    tog_input    = 0;
     announced            = true;
-    ads_thr_good_samples = 0;                     // covers a fault latched by sendData() while this task was stuck
+    ads_thr_good_samples = 0;                     // the buffer must be refilled with fresh samples after the edge
     vib_stop_pending     = true;                  // Pattern 7, the normal stop buzz (the motor is a GPIO, not I2C)
     if (remote_error != 71) remote_error = REMOTE_ERR_INPUT_FAULT;
     Serial.println(stale ? "INPUT [TX] FAULT: no ADS1115 conversion for >50 ms - throttle 0, steering centred, error 72"
@@ -231,9 +262,10 @@ void measBufCalc(void *parameter)
   {
     if(isHallActivityEnabled())
     {
+      const unsigned long pass_start = millis();   // V2.5-Evo - 2026-10-07 - P-1: see adsTaskPassStale()
       measureAndBuffer();
       calcFilter();
-      adsInputFaultUpdate();   // V2.5-Evo - 2026-10-07 - C-1: may override the values calcFilter() just wrote
+      adsInputFaultUpdate(pass_start);   // V2.5-Evo - 2026-10-07 - C-1: may override the values calcFilter() just wrote
     }
     else
     {

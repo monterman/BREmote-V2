@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - P-1: comment only - the radio task no longer writes ads_input_fault.
 // V2.5-Evo - 2026-10-07 - fm_display_mode DEFAULT 1 -> 2 (distance to the buggy in metres; owner ruling). defaultConf
 //   value only - no struct change, sizeof stays 136, SW_VERSION stays 27; remotes keep their stored value.
 // V2.5-Evo - 2026-10-07 - H-1 (TX part): fm_status_arrival_ms, rtm_stop_sent_ms, FM_STATUS_RTM_ACTIVE, and a note that
@@ -828,8 +829,9 @@ volatile int last_channel = 0;
 // remote shows error 72 as a blinking "St" with the stop buzz. The fault clears only after fresh, in-band
 // readings fill the whole filter buffer AND they show the trigger released, so throttle can never jump
 // back to a held position when the bus recovers.
-// Writers: measBufCalc task (prio 6) for all four; sendData task (prio 5) may also SET ads_input_fault
-// when it sees the deadline missed while measBufCalc is itself stuck inside a slow I2C transaction.
+// Writers: measBufCalc task (prio 6) for all four. V2.5-Evo - 2026-10-07 - P-1: the sendData task no longer
+// sets ads_input_fault; when it sees the deadline missed it zeroes only the packet it is sending (a CPU stall
+// must not latch a fault), and measBufCalc latches from its own per-pass deadline (adsTaskPassStale()).
 // Every variable is one aligned word or byte, so no read can tear on this single-core RISC-V part.
 // ============================================================
 #define ADS_STALE_MS 50UL                       // ms with no finished ADS1115 conversion before the input is untrusted

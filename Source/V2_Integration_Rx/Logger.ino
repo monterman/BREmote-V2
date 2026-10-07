@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-06 - VESC 2 OVER CAN, part 2 (see BREmote_V2_Rx.h): loggerTask() fills the new 14 B VESC 2 block at the tail of the level-5 record (fillVesc2Block()), deciding freshness at log time against VESC 2's own age stamp: never answered or older than kVesc2StaleMs = every value field written as its N/A sentinel, age logged as the real age. Level 5 only; levels 3 and 4 unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 5 of 5 (Rex delta audit L-3; the code fix is in PWM.ino): fillLevel4Diag()'s two swap-failure delta statics are SEEDED FROM THE LIVE COUNTERS ON THE FIRST CALL instead of starting at 0. Starting at 0 made the first level-4 row of a session report the whole boot's accumulated failure count as if it had happened inside that one ~333 ms row, and because the nibbles saturate at 15 a board that had seen any swap failures before logging started wrote a first row reading 15/15 - "pinned" - from a healthy bus. Seeded inside loggerTask, so the single-writer contract is untouched: this task still reads the PWM task's volatiles and writes only its own statics. ZERO log bytes, no LOG_FILE_FORMAT_VER bump (stays 2), record sizes stay 62 / 90 / 112, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 4 of 4 (see Compass.ino, System.ino, PWM.ino): convertToLogData() STOPS READING THE COMPASS OVER I2C. It used to call getCompassHeading() on EVERY log record - ~2.89 Hz at the default rate - which is two chained Wire transactions inside one portMAX_DELAY mutex hold, from loggerTask, with NO throttle gate, NO rtm_use_compass gate and NO heading-latch gate. So whenever logging was on, the RX hit the compass about three times a second at ANY throttle, including full throttle with a rider on the rope, contending for the same mutex as the 100 Hz enable swap that decides which of the two motors receives the single PPM output; and loggerTask is not registered with the task watchdog, so a hold that never returned would not have panicked anything. This was the compass starver nobody had found. IT IS NOT AN ARBITRATION PROBLEM: the logger and the compass were never two competing bus users - the logger's I2C traffic WAS a compass read - so the fix is a cache, not a referee. getCompassHeading() (Compass.ino) now publishes its last successful result, and this file reads that, with an age test: past kCompassLiveCacheMaxAgeMs the column records the 0xFFFF invalid sentinel it has always had. Zero transactions, zero mutex takes, zero contention. The column's contract is unchanged - same field, same size, same scaling, same 0xFFFF-means-invalid semantics - and the mode-2 heading mirror below is unaffected because in that mode getRtmHeading() reads live at 10 Hz, so the cached value is never more than ~100 ms behind what the controller actually used. No record-size change, no LOG_FILE_FORMAT_VER bump, no confStruct change: sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 2 of 4 - THE INSTRUMENT (see BREmote_V2_Rx.h, PWM.ino, System.ino): fillLevel4Diag() ORs two 4-bit DELTAS of the enable-swap failure counters into bits 23-30 of the fm_gate_flags word it already copies - how many swaps lost the mutex since the previous row, per channel, saturating at 15. NO NEW COLUMN AND NO NEW BYTES, deliberately: the project's own rule beside LOG_FILE_FORMAT_VER says appending to the BASE record forces a format bump, and it would move every field above byte 62 and break offsetof(VescLogDataL5, rider_lat) == 90, making EVERY EXISTING LOG FILE undecodable. Riding in the existing u32 costs nothing, needs no bump (format stays 2), covers levels 4 AND 5, and leaves record sizes at 62 / 90 / 112. The delta is computed against loggerTask-LOCAL statics, so this task reads the PWM task's two volatiles and writes only its own - the single-writer contract that makes the FmLogSnapshot hand-off safe is preserved exactly. The cur < prev case (?diagz zeroing the counters mid-session) is handled rather than wrapping. Strictly additive and masked to its own eight bits: no FM gate verdict, no other column, no control path and no record size is touched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -730,6 +731,57 @@ static void fillLevel5Extra(VescLogDataL5 &rec, const FmLogSnapshot &s)
   rec.l5_rsvd_takeover_end    = 0;
 }
 
+// ============================================================
+// V2.5-Evo - 2026-10-06 - fillVesc2Block - add the VESC 2 block to a level-5 log record
+//
+// What it does: copies VESC 2's last validated telemetry (vesc2, written by pollVesc2IfDue() in
+// VESC.ino) into the 14-byte block at the tail of VescLogDataL5, in the same units and clamps the
+// base record uses for VESC 1. FRESHNESS IS DECIDED HERE, at log time, against VESC 2's OWN age
+// stamp: if VESC 2 has never answered this session, or its last reply is older than kVesc2StaleMs,
+// every value field gets its "no data" sentinel instead of the old numbers - stale data is never
+// written as live (project GPS/telemetry rule 1, by analogy). vesc2_age_ms is always the real age
+// (0xFFFF only for "never"), so a reader can see WHY a row is N/A.
+// Inputs:  rec - a VescLogDataL5 whose earlier blocks are already filled
+// Outputs: none (rec is filled in place).
+// Side effects: takes vescMutex for a struct copy (the same 50 ms bound convertToLogData() uses);
+//   if the take fails the block is written as N/A rather than torn. No I/O, no globals written.
+// ============================================================
+static void fillVesc2Block(VescLogDataL5 &rec)
+{
+  // Start from "no data" in every field; only a fresh copy overwrites it.
+  rec.vesc2_age_ms          = 0xFFFF;
+  rec.vesc2_current_motor   = 0x7FFF;
+  rec.vesc2_current_battery = 0x7FFF;
+  rec.vesc2_duty_cycle      = 0x7F;
+  rec.vesc2_voltage         = 0xFFFF;
+  rec.vesc2_ERPM            = 0x7FFF;
+  rec.vesc2_temp_mos        = 0x7F;
+  rec.vesc2_temp_motor      = 0x7F;
+  rec.vesc2_fault_code      = 0xFF;
+
+  vesc2_struct v2;
+  if (!(vescMutex && xSemaphoreTake(vescMutex, pdMS_TO_TICKS(50)) == pdTRUE)) return;
+  v2 = vesc2;
+  xSemaphoreGive(vescMutex);
+
+  if (!v2.ever_ok) return;   // never answered: age stays 0xFFFF, values N/A
+
+  const uint32_t age = millis() - v2.last_ok_ms;
+  rec.vesc2_age_ms = (uint16_t)((age > 0xFFFEUL) ? 0xFFFEUL : age);
+  if (age > kVesc2StaleMs) return;   // stale: real age logged, values N/A
+
+  // Clamps keep every real value strictly inside its field and off its sentinel
+  // (+-30000 < 0x7FFF, +-101 / +-120 < 0x7F, a fault code is never 0xFF).
+  rec.vesc2_current_motor   = (int16_t)constrain(v2.motCur, -30000, 30000);
+  rec.vesc2_current_battery = (int16_t)constrain(v2.batCur, -30000, 30000);
+  rec.vesc2_duty_cycle      = (int8_t)constrain(v2.duty / 10, -101, 101);
+  rec.vesc2_voltage         = (uint16_t)constrain((int32_t)v2.batVolt, 0, 0xFFFE);
+  rec.vesc2_ERPM            = (int16_t)constrain(v2.erpm / 10, -30000, 30000);
+  rec.vesc2_temp_mos        = (int8_t)constrain(v2.fetTemp / 10, -120, 120);
+  rec.vesc2_temp_motor      = (int8_t)constrain(v2.motorTemp / 10, -120, 120);
+  rec.vesc2_fault_code      = (v2.fault_code == 0xFF) ? 0xFE : v2.fault_code;
+}
+
 // Check and manage SPIFFS space
 bool ensureFreeSpace() {
   size_t totalBytes = SPIFFS.totalBytes();
@@ -895,6 +947,7 @@ void loggerTask(void* parameter) {
         const FmLogSnapshot snap = logTakeFmSnapshot();
         fillLevel4Diag(logData5.l4, snap);
         fillLevel5Extra(logData5, snap);
+        fillVesc2Block(logData5);   // V2.5-Evo - 2026-10-06 - VESC 2 over CAN, with its own freshness test
         memcpy(rec_buf, &logData5, sizeof(logData5));
         rec_len = (uint16_t)sizeof(logData5);
       } else if (active_log_level >= 4) {

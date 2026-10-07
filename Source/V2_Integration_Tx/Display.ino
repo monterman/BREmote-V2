@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-07 - E71 visible in every mode: the "E 7" water-ingress blink moved into renderE71Blink() and both
+//   renderOperationalDisplay() and renderRtmInfoDisplay() call it FIRST when remote_error == 71, so it now shows while
+//   Follow-Me is armed or Return-To-Me is active (it was hidden there; the buzz always fired). Detection, buzz and
+//   throttle paths untouched. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-06 - F-label hold: showFmLabelHeld() draws "F<n>" and renderOperationalDisplay() leaves the
 //   digit zone alone for kFmLabelHoldMs (2 s) afterwards, so a station/mode confirm stays readable WITHOUT blocking
 //   loop(). Used by all four F-label sites in RTMState.ino. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
@@ -733,10 +737,62 @@ static bool fmLabelHolding()
   return false;
 }
 
+// ============================================================
+// V2.5-Evo - 2026-10-07 - E71 WATER-INGRESS BLINK, SHARED BY BOTH RENDER PATHS
+// THE BUG: the "E 7" blink lived in renderOperationalDisplay()'s error branch, AFTER the Follow-Me branch
+// returned, and renderRtmInfoDisplay() never looked at remote_error at all. So with Follow-Me armed or a
+// Return-To-Me active the water-ingress alarm never reached the screen (the Pattern 3 buzz still fired).
+// THE FIX: the blink is this one helper, and both renderers call it FIRST when remote_error == 71, so it
+// takes priority over the FM readout and the RTM info screen. The blink itself, its 250 ms cadence, the E71
+// detection (Radio.ino) and the Pattern 3 buzz (System.ino) are all unchanged. Display only - nothing here
+// touches throttle, FM or RTM state.
+// Inputs: none (millis()). Side effects: writes displayBuffer and pushes it. CALLER MUST HOLD displayMutex.
+// "E 7": E(3) + space(1) + 7(3) = 7 columns, all within C0-C6 (bits 7-9 are unconnected hw ROW lines).
+// ============================================================
+static void renderE71Blink()
+{
+  // V2.5-Evo - 2026-04-28 - P9: E71 water ingress — full-screen blinking flash, 250 ms on/off until it clears.
+  static unsigned long e71_blink_ms    = 0;
+  static bool          e71_blink_state = false;
+  if (millis() - e71_blink_ms >= 250)
+  {
+    e71_blink_state = !e71_blink_state;
+    e71_blink_ms    = millis();
+    if (e71_blink_state)
+    {
+      for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000;
+      const char* e71msg = "E 7";
+      uint8_t col = 0;
+      for (int ci = 0; e71msg[ci] && col < 10; ci++) {
+        if (e71msg[ci] == ' ') { col++; continue; }
+        const Fc3x7Entry* en = fc3x7GetChar(e71msg[ci]);
+        if (!en) { col++; continue; }
+        for (int fc = 0; fc < 3 && col < 10; fc++, col++) {
+          uint8_t cb = en->col[fc];
+          for (int r = 0; r < 7; r++) if (cb & (1u << r)) displayBuffer[r+1] |= (1u << col);
+        }
+      }
+    }
+    else
+    {
+      for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000;
+    }
+    updateDisplay();
+  }
+}
+
 void renderOperationalDisplay()
 {
   updateFoilDataCache();  // refresh digit cache once per render cycle, before mutex and switch
   xSemaphoreTake(displayMutex, portMAX_DELAY);  // loop-task render — waits for the bargraph task to release
+  // V2.5-Evo - 2026-10-07 - E71 FIRST: the water-ingress blink outranks the Follow-Me readout (and everything
+  // else this function draws). See renderE71Blink().
+  if (remote_error == 71)
+  {
+    renderE71Blink();
+    xSemaphoreGive(displayMutex);
+    return;
+  }
   // V2.5-Evo - 2026-04-28 - ChgDZ: Persistent "FM" while Follow-Me armed, RTM not active.
   // displayDigitZone() preserves R5 proximity bar, R6 battery bar, C7 GPS dot, C8/C9 bargraphs.
   // Previous hand-written render wrote through all 7 rows, destructively clearing R5/R6.
@@ -836,42 +892,8 @@ void renderOperationalDisplay()
   }
   else
   {
-    // V2.5-Evo - 2026-04-28 - P9: E71 water ingress — full-screen blinking flash.
-    // All existing E71 haptic (Pattern 3: 5×500ms) and detection logic are UNCHANGED.
-    // Display-only change: "E 7" rendered full-screen at 250ms on/off until error clears.
-    // E(3) + space(1) + 7(3) = 7 columns, all within C0-C6 (bits 7-9 are unconnected hw ROW lines).
-    if (remote_error == 71)
-    {
-      static unsigned long e71_blink_ms    = 0;
-      static bool          e71_blink_state = false;
-      if (millis() - e71_blink_ms >= 250)
-      {
-        e71_blink_state = !e71_blink_state;
-        e71_blink_ms    = millis();
-        if (e71_blink_state)
-        {
-          for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000;
-          const char* e71msg = "E 7";
-          uint8_t col = 0;
-          for (int ci = 0; e71msg[ci] && col < 10; ci++) {
-            if (e71msg[ci] == ' ') { col++; continue; }
-            const Fc3x7Entry* en = fc3x7GetChar(e71msg[ci]);
-            if (!en) { col++; continue; }
-            for (int fc = 0; fc < 3 && col < 10; fc++, col++) {
-              uint8_t cb = en->col[fc];
-              for (int r = 0; r < 7; r++) if (cb & (1u << r)) displayBuffer[r+1] |= (1u << col);
-            }
-          }
-        }
-        else
-        {
-          for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000;
-        }
-        updateDisplay();
-      }
-      xSemaphoreGive(displayMutex);
-      return;
-    }
+    // V2.5-Evo - 2026-10-07 - the E71 water-ingress blink that lived here moved to renderE71Blink(), and
+    // renderOperationalDisplay() now checks it FIRST (see there), so remote_error 71 never reaches this branch.
 
     // V2.5-Evo - 2026-04-27 - P8: ET error (code=20=LET_T) shows "--" and auto-clears after 3s.
     // ET is absent from V2.5-Evo RX source; this guard is defensive for legacy or future paths.
@@ -1468,6 +1490,14 @@ static void displayDistanceInUnits(float dist_m)
 void renderRtmInfoDisplay()
 {
   xSemaphoreTake(displayMutex, portMAX_DELAY);  // loop-task render — waits for the bargraph task to release
+  // V2.5-Evo - 2026-10-07 - E71 FIRST: the water-ingress blink outranks the RTM info screen. This function
+  // never checked remote_error before, so E71 was invisible for a whole return. See renderE71Blink().
+  if (remote_error == 71)
+  {
+    renderE71Blink();
+    xSemaphoreGive(displayMutex);
+    return;
+  }
   static unsigned long alt_last_switch_ms = 0;
   static uint8_t       alt_showing        = 0;  // 0=distance, 1=speed (used in mode 2)
 

@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - comment only: a station step no longer buzzes (Pattern 11 removed, RTMState.ino); the tap
+//   lockout note is updated. The 1 s lockout itself is unchanged.
 // V2.5-Evo - 2026-10-07 - R-4: stale comments corrected (the 2.5 s hold "toggles Return-To-Me", Pattern 10 "will
 //   toggle") and the fmToggleAutoReturnFromMagnet() prototype removed with the function. Comments only otherwise.
 // V2.5-Evo - 2026-10-07 - R-3: runMenu() ignores the toggle after an RTM arm ceremony until it has been seen
@@ -748,9 +750,9 @@ static const uint32_t kMagTapDebounceMs = 40UL;
 // exactly as after any other mode 4 removal, so nothing is left half-armed. Judged on the ARRIVAL edge,
 // not the removal, so a bounce that lands inside the window is dropped even if it lifts after it.
 // WHY 1000 ms. A deliberate tap-remove-tap-remove still steps quickly (about one station a second),
-// while a wobble or a bounce lands well inside it. It also guarantees the previous step's Pattern 11
-// (at most 3 x 250 ms, plus the 50 ms vibration-task poll = 800 ms) has finished before the next step
-// queues its own count, so the buzz count always matches the stations actually stepped.
+// while a wobble or a bounce lands well inside it. (It also used to guarantee that the previous step's
+// Pattern 11 count had finished before the next one queued; V2.5-Evo - 2026-10-07 - a station step no
+// longer buzzes at all, so only the double-step protection remains.)
 // Only taps are locked out. The 2.5 s hold is untouched: it cannot complete inside the window anyway.
 static const uint32_t kMagStepLockoutMs = 1000UL;
 

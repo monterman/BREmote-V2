@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - Station buzz REMOVED (owner ruling, minimal-buzz rule; audit R-4): fmStepStationFromMagnet()
+//   no longer queues the N-tap Pattern 11. The F<n> display label is the only station-change confirm.
 // V2.5-Evo - 2026-10-07 - R-4: the dead fmToggleRtmEnabledFromMagnet() and fmToggleAutoReturnFromMagnet() are
 //   removed, together with their header comment; the A1/A0 invariant they carried now sits on
 //   ceremonyCancelForReturnGesture(). rtm_enabled_session has no writer and is documented as such.
@@ -163,9 +165,7 @@
 //   are unchanged and still buzz.
 
 extern volatile uint8_t current_vib_pattern;
-// V2.5-Evo - 2026-09-30 - MagStations: how many taps Pattern 11 plays (1-3 = the station number).
-// Set it BEFORE writing 11 into current_vib_pattern. Defined in System.ino.
-extern volatile uint8_t vib_pulse_count;
+// (V2.5-Evo - 2026-10-07 - the vib_pulse_count extern for Pattern 11 was removed with the station buzz.)
 extern volatile bool    vib_stop_pending;   // set true to REQUEST the Pattern 7 STOP buzz (defined in
                                             // System.ino). Never write current_vib_pattern = 7 directly:
                                             // the flag is what makes the stop buzz preempt and survive.
@@ -1301,18 +1301,20 @@ static uint8_t fmNextStationInSet(uint8_t from, uint16_t mask)
 // fmIsEngaged() has returned true. It re-checks the gate itself so the safety rule lives with the
 // action, not only with the caller.
 //
-// CONFIRMATIONS - two channels, as the design requires, and only when something actually changed:
-//   haptic  : N short taps = station number (Pattern 11, N taken from vib_pulse_count)
+// CONFIRMATION - the display only, and only when something actually changed:
 //   display : the existing "F<n>" large-font confirm, held 2 s without blocking (V2.5-Evo - 2026-10-06;
 //             was a blocking 1.2 s)
+// V2.5-Evo - 2026-10-07 - NO BUZZ ANY MORE (owner ruling, minimal-buzz rule; audit R-4 found the count
+//   could also go silently missing behind another pattern). The N-tap Pattern 11 that used to say the
+//   station number is removed; the F<n> label is the confirm.
 // If the tap resolves to the station the buggy is already at, this function returns in silence: no
-// buzz, no flash, no packet. A confirmation for "nothing happened" teaches the rider to expect
+// flash, no packet. A confirmation for "nothing happened" teaches the rider to expect
 // feedback from accidental magnet contact, which is the opposite of what we want.
 //
 // INPUTS: last_fm_mode, usrConf.mag_fm_set. (usrConf.gear_display_time is NO LONGER read here - see
 //   the constants above for why.)
 // SIDE EFFECTS: last_fm_mode updated, one 0xF2 burst to the buggy, keepalive + arm timers reset,
-//   Pattern 11 queued, and a NON-blocking 2 s "F<n>" hold via showFmLabelHeld() (V2.5-Evo -
+//   and a NON-blocking 2 s "F<n>" hold via showFmLabelHeld() (V2.5-Evo -
 //   2026-10-06; was a blocking 1.2 s gpsKeepAliveDelay()). Loop task only - never from a FreeRTOS task.
 // OUTPUT (V2.5-Evo - 2026-10-06, audit M-1): true only when the station actually moved, false for every
 //   silent return. runMagGesture() starts its 1 s tap lockout on true only. Was void.
@@ -1332,13 +1334,8 @@ bool fmStepStationFromMagnet()
   fm_last_sync_ms = millis();              // reset keepalive - just synced
   fm_arm_ms       = millis();              // reset arm window - the rider is actively choosing
 
-  // Haptic first: the vibration runs in its own task, so it plays THROUGH the display hold below
-  // instead of after it. N taps = station number.
-  if (current_vib_pattern == 0)
-  {
-    vib_pulse_count     = last_fm_mode;    // must be set BEFORE the pattern number
-    current_vib_pattern = 11;
-  }
+  // V2.5-Evo - 2026-10-07 - the Pattern 11 station-count buzz that was queued here is removed (owner
+  // ruling: no buzz on a station change). The display label below is the only confirm.
 
   // The same "F<n>" confirm the toggle path draws. V2.5-Evo - 2026-10-06 - held 2 s (was a blocking
   // 1.2 s) by showFmLabelHeld() in Display.ino, which does not block loop() - see the note above.

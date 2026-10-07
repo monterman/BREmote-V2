@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - Pattern 11 and vib_pulse_count REMOVED: a magnet station change no longer buzzes (owner
+//   ruling, minimal-buzz rule). Its executor branch and the count variable are gone; number 11 is retired.
 // V2.5-Evo - 2026-10-07 - R-4: comments corrected - Pattern 10's mag_mode 4 meaning ("Return-To-Me will toggle"
 //   was stale since 2026-10-06), and Pattern 12 now has no caller. Comment only.
 // V2.5-Evo - 2026-10-07 - R-7: Pattern 5 (one short blip) gains a caller - the mag_mode 4 hold refusal when
@@ -936,13 +938,9 @@ void checkCharger()
   setBrightness(0x0F);
 }
 
-volatile uint8_t current_vib_pattern = 0;  // active haptic pattern: 0=none, 1=2 short, 2=5 short, 3=5 long, 4=2 fast short (RTM/FM ARM confirm), 5=1 short (magnet 2s "release for FM" advisory), 6=3 fast short (magnet 5s "release for RTM" advisory), 7=1 long (UNCOMMANDED RTM/FM stop, or an arm refusal — request it via vib_stop_pending, never by writing 7 here), 8=1 medium 300ms (FM warning-distance reached; repeats every 2s from runFmLoop), 9=4 quick 80ms taps (return gesture: auto-return override SET for the session), 10=2 medium 300ms pulses (return gesture: override CLEARED, back to the stored default), 11=vib_pulse_count short taps (magnet station change: the tap count IS the station number — see the MagStations note below), 12=3 firm 130ms taps (magnet hold turned Return-To-Me OFF for the session — deliberately NOT the Pattern 7 stop buzz; see the note on Pattern 12 below)
-// V2.5-Evo - 2026-09-30 - MagStations: how many taps Pattern 11 plays. It is the Follow-Me station number
-// (1-3), so the rider counts the buzzes and knows where the buggy just went without looking at the display.
-// WRITE THIS FIRST, then current_vib_pattern = 11 — the vibration task reads the count when it starts the
-// pattern, and a count of 0 would silently play nothing. It is clamped to 1-5 inside the task so a stray
-// value can never spin the motor for an unbounded time.
-volatile uint8_t vib_pulse_count = 0;
+volatile uint8_t current_vib_pattern = 0;  // active haptic pattern: 0=none, 1=2 short, 2=5 short, 3=5 long, 4=2 fast short (RTM/FM ARM confirm), 5=1 short (magnet 2s "release for FM" advisory), 6=3 fast short (magnet 5s "release for RTM" advisory), 7=1 long (UNCOMMANDED RTM/FM stop, or an arm refusal — request it via vib_stop_pending, never by writing 7 here), 8=1 medium 300ms (FM warning-distance reached; repeats every 2s from runFmLoop), 9=4 quick 80ms taps (return gesture: auto-return override SET for the session), 10=2 medium 300ms pulses (return gesture: override CLEARED, back to the stored default), 11=RETIRED 2026-10-07 (was the magnet station-change tap count; a station change no longer buzzes), 12=3 firm 130ms taps (magnet hold turned Return-To-Me OFF for the session — deliberately NOT the Pattern 7 stop buzz; see the note on Pattern 12 below)
+// V2.5-Evo - 2026-10-07 - vib_pulse_count (the tap count for Pattern 11) was removed with Pattern 11 itself:
+// a station change no longer buzzes (owner ruling). Pattern 11 in the list above is retired.
 
 // ============================================================
 // STOP-BUZZ REQUEST FLAG - how Pattern 7 gets to actually play
@@ -1212,25 +1210,8 @@ void vibrationTask(void *parameter) {
       }
       if (current_vib_pattern == 10) current_vib_pattern = 0;
     }
-    // V2.5-Evo - 2026-09-30 - MagStations: Pattern 11 — N short taps, where N IS THE ANSWER.
-    // vib_pulse_count carries the Follow-Me station number the magnet tap just moved to (1-3), so the rider
-    // counts taps instead of reading the display: two taps means the buggy is heading to station 2.
-    // The pulse shape (100 ms on / 150 ms off) is copied from Pattern 6 — this firmware's existing
-    // "counted taps" shape — so a count reads as a count and not as a new signal to learn. Pattern 11 with
-    // a count of 3 is deliberately identical to Pattern 6: Pattern 6 only ever plays in mag_mode 3 and
-    // Pattern 11 only in mag_mode 4, so one remote never produces both.
-    // The count is clamped to 1-5 so a stray or uninitialised value cannot buzz forever.
-    else if (current_vib_pattern == 11) {
-      uint8_t n = vib_pulse_count;
-      if (n < 1) n = 1;
-      if (n > 5) n = 5;
-      for (uint8_t i = 0; i < n; i++) {
-        digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(100));
-        digitalWrite(P_MOT, LOW);  vTaskDelay(pdMS_TO_TICKS(150));
-        if (vib_stop_pending) break;   // a stop outranks a confirm — cut it short
-      }
-      if (current_vib_pattern == 11) current_vib_pattern = 0;
-    }
+    // V2.5-Evo - 2026-10-07 - Pattern 11 (N short taps = the station a magnet tap moved to) REMOVED, with
+    // vib_pulse_count: owner ruling, a station change no longer buzzes; the F<n> label is the confirm.
     // V2.5-Evo - 2026-09-30 - MagFix (Rex delta audit): Pattern 12 — THREE FIRM taps, the Pattern 4 shape
     // (130 ms on / 250 ms off). Fired by fmToggleRtmEnabledFromMagnet() when a mag_mode 4 magnet hold turns
     // Return-To-Me OFF for the session.

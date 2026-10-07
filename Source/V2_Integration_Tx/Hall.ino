@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - R-4: stale comments corrected (the 2.5 s hold "toggles Return-To-Me", Pattern 10 "will
+//   toggle") and the fmToggleAutoReturnFromMagnet() prototype removed with the function. Comments only otherwise.
 // V2.5-Evo - 2026-10-07 - R-3: runMenu() ignores the toggle after an RTM arm ceremony until it has been seen
 //   centred (ceremony_toggle_latch, set by runDoubleSqueezeArm()), so a LEFT toggle still held for the in-ceremony
 //   RIGHT tap -> LEFT hold can no longer fall through into a gear step, station change or lock when the ceremony
@@ -654,17 +656,13 @@ extern volatile uint8_t current_vib_pattern;
 // rtmIsArming() is defined in RTMState.ino (also concatenated after this file).
 bool rtmIsArming();
 // V2.5-Evo - 2026-09-30 - rtmEnabledEffective() is the ONE place that answers "is Return-To-Me enabled
-// right now". It is the stored usrConf.rtm_enabled unless the magnet hold has overridden it for this
-// session (RAM only — see the RTM SESSION OVERRIDE block in RTMState.ino). Every gate that used to read
+// right now". It is the stored usrConf.rtm_enabled unless a session override stands (RAM only — see the
+// RTM SESSION OVERRIDE block in RTMState.ino; since 2026-10-07 nothing writes that override, R-4). Every gate that used to read
 // usrConf.rtm_enabled directly now calls this, so a session flip is honoured everywhere and can still
 // never reach SPIFFS. Defined in RTMState.ino, concatenated after this file.
 bool rtmEnabledEffective();
-// V2.5-Evo - 2026-10-02 - the FM-armed half of the state-aware 2.5 s hold (RTMState.ino,
-// concatenated after this file). Toggles AUTO-RETURN for the session and shows "A1"/"A0".
-// BLOCKS for ~2 s on the display confirm, so loop()-only like the rest of this function.
-// V2.5-Evo - 2026-10-06 - NO LONGER CALLED from here: the 2.5 s hold now always starts the manual
-// Return-To-Me (owner ruling). Declaration kept so the definition still has a matching prototype.
-void fmToggleAutoReturnFromMagnet();
+// (V2.5-Evo - 2026-10-07 - R-4: the fmToggleAutoReturnFromMagnet() prototype that sat here is gone with the
+// function itself; the 2.5 s hold has always started the manual Return-To-Me since 2026-10-06.)
 // fmDisarm() and setRtmDisarmed() are the toggle-combo's own disarm paths (both static in
 // RTMState.ino, concatenated after this file). Declared static here — matching their definitions
 // so the linkage agrees — so the magnet TOGGLE can fire the identical disarm the toggle uses
@@ -727,7 +725,8 @@ static const uint32_t kMagMaxHoldMs  = 30000UL;
 // 600 ms swallows the jitter and still keeps the tap band and the 2500 ms hold band more than 4x apart.
 static const uint32_t kMagTapMinMs   = 60UL;      // shorter than this = bounce, ignored
 static const uint32_t kMagTapMaxMs   = 600UL;     // longer than this is not a tap (see the dead-zone note)
-// The hold that toggles Return-To-Me. 2500 ms is more than 4x the tap CEILING (and ~8x a typical 300 ms
+// The hold that starts the manual Return-To-Me (V2.5-Evo - 2026-10-07 - R-4: this comment said "toggles
+// Return-To-Me", which it has not done since 2026-10-06). 2500 ms is more than 4x the tap CEILING (and ~8x a typical 300 ms
 // tap), which is what makes the pair impossible to confuse. The advisory buzz fires the moment the hold
 // crosses it, so the rider never has to estimate time: hold until you feel it, then take the magnet away.
 static const uint32_t kMagRtmToggleHoldMs = 2500UL;
@@ -937,7 +936,8 @@ void runMagGesture()
     // The 5s tier exists only in MAG_ROLE_BOTH; the single-role modes stop at 2s.
     // V2.5-Evo - 2026-09-30 - MagStations: MAG_ROLE_FMSET has its own single band at 2.5 s and does
     // NOT use the 2 s / 5 s thresholds at all, so it is handled first and returns. Pattern 10 (two
-    // medium pulses) says "let go now and Return-To-Me will toggle". Same buzz-announces-the-band
+    // medium pulses) says "let go now and the manual Return-To-Me starts" (V2.5-Evo - 2026-10-07 - R-4:
+    // it used to say "will toggle"; see the hold verdict below for when it is NOT played). Same buzz-announces-the-band
     // principle as the other roles: the rider holds until the pattern arrives, then takes the magnet
     // away — they never have to estimate 2.5 seconds.
     if (role == MAG_ROLE_FMSET)
@@ -1053,7 +1053,7 @@ void runMagGesture()
         // cancels the arm and flips auto-return for the session (returnGestureCeremonyPoll() and
         // ceremonyCancelForReturnGesture() in RTMState.ino). That detector does not need the arming
         // LEFT hold the toggle route starts with: on the magnet route the LEFT toggle is already up,
-        // so it is live from the first poll. fmToggleAutoReturnFromMagnet() is no longer called.
+        // so it is live from the first poll. (fmToggleAutoReturnFromMagnet() was removed 2026-10-07, R-4.)
         //
         // V2.5-Evo - 2026-10-07 - R-2 / R-7: the verdict latched at 2.5 s decides (see magHoldVerdict()).
         if (hold_verdict == kMagHoldIgnored)

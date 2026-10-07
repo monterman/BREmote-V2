@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - R-4: comments corrected - Pattern 10's mag_mode 4 meaning ("Return-To-Me will toggle"
+//   was stale since 2026-10-06), and Pattern 12 now has no caller. Comment only.
 // V2.5-Evo - 2026-10-07 - R-7: Pattern 5 (one short blip) gains a caller - the mag_mode 4 hold refusal when
 //   Return-To-Me cannot start. Comment only in this file; no pattern changed, no confStruct change.
 // V2.5-Evo - 2026-09-30 - MagFix (Rex delta audit): haptic Pattern 12 added — THREE FIRM taps (130 ms on /
@@ -1196,10 +1198,12 @@ void vibrationTask(void *parameter) {
     // Two mediums: longer than the two firm arm taps (4: 130 ms), one more than the single 300 ms
     // warning (8), far shorter than the one 750 ms STOP (7).
     // V2.5-Evo - 2026-09-30 - MagStations: SECOND CALLER. runMagGesture() also fires Pattern 10 as the
-    // 2.5 s advisory in mag_mode 4 — "let go now and Return-To-Me will toggle". It is the first half of
-    // that gesture's signature: two mediums, then two firm taps (4) for ON or one long buzz (7) for OFF.
-    // The two callers can never overlap — one is the toggle combo, the other needs a magnet held for
-    // 2.5 s — and both mean "a deliberate two-state decision just happened", so the feel stays honest.
+    // 2.5 s advisory in mag_mode 4.
+    // V2.5-Evo - 2026-10-07 - R-4: corrected. Since 2026-10-06 that advisory means "let go now and the
+    // manual Return-To-Me starts" ("rn" follows, then Pattern 4 when the squeeze arms it); it no longer
+    // toggles anything. Since 2026-10-07 it plays only when the hold will really start the ceremony - a
+    // hold that cannot start Return-To-Me gets Pattern 5 instead (R-7). The two callers can never overlap:
+    // one is the toggle combo, the other needs a magnet held for 2.5 s.
     else if (current_vib_pattern == 10) {
       for (int i = 0; i < 2; i++) {
         digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(300));
@@ -1230,6 +1234,8 @@ void vibrationTask(void *parameter) {
     // V2.5-Evo - 2026-09-30 - MagFix (Rex delta audit): Pattern 12 — THREE FIRM taps, the Pattern 4 shape
     // (130 ms on / 250 ms off). Fired by fmToggleRtmEnabledFromMagnet() when a mag_mode 4 magnet hold turns
     // Return-To-Me OFF for the session.
+    // V2.5-Evo - 2026-10-07 - R-4: NO CALLER. fmToggleRtmEnabledFromMagnet() and fmToggleAutoReturnFromMagnet()
+    // (its two users) were removed as dead code. The executor is left for the haptic-pattern review.
     // WHY THIS PATTERN EXISTS AT ALL. OFF used to raise vib_stop_pending, i.e. Pattern 7, the one long buzz.
     // Pattern 7 means "a FAULT stopped the system" and its own contract above says it DOES NOT FIRE ON any
     // deliberate disarm — and because it preempts every other pattern, it also outranked everything else the

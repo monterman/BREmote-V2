@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-07 - R-4: the dead fmToggleRtmEnabledFromMagnet() and fmToggleAutoReturnFromMagnet() are
+//   removed, together with their header comment; the A1/A0 invariant they carried now sits on
+//   ceremonyCancelForReturnGesture(). rtm_enabled_session has no writer and is documented as such.
 // V2.5-Evo - 2026-10-07 - R-3: rtm_arm_window_s itself is unchanged, but once a valid RIGHT tap -> LEFT hold has
 //   started inside it, the ceremony keeps waiting until that sequence completes or ends
 //   (return_gesture_in_progress, set by returnGestureCeremonyPoll()); no squeeze counts past the window. The
@@ -278,6 +281,9 @@ static uint8_t       last_fm_return_mode  = 0xFF;   // 0xFF none, 0 OFF, 1 ON; R
 // NO NEW STRUCT FIELD. A RAM variable is not a confStruct field: sizeof(confStruct) stays 136 and
 // SW_VERSION stays 27, which matters because the TX struct tail is FULL and a version bump here would
 // wipe the owner's throttle calibration.
+// V2.5-Evo - 2026-10-07 - R-4: NO WRITER ANY MORE. Its only writer, fmToggleRtmEnabledFromMagnet(), was
+// removed (dead since the 2026-10-06 hold ruling), so this stays 0xFF and rtmEnabledEffective() always
+// returns the stored usrConf.rtm_enabled. Kept, with every reader, so the gates need no change.
 // ============================================================
 static uint8_t       rtm_enabled_session  = 0xFF;   // 0xFF none, 0 OFF, 1 ON; RAM only, dies at power-off
 
@@ -551,6 +557,11 @@ static bool returnGestureCeremonyPoll(bool reset)
 //   RTM_IDLE, rtm_thr_cap_tx 255, rtm_arm_gps_timeout_override 0, display cleared, 0xF1/0 queued;
 //   last_fm_return_mode set to the opposite of the echo; Pattern 9; a BLOCKING 2 s "A1"/"A0" hold;
 //   the keepalive requested (if FM is armed). Called only from runDoubleSqueezeArm().
+// V2.5-Evo - 2026-10-07 - INVARIANT (moved here from the removed fmToggleAutoReturnFromMagnet()): AN
+//   AUTO-RETURN FLIP NEVER CHANGES FOLLOW-ME ARMING. This function and returnGesture() state 3 write
+//   last_fm_return_mode only - never fm_armed, last_fm_mode or fm_throttle_seen - and the keepalive re-sends
+//   the SAME station with only bits 5-6 changed. Field check 2026-10-05 (RX log RX1_2026-10-05_2346): after
+//   the A0 the buggy stayed FM ARMED at station 2; Follow-Me ended later on a buggy DIVERGENCE fault-stop.
 static void ceremonyCancelForReturnGesture()
 {
   // The abort, exactly as the ceremony's own timeout paths do it.
@@ -1335,153 +1346,10 @@ bool fmStepStationFromMagnet()
   return true;
 }
 
-// fmToggleRtmEnabledFromMagnet - act on a 2.5 s magnet hold (mag_mode 4).
-//
-// Flips the EFFECTIVE Return-To-Me enable for this session by writing rtm_enabled_session.
-//
-// ---- V2.5-Evo - 2026-09-30 - GENUINELY RAM ONLY NOW (Rex delta audit) ----
-// WHAT WAS WRONG BEFORE. This function used to write usrConf.rtm_enabled and describe itself as "RAM
-// only" because it never called the SPIFFS writer itself. That was not enough: `?save` and the web-UI
-// save both persist the LIVE usrConf wholesale, so a magnet flip on the water plus any later config
-// save made a session decision permanent. The owner's instruction was explicit - "No do not change
-// spiffs with a toggle or magnet ... spiffs changing is deliberate and intentional. Magnet is temp."
-// WHAT IT DOES NOW. usrConf is never touched. The session value goes into rtm_enabled_session and
-// every gate reads it through rtmEnabledEffective(). The stored setting is untouched on disk, so a
-// power cycle brings it straight back, and only the web UI (or `?set` + `?save`) can change it for
-// good - which is exactly the split the owner asked for: the magnet is temporary, SPIFFS is
-// deliberate. It is also the pattern followme_mode (last_fm_mode) and the auto-return override
-// (last_fm_return_mode) have always used, so it is no longer the odd one out.
-// NO NEW STRUCT FIELD: a RAM variable is not a confStruct field. sizeof(confStruct) stays 136 and
-// SW_VERSION stays 27 - the TX struct tail is full, and a bump would wipe the throttle calibration.
-//
-// ZERO THROTTLE REQUIRED. Unlike the arm gestures, this changes what the craft will do on its own
-// initiative later, so it must not be possible to do by accident while riding. thr_scaled < 10 is
-// the same "trigger released" test the toggle gestures use.
-//
-// ---- CONFIRMATIONS, AND WHY "OFF" IS NO LONGER THE STOP BUZZ (Rex delta audit) ----
-// Pattern 4 (two firm taps) = ON, as before. Pattern 12 (THREE firm taps) = OFF, NEW.
-// WHAT WAS WRONG BEFORE. OFF used to raise vib_stop_pending, i.e. Pattern 7, the one long buzz. That
-// broke Pattern 7's documented contract (System.ino: it means "a FAULT stopped the system" and it
-// explicitly DOES NOT FIRE ON any deliberate disarm), and vib_stop_pending PREEMPTS every other
-// pattern. The rider harmed by that is a specific one: someone carrying mag_mode 3 muscle memory,
-// where a magnet hold disarms and buzzes long. In mode 4 he would feel that same long buzz, read it
-// as "disarmed", and have actually switched Return-To-Me off while Follow-Me was still armed - and
-// the "R0" glyph is the only honest signal, at the moment he is looking at the water.
-// WHY THREE FIRM TAPS. A deliberate two-state decision gets a bounded counted-tap confirm, the shape
-// this remote already uses for exactly that (Pattern 4 = two taps = arm, Pattern 6 = three taps). ON
-// and OFF now differ only in COUNT within one identical shape, which is the same 2-vs-3 discrimination
-// the firmware already trusts, and neither of them can be mistaken for a stop, because neither is a
-// single sustained buzz. Nothing about Pattern 7 or vib_stop_pending changes for any other caller.
-// THE FULL SIGNATURE the rider feels, advisory first: "buzz-buzz .. tap-tap" = ON,
-// "buzz-buzz .. tap-tap-tap" = OFF. Display shows "R1" / "R0" - the same letter-plus-number shape as
-// the F<n> station and L<n> gear readouts, and the display is the tie-breaker if the buzz is missed.
-//
-// INPUTS: thr_scaled, rtm_enabled_session, usrConf.rtm_enabled (read only, via rtmEnabledEffective()).
-// SIDE EFFECTS: rtm_enabled_session set, one haptic pattern queued, and a BLOCKING 2 s display hold
-// via gpsKeepAliveDelay(). usrConf IS NOT WRITTEN. Loop task only.
-// ============================================================
-// V2.5-Evo - 2026-10-02 - fmToggleAutoReturnFromMagnet - the 2.5 s magnet hold WHILE FOLLOW-ME IS
-// ARMED toggles AUTO-RETURN for this session. ("r1"/"r0" used to mean something else entirely from
-// this gesture - whether the MANUAL recall was available - which is neither of the two things the
-// owner wanted it to do. See the state-aware dispatch in Hall.ino.)
-// V2.5-Evo - 2026-10-06 - NO LONGER CALLED. Owner ruling: the 2.5 s magnet hold ALWAYS starts the manual
-// Return-To-Me, whatever the Follow-Me state. Auto-return (A1/A0) is reached from the "rn" wait instead
-// (RIGHT tap then LEFT hold -> ceremonyCancelForReturnGesture() above). Body left as it was.
-//
-// WHAT AUTO-RETURN IS, and why it is not Return-To-Me: auto-return is the automatic one inside
-// Follow-Me - the rider stops, the buggy comes back on its own. Return-To-Me is the MANUAL recall
-// the rider asks for with a gesture. Different features, and the readouts now differ too: "A1"/"A0"
-// here, "r1"/"r0" and "rn" for the manual one.
-//
-// THE FLIP IS AGAINST THE BUGGY'S ECHO, not against a local copy. telemetry.fm_flags bit 7
-// (FM_FLAG_RETURN_ON) is the RX's echo of its EFFECTIVE mode, so the first hold of a session always
-// does the OPPOSITE of what the buggy is actually doing - whether that came from the RX's stored
-// fm_return_mode or from an earlier hold. Same approach ceremonyCancelForReturnGesture() uses.
-//
-// RAM ONLY. last_fm_return_mode is never written to SPIFFS; the RX holds it in
-// fm_return_mode_runtime, also RAM. A power cycle returns to the stored default, which is
-// fm_return_mode = 1 (auto-return ON). That is the owner's rule: always on unless he switches it off.
-//
-// MOVES NOTHING. The override only changes what a Follow-Me HOLD graduates to on the buggy, and
-// that graduation still requires a held trigger.
-//
-// Vibration matches the convention he has already learned from this gesture: Pattern 4 (two firm
-// taps) = ON, Pattern 12 (three firm taps) = OFF. Deliberately NOT Pattern 7, the long stop buzz,
-// which means "refused".
-//
-// V2.5-Evo - 2026-10-06 - INVARIANT: AN AUTO-RETURN FLIP NEVER CHANGES FOLLOW-ME ARMING. This function
-// writes last_fm_return_mode only. It never writes fm_armed, last_fm_mode or fm_throttle_seen, and the
-// keepalive it requests re-sends the SAME station with only bits 5-6 changed. Keep it that way: the
-// A1/A0 flip and the FM arm state are separate controls. (The same holds for the other two writers of
-// last_fm_return_mode: ceremonyCancelForReturnGesture() and returnGesture() state 3.)
-// Field check, 2026-10-05 ride, RX log RX1_2026-10-05_2346: the A0 at 557903 ms left the buggy in
-// FM ARMED, station 2, refreshed by keepalives for 6.7 minutes. Follow-Me ended later, at 968382 ms,
-// when the BUGGY stopped it for DIVERGENCE (fm_flags bit 3); runFmLoop() below then disarmed the
-// remote through fmDisarm(false) - "St" plus the long buzz. That fault-stop, not the A0, is what left
-// Follow-Me off for the rest of the ride.
-// ============================================================
-void fmToggleAutoReturnFromMagnet()
-{
-  // Off-throttle only. Silent refusal: a buzz for "I did nothing" is exactly the training we do
-  // not want around a magnet.
-  if (thr_scaled >= 10) return;
-
-  // Never flip it out from under a Return-To-Me run that is already arming or active.
-  if (rtm_tx_active || rtmIsArming()) return;
-
-  const bool echo_on  = (telemetry.fm_flags & FM_FLAG_RETURN_ON) != 0;
-  last_fm_return_mode = echo_on ? 0 : 1;
-
-  Serial.print("RETURN [TX] magnet hold 2.5s while FM armed: auto-return override -> ");
-  Serial.print(last_fm_return_mode ? "ON" : "OFF");
-  Serial.print(" for this session (buggy reported ");
-  Serial.print(echo_on ? "ON" : "OFF");
-  Serial.println("); SPIFFS fm_return_mode untouched, returns on power cycle");
-
-  if (current_vib_pattern == 0)
-    current_vib_pattern = last_fm_return_mode ? 4 : 12;   // 2 taps = ON, 3 taps = OFF
-
-  DISP_LOCK(); displayDigits(LET_A, last_fm_return_mode ? 1 : 0); updateDisplay(); DISP_UNLOCK();
-  gpsKeepAliveDelay(2000);
-  fmRequestKeepaliveNow();   // carry bits 5-6 to the buggy now instead of in 30 s
-}
-
-void fmToggleRtmEnabledFromMagnet()
-{
-  // Refuse while the trigger is held. Silent refusal: a buzz for "I did nothing" is exactly the
-  // training we do not want around a magnet.
-  if (thr_scaled >= 10) return;
-
-  // Never flip it out from under a Return-To-Me run that is already in progress.
-  if (rtm_tx_active || rtmIsArming()) return;
-
-  // Flip the EFFECTIVE value, so the first hold of a session always does the opposite of whatever the
-  // remote is actually doing right now - whether that came from SPIFFS or from an earlier hold.
-  bool now_on = !rtmEnabledEffective();
-  rtm_enabled_session = now_on ? 1 : 0;
-  Serial.print("RTM [TX] magnet hold 2.5s: rtm_enabled -> ");   // V2.5-Evo - 2026-09-30
-  Serial.print(now_on ? 1 : 0);
-  Serial.print(" (SESSION ONLY, RAM - stored value still ");     // V2.5-Evo - 2026-09-30 - RAM-only fix
-  Serial.print(usrConf.rtm_enabled);
-  Serial.println(", returns on power cycle)");
-
-  if (now_on)
-  {
-    if (current_vib_pattern == 0) current_vib_pattern = 4;    // two firm taps = ON
-  }
-  else
-  {
-    if (current_vib_pattern == 0) current_vib_pattern = 12;   // three firm taps = OFF (NOT the stop buzz)
-  }
-
-  DISP_LOCK();
-  // V2.5-Evo - 2026-10-01 - the LET_R glyph itself is now lowercase (see num0[] in the header),
-  // because uppercase R was F plus two pixels and "R0" was being read as a Follow-Me "F0".
-  displayDigits(LET_R, now_on ? 1 : 0);                       // "r1" = on, "r0" = off
-  updateDisplay();
-  DISP_UNLOCK();
-  gpsKeepAliveDelay(2000);
-}
+// V2.5-Evo - 2026-10-07 - R-4: fmToggleRtmEnabledFromMagnet() and fmToggleAutoReturnFromMagnet() were
+// REMOVED from here. Neither had a caller once the 2.5 s magnet hold started always meaning the manual
+// Return-To-Me (2026-10-06). Auto-return (A1/A0) is flipped only by ceremonyCancelForReturnGesture() and
+// cleared by returnGesture() state 3; rtm_enabled_session now has no writer and stays 0xFF (see its block).
 
 // ============================================================
 // V2.5-Evo - 2026-09-19 - returnGesture - RIGHT tap + LEFT hold, the three-state return gesture.

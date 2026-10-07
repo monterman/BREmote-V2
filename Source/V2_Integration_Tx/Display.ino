@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - F-8: unlockAnimation() samples the trigger during its frame waits (unlock_anim_release_seen),
+//   for the RTM double-squeeze ceremony. Same frames and timing. No confStruct change.
 // V2.5-Evo - 2026-10-07 - C-1: renderInputFaultBlink() - remote_error 72 (throttle input fault) shows a blinking "St"
 //   in both render paths, right after E71. Display only. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-07 - E71 visible in every mode: the "E 7" water-ingress blink moved into renderE71Blink() and both
@@ -1162,11 +1164,34 @@ void displayLock()
 // Helper: clear digit zone preserving C7 GPS dot and C8/C9 bargraphs (bit 7 = C7)
 #define ANIM_CLEAR() for(int _i = 0; _i < 7; _i++) displayBuffer[_i] &= 0xFF80
 
+// ============================================================
+// V2.5-Evo - 2026-10-07 - F-8: THE TRIGGER IS WATCHED DURING THE UNLOCK ANIMATION
+// THE BUG: in the RTM double-squeeze ceremony the rider must let go between squeeze 1 and squeeze 2, and the
+// ceremony sampled that release before and after unlockAnimation() but never during its ~180 ms, so a very quick
+// release-and-squeeze inside the animation was not counted. THE FIX: the animation's frame waits sample the
+// trigger every 10 ms and record a release in unlock_anim_release_seen, which the ceremony reads afterwards.
+// Same frames, same total time, same displayMutex hold; other callers simply ignore the flag.
+// Loop task only (every caller of unlockAnimation() runs there). Reads thr_scaled through triggerReleased().
+// ============================================================
+bool unlock_anim_release_seen = false;   // true if the trigger read released during the last unlockAnimation()
+
+// animDelaySampleRelease - delay(ms) that also records a trigger release into unlock_anim_release_seen.
+static void animDelaySampleRelease(uint32_t ms)
+{
+  unsigned long start = millis();
+  while (millis() - start < ms)
+  {
+    if (triggerReleased()) unlock_anim_release_seen = true;
+    delay(10);
+  }
+}
+
 // SW53: paintbrush sweep. Arrow descends R0→R6 using |= without clearing between frames —
 // each row the arrow passes through stays lit. Same pattern as advanceArrow().
 // 3 frames × 60ms = 180ms. Final state: R0-R3 = 0x3E (wide), R4-R5 = 0x1C (mid), R6 = 0x08 (tip).
 void unlockAnimation()
 {
+  unlock_anim_release_seen = false;   // V2.5-Evo - 2026-10-07 - F-8: fresh for this animation
   DISP_LOCK();
   ANIM_CLEAR();                // clear once — frames paint on top without erasing
   displayBuffer[7] &= 0xFF80; // clear battery row cols C0-C6 so tip pixel has clean base
@@ -1178,7 +1203,7 @@ void unlockAnimation()
   displayBuffer[4] |= 0x1C;
   displayBuffer[5] |= 0x08;
   updateDisplay();
-  delay(ANIMATION_DELAY);
+  animDelaySampleRelease(ANIMATION_DELAY);   // F-8: was delay(ANIMATION_DELAY)
 
   // Frame 2 — arrow moves to R1; R0 stays lit
   displayBuffer[2] |= 0x3E;
@@ -1187,7 +1212,7 @@ void unlockAnimation()
   displayBuffer[5] |= 0x1C;
   displayBuffer[6] |= 0x08;
   updateDisplay();
-  delay(ANIMATION_DELAY);
+  animDelaySampleRelease(ANIMATION_DELAY);   // F-8: was delay(ANIMATION_DELAY)
 
   // Frame 3 — arrow tip reaches R6; all rows R0-R6 painted at full head width (0x3E)
   // R4/R5 widened to 0x3E (were 0x1C — missing C1 and C5).
@@ -1198,7 +1223,7 @@ void unlockAnimation()
   displayBuffer[6] |= 0x3E;
   displayBuffer[7] |= 0x3E;
   updateDisplay();
-  delay(ANIMATION_DELAY);
+  animDelaySampleRelease(ANIMATION_DELAY);   // F-8: was delay(ANIMATION_DELAY)
 
   arrowPos = 0;
   DISP_UNLOCK();

@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - F-4: runMenu()'s post-ceremony latch hands the toggle back to steering on a squeeze (in_menu 0).
 // V2.5-Evo - 2026-10-07 - SOP-040 gesture rule: the mag_mode 4 2.5 s hold acts only with the trigger fully released
 //   (checked at 2.5 s and at removal; held -> ignored silently, one serial line). The toggle RIGHT tap + LEFT hold logs
 //   when it is ignored because the trigger is held. Magnet taps unchanged. No confStruct change.
@@ -1296,6 +1297,18 @@ void runMenu()
   // V2.5-Evo - 2026-10-07 - R-3: see ceremony_toggle_latch above.
   if (ceremony_toggle_latch)
   {
+    // V2.5-Evo - 2026-10-07 - F-4: THE BUG - with the latch set, a squeeze skipped the GestureAbort hand-back
+    // (in_menu = 0), so in_menu kept the toggle out of steering until menu_timeout ran down (~0.2 s on the owner's
+    // remote, up to ~110 s at the config maximum). THE FIX: with the trigger above the steering threshold and
+    // steering enabled, hand the toggle straight back to steering and drop the latch - the same test calcFilter()
+    // and handleGearToggle() use. A toggle held into a squeeze then reads 0 (steering), so it is still never a
+    // gear, station or lock action.
+    if (thr_scaled > 3 && usrConf.steer_enabled)
+    {
+      in_menu = 0;
+      ceremony_toggle_latch = false;
+      return;
+    }
     if (ctminus() || ctplus()) return;   // still held since the ceremony - not a new press
     ceremony_toggle_latch = false;       // released: from here the toggle is a fresh input again
   }

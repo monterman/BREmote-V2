@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - F-3 / F-8: the R-3 ceremony extension has a hard ceiling (window + COMBO_WINDOW_MS + hold);
+//   a trigger release during the unlock animation between the two squeezes is counted. No confStruct change.
 // V2.5-Evo - 2026-10-07 - P-6: the 1 s LEFT ceremony cancel needs a push past half of the calibrated left travel
 //   (tog_mid -> tog_left), so an ordinary LEFT steer cannot cancel a return. No confStruct change.
 // V2.5-Evo - 2026-10-07 - SOP-040 gesture rule: returnGesture() is ignored (serial line only) while Return-To-Me is active
@@ -508,7 +510,23 @@ static float decodeRtmDistanceM()
 // rtm_arm_window_s while it is true, so a sequence started inside the window is allowed to finish instead of
 // being cut off mid-hold. It is bounded: a pending tap expires COMBO_WINDOW_MS after the tap, a started hold
 // ends on release, completion or a squeeze, so the extension is at most COMBO_WINDOW_MS + rtm_hold_duration_s.
+// (V2.5-Evo - 2026-10-07 - F-3: that bound did not hold - a fresh RIGHT tap renewed it - so the wait loops now also
+// stop at the absolute ceiling in ceremonyExtensionAllowed().)
 static bool return_gesture_in_progress = false;
+
+// ceremonyExtensionAllowed - V2.5-Evo - 2026-10-07 - F-3: the R-3 extension's HARD CEILING.
+// THE BUG: the bound above was not a real ceiling - every new RIGHT tap renewed the pending tap, so tapping RIGHT
+// every 2 s kept the ceremony (and its zero throttle) going past rtm_arm_window_s indefinitely. THE FIX: the
+// extension may never run past window + COMBO_WINDOW_MS + rtm_hold_duration_s from the ceremony start, which is
+// the longest a RIGHT tap -> LEFT hold begun on the last instant of the window can legitimately take.
+// Inputs: rtm_arm_start_ms, usrConf.rtm_arm_window_s / rtm_hold_duration_s, COMBO_WINDOW_MS (Hall.ino).
+// Output: true = still inside the ceiling. No side effects.
+static bool ceremonyExtensionAllowed()
+{
+  const unsigned long ceiling_ms = (unsigned long)usrConf.rtm_arm_window_s * 1000UL + COMBO_WINDOW_MS
+                                 + (unsigned long)usrConf.rtm_hold_duration_s * 1000UL;
+  return (millis() - rtm_arm_start_ms) < ceiling_ms;
+}
 
 static bool returnGestureCeremonyPoll(bool reset)
 {
@@ -739,7 +757,7 @@ static void runDoubleSqueezeArm()
   bool          first_ok = false;
   unsigned long hold_ms  = 0;
   while (millis() - rtm_arm_start_ms < (unsigned long)usrConf.rtm_arm_window_s * 1000UL ||
-         return_gesture_in_progress)   // V2.5-Evo - 2026-10-07 - R-3: a started RIGHT tap -> LEFT hold may finish
+         (return_gesture_in_progress && ceremonyExtensionAllowed()))   // R-3: a started tap -> hold may finish; F-3: hard ceiling
   {
     advanceArrow();   // bob arrow every 100ms while waiting for squeeze
     if (thr_scaled < 10) thr_released_seen = true;   // V2.5-Evo - 2026-10-07 - R-1: release seen
@@ -784,6 +802,7 @@ static void runDoubleSqueezeArm()
     // again while the unlock animation is still playing is counted exactly as before.
     thr_released_seen = false;
     unlockAnimation();
+    if (unlock_anim_release_seen) thr_released_seen = true;   // V2.5-Evo - 2026-10-07 - F-8: a release during the animation counts
     if (ceremonyDelaySeeRelease(250)) thr_released_seen = true;
     DISP_LOCK(); for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000; updateDisplay(); DISP_UNLOCK();
     if (ceremonyDelaySeeRelease(800)) thr_released_seen = true;
@@ -792,7 +811,7 @@ static void runDoubleSqueezeArm()
     hold_ms = 0;
     advanceArrow();   // prime arrow for second wait
     while (millis() - rtm_arm_start_ms < (unsigned long)usrConf.rtm_arm_window_s * 1000UL ||
-           return_gesture_in_progress)   // V2.5-Evo - 2026-10-07 - R-3: a started RIGHT tap -> LEFT hold may finish
+           (return_gesture_in_progress && ceremonyExtensionAllowed()))   // R-3: a started tap -> hold may finish; F-3: hard ceiling
     {
       advanceArrow();   // bob arrow every 100ms while waiting for second squeeze
       if (thr_scaled < 10) thr_released_seen = true;   // V2.5-Evo - 2026-10-07 - R-1: release seen

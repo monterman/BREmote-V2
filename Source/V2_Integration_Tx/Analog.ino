@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - P-2 / P-11: the plausibility exemption is now (checkCal() running) || (in_setup && locked);
+//   new adsThrBufferPlausible() for checkStartupButtons(). No confStruct change.
 // V2.5-Evo - 2026-10-07 - P-1 / P-5: adsInputFaultNow() (the radio-side deadline check) zeroes only the packet being
 //   sent and no longer latches the fault, so a CPU stall cannot cut power until a release; the ADC task latches from
 //   its own deadline. On the fault's rising edge the outputs are forced safe before the serial line. No confStruct change.
@@ -160,6 +162,17 @@ bool adsInputFaultNow()
   return adsInputStale();   // P-1: zero this packet only - never latch from the radio task
 }
 
+// adsThrInBand - the band test alone, with no exemptions (also used by adsThrBufferPlausible()).
+static bool adsThrInBand(int32_t raw)
+{
+  int32_t lo = (usrConf.thr_idle < usrConf.thr_pull) ? usrConf.thr_idle : usrConf.thr_pull;
+  int32_t hi = (usrConf.thr_idle < usrConf.thr_pull) ? usrConf.thr_pull : usrConf.thr_idle;
+  if (lo == hi) return true;
+  int32_t margin = (hi - lo) / 2;
+  if (margin < 1000) margin = 1000;
+  return (raw >= lo - margin) && (raw <= hi + margin);
+}
+
 // adsThrReadingPlausible - is this raw throttle sample inside the calibrated band plus a margin?
 // A healthy Hall trigger reads between thr_idle and thr_pull, a little beyond each end because calibration
 // pulls both ends in by cal_offset. A failed I2C read in the ADS library leaves its buffer half-stale and
@@ -167,19 +180,37 @@ bool adsInputFaultNow()
 // into FULL throttle. Such a reading is now a fault, never a clamp.
 // Margin: half the calibrated span, at least 1000 counts (the calibration's own minimum span), which is far
 // beyond any normal over-travel or temperature drift and far inside a garbage reading.
-// Not applied while calibrating (cal_ok == 0: there is no trusted band yet), during boot (in_setup: the
-// throttle byte is 0 because the remote boots locked, and the boot recalibration gesture must stay usable
-// when the magnet has moved), or with a degenerate band (idle == pull: calcFilter() already outputs 0).
+// Not applied while calibrating (there is no trusted band yet), during the locked part of boot (the throttle
+// byte is 0 because the remote is locked, and the boot recalibration gesture must stay usable when the magnet
+// has moved), or with a degenerate band (idle == pull: calcFilter() already outputs 0).
+// V2.5-Evo - 2026-10-07 - P-2: THE BUG - the boot exemption was plain `in_setup`, which outlives the lock on a
+//   no_lock 1 remote: applyConfigSettings() unlocks it, then initTxGPS() runs for ~1-4 s with in_setup still
+//   true, and one failed read there was stored and sent (~50-76 % throttle for ~120 ms, trigger released).
+//   THE FIX: the boot exemption holds only while the remote is ALSO locked (in_setup && system_locked), i.e.
+//   only while nothing can be sent.
+// V2.5-Evo - 2026-10-07 - P-11: the calibration exemption is the RAM flag ads_cal_in_progress (set only while
+//   checkCal() calibrates), not usrConf.cal_ok, so `?set cal_ok 0` at runtime no longer turns the check off.
 // Input: raw - one signed conversion result. Output: true = plausible. No side effects.
 static bool adsThrReadingPlausible(int16_t raw)
 {
-  if (!usrConf.cal_ok || in_setup) return true;
-  int32_t lo = (usrConf.thr_idle < usrConf.thr_pull) ? usrConf.thr_idle : usrConf.thr_pull;
-  int32_t hi = (usrConf.thr_idle < usrConf.thr_pull) ? usrConf.thr_pull : usrConf.thr_idle;
-  if (lo == hi) return true;
-  int32_t margin = (hi - lo) / 2;
-  if (margin < 1000) margin = 1000;
-  return ((int32_t)raw >= lo - margin) && ((int32_t)raw <= hi + margin);
+  if (ads_cal_in_progress || (in_setup && system_locked)) return true;   // P-11 / P-2
+  return adsThrInBand((int32_t)raw);
+}
+
+// adsThrBufferPlausible - V2.5-Evo - 2026-10-07 - P-2: is EVERY slot of the throttle averaging buffer inside the
+// calibrated band? Used by checkStartupButtons() (System.ino) before it trusts `thr_scaled > 100`: during the
+// locked boot the plausibility check is exempt, so one failed read can sit in the buffer and lift the average to
+// ~76 %, which would turn the RIGHT-at-boot pairing gesture into "delete the config and reboot".
+// Inputs: thr_raw[], usrConf band. Output: true = no garbage sample in the buffer (or no calibration to judge
+// by: cal_ok 0). No side effects. Loop task.
+bool adsThrBufferPlausible()
+{
+  if (!usrConf.cal_ok) return true;
+  for (int i = 0; i < BUFFSZ; i++)
+  {
+    if (!adsThrInBand((int32_t)thr_raw[i])) return false;
+  }
+  return true;
 }
 
 // adsInputFaultUpdate - latch, announce, enforce and clear the throttle input fault.

@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - P-11: RAM flag ads_cal_in_progress (plausibility exempt only while checkCal() runs). No
+//   confStruct change: sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-07 - P-1: comment only - the radio task no longer writes ads_input_fault.
 // V2.5-Evo - 2026-10-07 - fm_display_mode DEFAULT 1 -> 2 (distance to the buggy in metres; owner ruling). defaultConf
 //   value only - no struct change, sizeof stays 136, SW_VERSION stays 27; remotes keep their stored value.
@@ -840,6 +842,10 @@ volatile unsigned long last_ads_ok_ms = 0;      // millis() of the last finished
 volatile bool    ads_input_fault      = false;  // latched: throttle input untrusted; outputs forced safe until recovery
 volatile bool    ads_thr_out_of_range = false;  // set by measureAndBuffer() when a raw throttle sample is implausible
 volatile uint8_t ads_thr_good_samples = 0;      // in-band throttle samples stored since the last bad event (saturates)
+// V2.5-Evo - 2026-10-07 - P-11: true only while checkCal() (Hall.ino) is actually calibrating. The throttle plausibility
+// check is skipped then (there is no trusted band yet). It used to be skipped whenever usrConf.cal_ok was 0, so a runtime
+// `?set cal_ok 0` switched the check off for the whole session. Written by the loop task, read by the ADC task; one byte.
+volatile bool    ads_cal_in_progress  = false;
 
 volatile int gear = 0;
 volatile uint8_t max_power_cap = 85;  // Runtime cap for throttle_mode 2

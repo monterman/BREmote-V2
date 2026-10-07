@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - P-2: checkStartupButtons() trusts `thr_scaled > 100` only when every throttle buffer slot is
+//   inside the calibrated band, so one failed read at boot cannot turn the pairing gesture into a config delete.
 // V2.5-Evo - 2026-10-07 - F-6: vibrationTask's final else clears an unknown pattern number so it cannot block the queue.
 // V2.5-Evo - 2026-10-07 - SOP-040: comment only - Pattern 5 lost its mag_mode 4 refusal caller ("St" + Pattern 7 now).
 // V2.5-Evo - 2026-10-07 - H-1 (TX part): deepSleep() flushes 0xF1/0 + 0xF2/0 (rtmFmStopFlush(), >= 400 ms) before the
@@ -183,9 +185,25 @@ String checkHWConfig()
   }
 }
 
+// V2.5-Evo - 2026-10-07 - P-2: THE BUG - during the locked boot the throttle plausibility check is exempt, so one
+// failed ADS1115 read could sit in the averaging buffer and lift thr_scaled above 100 with the trigger released;
+// a RIGHT toggle held for PAIRING then became "delete the config and reboot". THE FIX: the throttle reading is
+// trusted only when every buffer slot is inside the calibrated band (adsThrBufferPlausible(), Analog.ino). If one
+// is not, wait for the buffer to refill (up to 4 x 150 ms); if it still is not, the trigger counts as NOT pulled,
+// which keeps the non-destructive gestures (pairing, recalibration with a moved magnet) usable.
+// adsThrBufferPlausible() is defined in Analog.ino, concatenated before this file.
 void checkStartupButtons()
 {
-  if(thr_scaled > 100)
+  uint8_t thr_now     = thr_scaled;
+  bool    thr_trusted = adsThrBufferPlausible();
+  for (uint8_t i = 0; i < 4 && !thr_trusted; i++)
+  {
+    delay(150);
+    thr_now     = thr_scaled;
+    thr_trusted = adsThrBufferPlausible();
+  }
+  if (!thr_trusted) Serial.println("BOOT [TX] throttle reading not trusted (sample outside calibration) - trigger treated as released");
+  if(thr_trusted && thr_now > 100)
   {
     if(tog_input == 1)
     {

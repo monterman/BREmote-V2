@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - P-11: checkCal() sets ads_cal_in_progress while it calibrates (plausibility exemption).
 // V2.5-Evo - 2026-10-07 - SOP-040: the mag_mode 4 hold refusal (Return-To-Me disabled or GPS off) is now "St" + the
 //   normal stop buzz on removal, replacing the "n0" screen and the Pattern 5 blip at 2.5 s. No confStruct change.
 // V2.5-Evo - 2026-10-07 - H-1 (TX part): the LEFT-hold lock now flushes 0xF1/0 + 0xF2/0 (rtmFmStopFlush()).
@@ -1358,6 +1359,9 @@ void checkCal()
   //Check if calibration is OK
   if(!usrConf.cal_ok)
   {
+    // V2.5-Evo - 2026-10-07 - P-11: the throttle plausibility check (Analog.ino) is exempt ONLY while this block
+    // calibrates; the flag is cleared as soon as calibration succeeds (failure halts below, locked).
+    ads_cal_in_progress = true;
     Serial.println("Entering Calibration...");
 
     displayDigits(LET_E, LET_C);
@@ -1482,6 +1486,7 @@ void checkCal()
     if(cal_in_range)
     {
       usrConf.cal_ok = 1;
+      ads_cal_in_progress = false;   // V2.5-Evo - 2026-10-07 - P-11: the new band is trusted from here on
       Serial.println("Cal Done.");
       saveConfToSPIFFS(usrConf);
       scroll4Digits(5, LET_A, LET_V, LET_E, 120);

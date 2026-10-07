@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - ARRIVAL HAND-BACK CAP (owner rule: auto-return and manual return-to-me arrive the same way). handbackCapArm() keeps the cap in force at arrival in arrival_handback_cap (cleared by calcPWM() on one full trigger release). Gate 9 arms it from rtm_approach_cap before rtm_rx_active goes false (its print moved after the writes); FM_RETURN arrival now ends the return straight to ARMED-unlatched with the steering handed back and arms it from fm_throttle_cap (was FM_HOLD cap 0). Comment fix (audit D-1): the Gate 9 note no longer claims the inactive path writes rtm_distance 0xFF. No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - AUDIT M-20 + L-25 (owner-approved) + L-26: the front side floor is max(13, pass minimum, min_dist_m + 2 m),
 //   resolved by the one header helper fmFrontSideFloorM() at computeFmTarget(), the F4/F5 engage print and (through fmFrontSideFloorForConfigM)
 //   the ConfigService note. Bitwise unchanged for min_dist_m <= 11 m (the owner's 4 m gives 13 m). L-26: two stale "+/-30 deg" cone comments fixed.
@@ -324,6 +325,25 @@ static unsigned long rtm_phase_c_ms  = 0;       // last Phase C check time
 // is defined immediately after the flag. It only reads: it cannot set, clear or age anything.
 static bool headingDisagreeLatched();
 
+// ------------------------------------------------------------
+// handbackCapArm - V2.5-Evo - 2026-10-07 - keep a throttle cap in force after a mode lets go.
+// ------------------------------------------------------------
+// What it does: arms the arrival hand-back cap (arrival_handback_cap, BREmote_V2_Rx.h) at `cap`, or
+// leaves a LOWER standing value in place - it can only ever lower the stored cap, never raise it.
+// calcPWM() applies it (min(), subtract-only) until the trigger is fully released once, then clears it.
+// Inputs: cap - the cap that was in force when the mode ended (0-254; 255 = nothing to keep, no-op).
+// Side effects: arrival_handback_cap. Call it BEFORE the write that lets the mode go (rtm_rx_active
+// false, fm_throttle_cap 255), so the 100 Hz motor task can never see a tick with neither cap standing.
+// Used by: manual RTM Gate 9 arrival, auto-return arrival, and (same rule) the RTM fault ends below.
+static void handbackCapArm(uint8_t cap)
+{
+  if (cap == kHandbackNone) return;
+  uint8_t cur = arrival_handback_cap.load(std::memory_order_relaxed);
+  while (cap < cur) {
+    if (arrival_handback_cap.compare_exchange_weak(cur, cap, std::memory_order_relaxed)) break;
+  }
+}
+
 // ---- Safety gate check ----
 // Returns true if ALL gates pass. Sets rtm_rx_emergency_stop=true and prints reason on any failure.
 // Gate 1 (throttle released) returns false WITHOUT setting emergency_stop — motor is already 0.
@@ -476,11 +496,19 @@ static bool checkRtmSafetyGates()
 
   // Gate 9: hard stop distance — buggy reached TX position.
   // This is a NORMAL RTM completion, not a safety failure (unlike Gates 2-8).
-  // Clean disengagement: set rtm_rx_active=false and leave rtm_rx_emergency_stop=false
-  // so calcPWM() passes user throttle through immediately (seamless manual handoff).
-  // rtm_approach_cap reset to 255 so manual throttle is uncapped.
-  // The inactive path in runRtmLoop() will set telemetry.rtm_distance=0xFF on the next
-  // tick, clearing the TX pre-arm block so re-arm works after the buggy has moved away.
+  // Clean disengagement: set rtm_rx_active=false and leave rtm_rx_emergency_stop=false.
+  // V2.5-Evo - 2026-10-07 - THE ARRIVAL HAND-BACK CAP (owner rule, shared with auto-return). The
+  // mode still ends here and the steering is the rider's at once, but the throttle is NOT handed back
+  // at the held trigger any more: the cap in force at arrival (rtm_approach_cap, which this tick's
+  // distance block has just set from the arrival distance - close to 0 at the stop distance) is kept
+  // by handbackCapArm() until the rider lets go of the trigger fully once, then manual is uncapped.
+  // Before, a rider still at 100 % got the full held trigger back through the 1 s manual ramp, 3 m
+  // from himself. handbackCapArm() runs FIRST so the motor task never sees neither cap standing.
+  // rtm_approach_cap itself is still reset to 255 (RTM's own cap goes with the mode).
+  // V2.5-Evo - 2026-10-07 - comment fix (audit D-1): the inactive path does NOT write
+  // telemetry.rtm_distance = 0xFF on the next tick (it never did); the distance byte keeps reporting
+  // the real distance while both fixes are fresh and goes to 0xFF only after 10 s without a valid
+  // distance (see the distance block in runRtmLoopBody()). The remote's pre-arm check reads it.
   // Guard: rtm_stop_distance_m==0 means SPIFFS held the pre-fix zero default;
   // use 10m (firmware hard minimum) to keep Gate 9 active regardless of stored config.
   uint16_t stop_dist_m = (usrConf.rtm_stop_distance_m > 0) ? usrConf.rtm_stop_distance_m : 10u;
@@ -488,11 +516,13 @@ static bool checkRtmSafetyGates()
       gps_last_lat, gps_last_lng, rx_tx_gps_lat, rx_tx_gps_lng);
   if (dist_m < (float)stop_dist_m)
   {
-    Serial.printf("RTM [RX] Gate 9: reached stop distance (%.1f m < %u m) — clean handoff to manual\n",
-                  dist_m, stop_dist_m);
+    const uint8_t arrival_cap = rtm_approach_cap.load();
+    handbackCapArm(arrival_cap);       // FIRST: the cap in force at arrival stays until one full release
     rtm_rx_active         = false;   // disarm — enter inactive path next tick
-    rtm_rx_emergency_stop = false;   // no emergency; motor returns to user throttle immediately
-    rtm_approach_cap      = 255;     // clear decel cap so manual throttle is uncapped
+    rtm_rx_emergency_stop = false;   // no emergency
+    rtm_approach_cap      = 255;     // RTM's own cap goes with the mode; the hand-back cap carries the limit
+    Serial.printf("RTM [RX] Gate 9: reached stop distance (%.1f m < %u m) — RTM ended, steering is yours; throttle held at the arrival cap %u/255 until you let go of the trigger fully once\n",
+                  dist_m, stop_dist_m, (unsigned)arrival_cap);
     return false;
   }
 
@@ -2144,6 +2174,9 @@ static const FmReturnProofParams kFmReturnProofParams = {
 //                position ONLY while the trigger is held, through the engage ramp, at the align cap
 //                while turning and the RTM run-phase P-law once aligned, and stops at
 //                rtm_stop_distance_m -> FM_HOLD (cap 0 until one release) -> ARMED-unlatched.
+//                V2.5-Evo - 2026-10-07 - arrival now goes straight to ARMED-unlatched with the
+//                steering handed back, and the cap in force at arrival kept by the hand-back cap
+//                until one full release (fmReturnExitToHold, FM_RET_ARRIVED). Other exits unchanged.
 //                Numbered 5 so HOLD/STOPPING keep their log values.
 enum FmState : uint8_t { FM_IDLE = 0, FM_ARMED = 1, FM_ACTIVE = 2, FM_HOLD = 3, FM_STOPPING = 4, FM_RETURN = 5 };
 static FmState fm_state = FM_IDLE;
@@ -5518,20 +5551,29 @@ static void fmEnterReturn(unsigned long now, float dist_m)
   }
 }
 
-// fmReturnExitToHold - the three normal exits of RETURN (arrival, rider moving, runtime cap).
-// Inputs: reason (FM_RET_ARRIVED / _CANCELLED / _TIMEOUT), now, dist_m (print). Side effects: the
+// fmReturnExitToHold - the normal exits of RETURN (arrival, rider moving, the rider's stick).
+// Inputs: reason (FM_RET_ARRIVED / _CANCELLED / _STEERED), now, dist_m (print). Side effects: the
 //   motor posture FIRST (fm_rx_active false, cap 0, steering 127), then fm_state = FM_HOLD - which
 //   is the surge guard: the ordinary HOLD branch keeps cap 0 while the trigger stays held and
 //   HOLD-ESCAPE-2 turns it into ARMED (cap 255, manual) on the first released tick - the latch
 //   cleared, needs-D_engage set, this engagement's return spent, the derivative cold-started, and
 //   the print after the writes.
+// V2.5-Evo - 2026-10-07 - ARRIVAL IS DIFFERENT NOW (owner rule: auto-return and manual return-to-me
+//   arrive the same way). FM_RET_ARRIVED does NOT go to HOLD at cap 0 any more: the return ENDS at
+//   once - fm_state = FM_ARMED, steering back to the rider, Follow-Me's own cap 255 - and the cap that
+//   was in force at arrival (the return chain's approach cap, close to 0 at the stop radius) is kept
+//   by handbackCapArm() until the rider lets go of the trigger fully once. handbackCapArm() runs
+//   BEFORE fm_throttle_cap is lifted, so there is never a tick with neither cap standing: no throttle
+//   jump. The other exits (rider moving off, the mode-0 steer-cancel) keep the HOLD surge guard.
 static void fmReturnExitToHold(uint8_t reason, unsigned long now, float dist_m)
 {
   (void)now;
+  const bool arrived = (reason == FM_RET_ARRIVED);
+  if (arrived) handbackCapArm(fm_throttle_cap.load());   // FIRST: the cap in force at arrival stays
   fm_rx_active       = false;
-  fm_throttle_cap    = 0;
+  fm_throttle_cap    = arrived ? 255 : 0;
   rtm_steer_override = 127;
-  fm_state           = FM_HOLD;
+  fm_state           = arrived ? FM_ARMED : FM_HOLD;
 
   fm_sep_latched            = false;
   fm_sep_over_since_ms      = 0;
@@ -5555,8 +5597,13 @@ static void fmReturnExitToHold(uint8_t reason, unsigned long now, float dist_m)
   prev_heading_error_deg  = 0.0f;
   prev_steering_update_ms = 0;
 
-  Serial.printf("FM [RX] RETURN -> HOLD: %s (dist=%.1f m, rider raw %.1f km/h); cap 0 until the trigger is released once, then ARMED-unlatched, needs D_engage\n",
-                fmReturnReasonName(reason), (double)dist_m, (double)fm_rider_raw_kmh);
+  if (arrived) {
+    Serial.printf("FM [RX] RETURN -> ARMED: %s (dist=%.1f m); auto-return ended, steering is yours, throttle held at the arrival cap until you let go of the trigger fully once; ARMED-unlatched, needs D_engage\n",
+                  fmReturnReasonName(reason), (double)dist_m);
+  } else {
+    Serial.printf("FM [RX] RETURN -> HOLD: %s (dist=%.1f m, rider raw %.1f km/h); cap 0 until the trigger is released once, then ARMED-unlatched, needs D_engage\n",
+                  fmReturnReasonName(reason), (double)dist_m, (double)fm_rider_raw_kmh);
+  }
 }
 
 // fmReturnFault - a fault on the return leg (conditions 2-7, or not closing) -> FM_STOPPING.

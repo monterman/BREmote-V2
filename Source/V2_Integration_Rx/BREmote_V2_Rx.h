@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - ARRIVAL HAND-BACK CAP (owner rule): includes ../Common/AutoReturnRules.h and adds the arrival_handback_cap atomic (255 = none) + kHandbackReleaseThr (8 counts): manual RTM Gate 9 and auto-return arrival end the mode at once but keep the cap in force at arrival until one full trigger release. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - LOG FORMAT 3 (owner ruling: "level 4 should have both VESCs"): the 14 B VESC 2 block MOVES from the tail of VescLogDataL5 to the tail of VescLogDataL4 (L4 90 -> 104 B, static_assert 104, offsetof(vesc2_age_ms) == 90), so level 4 AND level 5 both carry it; the level-5 block now starts at byte 104 (L5 stays 126 B, offsetof(rider_lat) == 104). A field moved, so LOG_FILE_FORMAT_VER 2 -> 3 and the on-board readers refuse older files with a plain-English message (download logs BEFORE flashing; the PC log reader still decodes formats 1 and 2). CSV: LOG_CSV_HEADER_L4 = the 90 B column set (now LOG_CSV_HEADER_L4_MOTORS) + the 9 VESC 2 columns (62 columns); LOG_CSV_HEADER_L5 = L4 + the 14 level-5 columns (76); LOG_CSV_HEADER_L5_VESC2 is gone. Capacity restated for 62 / 104 / 126 B. Also (audit LOWs): "VESC 1 must not be CAN ID 2" at kVesc2CanId; the vescRelayBuffer comment; the LOG_CSV_ROW_BUF sizing comment (worst case ~602 B, 640 kept). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - COMMENTS ONLY (audit M-20): the fm_front_ahead_extra_m and kFmFrontLateralMinM comments name the new side floor (min_dist_m + 2 m above 11 m, fmFrontSideFloorM). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - VESC 2 OVER CAN, part 2 (see Logger.ino): a 14 B VESC 2 block APPENDED AT THE TAIL of VescLogDataL5 (112 -> 126 B, static_assert 126, new offsetof assert 112): age, motor + battery current, duty, voltage, ERPM, FET + motor temperature, fault code, with non-zero N/A sentinels written whenever VESC 2 has never answered or its data is older than kVesc2StaleMs. Level 5 only; the base record and level 4 are untouched, so LOG_FILE_FORMAT_VER STAYS 2 and every existing 62 / 90 / 112 B log still parses by its own record_size. CSV: LOG_CSV_HEADER_L5_VESC2 (+9 columns, 76 total), every N/A prints -999. logCsvHeaderFor() / logFormatCsvRow() tier the L4/L5 boundaries by OFFSET now, so a 112 B file keeps its level-5 columns. Capacity notes restated: level 5 about 1 h 19 min at 3 Hz / 48 min at 5 Hz. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -971,6 +972,12 @@ static const float kFmFrontAheadExtraMaxM     = 10.0f;  // metres; largest legal
 // Tools/tests/steer_arbitration_test.cpp runs the exact code the three auto-steer modes call. The
 // RX's kSteerTakeover* constants (RTMState.ino) are passed in; the header defines none of its own.
 #include "../Common/SteerArbitration.h"
+// V2.5-Evo - 2026-10-07 - the auto-return / return-to-me END RULES (the arrival hand-back cap, the H-2
+// gate-fault accumulator, the remote boot ID, the RTM refresh expiry, the distance-byte freshness rule,
+// the parked-return tolerance, the slow-pivot suspension and the ARMED candidate rule) are pure in
+// ../Common/AutoReturnRules.h so Tools/tests/auto_return_rules_test.cpp runs the exact code the RX
+// calls. The RX's constants are passed in; the header defines only wire values and sentinels.
+#include "../Common/AutoReturnRules.h"
 
 // ============================================================
 // V2.5-Evo - 2026-07-25 - STAGE 2: HEADING-SOURCE TRUST CONSTANTS (RTM + FM)
@@ -1396,6 +1403,32 @@ std::atomic<uint8_t> align_mixer_influence_override {0};
 // calcPWM() (generatePWM task, 100 Hz). With steer_during_auto == 0 it is never written true.
 // std::atomic for the same single-core preemption reason as fm_throttle_cap above.
 std::atomic<bool> steer_takeover_active {false};
+
+// ============================================================
+// V2.5-Evo - 2026-10-07 - THE ARRIVAL HAND-BACK CAP (owner rule, SOP "auto-return waits for the rider")
+// ============================================================
+// Manual return-to-me (Gate 9) and auto-return (FM_RETURN) now END THE SAME WAY on arrival: the MODE
+// ends and the steering goes back to the rider at once, but the throttle cap that was in force at
+// arrival (the approach cap, close to 0 at the stop distance) STAYS until the rider lets go of the
+// trigger fully once. A rider still holding 100 % when the buggy reaches him cannot ram it into himself
+// or someone next to him; after one full release the throttle is plain manual and the rider's own.
+// Before this, Gate 9 handed back the HELD trigger at once (through the 1 s manual ramp) and auto-return
+// held cap 0 in FM_HOLD - two different endings for what the rider sees as one thing.
+//   VALUE : kHandbackNone (255) = no hand-back cap standing; 0-254 = the cap held.
+//   SET   : by the loop task at an arrival (RTMState.ino handbackCapArm(), which only ever LOWERS a
+//           standing value), and by the other "the mode let go under a held trigger" exits that use the
+//           same rule (H-2 gate fault, H-1 refresh expiry, a remote reboot).
+//   CLEARED: by calcPWM() (generatePWM task, 100 Hz) on the first pass where thr_received is below
+//           kHandbackReleaseThr - it reads the trigger every 10 ms, so a quick full release is never
+//           missed. The clear is a compare-exchange, so it can never wipe a value armed after the read.
+//   APPLIED: in calcPWM() exactly like rtm_approach_cap / fm_throttle_cap - min(), subtract-only.
+// No confStruct field: sizeof stays 200, SW_VERSION stays 36.
+std::atomic<uint8_t> arrival_handback_cap {kHandbackNone};
+// "Fully released": the trigger byte below this many counts (8 of 255, about 3 %). The remote's
+// calibration puts the idle trigger at 0 with a cal_offset margin, so a released trigger reads 0; the
+// small band only absorbs Hall noise. Deliberately NOT the 25-count deadman threshold: easing to 9 %
+// is not letting go, and the owner's rule is "let go of the throttle completely".
+static const uint8_t kHandbackReleaseThr = 8;
 
 #include "../Common/SPIFFSEngine.h"
 

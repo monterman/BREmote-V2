@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-07 - SOP-040 gesture rule: the mag_mode 4 2.5 s hold acts only with the trigger fully released
+//   (checked at 2.5 s and at removal; held -> ignored silently, one serial line). The toggle RIGHT tap + LEFT hold logs
+//   when it is ignored because the trigger is held. Magnet taps unchanged. No confStruct change.
 // V2.5-Evo - 2026-10-07 - P-11: checkCal() sets ads_cal_in_progress while it calibrates (plausibility exemption).
 // V2.5-Evo - 2026-10-07 - SOP-040: the mag_mode 4 hold refusal (Return-To-Me disabled or GPS off) is now "St" + the
 //   normal stop buzz on removal, replacing the "n0" screen and the Pattern 5 blip at 2.5 s. No confStruct change.
@@ -449,6 +452,14 @@ void handleGearToggle(int direction)
         long_press_done = true;
         in_menu = usrConf.menu_timeout;
       }
+      else if (has_combo && direction < 0 && last_tap_dir == 1)
+      {
+        // V2.5-Evo - 2026-10-07 - SOP-040 gesture rule: the RIGHT tap + LEFT hold Return-To-Me gesture acts only
+        // with the trigger fully released. It always did nothing here with the trigger held; now it says so on
+        // serial (silently on the remote, as the rule asks).
+        Serial.printf("RTM [TX] return gesture ignored: trigger held (thr %u) - it needs the trigger fully released\n",
+                      (unsigned)thr_scaled);
+      }
       // Release wait after the action. A squeeze here also hands the toggle straight back to
       // steering instead of holding the rider in menu mode until the toggle is centred.
       while (isActive())
@@ -568,6 +579,9 @@ void handleGearToggle(int direction)
 //     ACTIVE the hold is ignored (no buzz, no action); when Return-To-Me cannot start (disabled, or GPS off)
 //     the 2.5 s buzz is ONE short blip (Pattern 5) instead of Pattern 10, and removal shows "n0" for 2 s.
 //     V2.5-Evo - 2026-10-07 - SOP-040: superseded - no buzz while holding, and removal shows "St" with the stop buzz.
+//     V2.5-Evo - 2026-10-07 - SOP-040 GESTURE RULE: the hold acts only with the trigger FULLY RELEASED (checked at
+//     2.5 s and again at removal). With the trigger held it is ignored silently - no buzz, no "St", no ceremony.
+//     The TAP row is unchanged: with the trigger held a tap still arms Follow-Me and still steps the station.
 //     TAP LOCKOUT (V2.5-Evo - 2026-10-06, audit M-1): after a tap that actually stepped the station, a tap
 //     whose magnet arrives within kMagStepLockoutMs (1 s) is ignored completely. See the constant.
 //
@@ -645,6 +659,8 @@ void handleGearToggle(int direction)
 //   stays armed through the return and resumes ARMED (unlatched) when it ends.
 //
 // ARMING WHILE ON THE THROTTLE IS INTENTIONAL
+//   (V2.5-Evo - 2026-10-07 - SOP-040: EXCEPT the mag_mode 4 2.5 s Return-To-Me hold, which now needs the trigger
+//   fully released - see kMagHoldTriggerHeld. Roles 1-3 and the mode 4 tap are unchanged.)
 //   Unlike the toggle combos, this gesture does NOT require a released throttle. The approved
 //   FM design has the rider arm during the tow, while on the trigger — the toggle physically
 //   cannot do that (it doubles as the steering control whenever thr_scaled > 3), which is a
@@ -785,19 +801,30 @@ static const uint32_t kMagStepLockoutMs = 1000UL;
 //                      buzz - nothing faulted, the feature is simply off).
 //                      V2.5-Evo - 2026-10-07 - SUPERSEDED by SOP-040 ("St" is the only "not working" signal):
 //                      no buzz while holding; on removal "St" for 2 s with the normal stop buzz (Pattern 7).
+//   kMagHoldTriggerHeld - V2.5-Evo - 2026-10-07 - SOP-040 GESTURE RULE: the trigger is NOT fully released
+//                      (triggerReleased() false). The hold is ignored SILENTLY - no buzz while holding, nothing on
+//                      removal, one serial line. Checked at the 2.5 s mark (so no Pattern 10 promise is made) AND
+//                      again at removal (a squeeze after the buzz still cancels it). This makes the held-trigger
+//                      RTM ceremony unreachable from the magnet: with the trigger held, nudging or steering a buggy
+//                      never starts or ends a return. The magnet TAP is not affected: with the trigger held a tap
+//                      still arms Follow-Me (owner exception) and still steps the station while following.
 // Latched in runMagGesture() so a state change between the 2.5 s mark and the removal (for example Gate 3
 // ending an active return while the magnet is still held) cannot turn an ignored hold into a new ceremony.
-static const uint8_t kMagHoldStartRtm = 0;
-static const uint8_t kMagHoldIgnored  = 1;
-static const uint8_t kMagHoldRefused  = 2;
+static const uint8_t kMagHoldStartRtm    = 0;
+static const uint8_t kMagHoldIgnored     = 1;
+static const uint8_t kMagHoldRefused     = 2;
+static const uint8_t kMagHoldTriggerHeld = 3;   // V2.5-Evo - 2026-10-07 - SOP-040 gesture rule
 
 // magHoldVerdict - decide what a mag_mode 4 2.5 s hold will do right now (see the block above).
-// Inputs: rtm_tx_active, rtmIsArming(), rtmEnabledEffective(), usrConf.gps_en.
-// Output: kMagHoldStartRtm, kMagHoldIgnored or kMagHoldRefused. No side effects, never blocks.
+// Inputs: rtm_tx_active, rtmIsArming(), triggerReleased(), rtmEnabledEffective(), usrConf.gps_en.
+// Output: kMagHoldStartRtm, kMagHoldIgnored, kMagHoldTriggerHeld or kMagHoldRefused. No side effects, never blocks.
+// Order matters: an active return is ignored first (R-2), then a held trigger is ignored silently (SOP-040) - so a
+// held trigger never produces the "St" refusal either - and only then is a released-trigger refusal shown (R-7).
 static uint8_t magHoldVerdict()
 {
-  if (rtm_tx_active || rtmIsArming())                return kMagHoldIgnored;   // R-2: the return continues
-  if (!(rtmEnabledEffective() && usrConf.gps_en))    return kMagHoldRefused;   // R-7: say no, clearly
+  if (rtm_tx_active || rtmIsArming())                return kMagHoldIgnored;      // R-2: the return continues
+  if (!triggerReleased())                            return kMagHoldTriggerHeld;  // SOP-040: trigger held -> silent
+  if (!(rtmEnabledEffective() && usrConf.gps_en))    return kMagHoldRefused;      // R-7: say no, clearly
   return kMagHoldStartRtm;
 }
 
@@ -973,7 +1000,7 @@ void runMagGesture()
         }
         // V2.5-Evo - 2026-10-07 - SOP-040 ("St" is the only refusal signal): kMagHoldRefused no longer plays the
         // Pattern 5 blip here; the refusal is "St" + the stop buzz on removal (see below).
-        // kMagHoldRefused and kMagHoldIgnored: no buzz while holding.
+        // kMagHoldRefused, kMagHoldIgnored and kMagHoldTriggerHeld: no buzz while holding.
       }
       return;
     }
@@ -1075,7 +1102,19 @@ void runMagGesture()
         // so it is live from the first poll. (fmToggleAutoReturnFromMagnet() was removed 2026-10-07, R-4.)
         //
         // V2.5-Evo - 2026-10-07 - R-2 / R-7: the verdict latched at 2.5 s decides (see magHoldVerdict()).
-        if (hold_verdict == kMagHoldIgnored)
+        // V2.5-Evo - 2026-10-07 - SOP-040 gesture rule: the trigger is checked AGAIN here, at the moment the action
+        // would happen. Released at 2.5 s but squeezed by the time the magnet comes off -> ignored silently.
+        if ((hold_verdict == kMagHoldStartRtm || hold_verdict == kMagHoldRefused) && !triggerReleased())
+        {
+          hold_verdict = kMagHoldTriggerHeld;
+        }
+        if (hold_verdict == kMagHoldTriggerHeld)
+        {
+          // SOP-040: the 2.5 s hold acts only with the trigger fully released. Nothing happens, no buzz.
+          Serial.printf("MAG [TX] hold ignored: trigger held (thr %u) - the 2.5 s hold needs the trigger fully released\n",
+                        (unsigned)thr_scaled);
+        }
+        else if (hold_verdict == kMagHoldIgnored)
         {
           // R-2: a Return-To-Me is already running. Ignore the hold; the return continues untouched.
           Serial.println("MAG [TX] hold ignored: Return-To-Me is already active, the return continues");

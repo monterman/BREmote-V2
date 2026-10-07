@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - SOP-040 gesture rule: returnGesture() is ignored (serial line only) while Return-To-Me is active
+//   on this remote or arming, and whenever the trigger is not fully released. No confStruct change.
 // V2.5-Evo - 2026-10-07 - SOP-040: returnGesture() (the toggle RIGHT tap + LEFT hold) now shows "St" + the stop buzz when
 //   Return-To-Me cannot start (disabled or GPS off); it was silent. No confStruct change.
 // V2.5-Evo - 2026-10-07 - M-3 / F-2: inside the RTM arm ceremony a plain 1 s LEFT hold (trigger held or released)
@@ -1500,6 +1502,25 @@ bool fmStepStationFromMagnet()
 // ============================================================
 void returnGesture()
 {
+  // V2.5-Evo - 2026-10-07 - THE GESTURE IS IGNORED WHILE RETURN-TO-ME IS ACTIVE ON THIS REMOTE (audit: "toggle route
+  // during RTM ACTIVE"; same rule as the magnet hold, R-2). THE BUG: this path called setRtmArmed() without looking
+  // at rtm_tx_state, so a RIGHT tap + LEFT hold during an active return re-entered the arm ceremony: the buggy was
+  // told 0xF1/0, throttle went to 0 and the return restarted with no "St" and no cooldown. Now: nothing happens,
+  // one serial line, the return continues (Gate 3 still ends it on a release).
+  if (rtm_tx_active || rtmIsArming())
+  {
+    Serial.println("RTM [TX] return gesture ignored: Return-To-Me is already active on this remote, the return continues");
+    return;
+  }
+  // V2.5-Evo - 2026-10-07 - SOP-040 GESTURE RULE: the gesture acts only with the trigger fully released, in every
+  // one of its states (arm, refusal, override clear). handleGearToggle() already gates its action on a released
+  // trigger; this is the same rule held at the action itself. Ignored silently (serial line only).
+  if (!triggerReleased())
+  {
+    Serial.printf("RTM [TX] return gesture ignored: trigger held (thr %u) - it needs the trigger fully released\n",
+                  (unsigned)thr_scaled);
+    return;
+  }
   if (last_fm_return_mode != 0xFF)
   {
     // State 3: back to default.

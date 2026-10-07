@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - SOP-040 gesture rule: triggerReleased() / TRIGGER_RELEASED_MAX (thr_scaled < 10). No struct change.
 // V2.5-Evo - 2026-10-07 - P-11: RAM flag ads_cal_in_progress (plausibility exempt only while checkCal() runs). No
 //   confStruct change: sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-07 - P-1: comment only - the radio task no longer writes ads_input_fault.
@@ -853,6 +854,17 @@ volatile uint8_t max_power_cap = 85;  // Runtime cap for throttle_mode 2
 volatile uint8_t thr_scaled = 0;
 volatile uint8_t tog_scaled = 0;
 volatile uint8_t steer_scaled = 0;
+
+// ============================================================
+// V2.5-Evo - 2026-10-07 - SOP-040 GESTURE RULE: ONE DEFINITION OF "THE TRIGGER IS FULLY RELEASED"
+// The Return-To-Me gestures (the magnet 2.5 s hold and the toggle RIGHT tap + LEFT hold) act only with the trigger
+// fully released, and an RTM arrival keeps its throttle cap until the trigger has been fully released once. Both
+// use this test. thr_scaled < 10 (of 255, ~4 %) is the release threshold the toggle gestures and the RTM arm
+// ceremony already used (handleGearToggle(), runDoubleSqueezeArm()), so nothing that worked before changes meaning.
+// Reads thr_scaled (written by the ADC task). No side effects.
+// ============================================================
+#define TRIGGER_RELEASED_MAX 10
+static inline bool triggerReleased() { return thr_scaled < TRIGGER_RELEASED_MAX; }
 
 volatile uint8_t thr_sent = 0;   // Post-expo+gear throttle actually sent over radio
 volatile uint8_t steer_sent = 0; // Steering value actually sent over radio

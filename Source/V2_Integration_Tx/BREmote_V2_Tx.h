@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - A-1 (TX part): fm_status_rtm_on_ms / fm_status_rtm_off_streak (the buggy's RTM bit per arrival).
+//   RAM only: sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-07 - SOP-040 gesture rule: triggerReleased() / TRIGGER_RELEASED_MAX (thr_scaled < 10). No struct change.
 // V2.5-Evo - 2026-10-07 - P-11: RAM flag ads_cal_in_progress (plausibility exempt only while checkCal() runs). No
 //   confStruct change: sizeof stays 136, SW_VERSION stays 27.
@@ -897,6 +899,20 @@ std::atomic<uint8_t> rtm_meta_count {0};    // bursts remaining; 0 = idle (value
 #define FM_STATUS_RTM_ACTIVE 0x02                 // telemetry.fm_status bit 1: the buggy has rtm_rx_active set
 volatile unsigned long fm_status_arrival_ms = 0;
 volatile unsigned long rtm_stop_sent_ms     = 0;
+
+// ============================================================
+// V2.5-Evo - 2026-10-07 - A-1 (TX part): "the buggy ended Return-To-Me but this remote still shows it".
+// The buggy ends a manual return on its own (arrival at the stop distance, a Phase C failure, its 30 s takeover
+// timeout) and says so only by clearing fm_status bit 1. The remote never read that bit while ACTIVE, so it kept
+// the RTM screen and cap until a 4 s release. runRtmLoop() now ends its own RTM when the buggy, having confirmed
+// RTM during this run, reports it OFF on 2 consecutive arrivals of the fm_status byte.
+//   fm_status_rtm_on_ms      - millis() of the last fm_status ARRIVAL with bit 1 set (0 = never).
+//   fm_status_rtm_off_streak - consecutive fm_status arrivals with bit 1 clear since the last set one (saturates).
+// Written only by waitForTelemetry (Radio.ino), where the byte arrives; read by the loop task. Counted per ARRIVAL of
+// index 15 (the cached byte only changes when its index comes round), like fm_engaged_streak. One word / one byte.
+// ============================================================
+volatile unsigned long fm_status_rtm_on_ms      = 0;
+volatile uint8_t       fm_status_rtm_off_streak = 0;
 
 // V2.5-Evo - 2026-04-25 - P7 RTM throttle cap.
 // V2.5-Evo - 2026-05-13 - SW32 M3: changed volatile→std::atomic<T>.

@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - A-1: waitForTelemetry() records each fm_status arrival's RTM bit (fm_status_rtm_on_ms,
+//   fm_status_rtm_off_streak) so the remote can follow the buggy ending RTM. No packet format change.
 // V2.5-Evo - 2026-10-07 - P-8: the meta queue's second slot follows an explicit priority 0xF1 > 0xF2 > 0xF4; a burst
 //   never evicts an equal- or higher-priority one. No packet format change.
 // V2.5-Evo - 2026-10-07 - P-1: comment only - sendData()'s input-fault check zeroes the current packet and no longer latches.
@@ -567,7 +569,20 @@ void waitForTelemetry(void *parameter)
           // V2.5-Evo - 2026-10-07 - H-1: stamp each ARRIVAL of the fm_status byte (index 15). The cached byte only
           // changes when its index comes round, so runRtmLoop() acts on its RTM bit only when it arrived after
           // the last 0xF1/0 went out.
-          if (rcvArray[3] == offsetof(TelemetryPacket, fm_status)) fm_status_arrival_ms = millis();
+          if (rcvArray[3] == offsetof(TelemetryPacket, fm_status))
+          {
+            fm_status_arrival_ms = millis();
+            // V2.5-Evo - 2026-10-07 - A-1: count this arrival's RTM bit for runRtmLoop() (see BREmote_V2_Tx.h).
+            if (rcvArray[4] & FM_STATUS_RTM_ACTIVE)
+            {
+              fm_status_rtm_on_ms      = millis();
+              fm_status_rtm_off_streak = 0;
+            }
+            else if (fm_status_rtm_off_streak < 255)
+            {
+              fm_status_rtm_off_streak = (uint8_t)(fm_status_rtm_off_streak + 1);   // explicit RMW, not ++ on a volatile
+            }
+          }
 
           // ---- V2.5-Evo - 2026-09-30 - FOLLOW-ME "ENGAGED" CORROBORATION COUNTER ----
           // WHY THIS IS HERE. The magnet tap may only move a Follow-Me station while the buggy is

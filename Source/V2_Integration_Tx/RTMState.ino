@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-07 - A-1 (TX part): while RTM_ACTIVE, if the buggy (having confirmed RTM this run) reports fm_status
+//   bit 1 OFF on 2 consecutive arrivals, the remote ends its own RTM: silent "St", and per SOP-040 the throttle cap stays
+//   in force until the trigger is fully released once, then full manual. Hook left for the buggy's future RTM-fault bit.
+//   No confStruct change.
 // V2.5-Evo - 2026-10-07 - F-3 / F-8: the R-3 ceremony extension has a hard ceiling (window + COMBO_WINDOW_MS + hold);
 //   a trigger release during the unlock animation between the two squeezes is counted. No confStruct change.
 // V2.5-Evo - 2026-10-07 - P-6: the 1 s LEFT ceremony cancel needs a push past half of the calibrated left travel
@@ -261,6 +265,21 @@ static uint32_t rtm_arm_gps_timeout_override = 0;
 // says the stick takes over (fm_flags bit 4). Cleared at every RTM_ACTIVE entry.
 static bool rtm_gate4_takeover_printed = false;
 
+// ============================================================
+// V2.5-Evo - 2026-10-07 - A-1 + SOP-040 "ARRIVAL HAND-BACK KEEPS A THROTTLE CAP"
+// When the buggy ends the return itself (A-1, see rtmBuggyEndedCheck()), the MODE ends on the remote at once but
+// the throttle cap that was in force stays in force until the trigger has been seen FULLY RELEASED once
+// (triggerReleased()); only then is throttle uncapped manual. A rider still at full trigger when the buggy arrives
+// cannot drive it into himself.
+//   rtm_end_keep_cap     - set by the A-1 path immediately before rtmDisengage(): "keep rtm_thr_cap_tx as it is".
+//                          Consumed (cleared) by rtmDisengage().
+//   rtm_arrival_cap_hold - true while that kept cap is waiting for the release. Cleared by the release
+//                          (rtmArrivalCapUpdate() or the "St" hold in rtmDisengage()) or by a new arm.
+// Loop task only.
+// ============================================================
+static bool rtm_end_keep_cap     = false;
+static bool rtm_arrival_cap_hold = false;
+
 // FM session-init and keepalive state (Changes B + E)
 static bool          fm_session_init_done = false;  // Change B: true once last_fm_mode seeded from SPIFFS this session
 static unsigned long fm_last_sync_ms      = 0;      // Change E: millis() of last 0xF2 keepalive; 0 when FM disarmed
@@ -387,6 +406,7 @@ void setRtmArmed()
   rtm_arm_start_ms = millis();
   rtm_hold_start   = 0;
   rtm_tx_active    = false;
+  rtm_arrival_cap_hold = false;   // V2.5-Evo - 2026-10-07 - A-1: a new run owns the cap from here (it is set to 0 below)
   // SAFETY FIX: sendData() FreeRTOS task keeps running while loop() is blocked inside
   // runDoubleSqueezeArm(). With cap=255, every arm-squeeze byte goes straight to RX and
   // drives the motor at full duty with rtm_rx_active=0 (no RX gate suppression).
@@ -417,6 +437,10 @@ static void setRtmDisarmed()
 //        Gate 1 (max runtime), the only timer here that can fire while he is still squeezing.
 // OUTPUT: none. SIDE EFFECTS: state → RTM_COOLDOWN, throttle cap restored to 255, 0xF1/0 sent to RX,
 //        STOP buzz requested when uncommanded, and a BLOCKING 2s "St" display hold.
+// V2.5-Evo - 2026-10-07 - A-1: if rtm_end_keep_cap is set (the buggy ended the return itself), the cap in force is
+//        KEPT instead of restored to 255, rtm_arrival_cap_hold is raised, and the 2 s "St" hold watches the trigger:
+//        a full release during it lifts the cap at the end of the hold; otherwise rtmArrivalCapUpdate() lifts it on
+//        the first released sample afterwards.
 static void rtmDisengage(bool commanded)
 {
   rtm_tx_state    = RTM_COOLDOWN;
@@ -424,7 +448,16 @@ static void rtmDisengage(bool commanded)
   rtm_tx_active   = false;
   displayBuffer[6] = 0x0000;     // Bug3: clear R5 proximity bar row — updateR5ProximityBar() left
                                  // stale data here; without clearing, FM mode sees a phantom pixel
-  rtm_thr_cap_tx  = 255;
+  if (rtm_end_keep_cap)
+  {
+    rtm_end_keep_cap     = false;   // A-1: consumed
+    rtm_arrival_cap_hold = true;    // rtm_thr_cap_tx keeps its current (ramp) value until a full release
+  }
+  else
+  {
+    rtm_arrival_cap_hold = false;
+    rtm_thr_cap_tx  = 255;
+  }
   rtm_arm_dist_m  = 0.0f;        // reset R5 bar reference (defined in BREmote_V2_Tx.h)
   rtm_arm_gps_timeout_override = 0;  // clear GPS timeout multiplier — ceremony fully over
   queueMetaPacketBurst(0xF1, 0);  // tell RX: RTM inactive
@@ -452,7 +485,34 @@ static void rtmDisengage(bool commanded)
   // Large-font stop confirm: LET_S(32) renders as "5", LET_T(20) renders as "t".
   // "5t" appearance is intentional — matches large-font style of F0-F3 confirms.
   DISP_LOCK(); displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
-  gpsKeepAliveDelay(2000);
+  if (rtm_arrival_cap_hold)
+  {
+    // V2.5-Evo - 2026-10-07 - A-1: watch the trigger during the hold (the loop is blocked here); a full release
+    // seen at any 10 ms sample lifts the kept cap when the hold ends.
+    if (ceremonyDelaySeeRelease(2000))
+    {
+      rtm_arrival_cap_hold = false;
+      rtm_thr_cap_tx       = 255;
+      Serial.println("RTM [TX] trigger fully released after the buggy ended the return -> throttle cap lifted, full manual");
+    }
+  }
+  else
+  {
+    gpsKeepAliveDelay(2000);
+  }
+}
+
+// rtmArrivalCapUpdate - V2.5-Evo - 2026-10-07 - A-1 / SOP-040: lift the cap kept after the buggy ended a return,
+// on the first sample that shows the trigger fully released. Called every runRtmLoop() tick (~110 ms), before the
+// RTM enable check so a disabled RTM cannot strand a cap. A new arm (setRtmArmed()) clears the hold itself.
+// Inputs: rtm_arrival_cap_hold, triggerReleased(). Side effects: rtm_thr_cap_tx = 255 + one line on release.
+static void rtmArrivalCapUpdate()
+{
+  if (!rtm_arrival_cap_hold) return;
+  if (!triggerReleased()) return;
+  rtm_arrival_cap_hold = false;
+  rtm_thr_cap_tx       = 255;
+  Serial.println("RTM [TX] trigger fully released after the buggy ended the return -> throttle cap lifted, full manual");
 }
 
 // ---- Decode telemetry.rtm_distance to metres ----
@@ -970,6 +1030,8 @@ void runRtmLoop()
 {
   // V2.5-Evo - 2026-10-07 - H-1: runs BEFORE the enable check below, on purpose - see rtmRxStateWatch().
   rtmRxStateWatch(millis());
+  // V2.5-Evo - 2026-10-07 - A-1: the kept arrival cap is lifted on a full release whatever the RTM enable says.
+  rtmArrivalCapUpdate();
 
   // V2.5-Evo - 2026-09-30 - the EFFECTIVE enable (see rtmEnabledEffective()). A session override that
   // says OFF parks this whole state machine exactly as a stored 0 always did; it cannot leave a run
@@ -1003,6 +1065,39 @@ void runRtmLoop()
     {
       // Update throttle cap for ramp
       rtm_thr_cap_tx = calcRtmThrottleCap();
+
+      // V2.5-Evo - 2026-10-07 - A-1: THE BUGGY ENDED THE RETURN ITSELF. Checked first: if the buggy is no longer
+      // returning, none of the remote's own gates below has anything left to supervise.
+      // Condition: the buggy CONFIRMED RTM during this run (an fm_status arrival with bit 1 set after ACTIVE began -
+      // so the arrivals that predate its hearing 0xF1/1 can never count as a drop) and then reported it OFF on 2
+      // consecutive arrivals of the byte (one corrupted-but-valid packet is not enough).
+      // Action: end RTM here through rtmDisengage() - silent "St" (an arrival is not a fault), 0xF1/0 for good
+      // measure, COOLDOWN, and the screen then lands on the true state (FM armed screen or normal) - while KEEPING
+      // the throttle cap in force until the trigger is fully released once (SOP-040 arrival rule, rtm_end_keep_cap).
+      // HOOK (the buggy will add an "RTM fault" bit later, audit H-2 / A-1): when that bit is set on these arrivals,
+      // treat it as a FAULT instead: rtmDisengage(false) ("St" + the stop buzz) WITHOUT keeping the cap, because a
+      // fault hands back full manual control (SOP-039 rule 2). Set rx_rtm_fault from that bit here.
+      {
+        const bool rx_confirmed = (fm_status_rtm_on_ms != 0) &&
+                                  ((long)(fm_status_rtm_on_ms - rtm_active_start_ms) > 0);
+        if (rx_confirmed && fm_status_rtm_off_streak >= 2)
+        {
+          const bool rx_rtm_fault = false;   // HOOK: the buggy's future RTM-fault bit goes here
+          if (rx_rtm_fault)
+          {
+            Serial.println("RTM [TX] the buggy ended Return-To-Me on a FAULT -> St + stop buzz, full manual");
+            rtmDisengage(false);
+          }
+          else
+          {
+            Serial.printf("RTM [TX] the buggy ended Return-To-Me (fm_status bit 1 off on 2 arrivals) -> silent St; throttle cap %u kept until the trigger is fully released\n",
+                          (unsigned)rtm_thr_cap_tx.load());
+            rtm_end_keep_cap = true;
+            rtmDisengage(true);
+          }
+          break;
+        }
+      }
 
       // Gate 1: max runtime (0 = disabled — safety gates handle all real scenarios)
       if (usrConf.rtm_max_runtime_s > 0 &&

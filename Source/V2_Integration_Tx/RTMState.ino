@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-06 - mag_mode 4 rulings (see Hall.ino): fmStepStationFromMagnet() now returns true when the
+//   station actually moved, so runMagGesture() can start its 1 s tap lockout (audit M-1). fmToggleAutoReturnFromMagnet()
+//   is no longer called: the 2.5 s magnet hold always starts the manual Return-To-Me. Its body is unchanged. No
+//   confStruct change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-06 - F-label hold: every "F<n>" confirm (cycleFmMode() arm + pre-throttle cycle,
 //   cycleFmModeArmed(), fmStepStationFromMagnet()) now calls showFmLabelHeld() (Display.ino): held 2 s and
 //   NON-blocking. Was a blocking gpsKeepAliveDelay() of 2 s (toggle paths) or 1.2 s (magnet tap). The 0xF2 in
@@ -1225,12 +1229,14 @@ static uint8_t fmNextStationInSet(uint8_t from, uint16_t mask)
 // SIDE EFFECTS: last_fm_mode updated, one 0xF2 burst to the buggy, keepalive + arm timers reset,
 //   Pattern 11 queued, and a NON-blocking 2 s "F<n>" hold via showFmLabelHeld() (V2.5-Evo -
 //   2026-10-06; was a blocking 1.2 s gpsKeepAliveDelay()). Loop task only - never from a FreeRTOS task.
-void fmStepStationFromMagnet()
+// OUTPUT (V2.5-Evo - 2026-10-06, audit M-1): true only when the station actually moved, false for every
+//   silent return. runMagGesture() starts its 1 s tap lockout on true only. Was void.
+bool fmStepStationFromMagnet()
 {
-  if (!fmIsEngaged()) return;                        // the gate lives with the action too
+  if (!fmIsEngaged()) return false;                  // the gate lives with the action too
 
   uint8_t next = fmNextStationInSet(last_fm_mode, usrConf.mag_fm_set);
-  if (next == 0 || next == last_fm_mode) return;     // nowhere to go - stay silent
+  if (next == 0 || next == last_fm_mode) return false;   // nowhere to go - stay silent
 
   last_fm_mode = next;
   Serial.print("FM [TX] magnet tap: station -> F");  // V2.5-Evo - 2026-09-30
@@ -1252,6 +1258,7 @@ void fmStepStationFromMagnet()
   // The same "F<n>" confirm the toggle path draws. V2.5-Evo - 2026-10-06 - held 2 s (was a blocking
   // 1.2 s) by showFmLabelHeld() in Display.ino, which does not block loop() - see the note above.
   showFmLabelHeld(last_fm_mode);
+  return true;
 }
 
 // fmToggleRtmEnabledFromMagnet - act on a 2.5 s magnet hold (mag_mode 4).
@@ -1303,6 +1310,9 @@ void fmStepStationFromMagnet()
 // ARMED toggles AUTO-RETURN for this session. ("r1"/"r0" used to mean something else entirely from
 // this gesture - whether the MANUAL recall was available - which is neither of the two things the
 // owner wanted it to do. See the state-aware dispatch in Hall.ino.)
+// V2.5-Evo - 2026-10-06 - NO LONGER CALLED. Owner ruling: the 2.5 s magnet hold ALWAYS starts the manual
+// Return-To-Me, whatever the Follow-Me state. Auto-return (A1/A0) is reached from the "rn" wait instead
+// (RIGHT tap then LEFT hold -> ceremonyCancelForReturnGesture() above). Body left as it was.
 //
 // WHAT AUTO-RETURN IS, and why it is not Return-To-Me: auto-return is the automatic one inside
 // Follow-Me - the rider stops, the buggy comes back on its own. Return-To-Me is the MANUAL recall

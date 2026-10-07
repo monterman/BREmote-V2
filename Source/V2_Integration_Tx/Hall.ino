@@ -1,3 +1,9 @@
+// V2.5-Evo - 2026-10-06 - mag_mode 4, two owner rulings. (1) M-1 TAP LOCKOUT: after a magnet tap actually steps the
+//   Follow-Me station, any tap whose magnet ARRIVES within kMagStepLockoutMs (1000 ms) is ignored completely - no
+//   step, no arm, no buzz. Since the F-label hold stopped blocking loop(), two quick taps (or one wobbly one) could
+//   step two stations while the rider felt only one count. (2) THE 2.5 s HOLD ALWAYS STARTS MANUAL RETURN-TO-ME,
+//   whatever the Follow-Me state (was: FM armed -> A1/A0 auto-return toggle). A1/A0 stays reachable from the "rn"
+//   wait (RIGHT tap then LEFT hold). No confStruct change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-09-30 - MagFix (Rex delta audit of 98fb7a8): runMagGesture() gains a SAMPLE-GAP GUARD (H-1) —
 //   a hold is abandoned if loop() stalled long enough that the magnet pin went unsampled, so a blocking disarm,
 //   disengage or arm ceremony can no longer promote a 300 ms tap into the 2.5 s hold and silently turn
@@ -528,12 +534,16 @@ void handleGearToggle(int direction)
 //     60-600ms (a TAP)   none (too short to buzz)        step to the next station in mag_fm_set,
 //                                                        or ARM Follow-Me if it is not armed yet
 //     600ms - 2.5s       none                            nothing (deliberate dead zone, see below)
-//     >= 2.5s            TWO medium pulses (Pattern 10)  toggle Return-To-Me on/off (zero throttle)
+//     >= 2.5s            TWO medium pulses (Pattern 10)  start the MANUAL Return-To-Me ("rn", squeeze to confirm)
+//     (V2.5-Evo - 2026-10-06: the hold row used to read "toggle Return-To-Me on/off", and from 2026-10-02 it
+//     toggled auto-return instead while Follow-Me was armed. Owner ruling: it ALWAYS starts the manual recall.)
+//     TAP LOCKOUT (V2.5-Evo - 2026-10-06, audit M-1): after a tap that actually stepped the station, a tap
+//     whose magnet arrives within kMagStepLockoutMs (1 s) is ignored completely. See the constant.
 //
 //     MODE 4 HAS NO MAGNET DISARM. Roles 1 and 3 make the magnet an arm↔disarm toggle; in mode 4 the
-//     magnet only ARMS Follow-Me or STEPS its station, and the hold only flips the Return-To-Me enable.
-//     To disarm Follow-Me in mode 4, use the toggle combo (LEFT tap → RIGHT hold) or select F0. This is a
-//     deliberate difference and it is why the hold does NOT use the stop buzz: see fmToggleRtmEnabledFromMagnet().
+//     magnet only ARMS Follow-Me or STEPS its station, and the hold only starts the manual Return-To-Me.
+//     To disarm Follow-Me in mode 4, use the toggle combo (LEFT tap → RIGHT hold). This is a deliberate
+//     difference.
 //
 //     WHY THE 600ms - 2.5s DEAD ZONE IS DELIBERATE. A tap is about 300 ms and the hold is 2500 ms, and the
 //     tap CEILING sits at 600 ms, so the two bands stay more than 4x apart end-to-end. That is what makes
@@ -638,6 +648,8 @@ bool rtmEnabledEffective();
 // V2.5-Evo - 2026-10-02 - the FM-armed half of the state-aware 2.5 s hold (RTMState.ino,
 // concatenated after this file). Toggles AUTO-RETURN for the session and shows "A1"/"A0".
 // BLOCKS for ~2 s on the display confirm, so loop()-only like the rest of this function.
+// V2.5-Evo - 2026-10-06 - NO LONGER CALLED from here: the 2.5 s hold now always starts the manual
+// Return-To-Me (owner ruling). Declaration kept so the definition still has a matching prototype.
 void fmToggleAutoReturnFromMagnet();
 // fmDisarm() and setRtmDisarmed() are the toggle-combo's own disarm paths (both static in
 // RTMState.ino, concatenated after this file). Declared static here — matching their definitions
@@ -713,6 +725,21 @@ static const uint32_t kMagRtmToggleHoldMs = 2500UL;
 // which described a sample rate this firmware has never run. Corrected, value unchanged.)
 // Roles 1-3 keep their original 120 ms untouched — this constant is never applied to them.
 static const uint32_t kMagTapDebounceMs = 40UL;
+// ---- V2.5-Evo - 2026-10-06 - TAP LOCKOUT AFTER A STATION STEP (audit M-1, owner ruling: 1 second) ----
+// THE PROBLEM. Until 2026-10-06 a station step blocked loop() for 1.2 s on its display flash, and that
+// stall swallowed any further taps by accident. The F-label hold no longer blocks, so two quick taps -
+// or one wobbly magnet that bounces off and back - stepped TWO stations (F1 -> F3) while the rider may
+// have felt only one buzz count.
+// THE RULE. After a tap that ACTUALLY moved the station, a tap whose magnet ARRIVES within this window
+// is ignored completely: no step, no arm, no buzz, and the debounce state is rebuilt from the pin
+// exactly as after any other mode 4 removal, so nothing is left half-armed. Judged on the ARRIVAL edge,
+// not the removal, so a bounce that lands inside the window is dropped even if it lifts after it.
+// WHY 1000 ms. A deliberate tap-remove-tap-remove still steps quickly (about one station a second),
+// while a wobble or a bounce lands well inside it. It also guarantees the previous step's Pattern 11
+// (at most 3 x 250 ms, plus the 50 ms vibration-task poll = 800 ms) has finished before the next step
+// queues its own count, so the buzz count always matches the stations actually stepped.
+// Only taps are locked out. The 2.5 s hold is untouched: it cannot complete inside the window anyway.
+static const uint32_t kMagStepLockoutMs = 1000UL;
 
 // ---- Called from loop() every cycle; self-rate-limits to kMagPollMs ----
 void runMagGesture()
@@ -730,6 +757,11 @@ void runMagGesture()
   // V2.5-Evo - 2026-09-30 - H-1: millis() of the last sample this function actually took. 0 = none yet.
   // The gap between consecutive samples is the evidence that the pin was really watched across a hold.
   static uint32_t mag_last_sample_ms = 0;
+  // V2.5-Evo - 2026-10-06 - M-1 tap lockout: millis() of the last tap that ACTUALLY stepped the station,
+  // and whether there has been one yet this power-up (a flag, not a 0 sentinel, so a step at any millis()
+  // value counts). Loop task only, like every other static here.
+  static uint32_t mag_last_step_ms   = 0;
+  static bool     mag_step_seen      = false;
 
   // Role gate. With mag_mode == 0 (the default — no Hall sensor fitted) the gesture does not
   // exist: bail out before touching any state, so the Hall behaves exactly as it did before
@@ -920,10 +952,8 @@ void runMagGesture()
     // the point: a buzz meaning "I ignored you" teaches the rider to expect feedback from accidental
     // magnet contact, and the buggy must never reposition itself while he is attached to the rope.
     //
-    // HOLD (>= 2.5 s): toggle the Return-To-Me enable FOR THIS SESSION ONLY.
-    // fmToggleRtmEnabledFromMagnet() enforces zero throttle itself, because unlike arming it changes
-    // what the craft will do on its own initiative later. It writes a RAM session override and never
-    // touches usrConf, so nothing can carry the flip into SPIFFS.
+    // HOLD (>= 2.5 s): start the MANUAL Return-To-Me ceremony through setRtmArmed(), in every Follow-Me
+    // state (V2.5-Evo - 2026-10-06, owner ruling; see the hold branch below).
     //
     // 600 ms - 2.5 s falls through both and does nothing: the deliberate dead zone that keeps the tap
     // band and the hold band more than 4x apart. See the band table in this function's header comment.
@@ -932,26 +962,49 @@ void runMagGesture()
     {
       if (held >= kMagRtmToggleHoldMs)
       {
-        // V2.5-Evo - 2026-10-02 - STATE-AWARE HOLD (owner's decision).
-        //   FM ARMED     -> toggle AUTO-RETURN for the session        -> "A1" / "A0"
-        //   FM NOT ARMED -> start the MANUAL Return-To-Me ceremony     -> "rn", squeeze confirm
-        // The two can never both apply: auto-return only means anything while Follow-Me is
-        // running, and a manual recall only means something when it is not - if FM is armed the
-        // buggy is already on its way to him. Separated by STATE, not by timing, exactly as the
-        // TAP above is (arm when disarmed / step station when following), so there is nothing to
-        // pre-select before a session and no config field was added.
+        // V2.5-Evo - 2026-10-06 - THE HOLD ALWAYS MEANS MANUAL RETURN-TO-ME (owner ruling, option A:
+        // "I want the buggy to always return to me; if it stops working I use the manual one").
+        // From 2026-10-02 this branch was state-aware: FM armed -> toggle auto-return ("A1"/"A0"),
+        // FM not armed -> manual recall. That left the manual recall UNREACHABLE from the magnet in
+        // exactly the state where the rider needs a fallback for auto-return. It now starts the manual
+        // ceremony in every state - FM disarmed, FM armed, FM engaged.
         //
-        // The manual path goes through setRtmArmed(), which keeps the FULL ceremony: it re-checks
-        // rtmEnabledEffective() and gps_en itself, then blinks "rn" and requires a >30% trigger
-        // squeeze held 500 ms before anything is armed. The magnet is another DOORWAY to that
-        // ceremony, never a way past it - and it is the only doorway reachable mid-tow, because
-        // calcFilter() hands the toggle to steering the moment the trigger rises.
-        if (isFmArmed()) fmToggleAutoReturnFromMagnet();
-        else             setRtmArmed();
+        // WHAT HAPPENS TO FOLLOW-ME: nothing on the remote. setRtmArmed() has not disarmed Follow-Me
+        // since 2026-09-18 (RTMState.ino, header of setRtmArmed): fm_armed, the station and the 30 s
+        // keepalive stay as they were. While the ceremony waits for the squeeze, the throttle byte is
+        // forced to 0 (Radio.ino, rtmIsArming()). Once RTM goes ACTIVE (0xF1/1) the buggy makes
+        // Follow-Me YIELD - parked ARMED, separation latch cleared - and it re-engages only by
+        // re-proving separation after the return ends. RTM > FM, the existing precedence, unchanged.
+        //
+        // setRtmArmed() keeps the FULL ceremony: it re-checks rtmEnabledEffective() and gps_en itself,
+        // then blinks "rn" and requires a >30% trigger squeeze held 500 ms before anything is armed.
+        // The magnet is another DOORWAY to that ceremony, never a way past it - and it is the only
+        // doorway reachable mid-tow, because calcFilter() hands the toggle to steering the moment the
+        // trigger rises.
+        //
+        // WHERE A1/A0 (THE AUTO-RETURN TOGGLE) LIVES NOW: inside the "rn" wait. With the trigger
+        // released, a RIGHT tap then a LEFT hold of rtm_hold_duration_s, all inside rtm_arm_window_s,
+        // cancels the arm and flips auto-return for the session (returnGestureCeremonyPoll() and
+        // ceremonyCancelForReturnGesture() in RTMState.ino). That detector does not need the arming
+        // LEFT hold the toggle route starts with: on the magnet route the LEFT toggle is already up,
+        // so it is live from the first poll. fmToggleAutoReturnFromMagnet() is no longer called.
+        setRtmArmed();
       }
       else if (held >= kMagTapMinMs && held <= kMagTapMaxMs)
       {
-        if (rtm_tx_active || rtmIsArming())
+        // V2.5-Evo - 2026-10-06 - M-1 TAP LOCKOUT, checked FIRST so a locked-out tap does nothing at all
+        // (no step, no arm, no buzz). Judged on the arrival edge (mag_hold_start). Wrap-safe: unsigned
+        // subtraction, and an arrival can never precede the step, because the step happens at the removal
+        // of the previous contact and the debounce state is rebuilt just below it.
+        if (mag_step_seen && (uint32_t)(mag_hold_start - mag_last_step_ms) < kMagStepLockoutMs)
+        {
+          Serial.print("MAG [TX] tap ignored: magnet arrived ");
+          Serial.print((uint32_t)(mag_hold_start - mag_last_step_ms));
+          Serial.print(" ms after the last station step (lockout ");
+          Serial.print(kMagStepLockoutMs);
+          Serial.println(" ms)");
+        }
+        else if (rtm_tx_active || rtmIsArming())
         {
           // Return-To-Me owns the buggy right now — never touch Follow-Me underneath it.
         }
@@ -970,7 +1023,13 @@ void runMagGesture()
         {
           // Actively following — the rope is slack, so a station transit is safe. This is the ONLY
           // state in which the magnet is allowed to move the buggy's station.
-          fmStepStationFromMagnet();
+          // V2.5-Evo - 2026-10-06 - M-1: start the lockout only when the station really moved. A silent
+          // no-op tap (already at the only set station) starts nothing.
+          if (fmStepStationFromMagnet())
+          {
+            mag_last_step_ms = millis();
+            mag_step_seen    = true;
+          }
         }
         // else: armed but not following = on the rope. Nothing, and no feedback. See the block above.
       }

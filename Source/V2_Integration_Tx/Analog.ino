@@ -316,6 +316,22 @@ void measBufCalc(void *parameter)
     vTaskDelayUntil(&xLastWakeTime, xFrequency);
   }
 }
+// adsReadConfigReg - V2.5-Evo - 2026-10-07 - P-3: read the ADS1115 config register (pointer 0x01) directly.
+// Same two transactions the library's conversionComplete() makes (write the pointer, read two bytes), but the I2C
+// result is CHECKED: the library's readRegister() is private and ignores failures. Caller must hold i2cMutex.
+// Output: cfg (valid only on true). Returns false on any NACK / short read. Bounded by the Wire timeout.
+static bool adsReadConfigReg(uint16_t &cfg)
+{
+  Wire.beginTransmission((uint8_t)ADS1115_ADDRESS);
+  Wire.write((uint8_t)ADS1X15_REG_POINTER_CONFIG);
+  if (Wire.endTransmission() != 0) return false;
+  if (Wire.requestFrom((uint8_t)ADS1115_ADDRESS, (uint8_t)2) != 2) return false;
+  const uint16_t hi = (uint16_t)Wire.read();   // two statements: the read order must be MSB first
+  const uint16_t lo = (uint16_t)Wire.read();
+  cfg = (uint16_t)((hi << 8) | lo);
+  return true;
+}
+
 //3ms
 // V2.5-Evo - 2026-07-20 - Rex §4.6: entire body wrapped in I2C_LOCK/I2C_UNLOCK — this is the ADS1115
 // half of the shared-bus hardening. ADC scaling/logic is untouched; only the bus access is serialized.
@@ -335,11 +351,12 @@ void measureAndBuffer()
   // config register once (same single transaction conversionComplete() made) and accept the result only if
   // OS = 1 AND the MUX field is the channel this pass expects. A finished conversion on the wrong channel is
   // discarded WITHOUT stamping last_ads_ok_ms (a persistent mismatch therefore still trips the deadline), and
-  // the startADCReading() below asks for the right channel again. A failed read returns 0x01xx (OS = 0, MUX 0),
-  // which is "not finished", as before.
-  const uint16_t ads_cfg  = ads.readRegister(ADS1X15_REG_POINTER_CONFIG);
+  // the startADCReading() below asks for the right channel again. The library's readRegister() is private, so the
+  // register is read directly (adsReadConfigReg()); a failed I2C read counts as "not finished", as before.
+  uint16_t       ads_cfg  = 0;
+  const bool     ads_rd   = adsReadConfigReg(ads_cfg);
   const int      ads_ch   = (last_channel >= 0 && last_channel <= 3) ? last_channel : 0;
-  const bool     ads_done = (ads_cfg & ADS1X15_REG_CONFIG_OS_MASK) != 0;
+  const bool     ads_done = ads_rd && (ads_cfg & ADS1X15_REG_CONFIG_OS_MASK) != 0;
   const bool     ads_mux  = (ads_cfg & ADS1X15_REG_CONFIG_MUX_MASK) == MUX_BY_CHANNEL[ads_ch];
   if (ads_done && ads_mux)
   {

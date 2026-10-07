@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - P-12: the dead-ADS boot line says the input fault holds throttle at 0 (no ?i2c on the TX).
 // V2.5-Evo - 2026-10-07 - P-10: measBufCalc() seeds thr_raw[] with thr_idle before its first pass.
 // V2.5-Evo - 2026-10-07 - P-3: measureAndBuffer() accepts a conversion only if the config register reads OS = 1 AND
 //   its MUX matches the channel this pass expects; a wrong-channel result is discarded and not stamped.
@@ -62,7 +63,9 @@ void startupADS()
   if(!ok)
   {
     Serial.println(" FAILED — continuing anyway (old firmware hung here forever).");
-    Serial.println("  >> Throttle will read ZERO until the ADS1115 answers. Use ?i2c.");
+    // V2.5-Evo - 2026-10-07 - P-12: the old line said "Throttle will read ZERO ... Use ?i2c": a dead ADS does not read
+    // zero (see the C-1 correction above) and the TX has no ?i2c command.
+    Serial.println("  >> Throttle input fault (error 72): throttle held at 0 until the ADS1115 answers.");
     return;
   }
   Serial.println(" Done");

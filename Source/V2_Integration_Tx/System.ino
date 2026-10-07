@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - P-12: the dead-ADC charge-screen comment and lines credit the input fault (error 72), not
+//   g_ads_ok, and no longer point to a ?i2c command the TX does not have.
 // V2.5-Evo - 2026-10-07 - P-2: checkStartupButtons() trusts `thr_scaled > 100` only when every throttle buffer slot is
 //   inside the calibrated band, so one failed read at boot cannot turn the pairing gesture into a config delete.
 // V2.5-Evo - 2026-10-07 - F-6: vibrationTask's final else clears an unknown pattern number so it cannot block the queue.
@@ -836,14 +838,17 @@ void checkCharger()
       //      the failure would silence the tool needed to investigate it.
       //
       // So: leave the charge screen, boot normally, and KEEP SERIAL ON. Throttle is
-      // unaffected by this decision — Analog.ino already fails throttle to zero when
-      // g_ads_ok is false, which is the safe direction.
+      // unaffected by this decision: with the ADC silent no conversion finishes, so the
+      // throttle input fault in Analog.ino (conversion deadline, error 72) holds throttle at
+      // zero. (V2.5-Evo - 2026-10-07 - P-12: this used to credit g_ads_ok, which gates
+      // nothing in the throttle path; and the TX has no ?i2c command - ?printinputs shows the
+      // raw readings.)
       // ============================================================
       Serial.println(" ADC NOT RESPONDING");
       Serial.println("CHG: !! ADS1115 did not answer. Cannot tell charging from not charging.");
       Serial.println("CHG: !! Skipping the charge screen and KEEPING SERIAL ON so this is");
-      Serial.println("CHG: !! diagnosable. Check the I2C bus — run ?i2c. Throttle reads as");
-      Serial.println("CHG: !! zero while the ADC is down, which is the safe direction.");
+      Serial.println("CHG: !! diagnosable. Check the I2C bus (boot log line state, ?printinputs).");
+      Serial.println("CHG: !! Throttle is held at zero (input fault, error 72) while the ADC is down.");
       serialOff = false;
       exitChargeScreen = 1;
       break;

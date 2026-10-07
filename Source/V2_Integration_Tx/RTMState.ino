@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - P-12: comments only - the single-slot queue notes (R-6 header, fmRequestKeepaliveNow(), the
+//   runFmLoop() guard) now say the queue is 2-deep and why the waits are kept.
 // V2.5-Evo - 2026-10-07 - defects b / c: during the RTM arm wait "rn" alternates with the arrow (it was overdrawn every
 //   100 ms); fmDisarm() and fmSilentDisarm() clear the whole R5 row (no leftover C7-C9 pixels). No confStruct change.
 // V2.5-Evo - 2026-10-07 - F-1 / F-7: a Follow-Me fault-stop edge handled during an active return disarms Follow-Me
@@ -24,8 +26,9 @@
 // V2.5-Evo - 2026-10-07 - R-6: runFmLoop() takes the Follow-Me fault-stop edge from fm_fault_latched (set in Radio.ino on
 //   the byte's arrival) instead of comparing telemetry.fm_flags tick to tick, so a fault that rose and fell during the
 //   blocking RTM arm ceremony is still handled: Follow-Me disarms, "St", stop buzz (fmDisarm(false)). The handling
-//   waits while the single-slot burst queue is busy so it can never overwrite a just-queued 0xF1/1. No confStruct
-//   change, sizeof stays 136, SW_VERSION stays 27.
+//   waits while the burst queue is busy (written when the queue was a single slot; it is 2-deep since the H-1 round
+//   and the wait is kept - see runFmLoop()). Since the F-1 round a fault handled during an active return is
+//   deferred instead. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-07 - FM warning-distance haptic REMOVED (owner ruling, minimal-buzz rule): runFmLoop() no longer
 //   queues Pattern 8, and its scheduler state is gone. fm_warn_distance_m itself stays - the R5 proximity bar
 //   uses it as the distance full-scale. No struct change.
@@ -375,11 +378,12 @@ static uint8_t fmEncodeModeByte(uint8_t mode)
 
 // fmRequestKeepaliveNow - ask runFmLoop()'s 30 s 0xF2 keepalive to go out on its next tick.
 // Used after the override changes while FM is armed, so the buggy learns the new value in ~100 ms
-// (or as soon as the single-slot burst queue is free) instead of up to 30 s later. Deliberately
-// NOT a direct queueMetaPacketBurst(): the gesture that sets the override has just queued the
-// 0xF1/0 cancel burst, and a second burst would overwrite it (single slot, see the 2026-09-18
-// keepalive note). The keepalive path already waits for an empty slot. No-op while FM is disarmed
-// (fm_last_sync_ms == 0): the next arm's 0xF2 carries the override anyway.
+// (or as soon as the burst queue is empty) instead of up to 30 s later. Deliberately NOT a direct
+// queueMetaPacketBurst(): the gesture that sets the override has just queued the 0xF1/0 cancel burst.
+// (V2.5-Evo - 2026-10-07 - P-12: this used to say a second burst would OVERWRITE it; that was true of the
+// old single-slot queue. The queue is 2-deep since the H-1 round and never lets an 0xF2 evict an 0xF1, so
+// nothing would be lost now; the keepalive path's wait for an empty queue is simply kept.) No-op while FM
+// is disarmed (fm_last_sync_ms == 0): the next arm's 0xF2 carries the override anyway.
 // Inputs: none. Side effects: rewinds fm_last_sync_ms so the keepalive is due now (never to 0,
 // which the keepalive reads as "disarmed").
 static void fmRequestKeepaliveNow()
@@ -1783,10 +1787,12 @@ void runFmLoop()
   // edge on the byte's arrival (fm_fault_latched); it is handled here however late: the remote disarms
   // Follow-Me, shows "St" and fires the stop buzz through fmDisarm(false) -> vib_stop_pending, exactly as
   // an on-time edge always did. Latched while NOT armed -> simply cleared, as an edge was ignored before.
-  // ONE GUARD: fmDisarm() queues 0xF2/0 into the SINGLE-SLOT burst queue. Handled late, right after a
-  // ceremony that just queued 0xF1/1 (RTM ACTIVE), it would overwrite that burst and the buggy would never
-  // learn RTM is on (the 2026-09-18 keepalive bug). So while a burst is still going out the latch is kept
-  // and retried next tick (~110 ms; a burst drains in ~300 ms), the same rule the keepalive below follows.
+  // ONE GUARD: while a burst is still going out the latch is kept and retried next tick (~110 ms; a burst
+  // drains in ~300 ms), the same rule the keepalive below follows. (V2.5-Evo - 2026-10-07 - P-12: this was
+  // written for the old SINGLE-SLOT queue, where fmDisarm()'s 0xF2/0 would have overwritten a just-queued
+  // 0xF1/1 and the buggy would never have learned RTM was on. The queue is 2-deep now and an 0xF2 can never
+  // evict an 0xF1, so the wait is belt only. A fault handled while a return is ACTIVE no longer reaches this
+  // branch at all - it takes the F-1 deferred path above it.)
   if (fm_fault_latched && !fm_armed)
   {
     fm_fault_latched = false;   // nothing armed on this side to disarm

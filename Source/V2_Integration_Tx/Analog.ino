@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - P-3: measureAndBuffer() accepts a conversion only if the config register reads OS = 1 AND
+//   its MUX matches the channel this pass expects; a wrong-channel result is discarded and not stamped.
 // V2.5-Evo - 2026-10-07 - P-2 / P-11: the plausibility exemption is now (checkCal() running) || (in_setup && locked);
 //   new adsThrBufferPlausible() for checkStartupButtons(). No confStruct change.
 // V2.5-Evo - 2026-10-07 - P-1 / P-5: adsInputFaultNow() (the radio-side deadline check) zeroes only the packet being
@@ -320,7 +322,20 @@ void measureAndBuffer()
   // held low, conversionComplete() reads 0x01xx (bit 15 clear) and is ALWAYS false - the buffer freezes, it is
   // never 0xFFFF - and a getLastConversionResults() that fails after a good poll returns 0x00xx (0..255).
   // The first case is caught by the conversion deadline, the second by the plausibility check below.
-  if (ads.conversionComplete())
+  // V2.5-Evo - 2026-10-07 - P-3: THE BUG - conversionComplete() only looked at the OS bit. If the
+  // startADCReading() that selected this channel failed (no ACK), the chip still held the PREVIOUS channel's
+  // finished conversion with OS = 1, and that result was stored in this channel's slot: a toggle reading in the
+  // throttle slot (an in-band ~2 % blip) or a battery reading there (a false input fault). THE FIX: read the
+  // config register once (same single transaction conversionComplete() made) and accept the result only if
+  // OS = 1 AND the MUX field is the channel this pass expects. A finished conversion on the wrong channel is
+  // discarded WITHOUT stamping last_ads_ok_ms (a persistent mismatch therefore still trips the deadline), and
+  // the startADCReading() below asks for the right channel again. A failed read returns 0x01xx (OS = 0, MUX 0),
+  // which is "not finished", as before.
+  const uint16_t ads_cfg  = ads.readRegister(ADS1X15_REG_POINTER_CONFIG);
+  const int      ads_ch   = (last_channel >= 0 && last_channel <= 3) ? last_channel : 0;
+  const bool     ads_done = (ads_cfg & ADS1X15_REG_CONFIG_OS_MASK) != 0;
+  const bool     ads_mux  = (ads_cfg & ADS1X15_REG_CONFIG_MUX_MASK) == MUX_BY_CHANNEL[ads_ch];
+  if (ads_done && ads_mux)
   {
     last_ads_ok_ms = millis();   // V2.5-Evo - 2026-10-07 - C-1: a conversion finished - the ADC is alive
     if(last_channel == 0)

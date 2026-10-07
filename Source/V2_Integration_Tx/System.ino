@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - F-6: vibrationTask's final else clears an unknown pattern number so it cannot block the queue.
 // V2.5-Evo - 2026-10-07 - SOP-040: comment only - Pattern 5 lost its mag_mode 4 refusal caller ("St" + Pattern 7 now).
 // V2.5-Evo - 2026-10-07 - H-1 (TX part): deepSleep() flushes 0xF1/0 + 0xF2/0 (rtmFmStopFlush(), >= 400 ms) before the
 //   radio is switched off. No confStruct change.
@@ -1243,6 +1244,17 @@ void vibrationTask(void *parameter) {
         if (vib_stop_pending) break;   // a stop outranks a confirm — cut it short
       }
       if (current_vib_pattern == 12) current_vib_pattern = 0;
+    }
+    // V2.5-Evo - 2026-10-07 - F-6: THE BUG - a pattern number with no branch above (a retired 8 or 11, or any
+    // stray value) was never cleared, so it stuck forever and every "only if nothing is playing" cue (arm
+    // confirms, advisories, warnings) was blocked behind it. THE FIX: clear it. The value is read once, and
+    // cleared only if it is NOT a pattern this task plays (1-7, 9, 10, 12) - so a valid pattern that another
+    // task wrote after the checks above ran is left for the next pass, never thrown away.
+    else
+    {
+      uint8_t p = current_vib_pattern;
+      bool known = (p >= 1 && p <= 7) || p == 9 || p == 10 || p == 12;
+      if (p != 0 && !known) current_vib_pattern = 0;
     }
 
     // Sleep briefly to prevent hoarding the CPU

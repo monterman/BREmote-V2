@@ -45,9 +45,15 @@ outputs - the current everyday level-4 record), 109 -> 65 (level 5,
 "everything"). Format 2 (since the M-2 flash, 2026-10-02) adds 3 bytes to the
 base record: 62 -> 33 (L3_V2), 90 -> 53 (L4_V2), 112 -> 67 (L5_V2), and since
 2026-10-06 126 -> 76 (L5_VESC2: level 5 + the second VESC's telemetry, read
-over CAN; -999 / empty = no data or stale). The record layout table (``RECORD_LAYOUTS``) is keyed by
-record size, so a future record size is one new table entry, not a
-rewrite; an unrecognized size decodes the largest known prefix that fits.
+over CAN; -999 / empty = no data or stale). Format 3 (2026-10-06) moves the
+VESC 2 block into the level-4 record: 62 -> 33 (L3, same layout as L3_V2),
+104 -> 62 (L4_V3: level 4 + VESC 2), 126 -> 76 (L5_V3: level 4 + VESC 2 +
+the level-5 block). A format-2 126 B record and a format-3 126 B record are
+the SAME SIZE with DIFFERENT layouts, so layouts are keyed by
+(format_ver, record_size) in ``RECORD_LAYOUTS_BY_FORMAT``, never by size
+alone; an unrecognized size decodes the largest known prefix that fits
+WITHIN THAT FILE'S OWN FORMAT. Device CSVs are told apart by their exact
+header line, which differs for every layout.
 
 Python 3.10+, standard library only.
 """
@@ -66,13 +72,17 @@ from typing import Any, Callable, Optional
 # FILE HEADER - BREmote_V2_Rx.h: LogFileHeader / LOG_FILE_MAGIC / LOG_FILE_FORMAT_VER
 # ============================================================
 LOG_FILE_MAGIC = 0x474C5242          # little-endian bytes on disk read "BRLG"
-LOG_FILE_FORMAT_VER = 2              # current: 2 = the M-2 motor-gate block in the base record
+LOG_FILE_FORMAT_VER = 3              # current: 3 = the VESC 2 block in the level-4 record (2026-10-06)
 # Both are READABLE. 1 is every file written before the M-2 flash (2026-10-02) and 2 is every
 # file after it. The two differ by 3 bytes at the tail of the BASE record, which moves every
 # block above byte 59 - record_size alone cannot express that, which is why the firmware bumped
 # the version rather than relying on the per-file header. Keeping 1 here is what lets every CSV
 # and .log already pulled off a board still parse.
-LOG_FILE_FORMAT_VERS_SUPPORTED = (1, 2)
+# 2026-10-06: 3 is every file written after the VESC-2-at-level-4 flash. The VESC 2 block moved from the
+# tail of the level-5 record into the level-4 record, which moves the level-5 block from byte 90 to 104.
+# The firmware can no longer decode format 1 or 2 on the board (it refuses them in plain English); this
+# tool still reads all three, so every CSV or .log already downloaded keeps working.
+LOG_FILE_FORMAT_VERS_SUPPORTED = (1, 2, 3)
 LOG_FILE_HEADER_FMT = "<IBBH"        # magic u32, format_ver u8, log_level u8, record_size u16
 LOG_FILE_HEADER_SIZE = struct.calcsize(LOG_FILE_HEADER_FMT)
 assert LOG_FILE_HEADER_SIZE == 8
@@ -224,9 +234,10 @@ TIER_ORDER = ["L3", "L4_DIAG", "L4_83", "L4_RAW", "L4", "L5"]
 # never mixes the two formats, so their relative order only matters within each group.
 TIER_ORDER += ["L3_V2", "L4_V2", "L5_V2"]
 TIER_ORDER += ["L5_VESC2"]   # 2026-10-06: level 5 + the VESC 2 block (126 B)
+TIER_ORDER += ["L4_V3", "L5_V3"]   # 2026-10-06: format 3 - VESC 2 in the level-4 record (104 B / 126 B)
 # Tiers that carry the Follow-Me block (decoded gate/state columns) and the level-5 block, by name.
-FM_BLOCK_TIERS = ("L4_83", "L4_RAW", "L4", "L5", "L4_V2", "L5_V2", "L5_VESC2")
-L5_BLOCK_TIERS = ("L5", "L5_V2", "L5_VESC2")
+FM_BLOCK_TIERS = ("L4_83", "L4_RAW", "L4", "L5", "L4_V2", "L5_V2", "L5_VESC2", "L4_V3", "L5_V3")
+L5_BLOCK_TIERS = ("L5", "L5_V2", "L5_VESC2", "L5_V3")
 
 
 # ============================================================
@@ -405,7 +416,8 @@ L5_EXTRA_FIELDS = [
     F("l5_rsvd_takeover_end", "B", csv_prescaled=True, unit="reserved"),
 ]
 
-# ---- VESC 2 block (bytes 112-125) - the 126 B "L5_VESC2" tier, 2026-10-06. ----
+# ---- VESC 2 block. Format 2: bytes 112-125, the 126 B "L5_VESC2" tier. Format 3 (2026-10-06): bytes 90-103,
+#      the tail of the level-4 record ("L4_V3" 104 B, and inside "L5_V3" 126 B). Same fields either way. ----
 # The second motor controller, read by the RX over CAN through VESC 1 (COMM_FORWARD_CAN, 1 Hz).
 # Appended at the TAIL of the largest record, so format_ver stays 2 and the new record_size is
 # what says these columns are present - a 112 B file is still the plain L5_V2 tier.
@@ -486,12 +498,32 @@ LAYOUT_L5_VESC2 = _layout(5, "L5_VESC2",
                           + VESC2_EXTRA_FIELDS,
                           virtual_after=_VIRTUAL_GATE_COLUMNS)
 
-LAYOUT_BY_NAME = {lay["name"]: lay for lay in (LAYOUT_L3, LAYOUT_L4_DIAG, LAYOUT_L4_83, LAYOUT_L4_RAW, LAYOUT_L4, LAYOUT_L5,
-                                               LAYOUT_L3_V2, LAYOUT_L4_V2, LAYOUT_L5_V2, LAYOUT_L5_VESC2)}
+# ---- 2026-10-06: LOG FORMAT 3. The VESC 2 block is the tail of the LEVEL-4 record now (owner: "level 4
+#      should have both VESCs"), and the level-5 block follows it. The level-3 record is unchanged, so a
+#      format-3 62 B file uses LAYOUT_L3_V2 as it is. ----
+LAYOUT_L4_V3 = _layout(4, "L4_V3",
+                       L3_FIELDS_V2 + L4_DIAG_EXTRA_FIELDS + L4_83_EXTRA_FIELDS
+                       + L4_RAW_EXTRA_FIELDS + L4_MOTORS_EXTRA_FIELDS + VESC2_EXTRA_FIELDS,
+                       virtual_after=_VIRTUAL_GATE_COLUMNS)
+LAYOUT_L5_V3 = _layout(5, "L5_V3",
+                       L3_FIELDS_V2 + L4_DIAG_EXTRA_FIELDS + L4_83_EXTRA_FIELDS
+                       + L4_RAW_EXTRA_FIELDS + L4_MOTORS_EXTRA_FIELDS + VESC2_EXTRA_FIELDS
+                       + L5_EXTRA_FIELDS,
+                       virtual_after=_VIRTUAL_GATE_COLUMNS)
 
-# Table-driven: keyed by on-disk record size. A future record (e.g. the steer-takeover branch
-# claiming bit 16 and its own bytes) is one new _layout() call and one new dict entry here.
-RECORD_LAYOUTS: dict[int, dict] = {lay["record_size"]: lay for lay in LAYOUT_BY_NAME.values()}
+LAYOUT_BY_NAME = {lay["name"]: lay for lay in (LAYOUT_L3, LAYOUT_L4_DIAG, LAYOUT_L4_83, LAYOUT_L4_RAW, LAYOUT_L4, LAYOUT_L5,
+                                               LAYOUT_L3_V2, LAYOUT_L4_V2, LAYOUT_L5_V2, LAYOUT_L5_VESC2,
+                                               LAYOUT_L4_V3, LAYOUT_L5_V3)}
+
+# Table-driven, keyed by (format_ver, record_size). 2026-10-06: it was keyed by record size alone, which
+# stopped being enough the day two formats wrote the same size with different layouts (format 2 L5_VESC2
+# and format 3 L5_V3 are both 126 B). A future record is one new _layout() call and one new entry here.
+RECORD_LAYOUTS_BY_FORMAT: dict[int, dict[int, dict]] = {
+    1: {lay["record_size"]: lay for lay in (LAYOUT_L3, LAYOUT_L4_DIAG, LAYOUT_L4_83, LAYOUT_L4_RAW, LAYOUT_L4, LAYOUT_L5)},
+    2: {lay["record_size"]: lay for lay in (LAYOUT_L3_V2, LAYOUT_L4_V2, LAYOUT_L5_V2, LAYOUT_L5_VESC2)},
+    3: {lay["record_size"]: lay for lay in (LAYOUT_L3_V2, LAYOUT_L4_V3, LAYOUT_L5_V3)},
+}
+assert set(RECORD_LAYOUTS_BY_FORMAT) == set(LOG_FILE_FORMAT_VERS_SUPPORTED)
 
 # BREmote_V2_Rx.h LOG_CSV_HEADER_L3 as of the M-2 change, copied verbatim. If the firmware adds a
 # base column and this reader is not updated, this assert fires on import rather than letting a
@@ -509,7 +541,10 @@ assert LAYOUT_L3_V2["csv_header"] == _FW_CSV_HEADER_L3_V2, (
 )
 # 59/65/83/85/87/109 = format_ver 1 (pre-2026-10-02). 62/90/112 = format_ver 2, the M-2 base.
 # 126 = format_ver 2 + the VESC 2 block at the tail of level 5 (2026-10-06).
-assert RECORD_LAYOUTS.keys() == {59, 65, 83, 85, 87, 109, 62, 90, 112, 126}, sorted(RECORD_LAYOUTS)
+# 62/104/126 = format_ver 3: VESC 2 in the level-4 record (2026-10-06).
+assert RECORD_LAYOUTS_BY_FORMAT[1].keys() == {59, 65, 83, 85, 87, 109}, sorted(RECORD_LAYOUTS_BY_FORMAT[1])
+assert RECORD_LAYOUTS_BY_FORMAT[2].keys() == {62, 90, 112, 126}, sorted(RECORD_LAYOUTS_BY_FORMAT[2])
+assert RECORD_LAYOUTS_BY_FORMAT[3].keys() == {62, 104, 126}, sorted(RECORD_LAYOUTS_BY_FORMAT[3])
 
 # BREmote_V2_Rx.h LOG_CSV_HEADER_L5_VESC2 is LOG_CSV_HEADER_L5 plus this suffix, copied verbatim.
 # (A test also reads the macro straight out of the firmware header, so the two cannot drift.)
@@ -519,6 +554,11 @@ _FW_CSV_SUFFIX_VESC2 = (
 )
 assert LAYOUT_L5_VESC2["csv_header"] == LAYOUT_L5_V2["csv_header"] + _FW_CSV_SUFFIX_VESC2, (
     "generated VESC 2 header has drifted from the firmware macro"
+)
+# Format 3: LOG_CSV_HEADER_L4 is the 90 B column set (LOG_CSV_HEADER_L4_MOTORS) plus the same suffix, and
+# LOG_CSV_HEADER_L5 is that plus the level-5 columns. (test_bremote_log.py expands the real macros.)
+assert LAYOUT_L4_V3["csv_header"] == LAYOUT_L4_V2["csv_header"] + _FW_CSV_SUFFIX_VESC2, (
+    "generated format-3 level-4 header has drifted from the firmware macro"
 )
 
 # The six CSV headers the firmware itself can print (BREmote_V2_Rx.h LOG_CSV_HEADER_L3 /
@@ -561,7 +601,13 @@ CSV_HEADER_TO_LAYOUT = {
     LAYOUT_L4_V2["csv_header"]: LAYOUT_L4_V2,
     LAYOUT_L5_V2["csv_header"]: LAYOUT_L5_V2,
     LAYOUT_L5_VESC2["csv_header"]: LAYOUT_L5_VESC2,   # 2026-10-06
+    # 2026-10-06 - format 3. Its level-3 header is LAYOUT_L3_V2's (same record, same columns), already above.
+    LAYOUT_L4_V3["csv_header"]: LAYOUT_L4_V3,
+    LAYOUT_L5_V3["csv_header"]: LAYOUT_L5_V3,
 }
+# Every layout must be reachable from a DISTINCT header line - the header is the only thing a CSV carries.
+# (L3_V2 serves formats 2 and 3, so it is one entry; 12 layouts -> 12 headers.)
+assert len(CSV_HEADER_TO_LAYOUT) == len(LAYOUT_BY_NAME), "two layouts print the same CSV header"
 
 
 # ============================================================
@@ -695,29 +741,35 @@ class LogFormatError(Exception):
     must exit non-zero for."""
 
 
-def _pick_layout_for_record_size(record_size: int) -> tuple[dict, int]:
-    """Return (layout, decode_size). Exact match uses the layout as-is. An unrecognized
-    record_size decodes the largest known layout that fits inside it (matching the firmware's
-    own logCsvHeaderFor() range-tiering: anything between two known sizes reads as the smaller
-    tier, extra bytes ignored), with a warning printed once. Smaller than the smallest known
-    layout cannot be decoded at all."""
-    layout = RECORD_LAYOUTS.get(record_size)
+def _pick_layout_for_record_size(record_size: int, format_ver: int = LOG_FILE_FORMAT_VER) -> tuple[dict, int]:
+    """Return (layout, decode_size) for a record of this size IN THIS FILE'S FORMAT. Exact match uses
+    the layout as-is. An unrecognized record_size decodes the largest layout OF THE SAME FORMAT that
+    fits inside it (matching the firmware's own logCsvHeaderFor() range-tiering: anything between two
+    known sizes reads as the smaller tier, extra bytes ignored), with a warning printed once. Smaller
+    than that format's smallest record cannot be decoded at all.
+    2026-10-06: the fallback used to search every format's sizes, so an odd-sized format-1 file could
+    be decoded with a format-2 layout (the base record differs by 3 bytes) - now it never leaves the
+    file's own format."""
+    table = RECORD_LAYOUTS_BY_FORMAT.get(format_ver)
+    if table is None:
+        raise LogFormatError(f"log format_ver={format_ver} is not one this tool knows.")
+    layout = table.get(record_size)
     if layout is not None:
         return layout, record_size
 
-    known_sizes = sorted(RECORD_LAYOUTS)
+    known_sizes = sorted(table)
     smaller_or_equal = [s for s in known_sizes if s <= record_size]
     if not smaller_or_equal:
         raise LogFormatError(
-            f"record_size={record_size} is smaller than the smallest known record "
-            f"({known_sizes[0]} bytes, {RECORD_LAYOUTS[known_sizes[0]]['name']}) - cannot decode."
+            f"record_size={record_size} is smaller than the smallest known format-{format_ver} record "
+            f"({known_sizes[0]} bytes, {table[known_sizes[0]]['name']}) - cannot decode."
         )
     chosen_size = smaller_or_equal[-1]
-    chosen = RECORD_LAYOUTS[chosen_size]
+    chosen = table[chosen_size]
     print(
-        f"warning: unrecognized record_size={record_size}; decoding the known {chosen['name']} "
-        f"prefix ({chosen_size} bytes) and ignoring the trailing {record_size - chosen_size} "
-        f"byte(s). Add a new RECORD_LAYOUTS entry once this record size is documented.",
+        f"warning: unrecognized format-{format_ver} record_size={record_size}; decoding the known "
+        f"{chosen['name']} prefix ({chosen_size} bytes) and ignoring the trailing {record_size - chosen_size} "
+        f"byte(s). Add a new RECORD_LAYOUTS_BY_FORMAT entry once this record size is documented.",
         file=sys.stderr,
     )
     return chosen, chosen_size
@@ -741,7 +793,7 @@ def iter_binary_records(path: str):
                 f"format_ver={' and '.join(str(v) for v in LOG_FILE_FORMAT_VERS_SUPPORTED)}."
             )
 
-        layout, decode_size = _pick_layout_for_record_size(record_size)
+        layout, decode_size = _pick_layout_for_record_size(record_size, format_ver)
 
         while True:
             rec_bytes = f.read(record_size)
@@ -758,8 +810,8 @@ def iter_csv_records(path: str):
         if layout is None:
             raise LogFormatError(
                 f"{path}: first line does not match any known BREmote log CSV header "
-                "(L3 / L4_DIAG / L4_83 / L4_RAW / L4 / L5). Not a device log CSV, or from a "
-                "different firmware era."
+                "(log formats 1, 2 and 3: L3 / L4_DIAG / L4_83 / L4_RAW / L4 / L5 and their V2 / V3 "
+                "variants). Not a device log CSV, or from a firmware newer than this tool."
             )
 
         expected_cols = len(layout["csv_header_cols"])

@@ -82,12 +82,29 @@ python bremote_log.py device_download.csv --timeline --from 120 --to 180
   | 87 | `L4` | 51 | + the two differential-mixer motor commands — **today's everyday level-4 record** |
   | 109 | `L5` | 65 | + the "everything" block: rider lat/lng and fix age, classic-RTM `rtm_phase`, align cap/influence/mixer influence, auto-return override, `fm_flags_sent`, keepalive age |
 
-  Any other record size decodes the largest known layout that fits inside it and warns once about
+  Those six are **log format 1** (files written before 2026-10-02). Two later formats exist, and the
+  header's `format_ver` byte picks between them - **never the record size alone**, because format 2
+  and format 3 both write a 126-byte record with different contents:
+
+  | Format | Bytes | Tier | Columns | What it is |
+  |---|---|---|---|---|
+  | 2 | 62 / 90 / 112 | `L3_V2` / `L4_V2` / `L5_V2` | 33 / 53 / 67 | the format-1 tiers plus the 3-byte M-2 motor-gate block in the base record (2026-10-02) |
+  | 2 | 126 | `L5_VESC2` | 76 | level 5 + the second VESC's telemetry at the tail (2026-10-06, first build) |
+  | 3 | 62 | `L3_V2` | 33 | level 3, unchanged |
+  | 3 | 104 | `L4_V3` | 62 | level 4 + the second VESC's telemetry (2026-10-06: both VESCs at level 4) |
+  | 3 | 126 | `L5_V3` | 76 | level 4 (with VESC 2) + the level-5 block |
+
+  **Firmware that writes format 3 cannot turn format-1 or format-2 files into CSV on the board** - it
+  refuses them with a plain-English message. Download logs before flashing. This tool still reads all
+  three formats, binary or CSV.
+
+  Any other record size decodes the largest known layout **of the same format** that fits inside it and warns once about
   the ignored trailing bytes — the same range-tiering `logCsvHeaderFor()` uses in the firmware, so
   a reader here and the firmware's own CSV path always agree on which columns a given file gets.
-  A future firmware that tail-appends new fields needs one new entry in `RECORD_LAYOUTS`, not a
+  A future firmware that tail-appends new fields needs one new entry in `RECORD_LAYOUTS_BY_FORMAT`, not a
   rewrite.
-- **Device CSV** — the tool matches the first line exactly against the six headers the firmware
+- **Device CSV** — every layout above prints a different header line, so the CSV header alone picks
+  the layout, whatever the format. For format 1, the tool matches the first line exactly against the six headers the firmware
   can emit (`LOG_CSV_HEADER_L3` / `_L4_DIAG` / `_L4_83` / `_L4_RAW` / `_L4` / `_L5` in
   `BREmote_V2_Rx.h`) to pick the same six layouts. The column order in that header **is** the
   input contract; a test in `test_bremote_log.py` asserts this tool's own field table still

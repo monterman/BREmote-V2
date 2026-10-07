@@ -12,6 +12,7 @@ or, from this directory:
 from __future__ import annotations
 
 import os
+import re
 import struct
 import sys
 import tempfile
@@ -41,9 +42,12 @@ def pack_record(layout: dict, raw_overrides: dict) -> bytes:
     return struct.pack(layout["struct_fmt"], *values)
 
 
-def write_binary_log(path: str, level: int, record_size: int, records: list[bytes]) -> None:
+def write_binary_log(path: str, level: int, record_size: int, records: list[bytes],
+                     format_ver: int = bl.LOG_FILE_FORMAT_VER) -> None:
+    """2026-10-06: format_ver is explicit now. The decoder picks a layout by (format_ver, record_size), so a
+    test that builds a format-1 or format-2 record must say so - exactly as a real file's header does."""
     with open(path, "wb") as f:
-        f.write(struct.pack(bl.LOG_FILE_HEADER_FMT, bl.LOG_FILE_MAGIC, bl.LOG_FILE_FORMAT_VER, level, record_size))
+        f.write(struct.pack(bl.LOG_FILE_HEADER_FMT, bl.LOG_FILE_MAGIC, format_ver, level, record_size))
         for rec in records:
             f.write(rec)
 
@@ -237,7 +241,7 @@ class TestBinaryDecodeRoundtrip(unittest.TestCase):
         rec_bytes = pack_record(bl.LAYOUT_L4_83, raw)
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "test.log")
-            write_binary_log(path, 4, 83, [rec_bytes])
+            write_binary_log(path, 4, 83, [rec_bytes], format_ver=1)
             records = list(bl.iter_binary_records(path))
         self.assertEqual(len(records), 1)
         rec = records[0]
@@ -257,7 +261,7 @@ class TestBinaryDecodeRoundtrip(unittest.TestCase):
         rec_bytes = pack_record(bl.LAYOUT_L4, raw)
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "test87.log")
-            write_binary_log(path, 4, 87, [rec_bytes])
+            write_binary_log(path, 4, 87, [rec_bytes], format_ver=1)
             records = list(bl.iter_binary_records(path))
         self.assertEqual(len(records), 1)
         rec = records[0]
@@ -276,7 +280,7 @@ class TestBinaryDecodeRoundtrip(unittest.TestCase):
         rec_bytes = pack_record(bl.LAYOUT_L5, raw)
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "test109.log")
-            write_binary_log(path, 5, 109, [rec_bytes])
+            write_binary_log(path, 5, 109, [rec_bytes], format_ver=1)
             records = list(bl.iter_binary_records(path))
         self.assertEqual(len(records), 1)
         rec = records[0]
@@ -305,7 +309,7 @@ class TestBinaryDecodeRoundtrip(unittest.TestCase):
         rec_bytes = pack_record(bl.LAYOUT_L4, raw) + b"\x00"  # 1 trailing byte, size 88
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "future.log")
-            write_binary_log(path, 4, 88, [rec_bytes])
+            write_binary_log(path, 4, 88, [rec_bytes], format_ver=1)
             records = list(bl.iter_binary_records(path))
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["fm_state_name"], "HOLD")
@@ -414,7 +418,7 @@ class TestTimelineScenario(unittest.TestCase):
         rec_bytes = [pack_record(bl.LAYOUT_L4, raw) for raw in raws]
         cls.tmpdir = tempfile.TemporaryDirectory()
         cls.path = os.path.join(cls.tmpdir.name, "scenario.log")
-        write_binary_log(cls.path, 4, 87, rec_bytes)
+        write_binary_log(cls.path, 4, 87, rec_bytes, format_ver=1)
         cls.records = list(bl.iter_binary_records(cls.path))
         cls.timeline = bl.generate_timeline(cls.records)
 
@@ -508,7 +512,7 @@ class TestReturnEpisodeSteeredExitWithBoost(unittest.TestCase):
         rec_bytes = [pack_record(bl.LAYOUT_L4, raw) for raw in raws]
         cls.tmpdir = tempfile.TemporaryDirectory()
         cls.path = os.path.join(cls.tmpdir.name, "steered.log")
-        write_binary_log(cls.path, 4, 87, rec_bytes)
+        write_binary_log(cls.path, 4, 87, rec_bytes, format_ver=1)
         cls.records = list(bl.iter_binary_records(cls.path))
         cls.timeline = bl.generate_timeline(cls.records)
 
@@ -549,7 +553,7 @@ class TestRtmPhaseTimeline(unittest.TestCase):
         rec_bytes = [pack_record(bl.LAYOUT_L5, raw) for raw in raws]
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "phase.log")
-            write_binary_log(path, 5, 109, rec_bytes)
+            write_binary_log(path, 5, 109, rec_bytes, format_ver=1)
             records = list(bl.iter_binary_records(path))
             timeline = bl.generate_timeline(records)
         self.assertTrue(any("RTM phase: align -> run" in ln for ln in timeline))
@@ -565,7 +569,7 @@ class TestExpandedCsvOutput(unittest.TestCase):
         rec_bytes = pack_record(bl.LAYOUT_L4_83, raw)
         with tempfile.TemporaryDirectory() as tmp:
             log_path = os.path.join(tmp, "one.log")
-            write_binary_log(log_path, 4, 83, [rec_bytes])
+            write_binary_log(log_path, 4, 83, [rec_bytes], format_ver=1)
             records = list(bl.iter_binary_records(log_path))
             out_path = os.path.join(tmp, "expanded.csv")
             bl.write_expanded_csv(records, out_path)
@@ -592,7 +596,7 @@ class TestExpandedCsvOutput(unittest.TestCase):
         rec_bytes = pack_record(bl.LAYOUT_L5, raw)
         with tempfile.TemporaryDirectory() as tmp:
             log_path = os.path.join(tmp, "l5.log")
-            write_binary_log(log_path, 5, 109, [rec_bytes])
+            write_binary_log(log_path, 5, 109, [rec_bytes], format_ver=1)
             records = list(bl.iter_binary_records(log_path))
             out_path = os.path.join(tmp, "expanded_l5.csv")
             bl.write_expanded_csv(records, out_path)
@@ -615,7 +619,7 @@ class TestExpandedCsvOutput(unittest.TestCase):
             rec_bytes = pack_record(layout, raw)
             with tempfile.TemporaryDirectory() as tmp:
                 log_path = os.path.join(tmp, "v2.log")
-                write_binary_log(log_path, level, layout["record_size"], [rec_bytes])
+                write_binary_log(log_path, level, layout["record_size"], [rec_bytes], format_ver=2)
                 records = list(bl.iter_binary_records(log_path))
                 out_path = os.path.join(tmp, "expanded_v2.csv")
                 bl.write_expanded_csv(records, out_path)
@@ -674,22 +678,18 @@ class TestVesc2Tier(unittest.TestCase):
     def test_firmware_header_matches(self):
         # Read the macro and the static_asserts straight out of the firmware header, so the reader
         # cannot drift from what the RX actually writes.
-        with open(_FW_HEADER_PATH, "r", encoding="utf-8") as f:
-            text = f.read()
-        prefix = '#define LOG_CSV_HEADER_L5_VESC2 LOG_CSV_HEADER_L5 "'
-        start = text.index(prefix) + len(prefix)
-        suffix = text[start:text.index('"', start)]
-        self.assertEqual(bl.LAYOUT_L5_V2["csv_header"] + suffix, bl.LAYOUT_L5_VESC2["csv_header"])
-        self.assertIn("static_assert(sizeof(VescLogDataL5) == 126,", text)
-        self.assertIn("static_assert(offsetof(VescLogDataL5, vesc2_age_ms) == 112,", text)
-        self.assertIn("#define LOG_FILE_FORMAT_VER  2 ", text)   # tail append: format version NOT bumped
+        self.assertEqual(bl.LAYOUT_L5_V2["csv_header"] + bl._FW_CSV_SUFFIX_VESC2, bl.LAYOUT_L5_VESC2["csv_header"])
+        self.assertEqual(bl.LAYOUT_L5_V2["record_size"] + 14, bl.LAYOUT_L5_VESC2["record_size"])
+        # 2026-10-06: LOG FORMAT 3 moved this block into the level-4 record, so the firmware no longer
+        # writes this layout; the macro above went with it. This test now pins the FORMAT-2 history the
+        # reader must keep decoding: 112 B + this 9-column suffix, which the reader's own constant holds.
 
     def test_fresh_binary_record_decodes(self):
         rec_bytes = pack_record(bl.LAYOUT_L5_VESC2, dict(_VESC2_FRESH_RAW, rider_fix_seq=7))
         self.assertEqual(len(rec_bytes), 126)
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "v2fresh.log")
-            write_binary_log(path, 5, 126, [rec_bytes])
+            write_binary_log(path, 5, 126, [rec_bytes], format_ver=2)
             rec = list(bl.iter_binary_records(path))[0]
         self.assertEqual(rec["_layout_name"], "L5_VESC2")
         self.assertEqual(rec["rider_fix_seq"], 7)                 # level-5 block unaffected
@@ -708,7 +708,7 @@ class TestVesc2Tier(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "v2stale.log")
             write_binary_log(path, 5, 126, [pack_record(bl.LAYOUT_L5_VESC2, _VESC2_STALE_RAW),
-                                            pack_record(bl.LAYOUT_L5_VESC2, never)])
+                                            pack_record(bl.LAYOUT_L5_VESC2, never)], format_ver=2)
             stale, nev = list(bl.iter_binary_records(path))
         self.assertEqual(stale["vesc2_age_ms"], 3400)             # the real age survives
         self.assertIsNone(nev["vesc2_age_ms"])
@@ -720,7 +720,7 @@ class TestVesc2Tier(unittest.TestCase):
         rec_bytes = pack_record(bl.LAYOUT_L5_V2, {"rtm_phase": 1, "rider_fix_seq": 3})
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "old112.log")
-            write_binary_log(path, 5, 112, [rec_bytes])
+            write_binary_log(path, 5, 112, [rec_bytes], format_ver=2)
             rec = list(bl.iter_binary_records(path))[0]
         self.assertEqual(rec["_layout_name"], "L5_V2")
         self.assertEqual(rec["rtm_phase_name"], "align")
@@ -752,7 +752,7 @@ class TestVesc2Tier(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             log_path = os.path.join(tmp, "v2.log")
             write_binary_log(log_path, 5, 126, [pack_record(bl.LAYOUT_L5_VESC2, dict(_VESC2_FRESH_RAW, rtm_phase=2)),
-                                                pack_record(bl.LAYOUT_L5_VESC2, _VESC2_STALE_RAW)])
+                                                pack_record(bl.LAYOUT_L5_VESC2, _VESC2_STALE_RAW)], format_ver=2)
             records = list(bl.iter_binary_records(log_path))
             out_path = os.path.join(tmp, "expanded.csv")
             bl.write_expanded_csv(records, out_path)
@@ -765,6 +765,185 @@ class TestVesc2Tier(unittest.TestCase):
         self.assertEqual(row1["vesc2_ERPM"], "-12000")
         self.assertEqual(row2["vesc2_age_ms"], "3400")
         self.assertEqual(row2["vesc2_voltage_V"], "")              # N/A -> empty cell, never a number
+
+
+# ============================================================
+# LOG FORMAT 3 (2026-10-06): the VESC 2 block moved into the level-4 record (owner ruling: both VESCs at
+# level 4). Format 3 writes 62 / 104 / 126 B; the 126 B size is shared with format 2's L5_VESC2 but the
+# layout differs, so every lookup is by (format_ver, record_size). Formats 1 and 2 must keep decoding.
+# ============================================================
+
+def _expand_fw_csv_macro(text: str, name: str) -> str:
+    """Expand a LOG_CSV_HEADER_* macro straight out of BREmote_V2_Rx.h: each #define is a run of other
+    macro names and string literals, concatenated - the same thing the C preprocessor does."""
+    defs = {}
+    for m in re.finditer(r'^#define (LOG_CSV_HEADER_\w+) (.+)$', text, re.M):
+        defs[m.group(1)] = m.group(2).strip()
+    out = []
+    for tok in re.findall(r'"[^"]*"|\w+', defs[name]):
+        out.append(tok[1:-1] if tok.startswith('"') else _expand_fw_csv_macro(text, tok))
+    return "".join(out)
+
+
+class TestLogFormat3(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        with open(_FW_HEADER_PATH, "r", encoding="utf-8") as f:
+            cls.fw = f.read()
+
+    def test_firmware_constants_and_static_asserts(self):
+        self.assertEqual(bl.LOG_FILE_FORMAT_VER, 3)
+        self.assertIn("#define LOG_FILE_FORMAT_VER  3 ", self.fw)
+        self.assertIn("static_assert(sizeof(VescLogDataL4) == 104,", self.fw)
+        self.assertIn("static_assert(offsetof(VescLogDataL4, vesc2_age_ms) == 90,", self.fw)
+        self.assertIn("static_assert(sizeof(VescLogDataL5) == 126,", self.fw)
+        self.assertIn("static_assert(offsetof(VescLogDataL5, rider_lat) == 104,", self.fw)
+        self.assertEqual(bl.LAYOUT_L4_V3["record_size"], 104)
+        self.assertEqual(bl.LAYOUT_L5_V3["record_size"], 126)
+        self.assertEqual(bl.LAYOUT_L3_V2["record_size"], 62)
+
+    def test_firmware_csv_macros_expand_to_the_generated_headers(self):
+        # The real macros, expanded here, against this tool's generated headers - all three format-3 tiers.
+        self.assertEqual(_expand_fw_csv_macro(self.fw, "LOG_CSV_HEADER_L3"), bl.LAYOUT_L3_V2["csv_header"])
+        self.assertEqual(_expand_fw_csv_macro(self.fw, "LOG_CSV_HEADER_L4_MOTORS"), bl.LAYOUT_L4_V2["csv_header"])
+        self.assertEqual(_expand_fw_csv_macro(self.fw, "LOG_CSV_HEADER_L4"), bl.LAYOUT_L4_V3["csv_header"])
+        self.assertEqual(_expand_fw_csv_macro(self.fw, "LOG_CSV_HEADER_L5"), bl.LAYOUT_L5_V3["csv_header"])
+        self.assertEqual(len(bl.LAYOUT_L4_V3["csv_header_cols"]), 62)
+        self.assertEqual(len(bl.LAYOUT_L5_V3["csv_header_cols"]), 76)
+
+    def test_level4_record_carries_vesc2(self):
+        raw = dict(_VESC2_FRESH_RAW, fm_state=2, motor0_cmd=30, motor_gate_open=1)
+        rec_bytes = pack_record(bl.LAYOUT_L4_V3, raw)
+        self.assertEqual(len(rec_bytes), 104)
+        self.assertEqual(rec_bytes[90:92], struct.pack("<H", 412))     # VESC 2 age at byte 90
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "f3_l4.log")
+            write_binary_log(path, 4, 104, [rec_bytes], format_ver=3)
+            rec = list(bl.iter_binary_records(path))[0]
+        self.assertEqual(rec["_layout_name"], "L4_V3")
+        self.assertEqual(rec["fm_state_name"], "ACTIVE")
+        self.assertEqual(rec["motor0_cmd"], 30)
+        self.assertEqual(rec["motor_gate_open"], 1)
+        self.assertEqual(rec["vesc2_age_ms"], 412)
+        self.assertAlmostEqual(rec["vesc2_motor_current_A"], 12.34, places=3)
+        self.assertAlmostEqual(rec["vesc2_ERPM"], -12000, places=3)
+        self.assertNotIn("rider_lat", rec)
+
+    def test_level5_record_carries_vesc2_then_level5_block(self):
+        raw = dict(_VESC2_FRESH_RAW, rider_fix_seq=7, rtm_phase=1, rider_lat=41.5)
+        rec_bytes = pack_record(bl.LAYOUT_L5_V3, raw)
+        self.assertEqual(len(rec_bytes), 126)
+        self.assertEqual(rec_bytes[104:108], struct.pack("<f", 41.5))  # level-5 block at byte 104
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "f3_l5.log")
+            write_binary_log(path, 5, 126, [rec_bytes], format_ver=3)
+            rec = list(bl.iter_binary_records(path))[0]
+        self.assertEqual(rec["_layout_name"], "L5_V3")
+        self.assertEqual(rec["vesc2_age_ms"], 412)
+        self.assertAlmostEqual(rec["vesc2_voltage_V"], 50.2, places=3)
+        self.assertEqual(rec["rider_fix_seq"], 7)
+        self.assertEqual(rec["rtm_phase_name"], "align")
+        self.assertAlmostEqual(rec["rider_lat"], 41.5, places=5)
+
+    def test_same_126_bytes_are_read_by_the_files_own_format(self):
+        # The heart of the bump: one 126 B record size, two layouts. The header's format_ver decides.
+        f3 = pack_record(bl.LAYOUT_L5_V3, dict(_VESC2_FRESH_RAW, rider_fix_seq=7))
+        f2 = pack_record(bl.LAYOUT_L5_VESC2, dict(_VESC2_FRESH_RAW, rider_fix_seq=7))
+        self.assertNotEqual(f2, f3)
+        with tempfile.TemporaryDirectory() as tmp:
+            p3 = os.path.join(tmp, "f3.log")
+            p2 = os.path.join(tmp, "f2.log")
+            write_binary_log(p3, 5, 126, [f3], format_ver=3)
+            write_binary_log(p2, 5, 126, [f2], format_ver=2)
+            r3 = list(bl.iter_binary_records(p3))[0]
+            r2 = list(bl.iter_binary_records(p2))[0]
+        self.assertEqual(r3["_layout_name"], "L5_V3")
+        self.assertEqual(r2["_layout_name"], "L5_VESC2")
+        for rec in (r2, r3):                                         # both decode the same truth
+            self.assertEqual(rec["rider_fix_seq"], 7)
+            self.assertEqual(rec["vesc2_age_ms"], 412)
+            self.assertAlmostEqual(rec["vesc2_battery_current_A"], -5.67, places=3)
+
+    def test_old_format_logs_of_every_size_still_decode(self):
+        # Everything a rider may already have downloaded: format 1 (59/65/83/85/87/109) and format 2
+        # (62/90/112/126). Each must decode with its own layout, not a format-3 one.
+        cases = [(1, lay) for lay in bl.RECORD_LAYOUTS_BY_FORMAT[1].values()] + \
+                [(2, lay) for lay in bl.RECORD_LAYOUTS_BY_FORMAT[2].values()]
+        self.assertEqual(len(cases), 10)
+        for fv, lay in cases:
+            with tempfile.TemporaryDirectory() as tmp:
+                path = os.path.join(tmp, "old.log")
+                write_binary_log(path, lay["level"], lay["record_size"], [pack_record(lay, {"timestamp_ms": 5})],
+                                 format_ver=fv)
+                rec = list(bl.iter_binary_records(path))[0]
+            self.assertEqual(rec["_layout_name"], lay["name"], (fv, lay["record_size"]))
+            self.assertEqual(rec["timestamp_ms"], 5)
+
+    def test_odd_size_falls_back_within_the_files_own_format(self):
+        # 110 B: format 3 -> L4_V3 (104), format 2 -> L4_V2 (90), format 1 -> L5 (109). Never across formats.
+        for fv, want, lay in ((3, "L4_V3", bl.LAYOUT_L4_V3), (2, "L4_V2", bl.LAYOUT_L4_V2), (1, "L5", bl.LAYOUT_L5)):
+            rec_bytes = pack_record(lay, {"fm_state": 3}) + b"\x00" * (110 - lay["record_size"])
+            with tempfile.TemporaryDirectory() as tmp:
+                path = os.path.join(tmp, "odd.log")
+                write_binary_log(path, 4, 110, [rec_bytes], format_ver=fv)
+                rec = list(bl.iter_binary_records(path))[0]
+            self.assertEqual(rec["_layout_name"], want, fv)
+            self.assertEqual(rec["fm_state_name"], "HOLD", fv)
+
+    def test_unknown_format_is_a_clear_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "f4.log")
+            write_binary_log(path, 4, 104, [pack_record(bl.LAYOUT_L4_V3, {})], format_ver=4)
+            with self.assertRaises(bl.LogFormatError) as ctx:
+                list(bl.iter_binary_records(path))
+        self.assertIn("format_ver=4", str(ctx.exception))
+
+    def test_cli_exits_nonzero_with_message_on_unknown_format(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "f9.log")
+            write_binary_log(path, 4, 104, [pack_record(bl.LAYOUT_L4_V3, {})], format_ver=9)
+            self.assertEqual(bl.main([path, "--summary"]), 1)
+
+    def test_device_csv_format3_and_older_headers_are_all_recognised(self):
+        # Format-3 CSVs (the new L4 and L5 headers) and every format-2 CSV header a rider may hold.
+        for lay in (bl.LAYOUT_L3_V2, bl.LAYOUT_L4_V2, bl.LAYOUT_L5_V2, bl.LAYOUT_L5_VESC2, bl.LAYOUT_L4_V3, bl.LAYOUT_L5_V3):
+            self.assertIs(bl.CSV_HEADER_TO_LAYOUT[lay["csv_header"]], lay, lay["name"])
+        # A format-3 level-4 CSV: VESC 2 fresh on row 1, never on row 2.
+        cols = bl.LAYOUT_L4_V3["csv_header_cols"]
+        base = ["0"] * (len(cols) - 9)
+        fresh = base + ["412", "12.34", "-5.67", "45", "50.2", "-12000", "31", "28", "0"]
+        never = base + ["-999", "-999.00", "-999.00", "-999", "-999.0", "-999", "-999", "-999", "-999"]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "f3_l4.csv")
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                f.write(bl.LAYOUT_L4_V3["csv_header"] + "\n" + ",".join(fresh) + "\n" + ",".join(never) + "\n")
+            r_fresh, r_never = list(bl.iter_csv_records(path))
+        self.assertEqual(r_fresh["_layout_name"], "L4_V3")
+        self.assertAlmostEqual(r_fresh["vesc2_motor_current_A"], 12.34, places=3)
+        self.assertEqual(r_fresh["vesc2_fault_code"], 0)
+        for f in bl.VESC2_EXTRA_FIELDS:
+            self.assertIsNone(r_never[f["name"]], f["name"])
+
+    def test_expanded_csv_for_format3_tiers(self):
+        for lay, level in ((bl.LAYOUT_L4_V3, 4), (bl.LAYOUT_L5_V3, 5)):
+            raw = dict(_VESC2_FRESH_RAW, fm_state=2)
+            if level == 5:
+                raw["rtm_phase"] = 2
+            with tempfile.TemporaryDirectory() as tmp:
+                log_path = os.path.join(tmp, "f3.log")
+                write_binary_log(log_path, level, lay["record_size"], [pack_record(lay, raw)], format_ver=3)
+                records = list(bl.iter_binary_records(log_path))
+                out_path = os.path.join(tmp, "f3.csv")
+                bl.write_expanded_csv(records, out_path)
+                with open(out_path, "r", encoding="utf-8") as f:
+                    header = f.readline().strip().split(",")
+                    row = dict(zip(header, f.readline().strip().split(",")))
+            self.assertEqual(row["fm_state_name"], "ACTIVE", lay["name"])
+            self.assertEqual(row["vesc2_voltage_V"], "50.2", lay["name"])
+            if level == 5:
+                self.assertEqual(row["rtm_phase_name"], "run")
+            else:
+                self.assertNotIn("rtm_phase_name", row)
 
 
 if __name__ == "__main__":

@@ -138,6 +138,7 @@ FM_RETURN_REASON_NAMES = {
     9: "RETURN fault -> STOPPING",
     10: "RETURN / candidate ended - Follow-Me left or yielded",
     11: "RETURN cancelled - rider steered",
+    12: "RETURN / candidate cancelled - remote switched off and on",   # 2026-10-07, S-8 boot ID
 }
 
 # RTMState.ino: the classic-RTM rtm_phase codes copied into VescLogDataL5.rtm_phase (level 5

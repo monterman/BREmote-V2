@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - S-8 + H-1 + M-1 (wire formats in Common/AutoReturnRules.h): processRtmStatePacket() accepts 0xF1 value 0x02 (RTM refresh: refreshes only, never activates; 0xF1/1 clears rtm_refresh_seen) and 0x80-0xFF (the remote boot ID; a change bumps rx_tx_boot_change_seq and clears the re-declaration block). processFmOverridePacket(): after a Follow-Me fault a mode 1-5 is ignored unless 0xF2 bit 7 (fresh declaration) is set; 0xF2/0 clears the block. Every older RX ignores the new values. GPS-integrity note (project rule 5): the 0xF3 GPS state machine, Phase A/B and the freshness gates are untouched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-29 - REVERTED the RX-only standbyXOSC line that the 2026-09-28 commit (1803869) added to startupRadio(). It does not work on this hardware: with radio.standbyXOSC = true the SX1262 never initialises and boot prints "Starting Radio... Power: 22 Region: US/AU915 TOA: 0 Failed, code: -707", i.e. RADIOLIB_ERR_SPI_CMD_FAILED (RadioLib 7.1.2, src/TypeDef.h line 430) - the chip refused a command sent to it over SPI, so there is no radio, no link and no telemetry at all. Proven by a three-flash A/B on one bench RX in one sitting with nothing else changed: parent d9873cc gave "TOA: 7488 Done", 1803869 gave "TOA: 0 Failed, code: -707", and d9873cc rebuilt and reflashed gave "TOA: 7488 Done" again, with the failure repeating over two further power-on resets. LIKELY BUT UNPROVEN REASON: this module runs a TCXO powered from the chip's DIO3 pin (initRadioHardware() passes 1.8 V for it in ../Common/RadioCommon.h), and standing by on an oscillator that has not powered up and settled leaves the chip busy and rejecting the next command; a board wired for a plain crystal instead would not hit this, which is presumably why upstream can use it. The full write-up and a DO-NOT-RE-ADD note now sit in startupRadio() where the line used to be. The R-3 motor-gate fix from that same commit is KEPT and its logic is unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-29 - R-3 HARDENING (review finding L-1, LOW, explicitly not a regression): the last_control_packet = millis() stamp is MOVED so it happens immediately AFTER thr_received and steering_received are written, instead of nine lines before them. Same branch, same value, no logic change - but "the motor gate is open" now structurally implies "thr_received came from that same packet", rather than only happening to be true. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-28 - R-3 FIX, part 2 of 3 (see PWM.ino and BREmote_V2_Rx.h): the normal control-packet branch now also stamps last_control_packet, next to the existing last_packet. The three meta-packet branches (0xF1 RTM state, 0xF2 FM mode, 0xF4 aux) deliberately do NOT, and that is the whole fix - they refresh "the remote is alive" without ever refreshing "I have a fresh throttle command", because none of them carries a throttle byte. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -370,6 +371,18 @@ static void gpsPhaseBCheck()
 // V2.5-Evo - 2026-04-25 - P7: Handle 0xF1 RTM state meta-packet from TX.
 // pkt: 6-byte buffer. byte[3]=0xF1, byte[4]: 0=RTM deactivate, 1=RTM activate.
 // Sets rtm_rx_active. Safety gates in RTMState.ino may override during active RTM.
+// V2.5-Evo - 2026-10-07 - two more 0xF1 VALUES (wire format in Common/AutoReturnRules.h). Every older
+// RX ignores any value other than 0 and 1, so a remote may send these to any RX safely:
+//   0x02        H-1 REFRESH: "RTM is still active on the remote". Refreshes only - it never sets
+//               rtm_rx_active, so a refresh that arrives after the buggy ended RTM by itself (Gate 9,
+//               H-2, Phase C) cannot switch it back on. The first one in a run arms the expiry.
+//   0x80-0xFF   S-8 BOOT ID: 0x80 | the remote's random 7-bit power-on ID. A different ID from the one
+//               stored means the remote was switched off and on: rx_tx_boot_change_seq is bumped and
+//               the loop cancels any standing return; the M-1 re-declaration block is cleared too
+//               (a rebooted remote's first declaration comes from a gesture).
+//   3-0x7F      still ignored.
+// 0xF1/1 now also clears rtm_refresh_seen, so each RTM run must prove for itself that the remote
+// refreshes before the expiry can apply.
 static void processRtmStatePacket(const uint8_t *pkt)
 {
   uint8_t new_state = pkt[4];
@@ -382,8 +395,39 @@ static void processRtmStatePacket(const uint8_t *pkt)
   else if (new_state == 1)
   {
     // RTM state machine in RTMState.ino will run safety gates on next iteration.
+    rtm_refresh_last_ms = millis();   // V2.5-Evo - 2026-10-07 - H-1: a new run has not proved refreshing yet
+    rtm_refresh_seen    = false;
     rtm_rx_active = true;
     Serial.println("RTM [RX] activation requested by TX");
+  }
+  else if (new_state == kRtmRefreshValue)
+  {
+    // V2.5-Evo - 2026-10-07 - H-1 refresh: only while RTM is active; never an activation.
+    if (rtm_rx_active)
+    {
+      rtm_refresh_last_ms = millis();
+      if (!rtm_refresh_seen) Serial.println("RTM [RX] the remote refreshes RTM - the 5 s refresh expiry is armed for this run");
+      rtm_refresh_seen    = true;
+    }
+  }
+  else if (txBootIdIsBootIdValue(new_state))
+  {
+    // V2.5-Evo - 2026-10-07 - S-8 boot ID. Single writer of rx_tx_boot_id (this task).
+    uint8_t stored = rx_tx_boot_id.load();
+    const uint8_t before = stored;
+    const bool rebooted = txBootIdStep(&stored, new_state);
+    rx_tx_boot_id.store(stored);
+    if (rebooted)
+    {
+      fm_redeclare_blocked = false;
+      rx_tx_boot_change_seq.store((uint8_t)(rx_tx_boot_change_seq.load() + 1));
+      Serial.printf("RX [S-8] remote boot ID changed %u -> %u: the remote was switched off and on - any standing return is cancelled\n",
+                    (unsigned)before, (unsigned)stored);
+    }
+    else if (before == kTxBootIdNone)
+    {
+      Serial.printf("RX [S-8] remote boot ID %u heard - a remote power cycle will now cancel a standing return\n", (unsigned)stored);
+    }
   }
 }
 
@@ -406,7 +450,10 @@ static void processRtmStatePacket(const uint8_t *pkt)
 //             01 = OFF   -> 0
 //             10 = ON    -> 1
 //             11 = ignored (the runtime value is left as it was)
-//   bit 7     reserved (ignored).
+//   bit 7     V2.5-Evo - 2026-10-07 - M-1: "FRESH DECLARATION" - the remote sets it on a declaration
+//             made by a rider gesture (arm, mode change), never on the 30 s keepalive or a disarm. It
+//             is read only while the post-fault re-declaration block stands (see below); otherwise
+//             ignored, so a remote that never sets it behaves exactly as before.
 // The old `& 0x03` mask would have folded bit 5 into the mode; it is gone. Because the override
 // rides on EVERY 0xF2 (declaration, 30 s keepalive, disarm burst), a lost packet is repaired by the
 // next keepalive and a remote power cycle - which forgets its RAM override - returns the RX to its
@@ -423,6 +470,40 @@ static void processFmOverridePacket(const uint8_t *pkt)
       Serial.printf("FM [RX] 0xF2 mode %u is not a mode this firmware knows - treated as 0 (disarm)\n", (unsigned)mode);
     }
     mode = 0;
+  }
+  // ============================================================
+  // V2.5-Evo - 2026-10-07 - M-1: AFTER A FOLLOW-ME FAULT, A KEEPALIVE MAY NOT RE-ARM THE BUGGY.
+  // A remote that missed the fault edge (fm_flags bit 3) keeps its fm_armed and its 30 s keepalive
+  // re-declared the mode, silently re-arming the buggy the fault had just disarmed. While
+  // fm_redeclare_blocked stands (set by RTMState.ino when a fault ends Follow-Me), a mode 1-5 is
+  // accepted only with bit 7 set - the "fresh declaration from a rider gesture" bit, which a remote
+  // must set on its arm / mode-change packets and never on a keepalive. Today's remote never sets
+  // bit 7, but it DOES disarm with 0xF2/0 when it sees the fault, and 0xF2/0 clears the block, so its
+  // next arm gesture is accepted exactly as before. A blocked packet still counts as "the remote is
+  // alive" (the caller stamped last_packet) but changes nothing else: no mode, no override bits, no
+  // declaration age.
+  // ============================================================
+  if (mode == 0)
+  {
+    fm_redeclare_blocked = false;
+  }
+  else if (fm_redeclare_blocked.load())
+  {
+    if (raw & 0x80)
+    {
+      fm_redeclare_blocked = false;   // a marked gesture declaration: accept it below
+    }
+    else
+    {
+      static unsigned long redeclare_msg_ms = 0;   // rate limit: one line per 10 s
+      const unsigned long t = millis();
+      if (redeclare_msg_ms == 0 || (t - redeclare_msg_ms) >= 10000UL)
+      {
+        redeclare_msg_ms = (t != 0) ? t : 1;
+        Serial.printf("FM [RX] 0xF2 mode %u IGNORED: Follow-Me ended on a fault; disarm and arm again on the remote to re-declare\n", (unsigned)mode);
+      }
+      return;
+    }
   }
   const uint8_t ret = (raw >> 5) & 0x03;
   if (ret == 0)      fm_return_mode_runtime.store(0xFF, std::memory_order_relaxed);

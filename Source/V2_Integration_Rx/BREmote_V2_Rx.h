@@ -1360,6 +1360,38 @@ std::atomic<unsigned long> fm_mode_last_rx_ms {0};
 // remote in telemetry.fm_flags bit 7. Written by Radio.ino (triggeredReceive task), read by
 // RTMState.ino (loop task): std::atomic for the same single-core preemption reason as above.
 std::atomic<uint8_t> fm_return_mode_runtime {0xFF};
+
+// ============================================================
+// V2.5-Evo - 2026-10-07 - THE REMOTE'S BOOT ID, THE RTM REFRESH, THE RE-DECLARATION BLOCK
+// (audits S-8, H-1, M-1). All three are written by Radio.ino (triggeredReceive task) and read by
+// RTMState.ino (loop task); std::atomic for the single-core preemption reason given above.
+// ============================================================
+// S-8 - rx_tx_boot_id: the remote's random 7-bit boot ID, carried in an 0xF1 meta packet whose VALUE
+//   byte is 0x80 | id (0x80-0xFF). kTxBootIdNone (0xFF) = no ID heard since this RX booted - which is
+//   every remote built before this protocol, and for those nothing changes. rx_tx_boot_change_seq is
+//   bumped once each time a DIFFERENT ID arrives (the remote was switched off and on); the RTM loop and
+//   the Follow-Me loop each keep their own last-seen copy, so each acts exactly once per reboot:
+//   a standing return-to-me or auto-return is cancelled (SOP "auto-return waits for the rider" rule 5)
+//   and Follow-Me's declaration is dropped (the rebooted remote is not armed). Why 0xF1 and those
+//   values: every RX firmware handles 0xF1 values 0 and 1 only and ignores the rest, while an unknown
+//   TYPE byte would be read as a throttle value by an older RX. Wire format: Common/AutoReturnRules.h.
+std::atomic<uint8_t> rx_tx_boot_id         {kTxBootIdNone};
+std::atomic<uint8_t> rx_tx_boot_change_seq {0};
+// H-1 - rtm_refresh_seen / rtm_refresh_last_ms: the remote re-sends 0xF1 VALUE 0x02 ("RTM still
+//   active") about once a second while its RTM is ACTIVE. A refresh only refreshes - it never sets
+//   rtm_rx_active - and rtm_refresh_seen is cleared by every 0xF1/1 activation, so the expiry
+//   (rtmRefreshExpired(), kRtmRefreshExpiryMs in RTMState.ino) applies only to a run in which this
+//   remote has PROVED it refreshes. Today's remote sends 0xF1/1 once and never refreshes; for it the
+//   expiry never arms and returns are not cut short.
+std::atomic<bool>          rtm_refresh_seen    {false};
+std::atomic<unsigned long> rtm_refresh_last_ms {0};
+// M-1 - fm_redeclare_blocked: set by RTMState.ino when a FAULT ends Follow-Me (FM_STOPPING). While set,
+//   an 0xF2 carrying a mode 1-5 is IGNORED unless it carries the "fresh declaration" bit 7 - so a
+//   keepalive from a remote that missed the fault edge cannot silently re-arm the buggy (audit R-6 /
+//   M-1). Cleared by an 0xF2/0 (the remote acknowledged the fault and disarmed - today's remote does
+//   this on fm_flags bit 3, so its next arm gesture works as before), by an 0xF2 with bit 7 set (a
+//   remote that marks its gesture declarations), and by a remote reboot (boot ID change).
+std::atomic<bool> fm_redeclare_blocked {false};
 std::atomic<uint8_t> rtm_approach_cap      {255};  // V2.5-Evo - 2026-04-30 - approach decel cap (0-255); 255=no cap; computed by RTMState.ino during active RTM; applied by calcPWM()
 
 // V2.5-Evo - 2026-07-19 - P3 Follow-Me (FM) autonomous-following runtime flags.
@@ -2471,9 +2503,9 @@ struct __attribute__((packed)) TelemetryPacket {
     //       only - the remote must not add a cap of its own for it.
     //   [3] REMOTE BOOT ID HELD (S-8): the buggy has heard a boot ID from this remote (0xF1 value
     //       0x80 | id), so a remote power cycle cancels a standing return and a parked auto-return
-    //       waits through a link loss. Set from the S-8 commit on; 0 before it.
+    //       waits through a link loss. 0 while no boot ID has been heard (every remote without S-8).
     //   [4] RTM REFRESH ARMED (H-1): the current RTM run has heard an 0xF1/2 refresh, so the buggy will
-    //       end RTM if refreshes stop for 5 s. Set from the H-1 commit on; 0 before it.
+    //       end RTM if refreshes stop for 5 s. 0 for a remote that does not refresh.
     //   [5..7] reserved, 0.
     uint8_t rx_state_flags = 0;       // index 19 - see above
 } telemetry;

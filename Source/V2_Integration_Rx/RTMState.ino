@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - S-8 + H-1 + M-1 (wire formats in Common/AutoReturnRules.h, decoding in Radio.ino): a remote boot-ID change (rx_tx_boot_change_seq) ends a standing RTM (hand-back cap first, no fault bit) and drops Follow-Me to IDLE with its declaration (auto-return cancelled, new FmReturnReason 12); H-1: an RTM run whose remote has refreshed (0xF1/2) ends on a fault after 5 s without a refresh (never for a remote that does not refresh); M-1: both Follow-Me fault entries set fm_redeclare_blocked; rx_state_flags bits 3 (boot ID held) and 4 (refresh armed); ?diag second line. No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - S-7 + A-1 + H-2 + D-1: fm_flags bit 6 = auto-return standing (bit 1 tells returning from waiting); rx_state_flags (index 19) carries the sticky RTM fault end (Phase C, H-2) and RTM arrival (Gate 9) and the hand-back cap; H-2: gates 2-7 failing 1.5 s of held trigger (a release pauses, only a pass resets) end RTM with the hand-back cap at 0 and the fault bit; D-1: the distance byte goes 0xFF after 10 s with no valid distance and needs 1 s valid to come back (telemetry only); printReturnEndDiag() for ?diag; two wrong 0xFF comments fixed. No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - ARRIVAL HAND-BACK CAP (owner rule: auto-return and manual return-to-me arrive the same way). handbackCapArm() keeps the cap in force at arrival in arrival_handback_cap (cleared by calcPWM() on one full trigger release). Gate 9 arms it from rtm_approach_cap before rtm_rx_active goes false (its print moved after the writes); FM_RETURN arrival now ends the return straight to ARMED-unlatched with the steering handed back and arms it from fm_throttle_cap (was FM_HOLD cap 0). Comment fix (audit D-1): the Gate 9 note no longer claims the inactive path writes rtm_distance 0xFF. No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - AUDIT M-20 + L-25 (owner-approved) + L-26: the front side floor is max(13, pass minimum, min_dist_m + 2 m),
@@ -342,6 +343,10 @@ static const uint32_t kRtmGateFaultMaxDtMs = 200;   // ms; one step can add at m
 static DistBlankState rtm_dist_blank      = {0, 0, true};
 static const uint32_t kDistBlankStaleMs   = 10000;  // ms without a valid distance -> 0xFF ("--" on the remote)
 static const uint32_t kDistBlankRecoverMs = 1000;   // ms of valid inputs before a blanked byte shows a number again
+
+// H-1: how long a remote that has PROVED it refreshes RTM (0xF1/2) may go quiet before the buggy ends
+// RTM. The remote refreshes about once a second, so 5 s is four or more lost refreshes in a row.
+static const uint32_t kRtmRefreshExpiryMs = 5000;
 
 // V2.5-Evo - 2026-08-17 - Read-only accessor for the heading-disagreement latch, forward-declared
 // here so gate 6 below can ask whether the compass has been withdrawn from the heading ladder —
@@ -2634,7 +2639,8 @@ enum FmReturnReason : uint8_t {
   FM_RET_TIMEOUT       = 8,   // RETURN: kFmReturnMaxMs of held-trigger motion -> HOLD
   FM_RET_FAULT         = 9,   // RETURN: a fault (conditions 2-7 or not closing) -> STOPPING
   FM_RET_LEFT          = 10,  // RETURN / candidate ended because FM left or yielded
-  FM_RET_STEERED       = 11   // RETURN: the rider steered (deadband + persistence past the motion grace) -> HOLD (fix round 1, M-1)
+  FM_RET_STEERED       = 11,  // RETURN: the rider steered (deadband + persistence past the motion grace) -> HOLD (fix round 1, M-1)
+  FM_RET_REMOTE_REBOOT = 12   // V2.5-Evo - 2026-10-07 - S-8: RETURN / candidate cancelled - the remote was switched off and on (boot ID changed)
 };
 static const char* fmReturnReasonName(uint8_t r)
 {
@@ -2651,6 +2657,7 @@ static const char* fmReturnReasonName(uint8_t r)
     case FM_RET_FAULT:        return "RETURN fault -> STOPPING";
     case FM_RET_LEFT:         return "RETURN / candidate ended - Follow-Me left or yielded";
     case FM_RET_STEERED:      return "RETURN cancelled - rider steered";
+    case FM_RET_REMOTE_REBOOT: return "RETURN / candidate cancelled - remote switched off and on";
     default:                  return "unknown";
   }
 }
@@ -3346,6 +3353,15 @@ static void printReturnEndDiag(unsigned long now_ms)
                 rtm_arrival_alarm_ms ? "" : "never/", rtm_arrival_alarm_ms ? (unsigned long)((now_ms - rtm_arrival_alarm_ms) / 1000UL) : 0UL,
                 (unsigned long)rtm_gate_fault.accum_ms,
                 (unsigned)telemetry.rx_state_flags);
+  // V2.5-Evo - 2026-10-07 - S-8 / H-1 / M-1 state on a second line.
+  const uint8_t bid = rx_tx_boot_id.load();
+  char bid_txt[40];
+  if (bid == kTxBootIdNone) snprintf(bid_txt, sizeof(bid_txt), "none heard (remote sends no ID)");
+  else                      snprintf(bid_txt, sizeof(bid_txt), "%u, reboots seen %u", (unsigned)bid, (unsigned)rx_tx_boot_change_seq.load());
+  Serial.printf("Remote link: boot ID %s; RTM refresh %s; Follow-Me re-declaration %s\n",
+                bid_txt,
+                (rtm_rx_active && rtm_refresh_seen.load()) ? "ARMED this run (5 s expiry)" : "not armed",
+                fm_redeclare_blocked.load() ? "BLOCKED after a fault (disarm on the remote, or a marked gesture, clears it)" : "open");
 }
 
 // ---- Main RTM loop — call from RX loop() ----
@@ -3645,6 +3661,8 @@ static void runRtmLoopBody(unsigned long now)
     if (rtm_fault_alarm_ms   != 0 && (now - rtm_fault_alarm_ms)   < kRtmEndStickyMs) r |= (1 << 0);
     if (rtm_arrival_alarm_ms != 0 && (now - rtm_arrival_alarm_ms) < kRtmEndStickyMs) r |= (1 << 1);
     if (arrival_handback_cap.load(std::memory_order_relaxed) != kHandbackNone)        r |= (1 << 2);
+    if (rx_tx_boot_id.load() != kTxBootIdNone)                                       r |= (1 << 3);   // S-8: boot ID held
+    if (rtm_rx_active && rtm_refresh_seen.load())                                    r |= (1 << 4);   // H-1: expiry armed this run
     telemetry.rx_state_flags = r;
   }
 
@@ -3819,6 +3837,32 @@ static void runRtmLoopBody(unsigned long now)
     rtm_steer_override = 127;
   }
 
+  // ============================================================
+  // V2.5-Evo - 2026-10-07 - S-8: THE REMOTE WAS SWITCHED OFF AND ON -> A STANDING RETURN-TO-ME ENDS.
+  // Radio.ino bumps rx_tx_boot_change_seq when the remote's boot ID changes (a remote that sends no
+  // ID never bumps it). Read on EVERY tick, active or not, so a reboot seen while RTM was idle is
+  // consumed at once and can never cancel a later run. A rebooted remote is not running RTM, so the
+  // buggy ends it here instead of waiting for the remote to notice fm_status bit 1. The cap in force
+  // stays as the hand-back cap (0 while a gate fault holds the motor), FIRST, so the trigger the
+  // rider may be holding is never handed back unreleased. Not a fault: no rx_state_flags bit 0.
+  // ============================================================
+  {
+    static uint8_t rtm_boot_seq_seen = 0;
+    const uint8_t seq = rx_tx_boot_change_seq.load();
+    if (seq != rtm_boot_seq_seen)
+    {
+      rtm_boot_seq_seen = seq;
+      if (rtm_rx_active)
+      {
+        handbackCapArm(rtm_rx_emergency_stop ? 0 : rtm_approach_cap.load());
+        rtm_rx_active         = false;
+        rtm_rx_emergency_stop = false;
+        rtm_approach_cap      = 255;
+        Serial.println("RTM [RX] S-8: the remote was switched off and on - return-to-me ended; throttle held at the cap in force until you let go of the trigger fully once");
+      }
+    }
+  }
+
   if (!usrConf.rtm_rx_enabled)
   {
     rtm_rx_active         = false;
@@ -3869,6 +3913,29 @@ static void runRtmLoopBody(unsigned long now)
     // telemetry.rtm_distance to 0xFF on the inactive path - it reports the real distance while both
     // fixes are fresh (Follow-Me and the remote's pre-arm check use it) and 0xFF only after
     // kDistBlankStaleMs without a valid distance.
+    return;
+  }
+
+  // ============================================================
+  // V2.5-Evo - 2026-10-07 - H-1: A REMOTE THAT REFRESHES RTM AND STOPS -> RTM ENDS.
+  // rtm_rx_active is set and cleared only by 0xF1 bursts, so a lost 0xF1/0 (remote switched off,
+  // deep sleep, all three packets lost) left the buggy in RTM with the remote showing manual. A
+  // remote that refreshes RTM (0xF1/2 about once a second, see Radio.ino) and then goes quiet for
+  // kRtmRefreshExpiryMs ends the run here: the cap in force stays as the hand-back cap (FIRST), RTM
+  // ends, and rx_state_flags bit 0 tells the remote it was a fault. rtmRefreshExpired() returns false
+  // for any run in which no refresh has been heard - today's remote never refreshes, and an
+  // unconditional expiry would cut every legitimate return short.
+  // ============================================================
+  if (rtmRefreshExpired(rtm_rx_active, rtm_refresh_seen.load(), (uint32_t)rtm_refresh_last_ms.load(),
+                        (uint32_t)now, kRtmRefreshExpiryMs))
+  {
+    handbackCapArm(rtm_rx_emergency_stop ? 0 : rtm_approach_cap.load());
+    rtm_rx_active         = false;
+    rtm_rx_emergency_stop = false;
+    rtm_approach_cap      = 255;
+    rtm_fault_alarm_ms    = (now != 0) ? now : 1;
+    Serial.printf("RTM [RX] H-1: no RTM refresh from the remote for %lu ms - return-to-me ENDED on a fault; throttle held at the cap in force until you let go of the trigger fully once\n",
+                  (unsigned long)kRtmRefreshExpiryMs);
     return;
   }
 
@@ -5753,6 +5820,7 @@ static void fmReturnFault(uint8_t stop_reason, unsigned long now, bool thr_held)
   if (thr_held) fm_fault_alarm_ms = now;   // the sticky St + stop buzz, surprise-gated as always
   fm_stop_ms          = now;
   fm_state            = FM_STOPPING;
+  fm_redeclare_blocked = true;             // V2.5-Evo - 2026-10-07 - M-1: a keepalive may not re-arm after this fault (Radio.ino)
   fm_stop_reason      = stop_reason;
   fm_last_stop_reason = stop_reason;
   fm_last_stop_ms     = now;
@@ -6058,6 +6126,37 @@ static void runFmLoopBody(unsigned long now)
   // than 3 so the mode gate below catches it. usrConf.followme_mode keeps exactly one job —
   // it is the value the TX's arm gesture SEEDS from (TX RTMState.ino). It is never again an
   // RX-side auto-arm source. Autonomous steering now always requires a live human declaration.
+  // ============================================================
+  // V2.5-Evo - 2026-10-07 - S-8: THE REMOTE WAS SWITCHED OFF AND ON -> FOLLOW-ME LETS GO.
+  // SOP "auto-return waits for the rider" rule 5: a remote reboot cancels auto-return, and the buggy
+  // must never resume it by itself. A rebooted remote is also not ARMED any more (its RAM is gone), so
+  // the whole declaration is dropped - otherwise the buggy would sit armed for up to 95 s behind a
+  // remote showing the normal screen. Read on every tick (its own copy of the counter, independent of
+  // the RTM loop's) so a reboot is consumed once. The cap in force stays as the hand-back cap, FIRST:
+  // fmEnterIdle() lifts Follow-Me's own cap to 255, and a rider holding the trigger must not get it
+  // back unreleased. A remote that sends no boot ID never bumps the counter: nothing changes for it.
+  // ============================================================
+  {
+    static uint8_t fm_boot_seq_seen = 0;
+    const uint8_t seq = rx_tx_boot_change_seq.load();
+    if (seq != fm_boot_seq_seen)
+    {
+      fm_boot_seq_seen = seq;
+      if (fm_state != FM_IDLE || fm_return_pending)
+      {
+        const bool had_return = (fm_state == FM_RETURN) || fm_return_pending;
+        const uint8_t from    = (uint8_t)fm_state;
+        handbackCapArm(fm_throttle_cap.load());   // FIRST: the cap in force stays until one full release
+        fm_mode_runtime.store(0xFF, std::memory_order_relaxed);
+        fmEnterIdle();
+        if (had_return) fm_return_last_reason = FM_RET_REMOTE_REBOOT;   // after fmEnterIdle(), which records FM_RET_LEFT
+        Serial.printf("FM [RX] S-8: the remote was switched off and on - Follow-Me %s -> IDLE%s; the remote must be armed again\n",
+                      fmStateName(from), had_return ? " (auto-return cancelled)" : "");
+        return;
+      }
+    }
+  }
+
   uint8_t m = fm_mode_runtime.load(std::memory_order_relaxed);
 
   // ---- R2(b): expire a declaration nobody is refreshing ----
@@ -7315,6 +7414,7 @@ static void runFmLoopBody(unsigned long now)
       fm_stop_ms      = now;
       fm_state        = FM_STOPPING;
       fm_throttle_cap = 0;         // subtract-only hard stop; the ramp begins next tick
+      fm_redeclare_blocked = true; // V2.5-Evo - 2026-10-07 - M-1: a keepalive may not re-arm after this fault (Radio.ino)
       // V2.5-Evo - 2026-07-25 - F7: ALL fault logging happens BELOW this line, never above it. The
       // divergence detail used to print at the point of detection, which is upstream of the cap write
       // — so if the USB CDC TX buffer was full (host not draining) Serial.printf() could block and

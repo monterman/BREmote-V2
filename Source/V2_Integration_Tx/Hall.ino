@@ -335,6 +335,9 @@ bool ctminus()
 void returnGesture();
 // V2.5-Evo - 2026-10-07 - H-1: defined in RTMState.ino (concatenated after this file); used by the lock branch.
 void rtmFmStopFlush();
+// V2.5-Evo - 2026-10-07 - P-7: static in RTMState.ino (concatenated after this file); used by the lock branch below. The
+// same declaration appears again above runMagGesture(); repeating a static declaration is allowed.
+static void setRtmDisarmed();
 static int           last_tap_dir   = 0;    // last recorded tap direction: +1=right, -1=left, 0=none
 static unsigned long last_tap_ms    = 0;    // millis() when last tap was recorded
 static const unsigned long COMBO_WINDOW_MS  = 3000UL;  // max gap between tap and hold for combo

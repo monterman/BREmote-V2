@@ -1,3 +1,41 @@
+// V2.5-Evo - 2026-10-07 - Q-10: the Follow-Me toggle combo (LEFT tap + RIGHT hold) is ignored while Return-To-Me is
+//   active or arming (serial line only), like the magnet tap. No confStruct change.
+// V2.5-Evo - 2026-10-07 - Q-8: mag_mode 1-3 - the Return-To-Me hold (arm or disarm) acts only with the trigger fully
+//   released, like the mode 4 hold; with it held the hold is ignored silently (no RTM advisory buzz either). The FM
+//   tier is unchanged (it still arms mid-tow). No confStruct change.
+// V2.5-Evo - 2026-10-07 - P-7: the LEFT-hold lock during an active Return-To-Me ends the remote's own RTM
+//   (setRtmDisarmed() -> silent "St") before the stop flush. No confStruct change.
+// V2.5-Evo - 2026-10-07 - F-4: runMenu()'s post-ceremony latch hands the toggle back to steering on a squeeze (in_menu 0).
+// V2.5-Evo - 2026-10-07 - SOP-040 gesture rule: the mag_mode 4 2.5 s hold acts only with the trigger fully released
+//   (checked at 2.5 s and at removal; held -> ignored silently, one serial line). The toggle RIGHT tap + LEFT hold logs
+//   when it is ignored because the trigger is held. Magnet taps unchanged. No confStruct change.
+// V2.5-Evo - 2026-10-07 - P-11: checkCal() sets ads_cal_in_progress while it calibrates (plausibility exemption).
+// V2.5-Evo - 2026-10-07 - SOP-040: the mag_mode 4 hold refusal (Return-To-Me disabled or GPS off) is now "St" + the
+//   normal stop buzz on removal, replacing the "n0" screen and the Pattern 5 blip at 2.5 s. No confStruct change.
+// V2.5-Evo - 2026-10-07 - H-1 (TX part): the LEFT-hold lock now flushes 0xF1/0 + 0xF2/0 (rtmFmStopFlush()).
+// V2.5-Evo - 2026-10-07 - C-1: runMagGesture() ignores every magnet gesture while the throttle input fault is latched
+//   (ads_input_fault). The toggle is already blocked by the ADC task (tog_input forced to 0). No confStruct change.
+// V2.5-Evo - 2026-10-07 - comment only: a station step no longer buzzes (Pattern 11 removed, RTMState.ino); the tap
+//   lockout note is updated. The 1 s lockout itself is unchanged.
+// V2.5-Evo - 2026-10-07 - R-4: stale comments corrected (the 2.5 s hold "toggles Return-To-Me", Pattern 10 "will
+//   toggle") and the fmToggleAutoReturnFromMagnet() prototype removed with the function. Comments only otherwise.
+// V2.5-Evo - 2026-10-07 - R-3: runMenu() ignores the toggle after an RTM arm ceremony until it has been seen
+//   centred (ceremony_toggle_latch, set by runDoubleSqueezeArm()), so a LEFT toggle still held for the in-ceremony
+//   RIGHT tap -> LEFT hold can no longer fall through into a gear step, station change or lock when the ceremony
+//   ends. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
+// V2.5-Evo - 2026-10-07 - mag_mode 4 hold, two owner rulings (audits R-2 and R-7). The 2.5 s hold now decides at the
+//   2.5 s mark what removal will do (magHoldVerdict(), latched): (1) a Return-To-Me ALREADY ACTIVE -> the hold is
+//   ignored, no buzz, the return continues (it used to restart the arm ceremony with no "St" and no cooldown);
+//   (2) Return-To-Me cannot start (disabled or GPS off) -> one short refusal blip (Pattern 5) instead of the
+//   Pattern 10 success cue, and "n0" for 2 s on removal (it used to promise with Pattern 10 and then do nothing);
+//   (3) otherwise Pattern 10 and the manual Return-To-Me ceremony, as before. No confStruct change, sizeof stays
+//   136, SW_VERSION stays 27.
+// V2.5-Evo - 2026-10-06 - mag_mode 4, two owner rulings. (1) M-1 TAP LOCKOUT: after a magnet tap actually steps the
+//   Follow-Me station, any tap whose magnet ARRIVES within kMagStepLockoutMs (1000 ms) is ignored completely - no
+//   step, no arm, no buzz. Since the F-label hold stopped blocking loop(), two quick taps (or one wobbly one) could
+//   step two stations while the rider felt only one count. (2) THE 2.5 s HOLD ALWAYS STARTS MANUAL RETURN-TO-ME,
+//   whatever the Follow-Me state (was: FM armed -> A1/A0 auto-return toggle). A1/A0 stays reachable from the "rn"
+//   wait (RIGHT tap then LEFT hold). No confStruct change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-09-30 - MagFix (delta audit of 98fb7a8): runMagGesture() gains a SAMPLE-GAP GUARD (H-1) —
 //   a hold is abandoned if loop() stalled long enough that the magnet pin went unsampled, so a blocking disarm,
 //   disengage or arm ceremony can no longer promote a 300 ms tap into the 2.5 s hold and silently turn
@@ -300,6 +338,11 @@ bool ctminus()
 // ============================================================
 // V2.5-Evo - 2026-09-19 - defined in RTMState.ino (concatenated after this file).
 void returnGesture();
+// V2.5-Evo - 2026-10-07 - H-1: defined in RTMState.ino (concatenated after this file); used by the lock branch.
+void rtmFmStopFlush();
+// V2.5-Evo - 2026-10-07 - P-7: static in RTMState.ino (concatenated after this file); used by the lock branch below. The
+// same declaration appears again above runMagGesture(); repeating a static declaration is allowed.
+static void setRtmDisarmed();
 static int           last_tap_dir   = 0;    // last recorded tap direction: +1=right, -1=left, 0=none
 static unsigned long last_tap_ms    = 0;    // millis() when last tap was recorded
 static const unsigned long COMBO_WINDOW_MS  = 3000UL;  // max gap between tap and hold for combo
@@ -389,7 +432,12 @@ void handleGearToggle(int direction)
           else if (direction > 0 && last_tap_dir == -1)
           {
             // LEFT tap + RIGHT hold 5s → FM mode cycle
-            if (usrConf.fm_override_enabled && usrConf.gps_en)
+            // V2.5-Evo - 2026-10-07 - Q-10: THE BUG - the magnet tap already left Follow-Me alone during a return, but
+            // this combo did not: it could disarm Follow-Me (with its 2 s blocking "St", freezing RTM's gates and
+            // ramp) or re-declare it in the middle of a return. THE FIX: ignored while RTM is active or arming.
+            if (rtm_tx_active || rtmIsArming())
+              Serial.println("FM [TX] Follow-Me gesture ignored: Return-To-Me is active on this remote");
+            else if (usrConf.fm_override_enabled && usrConf.gps_en)
               cycleFmMode();
           }
         }
@@ -409,12 +457,35 @@ void handleGearToggle(int direction)
           {
             // FM not armed: LEFT hold 2s → lock remote
             system_locked = 1;
+            // V2.5-Evo - 2026-10-07 - P-7: THE BUG - a lock during an active Return-To-Me flushed 0xF1/0 to the buggy
+            // but left THIS remote in RTM_ACTIVE (RTM screen, ramp cap, gates) until Gate 3 after the unlock, so the
+            // two sides disagreed. THE FIX (chosen over refusing the lock - locking is the rider's own stop and must
+            // always work): end the remote's own return through the deliberate-stop path, setRtmDisarmed() ->
+            // rtmDisengage(true): silent "St" for 2 s, cap back to 255, COOLDOWN. system_locked is already set
+            // above, so the radio sends 0 throughout. The flush below then repeats 0xF1/0 with 0xF2/0.
+            if (rtm_tx_active)
+            {
+              Serial.println("RTM [TX] lock during an active Return-To-Me: ending it on this remote too (silent St)");
+              setRtmDisarmed();
+            }
             DISP_LOCK(); displayLock(); DISP_UNLOCK();
+            // V2.5-Evo - 2026-10-07 - H-1 (TX part): a locked remote sends zero throttle, but a buggy left in
+            // Return-To-Me or Follow-Me would stay there. Send "RTM off" + "FM off" and let them go out
+            // (>= 400 ms, RTMState.ino). Follow-Me is never armed here (that branch is above).
+            rtmFmStopFlush();
           }
         }
         last_tap_dir   = 0;  // consume the tap after any long-press action
         long_press_done = true;
         in_menu = usrConf.menu_timeout;
+      }
+      else if (has_combo && direction < 0 && last_tap_dir == 1)
+      {
+        // V2.5-Evo - 2026-10-07 - SOP-040 gesture rule: the RIGHT tap + LEFT hold Return-To-Me gesture acts only
+        // with the trigger fully released. It always did nothing here with the trigger held; now it says so on
+        // serial (silently on the remote, as the rule asks).
+        Serial.printf("RTM [TX] return gesture ignored: trigger held (thr %u) - it needs the trigger fully released\n",
+                      (unsigned)thr_scaled);
       }
       // Release wait after the action. A squeeze here also hands the toggle straight back to
       // steering instead of holding the rider in menu mode until the toggle is centred.
@@ -528,12 +599,23 @@ void handleGearToggle(int direction)
 //     60-600ms (a TAP)   none (too short to buzz)        step to the next station in mag_fm_set,
 //                                                        or ARM Follow-Me if it is not armed yet
 //     600ms - 2.5s       none                            nothing (deliberate dead zone, see below)
-//     >= 2.5s            TWO medium pulses (Pattern 10)  toggle Return-To-Me on/off (zero throttle)
+//     >= 2.5s            TWO medium pulses (Pattern 10)  start the MANUAL Return-To-Me ("rn", squeeze to confirm)
+//     (V2.5-Evo - 2026-10-06: the hold row used to read "toggle Return-To-Me on/off", and from 2026-10-02 it
+//     toggled auto-return instead while Follow-Me was armed. Owner ruling: it ALWAYS starts the manual recall.)
+//     V2.5-Evo - 2026-10-07 - two exceptions to that row (audits R-2, R-7): while a Return-To-Me is ALREADY
+//     ACTIVE the hold is ignored (no buzz, no action); when Return-To-Me cannot start (disabled, or GPS off)
+//     the 2.5 s buzz is ONE short blip (Pattern 5) instead of Pattern 10, and removal shows "n0" for 2 s.
+//     V2.5-Evo - 2026-10-07 - SOP-040: superseded - no buzz while holding, and removal shows "St" with the stop buzz.
+//     V2.5-Evo - 2026-10-07 - SOP-040 GESTURE RULE: the hold acts only with the trigger FULLY RELEASED (checked at
+//     2.5 s and again at removal). With the trigger held it is ignored silently - no buzz, no "St", no ceremony.
+//     The TAP row is unchanged: with the trigger held a tap still arms Follow-Me and still steps the station.
+//     TAP LOCKOUT (V2.5-Evo - 2026-10-06, audit M-1): after a tap that actually stepped the station, a tap
+//     whose magnet arrives within kMagStepLockoutMs (1 s) is ignored completely. See the constant.
 //
 //     MODE 4 HAS NO MAGNET DISARM. Roles 1 and 3 make the magnet an arm↔disarm toggle; in mode 4 the
-//     magnet only ARMS Follow-Me or STEPS its station, and the hold only flips the Return-To-Me enable.
-//     To disarm Follow-Me in mode 4, use the toggle combo (LEFT tap → RIGHT hold) or select F0. This is a
-//     deliberate difference and it is why the hold does NOT use the stop buzz: see fmToggleRtmEnabledFromMagnet().
+//     magnet only ARMS Follow-Me or STEPS its station, and the hold only starts the manual Return-To-Me.
+//     To disarm Follow-Me in mode 4, use the toggle combo (LEFT tap → RIGHT hold). This is a deliberate
+//     difference.
 //
 //     WHY THE 600ms - 2.5s DEAD ZONE IS DELIBERATE. A tap is about 300 ms and the hold is 2500 ms, and the
 //     tap CEILING sits at 600 ms, so the two bands stay more than 4x apart end-to-end. That is what makes
@@ -604,6 +686,8 @@ void handleGearToggle(int direction)
 //   stays armed through the return and resumes ARMED (unlatched) when it ends.
 //
 // ARMING WHILE ON THE THROTTLE IS INTENTIONAL
+//   (V2.5-Evo - 2026-10-07 - SOP-040: EXCEPT the mag_mode 4 2.5 s Return-To-Me hold, which now needs the trigger
+//   fully released - see kMagHoldTriggerHeld. Roles 1-3 and the mode 4 tap are unchanged.)
 //   Unlike the toggle combos, this gesture does NOT require a released throttle. The approved
 //   FM design has the rider arm during the tow, while on the trigger — the toggle physically
 //   cannot do that (it doubles as the steering control whenever thr_scaled > 3), which is a
@@ -627,18 +711,17 @@ void handleGearToggle(int direction)
 // current_vib_pattern is defined in System.ino, which the Arduino build concatenates
 // AFTER Hall.ino, so it needs an extern here.
 extern volatile uint8_t current_vib_pattern;
+extern volatile bool    vib_stop_pending;   // V2.5-Evo - 2026-10-07 - the stop-buzz request flag (System.ino)
 // rtmIsArming() is defined in RTMState.ino (also concatenated after this file).
 bool rtmIsArming();
 // V2.5-Evo - 2026-09-30 - rtmEnabledEffective() is the ONE place that answers "is Return-To-Me enabled
-// right now". It is the stored usrConf.rtm_enabled unless the magnet hold has overridden it for this
-// session (RAM only — see the RTM SESSION OVERRIDE block in RTMState.ino). Every gate that used to read
+// right now". It is the stored usrConf.rtm_enabled unless a session override stands (RAM only — see the
+// RTM SESSION OVERRIDE block in RTMState.ino; since 2026-10-07 nothing writes that override, R-4). Every gate that used to read
 // usrConf.rtm_enabled directly now calls this, so a session flip is honoured everywhere and can still
 // never reach SPIFFS. Defined in RTMState.ino, concatenated after this file.
 bool rtmEnabledEffective();
-// V2.5-Evo - 2026-10-02 - the FM-armed half of the state-aware 2.5 s hold (RTMState.ino,
-// concatenated after this file). Toggles AUTO-RETURN for the session and shows "A1"/"A0".
-// BLOCKS for ~2 s on the display confirm, so loop()-only like the rest of this function.
-void fmToggleAutoReturnFromMagnet();
+// (V2.5-Evo - 2026-10-07 - R-4: the fmToggleAutoReturnFromMagnet() prototype that sat here is gone with the
+// function itself; the 2.5 s hold has always started the manual Return-To-Me since 2026-10-06.)
 // fmDisarm() and setRtmDisarmed() are the toggle-combo's own disarm paths (both static in
 // RTMState.ino, concatenated after this file). Declared static here — matching their definitions
 // so the linkage agrees — so the magnet TOGGLE can fire the identical disarm the toggle uses
@@ -682,7 +765,7 @@ static const uint32_t kMagLoopPeriodMs = 110UL;
 // the elapsed wall-clock, which needs a trustworthy cadence — the very thing that is missing here. One gap
 // measurement is direct evidence that the pin was not read, with nothing inferred.
 // WHY 5 LOOP PERIODS (550 ms): the real cadence is ~110 ms, so 5 periods clears ordinary jitter (display
-// writes, GPS drain, a serial command) without false-tripping, while still catching EVERY blocker the audit
+// writes, GPS drain, a serial command) without false-tripping, while still catching EVERY blocker audit
 // listed — the shortest of them is 2000 ms, and even a gear-flash hold (gear_display_time, 800 ms default)
 // is caught. THE COST OF A FALSE TRIP IS ZERO RISK: the gesture is abandoned silently and the rider taps
 // again. APPLIES TO EVERY ROLE, not just mode 4: roles 1-3 measure their 2 s / 5 s holds off the same
@@ -701,7 +784,8 @@ static const uint32_t kMagMaxHoldMs  = 30000UL;
 // 600 ms swallows the jitter and still keeps the tap band and the 2500 ms hold band more than 4x apart.
 static const uint32_t kMagTapMinMs   = 60UL;      // shorter than this = bounce, ignored
 static const uint32_t kMagTapMaxMs   = 600UL;     // longer than this is not a tap (see the dead-zone note)
-// The hold that toggles Return-To-Me. 2500 ms is more than 4x the tap CEILING (and ~8x a typical 300 ms
+// The hold that starts the manual Return-To-Me (V2.5-Evo - 2026-10-07 - R-4: this comment said "toggles
+// Return-To-Me", which it has not done since 2026-10-06). 2500 ms is more than 4x the tap CEILING (and ~8x a typical 300 ms
 // tap), which is what makes the pair impossible to confuse. The advisory buzz fires the moment the hold
 // crosses it, so the rider never has to estimate time: hold until you feel it, then take the magnet away.
 static const uint32_t kMagRtmToggleHoldMs = 2500UL;
@@ -713,6 +797,67 @@ static const uint32_t kMagRtmToggleHoldMs = 2500UL;
 // which described a sample rate this firmware has never run. Corrected, value unchanged.)
 // Roles 1-3 keep their original 120 ms untouched — this constant is never applied to them.
 static const uint32_t kMagTapDebounceMs = 40UL;
+// ---- V2.5-Evo - 2026-10-06 - TAP LOCKOUT AFTER A STATION STEP (audit M-1, owner ruling: 1 second) ----
+// THE PROBLEM. Until 2026-10-06 a station step blocked loop() for 1.2 s on its display flash, and that
+// stall swallowed any further taps by accident. The F-label hold no longer blocks, so two quick taps -
+// or one wobbly magnet that bounces off and back - stepped TWO stations (F1 -> F3) while the rider may
+// have felt only one buzz count.
+// THE RULE. After a tap that ACTUALLY moved the station, a tap whose magnet ARRIVES within this window
+// is ignored completely: no step, no arm, no buzz, and the debounce state is rebuilt from the pin
+// exactly as after any other mode 4 removal, so nothing is left half-armed. Judged on the ARRIVAL edge,
+// not the removal, so a bounce that lands inside the window is dropped even if it lifts after it.
+// WHY 1000 ms. A deliberate tap-remove-tap-remove still steps quickly (about one station a second),
+// while a wobble or a bounce lands well inside it. (It also used to guarantee that the previous step's
+// Pattern 11 count had finished before the next one queued; V2.5-Evo - 2026-10-07 - a station step no
+// longer buzzes at all, so only the double-step protection remains.)
+// Only taps are locked out. The 2.5 s hold is untouched: it cannot complete inside the window anyway.
+static const uint32_t kMagStepLockoutMs = 1000UL;
+
+// ---- V2.5-Evo - 2026-10-07 - WHAT A mag_mode 4 HOLD WILL DO (audits R-2 and R-7, owner rulings) ----
+// The 2.5 s hold has three possible outcomes, decided ONCE, at the moment the hold crosses 2.5 s, so the
+// buzz the rider feels while holding and the action on removal always agree:
+//   kMagHoldStartRtm - start the manual Return-To-Me ceremony (Pattern 10 while holding, "rn" on removal).
+//   kMagHoldIgnored  - a Return-To-Me is ALREADY ACTIVE. R-2: the hold is ignored completely - no buzz, no
+//                      action - and the return carries on. (It used to re-enter the arm ceremony, which cut
+//                      the buggy to 0 and restarted the return with no "St" and no cooldown.) Releasing the
+//                      trigger still ends the return through Gate 3, exactly as before.
+//   kMagHoldRefused  - Return-To-Me cannot start (RTM disabled or GPS off). R-7: the success cue used to
+//                      play and then nothing happened. Now the rider gets a refusal instead: ONE short
+//                      150 ms blip (Pattern 5) while holding, and "n0" ("no") on the display for 2 s on
+//                      removal. Not Pattern 10 (that is the success cue) and not Pattern 7 (the long fault
+//                      buzz - nothing faulted, the feature is simply off).
+//                      V2.5-Evo - 2026-10-07 - SUPERSEDED by SOP-040 ("St" is the only "not working" signal):
+//                      no buzz while holding; on removal "St" for 2 s with the normal stop buzz (Pattern 7).
+//   kMagHoldTriggerHeld - V2.5-Evo - 2026-10-07 - SOP-040 GESTURE RULE: the trigger is NOT fully released
+//                      (triggerReleased() false). The hold is ignored SILENTLY - no buzz while holding, nothing on
+//                      removal, one serial line. Checked at the 2.5 s mark (so no Pattern 10 promise is made) AND
+//                      again at removal (a squeeze after the buzz still cancels it). This makes the held-trigger
+//                      RTM ceremony unreachable from the magnet: with the trigger held, nudging or steering a buggy
+//                      never starts or ends a return. The magnet TAP is not affected: with the trigger held a tap
+//                      still arms Follow-Me (owner exception) and still steps the station while following.
+// Latched in runMagGesture() so a state change between the 2.5 s mark and the removal (for example Gate 3
+// ending an active return while the magnet is still held) cannot turn an ignored hold into a new ceremony.
+static const uint8_t kMagHoldStartRtm    = 0;
+static const uint8_t kMagHoldIgnored     = 1;
+static const uint8_t kMagHoldRefused     = 2;
+static const uint8_t kMagHoldTriggerHeld = 3;   // V2.5-Evo - 2026-10-07 - SOP-040 gesture rule
+
+// magHoldVerdict - decide what a mag_mode 4 2.5 s hold will do right now (see the block above).
+// Inputs: rtm_tx_active, rtmIsArming(), triggerReleased(), rtmEnabledEffective(), usrConf.gps_en.
+// Output: kMagHoldStartRtm, kMagHoldIgnored, kMagHoldTriggerHeld or kMagHoldRefused. No side effects, never blocks.
+// Order matters: an active return is ignored first (R-2), then a held trigger is ignored silently (SOP-040) - so a
+// held trigger never produces the "St" refusal either - and only then is a released-trigger refusal shown (R-7).
+static uint8_t magHoldVerdict()
+{
+  if (rtm_tx_active || rtmIsArming())                return kMagHoldIgnored;      // R-2: the return continues
+  if (!triggerReleased())                            return kMagHoldTriggerHeld;  // SOP-040: trigger held -> silent
+  if (!(rtmEnabledEffective() && usrConf.gps_en))    return kMagHoldRefused;      // R-7: say no, clearly
+  return kMagHoldStartRtm;
+}
+
+// gpsKeepAliveDelay() is defined in RTMState.ino (concatenated after this file). Declared static here to
+// match its definition; used for the 2 s "n0" refusal hold below.
+static void gpsKeepAliveDelay(uint32_t ms);
 
 // ---- Called from loop() every cycle; self-rate-limits to kMagPollMs ----
 void runMagGesture()
@@ -730,6 +875,14 @@ void runMagGesture()
   // V2.5-Evo - 2026-09-30 - H-1: millis() of the last sample this function actually took. 0 = none yet.
   // The gap between consecutive samples is the evidence that the pin was really watched across a hold.
   static uint32_t mag_last_sample_ms = 0;
+  // V2.5-Evo - 2026-10-06 - M-1 tap lockout: millis() of the last tap that ACTUALLY stepped the station,
+  // and whether there has been one yet this power-up (a flag, not a 0 sentinel, so a step at any millis()
+  // value counts). Loop task only, like every other static here.
+  static uint32_t mag_last_step_ms   = 0;
+  static bool     mag_step_seen      = false;
+  // V2.5-Evo - 2026-10-07 - R-2 / R-7: what this mag_mode 4 hold will do, latched when it crosses 2.5 s
+  // (kMagHold* above). Meaningful only while rtm_advised is true for the same hold.
+  static uint8_t  mag_hold_verdict   = 0;
 
   // Role gate. With mag_mode == 0 (the default — no Hall sensor fitted) the gesture does not
   // exist: bail out before touching any state, so the Hall behaves exactly as it did before
@@ -855,7 +1008,8 @@ void runMagGesture()
     // The 5s tier exists only in MAG_ROLE_BOTH; the single-role modes stop at 2s.
     // V2.5-Evo - 2026-09-30 - MagStations: MAG_ROLE_FMSET has its own single band at 2.5 s and does
     // NOT use the 2 s / 5 s thresholds at all, so it is handled first and returns. Pattern 10 (two
-    // medium pulses) says "let go now and Return-To-Me will toggle". Same buzz-announces-the-band
+    // medium pulses) says "let go now and the manual Return-To-Me starts" (V2.5-Evo - 2026-10-07 - R-4:
+    // it used to say "will toggle"; see the hold verdict below for when it is NOT played). Same buzz-announces-the-band
     // principle as the other roles: the rider holds until the pattern arrives, then takes the magnet
     // away — they never have to estimate 2.5 seconds.
     if (role == MAG_ROLE_FMSET)
@@ -863,7 +1017,17 @@ void runMagGesture()
       if (!rtm_advised && held >= kMagRtmToggleHoldMs)
       {
         rtm_advised = true;
-        if (current_vib_pattern == 0) current_vib_pattern = 10;
+        // V2.5-Evo - 2026-10-07 - R-2 / R-7: decide now what removal will do, and only promise what it
+        // will deliver. Pattern 10 only when the hold will really start the ceremony; Pattern 5 (one short
+        // blip) when Return-To-Me cannot start; nothing at all while a return is already active.
+        mag_hold_verdict = magHoldVerdict();
+        if (mag_hold_verdict == kMagHoldStartRtm)
+        {
+          if (current_vib_pattern == 0) current_vib_pattern = 10;
+        }
+        // V2.5-Evo - 2026-10-07 - SOP-040 ("St" is the only refusal signal): kMagHoldRefused no longer plays the
+        // Pattern 5 blip here; the refusal is "St" + the stop buzz on removal (see below).
+        // kMagHoldRefused, kMagHoldIgnored and kMagHoldTriggerHeld: no buzz while holding.
       }
       return;
     }
@@ -873,14 +1037,16 @@ void runMagGesture()
       // Pattern 6 = three fast buzzes = "release for RTM". Deliberately NOT Pattern 4:
       // Pattern 4 is the arm confirm that setRtmArmed() fires moments later, and two
       // identical double-buzzes back to back are indistinguishable by feel.
-      if (current_vib_pattern == 0) current_vib_pattern = 6;
+      // V2.5-Evo - 2026-10-07 - Q-8: no RTM promise with the trigger held (removal will ignore the hold).
+      if (current_vib_pattern == 0 && triggerReleased()) current_vib_pattern = 6;
     }
     else if (!fm_advised && held >= kMagFmHoldMs)
     {
       fm_advised = true;
       // One short buzz = "release now". In MAG_ROLE_BOTH that means FM; in the
       // single-role modes it means whichever mode this remote is configured for.
-      if (current_vib_pattern == 0) current_vib_pattern = 5;
+      // V2.5-Evo - 2026-10-07 - Q-8: in MAG_ROLE_RTM it promises Return-To-Me, so not with the trigger held.
+      if (current_vib_pattern == 0 && !(role == MAG_ROLE_RTM && !triggerReleased())) current_vib_pattern = 5;
     }
     return;
   }
@@ -892,6 +1058,10 @@ void runMagGesture()
     // the arrival edge is used above.
     uint32_t held = mag_raw_since - mag_hold_start;
     bool     was_abandoned = hold_abandoned;
+    // V2.5-Evo - 2026-10-07 - R-2 / R-7: the mode 4 hold verdict latched at the 2.5 s mark. If no
+    // advisory pass ran for this hold (it always does in practice - the sample that first sees the
+    // magnet gone evaluates the same held value), decide it now instead.
+    uint8_t  hold_verdict  = rtm_advised ? mag_hold_verdict : magHoldVerdict();
 
     // Clear per-hold state before doing anything blocking.
     fm_advised     = false;
@@ -909,6 +1079,9 @@ void runMagGesture()
     if (system_locked) return;                      // remote locked — no gesture from a stowed remote
     if (in_setup) return;                           // mid-calibration / setup
     if (remote_error && !remote_error_blocked) return;  // unacknowledged error on screen
+    // V2.5-Evo - 2026-10-07 - C-1: no magnet gesture while the throttle input is faulted. remote_error 72 above
+    // already covers it; this line holds even if water-ingress E71 has replaced the 72 on screen.
+    if (ads_input_fault) return;
 
     // ============================================================
     // V2.5-Evo - 2026-09-30 - MagStations: MAG_ROLE_FMSET (mag_mode 4) removal handling.
@@ -920,10 +1093,8 @@ void runMagGesture()
     // the point: a buzz meaning "I ignored you" teaches the rider to expect feedback from accidental
     // magnet contact, and the buggy must never reposition itself while he is attached to the rope.
     //
-    // HOLD (>= 2.5 s): toggle the Return-To-Me enable FOR THIS SESSION ONLY.
-    // fmToggleRtmEnabledFromMagnet() enforces zero throttle itself, because unlike arming it changes
-    // what the craft will do on its own initiative later. It writes a RAM session override and never
-    // touches usrConf, so nothing can carry the flip into SPIFFS.
+    // HOLD (>= 2.5 s): start the MANUAL Return-To-Me ceremony through setRtmArmed(), in every Follow-Me
+    // state (V2.5-Evo - 2026-10-06, owner ruling; see the hold branch below).
     //
     // 600 ms - 2.5 s falls through both and does nothing: the deliberate dead zone that keeps the tap
     // band and the hold band more than 4x apart. See the band table in this function's header comment.
@@ -932,26 +1103,83 @@ void runMagGesture()
     {
       if (held >= kMagRtmToggleHoldMs)
       {
-        // V2.5-Evo - 2026-10-02 - STATE-AWARE HOLD (owner's decision).
-        //   FM ARMED     -> toggle AUTO-RETURN for the session        -> "A1" / "A0"
-        //   FM NOT ARMED -> start the MANUAL Return-To-Me ceremony     -> "rn", squeeze confirm
-        // The two can never both apply: auto-return only means anything while Follow-Me is
-        // running, and a manual recall only means something when it is not - if FM is armed the
-        // buggy is already on its way to him. Separated by STATE, not by timing, exactly as the
-        // TAP above is (arm when disarmed / step station when following), so there is nothing to
-        // pre-select before a session and no config field was added.
+        // V2.5-Evo - 2026-10-06 - THE HOLD ALWAYS MEANS MANUAL RETURN-TO-ME (owner ruling, option A:
+        // "I want the buggy to always return to me; if it stops working I use the manual one").
+        // From 2026-10-02 this branch was state-aware: FM armed -> toggle auto-return ("A1"/"A0"),
+        // FM not armed -> manual recall. That left the manual recall UNREACHABLE from the magnet in
+        // exactly the state where the rider needs a fallback for auto-return. It now starts the manual
+        // ceremony in every state - FM disarmed, FM armed, FM engaged.
         //
-        // The manual path goes through setRtmArmed(), which keeps the FULL ceremony: it re-checks
-        // rtmEnabledEffective() and gps_en itself, then blinks "rn" and requires a >30% trigger
-        // squeeze held 500 ms before anything is armed. The magnet is another DOORWAY to that
-        // ceremony, never a way past it - and it is the only doorway reachable mid-tow, because
-        // calcFilter() hands the toggle to steering the moment the trigger rises.
-        if (isFmArmed()) fmToggleAutoReturnFromMagnet();
-        else             setRtmArmed();
+        // WHAT HAPPENS TO FOLLOW-ME: nothing on the remote. setRtmArmed() has not disarmed Follow-Me
+        // since 2026-09-18 (RTMState.ino, header of setRtmArmed): fm_armed, the station and the 30 s
+        // keepalive stay as they were. While the ceremony waits for the squeeze, the throttle byte is
+        // forced to 0 (Radio.ino, rtmIsArming()). Once RTM goes ACTIVE (0xF1/1) the buggy makes
+        // Follow-Me YIELD - parked ARMED, separation latch cleared - and it re-engages only by
+        // re-proving separation after the return ends. RTM > FM, the existing precedence, unchanged.
+        //
+        // setRtmArmed() keeps the FULL ceremony: it re-checks rtmEnabledEffective() and gps_en itself,
+        // then blinks "rn" and requires a >30% trigger squeeze held 500 ms before anything is armed.
+        // The magnet is another DOORWAY to that ceremony, never a way past it - and it is the only
+        // doorway reachable mid-tow, because calcFilter() hands the toggle to steering the moment the
+        // trigger rises.
+        //
+        // WHERE A1/A0 (THE AUTO-RETURN TOGGLE) LIVES NOW: inside the "rn" wait. With the trigger
+        // released, a RIGHT tap then a LEFT hold of rtm_hold_duration_s, all inside rtm_arm_window_s,
+        // cancels the arm and flips auto-return for the session (returnGestureCeremonyPoll() and
+        // ceremonyCancelForReturnGesture() in RTMState.ino). That detector does not need the arming
+        // LEFT hold the toggle route starts with: on the magnet route the LEFT toggle is already up,
+        // so it is live from the first poll. (fmToggleAutoReturnFromMagnet() was removed 2026-10-07, R-4.)
+        //
+        // V2.5-Evo - 2026-10-07 - R-2 / R-7: the verdict latched at 2.5 s decides (see magHoldVerdict()).
+        // V2.5-Evo - 2026-10-07 - SOP-040 gesture rule: the trigger is checked AGAIN here, at the moment the action
+        // would happen. Released at 2.5 s but squeezed by the time the magnet comes off -> ignored silently.
+        if ((hold_verdict == kMagHoldStartRtm || hold_verdict == kMagHoldRefused) && !triggerReleased())
+        {
+          hold_verdict = kMagHoldTriggerHeld;
+        }
+        if (hold_verdict == kMagHoldTriggerHeld)
+        {
+          // SOP-040: the 2.5 s hold acts only with the trigger fully released. Nothing happens, no buzz.
+          Serial.printf("MAG [TX] hold ignored: trigger held (thr %u) - the 2.5 s hold needs the trigger fully released\n",
+                        (unsigned)thr_scaled);
+        }
+        else if (hold_verdict == kMagHoldIgnored)
+        {
+          // R-2: a Return-To-Me is already running. Ignore the hold; the return continues untouched.
+          Serial.println("MAG [TX] hold ignored: Return-To-Me is already active, the return continues");
+        }
+        else if (hold_verdict == kMagHoldRefused)
+        {
+          // R-7: Return-To-Me cannot start.
+          // V2.5-Evo - 2026-10-07 - SOP-040: "St" with the normal stop buzz is the ONLY refusal signal. This used
+          // to be "n0" plus a Pattern 5 blip at 2.5 s; a rider knows "St" and never misses it, and reads the
+          // context from what he was trying to do. BLOCKING 2 s, like every other "St"; the resync below covers it.
+          Serial.printf("MAG [TX] hold refused: Return-To-Me cannot start (rtm enabled %d, gps_en %d)\n",
+                        rtmEnabledEffective() ? 1 : 0, (int)usrConf.gps_en);
+          vib_stop_pending = true;   // Pattern 7, the normal stop buzz
+          DISP_LOCK(); displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
+          gpsKeepAliveDelay(2000);
+        }
+        else
+        {
+          setRtmArmed();
+        }
       }
       else if (held >= kMagTapMinMs && held <= kMagTapMaxMs)
       {
-        if (rtm_tx_active || rtmIsArming())
+        // V2.5-Evo - 2026-10-06 - M-1 TAP LOCKOUT, checked FIRST so a locked-out tap does nothing at all
+        // (no step, no arm, no buzz). Judged on the arrival edge (mag_hold_start). Wrap-safe: unsigned
+        // subtraction, and an arrival can never precede the step, because the step happens at the removal
+        // of the previous contact and the debounce state is rebuilt just below it.
+        if (mag_step_seen && (uint32_t)(mag_hold_start - mag_last_step_ms) < kMagStepLockoutMs)
+        {
+          Serial.print("MAG [TX] tap ignored: magnet arrived ");
+          Serial.print((uint32_t)(mag_hold_start - mag_last_step_ms));
+          Serial.print(" ms after the last station step (lockout ");
+          Serial.print(kMagStepLockoutMs);
+          Serial.println(" ms)");
+        }
+        else if (rtm_tx_active || rtmIsArming())
         {
           // Return-To-Me owns the buggy right now — never touch Follow-Me underneath it.
         }
@@ -970,7 +1198,13 @@ void runMagGesture()
         {
           // Actively following — the rope is slack, so a station transit is safe. This is the ONLY
           // state in which the magnet is allowed to move the buggy's station.
-          fmStepStationFromMagnet();
+          // V2.5-Evo - 2026-10-06 - M-1: start the lockout only when the station really moved. A silent
+          // no-op tap (already at the only set station) starts nothing.
+          if (fmStepStationFromMagnet())
+          {
+            mag_last_step_ms = millis();
+            mag_step_seen    = true;
+          }
         }
         // else: armed but not following = on the rope. Nothing, and no feedback. See the block above.
       }
@@ -1019,7 +1253,17 @@ void runMagGesture()
       // V2.5-Evo - 2026-09-30 - reads the EFFECTIVE enable (stored value, or the RAM session override a
       // mag_mode 4 hold may have set) instead of usrConf.rtm_enabled directly.
       if (!(rtmEnabledEffective() && usrConf.gps_en)) return;
-      if (rtm_tx_active || rtmIsArming())
+      // V2.5-Evo - 2026-10-07 - Q-8 / SOP-040 GESTURE RULE: THE BUG - in mag_mode 1-3 the Return-To-Me hold still armed
+      // (or ended) a return with the trigger held, which the rule forbids: with the trigger held, nudging or steering a
+      // buggy must never start or end a return. THE FIX: checked at the moment of removal, exactly like the mode 4 hold;
+      // held -> ignored silently, one serial line. The FM tier below is untouched (arming FM mid-tow is the owner's
+      // exception).
+      if (!triggerReleased())
+      {
+        Serial.printf("MAG [TX] hold ignored: trigger held (thr %u) - the Return-To-Me hold needs the trigger fully released\n",
+                      (unsigned)thr_scaled);
+      }
+      else if (rtm_tx_active || rtmIsArming())
       {
         // RTM already active (or mid arm-ceremony) → DISARM through the toggle's own path.
         // setRtmDisarmed()→rtmDisengage(true) sends 0xF1/0 and shows "St", no buzz — identical
@@ -1073,8 +1317,40 @@ void runMagGesture()
   }
 }
 
+// ---- V2.5-Evo - 2026-10-07 - R-3: IGNORE THE TOGGLE UNTIL IT IS RELEASED AFTER AN RTM CEREMONY ----
+// THE BUG: the blocking RTM arm ceremony (runDoubleSqueezeArm(), RTMState.ino) can end - window expiry, an
+// A1/A0 cancel, a refusal, or RTM going ACTIVE - while the rider is still holding the LEFT toggle for the
+// in-ceremony RIGHT tap -> LEFT hold. That held toggle then reached handleGearToggle() as a brand-new press:
+// a gear-down step at once and, after 2 s, a Follow-Me station change (FM armed) or a remote lock.
+// THE FIX: the ceremony sets this latch when it starts; while it is set, runMenu() ignores the toggle, and
+// the first pass that sees the toggle centred clears it. A toggle that is held when the ceremony ends can
+// therefore never become a gear, station or lock action. Non-blocking: loop() keeps running, so RTM's gates
+// run normally if the ceremony ended in RTM ACTIVE. Written by the loop task only (runDoubleSqueezeArm()
+// and runMenu() both run on it). The toggle route is unaffected: handleGearToggle() already waits for its
+// own release after the ceremony returns, so the latch is clear on the very next pass.
+static bool ceremony_toggle_latch = false;
+
 void runMenu()
 {
+  // V2.5-Evo - 2026-10-07 - R-3: see ceremony_toggle_latch above.
+  if (ceremony_toggle_latch)
+  {
+    // V2.5-Evo - 2026-10-07 - F-4: THE BUG - with the latch set, a squeeze skipped the GestureAbort hand-back
+    // (in_menu = 0), so in_menu kept the toggle out of steering until menu_timeout ran down (~0.2 s on the owner's
+    // remote, up to ~110 s at the config maximum). THE FIX: with the trigger above the steering threshold and
+    // steering enabled, hand the toggle straight back to steering and drop the latch - the same test calcFilter()
+    // and handleGearToggle() use. A toggle held into a squeeze then reads 0 (steering), so it is still never a
+    // gear, station or lock action.
+    if (thr_scaled > 3 && usrConf.steer_enabled)
+    {
+      in_menu = 0;
+      ceremony_toggle_latch = false;
+      return;
+    }
+    if (ctminus() || ctplus()) return;   // still held since the ceremony - not a new press
+    ceremony_toggle_latch = false;       // released: from here the toggle is a fresh input again
+  }
+
   if(remote_error == 0 || remote_error_blocked == 1)
   {
     if(system_locked)
@@ -1173,6 +1449,9 @@ void checkCal()
   //Check if calibration is OK
   if(!usrConf.cal_ok)
   {
+    // V2.5-Evo - 2026-10-07 - P-11: the throttle plausibility check (Analog.ino) is exempt ONLY while this block
+    // calibrates; the flag is cleared as soon as calibration succeeds (failure halts below, locked).
+    ads_cal_in_progress = true;
     Serial.println("Entering Calibration...");
 
     displayDigits(LET_E, LET_C);
@@ -1297,6 +1576,7 @@ void checkCal()
     if(cal_in_range)
     {
       usrConf.cal_ok = 1;
+      ads_cal_in_progress = false;   // V2.5-Evo - 2026-10-07 - P-11: the new band is trusted from here on
       Serial.println("Cal Done.");
       saveConfToSPIFFS(usrConf);
       scroll4Digits(5, LET_A, LET_V, LET_E, 120);

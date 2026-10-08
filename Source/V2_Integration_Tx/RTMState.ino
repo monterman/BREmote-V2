@@ -1,4 +1,80 @@
-// V2.5-Evo - 2026-10-02 - P2 (FRONT STATIONS F4/F5), the remote side: the station wrap becomes 1 -> 2 -> 3 -> 4 -> 5 -> 1 in BOTH steppers - cycleFmMode()'s pre-throttle branch (LEFT tap + RIGHT hold) and cycleFmModeArmed() (the simple LEFT hold while armed) - and the first-arm seed from usrConf.followme_mode accepts 1-5. fmNextStationInSet(), the magnet-tap stepper, masks 0x1F instead of 0x07 and walks modulo 5, so bits 3 and 4 of mag_fm_set select the front pair; the 2026-09-30 note that said stations 4 and 5 do NOT exist in this firmware is corrected in place, and the hazard it named - a bit for an UNREACHABLE station stranding the tap - no longer applies because both new bits address reachable stations. The magnet DEFAULT is unchanged at the three rear stations: every remote in the field stores a mag_fm_set in 1-7, so the front pair is opt-in on that input. displayDigits(LET_F, last_fm_mode) already renders 4 and 5 (num0[] carries every digit) and the Pattern 11 counted-tap confirm was already clamped to 1-5, so neither needed a change. NOTHING ELSE MOVES: fmIsEngaged()'s four-condition tow gate, the 0xF2 encoding, the 30 s keepalive, the arm window, the disarm paths and every RTM path are untouched. No confStruct change: sizeof stays 136, SW_VERSION stays 27, and the owner's throttle and toggle calibration survive this flash.
+// V2.5-Evo - 2026-10-07 - S-8 follow-up: the first boot ID after a link gap (or at the first fresh link) is a 3-packet
+//   burst, the 10 s repeats stay single packets. No confStruct change.
+// V2.5-Evo - 2026-10-07 - S-7: fmIsReturning() - Follow-Me engaged (fmIsEngaged(), corroborated) AND fm_flags bit 6, i.e.
+//   the buggy confirms auto-return RETURNING. Display only. No confStruct change.
+// V2.5-Evo - 2026-10-07 - SOP-041 rule 3 resync: while this remote has Follow-Me armed and the link is fresh, if the
+//   buggy reports fm_flags bit 0 (armed) clear on 2+ consecutive arrivals spanning at least 3 s (and starting more than
+//   1.5 s after this remote's arm declaration), the remote disarms Follow-Me itself: "St" + the stop buzz (deferred to
+//   the end of an active return, as F-1). No confStruct change.
+// V2.5-Evo - 2026-10-07 - Q-5: Gate 4 (steer exit) always stands down - steering never ends a manual return (SOP-040);
+//   one serial line per run when the stick is pushed. No confStruct change.
+// V2.5-Evo - 2026-10-07 - Q-3 / Q-1 / Q-2 / Q-6: the remote ends its manual return when the BUGGY says how it ended:
+//   rx_state_flags bit 0 (fault) -> "St" + stop buzz, cap 255; bit 1 (arrived) -> silent "St", cap 0 until one full
+//   release; the fm_status bit-1 two-arrival end stays as the fallback (old RX). An RTM the buggy never confirms is
+//   re-sent once, then refused ("St" + stop buzz, cap kept until a release), and is drawn as "rn" until confirmed
+//   (rtmReturnConfirmed()). A release seen during the 2 s "St" lifts a kept cap at that sample. No confStruct change.
+// V2.5-Evo - 2026-10-07 - TX protocol round: S-8 boot ID (txBootIdInit() at power-on, different from the last one kept
+//   in NVS, then txBootIdTick() every 10 s on a fresh link), H-1 refresh (rtmRefreshTick(): one 0xF1/0x02 a second
+//   while RTM_ACTIVE), M-1 0xF2 bit 7 on the four gesture declarations only. Both new 0xF1 values go into a free
+//   queue slot only. No confStruct change.
+// V2.5-Evo - 2026-10-07 - P-12: comments only - the single-slot queue notes (R-6 header, fmRequestKeepaliveNow(), the
+//   runFmLoop() guard) now say the queue is 2-deep and why the waits are kept.
+// V2.5-Evo - 2026-10-07 - defects b / c: during the RTM arm wait "rn" alternates with the arrow (it was overdrawn every
+//   100 ms); fmDisarm() and fmSilentDisarm() clear the whole R5 row (no leftover C7-C9 pixels). No confStruct change.
+// V2.5-Evo - 2026-10-07 - F-1 / F-7: a Follow-Me fault-stop edge handled during an active return disarms Follow-Me
+//   silently at once and defers "St" + the stop buzz to the return's end (rtmDisengage()); a fresh Follow-Me arm clears a
+//   stale fm_fault_latched. No confStruct change.
+// V2.5-Evo - 2026-10-07 - A-1 (TX part): while RTM_ACTIVE, if the buggy (having confirmed RTM this run) reports fm_status
+//   bit 1 OFF on 2 consecutive arrivals, the remote ends its own RTM: silent "St", and per SOP-040 the throttle cap stays
+//   in force until the trigger is fully released once, then full manual. Hook left for the buggy's future RTM-fault bit.
+//   No confStruct change.
+// V2.5-Evo - 2026-10-07 - F-3 / F-8: the R-3 ceremony extension has a hard ceiling (window + COMBO_WINDOW_MS + hold);
+//   a trigger release during the unlock animation between the two squeezes is counted. No confStruct change.
+// V2.5-Evo - 2026-10-07 - P-6: the 1 s LEFT ceremony cancel needs a push past half of the calibrated left travel
+//   (tog_mid -> tog_left), so an ordinary LEFT steer cannot cancel a return. No confStruct change.
+// V2.5-Evo - 2026-10-07 - SOP-040 gesture rule: returnGesture() is ignored (serial line only) while Return-To-Me is active
+//   on this remote or arming, and whenever the trigger is not fully released. No confStruct change.
+// V2.5-Evo - 2026-10-07 - SOP-040: returnGesture() (the toggle RIGHT tap + LEFT hold) now shows "St" + the stop buzz when
+//   Return-To-Me cannot start (disabled or GPS off); it was silent. No confStruct change.
+// V2.5-Evo - 2026-10-07 - M-3 / F-2: inside the RTM arm ceremony a plain 1 s LEFT hold (trigger held or released)
+//   cancels at once to full manual: 0xF1/0, cap 255, "St" + stop buzz. A RIGHT tap first still makes it A1/A0.
+//   No magnet cancel. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
+// V2.5-Evo - 2026-10-07 - H-1 (TX part): rtmRxStateWatch() re-sends 0xF1/0 while the buggy reports Return-To-Me
+//   (fm_status bit 1) and this remote is not running one; rtmFmStopFlush() sends 0xF1/0 + 0xF2/0 and waits >= 400 ms,
+//   used by deepSleep() and the lock gesture. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
+// V2.5-Evo - 2026-10-07 - R-6: runFmLoop() takes the Follow-Me fault-stop edge from fm_fault_latched (set in Radio.ino on
+//   the byte's arrival) instead of comparing telemetry.fm_flags tick to tick, so a fault that rose and fell during the
+//   blocking RTM arm ceremony is still handled: Follow-Me disarms, "St", stop buzz (fmDisarm(false)). The handling
+//   waits while the burst queue is busy (written when the queue was a single slot; it is 2-deep since the H-1 round
+//   and the wait is kept - see runFmLoop()). Since the F-1 round a fault handled during an active return is
+//   deferred instead. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
+// V2.5-Evo - 2026-10-07 - FM warning-distance haptic REMOVED (owner ruling, minimal-buzz rule): runFmLoop() no longer
+//   queues Pattern 8, and its scheduler state is gone. fm_warn_distance_m itself stays - the R5 proximity bar
+//   uses it as the distance full-scale. No struct change.
+// V2.5-Evo - 2026-10-07 - Station buzz REMOVED (owner ruling, minimal-buzz rule; audit R-4): fmStepStationFromMagnet()
+//   no longer queues the N-tap Pattern 11. The F<n> display label is the only station-change confirm.
+// V2.5-Evo - 2026-10-07 - R-4: the dead fmToggleRtmEnabledFromMagnet() and fmToggleAutoReturnFromMagnet() are
+//   removed, together with their header comment; the A1/A0 invariant they carried now sits on
+//   ceremonyCancelForReturnGesture(). rtm_enabled_session has no writer and is documented as such.
+// V2.5-Evo - 2026-10-07 - R-3: rtm_arm_window_s itself is unchanged, but once a valid RIGHT tap -> LEFT hold has
+//   started inside it, the ceremony keeps waiting until that sequence completes or ends
+//   (return_gesture_in_progress, set by returnGestureCeremonyPoll()); no squeeze counts past the window. The
+//   ceremony also sets ceremony_toggle_latch (Hall.ino) so a toggle still held when it exits is ignored until
+//   released and can never become a gear, station or lock action. No confStruct change, sizeof stays 136,
+//   SW_VERSION stays 27.
+// V2.5-Evo - 2026-10-07 - R-1: in runDoubleSqueezeArm() a squeeze counts only after the trigger has been seen
+//   released (thr_scaled < 10) since the ceremony started, and again between squeeze 1 and squeeze 2. A trigger
+//   held through a magnet hold can no longer complete the ceremony on its own. No confStruct change, sizeof
+//   stays 136, SW_VERSION stays 27.
+// V2.5-Evo - 2026-10-06 - mag_mode 4 rulings (see Hall.ino): fmStepStationFromMagnet() now returns true when the
+//   station actually moved, so runMagGesture() can start its 1 s tap lockout (audit M-1). fmToggleAutoReturnFromMagnet()
+//   is no longer called: the 2.5 s magnet hold always starts the manual Return-To-Me. Its body is unchanged. No
+//   confStruct change, sizeof stays 136, SW_VERSION stays 27.
+// V2.5-Evo - 2026-10-06 - F-label hold: every "F<n>" confirm (cycleFmMode() arm + pre-throttle cycle,
+//   cycleFmModeArmed(), fmStepStationFromMagnet()) now calls showFmLabelHeld() (Display.ino): held 2 s and
+//   NON-blocking. Was a blocking gpsKeepAliveDelay() of 2 s (toggle paths) or 1.2 s (magnet tap). The 0xF2 in
+//   the two cycleFmMode() paths now goes out immediately instead of after the 2 s hold. No confStruct change,
+//   sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-09-30 - MagFix (delta audit of 98fb7a8), four changes here:
 //   1. RAM-ONLY ENFORCED. fmToggleRtmEnabledFromMagnet() no longer writes usrConf.rtm_enabled - it writes the new
 //      RAM rtm_enabled_session, and every gate now asks rtmEnabledEffective(). `?save` and the web-UI save persist
@@ -142,9 +218,7 @@
 //   are unchanged and still buzz.
 
 extern volatile uint8_t current_vib_pattern;
-// V2.5-Evo - 2026-09-30 - MagStations: how many taps Pattern 11 plays (1-3 = the station number).
-// Set it BEFORE writing 11 into current_vib_pattern. Defined in System.ino.
-extern volatile uint8_t vib_pulse_count;
+// (V2.5-Evo - 2026-10-07 - the vib_pulse_count extern for Pattern 11 was removed with the station buzz.)
 extern volatile bool    vib_stop_pending;   // set true to REQUEST the Pattern 7 STOP buzz (defined in
                                             // System.ino). Never write current_vib_pattern = 7 directly:
                                             // the flag is what makes the stop buzz preempt and survive.
@@ -164,6 +238,25 @@ static void gpsKeepAliveDelay(uint32_t ms)
     while (Serial1.available()) gps_tx.encode(Serial1.read());
     delay(10);
   }
+}
+
+// ceremonyDelaySeeRelease - V2.5-Evo - 2026-10-07 - R-1: gpsKeepAliveDelay() that also watches the trigger.
+// Used only for the two pauses between squeeze 1 and squeeze 2 in runDoubleSqueezeArm(), so a release that
+// happens while the ceremony is pausing is not missed.
+// Inputs:  ms - how long to wait. Reads thr_scaled (written by the 10 ms measBufCalc task).
+// Returns: true if the trigger read released (thr_scaled < 10) at any 10 ms sample during the wait.
+// Side effects: same as gpsKeepAliveDelay() (drains Serial1 into gps_tx). Loop task only. Blocks for ms.
+static bool ceremonyDelaySeeRelease(uint32_t ms)
+{
+  bool seen = false;
+  unsigned long start = millis();
+  while (millis() - start < ms)
+  {
+    while (Serial1.available()) gps_tx.encode(Serial1.read());
+    if (thr_scaled < 10) seen = true;
+    delay(10);
+  }
+  return seen;
 }
 
 // ============================================================
@@ -198,6 +291,57 @@ static uint32_t rtm_arm_gps_timeout_override = 0;
 // V2.5-Evo - 2026-09-19 - Gate 4 prints once per RTM run when it stands down because the buggy
 // says the stick takes over (fm_flags bit 4). Cleared at every RTM_ACTIVE entry.
 static bool rtm_gate4_takeover_printed = false;
+
+// ============================================================
+// V2.5-Evo - 2026-10-07 - A-1 + SOP-040 "ARRIVAL HAND-BACK KEEPS A THROTTLE CAP"
+// When the buggy ends the return itself (A-1, see rtmBuggyEndedCheck()), the MODE ends on the remote at once but
+// the throttle cap that was in force stays in force until the trigger has been seen FULLY RELEASED once
+// (triggerReleased()); only then is throttle uncapped manual. A rider still at full trigger when the buggy arrives
+// cannot drive it into himself.
+//   rtm_end_keep_cap     - set by the A-1 path immediately before rtmDisengage(): "keep rtm_thr_cap_tx as it is".
+//                          Consumed (cleared) by rtmDisengage().
+//   rtm_arrival_cap_hold - true while that kept cap is waiting for the release. Cleared by the release
+//                          (rtmArrivalCapUpdate() or the "St" hold in rtmDisengage()) or by a new arm.
+// Loop task only.
+// ============================================================
+static bool rtm_end_keep_cap     = false;
+static bool rtm_arrival_cap_hold = false;
+// V2.5-Evo - 2026-10-07 - Q-1: WHICH cap is kept. THE BUG: an arrival kept the ramp cap (30-70 %), so a rider still at
+// full trigger got up to 70 % with the buggy a few metres away and pointing at him. THE FIX: the ending path sets the
+// cap to keep here - 0 after an arrival (the buggy holds its own near-zero approach cap too), the cap in force after a
+// Q-2 refusal - and rtmDisengage() applies min(current cap, this), so a kept cap can only ever go DOWN. Loop task only.
+static uint8_t rtm_end_cap_value = 0;
+
+// ============================================================
+// V2.5-Evo - 2026-10-07 - Q-2: AN RTM THE BUGGY NEVER CONFIRMS
+// THE BUG: if the buggy never heard 0xF1/1 (all three packets lost, RTM disabled on the buggy) it never reports RTM
+// in fm_status bit 1, so the A-1 end could never fire: the remote showed the RTM screen and kept its cap while the
+// buggy was in plain manual - a silent non-start that looked like a return (SOP-041 rules 1-2).
+// THE FIX: count the fm_status ARRIVALS that land more than kRtmConfirmMarginMs after the last 0xF1/1 packet went
+// out (and only once that burst has drained). The first two with bit 1 clear, and none set: re-send 0xF1/1 once.
+// The next two still clear: end it as a REFUSAL - "St" + the stop buzz, the cap in force kept until one full release.
+// Until the first confirmed arrival the screen shows "rn" (waiting), never the RTM distance screen.
+// Loop task only. Reset at every RTM_ACTIVE entry (rtmUnconfirmedReset()).
+// ============================================================
+static const unsigned long kRtmConfirmMarginMs = 300UL;
+static unsigned long rtm_q2_last_arrival_ms = 0;   // fm_status arrival already looked at
+static uint8_t       rtm_q2_clear_count     = 0;   // clear arrivals counted since the start or the re-send
+static bool          rtm_q2_requeued        = false;
+
+// ============================================================
+// V2.5-Evo - 2026-10-07 - F-1: A FOLLOW-ME FAULT THAT ARRIVES DURING AN ACTIVE RETURN IS ANNOUNCED AT THE RETURN'S END
+// THE BUG: runFmLoop() handled a Follow-Me fault-stop edge with fmDisarm(false): "St" + the stop buzz and a 2 s
+// BLOCKING hold. Handled while RTM was ACTIVE (typically ~300 ms after the ceremony's 0xF1/1), it showed "St" on
+// top of a working return - a rider reads "stopped" when the buggy is coming back - and froze Gates 3/4 and the
+// ramp cap for 2 s. THE FIX: while RTM is active only the SILENT half runs at once (fmSilentDisarm(): fm_armed
+// false, keepalive stopped, 0xF2/0 queued - the 2-deep queue never lets it evict the 0xF1 burst), and this flag is
+// set. Every RTM end goes through rtmDisengage(), which then upgrades its "St" to carry the stop buzz and clears
+// the flag: ONE "St", ONE buzz, and the screen afterwards is the true state (normal screen, Follow-Me is off).
+// If RTM ends on its own fault the buzz fires anyway and the flag is simply cleared. A fault handled when no
+// return is active (including a ceremony that ended without going ACTIVE) takes today's fmDisarm(false) path.
+// Loop task only.
+// ============================================================
+static bool fm_fault_deferred = false;
 
 // FM session-init and keepalive state (Changes B + E)
 static bool          fm_session_init_done = false;  // Change B: true once last_fm_mode seeded from SPIFFS this session
@@ -241,6 +385,9 @@ static uint8_t       last_fm_return_mode  = 0xFF;   // 0xFF none, 0 OFF, 1 ON; R
 // NO NEW STRUCT FIELD. A RAM variable is not a confStruct field: sizeof(confStruct) stays 136 and
 // SW_VERSION stays 27, which matters because the TX struct tail is FULL and a version bump here would
 // wipe the owner's throttle calibration.
+// V2.5-Evo - 2026-10-07 - R-4: NO WRITER ANY MORE. Its only writer, fmToggleRtmEnabledFromMagnet(), was
+// removed (dead since the 2026-10-06 hold ruling), so this stays 0xFF and rtmEnabledEffective() always
+// returns the stored usrConf.rtm_enabled. Kept, with every reader, so the gates need no change.
 // ============================================================
 static uint8_t       rtm_enabled_session  = 0xFF;   // 0xFF none, 0 OFF, 1 ON; RAM only, dies at power-off
 
@@ -269,13 +416,21 @@ static uint8_t fmEncodeModeByte(uint8_t mode)
   return (uint8_t)((mode & 0x07) | (uint8_t)(ret_bits << 5));
 }
 
+// V2.5-Evo - 2026-10-07 - M-1: 0xF2 bit 7 = "FRESH DECLARATION". Set ONLY on a declaration the rider just made with a
+// gesture (a Follow-Me arm, a mode/station change); NEVER on the 30 s keepalive and never on a disarm (mode 0). After a
+// Follow-Me fault the buggy ignores a mode 1-5 without this bit, so a keepalive from a remote that missed the fault can
+// no longer re-arm it, while a deliberate re-arm still can. Every RX built before this round ignores bit 7 (it reads the
+// mode from bits 0-2 and the override from bits 5-6), so the bit is harmless to an older buggy.
+static const uint8_t kFmFreshDeclBit = 0x80;
+
 // fmRequestKeepaliveNow - ask runFmLoop()'s 30 s 0xF2 keepalive to go out on its next tick.
 // Used after the override changes while FM is armed, so the buggy learns the new value in ~100 ms
-// (or as soon as the single-slot burst queue is free) instead of up to 30 s later. Deliberately
-// NOT a direct queueMetaPacketBurst(): the gesture that sets the override has just queued the
-// 0xF1/0 cancel burst, and a second burst would overwrite it (single slot, see the 2026-09-18
-// keepalive note). The keepalive path already waits for an empty slot. No-op while FM is disarmed
-// (fm_last_sync_ms == 0): the next arm's 0xF2 carries the override anyway.
+// (or as soon as the burst queue is empty) instead of up to 30 s later. Deliberately NOT a direct
+// queueMetaPacketBurst(): the gesture that sets the override has just queued the 0xF1/0 cancel burst.
+// (V2.5-Evo - 2026-10-07 - P-12: this used to say a second burst would OVERWRITE it; that was true of the
+// old single-slot queue. The queue is 2-deep since the H-1 round and never lets an 0xF2 evict an 0xF1, so
+// nothing would be lost now; the keepalive path's wait for an empty queue is simply kept.) No-op while FM
+// is disarmed (fm_last_sync_ms == 0): the next arm's 0xF2 carries the override anyway.
 // Inputs: none. Side effects: rewinds fm_last_sync_ms so the keepalive is due now (never to 0,
 // which the keepalive reads as "disarmed").
 static void fmRequestKeepaliveNow()
@@ -322,6 +477,7 @@ void setRtmArmed()
   rtm_arm_start_ms = millis();
   rtm_hold_start   = 0;
   rtm_tx_active    = false;
+  rtm_arrival_cap_hold = false;   // V2.5-Evo - 2026-10-07 - A-1: a new run owns the cap from here (it is set to 0 below)
   // SAFETY FIX: sendData() FreeRTOS task keeps running while loop() is blocked inside
   // runDoubleSqueezeArm(). With cap=255, every arm-squeeze byte goes straight to RX and
   // drives the motor at full duty with rtm_rx_active=0 (no RX gate suppression).
@@ -336,7 +492,8 @@ void setRtmArmed()
 // ---- Called to disengage RTM from the gesture layer (user-initiated) ----
 // "St" confirm handled inside rtmDisengage().
 // Every caller of THIS wrapper is a deliberate rider action (the magnet toggle in Hall.ino and the
-// Gate 4 steer-exit), so it always passes commanded = true → no STOP buzz.
+// lock gesture; V2.5-Evo - 2026-10-07 - Q-5: the Gate 4 steer-exit no longer calls it), so it always passes
+// commanded = true → no STOP buzz.
 static void setRtmDisarmed()
 {
   rtmDisengage(true);
@@ -352,6 +509,10 @@ static void setRtmDisarmed()
 //        Gate 1 (max runtime), the only timer here that can fire while he is still squeezing.
 // OUTPUT: none. SIDE EFFECTS: state → RTM_COOLDOWN, throttle cap restored to 255, 0xF1/0 sent to RX,
 //        STOP buzz requested when uncommanded, and a BLOCKING 2s "St" display hold.
+// V2.5-Evo - 2026-10-07 - A-1: if rtm_end_keep_cap is set (the buggy ended the return itself), the cap in force is
+//        KEPT instead of restored to 255, rtm_arrival_cap_hold is raised, and the 2 s "St" hold watches the trigger:
+//        a full release during it lifts the cap at the end of the hold; otherwise rtmArrivalCapUpdate() lifts it on
+//        the first released sample afterwards.
 static void rtmDisengage(bool commanded)
 {
   rtm_tx_state    = RTM_COOLDOWN;
@@ -359,7 +520,18 @@ static void rtmDisengage(bool commanded)
   rtm_tx_active   = false;
   displayBuffer[6] = 0x0000;     // Bug3: clear R5 proximity bar row — updateR5ProximityBar() left
                                  // stale data here; without clearing, FM mode sees a phantom pixel
-  rtm_thr_cap_tx  = 255;
+  if (rtm_end_keep_cap)
+  {
+    rtm_end_keep_cap     = false;   // A-1: consumed
+    rtm_arrival_cap_hold = true;    // the kept cap stands until a full release
+    // V2.5-Evo - 2026-10-07 - Q-1: keep the LOWER of the cap in force and the one the ending path asked for.
+    if (rtm_end_cap_value < rtm_thr_cap_tx.load()) rtm_thr_cap_tx = rtm_end_cap_value;
+  }
+  else
+  {
+    rtm_arrival_cap_hold = false;
+    rtm_thr_cap_tx  = 255;
+  }
   rtm_arm_dist_m  = 0.0f;        // reset R5 bar reference (defined in BREmote_V2_Tx.h)
   rtm_arm_gps_timeout_override = 0;  // clear GPS timeout multiplier — ceremony fully over
   queueMetaPacketBurst(0xF1, 0);  // tell RX: RTM inactive
@@ -382,12 +554,109 @@ static void rtmDisengage(bool commanded)
   //   255, so that step to raw manual throttle is always real, and the sendData task keeps
   //   transmitting it throughout the blocking 2s hold below. That transition earns a warning;
   //   the two release-driven timeouts, where the trigger is already at rest, do not.
+  // V2.5-Evo - 2026-10-07 - F-1: a Follow-Me fault deferred during this return is announced now - this "St" gets
+  // the stop buzz even if the return itself ended quietly. If the return ended on its own fault it buzzes anyway.
+  if (fm_fault_deferred)
+  {
+    fm_fault_deferred = false;
+    if (commanded) Serial.println("FM [TX] the Follow-Me fault stop deferred during Return-To-Me is announced now: St + stop buzz");
+    commanded = false;
+  }
   if (!commanded) vib_stop_pending = true;   // Pattern 7: one long buzz = a FAULT stopped the system
 
   // Large-font stop confirm: LET_S(32) renders as "5", LET_T(20) renders as "t".
   // "5t" appearance is intentional — matches large-font style of F0-F3 confirms.
   DISP_LOCK(); displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
-  gpsKeepAliveDelay(2000);
+  if (rtm_arrival_cap_hold)
+  {
+    // V2.5-Evo - 2026-10-07 - A-1: watch the trigger during the hold (the loop is blocked here).
+    // V2.5-Evo - 2026-10-07 - Q-6: THE BUG - a release seen during the hold lifted the cap only when the 2 s ended, so a
+    // rider who let go and squeezed again inside the hold stayed capped for up to 2 s. THE FIX: the cap is lifted AT THE
+    // 10 ms SAMPLE where the release is seen; the "St" hold itself still runs its full 2 s.
+    const unsigned long hold_start_ms = millis();
+    while (millis() - hold_start_ms < 2000UL)
+    {
+      while (Serial1.available()) gps_tx.encode(Serial1.read());
+      if (rtm_arrival_cap_hold && triggerReleased())
+      {
+        rtm_arrival_cap_hold = false;
+        rtm_thr_cap_tx       = 255;
+        Serial.println("RTM [TX] trigger fully released after the return ended -> throttle cap lifted, full manual");
+      }
+      delay(10);
+    }
+  }
+  else
+  {
+    gpsKeepAliveDelay(2000);
+  }
+}
+
+// rtmArrivalCapUpdate - V2.5-Evo - 2026-10-07 - A-1 / SOP-040: lift the cap kept after the buggy ended a return,
+// on the first sample that shows the trigger fully released. Called every runRtmLoop() tick (~110 ms), before the
+// RTM enable check so a disabled RTM cannot strand a cap. A new arm (setRtmArmed()) clears the hold itself.
+// Inputs: rtm_arrival_cap_hold, triggerReleased(). Side effects: rtm_thr_cap_tx = 255 + one line on release.
+static void rtmArrivalCapUpdate()
+{
+  if (!rtm_arrival_cap_hold) return;
+  if (!triggerReleased()) return;
+  rtm_arrival_cap_hold = false;
+  rtm_thr_cap_tx       = 255;
+  Serial.println("RTM [TX] trigger fully released after the return ended -> throttle cap lifted, full manual");
+}
+
+// rtmReturnConfirmed - V2.5-Evo - 2026-10-07 - Q-2 / SOP-041: is a manual return running AND confirmed by the buggy
+// (an fm_status arrival with bit 1 set after this run went ACTIVE)? The screen draws the RTM returning look only while
+// this is true; before it, "rn" (waiting). Inputs: rtm_tx_state, fm_status_rtm_on_ms, rtm_active_start_ms.
+// Output: true = confirmed. No side effects. Not static: Display.ino (concatenated before this file) calls it from the
+// loop task and from the bargraph task; every read is one aligned word, so no tearing.
+bool rtmReturnConfirmed()
+{
+  if (rtm_tx_state != RTM_ACTIVE) return false;
+  const unsigned long on_ms = fm_status_rtm_on_ms;
+  return (on_ms != 0) && ((long)(on_ms - rtm_active_start_ms) > 0);
+}
+
+// rtmUnconfirmedReset - V2.5-Evo - 2026-10-07 - Q-2: start a fresh confirmation count at RTM_ACTIVE entry. Arrivals
+// already received are ignored (rtm_q2_last_arrival_ms = the current stamp). Loop task only.
+static void rtmUnconfirmedReset()
+{
+  rtm_q2_last_arrival_ms = fm_status_arrival_ms;
+  rtm_q2_clear_count     = 0;
+  rtm_q2_requeued        = false;
+}
+
+// rtmUnconfirmedCheck - V2.5-Evo - 2026-10-07 - Q-2: one tick of the "the buggy never confirmed RTM" rule (see the
+// block at the top of this file). Call only while RTM_ACTIVE and not yet confirmed.
+// Inputs: fm_status_arrival_ms, telemetry.fm_status, rtm_start_sent_ms, the meta queue, the rtm_q2_* state.
+// Returns: true if it ENDED the run (refusal: rtmDisengage(false) has run - the caller must stop). Side effects: may
+// re-queue 0xF1/1 once; one serial line per decision.
+static bool rtmUnconfirmedCheck()
+{
+  const unsigned long arr = fm_status_arrival_ms;
+  if (arr == rtm_q2_last_arrival_ms) return false;                          // no new fm_status arrival
+  rtm_q2_last_arrival_ms = arr;
+  const unsigned long sent = rtm_start_sent_ms;
+  if (sent == 0 || (long)(sent - rtm_active_start_ms) < 0) return false;   // this run's 0xF1/1 not on the air yet
+  if (metaQueuePending(0xF1, 1, false)) return false;                       // the 0xF1/1 burst is still draining
+  if ((long)(arr - sent) <= (long)kRtmConfirmMarginMs) return false;       // too soon after it to be evidence
+  if (telemetry.fm_status & FM_STATUS_RTM_ACTIVE) return false;            // bit set: that IS the confirmation
+  if (rtm_q2_clear_count < 255) rtm_q2_clear_count++;
+  if (rtm_q2_clear_count < 2) return false;
+  if (!rtm_q2_requeued)
+  {
+    rtm_q2_requeued    = true;
+    rtm_q2_clear_count = 0;
+    queueMetaPacketBurst(0xF1, 1);   // state burst: replaces a queued refresh / boot ID in place, never a stop
+    Serial.println("RTM [TX] the buggy has not confirmed Return-To-Me on 2 reports -> 0xF1/1 sent again");
+    return false;
+  }
+  Serial.printf("RTM [TX] the buggy did not confirm Return-To-Me after the re-send -> St + stop buzz; throttle cap %u kept until the trigger is fully released\n",
+                (unsigned)rtm_thr_cap_tx.load());
+  rtm_end_cap_value = rtm_thr_cap_tx.load();   // keep the cap in force
+  rtm_end_keep_cap  = true;
+  rtmDisengage(false);                         // a refusal: "St" + the stop buzz (SOP-040)
+  return true;
 }
 
 // ---- Decode telemetry.rtm_distance to metres ----
@@ -440,6 +709,29 @@ static float decodeRtmDistanceM()
 //   RETURN [TX] print style, added because the owner could not get the in-ceremony second gesture
 //   to fire on the bench and the remote was not on USB. Detector timing, thresholds and ordering
 //   are untouched.
+// V2.5-Evo - 2026-10-07 - R-3: true while a valid RIGHT tap -> LEFT hold sequence is under way inside the
+// ceremony (written by returnGestureCeremonyPoll() on every call). runDoubleSqueezeArm() keeps waiting past
+// rtm_arm_window_s while it is true, so a sequence started inside the window is allowed to finish instead of
+// being cut off mid-hold. It is bounded: a pending tap expires COMBO_WINDOW_MS after the tap, a started hold
+// ends on release, completion or a squeeze, so the extension is at most COMBO_WINDOW_MS + rtm_hold_duration_s.
+// (V2.5-Evo - 2026-10-07 - F-3: that bound did not hold - a fresh RIGHT tap renewed it - so the wait loops now also
+// stop at the absolute ceiling in ceremonyExtensionAllowed().)
+static bool return_gesture_in_progress = false;
+
+// ceremonyExtensionAllowed - V2.5-Evo - 2026-10-07 - F-3: the R-3 extension's HARD CEILING.
+// THE BUG: the bound above was not a real ceiling - every new RIGHT tap renewed the pending tap, so tapping RIGHT
+// every 2 s kept the ceremony (and its zero throttle) going past rtm_arm_window_s indefinitely. THE FIX: the
+// extension may never run past window + COMBO_WINDOW_MS + rtm_hold_duration_s from the ceremony start, which is
+// the longest a RIGHT tap -> LEFT hold begun on the last instant of the window can legitimately take.
+// Inputs: rtm_arm_start_ms, usrConf.rtm_arm_window_s / rtm_hold_duration_s, COMBO_WINDOW_MS (Hall.ino).
+// Output: true = still inside the ceiling. No side effects.
+static bool ceremonyExtensionAllowed()
+{
+  const unsigned long ceiling_ms = (unsigned long)usrConf.rtm_arm_window_s * 1000UL + COMBO_WINDOW_MS
+                                 + (unsigned long)usrConf.rtm_hold_duration_s * 1000UL;
+  return (millis() - rtm_arm_start_ms) < ceiling_ms;
+}
+
 static bool returnGestureCeremonyPoll(bool reset)
 {
   static bool          arm_hold_released = false;   // the LEFT hold that started the ceremony has been let go
@@ -448,6 +740,7 @@ static bool returnGestureCeremonyPoll(bool reset)
   static unsigned long right_down_ms     = 0;
   static unsigned long right_tap_ms      = 0;       // millis() of the last RIGHT tap; 0 = none pending
   static unsigned long left_down_ms      = 0;
+  return_gesture_in_progress = false;   // V2.5-Evo - 2026-10-07 - R-3: recomputed below on every live call
   if (reset) {
     arm_hold_released = false;
     right_was_down = left_was_down = false;
@@ -489,6 +782,15 @@ static bool returnGestureCeremonyPoll(bool reset)
     Serial.println("RETURN [TX] ceremony poll: gesture fired (tap+hold combo complete)");   // V2.5-Evo - 2026-09-19 - diagnostic only
     return true;
   }
+
+  // V2.5-Evo - 2026-10-07 - R-3: is a valid sequence under way? A RIGHT tap is pending and either (a) the
+  // LEFT hold has started within COMBO_WINDOW_MS of it and is still down, or (b) LEFT is not down yet and
+  // the tap is still young enough for a LEFT hold to qualify. The trigger must be released, because the
+  // gesture can only fire with thr_scaled < 10; a squeeze ends the extension at once.
+  if (right_tap_ms != 0 && thr_scaled < 10) {
+    if (left) return_gesture_in_progress = (left_down_ms - right_tap_ms) < COMBO_WINDOW_MS;
+    else      return_gesture_in_progress = (now - right_tap_ms) < COMBO_WINDOW_MS;
+  }
   return false;
 }
 
@@ -497,6 +799,11 @@ static bool returnGestureCeremonyPoll(bool reset)
 //   RTM_IDLE, rtm_thr_cap_tx 255, rtm_arm_gps_timeout_override 0, display cleared, 0xF1/0 queued;
 //   last_fm_return_mode set to the opposite of the echo; Pattern 9; a BLOCKING 2 s "A1"/"A0" hold;
 //   the keepalive requested (if FM is armed). Called only from runDoubleSqueezeArm().
+// V2.5-Evo - 2026-10-07 - INVARIANT (moved here from the removed fmToggleAutoReturnFromMagnet()): AN
+//   AUTO-RETURN FLIP NEVER CHANGES FOLLOW-ME ARMING. This function and returnGesture() state 3 write
+//   last_fm_return_mode only - never fm_armed, last_fm_mode or fm_throttle_seen - and the keepalive re-sends
+//   the SAME station with only bits 5-6 changed. Field check 2026-10-05 (RX log RX1_2026-10-05_2346): after
+//   the A0 the buggy stayed FM ARMED at station 2; Follow-Me ended later on a buggy DIVERGENCE fault-stop.
 static void ceremonyCancelForReturnGesture()
 {
   // The abort, exactly as the ceremony's own timeout paths do it.
@@ -525,6 +832,86 @@ static void ceremonyCancelForReturnGesture()
 }
 
 // ============================================================
+// V2.5-Evo - 2026-10-07 - M-3 / F-2: A 1 s LEFT HOLD CANCELS THE ARM CEREMONY BACK TO FULL MANUAL
+// THE BUG: while "rn" blinks the remote sends zero throttle for up to rtm_arm_window_s (15 s on the owner's
+// remote) and there was no way out except waiting: the only in-ceremony gesture was the A1/A0 combo, and a
+// rider who kept the trigger held through a magnet hold had no action at all that returned power.
+// THE FIX: hold the toggle LEFT for kCeremonyLeftCancelMs (1 s) -> the arm is cancelled AT ONCE: 0xF1/0 to the
+// buggy, throttle cap back to 255 (full manual), "St" with the normal stop buzz (vib_stop_pending, SOP-040).
+// DETAILS THAT MATTER:
+//   - LEFT is read from tog_scaled, not ctminus(): with the trigger squeezed calcFilter() hands the toggle to
+//     steering and tog_input reads 0, but tog_scaled still shows the push. So the cancel works trigger held
+//     or released - the held-trigger case is exactly F-2.
+//   - The LEFT hold that STARTED the ceremony (toggle route) must be released first; it never counts.
+//   - A RIGHT tap first makes the LEFT hold the A1/A0 auto-return switch instead (return_gesture_in_progress,
+//     set by returnGestureCeremonyPoll() on the same tick), so that existing gesture still works.
+//   - After the cancel the LEFT toggle may still be held; ceremony_toggle_latch (Hall.ino) keeps it from
+//     becoming a lock or a gear step until it is centred.
+//   - No magnet cancel (owner still deciding).
+// ============================================================
+static const unsigned long kCeremonyLeftCancelMs = 1000UL;
+
+// ceremonyLeftPastHalf - V2.5-Evo - 2026-10-07 - P-6: is the toggle pushed LEFT by MORE THAN HALF of its
+// calibrated left travel (tog_mid -> tog_left)?
+// THE BUG: the cancel counted any LEFT push past tog_diff (a few percent). In a held-trigger ceremony the toggle
+// is also the steering stick, so an ordinary LEFT steer held for 1 s cancelled the return the rider had asked for.
+// THE FIX: a deliberate push past the halfway point is required. Read from the raw averaged toggle counts against
+// the stored calibration, which works for either calibration direction (tog_left above or below tog_mid).
+// Inputs: tog_raw[] via readFilteredInputs() (Hall.ino), usrConf.tog_left / tog_mid, ads_input_fault (a frozen
+// buffer during an input fault is not a rider's push). Output: true = past half. No side effects. Loop task.
+static bool ceremonyLeftPastHalf()
+{
+  if (ads_input_fault) return false;
+  uint16_t thr_f = 0, tog_f = 0;
+  readFilteredInputs(thr_f, tog_f);
+  const int32_t span = (int32_t)usrConf.tog_left - (int32_t)usrConf.tog_mid;   // signed left travel
+  if (span == 0) return false;                                                 // no calibration to judge by
+  const int32_t d = (int32_t)tog_f - (int32_t)usrConf.tog_mid;                 // signed deflection now
+  return (span > 0) ? (2 * d > span) : (2 * d < span);                         // same side, beyond half
+}
+
+// ceremonyLeftCancelPoll - 1 s LEFT-hold detector for the blocking arm ceremony. Call AFTER
+// returnGestureCeremonyPoll(false) on the same tick.
+// Inputs: reset - true at ceremony start. Reads tog_scaled, usrConf.tog_diff, ceremonyLeftPastHalf(),
+//   return_gesture_in_progress.
+// Returns: true once the hold has lasted kCeremonyLeftCancelMs. Side effects: its own static state only.
+// V2.5-Evo - 2026-10-07 - P-6: "released" still means the toggle is back near centre (the old tog_diff test, so
+// the arming LEFT hold must really be let go), but the 1 s hold only counts while the push is past half travel
+// (ceremonyLeftPastHalf()); dropping below half restarts the second.
+static bool ceremonyLeftCancelPoll(bool reset)
+{
+  static bool          released_seen = false;   // LEFT seen not pushed since the ceremony started
+  static bool          holding       = false;
+  static unsigned long hold_start_ms = 0;
+  if (reset) { released_seen = false; holding = false; return false; }
+
+  const bool left = ((int)tog_scaled < 127 - (int)usrConf.tog_diff);
+  if (!left)                      { released_seen = true; holding = false; return false; }
+  if (!released_seen)             return false;                       // still the arming hold
+  if (return_gesture_in_progress) { holding = false; return false; }  // RIGHT tap first: this is A1/A0
+  if (!ceremonyLeftPastHalf())    { holding = false; return false; }  // P-6: a light push / steer does not count
+  if (!holding) { holding = true; hold_start_ms = millis(); }
+  return (millis() - hold_start_ms) >= kCeremonyLeftCancelMs;
+}
+
+// ceremonyCancelToManual - end the arm ceremony and hand back full manual throttle at once.
+// Inputs: none. Side effects: rtm_tx_state -> RTM_IDLE (so rtmIsArming() stops zeroing the throttle byte),
+//   rtm_thr_cap_tx 255, GPS override cleared, 0xF1/0 queued, stop buzz requested, then a 2 s "St" hold
+//   (BLOCKING, like every other "St"; the radio task passes the trigger during it). Loop task only.
+static void ceremonyCancelToManual()
+{
+  rtm_arm_gps_timeout_override = 0;
+  rtm_thr_cap_tx = 255;
+  rtm_tx_state   = RTM_IDLE;
+  rtm_tx_active  = false;
+  queueMetaPacketBurst(0xF1, 0);
+  Serial.println("RTM [TX] arm cancelled: LEFT hold 1 s -> full manual (0xF1/0)");
+  vib_stop_pending = true;   // Pattern 7, the normal stop buzz
+  DISP_LOCK(); displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
+  gpsKeepAliveDelay(2000);
+}
+
+// ============================================================
 // V2.5-Evo - 2026-04-28 - Bug4: Full rewrite. Handles both single and double squeeze.
 // Always called blocking from setRtmArmed(). Uses rtm_arm_start_ms as shared arm-window ref.
 // "A r" and "rn ×2" ceremony removed. Arm confirmation is unlockAnimation() + "r n" 2s.
@@ -538,6 +925,31 @@ static void ceremonyCancelForReturnGesture()
 //
 // On return: rtm_tx_state == RTM_ACTIVE (success) or RTM_IDLE (timeout / rejected).
 // ============================================================
+// ============================================================
+// V2.5-Evo - 2026-10-07 - DEFECT b: "rn" MUST BE VISIBLE WHILE THE CEREMONY WAITS FOR THE SQUEEZE
+// THE BUG: the wait drew "r n" once and then called advanceArrow() every 100 ms; advanceArrow() clears the whole
+// digit zone and draws the bobbing arrow, so "rn" was overdrawn on the very first tick and the rider only ever saw
+// the arrow (SOP-041 table: manual RTM window = "rn", must be visible). THE FIX: the two ALTERNATE in a fixed
+// cycle - "r n" steady for kCeremonyRnShowMs, then the bobbing arrow (the "squeeze" prompt) for the rest of
+// kCeremonyCycleMs. Same glyphs and same digit zone as before; nothing new is drawn and R5 / C7-C9 are untouched.
+// Inputs: phase_start_ms - millis() when this wait began (the cycle starts on "r n"). Side effects: draws the
+// digit zone (takes displayMutex via DISP_LOCK / advanceArrow()). Loop task only; called every ~100 ms.
+// ============================================================
+static const unsigned long kCeremonyRnShowMs = 1000UL;   // "r n" shown this long...
+static const unsigned long kCeremonyCycleMs  = 1500UL;   // ...out of every cycle; the arrow fills the remaining 500 ms
+
+static void ceremonyWaitFrame(unsigned long phase_start_ms)
+{
+  if (((millis() - phase_start_ms) % kCeremonyCycleMs) < kCeremonyRnShowMs)
+  {
+    DISP_LOCK(); displayDigitZone("r n"); updateDisplay(); DISP_UNLOCK();
+  }
+  else
+  {
+    advanceArrow();   // bob the arrow (it redraws the digit zone and calls updateDisplay() itself)
+  }
+}
+
 static void runDoubleSqueezeArm()
 {
   // Relax the GPS staleness threshold (Gate 2) for the duration of this blocking ceremony.
@@ -546,18 +958,42 @@ static void runDoubleSqueezeArm()
   rtm_arm_gps_timeout_override = (uint32_t)usrConf.rtm_gps_timeout_ms * 4UL;
 
   // Show "r n" while waiting for first squeeze
-  displayDigitZone("r n");
-  advanceArrow();   // prime arrow before loop; advanceArrow() calls updateDisplay() internally
+  // V2.5-Evo - 2026-10-07 - defect b: "r n" alternates with the arrow (ceremonyWaitFrame()); it used to be drawn
+  // here and overdrawn at once by advanceArrow().
+  const unsigned long wait1_start_ms = millis();
+  ceremonyWaitFrame(wait1_start_ms);
 
   returnGestureCeremonyPoll(true);   // V2.5-Evo - 2026-09-19 - fresh detector; the arming hold is still down
+  ceremonyLeftCancelPoll(true);      // V2.5-Evo - 2026-10-07 - M-3: fresh 1 s LEFT-hold cancel detector
+
+  // V2.5-Evo - 2026-10-07 - R-3: from here on, a toggle must be seen centred before runMenu() (Hall.ino)
+  // acts on it again. Set at the start so EVERY exit below (squeeze timeout, A1/A0 cancel, pre-arm refusal,
+  // RTM ACTIVE) is covered without touching each return path; nothing reads it while this function blocks.
+  ceremony_toggle_latch = true;
+
+  // V2.5-Evo - 2026-10-07 - RELEASE-FIRST SQUEEZES (audit R-1). THE BUG: the waits below accepted any
+  // trigger above 30% held for 500 ms and never asked whether the trigger had been let go first. A rider
+  // who kept the trigger held through a magnet hold therefore completed the whole ceremony with no
+  // deliberate squeeze at all: squeeze 1 was "met" about 0.6 s after the magnet came off, squeeze 2
+  // about 1.3 s later, and RTM went ACTIVE about 5 s after the hold - with Follow-Me armed, possibly
+  // while he was still on the rope. THE FIX: a squeeze only counts after the trigger has been SEEN
+  // RELEASED (thr_scaled < 10, the same "released" test the toggle gestures use) since the ceremony
+  // started, and again between squeeze 1 and squeeze 2. A deliberate squeeze - release, squeeze, hold
+  // half a second - works exactly as before; the toggle route always starts released, so nothing
+  // changes there. Throttle is still forced to 0 for the whole ceremony (rtm_thr_cap_tx = 0 and
+  // rtmIsArming() in Radio.ino), so this only decides WHEN the ceremony may complete.
+  bool          thr_released_seen = false;
 
   // Wait for first squeeze: thr > 30% (thr_scaled > 76) held for 500ms continuous
   bool          first_ok = false;
   unsigned long hold_ms  = 0;
-  while (millis() - rtm_arm_start_ms < (unsigned long)usrConf.rtm_arm_window_s * 1000UL)
+  while (millis() - rtm_arm_start_ms < (unsigned long)usrConf.rtm_arm_window_s * 1000UL ||
+         (return_gesture_in_progress && ceremonyExtensionAllowed()))   // R-3: a started tap -> hold may finish; F-3: hard ceiling
   {
-    advanceArrow();   // bob arrow every 100ms while waiting for squeeze
-    if (thr_scaled > 76)
+    ceremonyWaitFrame(wait1_start_ms);   // V2.5-Evo - 2026-10-07 - defect b: "r n" / arrow alternate (was advanceArrow() only)
+    if (thr_scaled < 10) thr_released_seen = true;   // V2.5-Evo - 2026-10-07 - R-1: release seen
+    if (thr_released_seen && thr_scaled > 76 &&     // V2.5-Evo - 2026-10-07 - R-1: counts only after a release
+        millis() - rtm_arm_start_ms < (unsigned long)usrConf.rtm_arm_window_s * 1000UL)   // R-3: never past the window
     {
       if (hold_ms == 0) hold_ms = millis();
       if (millis() - hold_ms >= 500UL) { first_ok = true; hold_ms = 0; break; }
@@ -565,6 +1001,8 @@ static void runDoubleSqueezeArm()
     else { hold_ms = 0; }
     // V2.5-Evo - 2026-09-19 - the return gesture done again while waiting = cancel + flip (state 2).
     if (returnGestureCeremonyPoll(false)) { ceremonyCancelForReturnGesture(); return; }
+    // V2.5-Evo - 2026-10-07 - M-3 / F-2: a plain 1 s LEFT hold = cancel to full manual, "St" + stop buzz.
+    if (ceremonyLeftCancelPoll(false)) { ceremonyCancelToManual(); return; }
     delay(100);
     checkSerial();
   }
@@ -590,18 +1028,27 @@ static void runDoubleSqueezeArm()
   else
   {
     // Double-squeeze: first unlock (no P4 yet), pause, then black screen, then wait for second squeeze
+    // V2.5-Evo - 2026-10-07 - R-1: squeeze 2 needs its OWN release after squeeze 1. The two pauses
+    // below watch the trigger too (ceremonyDelaySeeRelease()), so a rider who lets go and squeezes
+    // again while the unlock animation is still playing is counted exactly as before.
+    thr_released_seen = false;
     unlockAnimation();
-    gpsKeepAliveDelay(250);
+    if (unlock_anim_release_seen) thr_released_seen = true;   // V2.5-Evo - 2026-10-07 - F-8: a release during the animation counts
+    if (ceremonyDelaySeeRelease(250)) thr_released_seen = true;
     DISP_LOCK(); for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000; updateDisplay(); DISP_UNLOCK();
-    gpsKeepAliveDelay(800);
+    if (ceremonyDelaySeeRelease(800)) thr_released_seen = true;
 
     bool second_ok = false;
     hold_ms = 0;
-    advanceArrow();   // prime arrow for second wait
-    while (millis() - rtm_arm_start_ms < (unsigned long)usrConf.rtm_arm_window_s * 1000UL)
+    const unsigned long wait2_start_ms = millis();   // V2.5-Evo - 2026-10-07 - defect b: second wait, cycle restarts on "r n"
+    ceremonyWaitFrame(wait2_start_ms);
+    while (millis() - rtm_arm_start_ms < (unsigned long)usrConf.rtm_arm_window_s * 1000UL ||
+           (return_gesture_in_progress && ceremonyExtensionAllowed()))   // R-3: a started tap -> hold may finish; F-3: hard ceiling
     {
-      advanceArrow();   // bob arrow every 100ms while waiting for second squeeze
-      if (thr_scaled > 76)
+      ceremonyWaitFrame(wait2_start_ms);   // V2.5-Evo - 2026-10-07 - defect b: "r n" / arrow alternate (was advanceArrow() only)
+      if (thr_scaled < 10) thr_released_seen = true;   // V2.5-Evo - 2026-10-07 - R-1: release seen
+      if (thr_released_seen && thr_scaled > 76 &&     // V2.5-Evo - 2026-10-07 - R-1: counts only after a release
+          millis() - rtm_arm_start_ms < (unsigned long)usrConf.rtm_arm_window_s * 1000UL)   // R-3: never past the window
       {
         if (hold_ms == 0) hold_ms = millis();
         if (millis() - hold_ms >= 500UL) { second_ok = true; hold_ms = 0; break; }
@@ -609,6 +1056,8 @@ static void runDoubleSqueezeArm()
       else { hold_ms = 0; }
       // V2.5-Evo - 2026-09-19 - the return gesture done again while waiting = cancel + flip (state 2).
       if (returnGestureCeremonyPoll(false)) { ceremonyCancelForReturnGesture(); return; }
+      // V2.5-Evo - 2026-10-07 - M-3 / F-2: a plain 1 s LEFT hold = cancel to full manual, "St" + stop buzz.
+      if (ceremonyLeftCancelPoll(false)) { ceremonyCancelToManual(); return; }
       delay(100);
       checkSerial();
     }
@@ -673,6 +1122,7 @@ static void runDoubleSqueezeArm()
   rtm_tx_active       = true;
   rtm_release_ms      = 0;
   rtm_gate4_takeover_printed = false;   // V2.5-Evo - 2026-09-19 - Gate 4's stand-down notice is once per run
+  rtmUnconfirmedReset();                // V2.5-Evo - 2026-10-07 - Q-2: fresh confirmation count for this run
   rtm_arm_dist_m      = decodeRtmDistanceM();
   if (rtm_arm_dist_m < 0.0f) rtm_arm_dist_m = 0.0f;
   queueMetaPacketBurst(0xF1, 1);
@@ -685,9 +1135,167 @@ static void runDoubleSqueezeArm()
   if (fm_last_sync_ms > 0) fm_last_sync_ms = millis();
 }
 
+// ============================================================
+// V2.5-Evo - 2026-10-07 - H-1 (TX part): THE BUGGY IS STILL IN RETURN-TO-ME BUT THIS REMOTE IS NOT
+// THE BUG: the buggy's RTM flag (rtm_rx_active) is set and cleared only by 0xF1 bursts, with no expiry. If
+// the stop never arrived - link lost mid-return, the remote rebooted or slept mid-return, or all three burst
+// packets were lost - the buggy stayed in RTM while the remote showed manual: with GPS fine a squeeze steered
+// on its own with the stick ignored, with GPS dead the motor stayed at 0. Nothing on the remote could see it.
+// THE FIX: the buggy reports the flag in telemetry.fm_status bit 1. While this remote is NOT running a return
+// (IDLE or COOLDOWN, never ARMED or ACTIVE) and the link is fresh, a set bit that ARRIVED after our last 0xF1/0
+// went on the air (plus kRtmStopEchoMarginMs for the buggy to process it) means the buggy did not hear the
+// stop: queue 0xF1/0 again. The arrival test makes the retry follow the telemetry rotation (one try per fresh
+// report, ~2-3 s) instead of re-sending every loop tick, and it keeps retrying until the bit clears.
+// Runs whatever the remote's own RTM enable says, and while locked, because a stuck buggy is the problem
+// either way. Can only ever send "RTM off". Loop task only.
+// Inputs: rtm_tx_state, usrConf.paired, radio activity, last_packet, telemetry.fm_status,
+//   fm_status_arrival_ms, rtm_stop_sent_ms. Side effects: may queue 0xF1/0 and print one line.
+// ============================================================
+static const unsigned long kRtmStopEchoMarginMs = 300UL;   // buggy handles 0xF1 at once; telemetry refresh is 100 ms
+
+static void rtmRxStateWatch(unsigned long now)
+{
+  if (rtm_tx_state == RTM_ACTIVE || rtm_tx_state == RTM_ARMED) return;     // our own return, or its ceremony
+  if (!usrConf.paired || !isRadioActivityEnabled()) return;
+  if (last_packet == 0 || (now - last_packet) >= FM_LINK_HEALTHY_MS) return; // link not fresh: nothing to trust
+  if ((telemetry.fm_status & FM_STATUS_RTM_ACTIVE) == 0) return;              // the buggy is not in RTM
+  const unsigned long arrived = fm_status_arrival_ms;
+  const unsigned long sent    = rtm_stop_sent_ms;
+  if (arrived == 0) return;                                                   // never actually received the byte
+  if (sent != 0 && (long)(arrived - sent) < (long)kRtmStopEchoMarginMs) return; // report predates our last stop
+  Serial.println("RTM [TX] the buggy reports Return-To-Me active but this remote is not running it -> 0xF1/0");
+  queueMetaPacketBurst(0xF1, 0);
+  rtm_stop_sent_ms = now;   // hold off the next try until this burst is out and a fresh report arrives
+}
+
+// ============================================================
+// V2.5-Evo - 2026-10-07 - H-1 (TX part): FLUSH "RTM OFF" AND "FOLLOW-ME OFF" BEFORE GOING QUIET
+// THE BUG: deepSleep() switched the radio off with nothing sent, so a buggy in Return-To-Me or Follow-Me
+// kept that state with no remote behind it (contrary to the 2026-07-20 "flush 0xF1/0 before radio teardown").
+// THE FIX: queue 0xF1/0 and 0xF2/0 (both fit in the 2-deep queue) and wait until they have gone out:
+// at least kStopFlushMinMs (400 ms), until the queue is empty, at most kStopFlushMaxMs. Two bursts of three
+// packets at the 100 ms cadence take about 600 ms. Used by deepSleep() (System.ino) and the lock gesture
+// (Hall.ino). The 0xF2 value goes through fmEncodeModeByte(0) like every other Follow-Me disarm.
+// Does nothing if the remote is unpaired or its radio is off (nothing can be sent).
+// BLOCKING up to kStopFlushMaxMs on the loop task. The radio and ADC tasks keep running; throttle is not
+// affected (meta packets replace control packets for those cycles, exactly as any burst does).
+// Not static: Hall.ino and System.ino call it.
+// ============================================================
+static const unsigned long kStopFlushMinMs = 400UL;
+static const unsigned long kStopFlushMaxMs = 1000UL;
+
+void rtmFmStopFlush()
+{
+  if (!usrConf.paired || !isRadioActivityEnabled()) return;
+  queueMetaPacketBurst(0xF1, 0);
+  queueMetaPacketBurst(0xF2, fmEncodeModeByte(0));
+  unsigned long start = millis();
+  while (millis() - start < kStopFlushMaxMs)
+  {
+    if (millis() - start >= kStopFlushMinMs && rtm_meta_count.load(std::memory_order_acquire) == 0) break;
+    delay(10);
+  }
+  Serial.println("RTM [TX] stop flush: 0xF1/0 + 0xF2/0 sent before going quiet");
+}
+
+// ============================================================
+// V2.5-Evo - 2026-10-07 - S-8: THIS REMOTE'S BOOT ID (so the buggy can tell that the remote was switched off and on)
+// THE PROBLEM: a remote that is power-cycled mid-return looks to the buggy exactly like one that never went away, so a
+// standing return-to-me or auto-return carried on with nobody's intent behind it (SOP-040 auto-return rule 5).
+// THE FIX: at every power-on the remote picks a random 7-bit ID and sends it as an 0xF1 packet whose VALUE is
+// 0x80 | id. The buggy remembers the last ID; a DIFFERENT one means the remote rebooted, and the buggy cancels any
+// standing return. Every RX firmware handles 0xF1 values 0 and 1 only and ignores every other value, so an older buggy
+// simply ignores the packet.
+// The ID must differ from the previous power-on's (a repeat would hide the reboot), so the last one is kept in NVS
+// (Preferences namespace "bremote_tx", key "boot_id") - NOT in confStruct, so no struct change and no SPIFFS write.
+// If NVS cannot be opened the ID is still random (1 in 128 chance of a repeat) and one line says so.
+// Timing: a 3-packet burst queued in setup() before the radio task starts, so it is the first thing sent (after the
+// unlock on a remote that boots locked); then ONE packet whenever the link becomes fresh and every 10 s while it stays
+// fresh. These are lowest priority: queueMetaPacketIfFree() puts them only into a free slot and never over a pending
+// 0xF1/0 or 0xF1/1 (a refused one is retried on the next tick).
+// ============================================================
+static uint8_t       tx_boot_id         = 0;    // 0-127, chosen once per power-on
+static unsigned long tx_boot_id_last_ms = 0;    // millis() of the last repeat queued; 0 = send at the next fresh link
+static const unsigned long kTxBootIdRepeatMs = 10000UL;
+
+// txBootIdInit - choose this power-on's boot ID (different from the last one stored in NVS), store it, and queue the
+// first 0xF1/(0x80|id) burst. Called once from setup() before initTasks(). Inputs: NVS, esp_random().
+// Side effects: one NVS write per power-on, one queued burst, one serial line. Not static: setup() calls it.
+void txBootIdInit()
+{
+  Preferences prefs;
+  uint8_t last = 0xFF;                                   // 0xFF = none stored (never a valid 7-bit ID)
+  const bool nvs_ok = prefs.begin("bremote_tx", false);
+  if (nvs_ok) last = prefs.getUChar("boot_id", 0xFF);
+  uint8_t id = (uint8_t)(esp_random() & 0x7F);
+  if (id == last) id = (uint8_t)((id + 1 + (esp_random() % 126)) & 0x7F);   // offset 1..126: can never equal last
+  if (nvs_ok)
+  {
+    prefs.putUChar("boot_id", id);
+    prefs.end();
+  }
+  tx_boot_id = id;
+  queueMetaPacketIfFree(0xF1, (uint8_t)(0x80 | id), 3);
+  if (last == 0xFF) Serial.printf("RTM [TX] boot ID %u (none stored before) queued as 0xF1/0x%02X\n", (unsigned)id, (unsigned)(0x80 | id));
+  else              Serial.printf("RTM [TX] boot ID %u (previous %u) queued as 0xF1/0x%02X\n", (unsigned)id, (unsigned)last, (unsigned)(0x80 | id));
+  if (!nvs_ok) Serial.println("RTM [TX] boot ID: NVS not available - the ID is random but may repeat the last one");
+}
+
+// txBootIdTick - repeat the boot ID while the link is fresh (once when it becomes fresh, then every 10 s).
+// Inputs: now, usrConf.paired, radio activity, last_packet. Side effects: may queue one 0xF1 packet. Loop task only.
+static void txBootIdTick(unsigned long now)
+{
+  if (!usrConf.paired || !isRadioActivityEnabled()) return;
+  // V2.5-Evo - 2026-10-07 - signed: waitForTelemetry can stamp last_packet after `now` was read (see rtmRefreshTick()).
+  const bool link_fresh = (last_packet != 0) && ((long)(now - last_packet) < (long)FM_LINK_HEALTHY_MS);
+  if (!link_fresh) { tx_boot_id_last_ms = 0; return; }   // send again as soon as the link comes back
+  if (tx_boot_id_last_ms != 0 && (now - tx_boot_id_last_ms) < kTxBootIdRepeatMs) return;
+  // V2.5-Evo - 2026-10-07 - S-8 follow-up: right after a link gap the buggy may have lost the ID (an RX reboot) and a
+  // parked auto-return reads not-ready until it hears one, so the first send after a gap is a full 3-packet burst;
+  // the 10 s repeats on a steady link stay one packet each (every meta packet replaces a control packet).
+  const uint8_t sends = (tx_boot_id_last_ms == 0) ? 3 : 1;
+  if (queueMetaPacketIfFree(0xF1, (uint8_t)(0x80 | tx_boot_id), sends)) tx_boot_id_last_ms = (now != 0) ? now : 1;
+}
+
+// ============================================================
+// V2.5-Evo - 2026-10-07 - H-1: THE RTM REFRESH ("this remote is still running Return-To-Me")
+// THE PROBLEM: the buggy's RTM flag is set by one 0xF1/1 burst and has no expiry, so if every later 0xF1/0 is lost
+// (link loss, a remote that went quiet) the buggy keeps returning with nobody's intent behind it.
+// THE FIX: while RTM_ACTIVE this remote sends ONE 0xF1 packet with VALUE 0x02 about once a second, starting at least
+// 1 s after the last 0xF1/1 packet went out (the activation burst has drained). The buggy ends RTM on a fault if a
+// remote that has refreshed once stops refreshing for 5 s. A refresh never ACTIVATES RTM on the buggy, and an older RX
+// ignores value 2. It stops on every RTM end, because it is only queued from the RTM_ACTIVE case; a refresh still
+// queued when RTM ends is overwritten in place by the 0xF1/0 rtmDisengage() queues (same-type rule).
+// Free slot only (queueMetaPacketIfFree()), so it can never replace a pending 0xF1/0 or 0xF1/1.
+// ============================================================
+static unsigned long rtm_refresh_last_ms = 0;   // millis() of the last refresh queued
+static const unsigned long kRtmRefreshPeriodMs = 1000UL;
+
+// rtmRefreshTick - queue the next refresh if one is due. Inputs: now, rtm_start_sent_ms, rtm_active_start_ms,
+// rtm_refresh_last_ms, the queue. Side effects: may queue one 0xF1/0x02. Called only from the RTM_ACTIVE case.
+static void rtmRefreshTick(unsigned long now)
+{
+  const unsigned long started = rtm_start_sent_ms;
+  if (started == 0 || (long)(started - rtm_active_start_ms) < 0) return;   // this run's 0xF1/1 is not on the air yet
+  if (metaQueuePending(0xF1, 1, false)) return;                             // the activation burst is still draining
+  // V2.5-Evo - 2026-10-07 - signed: sendData (higher priority) can stamp `started` AFTER `now` was read; an unsigned
+  // now - started would then wrap to ~49 days and send the refresh at once, on top of the activation burst.
+  if ((long)(now - started) < (long)kRtmRefreshPeriodMs) return;           // >= 1 s after its last packet
+  if ((long)(rtm_refresh_last_ms - rtm_active_start_ms) >= 0 &&
+      (now - rtm_refresh_last_ms) < kRtmRefreshPeriodMs) return;           // one per second within this run
+  if (queueMetaPacketIfFree(0xF1, 0x02, 1)) rtm_refresh_last_ms = now;
+}
+
 // ---- Called from loop() every ~110ms ----
 void runRtmLoop()
 {
+  // V2.5-Evo - 2026-10-07 - S-8: boot ID repeats, whatever the RTM enable says (a reboot matters to auto-return too).
+  txBootIdTick(millis());
+  // V2.5-Evo - 2026-10-07 - H-1: runs BEFORE the enable check below, on purpose - see rtmRxStateWatch().
+  rtmRxStateWatch(millis());
+  // V2.5-Evo - 2026-10-07 - A-1: the kept arrival cap is lifted on a full release whatever the RTM enable says.
+  rtmArrivalCapUpdate();
+
   // V2.5-Evo - 2026-09-30 - the EFFECTIVE enable (see rtmEnabledEffective()). A session override that
   // says OFF parks this whole state machine exactly as a stored 0 always did; it cannot leave a run
   // half-supervised, because the flip is refused outright while RTM is active or arming.
@@ -720,6 +1328,58 @@ void runRtmLoop()
     {
       // Update throttle cap for ramp
       rtm_thr_cap_tx = calcRtmThrottleCap();
+
+      // V2.5-Evo - 2026-10-07 - A-1: THE BUGGY ENDED THE RETURN ITSELF. Checked first: if the buggy is no longer
+      // returning, none of the remote's own gates below has anything left to supervise.
+      // V2.5-Evo - 2026-10-07 - Q-3 / Q-1: THE BUGGY NOW SAYS HOW IT ENDED (telemetry.rx_state_flags, index 19, rising
+      // edges latched in Radio.ino; acted on only when the rise came after this run went ACTIVE):
+      //   bit 0 FAULT (Phase C, its gate timeout, the refresh expiry) -> rtmDisengage(false): "St" + the stop buzz,
+      //         0xF1/0, cap 255 - a fault hands back full manual control (SOP-039 rule 2).
+      //   bit 1 ARRIVED (its stop distance)                            -> rtmDisengage(true): silent "St", 0xF1/0, and the
+      //         throttle cap goes to 0 until the trigger is fully released once (SOP-040 arrival rule, Q-1).
+      // FALLBACK (an older RX that sends no index 19, or a lost edge): the buggy CONFIRMED RTM during this run (an
+      // fm_status arrival with bit 1 set after ACTIVE began) and then reported it OFF on 2 consecutive arrivals of the
+      // byte. It ends as a fault if the last rx_state_flags shows bit 0, otherwise as an arrival (cap 0 until release).
+      // Q-2: while the buggy has NOT confirmed, rtmUnconfirmedCheck() re-sends 0xF1/1 once, then refuses.
+      {
+        const bool rx_confirmed = (fm_status_rtm_on_ms != 0) &&
+                                  ((long)(fm_status_rtm_on_ms - rtm_active_start_ms) > 0);
+        const unsigned long fault_rise  = rx_rtm_fault_rise_ms;
+        const unsigned long arrive_rise = rx_rtm_arrived_rise_ms;
+        const bool rx_fault_now   = (fault_rise  != 0) && ((long)(fault_rise  - rtm_active_start_ms) > 0);
+        const bool rx_arrived_now = (arrive_rise != 0) && ((long)(arrive_rise - rtm_active_start_ms) > 0);
+        if (rx_fault_now)
+        {
+          Serial.println("RTM [TX] the buggy ended Return-To-Me on a FAULT (rx_state_flags bit 0) -> St + stop buzz, full manual");
+          rtmDisengage(false);
+          break;
+        }
+        if (rx_arrived_now)
+        {
+          Serial.println("RTM [TX] the buggy ARRIVED (rx_state_flags bit 1) -> silent St; throttle cap 0 until the trigger is fully released");
+          rtm_end_cap_value = 0;
+          rtm_end_keep_cap  = true;
+          rtmDisengage(true);
+          break;
+        }
+        if (rx_confirmed && fm_status_rtm_off_streak >= 2)
+        {
+          if (telemetry.rx_state_flags & RX_STATE_RTM_FAULT)
+          {
+            Serial.println("RTM [TX] the buggy ended Return-To-Me (fm_status bit 1 off on 2 arrivals, fault bit set) -> St + stop buzz, full manual");
+            rtmDisengage(false);
+          }
+          else
+          {
+            Serial.println("RTM [TX] the buggy ended Return-To-Me (fm_status bit 1 off on 2 arrivals) -> silent St; throttle cap 0 until the trigger is fully released");
+            rtm_end_cap_value = 0;
+            rtm_end_keep_cap  = true;
+            rtmDisengage(true);
+          }
+          break;
+        }
+        if (!rx_confirmed && rtmUnconfirmedCheck()) break;   // Q-2 refusal ended the run
+      }
 
       // Gate 1: max runtime (0 = disabled — safety gates handle all real scenarios)
       if (usrConf.rtm_max_runtime_s > 0 &&
@@ -773,7 +1433,8 @@ void runRtmLoop()
         rtm_release_ms = 0;
       }
 
-      // Gate 4: steering exit (P8 — any significant steering input exits RTM)
+      // Gate 4: steering exit (P8 — any significant steering input exited RTM). SUPERSEDED 2026-10-07 by Q-5 below:
+      // the gate never exits any more; the 2026-09-19 note that follows is kept as history.
       // V2.5-Evo - 2026-09-19 - THE GATE FOLLOWS THE BUGGY. usrConf.rtm_steer_exit_on_input is no
       // longer read (deprecated, see BREmote_V2_Tx.h). Whether the stick cancels or takes over an
       // automatic return is the buggy's steer_during_auto setting, echoed in fm_flags bit 4 and
@@ -783,23 +1444,20 @@ void runRtmLoop()
       // so the remote must NOT end the run - the gate stands down and says so once per run. During
       // the ~2 s handshake after a setting change the two boards may disagree for one telemetry
       // rotation; both directions fail to cancel or to ignore, never to an unguarded takeover.
+      // V2.5-Evo - 2026-10-07 - Q-5: GATE 4 ALWAYS STANDS DOWN. THE BUG: with the buggy echoing steer_during_auto 0 (or a
+      // stale link) a push past 20 counts ended the return - with the trigger HELD - and lifted the cap to 255 mid-squeeze.
+      // Owner rule (SOP-040, SOP-039 rule 7): steering is an aid, never an exit; a manual return ends only by arriving, a
+      // fault, the trigger released 4 s (Gate 3), the lock, or a remote power cycle. The remote now never exits on the
+      // stick; whether the stick cancels or takes over the automatic STEERING is the buggy's own steer_during_auto
+      // setting, applied on the buggy. One serial line per run when the stick is first pushed.
+      if (toggle_blocked_by_steer && abs((int)steer_scaled - 127) > 20 && !rtm_gate4_takeover_printed)
       {
-        const bool link_fresh     = (last_packet != 0) && ((now - last_packet) < FM_LINK_HEALTHY_MS);
-        const bool buggy_takeover = link_fresh && ((telemetry.fm_flags & FM_FLAG_STEER_TAKEOVER) != 0);
-        if (toggle_blocked_by_steer && abs((int)steer_scaled - 127) > 20)
-        {
-          if (!buggy_takeover)
-          {
-            setRtmDisarmed();   // COMMANDED: the rider deliberately steered out → silent
-            break;
-          }
-          if (!rtm_gate4_takeover_printed)
-          {
-            rtm_gate4_takeover_printed = true;
-            Serial.println("RTM [TX] Gate 4: stick pushed, but the buggy says the stick takes over (steer_during_auto 1) - not exiting; the buggy resumes when the stick centres");
-          }
-        }
+        rtm_gate4_takeover_printed = true;
+        Serial.println("RTM [TX] Gate 4: stick pushed - steering never ends a return on this remote; the buggy's steer_during_auto decides how the stick steers it");
       }
+
+      // V2.5-Evo - 2026-10-07 - H-1: still ACTIVE after every gate - send the once-a-second refresh if one is due.
+      rtmRefreshTick(now);
 
       // Display handled by renderRtmInfoDisplay() in loop() when rtm_tx_active==true
       break;
@@ -851,51 +1509,32 @@ void runRtmLoop()
 
 volatile bool        fm_armed         = false;  // FM arm state; RAM only, cleared on power cycle. Not static — extern'd by Display.ino (R5 bar)
                                                  // volatile: read by updateBargraphs() (task), written by loop()
-static uint8_t       last_fm_mode     = 1;      // last active FM station (1-5 since 2026-10-02: 1 rear-right, 2 behind, 3 rear-left, 4 front-right, 5 front-left; no 6, there is no dead-ahead station); defaults F1; RAM only
+static uint8_t       last_fm_mode     = 1;      // last active FM mode (1-3); defaults F1; RAM only
 static unsigned long fm_arm_ms        = 0;      // time of arm, or time of last throttle >10 while armed
 static bool          fm_throttle_seen = false;  // becomes true once thr_scaled>10 after arming
+// V2.5-Evo - 2026-10-07 - SOP-041 rule 3 resync: millis() of this remote's last Follow-Me ARM declaration (cycleFmMode()
+// arm path). The buggy needs the 0xF2 burst plus one telemetry rotation before it can report bit 0, so "not armed"
+// reports that began within kFmResyncDeclareMarginMs of the arm are not evidence. Loop task only.
+static unsigned long fm_declare_ms    = 0;
+static const unsigned long kFmResyncMs              = 3000UL;   // bit 0 clear for this long on a fresh link
+static const unsigned long kFmResyncDeclareMarginMs = 1500UL;
 
 // Returns true if FM is currently armed; called by Hall.ino to intercept LEFT hold 2s
 bool isFmArmed() { return fm_armed; }
 
-// V2.5-Evo - 2026-07-20 - Batch T: previous telemetry.fm_flags snapshot for bit3 (fault-stop)
-// rising-edge detection in runFmLoop(). Updated every runFmLoop() tick so re-arming always
-// starts from a fresh baseline (no stale edge). RAM only.
-static uint8_t fm_flags_prev = 0;
+// V2.5-Evo - 2026-07-20 - Batch T: a previous telemetry.fm_flags snapshot (fm_flags_prev) lived here for the
+// bit3 (fault-stop) rising-edge test in runFmLoop().
+// V2.5-Evo - 2026-10-07 - R-6: removed. The edge is now latched on the byte's arrival in Radio.ino
+// (fm_fault_latched, BREmote_V2_Tx.h), so a long loop() stall can no longer hide it.
+
+// V2.5-Evo - 2026-10-07 - the FM warning-distance haptic (Pattern 8, one 300 ms pulse every 2 s while the buggy
+// was at or beyond fm_warn_distance_m) is REMOVED by owner ruling (minimal-buzz rule), together with its
+// scheduler state (kFmDistanceWarningPeriodMs, fm_warning_last_ms, fm_warning_sent, fmResetWarningScheduler()).
+// usrConf.fm_warn_distance_m STAYS: the R5 proximity bar uses it as its distance full-scale (Display.ino,
+// updateR5ProximityBar()), and ConfigService.ino still validates it. No struct change.
 
 // ============================================================
-// V2.5-Evo - 2026-09-17 - WarnDist: FM warning-distance haptic scheduler state.
-//
-// WHAT IT DOES: while Follow-Me is live on BOTH sides (TX armed, RX reports FM_FLAG_ARMED, link
-// fresh within FM_LINK_HEALTHY_MS) and the decoded RX→TX distance is at or beyond
-// usrConf.fm_warn_distance_m, the remote gives one medium buzz (Pattern 8, 300 ms) immediately
-// and then one every kFmDistanceWarningPeriodMs while the condition holds. It stops when the
-// distance drops below the threshold, on FM disarm, or on link loss.
-//
-// WHY NO THROTTLE GATE: releasing the trigger withdraws motor authority, but it must not hide
-// that the buggy has reached the configured separation — that is exactly when the rider, off the
-// trigger and looking at the water, needs to be told. The warning belongs to the live FM
-// declaration, not to trigger posture.
-//
-// The decision logic (followMeDistanceWarningActive / followMeWarningPulseDue) lives in
-// Common/FollowMeDistanceWarning.h so the host unit test in Tools/tests exercises the same code.
-// Geometry warnings (his fm_flags bits 6/7) are NOT adopted here — they come with the P2 station work.
-// ============================================================
-static const unsigned long kFmDistanceWarningPeriodMs = 2000UL;  // repeat interval while the condition holds
-static unsigned long fm_warning_last_ms = 0;      // millis() of the last Pattern 8 actually queued
-static bool          fm_warning_sent    = false;  // true once a pulse has been queued for the current episode
-
-// Clears the scheduler so the next episode starts with an immediate pulse. Called every tick
-// that FM is not armed and every tick the condition is false — runFmLoop() runs every ~110 ms,
-// so every disarm path (gesture, F0, fault, silent) is covered within one tick.
-static void fmResetWarningScheduler()
-{
-  fm_warning_last_ms = 0;
-  fm_warning_sent    = false;
-}
-
-// ============================================================
-// V2.5-Evo - 2026-07-20 - Batch T (Fable FM v1.4): FM arm-time and display readiness gating.
+// V2.5-Evo - 2026-07-20 - Batch T (FM design v1.4): FM arm-time and display readiness gating.
 // All inputs are TX-LOCAL (paired flag, own GPS fix/age, last-reply age) plus the RX's own
 // armed-not-ready bit — instant, zero telemetry dependency, no new confStruct field. Called
 // only from the loop task: fmFundamentalReject() from cycleFmMode(), fmArmedNotReady()
@@ -936,6 +1575,9 @@ static void fmSilentDisarm()
   fm_last_sync_ms  = 0;
   last_fm_return_mode = 0xFF;      // V2.5-Evo - 2026-09-19 - the override ends with the declaration (bits 5-6 = 00)
   queueMetaPacketBurst(0xF2, fmEncodeModeByte(0));   // mode 0 = FM disabled on RX
+  // V2.5-Evo - 2026-10-07 - defect c: clear the whole R5 row here too (arm-timeout and the F-1 silent disarm), so no
+  // C7-C9 scanner/bar pixel outlives Follow-Me. During an active return the RTM bar redraws R5 on the next render.
+  DISP_LOCK(); displayBuffer[6] = 0x0000; DISP_UNLOCK();
 }
 
 // Internal disarm: clears state, notifies RX, shows "St" full-screen, buzzes only on a FAULT.
@@ -970,7 +1612,11 @@ static void fmDisarm(bool commanded)
   if (!commanded) vib_stop_pending = true;   // Pattern 7: one long buzz = a FAULT stopped the system
 
   // Large-font stop confirm on FM disarm.
-  DISP_LOCK(); displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
+  // V2.5-Evo - 2026-10-07 - DEFECT c: THE BUG - displayDigits() clears only C0-C6 of the R5 row (displayBuffer[6]),
+  // and the Follow-Me R5 bar / scanner also lights C7-C9 there. Nothing redraws R5 once Follow-Me is off, so those
+  // pixels stayed lit on the normal screen after a disarm - a leftover "following" look (SOP-041 rule 5). THE FIX:
+  // clear the whole R5 row (as rtmDisengage() already does for the RTM bar) before the "St".
+  DISP_LOCK(); displayBuffer[6] = 0x0000; displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
   gpsKeepAliveDelay(2000);
 }
 
@@ -992,33 +1638,25 @@ void cycleFmMode()
     else
     {
       // No throttle yet — cycle to next mode. V2.5-Evo - 2026-09-19 (owner ruling 12:45): wraps
-      // and never lands on F0 any more, the same wrap cycleFmModeArmed() uses.
+      // 1 -> 2 -> 3 -> 1 and never lands on F0 any more, the same wrap cycleFmModeArmed() uses.
       // F0 had no purpose as a cycle-stop — bench testing showed the tap+hold combo landing on it
       // (an unwanted disarm) twice in five minutes before any throttle. The F0-disarm branch this
       // wrap used to reach (display "F0", 0xF2/0, reset to SPIFFS default) is removed; it is
       // unreachable now. To leave Follow-Me off, don't arm it — the combo-after-throttle disarm
       // above and the magnet toggle disarm are unaffected.
-      // V2.5-Evo - 2026-10-02 - P2: the wrap is 1 -> 2 -> 3 -> 4 -> 5 -> 1. The stations are
-      // continuous round the rider - 1 rear-right, 2 behind, 3 rear-left, 4 FRONT-RIGHT, 5
-      // FRONT-LEFT - and there is deliberately no 6: a station directly ahead would put the buggy
-      // on the rider's line, where a failed motor stops it in his path. Walking past 3 therefore
-      // steps to the front pair, which is the whole feature, not a new gesture.
-      last_fm_mode = (last_fm_mode < 5) ? last_fm_mode + 1 : 1;
+      last_fm_mode = (last_fm_mode < 3) ? last_fm_mode + 1 : 1;
 
-      // Large-font mode confirm: LET_F + mode digit (1-5). snprintf no longer needed.
-      DISP_LOCK();
-      displayDigits(LET_F, last_fm_mode);
-      updateDisplay();
-      DISP_UNLOCK();
-      gpsKeepAliveDelay(2000);
-      queueMetaPacketBurst(0xF2, fmEncodeModeByte(last_fm_mode));   // V2.5-Evo - 2026-09-19 - carries the override bits
+      // Large-font mode confirm: LET_F + mode digit (1/2/3). V2.5-Evo - 2026-10-06 - held 2 s by
+      // showFmLabelHeld() (Display.ino) WITHOUT blocking loop(); was a blocking gpsKeepAliveDelay(2000).
+      showFmLabelHeld(last_fm_mode);
+      queueMetaPacketBurst(0xF2, (uint8_t)(fmEncodeModeByte(last_fm_mode) | kFmFreshDeclBit));   // V2.5-Evo - 2026-10-07 - M-1: a gesture -> bit 7
       fm_last_sync_ms = millis();
       fm_arm_ms       = millis();   // reset arm window — user is actively choosing a mode
     }
     return;
   }
 
-  // V2.5-Evo - 2026-07-20 - Batch T (Fable FM v1.4): FUNDAMENTAL arm-time reject.
+  // V2.5-Evo - 2026-07-20 - Batch T (FM design v1.4): FUNDAMENTAL arm-time reject.
   // Reached only on a FRESH arm (fm_armed was false above). Covers BOTH entry points — the
   // toggle combo AND the magnet gesture both funnel through cycleFmMode() when disarmed. On a
   // fundamental not-ready state the arm DOES NOT TAKE: fire Pattern 7 (long stop buzz) + "St",
@@ -1035,21 +1673,23 @@ void cycleFmMode()
   }
 
   // V2.5-Evo - 2026-04-28 - Change B: On first arm this session, seed last_fm_mode from SPIFFS.
-  // usrConf.followme_mode is the user's configured starting mode (range 1-5 since 2026-10-02; 0 is
-  // invalid here). After seeding, fm_session_init_done prevents overriding any mode the user cycled
-  // to mid-session.
-  // V2.5-Evo - 2026-10-02 - P2: the accepted range is 1-5, so a rider who wants to START on a front
-  // station can store it. The arm itself is unchanged - it is still a deliberate gesture, the RX
-  // still has to prove separation before anything engages, and a front station still has to earn
-  // its way past the abeam line before the buggy goes in front of him.
+  // usrConf.followme_mode is the user's configured starting mode (range 1-3; 0 is invalid here).
+  // After seeding, fm_session_init_done prevents overriding any mode the user cycled to mid-session.
   if (!fm_session_init_done)
   {
-    if (usrConf.followme_mode >= 1 && usrConf.followme_mode <= 5)
+    if (usrConf.followme_mode >= 1 && usrConf.followme_mode <= 3)
       last_fm_mode = usrConf.followme_mode;
     fm_session_init_done = true;
   }
 
+  // V2.5-Evo - 2026-10-07 - F-7: THE BUG - a fault-stop edge latched while Follow-Me was disarmed stayed latched
+  // until the next runFmLoop() pass, so an arm made in between (the toggle combo runs inside runMenu(), before
+  // runFmLoop() in loop()) was disarmed again at once with "St". THE FIX: a fresh arm starts with no stale latch.
+  // A fault that arrives AFTER this point latches again and is handled normally.
+  fm_fault_latched = false;
+
   // Arm at last used mode (never arms at F0 = disabled; last_fm_mode defaults to 1)
+  fm_declare_ms    = millis();   // V2.5-Evo - 2026-10-07 - SOP-041 rule 3 resync: evidence must come after this
   fm_armed         = true;
   fm_arm_ms        = millis();
   fm_throttle_seen = false;
@@ -1058,13 +1698,11 @@ void cycleFmMode()
 
   // V2.5-Evo - 2026-04-29 - Display: show actual mode being armed (F1/F2/F3) in large font
   // instead of the generic "FM" text. Uses large num0[] font via LET_F(15) + mode digit.
-  DISP_LOCK();
-  displayDigits(LET_F, last_fm_mode);
-  updateDisplay();
-  DISP_UNLOCK();
-  gpsKeepAliveDelay(2000);
+  // V2.5-Evo - 2026-10-06 - held 2 s by showFmLabelHeld() (Display.ino) WITHOUT blocking loop();
+  // was a blocking gpsKeepAliveDelay(2000). The 0xF2 below now goes out straight away, not 2 s later.
+  showFmLabelHeld(last_fm_mode);
 
-  queueMetaPacketBurst(0xF2, fmEncodeModeByte(last_fm_mode));   // V2.5-Evo - 2026-09-19 - carries the override bits
+  queueMetaPacketBurst(0xF2, (uint8_t)(fmEncodeModeByte(last_fm_mode) | kFmFreshDeclBit));   // V2.5-Evo - 2026-10-07 - M-1: the arm gesture -> bit 7
 }
 
 // Called by handleGearToggle(-1) simple LEFT hold 2s when FM is armed (Hall.ino checks isFmArmed()).
@@ -1079,21 +1717,13 @@ void cycleFmMode()
 void cycleFmModeArmed()
 {
   if (!fm_armed) return;
-  // Cycle 1→2→3→4→5→1: wrap, never 0.
-  // V2.5-Evo - 2026-10-02 - P2: 1-3 becomes 1-5. The two extra steps are the FRONT stations; there
-  // is no 6 because there is no dead-ahead station. A miscounted hold can therefore land the rider
-  // on a front station he did not mean to pick - which is a WRONG STATION, never an unsafe one: the
-  // buggy still has to be measurably wide of his line before the station is allowed ahead of him,
-  // and the next hold steps on. That is the same trade the 1-3 wrap already made against F0.
-  last_fm_mode = (last_fm_mode < 5) ? last_fm_mode + 1 : 1;
+  // Cycle 1→2→3→1: wrap, never 0.
+  last_fm_mode = (last_fm_mode < 3) ? last_fm_mode + 1 : 1;
 
-  // Large-font mode confirm: LET_F + mode digit (1-5). snprintf no longer needed.
-  DISP_LOCK();
-  displayDigits(LET_F, last_fm_mode);
-  updateDisplay();
-  DISP_UNLOCK();
-  gpsKeepAliveDelay(2000);
-  queueMetaPacketBurst(0xF2, fmEncodeModeByte(last_fm_mode));   // V2.5-Evo - 2026-09-19 - carries the override bits
+  // Large-font mode confirm: LET_F + mode digit (1/2/3). V2.5-Evo - 2026-10-06 - held 2 s by
+  // showFmLabelHeld() (Display.ino) WITHOUT blocking loop(); was a blocking gpsKeepAliveDelay(2000).
+  showFmLabelHeld(last_fm_mode);
+  queueMetaPacketBurst(0xF2, (uint8_t)(fmEncodeModeByte(last_fm_mode) | kFmFreshDeclBit));   // V2.5-Evo - 2026-10-07 - M-1: a gesture -> bit 7
   fm_last_sync_ms = millis();              // reset keepalive — just synced
   fm_arm_ms       = millis();             // reset arm window — user is actively choosing a mode
 }
@@ -1164,49 +1794,51 @@ bool fmIsEngaged()
   return true;
 }
 
+// fmIsReturning - V2.5-Evo - 2026-10-07 - S-7: is the buggy's AUTO-RETURN RETURNING (moving toward the rider) right now?
+// The buggy says so with fm_flags bit 6 (auto-return standing) together with bit 1 (engaged, it moves); bit 6 without
+// bit 1 is auto-return WAITING (parked), which is drawn exactly like Follow-Me armed. Built on fmIsEngaged(), so it
+// carries the same corroboration (bits 0 + 1 on 2 consecutive arrivals, fresh link, this remote armed): the returning
+// look is drawn only from buggy-confirmed telemetry (SOP-041 rule 1) and drops as soon as the link goes stale (rule 4).
+// An older RX never sets bit 6, so this is always false with it and its return looks like following, as before.
+// INPUTS: fmIsEngaged(), telemetry.fm_flags. OUTPUT: true = returning. No side effects; loop task and bargraph task.
+bool fmIsReturning()
+{
+  if (!fmIsEngaged()) return false;
+  return (telemetry.fm_flags & FM_FLAG_RETURN_STANDING) != 0;
+}
+
 // fmNextStationInSet - which station does a tap move to?
 //
-// INPUTS:  from = the station the buggy is at now (1-5; anything else counts as "outside the set")
-//          mask = usrConf.mag_fm_set, bit0 = station 1 ... bit4 = station 5
-// OUTPUT:  the station to move to (1-5), or 0 for "there is nowhere to go, do nothing".
+// INPUTS:  from = the station the buggy is at now (1-3; anything else counts as "outside the set")
+//          mask = usrConf.mag_fm_set, bit0 = station 1, bit1 = station 2, bit2 = station 3
+// OUTPUT:  the station to move to (1-3), or 0 for "there is nowhere to go, do nothing".
 // No side effects.
 //
 // Rules, straight from the design:
-//   - from IS in the set     -> the next set station going up, wrapping 5 -> 1
+//   - from IS in the set     -> the next set station going up, wrapping 3 -> 1
 //   - from is NOT in the set -> the LOWEST set station (the rider asked never to sit where he is)
 //   - the set holds only from -> returns from, which the caller treats as DO NOTHING. A tap never
 //     says "you are already there"; it either moves the buggy or it is silent.
-//
-// V2.5-Evo - 2026-10-02 - P2: THE SET IS FIVE STATIONS NOW. The 2026-09-30 note here said "stations
-// 4 and 5 (the front pair) DO NOT EXIST in this firmware ... a bit for a station the buggy cannot
-// reach would strand the tap on a station it could never leave". They exist as of today, so the mask
-// widens to 0x1F and the walk is modulo 5. The reasoning in that note is why the widening is SAFE
-// rather than merely consistent: the hazard it named was a bit for an UNREACHABLE station, and both
-// new bits now address reachable ones. The tap's own safety gate is unchanged and is the important
-// one - fmIsEngaged() still requires all four of its conditions, so a tap is dead while the rider is
-// on the rope, which is exactly when a station change would drag him.
-//
-// A RIDER WHO DOES NOT WANT THE FRONT PAIR ON THE MAGNET SIMPLY LEAVES BITS 3 AND 4 UNTICKED, and
-// that is the default for every board in the field: mag_fm_set has been validated 1-7 and defaults
-// to 7, so a stored value can only hold bits 0-2 and the magnet keeps stepping exactly the three
-// rear stations it does today until he ticks more. The front pair is opt-in on this input.
+// Bits 3 and up are masked off: stations 4 and 5 (the front pair) DO NOT EXIST in this firmware -
+// the mode wrap is 1 -> 2 -> 3 -> 1 - and a bit for a station the buggy cannot reach would strand
+// the tap on a station it could never leave.
 static uint8_t fmNextStationInSet(uint8_t from, uint16_t mask)
 {
-  mask &= 0x1F;                 // stations 1-5
+  mask &= 0x07;                 // stations 1-3 only
   if (mask == 0) return 0;      // nothing selected - validated against, but fail quietly anyway
 
   // Current station outside the chosen set -> go to the lowest station that IS in it.
-  if (from < 1 || from > 5 || !(mask & (1u << (from - 1))))
+  if (from < 1 || from > 3 || !(mask & (1u << (from - 1))))
   {
-    for (uint8_t s = 1; s <= 5; s++)
+    for (uint8_t s = 1; s <= 3; s++)
       if (mask & (1u << (s - 1))) return s;
     return 0;
   }
 
   // Current station inside the set -> walk forward and stop at the first set station.
-  for (uint8_t step = 1; step <= 5; step++)
+  for (uint8_t step = 1; step <= 3; step++)
   {
-    uint8_t s = (uint8_t)(((from - 1 + step) % 5) + 1);
+    uint8_t s = (uint8_t)(((from - 1 + step) % 3) + 1);
     if (mask & (1u << (s - 1))) return s;
   }
   return 0;
@@ -1220,7 +1852,7 @@ static uint8_t fmNextStationInSet(uint8_t from, uint16_t mask)
 //      ConfigService.ino). A rider who sets it to 5000 for a comfortably readable gear flash would
 //      have bought a 5 SECOND loop() stall on every magnet station change. That is not merely slow:
 //      a long stall is exactly what the sample-gap guard in runMagGesture() exists to defend against,
-//      so an unclamped blocking delay at this call site actively feeds the bug the audit filed as H-1.
+//      so an unclamped blocking delay at this call site actively feeds the bug the audit  as H-1.
 // BLOCKING CALL - freezes GPS polling, FreeRTOS task scheduling and Serial1 reads for its duration
 // (the blocking-call rule). It is bounded at 1.2 s, it is far shorter than the 2 s the toggle's own
 // station confirm already blocks for, and the throttle path is untouched by it: the throttle is read
@@ -1229,8 +1861,12 @@ static uint8_t fmNextStationInSet(uint8_t from, uint16_t mask)
 // THE CLAMP IS KEPT EVEN THOUGH THE VALUE IS NOW A CONSTANT. It costs one comparison and it means no
 // future edit to kMagStationFlashMs - or any later decision to feed a config field in here again -
 // can hand this call site a multi-second block without someone also raising the ceiling on purpose.
-static const uint32_t kMagStationFlashMs    = 1200UL;   // how long "F<n>" stays on screen (owner's figure)
-static const uint32_t kMagStationFlashCapMs = 1200UL;   // hard ceiling on the blocking call, whatever is asked
+// V2.5-Evo - 2026-10-06 - SUPERSEDED: the 1.2 s blocking flash and its clamp are gone. In the field
+// (2026-10-05) the label read as under half a second and the owner asked for 2 s (1 s minimum), the
+// same as every other "F<n>" confirm. The label is now held by showFmLabelHeld() (Display.ino), which
+// does NOT block loop() at all, so there is no stall left to bound and kMagStationFlashMs /
+// kMagStationFlashCapMs were removed. The H-1 reasoning above still holds: no config field feeds the
+// hold time, it is the fixed kFmLabelHoldMs.
 
 // fmStepStationFromMagnet - act on a magnet TAP (mag_mode 4).
 //
@@ -1238,187 +1874,52 @@ static const uint32_t kMagStationFlashCapMs = 1200UL;   // hard ceiling on the b
 // fmIsEngaged() has returned true. It re-checks the gate itself so the safety rule lives with the
 // action, not only with the caller.
 //
-// CONFIRMATIONS - two channels, as the design requires, and only when something actually changed:
-//   haptic  : N short taps = station number (Pattern 11, N taken from vib_pulse_count)
-//   display : the existing "F<n>" large-font confirm, held for a dedicated, clamped 1.2 s
+// CONFIRMATION - the display only, and only when something actually changed:
+//   display : the existing "F<n>" large-font confirm, held 2 s without blocking (V2.5-Evo - 2026-10-06;
+//             was a blocking 1.2 s)
+// V2.5-Evo - 2026-10-07 - NO BUZZ ANY MORE (owner ruling, minimal-buzz rule; audit R-4 found the count
+//   could also go silently missing behind another pattern). The N-tap Pattern 11 that used to say the
+//   station number is removed; the F<n> label is the confirm.
 // If the tap resolves to the station the buggy is already at, this function returns in silence: no
-// buzz, no flash, no packet. A confirmation for "nothing happened" teaches the rider to expect
+// flash, no packet. A confirmation for "nothing happened" teaches the rider to expect
 // feedback from accidental magnet contact, which is the opposite of what we want.
 //
 // INPUTS: last_fm_mode, usrConf.mag_fm_set. (usrConf.gear_display_time is NO LONGER read here - see
 //   the constants above for why.)
 // SIDE EFFECTS: last_fm_mode updated, one 0xF2 burst to the buggy, keepalive + arm timers reset,
-//   Pattern 11 queued, and a BLOCKING display hold of at most 1.2 s via gpsKeepAliveDelay(), which
-//   keeps draining the GPS UART so no fix goes stale. Loop task only - never from a FreeRTOS task.
-void fmStepStationFromMagnet()
+//   and a NON-blocking 2 s "F<n>" hold via showFmLabelHeld() (V2.5-Evo -
+//   2026-10-06; was a blocking 1.2 s gpsKeepAliveDelay()). Loop task only - never from a FreeRTOS task.
+// OUTPUT (V2.5-Evo - 2026-10-06, audit M-1): true only when the station actually moved, false for every
+//   silent return. runMagGesture() starts its 1 s tap lockout on true only. Was void.
+bool fmStepStationFromMagnet()
 {
-  if (!fmIsEngaged()) return;                        // the gate lives with the action too
+  if (!fmIsEngaged()) return false;                  // the gate lives with the action too
 
   uint8_t next = fmNextStationInSet(last_fm_mode, usrConf.mag_fm_set);
-  if (next == 0 || next == last_fm_mode) return;     // nowhere to go - stay silent
+  if (next == 0 || next == last_fm_mode) return false;   // nowhere to go - stay silent
 
   last_fm_mode = next;
   Serial.print("FM [TX] magnet tap: station -> F");  // V2.5-Evo - 2026-09-30
   Serial.println(last_fm_mode);
 
   // Tell the buggy first, so the transit starts while the rider is still reading the confirm.
-  queueMetaPacketBurst(0xF2, fmEncodeModeByte(last_fm_mode));
+  queueMetaPacketBurst(0xF2, (uint8_t)(fmEncodeModeByte(last_fm_mode) | kFmFreshDeclBit));   // V2.5-Evo - 2026-10-07 - M-1: a gesture -> bit 7
   fm_last_sync_ms = millis();              // reset keepalive - just synced
   fm_arm_ms       = millis();              // reset arm window - the rider is actively choosing
 
-  // Haptic first: the vibration runs in its own task, so it plays THROUGH the display hold below
-  // instead of after it. N taps = station number.
-  if (current_vib_pattern == 0)
-  {
-    vib_pulse_count     = last_fm_mode;    // must be set BEFORE the pattern number
-    current_vib_pattern = 11;
-  }
+  // V2.5-Evo - 2026-10-07 - the Pattern 11 station-count buzz that was queued here is removed (owner
+  // ruling: no buzz on a station change). The display label below is the only confirm.
 
-  // The same "F<n>" confirm the toggle path draws, held for 1.2 s instead of the toggle's 2 s.
-  // The hold is clamped at the call site so this blocking delay can never grow - see the
-  // kMagStationFlashMs / kMagStationFlashCapMs comment above.
-  DISP_LOCK();
-  displayDigits(LET_F, last_fm_mode);
-  updateDisplay();
-  DISP_UNLOCK();
-  uint32_t flash_ms = (kMagStationFlashMs < kMagStationFlashCapMs) ? kMagStationFlashMs
-                                                                  : kMagStationFlashCapMs;
-  gpsKeepAliveDelay(flash_ms);
+  // The same "F<n>" confirm the toggle path draws. V2.5-Evo - 2026-10-06 - held 2 s (was a blocking
+  // 1.2 s) by showFmLabelHeld() in Display.ino, which does not block loop() - see the note above.
+  showFmLabelHeld(last_fm_mode);
+  return true;
 }
 
-// fmToggleRtmEnabledFromMagnet - act on a 2.5 s magnet hold (mag_mode 4).
-//
-// Flips the EFFECTIVE Return-To-Me enable for this session by writing rtm_enabled_session.
-//
-// ---- V2.5-Evo - 2026-09-30 - GENUINELY RAM ONLY NOW (delta audit) ----
-// WHAT WAS WRONG BEFORE. This function used to write usrConf.rtm_enabled and describe itself as "RAM
-// only" because it never called the SPIFFS writer itself. That was not enough: `?save` and the web-UI
-// save both persist the LIVE usrConf wholesale, so a magnet flip on the water plus any later config
-// save made a session decision permanent. The owner's instruction was explicit - "No do not change
-// spiffs with a toggle or magnet ... spiffs changing is deliberate and intentional. Magnet is temp."
-// WHAT IT DOES NOW. usrConf is never touched. The session value goes into rtm_enabled_session and
-// every gate reads it through rtmEnabledEffective(). The stored setting is untouched on disk, so a
-// power cycle brings it straight back, and only the web UI (or `?set` + `?save`) can change it for
-// good - which is exactly the split the owner asked for: the magnet is temporary, SPIFFS is
-// deliberate. It is also the pattern followme_mode (last_fm_mode) and the auto-return override
-// (last_fm_return_mode) have always used, so it is no longer the odd one out.
-// NO NEW STRUCT FIELD: a RAM variable is not a confStruct field. sizeof(confStruct) stays 136 and
-// SW_VERSION stays 27 - the TX struct tail is full, and a bump would wipe the throttle calibration.
-//
-// ZERO THROTTLE REQUIRED. Unlike the arm gestures, this changes what the craft will do on its own
-// initiative later, so it must not be possible to do by accident while riding. thr_scaled < 10 is
-// the same "trigger released" test the toggle gestures use.
-//
-// ---- CONFIRMATIONS, AND WHY "OFF" IS NO LONGER THE STOP BUZZ (delta audit) ----
-// Pattern 4 (two firm taps) = ON, as before. Pattern 12 (THREE firm taps) = OFF, NEW.
-// WHAT WAS WRONG BEFORE. OFF used to raise vib_stop_pending, i.e. Pattern 7, the one long buzz. That
-// broke Pattern 7's documented contract (System.ino: it means "a FAULT stopped the system" and it
-// explicitly DOES NOT FIRE ON any deliberate disarm), and vib_stop_pending PREEMPTS every other
-// pattern. The rider harmed by that is a specific one: someone carrying mag_mode 3 muscle memory,
-// where a magnet hold disarms and buzzes long. In mode 4 he would feel that same long buzz, read it
-// as "disarmed", and have actually switched Return-To-Me off while Follow-Me was still armed - and
-// the "R0" glyph is the only honest signal, at the moment he is looking at the water.
-// WHY THREE FIRM TAPS. A deliberate two-state decision gets a bounded counted-tap confirm, the shape
-// this remote already uses for exactly that (Pattern 4 = two taps = arm, Pattern 6 = three taps). ON
-// and OFF now differ only in COUNT within one identical shape, which is the same 2-vs-3 discrimination
-// the firmware already trusts, and neither of them can be mistaken for a stop, because neither is a
-// single sustained buzz. Nothing about Pattern 7 or vib_stop_pending changes for any other caller.
-// THE FULL SIGNATURE the rider feels, advisory first: "buzz-buzz .. tap-tap" = ON,
-// "buzz-buzz .. tap-tap-tap" = OFF. Display shows "R1" / "R0" - the same letter-plus-number shape as
-// the F<n> station and L<n> gear readouts, and the display is the tie-breaker if the buzz is missed.
-//
-// INPUTS: thr_scaled, rtm_enabled_session, usrConf.rtm_enabled (read only, via rtmEnabledEffective()).
-// SIDE EFFECTS: rtm_enabled_session set, one haptic pattern queued, and a BLOCKING 2 s display hold
-// via gpsKeepAliveDelay(). usrConf IS NOT WRITTEN. Loop task only.
-// ============================================================
-// V2.5-Evo - 2026-10-02 - fmToggleAutoReturnFromMagnet - the 2.5 s magnet hold WHILE FOLLOW-ME IS
-// ARMED toggles AUTO-RETURN for this session. ("r1"/"r0" used to mean something else entirely from
-// this gesture - whether the MANUAL recall was available - which is neither of the two things the
-// owner wanted it to do. See the state-aware dispatch in Hall.ino.)
-//
-// WHAT AUTO-RETURN IS, and why it is not Return-To-Me: auto-return is the automatic one inside
-// Follow-Me - the rider stops, the buggy comes back on its own. Return-To-Me is the MANUAL recall
-// the rider asks for with a gesture. Different features, and the readouts now differ too: "A1"/"A0"
-// here, "r1"/"r0" and "rn" for the manual one.
-//
-// THE FLIP IS AGAINST THE BUGGY'S ECHO, not against a local copy. telemetry.fm_flags bit 7
-// (FM_FLAG_RETURN_ON) is the RX's echo of its EFFECTIVE mode, so the first hold of a session always
-// does the OPPOSITE of what the buggy is actually doing - whether that came from the RX's stored
-// fm_return_mode or from an earlier hold. Same approach ceremonyCancelForReturnGesture() uses.
-//
-// RAM ONLY. last_fm_return_mode is never written to SPIFFS; the RX holds it in
-// fm_return_mode_runtime, also RAM. A power cycle returns to the stored default, which is
-// fm_return_mode = 1 (auto-return ON). That is the owner's rule: always on unless he switches it off.
-//
-// MOVES NOTHING. The override only changes what a Follow-Me HOLD graduates to on the buggy, and
-// that graduation still requires a held trigger.
-//
-// Vibration matches the convention he has already learned from this gesture: Pattern 4 (two firm
-// taps) = ON, Pattern 12 (three firm taps) = OFF. Deliberately NOT Pattern 7, the long stop buzz,
-// which means "refused".
-// ============================================================
-void fmToggleAutoReturnFromMagnet()
-{
-  // Off-throttle only. Silent refusal: a buzz for "I did nothing" is exactly the training we do
-  // not want around a magnet.
-  if (thr_scaled >= 10) return;
-
-  // Never flip it out from under a Return-To-Me run that is already arming or active.
-  if (rtm_tx_active || rtmIsArming()) return;
-
-  const bool echo_on  = (telemetry.fm_flags & FM_FLAG_RETURN_ON) != 0;
-  last_fm_return_mode = echo_on ? 0 : 1;
-
-  Serial.print("RETURN [TX] magnet hold 2.5s while FM armed: auto-return override -> ");
-  Serial.print(last_fm_return_mode ? "ON" : "OFF");
-  Serial.print(" for this session (buggy reported ");
-  Serial.print(echo_on ? "ON" : "OFF");
-  Serial.println("); SPIFFS fm_return_mode untouched, returns on power cycle");
-
-  if (current_vib_pattern == 0)
-    current_vib_pattern = last_fm_return_mode ? 4 : 12;   // 2 taps = ON, 3 taps = OFF
-
-  DISP_LOCK(); displayDigits(LET_A, last_fm_return_mode ? 1 : 0); updateDisplay(); DISP_UNLOCK();
-  gpsKeepAliveDelay(2000);
-  fmRequestKeepaliveNow();   // carry bits 5-6 to the buggy now instead of in 30 s
-}
-
-void fmToggleRtmEnabledFromMagnet()
-{
-  // Refuse while the trigger is held. Silent refusal: a buzz for "I did nothing" is exactly the
-  // training we do not want around a magnet.
-  if (thr_scaled >= 10) return;
-
-  // Never flip it out from under a Return-To-Me run that is already in progress.
-  if (rtm_tx_active || rtmIsArming()) return;
-
-  // Flip the EFFECTIVE value, so the first hold of a session always does the opposite of whatever the
-  // remote is actually doing right now - whether that came from SPIFFS or from an earlier hold.
-  bool now_on = !rtmEnabledEffective();
-  rtm_enabled_session = now_on ? 1 : 0;
-  Serial.print("RTM [TX] magnet hold 2.5s: rtm_enabled -> ");   // V2.5-Evo - 2026-09-30
-  Serial.print(now_on ? 1 : 0);
-  Serial.print(" (SESSION ONLY, RAM - stored value still ");     // V2.5-Evo - 2026-09-30 - RAM-only fix
-  Serial.print(usrConf.rtm_enabled);
-  Serial.println(", returns on power cycle)");
-
-  if (now_on)
-  {
-    if (current_vib_pattern == 0) current_vib_pattern = 4;    // two firm taps = ON
-  }
-  else
-  {
-    if (current_vib_pattern == 0) current_vib_pattern = 12;   // three firm taps = OFF (NOT the stop buzz)
-  }
-
-  DISP_LOCK();
-  // V2.5-Evo - 2026-10-01 - the LET_R glyph itself is now lowercase (see num0[] in the header),
-  // because uppercase R was F plus two pixels and "R0" was being read as a Follow-Me "F0".
-  displayDigits(LET_R, now_on ? 1 : 0);                       // "r1" = on, "r0" = off
-  updateDisplay();
-  DISP_UNLOCK();
-  gpsKeepAliveDelay(2000);
-}
+// V2.5-Evo - 2026-10-07 - R-4: fmToggleRtmEnabledFromMagnet() and fmToggleAutoReturnFromMagnet() were
+// REMOVED from here. Neither had a caller once the 2.5 s magnet hold started always meaning the manual
+// Return-To-Me (2026-10-06). Auto-return (A1/A0) is flipped only by ceremonyCancelForReturnGesture() and
+// cleared by returnGesture() state 3; rtm_enabled_session now has no writer and stays 0xFF (see its block).
 
 // ============================================================
 // V2.5-Evo - 2026-09-19 - returnGesture - RIGHT tap + LEFT hold, the three-state return gesture.
@@ -1454,6 +1955,25 @@ void fmToggleRtmEnabledFromMagnet()
 // ============================================================
 void returnGesture()
 {
+  // V2.5-Evo - 2026-10-07 - THE GESTURE IS IGNORED WHILE RETURN-TO-ME IS ACTIVE ON THIS REMOTE (audit: "toggle route
+  // during RTM ACTIVE"; same rule as the magnet hold, R-2). THE BUG: this path called setRtmArmed() without looking
+  // at rtm_tx_state, so a RIGHT tap + LEFT hold during an active return re-entered the arm ceremony: the buggy was
+  // told 0xF1/0, throttle went to 0 and the return restarted with no "St" and no cooldown. Now: nothing happens,
+  // one serial line, the return continues (Gate 3 still ends it on a release).
+  if (rtm_tx_active || rtmIsArming())
+  {
+    Serial.println("RTM [TX] return gesture ignored: Return-To-Me is already active on this remote, the return continues");
+    return;
+  }
+  // V2.5-Evo - 2026-10-07 - SOP-040 GESTURE RULE: the gesture acts only with the trigger fully released, in every
+  // one of its states (arm, refusal, override clear). handleGearToggle() already gates its action on a released
+  // trigger; this is the same rule held at the action itself. Ignored silently (serial line only).
+  if (!triggerReleased())
+  {
+    Serial.printf("RTM [TX] return gesture ignored: trigger held (thr %u) - it needs the trigger fully released\n",
+                  (unsigned)thr_scaled);
+    return;
+  }
   if (last_fm_return_mode != 0xFF)
   {
     // State 3: back to default.
@@ -1467,7 +1987,21 @@ void returnGesture()
   // V2.5-Evo - 2026-09-30 - the EFFECTIVE enable (see rtmEnabledEffective()), so the toggle combo and the
   // magnet gesture agree about whether Return-To-Me is available this session. setRtmArmed() re-checks it.
   if (rtmEnabledEffective() && usrConf.gps_en)
+  {
     setRtmArmed();
+  }
+  else
+  {
+    // V2.5-Evo - 2026-10-07 - SOP-040: manual Return-To-Me cannot start (disabled or GPS off). This refusal was
+    // completely silent on the toggle route, so the rider could not tell the gesture failed. "St" with the
+    // normal stop buzz is the one "not working" signal - the same refusal the magnet hold now gives.
+    // BLOCKING 2 s like every other "St"; nothing was armed, throttle is untouched.
+    Serial.printf("RTM [TX] arm refused: Return-To-Me cannot start (rtm enabled %d, gps_en %d)\n",
+                  rtmEnabledEffective() ? 1 : 0, (int)usrConf.gps_en);
+    vib_stop_pending = true;
+    DISP_LOCK(); displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
+    gpsKeepAliveDelay(2000);
+  }
 }
 
 // Called from loop() every ~110ms.
@@ -1477,7 +2011,7 @@ void runFmLoop()
 {
   unsigned long now = millis();
 
-  // V2.5-Evo - 2026-07-20 - Batch T (Fable FM v1.4): DISARM OWNERSHIP — the display can't lie.
+  // V2.5-Evo - 2026-07-20 - Batch T (FM design v1.4): DISARM OWNERSHIP — the display can't lie.
   // The RX owns engagement; on an RX fault it stops FM and raises fm_flags bit3 (fault-stop),
   // held sticky ~6s so this ~110ms loop is guaranteed to catch the rising edge across the
   // ~2.4s telemetry rotation. On that rising edge, while WE still believe we are armed, the TX
@@ -1487,11 +2021,35 @@ void runFmLoop()
   // (belt-and-suspenders — RX already idle), and shows the stop as "St" + Pattern 7. bit3 is
   // already surprise-gated on the RX, so it is only set when the alarm is warranted — no TX
   // re-gating needed. fm_flags_prev is updated every tick (armed or not) so a re-arm starts clean.
-  uint8_t fm_flags_now = telemetry.fm_flags;
-  bool fault_rising = (fm_flags_now & FM_FLAG_FAULT) && !(fm_flags_prev & FM_FLAG_FAULT);
-  fm_flags_prev = fm_flags_now;
-  if (fm_armed && fault_rising)
+  // V2.5-Evo - 2026-10-07 - R-6: THE EDGE NOW COMES FROM A LATCH. Comparing telemetry.fm_flags tick to tick
+  // (the fm_flags_prev code that was here) missed a fault whose ~6 s sticky bit rose and fell while loop()
+  // was blocked in the RTM arm ceremony (up to the arm window + ~4 s). Radio.ino now latches the rising
+  // edge on the byte's arrival (fm_fault_latched); it is handled here however late: the remote disarms
+  // Follow-Me, shows "St" and fires the stop buzz through fmDisarm(false) -> vib_stop_pending, exactly as
+  // an on-time edge always did. Latched while NOT armed -> simply cleared, as an edge was ignored before.
+  // ONE GUARD: while a burst is still going out the latch is kept and retried next tick (~110 ms; a burst
+  // drains in ~300 ms), the same rule the keepalive below follows. (V2.5-Evo - 2026-10-07 - P-12: this was
+  // written for the old SINGLE-SLOT queue, where fmDisarm()'s 0xF2/0 would have overwritten a just-queued
+  // 0xF1/1 and the buggy would never have learned RTM was on. The queue is 2-deep now and an 0xF2 can never
+  // evict an 0xF1, so the wait is belt only. A fault handled while a return is ACTIVE no longer reaches this
+  // branch at all - it takes the F-1 deferred path above it.)
+  if (fm_fault_latched && !fm_armed)
   {
+    fm_fault_latched = false;   // nothing armed on this side to disarm
+  }
+  else if (fm_fault_latched && rtm_tx_active)
+  {
+    // V2.5-Evo - 2026-10-07 - F-1: a return is running - do the SILENT half now and defer the "St" + buzz to the
+    // return's end (see fm_fault_deferred). No blocking hold, so RTM's gates and ramp keep running.
+    fm_fault_latched = false;
+    Serial.println("FM [TX] the buggy reported a Follow-Me fault stop during Return-To-Me -> Follow-Me off now (0xF2/0, silent); St + stop buzz when the return ends");
+    fmSilentDisarm();
+    fm_fault_deferred = true;
+    return;
+  }
+  else if (fm_fault_latched && rtm_meta_count.load(std::memory_order_acquire) == 0)
+  {
+    fm_fault_latched = false;
     // FAULT — and since the 2026-08-17 revision this is the ONLY FM path that buzzes. The RX
     // faulted and stopped following by itself: the rider asked for nothing, no timer explains it,
     // and he has no other way to learn the buggy is no longer steering for him. → commanded =
@@ -1501,43 +2059,44 @@ void runFmLoop()
     return;
   }
 
-  if (!fm_armed)
-  {
-    fmResetWarningScheduler();   // WarnDist: a fresh arm always starts with an immediate pulse
-    return;
-  }
+  if (!fm_armed) return;   // V2.5-Evo - 2026-10-07 - the warning-scheduler reset that sat here went with Pattern 8
 
-  // V2.5-Evo - 2026-09-17 - WarnDist: FM warning-distance haptic. See the scheduler comment block
-  // above for what it does and why there is deliberately no throttle gate. Pattern 8 is
-  // informational: it is queued only when no other pattern is playing and no STOP is pending, so
-  // it can never mask a fault buzz. If the haptic is busy the pulse is simply retried next tick
-  // (fm_warning_sent stays as it was), so a due warning is deferred, never dropped.
+  // ============================================================
+  // V2.5-Evo - 2026-10-07 - SOP-041 RULE 3: THE SCREEN FOLLOWS THE BUGGY - RESYNC A FOLLOW-ME THE BUGGY NO LONGER HAS
+  // THE GAP: if the buggy dropped Follow-Me without a fault edge reaching this remote (its 95 s declaration expiry, an
+  // RX reboot, an RX with Follow-Me unavailable, an edge lost to the link), the remote kept drawing Follow-Me armed and
+  // kept re-declaring it every 30 s - a "wannabe" state the owner ruled out. THE FIX: when the buggy, on a fresh link,
+  // reports its ARMED bit (fm_flags bit 0) clear on at least 2 consecutive arrivals of the byte spanning at least
+  // kFmResyncMs, and that run began more than kFmResyncDeclareMarginMs after this remote's arm declaration, the remote
+  // disarms Follow-Me itself and says so the one way the rider knows: "St" + the stop buzz (fmDisarm(false) - it also
+  // sends 0xF2/0 so the two sides agree). During an active manual return the silent half runs now and the "St" + buzz
+  // is deferred to the return's end, exactly like a Follow-Me fault (F-1). Signed elapsed time: the stamps are written
+  // by the telemetry task and can be newer than `now`.
+  // ============================================================
   {
-    const bool link_fresh = (last_packet != 0) && ((now - last_packet) < FM_LINK_HEALTHY_MS);
-    // V2.5-Evo - 2026-09-18 - Follow-Me now stays armed THROUGH a Return-to-Me (setRtmArmed() no
-    // longer disarms it), and the RX reports FM_FLAG_ARMED while it yields - so without this term
-    // every RTM run would buzz the warning-distance pulse all the way in (the buggy is far by
-    // definition when the rider calls it back). The warning belongs to a live Follow-Me that is
-    // actually following; while RTM owns the buggy it is parked, and the RTM display says so.
-    const bool distance_warning_now = followMeDistanceWarningActive(
-        fm_armed && !rtm_tx_active,
-        (fm_flags_now & FM_FLAG_ARMED) != 0,
-        link_fresh,
-        telemetry.rtm_distance,
-        usrConf.fm_warn_distance_m);
-
-    if (!distance_warning_now)
+    const unsigned long since      = fm_flags_unarmed_since_ms;
+    const bool          link_fresh = (last_packet != 0) && ((long)(now - last_packet) < (long)FM_LINK_HEALTHY_MS);
+    if (link_fresh && fm_flags_unarmed_streak >= 2 && since != 0 &&
+        (long)(since - fm_declare_ms) > (long)kFmResyncDeclareMarginMs &&
+        (long)(now - since) >= (long)kFmResyncMs)
     {
-      fmResetWarningScheduler();
-    }
-    else if (followMeWarningPulseDue(true, fm_warning_sent, fm_warning_last_ms, now, kFmDistanceWarningPeriodMs)
-             && current_vib_pattern == 0 && !vib_stop_pending)
-    {
-      current_vib_pattern = 8;   // Pattern 8: one 300 ms pulse (System.ino vibrationTask)
-      fm_warning_last_ms  = now;
-      fm_warning_sent     = true;
+      if (rtm_tx_active)
+      {
+        Serial.println("FM [TX] the buggy reports Follow-Me NOT armed (fm_flags bit 0 clear 3 s) during Return-To-Me -> Follow-Me off now (0xF2/0); St + stop buzz when the return ends");
+        fmSilentDisarm();
+        fm_fault_deferred = true;
+      }
+      else
+      {
+        Serial.println("FM [TX] the buggy reports Follow-Me NOT armed (fm_flags bit 0 clear 3 s) -> disarm here too: St + stop buzz, 0xF2/0");
+        fmDisarm(false);
+      }
+      return;
     }
   }
+
+  // V2.5-Evo - 2026-10-07 - the FM warning-distance haptic block (Pattern 8 every 2 s beyond
+  // fm_warn_distance_m) that ran here is REMOVED by owner ruling - see the note above fmFundamentalReject().
 
   // Arm-timeout auto-disarm: if the rider never applied throttle since arming, disarm after
   // fm_arm_timeout_s. V2.5-Evo - 2026-09-17: gated on fm_arm_timeout_s > 0 — 0 means NEVER, and is
@@ -1597,6 +2156,8 @@ void runFmLoop()
   // Belt: runDoubleSqueezeArm() also refreshes fm_last_sync_ms at the end of a successful
   // ceremony, so the keepalive is not overdue on resume in the first place.
   // (A 2-deep queue and a TX check of fm_status bit 1 are the longer-term answer; not built here.)
+  // V2.5-Evo - 2026-10-07 - H-1 / L-1: both now exist (queueMetaPacketBurst() in Radio.ino, rtmRxStateWatch()
+  // above). This empty-queue wait is kept anyway: it costs at most ~600 ms and never loses a state burst.
   if (fm_last_sync_ms > 0 && now - fm_last_sync_ms >= 30000UL)
   {
     if (rtm_meta_count.load(std::memory_order_acquire) == 0)

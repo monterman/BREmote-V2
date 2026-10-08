@@ -215,7 +215,7 @@ class BLEServerCB : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
     vescProtoMode = false;  // reset on each new connection
 
-    // Audit §4.3 — request a RELAXED connection interval the instant a central connects. This is the
+    // audit §4.3 — request a RELAXED connection interval the instant a central connects. This is the
     // single highest-leverage single-core mitigation: a longer interval = the BT controller wakes far
     // less often = far less of the one C3 core stolen from the display render and the LoRa sendData
     // path, protecting BOTH the display and LoRa/FM timing. Units: 1.25 ms per interval step,
@@ -224,7 +224,7 @@ class BLEServerCB : public NimBLEServerCallbacks {
                               BLE_CONN_MIN_INTERVAL, BLE_CONN_MAX_INTERVAL,
                               BLE_CONN_LATENCY, BLE_CONN_TIMEOUT);
 
-    // Audit §4.2 — peripheral, single connection. This firmware is server/peripheral-only by
+    // audit §4.2 — peripheral, single connection. This firmware is server/peripheral-only by
     // construction (it never scans or acts as a central). Stop advertising while connected so a
     // second central cannot attach; advertising is restarted on disconnect below.
     NimBLEDevice::stopAdvertising();
@@ -245,7 +245,7 @@ void initBLE() {
   char devName[20];
   snprintf(devName, sizeof(devName), "BRemote-TX-%02X", mac[5]);
 
-  // Audit §4.1 — log free internal DRAM immediately before and after the NimBLE stack init so the
+  // audit §4.1 — log free internal DRAM immediately before and after the NimBLE stack init so the
   // no-PSRAM C3's real cost is visible on the bench (the bleInitTask floor-guard already refused to
   // reach here if the pre-init heap was below BLE_HEAP_FLOOR_BYTES). Same instrumentation that caught
   // the sibling foilIQ S3 collapse (81776 → 11688 → init FAILED).
@@ -256,7 +256,7 @@ void initBLE() {
                 (unsigned)heap_pre, (unsigned)heap_post, (int)heap_pre - (int)heap_post);
   NimBLEDevice::setPower(9);
 
-  // Audit §4.2 — peripheral, single-connection footprint: this app creates ONLY a GATT server (no
+  // audit §4.2 — peripheral, single-connection footprint: this app creates ONLY a GATT server (no
   // scanner, no client), so it is peripheral-only by construction. Advertising is stopped on connect
   // (BLEServerCB::onConnect) so a second central can't attach.
   bleServer = NimBLEDevice::createServer();

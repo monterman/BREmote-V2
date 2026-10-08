@@ -1,4 +1,26 @@
-// V2.5-Evo - 2026-10-02 - P2 (FRONT STATIONS F4/F5): comments and two RANGES, no struct change. followme_mode documents 1-5 (1 rear-right, 2 behind, 3 rear-left, 4 FRONT-RIGHT, 5 FRONT-LEFT; there is deliberately no 6, because a station directly ahead puts the buggy on the rider's line where a failed motor stops it in his path) and mag_fm_set grows two bits - bit3 = station 4, bit4 = station 5, range 1-31 - with the DEFAULT AND THE LOAD-PATH REPAIR VALUE BOTH LEFT AT 7, the three rear stations: the magnet is a single touch with no confirmation before the fact, so sending the buggy in front of the rider must be something he ticked rather than something he inherited. Both fields are the same uint16_t at the same offset, so sizeof(confStruct) STAYS 136, the static_assert is untouched, SW_VERSION STAYS 27 and this flash does NOT reset the TX config - the owner keeps his throttle calibration, his toggle calibration and his pairing. Worth stating because the TX tail is FULL (mag_fm_set took the last 2 padding bytes on 2026-09-30): any NEW TX field from here is a real bump and a real wipe, and P2 deliberately adds none.
+// V2.5-Evo - 2026-10-07 - SOP-041 rule 3 resync: RAM fm_flags_unarmed_since_ms / fm_flags_unarmed_streak. No struct change.
+// V2.5-Evo - 2026-10-07 - TX protocol round: TelemetryPacket gains index 19 rx_state_flags (20 bytes, appended; an old RX
+//   never sends it and 0 means nothing to report), RX_STATE_* bits, FM_FLAG_RETURN_STANDING (fm_flags bit 6), and the
+//   RAM stamps rx_rtm_fault_rise_ms / rx_rtm_arrived_rise_ms / rtm_start_sent_ms. No confStruct change: sizeof stays 136,
+//   SW_VERSION stays 27.
+// V2.5-Evo - 2026-10-07 - A-1 (TX part): fm_status_rtm_on_ms / fm_status_rtm_off_streak (the buggy's RTM bit per arrival).
+//   RAM only: sizeof stays 136, SW_VERSION stays 27.
+// V2.5-Evo - 2026-10-07 - SOP-040 gesture rule: triggerReleased() / TRIGGER_RELEASED_MAX (thr_scaled < 10). No struct change.
+// V2.5-Evo - 2026-10-07 - P-11: RAM flag ads_cal_in_progress (plausibility exempt only while checkCal() runs). No
+//   confStruct change: sizeof stays 136, SW_VERSION stays 27.
+// V2.5-Evo - 2026-10-07 - P-1: comment only - the radio task no longer writes ads_input_fault.
+// V2.5-Evo - 2026-10-07 - fm_display_mode DEFAULT 1 -> 2 (distance to the buggy in metres; owner ruling). defaultConf
+//   value only - no struct change, sizeof stays 136, SW_VERSION stays 27; remotes keep their stored value.
+// V2.5-Evo - 2026-10-07 - H-1 (TX part): fm_status_arrival_ms, rtm_stop_sent_ms, FM_STATUS_RTM_ACTIVE, and a note that
+//   the meta-packet atomics are now the head of a 2-deep queue. RAM only: sizeof stays 136, SW_VERSION stays 27.
+// V2.5-Evo - 2026-10-07 - C-1: throttle-input health globals (last_ads_ok_ms, ads_input_fault, ads_thr_out_of_range,
+//   ads_thr_good_samples), ADS_STALE_MS and the TX-local error code REMOTE_ERR_INPUT_FAULT (72). RAM only, no confStruct
+//   change: sizeof stays 136, SW_VERSION stays 27.
+// V2.5-Evo - 2026-10-07 - R-6: new RAM flag fm_fault_latched (set by the telemetry unpack on the Follow-Me fault-stop
+//   rising edge, cleared by runFmLoop()). A global, not a confStruct field: sizeof stays 136, SW_VERSION stays 27.
+// V2.5-Evo - 2026-10-07 - comments only: fm_warn_distance_m no longer drives a vibration (the Pattern 8 FM warning
+//   haptic was removed, owner ruling); it remains the R5 proximity-bar full-scale. The FollowMeDistanceWarning.h include
+//   stays for kFmDistanceTelemetryMaxM. No struct change: sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-09-30 - MagFix (delta audit of 98fb7a8) — SEVEN FOLLOW-UPS, NO STRUCT CHANGE. sizeof
 //   (confStruct) STAYS 136 and SW_VERSION STAYS 27: the tail is full, and a bump would wipe the owner's
 //   throttle calibration, so the one piece of new state (the Return-To-Me session override) is a RAM
@@ -120,7 +142,7 @@
 */
 #include <Arduino.h>
 #include <atomic>
-#include "../Common/FollowMeDistanceWarning.h"   // V2.5-Evo - 2026-09-17 - FM warning-distance haptic (pure header, host-testable)
+#include "../Common/FollowMeDistanceWarning.h"   // V2.5-Evo - 2026-09-17 - pure header, host-testable. Since 2026-10-07 the TX uses only kFmDistanceTelemetryMaxM from it (ConfigService.ino); the haptic it fed is removed
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -135,6 +157,7 @@
 #include "FS.h"
 #include "SPIFFS.h"
 #include "mbedtls/base64.h"
+#include <Preferences.h>   // V2.5-Evo - 2026-10-07 - S-8: the last boot ID lives in NVS (not confStruct), see txBootIdInit()
 
 // --- V2.5-Evo: TX GPS support (BN-220 on Serial1) ---
 // Added for Priority 1: read TX GPS speed and drive the SP display mode
@@ -271,7 +294,7 @@ struct confStruct {
     uint16_t steer_enabled; //If steering feature is enabled
     
     uint16_t thr_expo; //Exponential function, 50 = linear
-    uint16_t fm_display_mode;  // FM digit zone display: 1=TX speed (default), 2=distance to buggy,
+    uint16_t fm_display_mode;  // FM digit zone display: 1=TX speed, 2=distance to buggy (default since 2026-10-07),
                                // 3=buggy speed (RX telemetry), 4=throttle %; range 1-4
 
     uint16_t steer_expo; //currently unused
@@ -295,14 +318,7 @@ struct confStruct {
 
     // GPS features related flags
     uint16_t gps_en;           // GPS runtime enable flag (0=disabled, 1=enabled)
-    // V2.5-Evo - 2026-10-02 - P2: the station set is 1-5 and CONTINUOUS round the rider. There is no
-    // 6 and there never will be: a station directly ahead puts the buggy on the rider's line, where
-    // it has to accelerate as he closes on it and where a failed motor stops it in his path. Off
-    // axis, a dead motor leaves it beside the line and the trailing rope with it. Range only - the
-    // field is the same uint16_t at the same offset, so sizeof(confStruct) stays 136 and SW_VERSION
-    // stays 27 (the tail is FULL - mag_fm_set took the last 2 padding bytes on 2026-09-30 - so any
-    // NEW TX field from here is a real bump and a real config wipe; this one is not a new field).
-    uint16_t followme_mode; // Follow-me starting station (0=disabled, 1=rear_right, 2=behind, 3=rear_left, 4=front_right, 5=front_left)
+    uint16_t followme_mode; // Follow-me runtime mode flag (0=disabled, 1=near_right, 2=behind, 3=near_left)
     uint16_t kalman_en;        // Kalman filter runtime enable flag (0=disabled, 1=enabled)
     uint16_t speed_src;   // 0=RX km/h, 1=RX knots, 2=TX km/h, 3=TX knots, 4=RX mph, 5=TX mph
     
@@ -360,7 +376,8 @@ struct confStruct {
     // First flash of P8 firmware resets all TX settings to defaults.
     // ============================================================
     uint16_t rtm_display_mode;         // RTM/FM active info display: 0=distance(default), 1=speed, 2=alternating 2.5s each
-    uint16_t fm_warn_distance_m;       // TX-RX distance to trigger FM proximity warning vibration (Pattern 8); 50-164 m; default 150.
+    uint16_t fm_warn_distance_m;       // TX-RX distance used as the R5 proximity-bar full-scale while Follow-Me is engaged; 50-164 m; default 150.
+                                       // V2.5-Evo - 2026-10-07: no longer drives a vibration - the Pattern 8 warning haptic was removed.
                                        // V2.5-Evo - 2026-09-17: ceiling 1000 → 164 = kFmDistanceTelemetryMaxM, the largest value
                                        // the one-byte rtm_distance telemetry can carry; a stored value above it is clamped on load.
     // V2.5-Evo - 2026-09-19 - DEPRECATED, no longer read by the remote. Whether the stick cancels
@@ -428,7 +445,7 @@ struct confStruct {
     //       the magnet is an arm↔DISARM toggle, while in mode 4 the magnet only ever ARMS Follow-Me
     //       or STEPS its station, and the hold only flips the Return-To-Me enable. To disarm
     //       Follow-Me in mode 4, use the toggle combo (LEFT tap → RIGHT hold) or select F0.
-    //       (V2.5-Evo - 2026-09-30: documented after the audit flagged the silent capability change.)
+    //       (V2.5-Evo - 2026-09-30: documented after the audit  the silent capability change.)
     //
     // Valid range 0-4; default 0. Implemented by runMagGesture() in Hall.ino.
     uint16_t mag_mode;         // magnet/Hall gesture role; 0-4; default 0 (off / not fitted)
@@ -442,25 +459,17 @@ struct confStruct {
     // ============================================================
     // Which Follow-Me stations a magnet TAP steps through when mag_mode == 4. One bit per
     // station, so "never send me to station 2" is simply bit 1 left clear:
-    //   bit 0 = station 1 (rear right) | bit 1 = station 2 (behind) | bit 2 = station 3 (rear left)
-    // V2.5-Evo - 2026-10-02 - P2: AND THE FRONT PAIR NOW EXISTS, so the mask grows two bits:
-    //   bit 3 = station 4 (FRONT RIGHT) | bit 4 = station 5 (FRONT LEFT)
-    // Valid range 1-31 (at least one station must be selected). The 2026-09-30 note that used to
-    // sit here said stations 4 and 5 "DO NOT EXIST in this firmware - the mode wrap in RTMState.ino
-    // is 1 -> 2 -> 3 -> 1 - so bits 3 and up are deliberately unused". That wrap is 1 -> 5 today,
-    // so the two bits are live and fmNextStationInSet() masks 0x1F instead of 0x07.
-    // THE DEFAULT STAYS 7 - THE THREE REAR STATIONS - AND THAT IS THE POINT. The magnet is a
-    // one-touch input with no "are you sure" and no display confirmation before the fact, so sending
-    // the buggy in front of the rider has to be something he TICKED, not something he inherited:
-    // every remote in the field stores a value in 1-7 (the old validator's range), so the magnet
-    // keeps stepping exactly the three rear stations it does today until he opts in.
-    // A remote flashed from a pre-2026-09-30 build reads 0 out of the old padding bytes;
-    // cfgValidateCrossField() silently corrects 0 (and anything above 31) to 7 on load rather
+    //   bit 0 = station 1 (near right) | bit 1 = station 2 (behind) | bit 2 = station 3 (near left)
+    // Valid range 1-7 (at least one station must be selected); default 7 = all three, which
+    // is what the remote already does when the toggle cycles stations, so the default changes
+    // nothing. A remote flashed from an older build reads 0 out of the old padding bytes;
+    // cfgValidateCrossField() silently corrects 0 (and anything above 7) to 7 on load rather
     // than rejecting the config, because a rejection on the load path would write defaultConf
-    // and wipe the calibration this whole field placement exists to protect. The repair value is
-    // 7 and not 31 for the same reason the default is: a mask nobody chose must not be read as
-    // permission to go in front of him.
-    uint16_t mag_fm_set;       // magnet-tap station set, bitmask bit0=F1 bit1=F2 bit2=F3 bit3=F4 bit4=F5; 1-31; default 7 (the three REAR stations)
+    // and wipe the calibration this whole field placement exists to protect.
+    // Stations 4 and 5 (the two FRONT stations) DO NOT EXIST in this firmware — the mode wrap
+    // in RTMState.ino is 1 -> 2 -> 3 -> 1 — so bits 3 and up are deliberately unused and are
+    // masked off by fmNextStationInSet() in case a future build ever stores them.
+    uint16_t mag_fm_set;       // magnet-tap station set, bitmask bit0=F1 bit1=F2 bit2=F3; 1-7; default 7 (all)
 };
 
 // V2.5-Evo - 2026-07-20 - MagGesture: 132 → 136. mag_mode is a uint16_t (+2 bytes = 134), but the
@@ -553,7 +562,7 @@ confStruct defaultConf = {  // V2.5-Evo — factory default configuration
   1,             // steer_enabled
   100,           // thr_expo (50 = linear; 100 = fully exponential — gentle at low throttle, aggressive at high;
                  //           0 = the opposite curve — aggressive at low throttle. See expoThrCurve() in Hall.ino)
-  1,             // fm_display_mode (1 = TX speed; range 1-4)
+  2,             // fm_display_mode (2 = distance to the buggy in metres; range 1-4). V2.5-Evo - 2026-10-07: default was 1 (TX speed)
   50,            // steer_expo
   0,             // gps_dyn_model (was steer_expo1; 0 = default = Sea, unchanged behaviour)
   0.000185662f,  // ubat_cal
@@ -648,11 +657,40 @@ struct __attribute__((packed)) TelemetryPacket {
                                       //   Default 0 (not 0xFF) so that before any RX packet arrives no FM bit reads as set — matches
                                       //   the RX-side default. Written by the generic index-addressed telemetry unpack in Radio.ino.
     uint8_t rx_bearing_to_tx = 0xFF;  // index 17 — bearing from buggy toward rider÷2; 0xFF = N/A
-    uint8_t link_quality = 0;         // index 18 (must be last)
+    uint8_t link_quality = 0;         // index 18 (was "must be last": it is rotated like every other index and read by name)
+    // V2.5-Evo - 2026-10-07 - index 19 - rx_state_flags: how the BUGGY ended a return (bit map: RX_STATE_* below).
+    // APPENDED, so every older index keeps its place. An older RX never sends index 19: the byte stays 0 and every
+    // reader below treats 0 as "nothing to report", so a new remote with an old buggy behaves exactly as before.
+    uint8_t rx_state_flags = 0;       // index 19
 } telemetry;
+static_assert(sizeof(TelemetryPacket) == 20, "TelemetryPacket must be 20 bytes (indices 0-19) to match the RX");
 
 // ============================================================
-// V2.5-Evo - 2026-07-20 - Batch T (Fable FM v1.4): telemetry.fm_flags (index 16) bit map.
+// V2.5-Evo - 2026-10-07 - telemetry.rx_state_flags (index 19) bit map, as the RX assembles it (RX RTMState.ino).
+//   bit0 RTM FAULT-STOP, sticky ~6 s: the buggy ended Return-To-Me on a fault -> "St" + stop buzz, cap 255 (SOP-039).
+//   bit1 RTM ARRIVED, sticky ~6 s: the buggy ended Return-To-Me at its stop distance -> silent "St", near-zero cap
+//        until one full release (SOP-040 arrival rule).
+//   bit2 HAND-BACK CAP STANDING on the buggy (display only; the remote adds no cap for it).
+//   bit3 the buggy holds this remote's boot ID (S-8).  bit4 the buggy's RTM refresh expiry is armed (H-1).
+// The two sticky bits are acted on by their RISING EDGE (latched where the byte arrives, Radio.ino), so a bit left
+// over from the previous run (sticky for 6 s) cannot end a new one.
+// ============================================================
+#define RX_STATE_RTM_FAULT     0x01
+#define RX_STATE_RTM_ARRIVED   0x02
+#define RX_STATE_HANDBACK_CAP  0x04
+#define RX_STATE_BOOT_ID_HELD  0x08
+#define RX_STATE_REFRESH_ARMED 0x10
+// rx_rtm_fault_rise_ms / rx_rtm_arrived_rise_ms - millis() of the index-19 ARRIVAL on which that bit rose (it was
+// clear on the previous arrival). 0 = never. Written only by waitForTelemetry (Radio.ino); read by runRtmLoop(),
+// which acts only on a rise stamped after the current run went ACTIVE. One aligned word each, no tearing.
+volatile unsigned long rx_rtm_fault_rise_ms   = 0;
+volatile unsigned long rx_rtm_arrived_rise_ms = 0;
+// rtm_start_sent_ms - millis() when an 0xF1/1 ("RTM active") packet last went on the air. Written by sendData; read
+// by the loop task for the Q-2 confirmation count and the H-1 refresh start. Twin of rtm_stop_sent_ms.
+volatile unsigned long rtm_start_sent_ms      = 0;
+
+// ============================================================
+// V2.5-Evo - 2026-07-20 - Batch T (FM design v1.4): telemetry.fm_flags (index 16) bit map.
 // The RX FM brain assembles this byte; the new TX consumes it to drive the R5 display and the
 // disarm-ownership rule. An OLD TX ignores index 16 entirely (it was a reserved byte).
 // ============================================================
@@ -666,7 +704,10 @@ struct __attribute__((packed)) TelemetryPacket {
 // by the stick while it is deflected and resumes on centring; Gate 4 stands down so the remote does not exit the run
 // the buggy is deliberately continuing). Bit 5 = a takeover is STANDING on this tick (display only). Both are read
 // only under the FM_LINK_HEALTHY_MS window like the other flags - a stale packet reads as cancel, never as takeover.
-// An old RX never sets either bit, so a new remote with an old buggy cancels everywhere, as before. Bit 6 stays free.
+// An old RX never sets either bit, so a new remote with an old buggy cancels everywhere, as before.
+// (V2.5-Evo - 2026-10-07 - bit 6 is no longer free: see FM_FLAG_RETURN_STANDING below.)
+// V2.5-Evo - 2026-10-07 - Q-5: Gate 4 now stands down whatever bit 4 says (steering never ends a return on the remote),
+// so the remote no longer reads bit 4; it stays defined because the buggy still sends it.
 #define FM_FLAG_STEER_TAKEOVER 0x10  // bit4: RX steer_during_auto is 1 (take over) - Gate 4 steer-exit stands down
 #define FM_FLAG_STEER_ACTIVE   0x20  // bit5: a stick takeover is standing on the RX right now (display only)
 // V2.5-Evo - 2026-09-19 - bit 7: the RX's EFFECTIVE auto-return mode (its stored fm_return_mode unless this remote has
@@ -674,6 +715,10 @@ struct __attribute__((packed)) TelemetryPacket {
 // shown as "Ar" (ON) / "AO" (OFF) at that moment. Bit 6 is reserved for the accepted-mode echo (which will need its own
 // telemetry byte if it needs 3 bits).
 #define FM_FLAG_RETURN_ON 0x80  // bit7: RX effective auto-return mode is ON
+// V2.5-Evo - 2026-10-07 - bit 6 (audit S-7): AUTO-RETURN STANDING on the buggy (its Follow-Me is in FM_RETURN). With
+// bit 1 (engaged) also set the buggy is RETURNING (moving toward the rider); with bit 1 clear it is WAITING (parked).
+// An old RX never sets it, so the remote then draws following / armed exactly as before.
+#define FM_FLAG_RETURN_STANDING 0x40  // bit6: auto-return standing (bit 1 tells returning from waiting)
 // Link-health window: the TX treats the RX link as alive only while a packet has landed within
 // this many ms (matches the existing `millis()-last_packet < 1000` failsafe window used for the
 // bargraphs/vibration connectivity checks). Used by the FM readiness OR and the engaged gate.
@@ -701,6 +746,30 @@ struct __attribute__((packed)) TelemetryPacket {
 // one instruction on this RISC-V core, so no read can tear.
 // ============================================================
 volatile uint8_t fm_engaged_streak = 0;   // consecutive fm_flags arrivals with ARMED+ENGAGED both set
+
+// ============================================================
+// V2.5-Evo - 2026-10-07 - fm_fault_latched: the RX Follow-Me FAULT-STOP edge, latched where it arrives
+// (audit R-6). Set true by the telemetry unpack in Radio.ino (waitForTelemetry task) when an fm_flags byte
+// arrives with FM_FLAG_FAULT set and the previous arrival had it clear. Cleared only by runFmLoop()
+// (RTMState.ino, loop task) when it handles the edge.
+// WHY: runFmLoop() used to look for the rising edge itself, by comparing telemetry.fm_flags tick to tick.
+// The RX holds bit 3 for only ~6 s, and the blocking RTM arm ceremony can stall loop() for the arm window
+// plus ~4 s, so a fault that rose and fell inside one stall was never seen: the remote stayed fm_armed
+// and kept re-declaring Follow-Me to a buggy that had stopped it. A latch cannot be missed, however late
+// loop() gets to it. volatile bool: one writer task, one reader/clearer task; single-byte accesses do not
+// tear on this core, and the RX holds the bit for seconds, so two edges can never race one clear.
+// ============================================================
+volatile bool fm_fault_latched = false;
+
+// ============================================================
+// V2.5-Evo - 2026-10-07 - SOP-041 rule 3 RESYNC: "the remote thinks Follow-Me is armed, the buggy says it is not".
+//   fm_flags_unarmed_since_ms - millis() of the FIRST of the current run of fm_flags arrivals with bit 0 (armed) clear;
+//                               0 = the last arrival had bit 0 set.
+//   fm_flags_unarmed_streak   - how many consecutive fm_flags arrivals had bit 0 clear (saturates).
+// Written only by waitForTelemetry (Radio.ino) on the arrival of index 16; read by runFmLoop() (RTMState.ino).
+// ============================================================
+volatile unsigned long fm_flags_unarmed_since_ms = 0;
+volatile uint8_t       fm_flags_unarmed_streak   = 0;
 
 /*
 ** FreeRTOS/Task handles
@@ -804,12 +873,52 @@ volatile int filter_count = 0;
 volatile int bat_filter_count = 0;
 volatile int last_channel = 0;
 
+// ============================================================
+// V2.5-Evo - 2026-10-07 - C-1: THROTTLE INPUT HEALTH (frozen-throttle fix)
+// THE BUG: measureAndBuffer() (Analog.ino) only writes thr_raw[] when the ADS1115 reports a finished
+// conversion. If the I2C bus or the ADS1115 fails (SDA held low after water ingress, a loose wire, a
+// display fault that wedges the shared bus) no conversion ever finishes, the buffer stops changing,
+// and calcFilter() keeps producing the LAST throttle value. sendData() keeps sending it, so the buggy
+// keeps driving after the rider lets go. Only a hard power-off ended it.
+// THE FIX: every finished conversion stamps last_ads_ok_ms. If none has finished for ADS_STALE_MS while
+// hall sampling is on, or a raw throttle reading lands far outside the calibrated idle..pull band, the
+// input is declared faulty: throttle 0, steering centred, toggle (and every gesture) blocked, and the
+// remote shows error 72 as a blinking "St" with the stop buzz. The fault clears only after fresh, in-band
+// readings fill the whole filter buffer AND they show the trigger released, so throttle can never jump
+// back to a held position when the bus recovers.
+// Writers: measBufCalc task (prio 6) for all four. V2.5-Evo - 2026-10-07 - P-1: the sendData task no longer
+// sets ads_input_fault; when it sees the deadline missed it zeroes only the packet it is sending (a CPU stall
+// must not latch a fault), and measBufCalc latches from its own per-pass deadline (adsTaskPassStale()).
+// Every variable is one aligned word or byte, so no read can tear on this single-core RISC-V part.
+// ============================================================
+#define ADS_STALE_MS 50UL                       // ms with no finished ADS1115 conversion before the input is untrusted
+#define REMOTE_ERR_INPUT_FAULT 72               // TX-local remote_error code: throttle/toggle input fault (screen: blinking "St")
+volatile unsigned long last_ads_ok_ms = 0;      // millis() of the last finished ADS1115 conversion (any channel)
+volatile bool    ads_input_fault      = false;  // latched: throttle input untrusted; outputs forced safe until recovery
+volatile bool    ads_thr_out_of_range = false;  // set by measureAndBuffer() when a raw throttle sample is implausible
+volatile uint8_t ads_thr_good_samples = 0;      // in-band throttle samples stored since the last bad event (saturates)
+// V2.5-Evo - 2026-10-07 - P-11: true only while checkCal() (Hall.ino) is actually calibrating. The throttle plausibility
+// check is skipped then (there is no trusted band yet). It used to be skipped whenever usrConf.cal_ok was 0, so a runtime
+// `?set cal_ok 0` switched the check off for the whole session. Written by the loop task, read by the ADC task; one byte.
+volatile bool    ads_cal_in_progress  = false;
+
 volatile int gear = 0;
 volatile uint8_t max_power_cap = 85;  // Runtime cap for throttle_mode 2
 
 volatile uint8_t thr_scaled = 0;
 volatile uint8_t tog_scaled = 0;
 volatile uint8_t steer_scaled = 0;
+
+// ============================================================
+// V2.5-Evo - 2026-10-07 - SOP-040 GESTURE RULE: ONE DEFINITION OF "THE TRIGGER IS FULLY RELEASED"
+// The Return-To-Me gestures (the magnet 2.5 s hold and the toggle RIGHT tap + LEFT hold) act only with the trigger
+// fully released, and an RTM arrival keeps its throttle cap until the trigger has been fully released once. Both
+// use this test. thr_scaled < 10 (of 255, ~4 %) is the release threshold the toggle gestures and the RTM arm
+// ceremony already used (handleGearToggle(), runDoubleSqueezeArm()), so nothing that worked before changes meaning.
+// Reads thr_scaled (written by the ADC task). No side effects.
+// ============================================================
+#define TRIGGER_RELEASED_MAX 10
+static inline bool triggerReleased() { return thr_scaled < TRIGGER_RELEASED_MAX; }
 
 volatile uint8_t thr_sent = 0;   // Post-expo+gear throttle actually sent over radio
 volatile uint8_t steer_sent = 0; // Steering value actually sent over radio
@@ -822,8 +931,40 @@ volatile uint8_t steer_sent = 0; // Steering value actually sent over radio
 // reordering; std::atomic release/acquire prevents sendData from observing count>0
 // while type/value are still stale in the loop task's store buffer.
 std::atomic<uint8_t> rtm_meta_type  {0};    // 0xF1=RTM state, 0xF2=FM override
-std::atomic<uint8_t> rtm_meta_value {0};    // for 0xF1: 0=inactive 1=active; for 0xF2: 0-3 FM mode
+std::atomic<uint8_t> rtm_meta_value {0};    // for 0xF1: 0=inactive 1=active 2=refresh (H-1) 0x80|id=boot ID (S-8); for 0xF2: the mode byte
 std::atomic<uint8_t> rtm_meta_count {0};    // bursts remaining; 0 = idle (value is always 0 or 3)
+// V2.5-Evo - 2026-10-07 - H-1 / L-1: the three atomics above are now the HEAD of a 2-deep queue (a second slot
+// lives in Radio.ino). rtm_meta_count == 0 still means "nothing queued at all", because the second slot is
+// promoted into the head the moment the head empties. See queueMetaPacketBurst().
+
+// ============================================================
+// V2.5-Evo - 2026-10-07 - H-1 (TX part): "the buggy is still in Return-To-Me but this remote is not".
+// The buggy reports its RTM state in telemetry.fm_status bit 1 (RX RTMState.ino: rtm_rx_active). If the
+// remote missed sending, or the buggy missed hearing, the 0xF1/0 that ends a return (link loss, a remote
+// reboot or sleep mid-return, all three burst packets lost), the buggy kept running RTM with the remote
+// showing manual. runRtmLoop() now watches that bit and re-sends 0xF1/0 until it clears.
+//   fm_status_arrival_ms - millis() when the fm_status byte (telemetry index 15) last ARRIVED. The byte is
+//                          cached between arrivals, so only an arrival after our stop went out is evidence.
+//                          Written by waitForTelemetry (Radio.ino), read by the loop task.
+//   rtm_stop_sent_ms     - millis() when an 0xF1/0 packet last went on the air. Written by sendData.
+// ============================================================
+#define FM_STATUS_RTM_ACTIVE 0x02                 // telemetry.fm_status bit 1: the buggy has rtm_rx_active set
+volatile unsigned long fm_status_arrival_ms = 0;
+volatile unsigned long rtm_stop_sent_ms     = 0;
+
+// ============================================================
+// V2.5-Evo - 2026-10-07 - A-1 (TX part): "the buggy ended Return-To-Me but this remote still shows it".
+// The buggy ends a manual return on its own (arrival at the stop distance, a Phase C failure, its 30 s takeover
+// timeout) and says so only by clearing fm_status bit 1. The remote never read that bit while ACTIVE, so it kept
+// the RTM screen and cap until a 4 s release. runRtmLoop() now ends its own RTM when the buggy, having confirmed
+// RTM during this run, reports it OFF on 2 consecutive arrivals of the fm_status byte.
+//   fm_status_rtm_on_ms      - millis() of the last fm_status ARRIVAL with bit 1 set (0 = never).
+//   fm_status_rtm_off_streak - consecutive fm_status arrivals with bit 1 clear since the last set one (saturates).
+// Written only by waitForTelemetry (Radio.ino), where the byte arrives; read by the loop task. Counted per ARRIVAL of
+// index 15 (the cached byte only changes when its index comes round), like fm_engaged_streak. One word / one byte.
+// ============================================================
+volatile unsigned long fm_status_rtm_on_ms      = 0;
+volatile uint8_t       fm_status_rtm_off_streak = 0;
 
 // V2.5-Evo - 2026-04-25 - P7 RTM throttle cap.
 // V2.5-Evo - 2026-05-13 - SW32 M3: changed volatile→std::atomic<T>.

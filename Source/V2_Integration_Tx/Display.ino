@@ -1,3 +1,27 @@
+// V2.5-Evo - 2026-10-07 - FM INDICATOR DOTS, owner-final ("Hybrid H", following without rails): C7 R2-R4 in
+//   updateBargraphs(). Off = dark. W1 waiting (FM armed, not ready, auto-return parked) = R3/R4 take turns every
+//   200 ms. F1 following = R3 + R4 steady. R1 returning (auto-return returning, or manual RTM confirmed by the buggy) =
+//   down-fill R2 / R2+R3 / R2+R3+R4 / dark, 200 ms each, starting at R2. R2 lights only in R1. Frames come from the
+//   clock. Drawn only from buggy-confirmed state. R0 GPS and R1 BT unchanged. Display only, no confStruct change.
+// V2.5-Evo - 2026-10-07 - S-7: while the buggy confirms auto-return RETURNING (fmIsReturning(): fm_flags bits 6 + 1) the
+//   Follow-Me screen shows the distance in metres whatever fm_display_mode says, and R5 shows the left-anchored RETURN
+//   bar (drawReturnBar(), the same bar as manual RTM) instead of the centre FM bar. Auto-return WAITING (bit 6 without
+//   bit 1) keeps the Follow-Me armed look. No new indicator dots. Display only, no confStruct change.
+// V2.5-Evo - 2026-10-07 - Q-2 / SOP-041: renderRtmInfoDisplay() draws "rn" (waiting) with R5 dark until the buggy has
+//   confirmed the manual return (rtmReturnConfirmed()); the distance screen and RETURN bar only after that. Display only.
+// V2.5-Evo - 2026-10-07 - D-1 (TX part): the distance readout shows "0.X" under 1 m, and "--" for a 0x00 byte or a stale
+//   link as well as for 0xFF (rtmDistanceShowable()). Digit zone only; bars and dots untouched. No confStruct change.
+// V2.5-Evo - 2026-10-07 - F-8: unlockAnimation() samples the trigger during its frame waits (unlock_anim_release_seen),
+//   for the RTM double-squeeze ceremony. Same frames and timing. No confStruct change.
+// V2.5-Evo - 2026-10-07 - C-1: renderInputFaultBlink() - remote_error 72 (throttle input fault) shows a blinking "St"
+//   in both render paths, right after E71. Display only. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
+// V2.5-Evo - 2026-10-07 - E71 visible in every mode: the "E 7" water-ingress blink moved into renderE71Blink() and both
+//   renderOperationalDisplay() and renderRtmInfoDisplay() call it FIRST when remote_error == 71, so it now shows while
+//   Follow-Me is armed or Return-To-Me is active (it was hidden there; the buzz always fired). Detection, buzz and
+//   throttle paths untouched. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
+// V2.5-Evo - 2026-10-06 - F-label hold: showFmLabelHeld() draws "F<n>" and renderOperationalDisplay() leaves the
+//   digit zone alone for kFmLabelHoldMs (2 s) afterwards, so a station/mode confirm stays readable WITHOUT blocking
+//   loop(). Used by all four F-label sites in RTMState.ino. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-09-30 - MagFix (delta audit LOW): updateR5ProximityBar() now CALLS fmIsEngaged() instead of
 //   repeating its three-part test inline, so the engaged distance bar, the C7 R3/R4 FM dots and the magnet-tap
 //   safety gate all read one predicate and cannot drift apart. Presentation only: no confStruct change, sizeof
@@ -507,6 +531,20 @@ static void displayShowTwoDigitOrDash(uint8_t value)
   }
 }
 
+// rtmDistanceShowable - V2.5-Evo - 2026-10-07 - D-1 (TX part): may this telemetry.rtm_distance byte be drawn as a
+// number? THE BUG: only 0xFF showed "--". 0x00 is also a no-data value (decodeRtmDistanceM() and the RTM pre-arm
+// check already treat it so - see the BugA note there), but the readout drew it as a real distance; and with the
+// link gone the last value stayed on screen as if live. SOP-041 rule 4: old data is never
+// shown as live. THE FIX: "--" for 0xFF, for 0x00, and whenever no packet has landed within FM_LINK_HEALTHY_MS.
+// (A buggy-side stale GPS still needs the RX to write 0xFF - RX part of D-1.)
+// Input: d - the raw byte. Reads last_packet. Output: true = draw the distance. No side effects.
+static bool rtmDistanceShowable(uint8_t d)
+{
+  if (d == 0xFF || d == 0x00) return false;
+  if (last_packet == 0 || (millis() - last_packet) >= FM_LINK_HEALTHY_MS) return false;
+  return true;
+}
+
 // ============================================================
 // V2.5-Evo - 2026-04-28 - P9: COMPACT 3×7 FONT
 // Source: docs/Dot_Matrix_Display_10x7_Render.html — fontCompact JavaScript object.
@@ -684,10 +722,140 @@ uint8_t getEffectiveFoilBat() {
   return last_known_foil_bat;
 }
 
+// ============================================================
+// FOLLOW-ME LABEL HOLD - keeps "F1"/"F2"/"F3" on screen for 2 s without blocking loop()
+//
+// THE BUG THIS FIXES (field report 2026-10-05): the Follow-Me station label was seen for under half a
+// second and was sometimes barely visible. The owner wants it on screen for 2 s (1 s minimum).
+// The old confirms held the label by BLOCKING loop() inside gpsKeepAliveDelay() (2 s on the toggle
+// paths, 1.2 s on the magnet station tap), which also froze GPS polling, the magnet sampler and the
+// FM/RTM state machines for that whole time. NOTE, STATED HONESTLY: no path in this source was found
+// that cut the label below those figures, so the "under half a second" reading is not explained by the
+// code here (a different fielded build is possible). This change guarantees the 2 s on every F-label path.
+// THE FIX: the label is drawn once and its time is stamped. While the stamp is younger than
+// kFmLabelHoldMs, renderOperationalDisplay() skips its own digit-zone redraw in the Follow-Me branch,
+// so nothing paints over the label, and loop() keeps running every ~110 ms. Everything else on the
+// screen (R5 proximity bar, battery bar, GPS/BT/FM dots, signal bar) keeps updating as normal.
+// Anything that draws its own full-screen message ("St", "A1"/"A0", "rn", RTM info) still wins, exactly
+// as before - the hold only stops the routine speed/distance readout from overwriting the label.
+// ============================================================
+static const uint32_t kFmLabelHoldMs   = 2000UL;  // how long "F<n>" stays up (owner: 2 s, never under 1 s)
+static bool           fm_label_pending = false;   // true while a label is being held on screen
+static uint32_t       fm_label_shown_ms = 0;      // millis() when the label was drawn
+
+// showFmLabelHeld - draw "F<mode>" in large font and hold it for kFmLabelHoldMs.
+// Inputs: mode 1-3 (the station). Outputs: none.
+// Side effects: writes the digit zone and pushes it to the display (takes displayMutex), starts the
+//   hold timer. Does NOT block. Loop task only (every caller is in RTMState.ino on the loop task).
+void showFmLabelHeld(uint8_t mode)
+{
+  DISP_LOCK();
+  displayDigits(LET_F, mode);
+  updateDisplay();
+  DISP_UNLOCK();
+  fm_label_shown_ms = millis();
+  fm_label_pending  = true;
+}
+
+// fmLabelHolding - is an "F<n>" label still inside its hold time?
+// Outputs: true = leave the digit zone alone. Side effects: clears the pending flag once the time is up.
+// Wrap-safe: compares an unsigned elapsed time, never two absolute millis() values.
+static bool fmLabelHolding()
+{
+  if (!fm_label_pending) return false;
+  if (millis() - fm_label_shown_ms < kFmLabelHoldMs) return true;
+  fm_label_pending = false;
+  return false;
+}
+
+// ============================================================
+// V2.5-Evo - 2026-10-07 - E71 WATER-INGRESS BLINK, SHARED BY BOTH RENDER PATHS
+// THE BUG: the "E 7" blink lived in renderOperationalDisplay()'s error branch, AFTER the Follow-Me branch
+// returned, and renderRtmInfoDisplay() never looked at remote_error at all. So with Follow-Me armed or a
+// Return-To-Me active the water-ingress alarm never reached the screen (the Pattern 3 buzz still fired).
+// THE FIX: the blink is this one helper, and both renderers call it FIRST when remote_error == 71, so it
+// takes priority over the FM readout and the RTM info screen. The blink itself, its 250 ms cadence, the E71
+// detection (Radio.ino) and the Pattern 3 buzz (System.ino) are all unchanged. Display only - nothing here
+// touches throttle, FM or RTM state.
+// Inputs: none (millis()). Side effects: writes displayBuffer and pushes it. CALLER MUST HOLD displayMutex.
+// "E 7": E(3) + space(1) + 7(3) = 7 columns, all within C0-C6 (bits 7-9 are unconnected hw ROW lines).
+// ============================================================
+static void renderE71Blink()
+{
+  // V2.5-Evo - 2026-04-28 - P9: E71 water ingress — full-screen blinking flash, 250 ms on/off until it clears.
+  static unsigned long e71_blink_ms    = 0;
+  static bool          e71_blink_state = false;
+  if (millis() - e71_blink_ms >= 250)
+  {
+    e71_blink_state = !e71_blink_state;
+    e71_blink_ms    = millis();
+    if (e71_blink_state)
+    {
+      for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000;
+      const char* e71msg = "E 7";
+      uint8_t col = 0;
+      for (int ci = 0; e71msg[ci] && col < 10; ci++) {
+        if (e71msg[ci] == ' ') { col++; continue; }
+        const Fc3x7Entry* en = fc3x7GetChar(e71msg[ci]);
+        if (!en) { col++; continue; }
+        for (int fc = 0; fc < 3 && col < 10; fc++, col++) {
+          uint8_t cb = en->col[fc];
+          for (int r = 0; r < 7; r++) if (cb & (1u << r)) displayBuffer[r+1] |= (1u << col);
+        }
+      }
+    }
+    else
+    {
+      for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000;
+    }
+    updateDisplay();
+  }
+}
+
+// ============================================================
+// V2.5-Evo - 2026-10-07 - C-1: THROTTLE INPUT FAULT SCREEN (remote_error 72)
+// The trigger/toggle ADC stopped answering, or gave a reading far outside calibration, so the remote is
+// sending zero throttle (Analog.ino, adsInputFaultUpdate()). The screen is "St" - the one "not working"
+// signal riders already know (SOP-040) - BLINKING at the E71 cadence (250 ms) so it reads as a standing
+// fault rather than the steady 2 s "St" of an ordinary stop. The stop buzz fires once when it starts.
+// Shown first in both render paths (after E71), so Follow-Me or Return-To-Me screens cannot hide it.
+// Uses only the existing large-font S and t glyphs. NOTE: the display shares the I2C bus with the ADC, so
+// when the bus itself is dead this screen cannot be drawn; the buzz is the cue that always gets through.
+// Inputs: none (millis()). Side effects: writes displayBuffer and pushes it. CALLER MUST HOLD displayMutex.
+// ============================================================
+static void renderInputFaultBlink()
+{
+  static unsigned long blink_ms    = 0;
+  static bool          blink_state = false;
+  if (millis() - blink_ms >= 250)
+  {
+    blink_state = !blink_state;
+    blink_ms    = millis();
+    if (blink_state) displayDigits(LET_S, LET_T);
+    else             displayDigits(BLANK, BLANK);
+    updateDisplay();
+  }
+}
+
 void renderOperationalDisplay()
 {
   updateFoilDataCache();  // refresh digit cache once per render cycle, before mutex and switch
   xSemaphoreTake(displayMutex, portMAX_DELAY);  // loop-task render — waits for the bargraph task to release
+  // V2.5-Evo - 2026-10-07 - E71 FIRST: the water-ingress blink outranks the Follow-Me readout (and everything
+  // else this function draws). See renderE71Blink().
+  if (remote_error == 71)
+  {
+    renderE71Blink();
+    xSemaphoreGive(displayMutex);
+    return;
+  }
+  // V2.5-Evo - 2026-10-07 - C-1: the throttle input fault comes next. See renderInputFaultBlink().
+  if (remote_error == REMOTE_ERR_INPUT_FAULT)
+  {
+    renderInputFaultBlink();
+    xSemaphoreGive(displayMutex);
+    return;
+  }
   // V2.5-Evo - 2026-04-28 - ChgDZ: Persistent "FM" while Follow-Me armed, RTM not active.
   // displayDigitZone() preserves R5 proximity bar, R6 battery bar, C7 GPS dot, C8/C9 bargraphs.
   // Previous hand-written render wrote through all 7 rows, destructively clearing R5/R6.
@@ -699,12 +867,18 @@ void renderOperationalDisplay()
     // Option 2: Distance to buggy decoded from telemetry.rtm_distance (same encoding as RTM bar).
     // Option 3: Buggy speed from RX telemetry (0xFF = not available → shows "--").
     // Option 4: Current throttle percentage 0-100.
-    switch (usrConf.fm_display_mode)
+    // V2.5-Evo - 2026-10-06 - F-label hold: while an "F<n>" confirm is inside its 2 s hold, skip the
+    // digit-zone readout so it is not painted over. The R5 bar and the push below still run.
+    // V2.5-Evo - 2026-10-07 - S-7 (SOP-040 auto-return rule 6): while the buggy is RETURNING the digits are always the
+    // distance in metres, counting down, so the rider can see it closing; otherwise the rider's chosen readout.
+    const uint16_t fm_readout = fmIsReturning() ? 2 : usrConf.fm_display_mode;
+    if (!fmLabelHolding())
+    switch (fm_readout)
     {
       case 2:
       {
         uint8_t d = telemetry.rtm_distance;
-        if (d == 0xFF)
+        if (!rtmDistanceShowable(d))   // V2.5-Evo - 2026-10-07 - D-1: also 0x00 and a stale link (was d == 0xFF only)
           displayDigits(DASH, DASH);
         else
         {
@@ -784,42 +958,8 @@ void renderOperationalDisplay()
   }
   else
   {
-    // V2.5-Evo - 2026-04-28 - P9: E71 water ingress — full-screen blinking flash.
-    // All existing E71 haptic (Pattern 3: 5×500ms) and detection logic are UNCHANGED.
-    // Display-only change: "E 7" rendered full-screen at 250ms on/off until error clears.
-    // E(3) + space(1) + 7(3) = 7 columns, all within C0-C6 (bits 7-9 are unconnected hw ROW lines).
-    if (remote_error == 71)
-    {
-      static unsigned long e71_blink_ms    = 0;
-      static bool          e71_blink_state = false;
-      if (millis() - e71_blink_ms >= 250)
-      {
-        e71_blink_state = !e71_blink_state;
-        e71_blink_ms    = millis();
-        if (e71_blink_state)
-        {
-          for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000;
-          const char* e71msg = "E 7";
-          uint8_t col = 0;
-          for (int ci = 0; e71msg[ci] && col < 10; ci++) {
-            if (e71msg[ci] == ' ') { col++; continue; }
-            const Fc3x7Entry* en = fc3x7GetChar(e71msg[ci]);
-            if (!en) { col++; continue; }
-            for (int fc = 0; fc < 3 && col < 10; fc++, col++) {
-              uint8_t cb = en->col[fc];
-              for (int r = 0; r < 7; r++) if (cb & (1u << r)) displayBuffer[r+1] |= (1u << col);
-            }
-          }
-        }
-        else
-        {
-          for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000;
-        }
-        updateDisplay();
-      }
-      xSemaphoreGive(displayMutex);
-      return;
-    }
+    // V2.5-Evo - 2026-10-07 - the E71 water-ingress blink that lived here moved to renderE71Blink(), and
+    // renderOperationalDisplay() now checks it FIRST (see there), so remote_error 71 never reaches this branch.
 
     // V2.5-Evo - 2026-04-27 - P8: ET error (code=20=LET_T) shows "--" and auto-clears after 3s.
     // ET is absent from V2.5-Evo RX source; this guard is defensive for legacy or future paths.
@@ -1054,11 +1194,34 @@ void displayLock()
 // Helper: clear digit zone preserving C7 GPS dot and C8/C9 bargraphs (bit 7 = C7)
 #define ANIM_CLEAR() for(int _i = 0; _i < 7; _i++) displayBuffer[_i] &= 0xFF80
 
+// ============================================================
+// V2.5-Evo - 2026-10-07 - F-8: THE TRIGGER IS WATCHED DURING THE UNLOCK ANIMATION
+// THE BUG: in the RTM double-squeeze ceremony the rider must let go between squeeze 1 and squeeze 2, and the
+// ceremony sampled that release before and after unlockAnimation() but never during its ~180 ms, so a very quick
+// release-and-squeeze inside the animation was not counted. THE FIX: the animation's frame waits sample the
+// trigger every 10 ms and record a release in unlock_anim_release_seen, which the ceremony reads afterwards.
+// Same frames, same total time, same displayMutex hold; other callers simply ignore the flag.
+// Loop task only (every caller of unlockAnimation() runs there). Reads thr_scaled through triggerReleased().
+// ============================================================
+bool unlock_anim_release_seen = false;   // true if the trigger read released during the last unlockAnimation()
+
+// animDelaySampleRelease - delay(ms) that also records a trigger release into unlock_anim_release_seen.
+static void animDelaySampleRelease(uint32_t ms)
+{
+  unsigned long start = millis();
+  while (millis() - start < ms)
+  {
+    if (triggerReleased()) unlock_anim_release_seen = true;
+    delay(10);
+  }
+}
+
 // SW53: paintbrush sweep. Arrow descends R0→R6 using |= without clearing between frames —
 // each row the arrow passes through stays lit. Same pattern as advanceArrow().
 // 3 frames × 60ms = 180ms. Final state: R0-R3 = 0x3E (wide), R4-R5 = 0x1C (mid), R6 = 0x08 (tip).
 void unlockAnimation()
 {
+  unlock_anim_release_seen = false;   // V2.5-Evo - 2026-10-07 - F-8: fresh for this animation
   DISP_LOCK();
   ANIM_CLEAR();                // clear once — frames paint on top without erasing
   displayBuffer[7] &= 0xFF80; // clear battery row cols C0-C6 so tip pixel has clean base
@@ -1070,7 +1233,7 @@ void unlockAnimation()
   displayBuffer[4] |= 0x1C;
   displayBuffer[5] |= 0x08;
   updateDisplay();
-  delay(ANIMATION_DELAY);
+  animDelaySampleRelease(ANIMATION_DELAY);   // F-8: was delay(ANIMATION_DELAY)
 
   // Frame 2 — arrow moves to R1; R0 stays lit
   displayBuffer[2] |= 0x3E;
@@ -1079,7 +1242,7 @@ void unlockAnimation()
   displayBuffer[5] |= 0x1C;
   displayBuffer[6] |= 0x08;
   updateDisplay();
-  delay(ANIMATION_DELAY);
+  animDelaySampleRelease(ANIMATION_DELAY);   // F-8: was delay(ANIMATION_DELAY)
 
   // Frame 3 — arrow tip reaches R6; all rows R0-R6 painted at full head width (0x3E)
   // R4/R5 widened to 0x3E (were 0x1C — missing C1 and C5).
@@ -1090,7 +1253,7 @@ void unlockAnimation()
   displayBuffer[6] |= 0x3E;
   displayBuffer[7] |= 0x3E;
   updateDisplay();
-  delay(ANIMATION_DELAY);
+  animDelaySampleRelease(ANIMATION_DELAY);   // F-8: was delay(ANIMATION_DELAY)
 
   arrowPos = 0;
   DISP_UNLOCK();
@@ -1250,28 +1413,58 @@ void updateBargraphs(void *parameter)
     // group as one indicator, and it is reserved for a future Return-To-Me dot.
     // No new plumbing is needed to keep these alive: every digit-clear in this file already masks with
     // 0xFF80, which preserves bit 7, because that is how the GPS dot survives digit updates.
-    static uint32_t fm_dot_ms = 0;      // millis() of the last blink toggle
-    static bool     fm_dot_on = false;  // current on/off state of BOTH dots
-    if (!fm_armed)
+    // ---- V2.5-Evo - 2026-10-07 - SUPERSEDED: THE OWNER'S FINAL DOT PATTERNS (C7 R2, R3, R4) ----------
+    // The slow-blink-in-unison / solid pair above is replaced by the owner's final scheme ("Hybrid H", following
+    // without rails). Every single frame names one state, so a glance that catches one frozen picture still reads right:
+    //   OFF        Follow-Me not armed (and no confirmed return)           R2 R3 R4 dark
+    //   W1 WAITING Follow-Me armed: waiting, not ready, or auto-return     R3 and R4 TAKE TURNS every 200 ms (R3 first),
+    //              PARKED (fm_flags bit 6 without bit 1 - deliberately     exactly one always lit; R2 dark
+    //              the same look, the owner wants no extra state to learn)
+    //   F1 FOLLOWING the buggy confirms Follow-Me engaged, not returning   R3 + R4 steady; R2 dark
+    //   R1 RETURNING the buggy confirms auto-return returning (fm_flags    down-fill, 200 ms per frame: [R2] [R2 R3]
+    //              bits 6 + 1, fmIsReturning()) OR a manual return it      [R2 R3 R4] [dark], repeating (800 ms), always
+    //              has confirmed (rtmReturnConfirmed() on a fresh link)    starting at [R2] on entry
+    // R2 lights ONLY inside R1. The R5 bar and the digits carry the rest of each state (scanner / FM bar / RETURN bar,
+    // metres). Before the buggy confirms a manual return the remote shows "rn" and the dots stay on the Follow-Me state
+    // (SOP-041: never drawn from the remote's own intent); a stale link drops R1 / F1 (both need a fresh link).
+    // FRAMES COME FROM THE CLOCK, not from a tick count: frame = ((now - entry + 100 ms) / 200 ms) mod N, measured from
+    // the moment this task first saw the state. This task runs every 200 ms, so its ticks sit about +200 ms * k from
+    // the entry; the +100 ms centres each sample in its frame, and a few ms of scheduling jitter can never repeat or skip
+    // a frame. A skipped cycle (display mutex busy) simply advances the clock. E71 / E72 / "St" outrank these as before
+    // (they redraw the whole screen; the dots come back on the next pass).
+    static uint8_t  fm_dot_state    = 0;   // 0 off, 1 W1 waiting, 2 F1 following, 3 R1 returning
+    static uint32_t fm_dot_entry_ms = 0;   // millis() when this task first saw fm_dot_state
+    const  uint32_t dot_now    = millis();
+    const  bool     link_fresh = (last_packet != 0) && ((long)(dot_now - last_packet) < (long)FM_LINK_HEALTHY_MS);
+    uint8_t want_state;
+    if (fmIsReturning() || (rtmReturnConfirmed() && link_fresh)) want_state = 3;   // R1
+    else if (fmIsEngaged())                                       want_state = 2;   // F1
+    else if (fm_armed)                                            want_state = 1;   // W1
+    else                                                          want_state = 0;   // off
+    if (want_state != fm_dot_state) { fm_dot_state = want_state; fm_dot_entry_ms = dot_now; }
+    const uint32_t dot_frame = (dot_now - fm_dot_entry_ms + 100UL) / 200UL;
+    bool dot_r2 = false, dot_r3 = false, dot_r4 = false;
+    if (fm_dot_state == 3)
     {
-      // Not armed — dark, and reset the timer so a later blink starts cleanly on its on-phase.
-      fm_dot_on = false;
-      fm_dot_ms = millis();
+      const uint8_t f = (uint8_t)(dot_frame % 4);   // 0 [R2]  1 [R2 R3]  2 [R2 R3 R4]  3 [dark]
+      dot_r2 = (f <= 2);
+      dot_r3 = (f == 1 || f == 2);
+      dot_r4 = (f == 2);
     }
-    else if (fmIsEngaged())
+    else if (fm_dot_state == 2)
     {
-      // Actively following — solid. Same three-part test the R5 bar uses (armed + link fresh +
-      // FM_FLAG_ENGAGED), so the dots and the bar can never disagree about what state FM is in.
-      fm_dot_on = true;
-      fm_dot_ms = millis();
+      dot_r3 = true;
+      dot_r4 = true;
     }
-    else
+    else if (fm_dot_state == 1)
     {
-      // Armed but not following yet — slow blink.
-      if (millis() - fm_dot_ms >= 1000) { fm_dot_on = !fm_dot_on; fm_dot_ms = millis(); }
+      const bool r3_turn = (dot_frame % 2) == 0;   // R3 first, then R4 - exactly one lit
+      dot_r3 = r3_turn;
+      dot_r4 = !r3_turn;
     }
-    if (fm_dot_on) { displayBuffer[4] |=  (1u << 7); displayBuffer[5] |=  (1u << 7); }
-    else           { displayBuffer[4] &= ~(1u << 7); displayBuffer[5] &= ~(1u << 7); }
+    if (dot_r2) displayBuffer[3] |= (1u << 7); else displayBuffer[3] &= ~(1u << 7);
+    if (dot_r3) displayBuffer[4] |= (1u << 7); else displayBuffer[4] &= ~(1u << 7);
+    if (dot_r4) displayBuffer[5] |= (1u << 7); else displayBuffer[5] &= ~(1u << 7);
     // ---- End FM status dots -------------------------------------------
 
     displayVertBargraph(9, sq_graph, 2);
@@ -1300,8 +1493,9 @@ void updateBargraphs(void *parameter)
 //
 // Inputs: dist_m in metres (float). Metres are rendered for BOTH unit settings this version.
 // Rules (metres):
-//   <1 m     → "00"
-//   0-9.9 m  → "X.X" with the true-decimal dot at C3 R3   (1.7 = 1.7 m)
+//   0-9.9 m  → "X.X" with the true-decimal dot at C3 R3   (1.7 = 1.7 m; 0.4 = 0.4 m - V2.5-Evo - 2026-10-07 - D-1,
+//              under 1 m used to show "00")
+//   no data (byte 0xFF or 0x00) or a stale link → "--" (decided by the callers, see rtmDistanceShowable())
 //   10-99 m  → "XX" whole metres, no dot
 //   >=100 m  → scrolling "FAR"
 // displayDigits() must be called before setting the decimal dot (it clears R0-R5, R3 included).
@@ -1358,25 +1552,22 @@ static void scrollFarStep()
       displayBuffer[j] |= ((buf[(i + far_scroll_pos) % FAR_LEN] >> (5 - j)) & 0x01) << i;
 }
 
+// V2.5-Evo - 2026-10-07 - D-1: under 1 m now shows "0.X" with the decimal dot (it showed "00" with no dot, unlike
+//   every other sub-10 m value). The "00" branch is gone; 0.0-9.9 m all take the tenths path below.
 static void displayDistanceInUnits(float dist_m)
 {
   // FEET NOT IMPLEMENTED on TX display this version — renders metres. Parked: full feet/yards
   // far-range solution. usrConf.dist_unit is retained in confStruct/SPIFFS (no schema change,
   // no config wipe); a future version can branch here on dist_unit==1. Metres are rendered for
   // both settings for now.
-  if (dist_m < 1.0f)
-  {
-    scrollFarReset();
-    displayDigits(0, 0);
-  }
-  else if (dist_m < 100.0f)
+  if (dist_m < 100.0f)
   {
     scrollFarReset();
     if (dist_m < 10.0f)
     {
-      // 0-9.9 m: "X.X" with the C3 R3 dot meaning a TRUE decimal (1.7 = 1.7 m). Same dot
+      // 0-9.9 m: "X.X" with the C3 R3 dot meaning a TRUE decimal (1.7 = 1.7 m, 0.4 = 0.4 m). Same dot
       // mechanism the kW readout uses. Work in integer tenths to avoid float-rounding glitches.
-      uint16_t tenths = (uint16_t)(dist_m * 10.0f + 0.5f);  // 10..99 for 1.0-9.9 m
+      uint16_t tenths = (uint16_t)(dist_m * 10.0f + 0.5f);  // 0..99 for 0.0-9.9 m (D-1: was 10..99, <1 m showed "00")
       if (tenths > 99) tenths = 99;                         // guard 9.95-9.99 rounding to 10.0
       displayDigits(tenths / 10, tenths % 10);
       // V2.5-Evo - 2026-07-25 - Decimal dot raised R4 -> R3 (owner: one row up off the bottom of the
@@ -1416,6 +1607,33 @@ static void displayDistanceInUnits(float dist_m)
 void renderRtmInfoDisplay()
 {
   xSemaphoreTake(displayMutex, portMAX_DELAY);  // loop-task render — waits for the bargraph task to release
+  // V2.5-Evo - 2026-10-07 - E71 FIRST: the water-ingress blink outranks the RTM info screen. This function
+  // never checked remote_error before, so E71 was invisible for a whole return. See renderE71Blink().
+  if (remote_error == 71)
+  {
+    renderE71Blink();
+    xSemaphoreGive(displayMutex);
+    return;
+  }
+  // V2.5-Evo - 2026-10-07 - C-1: throttle input fault next, as in renderOperationalDisplay().
+  if (remote_error == REMOTE_ERR_INPUT_FAULT)
+  {
+    renderInputFaultBlink();
+    xSemaphoreGive(displayMutex);
+    return;
+  }
+  // V2.5-Evo - 2026-10-07 - Q-2 / SOP-041 rules 1-2: THE BUG - the RTM distance screen and RETURN bar were drawn from the
+  // remote's own intent (rtm_tx_active) the moment the ceremony ended, even when the buggy never heard 0xF1/1 and stayed
+  // in manual. THE FIX: until the buggy confirms RTM (fm_status bit 1 on an arrival after ACTIVE began) the screen shows
+  // the waiting look - "r n" in the digit zone, R5 dark - and only then the returning screen below.
+  if (!rtmReturnConfirmed())
+  {
+    displayDigitZone("r n");
+    displayBuffer[6] = 0x0000;
+    updateDisplay();
+    xSemaphoreGive(displayMutex);
+    return;
+  }
   static unsigned long alt_last_switch_ms = 0;
   static uint8_t       alt_showing        = 0;  // 0=distance, 1=speed (used in mode 2)
 
@@ -1437,7 +1655,7 @@ void renderRtmInfoDisplay()
   {
     // Distance mode — decode telemetry.rtm_distance then convert to selected unit
     uint8_t d = telemetry.rtm_distance;
-    if (d == 0xFF)
+    if (!rtmDistanceShowable(d))   // V2.5-Evo - 2026-10-07 - D-1: also 0x00 and a stale link (was d == 0xFF only)
     {
       displayDigits(DASH, DASH);
     }
@@ -1468,7 +1686,7 @@ void renderRtmInfoDisplay()
 
 // ============================================================
 // V2.5-Evo - 2026-04-28 - P9 S4: R5 PROXIMITY BAR
-// V2.5-Evo - 2026-07-20 - Batch T (Fable FM v1.4): FM path is now STATE-DRIVEN from
+// V2.5-Evo - 2026-07-20 - Batch T (FM design v1.4): FM path is now STATE-DRIVEN from
 //   telemetry.fm_flags + TX-local state. Suppressed during showFullScreenMessage() (buffer
 //   cleared, not called during blocking messages). All R5 writes stay inside displayBuffer[6]
 //   under the caller's displayMutex (renderOperationalDisplay / renderRtmInfoDisplay hold it),
@@ -1489,6 +1707,42 @@ void renderRtmInfoDisplay()
 //                                           full-scale from usrConf.fm_warn_distance_m (existing
 //                                           field — no new confStruct field).
 // ============================================================
+// ============================================================
+// V2.5-Evo - 2026-10-07 - S-7: THE RETURN BAR, shared by manual RTM and auto-return (SOP-041: "returning" looks like
+// ONE thing). Left-anchored on R5, square-root curve, full at the reference distance and shrinking toward the left as the
+// buggy closes; blinks with the caller's 1000/500 ms phase. This is the RTM bar that lived inline in
+// updateR5ProximityBar(), moved here unchanged so the auto-return return can draw the identical bar.
+// Inputs: ref_m - the 100 % reference (captured lazily from the first valid distance when <= 0, as before);
+//   blink_on - the caller's blink phase; telemetry.rtm_distance. Side effects: ORs pixels into displayBuffer[6] (the
+//   caller has cleared it and holds displayMutex); may set ref_m.
+// ============================================================
+static void drawReturnBar(float &ref_m, bool blink_on)
+{
+  if (!blink_on) return;  // off phase — leave R5 dark
+
+  uint8_t d = telemetry.rtm_distance;
+  if (d == 0xFF) return;  // no distance data — leave R5 dark
+
+  float current_m = (d < 100) ? d / 10.0f : (float)(d - 90);
+
+  // The reference may be captured before the buggy reports a distance; lazily capture it from the first valid
+  // render - the buggy is still near its starting distance at this point.
+  if (ref_m <= 0.0f) ref_m = current_m;
+  if (ref_m <= 0.0f) return;  // buggy literally at 0 m — skip to avoid divide-by-zero
+
+  float ratio = current_m / ref_m;
+  if (ratio > 1.0f) ratio = 1.0f;
+  uint8_t pixels = (uint8_t)(sqrtf(ratio) * 10.0f + 0.5f);  // full at the reference distance, shrinks as it closes
+  if (pixels > 10) pixels = 10;
+
+  for (uint8_t c = 0; c < pixels; c++)
+    displayBuffer[6] |= (1u << c);
+}
+
+// V2.5-Evo - 2026-10-07 - S-7: the auto-return's reference distance (RAM, the twin of rtm_arm_dist_m): captured on the
+// first returning render, cleared whenever the buggy is not returning, so every return starts with a full bar.
+static float fm_return_ref_m = 0.0f;
+
 void updateR5ProximityBar()
 {
   static unsigned long r5_blink_ms    = 0;
@@ -1514,28 +1768,22 @@ void updateR5ProximityBar()
   // ---- RTM proximity bar (unchanged): blinks, GROW-WITH-FAR (full = far) ----
   if (rtm_tx_active)
   {
-    if (!r5_blink_state) return;  // off phase — leave R5 dark
-
-    uint8_t d = telemetry.rtm_distance;
-    if (d == 0xFF) return;  // no distance data — leave R5 dark
-
-    float current_m = (d < 100) ? d / 10.0f : (float)(d - 90);
-
-    // rtm_arm_dist_m is captured at arm-engage time but RX telemetry may still be 0xFF
-    // at that instant (RX hasn't transitioned to active yet). Lazily capture it from the
-    // first valid render call — buggy is still near arm distance at this point.
-    if (rtm_arm_dist_m <= 0.0f) rtm_arm_dist_m = current_m;
-    if (rtm_arm_dist_m <= 0.0f) return;  // buggy literally at 0 m at arm — skip to avoid divide-by-zero
-
-    float ratio = current_m / rtm_arm_dist_m;
-    if (ratio > 1.0f) ratio = 1.0f;
-    uint8_t pixels = (uint8_t)(sqrtf(ratio) * 10.0f + 0.5f);  // full at arm distance, shrinks as it closes
-    if (pixels > 10) pixels = 10;
-
-    for (uint8_t c = 0; c < pixels; c++)
-      displayBuffer[6] |= (1u << c);
+    // rtm_arm_dist_m is captured at arm-engage time but RX telemetry may still be 0xFF at that instant; the lazy
+    // capture inside drawReturnBar() covers it. V2.5-Evo - 2026-10-07 - S-7: drawing moved to drawReturnBar(), unchanged.
+    drawReturnBar(rtm_arm_dist_m, r5_blink_state);
     return;
   }
+
+  // ---- V2.5-Evo - 2026-10-07 - S-7: AUTO-RETURN RETURNING -> the same RETURN bar, never the FM centre bar ----
+  // Drawn only while the buggy confirms it is returning (fmIsReturning(), RTMState.ino). Auto-return WAITING (parked)
+  // falls through to the armed scanner below - moving when ready, blinking in place when the buggy reports not-ready
+  // (fm_flags bit 2, read by fmArmedNotReady()).
+  if (fmIsReturning())
+  {
+    drawReturnBar(fm_return_ref_m, r5_blink_state);
+    return;
+  }
+  fm_return_ref_m = 0.0f;   // not returning: the next return starts from a full bar
 
   // ---- FM R5 row (Batch T): state-driven from fm_flags + TX-local readiness ----
   if (!fm_armed) return;  // Disarmed → R5 fully OFF

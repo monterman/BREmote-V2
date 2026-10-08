@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - P-4: measBufCalc task stack 2048 -> 3072 bytes (serial prints added by the C-1 fault path).
 // V2.5-Evo - 2026-04-21 - Added initTxGPS() call in applyConfigSettings() for TX GPS speed display
 // V2.5-Evo - 2026-04-22 - Simplified initTxGPS() call site: speed_src guard moved into initTxGPS() itself
 // V2.5-Evo - 2026-04-27 - P8: applyConfigSettings() always boots unlocked (lock feature removed)
@@ -73,7 +74,7 @@ static void bleInitTask(void* param)
     return;
   }
 
-  // Audit §4.7 — never run WiFi and BLE at the same time on the single-core, no-PSRAM C3.
+  // audit §4.7 — never run WiFi and BLE at the same time on the single-core, no-PSRAM C3.
   // Block until the web-config AP is gone (unlock/ride tears it down; a startup timeout also
   // stops it if no client ever connects). Negligible CPU: prio-1 task delaying 500 ms yields
   // fully to idle, so the native task watchdog keeps being fed while we wait.
@@ -84,7 +85,7 @@ static void bleInitTask(void* param)
   }
 #endif
 
-  // Audit §4.1 — heap-floor guard. The no-PSRAM C3 can init BLE into a NULL allocation under a tight
+  // audit §4.1 — heap-floor guard. The no-PSRAM C3 can init BLE into a NULL allocation under a tight
   // heap; refuse to even try below the floor and leave the rest of the firmware running normally.
   uint32_t heap_before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
   Serial.printf("BLE: free internal heap before init = %u bytes (floor %u)\n",
@@ -101,7 +102,7 @@ static void bleInitTask(void* param)
   initBLE();
   if (usrConf.bt_enabled == 2) bt_dot_state = BT_DOT_SLOW;  // always-on → pre-light the dot
 
-  // Audit §4.5 — the periodic telemetry push lives here, NOT in loop(), so BLE cadence can't couple to
+  // audit §4.5 — the periodic telemetry push lives here, NOT in loop(), so BLE cadence can't couple to
   // display-render timing. Prio 1 (below every app task, above idle), Core 0, modest stack. It only
   // reads telemetry/state and calls notify() — it never touches displayBuffer or the Wire bus.
   xTaskCreatePinnedToCore(bleNotifyTask, "BLE_Notify", 3072, NULL, 1, NULL, 0);
@@ -123,7 +124,10 @@ void initTasks()
   configASSERT(i2cMutex != NULL);
   xTaskCreatePinnedToCore(sendData, "Send_Data_100ms", 2048, NULL, 5, &sendDataHandle, 0);
   xTaskCreatePinnedToCore(waitForTelemetry, "wait_for_telem_triggered", 2048, NULL, 4, &triggeredWaitForTelemetryHandle, 0);
-  xTaskCreatePinnedToCore(measBufCalc, "wait_for_telem_triggered_10ms", 2048, NULL, 6, &measBufCalcHandle, 0);
+  // V2.5-Evo - 2026-10-07 - P-4: measBufCalc stack 2048 -> 3072. The C-1 input-fault code added Serial.println()
+  // calls to this task (the fault and recovery lines) and its high-water mark was never measured; a print on a
+  // nearly full stack would crash the task that zeroes the throttle. 1 KB of headroom is cheap on this heap.
+  xTaskCreatePinnedToCore(measBufCalc, "wait_for_telem_triggered_10ms", 3072, NULL, 6, &measBufCalcHandle, 0);
   xTaskCreatePinnedToCore(updateBargraphs, "wait_for_telem_triggered_200ms", 2048, NULL, 6, &updateBargraphsHandle, 0);
   xTaskCreatePinnedToCore(vibrationTask, "Vibration_Task_BG", 2048, NULL, 3, &vibrationTaskHandle, 0);
   // Finding 4-1: stack 1024→2048 words; handle saved so ?printtasks can report HWM

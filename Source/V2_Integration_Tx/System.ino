@@ -1,3 +1,19 @@
+// V2.5-Evo - 2026-10-07 - P-12: the dead-ADC charge-screen comment and lines credit the input fault (error 72), not
+//   g_ads_ok, and no longer point to a ?i2c command the TX does not have.
+// V2.5-Evo - 2026-10-07 - P-2: checkStartupButtons() trusts `thr_scaled > 100` only when every throttle buffer slot is
+//   inside the calibrated band, so one failed read at boot cannot turn the pairing gesture into a config delete.
+// V2.5-Evo - 2026-10-07 - F-6: vibrationTask's final else clears an unknown pattern number so it cannot block the queue.
+// V2.5-Evo - 2026-10-07 - SOP-040: comment only - Pattern 5 lost its mag_mode 4 refusal caller ("St" + Pattern 7 now).
+// V2.5-Evo - 2026-10-07 - H-1 (TX part): deepSleep() flushes 0xF1/0 + 0xF2/0 (rtmFmStopFlush(), >= 400 ms) before the
+//   radio is switched off. No confStruct change.
+// V2.5-Evo - 2026-10-07 - Pattern 8 REMOVED: the FM warning-distance haptic is gone (owner ruling, minimal-buzz
+//   rule); its executor branch is deleted and number 8 is retired.
+// V2.5-Evo - 2026-10-07 - Pattern 11 and vib_pulse_count REMOVED: a magnet station change no longer buzzes (owner
+//   ruling, minimal-buzz rule). Its executor branch and the count variable are gone; number 11 is retired.
+// V2.5-Evo - 2026-10-07 - R-4: comments corrected - Pattern 10's mag_mode 4 meaning ("Return-To-Me will toggle"
+//   was stale since 2026-10-06), and Pattern 12 now has no caller. Comment only.
+// V2.5-Evo - 2026-10-07 - R-7: Pattern 5 (one short blip) gains a caller - the mag_mode 4 hold refusal when
+//   Return-To-Me cannot start. Comment only in this file; no pattern changed, no confStruct change.
 // V2.5-Evo - 2026-09-30 - MagFix (delta audit): haptic Pattern 12 added — THREE FIRM taps (130 ms on /
 //   250 ms off, the Pattern 4 shape) = a mag_mode 4 magnet hold switched Return-To-Me OFF for the session.
 //   It replaces the vib_stop_pending / Pattern 7 long buzz that confirm used to borrow: Pattern 7 means "a
@@ -57,6 +73,11 @@ void deepSleep()
   updateDisplay();
   DISP_UNLOCK();
   setBrightness(0x00);
+  // V2.5-Evo - 2026-10-07 - H-1 (TX part): tell the buggy "Return-To-Me off" and "Follow-Me off" and let both
+  // bursts go out (>= 400 ms) BEFORE the radio is switched off, so a buggy mid-return or mid-follow is never
+  // left in that state with no remote behind it. rtmFmStopFlush() is in RTMState.ino; it skips itself when
+  // the radio is already off or the remote is unpaired.
+  rtmFmStopFlush();
   Serial.println("Going to sleep now");
   setRadioActivityEnabled(false);
   Serial.flush();
@@ -166,9 +187,25 @@ String checkHWConfig()
   }
 }
 
+// V2.5-Evo - 2026-10-07 - P-2: THE BUG - during the locked boot the throttle plausibility check is exempt, so one
+// failed ADS1115 read could sit in the averaging buffer and lift thr_scaled above 100 with the trigger released;
+// a RIGHT toggle held for PAIRING then became "delete the config and reboot". THE FIX: the throttle reading is
+// trusted only when every buffer slot is inside the calibrated band (adsThrBufferPlausible(), Analog.ino). If one
+// is not, wait for the buffer to refill (up to 4 x 150 ms); if it still is not, the trigger counts as NOT pulled,
+// which keeps the non-destructive gestures (pairing, recalibration with a moved magnet) usable.
+// adsThrBufferPlausible() is defined in Analog.ino, concatenated before this file.
 void checkStartupButtons()
 {
-  if(thr_scaled > 100)
+  uint8_t thr_now     = thr_scaled;
+  bool    thr_trusted = adsThrBufferPlausible();
+  for (uint8_t i = 0; i < 4 && !thr_trusted; i++)
+  {
+    delay(150);
+    thr_now     = thr_scaled;
+    thr_trusted = adsThrBufferPlausible();
+  }
+  if (!thr_trusted) Serial.println("BOOT [TX] throttle reading not trusted (sample outside calibration) - trigger treated as released");
+  if(thr_trusted && thr_now > 100)
   {
     if(tog_input == 1)
     {
@@ -801,14 +838,17 @@ void checkCharger()
       //      the failure would silence the tool needed to investigate it.
       //
       // So: leave the charge screen, boot normally, and KEEP SERIAL ON. Throttle is
-      // unaffected by this decision — Analog.ino already fails throttle to zero when
-      // g_ads_ok is false, which is the safe direction.
+      // unaffected by this decision: with the ADC silent no conversion finishes, so the
+      // throttle input fault in Analog.ino (conversion deadline, error 72) holds throttle at
+      // zero. (V2.5-Evo - 2026-10-07 - P-12: this used to credit g_ads_ok, which gates
+      // nothing in the throttle path; and the TX has no ?i2c command - ?printinputs shows the
+      // raw readings.)
       // ============================================================
       Serial.println(" ADC NOT RESPONDING");
       Serial.println("CHG: !! ADS1115 did not answer. Cannot tell charging from not charging.");
       Serial.println("CHG: !! Skipping the charge screen and KEEPING SERIAL ON so this is");
-      Serial.println("CHG: !! diagnosable. Check the I2C bus — run ?i2c. Throttle reads as");
-      Serial.println("CHG: !! zero while the ADC is down, which is the safe direction.");
+      Serial.println("CHG: !! diagnosable. Check the I2C bus (boot log line state, ?printinputs).");
+      Serial.println("CHG: !! Throttle is held at zero (input fault, error 72) while the ADC is down.");
       serialOff = false;
       exitChargeScreen = 1;
       break;
@@ -932,13 +972,9 @@ void checkCharger()
   setBrightness(0x0F);
 }
 
-volatile uint8_t current_vib_pattern = 0;  // active haptic pattern: 0=none, 1=2 short, 2=5 short, 3=5 long, 4=2 fast short (RTM/FM ARM confirm), 5=1 short (magnet 2s "release for FM" advisory), 6=3 fast short (magnet 5s "release for RTM" advisory), 7=1 long (UNCOMMANDED RTM/FM stop, or an arm refusal — request it via vib_stop_pending, never by writing 7 here), 8=1 medium 300ms (FM warning-distance reached; repeats every 2s from runFmLoop), 9=4 quick 80ms taps (return gesture: auto-return override SET for the session), 10=2 medium 300ms pulses (return gesture: override CLEARED, back to the stored default), 11=vib_pulse_count short taps (magnet station change: the tap count IS the station number — see the MagStations note below), 12=3 firm 130ms taps (magnet hold turned Return-To-Me OFF for the session — deliberately NOT the Pattern 7 stop buzz; see the note on Pattern 12 below)
-// V2.5-Evo - 2026-09-30 - MagStations: how many taps Pattern 11 plays. It is the Follow-Me station number
-// (1-3), so the rider counts the buzzes and knows where the buggy just went without looking at the display.
-// WRITE THIS FIRST, then current_vib_pattern = 11 — the vibration task reads the count when it starts the
-// pattern, and a count of 0 would silently play nothing. It is clamped to 1-5 inside the task so a stray
-// value can never spin the motor for an unbounded time.
-volatile uint8_t vib_pulse_count = 0;
+volatile uint8_t current_vib_pattern = 0;  // active haptic pattern: 0=none, 1=2 short, 2=5 short, 3=5 long, 4=2 fast short (RTM/FM ARM confirm), 5=1 short (magnet 2s "release for FM" advisory), 6=3 fast short (magnet 5s "release for RTM" advisory), 7=1 long (UNCOMMANDED RTM/FM stop, or an arm refusal — request it via vib_stop_pending, never by writing 7 here), 8=RETIRED 2026-10-07 (was the FM warning-distance pulse; that haptic is removed), 9=4 quick 80ms taps (return gesture: auto-return override SET for the session), 10=2 medium 300ms pulses (return gesture: override CLEARED, back to the stored default), 11=RETIRED 2026-10-07 (was the magnet station-change tap count; a station change no longer buzzes), 12=3 firm 130ms taps (magnet hold turned Return-To-Me OFF for the session — deliberately NOT the Pattern 7 stop buzz; see the note on Pattern 12 below)
+// V2.5-Evo - 2026-10-07 - vib_pulse_count (the tap count for Pattern 11) was removed with Pattern 11 itself:
+// a station change no longer buzzes (owner ruling). Pattern 11 in the list above is retired.
 
 // ============================================================
 // STOP-BUZZ REQUEST FLAG - how Pattern 7 gets to actually play
@@ -1101,6 +1137,13 @@ void vibrationTask(void *parameter) {
     // Deliberately a single pulse so it cannot be confused by feel with Pattern 4 (two pulses),
     // which is the 5s RTM advisory and every arm/disarm confirm. 150ms matches the "short"
     // pulse length already used by Patterns A and B.
+    // V2.5-Evo - 2026-10-07 - R-7: THIRD CALLER. runMagGesture() (mag_mode 4) plays it at the 2.5 s mark
+    // INSTEAD of the Pattern 10 "let go now" cue when Return-To-Me cannot start (disabled or GPS off); removal
+    // then shows "n0". One short blip is the least confusing existing shape for "no": it is not the two-medium
+    // success cue (10), not the long fault buzz (7), and its other callers are the mag_mode 1-3 advisory (a
+    // different mag_mode, so never on the same remote) and the fm_arm_timeout_s nudge (off by default).
+    // V2.5-Evo - 2026-10-07 - SOP-040: that third caller is GONE - the refusal is now "St" + Pattern 7 (via
+    // vib_stop_pending). Pattern 5 keeps its mag_mode 1-3 advisory and fm_arm_timeout_s nudge callers.
     else if (current_vib_pattern == 5) {
       digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(150));
       digitalWrite(P_MOT, LOW);
@@ -1161,17 +1204,8 @@ void vibrationTask(void *parameter) {
       digitalWrite(P_MOT, LOW);
       if (current_vib_pattern == 7) current_vib_pattern = 0;
     }
-    // V2.5-Evo - 2026-09-17 - WarnDist: Pattern 8 — ONE medium 300 ms pulse = the FM warning-distance
-    // haptic. runFmLoop() (RTMState.ino) queues it the moment the buggy reaches fm_warn_distance_m
-    // and then every 2 s while it stays at or beyond it, including with the trigger released.
-    // 300 ms sits between the 150 ms advisory (Pattern 5) and the 750 ms STOP (Pattern 7), so all
-    // three stay distinct by feel. It is queued only when nothing else is playing and no STOP is
-    // pending, and the pulse is bounded, so a STOP that arrives during it is promoted right after.
-    else if (current_vib_pattern == 8) {
-      digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(300));
-      digitalWrite(P_MOT, LOW);
-      if (current_vib_pattern == 8) current_vib_pattern = 0;
-    }
+    // V2.5-Evo - 2026-10-07 - Pattern 8 (one medium 300 ms pulse = the FM warning-distance haptic) REMOVED
+    // with its only caller in runFmLoop(): owner ruling, minimal-buzz rule. Number 8 is retired.
     // V2.5-Evo - 2026-09-19 - Return gesture: Pattern 9 — FOUR quick 80 ms taps, 80 ms gaps (a trill).
     // Fired by returnGesture() when the RTM arm is cancelled and the auto-return override is SET
     // (to the opposite of what the buggy reported). Four fast taps are a new shape: the arm confirm
@@ -1189,10 +1223,12 @@ void vibrationTask(void *parameter) {
     // Two mediums: longer than the two firm arm taps (4: 130 ms), one more than the single 300 ms
     // warning (8), far shorter than the one 750 ms STOP (7).
     // V2.5-Evo - 2026-09-30 - MagStations: SECOND CALLER. runMagGesture() also fires Pattern 10 as the
-    // 2.5 s advisory in mag_mode 4 — "let go now and Return-To-Me will toggle". It is the first half of
-    // that gesture's signature: two mediums, then two firm taps (4) for ON or one long buzz (7) for OFF.
-    // The two callers can never overlap — one is the toggle combo, the other needs a magnet held for
-    // 2.5 s — and both mean "a deliberate two-state decision just happened", so the feel stays honest.
+    // 2.5 s advisory in mag_mode 4.
+    // V2.5-Evo - 2026-10-07 - R-4: corrected. Since 2026-10-06 that advisory means "let go now and the
+    // manual Return-To-Me starts" ("rn" follows, then Pattern 4 when the squeeze arms it); it no longer
+    // toggles anything. Since 2026-10-07 it plays only when the hold will really start the ceremony - a
+    // hold that cannot start Return-To-Me gets Pattern 5 instead (R-7). The two callers can never overlap:
+    // one is the toggle combo, the other needs a magnet held for 2.5 s.
     else if (current_vib_pattern == 10) {
       for (int i = 0; i < 2; i++) {
         digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(300));
@@ -1201,29 +1237,13 @@ void vibrationTask(void *parameter) {
       }
       if (current_vib_pattern == 10) current_vib_pattern = 0;
     }
-    // V2.5-Evo - 2026-09-30 - MagStations: Pattern 11 — N short taps, where N IS THE ANSWER.
-    // vib_pulse_count carries the Follow-Me station number the magnet tap just moved to (1-5 since the
-    // front pair landed on 2026-10-02; the clamp below already allowed 5), so the rider
-    // counts taps instead of reading the display: two taps means the buggy is heading to station 2.
-    // The pulse shape (100 ms on / 150 ms off) is copied from Pattern 6 — this firmware's existing
-    // "counted taps" shape — so a count reads as a count and not as a new signal to learn. Pattern 11 with
-    // a count of 3 is deliberately identical to Pattern 6: Pattern 6 only ever plays in mag_mode 3 and
-    // Pattern 11 only in mag_mode 4, so one remote never produces both.
-    // The count is clamped to 1-5 so a stray or uninitialised value cannot buzz forever.
-    else if (current_vib_pattern == 11) {
-      uint8_t n = vib_pulse_count;
-      if (n < 1) n = 1;
-      if (n > 5) n = 5;
-      for (uint8_t i = 0; i < n; i++) {
-        digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(100));
-        digitalWrite(P_MOT, LOW);  vTaskDelay(pdMS_TO_TICKS(150));
-        if (vib_stop_pending) break;   // a stop outranks a confirm — cut it short
-      }
-      if (current_vib_pattern == 11) current_vib_pattern = 0;
-    }
+    // V2.5-Evo - 2026-10-07 - Pattern 11 (N short taps = the station a magnet tap moved to) REMOVED, with
+    // vib_pulse_count: owner ruling, a station change no longer buzzes; the F<n> label is the confirm.
     // V2.5-Evo - 2026-09-30 - MagFix (delta audit): Pattern 12 — THREE FIRM taps, the Pattern 4 shape
     // (130 ms on / 250 ms off). Fired by fmToggleRtmEnabledFromMagnet() when a mag_mode 4 magnet hold turns
     // Return-To-Me OFF for the session.
+    // V2.5-Evo - 2026-10-07 - R-4: NO CALLER. fmToggleRtmEnabledFromMagnet() and fmToggleAutoReturnFromMagnet()
+    // (its two users) were removed as dead code. The executor is left for the haptic-pattern review.
     // WHY THIS PATTERN EXISTS AT ALL. OFF used to raise vib_stop_pending, i.e. Pattern 7, the one long buzz.
     // Pattern 7 means "a FAULT stopped the system" and its own contract above says it DOES NOT FIRE ON any
     // deliberate disarm — and because it preempts every other pattern, it also outranked everything else the
@@ -1247,6 +1267,17 @@ void vibrationTask(void *parameter) {
         if (vib_stop_pending) break;   // a stop outranks a confirm — cut it short
       }
       if (current_vib_pattern == 12) current_vib_pattern = 0;
+    }
+    // V2.5-Evo - 2026-10-07 - F-6: THE BUG - a pattern number with no branch above (a retired 8 or 11, or any
+    // stray value) was never cleared, so it stuck forever and every "only if nothing is playing" cue (arm
+    // confirms, advisories, warnings) was blocked behind it. THE FIX: clear it. The value is read once, and
+    // cleared only if it is NOT a pattern this task plays (1-7, 9, 10, 12) - so a valid pattern that another
+    // task wrote after the checks above ran is left for the next pass, never thrown away.
+    else
+    {
+      uint8_t p = current_vib_pattern;
+      bool known = (p >= 1 && p <= 7) || p == 9 || p == 10 || p == 12;
+      if (p != 0 && !known) current_vib_pattern = 0;
     }
 
     // Sleep briefly to prevent hoarding the CPU

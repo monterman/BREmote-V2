@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - RTM STEERING TIMEOUT CONTINUES, ONE CAP STORE PER TICK (audit N-11, N-17, N-15): the 30 s RTM stick-takeover timeout hands the steering back to the controller and RTM continues (it used to end RTM uncapped and unannounced), mirroring the auto-return S-5 rule; RTM's approach / align / bootstrap / governor caps are folded into a local and rtm_approach_cap is stored once per tick, so the motor task never sees 255 mid-tick; a comment documents the steer_during_auto 0 exception (the stick still ends a return in mode 0). No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - PARKED AUTO-RETURN (audit N-9, N-10, N-13 + owner rule "waiting means it will work"): runFmReturnTick() decides from ONE mask (fmReturnParkVerdict): a parked return stays parked and raises fm_flags bit 2 (not ready) while only the remote's side is missing or, after a tolerated link gap, until the remote's boot ID is heard again (N-10); the buggy's own sensors, or a squeeze while not ready, end it with St. A stall is an arrival only in the final crawl (N-9: within stop + 3 m or a previous-tick cap <= 40 not from aligning, and buggy < 1.5 km/h); otherwise RETURN_NOT_CLOSING. No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - LINK-TIME CLOCKS (audit N-8(b), N-12): the sticky telemetry bits (fm_flags bit 3, rx_state_flags bits 0/1) count their 6 s only while the link is fresh, so a remote that was out of range when the fault happened still gets 6 s to read it; the H-1 RTM refresh expiry fires only after the link has been fresh for the whole 5 s with no refresh (link-down time no longer counts). ?diag says when the post-fault re-declaration block is set but not enforced (N-8(a), Radio.ino). No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - EVERY RTM END ARMS THE HAND-BACK CAP AT 0 (audit N-2, N-3, N-4): Phase C's three FAIL ends now arm it before rtm_rx_active goes false (they armed nothing, and the next tick dropped the emergency stop under a held trigger); Gate 9, the S-8 remote reboot and the H-1 refresh expiry arm kRtmEndHandbackCap (0) instead of rtm_approach_cap, which is 255 with the approach zone off or already reset that tick. No confStruct change, SW_VERSION stays 36.
@@ -2579,7 +2580,7 @@ static const char* steerTakeoverEndName(uint8_t e)
   switch (e) {
     case STO_END_NONE:      return "none yet";
     case STO_END_RELEASED:  return "released (stick centred, controller resumed)";
-    case STO_END_TIMED_OUT: return "timed out after 30 s -> cancel path";
+    case STO_END_TIMED_OUT: return "timed out after 30 s (following: cancel path; auto-return / RTM: steering handed back, the mode continues)";
     case STO_END_OWNER:     return "owner ended under it (release / stop / arrival / fault / disarm)";
     default:                return "unknown";
   }
@@ -3774,6 +3775,18 @@ static void runRtmLoopBody(unsigned long now)
     }
   }
 
+  // ============================================================
+  // V2.5-Evo - 2026-10-07 - N-17: RTM'S CAP IS COMPUTED IN A LOCAL AND STORED ONCE PER TICK.
+  // The approach ramp below used to WRITE rtm_approach_cap (255 outside the zone) and the run-phase governor,
+  // the align cap and BOOTSTRAP-1 further down then LOWERED it again. The 100 Hz motor task can run between
+  // the two writes, so one 10 ms pass could see 255 in the middle of an aligning or governed tick. Now every
+  // active-RTM contribution is folded into rtm_cap_tick and the atomic is written once: after the governor on
+  // a gates-pass tick, or straight after the gate check on a gate-fail tick (the zone value, exactly what
+  // those ticks stored before). It starts at the stored value, which is the "keep the last cap" the
+  // GPS-failed branch below has always meant. The inactive and mode-ending paths still write 255 directly.
+  // ============================================================
+  uint8_t rtm_cap_tick = rtm_approach_cap.load();
+
   // ---- Distance computation: telemetry encoding + approach decel cap ----
   // Distance is always encoded when both GPS sources are valid — feeds the TX R5 proximity
   // bar during RTM and FM modes, and enables the TX pre-arm check to correctly block
@@ -3852,17 +3865,17 @@ static void runRtmLoopBody(unsigned long now)
             float cap_frac = (d - (float)stop_m) / (approach_m - (float)stop_m);
             if (cap_frac < 0.0f) cap_frac = 0.0f;
             if (cap_frac > 1.0f) cap_frac = 1.0f;
-            rtm_approach_cap = (uint8_t)(cap_frac * 255.0f);
+            rtm_cap_tick = (uint8_t)(cap_frac * 255.0f);   // N-17: stored once, after the governor
             rtm_log_in_approach = true;   // level-5 log: the decel ramp is capping this tick
           }
           else
           {
-            rtm_approach_cap = 255;  // outside zone: no cap
+            rtm_cap_tick = 255;  // outside zone: no cap (N-17: stored once)
           }
         }
         else
         {
-          rtm_approach_cap = 255;  // feature disabled: no cap
+          rtm_cap_tick = 255;  // feature disabled: no cap (N-17: stored once)
         }
       }
       else
@@ -4043,6 +4056,9 @@ static void runRtmLoopBody(unsigned long now)
   // RTM active: run all gates
   if (!checkRtmSafetyGates())
   {
+    // V2.5-Evo - 2026-10-07 - N-17: no governor runs on a gate-fail tick, so the zone value is this tick's
+    // cap - the one store. Not after Gate 9 (it ended RTM and wrote 255 itself) or any other end.
+    if (rtm_rx_active) rtm_approach_cap = rtm_cap_tick;
     // Gate 1: throttle released — no emergency stop, motor already at 0.
     // Gate 9: stop distance reached — clean disengagement, rtm_rx_active set false, no emergency stop.
     // Gates 2-8: safety failure — rtm_rx_emergency_stop=true, calcPWM() forces throttle to 0.
@@ -4127,29 +4143,28 @@ static void runRtmLoopBody(unsigned long now)
   //     governor and BOOTSTRAP-1 keep running exactly as they do below - a takeover during the
   //     bootstrap is the rider steering a heading-blind buggy at <= 24 % under its own abort
   //     radius and timeout.
-  //   TIMED OUT (30 s): the Gate-9-shaped clean handoff - rtm_rx_active false, no emergency stop,
-  //     cap 255, manual at the held trigger with the stick the rider was already using. The print
-  //     comes after those writes (F7). The remote learns of it the way it does of Gate 9 today.
+  //   TIMED OUT (30 s): V2.5-Evo - 2026-10-07 - N-11: THE STEERING GOES BACK TO THE CONTROLLER AND
+  //     RETURN-TO-ME CONTINUES - the auto-return S-5 rule, because the owner ruled that RTM and
+  //     auto-return behave the same (SOP-040: steering is an aid, never an exit). It used to end RTM
+  //     with cap 255 - the held trigger back at once, no alarm, and the remote never told. The
+  //     arbitration has already dropped the takeover and cleared centre_seen on this tick, so the
+  //     stick must be read centred again before it can take over again (a drifted remote centre
+  //     cannot keep re-taking it), and Phase C check 1 is re-seeded exactly as after a release.
   // ============================================================
   if (rtm_motion_ms == 0) rtm_motion_ms = (now != 0) ? now : 1;
   if (usrConf.steer_during_auto != 0)
   {
     const uint8_t sto = steerTakeoverTick(now, rtm_motion_ms, "RTM");
     rtm_steer_takeover_req = steer_takeover.active;
-    if (sto == STO_RELEASED)
+    if (sto == STO_RELEASED || sto == STO_TIMED_OUT)   // N-11: a timeout resumes the controller like a release
     {
       rtm_prev_dist_m = -1.0;          // Phase C check 1: no baseline from the rider-steered stretch
       rtm_phase_c_ms  = now;           // next runPhaseC() in 5 s seeds, the one after judges
     }
-    else if (sto == STO_TIMED_OUT)
+    if (sto == STO_TIMED_OUT)
     {
-      rtm_rx_active         = false;   // disarm — the inactive path next tick, as after Gate 9
-      rtm_rx_emergency_stop = false;   // no emergency; manual throttle passes through at once
-      rtm_approach_cap      = 255;     // no decel cap on manual
-      rtm_steer_takeover_req = false;
-      Serial.printf("STEER [RX] RTM: takeover held %lu s - return-to-me ended, clean handoff to manual (a stick that never comes back to centre is most likely a drifted remote centre; check it)\n",
+      Serial.printf("STEER [RX] RTM: takeover held %lu s - steering handed back to return-to-me, which CONTINUES; centre the stick before it can take over again (a stick that never comes back to centre is most likely a drifted remote centre; check it)\n",
                     (unsigned long)(kSteerTakeoverMaxMs / 1000UL));
-      return;
     }
   }
   else
@@ -4283,7 +4298,7 @@ static void runRtmLoopBody(unsigned long now)
         // PERMISSIVE branch below, where the buggy is licensed to run heading-blind in a straight
         // line because the rider is confirmed OUTSIDE the abort radius. This branch is the opposite
         // - the licence was declined - and its envelope is, by its own words, ordinary align.
-        // STILL SUBTRACT-ONLY AND STILL BOUNDED: the line below only ever LOWERS rtm_approach_cap,
+        // STILL SUBTRACT-ONLY AND STILL BOUNDED: the line below only ever LOWERS the cap (rtm_cap_tick since N-17),
         // so wherever the approach decel ramp has already set a smaller cap (i.e. near the rider)
         // the ramp binds and no align-cap value can lift it; Gate 9 fired earlier in this same
         // function at rtm_stop_distance_m; and output is still min(rider_throttle, cap), so this
@@ -4291,7 +4306,7 @@ static void runRtmLoopBody(unsigned long now)
         // default 13 the behaviour is byte-identical. Range is the field's own 8-80 with
         // fmAlignCapValue()'s read-site clamp, so a corrupt stored value still lands on 13.
         const uint8_t align_cap = fmAlignCapValue();
-        if (rtm_approach_cap > align_cap) rtm_approach_cap = align_cap;
+        if (rtm_cap_tick > align_cap) rtm_cap_tick = align_cap;   // N-17: into the local
 
         // AUDIT B-2: name the reason. This fallback returns the buggy to precisely the behaviour a
         // beta tester reported as "did not start any steering at all", and it took a full trace to
@@ -4311,7 +4326,7 @@ static void runRtmLoopBody(unsigned long now)
         if (speed_frac > 1.0f) speed_frac = 1.0f;
         uint8_t boot_cap = (uint8_t)((1.0f - speed_frac) * 255.0f);
         if (boot_cap > kBootstrapMaxCap) boot_cap = kBootstrapMaxCap;
-        if (rtm_approach_cap > boot_cap) rtm_approach_cap = boot_cap;
+        if (rtm_cap_tick > boot_cap) rtm_cap_tick = boot_cap;     // N-17: into the local
       }
     } else if (abs_err > (float)usrConf.rtm_align_threshold_deg) {
       rtm_bootstrap_since_ms = 0;    // heading exists: the bootstrap window is over
@@ -4327,7 +4342,7 @@ static void runRtmLoopBody(unsigned long now)
       // BOOTSTRAP-1 - clears it. RTM's gates, stop radius, Gate 9, approach ramp, R-1/R-5 and the
       // bootstrap logic are untouched; only the two numbers RTM feeds the mixer during alignment.
       const uint8_t align_cap = fmAlignCapValue();
-      if (rtm_approach_cap > align_cap) rtm_approach_cap = align_cap;
+      if (rtm_cap_tick > align_cap) rtm_cap_tick = align_cap;     // N-17: into the local
       rtm_align_influence_req = (uint8_t)usrConf.fm_align_influence;
     } else if (usrConf.rtm_target_speed_kmh > 0.0f) {
       rtm_bootstrap_since_ms = 0;    // heading exists: the bootstrap window is over
@@ -4335,9 +4350,13 @@ static void runRtmLoopBody(unsigned long now)
       float speed_frac = gps_last_speed_kmh / usrConf.rtm_target_speed_kmh;
       if (speed_frac > 1.0f) speed_frac = 1.0f;
       uint8_t speed_cap = (uint8_t)((1.0f - speed_frac) * 255.0f);
-      if (rtm_approach_cap > speed_cap) rtm_approach_cap = speed_cap;
+      if (rtm_cap_tick > speed_cap) rtm_cap_tick = speed_cap;     // N-17: into the local
     }
   }
+
+  // V2.5-Evo - 2026-10-07 - N-17: THE ONE STORE on a gates-pass tick - the zone ramp, the align cap, the
+  // bootstrap cap and the governor, already folded together. calcPWM() never sees a partial value.
+  rtm_approach_cap = rtm_cap_tick;
 
   // Phase C (every 5s)
   runPhaseC();
@@ -6130,6 +6149,12 @@ static void runFmReturnTick(unsigned long now)
   // the takeover arbitration in its place, at this same point in the tick order - after faults,
   // distance, arrival and the rider-moving cancel, BEFORE the trigger gate - with the same grace
   // base (fm_return_motion_ms). Everything after this block is common to both modes.
+  // V2.5-Evo - 2026-10-07 - N-15 (documented, unchanged): WITH steer_during_auto 0 THE STICK STILL ENDS A
+  // RETURN. That is a deliberate MODE-0 EXCEPTION to SOP-040 rule 3 ("steering is an aid, never an exit"):
+  // mode 0 means "the stick cancels automatic steering" everywhere in this firmware, and a rider who chose it
+  // gets the same here - a sustained push past the grace ends the return through HOLD (cap 0 until a release,
+  // then ARMED), with no alarm because it is the rider's own act. The owner rides with 1 (take over), where
+  // rule 3 holds: the 30 s takeover hands the steering back and the return continues (S-5).
   if (usrConf.steer_during_auto == 0)
   {
     steerTakeoverReset();   // mode 0: the memory is always zero (covers a setting flipped 1 -> 0 -> 1 mid-session); a no-op otherwise

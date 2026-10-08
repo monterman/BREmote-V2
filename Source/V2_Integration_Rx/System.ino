@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): ?diag names level 6 "IMU" and gains three lines under "VESC 2 CAN": "VESC 2 IMU" (poll success in the window, polling / idle / waiting / backed-off state, miss streak), the last IMU values with their age and fresh / STALE / IMPLAUSIBLE verdict (the same rule the logger applies), and "RX IMU" (none fitted, columns reserved). DiagSnapshot carries the two imu2 counters; ?diagz zeroes them (the miss streak is live state and is left alone). No new ?command. Read-only. No confStruct change.
 // V2.5-Evo - 2026-10-07 - P-11: the BIND LED link test uses stampStale() (signed age). No confStruct change.
 // V2.5-Evo - 2026-10-07 - H-3 stop-gap: ?diag prints an "I2C bus" line under "swap fails" - stuck-bus recoveries this session, the SDA/SCL levels seen before/after the last one, whether Wire re-initialised, and whether the compass has been isolated. Read-only. No new ?command. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - ?diag gains one "Return end" line (printReturnEndDiag() in RTMState.ino): the arrival hand-back cap, the last RTM fault end / arrival, the H-2 gate-fault time and rx_state_flags. Read-only. No confStruct change, SW_VERSION stays 36.
@@ -1317,13 +1318,15 @@ struct DiagSnapshot {
   uint32_t vesc_ok;
   uint32_t vesc2_polls;   // V2.5-Evo - 2026-10-06 - VESC 2 over CAN
   uint32_t vesc2_ok;
+  uint32_t imu2_polls;    // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): VESC 2's IMU poll
+  uint32_t imu2_ok;
   uint32_t loop_count;
   uint32_t loop_us_sum;
   uint8_t  origin;   // 0 = boot (no previous call), 1 = previous ?diag, 2 = ?diagz
 };
 // Zero-initialised on purpose: the very first ?diag then differences against "boot", which is
 // exactly right — its window is millis() and its deltas are the totals since power-on.
-static DiagSnapshot g_diag_prev = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+static DiagSnapshot g_diag_prev = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 // ============================================================
 // cmdDiag - one-shot RX instrumentation snapshot (?diag)
@@ -1371,6 +1374,8 @@ void cmdDiag(const String& params) {
   cur.vesc_ok         = g_diag_vesc_ok;
   cur.vesc2_polls     = g_diag_vesc2_polls;
   cur.vesc2_ok        = g_diag_vesc2_ok;
+  cur.imu2_polls      = g_diag_imu2_polls;   // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU)
+  cur.imu2_ok         = g_diag_imu2_ok;
   cur.loop_count      = g_diag_loop_count;
   cur.loop_us_sum     = g_diag_loop_us_sum;
   cur.origin          = 1;   // this call becomes "the previous ?diag" for the next one
@@ -1394,7 +1399,9 @@ void cmdDiag(const String& params) {
   const uint32_t d_vesc_ok   = cur.vesc_ok         - g_diag_prev.vesc_ok;
   const uint32_t d_vesc2_p   = cur.vesc2_polls     - g_diag_prev.vesc2_polls;
   const uint32_t d_vesc2_ok  = cur.vesc2_ok        - g_diag_prev.vesc2_ok;
-  const uint32_t d_loop_n    = cur.loop_count      - g_diag_prev.loop_count;
+  const uint32_t d_imu2_p    = cur.imu2_polls      - g_diag_prev.imu2_polls;   // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU)
+  const uint32_t d_imu2_ok   = cur.imu2_ok         - g_diag_prev.imu2_ok;
+  const uint32_t d_loop_n   = cur.loop_count      - g_diag_prev.loop_count;
   const uint32_t d_loop_us   = cur.loop_us_sum     - g_diag_prev.loop_us_sum;
 
   // Never divide by zero: two ?diag calls in the same millisecond still produce a finite rate.
@@ -1406,7 +1413,7 @@ void cmdDiag(const String& params) {
                                                      : "since boot (first call)";
 
   const uint8_t lvl = logResolveLevel();
-  const char*   lvl_txt = (lvl >= 5) ? "Everything" : (lvl >= 4) ? "Deep" : "Developer";   // V2.5-Evo - 2026-09-19 - level 5
+  const char*   lvl_txt = (lvl >= 6) ? "IMU" : (lvl >= 5) ? "Everything" : (lvl >= 4) ? "Deep" : "Developer";   // V2.5-Evo - 2026-09-19 - level 5; 2026-10-08 - level 6 (IMU)
 
   // "-1" in the lines below always means "no sample in this window", never a real measurement.
   const long  fix_age_now  = (gps_last_ms != 0) ? (long)(now_ms - (uint32_t)gps_last_ms) : -1L;
@@ -1613,6 +1620,49 @@ void cmdDiag(const String& params) {
                     v2.batVolt / 10.0f, v2.batCur / 100.0f, v2.motCur / 100.0f, v2.duty / 10.0f,
                     (long)v2.erpm, v2.fetTemp / 10.0f, v2.motorTemp / 10.0f, (unsigned)v2.fault_code);
     }
+
+    // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): VESC 2's IMU, directly under VESC 2's values. Line 1 is
+    // the poll: success in this window and WHY it is or is not polling right now (the same gates
+    // pollVesc2ImuIfDue() applies, in the same order). Line 2 is the last sample, its age and the
+    // verdict the logger would write for it now (fresh / STALE / IMPLAUSIBLE - the same rule as
+    // imuLogEncode()), so "STALE" or "IMPLAUSIBLE" here means the log is writing -999. Line 3 says the
+    // RX IMU columns are reserved. A copy of imu2 is taken under vescMutex. Read-only.
+    {
+      imu2_struct i2;
+      bool i2_copied = false;
+      if (vescMutex && xSemaphoreTake(vescMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+        i2 = imu2;
+        xSemaphoreGive(vescMutex);
+        i2_copied = true;
+      }
+      const float imu_pct  = (d_imu2_p > 0) ? (100.0f * (float)d_imu2_ok / (float)d_imu2_p) : -1.0f;
+      const bool  v2_fresh = v2_copied && v2.ever_ok && ((now_ms - v2.last_ok_ms) <= kVesc2StaleMs) && !backed_off;
+      const char* imu_state =
+          !logImuPollWanted()                       ? "idle - polled only while a level-6 log records"
+        : !v2_fresh                                 ? "waiting - VESC 2 values not fresh"
+        : (g_imu2_miss_streak >= kImu2MissesToBackoff) ? "BACKED OFF 1 poll / 10 s (IMU enabled in VESC 2 App Settings > IMU?)"
+                                                    : "polling 2 Hz (level-6 log recording)";
+      Serial.printf("VESC 2 IMU : %u/%u ok (%.1f%%), %s, %u misses in a row\n",
+                    (unsigned)d_imu2_ok, (unsigned)d_imu2_p, imu_pct, imu_state,
+                    (unsigned)g_imu2_miss_streak);
+      if (!i2_copied) {
+        Serial.println("             values busy (vescMutex held) - run ?diag again");
+      } else if (!i2.ever_ok) {
+        Serial.println("             no IMU reply this session - the level-6 log writes -999 (no data)");
+      } else {
+        const uint32_t age = now_ms - i2.last_ok_ms;
+        const char* verdict = (age > kImu2StaleMs)        ? "STALE - the log writes -999"
+                            : !vescImuPlausible(&i2.s)    ? "IMPLAUSIBLE (|acc| < 0.5 g: IMU off or not detected?) - the log writes -999"
+                                                          : "fresh";
+        Serial.printf("             age %lu ms (%s), roll %.1f pitch %.1f yaw %.1f deg, gyro %.1f/%.1f/%.1f dps, acc %.3f/%.3f/%.3f g, |acc| %.3f g\n",
+                      (unsigned long)age, verdict,
+                      i2.s.rpy_deg[0], i2.s.rpy_deg[1], i2.s.rpy_deg[2],
+                      i2.s.gyro_dps[0], i2.s.gyro_dps[1], i2.s.gyro_dps[2],
+                      i2.s.acc_g[0], i2.s.acc_g[1], i2.s.acc_g[2],
+                      vescImuAccMagG(&i2.s));
+      }
+      Serial.println("RX IMU     : none fitted - the level-6 rx_imu_* columns are reserved and read -999");
+    }
   }
   Serial.printf("loop()     : min %.2f ms, mean %.2f ms, max %.2f ms   [%u loops]\n",
                 loop_min_ms, loop_mean_ms, loop_max_ms, (unsigned)d_loop_n);
@@ -1720,12 +1770,14 @@ void cmdDiagZ(const String& params) {
   g_diag_vesc_ok         = 0;
   g_diag_vesc2_polls     = 0;   // V2.5-Evo - 2026-10-06 - VESC 2 over CAN (the miss streak is live state, not a total - left alone)
   g_diag_vesc2_ok        = 0;
+  g_diag_imu2_polls      = 0;   // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU) (the miss streak is live state, not a total - left alone)
+  g_diag_imu2_ok         = 0;
   g_diag_loop_count      = 0;
   g_diag_loop_us_sum     = 0;
   g_diag_loop_min_us     = 0xFFFFFFFF;
   g_diag_loop_max_us     = 0;
 
-  DiagSnapshot fresh = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  DiagSnapshot fresh = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
   fresh.t_ms   = millis();
   fresh.origin = 2;   // so the next ?diag says "since ?diagz"
   g_diag_prev  = fresh;

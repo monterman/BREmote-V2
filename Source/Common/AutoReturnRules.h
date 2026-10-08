@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-07 - PARKED AUTO-RETURN (audit N-9, N-10, N-13 + owner rule "waiting means it will work"):
+//   fmReturnGapStep() (no return motion after a tolerated link gap until a boot ID is heard again),
+//   fmReturnParkVerdict() (go / not-ready / fault for a parked return), fmReturnStallIsArrival() (a stall is an
+//   arrival only in the final crawl).
 // V2.5-Evo - 2026-10-07 - LINK-TIME CLOCKS (audit N-8(b), N-12): stickyWindowStep() holds a sticky telemetry bit
 //   for 6 s of LINK-FRESH time; rtmRefreshExpiredOnLink() ends RTM only after the link has been fresh for the
 //   whole expiry with no refresh.
@@ -411,6 +415,89 @@ static inline uint8_t fmFailingMaskFrom(uint32_t now_ms, bool phase_a_rejected, 
   if (!heading_ok)                                     mask |= kFmCondHeading;
   if (stampStale(now_ms, link_ms, link_timeout_ms))    mask |= kFmCondLink;
   return mask;
+}
+
+// ============================================================
+// 10. N-10: AFTER A TOLERATED LINK GAP, NO RETURN MOTION UNTIL THE REMOTE HAS SAID WHO IT IS AGAIN
+// ============================================================
+// A parked return waits through a link loss only for a remote that sends a boot ID (S-2 + S-8), because a
+// changed boot ID is what cancels the return if the remote was switched off and on. But a remote rebooted
+// DURING the gap comes back with control packets first; until its boot ID arrives the buggy cannot tell it
+// from the remote it was waiting for, and a squeeze could resume the return by itself (SOP-040 rule 5, audit
+// N-10). So: once a link gap is seen while a boot ID has ever been heard, return motion waits until a boot
+// ID has been received AFTER the gap (the RX counts every boot-ID packet, changed or not). Today's remote
+// sends no boot ID, a link loss is not tolerated for it at all, and nothing changes for it.
+struct FmReturnGapState {
+  bool    awaiting;   // a gap was seen; no boot ID received since
+  uint8_t mark;       // the boot-ID receive counter on the last tick the link was down
+};
+
+// fmReturnGapStep - one tick. Inputs: link_failing (condition 7 this tick); bootid_rx_seq (the counter of
+//   boot-ID packets received); bootid_ever (a boot ID has been heard since the RX booted).
+// Returns: true while return motion must wait for a boot ID. Side effects: updates *g only.
+static inline bool fmReturnGapStep(FmReturnGapState* g, bool link_failing, uint8_t bootid_rx_seq,
+                                   bool bootid_ever)
+{
+  if (link_failing) {
+    g->mark     = bootid_rx_seq;
+    g->awaiting = bootid_ever;
+  } else if (g->awaiting && bootid_rx_seq != g->mark) {
+    g->awaiting = false;
+  }
+  return g->awaiting;
+}
+
+// ============================================================
+// 11. N-13 + OWNER RULE "WAITING MEANS IT WILL WORK": WHAT A PARKED RETURN DOES THIS TICK
+// ============================================================
+// SOP-040 (2026-10-07): the waiting screen is a promise. If the BUGGY's own side cannot do the return
+// (its GPS 2/5, its heading 6, a real handshake mismatch 3), the return ends at once with "St" and the stop
+// buzz. If only the REMOTE's side is briefly missing (its GPS 4, the link 7, or the boot ID after a gap,
+// N-10), the return stays parked and the remote shows NOT READY (fm_flags bit 2). A squeeze while not ready
+// gives "St" - it ends the return, as before - and MOTION always needs every input.
+enum FmReturnParkVerdict : uint8_t {
+  FMRPV_GO        = 0,   // nothing failing: the ordinary tick runs (a squeeze moves the buggy)
+  FMRPV_NOT_READY = 1,   // stay parked, cap 0, show not-ready; nothing ends
+  FMRPV_FAULT     = 2    // end the return on a fault (St + stop buzz)
+};
+
+// fmReturnParkVerdict - Inputs: failing_mask (fmFailingMaskFrom); parked (no held-trigger motion under
+//   way); thr_held; link_tolerance_allowed (a boot ID has been heard); awaiting_bootid (fmReturnGapStep).
+// Returns: one FmReturnParkVerdict. Side effects: none (pure).
+static inline uint8_t fmReturnParkVerdict(uint8_t failing_mask, bool parked, bool thr_held,
+                                          bool link_tolerance_allowed, bool awaiting_bootid)
+{
+  if (failing_mask == 0 && !awaiting_bootid) return FMRPV_GO;
+  if (!parked || thr_held) return FMRPV_FAULT;                   // motion needs every input, and the boot ID
+  if (failing_mask == 0) return FMRPV_NOT_READY;                  // only the post-gap boot ID is missing
+  return fmReturnParkedTolerates(failing_mask, parked, thr_held, link_tolerance_allowed)
+             ? FMRPV_NOT_READY : FMRPV_FAULT;
+}
+
+// ============================================================
+// 12. N-9: A RETURN THAT STOPS CLOSING IS AN "ARRIVAL" ONLY IN THE FINAL CRAWL
+// ============================================================
+// S-6 treated ANY not-closing verdict inside rtm_approach_zone_m as an arrival (hand-back, no alarm). Inside
+// a 12 m zone that also covered a buggy circling or steering mirrored at 10 m with a cap near 200 - a
+// failure, ended in silence (audit N-9). The arrival reading is now kept for the case it was written for:
+// the last metres, where the approach ramp has the cap near 0 and the motor (or the VESC deadband) stops the
+// buggy short of the stop radius. Everything else is RETURN_NOT_CLOSING with "St" + the stop buzz.
+static const float   kFmReturnCrawlExtraM    = 3.0f;   // m beyond the stop radius that still counts as the final crawl
+static const uint8_t kFmReturnCrawlCapMax    = 40;     // a previous-tick cap at or below this is a crawl (about 16 %)
+static const float   kFmReturnCrawlSpeedKmh  = 1.5f;   // the buggy must be (nearly) stopped, by its own GPS
+
+// fmReturnStallIsArrival - Inputs: in_zone (inside rtm_approach_zone_m, zone enabled); dist_m; stop_m;
+//   prev_cap (the return cap on the previous tick); aligning (the align cap, not the approach ramp, is what
+//   holds the cap low - a stalled pivot is not an arrival); buggy_kmh (own GPS speed; < 0 = unknown).
+// Returns: true = treat the stall as an arrival; false = a not-closing fault. Side effects: none (pure).
+static inline bool fmReturnStallIsArrival(bool in_zone, float dist_m, float stop_m, uint8_t prev_cap,
+                                          bool aligning, float buggy_kmh)
+{
+  if (!in_zone) return false;
+  if (buggy_kmh < 0.0f || buggy_kmh >= kFmReturnCrawlSpeedKmh) return false;
+  const bool close    = dist_m <= (stop_m + kFmReturnCrawlExtraM);
+  const bool crawling = (prev_cap <= kFmReturnCrawlCapMax) && !aligning;
+  return close || crawling;
 }
 
 #endif // BREMOTE_AUTO_RETURN_RULES_H

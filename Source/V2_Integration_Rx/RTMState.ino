@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - PARKED AUTO-RETURN (audit N-9, N-10, N-13 + owner rule "waiting means it will work"): runFmReturnTick() decides from ONE mask (fmReturnParkVerdict): a parked return stays parked and raises fm_flags bit 2 (not ready) while only the remote's side is missing or, after a tolerated link gap, until the remote's boot ID is heard again (N-10); the buggy's own sensors, or a squeeze while not ready, end it with St. A stall is an arrival only in the final crawl (N-9: within stop + 3 m or a previous-tick cap <= 40 not from aligning, and buggy < 1.5 km/h); otherwise RETURN_NOT_CLOSING. No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - LINK-TIME CLOCKS (audit N-8(b), N-12): the sticky telemetry bits (fm_flags bit 3, rx_state_flags bits 0/1) count their 6 s only while the link is fresh, so a remote that was out of range when the fault happened still gets 6 s to read it; the H-1 RTM refresh expiry fires only after the link has been fresh for the whole 5 s with no refresh (link-down time no longer counts). ?diag says when the post-fault re-declaration block is set but not enforced (N-8(a), Radio.ino). No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - EVERY RTM END ARMS THE HAND-BACK CAP AT 0 (audit N-2, N-3, N-4): Phase C's three FAIL ends now arm it before rtm_rx_active goes false (they armed nothing, and the next tick dropped the emergency stop under a held trigger); Gate 9, the S-8 remote reboot and the H-1 refresh expiry arm kRtmEndHandbackCap (0) instead of rtm_approach_cap, which is 255 with the approach zone off or already reset that tick. No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - SIGNED STAMP AGES (audit N-1, N-6, N-7): every loop-task comparison of the tick's clock against a stamp the radio task writes (rx_tx_gps_timestamp, last_packet, fm_mode_last_rx_ms, rtm_refresh_last_ms) now uses stampAgeMs() / stampStale() from Common/AutoReturnRules.h - a stamp written after the loop read the clock reads as age 0 instead of wrapping to ~49 days. Sites: RTM gates 4 and 7, Phase C check 3, the Phase B revoke, the distance block, the BOOTSTRAP-1 rider distance, Follow-Me conditions 4 and 7, fmFailingConditionsMask() (now reads millis() itself, N-6), the 95 s mode-age expiry (N-7; a real expiry from an engaged state now keeps the cap in force as the hand-back cap), the RTM refresh expiry (N-1, in the header) and two level-5 log ages. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -2555,6 +2556,14 @@ static unsigned long fm_return_judge_base_ms   = 0;
 // V2.5-Evo - 2026-10-07 - S-6: the slow-pivot episode for RETURN's not-closing net (best heading error
 // and when it last improved). Reset wherever fm_return_judge_base_ms is (re)based and while parked.
 static FmReturnPivotState fm_return_pivot      = {180.0f, 0};
+// V2.5-Evo - 2026-10-07 - N-10: the link-gap memory of a standing return (fmReturnGapStep()). Reset on
+// every entry into RETURN and with the rest of the return state.
+static FmReturnGapState   fm_return_gap        = {false, 0};
+// V2.5-Evo - 2026-10-07 - N-13: true on the last RETURN tick that stayed parked because a squeeze would NOT
+// have started motion (the remote's GPS, the link, or the post-gap boot ID missing). Written by
+// runFmReturnTick() (loop task); read one tick later by the fm_flags assembly in runRtmLoopBody(), which
+// sets fm_flags bit 2 (not ready) for it while fm_state is FM_RETURN and the buggy is not moving.
+static bool               fm_return_not_ready  = false;
 // For ?diag: engagements since boot, and how the last one ended.
 static uint16_t      steer_takeover_episodes   = 0;
 static unsigned long steer_takeover_notice_ms  = 0;    // rate limit for the not-centred notice
@@ -2776,6 +2785,8 @@ static void fmResetReturnState()
   fm_raw_last_fix_ms        = 0;
   fm_rider_raw_kmh          = -1.0f;
   fm_align_influence_req    = 0;
+  fm_return_gap             = {false, 0};   // V2.5-Evo - 2026-10-07 - N-10
+  fm_return_not_ready       = false;        // V2.5-Evo - 2026-10-07 - N-13
 }
 
 // updateFmRawRiderSpeed - the rider's RAW displacement speed over the last >= 1 s.
@@ -3692,8 +3703,15 @@ static void runRtmLoopBody(unsigned long now)
     // actually moves the buggy (fm_rx_active), so the remote's distance bar runs during a return.
     if (s == FM_ARMED || s == FM_ACTIVE || s == FM_HOLD || s == FM_RETURN)    f |= (1 << 0);
     if (s == FM_ACTIVE || (s == FM_RETURN && fm_rx_active))                  f |= (1 << 1);
-    if ((s == FM_ARMED || s == FM_HOLD) &&
-        (!fm_sep_latched || heading_disagree_fault))        f |= (1 << 2);
+    // V2.5-Evo - 2026-10-07 - N-13 (owner rule "waiting means it will work"): bit 2 ALSO rises for a PARKED
+    // auto-return (FM_RETURN, not moving) on which a squeeze would NOT start the return right now - the
+    // remote's GPS stale, the link down, or the post-gap boot ID not yet heard (fm_return_not_ready, set by
+    // the previous FM tick). The remote shows its existing not-ready look (scanner blinking in place)
+    // instead of "auto-return waiting", and goes back to waiting when the data returns. A squeeze while
+    // not ready still ends the return with "St" (runFmReturnTick()). When the BUGGY's own side fails the
+    // return has already ended with "St" + the stop buzz, so it is never shown as waiting.
+    if (((s == FM_ARMED || s == FM_HOLD) && (!fm_sep_latched || heading_disagree_fault)) ||
+        (s == FM_RETURN && !fm_rx_active && fm_return_not_ready))   f |= (1 << 2);
     // V2.5-Evo - 2026-10-07 - N-8(b): 6 s of LINK-FRESH time, not wall-clock time (see fm_fault_sticky).
     if (stickyWindowStep(&fm_fault_sticky, (uint32_t)now, (uint32_t)fm_fault_alarm_ms, link_fresh, kFmFaultStickyMs)) f |= (1 << 3);
     // V2.5-Evo - 2026-09-19 - bit 7: the EFFECTIVE auto-return mode, echoed in every FM state
@@ -5844,6 +5862,8 @@ static void fmEnterReturn(unsigned long now, float dist_m)
   fm_return_check_dist_m    = -1.0f;
   fm_return_cancel_since_ms = 0;
   fm_return_last_reason     = FM_RET_ENTERED;
+  fm_return_gap             = {false, 0};   // V2.5-Evo - 2026-10-07 - N-10: a new return starts with no gap on record
+  fm_return_not_ready       = false;        // V2.5-Evo - 2026-10-07 - N-13
   fmClearReturnProof();
   fm_align_influence_req    = 0;
   steerTakeoverReset();               // V2.5-Evo - 2026-09-19 - a new owner: a following takeover never carries into the return
@@ -5961,6 +5981,21 @@ static void fmReturnFault(uint8_t stop_reason, unsigned long now, bool thr_held)
   Serial.printf("FM [RX] stop reason: %s [%u]\n", fmStopReasonName(stop_reason), (unsigned)stop_reason);
 }
 
+// fmStopReasonFromMask - V2.5-Evo - 2026-10-07 - the FmStopReason of the FIRST failing condition in a
+// fmFailingConditionsMask() mask, in checkFmFaultConditions()'s order (2, 3, 4, 5, 6, 7), so a return
+// fault decided from the mask is named exactly as before. Input: mask (non-zero). Returns: the reason
+// (FM_STOP_NONE for 0). Side effects: none.
+static uint8_t fmStopReasonFromMask(uint8_t mask)
+{
+  if (mask & kFmCondPhaseA)  return FM_STOP_PHASE_A;
+  if (mask & kFmCondPhaseB)  return FM_STOP_PHASE_B;
+  if (mask & kFmCondTxStale) return FM_STOP_TX_STALE;
+  if (mask & kFmCondRxStale) return FM_STOP_RX_STALE;
+  if (mask & kFmCondHeading) return FM_STOP_HEADING;
+  if (mask & kFmCondLink)    return FM_STOP_LINK;
+  return FM_STOP_NONE;
+}
+
 // runFmReturnTick - one 10 Hz tick of FM_RETURN. Called from runFmLoopBody() while fm_state ==
 // FM_RETURN, after the mode/idle/yield/STOPPING/release-clear blocks and before the following
 // machinery (which does not run in RETURN).
@@ -5992,11 +6027,28 @@ static void runFmReturnTick(unsigned long now)
   // this remote sends a boot ID (rx_tx_boot_id held), which cancels the return on a reboot by itself
   // (runFmLoopBody). A remote without the boot ID keeps today's behaviour for the link: it ends the
   // return - now WITH the alarm (fmReturnFault).
-  uint8_t fault_reason = FM_STOP_NONE;
-  if (!checkFmFaultConditions(&fault_reason)) {
-    const uint8_t failing = fmFailingConditionsMask();   // V2.5-Evo - 2026-10-07 - N-6: reads its own clock
-    if (fmReturnParkedTolerates(failing, fm_return_motion_ms == 0, thr_held,
-                                rx_tx_boot_id.load() != kTxBootIdNone)) {
+  // V2.5-Evo - 2026-10-07 - N-10 + N-13: ONE DECISION FROM ONE MASK. The mask (all six conditions, signed
+  // ages, N-6) is now the single source: checkFmFaultConditions() is no longer called here, so the fault
+  // test and the tolerance test can never disagree within one tick. fmReturnParkVerdict()
+  // (Common/AutoReturnRules.h, host-tested) says GO, NOT READY or FAULT:
+  //   NOT READY - parked, released, and only the remote's side is missing (its GPS, the link) or, after a
+  //               tolerated link gap, its boot ID has not been heard again yet (N-10: a remote rebooted
+  //               during the gap must not resume the return before it says who it is). Stays parked and
+  //               raises fm_flags bit 2 (not ready) for the remote.
+  //   FAULT     - the buggy's own side (2, 5, 6, or a real handshake mismatch 3), or ANY of it with the
+  //               trigger held or the buggy moving: a squeeze while not ready gives "St" (SOP-040), as before.
+  //               The stop reason is the first failing condition, as checkFmFaultConditions() named it;
+  //               FM_STOP_LINK when only the post-gap boot ID was missing.
+  fm_return_not_ready = false;
+  const uint8_t failing      = fmFailingConditionsMask();   // V2.5-Evo - 2026-10-07 - N-6: reads its own clock
+  const bool    bootid_ever  = (rx_tx_boot_id.load() != kTxBootIdNone);
+  const bool    await_bootid = fmReturnGapStep(&fm_return_gap, (failing & kFmCondLink) != 0,
+                                               rx_tx_boot_id_rx_seq.load(), bootid_ever);
+  const uint8_t park_verdict = fmReturnParkVerdict(failing, fm_return_motion_ms == 0, thr_held,
+                                                   bootid_ever, await_bootid);
+  if (park_verdict != FMRPV_GO) {
+    if (park_verdict == FMRPV_NOT_READY) {
+      fm_return_not_ready       = true;    // N-13: the remote draws not-ready, not "waiting"
       fm_rx_active              = false;   // parked posture, as in the released-trigger branch below
       rtm_steer_override        = 127;
       fm_throttle_cap           = 0;
@@ -6009,14 +6061,16 @@ static void runFmReturnTick(unsigned long now)
       static unsigned long fm_return_wait_msg_ms = 0;   // rate limit: one line per 5 s
       if (fm_return_wait_msg_ms == 0 || (now - fm_return_wait_msg_ms) >= 5000UL) {
         fm_return_wait_msg_ms = (now != 0) ? now : 1;
-        Serial.printf("FM [RX] RETURN waiting (parked): the remote's side is not fresh (%s%s%s) - auto-return stays parked and moves again only with every input fresh\n",
-                      (failing & kFmCondTxStale) ? "rider GPS stale " : "",
-                      (failing & kFmCondLink)    ? "link down " : "",
-                      (failing & kFmCondPhaseB)  ? "handshake revoked" : "");
+        Serial.printf("FM [RX] RETURN waiting (parked, NOT READY): %s%s%s%s- auto-return stays parked, the remote shows not-ready, and a squeeze now would end it with St\n",
+                      (failing & kFmCondTxStale) ? "rider GPS stale, " : "",
+                      (failing & kFmCondLink)    ? "link down, " : "",
+                      (failing & kFmCondPhaseB)  ? "handshake revoked, " : "",
+                      (failing == 0 && await_bootid) ? "link back but the remote's boot ID not heard again yet (N-10), " : "");
       }
       return;
     }
-    fmReturnFault(fault_reason, now, thr_held);
+    fmReturnFault((failing != 0) ? fmStopReasonFromMask(failing) : (uint8_t)FM_STOP_LINK, now, thr_held);
+    if (failing == 0) Serial.println("FM [RX] RETURN fault: squeezed after a link gap before the remote's boot ID was heard again (N-10)");
     return;
   }
   fm_log_gate_flags |= FM_LOG_GATE_FAULT_OK;
@@ -6171,6 +6225,7 @@ static void runFmReturnTick(unsigned long now)
   fm_rx_active      = true;
   updateRtmSteering();
   const bool aligning = fmHeadingAligning();
+  const uint8_t prev_tick_cap = fm_throttle_cap.load();   // V2.5-Evo - 2026-10-07 - N-9: the cap the buggy was crawling on
   fm_throttle_cap = fmComputeReturnThrottleCap(dist_m, stop_m, now, aligning);
   fm_align_influence_req = aligning ? (uint8_t)usrConf.fm_align_influence : 0;   // the pivot boost, this tick only
 
@@ -6219,11 +6274,16 @@ static void runFmReturnTick(unsigned long now)
     fm_return_check_dist_m = dist_m;
   } else if ((now - fm_return_check_ms) >= kFmReturnNotClosingMs) {
     if (dist_m >= (fm_return_check_dist_m - kFmReturnNotClosingM)) {
-      if (in_approach_zone) {
+      // V2.5-Evo - 2026-10-07 - N-9: an ARRIVAL only in the final crawl - inside the zone AND (within
+      // stop + 3 m, OR the previous tick's cap at or below 40 and not held low by the align cap) AND the
+      // buggy's own GPS speed under 1.5 km/h (fmReturnStallIsArrival(), host-tested). A buggy circling or
+      // steering mirrored at 10 m with the cap near 200 is a fault (St + stop buzz), not a silent arrival.
+      if (fmReturnStallIsArrival(in_approach_zone, dist_m, stop_m, prev_tick_cap, aligning, gps_last_speed_kmh)) {
         const float was_m = fm_return_check_dist_m;   // captured before the exit clears it
         fmReturnExitToHold(FM_RET_ARRIVED_ZONE, now, dist_m);   // motor posture first; prints the ARMED line
-        Serial.printf("FM [RX] RETURN stopped closing inside the approach zone (dist=%.1f m, was %.1f m %lu ms ago, zone %u m) - treated as ARRIVAL, no alarm\n",
-                      (double)dist_m, (double)was_m, (unsigned long)kFmReturnNotClosingMs, (unsigned)usrConf.rtm_approach_zone_m);
+        Serial.printf("FM [RX] RETURN stopped closing in the final crawl (dist=%.1f m, was %.1f m %lu ms ago, zone %u m, cap %u, buggy %.1f km/h) - treated as ARRIVAL, no alarm\n",
+                      (double)dist_m, (double)was_m, (unsigned long)kFmReturnNotClosingMs, (unsigned)usrConf.rtm_approach_zone_m,
+                      (unsigned)prev_tick_cap, (double)gps_last_speed_kmh);
         return;
       }
       fmReturnFault(FM_STOP_RETURN_NOT_CLOSING, now, thr_held);

@@ -281,6 +281,85 @@ static void testParkedTolerance()
   assert(!fmReturnParkedTolerates(0, true, false, true));
 }
 
+// N-10: no return motion after a tolerated link gap until a boot ID has been received again.
+static void testReturnGap()
+{
+  FmReturnGapState g = {false, 0};
+  // Today's remote (no boot ID ever): a gap never makes it wait (the link loss is a fault for it anyway).
+  assert(!fmReturnGapStep(&g, true, 0, false));
+  assert(!fmReturnGapStep(&g, false, 0, false));
+  // A boot-ID remote: link down -> waiting; link back with no new boot ID -> still waiting.
+  g = {false, 0};
+  uint8_t seq = 5;
+  assert(!fmReturnGapStep(&g, false, seq, true));
+  assert(fmReturnGapStep(&g, true, seq, true));
+  assert(fmReturnGapStep(&g, true, seq, true));
+  assert(fmReturnGapStep(&g, false, seq, true));      // control packets are back, the remote has not said who it is
+  assert(fmReturnGapStep(&g, false, seq, true));
+  ++seq;                                               // its boot ID arrives (same ID: same remote)
+  assert(!fmReturnGapStep(&g, false, seq, true));
+  assert(!fmReturnGapStep(&g, false, seq, true));
+  // The packet that ends the gap may itself be the boot ID: it counts.
+  assert(fmReturnGapStep(&g, true, seq, true));
+  ++seq;
+  assert(!fmReturnGapStep(&g, false, seq, true));
+  // Counter wrap 255 -> 0 still counts as "moved".
+  g = {false, 0};
+  assert(fmReturnGapStep(&g, true, 255, true));
+  assert(!fmReturnGapStep(&g, false, 0, true));
+}
+
+// N-13 + owner rule "waiting means it will work": the parked verdict.
+static void testParkVerdict()
+{
+  // All good: GO.
+  assert(fmReturnParkVerdict(0, true, false, true, false) == FMRPV_GO);
+  assert(fmReturnParkVerdict(0, false, true, true, false) == FMRPV_GO);
+  // Parked, released, the remote's side missing: NOT READY (bit 2) - never "waiting".
+  assert(fmReturnParkVerdict(kFmCondTxStale, true, false, false, false) == FMRPV_NOT_READY);
+  assert(fmReturnParkVerdict(kFmCondLink, true, false, true, false) == FMRPV_NOT_READY);
+  assert(fmReturnParkVerdict(kFmCondLink | kFmCondTxStale | kFmCondPhaseB, true, false, true, false) == FMRPV_NOT_READY);
+  // Link down for a remote without a boot ID: a fault, as before (St).
+  assert(fmReturnParkVerdict(kFmCondLink, true, false, false, false) == FMRPV_FAULT);
+  // N-10: link back, boot ID not heard again: NOT READY while released...
+  assert(fmReturnParkVerdict(0, true, false, true, true) == FMRPV_NOT_READY);
+  // ... and a squeeze then is a fault (St), never motion.
+  assert(fmReturnParkVerdict(0, true, true, true, true) == FMRPV_FAULT);
+  // A squeeze while not ready: fault (St).
+  assert(fmReturnParkVerdict(kFmCondTxStale, true, true, true, false) == FMRPV_FAULT);
+  // The buggy's own sensors while parked: the return ends at once (St + buzz), never "waiting".
+  assert(fmReturnParkVerdict(kFmCondRxStale, true, false, true, false) == FMRPV_FAULT);
+  assert(fmReturnParkVerdict(kFmCondHeading, true, false, true, false) == FMRPV_FAULT);
+  assert(fmReturnParkVerdict(kFmCondPhaseA | kFmCondTxStale, true, false, true, false) == FMRPV_FAULT);
+  assert(fmReturnParkVerdict(kFmCondPhaseB, true, false, true, false) == FMRPV_FAULT);   // a real handshake mismatch
+  // Moving with anything failing: fault.
+  assert(fmReturnParkVerdict(kFmCondTxStale, false, true, true, false) == FMRPV_FAULT);
+}
+
+// N-9: a stall is an arrival only in the final crawl.
+static void testStallIsArrival()
+{
+  const float stop = 3.0f;
+  // The final crawl: inside the zone, within stop + 3 m, buggy stopped.
+  assert(fmReturnStallIsArrival(true, 5.5f, stop, 180, false, 0.3f));
+  // Further out but the approach ramp had it crawling (cap 30) and the buggy stopped: arrival.
+  assert(fmReturnStallIsArrival(true, 7.0f, stop, 30, false, 0.5f));
+  // THE AUDIT CASE: circling / mirrored at 10 m, cap about 198: a fault, not a silent arrival.
+  assert(!fmReturnStallIsArrival(true, 10.0f, stop, 198, false, 0.8f));
+  // Low cap only because it is aligning (a stalled pivot at the align cap): a fault.
+  assert(!fmReturnStallIsArrival(true, 10.0f, stop, 13, true, 0.2f));
+  // Still moving (>= 1.5 km/h) or speed unknown: a fault even close in.
+  assert(!fmReturnStallIsArrival(true, 4.0f, stop, 10, false, 2.0f));
+  assert(!fmReturnStallIsArrival(true, 4.0f, stop, 10, false, -1.0f));
+  // Outside the zone (or the zone off): always a fault.
+  assert(!fmReturnStallIsArrival(false, 4.0f, stop, 10, false, 0.1f));
+  // The boundary: stop + 3 m exactly counts; 1.5 km/h exactly does not; cap 40 counts, 41 does not.
+  assert(fmReturnStallIsArrival(true, 6.0f, stop, 200, false, 1.0f));
+  assert(!fmReturnStallIsArrival(true, 6.0f, stop, 200, false, 1.5f));
+  assert(fmReturnStallIsArrival(true, 9.0f, stop, 40, false, 1.0f));
+  assert(!fmReturnStallIsArrival(true, 9.0f, stop, 41, false, 1.0f));
+}
+
 static void testPivotSuspend()
 {
   FmReturnPivotState s; fmReturnPivotReset(&s);
@@ -350,6 +429,9 @@ int main()
   testFailingMask();
   testDistBlank();
   testParkedTolerance();
+  testReturnGap();
+  testParkVerdict();
+  testStallIsArrival();
   testPivotSuspend();
   testCandidateMayForm();
   printf("auto_return_rules_test: all tests passed\n");

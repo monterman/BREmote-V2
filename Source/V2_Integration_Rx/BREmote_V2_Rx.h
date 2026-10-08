@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - N-10: adds the rx_tx_boot_id_rx_seq atomic (bumped on every boot-ID packet; a parked auto-return after a link gap waits for it to move). Runtime global, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - COMMENTS (audits N-2..N-8): rx_state_flags bit 2 now means 0 after every RTM end; the sticky bits (rx_state_flags 0/1, fm_flags 3) count 6 s of link-fresh time; fm_redeclare_blocked is enforced only once a boot ID is heard. No code change in this file, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - TELEMETRY (audits S-7, A-1, H-2): telemetry.fm_flags bit 6 = auto-return standing (FM_RETURN; with bit 1 = returning, without = waiting); TelemetryPacket gains index 19 rx_state_flags ([0] RTM fault-stop sticky, [1] RTM arrived sticky, [2] hand-back cap standing, [3] boot ID held, [4] RTM refresh armed) - appended, an older remote ignores it. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - ARRIVAL HAND-BACK CAP (owner rule): includes ../Common/AutoReturnRules.h and adds the arrival_handback_cap atomic (255 = none) + kHandbackReleaseThr (8 counts): manual RTM Gate 9 and auto-return arrival end the mode at once but keep the cap in force at arrival until one full trigger release. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -1378,6 +1379,11 @@ std::atomic<uint8_t> fm_return_mode_runtime {0xFF};
 //   TYPE byte would be read as a throttle value by an older RX. Wire format: Common/AutoReturnRules.h.
 std::atomic<uint8_t> rx_tx_boot_id         {kTxBootIdNone};
 std::atomic<uint8_t> rx_tx_boot_change_seq {0};
+// V2.5-Evo - 2026-10-07 - N-10: bumped on EVERY boot-ID packet received (changed or not), so a parked
+//   auto-return can tell "a boot ID has arrived since the link came back" (fmReturnGapStep() in
+//   Common/AutoReturnRules.h). Wraps at 256, which only has to differ from the value marked at the gap.
+//   Written by Radio.ino (triggeredReceive task), read by RTMState.ino (loop task).
+std::atomic<uint8_t> rx_tx_boot_id_rx_seq  {0};
 // H-1 - rtm_refresh_seen / rtm_refresh_last_ms: the remote re-sends 0xF1 VALUE 0x02 ("RTM still
 //   active") about once a second while its RTM is ACTIVE. A refresh only refreshes - it never sets
 //   rtm_rx_active - and rtm_refresh_seen is cleared by every 0xF1/1 activation, so the expiry
@@ -2487,7 +2493,7 @@ struct __attribute__((packed)) TelemetryPacket {
     uint8_t rx_heading = 0xFF;        // index 13 — GPS COG÷2 (0-179→0-358°); 0xFF = N/A
     uint8_t fm_heading_err = 127;     // index 14 — bearing error+127; 127 = no data
     uint8_t fm_status = 0;            // index 15 — [7]=aux2_on [6]=aux1_on [5]=vesc_online [4]=rx_wetness [3:2]=heading_conf [1]=rtm_active [0]=fm_active
-    uint8_t fm_flags = 0;             // index 16 — Follow-Me engagement sub-state (assembled in RTMState.ino runRtmLoop): [7]=effective auto-return mode echo (1 = ON; V2.5-Evo 2026-09-19, read by the remote's display and return gesture) [6]=AUTO-RETURN STANDING (V2.5-Evo 2026-10-07, audit S-7: fm_state is FM_RETURN; with [1] set it is RETURNING (moving), with [1] clear it is WAITING (parked); drops on every end of the return) [5]=steer takeover STANDING this tick (the stick is steering an auto-steer run; display only) [4]=steer_during_auto echo (1 = take over: the remote's Gate 4 steer-exit stands down; 0 = cancel) - both V2.5-Evo 2026-09-19, sent every tick in every FM state [3]=fault-stop-sticky [2]=armed-not-ready [1]=engaged (FM_ACTIVE, or FM_RETURN while it moves) [0]=armed. Was reserved_tx_imu (unused reserved byte).
+    uint8_t fm_flags = 0;             // index 16 — Follow-Me engagement sub-state (assembled in RTMState.ino runRtmLoop): [7]=effective auto-return mode echo (1 = ON; V2.5-Evo 2026-09-19, read by the remote's display and return gesture) [6]=AUTO-RETURN STANDING (V2.5-Evo 2026-10-07, audit S-7: fm_state is FM_RETURN; with [1] set it is RETURNING (moving), with [1] clear it is WAITING (parked); drops on every end of the return) [5]=steer takeover STANDING this tick (the stick is steering an auto-steer run; display only) [4]=steer_during_auto echo (1 = take over: the remote's Gate 4 steer-exit stands down; 0 = cancel) - both V2.5-Evo 2026-09-19, sent every tick in every FM state [3]=fault-stop-sticky (V2.5-Evo 2026-10-07 N-8: held 6 s of LINK-FRESH time) [2]=not ready (FM_ARMED / FM_HOLD: not engage-eligible on RX facts; V2.5-Evo 2026-10-07 N-13: FM_RETURN parked: a squeeze would NOT start the return now - remote GPS stale, link down, or the post-gap boot ID not heard again; the remote draws its not-ready look and a squeeze gives St) [1]=engaged (FM_ACTIVE, or FM_RETURN while it moves) [0]=armed. Was reserved_tx_imu (unused reserved byte).
     uint8_t rx_bearing_to_tx = 0xFF;  // index 17 — bearing from buggy toward rider÷2; 0xFF = N/A
     uint8_t link_quality = 0;         // index 18 (was "must be last"; it is only rotated like every other index, and the remote reads it by name)
     // V2.5-Evo - 2026-10-07 - index 19 - rx_state_flags: how the BUGGY ended a return, for the remote

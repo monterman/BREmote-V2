@@ -12,6 +12,11 @@ ESP32 LoRa wireless remote for efoil and RC tow buggy — 868/915 MHz, 10 Hz con
 
 > **⚠️ 2026-07-25 — important fix, please reflash both boards.** A bug was found in on-water testing: the shared serial line was prioritising the VESC over the GPS, so the receiver was catching only ~2% of the GPS feed and Follow-Me could steer on a dead heading. Priority is now swapped and the GPS course works. **Fixed but not yet proven on the water** — see [CHANGELOG.md](CHANGELOG.md). Read the Alpha Testing Notes below before any in-water use.**
 
+> **🆕 Upcoming release — new Follow-Me screens, auto-return, front stations, buggy WiFi console.**
+> Available now for testing on the [`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations) (binaries in the
+> `latest-FM-stations` folders). It moves to master after water testing. See
+> [what's coming](#-coming-in-the-upcoming-release) and the [release notes](docs/RELEASE_NOTES_upcoming.md).
+
 ---
 
 ## 🚀 New here? Start with the setup guide
@@ -48,6 +53,9 @@ Every section of this README has a longer document behind it. Start here when yo
 | Chase compass EMI / understand the field data | [Compass calibration & EMI field analysis](docs/Compass_Cal_Analysis.md) *(reference, not a how-to)* |
 | Read the TX screen | [Display reference](docs/display-reference.md) |
 | Ride with Follow-Me | [Follow-Me guide](docs/FOLLOW_ME_GUIDE.md) · [design notes](DESIGN_FOLLOW_ME.md) |
+| See the new Follow-Me screens *(upcoming release)* | **[Screens page + glance quiz](https://monterman.github.io/BREmote-V2/followme-screens.html)** |
+| Get a starting config for your setup *(upcoming release)* | **[Setup wizard](https://monterman.github.io/BREmote-V2/setup-wizard.html)** |
+| What the next firmware changes | [Upcoming release notes](docs/RELEASE_NOTES_upcoming.md) |
 | Use Return-to-Me | [RTM design notes](DESIGN_RETURN_TO_ME.md) |
 | Set up or tune the VESCs | [Smooth-start quick reference](docs/VESC_SMOOTH_START_QUICK_REFERENCE.md) · [tuning process](docs/VESC_TUNING_PROCESS.md) · [FOC notes](docs/VESC_FOC_TUNING_NOTES.md) |
 | Fix VESC telemetry | [VESC telemetry fix](docs/VESC_Telemetry_Fix.md) · [telemetry sources & prop baseline](docs/TELEMETRY_SOURCE_AND_PROP_BASELINE.md) |
@@ -90,6 +98,7 @@ This fork exists because LudwigBre published open hardware and firmware under GP
 |---|---|
 | **`master`** | **V2.5-Evo. The default branch, and what you want.** Hardware-verified on both boards. |
 | `ludwig-upstream-main` | **LudwigBre's original line, not mine.** Kept so upstream changes can be tracked and merged. Do not flash it expecting V2.5-Evo behaviour — it is a different firmware. |
+| `fm-stations` | **The upcoming release, for testers:** new Follow-Me screens, auto-return, front stations, buggy WiFi console. Binaries in the `latest-FM-stations` folders. Moves to master after water testing. |
 | `multi-tx` | Work in progress: multiple remotes sharing one buggy. **Nothing here has been flashed to hardware.** |
 
 `ludwig-upstream-main` was called `main` until 2026-08-05. It was renamed because "main" reads
@@ -118,6 +127,43 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 │                            │              │  Flash Data Logger               │
 └────────────────────────────┘              └──────────────────────────────────┘
 ```
+
+---
+
+## 🆕 Coming in the upcoming release
+
+*Available now for testing on the [`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations), binaries in
+`Source/V2_Integration_Rx/RX firmware/latest-FM-stations/` and
+`Source/V2_Integration_Tx/TX firmware/latest-FM-stations/`. It moves to master after water testing.
+Flash the remote and the buggy together.* Details: [release notes](docs/RELEASE_NOTES_upcoming.md).
+
+- **New Follow-Me screens.** One dot hopping = waiting, two steady dots = following, the dot column
+  filling down = the buggy is coming to you. The numbers are the metres between remote and buggy.
+  [See them animated, with a glance quiz](https://monterman.github.io/BREmote-V2/followme-screens.html).
+- **Auto-return inside Follow-Me.** Stop and the buggy parks and waits. Squeeze when you want it
+  back. Pauses never cancel it; it ends by arriving, a fault, or switching the remote off and on.
+- **Magnet tap** (`mag_mode` 4): a tap arms Follow-Me, even on the rope, and steps the station;
+  a 2.5 s hold with the trigger released starts the manual return-to-me.
+- **Front stations F4 / F5\*** — ahead-left or ahead-right for downwind runs, never dead ahead,
+  with a protection cone around your path. *\* In development and testing, not yet water-tested.*
+- **Serial console on the buggy's WiFi page** (RX only). Run commands from your phone at the dock
+  or the beach, no laptop or cable: a dropdown of the commands the buggy allows over WiFi, a
+  free-text box, and one-tap buttons for everyday jobs (Save, `?get`, North check, compass align,
+  `?diag`, `?conf`, `?printgps`, `?logstat`). Save checks there is enough free space first.
+- **Throttle-input fault protection.** If the remote's trigger sensor stops answering (water, a
+  stuck sensor bus), the throttle goes to **zero** and the screen blinks **St**, instead of
+  holding the last value.
+- **Safety rules the remote now follows:** manual always wins, "St" is the one not-working
+  signal, the screen shows only what the buggy confirms, auto-return waits for you, arrival keeps
+  the throttle capped until one full release. See the [Follow-Me guide](docs/FOLLOW_ME_GUIDE.md#2-safety-philosophy).
+- **Fewer buzzes.** No buzz for distance, station steps or the start of following. The
+  distance-warning buzz is gone: `fm_warn_distance_m` now only sets the bar's full scale.
+- **New defaults:** the Follow-Me numbers show metres to the buggy (`fm_display_mode` 2);
+  auto-return on (`fm_return_mode` 1).
+- **Setup wizard** for early adopters: answer the questions (about 8 minutes) and get a config for
+  the remote and the buggy. [Open the wizard](https://monterman.github.io/BREmote-V2/setup-wizard.html).
+- **Log format 3:** log level 4 now carries the second VESC too. **Download your logs before you
+  flash** — after the flash the buggy can no longer open log files from older firmware.
 
 ---
 
@@ -409,7 +455,7 @@ Unavailable modes (no VESC lock or no GPS fix) are skipped automatically. `MA` r
 | RIGHT tap → LEFT hold (default 5 s, tunable 3–10 s) | Arm **Return-to-Me** (RTM) — display shows `rn` |
 | LEFT tap → RIGHT hold (default 5 s, tunable 3–10 s) | Cycle **Follow-Me** override mode (F0/F1/F2/F3) |
 
-> 💡 **Optional — magnet / Hall input for hands-free control.** A DRV5032 Hall sensor on GPIO 9 (P_MAG) lets a magnet gesture activate **BLE** and arm **Follow-Me** without reaching for the toggles (great mid-ride). Wiring + firmware: **[Hall Sensor Expansion guide →](docs/Hall_Sensor_Expansion.md)** · step-by-step fitting (incl. easier-to-solder parts): **[install tutorial →](docs/Hall_Sensor_Install_Tutorial.md)**.
+> 💡 **Optional — magnet / Hall input for hands-free control.** A DRV5032 Hall sensor on GPIO 9 (P_MAG) lets a magnet gesture arm **Follow-Me** and start **Return-to-Me** without reaching for the toggles (great mid-ride). With `mag_mode` 0 it keeps its older job of switching **BLE** on. *Upcoming release:* `mag_mode` 4 — tap to arm Follow-Me or step the station, hold 2.5 s (trigger released) for return-to-me. ⚠️ Never power the remote on with the magnet against it: GPIO 9 is a boot pin. Wiring + firmware: **[Hall Sensor Expansion guide →](docs/Hall_Sensor_Expansion.md)** · step-by-step fitting (incl. easier-to-solder parts): **[install tutorial →](docs/Hall_Sensor_Install_Tutorial.md)**.
 
 > 
 
@@ -425,7 +471,7 @@ Unavailable modes (no VESC lock or no GPS fix) are skipped automatically. `MA` r
 - Water ingress detection with safety stop
 - Configurable failsafe time (motor stop on LoRa link loss)
 - Foil battery cell count and voltage monitoring
-- BMS detection
+- BMS input: two pads on the RX board, **BMS+** and **BMS−** (see the silkscreen). The current firmware does not use it yet.
 - GPS positioning (BN-880 or HGLRC M100-5883)
 - Compass (I2C, fully calibrated) — **either a QMC5883L at `0x0D` (BN-880) or a QMC5883P at `0x2C` (HGLRC M100-5883), detected automatically at boot and driven by the matching driver**; one firmware image, nothing to set. RTM uses GPS COG as primary heading, compass snapshot as low-speed fallback; pure compass mode available as diagnostic option (`rtm_use_compass=2`)
 - Kalman filter on GPS data
@@ -461,6 +507,10 @@ The RX board logs GPS position, VESC telemetry, voltage, speed, and timestamps t
 
 *\* Date format changed from DDMMYY (original LudwigBre) to MMDDYY in V2.5-Evo.*
 
+> **Upcoming release — log format 3.** Level 4 logs gain the second VESC. **Download every log
+> before you flash the new buggy firmware:** afterwards the buggy refuses to open files written by
+> older firmware (the PC log reader on the `fm-stations` branch still reads them).
+
 ---
 
 ## 🛡️ Safety Philosophy
@@ -476,6 +526,14 @@ This rule is non-negotiable and is enforced at the firmware level — it cannot 
 - No loiter, no station-keeping, no position hold, no autonomous parking
 - Return-to-Me and Follow-Me can adjust steering and reduce throttle — they cannot independently spin the motor
 - Without active user throttle input, the buggy motor **never moves** under any circumstance
+
+**Added in the upcoming release** (full text in the [Follow-Me guide](docs/FOLLOW_ME_GUIDE.md#2-safety-philosophy)):
+
+- **Manual always wins** — when GPS, compass or any automatic mode fails, the automation turns itself off and you drive home by hand.
+- **"St" is the one signal** for anything that stopped or was refused.
+- **The screen shows only what the buggy confirms** — no "wannabe" states, no frozen numbers.
+- **Auto-return waits for the rider** — "waiting" means a squeeze will bring it; if it can't, you get St.
+- **Arrival keeps a throttle cap until one full release**, so a buggy arriving at full throttle can't hit you.
 
 ---
 
@@ -616,6 +674,8 @@ The override is RAM-only — RX returns to its web-configured `followme_mode` on
 
 If TX-to-RX distance drops below `fm_warn_distance_m` (default 150 m), TX fires a 2×Pattern-2 vibration burst warning (2 short × 2, with 300 ms gap).
 
+> **Upcoming release:** this buzz is removed. `fm_warn_distance_m` only sets the distance that fills the bar. The station cycle no longer lands on `F0`. New screens, auto-return and the magnet tap are in the [Follow-Me guide](docs/FOLLOW_ME_GUIDE.md).
+
 ### FM Engage Distance — measure your rope first (RX)
 
 > **⚠️ Set this before your first Follow-Me session.**
@@ -669,7 +729,8 @@ If TX-to-RX distance drops below `fm_warn_distance_m` (default 150 m), TX fires 
 | `F1` | Follow-Me override: Near-Right |
 | `F2` | Follow-Me override: Behind (default) |
 | `F3` | Follow-Me override: Near-Left |
-| `St` | Stop — RTM or FM safety gate triggered, or arming blocked |
+| `St` | Stop — RTM or FM safety gate triggered, or arming blocked. *Upcoming release:* the one signal for anything stopped or refused |
+| `St` blinking | *Upcoming release:* throttle input fault — the remote's trigger sensor stopped answering, throttle forced to zero |
 | `99` | Full throttle reached (100%) |
 
 ### RX
@@ -788,6 +849,10 @@ Full bar (10 pixels) = buggy at arm distance. Shrinks from the right as the bugg
 2 pixels at C4–C5 = ideal following distance. Expands symmetrically outward as the buggy lags further behind. 1 pixel = buggy too close.
 
 > See [docs/display-reference.md](docs/display-reference.md) for full implementation details and current FM bar status.
+
+> **Upcoming release:** the bars above show the current master firmware. The new screens add
+> indicator dots (one hopping = waiting, two steady = following, filling down = coming to you).
+> See the [screens page](https://monterman.github.io/BREmote-V2/followme-screens.html).
 
 ---
 

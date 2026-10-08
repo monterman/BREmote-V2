@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - S-8 follow-up: the first boot ID after a link gap (or at the first fresh link) is a 3-packet
+//   burst, the 10 s repeats stay single packets. No confStruct change.
 // V2.5-Evo - 2026-10-07 - S-7: fmIsReturning() - Follow-Me engaged (fmIsEngaged(), corroborated) AND fm_flags bit 6, i.e.
 //   the buggy confirms auto-return RETURNING. Display only. No confStruct change.
 // V2.5-Evo - 2026-10-07 - SOP-041 rule 3 resync: while this remote has Follow-Me armed and the link is fresh, if the
@@ -1248,7 +1250,11 @@ static void txBootIdTick(unsigned long now)
   const bool link_fresh = (last_packet != 0) && ((long)(now - last_packet) < (long)FM_LINK_HEALTHY_MS);
   if (!link_fresh) { tx_boot_id_last_ms = 0; return; }   // send again as soon as the link comes back
   if (tx_boot_id_last_ms != 0 && (now - tx_boot_id_last_ms) < kTxBootIdRepeatMs) return;
-  if (queueMetaPacketIfFree(0xF1, (uint8_t)(0x80 | tx_boot_id), 1)) tx_boot_id_last_ms = (now != 0) ? now : 1;
+  // V2.5-Evo - 2026-10-07 - S-8 follow-up: right after a link gap the buggy may have lost the ID (an RX reboot) and a
+  // parked auto-return reads not-ready until it hears one, so the first send after a gap is a full 3-packet burst;
+  // the 10 s repeats on a steady link stay one packet each (every meta packet replaces a control packet).
+  const uint8_t sends = (tx_boot_id_last_ms == 0) ? 3 : 1;
+  if (queueMetaPacketIfFree(0xF1, (uint8_t)(0x80 | tx_boot_id), sends)) tx_boot_id_last_ms = (now != 0) ? now : 1;
 }
 
 // ============================================================

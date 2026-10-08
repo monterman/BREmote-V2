@@ -3,7 +3,7 @@
 > **Partly outdated — the Follow-Me screens are changing.** This page, `display-reference.png`,
 > `display-reference.svg`, `fm_bar_animation.gif` and `Dot_Matrix_Display_10x7_Render.html` show
 > the **current master firmware** (bar only, no indicator dots). The new screens are in the
-> **NIGHTLY** firmware on the [`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations) (bleeding edge, under water
+> **nightly** firmware on the [`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations) (bleeding edge, under water
 > testing, use at your own risk). See [Follow-Me screens — nightly](#follow-me-screens--nightly-fm-stations-branch)
 > below and the [animated screens page](https://monterman.github.io/BREmote-V2/followme-screens.html).
 

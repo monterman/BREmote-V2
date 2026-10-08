@@ -10,8 +10,8 @@ ESP32 LoRa wireless remote for efoil and RC tow buggy — 868/915 MHz, 10 Hz con
 
 **Status: Alpha — BLE + VESC Tool field-confirmed ✅ (2026-05-16). RTM encoded + working, FM coded.**
 
-> **🌙 NIGHTLY firmware.** The sections marked *upcoming release*, the setup wizard and the new
-> screens match the **NIGHTLY** firmware on the [`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations), not the
+> **🌙 nightly firmware.** The sections marked *upcoming release*, the setup wizard and the new
+> screens match the **nightly** firmware on the [`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations), not the
 > firmware on master. Nightly = bleeding edge, under water testing, use at your own risk.
 > Binaries are in the `latest-FM-stations` folders. See [Nightly builds](#-nightly-builds).
 
@@ -19,7 +19,7 @@ ESP32 LoRa wireless remote for efoil and RC tow buggy — 868/915 MHz, 10 Hz con
 
 > **🆕 Upcoming release — new Follow-Me screens, auto-return, front stations, buggy WiFi console.**
 > In the nightly builds on the [`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations) now; it moves to master
-> gradually after more testing. See [what's coming](#-coming-in-the-upcoming-release) and the
+> gradually after more water testing. See [what's coming](#-coming-in-the-upcoming-release) and the
 > [release notes](docs/RELEASE_NOTES_upcoming.md).
 
 ---
@@ -103,7 +103,7 @@ This fork exists because LudwigBre published open hardware and firmware under GP
 |---|---|
 | **`master`** | **V2.5-Evo. The default branch, and what you want.** Hardware-verified on both boards. |
 | `ludwig-upstream-main` | **LudwigBre's original line, not mine.** Kept so upstream changes can be tracked and merged. Do not flash it expecting V2.5-Evo behaviour — it is a different firmware. |
-| `fm-stations` | **Nightly builds** — bleeding edge, under water testing, use at your own risk: new Follow-Me screens, auto-return, front stations, buggy WiFi console. Binaries in the `latest-FM-stations` folders. Commits move to master gradually after more testing. See [Nightly builds](#-nightly-builds). |
+| `fm-stations` | **Nightly builds** — bleeding edge, under water testing, use at your own risk: new Follow-Me screens, auto-return, front stations, buggy WiFi console. Binaries in the `latest-FM-stations` folders. Commits move to master gradually after more water testing. See [Nightly builds](#-nightly-builds). |
 | `multi-tx` | Work in progress: multiple remotes sharing one buggy. **Nothing here has been flashed to hardware.** |
 
 `ludwig-upstream-main` was called `main` until 2026-08-05. It was renamed because "main" reads
@@ -138,7 +138,7 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 ## 🆕 Coming in the upcoming release
 
 *In the nightly builds on the [`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations) now (see
-[Nightly builds](#-nightly-builds)). It moves to master gradually after more testing. Flash the
+[Nightly builds](#-nightly-builds)). It moves to master gradually after more water testing. Flash the
 remote and the buggy together.* Details: [release notes](docs/RELEASE_NOTES_upcoming.md).
 
 - **New Follow-Me screens.** One dot hopping = waiting, two steady dots = following, the dot column
@@ -182,7 +182,7 @@ A **nightly** is a build of the newest firmware, published before it reaches mas
   the older binaries in those folders. Flash the remote and the buggy together, and download your
   logs and back up your settings first.
 - **How often:** new nightlies keep coming as fixes land.
-- **Master stays the stable line.** Nightly commits move to master gradually, after more testing.
+- **Master stays the stable line.** Nightly commits move to master gradually, after more water testing.
   If you want the tested firmware, stay on master.
 
 Found a problem on a nightly? Please report it with your firmware version (`?conf` shows it) and,

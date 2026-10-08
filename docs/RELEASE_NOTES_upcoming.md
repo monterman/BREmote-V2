@@ -1,9 +1,9 @@
 # Upcoming release — notes for riders
 
-> **🌙 NIGHTLY firmware.** These notes describe the **NIGHTLY** firmware on the
+> **🌙 nightly firmware.** These notes describe the **nightly** firmware on the
 > [`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations), not the firmware
 > on master. Nightly = bleeding edge, under water testing, use at your own risk. Binaries are in the
-> `latest-FM-stations` folders. Its commits move to master gradually after more testing.
+> `latest-FM-stations` folders. Its commits move to master gradually after more water testing.
 
 Remote (TX) SW 27 and buggy (RX) SW 36, both V2.5-Evo.
 

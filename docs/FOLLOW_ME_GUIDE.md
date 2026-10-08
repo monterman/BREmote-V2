@@ -2,8 +2,8 @@
 
 **BREmote V2.5-Evo** · tow buggy / eFoil remote
 
-> **🌙 NIGHTLY firmware.** These docs, the setup wizard and the new screens match the
-> **NIGHTLY** firmware on the [`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations), not the firmware on
+> **🌙 nightly firmware.** These docs, the setup wizard and the new screens match the
+> **nightly** firmware on the [`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations), not the firmware on
 > master. Nightly = bleeding edge, under water testing, use at your own risk. Binaries are in
 > the `latest-FM-stations` folders.
 

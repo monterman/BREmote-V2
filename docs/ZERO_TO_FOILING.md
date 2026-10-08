@@ -406,7 +406,7 @@ chop, one-handed, with a foil under you. Learn them dry first.
 
 Confirm the gestures and display before you're in the water:
 
-> **🌙 On the NIGHTLY firmware** ([`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations),
+> **🌙 On the nightly firmware** ([`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations),
 > bleeding edge, under water testing, use at your own risk) the gestures and screens below have
 > changed: new indicator dots, auto-return, the magnet tap (`mag_mode` 4), no F0 in the station
 > cycle, and the numbers default to metres. Use the [Follow-Me guide](FOLLOW_ME_GUIDE.md) and the

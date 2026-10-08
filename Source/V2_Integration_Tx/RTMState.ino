@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-08 - STICKY RETURN CAP, remote backstop (owner design): Gate 1 (max runtime), Gate 2 (TX GPS stale)
+//   and the buggy's fault bit (and its fallback) now KEEP the RTM cap in force instead of lifting it to 255, until the raw
+//   trigger drops below 26 once (rtm_end_sticky / rtm_cap_hold_sticky, rtmKeptCapReleased()). Arrival, the Q-2 refusal and
+//   the ceremony holds keep the < 10 release. "St" + buzz unchanged; no display change. No confStruct change.
 // V2.5-Evo - 2026-10-07 - T-6: stop-flush ceiling 1000 -> 1500 ms. T-7: a failed boot-ID NVS write is logged. T-8: a boot
 //   ID overwritten in the queue before it was sent is re-armed (send stamp). No confStruct change.
 // V2.5-Evo - 2026-10-07 - T-4: fmStepStationFromMagnet() refuses while the buggy confirms an auto-return RETURNING.
@@ -323,6 +327,30 @@ static bool rtm_arrival_cap_hold = false;
 // cap to keep here - 0 after an arrival (the buggy holds its own near-zero approach cap too), the cap in force after a
 // Q-2 refusal - and rtmDisengage() applies min(current cap, this), so a kept cap can only ever go DOWN. Loop task only.
 static uint8_t rtm_end_cap_value = 0;
+// ============================================================
+// V2.5-Evo - 2026-10-08 - THE STICKY RETURN CAP, REMOTE BACKSTOP (owner design: a return that ends early keeps its limit)
+// When Return-To-Me ends EARLY - not by arrival - the remote keeps its RTM cap in force (the 30-70 % ramp cap) instead of
+// lifting it to 255, until the RAW trigger drops below kRtmStickyReleaseRaw (26 of 255, 10.2 % of travel) once. The
+// buggy keeps the real limit itself (its sticky return cap: governor, slow-down near the rider); this is the backstop
+// for the governor's one weak moment (standing still) and for a buggy on older firmware. Why 26 and not the arrival
+// release (< 10): the owner's rule is "below 10 % or released, full manual", and the buggy clears at 25 counts of its
+// own byte (audit D-6 - the two bytes differ after the expo curve and the gear; the rider only ever gets the lower cap).
+//   rtm_end_sticky      - set by an early-ending path together with rtm_end_keep_cap; consumed by rtmDisengage().
+//   rtm_cap_hold_sticky - the kept cap standing is a sticky one: it clears at raw < 26, not at triggerReleased().
+// Used by: Gate 1 (max runtime), Gate 2 (this remote's GPS stale), the buggy's fault bit and its fallback. Arrival and
+// the Q-2 refusal keep the arrival rule. Loop task only.
+// ============================================================
+static const uint8_t kRtmStickyReleaseRaw = 26;
+static bool rtm_end_sticky      = false;
+static bool rtm_cap_hold_sticky = false;
+
+// rtmKeptCapReleased - V2.5-Evo - 2026-10-08 - has the rider released enough to lift the kept cap? A sticky cap: the
+// raw trigger below kRtmStickyReleaseRaw; any other kept cap: triggerReleased() (< 10) as before.
+// Inputs: rtm_cap_hold_sticky, thr_scaled. Output: true = lift it. No side effects.
+static bool rtmKeptCapReleased()
+{
+  return rtm_cap_hold_sticky ? (thr_scaled < kRtmStickyReleaseRaw) : triggerReleased();
+}
 
 // ============================================================
 // V2.5-Evo - 2026-10-07 - Q-2: AN RTM THE BUGGY NEVER CONFIRMS
@@ -490,6 +518,7 @@ void setRtmArmed()
   rtm_hold_start   = 0;
   rtm_tx_active    = false;
   rtm_arrival_cap_hold = false;   // V2.5-Evo - 2026-10-07 - A-1: a new run owns the cap from here (it is set to 0 below)
+  rtm_cap_hold_sticky  = false;   // V2.5-Evo - 2026-10-08 - and no sticky kept cap survives into it
   // SAFETY FIX: sendData() FreeRTOS task keeps running while loop() is blocked inside
   // runDoubleSqueezeArm(). With cap=255, every arm-squeeze byte goes straight to RX and
   // drives the motor at full duty with rtm_rx_active=0 (no RX gate suppression).
@@ -525,6 +554,8 @@ static void setRtmDisarmed()
 //        KEPT instead of restored to 255, rtm_arrival_cap_hold is raised, and the 2 s "St" hold watches the trigger:
 //        a full release during it lifts the cap at the end of the hold; otherwise rtmArrivalCapUpdate() lifts it on
 //        the first released sample afterwards.
+// V2.5-Evo - 2026-10-08 - STICKY RETURN CAP: if rtm_end_sticky is set too (an early end: Gate 1, Gate 2, the buggy's
+//        fault bit), the kept cap is a sticky one - rtm_cap_hold_sticky - and lifts at raw < 26 instead of < 10.
 static void rtmDisengage(bool commanded)
 {
   rtm_tx_state    = RTM_COOLDOWN;
@@ -536,12 +567,16 @@ static void rtmDisengage(bool commanded)
   {
     rtm_end_keep_cap     = false;   // A-1: consumed
     rtm_arrival_cap_hold = true;    // the kept cap stands until a full release
+    rtm_cap_hold_sticky  = rtm_end_sticky;   // V2.5-Evo - 2026-10-08 - a sticky one clears at raw < 26 instead
+    rtm_end_sticky       = false;            // consumed
     // V2.5-Evo - 2026-10-07 - Q-1: keep the LOWER of the cap in force and the one the ending path asked for.
     if (rtm_end_cap_value < rtm_thr_cap_tx.load()) rtm_thr_cap_tx = rtm_end_cap_value;
   }
   else
   {
     rtm_arrival_cap_hold = false;
+    rtm_cap_hold_sticky  = false;   // V2.5-Evo - 2026-10-08
+    rtm_end_sticky       = false;
     rtm_thr_cap_tx  = 255;
   }
   rtm_arm_dist_m  = 0.0f;        // reset R5 bar reference (defined in BREmote_V2_Tx.h)
@@ -589,11 +624,11 @@ static void rtmDisengage(bool commanded)
     while (millis() - hold_start_ms < 2000UL)
     {
       while (Serial1.available()) gps_tx.encode(Serial1.read());
-      if (rtm_arrival_cap_hold && triggerReleased())
+      if (rtm_arrival_cap_hold && rtmKeptCapReleased())   // V2.5-Evo - 2026-10-08 - was triggerReleased(): a sticky cap clears at raw < 26
       {
         rtm_arrival_cap_hold = false;
         rtm_thr_cap_tx       = 255;
-        Serial.println("RTM [TX] trigger fully released after the return ended -> throttle cap lifted, full manual");
+        Serial.println("RTM [TX] trigger released after the return ended -> throttle cap lifted, full manual");
       }
       delay(10);
     }
@@ -608,13 +643,15 @@ static void rtmDisengage(bool commanded)
 // on the first sample that shows the trigger fully released. Called every runRtmLoop() tick (~110 ms), before the
 // RTM enable check so a disabled RTM cannot strand a cap. A new arm (setRtmArmed()) clears the hold itself.
 // Inputs: rtm_arrival_cap_hold, triggerReleased(). Side effects: rtm_thr_cap_tx = 255 + one line on release.
+// V2.5-Evo - 2026-10-08 - the release test is rtmKeptCapReleased(): raw < 26 for a sticky kept cap (an early end),
+// triggerReleased() (< 10) for every other kept cap, exactly as before.
 static void rtmArrivalCapUpdate()
 {
   if (!rtm_arrival_cap_hold) return;
-  if (!triggerReleased()) return;
+  if (!rtmKeptCapReleased()) return;
   rtm_arrival_cap_hold = false;
   rtm_thr_cap_tx       = 255;
-  Serial.println("RTM [TX] trigger fully released after the return ended -> throttle cap lifted, full manual");
+  Serial.println("RTM [TX] trigger released after the return ended -> throttle cap lifted, full manual");
 }
 
 // rtmCapHoldDelay - V2.5-Evo - 2026-10-07 - T-1: a blocking wait (the 2 s "St" hold) that also lifts a kept cap.
@@ -653,6 +690,7 @@ static void rtmCeremonyKeepCapIfHeld(const char *why)
   }
   rtm_thr_cap_tx       = 0;       // only ever lowers it: the ceremony already held it at 0
   rtm_arrival_cap_hold = true;
+  rtm_cap_hold_sticky  = false;   // V2.5-Evo - 2026-10-08 - a ceremony hold clears on the full release (< 10), not the sticky rule
   Serial.printf("RTM [TX] %s with the trigger held -> throttle cap 0 until the trigger is fully released\n", why);
 }
 
@@ -1408,6 +1446,7 @@ void runRtmLoop()
       // edges latched in Radio.ino; acted on only when the rise came after this run went ACTIVE):
       //   bit 0 FAULT (Phase C, its gate timeout, the refresh expiry) -> rtmDisengage(false): "St" + the stop buzz,
       //         0xF1/0, cap 255 - a fault hands back full manual control (SOP-039 rule 2).
+      //         V2.5-Evo - 2026-10-08 - now the cap in force is KEPT until the raw trigger drops below 26 (sticky cap).
       //   bit 1 ARRIVED (its stop distance)                            -> rtmDisengage(true): silent "St", 0xF1/0, and the
       //         throttle cap goes to 0 until the trigger is fully released once (SOP-040 arrival rule, Q-1).
       // FALLBACK (an older RX that sends no index 19, or a lost edge): the buggy CONFIRMED RTM during this run (an
@@ -1421,9 +1460,14 @@ void runRtmLoop()
         const unsigned long arrive_rise = rx_rtm_arrived_rise_ms;
         const bool rx_fault_now   = (fault_rise  != 0) && ((long)(fault_rise  - rtm_active_start_ms) > 0);
         const bool rx_arrived_now = (arrive_rise != 0) && ((long)(arrive_rise - rtm_active_start_ms) > 0);
+        // V2.5-Evo - 2026-10-08 - STICKY RETURN CAP: a fault end no longer hands back full manual at once. The RTM cap in
+        // force is KEPT (rtm_end_sticky) until the raw trigger drops below 26 once; the buggy holds its own live limit.
         if (rx_fault_now)
         {
-          Serial.println("RTM [TX] the buggy ended Return-To-Me on a FAULT (rx_state_flags bit 0) -> St + stop buzz, full manual");
+          Serial.println("RTM [TX] the buggy ended Return-To-Me on a FAULT (rx_state_flags bit 0) -> St + stop buzz; steering is yours, the RTM throttle cap stays until the trigger drops below 10 %");
+          rtm_end_cap_value = rtm_thr_cap_tx.load();   // V2.5-Evo - 2026-10-08 - keep the cap in force
+          rtm_end_keep_cap  = true;
+          rtm_end_sticky    = true;
           rtmDisengage(false);
           break;
         }
@@ -1439,7 +1483,10 @@ void runRtmLoop()
         {
           if (telemetry.rx_state_flags & RX_STATE_RTM_FAULT)
           {
-            Serial.println("RTM [TX] the buggy ended Return-To-Me (fm_status bit 1 off on 2 arrivals, fault bit set) -> St + stop buzz, full manual");
+            Serial.println("RTM [TX] the buggy ended Return-To-Me (fm_status bit 1 off on 2 arrivals, fault bit set) -> St + stop buzz; the RTM throttle cap stays until the trigger drops below 10 %");
+            rtm_end_cap_value = rtm_thr_cap_tx.load();   // V2.5-Evo - 2026-10-08 - sticky: keep the cap in force
+            rtm_end_keep_cap  = true;
+            rtm_end_sticky    = true;
             rtmDisengage(false);
           }
           else
@@ -1464,6 +1511,11 @@ void runRtmLoop()
         // by config range) back to 255 in the same instant. That is a silent step from capped RTM
         // throttle to raw manual throttle with no gesture behind it. Off by default
         // (rtm_max_runtime_s = 0), so keeping this buzz costs nothing against buzz saturation.
+        // V2.5-Evo - 2026-10-08 - STICKY RETURN CAP: that silent step to raw manual throttle is gone. The cap in force is
+        // KEPT until the raw trigger drops below 26 once (the buggy keeps the return's limit on 0xF1/0 too). The buzz stays.
+        rtm_end_cap_value = rtm_thr_cap_tx.load();
+        rtm_end_keep_cap  = true;
+        rtm_end_sticky    = true;
         rtmDisengage(false);
         break;
       }
@@ -1477,6 +1529,11 @@ void runRtmLoop()
                            : (uint32_t)usrConf.rtm_gps_timeout_ms;
         if (gps_tx.location.age() > gps_thr)
         {
+          // V2.5-Evo - 2026-10-08 - STICKY RETURN CAP: keep the cap in force until the raw trigger drops below 26 once,
+          // instead of lifting it to 255 under a held trigger (the buggy keeps the return's limit on 0xF1/0).
+          rtm_end_cap_value = rtm_thr_cap_tx.load();
+          rtm_end_keep_cap  = true;
+          rtm_end_sticky    = true;
           rtmDisengage(false);   // FAULT, not a timeout: the TX GPS died under RTM and nothing the
                                  // rider did explains the stop → buzz
           break;

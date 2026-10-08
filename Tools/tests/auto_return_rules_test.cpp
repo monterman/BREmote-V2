@@ -553,6 +553,19 @@ static void testStickyReturnCap()
   assert(handbackCapStep(60, 25, 25, 25, &clr) == 25 && !clr);    // feathering at 10 % keeps the slow buggy
   assert(handbackCapStep(60, 24, 24, 25, &clr) == 24 && clr);     // below 10 %: cleared, full manual next pass
   assert(handbackCapStep(0, 255, 255, 25, &clr) == 0 && !clr);
+  // Audit F-1: the sticky cap can stand at 255 (governor 0, rider far, rise done) - and handbackCapStep() never reports a
+  // clear at 255, its "no cap" sentinel. So calcPWM() clears the sticky cap on the TRIGGER ALONE; mirror of that rule:
+  assert(handbackCapStep(255, 10, 10, 25, &clr) == 10 && !clr);   // the trap the old calcPWM() code fell into
+  {
+    bool armed = true; uint8_t eff = 10; const uint8_t sc = 255, trig = 10;
+    if (sc < eff) eff = sc;
+    if (trig < 25) armed = false;
+    assert(eff == 10 && !armed);                                     // cap 255 + release: cleared
+    armed = true; eff = 200;
+    if (sc < eff) eff = sc;
+    if (200 < 25) armed = false;
+    assert(eff == 200 && armed);                                     // cap 255 + held: stands (no limit right now)
+  }
   // THE SEQUENCE the owner asked for (H-2 end, trigger held at 200): armed at 0, it restarts under the limit - not a
   // dead stop and never the full held trigger while the governor or a GPS fault binds; release clears it.
   c = 0;

@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-08 - audit F-1: the sticky cap clears on the trigger alone (it did not clear at cap 255).
 // V2.5-Evo - 2026-10-08 - STICKY RETURN CAP (owner design): calcPWM() applies sticky_cap after the arrival hand-back cap
 //   (min(), subtract-only, handbackCapStep() with release 25) and clears sticky_armed on the first pass with the trigger
 //   byte below 25. Arrival cap untouched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -390,9 +391,13 @@ void calcPWM()
   // 100 Hz, so a quick release is never missed; only this pass ever clears sticky_armed.
   if (sticky_armed.load())
   {
-    bool st_clear = false;
-    effective_thr = handbackCapStep(sticky_cap.load(), effective_thr, thr_received, kStickyReleaseThr, &st_clear);
-    if (st_clear) sticky_armed.store(false);   // released below 10 %: full manual from the next pass
+    // V2.5-Evo - 2026-10-08 - audit F-1: THE BUG - handbackCapStep() returns before its trigger test when the cap is 255
+    // (its "no cap" sentinel), and the sticky cap legitimately reaches 255 (governor reading 0, rider beyond the approach
+    // zone, rise complete; or armed at 255 on 0xF1/0) - so a release never cleared sticky_armed. THE FIX: apply the cap
+    // as a plain min() and clear on the trigger alone, whatever the cap value.
+    const uint8_t sc = sticky_cap.load();
+    if (sc < effective_thr) effective_thr = sc;
+    if (thr_received < kStickyReleaseThr) sticky_armed.store(false);   // released below 10 %: full manual from the next pass
   }
 
   // -- SAFETY: THROTTLE RAMPING (usrConf.motor_ramp_s / usrConf.auto_ramp_s, seconds) ----------

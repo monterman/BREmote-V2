@@ -867,7 +867,11 @@ Full bar (10 pixels) = buggy at arm distance. Shrinks from the right as the bugg
 
 **FM bar** — expands outward from center sweet spot:
 
-![FM Proximity Bar](docs/fm_bar_animation.gif)
+| Waiting | Following | Coming to you |
+|---|---|---|
+| ![Waiting](docs/img/fm/fm-waiting.gif) | ![Following](docs/img/fm/fm-following.gif) | ![Coming to you](docs/img/fm/fm-returning.gif) |
+
+*Nightly screens (`fm-stations` branch). Following: the numbers are metres to the buggy and the bar shrinks as it closes in.*
 
 2 pixels at C4–C5 = ideal following distance. Expands symmetrically outward as the buggy lags further behind. 1 pixel = buggy too close.
 

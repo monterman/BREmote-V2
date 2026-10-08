@@ -207,7 +207,7 @@ Blink pattern: 1000 ms on / 500 ms off.
 - 2 pixels at C4+C5 = ideal following distance (sweet spot). Bar expands outward symmetrically as buggy gets closer. Dark when ≥30 m away. Full bar (C0-C9) = buggy right next to user.
 - Implemented 2026-04-30 in `Display.ino:updateR5ProximityBar()` — replaced an earlier left-to-right linear fill. Center-expanding is the current and only implementation.
 
-![FM Proximity Bar Animation](fm_bar_animation.gif)
+![Following](img/fm/fm-following.gif)
 
 *This animation shows the bar on current master firmware. The nightly adds the indicator dots — see
 [Follow-Me screens — nightly](#follow-me-screens--nightly-fm-stations-branch).*

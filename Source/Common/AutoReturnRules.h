@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-07 - P-3 (owner ruling): fmReturnParkedTolerates() / fmReturnParkVerdict() take phase_b_distance_only -
+//   a parked, released auto-return whose handshake fails only on the pairing distance is NOT_READY, not a fault. Moving,
+//   held, or a speed-check failure: still a fault. Host-tested.
 // V2.5-Evo - 2026-10-07 - N-5 backstop: handbackBackstopStep() - the hand-back cap also clears after the trigger byte
 //   stays below 25 for 1.0 s continuously (the instant clear below 8 is unchanged). Pure, host-tested.
 // V2.5-Evo - 2026-10-07 - PARKED AUTO-RETURN (audit N-9, N-10, N-13 + owner rule "waiting means it will work"):
@@ -343,19 +346,28 @@ static const uint8_t kFmCondLink    = 1u << 5;   // 7: the radio link down
 //                         is recognised and cancels the return by itself. Without that, a link loss
 //                         keeps ending the return exactly as before, because the link-loss fault is
 //                         today's ONLY way a remote reboot cancels a parked return.
+//          phase_b_distance_only - V2.5-Evo - 2026-10-07 - P-3: the handshake (3) is failing ONLY because the
+//                         rider is farther from the buggy than gps_max_pair_dist_m (the distance check), not
+//                         because of the speed check. Default false = the old rule.
 // Returns: true = stay parked (no fault, no motion); false = the caller ends the return on a fault.
 // THE RULE: only the REMOTE side may be missing - its GPS (4), the link (7), and the handshake (3),
 // which the RX revokes by itself once the remote's GPS has been stale for 2x the stale timeout, so it
 // follows 4 or 7 and is tolerated only together with one of them. The buggy's OWN sensors (2, 5, 6)
 // still end the return. And MOTION still needs every input: a held trigger is never tolerated.
+// V2.5-Evo - 2026-10-07 - P-3 (owner ruling): A HANDSHAKE THAT FAILS ON DISTANCE ALONE IS TOLERATED TOO. THE BUG: a
+// rider who surfed more than gps_max_pair_dist_m (500 m) away from a parked buggy failed the distance check, and that
+// alone ended the parked return - he came back to "St" instead of a not-ready screen. Being far away is exactly what
+// a parked return waits through (SOP-040 rule 1). It is still a fault while the buggy is moving or the trigger is
+// held (checked above), and a SPEED-check failure is never tolerated on its own.
 static inline bool fmReturnParkedTolerates(uint8_t failing_mask, bool parked, bool thr_held,
-                                           bool link_tolerance_allowed)
+                                           bool link_tolerance_allowed, bool phase_b_distance_only = false)
 {
   if (failing_mask == 0) return false;                 // nothing failing: not a tolerance question
   if (!parked || thr_held) return false;               // motion needs every input fresh
   if (failing_mask & (kFmCondPhaseA | kFmCondRxStale | kFmCondHeading)) return false;   // the buggy's own sensors
   if ((failing_mask & kFmCondLink) && !link_tolerance_allowed) return false;
-  if ((failing_mask & kFmCondPhaseB) && !(failing_mask & (kFmCondTxStale | kFmCondLink))) return false;
+  if ((failing_mask & kFmCondPhaseB) && !(failing_mask & (kFmCondTxStale | kFmCondLink)) &&
+      !phase_b_distance_only) return false;            // P-3: a distance-only handshake failure waits
   return true;
 }
 
@@ -489,15 +501,17 @@ enum FmReturnParkVerdict : uint8_t {
 };
 
 // fmReturnParkVerdict - Inputs: failing_mask (fmFailingMaskFrom); parked (no held-trigger motion under
-//   way); thr_held; link_tolerance_allowed (a boot ID has been heard); awaiting_bootid (fmReturnGapStep).
+//   way); thr_held; link_tolerance_allowed (a boot ID has been heard); awaiting_bootid (fmReturnGapStep);
+//   phase_b_distance_only (V2.5-Evo - 2026-10-07 - P-3: see fmReturnParkedTolerates(); default false).
 // Returns: one FmReturnParkVerdict. Side effects: none (pure).
 static inline uint8_t fmReturnParkVerdict(uint8_t failing_mask, bool parked, bool thr_held,
-                                          bool link_tolerance_allowed, bool awaiting_bootid)
+                                          bool link_tolerance_allowed, bool awaiting_bootid,
+                                          bool phase_b_distance_only = false)
 {
   if (failing_mask == 0 && !awaiting_bootid) return FMRPV_GO;
   if (!parked || thr_held) return FMRPV_FAULT;                   // motion needs every input, and the boot ID
   if (failing_mask == 0) return FMRPV_NOT_READY;                  // only the post-gap boot ID is missing
-  return fmReturnParkedTolerates(failing_mask, parked, thr_held, link_tolerance_allowed)
+  return fmReturnParkedTolerates(failing_mask, parked, thr_held, link_tolerance_allowed, phase_b_distance_only)
              ? FMRPV_NOT_READY : FMRPV_FAULT;
 }
 

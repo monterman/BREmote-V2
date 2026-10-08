@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - P-3: gps_phase_b_dist_fail records that the last Phase B failure was the distance check. No
+//   packet format change, no confStruct change.
 // V2.5-Evo - 2026-10-07 - N-10: processRtmStatePacket() bumps rx_tx_boot_id_rx_seq on every boot-ID packet, so a parked auto-return can wait after a link gap until the remote has identified itself again. No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - N-8(a): processFmOverridePacket() enforces the post-fault re-declaration block (M-1) only once a boot ID has been heard from this remote; a remote without the boot ID keeps the R-6 keepalive re-arm, so a link-loss fault it never saw cannot leave Follow-Me silently unavailable behind an ARMED screen. GPS-integrity note (project rule 5): the 0xF3 GPS state machine, Phase A/B and the freshness gates are untouched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - S-8 + H-1 + M-1 (wire formats in Common/AutoReturnRules.h): processRtmStatePacket() accepts 0xF1 value 0x02 (RTM refresh: refreshes only, never activates; 0xF1/1 clears rtm_refresh_seen) and 0x80-0xFF (the remote boot ID; a change bumps rx_tx_boot_change_seq and clears the re-declaration block). processFmOverridePacket(): after a Follow-Me fault a mode 1-5 is ignored unless 0xF2 bit 7 (fresh declaration) is set; 0xF2/0 clears the block. Every older RX ignores the new values. GPS-integrity note (project rule 5): the 0xF3 GPS state machine, Phase A/B and the freshness gates are untouched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -241,6 +243,10 @@ bool waitForPairing()
 // track timing and the previous TX position snapshot across calls.
 // ============================================================
 bool gps_phase_b_ok = false;  // Phase B handshake result; false = RTM arming blocked
+// V2.5-Evo - 2026-10-07 - P-3: true while the LAST Phase B result is a failure of the DISTANCE check (rider farther than
+// gps_max_pair_dist_m); false after a pass or a speed-check failure. Read by runFmReturnTick() (RTMState.ino): a parked
+// auto-return waits (NOT READY) through a distance-only failure instead of ending. NOT static, like gps_phase_b_ok.
+bool gps_phase_b_dist_fail = false;
 
 // Last time Phase B check ran (ms). 0 = never run this session.
 static unsigned long gps_phase_b_last_check_ms = 0;
@@ -324,6 +330,7 @@ static void gpsPhaseBCheck()
     Serial.printf("GPS [PhB] FAIL distance: %.0f m > max %.0f m — RTM arming blocked\n",
                   dist_m, (double)usrConf.gps_max_pair_dist_m);
     gps_phase_b_ok = false;
+    gps_phase_b_dist_fail = true;    // V2.5-Evo - 2026-10-07 - P-3: this failure is the distance check
     // Update snapshot so the next check has a fresh reference point.
     gps_phase_b_prev_tx_lat = rx_tx_gps_lat;
     gps_phase_b_prev_tx_lng = rx_tx_gps_lng;
@@ -353,6 +360,7 @@ static void gpsPhaseBCheck()
                       tx_speed_kmh, gps_last_speed_kmh, speed_diff,
                       (double)usrConf.gps_max_speed_diff_kmh);
         gps_phase_b_ok = false;
+        gps_phase_b_dist_fail = false;   // V2.5-Evo - 2026-10-07 - P-3: a speed-check failure is never waited through
         gps_phase_b_prev_tx_lat = rx_tx_gps_lat;
         gps_phase_b_prev_tx_lng = rx_tx_gps_lng;
         gps_phase_b_prev_tx_ms  = now;
@@ -365,6 +373,7 @@ static void gpsPhaseBCheck()
   Serial.printf("GPS [PhB] PASS: dist %.0f m (max %.0f m)\n",
                 dist_m, (double)usrConf.gps_max_pair_dist_m);
   gps_phase_b_ok = true;
+  gps_phase_b_dist_fail = false;     // V2.5-Evo - 2026-10-07 - P-3
   gps_phase_b_prev_tx_lat = rx_tx_gps_lat;
   gps_phase_b_prev_tx_lng = rx_tx_gps_lng;
   gps_phase_b_prev_tx_ms  = now;

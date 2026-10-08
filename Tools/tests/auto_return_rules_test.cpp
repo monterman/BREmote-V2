@@ -367,6 +367,30 @@ static void testParkVerdict()
 }
 
 // N-9: a stall is an arrival only in the final crawl.
+// P-3 (owner ruling, 2026-10-07): a handshake failing ONLY on the pairing distance is waited through while parked
+// and released (NOT_READY); a speed-check failure, a held trigger or a moving return is still a FAULT; the buggy's
+// own sensors still end it whatever the distance flag says.
+static void testParkVerdictDistance()
+{
+  // Default argument: unchanged behaviour (a lone handshake failure is a fault).
+  assert(fmReturnParkVerdict(kFmCondPhaseB, true, false, true, false) == FMRPV_FAULT);
+  // Distance-only, parked, released: wait.
+  assert(fmReturnParkVerdict(kFmCondPhaseB, true, false, true, false, true) == FMRPV_NOT_READY);
+  assert(fmReturnParkVerdict(kFmCondPhaseB, true, false, false, false, true) == FMRPV_NOT_READY);
+  // Speed-check failure (flag false): fault.
+  assert(fmReturnParkVerdict(kFmCondPhaseB, true, false, true, false, false) == FMRPV_FAULT);
+  // Distance-only but the trigger held, or the return moving: fault.
+  assert(fmReturnParkVerdict(kFmCondPhaseB, true, true, true, false, true) == FMRPV_FAULT);
+  assert(fmReturnParkVerdict(kFmCondPhaseB, false, false, true, false, true) == FMRPV_FAULT);
+  // Distance-only together with the buggy's own sensors failing: fault.
+  assert(fmReturnParkVerdict(kFmCondPhaseB | kFmCondHeading, true, false, true, false, true) == FMRPV_FAULT);
+  assert(fmReturnParkVerdict(kFmCondPhaseB | kFmCondRxStale, true, false, true, false, true) == FMRPV_FAULT);
+  // Distance-only together with the rider's GPS stale: still a wait (as before).
+  assert(fmReturnParkVerdict(kFmCondPhaseB | kFmCondTxStale, true, false, true, false, true) == FMRPV_NOT_READY);
+  // Link down without a boot ID: still a fault whatever the distance flag says.
+  assert(fmReturnParkVerdict(kFmCondPhaseB | kFmCondLink, true, false, false, false, true) == FMRPV_FAULT);
+}
+
 static void testStallIsArrival()
 {
   const float stop = 3.0f;
@@ -462,6 +486,7 @@ int main()
   testParkedTolerance();
   testReturnGap();
   testParkVerdict();
+  testParkVerdictDistance();
   testStallIsArrival();
   testPivotSuspend();
   testCandidateMayForm();

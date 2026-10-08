@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-07 - P-3 (owner ruling): runFmReturnTick() - a parked, released auto-return whose Phase B handshake
+//   fails only on the pairing distance stays parked as NOT READY (fm_flags bit 2) instead of ending with St. Moving,
+//   held, or the speed check: a fault as before. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - RTM STEERING TIMEOUT CONTINUES, ONE CAP STORE PER TICK (audit N-11, N-17, N-15): the 30 s RTM stick-takeover timeout hands the steering back to the controller and RTM continues (it used to end RTM uncapped and unannounced), mirroring the auto-return S-5 rule; RTM's approach / align / bootstrap / governor caps are folded into a local and rtm_approach_cap is stored once per tick, so the motor task never sees 255 mid-tick; a comment documents the steer_during_auto 0 exception (the stick still ends a return in mode 0). No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - PARKED AUTO-RETURN (audit N-9, N-10, N-13 + owner rule "waiting means it will work"): runFmReturnTick() decides from ONE mask (fmReturnParkVerdict): a parked return stays parked and raises fm_flags bit 2 (not ready) while only the remote's side is missing or, after a tolerated link gap, until the remote's boot ID is heard again (N-10); the buggy's own sensors, or a squeeze while not ready, end it with St. A stall is an arrival only in the final crawl (N-9: within stop + 3 m or a previous-tick cap <= 40 not from aligning, and buggy < 1.5 km/h); otherwise RETURN_NOT_CLOSING. No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - LINK-TIME CLOCKS (audit N-8(b), N-12): the sticky telemetry bits (fm_flags bit 3, rx_state_flags bits 0/1) count their 6 s only while the link is fresh, so a remote that was out of range when the fault happened still gets 6 s to read it; the H-1 RTM refresh expiry fires only after the link has been fresh for the whole 5 s with no refresh (link-down time no longer counts). ?diag says when the post-fault re-declaration block is set but not enforced (N-8(a), Radio.ino). No confStruct change, SW_VERSION stays 36.
@@ -228,6 +231,7 @@
 // All outputs are written to volatile globals read by calcPWM() and triggeredReceive().
 
 extern bool gps_phase_b_ok;   // V2.5-Evo - P7 fix: defined in Radio.ino (Phase B section)
+extern bool gps_phase_b_dist_fail;   // V2.5-Evo - 2026-10-07 - P-3: defined in Radio.ino (Phase B section)
 // V2.5-Evo - 2026-05-06 - D5: extern declarations for D1+D2 capture globals.
 extern float         gps_last_course_deg;       // From GPS.ino (D1) — last valid GPS course-over-ground (0-360 deg, -1.0 if none)
 extern unsigned long gps_last_course_ms;        // From GPS.ino (D1) — millis() of last course update (0 if none)
@@ -6063,8 +6067,12 @@ static void runFmReturnTick(unsigned long now)
   const bool    bootid_ever  = (rx_tx_boot_id.load() != kTxBootIdNone);
   const bool    await_bootid = fmReturnGapStep(&fm_return_gap, (failing & kFmCondLink) != 0,
                                                rx_tx_boot_id_rx_seq.load(), bootid_ever);
+  // V2.5-Evo - 2026-10-07 - P-3 (owner ruling): a handshake that fails only on the pairing DISTANCE (the rider surfed
+  // farther than gps_max_pair_dist_m) is waited through while parked and released - NOT READY, not "St". Moving, held,
+  // or a speed-check failure still end the return as before.
+  const bool    phb_dist_only = (failing & kFmCondPhaseB) && gps_phase_b_dist_fail;
   const uint8_t park_verdict = fmReturnParkVerdict(failing, fm_return_motion_ms == 0, thr_held,
-                                                   bootid_ever, await_bootid);
+                                                   bootid_ever, await_bootid, phb_dist_only);
   if (park_verdict != FMRPV_GO) {
     if (park_verdict == FMRPV_NOT_READY) {
       fm_return_not_ready       = true;    // N-13: the remote draws not-ready, not "waiting"
@@ -6083,7 +6091,7 @@ static void runFmReturnTick(unsigned long now)
         Serial.printf("FM [RX] RETURN waiting (parked, NOT READY): %s%s%s%s- auto-return stays parked, the remote shows not-ready, and a squeeze now would end it with St\n",
                       (failing & kFmCondTxStale) ? "rider GPS stale, " : "",
                       (failing & kFmCondLink)    ? "link down, " : "",
-                      (failing & kFmCondPhaseB)  ? "handshake revoked, " : "",
+                      (failing & kFmCondPhaseB)  ? (phb_dist_only ? "rider beyond the pairing distance, " : "handshake revoked, ") : "",
                       (failing == 0 && await_bootid) ? "link back but the remote's boot ID not heard again yet (N-10), " : "");
       }
       return;

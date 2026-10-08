@@ -475,7 +475,7 @@ VescLogData convertToLogData() {
     // No-fix guard mirror of getRtmHeading() (RTMState.ino, 2026-07-19 FM triage): with no
     // fresh RX GPS fix, no heading source is valid for steering — the bearing is computed from
     // gps_last_lat/lng which are 0,0 without a fix. Force NONE so the log matches runtime
-    // behaviour (Fable audit: confidence=2 logged with datetime_unix=0).
+    // behaviour (FM audit: confidence=2 logged with datetime_unix=0).
     if (gps_last_ms == 0 || (now_ms - gps_last_ms) > 6000UL) {
       src = 0; conf = 0; chosen = -1.0f;
     }

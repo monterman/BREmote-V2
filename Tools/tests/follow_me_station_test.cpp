@@ -797,7 +797,7 @@ int main()
     assert(!fmFadeBypass(true,  +135.0f,  0.0f, +13.0f, kPassLateral));
     assert(!fmFadeBypass(true,  +135.0f, -5.0f, +13.0f, kPassLateral));
     // Ahead but passing too close to the line -> ordinary fade. This is the term that makes it a
-    // pass rather than an overtake, and it is the one Rex will attack hardest.
+    // pass rather than an overtake, and it is the one an audit will attack hardest.
     assert(!fmFadeBypass(true,  +135.0f, +5.0f, +10.0f, kPassLateral));
     assert(!fmFadeBypass(true,  +135.0f, +5.0f,   0.0f, kPassLateral));
     // The cross term is a magnitude, so a left-hand pass with a right-hand station still bypasses

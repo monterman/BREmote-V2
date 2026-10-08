@@ -33,7 +33,7 @@ Keep in each folder: `*.ino.bin`, `*.bootloader.bin`, `*.partitions.bin`, `boot_
 
 | Set | Board | What it is |
 |---|---|---|
-| `RX/SW36-2026-09-25-fm-stations-dd198e8-FLASHED` | RX | **CURRENT — flashed 2026-09-25.** Steering is instant (throttle ramps before the mixer), Q12 ramp honours 0.2–4.0 s, stick-takeover available but OFF (`steer_during_auto 0`), second ramp rate available but OFF (`auto_ramp_s 0`), FM engage ramp 1.5 s. Rex-audited, 7/7 host tests. |
+| `RX/SW36-2026-09-25-fm-stations-dd198e8-FLASHED` | RX | **CURRENT — flashed 2026-09-25.** Steering is instant (throttle ramps before the mixer), Q12 ramp honours 0.2–4.0 s, stick-takeover available but OFF (`steer_during_auto 0`), second ramp rate available but OFF (`auto_ramp_s 0`), FM engage ramp 1.5 s. Audited, 7/7 host tests. |
 | `RX/SW36-2026-09-21-fm-stations-77a04c9-FLASHED` | RX | **PREVIOUS known-good — the rollback.** Auto-return (`fm_return_mode 1`), stop 3 m, pivot boost, steer-cancels-return, deep log L4/L5. This is the rollback. |
 | `TX/SW27-2026-09-19-fm-stations-5fd3f79-FLASHED` | TX | **The known-good build in the remote today.** F-mode wrap fix (F0 removed), `rtm_disengage_distance_m 3`, M10 GPS support. Rebuilt 2026-09-24 from the same source that was flashed. |
 | `RX/SW28 … SW33-DEV` (in `firmware/RX`, `firmware/_dev`) | RX | Older releases and dev builds from May–June 2026. |

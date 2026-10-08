@@ -1202,7 +1202,7 @@ void cmdVescRaw(const String& params) {
 //   Streams one diagnostic line at 2 Hz for up to 120 seconds showing the RX GPS
 //   feed state AND the exact values the RTM heading ladder (getRtmHeading() in
 //   RTMState.ino) reads when it decides whether GPS course-over-ground (COG) is a
-//   valid heading source. This answers the open field question from the Fable audit:
+//   valid heading source. This answers the open field question from the FM audit:
 //   why does rtm_source=1 (GPS COG) never engage?
 //
 //   Each line reports, in order:

@@ -7,6 +7,9 @@
 //   g++ -std=c++17 -O1 -Wall -Wextra vesc_imu_test.cpp -o vesc_imu_test.exe
 
 #include <assert.h>
+#ifdef NDEBUG
+#error "vesc_imu_test relies on assert() - build without -DNDEBUG"
+#endif
 #include <stdint.h>
 #include <string.h>
 #include <math.h>

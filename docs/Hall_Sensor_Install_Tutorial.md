@@ -2,7 +2,9 @@
 
 > **Skill level:** Intermediate soldering required. The DRV5032 SOT-23 package is very small — see hardware alternatives below if you prefer an easier solder job.
 
-This tutorial covers fitting the optional P_MAG Hall sensor that lets you activate BLE by holding a small magnet against the outside of the remote enclosure. You do not need this sensor — BLE works without it via SPIFFS config or the boot gesture. This is purely for convenience during a session.
+This tutorial covers fitting the optional P_MAG Hall sensor. With it, a small magnet touched to the outside of the remote **arms Follow-Me** (even while you're being towed) or **starts Return-to-Me**, without reaching for the toggles. You do not need this sensor — everything also works from the toggles. What each magnet gesture does is in the [Hall Sensor Expansion page](Hall_Sensor_Expansion.md#firmware-behaviour--mag_mode-tx-setting).
+
+> ⚠️ **GPIO 9 is an ESP32-C3 boot (strapping) pin. Never power the remote on with the magnet against it** — it won't boot (dark screen, no buzz). Take the magnet away, power on, then use it.
 
 ---
 
@@ -21,7 +23,7 @@ This tutorial covers fitting the optional P_MAG Hall sensor that lets you activa
 
 ## Hardware Options
 
-### What was used here: DRV5032 (SOT-23)
+### What was used here: TI DRV5032 (SOT-23)
 
 > ⚠️ **The DRV5032 SOT-23 is a very small package** — 3 pads, 1.6 × 2.9 mm footprint, 0.95 mm pitch. If you have never soldered SMD before, use one of the easier options below. The DRV5032 was used because it was already in stock, not because it is the easiest choice.
 
@@ -115,22 +117,26 @@ Before closing the enclosure:
 3. Check with a multimeter that GPIO 9 reads near 0 V with magnet present, ~3.3 V without
 4. If inverted, flip the magnet — you have the wrong pole facing the sensor (unless you used an OH090U, which is omnipolar)
 
-### Step 6 — Configure SPIFFS
+### Step 6 — Configure the magnet role
 
-Connect to the TX via the Web Serial Config Tool or serial at 115200 baud:
+Connect to the TX via the Web Serial Config Tool or serial at 115200 baud and pick a `mag_mode`:
 
 ```
-?set bt_enabled 1
+?set mag_mode 4
 ?save
 ```
 
-Reboot the TX on battery. The BT dot (C7 R1 on the display) should be dark at boot. Hold the magnet against the enclosure — BT dot should start slow blinking within 1 second. Hold 5 s from slow state → fast blink → VESC Tool can now connect.
+- **`mag_mode 4`** *(new in the upcoming release, on the [`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations))*: a **tap** arms Follow-Me or steps the station; a **2.5 s hold with the trigger released** starts the manual Return-to-Me.
+- **`mag_mode 1-3`** *(current master firmware)*: hold about 2 s for Follow-Me (modes 1 and 3), about 5 s for Return-to-Me (mode 3); the action happens when you take the magnet away. Mode 2 uses the 2 s hold for Return-to-Me.
+- **`mag_mode 0`** with `bt_enabled 1`: the older role — the magnet switches BLE on for the session (BT dot at C7 R1 slow-blinks; hold 5 s more for fast blink, then VESC Tool can connect).
+
+**Test it:** power the TX on battery **with the magnet away**. With `mag_mode 4`, tap the magnet once: two short taps and the waiting screen = Follow-Me armed. Switch it off again with the toggle gesture.
 
 ---
 
 ## Magnet Tip
 
-A small disc neodymium magnet (6–8 mm diameter, N35 grade) is ideal. Stick it to the inside of a wetsuit wrist strap or glove cuff — you can activate BLE by touching your wrist to the remote without taking your hand off the throttle.
+A small disc neodymium magnet (6–8 mm diameter, N35 grade) is ideal. Stick it to the inside of a wetsuit wrist strap or glove cuff — you can arm Follow-Me by touching your wrist to the remote without taking your hand off the throttle. Keep it away from the remote when you switch it on.
 
 ---
 
@@ -138,7 +144,10 @@ A small disc neodymium magnet (6–8 mm diameter, N35 grade) is ideal. Stick it 
 
 | Symptom | Check |
 |---|---|
-| BT dot never blinks | `bt_enabled = 1` set and saved? Boot on battery (not USB)? |
+| Remote won't boot (dark, no buzz) | The magnet was near the sensor at power-on (GPIO 9 is a boot pin). Remove it and power on again. |
+| Magnet tap does nothing | `mag_mode` set and saved? Follow-Me enabled and GPS on? After a station step, taps for 1 s are ignored. |
+| Magnet hold does nothing | The 2.5 s hold (mode 4) only works with the trigger fully released. |
+| BT dot never blinks | Only in `mag_mode 0`: `bt_enabled = 1` set and saved? Boot on battery (not USB)? |
 | Magnet held but no response | Magnet polarity — try flipping it. Sensor within 5 mm of wall? |
 | BT dot blinks constantly without magnet | GPIO 9 floating — check the OUT wire is soldered securely |
 | VESC Tool can't find device | BT dot must be fast-blinking, not slow. Hold magnet 5 s past slow blink. |

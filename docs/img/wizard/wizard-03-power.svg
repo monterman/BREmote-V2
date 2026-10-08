@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 120" width="100%" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="w3t w3d" stroke-linecap="round" stroke-linejoin="round">
+<title id="w3t">Battery, controller and data wire</title>
+<desc id="w3d">The battery pack and the speed controller, joined by the data wire that carries the readings.</desc>
+<style>
+.i-ink{fill:none;stroke:#1f2328;stroke-width:2.5}
+.i-ink2{fill:none;stroke:#1f2328;stroke-width:1.5}
+.i-body{fill:#f6f8fa;stroke:#1f2328;stroke-width:2.5}
+.i-body2{fill:#f6f8fa;stroke:#1f2328;stroke-width:1.5}
+.i-det{fill:none;stroke:#57606a;stroke-width:1.5}
+.i-detd{fill:none;stroke:#57606a;stroke-width:1.5;stroke-dasharray:4 3}
+.i-water{fill:none;stroke:#0284c7;stroke-width:2.5}
+.i-radio{fill:none;stroke:#0284c7;stroke-width:1.5}
+.i-acc{fill:none;stroke:#2563eb;stroke-width:2.5}
+.i-acc1{fill:none;stroke:#2563eb;stroke-width:1.5}
+.i-accd{fill:none;stroke:#2563eb;stroke-width:1.5;stroke-dasharray:4 3}
+.i-ok{fill:none;stroke:#16a34a;stroke-width:2.5}
+.i-warn{fill:none;stroke:#b45309;stroke-width:2.5}
+.i-warn1{fill:none;stroke:#b45309;stroke-width:1.5}
+@media (prefers-color-scheme: dark){
+.i-ink{fill:none;stroke:#e5e7eb;stroke-width:2.5}
+.i-ink2{fill:none;stroke:#e5e7eb;stroke-width:1.5}
+.i-body{fill:#151f33;stroke:#e5e7eb;stroke-width:2.5}
+.i-body2{fill:#151f33;stroke:#e5e7eb;stroke-width:1.5}
+.i-det{fill:none;stroke:#9ca3af;stroke-width:1.5}
+.i-detd{fill:none;stroke:#9ca3af;stroke-width:1.5;stroke-dasharray:4 3}
+.i-water{fill:none;stroke:#38bdf8;stroke-width:2.5}
+.i-radio{fill:none;stroke:#38bdf8;stroke-width:1.5}
+.i-acc{fill:none;stroke:#60a5fa;stroke-width:2.5}
+.i-acc1{fill:none;stroke:#60a5fa;stroke-width:1.5}
+.i-accd{fill:none;stroke:#60a5fa;stroke-width:1.5;stroke-dasharray:4 3}
+.i-ok{fill:none;stroke:#22c55e;stroke-width:2.5}
+.i-warn{fill:none;stroke:#f59e0b;stroke-width:2.5}
+.i-warn1{fill:none;stroke:#f59e0b;stroke-width:1.5}
+}
+</style>
+<rect class="i-body2" x="48" y="34" width="12" height="6" rx="2"/>
+<rect class="i-body2" x="116" y="34" width="12" height="6" rx="2"/>
+<rect class="i-body" x="36" y="40" width="104" height="44" rx="4"/>
+<path class="i-det" d="M57 45 V79 M78 45 V79 M99 45 V79 M120 45 V79"/>
+<path class="i-ink2" d="M202 52 V40 M210 52 V40 M218 52 V40 M226 52 V40 M234 52 V40 M242 52 V40 M250 52 V40 M258 52 V40"/>
+<rect class="i-body" x="196" y="52" width="68" height="32" rx="3"/>
+<path class="i-ink2" d="M264 60 H278 M264 68 H278 M264 76 H278"/>
+<path class="i-accd" d="M140 66 C164 66 172 72 196 72"/>
+</svg>

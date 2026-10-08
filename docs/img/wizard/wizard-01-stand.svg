@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 120" width="100%" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="w1t w1d" stroke-linecap="round" stroke-linejoin="round">
+<title id="w1t">Buggy on a stand</title>
+<desc id="w1d">Put the buggy on a stand so the props spin freely, clear of the ground and of you.</desc>
+<style>
+.i-ink{fill:none;stroke:#1f2328;stroke-width:2.5}
+.i-ink2{fill:none;stroke:#1f2328;stroke-width:1.5}
+.i-body{fill:#f6f8fa;stroke:#1f2328;stroke-width:2.5}
+.i-body2{fill:#f6f8fa;stroke:#1f2328;stroke-width:1.5}
+.i-det{fill:none;stroke:#57606a;stroke-width:1.5}
+.i-detd{fill:none;stroke:#57606a;stroke-width:1.5;stroke-dasharray:4 3}
+.i-water{fill:none;stroke:#0284c7;stroke-width:2.5}
+.i-radio{fill:none;stroke:#0284c7;stroke-width:1.5}
+.i-acc{fill:none;stroke:#2563eb;stroke-width:2.5}
+.i-acc1{fill:none;stroke:#2563eb;stroke-width:1.5}
+.i-accd{fill:none;stroke:#2563eb;stroke-width:1.5;stroke-dasharray:4 3}
+.i-ok{fill:none;stroke:#16a34a;stroke-width:2.5}
+.i-warn{fill:none;stroke:#b45309;stroke-width:2.5}
+.i-warn1{fill:none;stroke:#b45309;stroke-width:1.5}
+@media (prefers-color-scheme: dark){
+.i-ink{fill:none;stroke:#e5e7eb;stroke-width:2.5}
+.i-ink2{fill:none;stroke:#e5e7eb;stroke-width:1.5}
+.i-body{fill:#151f33;stroke:#e5e7eb;stroke-width:2.5}
+.i-body2{fill:#151f33;stroke:#e5e7eb;stroke-width:1.5}
+.i-det{fill:none;stroke:#9ca3af;stroke-width:1.5}
+.i-detd{fill:none;stroke:#9ca3af;stroke-width:1.5;stroke-dasharray:4 3}
+.i-water{fill:none;stroke:#38bdf8;stroke-width:2.5}
+.i-radio{fill:none;stroke:#38bdf8;stroke-width:1.5}
+.i-acc{fill:none;stroke:#60a5fa;stroke-width:2.5}
+.i-acc1{fill:none;stroke:#60a5fa;stroke-width:1.5}
+.i-accd{fill:none;stroke:#60a5fa;stroke-width:1.5;stroke-dasharray:4 3}
+.i-ok{fill:none;stroke:#22c55e;stroke-width:2.5}
+.i-warn{fill:none;stroke:#f59e0b;stroke-width:2.5}
+.i-warn1{fill:none;stroke:#f59e0b;stroke-width:1.5}
+}
+</style>
+<path class="i-det" d="M40 102 H280"/>
+<path class="i-ink2" d="M156 62 H188 M158 63 L148 102 M186 63 L196 102 M152 86 H192"/>
+<g transform="translate(-62 -22)">
+<path class="i-body" d="M186 70 H252 L258 74 L250 84 H190 Z"/>
+<path class="i-ink2" d="M198 70 V56"/>
+<circle class="i-body2" cx="198" cy="54" r="2"/>
+<path class="i-ink2" d="M208 84 V86"/>
+<rect class="i-body2" x="200" y="86" width="16" height="6" rx="2"/>
+<path class="i-ink2" d="M198 85 V93"/>
+<circle class="i-ink2" cx="183" cy="73" r="2"/>
+</g>
+<path class="i-warn1" d="M130 60 L126 57 M129 67 H123 M130 74 L126 77 M134 78 L132 82 M140 78 L142 82"/>
+</svg>

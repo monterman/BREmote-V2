@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 120" width="100%" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="w5t w5d" stroke-linecap="round" stroke-linejoin="round">
+<title id="w5t">Finger on the trigger</title>
+<desc id="w5d">A hand holds the remote with the index finger on the trigger, which sets how power comes in.</desc>
+<style>
+.i-ink{fill:none;stroke:#1f2328;stroke-width:2.5}
+.i-ink2{fill:none;stroke:#1f2328;stroke-width:1.5}
+.i-body{fill:#f6f8fa;stroke:#1f2328;stroke-width:2.5}
+.i-body2{fill:#f6f8fa;stroke:#1f2328;stroke-width:1.5}
+.i-det{fill:none;stroke:#57606a;stroke-width:1.5}
+.i-detd{fill:none;stroke:#57606a;stroke-width:1.5;stroke-dasharray:4 3}
+.i-water{fill:none;stroke:#0284c7;stroke-width:2.5}
+.i-radio{fill:none;stroke:#0284c7;stroke-width:1.5}
+.i-acc{fill:none;stroke:#2563eb;stroke-width:2.5}
+.i-acc1{fill:none;stroke:#2563eb;stroke-width:1.5}
+.i-accd{fill:none;stroke:#2563eb;stroke-width:1.5;stroke-dasharray:4 3}
+.i-ok{fill:none;stroke:#16a34a;stroke-width:2.5}
+.i-warn{fill:none;stroke:#b45309;stroke-width:2.5}
+.i-warn1{fill:none;stroke:#b45309;stroke-width:1.5}
+@media (prefers-color-scheme: dark){
+.i-ink{fill:none;stroke:#e5e7eb;stroke-width:2.5}
+.i-ink2{fill:none;stroke:#e5e7eb;stroke-width:1.5}
+.i-body{fill:#151f33;stroke:#e5e7eb;stroke-width:2.5}
+.i-body2{fill:#151f33;stroke:#e5e7eb;stroke-width:1.5}
+.i-det{fill:none;stroke:#9ca3af;stroke-width:1.5}
+.i-detd{fill:none;stroke:#9ca3af;stroke-width:1.5;stroke-dasharray:4 3}
+.i-water{fill:none;stroke:#38bdf8;stroke-width:2.5}
+.i-radio{fill:none;stroke:#38bdf8;stroke-width:1.5}
+.i-acc{fill:none;stroke:#60a5fa;stroke-width:2.5}
+.i-acc1{fill:none;stroke:#60a5fa;stroke-width:1.5}
+.i-accd{fill:none;stroke:#60a5fa;stroke-width:1.5;stroke-dasharray:4 3}
+.i-ok{fill:none;stroke:#22c55e;stroke-width:2.5}
+.i-warn{fill:none;stroke:#f59e0b;stroke-width:2.5}
+.i-warn1{fill:none;stroke:#f59e0b;stroke-width:1.5}
+}
+</style>
+<path class="i-body" d="M128 74 L102 80 V100 L128 100 Z"/>
+<path class="i-ink2" d="M110 78 V100"/>
+<path class="i-ink2" d="M154 22 V14"/>
+<circle class="i-body2" cx="154" cy="12" r="2"/>
+<rect class="i-body" x="138" y="22" width="32" height="84" rx="8"/>
+<rect class="i-ink2" x="144" y="28" width="20" height="12" rx="2"/>
+<path class="i-acc" d="M170 46 Q184 52 180 66"/>
+<path class="i-body" d="M124 82 Q124 70 136 70 H164 Q176 70 176 82 V92 Q176 104 164 104 H136 Q124 104 124 92 Z"/>
+<path class="i-det" d="M148 84 H170 M148 94 H170"/>
+<rect class="i-body" x="128" y="56" width="12" height="20" rx="6"/>
+<rect class="i-body" x="160" y="62" width="28" height="10" rx="5" transform="rotate(-24 174 67)"/>
+<path class="i-det" d="M196 52 L202 48 M198 60 H205"/>
+</svg>

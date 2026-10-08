@@ -1,0 +1,1144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BREmote Setup Wizard</title>
+<style>
+:root{ color-scheme:dark;
+  --bg:#0b1220; --panel:#101828; --panel2:#151f33; --line:#243042;
+  --txt:#e5e7eb; --muted:#9ca3af; --pri:#60a5fa; --pri2:#38bdf8;
+  --ok:#22c55e; --warn:#f59e0b; --err:#ef4444;
+  /* illustration tokens (dark column of the illustration style) */
+  --ill-ink:var(--txt); --ill-muted:var(--muted); --ill-surface:var(--panel2);
+  --ill-water:var(--pri2); --ill-accent:var(--pri); --ill-ok:var(--ok); --ill-warn:var(--warn);
+}
+*{box-sizing:border-box}
+body{margin:0;background:radial-gradient(1100px 650px at 10% -10%,#1e3a5f55 0,transparent 45%),linear-gradient(180deg,#0a1120 0,#0b1220 40%);
+ color:var(--txt);font-family:"Avenir Next","Segoe UI",system-ui,sans-serif;min-height:100vh;-webkit-text-size-adjust:100%}
+.wrap{max-width:860px;margin:0 auto;padding:18px 16px 140px}
+h1{font-size:20px;color:var(--pri2);margin:0 0 2px}
+.sub{color:var(--muted);font-size:12px;margin-bottom:16px}
+.card{background:linear-gradient(180deg,#121b2e,#101828);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:0 8px 24px #00000033}
+.card h2{font-size:16px;margin:0 0 4px;color:var(--pri2)}
+.card .screenmeta{color:var(--muted);font-size:11px;margin-bottom:14px}
+.q{margin:0 0 20px;padding:0 0 18px;border-bottom:1px dashed #1f2a3d}
+.q:last-child{border-bottom:0;padding-bottom:0;margin-bottom:0}
+.qlabel{font-weight:700;font-size:14px;margin-bottom:4px;line-height:1.4}
+.qid{color:var(--muted);font-weight:400;font-size:11px;margin-right:6px}
+.hint{font-size:12px;color:var(--muted);line-height:1.5;margin:4px 0 8px}
+.warnbox{font-size:12px;line-height:1.5;background:#3b240a;border:1px solid #7c4a0a;color:#fcd34d;border-radius:8px;padding:9px 11px;margin:6px 0 8px}
+.cardbox{font-size:12px;line-height:1.55;background:#0e1a2c;border:1px solid #1e3a5f;border-radius:8px;padding:10px 12px;margin:6px 0 2px;color:#bfdbfe}
+.opts{display:flex;flex-direction:column;gap:7px;margin-top:8px}
+.opt{display:flex;gap:9px;align-items:flex-start;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:9px 11px;cursor:pointer;transition:.15s;font-size:13px;line-height:1.4}
+.opt:hover{border-color:#3b5a85}
+.opt input{margin:2px 0 0;flex-shrink:0;accent-color:var(--pri)}
+.opt.sel{border-color:var(--pri);background:#16283f}
+.opt .rec{color:var(--ok);font-size:11px;font-weight:700;margin-left:5px;white-space:nowrap}
+.opt .sets{display:block;color:var(--muted);font-size:11px;margin-top:3px;font-family:ui-monospace,Consolas,monospace}
+input[type=number],input[type=text]{background:#0b1322;border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:8px 10px;font-size:14px;width:150px}
+input:focus{outline:0;border-color:var(--pri)}
+.derived{font-size:12px;color:var(--ok);margin-top:7px;font-family:ui-monospace,Consolas,monospace}
+.fielderr{font-size:12px;color:var(--err);margin-top:6px}
+.nav{position:fixed;left:0;right:0;bottom:0;background:#0a111fe8;backdrop-filter:blur(8px);border-top:1px solid var(--line);padding:11px 16px}
+.navin{max-width:860px;margin:0 auto;display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.btn{border:0;border-radius:9px;padding:9px 15px;background:var(--pri);color:#08111f;font-weight:700;cursor:pointer;font-size:13px}
+.btn.sec{background:#243042;color:var(--txt)}
+.btn:disabled{opacity:.35;cursor:not-allowed}
+.prog{flex:1;min-width:120px;height:6px;background:#1b2437;border-radius:99px;overflow:hidden}
+.prog i{display:block;height:100%;background:linear-gradient(90deg,var(--pri),var(--ok));width:0;transition:width .25s}
+.progtxt{font-size:11px;color:var(--muted);white-space:nowrap}
+/* results */
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:760px){.cols{grid-template-columns:1fr}}
+.board{background:var(--panel2);border:1px solid var(--line);border-radius:11px;overflow:hidden}
+.board h3{margin:0;padding:10px 12px;font-size:13px;background:#182742;border-bottom:1px solid var(--line);color:var(--pri2)}
+.board h3 small{color:var(--muted);font-weight:400;display:block;font-size:11px;margin-top:2px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+td{padding:6px 10px;border-bottom:1px solid #1b2538;vertical-align:top}
+tr:last-child td{border-bottom:0}
+td.k{color:var(--muted);width:42%}
+td.v{font-weight:600}
+td.v code{display:block;font-weight:400;color:#7f9cc0;font-size:10.5px;margin-top:2px;font-family:ui-monospace,Consolas,monospace}
+.tabs{display:flex;gap:6px;margin:16px 0 8px;flex-wrap:wrap}
+.tab{border:1px solid var(--line);background:#192338;color:var(--muted);border-radius:8px;padding:6px 11px;font-size:12px;cursor:pointer}
+.tab.on{border-color:var(--pri);color:var(--txt);background:#16283f}
+.tab:disabled{opacity:.4;cursor:not-allowed}
+pre{background:#070d18;border:1px solid var(--line);border-radius:9px;padding:11px;font-size:11.5px;line-height:1.55;overflow:auto;max-height:340px;margin:0;
+ font-family:ui-monospace,Consolas,monospace;color:#cbd5e1;white-space:pre-wrap;word-break:break-all}
+.todo{font-size:12.5px;line-height:1.6}
+.todo li{margin-bottom:7px}
+.badge{display:inline-block;font-size:10.5px;padding:2px 7px;border-radius:99px;background:#1e3a5f;color:#93c5fd;margin-left:6px;vertical-align:1px}
+.disabledNote{font-size:12px;line-height:1.55;background:#2a1414;border:1px solid #7f1d1d;color:#fca5a5;border-radius:8px;padding:10px 12px}
+.srcnote{font-size:11px;color:#6b7a90;margin-top:14px;line-height:1.55}
+
+.jump{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}
+.jump button{border:1px solid var(--line);background:#192338;color:var(--muted);border-radius:99px;padding:5px 11px;font-size:12px;cursor:pointer;font:inherit;font-size:12px}
+.jump button.on{border-color:var(--pri);color:var(--txt);background:#16283f}
+.jump button:focus-visible,.btn:focus-visible,.opt:focus-within{outline:2px solid var(--pri2);outline-offset:2px}
+.modebar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:12px;color:var(--muted);margin:0 0 10px}
+.notice{font-size:12px;line-height:1.5;background:#0e1a2c;border:1px solid #1e3a5f;color:#bfdbfe;border-radius:8px;padding:9px 11px;margin:0 0 12px}
+.inlineerr{font-size:12.5px;color:#fca5a5;margin:0 0 10px;min-height:0}
+/* v2: page illustrations */
+.illwrap{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:6px 8px;margin:0 0 12px}
+.ill{display:block;width:100%;max-width:380px;height:auto;margin:0 auto}
+.ill .i-ink{fill:none;stroke:var(--ill-ink);stroke-width:2.5}
+.ill .i-ink2{fill:none;stroke:var(--ill-ink);stroke-width:1.5}
+.ill .i-body{fill:var(--ill-surface);stroke:var(--ill-ink);stroke-width:2.5}
+.ill .i-body2{fill:var(--ill-surface);stroke:var(--ill-ink);stroke-width:1.5}
+.ill .i-det{fill:none;stroke:var(--ill-muted);stroke-width:1.5}
+.ill .i-detd{fill:none;stroke:var(--ill-muted);stroke-width:1.5;stroke-dasharray:4 3}
+.ill .i-water{fill:none;stroke:var(--ill-water);stroke-width:2.5}
+.ill .i-radio{fill:none;stroke:var(--ill-water);stroke-width:1.5}
+.ill .i-acc{fill:none;stroke:var(--ill-accent);stroke-width:2.5}
+.ill .i-acc1{fill:none;stroke:var(--ill-accent);stroke-width:1.5}
+.ill .i-accd{fill:none;stroke:var(--ill-accent);stroke-width:1.5;stroke-dasharray:4 3}
+.ill .i-ok{fill:none;stroke:var(--ill-ok);stroke-width:2.5}
+.ill .i-warn{fill:none;stroke:var(--ill-warn);stroke-width:2.5}
+.ill .i-warn1{fill:none;stroke:var(--ill-warn);stroke-width:1.5}
+.purpose{font-size:12.5px;color:#cbd5e1;line-height:1.45;margin:0 0 4px}
+.optpic{display:block;width:120px;max-width:100%;margin:0 0 6px;background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:3px}
+.optpic .ill{max-width:none}
+.opt>span{min-width:0}
+.hint a{color:var(--pri)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>BREmote V2.5-Evo — Setup Wizard</h1>
+  <div class="sub">Prototype. Answer the questions, get a config for the remote and a config for the buggy. About 8 minutes.</div>
+  <div class="warnbox" role="note" style="margin:0 0 12px"><b>Only for BREmote V2.5-Evo firmware</b> (buggy SW 36, remote SW 27 or later). The settings this wizard writes do not exist in Ludwig's stock BREmote firmware: do not use it with stock firmware, or with older V2.5-Evo builds. Check the version your board prints at boot (<code>?conf</code> shows "version") before pasting anything.</div>
+  <div class="notice"><b>Browse mode is on:</b> flip to any page with the chips or Back/Next, no answers needed. Unanswered questions use the recommended choice, so the Results page always shows a full example config. Turn Browse mode off to answer the questions for your own setup. New in the upcoming release, available now for testing on the <a href="https://github.com/monterman/BREmote-V2/tree/fm-stations" target="_blank" rel="noopener">fm-stations branch</a>; it moves to master after water testing.</div>
+  <div class="modebar"><label><input type="checkbox" id="browse" checked> Browse mode</label></div>
+  <div class="jump" id="jump" aria-label="Wizard pages"></div>
+  <div class="inlineerr" id="inlineerr" aria-live="polite"></div>
+  <div id="screens"></div>
+</div>
+
+<div class="nav"><div class="navin">
+  <button class="btn sec" id="back">Back</button>
+  <div class="prog"><i id="bar"></i></div>
+  <span class="progtxt" id="ptxt"></span>
+  <button class="btn" id="next">Next</button>
+</div></div>
+
+<script>
+/* ============================================================
+   BREmote V2.5-Evo setup wizard — prototype
+   Every range, default and key below is taken from the firmware:
+     RX  Source/V2_Integration_Rx/ConfigService.ino  kCfgFields[]  (69 keys, SW_VERSION 36)
+     TX  Source/V2_Integration_Tx/ConfigService.ino  kCfgFields[]  (63 keys, SW_VERSION 27)
+   plus the defaultConf initialisers in the two headers and the
+   cfgValidateCrossField() rules in both ConfigService.ino files.
+   Nothing here is invented except where marked INFERRED.
+   ============================================================ */
+
+const SW_RX = 36, SW_TX = 27;
+
+/* answers live here */
+const A = {};
+
+/* ---------- helpers ---------- */
+/* v2: controller type. Unanswered counts as VESC (the recommended option). */
+function isVesc(){ return A.esc!=="other"; }
+/* a non-VESC ESC has no data wire: never keep data_src = 2 for it */
+function fixEsc(){ if(!isVesc() && A.tel===2) A.tel = 1; }
+
+/* v2: page illustrations (index = page; last = Results), hand-drawn SVG per the
+   2026-10-07 illustration style spec. Colours come from the --ill-* variables. */
+const ILL = [
+"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 320 120\" width=\"100%\" preserveAspectRatio=\"xMidYMid meet\" role=\"img\" aria-labelledby=\"wz1t wz1d\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"ill\" focusable=\"false\"><title id=\"wz1t\">Buggy on a stand</title><desc id=\"wz1d\">Put the buggy on a stand so the props spin freely, clear of the ground and of you.</desc><path class=\"i-det\" d=\"M40 102 H280\"/><path class=\"i-ink2\" d=\"M156 62 H188 M158 63 L148 102 M186 63 L196 102 M152 86 H192\"/><g transform=\"translate(-62 -22)\"><path class=\"i-body\" d=\"M186 70 H252 L258 74 L250 84 H190 Z\"/><path class=\"i-ink2\" d=\"M198 70 V56\"/><circle class=\"i-body2\" cx=\"198\" cy=\"54\" r=\"2\"/><path class=\"i-ink2\" d=\"M208 84 V86\"/><rect class=\"i-body2\" x=\"200\" y=\"86\" width=\"16\" height=\"6\" rx=\"2\"/><path class=\"i-ink2\" d=\"M198 85 V93\"/><circle class=\"i-ink2\" cx=\"183\" cy=\"73\" r=\"2\"/></g><path class=\"i-warn1\" d=\"M130 60 L126 57 M129 67 H123 M130 74 L126 77 M134 78 L132 82 M140 78 L142 82\"/></svg>",
+"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 320 120\" width=\"100%\" preserveAspectRatio=\"xMidYMid meet\" role=\"img\" aria-labelledby=\"wz2t wz2d\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"ill\" focusable=\"false\"><title id=\"wz2t\">Twin-motor steering</title><desc id=\"wz2d\">Seen from above: two motors at the stern steer the buggy by running at different power.</desc><path class=\"i-det\" d=\"M86 46 H78 M86 50 H74 M86 70 H66 M86 74 H62\"/><rect class=\"i-body2\" x=\"94\" y=\"44\" width=\"18\" height=\"8\" rx=\"2\"/><rect class=\"i-body2\" x=\"94\" y=\"68\" width=\"18\" height=\"8\" rx=\"2\"/><path class=\"i-ink2\" d=\"M92 41 V55 M92 65 V79\"/><path class=\"i-body\" d=\"M114 40 H184 L206 60 L184 80 H114 Q110 80 110 76 V44 Q110 40 114 40 Z\"/><path class=\"i-det\" d=\"M120 48 H176 L188 60 L176 72 H120\"/><circle class=\"i-body2\" cx=\"124\" cy=\"60\" r=\"2\"/><path class=\"i-acc\" d=\"M200 96 Q240 92 240 54 M235 62 L240 54 L245 62\"/></svg>",
+"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 320 120\" width=\"100%\" preserveAspectRatio=\"xMidYMid meet\" role=\"img\" aria-labelledby=\"wz3t wz3d\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"ill\" focusable=\"false\"><title id=\"wz3t\">Battery, controller and data wire</title><desc id=\"wz3d\">The battery pack and the speed controller, joined by the data wire that carries the readings.</desc><rect class=\"i-body2\" x=\"48\" y=\"34\" width=\"12\" height=\"6\" rx=\"2\"/><rect class=\"i-body2\" x=\"116\" y=\"34\" width=\"12\" height=\"6\" rx=\"2\"/><rect class=\"i-body\" x=\"36\" y=\"40\" width=\"104\" height=\"44\" rx=\"4\"/><path class=\"i-det\" d=\"M57 45 V79 M78 45 V79 M99 45 V79 M120 45 V79\"/><path class=\"i-ink2\" d=\"M202 52 V40 M210 52 V40 M218 52 V40 M226 52 V40 M234 52 V40 M242 52 V40 M250 52 V40 M258 52 V40\"/><rect class=\"i-body\" x=\"196\" y=\"52\" width=\"68\" height=\"32\" rx=\"3\"/><path class=\"i-ink2\" d=\"M264 60 H278 M264 68 H278 M264 76 H278\"/><path class=\"i-accd\" d=\"M140 66 C164 66 172 72 196 72\"/></svg>",
+"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 320 120\" width=\"100%\" preserveAspectRatio=\"xMidYMid meet\" role=\"img\" aria-labelledby=\"wz4t wz4d\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"ill\" focusable=\"false\"><title id=\"wz4t\">Remote and buggy radio link</title><desc id=\"wz4d\">The remote and the buggy talk over radio; both must use the same band.</desc><path class=\"i-water\" d=\"M196 80 Q216 70 236 80 T276 80\"/><g transform=\"translate(28 0)\"><path class=\"i-body\" d=\"M186 70 H252 L258 74 L250 84 H190 Z\"/><path class=\"i-ink2\" d=\"M198 70 V56\"/><circle class=\"i-body2\" cx=\"198\" cy=\"54\" r=\"2\"/><path class=\"i-ink2\" d=\"M208 84 V86\"/><rect class=\"i-body2\" x=\"200\" y=\"86\" width=\"16\" height=\"6\" rx=\"2\"/><path class=\"i-ink2\" d=\"M198 85 V93\"/><circle class=\"i-ink2\" cx=\"183\" cy=\"73\" r=\"2\"/></g><path class=\"i-ink2\" d=\"M65 30 V20\"/><circle class=\"i-body2\" cx=\"65\" cy=\"18\" r=\"2\"/><rect class=\"i-body\" x=\"52\" y=\"30\" width=\"26\" height=\"56\" rx=\"6\"/><rect class=\"i-ink2\" x=\"57\" y=\"36\" width=\"16\" height=\"10\" rx=\"2\"/><circle class=\"i-ink2\" cx=\"65\" cy=\"58\" r=\"3\"/><path class=\"i-ink\" d=\"M78 52 q8 4 6 14\"/><path class=\"i-radio\" d=\"M71.6 13.4 A8 8 0 0 1 71.6 22.6\"/><path class=\"i-radio\" d=\"M75.6 10.5 A13 13 0 0 1 75.6 25.5\"/><path class=\"i-radio\" d=\"M79.7 7.7 A18 18 0 0 1 79.7 28.3\"/><path class=\"i-radio\" d=\"M219.4 49.4 A8 8 0 0 0 219.4 58.6\"/><path class=\"i-radio\" d=\"M215.4 46.5 A13 13 0 0 0 215.4 61.5\"/><path class=\"i-accd\" d=\"M88 18 Q156 14 214 46\"/></svg>",
+"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 320 120\" width=\"100%\" preserveAspectRatio=\"xMidYMid meet\" role=\"img\" aria-labelledby=\"wz5t wz5d\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"ill\" focusable=\"false\"><title id=\"wz5t\">Finger on the trigger</title><desc id=\"wz5d\">A hand holds the remote with the index finger on the trigger, which sets how power comes in.</desc><path class=\"i-body\" d=\"M128 74 L102 80 V100 L128 100 Z\"/><path class=\"i-ink2\" d=\"M110 78 V100\"/><path class=\"i-ink2\" d=\"M154 22 V14\"/><circle class=\"i-body2\" cx=\"154\" cy=\"12\" r=\"2\"/><rect class=\"i-body\" x=\"138\" y=\"22\" width=\"32\" height=\"84\" rx=\"8\"/><rect class=\"i-ink2\" x=\"144\" y=\"28\" width=\"20\" height=\"12\" rx=\"2\"/><path class=\"i-acc\" d=\"M170 46 Q184 52 180 66\"/><path class=\"i-body\" d=\"M124 82 Q124 70 136 70 H164 Q176 70 176 82 V92 Q176 104 164 104 H136 Q124 104 124 92 Z\"/><path class=\"i-det\" d=\"M148 84 H170 M148 94 H170\"/><rect class=\"i-body\" x=\"128\" y=\"56\" width=\"12\" height=\"20\" rx=\"6\"/><rect class=\"i-body\" x=\"160\" y=\"62\" width=\"28\" height=\"10\" rx=\"5\" transform=\"rotate(-24 174 67)\"/><path class=\"i-det\" d=\"M196 52 L202 48 M198 60 H205\"/></svg>",
+"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 320 120\" width=\"100%\" preserveAspectRatio=\"xMidYMid meet\" role=\"img\" aria-labelledby=\"wz6t wz6d\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"ill\" focusable=\"false\"><title id=\"wz6t\">Follow-Me tow</title><desc id=\"wz6d\">The rider rides the wave while the buggy keeps station nearby, linked by the tow rope.</desc><path class=\"i-water\" d=\"M14 80 Q26 80 34 66 Q42 50 56 50 Q62 51 64 56 Q56 56 56 64 Q58 76 76 80\"/><path class=\"i-det\" d=\"M44 58 Q50 54 56 56\"/><path class=\"i-water\" d=\"M76 80 Q96 70 116 80 T156 80 T196 80 T236 80 T276 80\"/><path class=\"i-ink2\" d=\"M112 66 V92\"/><path class=\"i-ink\" d=\"M104 92 H122\"/><rect class=\"i-body2\" x=\"96\" y=\"62\" width=\"32\" height=\"4\" rx=\"2\"/><path class=\"i-ink\" d=\"M102 62 L106 53 L110 46 M120 62 L122 53 L110 46 M110 46 L107 33 M107 35 L118 38 L127 40\"/><circle class=\"i-ink\" cx=\"105\" cy=\"27\" r=\"4\"/><g transform=\"translate(20 0)\"><path class=\"i-body\" d=\"M186 70 H252 L258 74 L250 84 H190 Z\"/><path class=\"i-ink2\" d=\"M198 70 V56\"/><circle class=\"i-body2\" cx=\"198\" cy=\"54\" r=\"2\"/><path class=\"i-ink2\" d=\"M208 84 V86\"/><rect class=\"i-body2\" x=\"200\" y=\"86\" width=\"16\" height=\"6\" rx=\"2\"/><path class=\"i-ink2\" d=\"M198 85 V93\"/><circle class=\"i-ink2\" cx=\"183\" cy=\"73\" r=\"2\"/></g><path class=\"i-accd\" d=\"M128 40 Q168 62 181 73\"/></svg>",
+"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 320 120\" width=\"100%\" preserveAspectRatio=\"xMidYMid meet\" role=\"img\" aria-labelledby=\"wz7t wz7d\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"ill\" focusable=\"false\"><title id=\"wz7t\">Return-to-Me</title><desc id=\"wz7d\">After a fall the rider floats and waves, and the buggy comes back to pick them up.</desc><path class=\"i-water\" d=\"M12 80 Q32 70 52 80 T92 80 T132 80 T172 80 T212 80 T252 80 T292 80\"/><rect class=\"i-body2\" x=\"24\" y=\"76\" width=\"26\" height=\"4\" rx=\"2\"/><path class=\"i-ink\" d=\"M64 79 Q66 70 76 70 Q86 70 88 79 M86 72 L94 60 L95 50\"/><circle class=\"i-ink\" cx=\"76\" cy=\"63\" r=\"4\"/><path class=\"i-det\" d=\"M58 88 Q76 94 94 88\"/><g transform=\"translate(458 0) scale(-1 1)\"><path class=\"i-body\" d=\"M186 70 H252 L258 74 L250 84 H190 Z\"/><path class=\"i-ink2\" d=\"M198 70 V56\"/><circle class=\"i-body2\" cx=\"198\" cy=\"54\" r=\"2\"/><path class=\"i-ink2\" d=\"M208 84 V86\"/><rect class=\"i-body2\" x=\"200\" y=\"86\" width=\"16\" height=\"6\" rx=\"2\"/><path class=\"i-ink2\" d=\"M198 85 V93\"/><circle class=\"i-ink2\" cx=\"183\" cy=\"73\" r=\"2\"/></g><path class=\"i-det\" d=\"M282 84 H294 M284 88 H300\"/><path class=\"i-acc\" d=\"M236 44 Q172 18 108 40 M115 32.8 L108 40 L118 41.4\"/></svg>",
+"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 320 120\" width=\"100%\" preserveAspectRatio=\"xMidYMid meet\" role=\"img\" aria-labelledby=\"wz8t wz8d\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"ill\" focusable=\"false\"><title id=\"wz8t\">GPS, compass and magnet</title><desc id=\"wz8d\">Satellites give position, the compass gives heading, and a magnet near the remote needs care.</desc><g transform=\"rotate(-20 48 32)\"><path class=\"i-ink2\" d=\"M41 32 H44 M52 32 H55\"/><rect class=\"i-body2\" x=\"31\" y=\"29\" width=\"10\" height=\"6\" rx=\"2\"/><rect class=\"i-body2\" x=\"55\" y=\"29\" width=\"10\" height=\"6\" rx=\"2\"/><rect class=\"i-body2\" x=\"44\" y=\"28\" width=\"8\" height=\"8\" rx=\"2\"/></g><path class=\"i-radio\" d=\"M44.1 42.6 A6 6 0 0 0 51.9 42.6\"/><path class=\"i-radio\" d=\"M40.9 46.4 A11 11 0 0 0 55.1 46.4\"/><g transform=\"rotate(-20 96 24)\"><path class=\"i-ink2\" d=\"M89 24 H92 M100 24 H103\"/><rect class=\"i-body2\" x=\"79\" y=\"21\" width=\"10\" height=\"6\" rx=\"2\"/><rect class=\"i-body2\" x=\"103\" y=\"21\" width=\"10\" height=\"6\" rx=\"2\"/><rect class=\"i-body2\" x=\"92\" y=\"20\" width=\"8\" height=\"8\" rx=\"2\"/></g><path class=\"i-radio\" d=\"M92.1 34.6 A6 6 0 0 0 99.9 34.6\"/><path class=\"i-radio\" d=\"M88.9 38.4 A11 11 0 0 0 103.1 38.4\"/><circle class=\"i-body\" cx=\"170\" cy=\"62\" r=\"24\"/><path class=\"i-det\" d=\"M152 62 L170 58 L188 62 L170 66 Z\"/><path class=\"i-ink2\" d=\"M170 44 L175 62 L170 80 L165 62 Z M166 36 L170 30 L174 36\"/><path class=\"i-warn\" d=\"M232 40 H244 V64 A6 6 0 0 0 256 64 V40 H268 V64 A18 18 0 0 1 232 64 Z\"/><path class=\"i-warn1\" d=\"M232 48 H244 M256 48 H268 M238 34 V28 M262 34 V28\"/></svg>",
+"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 320 120\" width=\"100%\" preserveAspectRatio=\"xMidYMid meet\" role=\"img\" aria-labelledby=\"wz9t wz9d\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"ill\" focusable=\"false\"><title id=\"wz9t\">Units, sleep and battery</title><desc id=\"wz9d\">Three housekeeping choices: the units you think in, auto sleep, and Bluetooth telemetry.</desc><rect class=\"i-ink\" x=\"58\" y=\"52\" width=\"44\" height=\"16\" rx=\"2\"/><path class=\"i-ink2\" d=\"M64 52 V58 M70 52 V61 M76 52 V58 M82 52 V61 M88 52 V58 M94 52 V61\"/><circle class=\"i-ink\" cx=\"160\" cy=\"60\" r=\"18\"/><path class=\"i-det\" d=\"M160 44 V46 M176 60 H174 M160 76 V74 M144 60 H146\"/><path class=\"i-ink\" d=\"M160 60 V49 M160 60 L168 64\"/><rect class=\"i-ink\" x=\"222\" y=\"48\" width=\"32\" height=\"24\" rx=\"3\"/><rect class=\"i-ink2\" x=\"255\" y=\"55\" width=\"4\" height=\"10\" rx=\"2\"/><path class=\"i-ink2\" d=\"M229 54 V66 M236 54 V66 M243 54 V66\"/></svg>",
+"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 320 120\" width=\"100%\" preserveAspectRatio=\"xMidYMid meet\" role=\"img\" aria-labelledby=\"wz10t wz10d\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"ill\" focusable=\"false\"><title id=\"wz10t\">Setup ready</title><desc id=\"wz10d\">The remote and the buggy each get their own config; paste each one into its board.</desc><path class=\"i-water\" d=\"M200 80 Q220 70 240 80 T280 80\"/><g transform=\"translate(30 0)\"><path class=\"i-body\" d=\"M186 70 H252 L258 74 L250 84 H190 Z\"/><path class=\"i-ink2\" d=\"M198 70 V56\"/><circle class=\"i-body2\" cx=\"198\" cy=\"54\" r=\"2\"/><path class=\"i-ink2\" d=\"M208 84 V86\"/><rect class=\"i-body2\" x=\"200\" y=\"86\" width=\"16\" height=\"6\" rx=\"2\"/><path class=\"i-ink2\" d=\"M198 85 V93\"/><circle class=\"i-ink2\" cx=\"183\" cy=\"73\" r=\"2\"/></g><path class=\"i-ink2\" d=\"M69 32 V22\"/><circle class=\"i-body2\" cx=\"69\" cy=\"20\" r=\"2\"/><rect class=\"i-body\" x=\"56\" y=\"32\" width=\"26\" height=\"56\" rx=\"6\"/><rect class=\"i-ink2\" x=\"61\" y=\"38\" width=\"16\" height=\"10\" rx=\"2\"/><circle class=\"i-ink2\" cx=\"69\" cy=\"60\" r=\"3\"/><path class=\"i-ink\" d=\"M82 54 q8 4 6 14\"/><path class=\"i-detd\" d=\"M92 56 H136 M184 58 Q198 60 210 68\"/><circle class=\"i-ok\" cx=\"160\" cy=\"56\" r=\"18\"/><path class=\"i-ok\" d=\"M151 56 L158 63 L170 49\"/></svg>"
+];
+const ESCPIC = [
+"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 120 60\" width=\"100%\" preserveAspectRatio=\"xMidYMid meet\" role=\"img\" aria-labelledby=\"esc1t esc1d\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"ill escpic\" focusable=\"false\"><title id=\"esc1t\">VESC 75200 style controller</title><desc id=\"esc1d\">An aluminium case with heatsink fins, thick battery leads, three motor leads and a small data connector.</desc><path class=\"i-ink2\" d=\"M36 20 V12 M44 20 V12 M52 20 V12 M60 20 V12 M68 20 V12 M76 20 V12 M84 20 V12\"/><path class=\"i-ink\" d=\"M30 28 H14 M30 38 H14\"/><circle class=\"i-ink2\" cx=\"12\" cy=\"28\" r=\"2\"/><circle class=\"i-ink2\" cx=\"12\" cy=\"38\" r=\"2\"/><path class=\"i-ink2\" d=\"M90 26 H106 M90 33 H106 M90 40 H106\"/><rect class=\"i-body\" x=\"30\" y=\"20\" width=\"60\" height=\"26\" rx=\"3\"/><rect class=\"i-acc1\" x=\"52\" y=\"46\" width=\"12\" height=\"6\" rx=\"2\"/></svg>",
+"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 120 60\" width=\"100%\" preserveAspectRatio=\"xMidYMid meet\" role=\"img\" aria-labelledby=\"esc2t esc2d\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"ill escpic\" focusable=\"false\"><title id=\"esc2t\">Sealed waterproof hobby ESC</title><desc id=\"esc2d\">A slim sealed body with battery leads, three motor leads and one thin throttle signal lead.</desc><path class=\"i-radio\" d=\"M60 5 Q54 13 60 16 Q66 13 60 5 Z\"/><path class=\"i-ink\" d=\"M30 27 H14 M30 35 H14\"/><path class=\"i-ink2\" d=\"M90 25 H106 M90 31 H106 M90 37 H106\"/><rect class=\"i-body\" x=\"30\" y=\"22\" width=\"60\" height=\"18\" rx=\"7\"/><path class=\"i-det\" d=\"M40 23 V39 M80 23 V39\"/><path class=\"i-acc1\" d=\"M60 40 Q60 50 72 52\"/><rect class=\"i-acc1\" x=\"72\" y=\"49\" width=\"8\" height=\"6\" rx=\"2\"/></svg>"
+];
+const PURPOSE = [
+"Make sure the buggy is safe to spin before anything else.",
+"Tell the wizard what drives and steers your buggy, and check the steering direction.",
+"Say where battery and speed readings come from, and describe your pack.",
+"Put both boards on the same legal radio band and set the setup WiFi password.",
+"Choose how the trigger and power control feel while you ride.",
+"Decide whether the buggy follows you, where it sits and how close it may come.",
+"Set up how the buggy comes back to pick you up after a fall. (This is manual return-to-me: a gesture you make in the water, the magnet hold or RIGHT tap + LEFT hold. It does not change auto-return inside Follow-Me, which works almost the same way.)",
+"Tell the wizard which GPS, compass and magnet hardware is fitted.",
+"Pick your units, auto sleep and Bluetooth. Last page of questions.",
+"Your two configs, the controller advice, and the commands to paste into each board."
+];
+function illHead(i){ return '<div class="illwrap">'+ILL[i]+'</div>'; }
+function purposeLine(i){ return '<div class="purpose">'+PURPOSE[i]+'</div>'; }
+const kmh = mph => +(mph * 1.609344).toFixed(1);
+const mphOf = k => Math.round(k / 1.609344);
+const ft = m => Math.round(m * 3.28084);
+
+/* ---------- the question set ---------- */
+/* set: function(answerValue) -> {rx:{...}, tx:{...}}  (keys written to each board) */
+const SCREENS = [
+{
+  title:"1 · Before you start",
+  meta:"20 seconds · no settings are written",
+  qs:[{
+    id:"gate", type:"choice", required:true,
+    label:"Is the buggy on a stand, with the props or wheels clear of the water and clear of you, and the battery connected?",
+    hint:"Two of the questions coming up need you to spin the motors. Do not skip this.",
+    opts:[
+      {v:"yes", l:"Yes — it is on a stand and safe to spin", rec:true},
+      {v:"no",  l:"No — I will come back when it is"}
+    ]
+  }]
+},
+{
+  title:"2 · Your machine",
+  meta:"about 90 seconds · steering_type decides most of what follows",
+  qs:[
+  {
+    id:"esc", type:"choice", required:true,
+    label:"What speed controllers (ESCs) drive your motors?",
+    hint:'Not every build uses a VESC. This answer decides which calibration and telemetry advice you get from here on. The non-VESC example: <a href="https://sequremall.com/products/sequre-wp14200-ip68-waterproof-200a-esc-drones-efoil-board" target="_blank" rel="noopener">SEQURE WP14200 product page</a>.',
+    opts:[
+      {v:"vesc", pic:0, l:"VESC (any VESC-based controller, set up in VESC Tool), e.g. VESC 75200 V2 (the owner's)", rec:true, sets:"data_src can be 2 (VESC data wire)"},
+      {v:"other", pic:1, l:"A non-VESC ESC — a regular hobby/marine ESC driven by the PPM signal only, e.g. SEQURE WP14200 (waterproof 200 A ESC)", sets:"no VESC data; telemetry from a voltage wire or none"}
+    ],
+    set:()=>({})
+  },
+  {
+    id:"turns", type:"choice", required:true,
+    label:"How does your buggy turn?",
+    opts:[
+      {v:1, l:"Two motors, and it turns by giving one more power than the other", rec:true, sets:"steering_type = 1"},
+      {v:2, l:"A rudder or steering servo", sets:"steering_type = 2"},
+      {v:0, l:"It does not steer itself — both motors always run together", sets:"steering_type = 0"}
+    ],
+    set:v=>({rx:{steering_type:v}, tx:{steer_enabled: v===0?0:1}})
+  },
+  {
+    id:"dir", type:"choice", required:true, noDefault:true,
+    label:"Push the steering right. Which way does the buggy actually turn?",
+    warn:"Do this now, on the stand. This is the one check that matters most: if it is backwards, Follow-Me will steer the buggy away from you instead of toward you.",
+    opts:[
+      {v:0, l:"Right — correct", sets:"steering_inverted = 0"},
+      {v:1, l:"Left — the wrong way", sets:"steering_inverted = 1"}
+    ],
+    set:v=>({rx:{steering_inverted:v}})
+  },
+  {
+    id:"sharp", type:"choice", showIf:a=>a.turns!==0,
+    label:"How sharply should it turn?",
+    hint:"Two of these three are real, water-tested values: 50 is what a new board ships with, and 100 is what the owner's own buggy runs. 75 is just the midpoint between them.",
+    opts:[
+      {v:50, l:"Gentle — the factory value",sets:"steering_influence = 50"},
+      {v:75, l:"Medium",sets:"steering_influence = 75"},
+      {v:100,l:"Full — what the owner's buggy runs",rec:true,sets:"steering_influence = 100"}
+    ],
+    set:v=>({rx:{steering_influence:v}})
+  },
+  {
+    id:"veer", type:"choice",
+    label:"Does it pull to one side when you ask for straight?",
+    opts:[
+      {v:"no",  l:"No, or I have not tried yet", rec:true, sets:"trim = 0"},
+      {v:"yes", l:"Yes, it pulls to one side"}
+    ],
+    set:()=>({rx:{trim:0}})
+  },
+  {
+    id:"ppm", type:"choice", showIf:a=>a.veer==="yes",
+    get label(){ return isVesc()
+      ? "Have you run VESC Tool's PPM Input calibration on BOTH VESCs, with min, centre and max captured on each?"
+      : "Have you calibrated each ESC's throttle range (endpoints) per its manual, so both motors start at the same low throttle and top out together?"; },
+    get card(){ return isVesc()
+      ? "Uneven motors are almost always a mismatched PPM map, not a remote setting. Calibrate both VESCs so the two motors start at the same low throttle and top out together, and set the min just above the rest pulse so there is no idle creep. Measured on this build: 1.236 ms crept, 1.240-1.251 ms was clean."
+      : "Uneven motors are almost always mismatched ESC throttle endpoints, not a remote setting. Calibrate each ESC's throttle range per its manual, both from the same remote, so the two motors start at the same low throttle and top out together."; },
+    get opts(){ return [
+      {v:"no",  l: isVesc() ? "Not yet — I will do that first" : "Not yet — I will calibrate both ESCs first", rec:true, sets:"nothing"},
+      {v:"l5",  l: isVesc() ? "Yes, and it still pulls LEFT" : "Yes, both ESCs are calibrated, and it still pulls LEFT",  sets:"trim = +5 µs"},
+      {v:"r5",  l: isVesc() ? "Yes, and it still pulls RIGHT" : "Yes, both ESCs are calibrated, and it still pulls RIGHT", sets:"trim = -5 µs"}
+    ]; },
+    set:v=>({rx:{trim: v==="l5"?5 : v==="r5"?-5 : 0}})
+  }]
+},
+{
+  title:"3 · Power and telemetry",
+  meta:"about 75 seconds",
+  qs:[
+  {
+    id:"tel", type:"choice",
+    label:"Where does the buggy get its battery and speed readings from?",
+    get hint(){ return isVesc() ? undefined : "A non-VESC ESC has no data wire the buggy can read, so the VESC option is not offered."; },
+    get opts(){ return isVesc() ? [
+      {v:2,l:"From the VESC over its data wire",rec:true,sets:"data_src = 2"},
+      {v:1,l:"From a plain voltage wire into the receiver",sets:"data_src = 1"},
+      {v:0,l:"Nowhere — I do not want telemetry",sets:"data_src = 0"}
+    ] : [
+      {v:1,l:"From a plain voltage wire into the receiver",rec:true,sets:"data_src = 1"},
+      {v:0,l:"Nowhere — I do not want telemetry",sets:"data_src = 0"}
+    ]; },
+    set:v=>({rx:{data_src:v}})
+  },
+  {
+    id:"telnote", type:"info", showIf:a=>a.tel===1,
+    label:"One thing the wizard cannot do for you",
+    card:"A plain voltage wire has to be calibrated against a multimeter before the battery reading means anything. That needs a measurement, so the wizard leaves ubat_cal at its factory value and you adjust it on the board until the displayed voltage matches your meter. Ludwig's <a href=\"https://lbre.de/BREmote/ubat_cal.html\" target=\"_blank\" rel=\"noopener\">calibration-factor calculator</a> does the maths: enter what the receiver measured, what your meter shows and the current factor."
+  },
+  {
+    id:"cells", type:"number", min:1, max:50, def:12, unit:"cells in series",
+    label:"How many cells in series is your pack?",
+    hint:"Count the cell groups, or charge it full and divide the pack voltage by 4.2. 10S is about 42.0 V full, 12S about 50.4 V (the most common), 14S about 58.8 V. A pack marked 12S4P is 12 in series.",
+    set:v=>({rx:{foil_num_cells:v}}),
+    derive:v=>"foil_num_cells = "+v+". The buggy uses this for one thing only: turning pack voltage into a battery percentage. It sets no cutoff and no current limit — see the "+(isVesc()?"VESC":"ESC")+" card on the results page."
+  },
+  {
+    id:"batlut", type:"info",
+    label:"Battery percentage: load a battery table (credit: Ludwig)",
+    card:"The cell count only gets you a rough percentage. For a good reading, load a battery table (LUT) for your cells. BREmote's author Ludwig made the tools and a procedure for this: <a href=\"https://lbre.de/BREmote/LUT.html\" target=\"_blank\" rel=\"noopener\">premade battery tables</a> (pick your cell model, e.g. Molicel P42A, and your current per cell), the <a href=\"https://lbre.de/BREmote/per_cell_calc.html\" target=\"_blank\" rel=\"noopener\">per-cell current calculator</a>, a <a href=\"https://lbre.de/BREmote/bat_conf.html\" target=\"_blank\" rel=\"noopener\">table builder</a> for your own discharge data, and the <a href=\"https://lbre.de/BREmote/bat_decode.html\" target=\"_blank\" rel=\"noopener\">table decoder</a>. Each one outputs a Base64 blob you paste into the buggy's battery settings. Ludwig walks through setup and configuration in his <a href=\"https://youtu.be/r6JIZEq3aTU\" target=\"_blank\" rel=\"noopener\">software setup and config video</a>, and everything is linked from his repository, <a href=\"https://github.com/Luddi96/BREmote-V2\" target=\"_blank\" rel=\"noopener\">github.com/Luddi96/BREmote-V2</a>. This wizard is a quick first setup; the battery table is where the good battery values come from."
+  },
+  {
+    id:"cap", type:"number", showIf:a=>a.esc!=="other", min:0, max:999, def:16.8, step:0.1, unit:"Ah",
+    label:"What is the capacity of your pack, in amp-hours?",
+    get hint(){ return isVesc()
+      ? "It is printed on the pack, or it is the cell's Ah times the number of cells in parallel. Capacity = one cell's Ah × cells in parallel. Common cells: Molicel P42A 4.2 Ah, Molicel P45B 4.5 Ah, Samsung 40T 4.0 Ah, Samsung 50S 5.0 Ah. So 12S4P P42A = 16.8 Ah, 12S5P = 21 Ah. Need help planning a pack? The <a href=\"https://calc.esk8.news/\" target=\"_blank\" rel=\"noopener\">esk8.news calculator</a> and the <a href=\"https://forum.esk8.news/t/battery-basics-for-beginners-wiki-serious/14271\" target=\"_blank\" rel=\"noopener\">battery basics wiki</a> cover series, parallel and capacity. THIS ONE GOES IN VESC TOOL, NOT ON THE REMOTE — there is no capacity field on either board, so it produces no ?set line. It lands on the VESC card instead."
+      : "It is printed on the pack, or it is the cell's Ah times the number of cells in parallel. A typical 12S4P Molicel P42A pack is 4 × 4.2 = 16.8 Ah; 12S5P is 21 Ah. There is no capacity field on either board, so it produces no ?set line. With a non-VESC ESC nothing in this setup uses it; it is shown on the ESC card for your own records."; },
+    set:()=>({}),
+    derive:v=> v<=0 ? "" : isVesc()
+      ? "About "+Math.round(v*3.6*(A.cells||12))+" Wh ("+(A.cells||12)+"S × 3.6 V × "+v+" Ah). si_battery_ah = "+v+" in VESC Tool. Feeds watt-hours and range THERE. It does not feed the battery percentage, any current limit, any cutoff, or the remote's battery reading."
+      : v+" Ah, for your records only. It does not feed the battery percentage, any current limit, any cutoff, or the remote's battery reading."
+  },
+  {
+    id:"wet", type:"choice",
+    label:"Is a water sensor fitted inside the buggy?",
+    hint:"When it trips you get a warning on the remote and a buzz. It does not cut the motors, so you can ride back to shore.",
+    opts:[{v:1,l:"Yes",rec:true,sets:"wet_det_active = 1"},{v:0,l:"No",sets:"wet_det_active = 0"}],
+    set:v=>({rx:{wet_det_active:v}})
+  },
+  {
+    id:"bms", type:"choice", showIf:()=>false, /* hidden: the firmware never reads the BMS input pin today (AW9523 P0_7) */
+    label:"Is a BMS cutoff signal wired into the receiver (two wires, to the BMS+ and BMS− pads on the board)?",
+    warn:"Only say yes if the wire is actually there. When this is on, the receiver will shut the motors off if it sees the BMS signal.",
+    opts:[{v:0,l:"No",rec:true,sets:"bms_det_active = 0"},{v:1,l:"Yes, it is wired",sets:"bms_det_active = 1"}],
+    set:v=>({rx:{bms_det_active:v}})
+  }]
+},
+{
+  title:"4 · Radio and region",
+  meta:"about 30 seconds · both boards must match",
+  qs:[
+  {
+    id:"band", type:"choice", noDefault:true,
+    label:"Which radio band is legal where you ride?",
+    warn:"Both boards must be on the same band or they will never see each other.",
+    opts:[
+      {v:2,l:"US / Australia — 915 MHz",sets:"radio_preset = 2 on both boards"},
+      {v:1,l:"Europe — 868 MHz",sets:"radio_preset = 1 on both boards"}
+    ],
+    set:v=>({rx:{radio_preset:v}, tx:{radio_preset:v}})
+  },
+  {
+    id:"wifipw", type:"text", len:8, def:"12345678",
+    label:"Pick an 8-character password for the boards' setup WiFi.",
+    hint:"Exactly 8 characters — the field holds no more and no less. The factory password is 12345678; change it.",
+    set:v=>({rx:{wifi_password:v}, tx:{wifi_password:v}})
+  },
+  {
+    id:"pairnote", type:"info",
+    label:"Pairing is not a wizard setting",
+    card:"The bind button on each board writes the pairing. The wizard never touches paired, own_address or dest_address — if it did, it would unbind boards that are already working. Hold BIND at boot on each board to pair them. One remote pairs to one buggy."
+  }]
+},
+{
+  title:"5 · How you want to drive it",
+  meta:"about 75 seconds",
+  qs:[
+  {
+    id:"pwr", type:"choice",
+    label:"How do you want to control power while you ride?",
+    opts:[
+      {v:2,l:"A power dial I nudge up and down",rec:true,sets:"throttle_mode = 2, dynamic_power_step = 5"},
+      {v:0,l:"Fixed gears",sets:"throttle_mode = 0, startgear = 0"},
+      {v:1,l:"No limit — the trigger is the whole range",sets:"throttle_mode = 1"}
+    ],
+    set:v=>{
+      if(v===2) return {tx:{throttle_mode:2, dynamic_power_step:5}};
+      if(v===0) return {tx:{throttle_mode:0, startgear:0}};
+      return {tx:{throttle_mode:1}};
+    }
+  },
+  {
+    id:"dialstart", type:"choice", showIf:a=>a.pwr===2,
+    label:"Where should the dial start when you switch on?",
+    opts:[
+      {v:50,l:"Low — 50%",sets:"dynamic_power_start = 50"},
+      {v:70,l:"Medium — 70%",sets:"dynamic_power_start = 70"},
+      {v:85,l:"High — 85%",rec:true,sets:"dynamic_power_start = 85"}
+    ],
+    set:v=>({tx:{dynamic_power_start:v}})
+  },
+  {
+    id:"gears", type:"number", min:1, max:10, def:6, unit:"gears", showIf:a=>a.pwr===0,
+    label:"How many gears?",
+    set:v=>({tx:{max_gears:v, startgear:0}})
+  },
+  {
+    id:"feel", type:"choice",
+    label:"How should the trigger feel?",
+    opts:[
+      {v:100,l:"Soft at the start, stronger near the end",rec:true,sets:"thr_expo = 100"},
+      {v:50, l:"Exactly in step with my finger",sets:"thr_expo = 50"}
+    ],
+    set:v=>({tx:{thr_expo:v}})
+  },
+  {
+    id:"ramp", type:"choice",
+    label:"When you squeeze the trigger with someone on the rope, how should the motors come in?",
+    hint:"A slow ramp stops the rope giving a hard yank on the rider's arm. Letting go always cuts the motors instantly — that is never ramped.",
+    opts:[
+      {v:0.75,l:"Gently — 0.75 s",rec:true,sets:"motor_ramp_s = 0.75"},
+      {v:0.40,l:"Quicker — 0.40 s",sets:"motor_ramp_s = 0.40"}
+    ],
+    set:v=>({rx:{motor_ramp_s:v}})
+  },
+  {
+    id:"autoramp", type:"choice",
+    label:"When the buggy is driving itself, should it react quickly?",
+    hint:"The rope is not loaded when the buggy drives itself, so a quick ramp means it catches up and pivots fast. The firmware's own help text for this field suggests 0.5 s.",
+    opts:[
+      {v:0.5,l:"Yes — catch up and pivot fast",rec:true,sets:"auto_ramp_s = 0.50"},
+      {v:0.0,l:"Same as the towing setting",sets:"auto_ramp_s = 0"}
+    ],
+    set:v=>({rx:{auto_ramp_s:v}})
+  }]
+},
+{
+  title:"6 · Follow-Me",
+  meta:"about 2 minutes · the longest screen, and the most important",
+  qs:[
+  {
+    id:"fm", type:"choice",
+    label:"Do you want Follow-Me — the buggy keeping station near you while you ride?",
+    opts:[
+      {v:1,l:"Yes",rec:true,sets:"gps_en = 1 and kalman_en = 1 on both boards"},
+      {v:0,l:"No",sets:"followme_mode = 0 on both boards"}
+    ],
+    set:v=> v===1
+      ? {rx:{gps_en:1,kalman_en:1}, tx:{gps_en:1,kalman_en:1,fm_override_enabled:1}}
+      : {rx:{followme_mode:0,gps_en:1,kalman_en:1}, tx:{followme_mode:0,gps_en:1,kalman_en:1}}
+  },
+  {
+    id:"station", type:"choice", showIf:a=>a.fm===1,
+    label:"Where should the buggy sit while it follows you?",
+    opts:[
+      {v:2,l:"Behind me",rec:true,sets:"followme_mode = 2 on both boards"},
+      {v:1,l:"Behind and to my right — recommended for regular (normal) stance riders",sets:"followme_mode = 1 on both boards"},
+      {v:3,l:"Behind and to my left — recommended for goofy stance riders",sets:"followme_mode = 3 on both boards"},
+      {v:4,l:"Ahead and to my right (F4)* — for downwind runs",sets:"followme_mode = 4 on both boards"},
+      {v:5,l:"Ahead and to my left (F5)* — for downwind runs",sets:"followme_mode = 5 on both boards"}
+    ],
+    hint:"<b>* F4/F5 are still in development and testing</b>, not yet water-tested; expect changes. <b>This is only your starting station.</b> On the water you can change it with a gesture: with Follow-Me armed, hold the toggle LEFT for 2 s to step to the next station, or (magnet sensor, mode 4) tap the magnet while the buggy is following. The remote flashes F1 to F5 so you know where it is going. The front stations F4/F5 keep the buggy ahead-left or ahead-right, never dead ahead, at a safe side distance, and never cross the protection cone around your path.",
+    set:v=>({rx:{followme_mode:v}, tx:{followme_mode:v}})
+  },
+  {
+    id:"frontextra", type:"number", min:4, max:10, def:7, step:1, unit:"m extra ahead", showIf:a=>a.fm===1 && (a.station===4||a.station===5),
+    label:"Front stations*: how much further ahead should the buggy sit? (* still in development and testing)",
+    hint:"The buggy sits 13 m to your side and this many metres further ahead than its normal follow distance. 7 m is the default; 4 m is the closest, 10 m the furthest. Ahead of you, a longer distance is fine and safer.",
+    set:v=>({rx:{fm_front_ahead_extra_m:v}}),
+    derive:v=>"fm_front_ahead_extra_m = "+v
+  },
+  {
+    id:"rope", type:"number", min:1, max:38, def:7.1, step:0.1, unit:"m of rope", feet:true, showIf:a=>a.fm===1,
+    label:"How long is your tow rope, measured to the buggy's GPS? Enter metres or feet.",
+    warn:"Measure it, and <b>add the distance from the tow point at the back of the buggy to the buggy's GPS unit</b> (often about 1 m): the buggy measures from its GPS, not from the tow point. This is a safety number, not a preference: Follow-Me must never be able to engage while you are still on the rope. The wizard sets the engage distance to about a third beyond your rope, and never below the firmware's 9.5 m floor.",
+    set:v=>({rx:{fm_engage_dist_m: engageFromRope(v)}}),
+    derive:v=>"fm_engage_dist_m = " + engageFromRope(v).toFixed(1) + " m  (rope x 1.31, rounded up to the next 0.5 m, floored at 9.5)"
+  },
+  {
+    id:"fmspeed", type:"number", min:5, max:40, def:25, step:0.5, unit:"km/h", mph:true, showIf:a=>a.fm===1,
+    label:"How fast may the buggy go while it is following you? Enter km/h or mph.",
+    hint:"25 km/h (about 15 mph) is a good start. There is deliberately no unlimited option: the firmware accepts 0, which means no speed cap at all, and the wizard will not produce that.",
+    set:v=>({rx:{boogie_vmax_in_followme_kmh:v}}),
+    derive:v=>"boogie_vmax_in_followme_kmh = "+v.toFixed(1)
+  },
+  {
+    id:"fmdist", type:"choice", showIf:a=>a.fm===1,
+    label:"How close is it allowed to come while it follows you?",
+    hint:"Nothing below the factory 10 m is offered. The field accepts 0, which removes the only distance protection you have while the buggy is following you.",
+    opts:[
+      {v:10.0,l:"10 m / 33 ft",rec:true,sets:"min_dist_m = 10.0"},
+      {v:15.0,l:"15 m / 49 ft",sets:"min_dist_m = 15.0"},
+      {v:20.0,l:"20 m / 66 ft",sets:"min_dist_m = 20.0"}
+    ],
+    set:v=>({rx:{min_dist_m:v}})
+  },
+  {
+    id:"fmreturn", type:"choice", showIf:a=>a.fm===1,
+    label:"Auto-return: when you stop, should the buggy come back to you?",
+    hint:"<b>This is auto-return</b>, part of Follow-Me. When you stop far from the buggy, it parks and waits as long as you like; it never moves on its own. <b>Squeeze the trigger and it comes back to you.</b> You can let go, pause or squeeze softer — none of that cancels it — and steering only helps it come back. On arrival you get steering back at once, and the throttle stays limited until you let go once. If it cannot come back, the remote shows \"St\". Separate from this, manual return-to-me (magnet hold or the RIGHT tap + LEFT hold gesture) still works. Your remote's A1/A0 gesture can switch auto-return on or off for the session.",
+    opts:[
+      {v:1,l:"Yes — auto-return: park and wait, then come back when I squeeze",rec:true,sets:"fm_return_mode = 1"},
+      {v:0,l:"No — no auto-return; it just holds where it is",sets:"fm_return_mode = 0"}
+    ],
+    set:v=>({rx:{fm_return_mode:v}})
+  },
+  {
+    id:"cancelnote", type:"info", showIf:a=>a.fm===1,
+    label:"Steering during Follow-Me: start with cancel, change later",
+    card:"<b>Start with cancel</b> (how a new buggy ships, steer_during_auto = 0): hold the steering stick over for about half a second and Follow-Me drops back to armed. Simple to learn on your first days.<br><br><b>Best option once you are used to it: nudge</b> (steer_during_auto = 1). You steer to correct the course or dodge an obstacle, Follow-Me stays on, and when you let the stick go the buggy returns to its station. The owner runs nudge. You change it later in the buggy's settings; the wizard leaves it on cancel."
+  },
+  {
+    id:"buzz", type:"choice", showIf:a=>a.fm===1,
+    label:"How far away should the Follow-Me distance bar read full?",
+    hint:"The remote no longer buzzes just because the buggy is far away. It still buzzes for the radio: 2 short buzzes when the signal gets weak, 5 short buzzes when it is lost (see the buzz list below). This value only sets the full scale of the distance bar on the screen. 164 m is the ceiling the telemetry can carry.",
+    opts:[
+      {v:150,l:"150 m / 492 ft",rec:true,sets:"fm_warn_distance_m = 150"},
+      {v:100,l:"100 m / 328 ft",sets:"fm_warn_distance_m = 100"},
+      {v:50, l:"50 m / 164 ft",sets:"fm_warn_distance_m = 50"}
+    ],
+    set:v=>({tx:{fm_warn_distance_m:v}})
+  },
+  {
+    id:"buzzlegend", type:"info", showIf:a=>a.fm===1,
+    label:"What the buzzes in your hand mean",
+    card:"The remote buzzes as little as possible while you ride, and only for things that matter:<br>• <b>Two short firm taps</b>: you armed something (Follow-Me, return-to-me) — a confirmation.<br>• <b>One long buzz</b> with <b>\"St\"</b> on the screen: something stopped or was refused. Look at the screen.<br>• <b>Two short buzzes</b>: the radio signal is getting weak, or the buggy battery is low (20 %).<br>• <b>Five short buzzes</b>: the radio link to the buggy was lost.<br>• <b>Five long buzzes</b> with <b>\"E 7\"</b>: water inside the buggy. Head back.<br>There is <b>no buzz</b> for station changes, for Follow-Me starting to follow, or for how far away the buggy is — those show on the screen only. (A weak or lost radio signal is different: that still buzzes.)"
+  },
+  {
+    id:"fmdisp", type:"choice", showIf:a=>a.fm===1,
+    label:"What should the remote show while Follow-Me is armed?",
+    opts:[
+      {v:1,l:"My speed",sets:"fm_display_mode = 1"},
+      {v:2,l:"Distance to the buggy (metres between your remote and the buggy)",rec:true,sets:"fm_display_mode = 2"},
+      {v:3,l:"The buggy's speed",sets:"fm_display_mode = 3"},
+      {v:4,l:"Throttle percentage",sets:"fm_display_mode = 4"}
+    ],
+    set:v=>({tx:{fm_display_mode:v}})
+  }]
+},
+{
+  title:"7 · Return-to-Me",
+  meta:"about 60 seconds",
+  qs:[
+  {
+    id:"rtm", type:"choice",
+    label:"Do you want Return-to-Me — asking the buggy to come and get you?",
+    opts:[
+      {v:1,l:"Yes",rec:true,sets:"rtm_enabled = 1, rtm_rx_enabled = 1, rtm_rx_override_steering = 1"},
+      {v:0,l:"No",sets:"rtm_enabled = 0, rtm_rx_enabled = 0"}
+    ],
+    set:v=> v===1
+      ? {rx:{rtm_rx_enabled:1, rtm_rx_override_steering:1}, tx:{rtm_enabled:1}}
+      : {rx:{rtm_rx_enabled:0}, tx:{rtm_enabled:0}}
+  },
+  {
+    id:"gesture", type:"choice", showIf:a=>a.rtm===1,
+    label:"How do you want to ask for it?",
+    hint:"Two squeezes is the deliberate gesture, and it is what you should start on. The firmware's own note beside this field warns that a single squeeze is something an accidental throttle pull can satisfy on a machine that tows a person through water.",
+    opts:[
+      {v:1,l:"Two squeezes of the trigger",rec:true,sets:"rtm_double_squeeze_en = 1"},
+      {v:0,l:"One squeeze held about half a second — for experienced riders. Quicker, but an accidental throttle pull can satisfy it.",sets:"rtm_double_squeeze_en = 0"}
+    ],
+    set:v=>({tx:{rtm_double_squeeze_en:v}})
+  },
+  {
+    id:"stopdist", type:"number", min:3, max:20, def:10, unit:"m", showIf:a=>a.rtm===1,
+    label:"How far from you should it stop?",
+    hint:"3 to 20 m. That is narrower than the buggy alone allows (1-50 m) because the remote's matching setting only accepts 3-20, and both boards must hold the same number.",
+    set:v=>({rx:{rtm_stop_distance_m:v, rtm_approach_zone_m:Math.min(100,Math.max(12,v+2))}, tx:{rtm_disengage_distance_m:v}}),
+    derive:v=>"rtm_stop_distance_m = "+v+" (buggy), rtm_disengage_distance_m = "+v+" (remote), rtm_approach_zone_m = "+Math.min(100,Math.max(12,v+2))+" (derived: must be greater than the stop distance)"
+  },
+  {
+    id:"water", type:"choice", showIf:a=>a.rtm===1,
+    label:"What is the water usually like where you ride?",
+    hint:"Pick it for the day's water, and adjust between sessions: <b>if the buggy feels slow or lazy to turn</b> when it comes back, pick a calmer-water option (sharper steering). <b>If it wobbles, overshoots or zig-zags</b>, pick a rougher-water option (smoother, more damped steering).",
+    opts:[
+      {v:0,l:"Big surf, aggressive turns",sets:"rtm_steer_response = 0"},
+      {v:1,l:"Choppy",sets:"rtm_steer_response = 1"},
+      {v:2,l:"Mixed",rec:true,sets:"rtm_steer_response = 2"},
+      {v:3,l:"Calm",sets:"rtm_steer_response = 3"},
+      {v:4,l:"Glass-flat lake",sets:"rtm_steer_response = 4"}
+    ],
+    set:v=>({rx:{rtm_steer_response:v}})
+  },
+  {
+    id:"rtmdisp", type:"choice", showIf:a=>a.rtm===1,
+    label:"What should the remote show while a return is running?",
+    opts:[
+      {v:0,l:"Distance",rec:true,sets:"rtm_display_mode = 0"},
+      {v:1,l:"Speed",sets:"rtm_display_mode = 1"},
+      {v:2,l:"Alternating every 2.5 s (not recommended: it can be confusing)",sets:"rtm_display_mode = 2"}
+    ],
+    set:v=>({tx:{rtm_display_mode:v}})
+  }]
+},
+{
+  title:"8 · Your GPS, compass and magnet",
+  meta:"about 60 seconds · hardware facts, answerable by looking",
+  qs:[
+  {
+    id:"rxgps", type:"choice",
+    label:"Which GPS module is fitted in the BUGGY, and does it have a compass in it?",
+    hint:"A compass-only heading source exists in the firmware and is deliberately not offered here: bench tests on this hardware show motor current biasing the compass by 100 degrees or more under load. <b>Mount the GPS/compass module outside the box, away from the ESCs, motors and battery leads, and raised up like on drones: on a small pole about 10 cm above the buggy makes a huge difference.</b>",
+    opts:[
+      {v:3,l:"M100-5883 (M10 GPS + compass) — tested and working on the owner's buggy",rec:true,sets:"gps_chip_type = 3, rtm_use_compass = 1, rtm_compass_required = 1"},
+      {v:1,l:"BN-880 — GPS and compass",sets:"gps_chip_type = 1, rtm_use_compass = 1, rtm_compass_required = 1"},
+      {v:0,l:"BN-220 — GPS only",sets:"gps_chip_type = 0, rtm_use_compass = 0, rtm_compass_required = 0"},
+      {v:2,l:"M10 — GPS only",sets:"gps_chip_type = 2, rtm_use_compass = 0, rtm_compass_required = 0"}
+    ],
+    set:v=>{
+      const hasCompass = (v===1||v===3);
+      return {rx:{gps_chip_type:v, rtm_use_compass:hasCompass?1:0, rtm_compass_required:hasCompass?1:0}};
+    }
+  },
+  {
+    id:"txgps", type:"choice", noDefault:true,
+    label:"Which GPS module is in the REMOTE?",
+    hint:"Only two options. The remote has no compass, and the firmware rejects the two compass module types on the remote outright.",
+    opts:[
+      {v:0,l:"BN-220",sets:"gps_chip_type = 0"},
+      {v:2,l:"M10",sets:"gps_chip_type = 2"}
+    ],
+    set:v=>({tx:{gps_chip_type:v}})
+  },
+  {
+    id:"alt", type:"choice",
+    label:"Will you ride above 500 m / 1600 ft altitude?",
+    hint:"The default GPS model is tuned for sea level and has a 500 m ceiling. Above that the Automotive model is the right one.",
+    opts:[
+      {v:5,l:"No — sea, lake or coast",rec:true,sets:"gps_dyn_model = 5 on both boards"},
+      {v:4,l:"Yes — a mountain lake",sets:"gps_dyn_model = 4 on both boards"}
+    ],
+    set:v=>({rx:{gps_dyn_model:v}, tx:{gps_dyn_model:v}})
+  },
+  {
+    id:"mag", type:"choice",
+    label:"Is a magnet (Hall) sensor fitted in your remote?",
+    warn:"Never switch the remote on with a magnet held against it. GPIO 9 is a strapping pin, so the remote will go into download mode and will not boot. No setting can prevent that — it happens before the firmware runs.",
+    hint:"<b>This is an optional, advanced modification to the remote</b> — not required, just a convenience. It adds a new input: a small Hall-effect magnet sensor (<b>TI DRV5032</b>, unipolar, active-low, 3.3 V) soldered to GPIO 9 inside the remote, so you can trigger Follow-Me and return-to-me with a magnet on your wrist instead of the toggle. Most remotes do not have one, so leave this off unless you fitted it. How to fit and wire it: <a href=\"https://github.com/monterman/BREmote-V2/blob/master/docs/Hall_Sensor_Install_Tutorial.md\" target=\"_blank\" rel=\"noopener\">install tutorial</a> · <a href=\"https://github.com/monterman/BREmote-V2/blob/master/docs/Hall_Sensor_Expansion.md\" target=\"_blank\" rel=\"noopener\">expansion notes and wiring</a>.",
+    opts:[
+      {v:0,l:"No",rec:true,sets:"mag_mode = 0"},
+      {v:4,l:"Yes — tap (under about half a second) arms Follow-Me or steps the station; hold 2.5 s (trigger released) starts return-to-me",sets:"mag_mode = 4, mag_fm_set = 7"},
+      {v:3,l:"Yes, older style — hold 2 s arms Follow-Me, hold 5 s arms return-to-me",sets:"mag_mode = 3, mag_fm_set = 7"}
+    ],
+    set:v=>({tx:{mag_mode:v, mag_fm_set:7}})
+  }]
+},
+{
+  title:"9 · Units and housekeeping",
+  meta:"about 45 seconds · cheap questions last",
+  qs:[
+  {
+    id:"units", type:"choice", noDefault:true,
+    label:"Which units do you think in?",
+    opts:[
+      {v:"mph_ft",l:"mph and feet",sets:"speed_src = 5, dist_unit = 1"},
+      {v:"mph_m", l:"mph and metres",sets:"speed_src = 5, dist_unit = 0"},
+      {v:"kmh_m", l:"km/h and metres",sets:"speed_src = 2, dist_unit = 0"},
+      {v:"kt_m",  l:"knots and metres",sets:"speed_src = 3, dist_unit = 0"}
+    ],
+    set:v=>({tx:{
+      speed_src: v==="kmh_m"?2 : v==="kt_m"?3 : 5,
+      dist_unit: v==="mph_ft"?1:0
+    }})
+  },
+  {
+    id:"sleep", type:"choice",
+    label:"Should the remote switch itself off when it is idle?",
+    opts:[
+      {v:300,l:"After 5 minutes",rec:true,sets:"sleep_timeout_s = 300"},
+      {v:600,l:"After 10 minutes",sets:"sleep_timeout_s = 600"},
+      {v:0,  l:"Never",sets:"sleep_timeout_s = 0"}
+    ],
+    set:v=>({tx:{sleep_timeout_s:v}})
+  },
+  {
+    id:"bt", type:"choice",
+    label:"Do you want the remote to stream telemetry over Bluetooth?",
+    hint:"The remote can switch on its Bluetooth module and stream VESC-compatible telemetry, so a phone running a VESC app (or similar) can log your session. It needs a phone nearby to record anything. Leave it off unless you want phone logging.",
+    opts:[
+      {v:0,l:"No — leave Bluetooth off",rec:true,sets:"bt_enabled = 0"},
+      {v:2,l:"Yes, always on (phone logging)",sets:"bt_enabled = 2"}
+    ],
+    set:v=>({tx:{bt_enabled:v}})
+  },
+  {
+    id:"lognote", type:"info",
+    label:"Session logs — already sorted",
+    card:"Logging is available without any setting: short-press AUX on the buggy any time it is running to start, press again to stop. It deliberately does not start by itself, so it never fills the buggy's storage while the thing sits parked. The wizard leaves logger_en at 0 and log_level at 0, which is what every board already holds."
+  }]
+}
+];
+
+/* firmware floor for fm_engage_dist_m: kFmEngageDistFloorM = 9.5f (BREmote_V2_Rx.h) */
+function engageFromRope(rope){
+  const want = Math.ceil(rope * 1.31 * 2) / 2;   // round up to next 0.5 m
+  return Math.max(9.5, Math.min(50, want));
+}
+
+/* ---------- plain-English labels for the results table ---------- */
+const NICE = {
+  radio_preset:   v=>["","Europe 868 MHz","US/AU 915 MHz"][v],
+  steering_type:  v=>["Both motors together","Two motors, differential","Rudder / servo"][v],
+  steering_inverted: v=> v? "Inverted":"Normal",
+  steering_influence: v=> v+"%",
+  trim:           v=> v===0 ? "None" : (v>0?"+":"")+v+" us",
+  data_src:       v=>["None","Voltage wire","VESC UART"][v],
+  foil_num_cells: v=> v+"S",
+  wet_det_active: v=> v?"Fitted":"Not fitted",
+  bms_det_active: v=> v?"Wired":"Not wired",
+  gps_en:         v=> v?"On":"Off",
+  kalman_en:      v=> v?"On":"Off",
+  followme_mode:  v=>["Disabled","Behind and right","Behind me","Behind and left","Ahead and right (F4)*","Ahead and left (F5)*"][v],
+  fm_engage_dist_m: v=> v.toFixed(1)+" m",
+  boogie_vmax_in_followme_kmh: v=> v+" km/h ("+mphOf(v)+" mph)",
+  min_dist_m:     v=> v.toFixed(1)+" m / "+ft(v)+" ft",
+  fm_return_mode: v=> v?"Yes, comes back":"Holds position",
+  motor_ramp_s:   v=> v.toFixed(2)+" s",
+  auto_ramp_s:    v=> v===0?"Same as towing":v.toFixed(2)+" s",
+  rtm_rx_enabled: v=> v?"On":"Off",
+  rtm_enabled:    v=> v?"On":"Off",
+  rtm_stop_distance_m: v=> v+" m / "+ft(v)+" ft",
+  rtm_disengage_distance_m: v=> v+" m / "+ft(v)+" ft",
+  rtm_approach_zone_m: v=> v+" m",
+  rtm_steer_response: v=>["Big surf","Choppy","Mixed","Calm","Glass-flat"][v],
+  rtm_double_squeeze_en: v=> v?"Two squeezes":"One squeeze held",
+  rtm_display_mode: v=>["Distance","Speed","Alternating"][v],
+  rtm_use_compass: v=>["GPS course only","Hybrid","Compass only"][v],
+  rtm_compass_required: v=> v?"Heading needed to arm":"Not required",
+  gps_chip_type:  v=>["BN-220","BN-880 + compass","M10","M10 + compass (e.g. M100-5883)"][v],
+  gps_dyn_model:  v=> v===4?"Automotive (high altitude)":"Sea",
+  throttle_mode:  v=>["Fixed gears","No limit","Power dial"][v],
+  dynamic_power_start: v=> v+"%",
+  dynamic_power_step:  v=> v+"% per press",
+  max_gears:      v=> v+" gears",
+  startgear:      v=> "Gear "+(v+1),
+  thr_expo:       v=> v===50?"Linear":"Soft start",
+  steer_enabled:  v=> v?"Steers":"Power only",
+  fm_display_mode: v=>["","My speed","Distance to buggy","Buggy speed","Throttle %"][v],
+  fm_warn_distance_m: v=> v+" m / "+ft(v)+" ft",
+  fm_override_enabled: v=> v?"On":"Off",
+  speed_src:      v=>["Buggy km/h","Buggy knots","Remote km/h","Remote knots","Buggy mph","Remote mph"][v],
+  dist_unit:      v=> v?"Feet":"Metres",
+  sleep_timeout_s: v=> v===0?"Never":(v/60)+" minutes",
+  bt_enabled:     v=>["Off","Hall / session","Always on"][v],
+  mag_mode:       v=> v===0?"Not fitted":(v===4?"Tap = Follow-Me / station, hold 2.5 s = return-to-me":"FM at 2 s / RTM at 5 s"),
+  mag_fm_set:     v=> "All three stations",
+  wifi_password:  v=> v
+};
+const PRETTY = {
+  radio_preset:"Radio band", steering_type:"Steering", steering_inverted:"Steering direction",
+  steering_influence:"Turn sharpness", trim:"Straight-line trim", data_src:"Telemetry source",
+  foil_num_cells:"Battery pack", wet_det_active:"Water sensor", bms_det_active:"BMS cutoff wire",
+  gps_en:"GPS", kalman_en:"GPS smoothing", followme_mode:"Follow-Me station",
+  fm_engage_dist_m:"Follow-Me engages at", boogie_vmax_in_followme_kmh:"Max following speed",
+  min_dist_m:"Closest while following", fm_return_mode:"Comes back when you stop",
+  motor_ramp_s:"Towing ramp", auto_ramp_s:"Self-driving ramp",
+  rtm_rx_enabled:"Return-to-Me", rtm_enabled:"Return-to-Me",
+  rtm_rx_override_steering:"Return may steer", rtm_stop_distance_m:"Return stops at",
+  rtm_disengage_distance_m:"Return stops at", rtm_approach_zone_m:"Slows down from",
+  rtm_steer_response:"Water conditions", rtm_double_squeeze_en:"Return gesture",
+  rtm_display_mode:"Shows during return", rtm_use_compass:"Heading source",
+  rtm_compass_required:"Compass gate", gps_chip_type:"GPS module", gps_dyn_model:"GPS model",
+  throttle_mode:"Power control", dynamic_power_start:"Dial starts at", dynamic_power_step:"Dial step",
+  max_gears:"Gears", startgear:"Starting gear", thr_expo:"Trigger feel", steer_enabled:"Toggle role",
+  fm_display_mode:"Shows during Follow-Me", fm_warn_distance_m:"Buzz at",
+  fm_override_enabled:"Remote may set station", speed_src:"Speed shown from",
+  dist_unit:"Distance unit", sleep_timeout_s:"Auto sleep", bt_enabled:"Bluetooth",
+  mag_mode:"Magnet sensor", mag_fm_set:"Magnet stations", wifi_password:"Setup WiFi password"
+};
+/* float keys, with the precision kCfgFields declares for them */
+const FLOATS = {
+  fm_engage_dist_m:1, boogie_vmax_in_followme_kmh:1, min_dist_m:1,
+  motor_ramp_s:2, auto_ramp_s:2
+};
+
+/* ---------- rendering ---------- */
+let step = 0;
+const screensEl = document.getElementById("screens");
+
+function visibleQs(s){ return s.qs.filter(q => !q.showIf || q.showIf(A)); }
+
+let lastRenderedStep = -1, refocusRadio = null;
+function render(){
+  fixEsc();
+  if(step >= SCREENS.length){ renderResults(); if(lastRenderedStep!==step) window.scrollTo(0,0); lastRenderedStep = step; return; }
+  const s = SCREENS[step];
+  /* Browse mode: fill recommended answers first, repeatedly, so every follow-up question they open is shown.
+     Normal mode: nothing is pre-picked; choosing an answer re-renders and opens its follow-ups. */
+  const browsing = (document.getElementById('browse')||{}).checked;
+  for(let pass=0; pass<4; pass++){
+    visibleQs(s).forEach(q=>{
+      if(A[q.id]!==undefined) return;
+      if(q.type==="number"||q.type==="text"){ A[q.id]=q.def; return; }
+      if(browsing && q.type==="choice"){ const r=q.opts.find(o=>o.rec)||q.opts[0]; A[q.id]=r.v; }
+    });
+  }
+  let h = '<div class="card">'+illHead(step)+'<h2>'+s.title+'</h2>'+purposeLine(step)+'<div class="screenmeta">'+s.meta+'</div>';
+  visibleQs(s).forEach(q=>{
+    h += '<div class="q" data-q="'+q.id+'">';
+    h += '<div class="qlabel"><span class="qid">'+q.id+'</span>'+q.label+'</div>';
+    if(q.warn) h += '<div class="warnbox">'+q.warn+'</div>';
+    if(q.card) h += '<div class="cardbox">'+q.card+'</div>';
+    if(q.hint) h += '<div class="hint">'+q.hint+'</div>';
+    if(q.type==="choice"){
+      h += '<div class="opts">';
+      q.opts.forEach((o,i)=>{
+        const picked = (A[q.id]!==undefined) && A[q.id]===o.v;
+        h += '<label class="opt'+(picked?' sel':'')+'">'
+           + '<input type="radio" name="'+q.id+'" value="'+i+'"'+(picked?' checked':'')+'>'
+           + '<span>'+(o.pic!==undefined?'<span class="optpic">'+ESCPIC[o.pic]+'</span>':'')+o.l+(o.rec?'<span class="rec">RECOMMENDED</span>':'')
+           + (o.sets?'<span class="sets">sets '+o.sets+'</span>':'')+'</span></label>';
+      });
+      h += '</div>';
+    } else if(q.type==="number"){
+      const v = (A[q.id]!==undefined)?A[q.id]:q.def;
+      h += '<input type="number" data-num="'+q.id+'" min="'+q.min+'" max="'+q.max+'" step="'+(q.step||1)+'" value="'+v+'"> <span class="hint" style="display:inline">'+q.unit+'</span>';
+      if(q.mph) h += ' <span class="hint" style="display:inline">=</span> <input type="number" data-mph="'+q.id+'" min="0" step="0.5" value="'+(Math.round(v/1.609344*10)/10)+'" aria-label="Speed in mph"> <span class="hint" style="display:inline">mph</span>';
+      if(q.feet) h += ' <span class="hint" style="display:inline">=</span> <input type="number" data-feet="'+q.id+'" min="0" step="0.5" value="'+(Math.round(v*3.28084*10)/10)+'" aria-label="Rope length in feet"> <span class="hint" style="display:inline">feet</span>';
+      h += '<div class="derived" data-d="'+q.id+'"></div><div class="fielderr" data-e="'+q.id+'"></div>';
+    } else if(q.type==="text"){
+      const v = (A[q.id]!==undefined)?A[q.id]:q.def;
+      h += '<input type="text" data-txt="'+q.id+'" maxlength="'+q.len+'" value="'+v+'">';
+      h += '<div class="fielderr" data-e="'+q.id+'"></div>';
+    }
+    h += '</div>';
+  });
+  h += '</div>';
+  const keepY = (step===lastRenderedStep) ? window.scrollY : null;
+  screensEl.innerHTML = h;
+  if(keepY===null){ window.scrollTo(0,0); } else { window.scrollTo(0,keepY); }
+  lastRenderedStep = step;
+
+  /* seed defaults into A so a straight click-through produces a full config */
+  visibleQs(s).forEach(q=>{
+    if(A[q.id]!==undefined) return;
+    if(q.type==="number") A[q.id]=q.def;
+    if(q.type==="text")   A[q.id]=q.def;
+  });
+
+  screensEl.querySelectorAll('input[type=radio]').forEach(r=>{
+    r.addEventListener('change',()=>{
+      const q = visibleQs(s).find(x=>x.id===r.name);
+      A[r.name] = q.opts[+r.value].v;
+      refocusRadio = {name:r.name, value:r.value};
+      render();            /* re-render: showIf branches may open or close; scroll position and focus are kept */
+    });
+  });
+  if(refocusRadio){ const el=screensEl.querySelector('input[type=radio][name="'+refocusRadio.name+'"][value="'+refocusRadio.value+'"]'); if(el) el.focus({preventScroll:true}); refocusRadio=null; }
+  screensEl.querySelectorAll('input[data-num]').forEach(i=>{
+    const q = visibleQs(s).find(x=>x.id===i.dataset.num);
+    const upd=()=>{
+      const v = parseFloat(i.value);
+      const errEl = screensEl.querySelector('[data-e="'+q.id+'"]');
+      const dEl   = screensEl.querySelector('[data-d="'+q.id+'"]');
+      if(isNaN(v) || v<q.min || v>q.max){
+        errEl.textContent = "Must be between "+q.min+" and "+q.max+" — the firmware would reject anything else.";
+        if(dEl) dEl.textContent="";
+        A[q.id]=undefined; return;
+      }
+      errEl.textContent=""; A[q.id]=v;
+      if(dEl && q.derive) dEl.textContent = q.derive(v);
+    };
+    i.addEventListener('input',()=>{ upd(); const f=screensEl.querySelector('input[data-feet="'+q.id+'"]'); const v=parseFloat(i.value); if(f && !isNaN(v)) f.value=Math.round(v*3.28084*10)/10; const mp=screensEl.querySelector('input[data-mph="'+q.id+'"]'); if(mp && !isNaN(v)) mp.value=Math.round(v/1.609344*10)/10; }); upd();
+  });
+  screensEl.querySelectorAll('input[data-mph]').forEach(f=>{
+    f.addEventListener('input',()=>{
+      const m=screensEl.querySelector('input[data-num="'+f.dataset.mph+'"]'); const mp=parseFloat(f.value);
+      if(!m || isNaN(mp)) return;
+      m.value=Math.round(mp*1.609344*10)/10; m.dispatchEvent(new Event('input')); f.value=mp;
+    });
+  });
+  screensEl.querySelectorAll('input[data-feet]').forEach(f=>{
+    f.addEventListener('input',()=>{
+      const m=screensEl.querySelector('input[data-num="'+f.dataset.feet+'"]'); const ft=parseFloat(f.value);
+      if(!m || isNaN(ft)) return;
+      m.value=Math.round(ft/3.28084*10)/10; m.dispatchEvent(new Event('input'));
+      f.value=ft;
+    });
+  });
+  screensEl.querySelectorAll('input[data-txt]').forEach(i=>{
+    const q = visibleQs(s).find(x=>x.id===i.dataset.txt);
+    const upd=()=>{
+      const errEl = screensEl.querySelector('[data-e="'+q.id+'"]');
+      if(i.value.length!==q.len){
+        errEl.textContent = "Exactly "+q.len+" characters. The field holds no more and no less.";
+        A[q.id]=undefined; return;
+      }
+      errEl.textContent=""; A[q.id]=i.value;
+    };
+    i.addEventListener('input',upd); upd();
+  });
+
+  document.getElementById('back').disabled = (step===0);
+  document.getElementById('next').textContent = (step===SCREENS.length-1)?'See my config':'Next';
+  const pct = Math.round(step/SCREENS.length*100);
+  document.getElementById('bar').style.width = pct+'%';
+  document.getElementById('ptxt').textContent = 'Screen '+(step+1)+' of '+SCREENS.length;
+}
+
+/* ---------- collect answers into two configs ---------- */
+function build(){
+  fixEsc();
+  const rx={}, tx={};
+  SCREENS.forEach(s=> s.qs.forEach(q=>{
+    if(q.showIf && !q.showIf(A)) return;
+    if(!q.set) return;
+    const v = A[q.id];
+    if(v===undefined) return;
+    const out = q.set(v) || {};
+    Object.assign(rx, out.rx||{});
+    Object.assign(tx, out.tx||{});
+  }));
+  return {rx,tx};
+}
+function fmtVal(k,v){
+  if(typeof v === "string") return v;
+  if(FLOATS[k]!==undefined) return v.toFixed(FLOATS[k]);
+  return String(v);
+}
+function setScript(cfg){
+  /* radio_preset and rf_power are the two keys flagged radioReinitRequired in
+     kCfgFields[] on both boards, and the wizard writes radio_preset — so the
+     script ends with a reboot. ?applyconf is only needed after ?setconf. */
+  const lines = Object.keys(cfg).map(k=>'?set '+k+' '+fmtVal(k,cfg[k]));
+  lines.push('?save');
+  if(cfg.radio_preset!==undefined || cfg.rf_power!==undefined) lines.push('?reboot');
+  return lines.join('\n');
+}
+function jsonPatch(cfg){
+  const parts = Object.keys(cfg).map(k=>{
+    const v = cfg[k];
+    return '"'+k+'":' + (typeof v==="string" ? '"'+v+'"' : fmtVal(k,v));
+  });
+  return '{'+parts.join(',')+'}';
+}
+
+/* ---------- the VESC card: the two answers whose destination is VESC Tool ----------
+   Values are the maintainer's own, read from his two VESC config exports
+   (mot_vesc1_bremote_Oct3-26 / mot_vesc2_bremote_Oct3-26, identical).
+   NOTE the design point: l_battery_cut_start 30 V was set below a MEASURED 30.1 V
+   worst-case loaded sag, not derived per cell. So this card never scales a cutoff
+   by someone else's cell count - it either gives his numbers to copy, or the
+   procedure for measuring your own.                                                  */
+function vescCard(){
+  const cells = A.cells, ah = A.cap, same = false;
+
+
+  const yours = `<table style="margin-top:8px">
+    <tr><td class="k">Battery Cells in Series</td><td class="v">${cells}<code>si_battery_cells = ${cells}</code></td></tr>
+    <tr><td class="k">Battery Capacity</td><td class="v">${ah>0?ah+' Ah':'you did not say'}<code>si_battery_ah = ${ah>0?ah:'(your figure)'}</code></td></tr>
+    <tr><td class="k">Battery Voltage Cutoff Start</td><td class="v">measure it — see below<code>l_battery_cut_start</code></td></tr>
+    <tr><td class="k">Battery Voltage Cutoff End</td><td class="v">your cell chemistry's floor + margin<code>l_battery_cut_end</code></td></tr>
+  </table>`;
+
+  return `<div class="card" style="margin:0 0 14px;background:#0e1a2c;border-color:#1e3a5f">
+  <h2 style="font-size:14px">Two of your answers belong in VESC Tool, not on the boards</h2>
+  <div class="hint" style="margin-bottom:4px">
+    Your cell count and your pack capacity produced no <code>?set</code> line, and that is correct:
+    there is no capacity field on either board, and the buggy's cell count is used for one thing only —
+    turning pack voltage into a battery percentage. <b>No cutoff, current limit or power limit exists
+    anywhere in either board's config.</b> They all live here.
+  </div>
+  <div class="hint"><b>Your pack, so the cutoffs have to be measured — they cannot be worked out from the cell count.</b></div>${yours}
+      <div class="warnbox" style="margin-top:9px">
+        <b>Why there is no number here.</b> A cutoff is compared against <b>loaded</b> voltage, so the
+        right value depends on your pack's internal resistance, age and parallel count — not on how many
+        cells are in series. A cutoff that is too high starts cutting your power under load long before the
+        pack is empty.<br><br>
+        <b>How to get yours:</b> log a hard run, read the lowest loaded pack voltage out of the log, set
+        Cutoff Start just below it, and set Cutoff End above your cell chemistry's floor with a margin.
+        A starting point for comparison: about 3.00 V per cell to start and 2.70 V per cell to end —
+        on a 12S pack that is ${(cells*3).toFixed(1)} V and ${(cells*2.7).toFixed(1)} V for your ${cells}S. Check your cell's
+        datasheet (Molicel P42A is rated down to 2.5 V per cell).
+      </div>
+  <div class="hint" style="margin-top:9px">
+    <b>What <code>si_battery_ah</code> actually does:</b> it feeds pack watt-hours and therefore the
+    watt-hours-remaining and range figures <b>in VESC Tool</b>. It does <b>not</b> feed the battery
+    percentage gauge (that is voltage-based), nor any current limit, nor any cutoff, nor motor
+    behaviour — <b>and not the remote's battery percentage either</b>, which the buggy computes from its
+    own stored voltage curve and never reads amp-hours for.
+  </div>
+  <div class="hint" style="margin-top:7px">
+    <b>And before you ride:</b> run PPM Input calibration on <b>both</b> VESCs, matched min / centre /
+    max across the full range, with the min just above the rest pulse. Measured on this build:
+    1.236 ms crept, 1.240-1.251 ms was clean.
+  </div>
+</div>`;
+}
+
+/* ---------- v2: the card for a non-VESC ESC (replaces the VESC card) ---------- */
+function escCard(){
+  const cells = A.cells, ah = A.cap;
+  return `<div class="card" style="margin:0 0 14px;background:#0e1a2c;border-color:#1e3a5f">
+  <h2 style="font-size:14px">Your ESCs are not VESCs, so a few things are set on the ESCs themselves</h2>
+  <div class="hint" style="margin-bottom:4px">
+    Your cell count (${cells}S) only turns pack voltage into a battery percentage on the buggy.
+    ${ah>0 ? 'Your pack capacity ('+ah+' Ah) is for your records; nothing in this setup uses it. ' : ''}
+    <b>No cutoff, current limit or power limit exists anywhere in either board's config.</b>
+  </div>
+  <ul class="todo" style="margin:8px 0 0;padding-left:18px">
+    <li><b>Calibrate your ESC's throttle range (endpoints) per its manual</b> so both motors start together and top out together.</li>
+    <li><b>Set its low-voltage cutoff on the ESC itself.</b></li>
+    <li>VESC telemetry and VESC logging need a VESC, so they are not available on this build.</li>
+  </ul>
+</div>`;
+}
+
+/* ---------- results ---------- */
+function renderResults(){
+  const {rx,tx} = build();
+  const rxRows = Object.keys(rx).map(k=>row(k,rx[k])).join('');
+  const txRows = Object.keys(tx).map(k=>row(k,tx[k])).join('');
+  const nAns = SCREENS.reduce((n,s)=> n + s.qs.filter(q=>q.set && (!q.showIf||q.showIf(A)) && A[q.id]!==undefined).length, 0);
+
+  screensEl.innerHTML = `
+<div class="card">
+  ${illHead(SCREENS.length)}
+  <h2>Your setup</h2>
+  ${purposeLine(SCREENS.length)}
+  <div class="screenmeta">${nAns} answers · ${Object.keys(tx).length + Object.keys(rx).length} settings written · everything else stays at its factory value</div>
+
+  <div class="cardbox" style="margin-bottom:14px">
+    <b>Before pasting:</b> these commands are for BREmote V2.5-Evo firmware only (buggy SW ${SW_RX}, remote SW ${SW_TX}), not Ludwig's stock firmware.<br><br>
+    <b>Four things the wizard cannot do for you.</b><br>
+    1 · <b>Bind the boards.</b> Hold BIND at boot on each. The wizard never writes pairing — if it did, it would unbind boards that already work.<br>
+    2 · ${isVesc()
+      ? `<b>Run VESC Tool's PPM Input calibration on both VESCs.</b> Capture min, centre and max on each so both motors start together and top out together, with the min just above the rest pulse. This is the real fix for uneven motors.`
+      : `<b>Calibrate each ESC's throttle range per its manual.</b> Set the endpoints on both ESCs so both motors start together and top out together. This is the real fix for uneven motors.`}<br>
+    3 · <b>Calibrate the compass</b> (<code>?compasscal</code>) if the buggy's GPS has one.<br>
+    4 · <b>Load a battery table for your cells</b> with Ludwig's tools (<a href="https://lbre.de/BREmote/LUT.html" target="_blank" rel="noopener">premade tables</a> · <a href="https://lbre.de/BREmote/bat_conf.html" target="_blank" rel="noopener">build your own</a> · <a href="https://youtu.be/r6JIZEq3aTU" target="_blank" rel="noopener">his setup video</a> · <a href="https://github.com/Luddi96/BREmote-V2" target="_blank" rel="noopener">his repository</a>). The cell count alone only gives a rough percentage.
+  </div>
+
+  ${isVesc() ? vescCard() : escCard()}
+
+  <div class="cols">
+    <div class="board">
+      <h3>REMOTE &nbsp;(TX)<small>config version ${SW_TX} · 136-byte struct · ${Object.keys(tx).length} settings written</small></h3>
+      <table>${txRows||'<tr><td class="k">nothing written</td><td class="v">—</td></tr>'}</table>
+    </div>
+    <div class="board">
+      <h3>BUGGY &nbsp;(RX)<small>config version ${SW_RX} · 200-byte struct · ${Object.keys(rx).length} settings written</small></h3>
+      <table>${rxRows||'<tr><td class="k">nothing written</td><td class="v">—</td></tr>'}</table>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab on" data-t="set">Serial commands <span class="badge">recommended</span></button>
+    <button class="tab" data-t="json">JSON patch</button>
+    <button class="tab" data-t="b64" disabled>Base64 blob</button>
+  </div>
+  <div id="pane"></div>
+  <div class="srcnote">
+    Every setting name, range and default in this wizard is taken from the BREmote V2.5-Evo firmware
+    itself, so it cannot suggest a value your boards would reject.
+  </div>
+</div>`;
+
+  const panes = {
+    set: `<div class="cardbox" style="margin-bottom:9px">
+            <b>Why serial commands are the best way:</b> each line changes just one setting and leaves
+            everything else on the board exactly as it is — <b>your pairing, your throttle and toggle
+            calibration, and your compass calibration are not touched</b>. It replaces the factory values of
+            the settings listed below with your answers, nothing more. You see an OK for every line, so
+            you know each one landed.<br><br>
+            <b>How:</b> connect the board by USB, open the serial console (115200 baud, or the web config
+            tool's serial page), and paste the block for that board. Do one board at a time.
+            <b>For the buggy you can also do it from your phone:</b> join the buggy's WiFi and use the serial
+            console on its web page (it has buttons for everyday calibrations and a command dropdown).
+            <b>Before the final <code>?save</code>:</b> run <code>?list</code> and delete logs you do not need —
+            saving needs a little free space. The block ends with <code>?reboot</code> because a new radio
+            band only takes effect after a restart.
+          </div>
+          <b style="font-size:13px">REMOTE (TX)</b>
+          <pre>${esc(setScript(tx))}</pre>
+          <b style="font-size:13px;display:block;margin-top:11px">BUGGY (RX)</b>
+          <pre>${esc(setScript(rx))}</pre>`,
+    json:`<div class="cardbox" style="margin-bottom:9px">
+            <b>Alternative, over WiFi:</b> this does the same job as the serial commands — it changes only
+            these settings and keeps your pairing and calibrations. Use it if you have no USB cable handy.<br><br>
+            <b>How:</b> put the board in WiFi setup mode, join its WiFi network on your phone or laptop, open
+            the address the board shows (usually <code>http://192.168.4.1</code>), and paste this into the
+            Import box with the format set to JSON. You have to do it yourself on the board's page; this
+            wizard cannot send it for you.
+          </div>
+          <b style="font-size:13px">REMOTE (TX)</b>
+          <pre>${esc(jsonPatch(tx))}</pre>
+          <b style="font-size:13px;display:block;margin-top:11px">BUGGY (RX)</b>
+          <pre>${esc(jsonPatch(rx))}</pre>`,
+    b64:`<div class="disabledNote">
+            <b>Deliberately disabled, and it should stay that way until someone proves the byte map.</b><br><br>
+            The stored config is a raw copy of the firmware struct, Base64-encoded. That means a blob
+            carries <i>every</i> field — including your pairing addresses, your throttle calibration and
+            your compass calibration, none of which a wizard can know. A blob built from scratch would
+            wipe all three.<br><br>
+            The only safe shape is a blob built <i>on top of your own</i>: you paste your board's
+            <code>?conf</code> output in, the wizard decodes it, re-encodes it unchanged and checks the
+            result is character-identical before touching anything, then overwrites only the settings
+            you chose. That self-test catches an offset, padding or endianness error before any byte
+            reaches a device. The byte map for both structs is derived and cross-checked in the design
+            document, but it has not been round-tripped against a real blob from real hardware — so
+            until it has, this tab produces nothing.
+          </div>`
+  };
+  const pane = document.getElementById('pane');
+  pane.innerHTML = panes.set;
+  screensEl.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{
+    screensEl.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));
+    t.classList.add('on'); pane.innerHTML = panes[t.dataset.t];
+  }));
+
+  document.getElementById('next').textContent='Start again';
+  document.getElementById('bar').style.width='100%';
+  document.getElementById('ptxt').textContent='Done';
+}
+function row(k,v){
+  const label = PRETTY[k]||k;
+  const nice  = NICE[k] ? NICE[k](v) : String(v);
+  return '<tr><td class="k">'+label+'</td><td class="v">'+esc(String(nice))+'<code>'+k+' = '+esc(fmtVal(k,v))+'</code></td></tr>';
+}
+function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+/* ---------- nav ---------- */
+const errEl=document.getElementById('inlineerr');
+const browseEl=document.getElementById('browse');
+function seedAll(){
+  fixEsc();
+  SCREENS.forEach(s=>s.qs.forEach(q=>{
+    if(q.showIf && !q.showIf(A)) return;
+    if(A[q.id]!==undefined) return;
+    if(q.type==="choice"){ const r=q.opts.find(o=>o.rec)||q.opts[0]; A[q.id]=r.v; }
+    if(q.type==="number"||q.type==="text") A[q.id]=q.def;
+  }));
+}
+function drawJump(){
+  const j=document.getElementById('jump');
+  j.innerHTML = SCREENS.map((s,i)=>'<button type="button" data-i="'+i+'"'+(i===step?' class="on"':'')+'>'+s.title.split(' · ')[0]+' · '+s.title.split(' · ')[1]+'</button>').join('')
+    + '<button type="button" data-i="'+SCREENS.length+'"'+(step>=SCREENS.length?' class="on"':'')+'>Results</button>';
+  j.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{
+    if(!browseEl.checked){ errEl.textContent='Turn on Browse mode to jump between pages.'; return; }
+    step=+b.dataset.i; if(step>=SCREENS.length) seedAll(); errEl.textContent=''; render(); drawJump();
+  }));
+}
+document.getElementById('next').addEventListener('click',()=>{
+  errEl.textContent='';
+  if(step>=SCREENS.length){ step=0; Object.keys(A).forEach(k=>delete A[k]); render(); drawJump(); return; }
+  if(!browseEl.checked){
+    const s = SCREENS[step];
+    for(const q of visibleQs(s)){
+      if(q.type==="info") continue;
+      if(A[q.id]===undefined){ errEl.textContent='Please answer: '+q.label.replace(/<[^>]+>/g,''); return; }
+    }
+    if(step===0 && A.gate==="no"){ errEl.textContent='Come back when the buggy is on a stand. Two of the questions ahead need the motors to spin.'; return; }
+  } else if(step===SCREENS.length-1){ seedAll(); }
+  step++; render(); drawJump();
+});
+document.getElementById('back').addEventListener('click',()=>{ errEl.textContent=''; if(step>0){step--; render(); drawJump();} });
+browseEl.addEventListener('change',()=>{ errEl.textContent=''; });
+render(); drawJump();
+</script>
+</body>
+</html>

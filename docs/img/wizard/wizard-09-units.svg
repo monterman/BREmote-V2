@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 120" width="100%" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="w9t w9d" stroke-linecap="round" stroke-linejoin="round">
+<title id="w9t">Units, sleep and battery</title>
+<desc id="w9d">Three housekeeping choices: the units you think in, auto sleep, and Bluetooth telemetry.</desc>
+<style>
+.i-ink{fill:none;stroke:#1f2328;stroke-width:2.5}
+.i-ink2{fill:none;stroke:#1f2328;stroke-width:1.5}
+.i-body{fill:#f6f8fa;stroke:#1f2328;stroke-width:2.5}
+.i-body2{fill:#f6f8fa;stroke:#1f2328;stroke-width:1.5}
+.i-det{fill:none;stroke:#57606a;stroke-width:1.5}
+.i-detd{fill:none;stroke:#57606a;stroke-width:1.5;stroke-dasharray:4 3}
+.i-water{fill:none;stroke:#0284c7;stroke-width:2.5}
+.i-radio{fill:none;stroke:#0284c7;stroke-width:1.5}
+.i-acc{fill:none;stroke:#2563eb;stroke-width:2.5}
+.i-acc1{fill:none;stroke:#2563eb;stroke-width:1.5}
+.i-accd{fill:none;stroke:#2563eb;stroke-width:1.5;stroke-dasharray:4 3}
+.i-ok{fill:none;stroke:#16a34a;stroke-width:2.5}
+.i-warn{fill:none;stroke:#b45309;stroke-width:2.5}
+.i-warn1{fill:none;stroke:#b45309;stroke-width:1.5}
+@media (prefers-color-scheme: dark){
+.i-ink{fill:none;stroke:#e5e7eb;stroke-width:2.5}
+.i-ink2{fill:none;stroke:#e5e7eb;stroke-width:1.5}
+.i-body{fill:#151f33;stroke:#e5e7eb;stroke-width:2.5}
+.i-body2{fill:#151f33;stroke:#e5e7eb;stroke-width:1.5}
+.i-det{fill:none;stroke:#9ca3af;stroke-width:1.5}
+.i-detd{fill:none;stroke:#9ca3af;stroke-width:1.5;stroke-dasharray:4 3}
+.i-water{fill:none;stroke:#38bdf8;stroke-width:2.5}
+.i-radio{fill:none;stroke:#38bdf8;stroke-width:1.5}
+.i-acc{fill:none;stroke:#60a5fa;stroke-width:2.5}
+.i-acc1{fill:none;stroke:#60a5fa;stroke-width:1.5}
+.i-accd{fill:none;stroke:#60a5fa;stroke-width:1.5;stroke-dasharray:4 3}
+.i-ok{fill:none;stroke:#22c55e;stroke-width:2.5}
+.i-warn{fill:none;stroke:#f59e0b;stroke-width:2.5}
+.i-warn1{fill:none;stroke:#f59e0b;stroke-width:1.5}
+}
+</style>
+<rect class="i-ink" x="58" y="52" width="44" height="16" rx="2"/>
+<path class="i-ink2" d="M64 52 V58 M70 52 V61 M76 52 V58 M82 52 V61 M88 52 V58 M94 52 V61"/>
+<circle class="i-ink" cx="160" cy="60" r="18"/>
+<path class="i-det" d="M160 44 V46 M176 60 H174 M160 76 V74 M144 60 H146"/>
+<path class="i-ink" d="M160 60 V49 M160 60 L168 64"/>
+<rect class="i-ink" x="222" y="48" width="32" height="24" rx="3"/>
+<rect class="i-ink2" x="255" y="55" width="4" height="10" rx="2"/>
+<path class="i-ink2" d="M229 54 V66 M236 54 V66 M243 54 V66"/>
+</svg>

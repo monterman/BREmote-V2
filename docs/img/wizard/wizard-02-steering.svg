@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 120" width="100%" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="w2t w2d" stroke-linecap="round" stroke-linejoin="round">
+<title id="w2t">Twin-motor steering</title>
+<desc id="w2d">Seen from above: two motors at the stern steer the buggy by running at different power.</desc>
+<style>
+.i-ink{fill:none;stroke:#1f2328;stroke-width:2.5}
+.i-ink2{fill:none;stroke:#1f2328;stroke-width:1.5}
+.i-body{fill:#f6f8fa;stroke:#1f2328;stroke-width:2.5}
+.i-body2{fill:#f6f8fa;stroke:#1f2328;stroke-width:1.5}
+.i-det{fill:none;stroke:#57606a;stroke-width:1.5}
+.i-detd{fill:none;stroke:#57606a;stroke-width:1.5;stroke-dasharray:4 3}
+.i-water{fill:none;stroke:#0284c7;stroke-width:2.5}
+.i-radio{fill:none;stroke:#0284c7;stroke-width:1.5}
+.i-acc{fill:none;stroke:#2563eb;stroke-width:2.5}
+.i-acc1{fill:none;stroke:#2563eb;stroke-width:1.5}
+.i-accd{fill:none;stroke:#2563eb;stroke-width:1.5;stroke-dasharray:4 3}
+.i-ok{fill:none;stroke:#16a34a;stroke-width:2.5}
+.i-warn{fill:none;stroke:#b45309;stroke-width:2.5}
+.i-warn1{fill:none;stroke:#b45309;stroke-width:1.5}
+@media (prefers-color-scheme: dark){
+.i-ink{fill:none;stroke:#e5e7eb;stroke-width:2.5}
+.i-ink2{fill:none;stroke:#e5e7eb;stroke-width:1.5}
+.i-body{fill:#151f33;stroke:#e5e7eb;stroke-width:2.5}
+.i-body2{fill:#151f33;stroke:#e5e7eb;stroke-width:1.5}
+.i-det{fill:none;stroke:#9ca3af;stroke-width:1.5}
+.i-detd{fill:none;stroke:#9ca3af;stroke-width:1.5;stroke-dasharray:4 3}
+.i-water{fill:none;stroke:#38bdf8;stroke-width:2.5}
+.i-radio{fill:none;stroke:#38bdf8;stroke-width:1.5}
+.i-acc{fill:none;stroke:#60a5fa;stroke-width:2.5}
+.i-acc1{fill:none;stroke:#60a5fa;stroke-width:1.5}
+.i-accd{fill:none;stroke:#60a5fa;stroke-width:1.5;stroke-dasharray:4 3}
+.i-ok{fill:none;stroke:#22c55e;stroke-width:2.5}
+.i-warn{fill:none;stroke:#f59e0b;stroke-width:2.5}
+.i-warn1{fill:none;stroke:#f59e0b;stroke-width:1.5}
+}
+</style>
+<path class="i-det" d="M86 46 H78 M86 50 H74 M86 70 H66 M86 74 H62"/>
+<rect class="i-body2" x="94" y="44" width="18" height="8" rx="2"/>
+<rect class="i-body2" x="94" y="68" width="18" height="8" rx="2"/>
+<path class="i-ink2" d="M92 41 V55 M92 65 V79"/>
+<path class="i-body" d="M114 40 H184 L206 60 L184 80 H114 Q110 80 110 76 V44 Q110 40 114 40 Z"/>
+<path class="i-det" d="M120 48 H176 L188 60 L176 72 H120"/>
+<circle class="i-body2" cx="124" cy="60" r="2"/>
+<path class="i-acc" d="M200 96 Q240 92 240 54 M235 62 L240 54 L245 62"/>
+</svg>

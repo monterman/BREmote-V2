@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 120" width="100%" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="w7t w7d" stroke-linecap="round" stroke-linejoin="round">
+<title id="w7t">Return-to-Me</title>
+<desc id="w7d">After a fall the rider floats and waves, and the buggy comes back to pick them up.</desc>
+<style>
+.i-ink{fill:none;stroke:#1f2328;stroke-width:2.5}
+.i-ink2{fill:none;stroke:#1f2328;stroke-width:1.5}
+.i-body{fill:#f6f8fa;stroke:#1f2328;stroke-width:2.5}
+.i-body2{fill:#f6f8fa;stroke:#1f2328;stroke-width:1.5}
+.i-det{fill:none;stroke:#57606a;stroke-width:1.5}
+.i-detd{fill:none;stroke:#57606a;stroke-width:1.5;stroke-dasharray:4 3}
+.i-water{fill:none;stroke:#0284c7;stroke-width:2.5}
+.i-radio{fill:none;stroke:#0284c7;stroke-width:1.5}
+.i-acc{fill:none;stroke:#2563eb;stroke-width:2.5}
+.i-acc1{fill:none;stroke:#2563eb;stroke-width:1.5}
+.i-accd{fill:none;stroke:#2563eb;stroke-width:1.5;stroke-dasharray:4 3}
+.i-ok{fill:none;stroke:#16a34a;stroke-width:2.5}
+.i-warn{fill:none;stroke:#b45309;stroke-width:2.5}
+.i-warn1{fill:none;stroke:#b45309;stroke-width:1.5}
+@media (prefers-color-scheme: dark){
+.i-ink{fill:none;stroke:#e5e7eb;stroke-width:2.5}
+.i-ink2{fill:none;stroke:#e5e7eb;stroke-width:1.5}
+.i-body{fill:#151f33;stroke:#e5e7eb;stroke-width:2.5}
+.i-body2{fill:#151f33;stroke:#e5e7eb;stroke-width:1.5}
+.i-det{fill:none;stroke:#9ca3af;stroke-width:1.5}
+.i-detd{fill:none;stroke:#9ca3af;stroke-width:1.5;stroke-dasharray:4 3}
+.i-water{fill:none;stroke:#38bdf8;stroke-width:2.5}
+.i-radio{fill:none;stroke:#38bdf8;stroke-width:1.5}
+.i-acc{fill:none;stroke:#60a5fa;stroke-width:2.5}
+.i-acc1{fill:none;stroke:#60a5fa;stroke-width:1.5}
+.i-accd{fill:none;stroke:#60a5fa;stroke-width:1.5;stroke-dasharray:4 3}
+.i-ok{fill:none;stroke:#22c55e;stroke-width:2.5}
+.i-warn{fill:none;stroke:#f59e0b;stroke-width:2.5}
+.i-warn1{fill:none;stroke:#f59e0b;stroke-width:1.5}
+}
+</style>
+<path class="i-water" d="M12 80 Q32 70 52 80 T92 80 T132 80 T172 80 T212 80 T252 80 T292 80"/>
+<rect class="i-body2" x="24" y="76" width="26" height="4" rx="2"/>
+<path class="i-ink" d="M64 79 Q66 70 76 70 Q86 70 88 79 M86 72 L94 60 L95 50"/>
+<circle class="i-ink" cx="76" cy="63" r="4"/>
+<path class="i-det" d="M58 88 Q76 94 94 88"/>
+<g transform="translate(458 0) scale(-1 1)">
+<path class="i-body" d="M186 70 H252 L258 74 L250 84 H190 Z"/>
+<path class="i-ink2" d="M198 70 V56"/>
+<circle class="i-body2" cx="198" cy="54" r="2"/>
+<path class="i-ink2" d="M208 84 V86"/>
+<rect class="i-body2" x="200" y="86" width="16" height="6" rx="2"/>
+<path class="i-ink2" d="M198 85 V93"/>
+<circle class="i-ink2" cx="183" cy="73" r="2"/>
+</g>
+<path class="i-det" d="M282 84 H294 M284 88 H300"/>
+<path class="i-acc" d="M236 44 Q172 18 108 40 M115 32.8 L108 40 L118 41.4"/>
+</svg>

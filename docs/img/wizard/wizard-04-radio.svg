@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 120" width="100%" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="w4t w4d" stroke-linecap="round" stroke-linejoin="round">
+<title id="w4t">Remote and buggy radio link</title>
+<desc id="w4d">The remote and the buggy talk over radio; both must use the same band.</desc>
+<style>
+.i-ink{fill:none;stroke:#1f2328;stroke-width:2.5}
+.i-ink2{fill:none;stroke:#1f2328;stroke-width:1.5}
+.i-body{fill:#f6f8fa;stroke:#1f2328;stroke-width:2.5}
+.i-body2{fill:#f6f8fa;stroke:#1f2328;stroke-width:1.5}
+.i-det{fill:none;stroke:#57606a;stroke-width:1.5}
+.i-detd{fill:none;stroke:#57606a;stroke-width:1.5;stroke-dasharray:4 3}
+.i-water{fill:none;stroke:#0284c7;stroke-width:2.5}
+.i-radio{fill:none;stroke:#0284c7;stroke-width:1.5}
+.i-acc{fill:none;stroke:#2563eb;stroke-width:2.5}
+.i-acc1{fill:none;stroke:#2563eb;stroke-width:1.5}
+.i-accd{fill:none;stroke:#2563eb;stroke-width:1.5;stroke-dasharray:4 3}
+.i-ok{fill:none;stroke:#16a34a;stroke-width:2.5}
+.i-warn{fill:none;stroke:#b45309;stroke-width:2.5}
+.i-warn1{fill:none;stroke:#b45309;stroke-width:1.5}
+@media (prefers-color-scheme: dark){
+.i-ink{fill:none;stroke:#e5e7eb;stroke-width:2.5}
+.i-ink2{fill:none;stroke:#e5e7eb;stroke-width:1.5}
+.i-body{fill:#151f33;stroke:#e5e7eb;stroke-width:2.5}
+.i-body2{fill:#151f33;stroke:#e5e7eb;stroke-width:1.5}
+.i-det{fill:none;stroke:#9ca3af;stroke-width:1.5}
+.i-detd{fill:none;stroke:#9ca3af;stroke-width:1.5;stroke-dasharray:4 3}
+.i-water{fill:none;stroke:#38bdf8;stroke-width:2.5}
+.i-radio{fill:none;stroke:#38bdf8;stroke-width:1.5}
+.i-acc{fill:none;stroke:#60a5fa;stroke-width:2.5}
+.i-acc1{fill:none;stroke:#60a5fa;stroke-width:1.5}
+.i-accd{fill:none;stroke:#60a5fa;stroke-width:1.5;stroke-dasharray:4 3}
+.i-ok{fill:none;stroke:#22c55e;stroke-width:2.5}
+.i-warn{fill:none;stroke:#f59e0b;stroke-width:2.5}
+.i-warn1{fill:none;stroke:#f59e0b;stroke-width:1.5}
+}
+</style>
+<path class="i-water" d="M196 80 Q216 70 236 80 T276 80"/>
+<g transform="translate(28 0)">
+<path class="i-body" d="M186 70 H252 L258 74 L250 84 H190 Z"/>
+<path class="i-ink2" d="M198 70 V56"/>
+<circle class="i-body2" cx="198" cy="54" r="2"/>
+<path class="i-ink2" d="M208 84 V86"/>
+<rect class="i-body2" x="200" y="86" width="16" height="6" rx="2"/>
+<path class="i-ink2" d="M198 85 V93"/>
+<circle class="i-ink2" cx="183" cy="73" r="2"/>
+</g>
+<path class="i-ink2" d="M65 30 V20"/>
+<circle class="i-body2" cx="65" cy="18" r="2"/>
+<rect class="i-body" x="52" y="30" width="26" height="56" rx="6"/>
+<rect class="i-ink2" x="57" y="36" width="16" height="10" rx="2"/>
+<circle class="i-ink2" cx="65" cy="58" r="3"/>
+<path class="i-ink" d="M78 52 q8 4 6 14"/>
+<path class="i-radio" d="M71.6 13.4 A8 8 0 0 1 71.6 22.6"/>
+<path class="i-radio" d="M75.6 10.5 A13 13 0 0 1 75.6 25.5"/>
+<path class="i-radio" d="M79.7 7.7 A18 18 0 0 1 79.7 28.3"/>
+<path class="i-radio" d="M219.4 49.4 A8 8 0 0 0 219.4 58.6"/>
+<path class="i-radio" d="M215.4 46.5 A13 13 0 0 0 215.4 61.5"/>
+<path class="i-accd" d="M88 18 Q156 14 214 46"/>
+</svg>

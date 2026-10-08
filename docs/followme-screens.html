@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BREmote Follow-Me Screens</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;700&family=IBM+Plex+Sans:wght@400;600&family=IBM+Plex+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: a field guide. Short intro, the "three rules" strip, then one row per screen state
+   (animated remote on the left, plain explanation on the right), then the glance quiz. */
+:root{
+  --bg:#eef0ec; --surface:#f8f9f6; --ink:#1d2421; --muted:#56615c; --line:#cfd5d0; --accent:#0f6e64;
+  --case:#22282a; --case-edge:#3a4245; --led-off:#3a1a17; --led-on:#ff4a36; --led-glow:rgba(255,74,54,.55);
+  --good:#1f7a3a; --bad:#a3322a;
+  --f-display:"Barlow Semi Condensed","Arial Narrow",system-ui,sans-serif;
+  --f-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#141917; --surface:#1b2220; --ink:#e4e9e6; --muted:#9aa6a0; --line:#2f3936; --accent:#5cc7b8;
+  --case:#0b0e0f; --case-edge:#2a3134; --good:#5fcf80; --bad:#ff7d72; color-scheme:dark } }
+:root[data-theme="dark"]{
+  --bg:#141917; --surface:#1b2220; --ink:#e4e9e6; --muted:#9aa6a0; --line:#2f3936; --accent:#5cc7b8;
+  --case:#0b0e0f; --case-edge:#2a3134; --good:#5fcf80; --bad:#ff7d72; color-scheme:dark }
+html,body{background:var(--bg);color:var(--ink)}
+body{font-family:var(--f-body);font-size:15.5px;line-height:1.55;margin:0}
+.wrap{max-width:1040px;margin:0 auto;padding-inline:16px;padding-block:20px 40px;display:flex;flex-direction:column;gap:20px}
+*,*::before,*::after{box-sizing:border-box}
+h1,h2,h3{font-family:var(--f-display);text-wrap:balance;margin:0;letter-spacing:.01em}
+h1{font-size:32px;font-weight:700;line-height:1.1}
+h2{font-size:22px;font-weight:700}
+h3{font-size:17px;font-weight:700}
+p{margin:0;max-width:66ch}
+.eyebrow{font-family:var(--f-mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
+.lede{color:var(--muted);font-size:16.5px}
+a{color:var(--accent)}
+.rules{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.rule{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:11px;display:flex;flex-direction:column;gap:6px;min-width:0}
+.rule b{font-family:var(--f-display);font-size:18px}
+.rule span{font-size:14px;color:var(--muted)}
+.learn{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.learn .item{display:flex;gap:12px;align-items:center;min-width:0}
+.mini{width:30px;flex:0 0 30px;display:grid;grid-template-rows:repeat(3,1fr);gap:4px;background:var(--case);padding:6px;border-radius:6px}
+.mini .px{width:18px}
+#states{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.state{display:grid;grid-template-columns:140px minmax(0,1fr);gap:12px;align-items:start;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px;min-width:0}
+.state .text{display:flex;flex-direction:column;gap:5px;min-width:0;font-size:14px}
+.state .text p{font-size:14px}
+.how{display:grid;grid-template-columns:auto minmax(0,1fr);gap:2px 10px;font-size:13px}
+.how b{font-family:var(--f-mono);font-size:12.5px;color:var(--muted);font-weight:600;padding-top:2px}
+.remote{background:var(--case);border:2px solid var(--case-edge);border-radius:10px;padding:8px;width:100%;max-width:100%;position:relative}
+.hero-remote{width:190px}
+.matrix{display:grid;grid-template-columns:repeat(10,1fr);gap:3px}
+.px{aspect-ratio:1;border-radius:50%;background:var(--led-off);transition:background-color 40ms linear}
+.px.on{background:var(--led-on);box-shadow:0 0 6px 1px var(--led-glow)}
+.legend{display:grid;grid-template-columns:auto minmax(0,1fr);gap:3px 12px;font-size:13px;color:var(--muted)}
+.legend b{font-family:var(--f-mono);color:var(--ink);font-weight:600}
+.top{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:24px;align-items:start}
+.cap{font-family:var(--f-mono);font-size:11.5px;color:var(--muted);text-align:center;margin-top:6px}
+button{font:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink);padding:8px 13px}
+button:hover{border-color:var(--accent)}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button:disabled{opacity:.5;cursor:default}
+select{font:inherit;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink);padding:6px 8px}
+.quiz{display:grid;grid-template-columns:240px minmax(0,1fr);gap:22px;align-items:start}
+.stage{width:240px;max-width:100%;display:flex;flex-direction:column;align-items:center;gap:8px}
+.stage .remote{width:240px;padding:10px}
+.stage.bob .remote{animation:bob .42s ease-in-out infinite}
+@keyframes bob{0%,100%{transform:translate(0,0) rotate(0)}25%{transform:translate(2px,-7px) rotate(-1.5deg)}75%{transform:translate(-2px,6px) rotate(1.2deg)}}
+.stage.wet .matrix{filter:blur(1.6px) brightness(1.15)}
+.shutter{position:absolute;inset:0;border-radius:10px;background:var(--case);display:flex;align-items:center;justify-content:center;font-family:var(--f-mono);font-size:12px;color:#8a9692;letter-spacing:.06em;text-transform:uppercase}
+.shutter.open{opacity:0;pointer-events:none}
+.controls{display:flex;flex-direction:column;gap:12px;min-width:0}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.answers button{min-width:118px}
+.score{font-family:var(--f-mono);font-size:14px}
+.ok{color:var(--good)} .bad{color:var(--bad)}
+.log{font-family:var(--f-mono);font-size:12.5px;color:var(--muted);max-height:170px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px}
+.note{font-size:13.5px;color:var(--muted)}
+footer{border-top:1px solid var(--line);padding-top:18px;display:flex;flex-direction:column;gap:6px}
+@media (max-width:820px){ #states{grid-template-columns:minmax(0,1fr)} }
+@media (max-width:640px){ .rules,.learn{grid-template-columns:minmax(0,1fr)} .quiz,.top{grid-template-columns:minmax(0,1fr)} .state{grid-template-columns:110px minmax(0,1fr)} }
+@media (prefers-reduced-motion: reduce){ .stage.bob .remote{animation:none} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div style="display:flex;flex-direction:column;gap:12px;min-width:0">
+      <span class="eyebrow">BREmote V2.5-Evo · remote screen guide · next release</span>
+      <h1>BREmote Follow-Me Screens</h1>
+      <p class="lede">The next remote firmware gives every Follow-Me state its own look, so one glance while you are surfing tells you what the buggy is doing. Below: each screen, animated at the real speed the remote draws it, then a quick glance quiz.</p>
+      <div class="legend" aria-label="Screen layout">
+        <b>Left</b><span>2-character number area (metres to the buggy in Follow-Me)</span>
+        <b>Dot column</b><span>GPS and Bluetooth at the top; the 3 Follow-Me dots below them</span>
+        <b>Right edge</b><span>temperature bar and signal bar</span>
+        <b>Second row from the bottom</b><span>Follow-Me / return bar</span>
+        <b>Bottom row</b><span>battery</span>
+      </div>
+    </div>
+    <div>
+      <div class="remote hero-remote" id="hero"></div>
+      <div class="cap">Following, about 12 m behind you</div>
+    </div>
+  </header>
+
+  <section style="display:flex;flex-direction:column;gap:14px">
+    <h2>Three dots, three meanings</h2>
+    <p class="note"><b>The two numbers are the metres between your remote and the buggy</b>, in Follow-Me, auto-return and return-to-me alike.</p>
+    <div class="learn">
+      <div class="item"><div class="mini" id="mini-w"></div><p><b>One dot hopping</b><br><span class="note">waiting — armed, not following yet</span></p></div>
+      <div class="item"><div class="mini" id="mini-f"></div><p><b>Two steady dots</b><br><span class="note">following you</span></p></div>
+      <div class="item"><div class="mini" id="mini-r"></div><p><b>Filling down from the top</b><br><span class="note">the buggy is coming to you</span></p></div>
+    </div>
+  </section>
+
+  <section class="rules" aria-label="Safety rules">
+    <div class="rule"><b>Manual always wins</b><span>If GPS, compass or any automatic mode fails, the automation switches itself off and you can drive home by hand.</span></div>
+    <div class="rule"><b>“St” means not working</b><span>One signal for everything that stopped or was refused, always with the long buzz when you did not cause it. No new words to learn.</span></div>
+    <div class="rule"><b>The screen tells the truth</b><span>A mode is shown as ON only when the buggy confirms it. “Waiting” is only shown when a squeeze will really bring the buggy back.</span></div>
+  </section>
+
+  <div id="states"></div>
+
+  <section style="display:flex;flex-direction:column;gap:12px;border-top:1px solid var(--line);padding-top:22px">
+    <span class="eyebrow">Glance quiz</span>
+    <h2>Can you read it in a third of a second?</h2>
+    <p class="note">The screen keeps running under a cover. Each round the cover opens for the time you pick, like glancing down at your hand while riding, then you tap what you saw. 12 rounds, 3 each of off, waiting, following and returning. Start at 5 s to learn the looks, then go down to 0.33 s and turn on Bob and Wet.</p>
+    <div class="quiz">
+      <div class="stage" id="stage"><div class="remote" id="quizRemote"></div><div class="cap" id="qcap">Press Start</div></div>
+      <div class="controls">
+        <div class="row">
+          <label for="qms" class="note">Glance</label>
+          <select id="qms"><option value="330">0.33 s</option><option value="1000">1 s</option><option value="2000">2 s</option><option value="5000" selected>5 s</option></select>
+          <label class="note"><input type="checkbox" id="qbob"> Bob</label>
+          <label class="note"><input type="checkbox" id="qwet"> Wet</label>
+          <button id="qstart" type="button">Start</button>
+        </div>
+        <div class="row answers" id="qans">
+          <button type="button" data-a="off" disabled>FM off</button>
+          <button type="button" data-a="waiting" disabled>Waiting</button>
+          <button type="button" data-a="following" disabled>Following</button>
+          <button type="button" data-a="returning" disabled>Coming to me</button>
+        </div>
+        <div class="score" id="qscore" aria-live="polite"></div>
+        <div class="log" id="qlog">No rounds yet.</div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <p><b>Read the full guide and the firmware:</b> <a href="https://github.com/monterman/BREmote-V2" target="_blank" rel="noopener">github.com/monterman/BREmote-V2</a> (Follow-Me guide in <code>docs/FOLLOW_ME_GUIDE.md</code>).</p>
+    <p class="note">New in the upcoming release, available now for testing on the <a href="https://github.com/monterman/BREmote-V2/tree/fm-stations" target="_blank" rel="noopener">fm-stations branch</a>; it moves to master after water testing. Screens are drawn on the remote’s 10 × 7 LED matrix in 0.2 s steps; LED colour on your remote may differ.</p>
+  </footer>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  const F={"0":["111","101","101","101","111"],"1":["010","110","010","010","111"],"2":["111","001","111","100","111"],"3":["111","001","111","001","111"],"4":["101","101","111","001","001"],"5":["111","100","111","001","111"],"6":["111","100","111","101","111"],"7":["111","001","001","001","001"],"8":["111","101","111","101","111"],"9":["111","101","111","001","111"],"-":["000","000","111","000","000"]," ":["000","000","000","000","000"],
+    "r":["000","011","100","100","100"],"n":["000","110","101","101","101"],"S":["111","100","111","001","111"],"t":["010","111","010","010","011"],"E":["111","100","111","100","111"]};
+  const blank=()=>Array.from({length:7},()=>Array(10).fill(false));
+  function digits(g,txt){ const s=(txt+"").padStart(2," ").slice(-2); [0,4].forEach((c0,i)=>{ const gl=F[s[i]]||F[" "]; for(let r=0;r<5;r++)for(let c=0;c<3;c++) if(gl[r][c]==="1") g[r][c0+c]=true; }); }
+  function chrome(g){ g[0][7]=true; for(let r=3;r<5;r++) g[r][8]=true; for(let r=1;r<5;r++) g[r][9]=true; for(let c=0;c<7;c++) g[6][c]=true; }
+  const pos=[0,1,2,3,4,5,6,7,6,5,4,3,2,1];
+  function scanner(g,t){ const p=pos[Math.floor(t/200)%pos.length]; for(let c=p;c<p+3&&c<10;c++) g[5][c]=true; }
+  function scannerNotReady(g,t){ if((t%1500)<1000) for(let c=3;c<6;c++) g[5][c]=true; }
+  function fmBar(g,d){ const n=Math.max(2,Math.min(10,2*Math.round(d/30*5))); const s=Math.floor((10-n)/2); for(let c=s;c<s+n;c++) g[5][c]=true; }
+  function retBar(g,d,st){ const n=Math.max(1,Math.ceil(d/st*10)); for(let c=0;c<n;c++) g[5][c]=true; }
+  const W1=(g,t)=>{ g[Math.floor(t/200)%2?4:3][7]=true; };
+  const F1=(g)=>{ g[3][7]=true; g[4][7]=true; };
+  const R1=(g,t)=>{ const f=Math.floor(t/200)%4; if(f<3){ g[2][7]=true; if(f>=1) g[3][7]=true; if(f>=2) g[4][7]=true; } };
+  const follow=t=>12+2*Math.sin(t/1500);
+  const RS=40, ret=t=>{ const span=(RS-3)*250; return RS-(t%span)/250; };
+  const arrow=(g,t)=>{ const p=Math.floor(t/100)%2; const W=[[1,2,3,4,5],[1,2,3,4,5],[2,3,4],[2,3,4],[3]]; W.forEach((cols,i)=>cols.forEach(c=>{ g[p+i][c]=true; })); };
+
+  const STATES={
+    off:{draw:(g)=>{ chrome(g); digits(g,"45"); }},
+    waiting:{draw:(g,t)=>{ chrome(g); digits(g,"15"); scanner(g,t); W1(g,t); }},
+    notready:{draw:(g,t)=>{ chrome(g); digits(g,"--"); scannerNotReady(g,t); W1(g,t); }},
+    following:{draw:(g,t)=>{ chrome(g); digits(g,String(Math.round(follow(t)))); fmBar(g,follow(t)); F1(g); }},
+    parked:{draw:(g,t)=>{ chrome(g); digits(g,"38"); scanner(g,t); W1(g,t); }},
+    returning:{draw:(g,t)=>{ chrome(g); digits(g,String(Math.max(3,Math.round(ret(t))))); retBar(g,ret(t),RS); R1(g,t); }},
+    rn:{draw:(g,t)=>{ chrome(g); if((t%1500)<1000) digits(g,"rn"); else arrow(g,t); }},
+    st:{draw:(g)=>{ chrome(g); digits(g,"St"); }},
+    e7:{draw:(g,t)=>{ if((t%500)<250){ digits(g,"E7"); for(let c=0;c<10;c++) g[5][c]=true; } }},
+    e72:{draw:(g,t)=>{ if((t%500)<250) digits(g,"St"); }}
+  };
+  const ROWS=[
+    ["off","FM off — normal riding","The numbers show the readout you chose (here throttle 45 %). No Follow-Me dots, no bar.",[["What you see","your readout, Follow-Me dots dark"],["What to do","ride as usual; tap the magnet (even while holding the trigger) to arm Follow-Me"]]],
+    ["waiting","Waiting — Follow-Me armed","Follow-Me is on, but the buggy is not following yet. The numbers show metres to the buggy. One dot hops between the two Follow-Me dots and the scanner sweeps along the bar.",[["One dot hopping","armed, ready"],["Starts following","once you ride away from the buggy"]]],
+    ["notready","Waiting, not ready","Armed, but something the buggy needs is missing for a moment (for example your GPS fix or the link). Same hopping dot; the bar blinks in place instead of sweeping, and the distance may show “--”.",[["Bar blinking in place","not ready yet — wait for it to sweep"],["If you squeeze now","you get “St”: it will not work right now"]]],
+    ["following","Following","The buggy is towing behind you. Two steady dots; the bar grows from the centre with distance and the numbers show metres.",[["Two steady dots","following"],["Steering","nudges help; they never switch Follow-Me off"]]],
+    ["parked","Auto-return waiting (parked)","You stopped to surf or rest, far from the buggy. It parks and waits as long as you like — and looks exactly like “waiting”, so there is nothing new to learn.",[["Looks like","waiting (one dot hopping)"],["To bring it back","squeeze the trigger"]]],
+    ["returning","Coming to you","Auto-return or manual return-to-me: they look the same. The top dot fills the column downward toward you, the numbers count down and the bar shrinks to the left as it closes.",[["Filling down","the buggy is coming to you"],["Let go, pause, squeeze softer","it keeps coming; pauses never cancel it"],["On arrival","you get steering back; the throttle stays limited until you let go once"]]],
+    ["rn","Return-to-me: waiting for your squeeze","After the 2.5 s magnet hold (trigger released), “rn” alternates with an arrow until you squeeze to start the return.",[["Squeeze","start the return"],["Hold LEFT 1 s","cancel, full manual"]]],
+    ["st","“St” — stopped or refused","The one “not working” signal: a fault stopped Follow-Me or the return, or what you asked for cannot start. With the long buzz when you did not cause it. Then the screen shows what is really on.",[["After “St”","normal screen = Follow-Me off; waiting screen = still armed"]]],
+    ["e7","E7 — water in the buggy","Blinks over everything, with its own buzz. Head back.",[]],
+    ["e72","Blinking “St” — remote trigger fault","The remote cannot read its trigger, so it sends zero throttle. Let go fully; it recovers once the reading is good again.",[]]
+  ];
+  function makeRemote(host){ const m=document.createElement("div"); m.className="matrix"; const cells=[]; for(let i=0;i<70;i++){ const d=document.createElement("div"); d.className="px"; m.appendChild(d); cells.push(d);} host.appendChild(m); return cells; }
+  function paint(cells,g){ for(let r=0;r<7;r++)for(let c=0;c<10;c++){ const on=g[r][c], el=cells[r*10+c]; if(el._o!==on){ el._o=on; el.classList.toggle("on",on);} } }
+  function frame(k,t){ const g=blank(); STATES[k].draw(g,t); return g; }
+  const live=[];
+  live.push({cells:makeRemote(document.getElementById("hero")),k:"following"});
+  const host=document.getElementById("states");
+  ROWS.forEach(([k,title,body,how])=>{
+    const sec=document.createElement("section"); sec.className="state";
+    const left=document.createElement("div"); const rem=document.createElement("div"); rem.className="remote"; left.appendChild(rem); sec.appendChild(left);
+    const tx=document.createElement("div"); tx.className="text";
+    tx.innerHTML="<h3>"+title+"</h3><p>"+body+"</p>"+(how.length?'<div class="how">'+how.map(h=>"<b>"+h[0]+"</b><span>"+h[1]+"</span>").join("")+"</div>":"");
+    sec.appendChild(tx); host.appendChild(sec);
+    live.push({cells:makeRemote(rem),k});
+  });
+  function mini(id,fn){ const el=document.getElementById(id); const cells=[]; for(let i=0;i<3;i++){ const d=document.createElement("div"); d.className="px"; el.appendChild(d); cells.push(d);} return {cells,fn}; }
+  const minis=[mini("mini-w",W1),mini("mini-f",F1),mini("mini-r",R1)];
+
+  // quiz
+  const qcells=makeRemote(document.getElementById("quizRemote"));
+  const sh=document.createElement("div"); sh.className="shutter open"; sh.textContent="looking away"; document.getElementById("quizRemote").appendChild(sh);
+  const stage=document.getElementById("stage"), cap=document.getElementById("qcap");
+  const ans=[...document.querySelectorAll("#qans button")], scoreEl=document.getElementById("qscore"), logEl=document.getElementById("qlog");
+  const label={off:"FM off",waiting:"Waiting",following:"Following",returning:"Coming to me"};
+  let q={k:"off",off:0}, trials=[], idx=0, res=[], tm=null;
+  document.getElementById("qbob").addEventListener("change",e=>stage.classList.toggle("bob",e.target.checked));
+  document.getElementById("qwet").addEventListener("change",e=>stage.classList.toggle("wet",e.target.checked));
+  document.getElementById("qstart").addEventListener("click",()=>{ trials=[]; ["off","waiting","following","returning"].forEach(s=>{for(let i=0;i<3;i++) trials.push(s);}); for(let i=trials.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[trials[i],trials[j]]=[trials[j],trials[i]];} idx=0; res=[]; logEl.textContent=""; scoreEl.textContent=""; next(); });
+  function next(){ ans.forEach(b=>b.disabled=true); clearTimeout(tm); if(idx>=trials.length){ done(); return; } sh.classList.remove("open"); q={k:trials[idx],off:Math.random()*4000}; cap.textContent="Get ready… ("+(idx+1)+" of 12)"; const dur=+document.getElementById("qms").value;
+    tm=setTimeout(()=>{ sh.classList.add("open"); cap.textContent="Look!"; ans.forEach(b=>b.disabled=false); tm=setTimeout(()=>{ sh.classList.remove("open"); cap.textContent="What did you see?"; },dur); },900+Math.random()*900); }
+  ans.forEach(b=>b.addEventListener("click",()=>{ const tr=trials[idx], a=b.dataset.a, ok=a===tr; res.push({tr,a,ok}); const l=document.createElement("div"); l.className=ok?"ok":"bad"; l.textContent=(idx+1)+". shown "+label[tr]+" — you said "+label[a]+(ok?"  ✓":"  ✗"); logEl.prepend(l); idx++; next(); }));
+  function done(){ const w=res.filter(r=>!r.ok); const mix=w.filter(r=>(r.tr==="following"&&r.a==="returning")||(r.tr==="returning"&&r.a==="following")).length; const pass=mix===0&&w.length<=1; scoreEl.innerHTML='<span class="'+(pass?"ok":"bad")+'">'+(res.length-w.length)+" of 12 right · following/coming mix-ups: "+mix+" · "+(pass?"you can read it at a glance":"try again")+"</span>"; cap.textContent="Done. Press Start to play again."; sh.classList.add("open"); q={k:"following",off:0}; }
+
+  function tick(now){ for(const d of live) paint(d.cells,frame(d.k,now)); for(const m of minis){ const g=blank(); m.fn(g,now); m.cells.forEach((c,i)=>{ const on=g[2+i][7]; if(c._o!==on){c._o=on;c.classList.toggle("on",on);} }); } paint(qcells,frame(q.k,now+q.off)); requestAnimationFrame(tick); }
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>

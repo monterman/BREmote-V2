@@ -1,5 +1,24 @@
 # BREmote V2.5-Evo — Tow Buggy / eFoil Remote
 
+> **🌙 This is the `fm-stations` NIGHTLY branch — bleeding edge, under on-water testing, use at your own risk.**
+> It carries the newest receiver (RX SW36) and remote (TX SW27) work before it reaches `master`. For the
+> stable firmware and the full documentation, use the **[master branch](https://github.com/monterman/BREmote-V2/tree/master)**
+> and its **[guides in `docs/`](https://github.com/monterman/BREmote-V2/tree/master/docs)**.
+>
+> - **Update the receiver and the remote together.** Mixing nightly and stable boards is not supported.
+> - **Download your buggy's logs before flashing the receiver.** This build writes log format 3; older logs cannot be turned into CSV by it.
+> - Ready-made binaries: `Source/V2_Integration_Rx/RX firmware/latest-FM-stations/` and `Source/V2_Integration_Tx/TX firmware/latest-FM-stations/` — read the README in each folder first.
+>
+> **Known issues on this branch**
+>
+> - Remote: when it refuses to arm Return-To-Me close to the buggy, a trigger squeeze you are still holding goes straight back to the motors.
+> - Remote: a magnet tap during an auto-return steps the Follow-Me station.
+> - Remote: deliberately disarming Follow-Me also ends an auto-return that is under way.
+> - Receiver: any stall on the shared sensor bus takes the compass out of service, even when the compass was not the cause.
+> - Receiver: riding more than 500 m away from a buggy that is parked at the end of an auto-return ends that auto-return.
+> - Receiver: after an arrival, the throttle cap only clears once the trigger is back at idle (below 8).
+> - Front stations F4 / F5 are still in development: the receiver has them, but the remote cannot select F4 or F5 yet.
+
 > **Fork of [BREmote V2](https://github.com/Luddi96/BREmote) by LudwigBre / Luddi96**
 
 [![Original by LudwigBre](https://img.shields.io/badge/Original%20HW%20%26%20FW-LudwigBre%20%2F%20Luddi96-blue)](https://github.com/Luddi96/BREmote)

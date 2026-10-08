@@ -209,7 +209,8 @@ Blink pattern: 1000 ms on / 500 ms off.
 
 ![Following](img/fm/fm-following.gif)
 
-*This animation shows the bar on current master firmware. The nightly adds the indicator dots — see
+*Nightly screen (`fm-stations` branch): the numbers are metres to the buggy, and the bar shrinks toward 2 dots as the buggy closes in
+(here 15 m to 8 m). The text above describes the older master behaviour. See
 [Follow-Me screens — nightly](#follow-me-screens--nightly-fm-stations-branch).*
 
 **`rtm_arm_dist_m` variable:**

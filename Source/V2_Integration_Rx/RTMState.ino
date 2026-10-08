@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - SIGNED STAMP AGES (audit N-1, N-6, N-7): every loop-task comparison of the tick's clock against a stamp the radio task writes (rx_tx_gps_timestamp, last_packet, fm_mode_last_rx_ms, rtm_refresh_last_ms) now uses stampAgeMs() / stampStale() from Common/AutoReturnRules.h - a stamp written after the loop read the clock reads as age 0 instead of wrapping to ~49 days. Sites: RTM gates 4 and 7, Phase C check 3, the Phase B revoke, the distance block, the BOOTSTRAP-1 rider distance, Follow-Me conditions 4 and 7, fmFailingConditionsMask() (now reads millis() itself, N-6), the 95 s mode-age expiry (N-7; a real expiry from an engaged state now keeps the cap in force as the hand-back cap), the RTM refresh expiry (N-1, in the header) and two level-5 log ages. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - D-1 follow-up: kDistBlankStaleMs 10000 -> 0. The distance inputs already accept a rider fix up to 10 s old, so the extra 10 s kept a frozen number on the remote for ~20 s; the byte now goes 0xFF as soon as the rider fix is > 10 s old (buggy fix > 6 s), and still needs 1 s of valid inputs to come back. Telemetry only. No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - S-3: the auto-return candidate may also form in FM_ARMED (the state a trigger release leaves, HOLD-ESCAPE-2) when Follow-Me has engaged since the declaration (fm_engaged_this_run, set on the ACTIVE edge, cleared by fmResetReturnState() on disarm / expiry / fault end / reboot / RTM yield), and only beyond D_engage, on every tick for such a candidate (fm_return_from_armed). The proof is unchanged. "Release, surf or stop, squeeze later" now earns the return. No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - AUTO-RETURN WAITS FOR THE RIDER (audits S-1, S-2, S-4, S-5, S-6): a PARKED return is no longer cancelled by the rider moving (S-1) and waits through a stale remote GPS / revoked handshake, and through a link loss when the remote sends a boot ID (S-2, fmFailingConditionsMask + fmReturnParkedTolerates); every return fault now raises fm_flags bit 3 whatever the trigger (S-2); the 60 s motion cap is gone (S-4, FmReturnReason 8 retired); a 30 s stick takeover hands the steering back and the return continues (S-5); the not-closing net stays suspended while a slow pivot is still making progress (to 45 s) and a not-closing verdict inside rtm_approach_zone_m is an arrival with the hand-back cap, not a fault (S-6, FmReturnReason 13). No confStruct change, SW_VERSION stays 36.
@@ -446,8 +447,10 @@ static bool checkRtmSafetyGates()
   // Gate 4: valid TX GPS fix (age < usrConf.tx_gps_stale_timeout_ms)
   // Finding 6-1: was hardcoded 2000ms — now reads from SPIFFS so the
   // WebUI setting actually takes effect. Default is 3000 ms (defaultConf / WebUiEmbedded.h).
-  if (rx_tx_gps_timestamp == 0 ||
-      (now - rx_tx_gps_timestamp) > (uint32_t)usrConf.tx_gps_stale_timeout_ms)
+  // V2.5-Evo - 2026-10-07 - N-7 scan: a signed age (stampAgeMs). The radio task can stamp
+  // rx_tx_gps_timestamp after `now` was read above; the unsigned difference then wrapped and this gate
+  // raised the emergency stop for one tick (motor to 0 for 100 ms, and H-2 counted it) on a fresh fix.
+  if (stampStale((uint32_t)now, (uint32_t)rx_tx_gps_timestamp, (uint32_t)usrConf.tx_gps_stale_timeout_ms))
   {
     rtm_rx_emergency_stop = true;   // F7: motor to 0 first (V2.5-Evo - 2026-09-19)
     static unsigned long gate4_msg_ms = 0;
@@ -526,7 +529,9 @@ static bool checkRtmSafetyGates()
   }
 
   // Gate 7: LoRa link healthy
-  if (millis() - last_packet > usrConf.failsafe_time)
+  // V2.5-Evo - 2026-10-07 - N-7 scan: signed age, same reason as Gate 4 (the compiler may read millis()
+  // before last_packet, and the radio task may stamp last_packet in between).
+  if (stampStale((uint32_t)millis(), (uint32_t)last_packet, (uint32_t)usrConf.failsafe_time))
   {
     rtm_rx_emergency_stop = true;   // F7: motor to 0 first (V2.5-Evo - 2026-09-19)
     static unsigned long gate7_msg_ms = 0;
@@ -2986,7 +2991,7 @@ static void fmPublishLogSnapshot()
     if (tx_ts == 0) {
       s.l5_rider_fix_age_div10 = 0xFFFF;                       // never received
     } else {
-      unsigned long a = (now_ms - tx_ts) / 10UL;
+      unsigned long a = stampAgeMs((uint32_t)now_ms, (uint32_t)tx_ts) / 10UL;   // V2.5-Evo - 2026-10-07 - N-7 scan: signed (log column)
       s.l5_rider_fix_age_div10 = (a > 0xFFFEUL) ? 0xFFFE : (uint16_t)a;
     }
     // Classic RTM: the cap it published and the branch it took this tick.
@@ -3014,7 +3019,7 @@ static void fmPublishLogSnapshot()
     if (ka == 0) {
       s.l5_fm_keepalive_age_div100 = 0xFF;                     // no 0xF2 this session
     } else {
-      unsigned long a = (now_ms - ka) / 100UL;
+      unsigned long a = stampAgeMs((uint32_t)now_ms, (uint32_t)ka) / 100UL;   // V2.5-Evo - 2026-10-07 - N-7 scan: signed (log column)
       s.l5_fm_keepalive_age_div100 = (a > 0xFEUL) ? 0xFE : (uint8_t)a;
     }
   }
@@ -3351,8 +3356,9 @@ static void runPhaseC()
   // Finding 6-1: was hardcoded 2000ms — now reads from SPIFFS.
   // NOTE: structurally redundant — Gate 4 already enforces this before
   // runPhaseC() is called. Retained as belt-and-suspenders only.
-  if (rx_tx_gps_timestamp == 0 ||
-      (millis() - rx_tx_gps_timestamp) > (uint32_t)usrConf.tx_gps_stale_timeout_ms)
+  // V2.5-Evo - 2026-10-07 - N-7 scan: signed age. With the unsigned difference a fix stamped between the
+  // two reads wrapped and ENDED RTM on a false "TX GPS freshness" fault.
+  if (stampStale((uint32_t)millis(), (uint32_t)rx_tx_gps_timestamp, (uint32_t)usrConf.tx_gps_stale_timeout_ms))
   {
     Serial.println("RTM [PhC] FAIL TX GPS freshness");
     rtm_rx_emergency_stop = true;
@@ -3707,8 +3713,9 @@ static void runRtmLoopBody(unsigned long now)
   // Revoke Phase B if TX GPS is older than 2× the configured stale threshold.
   {
     unsigned long phase_b_stale = (uint32_t)usrConf.tx_gps_stale_timeout_ms * 2UL;
-    if (rx_tx_gps_timestamp == 0 ||
-        (now - rx_tx_gps_timestamp) > phase_b_stale)
+    // V2.5-Evo - 2026-10-07 - N-7 scan: signed age. The wrapped difference revoked Phase B on a fresh fix,
+    // which then blocked RTM (gate 3) and faulted Follow-Me (condition 3) until the 2 s re-check passed.
+    if (stampStale((uint32_t)now, (uint32_t)rx_tx_gps_timestamp, (uint32_t)phase_b_stale))
     {
       gps_phase_b_ok = false;
     }
@@ -3729,8 +3736,9 @@ static void runRtmLoopBody(unsigned long now)
     // Active RTM: 5s max age (tight — buggy is moving, staleness is dangerous).
     // Inactive/FM: 10s max age (tolerates brief meta-packet gaps without
     //              suppressing the FM bar; still rejects genuinely stale GPS).
+    // V2.5-Evo - 2026-10-07 - N-7 scan: signed age (a wrapped one blanked the distance byte for 1 s).
     bool gps_tx_ok = (rx_tx_gps_timestamp > 0) &&
-                     ((millis() - rx_tx_gps_timestamp) < (rtm_rx_active ? 5000UL : 10000UL));
+                     (stampAgeMs((uint32_t)millis(), (uint32_t)rx_tx_gps_timestamp) < (rtm_rx_active ? 5000UL : 10000UL));
 
     // V2.5-Evo - 2026-10-07 - D-1: THE DISTANCE BYTE GOES TO 0xFF ("--" on the remote) ONCE THE RIDER'S
     // FIX IS MORE THAN 10 s OLD (gps_tx_ok above; 5 s while RTM is active) OR THE BUGGY'S MORE THAN 6 s
@@ -4171,8 +4179,9 @@ static void runRtmLoopBody(unsigned long now)
       // a regression waiting for someone to turn a knob. Gate 4 already vetted this value; a
       // second, stricter, hardcoded opinion buys nothing.
       float rider_dist = -1.0f;
+      // V2.5-Evo - 2026-10-07 - N-7 scan: signed age (a wrapped one read a fresh fix as "unknown").
       if (gps_last_lat != 0.0 && rx_tx_gps_timestamp > 0 &&
-          (millis() - rx_tx_gps_timestamp) < (uint32_t)usrConf.tx_gps_stale_timeout_ms) {
+          stampAgeMs((uint32_t)millis(), (uint32_t)rx_tx_gps_timestamp) < (uint32_t)usrConf.tx_gps_stale_timeout_ms) {
         rider_dist = (float)TinyGPSPlus::distanceBetween(
             gps_last_lat, gps_last_lng, rx_tx_gps_lat, rx_tx_gps_lng);
       }
@@ -5244,8 +5253,9 @@ static bool checkFmFaultConditions(uint8_t* out_reason)
   if (!gps_phase_b_ok) { *out_reason = FM_STOP_PHASE_B; return false; }
 
   // 4. The rider's (TX) GPS position is fresh.
-  if (rx_tx_gps_timestamp == 0 ||
-      (now - rx_tx_gps_timestamp) > (uint32_t)usrConf.tx_gps_stale_timeout_ms) { *out_reason = FM_STOP_TX_STALE; return false; }
+  // V2.5-Evo - 2026-10-07 - N-7 scan: conditions 4 and 7 use signed ages (stampAgeMs, via stampStale): the
+  // radio task can stamp after `now` above, and the wrapped unsigned age was a false fault.
+  if (stampStale((uint32_t)now, (uint32_t)rx_tx_gps_timestamp, (uint32_t)usrConf.tx_gps_stale_timeout_ms)) { *out_reason = FM_STOP_TX_STALE; return false; }
 
   // 5. The buggy's (RX) GPS position is fresh (same 6 s window as RTM gate 5).
   if (gps_last_ms == 0 || (now - gps_last_ms) > 6000UL) { *out_reason = FM_STOP_RX_STALE; return false; }
@@ -5260,7 +5270,7 @@ static bool checkFmFaultConditions(uint8_t* out_reason)
   }
 
   // 7. The LoRa link is healthy.
-  if (now - last_packet > usrConf.failsafe_time) { *out_reason = FM_STOP_LINK; return false; }
+  if (stampStale((uint32_t)now, (uint32_t)last_packet, (uint32_t)usrConf.failsafe_time)) { *out_reason = FM_STOP_LINK; return false; }
 
   return true;
 }
@@ -5271,22 +5281,22 @@ static bool checkFmFaultConditions(uint8_t* out_reason)
 // checkFmFaultConditions() stops at the first failure, which is right for a stop reason but cannot
 // answer "is it ONLY the remote side that is missing?" - the question a PARKED auto-return asks before
 // it decides to wait instead of ending (fmReturnParkedTolerates(), Common/AutoReturnRules.h). Same six
-// tests, same thresholds, nothing short-circuited. Input: now. Returns: the mask (0 = all hold).
+// tests, same thresholds, nothing short-circuited. Returns: the mask (0 = all hold).
 // Side effects: none on control state (getRtmHeading() is called here exactly as in the function above).
-static uint8_t fmFailingConditionsMask(unsigned long now)
+// V2.5-Evo - 2026-10-07 - N-6: NO `now` PARAMETER ANY MORE. It used the loop tick's `now`, read before
+// this point; the radio task stamps rx_tx_gps_timestamp and last_packet after that, the unsigned age
+// wrapped, and a false "rider GPS stale" / "link down" bit came out. With a real rider-GPS gap and no boot
+// ID that turned a parked return that should wait into a fault ("St") about half the time. Now it reads
+// millis() itself, AFTER the heading call, and every age is signed and clamped to 0 (fmFailingMaskFrom()
+// in Common/AutoReturnRules.h, host-tested), so a stamp newer than the clock reads "just now".
+static uint8_t fmFailingConditionsMask()
 {
-  uint8_t mask = 0;
-  if (gps_rejected)                                                        mask |= kFmCondPhaseA;
-  if (!gps_phase_b_ok)                                                     mask |= kFmCondPhaseB;
-  if (rx_tx_gps_timestamp == 0 ||
-      (now - rx_tx_gps_timestamp) > (uint32_t)usrConf.tx_gps_stale_timeout_ms) mask |= kFmCondTxStale;
-  if (gps_last_ms == 0 || (now - gps_last_ms) > 6000UL)                    mask |= kFmCondRxStale;
-  {
-    float h_unused; uint8_t conf_unused;
-    if (!getRtmHeading(&h_unused, &conf_unused))                           mask |= kFmCondHeading;
-  }
-  if (now - last_packet > usrConf.failsafe_time)                           mask |= kFmCondLink;
-  return mask;
+  float h_unused; uint8_t conf_unused;
+  const bool heading_ok = getRtmHeading(&h_unused, &conf_unused);
+  return fmFailingMaskFrom((uint32_t)millis(), gps_rejected, gps_phase_b_ok,
+                           (uint32_t)rx_tx_gps_timestamp, (uint32_t)usrConf.tx_gps_stale_timeout_ms,
+                           (uint32_t)gps_last_ms, 6000UL,
+                           heading_ok, (uint32_t)last_packet, (uint32_t)usrConf.failsafe_time);
 }
 
 // ------------------------------------------------------------
@@ -5943,7 +5953,7 @@ static void runFmReturnTick(unsigned long now)
   // return - now WITH the alarm (fmReturnFault).
   uint8_t fault_reason = FM_STOP_NONE;
   if (!checkFmFaultConditions(&fault_reason)) {
-    const uint8_t failing = fmFailingConditionsMask(now);
+    const uint8_t failing = fmFailingConditionsMask();   // V2.5-Evo - 2026-10-07 - N-6: reads its own clock
     if (fmReturnParkedTolerates(failing, fm_return_motion_ms == 0, thr_held,
                                 rx_tx_boot_id.load() != kTxBootIdNone)) {
       fm_rx_active              = false;   // parked posture, as in the released-trigger branch below
@@ -6316,12 +6326,21 @@ static void runFmLoopBody(unsigned long now)
   // the same 95 s expiry as the rear three; a front station that nobody is refreshing must die the
   // same way. The 0xF2 decoder in Radio.ino has accepted 0-5 and failed closed above 5 since
   // 2026-09-19, so there is no wire change in this commit.
+  // V2.5-Evo - 2026-10-07 - N-7: TWO FIXES.
+  //   (1) SIGNED AGE. fm_mode_last_rx_ms is stamped by the radio task, which can preempt this task after
+  //       `now` was read; `now - mode_ms` then wrapped to ~49 days and the declaration "expired" on a
+  //       keepalive that had just arrived - Follow-Me dropped to IDLE silently, and from FM_ACTIVE / HOLD /
+  //       RETURN that lifted its cap to 255 under a held trigger. stampStale() clamps a newer stamp to age 0.
+  //   (2) A REAL EXPIRY FROM AN ENGAGED STATE KEEPS THE CAP. fmEnterIdle() lifts fm_throttle_cap to 255, so
+  //       the cap in force is armed as the hand-back cap FIRST (handbackCapArm only lowers; 255 in ARMED is
+  //       a no-op): a rider still holding the trigger gets it back only after one full release.
   if (m >= 1 && m <= 5) {
     unsigned long mode_ms = fm_mode_last_rx_ms.load(std::memory_order_relaxed);
-    if (mode_ms == 0 || (now - mode_ms) > kFmModeAgeMs) {
-      Serial.println("FM [RX] mode declaration expired (no 0xF2 refresh) -> IDLE");
+    if (stampStale((uint32_t)now, (uint32_t)mode_ms, (uint32_t)kFmModeAgeMs)) {
+      if (fm_state != FM_IDLE) handbackCapArm(fm_throttle_cap.load());   // FIRST: before fmEnterIdle() lifts the cap
       fm_mode_runtime.store(0xFF, std::memory_order_relaxed);
       fmEnterIdle();
+      Serial.println("FM [RX] mode declaration expired (no 0xF2 refresh) -> IDLE");   // after the writes (F7)
       return;
     }
   }

@@ -88,6 +88,55 @@ static void testRefreshExpiry()
   assert(rtmRefreshExpired(true, true, 10000, 15001, 5000));
   // RTM not active: never.
   assert(!rtmRefreshExpired(false, true, 0, 600000, 5000));
+  // N-1: the radio task stamped the refresh AFTER the loop read its clock (last = now + 1, + 50): fresh,
+  // never "49 days old". The unsigned difference used to wrap and expire the run at once.
+  assert(!rtmRefreshExpired(true, true, 20001, 20000, 5000));
+  assert(!rtmRefreshExpired(true, true, 20050, 20000, 5000));
+  // Across the 32-bit millis() wrap: still measured correctly both ways.
+  assert(!rtmRefreshExpired(true, true, 0xFFFFFF00u, 0x00000100u, 5000));          // 512 ms old
+  assert(rtmRefreshExpired(true, true, 0xFFFFFF00u, 0x00000100u + 5000u, 5000));   // 5512 ms old
+  assert(!rtmRefreshExpired(true, true, 0x00000010u, 0xFFFFFFF0u, 5000));          // stamped 32 ms "after" now
+}
+
+// N-1 / N-6 / N-7: the signed stamp age every loop-task comparison now uses.
+static void testStampAge()
+{
+  assert(stampAgeMs(1000, 400) == 600);
+  assert(stampAgeMs(1000, 1000) == 0);
+  assert(stampAgeMs(1000, 1001) == 0);              // stamp newer than the clock: "just now", not 49 days
+  assert(stampAgeMs(1000, 1500) == 0);
+  assert(stampAgeMs(0x00000005u, 0xFFFFFFFBu) == 10); // across the wrap
+  // stampStale: 0 = never = stale; strictly older than the limit = stale; newer than now = fresh.
+  assert(stampStale(5000, 0, 1000));
+  assert(!stampStale(5000, 4000, 1000));             // exactly at the limit: not stale (the old `>` test)
+  assert(stampStale(5000, 3999, 1000));
+  assert(!stampStale(5000, 5001, 1000));             // the race the audit found: stamp > now
+  assert(!stampStale(5000, 5100, 0));
+}
+
+// N-6: the failing-conditions mask, from plain inputs.
+static void testFailingMask()
+{
+  const uint32_t now = 100000;
+  // Everything fresh and good: 0.
+  assert(fmFailingMaskFrom(now, false, true, now - 500, 3000, now - 200, 6000, true, now - 100, 1000) == 0);
+  // THE AUDIT CASE: the radio task stamped the rider fix and the link AFTER `now` (stamp = now + 1).
+  // They must read fresh - no false TxStale / Link bit.
+  assert(fmFailingMaskFrom(now, false, true, now + 1, 3000, now - 200, 6000, true, now + 1, 1000) == 0);
+  // A real rider-GPS gap while the link keeps refreshing after `now`: ONLY the rider bit, so a parked
+  // return waits (tolerated) even without a boot ID - before the fix the false Link bit made it a fault.
+  const uint8_t m = fmFailingMaskFrom(now, false, true, now - 4000, 3000, now - 200, 6000, true, now + 3, 1000);
+  assert(m == kFmCondTxStale);
+  assert(fmReturnParkedTolerates(m, true, false, false));
+  // Never-received stamps fail (0 = never), exactly as the old `stamp == 0 ||` tests.
+  assert(fmFailingMaskFrom(now, false, true, 0, 3000, 0, 6000, true, 0, 1000) ==
+         (kFmCondTxStale | kFmCondRxStale | kFmCondLink));
+  // Each condition maps to its own bit.
+  assert(fmFailingMaskFrom(now, true,  true,  now, 3000, now, 6000, true,  now, 1000) == kFmCondPhaseA);
+  assert(fmFailingMaskFrom(now, false, false, now, 3000, now, 6000, true,  now, 1000) == kFmCondPhaseB);
+  assert(fmFailingMaskFrom(now, false, true,  now, 3000, now - 6001, 6000, true, now, 1000) == kFmCondRxStale);
+  assert(fmFailingMaskFrom(now, false, true,  now, 3000, now, 6000, false, now, 1000) == kFmCondHeading);
+  assert(fmFailingMaskFrom(now, false, true,  now, 3000, now, 6000, true,  now - 1001, 1000) == kFmCondLink);
 }
 
 static void testDistBlank()
@@ -210,6 +259,8 @@ int main()
   testRtmGateFault();
   testBootId();
   testRefreshExpiry();
+  testStampAge();
+  testFailingMask();
   testDistBlank();
   testParkedTolerance();
   testPivotSuspend();

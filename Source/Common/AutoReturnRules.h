@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-07 - SIGNED STAMP AGES (audit N-1, N-6, N-7): rtmRefreshExpired() treats a refresh stamped
+//   AFTER the caller read the clock (age <= 0) as fresh instead of 49 days old; new stampAgeMs() / stampStale()
+//   clamp a negative age to 0 for every loop-task comparison against a stamp the radio task writes; new
+//   fmFailingMaskFrom() is the pure, host-tested core of the RX's failing-conditions mask.
 // V2.5-Evo - 2026-10-07 - Auto-return / return-to-me END RULES (audits S-1..S-8, A-1, H-1, H-2, M-1, D-1 and the
 //   owner's "arrival hand-back keeps a throttle cap" rule). Pure, header-only, no Arduino dependencies, so the host
 //   unit test Tools/tests/auto_return_rules_test.cpp exercises the exact code the RX runs. Every function here is a
@@ -13,10 +17,41 @@
 //   6. fmReturnParkedTolerates - S-2: a PARKED auto-return waits through a silent / stale remote.
 //   7. fmReturnPivotSuspend    - S-6: the not-closing net stays parked while the heading error is still falling.
 //   8. fmReturnCandidateMayForm- S-3: the auto-return candidate may form from ARMED after an engagement this run.
+//   0. stampAgeMs / stampStale - N-1/N-6/N-7: the age of a stamp another task writes, never negative (defined first,
+//                                because rtmRefreshExpired() uses it).
+//   9. fmFailingMaskFrom       - N-6: the failing Follow-Me conditions 2-7 as a mask, from plain inputs.
 #ifndef BREMOTE_AUTO_RETURN_RULES_H
 #define BREMOTE_AUTO_RETURN_RULES_H
 
 #include <stdint.h>
+
+// ============================================================
+// 0. THE AGE OF A STAMP ANOTHER TASK WRITES (audits N-1, N-6, N-7)
+// ============================================================
+// THE BUG: the loop task reads millis() once at the top of its 10 Hz tick (`now`), and the radio task
+// (higher priority) can preempt it afterwards and stamp a timestamp with a LATER millis() - last_packet,
+// rx_tx_gps_timestamp, fm_mode_last_rx_ms, rtm_refresh_last_ms. `now - stamp` in unsigned arithmetic then
+// wraps to about 4.29 billion ms, so a packet that arrived a microsecond ago reads as 49 days stale: a false
+// link loss, a false stale rider fix, a false 95 s mode expiry, a false RTM refresh expiry. On a 10 Hz link
+// the window is hit every few seconds to minutes.
+// THE FIX: take the difference as a SIGNED 32-bit number. A stamp newer than `now` gives a negative age,
+// which is clamped to 0 - "just now", which is the truth. Differences up to 24.8 days stay correct, far
+// beyond any session.
+// stampAgeMs - Inputs: now_ms (the caller's clock), stamp_ms (millis() of the event). Returns: the age in
+//   ms, 0 when the stamp is newer than now_ms. Side effects: none (pure).
+static inline uint32_t stampAgeMs(uint32_t now_ms, uint32_t stamp_ms)
+{
+  const int32_t age = (int32_t)(now_ms - stamp_ms);
+  return (age > 0) ? (uint32_t)age : 0u;
+}
+
+// stampStale - Inputs: now_ms; stamp_ms (0 = never happened); limit_ms. Returns: true when the event never
+//   happened or is older than limit_ms (strictly, like every `age > limit` test it replaces). Side effects: none.
+static inline bool stampStale(uint32_t now_ms, uint32_t stamp_ms, uint32_t limit_ms)
+{
+  if (stamp_ms == 0) return true;
+  return stampAgeMs(now_ms, stamp_ms) > limit_ms;
+}
 
 // ============================================================
 // 1. THE ARRIVAL HAND-BACK CAP
@@ -138,11 +173,14 @@ static const uint8_t kRtmRefreshValue = 0x02;
 // Inputs:  rtm_active; refresh_seen (a refresh arrived during THIS run); last_refresh_ms; now_ms;
 //          expiry_ms.
 // Returns: true when RTM must end. Side effects: none (pure).
+// V2.5-Evo - 2026-10-07 - N-1: the age is SIGNED (stampAgeMs). The radio task stamps last_refresh_ms and can
+// do so after the loop read now_ms; the unsigned difference then wrapped and the run "expired" at once -
+// roughly every 0.5-2 min once a remote refreshes. An age of 0 or less is fresh.
 static inline bool rtmRefreshExpired(bool rtm_active, bool refresh_seen, uint32_t last_refresh_ms,
                                      uint32_t now_ms, uint32_t expiry_ms)
 {
   if (!rtm_active || !refresh_seen) return false;
-  return (uint32_t)(now_ms - last_refresh_ms) > expiry_ms;
+  return stampAgeMs(now_ms, last_refresh_ms) > expiry_ms;
 }
 
 // ============================================================
@@ -281,6 +319,34 @@ static inline bool fmReturnCandidateMayForm(bool active_or_hold, bool armed, boo
 {
   if (active_or_hold) return true;
   return armed && engaged_this_run && (dist_m > d_engage_m);
+}
+
+// ============================================================
+// 9. N-6: THE FAILING FOLLOW-ME CONDITIONS 2-7 AS A MASK, FROM PLAIN INPUTS
+// ============================================================
+// The RX's fmFailingConditionsMask() gathers the globals and calls this, so the host test runs the exact
+// decision. THE BUG IT CLOSES (audit N-6): the mask used the loop tick's `now` against stamps the radio task
+// writes; a stamp newer than `now` wrapped and set a false "rider GPS stale" or "link down" bit. With a real
+// rider-GPS gap that turned a parked return that should WAIT into a fault ("St") about half the time.
+// Every age here is stampAgeMs(), never negative. A stamp of 0 means "never" and counts as failing, exactly
+// as the old `stamp == 0 ||` tests did.
+// Inputs:  now_ms - read by the caller AFTER it has read nothing else time-related (the RX passes millis());
+//          phase_a_rejected (2); phase_b_ok (3); tx_fix_ms + tx_stale_ms (4); rx_fix_ms + rx_stale_ms (5);
+//          heading_ok (6); link_ms + link_timeout_ms (7).
+// Returns: the kFmCond* bits of every failing condition (0 = all hold). Side effects: none (pure).
+static inline uint8_t fmFailingMaskFrom(uint32_t now_ms, bool phase_a_rejected, bool phase_b_ok,
+                                        uint32_t tx_fix_ms, uint32_t tx_stale_ms,
+                                        uint32_t rx_fix_ms, uint32_t rx_stale_ms,
+                                        bool heading_ok, uint32_t link_ms, uint32_t link_timeout_ms)
+{
+  uint8_t mask = 0;
+  if (phase_a_rejected)                                mask |= kFmCondPhaseA;
+  if (!phase_b_ok)                                     mask |= kFmCondPhaseB;
+  if (stampStale(now_ms, tx_fix_ms, tx_stale_ms))      mask |= kFmCondTxStale;
+  if (stampStale(now_ms, rx_fix_ms, rx_stale_ms))      mask |= kFmCondRxStale;
+  if (!heading_ok)                                     mask |= kFmCondHeading;
+  if (stampStale(now_ms, link_ms, link_timeout_ms))    mask |= kFmCondLink;
+  return mask;
 }
 
 #endif // BREMOTE_AUTO_RETURN_RULES_H

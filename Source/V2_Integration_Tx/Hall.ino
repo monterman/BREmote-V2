@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - T-9: mag_mode 1-3 - the magnet Follow-Me disarm is ignored while the buggy confirms an
+//   auto-return RETURNING (fmIsReturning()); serial line only. No confStruct change.
 // V2.5-Evo - 2026-10-07 - Q-10: the Follow-Me toggle combo (LEFT tap + RIGHT hold) is ignored while Return-To-Me is
 //   active or arming (serial line only), like the magnet tap. No confStruct change.
 // V2.5-Evo - 2026-10-07 - Q-8: mag_mode 1-3 - the Return-To-Me hold (arm or disarm) acts only with the trigger fully
@@ -1286,7 +1288,14 @@ void runMagGesture()
       // Mutual exclusion: never touch FM while RTM is active or mid-ceremony.
       if (rtm_tx_active || rtmIsArming()) return;
       if (!(usrConf.fm_override_enabled && usrConf.gps_en)) return;
-      if (isFmArmed())
+      if (isFmArmed() && fmIsReturning())
+      {
+        // V2.5-Evo - 2026-10-07 - T-9: THE BUG - this magnet disarm also ended an auto-return under way; SOP-040 rule 4
+        // says auto-return ends only by arriving, a fault or a remote power cycle. THE FIX: ignored while the buggy
+        // confirms it is RETURNING (fmIsReturning()), serial line only. Parked or following, the disarm is unchanged.
+        Serial.println("MAG [TX] Follow-Me disarm ignored: the buggy is on an auto-return back to you (it ends by arriving, a fault or a remote power cycle)");
+      }
+      else if (isFmArmed())
       {
         // FM already armed → DISARM via the toggle-combo's own disarm path. fmDisarm(true) sends
         // 0xF2/0 and shows "St" with no buzz — so the magnet disarm feels and behaves exactly like the

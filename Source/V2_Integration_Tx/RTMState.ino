@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - T-9: the toggle-combo Follow-Me disarm (after riding) is ignored while the buggy confirms an
+//   auto-return RETURNING (fmIsReturning()); serial line only. No confStruct change.
 // V2.5-Evo - 2026-10-07 - T-1: the pre-arm distance refusal and the two squeeze timeouts keep the throttle cap at 0 while
 //   the trigger is held (rtm_arrival_cap_hold) until one full release; released -> 255 as before. The 1 s LEFT cancel
 //   is unchanged. No confStruct change.
@@ -1683,6 +1685,15 @@ void cycleFmMode()
   {
     if (fm_throttle_seen)
     {
+      // V2.5-Evo - 2026-10-07 - T-9: THE BUG - this deliberate disarm also ended an auto-return that was under way
+      // (the buggy dropped Follow-Me mid-return), but SOP-040 rule 4 says auto-return ends only by arriving, a fault or
+      // a remote power cycle. THE FIX: while the buggy confirms it is RETURNING (fmIsReturning()) the gesture is ignored,
+      // serial line only. Parked (waiting) or following, the disarm works exactly as before.
+      if (fmIsReturning())
+      {
+        Serial.println("FM [TX] disarm gesture ignored: the buggy is on an auto-return back to you (it ends by arriving, a fault or a remote power cycle)");
+        return;
+      }
       // User already rode — treat gesture as disarm toggle
       Serial.println("FM [TX] disarm: the disarm gesture after riding -> 0xF2/0");   // V2.5-Evo - 2026-09-19
       fmDisarm(true);   // COMMANDED: the rider made the disarm gesture → silent

@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - S-8: setup() calls txBootIdInit() before initTasks(); prototype for txBootIdInit(). No confStruct
+//   change.
 // V2.5-Evo - 2026-10-07 - H-4: auto-sleep on buggy silence now also needs 30 s with no rider input and the trigger
 //   at or below 20; the user-idle sleep is unchanged. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-07-20 - BLE re-enable deep-fix (Rex): the per-loop bleTelemetryLoop()/extTelemNotify() pushes are REMOVED from loop(); the periodic BLE telemetry push now lives in the dedicated Core-0 bleNotifyTask (see Init.ino/BLE.ino) so BLE cadence can't couple to display-render timing.
@@ -55,6 +57,7 @@ bool txGpsGoodFix();
 // RTM & FM State Machine Functions (defined in RTMState.ino)
 void runRtmLoop();
 void runFmLoop();
+void txBootIdInit();          // V2.5-Evo - 2026-10-07 - S-8: pick this power-on's boot ID and queue its first burst (RTMState.ino)
 void setRtmArmed();
 void cycleFmMode();
 void cycleFmModeArmed();
@@ -129,6 +132,9 @@ void setup()
   initStorage();
   
   checkCharger();
+  // V2.5-Evo - 2026-10-07 - S-8: choose the boot ID and queue its first 0xF1 burst BEFORE the radio task starts, so it
+  // is the first thing this remote sends (after an unlock, if it boots locked). usrConf is loaded by initStorage().
+  txBootIdInit();
   initTasks();
   runBootSequence();
   applyConfigSettings();

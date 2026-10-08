@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-07 - TX protocol round: TelemetryPacket gains index 19 rx_state_flags (20 bytes, appended; an old RX
+//   never sends it and 0 means nothing to report), RX_STATE_* bits, FM_FLAG_RETURN_STANDING (fm_flags bit 6), and the
+//   RAM stamps rx_rtm_fault_rise_ms / rx_rtm_arrived_rise_ms / rtm_start_sent_ms. No confStruct change: sizeof stays 136,
+//   SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-07 - A-1 (TX part): fm_status_rtm_on_ms / fm_status_rtm_off_streak (the buggy's RTM bit per arrival).
 //   RAM only: sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-07 - SOP-040 gesture rule: triggerReleased() / TRIGGER_RELEASED_MAX (thr_scaled < 10). No struct change.
@@ -152,6 +156,7 @@
 #include "FS.h"
 #include "SPIFFS.h"
 #include "mbedtls/base64.h"
+#include <Preferences.h>   // V2.5-Evo - 2026-10-07 - S-8: the last boot ID lives in NVS (not confStruct), see txBootIdInit()
 
 // --- V2.5-Evo: TX GPS support (BN-220 on Serial1) ---
 // Added for Priority 1: read TX GPS speed and drive the SP display mode
@@ -651,8 +656,37 @@ struct __attribute__((packed)) TelemetryPacket {
                                       //   Default 0 (not 0xFF) so that before any RX packet arrives no FM bit reads as set — matches
                                       //   the RX-side default. Written by the generic index-addressed telemetry unpack in Radio.ino.
     uint8_t rx_bearing_to_tx = 0xFF;  // index 17 — bearing from buggy toward rider÷2; 0xFF = N/A
-    uint8_t link_quality = 0;         // index 18 (must be last)
+    uint8_t link_quality = 0;         // index 18 (was "must be last": it is rotated like every other index and read by name)
+    // V2.5-Evo - 2026-10-07 - index 19 - rx_state_flags: how the BUGGY ended a return (bit map: RX_STATE_* below).
+    // APPENDED, so every older index keeps its place. An older RX never sends index 19: the byte stays 0 and every
+    // reader below treats 0 as "nothing to report", so a new remote with an old buggy behaves exactly as before.
+    uint8_t rx_state_flags = 0;       // index 19
 } telemetry;
+static_assert(sizeof(TelemetryPacket) == 20, "TelemetryPacket must be 20 bytes (indices 0-19) to match the RX");
+
+// ============================================================
+// V2.5-Evo - 2026-10-07 - telemetry.rx_state_flags (index 19) bit map, as the RX assembles it (RX RTMState.ino).
+//   bit0 RTM FAULT-STOP, sticky ~6 s: the buggy ended Return-To-Me on a fault -> "St" + stop buzz, cap 255 (SOP-039).
+//   bit1 RTM ARRIVED, sticky ~6 s: the buggy ended Return-To-Me at its stop distance -> silent "St", near-zero cap
+//        until one full release (SOP-040 arrival rule).
+//   bit2 HAND-BACK CAP STANDING on the buggy (display only; the remote adds no cap for it).
+//   bit3 the buggy holds this remote's boot ID (S-8).  bit4 the buggy's RTM refresh expiry is armed (H-1).
+// The two sticky bits are acted on by their RISING EDGE (latched where the byte arrives, Radio.ino), so a bit left
+// over from the previous run (sticky for 6 s) cannot end a new one.
+// ============================================================
+#define RX_STATE_RTM_FAULT     0x01
+#define RX_STATE_RTM_ARRIVED   0x02
+#define RX_STATE_HANDBACK_CAP  0x04
+#define RX_STATE_BOOT_ID_HELD  0x08
+#define RX_STATE_REFRESH_ARMED 0x10
+// rx_rtm_fault_rise_ms / rx_rtm_arrived_rise_ms - millis() of the index-19 ARRIVAL on which that bit rose (it was
+// clear on the previous arrival). 0 = never. Written only by waitForTelemetry (Radio.ino); read by runRtmLoop(),
+// which acts only on a rise stamped after the current run went ACTIVE. One aligned word each, no tearing.
+volatile unsigned long rx_rtm_fault_rise_ms   = 0;
+volatile unsigned long rx_rtm_arrived_rise_ms = 0;
+// rtm_start_sent_ms - millis() when an 0xF1/1 ("RTM active") packet last went on the air. Written by sendData; read
+// by the loop task for the Q-2 confirmation count and the H-1 refresh start. Twin of rtm_stop_sent_ms.
+volatile unsigned long rtm_start_sent_ms      = 0;
 
 // ============================================================
 // V2.5-Evo - 2026-07-20 - Batch T (Fable FM v1.4): telemetry.fm_flags (index 16) bit map.
@@ -669,7 +703,8 @@ struct __attribute__((packed)) TelemetryPacket {
 // by the stick while it is deflected and resumes on centring; Gate 4 stands down so the remote does not exit the run
 // the buggy is deliberately continuing). Bit 5 = a takeover is STANDING on this tick (display only). Both are read
 // only under the FM_LINK_HEALTHY_MS window like the other flags - a stale packet reads as cancel, never as takeover.
-// An old RX never sets either bit, so a new remote with an old buggy cancels everywhere, as before. Bit 6 stays free.
+// An old RX never sets either bit, so a new remote with an old buggy cancels everywhere, as before.
+// (V2.5-Evo - 2026-10-07 - bit 6 is no longer free: see FM_FLAG_RETURN_STANDING below.)
 #define FM_FLAG_STEER_TAKEOVER 0x10  // bit4: RX steer_during_auto is 1 (take over) - Gate 4 steer-exit stands down
 #define FM_FLAG_STEER_ACTIVE   0x20  // bit5: a stick takeover is standing on the RX right now (display only)
 // V2.5-Evo - 2026-09-19 - bit 7: the RX's EFFECTIVE auto-return mode (its stored fm_return_mode unless this remote has
@@ -677,6 +712,10 @@ struct __attribute__((packed)) TelemetryPacket {
 // shown as "Ar" (ON) / "AO" (OFF) at that moment. Bit 6 is reserved for the accepted-mode echo (which will need its own
 // telemetry byte if it needs 3 bits).
 #define FM_FLAG_RETURN_ON 0x80  // bit7: RX effective auto-return mode is ON
+// V2.5-Evo - 2026-10-07 - bit 6 (audit S-7): AUTO-RETURN STANDING on the buggy (its Follow-Me is in FM_RETURN). With
+// bit 1 (engaged) also set the buggy is RETURNING (moving toward the rider); with bit 1 clear it is WAITING (parked).
+// An old RX never sets it, so the remote then draws following / armed exactly as before.
+#define FM_FLAG_RETURN_STANDING 0x40  // bit6: auto-return standing (bit 1 tells returning from waiting)
 // Link-health window: the TX treats the RX link as alive only while a packet has landed within
 // this many ms (matches the existing `millis()-last_packet < 1000` failsafe window used for the
 // bargraphs/vibration connectivity checks). Used by the FM readiness OR and the engaged gate.
@@ -879,7 +918,7 @@ volatile uint8_t steer_sent = 0; // Steering value actually sent over radio
 // reordering; std::atomic release/acquire prevents sendData from observing count>0
 // while type/value are still stale in the loop task's store buffer.
 std::atomic<uint8_t> rtm_meta_type  {0};    // 0xF1=RTM state, 0xF2=FM override
-std::atomic<uint8_t> rtm_meta_value {0};    // for 0xF1: 0=inactive 1=active; for 0xF2: 0-3 FM mode
+std::atomic<uint8_t> rtm_meta_value {0};    // for 0xF1: 0=inactive 1=active 2=refresh (H-1) 0x80|id=boot ID (S-8); for 0xF2: the mode byte
 std::atomic<uint8_t> rtm_meta_count {0};    // bursts remaining; 0 = idle (value is always 0 or 3)
 // V2.5-Evo - 2026-10-07 - H-1 / L-1: the three atomics above are now the HEAD of a 2-deep queue (a second slot
 // lives in Radio.ino). rtm_meta_count == 0 still means "nothing queued at all", because the second slot is

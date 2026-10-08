@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-07 - TX protocol round: S-8 boot ID (txBootIdInit() at power-on, different from the last one kept
+//   in NVS, then txBootIdTick() every 10 s on a fresh link), H-1 refresh (rtmRefreshTick(): one 0xF1/0x02 a second
+//   while RTM_ACTIVE), M-1 0xF2 bit 7 on the four gesture declarations only. Both new 0xF1 values go into a free
+//   queue slot only. No confStruct change.
 // V2.5-Evo - 2026-10-07 - P-12: comments only - the single-slot queue notes (R-6 header, fmRequestKeepaliveNow(), the
 //   runFmLoop() guard) now say the queue is 2-deep and why the waits are kept.
 // V2.5-Evo - 2026-10-07 - defects b / c: during the RTM arm wait "rn" alternates with the arrow (it was overdrawn every
@@ -375,6 +379,13 @@ static uint8_t fmEncodeModeByte(uint8_t mode)
   else if (last_fm_return_mode == 1) ret_bits = 2;   // 10 = ON for the session
   return (uint8_t)((mode & 0x07) | (uint8_t)(ret_bits << 5));
 }
+
+// V2.5-Evo - 2026-10-07 - M-1: 0xF2 bit 7 = "FRESH DECLARATION". Set ONLY on a declaration the rider just made with a
+// gesture (a Follow-Me arm, a mode/station change); NEVER on the 30 s keepalive and never on a disarm (mode 0). After a
+// Follow-Me fault the buggy ignores a mode 1-5 without this bit, so a keepalive from a remote that missed the fault can
+// no longer re-arm it, while a deliberate re-arm still can. Every RX built before this round ignores bit 7 (it reads the
+// mode from bits 0-2 and the override from bits 5-6), so the bit is harmless to an older buggy.
+static const uint8_t kFmFreshDeclBit = 0x80;
 
 // fmRequestKeepaliveNow - ask runFmLoop()'s 30 s 0xF2 keepalive to go out on its next tick.
 // Used after the override changes while FM is armed, so the buggy learns the new value in ~100 ms
@@ -1085,9 +1096,92 @@ void rtmFmStopFlush()
   Serial.println("RTM [TX] stop flush: 0xF1/0 + 0xF2/0 sent before going quiet");
 }
 
+// ============================================================
+// V2.5-Evo - 2026-10-07 - S-8: THIS REMOTE'S BOOT ID (so the buggy can tell that the remote was switched off and on)
+// THE PROBLEM: a remote that is power-cycled mid-return looks to the buggy exactly like one that never went away, so a
+// standing return-to-me or auto-return carried on with nobody's intent behind it (SOP-040 auto-return rule 5).
+// THE FIX: at every power-on the remote picks a random 7-bit ID and sends it as an 0xF1 packet whose VALUE is
+// 0x80 | id. The buggy remembers the last ID; a DIFFERENT one means the remote rebooted, and the buggy cancels any
+// standing return. Every RX firmware handles 0xF1 values 0 and 1 only and ignores every other value, so an older buggy
+// simply ignores the packet.
+// The ID must differ from the previous power-on's (a repeat would hide the reboot), so the last one is kept in NVS
+// (Preferences namespace "bremote_tx", key "boot_id") - NOT in confStruct, so no struct change and no SPIFFS write.
+// If NVS cannot be opened the ID is still random (1 in 128 chance of a repeat) and one line says so.
+// Timing: a 3-packet burst queued in setup() before the radio task starts, so it is the first thing sent (after the
+// unlock on a remote that boots locked); then ONE packet whenever the link becomes fresh and every 10 s while it stays
+// fresh. These are lowest priority: queueMetaPacketIfFree() puts them only into a free slot and never over a pending
+// 0xF1/0 or 0xF1/1 (a refused one is retried on the next tick).
+// ============================================================
+static uint8_t       tx_boot_id         = 0;    // 0-127, chosen once per power-on
+static unsigned long tx_boot_id_last_ms = 0;    // millis() of the last repeat queued; 0 = send at the next fresh link
+static const unsigned long kTxBootIdRepeatMs = 10000UL;
+
+// txBootIdInit - choose this power-on's boot ID (different from the last one stored in NVS), store it, and queue the
+// first 0xF1/(0x80|id) burst. Called once from setup() before initTasks(). Inputs: NVS, esp_random().
+// Side effects: one NVS write per power-on, one queued burst, one serial line. Not static: setup() calls it.
+void txBootIdInit()
+{
+  Preferences prefs;
+  uint8_t last = 0xFF;                                   // 0xFF = none stored (never a valid 7-bit ID)
+  const bool nvs_ok = prefs.begin("bremote_tx", false);
+  if (nvs_ok) last = prefs.getUChar("boot_id", 0xFF);
+  uint8_t id = (uint8_t)(esp_random() & 0x7F);
+  if (id == last) id = (uint8_t)((id + 1 + (esp_random() % 126)) & 0x7F);   // offset 1..126: can never equal last
+  if (nvs_ok)
+  {
+    prefs.putUChar("boot_id", id);
+    prefs.end();
+  }
+  tx_boot_id = id;
+  queueMetaPacketIfFree(0xF1, (uint8_t)(0x80 | id), 3);
+  if (last == 0xFF) Serial.printf("RTM [TX] boot ID %u (none stored before) queued as 0xF1/0x%02X\n", (unsigned)id, (unsigned)(0x80 | id));
+  else              Serial.printf("RTM [TX] boot ID %u (previous %u) queued as 0xF1/0x%02X\n", (unsigned)id, (unsigned)last, (unsigned)(0x80 | id));
+  if (!nvs_ok) Serial.println("RTM [TX] boot ID: NVS not available - the ID is random but may repeat the last one");
+}
+
+// txBootIdTick - repeat the boot ID while the link is fresh (once when it becomes fresh, then every 10 s).
+// Inputs: now, usrConf.paired, radio activity, last_packet. Side effects: may queue one 0xF1 packet. Loop task only.
+static void txBootIdTick(unsigned long now)
+{
+  if (!usrConf.paired || !isRadioActivityEnabled()) return;
+  const bool link_fresh = (last_packet != 0) && ((now - last_packet) < FM_LINK_HEALTHY_MS);
+  if (!link_fresh) { tx_boot_id_last_ms = 0; return; }   // send again as soon as the link comes back
+  if (tx_boot_id_last_ms != 0 && (now - tx_boot_id_last_ms) < kTxBootIdRepeatMs) return;
+  if (queueMetaPacketIfFree(0xF1, (uint8_t)(0x80 | tx_boot_id), 1)) tx_boot_id_last_ms = (now != 0) ? now : 1;
+}
+
+// ============================================================
+// V2.5-Evo - 2026-10-07 - H-1: THE RTM REFRESH ("this remote is still running Return-To-Me")
+// THE PROBLEM: the buggy's RTM flag is set by one 0xF1/1 burst and has no expiry, so if every later 0xF1/0 is lost
+// (link loss, a remote that went quiet) the buggy keeps returning with nobody's intent behind it.
+// THE FIX: while RTM_ACTIVE this remote sends ONE 0xF1 packet with VALUE 0x02 about once a second, starting at least
+// 1 s after the last 0xF1/1 packet went out (the activation burst has drained). The buggy ends RTM on a fault if a
+// remote that has refreshed once stops refreshing for 5 s. A refresh never ACTIVATES RTM on the buggy, and an older RX
+// ignores value 2. It stops on every RTM end, because it is only queued from the RTM_ACTIVE case; a refresh still
+// queued when RTM ends is overwritten in place by the 0xF1/0 rtmDisengage() queues (same-type rule).
+// Free slot only (queueMetaPacketIfFree()), so it can never replace a pending 0xF1/0 or 0xF1/1.
+// ============================================================
+static unsigned long rtm_refresh_last_ms = 0;   // millis() of the last refresh queued
+static const unsigned long kRtmRefreshPeriodMs = 1000UL;
+
+// rtmRefreshTick - queue the next refresh if one is due. Inputs: now, rtm_start_sent_ms, rtm_active_start_ms,
+// rtm_refresh_last_ms, the queue. Side effects: may queue one 0xF1/0x02. Called only from the RTM_ACTIVE case.
+static void rtmRefreshTick(unsigned long now)
+{
+  const unsigned long started = rtm_start_sent_ms;
+  if (started == 0 || (long)(started - rtm_active_start_ms) < 0) return;   // this run's 0xF1/1 is not on the air yet
+  if (metaQueuePending(0xF1, 1, false)) return;                             // the activation burst is still draining
+  if ((now - started) < kRtmRefreshPeriodMs) return;                        // >= 1 s after its last packet
+  if ((long)(rtm_refresh_last_ms - rtm_active_start_ms) >= 0 &&
+      (now - rtm_refresh_last_ms) < kRtmRefreshPeriodMs) return;           // one per second within this run
+  if (queueMetaPacketIfFree(0xF1, 0x02, 1)) rtm_refresh_last_ms = now;
+}
+
 // ---- Called from loop() every ~110ms ----
 void runRtmLoop()
 {
+  // V2.5-Evo - 2026-10-07 - S-8: boot ID repeats, whatever the RTM enable says (a reboot matters to auto-return too).
+  txBootIdTick(millis());
   // V2.5-Evo - 2026-10-07 - H-1: runs BEFORE the enable check below, on purpose - see rtmRxStateWatch().
   rtmRxStateWatch(millis());
   // V2.5-Evo - 2026-10-07 - A-1: the kept arrival cap is lifted on a full release whatever the RTM enable says.
@@ -1238,6 +1332,9 @@ void runRtmLoop()
           }
         }
       }
+
+      // V2.5-Evo - 2026-10-07 - H-1: still ACTIVE after every gate - send the once-a-second refresh if one is due.
+      rtmRefreshTick(now);
 
       // Display handled by renderRtmInfoDisplay() in loop() when rtm_tx_active==true
       break;
@@ -1423,7 +1520,7 @@ void cycleFmMode()
       // Large-font mode confirm: LET_F + mode digit (1/2/3). V2.5-Evo - 2026-10-06 - held 2 s by
       // showFmLabelHeld() (Display.ino) WITHOUT blocking loop(); was a blocking gpsKeepAliveDelay(2000).
       showFmLabelHeld(last_fm_mode);
-      queueMetaPacketBurst(0xF2, fmEncodeModeByte(last_fm_mode));   // V2.5-Evo - 2026-09-19 - carries the override bits
+      queueMetaPacketBurst(0xF2, (uint8_t)(fmEncodeModeByte(last_fm_mode) | kFmFreshDeclBit));   // V2.5-Evo - 2026-10-07 - M-1: a gesture -> bit 7
       fm_last_sync_ms = millis();
       fm_arm_ms       = millis();   // reset arm window — user is actively choosing a mode
     }
@@ -1475,7 +1572,7 @@ void cycleFmMode()
   // was a blocking gpsKeepAliveDelay(2000). The 0xF2 below now goes out straight away, not 2 s later.
   showFmLabelHeld(last_fm_mode);
 
-  queueMetaPacketBurst(0xF2, fmEncodeModeByte(last_fm_mode));   // V2.5-Evo - 2026-09-19 - carries the override bits
+  queueMetaPacketBurst(0xF2, (uint8_t)(fmEncodeModeByte(last_fm_mode) | kFmFreshDeclBit));   // V2.5-Evo - 2026-10-07 - M-1: the arm gesture -> bit 7
 }
 
 // Called by handleGearToggle(-1) simple LEFT hold 2s when FM is armed (Hall.ino checks isFmArmed()).
@@ -1496,7 +1593,7 @@ void cycleFmModeArmed()
   // Large-font mode confirm: LET_F + mode digit (1/2/3). V2.5-Evo - 2026-10-06 - held 2 s by
   // showFmLabelHeld() (Display.ino) WITHOUT blocking loop(); was a blocking gpsKeepAliveDelay(2000).
   showFmLabelHeld(last_fm_mode);
-  queueMetaPacketBurst(0xF2, fmEncodeModeByte(last_fm_mode));   // V2.5-Evo - 2026-09-19 - carries the override bits
+  queueMetaPacketBurst(0xF2, (uint8_t)(fmEncodeModeByte(last_fm_mode) | kFmFreshDeclBit));   // V2.5-Evo - 2026-10-07 - M-1: a gesture -> bit 7
   fm_last_sync_ms = millis();              // reset keepalive — just synced
   fm_arm_ms       = millis();             // reset arm window — user is actively choosing a mode
 }
@@ -1663,7 +1760,7 @@ bool fmStepStationFromMagnet()
   Serial.println(last_fm_mode);
 
   // Tell the buggy first, so the transit starts while the rider is still reading the confirm.
-  queueMetaPacketBurst(0xF2, fmEncodeModeByte(last_fm_mode));
+  queueMetaPacketBurst(0xF2, (uint8_t)(fmEncodeModeByte(last_fm_mode) | kFmFreshDeclBit));   // V2.5-Evo - 2026-10-07 - M-1: a gesture -> bit 7
   fm_last_sync_ms = millis();              // reset keepalive - just synced
   fm_arm_ms       = millis();              // reset arm window - the rider is actively choosing
 

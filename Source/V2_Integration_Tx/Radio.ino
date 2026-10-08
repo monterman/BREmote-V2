@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-07 - TX protocol round: queueMetaPacketIfFree() / metaQueuePending() for the boot ID (S-8) and the
+//   RTM refresh (H-1) - free slot only, never update or evict a pending burst; sendData() stamps rtm_start_sent_ms on
+//   every 0xF1/1 and keeps at most 3 non-control cycles in a row (meta budget); waitForTelemetry() latches the rising
+//   edges of rx_state_flags (index 19) bits 0/1. No packet format change on the remote's side of the link.
 // V2.5-Evo - 2026-10-07 - A-1: waitForTelemetry() records each fm_status arrival's RTM bit (fm_status_rtm_on_ms,
 //   fm_status_rtm_off_streak) so the remote can follow the buggy ending RTM. No packet format change.
 // V2.5-Evo - 2026-10-07 - P-8: the meta queue's second slot follows an explicit priority 0xF1 > 0xF2 > 0xF4; a burst
@@ -250,6 +254,17 @@ void sendData(void *parameter)
   // (i.e., every 5 control cycles = 2Hz at the 100ms base cadence).
   static uint8_t gps_cycle = 0;
 
+  // ---------------------------------------------------------------------
+  // V2.5-Evo - 2026-10-07 - META BUDGET: AT MOST 3 NON-CONTROL CYCLES IN A ROW
+  // Every meta packet (0xF1/0xF2/0xF4) and every GPS meta cycle (0xF3) replaces a control packet, and the buggy
+  // holds the last throttle command until the next one arrives. The 2-deep queue can hold two 3-packet bursts, and
+  // a GPS cycle can fall right after them, so the control stream could pause for 600-700 ms. THE RULE: after 3
+  // consecutive non-control cycles (300 ms) the next cycle is ALWAYS a control packet; the pending meta / GPS
+  // packet simply goes one cycle later. Counted here, reset by every control packet.
+  // ---------------------------------------------------------------------
+  static uint8_t non_control_run = 0;
+  const uint8_t  kMaxNonControlRun = 3;
+
   // -----------------------------------------------------------------------
   // Feature A — adaptive RF collision backoff (adapted from Ludwig 2.2.7).
   // Identifier names kept 1:1 with Ludwig for cross-fork diffability.
@@ -300,7 +315,7 @@ void sendData(void *parameter)
       // V2.5-Evo - 2026-10-07 - H-1 / L-1: the packet now comes from the 2-deep queue (metaQueueTake(), which
       // also counts it off). Same one-packet-per-cycle cadence as before.
       uint8_t meta_type = 0, meta_value = 0;
-      if (metaQueueTake(meta_type, meta_value))
+      if (non_control_run < kMaxNonControlRun && metaQueueTake(meta_type, meta_value))   // V2.5-Evo - 2026-10-07 - meta budget
       {
         uint8_t metaPkt[6];
         memcpy(metaPkt, usrConf.dest_address, 3);
@@ -322,6 +337,10 @@ void sendData(void *parameter)
         // V2.5-Evo - 2026-10-07 - H-1: remember when an "RTM off" went on the air, so the loop task can tell a
         // fresh "buggy still in RTM" report from the cached one that predates this stop.
         if (meta_type == 0xF1 && meta_value == 0) rtm_stop_sent_ms = millis();
+        // V2.5-Evo - 2026-10-07 - Q-2 / H-1: and when an "RTM on" did, so the loop task knows when the 0xF1/1 burst
+        // has drained (its confirmation count and the refresh start are timed from the last one).
+        if (meta_type == 0xF1 && meta_value == 1) rtm_start_sent_ms = millis();
+        non_control_run++;   // V2.5-Evo - 2026-10-07 - meta budget, see below
         num_sent_packets++;
         vTaskDelay(pdMS_TO_TICKS(10));
         radio.implicitHeader(6);
@@ -344,6 +363,15 @@ void sendData(void *parameter)
                         && usrConf.gps_en
                         && gps_tx.location.isValid()
                         && gps_tx.location.age() < usrConf.tx_gps_stale_timeout_ms;
+      // V2.5-Evo - 2026-10-07 - meta budget: a GPS cycle due right after 3 non-control cycles waits one cycle
+      // (gps_cycle 4 -> the next pass makes it 0 again), so the >= 2 Hz GPS rate loses at most one 100 ms slot.
+      if (send_gps_meta && non_control_run >= kMaxNonControlRun)
+      {
+        send_gps_meta = false;
+        gps_cycle     = 4;
+      }
+      if (send_gps_meta) non_control_run++;
+      else               non_control_run = 0;   // this cycle sends a control packet
 
       if (send_gps_meta)
       {
@@ -626,6 +654,21 @@ void waitForTelemetry(void *parameter)
             fm_flags_prev_arrival = rcvArray[4];
           }
 
+          // V2.5-Evo - 2026-10-07 - A-1 / Q-3: index 19 (rx_state_flags) - latch the RISING EDGE of the buggy's two sticky
+          // "how Return-To-Me ended" bits on the ARRIVAL of the byte, like the Follow-Me fault edge above. Both bits are
+          // held ~6 s by the buggy, so a bit still standing from the previous run is not a new end: only an arrival that
+          // shows the bit after one that did not is stamped. runRtmLoop() acts on a stamp later than its own ACTIVE start.
+          // An older RX never sends index 19 (it rotates 19 indices), so nothing is ever stamped and the fm_status
+          // fallback in runRtmLoop() keeps working exactly as before. The byte itself was stored above (index < 20).
+          if (rcvArray[3] == offsetof(TelemetryPacket, rx_state_flags))
+          {
+            static uint8_t rx_state_prev_arrival = 0;
+            const unsigned long t = millis();
+            if ((rcvArray[4] & RX_STATE_RTM_FAULT)   && !(rx_state_prev_arrival & RX_STATE_RTM_FAULT))   rx_rtm_fault_rise_ms   = (t != 0) ? t : 1;
+            if ((rcvArray[4] & RX_STATE_RTM_ARRIVED) && !(rx_state_prev_arrival & RX_STATE_RTM_ARRIVED)) rx_rtm_arrived_rise_ms = (t != 0) ? t : 1;
+            rx_state_prev_arrival = rcvArray[4];
+          }
+
           // Speed conversion: RX sends speed in km/h; convert to the unit selected in web config.
           // 0xFF = no GPS data sentinel (V2.5-Evo fix: old V2 sentinel 99 km/h removed — collided with real speed)
           if (rcvArray[3] == 2 && telemetry.foil_speed != 0xFF)
@@ -748,6 +791,59 @@ void queueMetaPacketBurst(uint8_t type, uint8_t value)
   // burst is dropped. Its senders re-send (the FM keepalive retries, aux is a user action, the H-1 watch
   // re-sends 0xF1/0 on the next report).
   portEXIT_CRITICAL(&metaQueueMux);
+}
+
+// ============================================================
+// V2.5-Evo - 2026-10-07 - LOWEST-PRIORITY META PACKETS: THE BOOT ID (S-8) AND THE RTM REFRESH (H-1)
+// Both are 0xF1 packets, and queueMetaPacketBurst() rule 1 updates a queued burst OF THE SAME TYPE in place. So a boot
+// ID or a refresh queued the normal way would REPLACE a pending 0xF1/0 ("RTM off") or 0xF1/1 ("RTM on") and the buggy
+// would never hear the state change - the exact failure the 2-deep queue exists to prevent. THE RULE: these two go
+// only into a FREE slot, never update or evict anything, and are refused while any burst of their type is pending.
+// They repeat on their own schedule (boot ID every 10 s, refresh every 1 s), so a refused one is simply retried.
+// Inputs: type, value, count (sends; 1 for the repeating packets - every meta packet replaces a control packet).
+// Returns: true if queued. Side effects: the queue only. Any task; critical section like queueMetaPacketBurst().
+// ============================================================
+bool queueMetaPacketIfFree(uint8_t type, uint8_t value, uint8_t count)
+{
+  bool queued = false;
+  if (count == 0) return false;
+  portENTER_CRITICAL(&metaQueueMux);
+  const uint8_t head_count = rtm_meta_count.load(std::memory_order_relaxed);
+  const uint8_t head_type  = rtm_meta_type.load(std::memory_order_relaxed);
+  const bool    same_type  = (head_count > 0 && head_type == type) || (meta_next_count > 0 && meta_next_type == type);
+  if (!same_type)
+  {
+    if (head_count == 0)
+    {
+      rtm_meta_type.store(type, std::memory_order_relaxed);
+      rtm_meta_value.store(value, std::memory_order_relaxed);
+      rtm_meta_count.store(count, std::memory_order_release);
+      queued = true;
+    }
+    else if (meta_next_count == 0)
+    {
+      meta_next_type  = type;
+      meta_next_value = value;
+      meta_next_count = count;
+      queued = true;
+    }
+  }
+  portEXIT_CRITICAL(&metaQueueMux);
+  return queued;
+}
+
+// metaQueuePending - V2.5-Evo - 2026-10-07 - is a packet of this type (and, if any_value is false, this exact value)
+// still waiting to go out in either slot? Used to tell "the 0xF1/1 burst has drained" (Q-2, H-1 refresh start).
+// Inputs: type, value, any_value. Output: true = pending. No side effects. Any task.
+bool metaQueuePending(uint8_t type, uint8_t value, bool any_value)
+{
+  bool pending = false;
+  portENTER_CRITICAL(&metaQueueMux);
+  if (rtm_meta_count.load(std::memory_order_relaxed) > 0 && rtm_meta_type.load(std::memory_order_relaxed) == type &&
+      (any_value || rtm_meta_value.load(std::memory_order_relaxed) == value)) pending = true;
+  if (meta_next_count > 0 && meta_next_type == type && (any_value || meta_next_value == value)) pending = true;
+  portEXIT_CRITICAL(&metaQueueMux);
+  return pending;
 }
 
 // metaQueueTake - hand sendData() the next meta packet to transmit, if any.

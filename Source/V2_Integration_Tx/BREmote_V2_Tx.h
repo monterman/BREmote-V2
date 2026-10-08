@@ -705,6 +705,8 @@ volatile unsigned long rtm_start_sent_ms      = 0;
 // only under the FM_LINK_HEALTHY_MS window like the other flags - a stale packet reads as cancel, never as takeover.
 // An old RX never sets either bit, so a new remote with an old buggy cancels everywhere, as before.
 // (V2.5-Evo - 2026-10-07 - bit 6 is no longer free: see FM_FLAG_RETURN_STANDING below.)
+// V2.5-Evo - 2026-10-07 - Q-5: Gate 4 now stands down whatever bit 4 says (steering never ends a return on the remote),
+// so the remote no longer reads bit 4; it stays defined because the buggy still sends it.
 #define FM_FLAG_STEER_TAKEOVER 0x10  // bit4: RX steer_during_auto is 1 (take over) - Gate 4 steer-exit stands down
 #define FM_FLAG_STEER_ACTIVE   0x20  // bit5: a stick takeover is standing on the RX right now (display only)
 // V2.5-Evo - 2026-09-19 - bit 7: the RX's EFFECTIVE auto-return mode (its stored fm_return_mode unless this remote has

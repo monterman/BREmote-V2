@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - Q-5: Gate 4 (steer exit) always stands down - steering never ends a manual return (SOP-040);
+//   one serial line per run when the stick is pushed. No confStruct change.
 // V2.5-Evo - 2026-10-07 - Q-3 / Q-1 / Q-2 / Q-6: the remote ends its manual return when the BUGGY says how it ended:
 //   rx_state_flags bit 0 (fault) -> "St" + stop buzz, cap 255; bit 1 (arrived) -> silent "St", cap 0 until one full
 //   release; the fm_status bit-1 two-arrival end stays as the fallback (old RX). An RTM the buggy never confirms is
@@ -482,7 +484,8 @@ void setRtmArmed()
 // ---- Called to disengage RTM from the gesture layer (user-initiated) ----
 // "St" confirm handled inside rtmDisengage().
 // Every caller of THIS wrapper is a deliberate rider action (the magnet toggle in Hall.ino and the
-// Gate 4 steer-exit), so it always passes commanded = true → no STOP buzz.
+// lock gesture; V2.5-Evo - 2026-10-07 - Q-5: the Gate 4 steer-exit no longer calls it), so it always passes
+// commanded = true → no STOP buzz.
 static void setRtmDisarmed()
 {
   rtmDisengage(true);
@@ -1415,7 +1418,8 @@ void runRtmLoop()
         rtm_release_ms = 0;
       }
 
-      // Gate 4: steering exit (P8 — any significant steering input exits RTM)
+      // Gate 4: steering exit (P8 — any significant steering input exited RTM). SUPERSEDED 2026-10-07 by Q-5 below:
+      // the gate never exits any more; the 2026-09-19 note that follows is kept as history.
       // V2.5-Evo - 2026-09-19 - THE GATE FOLLOWS THE BUGGY. usrConf.rtm_steer_exit_on_input is no
       // longer read (deprecated, see BREmote_V2_Tx.h). Whether the stick cancels or takes over an
       // automatic return is the buggy's steer_during_auto setting, echoed in fm_flags bit 4 and
@@ -1425,22 +1429,16 @@ void runRtmLoop()
       // so the remote must NOT end the run - the gate stands down and says so once per run. During
       // the ~2 s handshake after a setting change the two boards may disagree for one telemetry
       // rotation; both directions fail to cancel or to ignore, never to an unguarded takeover.
+      // V2.5-Evo - 2026-10-07 - Q-5: GATE 4 ALWAYS STANDS DOWN. THE BUG: with the buggy echoing steer_during_auto 0 (or a
+      // stale link) a push past 20 counts ended the return - with the trigger HELD - and lifted the cap to 255 mid-squeeze.
+      // Owner rule (SOP-040, SOP-039 rule 7): steering is an aid, never an exit; a manual return ends only by arriving, a
+      // fault, the trigger released 4 s (Gate 3), the lock, or a remote power cycle. The remote now never exits on the
+      // stick; whether the stick cancels or takes over the automatic STEERING is the buggy's own steer_during_auto
+      // setting, applied on the buggy. One serial line per run when the stick is first pushed.
+      if (toggle_blocked_by_steer && abs((int)steer_scaled - 127) > 20 && !rtm_gate4_takeover_printed)
       {
-        const bool link_fresh     = (last_packet != 0) && ((now - last_packet) < FM_LINK_HEALTHY_MS);
-        const bool buggy_takeover = link_fresh && ((telemetry.fm_flags & FM_FLAG_STEER_TAKEOVER) != 0);
-        if (toggle_blocked_by_steer && abs((int)steer_scaled - 127) > 20)
-        {
-          if (!buggy_takeover)
-          {
-            setRtmDisarmed();   // COMMANDED: the rider deliberately steered out → silent
-            break;
-          }
-          if (!rtm_gate4_takeover_printed)
-          {
-            rtm_gate4_takeover_printed = true;
-            Serial.println("RTM [TX] Gate 4: stick pushed, but the buggy says the stick takes over (steer_during_auto 1) - not exiting; the buggy resumes when the stick centres");
-          }
-        }
+        rtm_gate4_takeover_printed = true;
+        Serial.println("RTM [TX] Gate 4: stick pushed - steering never ends a return on this remote; the buggy's steer_during_auto decides how the stick steers it");
       }
 
       // V2.5-Evo - 2026-10-07 - H-1: still ACTIVE after every gate - send the once-a-second refresh if one is due.

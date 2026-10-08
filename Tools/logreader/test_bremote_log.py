@@ -946,5 +946,181 @@ class TestLogFormat3(unittest.TestCase):
                 self.assertNotIn("rtm_phase_name", row)
 
 
+# ============================================================
+# 2026-10-08 - LOG LEVEL 6 (IMU): the 126 B format-3 level-5 record + two 22 B IMU blocks = 170 B, still
+# format 3 (a tail append). VESC 2's IMU at 126-147, the reserved RX IMU at 148-169 (always N/A today).
+# ============================================================
+
+_COMMON_IMU_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "..", "Source", "Common", "VescImu.h")
+
+# One fresh, plausible VESC 2 IMU sample as raw struct values (what imuLogEncode() writes): 12.34 deg roll,
+# -5.5 deg pitch, 170 deg yaw, gyro 1.5 / -80.3 / 33.0 dps, acc 0.120 / -0.340 / 0.980 g.
+_IMU_FRESH_RAW = {
+    "vesc2_imu_age_ms": 250,
+    "vesc2_roll_deg": 1234, "vesc2_pitch_deg": -550, "vesc2_yaw_deg": 17000,
+    "vesc2_gyro_x_dps": 15, "vesc2_gyro_y_dps": -803, "vesc2_gyro_z_dps": 330,
+    "vesc2_acc_x_g": 120, "vesc2_acc_y_g": -340, "vesc2_acc_z_g": 980,
+    "vesc2_imu_status": 1,
+}
+_IMU_VALUE_KEYS = ["vesc2_roll_deg", "vesc2_pitch_deg", "vesc2_yaw_deg", "vesc2_gyro_x_dps", "vesc2_gyro_y_dps",
+                   "vesc2_gyro_z_dps", "vesc2_acc_x_g", "vesc2_acc_y_g", "vesc2_acc_z_g"]
+# What the firmware always writes in the reserved RX IMU block (imuLogNoSource()).
+_RX_IMU_NO_SOURCE_RAW = {"rx_imu_age_ms": 0xFFFF, "rx_roll_deg": 0x7FFF, "rx_pitch_deg": 0x7FFF, "rx_yaw_deg": 0x7FFF,
+                         "rx_gyro_x_dps": 0x7FFF, "rx_gyro_y_dps": 0x7FFF, "rx_gyro_z_dps": 0x7FFF,
+                         "rx_acc_x_g": 0x7FFF, "rx_acc_y_g": 0x7FFF, "rx_acc_z_g": 0x7FFF, "rx_imu_status": 0xFF}
+
+
+def _imu_na(age: int, status: int) -> dict:
+    raw = {k: 0x7FFF for k in _IMU_VALUE_KEYS}
+    raw.update({"vesc2_imu_age_ms": age, "vesc2_imu_status": status})
+    return raw
+
+
+class TestLogLevel6(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        with open(_FW_HEADER_PATH, "r", encoding="utf-8") as f:
+            cls.fw = f.read()
+        with open(_COMMON_IMU_PATH, "r", encoding="utf-8") as f:
+            cls.imu_h = f.read()
+
+    def _decode(self, raw: dict, format_ver: int = 3) -> dict:
+        rec_bytes = pack_record(bl.LAYOUT_L6_V3, dict(_RX_IMU_NO_SOURCE_RAW, **raw))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "l6.log")
+            write_binary_log(path, 6, 170, [rec_bytes], format_ver=format_ver)
+            return list(bl.iter_binary_records(path))[0]
+
+    def test_firmware_static_asserts_and_sizes(self):
+        self.assertIn("static_assert(sizeof(VescLogDataL6) == 170,", self.fw)
+        self.assertIn("static_assert(offsetof(VescLogDataL6, imu_vesc2) == 126,", self.fw)
+        self.assertIn("static_assert(offsetof(VescLogDataL6, imu_rx) == 148,", self.fw)
+        self.assertIn("static_assert(sizeof(VescLogDataL5) == 126,", self.fw)
+        self.assertIn("static_assert(sizeof(ImuLogBlock) == 22,", self.imu_h)
+        self.assertIn("#define LOG_FILE_FORMAT_VER  3 ", self.fw)   # a tail append: no format bump
+        self.assertEqual(bl.LAYOUT_L6_V3["record_size"], 170)
+        self.assertEqual(bl.LAYOUT_L6_V3["level"], 6)
+        # the first 126 bytes are byte-identical to the format-3 level-5 record
+        self.assertEqual(bl.LAYOUT_L6_V3["fields"][:len(bl.LAYOUT_L5_V3["fields"])], bl.LAYOUT_L5_V3["fields"])
+        self.assertEqual(struct.calcsize("<" + "".join(f["fmt"] for f in bl.IMU_VESC2_FIELDS)), 22)
+
+    def test_firmware_csv_macro_expands_to_the_generated_header(self):
+        self.assertEqual(_expand_fw_csv_macro(self.fw, "LOG_CSV_HEADER_L6"), bl.LAYOUT_L6_V3["csv_header"])
+        self.assertEqual(len(bl.LAYOUT_L6_V3["csv_header_cols"]), 98)
+        self.assertIs(bl.CSV_HEADER_TO_LAYOUT[bl.LAYOUT_L6_V3["csv_header"]], bl.LAYOUT_L6_V3)
+
+    def test_rsvd_bytes_are_not_columns(self):
+        cols = bl.LAYOUT_L6_V3["csv_header_cols"]
+        self.assertNotIn("vesc2_imu_rsvd", cols)
+        self.assertNotIn("rx_imu_rsvd", cols)
+        rec = self._decode(_IMU_FRESH_RAW)
+        self.assertNotIn("vesc2_imu_rsvd", rec)
+
+    def test_byte_offsets(self):
+        rec_bytes = pack_record(bl.LAYOUT_L6_V3, dict(_RX_IMU_NO_SOURCE_RAW, **_IMU_FRESH_RAW))
+        self.assertEqual(len(rec_bytes), 170)
+        self.assertEqual(rec_bytes[126:128], struct.pack("<H", 250))      # VESC 2 IMU age at 126
+        self.assertEqual(rec_bytes[130:132], struct.pack("<h", -550))     # pitch at 130
+        self.assertEqual(rec_bytes[146], 1)                               # status at 146
+        self.assertEqual(rec_bytes[148:150], struct.pack("<H", 0xFFFF))   # RX IMU age at 148
+
+    def test_fresh_record_decodes(self):
+        rec = self._decode(dict(_VESC2_FRESH_RAW, rider_fix_seq=7, **_IMU_FRESH_RAW))
+        self.assertEqual(rec["_layout_name"], "L6_V3")
+        self.assertEqual(rec["rider_fix_seq"], 7)                         # level-5 block unaffected
+        self.assertEqual(rec["vesc2_age_ms"], 412)                        # VESC 2 values block unaffected
+        self.assertEqual(rec["vesc2_imu_age_ms"], 250)
+        self.assertAlmostEqual(rec["vesc2_roll_deg"], 12.34, places=3)
+        self.assertAlmostEqual(rec["vesc2_pitch_deg"], -5.5, places=3)
+        self.assertAlmostEqual(rec["vesc2_yaw_deg"], 170.0, places=3)
+        self.assertAlmostEqual(rec["vesc2_gyro_y_dps"], -80.3, places=3)
+        self.assertAlmostEqual(rec["vesc2_acc_z_g"], 0.98, places=3)
+        self.assertEqual(rec["vesc2_imu_status"], 1)
+        self.assertEqual(rec["vesc2_imu_status_name"], "OK")
+        # the reserved RX IMU always reads N/A
+        self.assertIsNone(rec["rx_imu_age_ms"])
+        self.assertIsNone(rec["rx_roll_deg"])
+        self.assertIsNone(rec["rx_imu_status"])
+        self.assertEqual(rec["rx_imu_status_name"], "NO_SOURCE")
+
+    def test_stale_implausible_and_never_decode_as_none(self):
+        stale = self._decode(_imu_na(1800, 2))
+        implausible = self._decode(_imu_na(120, 3))
+        never = self._decode(_imu_na(0xFFFF, 0xFF))
+        self.assertEqual(stale["vesc2_imu_age_ms"], 1800)                 # the real age survives
+        self.assertEqual(stale["vesc2_imu_status_name"], "STALE")
+        self.assertEqual(implausible["vesc2_imu_age_ms"], 120)
+        self.assertEqual(implausible["vesc2_imu_status_name"], "IMPLAUSIBLE")
+        self.assertIsNone(never["vesc2_imu_age_ms"])
+        self.assertIsNone(never["vesc2_imu_status"])
+        self.assertEqual(never["vesc2_imu_status_name"], "NO_SOURCE")
+        for rec in (stale, implausible, never):
+            for k in _IMU_VALUE_KEYS:
+                self.assertIsNone(rec[k], k)
+
+    def test_device_csv_input_with_sentinels(self):
+        base = ["0"] * len(bl.LAYOUT_L5_V3["csv_header_cols"])
+        rx_na = ["-999", "-999.00", "-999.00", "-999.00", "-999.0", "-999.0", "-999.0",
+                 "-999.000", "-999.000", "-999.000", "-999"]
+        fresh = base + ["250", "12.34", "-5.50", "170.00", "1.5", "-80.3", "33.0", "0.120", "-0.340", "0.980", "1"] + rx_na
+        stale = base + ["1800", "-999.00", "-999.00", "-999.00", "-999.0", "-999.0", "-999.0",
+                        "-999.000", "-999.000", "-999.000", "2"] + rx_na
+        never = base + rx_na + rx_na
+        self.assertEqual(len(fresh), 98)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "l6.csv")
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                f.write(bl.LAYOUT_L6_V3["csv_header"] + "\n")
+                for row in (fresh, stale, never):
+                    f.write(",".join(row) + "\n")
+            r_fresh, r_stale, r_never = list(bl.iter_csv_records(path))
+        self.assertEqual(r_fresh["_layout_name"], "L6_V3")
+        self.assertAlmostEqual(r_fresh["vesc2_roll_deg"], 12.34, places=3)
+        self.assertAlmostEqual(r_fresh["vesc2_acc_y_g"], -0.34, places=3)
+        self.assertEqual(r_fresh["vesc2_imu_status_name"], "OK")
+        self.assertEqual(r_stale["vesc2_imu_age_ms"], 1800)
+        self.assertEqual(r_stale["vesc2_imu_status_name"], "STALE")
+        self.assertIsNone(r_never["vesc2_imu_age_ms"])
+        self.assertEqual(r_never["vesc2_imu_status_name"], "NO_SOURCE")
+        for rec in (r_fresh, r_stale, r_never):
+            self.assertIsNone(rec["rx_imu_status"])
+        for rec in (r_stale, r_never):
+            for k in _IMU_VALUE_KEYS:
+                self.assertIsNone(rec[k], k)
+
+    def test_126_byte_format3_file_still_decodes_as_level5(self):
+        rec_bytes = pack_record(bl.LAYOUT_L5_V3, dict(_VESC2_FRESH_RAW, rider_fix_seq=9))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "f3_l5.log")
+            write_binary_log(path, 5, 126, [rec_bytes], format_ver=3)
+            rec = list(bl.iter_binary_records(path))[0]
+        self.assertEqual(rec["_layout_name"], "L5_V3")
+        self.assertEqual(rec["rider_fix_seq"], 9)
+        self.assertNotIn("vesc2_imu_age_ms", rec)
+
+    def test_expanded_csv_and_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = os.path.join(tmp, "l6.log")
+            recs = [pack_record(bl.LAYOUT_L6_V3, dict(_RX_IMU_NO_SOURCE_RAW, timestamp_ms=1000, **_IMU_FRESH_RAW)),
+                    pack_record(bl.LAYOUT_L6_V3, dict(_RX_IMU_NO_SOURCE_RAW, timestamp_ms=1333, **_imu_na(1800, 2)))]
+            write_binary_log(log_path, 6, 170, recs, format_ver=3)
+            records = list(bl.iter_binary_records(log_path))
+            out_path = os.path.join(tmp, "l6.csv")
+            bl.write_expanded_csv(records, out_path)
+            with open(out_path, "r", encoding="utf-8") as f:
+                header = f.readline().strip().split(",")
+                row1 = dict(zip(header, f.readline().strip().split(",")))
+                row2 = dict(zip(header, f.readline().strip().split(",")))
+        self.assertEqual(row1["vesc2_roll_deg"], "12.34")
+        self.assertEqual(row1["vesc2_imu_status_name"], "OK")
+        self.assertEqual(row1["rx_imu_status_name"], "NO_SOURCE")
+        self.assertEqual(row1["rx_roll_deg"], "")                         # N/A -> empty cell
+        self.assertEqual(row2["vesc2_pitch_deg"], "")
+        self.assertEqual(row2["vesc2_imu_status_name"], "STALE")
+        summary = bl.generate_summary(records)
+        self.assertIn("VESC 2 IMU: 50.0% of rows OK; max |roll| 12.3 deg; max pitch -5.5 deg", summary)
+
+
 if __name__ == "__main__":
     unittest.main()

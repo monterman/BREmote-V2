@@ -48,7 +48,9 @@ base record: 62 -> 33 (L3_V2), 90 -> 53 (L4_V2), 112 -> 67 (L5_V2), and since
 over CAN; -999 / empty = no data or stale). Format 3 (2026-10-06) moves the
 VESC 2 block into the level-4 record: 62 -> 33 (L3, same layout as L3_V2),
 104 -> 62 (L4_V3: level 4 + VESC 2), 126 -> 76 (L5_V3: level 4 + VESC 2 +
-the level-5 block). A format-2 126 B record and a format-3 126 B record are
+the level-5 block), and since 2026-10-08 170 -> 98 (L6_V3: level 5 + VESC 2's
+IMU + a reserved RX IMU block; a tail append, so still format 3). A format-2
+126 B record and a format-3 126 B record are
 the SAME SIZE with DIFFERENT layouts, so layouts are keyed by
 (format_ver, record_size) in ``RECORD_LAYOUTS_BY_FORMAT``, never by size
 alone; an unrecognized size decodes the largest known prefix that fits
@@ -237,9 +239,16 @@ TIER_ORDER = ["L3", "L4_DIAG", "L4_83", "L4_RAW", "L4", "L5"]
 TIER_ORDER += ["L3_V2", "L4_V2", "L5_V2"]
 TIER_ORDER += ["L5_VESC2"]   # 2026-10-06: level 5 + the VESC 2 block (126 B)
 TIER_ORDER += ["L4_V3", "L5_V3"]   # 2026-10-06: format 3 - VESC 2 in the level-4 record (104 B / 126 B)
+TIER_ORDER += ["L6_V3"]            # 2026-10-08: format 3 level 6 - level 5 + the two IMU blocks (170 B)
 # Tiers that carry the Follow-Me block (decoded gate/state columns) and the level-5 block, by name.
-FM_BLOCK_TIERS = ("L4_83", "L4_RAW", "L4", "L5", "L4_V2", "L5_V2", "L5_VESC2", "L4_V3", "L5_V3")
-L5_BLOCK_TIERS = ("L5", "L5_V2", "L5_VESC2", "L5_V3")
+FM_BLOCK_TIERS = ("L4_83", "L4_RAW", "L4", "L5", "L4_V2", "L5_V2", "L5_VESC2", "L4_V3", "L5_V3", "L6_V3")
+L5_BLOCK_TIERS = ("L5", "L5_V2", "L5_VESC2", "L5_V3", "L6_V3")
+# 2026-10-08: tiers that carry the two IMU blocks (VESC 2's IMU + the reserved RX IMU).
+IMU_BLOCK_TIERS = ("L6_V3",)
+
+# ImuLogBlock.status (Source/Common/VescImu.h). 0xFF (NO SOURCE) is the field's sentinel, so it decodes
+# as None and is named "NO_SOURCE" in the expanded CSV; 0 is never written by the firmware.
+IMU_STATUS_NAMES = {1: "OK", 2: "STALE", 3: "IMPLAUSIBLE"}
 
 
 # ============================================================
@@ -443,6 +452,42 @@ VESC2_EXTRA_FIELDS = [
     F("vesc2_fault_code", "B", sentinel_raw=0xFF, csv_prescaled=True, sentinel_val=-999, unit="code"),
 ]
 
+# ---- 2026-10-08: LOG LEVEL 6 - one 22 B IMU block (Source/Common/VescImu.h ImuLogBlock), used twice at
+#      the tail of the 170 B "L6_V3" record: VESC 2's IMU at bytes 126-147, then a RESERVED RX IMU at
+#      148-169 that the firmware always writes as NO SOURCE (every value N/A). Angles are degrees x 100,
+#      rates deg/s x 10, accelerations milli-g, all in VESC 2's own axes (no sign flips). FRESHNESS: the
+#      firmware writes the sentinels in every value field when the sample is stale (> 1500 ms, status 2)
+#      or implausible (|acc| < 0.5 g or non-finite, status 3); the age is always the real age (sentinel
+#      only for "never"). In the firmware's CSV every N/A prints -999 (-999.00 / -999.0 / -999.000 for
+#      values). The rsvd byte is not a CSV column. ----
+def _imu_fields(prefix_meta: str, prefix_val: str) -> list[dict]:
+    """One ImuLogBlock as field-table entries. prefix_meta names the age/status/rsvd columns
+    ("vesc2_imu" -> vesc2_imu_age_ms), prefix_val the value columns ("vesc2" -> vesc2_roll_deg)."""
+    def ang(axis):
+        return F(f"{prefix_val}_{axis}_deg", "h", raw_scale=100.0, sentinel_raw=0x7FFF,
+                 csv_prescaled=True, sentinel_val=-999.0, unit="deg")
+
+    def rate(axis):
+        return F(f"{prefix_val}_gyro_{axis}_dps", "h", raw_scale=10.0, sentinel_raw=0x7FFF,
+                 csv_prescaled=True, sentinel_val=-999.0, unit="deg/s")
+
+    def acc(axis):
+        return F(f"{prefix_val}_acc_{axis}_g", "h", raw_scale=1000.0, sentinel_raw=0x7FFF,
+                 csv_prescaled=True, sentinel_val=-999.0, unit="g")
+
+    return [
+        F(f"{prefix_meta}_age_ms", "H", sentinel_raw=0xFFFF, csv_prescaled=True, sentinel_val=-999, unit="ms"),
+        ang("roll"), ang("pitch"), ang("yaw"),
+        rate("x"), rate("y"), rate("z"),
+        acc("x"), acc("y"), acc("z"),
+        F(f"{prefix_meta}_status", "B", sentinel_raw=0xFF, csv_prescaled=True, sentinel_val=-999, unit="code"),
+        F(f"{prefix_meta}_rsvd", "B", unit="reserved", skip=True),
+    ]
+
+
+IMU_VESC2_FIELDS = _imu_fields("vesc2_imu", "vesc2")
+IMU_RX_FIELDS = _imu_fields("rx_imu", "rx")
+
 # fm_aligning / fm_boost are spliced into the CSV header right after fm_return_reason in every
 # tier from L4_83 up - see the field-table note above for why they have no field-table entry.
 _VIRTUAL_GATE_COLUMNS = {"fm_return_reason": ["fm_aligning", "fm_boost"]}
@@ -512,10 +557,17 @@ LAYOUT_L5_V3 = _layout(5, "L5_V3",
                        + L4_RAW_EXTRA_FIELDS + L4_MOTORS_EXTRA_FIELDS + VESC2_EXTRA_FIELDS
                        + L5_EXTRA_FIELDS,
                        virtual_after=_VIRTUAL_GATE_COLUMNS)
+# ---- 2026-10-08: LOG LEVEL 6 - the full format-3 level-5 record + the two IMU blocks (170 B). Appended at
+#      the tail of the largest record, so the firmware kept format_ver 3; the size is the marker. ----
+LAYOUT_L6_V3 = _layout(6, "L6_V3",
+                       L3_FIELDS_V2 + L4_DIAG_EXTRA_FIELDS + L4_83_EXTRA_FIELDS
+                       + L4_RAW_EXTRA_FIELDS + L4_MOTORS_EXTRA_FIELDS + VESC2_EXTRA_FIELDS
+                       + L5_EXTRA_FIELDS + IMU_VESC2_FIELDS + IMU_RX_FIELDS,
+                       virtual_after=_VIRTUAL_GATE_COLUMNS)
 
 LAYOUT_BY_NAME = {lay["name"]: lay for lay in (LAYOUT_L3, LAYOUT_L4_DIAG, LAYOUT_L4_83, LAYOUT_L4_RAW, LAYOUT_L4, LAYOUT_L5,
                                                LAYOUT_L3_V2, LAYOUT_L4_V2, LAYOUT_L5_V2, LAYOUT_L5_VESC2,
-                                               LAYOUT_L4_V3, LAYOUT_L5_V3)}
+                                               LAYOUT_L4_V3, LAYOUT_L5_V3, LAYOUT_L6_V3)}
 
 # Table-driven, keyed by (format_ver, record_size). 2026-10-06: it was keyed by record size alone, which
 # stopped being enough the day two formats wrote the same size with different layouts (format 2 L5_VESC2
@@ -523,7 +575,7 @@ LAYOUT_BY_NAME = {lay["name"]: lay for lay in (LAYOUT_L3, LAYOUT_L4_DIAG, LAYOUT
 RECORD_LAYOUTS_BY_FORMAT: dict[int, dict[int, dict]] = {
     1: {lay["record_size"]: lay for lay in (LAYOUT_L3, LAYOUT_L4_DIAG, LAYOUT_L4_83, LAYOUT_L4_RAW, LAYOUT_L4, LAYOUT_L5)},
     2: {lay["record_size"]: lay for lay in (LAYOUT_L3_V2, LAYOUT_L4_V2, LAYOUT_L5_V2, LAYOUT_L5_VESC2)},
-    3: {lay["record_size"]: lay for lay in (LAYOUT_L3_V2, LAYOUT_L4_V3, LAYOUT_L5_V3)},
+    3: {lay["record_size"]: lay for lay in (LAYOUT_L3_V2, LAYOUT_L4_V3, LAYOUT_L5_V3, LAYOUT_L6_V3)},   # 170 = L6 (2026-10-08)
 }
 assert set(RECORD_LAYOUTS_BY_FORMAT) == set(LOG_FILE_FORMAT_VERS_SUPPORTED)
 
@@ -543,10 +595,10 @@ assert LAYOUT_L3_V2["csv_header"] == _FW_CSV_HEADER_L3_V2, (
 )
 # 59/65/83/85/87/109 = format_ver 1 (pre-2026-10-02). 62/90/112 = format_ver 2, the M-2 base.
 # 126 = format_ver 2 + the VESC 2 block at the tail of level 5 (2026-10-06).
-# 62/104/126 = format_ver 3: VESC 2 in the level-4 record (2026-10-06).
+# 62/104/126 = format_ver 3: VESC 2 in the level-4 record (2026-10-06). 170 = format_ver 3 level 6 (2026-10-08).
 assert RECORD_LAYOUTS_BY_FORMAT[1].keys() == {59, 65, 83, 85, 87, 109}, sorted(RECORD_LAYOUTS_BY_FORMAT[1])
 assert RECORD_LAYOUTS_BY_FORMAT[2].keys() == {62, 90, 112, 126}, sorted(RECORD_LAYOUTS_BY_FORMAT[2])
-assert RECORD_LAYOUTS_BY_FORMAT[3].keys() == {62, 104, 126}, sorted(RECORD_LAYOUTS_BY_FORMAT[3])
+assert RECORD_LAYOUTS_BY_FORMAT[3].keys() == {62, 104, 126, 170}, sorted(RECORD_LAYOUTS_BY_FORMAT[3])
 
 # BREmote_V2_Rx.h LOG_CSV_HEADER_L5_VESC2 is LOG_CSV_HEADER_L5 plus this suffix, copied verbatim.
 # (A test also reads the macro straight out of the firmware header, so the two cannot drift.)
@@ -561,6 +613,17 @@ assert LAYOUT_L5_VESC2["csv_header"] == LAYOUT_L5_V2["csv_header"] + _FW_CSV_SUF
 # LOG_CSV_HEADER_L5 is that plus the level-5 columns. (test_bremote_log.py expands the real macros.)
 assert LAYOUT_L4_V3["csv_header"] == LAYOUT_L4_V2["csv_header"] + _FW_CSV_SUFFIX_VESC2, (
     "generated format-3 level-4 header has drifted from the firmware macro"
+)
+# 2026-10-08: BREmote_V2_Rx.h LOG_CSV_HEADER_L6 is LOG_CSV_HEADER_L5 plus this suffix, copied verbatim
+# (test_bremote_log.py also expands the real macro). 22 columns: 11 per IMU block, no rsvd column.
+_FW_CSV_SUFFIX_IMU = (
+    ",vesc2_imu_age_ms,vesc2_roll_deg,vesc2_pitch_deg,vesc2_yaw_deg,vesc2_gyro_x_dps,vesc2_gyro_y_dps,"
+    "vesc2_gyro_z_dps,vesc2_acc_x_g,vesc2_acc_y_g,vesc2_acc_z_g,vesc2_imu_status,rx_imu_age_ms,rx_roll_deg,"
+    "rx_pitch_deg,rx_yaw_deg,rx_gyro_x_dps,rx_gyro_y_dps,rx_gyro_z_dps,rx_acc_x_g,rx_acc_y_g,rx_acc_z_g,"
+    "rx_imu_status"
+)
+assert LAYOUT_L6_V3["csv_header"] == LAYOUT_L5_V3["csv_header"] + _FW_CSV_SUFFIX_IMU, (
+    "generated level-6 IMU header has drifted from the firmware macro"
 )
 
 # The six CSV headers the firmware itself can print (BREmote_V2_Rx.h LOG_CSV_HEADER_L3 /
@@ -606,9 +669,10 @@ CSV_HEADER_TO_LAYOUT = {
     # 2026-10-06 - format 3. Its level-3 header is LAYOUT_L3_V2's (same record, same columns), already above.
     LAYOUT_L4_V3["csv_header"]: LAYOUT_L4_V3,
     LAYOUT_L5_V3["csv_header"]: LAYOUT_L5_V3,
+    LAYOUT_L6_V3["csv_header"]: LAYOUT_L6_V3,   # 2026-10-08 - level 6 (IMU)
 }
 # Every layout must be reachable from a DISTINCT header line - the header is the only thing a CSV carries.
-# (L3_V2 serves formats 2 and 3, so it is one entry; 12 layouts -> 12 headers.)
+# (L3_V2 serves formats 2 and 3, so it is one entry; 13 layouts -> 13 headers.)
 assert len(CSV_HEADER_TO_LAYOUT) == len(LAYOUT_BY_NAME), "two layouts print the same CSV header"
 
 
@@ -705,6 +769,11 @@ def add_decoded_columns(rec: dict) -> dict:
         rec.update(decode_gate_flags(int(rec["fm_gate_flags"])))
     if "fm_flags_sent" in rec and rec["fm_flags_sent"] is not None:
         rec.update(decode_fm_flags_sent(int(rec["fm_flags_sent"])))
+    # 2026-10-08: level-6 IMU status codes. None is the 0xFF sentinel: no source / never answered.
+    for key in ("vesc2_imu_status", "rx_imu_status"):
+        if key in rec:
+            value = rec[key]
+            rec[key + "_name"] = "NO_SOURCE" if value is None else IMU_STATUS_NAMES.get(value, f"unknown({value})")
     return rec
 
 
@@ -865,6 +934,8 @@ def csv_field_order_for_layout(layout_name: str) -> list[str]:
     if layout_name in L5_BLOCK_TIERS:
         extra += ["rtm_phase_name"]
         extra += FM_FLAGS_SENT_BIT_NAMES
+    if layout_name in IMU_BLOCK_TIERS:   # 2026-10-08 - level 6
+        extra += ["vesc2_imu_status_name", "rx_imu_status_name"]
     return base + extra
 
 
@@ -1085,6 +1156,20 @@ def generate_summary(records: list[dict]) -> str:
             lines.append(f"  {name}: {count}")
     else:
         lines.append("  (none)")
+    # 2026-10-08: level-6 files - how much of the session has a usable VESC 2 IMU sample, and the extremes
+    # of heel (|roll|) and nose-up pitch over the rows that do. Only OK rows count (stale / implausible
+    # rows carry no values).
+    imu_rows = [r for r in records if "vesc2_imu_status" in r]
+    if imu_rows:
+        ok_rows = [r for r in imu_rows if r.get("vesc2_imu_status") == 1]
+        pct_ok = 100.0 * len(ok_rows) / len(imu_rows)
+        rolls = [abs(r["vesc2_roll_deg"]) for r in ok_rows if r.get("vesc2_roll_deg") is not None]
+        pitches = [r["vesc2_pitch_deg"] for r in ok_rows if r.get("vesc2_pitch_deg") is not None]
+        lines.append(
+            f"VESC 2 IMU: {pct_ok:.1f}% of rows OK; "
+            f"max |roll| {_fmt_or_na(max(rolls) if rolls else None, ' deg')}; "
+            f"max pitch {_fmt_or_na(max(pitches) if pitches else None, ' deg')}"
+        )
     return "\n".join(lines)
 
 

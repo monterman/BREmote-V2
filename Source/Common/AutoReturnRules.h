@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-08 - STICKY RETURN CAP (owner design): stickyReturnCapStep() - the live limit a return that ends
+//   early (not arrival) keeps until one trigger release: speed governor, distance slow-down, a fixed fallback ceiling
+//   when GPS cannot run them, and a rise limit. Pure, host-tested. kRtmEndHandbackCap now serves Gate 9 arrival only.
 // V2.5-Evo - 2026-10-07 - P-4: fmReturnApproachRampCap() (the approach-ramp term alone); fmReturnStallIsArrival()'s crawl
 //   test takes that term at dist_m instead of the previous tick's total cap. Host-tested.
 // V2.5-Evo - 2026-10-07 - P-3 (owner ruling): fmReturnParkedTolerates() / fmReturnParkVerdict() take phase_b_distance_only -
@@ -134,6 +137,8 @@ static inline bool handbackBackstopStep(uint32_t now_ms, uint8_t trigger, uint8_
 //     the approach zone is 0 or smaller than the stop distance, or was already reset to 255 that tick.
 // One number for all of them (Gate 9, Phase C, H-1, H-2, S-8): 0. The rider lets go fully once, then the
 // throttle is plain manual. Auto-return arrival keeps its own rule (the cap in force, near 0 at the stop radius).
+// V2.5-Evo - 2026-10-08 - since the sticky return cap (section 13) only GATE 9 ARRIVAL still arms this. Phase C, H-1,
+// H-2 and the remote reboot keep the return's live limit instead (stickyReturnCapStep()), until one release.
 static const uint8_t kRtmEndHandbackCap = 0;
 
 // ============================================================
@@ -557,6 +562,73 @@ static inline bool fmReturnStallIsArrival(bool in_zone, float dist_m, float stop
   const bool close    = dist_m <= (stop_m + kFmReturnCrawlExtraM);
   const bool crawling = (ramp_cap <= kFmReturnCrawlCapMax) && !aligning;
   return close || crawling;
+}
+
+// ============================================================
+// 13. THE STICKY RETURN CAP - A RETURN THAT ENDS EARLY KEEPS ITS SPEED LIMIT UNTIL ONE RELEASE
+// ============================================================
+// V2.5-Evo - 2026-10-08 - owner design (sticky return cap on exit). When a manual return-to-me or an auto-return
+// ends for any reason OTHER THAN ARRIVAL (a fault on either board, a link loss, a remote reboot, the rider's own
+// cancel), the mode ends and the steering is the rider's at once, but the throttle keeps the RETURN'S LIMIT for as
+// long as the trigger stays at 10 % or more. One release below 10 % (25 counts on the buggy) clears it for good.
+// The buggy must neither stop dead mid-return nor be handed the full held trigger while it points at the rider.
+//
+// WHY A LIVE LIMIT AND NOT A FROZEN NUMBER (audit D-2): the return's cap is a speed governor, not a value. Frozen at
+// the exit it is about 255 (no cap) for a slow buggy and about 0 (a dead stop) for one at target speed, and after a
+// fault end it was 0 (the emergency stop). So the SETTINGS are frozen and the limit is computed every tick.
+//
+// THE TERMS, each one can only LOWER the result (the caller applies it as min(rider, cap)):
+//   1. SPEED GOVERNOR (1 - buggy speed / target) x 255 - only while the buggy's own fix is fresh and not rejected
+//      (rx_fix_ok); a stale speed is never used (audit D-4). target_kmh 0 = governor off.
+//   2. DISTANCE SLOW-DOWN (the throttle half of the rider "bubble"; the steering half is NOT used - in manual the
+//      stick steers, audit D-3): the return's approach ramp, fmReturnApproachRampCap(), and 0 at or inside the stop
+//      distance even when the approach zone is switched off. Only while the rider's position is known (rider_known:
+//      rider fix fresh, buggy fix fresh, handshake passing). A stale position is never read as "far enough".
+//   3. FALLBACK CEILING fallback_cap whenever term 1 cannot run (buggy GPS stale or rejected, or the governor is off)
+//      OR term 2 cannot run (rider position unknown). Never 0 (that strands the rider) and never "no cap".
+//   4. RISE LIMIT: the result may RISE by at most 255 counts per rise_ms (from prev_cap, the value standing), and
+//      drops at once. The caller arms the cap at the value in force at the exit, so there is never a step; after a
+//      fault end (cap 0) this is the 0 -> 255 re-start ramp. It also softens the governor's one weakness - at a
+//      standstill it allows 255 until the GPS speed catches up.
+// stickyReturnCapStep - one tick of the sticky return cap.
+// Inputs:  prev_cap     - the cap standing now (0-255).
+//          dt_ms        - time since the previous step (the caller bounds it).
+//          rx_fix_ok    - the buggy's own fix is fresh and not rejected.
+//          buggy_kmh    - the buggy's own GPS speed (read only when rx_fix_ok).
+//          target_kmh   - the return's target speed (rtm_target_speed_kmh; 0 = governor off).
+//          rider_known  - the distance to the rider can be trusted this tick.
+//          dist_m       - buggy to rider (read only when rider_known).
+//          stop_m       - the stop distance; approach_m - the approach zone (0 = ramp off).
+//          fallback_cap - the fixed slow ceiling (terms 1/2 unavailable).
+//          rise_ms      - full-scale rise time (0 = no rise limit).
+// Returns: the new cap, 0-255. Side effects: none (pure).
+static inline uint8_t stickyReturnCapStep(uint8_t prev_cap, uint32_t dt_ms,
+                                          bool rx_fix_ok, float buggy_kmh, float target_kmh,
+                                          bool rider_known, float dist_m, float stop_m, float approach_m,
+                                          uint8_t fallback_cap, uint32_t rise_ms)
+{
+  uint16_t live = 255;
+  const bool governor_runs = rx_fix_ok && (target_kmh > 0.0f);
+  if (governor_runs) {                                         // term 1
+    float frac = buggy_kmh / target_kmh;
+    if (frac < 0.0f) frac = 0.0f;
+    if (frac > 1.0f) frac = 1.0f;
+    const uint16_t c = (uint16_t)((1.0f - frac) * 255.0f);
+    if (c < live) live = c;
+  }
+  if (rider_known) {                                           // term 2
+    const uint16_t c = (dist_m <= stop_m) ? 0u : (uint16_t)fmReturnApproachRampCap(dist_m, stop_m, approach_m);
+    if (c < live) live = c;
+  }
+  if (!governor_runs || !rider_known) {                        // term 3
+    if (fallback_cap < live) live = fallback_cap;
+  }
+  uint32_t rise = 255u;                                        // term 4
+  if (rise_ms != 0) {
+    rise = (uint32_t)prev_cap + (uint32_t)(((uint64_t)255u * dt_ms) / rise_ms);
+    if (rise > 255u) rise = 255u;
+  }
+  return (uint8_t)((rise < live) ? rise : live);
 }
 
 #endif // BREMOTE_AUTO_RETURN_RULES_H

@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-08 - STICKY RETURN CAP (owner design): calcPWM() applies sticky_cap after the arrival hand-back cap
+//   (min(), subtract-only, handbackCapStep() with release 25) and clears sticky_armed on the first pass with the trigger
+//   byte below 25. Arrival cap untouched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - P-7: generatePWM() counts swap attempts (g_swap_attempt_seq) for the stuck-bus service. No
 //   change to the swap, the pulse or the gate. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - N-5 backstop: calcPWM() also clears the arrival hand-back cap after the trigger byte stays below
@@ -377,6 +380,19 @@ void calcPWM()
     {
       hb_low_since_ms = 0;
     }
+  }
+
+  // V2.5-Evo - 2026-10-08 - THE STICKY RETURN CAP (owner design; see sticky_cap in BREmote_V2_Rx.h). A return that
+  // ended early (not arrival) keeps its live speed limit here until the rider lets the trigger drop below 10 % once.
+  // A SECOND, separate cap after the arrival hand-back cap - the two are never merged, the lower one wins, and the
+  // arrival cap above is byte-identical. Same subtract-only step (handbackCapStep(), host-tested) with release_below =
+  // kStickyReleaseThr (25): it needs no N-5 backstop because below 25 already clears it at once. Cleared HERE, at
+  // 100 Hz, so a quick release is never missed; only this pass ever clears sticky_armed.
+  if (sticky_armed.load())
+  {
+    bool st_clear = false;
+    effective_thr = handbackCapStep(sticky_cap.load(), effective_thr, thr_received, kStickyReleaseThr, &st_clear);
+    if (st_clear) sticky_armed.store(false);   // released below 10 %: full manual from the next pass
   }
 
   // -- SAFETY: THROTTLE RAMPING (usrConf.motor_ramp_s / usrConf.auto_ramp_s, seconds) ----------

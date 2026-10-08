@@ -1,3 +1,9 @@
+// V2.5-Evo - 2026-10-08 - STICKY RETURN CAP (owner design): every non-arrival end of a return keeps the return's live
+//   speed limit until the trigger drops below 10 % once - RTM Phase C, H-1, H-2 and S-8 arm it instead of the hand-back
+//   cap at 0; auto-return fmReturnFault() (audit D-1), the IDLE gate, the 95 s expiry and S-8 when leaving FM_RETURN, and
+//   (owner switch kStickyOnRiderCancel, D-8) the rider-moving / mode-0 stick cancels to FM_ARMED. stickyCapUpdate()
+//   recomputes it every tick; rx_state_flags bit 5; a ?diag line; Follow-Me cannot engage while it stands (D-7).
+//   Arrival unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - P-5: runFmLoopBody() reads both boot counters once per tick, back to back (rx_seq first), and
 //   runFmReturnTick() uses that snapshot. P-13: an RTM gate-fail tick stores min(zone cap, last stored cap). No
 //   confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -3316,6 +3322,10 @@ static void updateRtmSteering()
 // path drops it on the next tick, so without the cap a rider still holding the trigger got it back at
 // once with nothing in between - and the remote, told by rx_state_flags bit 0 that the buggy holds the
 // throttle at 0 until a full release, would have dropped its own RTM cap on that promise.
+// V2.5-Evo - 2026-10-08 - STICKY RETURN CAP (owner design): the three FAIL ends now arm the sticky return cap at the cap
+// in force (rtm_approach_cap; this function never runs under an emergency stop) instead of the hand-back cap at 0. The
+// rider steers at once, the buggy keeps the return's live limit (governor, slow-down near the rider, or the fixed
+// fallback) while the trigger stays at 10 % or more, and one release below 10 % gives plain manual. Still armed FIRST.
 static void runPhaseC()
 {
   if (!rtm_rx_active || rtm_rx_emergency_stop) return;
@@ -3344,7 +3354,7 @@ static void runPhaseC()
     {
       Serial.printf("RTM [PhC] FAIL convergence: dist %.0f m (was %.0f m) — not closing\n",
                     dist_m, rtm_prev_dist_m);
-      handbackCapArm(kRtmEndHandbackCap);   // V2.5-Evo - 2026-10-07 - N-2: FIRST - the held trigger is not handed back unreleased
+      stickyCapArm(rtm_approach_cap.load());   // V2.5-Evo - 2026-10-08 - sticky return cap FIRST (was the hand-back cap at 0, N-2)
       rtm_rx_emergency_stop = true;
       rtm_rx_active = false;
       rtm_fault_alarm_ms = (now != 0) ? now : 1;   // V2.5-Evo - 2026-10-07 - A-1: RTM ended on a fault -> rx_state_flags bit 0
@@ -3382,7 +3392,7 @@ static void runPhaseC()
         {
           Serial.printf("RTM [PhC] FAIL VESC speed: VESC=%.1f km/h GPS=%.1f km/h diff=%.1f\n",
                         vesc_speed_kmh, gps_last_speed_kmh, speed_diff);
-          handbackCapArm(kRtmEndHandbackCap);   // V2.5-Evo - 2026-10-07 - N-2: FIRST (see check 1)
+          stickyCapArm(rtm_approach_cap.load());   // V2.5-Evo - 2026-10-08 - sticky return cap FIRST (see check 1)
           rtm_rx_emergency_stop = true;
           rtm_rx_active = false;
           rtm_fault_alarm_ms = (now != 0) ? now : 1;   // V2.5-Evo - 2026-10-07 - A-1: RTM ended on a fault -> rx_state_flags bit 0
@@ -3401,7 +3411,7 @@ static void runPhaseC()
   if (stampStale((uint32_t)millis(), (uint32_t)rx_tx_gps_timestamp, (uint32_t)usrConf.tx_gps_stale_timeout_ms))
   {
     Serial.println("RTM [PhC] FAIL TX GPS freshness");
-    handbackCapArm(kRtmEndHandbackCap);   // V2.5-Evo - 2026-10-07 - N-2: FIRST (see check 1)
+    stickyCapArm(rtm_approach_cap.load());   // V2.5-Evo - 2026-10-08 - sticky return cap FIRST (see check 1)
     rtm_rx_emergency_stop = true;
     rtm_rx_active = false;
     rtm_fault_alarm_ms = (now != 0) ? now : 1;   // V2.5-Evo - 2026-10-07 - A-1: RTM ended on a fault -> rx_state_flags bit 0
@@ -3443,6 +3453,52 @@ static void printReturnEndDiag(unsigned long now_ms)
                 !fm_redeclare_blocked.load() ? "open" :
                 (bid == kTxBootIdNone) ? "set after a fault but NOT enforced (no boot ID heard: this remote keeps the old re-arm behaviour, N-8)"
                                        : "BLOCKED after a fault (disarm on the remote, or a marked gesture, clears it)");
+  // V2.5-Evo - 2026-10-08 - the sticky return cap on a third line.
+  if (sticky_armed.load())
+    Serial.printf("Sticky cap : STANDING at %u/255 (a return ended early; clears when the trigger drops below %u counts; fallback ceiling %u)\n",
+                  (unsigned)sticky_cap.load(), (unsigned)kStickyReleaseThr, (unsigned)kStickyFallbackCap);
+  else
+    Serial.println("Sticky cap : none");
+}
+
+// ------------------------------------------------------------
+// stickyCapUpdate - V2.5-Evo - 2026-10-08 - one 10 Hz tick of the sticky return cap (owner design).
+// ------------------------------------------------------------
+// What it does: while a sticky return cap stands (sticky_armed, BREmote_V2_Rx.h), recomputes the return's limit from
+// live data with stickyReturnCapStep() (Common/AutoReturnRules.h, host-tested) and stores it. The SETTINGS are the
+// return's own (rtm_target_speed_kmh, rtm_stop_distance_m, rtm_approach_zone_m); nothing is frozen as a number.
+//   - The governor runs only on a buggy fix younger than kStickyRxFixMaxMs and not Phase-A rejected (a stale speed
+//     is never used: gps_last_speed_kmh is not zeroed on fix loss, audit D-4).
+//   - The rider distance is used only with the rider's fix within tx_gps_stale_timeout_ms (RTM Gate 4's limit), the
+//     buggy's fix fresh as above and the handshake passing. Otherwise it is UNKNOWN, never "far enough".
+//   - Either term missing -> the fixed kStickyFallbackCap; never 0, never 255.
+//   - The value can rise by at most 255 counts per kFmEngageRampMs (1.5 s) and drops at once.
+// GPS integrity (project GPS rule 5): reads the stored, already Phase-A-checked fixes only; no extrapolation, no
+// interpolation, nothing in the 0xF3 path is touched. It steers nothing.
+// Inputs: now (this tick's clock). Side effects: sticky_cap only, by compare-exchange - if the radio task armed a
+// LOWER value since this tick read it, the store is skipped, so a fresh arm is never raised. It never sets or clears
+// sticky_armed (only stickyCapArm() and calcPWM() do). Loop task only. Called every tick, armed or not, so the step
+// time is always one tick (bounded to 200 ms) and a fresh arm does not inherit a long gap.
+static void stickyCapUpdate(unsigned long now)
+{
+  static unsigned long last_ms = 0;
+  uint32_t dt = (last_ms != 0) ? stampAgeMs((uint32_t)now, (uint32_t)last_ms) : 0u;
+  if (dt > 200u) dt = 200u;
+  last_ms = (now != 0) ? now : 1;
+  if (!sticky_armed.load()) return;
+
+  uint8_t prev = sticky_cap.load();
+  const bool rx_fix_ok = (gps_last_ms != 0) && !stampStale((uint32_t)now, (uint32_t)gps_last_ms, kStickyRxFixMaxMs) &&
+                         !gps_rejected;
+  const bool rider_known = rx_fix_ok && gps_phase_b_ok &&
+                           !stampStale((uint32_t)now, (uint32_t)rx_tx_gps_timestamp, (uint32_t)usrConf.tx_gps_stale_timeout_ms);
+  float dist_m = -1.0f;
+  if (rider_known) dist_m = (float)TinyGPSPlus::distanceBetween(gps_last_lat, gps_last_lng, rx_tx_gps_lat, rx_tx_gps_lng);
+  const float stop_m = (float)((usrConf.rtm_stop_distance_m > 0) ? usrConf.rtm_stop_distance_m : 10u);   // as Gate 9
+  const uint8_t next = stickyReturnCapStep(prev, dt, rx_fix_ok, gps_last_speed_kmh, usrConf.rtm_target_speed_kmh,
+                                           rider_known, dist_m, stop_m, (float)usrConf.rtm_approach_zone_m,
+                                           kStickyFallbackCap, kFmEngageRampMs);
+  sticky_cap.compare_exchange_strong(prev, next);
 }
 
 // ---- Main RTM loop — call from RX loop() ----
@@ -3473,6 +3529,7 @@ void runRtmLoop()
   rtm_log_in_approach = false;
   rtm_steer_takeover_req  = false;  // V2.5-Evo - 2026-09-19 - no takeover unless the RTM owner tick below stands one
   runRtmLoopBody(now);
+  stickyCapUpdate(now);             // V2.5-Evo - 2026-10-08 - the sticky return cap, every tick, after any RTM end this tick
   publishAlignMixerInfluence();     // once per tick, after every possible exit of the body
   publishSteerTakeover();           // V2.5-Evo - 2026-09-19 - once per tick, RTM > FM, after every exit of the body
 }
@@ -3756,6 +3813,7 @@ static void runRtmLoopBody(unsigned long now)
   //         Remote: end RTM, silent "St", keep no RTM cap of its own (the buggy holds the hand-back cap).
   //   bit 2 hand-back cap standing: the buggy is holding the arrival cap until the trigger is fully
   //         released once (manual RTM or auto-return arrival, or an RTM fault end). Display only.
+  //         V2.5-Evo - 2026-10-08 - an RTM fault end now leaves the sticky return cap instead: bit 5.
   {
     uint8_t r = 0;
     // V2.5-Evo - 2026-10-07 - N-8(b): bits 0 and 1 count 6 s of LINK-FRESH time (see rtm_fault_sticky).
@@ -3764,6 +3822,7 @@ static void runRtmLoopBody(unsigned long now)
     if (arrival_handback_cap.load(std::memory_order_relaxed) != kHandbackNone)        r |= (1 << 2);
     if (rx_tx_boot_id.load() != kTxBootIdNone)                                       r |= (1 << 3);   // S-8: boot ID held
     if (rtm_rx_active && rtm_refresh_seen.load())                                    r |= (1 << 4);   // H-1: expiry armed this run
+    if (sticky_armed.load())                                                         r |= (1 << 5);   // V2.5-Evo - 2026-10-08 - sticky return cap standing (logs; no remote display)
     telemetry.rx_state_flags = r;
   }
 
@@ -3973,11 +4032,13 @@ static void runRtmLoopBody(unsigned long now)
       rtm_boot_seq_seen = seq;
       if (rtm_rx_active)
       {
-        handbackCapArm(kRtmEndHandbackCap);   // V2.5-Evo - 2026-10-07 - N-4: 0, not the approach cap (already 255 outside the zone this tick)
+        // V2.5-Evo - 2026-10-08 - sticky return cap FIRST (was the hand-back cap at 0, N-4): the cap in force (0 under an
+        // emergency stop). A freshly booted remote sends a released trigger, so in practice it clears on the next pass.
+        stickyCapArm(rtm_rx_emergency_stop ? 0 : rtm_approach_cap.load());
         rtm_rx_active         = false;
         rtm_rx_emergency_stop = false;
         rtm_approach_cap      = 255;
-        Serial.println("RTM [RX] S-8: the remote was switched off and on - return-to-me ended; throttle held at 0 until you let go of the trigger fully once");
+        Serial.println("RTM [RX] S-8: the remote was switched off and on - return-to-me ended; steering is yours, the return's speed limit stays until the trigger drops below 10 % once");
       }
     }
   }
@@ -4053,12 +4114,12 @@ static void runRtmLoopBody(unsigned long now)
   if (rtmRefreshExpiredOnLink(rtm_rx_active, rtm_refresh_seen.load(), (uint32_t)rtm_refresh_last_ms.load(),
                               (uint32_t)now, kRtmRefreshExpiryMs, link_fresh, (uint32_t)link_fresh_since_ms))
   {
-    handbackCapArm(kRtmEndHandbackCap);   // V2.5-Evo - 2026-10-07 - N-4: 0, not the approach cap (already 255 outside the zone this tick)
+    stickyCapArm(rtm_rx_emergency_stop ? 0 : rtm_approach_cap.load());   // V2.5-Evo - 2026-10-08 - sticky return cap FIRST (was the hand-back cap at 0, N-4)
     rtm_rx_active         = false;
     rtm_rx_emergency_stop = false;
     rtm_approach_cap      = 255;
     rtm_fault_alarm_ms    = (now != 0) ? now : 1;
-    Serial.printf("RTM [RX] H-1: no RTM refresh from the remote for %lu ms - return-to-me ENDED on a fault; throttle held at 0 until you let go of the trigger fully once\n",
+    Serial.printf("RTM [RX] H-1: no RTM refresh from the remote for %lu ms - return-to-me ENDED on a fault; steering is yours, the return's speed limit stays until the trigger drops below 10 %% once\n",
                   (unsigned long)kRtmRefreshExpiryMs);
     return;
   }
@@ -4112,6 +4173,7 @@ static void runRtmLoopBody(unsigned long now)
     //   - handbackCapArm(0) FIRST: the cap in force was 0 (the emergency stop), and it stays 0 until
     //     the rider lets go of the trigger fully once - the arrival-style hand-back, so dropping the
     //     emergency stop below can never give the motor the held trigger;
+    //     (V2.5-Evo - 2026-10-08 - now stickyCapArm(): the return's live limit from 0, not a dead stop - see the site);
     //   - rtm_rx_active false, emergency stop cleared, RTM's own cap back to 255;
     //   - rtm_fault_alarm_ms: rx_state_flags bit 0 (sticky) so the remote ends RTM with "St" + the
     //     stop buzz.
@@ -4124,13 +4186,16 @@ static void runRtmLoopBody(unsigned long now)
       if (rtmGateFaultStep(&rtm_gate_fault, (uint32_t)now, held,
                            rtm_rx_active && rtm_rx_emergency_stop, kRtmGateFaultMs, kRtmGateFaultMaxDtMs))
       {
-        handbackCapArm(kRtmEndHandbackCap); // FIRST: the motor stays at 0 until one full release
+        // V2.5-Evo - 2026-10-08 - STICKY RETURN CAP FIRST (owner design; was the hand-back cap at 0). The cap in force is 0
+        // (the emergency stop), so the limit starts at 0 and rises under the return's live limit over 1.5 s: not a dead
+        // stop, and never the full held trigger. On a link loss it applies once the link (and the motor gate) returns.
+        stickyCapArm(rtm_rx_emergency_stop ? 0 : rtm_approach_cap.load());
         rtm_rx_active         = false;     // RTM ends - the inactive path from the next tick
         rtm_rx_emergency_stop = false;
         rtm_approach_cap      = 255;
         rtm_fault_alarm_ms    = (now != 0) ? now : 1;
         rtmGateFaultReset(&rtm_gate_fault);
-        Serial.printf("RTM [RX] H-2: a safety gate failed for %lu ms with the trigger held - return-to-me ENDED on a fault; throttle held at 0 until you let go of the trigger fully once, then manual\n",
+        Serial.printf("RTM [RX] H-2: a safety gate failed for %lu ms with the trigger held - return-to-me ENDED on a fault; steering is yours, the return's speed limit stays until the trigger drops below 10 %% once, then manual\n",
                       (unsigned long)kRtmGateFaultMs);
       }
     }
@@ -5929,15 +5994,22 @@ static void fmEnterReturn(unsigned long now, float dist_m)
 //   by handbackCapArm() until the rider lets go of the trigger fully once. handbackCapArm() runs
 //   BEFORE fm_throttle_cap is lifted, so there is never a tick with neither cap standing: no throttle
 //   jump. The other exits (rider moving off, the mode-0 steer-cancel) keep the HOLD surge guard.
+// V2.5-Evo - 2026-10-08 - STICKY RETURN CAP (owner design, audit D-8): with kStickyOnRiderCancel (the default) the
+//   rider's own cancels of a MOVING return (the rider moving off, the mode-0 stick cancel) no longer stop the buggy in
+//   FM_HOLD at cap 0: the return ends to FM_ARMED like an arrival, but keeps the sticky return cap - the return's live
+//   limit - armed FIRST at the cap in force, until the trigger drops below 10 % once. Follow-Me cannot re-engage while
+//   it stands (can_be_active). With the switch false the HOLD surge guard below runs exactly as before. Arrival unchanged.
 static void fmReturnExitToHold(uint8_t reason, unsigned long now, float dist_m)
 {
   (void)now;
   const bool arrived = (reason == FM_RET_ARRIVED || reason == FM_RET_ARRIVED_ZONE);   // V2.5-Evo - 2026-10-07 - S-6: a stalled approach inside the zone arrives the same way
+  const bool sticky  = !arrived && kStickyOnRiderCancel;   // V2.5-Evo - 2026-10-08 - D-8 owner switch
   if (arrived) handbackCapArm(fm_throttle_cap.load());   // FIRST: the cap in force at arrival stays
+  if (sticky)  stickyCapArm(fm_throttle_cap.load());     // V2.5-Evo - 2026-10-08 - FIRST: the return's live limit stays
   fm_rx_active       = false;
-  fm_throttle_cap    = arrived ? 255 : 0;
+  fm_throttle_cap    = (arrived || sticky) ? 255 : 0;
   rtm_steer_override = 127;
-  fm_state           = arrived ? FM_ARMED : FM_HOLD;
+  fm_state           = (arrived || sticky) ? FM_ARMED : FM_HOLD;
 
   fm_sep_latched            = false;
   fm_sep_over_since_ms      = 0;
@@ -5965,6 +6037,9 @@ static void fmReturnExitToHold(uint8_t reason, unsigned long now, float dist_m)
   if (arrived) {
     Serial.printf("FM [RX] RETURN -> ARMED: %s (dist=%.1f m); auto-return ended, steering is yours, throttle held at the arrival cap until you let go of the trigger fully once; ARMED-unlatched, needs D_engage\n",
                   fmReturnReasonName(reason), (double)dist_m);
+  } else if (sticky) {
+    Serial.printf("FM [RX] RETURN -> ARMED: %s (dist=%.1f m, rider raw %.1f km/h); auto-return ended, steering is yours, the return's speed limit stays until the trigger drops below 10 %% once; ARMED-unlatched, needs D_engage\n",
+                  fmReturnReasonName(reason), (double)dist_m, (double)fm_rider_raw_kmh);
   } else {
     Serial.printf("FM [RX] RETURN -> HOLD: %s (dist=%.1f m, rider raw %.1f km/h); cap 0 until the trigger is released once, then ARMED-unlatched, needs D_engage\n",
                   fmReturnReasonName(reason), (double)dist_m, (double)fm_rider_raw_kmh);
@@ -5978,8 +6053,16 @@ static void fmReturnExitToHold(uint8_t reason, unsigned long now, float dist_m)
 // ended in silence: the remote never saw fm_flags bit 3, showed no "St", and its keepalive re-declared
 // Follow-Me. A standing auto-return is a mode the rider is relying on and waiting for; ending it is
 // always news (SOP "auto-return waits for the rider" rule 4: a fault shows "St" and the stop buzz).
+// V2.5-Evo - 2026-10-08 - STICKY RETURN CAP (owner design; closes audit D-1). THE BUG: this fault set cap 0 and
+// FM_STOPPING, whose ramp lifts the cap 0 -> 255 in 2 s whatever the trigger does, and the remote's 0xF2/0 answer to
+// the fault bit sent Follow-Me straight to IDLE (cap 255) - so a rider squeezing on a "not closing" or a "squeeze while
+// not ready" fault got his full held trigger back within 2 s, buggy pointed at him. THE FIX: the sticky return cap is
+// armed FIRST at 0 (the cap this fault puts in force). The STOPPING ramp and the IDLE lift are unchanged, but the
+// sticky cap stays under them: the buggy restarts on the 1.5 s rise under the return's live limit and keeps that limit
+// until the trigger drops below 10 % once. The steering is the rider's at once (fm_rx_active false).
 static void fmReturnFault(uint8_t stop_reason, unsigned long now, bool thr_held)
 {
+  stickyCapArm(0);                     // V2.5-Evo - 2026-10-08 - FIRST: the return's limit outlives the fault until one release
   fm_rx_active       = false;
   fm_throttle_cap    = 0;
   rtm_steer_override = 127;
@@ -6194,8 +6277,9 @@ static void runFmReturnTick(unsigned long now)
       const unsigned long held_ms   = now - fm_steer_input_since_ms;   // captured before the exit zeroes both timers
       const unsigned long motion_ms = now - fm_return_motion_ms;
       fmReturnExitToHold(FM_RET_STEERED, now, dist_m);   // motor posture first; it prints the HOLD line
-      Serial.printf("FM [RX] RETURN cancelled: rider steered (stick %d from centre for %lu ms, %lu ms into the motion) -> HOLD, no alarm\n",
-                    sdev, held_ms, motion_ms);
+      Serial.printf("FM [RX] RETURN cancelled: rider steered (stick %d from centre for %lu ms, %lu ms into the motion) -> %s, no alarm\n",
+                    sdev, held_ms, motion_ms,
+                    kStickyOnRiderCancel ? "ARMED with the return's speed limit until a release" : "HOLD");   // V2.5-Evo - 2026-10-08 - D-8
       return;
     }
   }
@@ -6458,7 +6542,11 @@ static void runFmLoopBody(unsigned long now)
       {
         const bool had_return = (fm_state == FM_RETURN) || fm_return_pending;
         const uint8_t from    = (uint8_t)fm_state;
-        handbackCapArm(fm_throttle_cap.load());   // FIRST: the cap in force stays until one full release
+        // V2.5-Evo - 2026-10-08 - leaving an auto-return (FM_RETURN) keeps the sticky return cap instead (owner design);
+        // every other state keeps the hand-back cap as before. A rebooted remote sends a released trigger, so either
+        // one clears on the next pass in practice.
+        if (fm_state == FM_RETURN) stickyCapArm(fm_throttle_cap.load());     // FIRST
+        else                       handbackCapArm(fm_throttle_cap.load());   // FIRST: the cap in force stays until one full release
         fm_mode_runtime.store(0xFF, std::memory_order_relaxed);
         fmEnterIdle();
         if (had_return) fm_return_last_reason = FM_RET_REMOTE_REBOOT;   // after fmEnterIdle(), which records FM_RET_LEFT
@@ -6491,7 +6579,9 @@ static void runFmLoopBody(unsigned long now)
   if (m >= 1 && m <= 5) {
     unsigned long mode_ms = fm_mode_last_rx_ms.load(std::memory_order_relaxed);
     if (stampStale((uint32_t)now, (uint32_t)mode_ms, (uint32_t)kFmModeAgeMs)) {
-      if (fm_state != FM_IDLE) handbackCapArm(fm_throttle_cap.load());   // FIRST: before fmEnterIdle() lifts the cap
+      // V2.5-Evo - 2026-10-08 - an auto-return (FM_RETURN) ending on the expiry keeps the sticky return cap (owner design).
+      if (fm_state == FM_RETURN)     stickyCapArm(fm_throttle_cap.load());     // FIRST
+      else if (fm_state != FM_IDLE)  handbackCapArm(fm_throttle_cap.load());   // FIRST: before fmEnterIdle() lifts the cap
       fm_mode_runtime.store(0xFF, std::memory_order_relaxed);
       fmEnterIdle();
       Serial.println("FM [RX] mode declaration expired (no 0xF2 refresh) -> IDLE");   // after the writes (F7)
@@ -6506,7 +6596,11 @@ static void runFmLoopBody(unsigned long now)
   // here during an RTM run - the TX's fault-stop disarm (0xF2/0 on fm_flags bit 3) keeps working.
   // V2.5-Evo - 2026-10-02 - P2: m > 3 -> m > 5. 0, 6, 7 and 0xFF all still land here and still mean
   // IDLE; there is deliberately no mode 6, so 6 fails to IDLE rather than being read as "nearly 5".
+  // V2.5-Evo - 2026-10-08 - STICKY RETURN CAP (owner design): an auto-return (FM_RETURN) that is ended here - the remote's
+  // 0xF2/0 disarm, GPS or RTM switched off - keeps the return's limit, armed FIRST at the cap in force, because
+  // fmEnterIdle() lifts Follow-Me's cap to 255 and used to hand the held trigger straight back (audit D-1).
   if (!usrConf.gps_en || !usrConf.rtm_rx_enabled || m < 1 || m > 5) {
+    if (fm_state == FM_RETURN) stickyCapArm(fm_throttle_cap.load());   // FIRST
     fmEnterIdle();
     return;
   }
@@ -7442,9 +7536,16 @@ static void runFmLoopBody(unsigned long now)
   // guessing — fm_flags bit 2 rises, the ARMED branch below prints a rate-limited explanation, the
   // one-shot degradation notice has already printed, and ?diag answers on demand. And RTM keeps
   // working throughout, so the buggy can always be brought home.
+  // V2.5-Evo - 2026-10-08 - STICKY RETURN CAP (audit D-7): Follow-Me may NOT engage while a sticky return cap stands.
+  // After a return ends early the rider is in manual with the return's speed limit; Follow-Me is ARMED again and would
+  // otherwise re-latch on distance alone and take the steering from a rider who believes he is in manual. One release
+  // below 10 % clears the cap, and the ordinary engage rules (latch, D_engage, streak) apply from there. This is the
+  // only road into FM_ACTIVE; the auto-return proof needs the cap or the trigger at 0, which a held trigger in ARMED
+  // never gives, so FM_RETURN cannot start under it either.
   bool can_be_active = hard_ok && speed_ok && dist_ok && fm_sep_latched &&
                        !diverge_fault && !heading_disagree_fault &&
-                       !return_candidate;   // V2.5-Evo - 2026-09-19 - a stopped rider is never followed (raw judgement, B6)
+                       !return_candidate &&   // V2.5-Evo - 2026-09-19 - a stopped rider is never followed (raw judgement, B6)
+                       !sticky_armed.load();  // V2.5-Evo - 2026-10-08 - D-7
 
   // V2.5-Evo - 2026-09-17 - P0-g: record the verdicts that just decided can_be_active, exactly as
   // evaluated, for the deep log. Pure bookkeeping — nothing below reads fm_log_*.

@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-08 - STICKY RETURN CAP (owner design): sticky_cap + sticky_armed atomics, kStickyReleaseThr (25), kStickyFallbackCap (60), kStickyRxFixMaxMs (2000), the kStickyOnRiderCancel owner switch, stickyCapArm(), rx_state_flags bit 5. Runtime only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - defaultConf.foil_num_cells 10 -> 12 (value only: same field, sizeof stays 200, SW_VERSION stays 36, a stored config keeps its own value).
 // V2.5-Evo - 2026-10-07 - N-5 backstop: comment only - arrival_handback_cap also clears after 1.0 s below 25 (PWM.ino).
 // V2.5-Evo - 2026-10-07 - N-10: adds the rx_tx_boot_id_rx_seq atomic (bumped on every boot-ID packet; a parked auto-return after a link gap waits for it to move). Runtime global, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -1477,6 +1478,58 @@ std::atomic<uint8_t> arrival_handback_cap {kHandbackNone};
 // is not letting go, and the owner's rule is "let go of the throttle completely".
 static const uint8_t kHandbackReleaseThr = 8;
 
+// ============================================================
+// V2.5-Evo - 2026-10-08 - THE STICKY RETURN CAP (owner design: a return that ends early keeps its speed limit)
+// ============================================================
+// When a manual return-to-me or an auto-return ends for ANY reason other than arrival - a fault on either board, a
+// link loss, a remote reboot, the rider's own cancel - the mode ends and the steering is the rider's at once, but
+// the throttle keeps the RETURN'S LIMIT (the 4 km/h governor, the slow-down near the rider, or a fixed slow ceiling
+// when GPS cannot run those) for as long as the trigger stays at 10 % or more. Below 10 % once, it is gone and the
+// throttle is plain manual. The buggy neither stops dead mid-return nor gets the full held trigger while it points
+// at the rider. Arrival is NOT this: it keeps arrival_handback_cap above, unchanged.
+//   sticky_cap   : the limit standing (0-255). Ignored unless sticky_armed.
+//   sticky_armed : true while the limit stands.
+//   ARMED  by stickyCapArm() below - at a return's exit edge only (RTMState.ino, and Radio.ino on 0xF1/0) - value
+//          FIRST, then the flag, and BEFORE the write that lets the mode go, so the motor task never sees a tick with
+//          neither cap standing.
+//   UPDATED by stickyCapUpdate() (RTMState.ino, loop task, 10 Hz) from stickyReturnCapStep() (Common/AutoReturnRules.h,
+//          host-tested), with a compare-exchange so a lower value armed in between is never overwritten.
+//   CLEARED only by calcPWM() (generatePWM task, 100 Hz) on the first pass with thr_received below kStickyReleaseThr.
+//   APPLIED in calcPWM() like every other cap: min(), subtract-only. The rider's trigger is still the only throttle.
+// No confStruct field: sizeof stays 200, SW_VERSION stays 36.
+std::atomic<uint8_t> sticky_cap   {255};
+std::atomic<bool>    sticky_armed {false};
+// The release that clears it: thr_received below 25 counts (9.8 % of the byte, the deadman threshold RTM Gate 1 and
+// auto-return use). The remote's own backstop clears at its raw trigger below 26 (audit D-6); the buggy decides.
+static const uint8_t  kStickyReleaseThr  = 25;
+// The fixed slow ceiling when the governor or the rider distance cannot run (a GPS on either board stale, rejected or
+// the governor set to 0): 60/255, about 24 %, the same "controlled start, not a lurch" number as kBootstrapMaxCap.
+// Never 0 (that would strand the rider) and never 255. OWNER: confirm after a speed measurement at 60/255.
+static const uint8_t  kStickyFallbackCap = 60;
+// The buggy's own fix must be this fresh for the governor to run (a stale speed is never used, audit D-4).
+static const uint32_t kStickyRxFixMaxMs  = 2000;
+// OWNER SWITCH (audit D-8): true = the rider's own cancels of a moving auto-return (rider moving off, the mode-0 stick
+// cancel) also leave the sticky cap, in FM_ARMED; false = the old behaviour (FM_HOLD, cap 0 until one release).
+static const bool     kStickyOnRiderCancel = true;
+
+// stickyCapArm - V2.5-Evo - 2026-10-08 - start the sticky return cap at a return's exit edge.
+// What it does: stores `initial` (the cap in force at the exit, so the limit never steps) as the standing value - or,
+// if a sticky cap already stands, keeps the LOWER of the two - then raises sticky_armed. Safe from the loop task and
+// the radio task (a re-arm can only lower the value; the clear in calcPWM() needs a released trigger anyway).
+// Inputs: initial (0-255). Side effects: sticky_cap, sticky_armed. Call it BEFORE the write that ends the mode.
+static inline void stickyCapArm(uint8_t initial)
+{
+  if (sticky_armed.load()) {
+    uint8_t cur = sticky_cap.load();
+    while (initial < cur) {
+      if (sticky_cap.compare_exchange_weak(cur, initial)) break;
+    }
+  } else {
+    sticky_cap.store(initial);
+  }
+  sticky_armed.store(true);
+}
+
 #include "../Common/SPIFFSEngine.h"
 
 // ============================================================
@@ -2513,19 +2566,25 @@ struct __attribute__((packed)) TelemetryPacket {
     //       timeout, the H-1 refresh expiry). REMOTE TO DO: on the rising edge while RTM is ACTIVE, end
     //       RTM at once with "St" + the stop buzz (the RTM twin of fm_flags bit 3), send 0xF1/0, and
     //       drop its own RTM cap (the buggy holds the throttle at 0 until one full release).
+    //       V2.5-Evo - 2026-10-08 - now: the buggy keeps the sticky return cap (bit 5), and the remote
+    //       KEEPS its own RTM cap until its raw trigger drops below 26 (the remote's backstop).
     //   [1] RTM ARRIVED, sticky 6 s: the buggy ended return-to-me at Gate 9. REMOTE TO DO: end RTM with
     //       the silent "St", send 0xF1/0, drop its own RTM cap (the buggy holds the arrival cap).
     //   [2] HAND-BACK CAP STANDING: the buggy is holding a hand-back cap until the trigger is fully
     //       released once - 0 after ANY end of manual RTM (Gate 9, Phase C, H-1, H-2, a remote reboot;
     //       V2.5-Evo 2026-10-07 N-2/N-3/N-4), the cap in force after an auto-return arrival or a 95 s
     //       declaration expiry from an engaged state (N-7). Display only - the remote must not add a cap
-    //       of its own for it.
+    //       of its own for it. V2.5-Evo - 2026-10-08 - since the sticky return cap: Gate 9 arrival, an
+    //       auto-return arrival and a 95 s expiry from following only; every other return end sets [5].
     //   [3] REMOTE BOOT ID HELD (S-8): the buggy has heard a boot ID from this remote (0xF1 value
     //       0x80 | id), so a remote power cycle cancels a standing return and a parked auto-return
     //       waits through a link loss. 0 while no boot ID has been heard (every remote without S-8).
     //   [4] RTM REFRESH ARMED (H-1): the current RTM run has heard an 0xF1/2 refresh, so the buggy will
     //       end RTM if refreshes stop for 5 s. 0 for a remote that does not refresh.
-    //   [5..7] reserved, 0.
+    //   [5] STICKY RETURN CAP STANDING (V2.5-Evo - 2026-10-08): a return ended early (not arrival) and the
+    //       buggy keeps the return's speed limit until the trigger drops below 10 % once (sticky_armed).
+    //       For logs and diagnostics; the remote draws nothing for it (owner: screen option A).
+    //   [6..7] reserved, 0.
     uint8_t rx_state_flags = 0;       // index 19 - see above
 } telemetry;
 

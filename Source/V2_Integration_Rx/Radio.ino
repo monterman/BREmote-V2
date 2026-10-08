@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-08 - STICKY RETURN CAP (owner design): processRtmStatePacket() arms the sticky return cap on 0xF1/0
+//   while RTM is running, before rtm_rx_active goes false. No packet format change, no confStruct change.
 // V2.5-Evo - 2026-10-07 - P-3: gps_phase_b_dist_fail records that the last Phase B failure was the distance check. No
 //   packet format change, no confStruct change.
 // V2.5-Evo - 2026-10-07 - N-10: processRtmStatePacket() bumps rx_tx_boot_id_rx_seq on every boot-ID packet, so a parked auto-return can wait after a link gap until the remote has identified itself again. No confStruct change, SW_VERSION stays 36.
@@ -399,6 +401,15 @@ static void processRtmStatePacket(const uint8_t *pkt)
   uint8_t new_state = pkt[4];
   if (new_state == 0)
   {
+    // V2.5-Evo - 2026-10-08 - STICKY RETURN CAP (owner design). The remote ending a RUNNING return (its max-runtime
+    // gate, its own GPS going stale, its answer to the buggy's fault bit, or any older remote's exit) used to leave
+    // the buggy with nothing: the next pass handed the motor the full held trigger, buggy pointed at the rider. Now the
+    // return's live limit is armed FIRST - at the cap in force (0 under an emergency stop, else RTM's own cap) - and
+    // only then does RTM go off, so the motor task never sees a pass with neither cap standing. It clears on the first
+    // pass with the trigger below 25 counts, so a released trigger (the arm ceremony's 0xF1/0, a stop after a long
+    // release) is unaffected. Not armed when RTM is not running: after a Gate 9 arrival the buggy has already ended
+    // RTM itself and keeps the arrival cap instead.
+    if (rtm_rx_active) stickyCapArm(rtm_rx_emergency_stop ? 0 : rtm_approach_cap.load());
     rtm_rx_active         = false;
     rtm_rx_emergency_stop = false;
     Serial.println("RTM [RX] deactivated by TX");

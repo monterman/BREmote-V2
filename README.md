@@ -11,7 +11,7 @@
 >
 > **Known issues on this branch**
 >
-> - Remote: if the remote ends Return-To-Me on its own fault (its GPS lost, or the optional maximum run time) while you hold the trigger, full manual throttle comes back at once with "St" and the stop buzz, not after a release.
+> - New in this build, bench-checked but not yet water-tested: when a return (Return-To-Me or auto-return) ends on a fault while you hold the trigger, the buggy keeps the return's slow speed instead of jumping to full throttle. Let go (below about 10 %) once and you have full manual again. Your own cancel is not affected.
 > - Receiver: a radio link loss longer than about 95 s ends a parked auto-return; the remote shows "St" once the link is back.
 > - Receiver: if a part holds the shared sensor bus (I2C) low, both motors stop until the bus is free. The firmware recovers the bus and, when the compass is the likely cause, takes it out of service until the receiver is restarted (Follow-Me and auto-return then steer on the GPS course only, and stop with "St" when there is none). A wiring short cannot be cleared by firmware; a hardware isolator in front of the compass is the real fix.
 > - Not yet proven on the water: this round's changes (front stations F4 / F5 on the remote, the arm-refusal and arrival throttle caps, the auto-return gesture rules, the sensor-bus recovery) still need the bench tests and a water test.

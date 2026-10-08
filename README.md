@@ -11,13 +11,10 @@
 >
 > **Known issues on this branch**
 >
-> - Remote: when it refuses to arm Return-To-Me close to the buggy, a trigger squeeze you are still holding goes straight back to the motors.
-> - Remote: a magnet tap during an auto-return steps the Follow-Me station.
-> - Remote: deliberately disarming Follow-Me also ends an auto-return that is under way.
-> - Receiver: any stall on the shared sensor bus takes the compass out of service, even when the compass was not the cause.
-> - Receiver: riding more than 500 m away from a buggy that is parked at the end of an auto-return ends that auto-return.
-> - Receiver: after an arrival, the throttle cap only clears once the trigger is back at idle (below 8).
-> - Front stations F4 / F5 are still in development: the receiver has them, but the remote cannot select F4 or F5 yet.
+> - Remote: if the remote ends Return-To-Me on its own fault (its GPS lost, or the optional maximum run time) while you hold the trigger, full manual throttle comes back at once with "St" and the stop buzz, not after a release.
+> - Receiver: a radio link loss longer than about 95 s ends a parked auto-return; the remote shows "St" once the link is back.
+> - Receiver: if a part holds the shared sensor bus (I2C) low, both motors stop until the bus is free. The firmware recovers the bus and, when the compass is the likely cause, takes it out of service until the receiver is restarted (Follow-Me and auto-return then steer on the GPS course only, and stop with "St" when there is none). A wiring short cannot be cleared by firmware; a hardware isolator in front of the compass is the real fix.
+> - Not yet proven on the water: this round's changes (front stations F4 / F5 on the remote, the arm-refusal and arrival throttle caps, the auto-return gesture rules, the sensor-bus recovery) still need the bench tests and a water test.
 
 > **Fork of [BREmote V2](https://github.com/Luddi96/BREmote) by LudwigBre / Luddi96**
 

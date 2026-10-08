@@ -1238,7 +1238,8 @@ void txBootIdInit()
 static void txBootIdTick(unsigned long now)
 {
   if (!usrConf.paired || !isRadioActivityEnabled()) return;
-  const bool link_fresh = (last_packet != 0) && ((now - last_packet) < FM_LINK_HEALTHY_MS);
+  // V2.5-Evo - 2026-10-07 - signed: waitForTelemetry can stamp last_packet after `now` was read (see rtmRefreshTick()).
+  const bool link_fresh = (last_packet != 0) && ((long)(now - last_packet) < (long)FM_LINK_HEALTHY_MS);
   if (!link_fresh) { tx_boot_id_last_ms = 0; return; }   // send again as soon as the link comes back
   if (tx_boot_id_last_ms != 0 && (now - tx_boot_id_last_ms) < kTxBootIdRepeatMs) return;
   if (queueMetaPacketIfFree(0xF1, (uint8_t)(0x80 | tx_boot_id), 1)) tx_boot_id_last_ms = (now != 0) ? now : 1;
@@ -1265,7 +1266,9 @@ static void rtmRefreshTick(unsigned long now)
   const unsigned long started = rtm_start_sent_ms;
   if (started == 0 || (long)(started - rtm_active_start_ms) < 0) return;   // this run's 0xF1/1 is not on the air yet
   if (metaQueuePending(0xF1, 1, false)) return;                             // the activation burst is still draining
-  if ((now - started) < kRtmRefreshPeriodMs) return;                        // >= 1 s after its last packet
+  // V2.5-Evo - 2026-10-07 - signed: sendData (higher priority) can stamp `started` AFTER `now` was read; an unsigned
+  // now - started would then wrap to ~49 days and send the refresh at once, on top of the activation burst.
+  if ((long)(now - started) < (long)kRtmRefreshPeriodMs) return;           // >= 1 s after its last packet
   if ((long)(rtm_refresh_last_ms - rtm_active_start_ms) >= 0 &&
       (now - rtm_refresh_last_ms) < kRtmRefreshPeriodMs) return;           // one per second within this run
   if (queueMetaPacketIfFree(0xF1, 0x02, 1)) rtm_refresh_last_ms = now;

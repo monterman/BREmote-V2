@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - H-3 stop-gap: loop() calls i2cStuckBusService() (Init.ino) after checkButtons(); it does nothing unless the PWM task has declared the motor-enable swap starved. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-03 - RX WEB CONSOLE: serialTeeInit() added as the first line of setup() so the
 // serial capture ring has its mutex before anything else prints. No control-path statement added,
 // removed or reordered; loop() is untouched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -89,6 +90,11 @@ void loop()
 
   // Runtime button detection: BIND = compass cal. Boot-time pairing is guarded inside.
   checkButtons();
+
+  // V2.5-Evo - 2026-10-07 - H-3 stop-gap (Init.ino): when the motor-enable swap has starved on a stuck I2C
+  // bus, a 9-clock bus recovery + Wire re-init, and the compass is isolated for the session. Before the RTM
+  // and FM loops, so their heading reads already see the compass gone. A no-op while the swap is healthy.
+  i2cStuckBusService();
 
   // V2.5-Evo - 2026-04-25 - P7: RTM state machine — safety gates, steering override, Phase C.
   // Runs at 10Hz regardless of the 1000ms GPS/VESC gate below.

@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - STUCK-BUS STOP-GAP (audit H-3): compassIsolateForSession() takes the compass off the bus for the rest of the session (compass_detected false, snapshot invalidated) when Init.ino's stuck-bus service finds the motor-enable swap starved. Nothing else in this file changes. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 4 of 4 - MOTOR PRIORITY OVER COMPASS (see Logger.ino, System.ino, PWM.ino). THREE CHANGES HERE. (1) All four portMAX_DELAY takes become pdMS_TO_TICKS(10) and return false on timeout: compassWriteReg(), compassReadReg(), compassProbe() and readCompassRaw(). A compass may skip a sample; a motor may not skip an enable swap, and the swap takes this same mutex with a 10 ms bound. This does NOT shorten a single compass hold - the hold is Wire time, capped by Wire.setTimeOut(3) since STEP 1, not by the semaphore - but it stops the compass stacking its hold on top of a pile-up it was queued behind, and it REMOVES a loop-task WDT panic path (updateCompassSnapshot() runs in the WDT-registered loop task, where an unbounded take could wedge to the 3000 ms panic - the same hazard the 2026-07-22 fix removed from the PWM task, still live on this side until today). 10 ms is correct only because STEP 1 landed the 3 ms transaction ceiling; at the old 20 ms ceiling it would have been 25. Degrades safely, verified rather than assumed: every one of the four already had a false-return path and every consumer treats a failed read as "no heading" and holds straight, readCompassRaw() reads into locals so a torn read cannot leave magX fresh and magY stale, and the age windows sit on a timestamp that only advances on SUCCESS - there is no extrapolation and no last-value-held path in this chain. (2) getCompassHeading() now PUBLISHES its last successful result into compass_live_cache_deg / _ms, so the logger can RECORD a heading without triggering a fresh two-transaction I2C read on the motor path at 2.89 Hz. Updated only on success, so a refusal or a bus failure leaves the value and its timestamp alone and it simply ages out. No control path reads the cache; getCompassHeading() remains the only producer of a heading. (3) updateCompassSnapshot() gains an early return on usrConf.rtm_use_compass == 0, so that setting finally means what every owner assumes: at mode 0 the driver issues NO compass transaction. Verified safe - getRtmHeading() returns NONE at an explicit mode == 0 test that sits ABOVE the compass fallback, so mode 0 never steered on the snapshot; the only visible effect is that the log's compass_snap columns report their documented 0xFFFF "no snapshot" sentinel on a mode-0 board. Operator-initiated diagnostics (?printcompass, ?compassheading, ?magtest, ?compasscal, ?magalign) still read the part deliberately - someone who types ?magtest is asking for a reading. No confStruct change, sizeof stays 200, SW_VERSION stays 36, no log format change.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 1 of 4 (see Init.ino, System.ino): initCompass() no longer calls Wire.setTimeOut(20). That call set a GLOBAL Wire property - the per-transaction ceiling every holder on this bus runs under - from a compass-specific function, so a board with no compass fitted never reached it and silently ran the arduino-esp32 default of 50 ms, which is 2.5x worse than the ceiling everyone believed was in force. The call now lives once in initHardware() (Init.ino) at 3 ms, on the unconditional boot path, immediately after Wire.begin(). Only the line and its replacement comment change here: detection, configuration, calibration, readCompassRaw() and every heading path are untouched, and this file issues exactly the transactions it did before. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-03 - RX WEB CONSOLE: one webCfgPumpWhileBlocked() call added at the EXISTING periodic abort point of runCompassCalibration() (45 s) and of runMagAlign() (5 s), so the WiFi console keeps being served while either holds the loop task - the owner taps the button and watches the text arrive, including the 5 s countdown he is meant to rotate the buggy to, instead of a dead page. Both loops already carry a vTaskDelay(20), so the service rate is roughly 50 Hz. No calibration threshold, sample, verdict, write or abort condition is touched, and neither function's behaviour over USB changes at all. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -330,6 +331,38 @@ bool readCompassRaw() {
 
   xSemaphoreGive(i2cMutex);
   return false;
+}
+
+// ============================================================
+// V2.5-Evo - 2026-10-07 - compassIsolateForSession - take the compass off the bus for the rest of the session
+// ============================================================
+// Audit H-3 stop-gap. Called by i2cStuckBusService() (Init.ino) when the motor-enable swap on the shared I2C
+// bus has starved: the compass is the part on flying leads that can hold the bus, and the motors outrank it.
+// What it does: marks the compass as not detected (so readCompassRaw(), getCompassHeading() and
+//   updateCompassSnapshot() issue no transaction from now on - every one of them already refuses on
+//   !compass_detected) and INVALIDATES the snapshot (heading -1, stamp 0), so no heading taken around the
+//   fault is steered on. The heading then falls back by the existing rules in getRtmHeading(): GPS course
+//   while moving; with none, Follow-Me and a parked auto-return end with "St" (condition 6), and RTM follows
+//   its own gates (headless bootstrap / align cap, as for a COG-only board).
+// Inputs: why - printed. Outputs: g_compass_isolated, g_compass_isolated_ms (for ?diag).
+// Side effects: compass_detected, compass_snapshot_*; one Serial line. Loop task only. Idempotent.
+// NOT a config change: nothing is written to SPIFFS; a reboot probes the compass again as usual. The serial
+// compass tools (?printcompass, ?compasscal, ?magalign, ?magtest) report "not detected" until then.
+bool          g_compass_isolated    = false;   // true = the compass was taken off the bus this session
+unsigned long g_compass_isolated_ms = 0;       // millis() it happened; 0 = never
+
+void compassIsolateForSession(const char *why)
+{
+  if (g_compass_isolated) return;
+  g_compass_isolated       = true;
+  g_compass_isolated_ms    = millis();
+  if (g_compass_isolated_ms == 0) g_compass_isolated_ms = 1;
+  const bool was_detected  = compass_detected;
+  compass_detected         = false;
+  compass_snapshot_heading = -1.0f;
+  compass_snapshot_ms      = 0;
+  Serial.printf("COMPASS [RX] ISOLATED for this session (%s)%s: no more compass reads; heading falls back to GPS course, Follow-Me / auto-return need a heading and end with St without one, manual driving is unaffected. Reboot to use the compass again.\n",
+                why, was_detected ? "" : " - no compass was in use");
 }
 
 void serPrintCompass() {

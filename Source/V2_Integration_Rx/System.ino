@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - H-3 stop-gap: ?diag prints an "I2C bus" line under "swap fails" - stuck-bus recoveries this session, the SDA/SCL levels seen before/after the last one, whether Wire re-initialised, and whether the compass has been isolated. Read-only. No new ?command. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - ?diag gains one "Return end" line (printReturnEndDiag() in RTMState.ino): the arrival hand-back cap, the last RTM fault end / arrival, the H-2 gate-fault time and rx_state_flags. Read-only. No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - audit LOW: ?printtasks also reports the loggerTask stack high-water mark (it was the one task not measured).
 // V2.5-Evo - 2026-10-06 - VESC 2 OVER CAN: ?diag gains a "VESC 2 CAN" line under "VESC poll" - VESC 2's poll success in the window, backoff state, data age vs the logger's freshness limit and its last values; ?diagz zeroes the two VESC 2 counters. No new ?command, so the web quick-commands and config tool need no change. Read-only. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -1469,6 +1470,26 @@ void cmdDiag(const String& params) {
                 g_swap_starved ? "YES - BOTH channels gated off; THIS is why the motor gate is CLOSED"
                                : "no",
                 (unsigned)alternatePWMChannel);
+  // V2.5-Evo - 2026-10-07 - H-3 stop-gap: what the stuck-bus service (Init.ino) has done this session -
+  // directly under "swap fails", because a starved swap is what triggers it. Recoveries, the age of the last
+  // one, the SDA / SCL levels it saw before and after (1 = high; SDA still 0 after = a short the firmware
+  // cannot clear), whether Wire came back, and whether the compass has been isolated. Read-only.
+  if (g_i2c_recoveries == 0) {
+    Serial.printf("I2C bus    : no stuck-bus recovery this session; compass %s\n",
+                  g_compass_isolated ? "ISOLATED (see below)" : (compass_detected ? "polled normally" : "not detected at boot"));
+  } else {
+    Serial.printf("I2C bus    : %u stuck-bus recover%s, last %lu s ago: SDA/SCL before %u/%u after %u/%u, Wire re-init %s%s\n",
+                  (unsigned)g_i2c_recoveries, (g_i2c_recoveries == 1) ? "y" : "ies",
+                  (unsigned long)((now_ms - g_i2c_last_recovery_ms) / 1000UL),
+                  (unsigned)(g_i2c_last_levels & 0x01), (unsigned)((g_i2c_last_levels >> 1) & 0x01),
+                  (unsigned)((g_i2c_last_levels >> 2) & 0x01), (unsigned)((g_i2c_last_levels >> 3) & 0x01),
+                  g_i2c_last_reinit_ok ? "ok" : "FAILED",
+                  g_i2c_last_mutex_miss ? " (the newest attempt was postponed: mutex busy)" : "");
+  }
+  if (g_compass_isolated) {
+    Serial.printf("I2C bus    : compass ISOLATED for this session %lu s ago after the motor-enable swap starved - no compass reads, heading from GPS course only; reboot to use it again\n",
+                  (unsigned long)((now_ms - g_compass_isolated_ms) / 1000UL));
+  }
   Serial.printf("GPS feed   : %.0f bytes/s, %.1f sentences/s   [window %u B, %u sentences]\n",
                 (float)d_bytes / win_s, (float)d_sent / win_s,
                 (unsigned)d_bytes, (unsigned)d_sent);

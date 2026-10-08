@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - STUCK-BUS STOP-GAP (audit H-3, owner: firmware only): i2cStuckBusService(), called from loop(), runs a 9-clock SCL recovery + STOP + Wire re-init under i2cMutex whenever the PWM task has declared the AW9523 enable swap starved (retried every 2 s while it lasts), and isolates the compass for the session (compassIsolateForSession(), Compass.ino), so a wedged compass cannot keep both motors coasting. Nothing added to the PWM task. ?diag prints the record. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 1 of 4 (see Compass.ino, System.ino): the two lines in initHardware() that bound EVERY I2C hold on this board. BACKGROUND: there is one PPM output (GPIO 9, one RMT channel) and two motors, time-multiplexed by swapping the optocoupler enables over the AW9523 on I2C - so the enable swap is ON the motor control path, and it takes i2cMutex with a 10 ms bound (PWM.ino). Other holders take the same mutex with portMAX_DELAY and hold it for Wire time, which was capped at 20 ms PER TRANSACTION; a single physical-layer stall therefore blew the swap's whole budget, the channel index correctly did not advance, and THE OTHER MOTOR RECEIVED ZERO PULSES - asymmetric thrust under power. (1) Wire.setClock(400000) -> 100000. The RX pulls SDA/SCL up with 10k (R24/R28, Electronics/.../Rx_V2-2.sch) and the compass hangs off two hand-soldered pads on flying leads: Fast-mode's 300 ns rise-time limit permits only ~35 pF of total bus capacitance, which the module's own pads and leads exceed on their own, while Standard-mode's 1000 ns limit is met with ~1.9x margin. That rise-time violation is what makes a 20 ms timeout reachable at all. COST: the longest routine hold goes ~0.6 ms -> ~2.4 ms against the PWM task's 10 ms budget (17x headroom -> 4x), which is the cheap side of the trade. (2) Wire.setTimeOut MOVED HERE from initCompass() and lowered 20 -> 3 ms. WHY THE MOVE MATTERS AND IS NOT COSMETIC - REASON CORRECTED 2026-10-03 (STEP 5, delta audit M-2; the reason first written here was factually WRONG and is replaced rather than left in the tree): it is NOT that a board with no compass fitted ran the 50 ms Wire default. initCompass() is called UNCONDITIONALLY from setup() (V2_Integration_Rx.ino:44) and setTimeOut was its FIRST statement, ahead of any detection, so a compass-less board DID get the 20 ms ceiling. THE BEHAVIOUR THE MOVE ACTUALLY CHANGES IS ORDERING: startupAW() runs inside initHardware(), BEFORE initCompass(), so the AW9523's ~15 init transactions used to run at the arduino-esp32 50 ms default and now run under the 3 ms ceiling - that is the one call site this move affects, and it is precisely the call site that was flagged for review. The second reason is ownership/SSOT: setTimeOut is GLOBAL to the Wire instance, so it belongs beside Wire.begin() and Wire.setClock() in initHardware(), not inside a compass-specific function where any future early return above it would silently hand the whole board back to the 50 ms default. EFFECT: worst-case hold for setUartMux() drops ~200 -> ~30 ms and the enable swap's own worst wait 80 -> 12 ms. 3 ms is 3.5x the longest legitimate transaction on this bus (a 6-byte compass read at 100 kHz is ~840 us). CHECKED, because moving it changes who sees it: startupAW() below now runs UNDER the 3 ms ceiling, and its aw.begin(0x58) failure path is a hard hang (while(1) delay(10), System.ino). A NACK still returns immediately, so a healthy bus is unaffected and a dead bus fails the same way it always did, only faster - the verdict does not change, only the time spent reaching it. No confStruct change, sizeof stays 200, SW_VERSION stays 36, no log format change.
 // V2.5-Evo - 2026-08-16 - initWatchdog() no longer returns early on config_version_error, so the task watchdog is armed on EVERY boot — including the first boot after a version bump, which used to run with no watchdog at all. A version mismatch is a self-healing condition (defaults are re-baked and re-read); a genuine config failure halts in spiffsErrorHalt() and never reaches this function. The flag itself is left set and untouched — it is shared with the TX, where it drives a whole-boot safe mode. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
 // V2.5-Evo - 2026-07-25 - STAGE 1 (GPS repair): Serial1.setRxBufferSize(2048) added in runBootSequence() immediately BEFORE the first Serial1.begin(). The old setRxBufferSize(512) lived in configureGPS() (GPS.ino), which runs AFTER this begin() — and arduino-esp32 refuses a resize once the UART driver is installed, so the ring has always silently been the 256-byte default. No confStruct change, SW_VERSION stays 34.
@@ -26,6 +27,114 @@ void initHardware()
   // number is ever raised, re-check kSwapStarveTicks in BREmote_V2_Rx.h, which is derived from it.
   Wire.setTimeOut(3);
   startupAW();
+}
+
+// ============================================================
+// V2.5-Evo - 2026-10-07 - STUCK-BUS STOP-GAP (audit H-3, owner: firmware only, "so the rider can always limp
+// home"). A damaged compass can hold the RX's only I2C bus; the AW9523 that switches the two PPM enables is
+// on the same bus, every enable swap then fails, g_swap_starved trips (PWM.ino) and BOTH motors coast - the
+// manual buggy is dead because of a sensor. This adds the two things the firmware can do about it:
+//   1. A 9-CLOCK BUS RECOVERY + Wire re-init, the standard I2C unwedge: a slave stopped mid-byte holding SDA
+//      low is clocked out of it, a STOP resets every slave, and the ESP32's I2C peripheral is rebuilt.
+//   2. THE COMPASS IS ISOLATED FOR THE REST OF THE SESSION (compassIsolateForSession(), Compass.ino): no
+//      driver path reads it again, its snapshot is invalidated, the heading falls back per the existing rules
+//      (GPS course; Follow-Me / auto-return fault with "St" without a heading; RTM per its own gates).
+// Once the bus answers, the PWM task's existing Schmitt recovery (5 good swaps) re-opens the motor gate and
+// the throttle ramps up from 0 - manual control is back. NOTHING here runs in the PWM task: this is called
+// from loop() and the PWM task only keeps its bounded 10 ms take, exactly as before.
+// HONEST LIMIT: if SDA is shorted to ground (not a wedged slave but a dead short), no firmware can drive the
+// bus; the recovery repeats every kI2cRecoveryRetryMs and the motors stay coasting until the short clears.
+// That is the hardware fix the audit lists (an isolator in front of the compass).
+// ============================================================
+// g_swap_starved is owned by PWM.ino, which the sketch concatenates AFTER this file, so it is declared here.
+extern volatile bool g_swap_starved;
+
+static const unsigned long kI2cRecoveryRetryMs = 2000UL;   // ms between recovery attempts while the swap stays starved
+
+// ?diag record (System.ino prints it). Loop task only; the counter saturates.
+uint16_t      g_i2c_recoveries        = 0;      // recovery attempts this session
+unsigned long g_i2c_last_recovery_ms  = 0;      // millis() of the last attempt; 0 = none
+uint8_t       g_i2c_last_levels       = 0;      // bit0 SDA before, bit1 SCL before, bit2 SDA after, bit3 SCL after (1 = high)
+bool          g_i2c_last_reinit_ok    = false;  // Wire.begin() succeeded after the last recovery
+bool          g_i2c_last_mutex_miss   = false;  // the last attempt could not get i2cMutex within 50 ms (tried again later)
+
+// i2cBusRecoverLocked - the 9-clock recovery and Wire re-init.
+// Inputs: none. THE CALLER MUST HOLD i2cMutex, so no other holder can touch Wire while it is torn down.
+// Outputs: the bus line levels before / after (into g_i2c_last_levels) and the Wire.begin() result.
+// Side effects: Wire.end(), ~110 us of bit-banged clocks on P_I2C_SCL, a STOP, Wire.begin() + the board's
+//   clock and timeout (the same three settings initHardware() makes). No delay() and no vTaskDelay:
+//   delayMicroseconds only, so the mutex is held for roughly a millisecond. A higher-priority task that
+//   waits on the mutex (the PWM task's bounded swap) lends this task its priority until it is given back.
+static void i2cBusRecoverLocked()
+{
+  uint8_t lv = 0;
+  if (gpio_get_level((gpio_num_t)P_I2C_SDA)) lv |= 0x01;
+  if (gpio_get_level((gpio_num_t)P_I2C_SCL)) lv |= 0x02;
+
+  Wire.end();
+  pinMode(P_I2C_SDA, INPUT_PULLUP);        // the board's 10k pull-ups are the real ones; this only helps
+  pinMode(P_I2C_SCL, OUTPUT_OPEN_DRAIN);
+  digitalWrite(P_I2C_SCL, HIGH);
+  delayMicroseconds(5);
+  // Nine clocks at ~100 kHz: a slave stuck mid-byte shifts out its remaining bits and its ACK slot and
+  // lets go of SDA.
+  for (uint8_t i = 0; i < 9; i++) {
+    digitalWrite(P_I2C_SCL, LOW);  delayMicroseconds(5);
+    digitalWrite(P_I2C_SCL, HIGH); delayMicroseconds(5);
+  }
+  // A STOP (SDA rising while SCL is high) resets every slave's bus state machine.
+  digitalWrite(P_I2C_SCL, LOW);  delayMicroseconds(5);
+  pinMode(P_I2C_SDA, OUTPUT_OPEN_DRAIN);
+  digitalWrite(P_I2C_SDA, LOW);  delayMicroseconds(5);
+  digitalWrite(P_I2C_SCL, HIGH); delayMicroseconds(5);
+  digitalWrite(P_I2C_SDA, HIGH); delayMicroseconds(5);
+  pinMode(P_I2C_SDA, INPUT_PULLUP);
+  delayMicroseconds(5);
+  if (digitalRead(P_I2C_SDA)) lv |= 0x04;
+  if (digitalRead(P_I2C_SCL)) lv |= 0x08;
+
+  // Rebuild the peripheral exactly as initHardware() set it up.
+  g_i2c_last_reinit_ok = Wire.begin(P_I2C_SDA, P_I2C_SCL);
+  Wire.setClock(100000);
+  Wire.setTimeOut(3);
+  g_i2c_last_levels = lv;
+}
+
+// i2cStuckBusService - the loop-task supervisor. Call once per loop() pass.
+// What it does: nothing while the enable swap is healthy. When the PWM task has declared the swap starved
+//   (g_swap_starved: 25 consecutive failed AW9523 swaps = 250 ms), it isolates the compass for the session
+//   (once) and runs the bus recovery under i2cMutex, at most once every kI2cRecoveryRetryMs for as long as
+//   the starvation lasts.
+// Inputs: g_swap_starved (written only by the PWM task). Outputs: the g_i2c_* record, the compass isolation.
+// Side effects: Serial lines (after the mutex is given back), Wire torn down and rebuilt.
+void i2cStuckBusService()
+{
+  if (!g_swap_starved) return;
+  const unsigned long now = millis();
+  if (g_i2c_last_recovery_ms != 0 && (now - g_i2c_last_recovery_ms) < kI2cRecoveryRetryMs) return;
+  g_i2c_last_recovery_ms = (now != 0) ? now : 1;
+
+  // The compass first: it is the part on flying leads that can wedge the bus, and it must not be polled
+  // again either way - a sensor is never worth the motors.
+  compassIsolateForSession("the motor-enable swap starved on the I2C bus");
+
+  // Bounded take: this is the WDT-registered loop task. On a miss, try again on the next attempt.
+  if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(50)) != pdTRUE) {
+    g_i2c_last_mutex_miss = true;
+    Serial.println("I2C [RX] stuck-bus recovery postponed: i2cMutex busy for 50 ms");
+    return;
+  }
+  g_i2c_last_mutex_miss = false;
+  i2cBusRecoverLocked();
+  xSemaphoreGive(i2cMutex);
+  if (g_i2c_recoveries < 0xFFFF) g_i2c_recoveries = (uint16_t)(g_i2c_recoveries + 1);
+
+  Serial.printf("I2C [RX] STUCK-BUS RECOVERY #%u: 9 clocks + STOP + Wire re-init (%s); SDA/SCL before %u/%u, after %u/%u; compass isolated for this session; the motors come back after 5 good enable swaps (%s)\n",
+                (unsigned)g_i2c_recoveries, g_i2c_last_reinit_ok ? "ok" : "FAILED",
+                (unsigned)(g_i2c_last_levels & 0x01), (unsigned)((g_i2c_last_levels >> 1) & 0x01),
+                (unsigned)((g_i2c_last_levels >> 2) & 0x01), (unsigned)((g_i2c_last_levels >> 3) & 0x01),
+                ((g_i2c_last_levels & 0x04) == 0) ? "SDA STILL LOW: a short to ground cannot be cleared by firmware - check the compass wiring"
+                                                  : "SDA released");
 }
 
 // ===== Storage & Config =====

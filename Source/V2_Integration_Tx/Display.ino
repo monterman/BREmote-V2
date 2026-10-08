@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - T-2: drawReturnBar() leaves R5 dark unless the distance is showable (rtmDistanceShowable():
+//   not 0xFF, not 0x00, link fresh), the same rule as the digits. Display only, no confStruct change.
 // V2.5-Evo - 2026-10-07 - F4/F5: comment only - showFmLabelHeld() draws stations 1-5 (displayDigits() renders every digit).
 // V2.5-Evo - 2026-10-07 - FM INDICATOR DOTS, owner-final ("Hybrid H", following without rails): C7 R2-R4 in
 //   updateBargraphs(). Off = dark. W1 waiting (FM armed, not ready, auto-return parked) = R3/R4 take turns every
@@ -1722,7 +1724,9 @@ static void drawReturnBar(float &ref_m, bool blink_on)
   if (!blink_on) return;  // off phase — leave R5 dark
 
   uint8_t d = telemetry.rtm_distance;
-  if (d == 0xFF) return;  // no distance data — leave R5 dark
+  // V2.5-Evo - 2026-10-07 - T-2: THE BUG - only 0xFF left R5 dark, so a 0x00 byte or a stale link kept the RETURN bar
+  // drawn from an old distance (SOP-041 rule 4). THE FIX: the same test as the digits, rtmDistanceShowable().
+  if (!rtmDistanceShowable(d)) return;  // no fresh distance data — leave R5 dark
 
   float current_m = (d < 100) ? d / 10.0f : (float)(d - 90);
 

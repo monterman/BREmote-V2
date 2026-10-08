@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-07 - T-3: an rx_state_flags (index 19) end bit counts only when set on 2 consecutive arrivals.
+//   T-5: meta cycles advance gps_cycle (capped at 4) so GPS stays at 2 Hz through meta packets. T-8: sendData()
+//   stamps tx_boot_id_sent_ms when a boot ID goes on the air. No packet format change, no confStruct change.
 // V2.5-Evo - 2026-10-07 - SOP-041 rule 3 resync: the fm_flags unpack counts arrivals with bit 0 (armed) clear.
 // V2.5-Evo - 2026-10-07 - Q-9: sendData() holds the 100 ms cadence (no collision backoff) while the throttle input is
 //   stale or faulted, so the zeroed packets go out at full rate. Can only make the zero arrive sooner.
@@ -347,7 +350,15 @@ void sendData(void *parameter)
         // V2.5-Evo - 2026-10-07 - Q-2 / H-1: and when an "RTM on" did, so the loop task knows when the 0xF1/1 burst
         // has drained (its confirmation count and the refresh start are timed from the last one).
         if (meta_type == 0xF1 && meta_value == 1) rtm_start_sent_ms = millis();
+        // V2.5-Evo - 2026-10-07 - T-8: and when a boot ID did (0xF1 value 0x80|id), so txBootIdTick() can tell a boot ID
+        // that really went out from one a state burst overwrote in the queue before it was sent.
+        if (meta_type == 0xF1 && (meta_value & 0x80)) { const unsigned long t = millis(); tx_boot_id_sent_ms = (t != 0) ? t : 1; }
         non_control_run++;   // V2.5-Evo - 2026-10-07 - meta budget, see below
+        // V2.5-Evo - 2026-10-07 - T-5: THE BUG - gps_cycle advanced only on non-meta cycles, so every meta packet pushed
+        // the next GPS packet back by 100 ms (about 1.8 Hz during an active return with its once-a-second refresh).
+        // THE FIX: a meta cycle advances the GPS counter too, but never past 4: a GPS packet that falls due on a meta
+        // cycle goes out on the next free cycle instead of being skipped.
+        if (gps_cycle < 4) gps_cycle++;
         num_sent_packets++;
         vTaskDelay(pdMS_TO_TICKS(10));
         radio.implicitHeader(6);
@@ -684,13 +695,20 @@ void waitForTelemetry(void *parameter)
           // shows the bit after one that did not is stamped. runRtmLoop() acts on a stamp later than its own ACTIVE start.
           // An older RX never sends index 19 (it rotates 19 indices), so nothing is ever stamped and the fm_status
           // fallback in runRtmLoop() keeps working exactly as before. The byte itself was stored above (index < 20).
+          // V2.5-Evo - 2026-10-07 - T-3: THE BUG - one arrival was enough, so a single corrupted byte (or a bit left over
+          // from a run that ended during a link gap) could end the current run: an arrival -> cap 0, a fault -> "St".
+          // THE FIX: the bit must be SET ON 2 CONSECUTIVE ARRIVALS of index 19 (the buggy holds it ~6 s, two to three
+          // arrivals); the rise is stamped on the second one. A clear arrival resets the count; the count saturates, so
+          // a bit that stays set is stamped once. If an edge is missed this way, the fm_status fallback still ends the run.
           if (rcvArray[3] == offsetof(TelemetryPacket, rx_state_flags))
           {
-            static uint8_t rx_state_prev_arrival = 0;
+            static uint8_t rx_fault_streak   = 0;   // consecutive arrivals with bit 0 set (this task only)
+            static uint8_t rx_arrived_streak = 0;   // consecutive arrivals with bit 1 set (this task only)
             const unsigned long t = millis();
-            if ((rcvArray[4] & RX_STATE_RTM_FAULT)   && !(rx_state_prev_arrival & RX_STATE_RTM_FAULT))   rx_rtm_fault_rise_ms   = (t != 0) ? t : 1;
-            if ((rcvArray[4] & RX_STATE_RTM_ARRIVED) && !(rx_state_prev_arrival & RX_STATE_RTM_ARRIVED)) rx_rtm_arrived_rise_ms = (t != 0) ? t : 1;
-            rx_state_prev_arrival = rcvArray[4];
+            if (rcvArray[4] & RX_STATE_RTM_FAULT)   { if (rx_fault_streak   < 255) rx_fault_streak++;   } else rx_fault_streak   = 0;
+            if (rcvArray[4] & RX_STATE_RTM_ARRIVED) { if (rx_arrived_streak < 255) rx_arrived_streak++; } else rx_arrived_streak = 0;
+            if (rx_fault_streak   == 2) rx_rtm_fault_rise_ms   = (t != 0) ? t : 1;
+            if (rx_arrived_streak == 2) rx_rtm_arrived_rise_ms = (t != 0) ? t : 1;
           }
 
           // Speed conversion: RX sends speed in km/h; convert to the unit selected in web config.

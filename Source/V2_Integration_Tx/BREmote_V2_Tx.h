@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - T-8: RAM stamp tx_boot_id_sent_ms. T-10: rtm_meta_count comment (counts can be 1). No struct change.
 // V2.5-Evo - 2026-10-07 - F4/F5 on the remote (port of P2-d): followme_mode documents 1-5 (4 front right, 5 front left;
 //   no 6) and mag_fm_set gains bit 3 = station 4 and bit 4 = station 5 (range 1-31). Default and repair value stay 7,
 //   the three rear stations. Ranges and comments only: same fields at the same offsets, sizeof stays 136, SW_VERSION
@@ -701,6 +702,9 @@ volatile unsigned long rx_rtm_arrived_rise_ms = 0;
 // rtm_start_sent_ms - millis() when an 0xF1/1 ("RTM active") packet last went on the air. Written by sendData; read
 // by the loop task for the Q-2 confirmation count and the H-1 refresh start. Twin of rtm_stop_sent_ms.
 volatile unsigned long rtm_start_sent_ms      = 0;
+// V2.5-Evo - 2026-10-07 - T-8: tx_boot_id_sent_ms - millis() when a boot-ID packet (0xF1 value 0x80|id) last went on the
+// air. 0 = never. Written by sendData; read by txBootIdTick() (RTMState.ino). One aligned word, no tearing.
+volatile unsigned long tx_boot_id_sent_ms     = 0;
 
 // ============================================================
 // V2.5-Evo - 2026-07-20 - Batch T (FM design v1.4): telemetry.fm_flags (index 16) bit map.
@@ -945,7 +949,7 @@ volatile uint8_t steer_sent = 0; // Steering value actually sent over radio
 // while type/value are still stale in the loop task's store buffer.
 std::atomic<uint8_t> rtm_meta_type  {0};    // 0xF1=RTM state, 0xF2=FM override
 std::atomic<uint8_t> rtm_meta_value {0};    // for 0xF1: 0=inactive 1=active 2=refresh (H-1) 0x80|id=boot ID (S-8); for 0xF2: the mode byte
-std::atomic<uint8_t> rtm_meta_count {0};    // bursts remaining; 0 = idle (value is always 0 or 3)
+std::atomic<uint8_t> rtm_meta_count {0};    // sends remaining; 0 = idle. 0-3: a state burst is 3, the boot-ID repeat and the RTM refresh are 1 (V2.5-Evo - 2026-10-07 - T-10: said "always 0 or 3")
 // V2.5-Evo - 2026-10-07 - H-1 / L-1: the three atomics above are now the HEAD of a 2-deep queue (a second slot
 // lives in Radio.ino). rtm_meta_count == 0 still means "nothing queued at all", because the second slot is
 // promoted into the head the moment the head empties. See queueMetaPacketBurst().

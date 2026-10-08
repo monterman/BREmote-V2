@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - T-6: stop-flush ceiling 1000 -> 1500 ms. T-7: a failed boot-ID NVS write is logged. T-8: a boot
+//   ID overwritten in the queue before it was sent is re-armed (send stamp). No confStruct change.
 // V2.5-Evo - 2026-10-07 - T-4: fmStepStationFromMagnet() refuses while the buggy confirms an auto-return RETURNING.
 // V2.5-Evo - 2026-10-07 - T-9: the toggle-combo Follow-Me disarm (after riding) is ignored while the buggy confirms an
 //   auto-return RETURNING (fmIsReturning()); serial line only. No confStruct change.
@@ -1237,7 +1239,10 @@ static void rtmRxStateWatch(unsigned long now)
 // Not static: Hall.ino and System.ino call it.
 // ============================================================
 static const unsigned long kStopFlushMinMs = 400UL;
-static const unsigned long kStopFlushMaxMs = 1000UL;
+// V2.5-Evo - 2026-10-07 - T-6: THE BUG - at the degraded 200 ms cadence (plus jitter) two bursts and the forced control
+// packets between them can take 0.8-1.0 s, so a 1000 ms ceiling could give up before the second burst was out. THE
+// FIX: the ceiling is 1500 ms. The wait still ends as soon as the queue is empty (after the 400 ms minimum).
+static const unsigned long kStopFlushMaxMs = 1500UL;
 
 void rtmFmStopFlush()
 {
@@ -1286,7 +1291,10 @@ void txBootIdInit()
   if (id == last) id = (uint8_t)((id + 1 + (esp_random() % 126)) & 0x7F);   // offset 1..126: can never equal last
   if (nvs_ok)
   {
-    prefs.putUChar("boot_id", id);
+    // V2.5-Evo - 2026-10-07 - T-7: a failed write was silent. putUChar() returns the bytes written (0 = failed); the
+    // ID is still used, but the next power-on may pick the same one, so say so.
+    if (prefs.putUChar("boot_id", id) == 0)
+      Serial.println("RTM [TX] boot ID: NVS write failed - the next power-on may repeat this ID");
     prefs.end();
   }
   tx_boot_id = id;
@@ -1304,6 +1312,16 @@ static void txBootIdTick(unsigned long now)
   // V2.5-Evo - 2026-10-07 - signed: waitForTelemetry can stamp last_packet after `now` was read (see rtmRefreshTick()).
   const bool link_fresh = (last_packet != 0) && ((long)(now - last_packet) < (long)FM_LINK_HEALTHY_MS);
   if (!link_fresh) { tx_boot_id_last_ms = 0; return; }   // send again as soon as the link comes back
+  // V2.5-Evo - 2026-10-07 - T-8: THE BUG - the repeat timer was stamped when the boot ID was QUEUED, and a state burst
+  // (0xF1/0 or 0xF1/1) queued after it replaces it in place, so a boot ID could be lost without ever going on the air
+  // and the next try was 10 s away. THE FIX: once it has left the queue, check the send stamp (tx_boot_id_sent_ms,
+  // written by sendData). Not sent since it was queued -> it was overwritten: re-arm now, as a 3-packet burst.
+  if (tx_boot_id_last_ms != 0 && !metaQueuePending(0xF1, (uint8_t)(0x80 | tx_boot_id), false) &&
+      (long)(tx_boot_id_sent_ms - tx_boot_id_last_ms) < 0)
+  {
+    tx_boot_id_last_ms = 0;
+    Serial.println("RTM [TX] boot ID was replaced in the queue before it went out -> sent again");
+  }
   if (tx_boot_id_last_ms != 0 && (now - tx_boot_id_last_ms) < kTxBootIdRepeatMs) return;
   // V2.5-Evo - 2026-10-07 - S-8 follow-up: right after a link gap the buggy may have lost the ID (an RX reboot) and a
   // parked auto-return reads not-ready until it hears one, so the first send after a gap is a full 3-packet burst;

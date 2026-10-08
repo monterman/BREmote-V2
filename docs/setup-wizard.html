@@ -102,6 +102,7 @@ pre{background:#070d18;border:1px solid var(--line);border-radius:9px;padding:11
 .opt>span{min-width:0}
 .hint a{color:var(--pri)}
 .pbtns{display:flex;gap:8px;margin:6px 0 2px;flex-wrap:wrap}.pbtn{font:inherit;font-size:12px;padding:5px 12px;border-radius:6px;border:1px solid #2c4a72;background:#13233a;color:#cfe0f5;cursor:pointer}.pbtn:hover{border-color:#4d7fb8}
+.pnote{font-size:12px;line-height:1.5;opacity:.85;margin:2px 0 4px}
 </style>
 </head>
 <body>
@@ -1040,7 +1041,7 @@ function renderResults(){
             stores nothing. Download the logs you want to keep, then delete them.<br><br>
             <b>A. By USB cable, from a computer (Chrome or Edge):</b>
             <ol style="margin:6px 0 6px 18px;padding:0">
-              <li>Tap <b>Save as file</b> under the board below.</li>
+              <li>Tap <b>Save as file — for USB</b> under the board below.</li>
               <li>Open the <a href="BREmote_V2.5-Evo_Web_Serial_Config_Tool.html" target="_blank" rel="noopener">BREmote
                 web serial config tool</a>, plug the board in and tap <b>Connect Serial</b>.</li>
               <li>Tap <b>Import JSON</b> and pick the file. The changed settings are marked; check them.</li>
@@ -1053,7 +1054,7 @@ function renderResults(){
               <li>Put the board in WiFi setup mode, join its WiFi network and open the address the board
                 shows (usually <code>http://192.168.4.1</code>). On the buggy, <b>Manage Logs</b> is where
                 you download and delete logs.</li>
-              <li>Tap <b>Copy</b> under the board below, paste it into the <b>Raw JSON Backup &amp; Restore</b>
+              <li>Tap <b>Copy — for the phone</b> under the board below, paste it into the <b>Raw JSON Backup &amp; Restore</b>
                 box at the bottom of the page and tap <b>Load from Text</b>. The page says how many values it
                 took in, and the changed settings turn red.</li>
               <li>Check the red boxes, then tap <b>Save All</b>. It sends each setting on its own, stops on the
@@ -1066,10 +1067,10 @@ function renderResults(){
           </div>
           <b style="font-size:13px">REMOTE (TX)</b>
           <pre>${esc(jsonPatch(tx))}</pre>
-          <div class="pbtns"><button class="pbtn" data-copy="tx">Copy</button><button class="pbtn" data-file="tx">Save as file</button></div>
+          <div class="pbtns"><button class="pbtn" data-copy="tx">Copy — for the phone (WiFi page)</button><button class="pbtn" data-file="tx">Save as file — for USB</button></div><div class="pnote">Copy: paste it on the board's WiFi page (<code>http://192.168.4.1</code>) into the <b>Raw JSON Backup &amp; Restore</b> box, tap <b>Load from Text</b>, then <b>Save All</b>.<br>Save as file: open the <a href="BREmote_V2.5-Evo_Web_Serial_Config_Tool.html" target="_blank" rel="noopener">web serial config tool</a>, <b>Connect Serial</b>, <b>Import JSON</b>, pick the file, then <b>Save to Device</b>.</div>
           <b style="font-size:13px;display:block;margin-top:11px">BUGGY (RX)</b>
           <pre>${esc(jsonPatch(rx))}</pre>
-          <div class="pbtns"><button class="pbtn" data-copy="rx">Copy</button><button class="pbtn" data-file="rx">Save as file</button></div>`,
+          <div class="pbtns"><button class="pbtn" data-copy="rx">Copy — for the phone (WiFi page)</button><button class="pbtn" data-file="rx">Save as file — for USB</button></div><div class="pnote">Copy: paste it on the board's WiFi page (<code>http://192.168.4.1</code>) into the <b>Raw JSON Backup &amp; Restore</b> box, tap <b>Load from Text</b>, then <b>Save All</b>.<br>Save as file: open the <a href="BREmote_V2.5-Evo_Web_Serial_Config_Tool.html" target="_blank" rel="noopener">web serial config tool</a>, <b>Connect Serial</b>, <b>Import JSON</b>, pick the file, then <b>Save to Device</b>.</div>`,
     b64:`<div class="disabledNote">
             <b>Deliberately disabled, and it should stay that way until someone proves the byte map.</b><br><br>
             The stored config is a raw copy of the firmware struct, Base64-encoded. That means a blob
@@ -1093,7 +1094,7 @@ function renderResults(){
     const b = e.target.closest('.pbtn'); if(!b) return;
     if(b.dataset.copy){
       const t = patches[b.dataset.copy];
-      const done = ok=>{ b.textContent = ok ? 'Copied' : 'Select the text above and copy it'; setTimeout(()=>b.textContent='Copy',2500); };
+      const done = ok=>{ b.textContent = ok ? 'Copied' : 'Select the text above and copy it'; setTimeout(()=>b.textContent='Copy — for the phone (WiFi page)',2500); };
       if(navigator.clipboard) navigator.clipboard.writeText(t).then(()=>done(true), ()=>done(false)); else done(false);
     } else if(b.dataset.file){
       const k = b.dataset.file;

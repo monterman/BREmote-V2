@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU), delta-audit M-1: active_log_level is volatile and reset to 3 while no file is open (start of createNewLogFile(), and in stopLog()), so the IMU poll never runs on a previous file's level or after a failed create.
 // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU) (see BREmote_V2_Rx.h, VESC.ino): logImuPollWanted() (true only while a level-6 log is recording - the IMU poll's first gate); fillImuBlocks() fills the two 22 B IMU blocks (VESC 2's IMU with its freshness decided at log time, the reserved RX IMU always NO SOURCE); loggerTask() builds a static VescLogDataL6 for level 6, and its record buffer is static and sized LOG_REC_MAX; downloadLogFile()'s ceiling and buffer use LOG_REC_MAX, so a 170 B file is accepted. Log format stays 3. No confStruct change.
 // V2.5-Evo - 2026-10-07 - P-11: the log's link-quality test uses stampStale() (signed age). Log format unchanged.
 // V2.5-Evo - 2026-10-06 - LOG FORMAT 3 (see BREmote_V2_Rx.h): fillVesc2Block() fills the VESC 2 block in the LEVEL-4 record now (owner ruling: both VESCs at level 4), so loggerTask() calls it for level 4 AND level 5 (logData5.l4). ?download refuses a file of another log format with a plain-English message that says which firmware wrote it and what to do (download before flashing; the PC log reader still decodes it). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -99,7 +100,7 @@ static String currentLogFileName = "";
 // that file's header, so a rider changing the setting over WiFi mid-session cannot produce a
 // file whose records stop matching its own header. Defaults describe a level-3 file so these
 // are never nonsense even before the first file is created.
-static uint8_t  active_log_level   = 3;
+static volatile uint8_t active_log_level = 3;   // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): volatile - read by the loop task (logImuPollWanted), written by loggerTask
 static uint16_t active_record_size = (uint16_t)sizeof(VescLogData);
 static uint32_t last_space_check = 0;
 static const uint32_t SPACE_CHECK_INTERVAL = 60000;
@@ -888,6 +889,9 @@ bool ensureFreeSpace() {
 
 // Create new log file — no GPS wait; file created immediately on startLog()
 bool createNewLogFile() {
+  // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): no file is open while we are in here, so the IMU poll gate must
+  // not see the PREVIOUS file's level. Set back to the real level below once the new file exists.
+  active_log_level = 3;
   if (!ensureFreeSpace()) return false;
 
   char filenameBuffer[30];
@@ -1101,6 +1105,7 @@ void stopLog() {
       Serial.printf("Closed log file: %s\n", currentLogFileName.c_str());
     }
     currentLogFileName = "";
+    active_log_level   = 3;   // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): no file open -> no IMU poll before the next file is created
     xSemaphoreGive(fileMutex);
   }
 }

@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU), delta-audit L-2: pollVesc2ImuIfDue() clears g_imu2_miss_streak whenever no level-6 log is recording, so each level-6 session starts un-backed-off.
 // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): pollVesc2ImuIfDue() asks VESC 1 to forward COMM_GET_IMU_DATA (65, mask 0x01FF: roll/pitch/yaw, acc xyz, gyro xyz) to CAN ID 2 inside getVescLoop()'s existing mux visit, after VESC 1 AND (when it polled) VESC 2's values poll have answered - 2 Hz, 30 ms reply cap, backoff to 1 poll / 10 s after 3 misses - and ONLY while a level-6 log is recording and VESC 2's values are fresh. Reply accepted only with our mask echoed and controller ID 2 in its last byte (Common/VescImu.h). Writes imu2 under vescMutex. Log/diag only: no throttle/PWM/mux/I2C change. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - VESC 2 OVER CAN: pollVesc2IfDue() asks VESC 1 to forward a COMM_GET_VALUES_SELECTIVE to CAN ID 2 (COMM_FORWARD_CAN) inside getVescLoop()'s existing mux visit, after VESC 1 has answered, at 1 Hz (10 s backoff after 3 misses), 50 ms reply cap; reply accepted only with our mask echoed and controller ID 2. receiveFromVESC() takes its timeout as a parameter (VESC 1 still 200 ms). Telemetry only: no throttle/PWM/mux/I2C change. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-07-25 - STAGE 1 (GPS repair): getVescLoop() now ENDS with setUartMux(1), handing the UART line back to the GPS. The mux's resting position is now GPS, not the VESC — getGPSLoop() no longer switches at all, so getVescLoop() is the only function that moves the mux in normal operation (2 switches per poll at 2 Hz = 4 switches/s, DOWN from 6/s). The leading setUartMux(0), the 20 ms SW54 settle, the pre-query drain, the 200 ms receive timeout and the whole VESC protocol path are UNTOUCHED. No confStruct change, SW_VERSION stays 34.
@@ -456,7 +457,8 @@ void pollVesc2IfDue(Stream* interface)
 void pollVesc2ImuIfDue(Stream* interface)
 {
   // Gate 1: only while a level-6 log is recording.
-  if (!logImuPollWanted()) return;
+  // (Resetting the streak also ends any backoff: gate 3 zeroes its visit counter on the next un-backed-off call.)
+  if (!logImuPollWanted()) { g_imu2_miss_streak = 0; return; }   // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): each level-6 session starts un-backed-off
 
   // Gate 2: VESC 2 must be proven present by the values poll (which also proves its CAN ID).
   if (!vesc2.ever_ok) return;

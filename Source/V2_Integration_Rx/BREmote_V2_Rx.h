@@ -1481,8 +1481,8 @@ static const uint8_t kHandbackReleaseThr = 8;
 // ============================================================
 // V2.5-Evo - 2026-10-08 - THE STICKY RETURN CAP (owner design: a return that ends early keeps its speed limit)
 // ============================================================
-// When a manual return-to-me or an auto-return ends for ANY reason other than arrival - a fault on either board, a
-// link loss, a remote reboot, the rider's own cancel - the mode ends and the steering is the rider's at once, but
+// When a manual return-to-me or an auto-return ends on a FAULT - on either board, a link loss, a remote reboot (owner
+// scope 2026-10-08: never on arrival, a rider's own cancel or disarm, a Follow-Me exit or normal manual) - the mode ends and the steering is the rider's at once, but
 // the throttle keeps the RETURN'S LIMIT (the 4 km/h governor, the slow-down near the rider, or a fixed slow ceiling
 // when GPS cannot run those) for as long as the trigger stays at 10 % or more. Below 10 % once, it is gone and the
 // throttle is plain manual. The buggy neither stops dead mid-return nor gets the full held trigger while it points
@@ -1510,7 +1510,9 @@ static const uint8_t  kStickyFallbackCap = 60;
 static const uint32_t kStickyRxFixMaxMs  = 2000;
 // OWNER SWITCH (audit D-8): true = the rider's own cancels of a moving auto-return (rider moving off, the mode-0 stick
 // cancel) also leave the sticky cap, in FM_ARMED; false = the old behaviour (FM_HOLD, cap 0 until one release).
-static const bool     kStickyOnRiderCancel = true;
+// V2.5-Evo - 2026-10-08 - OWNER RULING: OFF. A rider who cancels is riding away and needs the buggy to keep up; a speed
+// cap would leave it behind. The sticky cap is for FAULT ends of a return only.
+static const bool     kStickyOnRiderCancel = false;
 
 // stickyCapArm - V2.5-Evo - 2026-10-08 - start the sticky return cap at a return's exit edge.
 // What it does: stores `initial` (the cap in force at the exit, so the limit never steps) as the standing value - or,

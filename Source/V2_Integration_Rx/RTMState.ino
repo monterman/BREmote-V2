@@ -1,7 +1,7 @@
-// V2.5-Evo - 2026-10-08 - STICKY RETURN CAP (owner design): every non-arrival end of a return keeps the return's live
+// V2.5-Evo - 2026-10-08 - STICKY RETURN CAP (owner design): a return that ends on a FAULT keeps the return's live
 //   speed limit until the trigger drops below 10 % once - RTM Phase C, H-1, H-2 and S-8 arm it instead of the hand-back
-//   cap at 0; auto-return fmReturnFault() (audit D-1), the IDLE gate, the 95 s expiry and S-8 when leaving FM_RETURN, and
-//   (owner switch kStickyOnRiderCancel, D-8) the rider-moving / mode-0 stick cancels to FM_ARMED. stickyCapUpdate()
+//   cap at 0; auto-return fmReturnFault() (audit D-1) and S-8 when leaving FM_RETURN. Rider cancels keep today's HOLD
+//   (owner switch kStickyOnRiderCancel, D-8, OFF); the IDLE gate (rider disarm) and the 95 s expiry keep today's rule. stickyCapUpdate()
 //   recomputes it every tick; rx_state_flags bit 5; a ?diag line; Follow-Me cannot engage while it stands (D-7).
 //   Arrival unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - P-5: runFmLoopBody() reads both boot counters once per tick, back to back (rx_seq first), and
@@ -5994,7 +5994,7 @@ static void fmEnterReturn(unsigned long now, float dist_m)
 //   by handbackCapArm() until the rider lets go of the trigger fully once. handbackCapArm() runs
 //   BEFORE fm_throttle_cap is lifted, so there is never a tick with neither cap standing: no throttle
 //   jump. The other exits (rider moving off, the mode-0 steer-cancel) keep the HOLD surge guard.
-// V2.5-Evo - 2026-10-08 - STICKY RETURN CAP (owner design, audit D-8): with kStickyOnRiderCancel (the default) the
+// V2.5-Evo - 2026-10-08 - STICKY RETURN CAP (owner design, audit D-8): with kStickyOnRiderCancel (OFF by owner ruling) the
 //   rider's own cancels of a MOVING return (the rider moving off, the mode-0 stick cancel) no longer stop the buggy in
 //   FM_HOLD at cap 0: the return ends to FM_ARMED like an arrival, but keeps the sticky return cap - the return's live
 //   limit - armed FIRST at the cap in force, until the trigger drops below 10 % once. Follow-Me cannot re-engage while
@@ -6579,9 +6579,9 @@ static void runFmLoopBody(unsigned long now)
   if (m >= 1 && m <= 5) {
     unsigned long mode_ms = fm_mode_last_rx_ms.load(std::memory_order_relaxed);
     if (stampStale((uint32_t)now, (uint32_t)mode_ms, (uint32_t)kFmModeAgeMs)) {
-      // V2.5-Evo - 2026-10-08 - an auto-return (FM_RETURN) ending on the expiry keeps the sticky return cap (owner design).
-      if (fm_state == FM_RETURN)     stickyCapArm(fm_throttle_cap.load());     // FIRST
-      else if (fm_state != FM_IDLE)  handbackCapArm(fm_throttle_cap.load());   // FIRST: before fmEnterIdle() lifts the cap
+      // V2.5-Evo - 2026-10-08 - no sticky return cap on the expiry (owner scope: fault ends only; a lost 0xF2/0 disarm
+      // looks the same) - it keeps today's hand-back cap.
+      if (fm_state != FM_IDLE) handbackCapArm(fm_throttle_cap.load());   // FIRST: before fmEnterIdle() lifts the cap
       fm_mode_runtime.store(0xFF, std::memory_order_relaxed);
       fmEnterIdle();
       Serial.println("FM [RX] mode declaration expired (no 0xF2 refresh) -> IDLE");   // after the writes (F7)
@@ -6596,11 +6596,10 @@ static void runFmLoopBody(unsigned long now)
   // here during an RTM run - the TX's fault-stop disarm (0xF2/0 on fm_flags bit 3) keeps working.
   // V2.5-Evo - 2026-10-02 - P2: m > 3 -> m > 5. 0, 6, 7 and 0xFF all still land here and still mean
   // IDLE; there is deliberately no mode 6, so 6 fails to IDLE rather than being read as "nearly 5".
-  // V2.5-Evo - 2026-10-08 - STICKY RETURN CAP (owner design): an auto-return (FM_RETURN) that is ended here - the remote's
-  // 0xF2/0 disarm, GPS or RTM switched off - keeps the return's limit, armed FIRST at the cap in force, because
-  // fmEnterIdle() lifts Follow-Me's cap to 255 and used to hand the held trigger straight back (audit D-1).
+  // V2.5-Evo - 2026-10-08 - deliberately NO sticky return cap here (owner scope: fault ends only). Reaching this gate from
+  // FM_RETURN is the rider's own disarm (0xF2/0) or a config switch-off, not a fault; the remote's 0xF2/0 answer to a
+  // return FAULT arrives in FM_STOPPING, where fmReturnFault() has already armed the sticky cap.
   if (!usrConf.gps_en || !usrConf.rtm_rx_enabled || m < 1 || m > 5) {
-    if (fm_state == FM_RETURN) stickyCapArm(fm_throttle_cap.load());   // FIRST
     fmEnterIdle();
     return;
   }

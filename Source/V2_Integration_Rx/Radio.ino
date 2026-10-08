@@ -409,6 +409,10 @@ static void processRtmStatePacket(const uint8_t *pkt)
     // pass with the trigger below 25 counts, so a released trigger (the arm ceremony's 0xF1/0, a stop after a long
     // release) is unaffected. Not armed when RTM is not running: after a Gate 9 arrival the buggy has already ended
     // RTM itself and keeps the arrival cap instead.
+    // SCOPE (owner, 2026-10-08: fault ends only). The buggy cannot tell WHY the remote stopped. On this firmware's remote
+    // every 0xF1/0 under a held trigger is a fault end (Gate 1 max runtime, Gate 2 its GPS stale); the rider's own stops
+    // (Gate 3 after a 4 s release, the magnet, the lock) come with the trigger released, so the cap clears at once. Only
+    // an OLDER remote's stick exit (Gate 4) would also arm it.
     if (rtm_rx_active) stickyCapArm(rtm_rx_emergency_stop ? 0 : rtm_approach_cap.load());
     rtm_rx_active         = false;
     rtm_rx_emergency_stop = false;

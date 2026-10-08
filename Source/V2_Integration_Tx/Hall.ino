@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - T-4: mag_mode 4 - a magnet tap is ignored while the buggy confirms an auto-return RETURNING
+//   (fmIsReturning()): no station step, no "F<n>" over the metres. Serial line only. No confStruct change.
 // V2.5-Evo - 2026-10-07 - T-9: mag_mode 1-3 - the magnet Follow-Me disarm is ignored while the buggy confirms an
 //   auto-return RETURNING (fmIsReturning()); serial line only. No confStruct change.
 // V2.5-Evo - 2026-10-07 - Q-10: the Follow-Me toggle combo (LEFT tap + RIGHT hold) is ignored while Return-To-Me is
@@ -1195,6 +1197,13 @@ void runMagGesture()
           // fundamental-readiness check, the Pattern 4 confirm and the F<n> display, exactly as it does
           // for the toggle combo and for mag_mode 1.
           cycleFmMode();
+        }
+        else if (fmIsReturning())
+        {
+          // V2.5-Evo - 2026-10-07 - T-4: THE BUG - a tap while the buggy was on an auto-return back to the rider stepped
+          // the Follow-Me station and covered the metres countdown with "F<n>" for 2 s (SOP-041: the returning screen
+          // must stay readable). THE FIX: ignored while the buggy confirms it is RETURNING. No step, no lockout, no buzz.
+          Serial.println("MAG [TX] tap ignored: the buggy is on an auto-return back to you");
         }
         else if (fmIsEngaged())
         {

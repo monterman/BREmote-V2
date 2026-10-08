@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - T-4: fmStepStationFromMagnet() refuses while the buggy confirms an auto-return RETURNING.
 // V2.5-Evo - 2026-10-07 - T-9: the toggle-combo Follow-Me disarm (after riding) is ignored while the buggy confirms an
 //   auto-return RETURNING (fmIsReturning()); serial line only. No confStruct change.
 // V2.5-Evo - 2026-10-07 - T-1: the pre-arm distance refusal and the two squeeze timeouts keep the throttle cap at 0 while
@@ -1966,6 +1967,7 @@ static uint8_t fmNextStationInSet(uint8_t from, uint16_t mask)
 bool fmStepStationFromMagnet()
 {
   if (!fmIsEngaged()) return false;                  // the gate lives with the action too
+  if (fmIsReturning()) return false;                 // V2.5-Evo - 2026-10-07 - T-4: never during an auto-return coming back
 
   uint8_t next = fmNextStationInSet(last_fm_mode, usrConf.mag_fm_set);
   if (next == 0 || next == last_fm_mode) return false;   // nowhere to go - stay silent

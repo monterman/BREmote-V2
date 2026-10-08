@@ -1,3 +1,8 @@
+// V2.5-Evo - 2026-10-07 - FM INDICATOR DOTS, owner-final ("Hybrid H", following without rails): C7 R2-R4 in
+//   updateBargraphs(). Off = dark. W1 waiting (FM armed, not ready, auto-return parked) = R3/R4 take turns every
+//   200 ms. F1 following = R3 + R4 steady. R1 returning (auto-return returning, or manual RTM confirmed by the buggy) =
+//   down-fill R2 / R2+R3 / R2+R3+R4 / dark, 200 ms each, starting at R2. R2 lights only in R1. Frames come from the
+//   clock. Drawn only from buggy-confirmed state. R0 GPS and R1 BT unchanged. Display only, no confStruct change.
 // V2.5-Evo - 2026-10-07 - S-7: while the buggy confirms auto-return RETURNING (fmIsReturning(): fm_flags bits 6 + 1) the
 //   Follow-Me screen shows the distance in metres whatever fm_display_mode says, and R5 shows the left-anchored RETURN
 //   bar (drawReturnBar(), the same bar as manual RTM) instead of the centre FM bar. Auto-return WAITING (bit 6 without
@@ -1408,28 +1413,58 @@ void updateBargraphs(void *parameter)
     // group as one indicator, and it is reserved for a future Return-To-Me dot.
     // No new plumbing is needed to keep these alive: every digit-clear in this file already masks with
     // 0xFF80, which preserves bit 7, because that is how the GPS dot survives digit updates.
-    static uint32_t fm_dot_ms = 0;      // millis() of the last blink toggle
-    static bool     fm_dot_on = false;  // current on/off state of BOTH dots
-    if (!fm_armed)
+    // ---- V2.5-Evo - 2026-10-07 - SUPERSEDED: THE OWNER'S FINAL DOT PATTERNS (C7 R2, R3, R4) ----------
+    // The slow-blink-in-unison / solid pair above is replaced by the owner's final scheme ("Hybrid H", following
+    // without rails). Every single frame names one state, so a glance that catches one frozen picture still reads right:
+    //   OFF        Follow-Me not armed (and no confirmed return)           R2 R3 R4 dark
+    //   W1 WAITING Follow-Me armed: waiting, not ready, or auto-return     R3 and R4 TAKE TURNS every 200 ms (R3 first),
+    //              PARKED (fm_flags bit 6 without bit 1 - deliberately     exactly one always lit; R2 dark
+    //              the same look, the owner wants no extra state to learn)
+    //   F1 FOLLOWING the buggy confirms Follow-Me engaged, not returning   R3 + R4 steady; R2 dark
+    //   R1 RETURNING the buggy confirms auto-return returning (fm_flags    down-fill, 200 ms per frame: [R2] [R2 R3]
+    //              bits 6 + 1, fmIsReturning()) OR a manual return it      [R2 R3 R4] [dark], repeating (800 ms), always
+    //              has confirmed (rtmReturnConfirmed() on a fresh link)    starting at [R2] on entry
+    // R2 lights ONLY inside R1. The R5 bar and the digits carry the rest of each state (scanner / FM bar / RETURN bar,
+    // metres). Before the buggy confirms a manual return the remote shows "rn" and the dots stay on the Follow-Me state
+    // (SOP-041: never drawn from the remote's own intent); a stale link drops R1 / F1 (both need a fresh link).
+    // FRAMES COME FROM THE CLOCK, not from a tick count: frame = ((now - entry + 100 ms) / 200 ms) mod N, measured from
+    // the moment this task first saw the state. This task runs every 200 ms, so its ticks sit about +200 ms * k from
+    // the entry; the +100 ms centres each sample in its frame, and a few ms of scheduling jitter can never repeat or skip
+    // a frame. A skipped cycle (display mutex busy) simply advances the clock. E71 / E72 / "St" outrank these as before
+    // (they redraw the whole screen; the dots come back on the next pass).
+    static uint8_t  fm_dot_state    = 0;   // 0 off, 1 W1 waiting, 2 F1 following, 3 R1 returning
+    static uint32_t fm_dot_entry_ms = 0;   // millis() when this task first saw fm_dot_state
+    const  uint32_t dot_now    = millis();
+    const  bool     link_fresh = (last_packet != 0) && ((long)(dot_now - last_packet) < (long)FM_LINK_HEALTHY_MS);
+    uint8_t want_state;
+    if (fmIsReturning() || (rtmReturnConfirmed() && link_fresh)) want_state = 3;   // R1
+    else if (fmIsEngaged())                                       want_state = 2;   // F1
+    else if (fm_armed)                                            want_state = 1;   // W1
+    else                                                          want_state = 0;   // off
+    if (want_state != fm_dot_state) { fm_dot_state = want_state; fm_dot_entry_ms = dot_now; }
+    const uint32_t dot_frame = (dot_now - fm_dot_entry_ms + 100UL) / 200UL;
+    bool dot_r2 = false, dot_r3 = false, dot_r4 = false;
+    if (fm_dot_state == 3)
     {
-      // Not armed — dark, and reset the timer so a later blink starts cleanly on its on-phase.
-      fm_dot_on = false;
-      fm_dot_ms = millis();
+      const uint8_t f = (uint8_t)(dot_frame % 4);   // 0 [R2]  1 [R2 R3]  2 [R2 R3 R4]  3 [dark]
+      dot_r2 = (f <= 2);
+      dot_r3 = (f == 1 || f == 2);
+      dot_r4 = (f == 2);
     }
-    else if (fmIsEngaged())
+    else if (fm_dot_state == 2)
     {
-      // Actively following — solid. Same three-part test the R5 bar uses (armed + link fresh +
-      // FM_FLAG_ENGAGED), so the dots and the bar can never disagree about what state FM is in.
-      fm_dot_on = true;
-      fm_dot_ms = millis();
+      dot_r3 = true;
+      dot_r4 = true;
     }
-    else
+    else if (fm_dot_state == 1)
     {
-      // Armed but not following yet — slow blink.
-      if (millis() - fm_dot_ms >= 1000) { fm_dot_on = !fm_dot_on; fm_dot_ms = millis(); }
+      const bool r3_turn = (dot_frame % 2) == 0;   // R3 first, then R4 - exactly one lit
+      dot_r3 = r3_turn;
+      dot_r4 = !r3_turn;
     }
-    if (fm_dot_on) { displayBuffer[4] |=  (1u << 7); displayBuffer[5] |=  (1u << 7); }
-    else           { displayBuffer[4] &= ~(1u << 7); displayBuffer[5] &= ~(1u << 7); }
+    if (dot_r2) displayBuffer[3] |= (1u << 7); else displayBuffer[3] &= ~(1u << 7);
+    if (dot_r3) displayBuffer[4] |= (1u << 7); else displayBuffer[4] &= ~(1u << 7);
+    if (dot_r4) displayBuffer[5] |= (1u << 7); else displayBuffer[5] &= ~(1u << 7);
     // ---- End FM status dots -------------------------------------------
 
     displayVertBargraph(9, sq_graph, 2);

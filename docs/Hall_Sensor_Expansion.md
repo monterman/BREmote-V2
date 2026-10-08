@@ -63,8 +63,8 @@ The output is active-low — it pulls low when a magnet is present, floats high 
 
 ### Mode 4 — tap and hold *(new in the upcoming release)*
 
-*Available now for testing on the [`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations);
-it moves to master after water testing.*
+*In the nightly builds on the [`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations) (bleeding edge,
+use at your own risk); it moves to master gradually after more testing.*
 
 | Magnet | Result |
 |---|---|

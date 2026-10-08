@@ -2,10 +2,15 @@
 
 **BREmote V2.5-Evo** · tow buggy / eFoil remote
 
+> **🌙 NIGHTLY firmware.** These docs, the setup wizard and the new screens match the
+> **NIGHTLY** firmware on the [`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations), not the firmware on
+> master. Nightly = bleeding edge, under water testing, use at your own risk. Binaries are in
+> the `latest-FM-stations` folders.
+
 > **Firmware status.** This guide describes the **upcoming release**: the new screens,
-> auto-return, the magnet tap and the front stations. It is **available now for testing on the
-> [`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations)** (binaries in
-> the `latest-FM-stations` folders) and **moves to master after water testing**. Firmware on
+> auto-return, the magnet tap and the front stations. It is **in the nightly builds on the
+> [`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations)** now, and **moves to master gradually after more
+> testing**. Firmware on
 > master today still uses the older screens (a bar only, no dots).
 >
 > Flash the remote and the buggy **together**: the new screens need both sides on the new firmware.

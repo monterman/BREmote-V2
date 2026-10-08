@@ -105,10 +105,11 @@ pre{background:#070d18;border:1px solid var(--line);border-radius:9px;padding:11
 </head>
 <body>
 <div class="wrap">
+<div role="note" style="margin:0 0 14px;padding:10px 14px;border:2px solid #d97706;border-radius:8px;background:#fff7ed;color:#7c2d12;font:15px/1.45 system-ui,sans-serif"><b>NIGHTLY firmware.</b> These docs, the setup wizard and the new screens match the <b>NIGHTLY</b> firmware on the <a href="https://github.com/monterman/BREmote-V2/tree/fm-stations" target="_blank" rel="noopener" style="color:#9a3412">fm-stations branch</a>, not the firmware on master. Nightly = bleeding edge, under water testing, use at your own risk. Binaries are in the <code>latest-FM-stations</code> folders.</div>
   <h1>BREmote V2.5-Evo — Setup Wizard</h1>
   <div class="sub">Prototype. Answer the questions, get a config for the remote and a config for the buggy. About 8 minutes.</div>
   <div class="warnbox" role="note" style="margin:0 0 12px"><b>Only for BREmote V2.5-Evo firmware</b> (buggy SW 36, remote SW 27 or later). The settings this wizard writes do not exist in Ludwig's stock BREmote firmware: do not use it with stock firmware, or with older V2.5-Evo builds. Check the version your board prints at boot (<code>?conf</code> shows "version") before pasting anything.</div>
-  <div class="notice"><b>Browse mode is on:</b> flip to any page with the chips or Back/Next, no answers needed. Unanswered questions use the recommended choice, so the Results page always shows a full example config. Turn Browse mode off to answer the questions for your own setup. New in the upcoming release, available now for testing on the <a href="https://github.com/monterman/BREmote-V2/tree/fm-stations" target="_blank" rel="noopener">fm-stations branch</a>; it moves to master after water testing.</div>
+  <div class="notice"><b>Browse mode is on:</b> flip to any page with the chips or Back/Next, no answers needed. Unanswered questions use the recommended choice, so the Results page always shows a full example config. Turn Browse mode off to answer the questions for your own setup. New in the upcoming release: in the nightly builds on the <a href="https://github.com/monterman/BREmote-V2/tree/fm-stations" target="_blank" rel="noopener">fm-stations branch</a> now; it moves to master gradually after more testing.</div>
   <div class="modebar"><label><input type="checkbox" id="browse" checked> Browse mode</label></div>
   <div class="jump" id="jump" aria-label="Wizard pages"></div>
   <div class="inlineerr" id="inlineerr" aria-live="polite"></div>

@@ -1,5 +1,28 @@
 # BREmote V2.5-Evo — Dot Display Reference
 
+> **Partly outdated — the Follow-Me screens are changing.** This page, `display-reference.png`,
+> `display-reference.svg`, `fm_bar_animation.gif` and `Dot_Matrix_Display_10x7_Render.html` show
+> the **current master firmware** (bar only, no indicator dots). The new screens are in the
+> **NIGHTLY** firmware on the [`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations) (bleeding edge, under water
+> testing, use at your own risk). See [Follow-Me screens — nightly](#follow-me-screens--nightly-fm-stations-branch)
+> below and the [animated screens page](https://monterman.github.io/BREmote-V2/followme-screens.html).
+
+## Follow-Me screens — nightly (`fm-stations` branch)
+
+The FM pair of dots is C7 R3 + R4; R2 lights only while the buggy is coming to you.
+
+| Screen | Dots (C7) | Numbers | R5 bar |
+|---|---|---|---|
+| ![waiting](img/fm/fm-waiting.gif) **Waiting** (armed; also parked auto-return) | R3 and R4 take turns every 200 ms | metres or `--` | scanner moving; blinking in place = not ready |
+| ![following](img/fm/fm-following.gif) **Following** | R3 + R4 steady | metres | grows/shrinks from the centre |
+| ![returning](img/fm/fm-returning.gif) **Coming to you** (auto-return or return-to-me) | fills down: R2, R2+R3, R2+R3+R4, dark (200 ms steps) | metres counting down | anchored left, shrinking |
+| **Stop / refused / fault** | — | `St` for 2 s, then the true state | — |
+
+Numbers default to **metres to the buggy** (`fm_display_mode` 2): `X.X` under 10 m, whole metres
+to 99, `FAR` beyond, `--` when not fresh. Blinking `St` = throttle input fault. The
+distance-warning buzz (Pattern 8) and the station-step buzz are removed in the nightly;
+`fm_warn_distance_m` only sets the bar's full scale. Full rider guide: [FOLLOW_ME_GUIDE.md](FOLLOW_ME_GUIDE.md).
+
 ## Hardware
 Two 5×7 LED matrices side by side = 10 columns × 7 rows = 70 red LEDs
 Driver: HT16K33 at I2C address 0x70
@@ -186,6 +209,9 @@ Blink pattern: 1000 ms on / 500 ms off.
 
 ![FM Proximity Bar Animation](fm_bar_animation.gif)
 
+*This animation shows the bar on current master firmware. The nightly adds the indicator dots — see
+[Follow-Me screens — nightly](#follow-me-screens--nightly-fm-stations-branch).*
+
 **`rtm_arm_dist_m` variable:**
 - RAM only — never written to SPIFFS.
 - Captured at RTM engage (both single-squeeze and double-squeeze paths).
@@ -215,7 +241,7 @@ Blink pattern: 1000 ms on / 500 ms off.
 | Field | Range | Default | Description |
 |---|---|---|---|
 | `rtm_display_mode` | 0-2 | 0 | RTM/FM active display: 0=distance, 1=speed, 2=alternating 2.5s |
-| `fm_warn_distance_m` | 50-1000m | 150 | TX-RX distance for FM proximity warning vibration |
+| `fm_warn_distance_m` | 50-1000m | 150 | TX-RX distance for FM proximity warning vibration. *Nightly: no vibration; bar full scale only (50-164 m).* |
 | `rtm_steer_exit_on_input` | 0-1 | 1 | 1=steering exits RTM; 0=blend/correction mode |
 | `rtm_max_runtime_s` | 0-300s | 0 | Max RTM runtime; 0=disabled (safety gates handle scenarios) |
 

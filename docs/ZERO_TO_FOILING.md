@@ -406,6 +406,14 @@ chop, one-handed, with a foil under you. Learn them dry first.
 
 Confirm the gestures and display before you're in the water:
 
+> **🌙 On the NIGHTLY firmware** ([`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations),
+> bleeding edge, under water testing, use at your own risk) the gestures and screens below have
+> changed: new indicator dots, auto-return, the magnet tap (`mag_mode` 4), no F0 in the station
+> cycle, and the numbers default to metres. Use the [Follow-Me guide](FOLLOW_ME_GUIDE.md) and the
+> [screens page](https://monterman.github.io/BREmote-V2/followme-screens.html) instead. The list
+> below is for the master firmware.
+
+
 - **Arm FM (toggle, works while floating):** **LEFT tap → RIGHT hold ~3 s.** Display shows **F1/F2/F3**, remote buzzes **two quick taps** = armed. Repeat the gesture to cycle **F1→F2→F3→F0-off** before you're on the throttle.
 - **Arm FM (magnet, works during the tow — if fitted):** hold magnet ~2 s, feel one pulse, pull away → two taps = armed (toggle: same gesture disarms).
 - **Arm RTM:** **RIGHT tap → LEFT hold ~5 s** (needs `gps_en=1` + `rtm_enabled=1`).

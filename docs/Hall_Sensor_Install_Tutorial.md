@@ -126,7 +126,7 @@ Connect to the TX via the Web Serial Config Tool or serial at 115200 baud and pi
 ?save
 ```
 
-- **`mag_mode 4`** *(new in the upcoming release, on the [`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations))*: a **tap** arms Follow-Me or steps the station; a **2.5 s hold with the trigger released** starts the manual Return-to-Me.
+- **`mag_mode 4`** *(new in the upcoming release; nightly builds on the [`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations))*: a **tap** arms Follow-Me or steps the station; a **2.5 s hold with the trigger released** starts the manual Return-to-Me.
 - **`mag_mode 1-3`** *(current master firmware)*: hold about 2 s for Follow-Me (modes 1 and 3), about 5 s for Return-to-Me (mode 3); the action happens when you take the magnet away. Mode 2 uses the 2 s hold for Return-to-Me.
 - **`mag_mode 0`** with `bt_enabled 1`: the older role — the magnet switches BLE on for the session (BT dot at C7 R1 slow-blinks; hold 5 s more for fast blink, then VESC Tool can connect).
 

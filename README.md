@@ -10,12 +10,17 @@ ESP32 LoRa wireless remote for efoil and RC tow buggy — 868/915 MHz, 10 Hz con
 
 **Status: Alpha — BLE + VESC Tool field-confirmed ✅ (2026-05-16). RTM encoded + working, FM coded.**
 
+> **🌙 NIGHTLY firmware.** The sections marked *upcoming release*, the setup wizard and the new
+> screens match the **NIGHTLY** firmware on the [`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations), not the
+> firmware on master. Nightly = bleeding edge, under water testing, use at your own risk.
+> Binaries are in the `latest-FM-stations` folders. See [Nightly builds](#-nightly-builds).
+
 > **⚠️ 2026-07-25 — important fix, please reflash both boards.** A bug was found in on-water testing: the shared serial line was prioritising the VESC over the GPS, so the receiver was catching only ~2% of the GPS feed and Follow-Me could steer on a dead heading. Priority is now swapped and the GPS course works. **Fixed but not yet proven on the water** — see [CHANGELOG.md](CHANGELOG.md). Read the Alpha Testing Notes below before any in-water use.**
 
 > **🆕 Upcoming release — new Follow-Me screens, auto-return, front stations, buggy WiFi console.**
-> Available now for testing on the [`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations) (binaries in the
-> `latest-FM-stations` folders). It moves to master after water testing. See
-> [what's coming](#-coming-in-the-upcoming-release) and the [release notes](docs/RELEASE_NOTES_upcoming.md).
+> In the nightly builds on the [`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations) now; it moves to master
+> gradually after more testing. See [what's coming](#-coming-in-the-upcoming-release) and the
+> [release notes](docs/RELEASE_NOTES_upcoming.md).
 
 ---
 
@@ -98,7 +103,7 @@ This fork exists because LudwigBre published open hardware and firmware under GP
 |---|---|
 | **`master`** | **V2.5-Evo. The default branch, and what you want.** Hardware-verified on both boards. |
 | `ludwig-upstream-main` | **LudwigBre's original line, not mine.** Kept so upstream changes can be tracked and merged. Do not flash it expecting V2.5-Evo behaviour — it is a different firmware. |
-| `fm-stations` | **The upcoming release, for testers:** new Follow-Me screens, auto-return, front stations, buggy WiFi console. Binaries in the `latest-FM-stations` folders. Moves to master after water testing. |
+| `fm-stations` | **Nightly builds** — bleeding edge, under water testing, use at your own risk: new Follow-Me screens, auto-return, front stations, buggy WiFi console. Binaries in the `latest-FM-stations` folders. Commits move to master gradually after more testing. See [Nightly builds](#-nightly-builds). |
 | `multi-tx` | Work in progress: multiple remotes sharing one buggy. **Nothing here has been flashed to hardware.** |
 
 `ludwig-upstream-main` was called `main` until 2026-08-05. It was renamed because "main" reads
@@ -132,10 +137,9 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 
 ## 🆕 Coming in the upcoming release
 
-*Available now for testing on the [`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations), binaries in
-`Source/V2_Integration_Rx/RX firmware/latest-FM-stations/` and
-`Source/V2_Integration_Tx/TX firmware/latest-FM-stations/`. It moves to master after water testing.
-Flash the remote and the buggy together.* Details: [release notes](docs/RELEASE_NOTES_upcoming.md).
+*In the nightly builds on the [`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations) now (see
+[Nightly builds](#-nightly-builds)). It moves to master gradually after more testing. Flash the
+remote and the buggy together.* Details: [release notes](docs/RELEASE_NOTES_upcoming.md).
 
 - **New Follow-Me screens.** One dot hopping = waiting, two steady dots = following, the dot column
   filling down = the buggy is coming to you. The numbers are the metres between remote and buggy.
@@ -164,6 +168,25 @@ Flash the remote and the buggy together.* Details: [release notes](docs/RELEASE_
   the remote and the buggy. [Open the wizard](https://monterman.github.io/BREmote-V2/setup-wizard.html).
 - **Log format 3:** log level 4 now carries the second VESC too. **Download your logs before you
   flash** — after the flash the buggy can no longer open log files from older firmware.
+
+---
+
+## 🌙 Nightly builds
+
+A **nightly** is a build of the newest firmware, published before it reaches master.
+
+- **What:** bleeding edge. It is being water-tested right now. **Use at your own risk.**
+- **Where:** the [`fm-stations` branch](https://github.com/monterman/BREmote-V2/tree/fm-stations). Binaries:
+  `Source/V2_Integration_Rx/RX firmware/latest-FM-stations/` (buggy) and
+  `Source/V2_Integration_Tx/TX firmware/latest-FM-stations/` (remote). They are kept apart from
+  the older binaries in those folders. Flash the remote and the buggy together, and download your
+  logs and back up your settings first.
+- **How often:** new nightlies keep coming as fixes land.
+- **Master stays the stable line.** Nightly commits move to master gradually, after more testing.
+  If you want the tested firmware, stay on master.
+
+Found a problem on a nightly? Please report it with your firmware version (`?conf` shows it) and,
+if you can, the log of that session.
 
 ---
 
@@ -701,7 +724,7 @@ If TX-to-RX distance drops below `fm_warn_distance_m` (default 150 m), TX fires 
 |---|---|---|
 | `fm_override_enabled` | 1 | Master on/off switch |
 | `fm_hold_duration_s` | 5 | RIGHT-hold duration to cycle FM mode, in seconds (4–10) |
-| `fm_warn_distance_m` | 150 | Proximity warning threshold in metres |
+| `fm_warn_distance_m` | 150 | Proximity warning threshold in metres. *Nightly: no buzz; only the distance that fills the bar.* |
 
 </details>
 

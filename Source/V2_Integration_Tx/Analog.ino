@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - Q-7: measBufCalc() also seeds tog_raw[] with tog_mid before its first pass.
 // V2.5-Evo - 2026-10-07 - P-12: the dead-ADS boot line says the input fault holds throttle at 0 (no ?i2c on the TX).
 // V2.5-Evo - 2026-10-07 - P-10: measBufCalc() seeds thr_raw[] with thr_idle before its first pass.
 // V2.5-Evo - 2026-10-07 - P-3: measureAndBuffer() accepts a conversion only if the config register reads OS = 1 AND
@@ -299,6 +300,10 @@ void measBufCalc(void *parameter)
   // samples have landed. The locked boot masked it. THE FIX: seed every slot with thr_idle (usrConf is loaded in
   // initStorage(), before initTasks() creates this task), so the empty buffer reads as a released trigger.
   for (int i = 0; i < BUFFSZ; i++) thr_raw[i] = usrConf.thr_idle;
+  // V2.5-Evo - 2026-10-07 - Q-7: the same for the toggle. THE BUG: tog_raw[] started as zeros, and with an inverted toggle
+  // calibration that reads as full RIGHT for the ~120 ms until six real samples land (the locked boot masked it). THE
+  // FIX: seed every slot with tog_mid, so the empty buffer reads as a centred toggle.
+  for (int i = 0; i < BUFFSZ; i++) tog_raw[i] = usrConf.tog_mid;
 
   while (1)
   {

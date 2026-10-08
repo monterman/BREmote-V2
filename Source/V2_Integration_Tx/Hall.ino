@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-07 - Q-8: mag_mode 1-3 - the Return-To-Me hold (arm or disarm) acts only with the trigger fully
+//   released, like the mode 4 hold; with it held the hold is ignored silently (no RTM advisory buzz either). The FM
+//   tier is unchanged (it still arms mid-tow). No confStruct change.
 // V2.5-Evo - 2026-10-07 - P-7: the LEFT-hold lock during an active Return-To-Me ends the remote's own RTM
 //   (setRtmDisarmed() -> silent "St") before the stop flush. No confStruct change.
 // V2.5-Evo - 2026-10-07 - F-4: runMenu()'s post-ceremony latch hands the toggle back to steering on a squeeze (in_menu 0).
@@ -1027,14 +1030,16 @@ void runMagGesture()
       // Pattern 6 = three fast buzzes = "release for RTM". Deliberately NOT Pattern 4:
       // Pattern 4 is the arm confirm that setRtmArmed() fires moments later, and two
       // identical double-buzzes back to back are indistinguishable by feel.
-      if (current_vib_pattern == 0) current_vib_pattern = 6;
+      // V2.5-Evo - 2026-10-07 - Q-8: no RTM promise with the trigger held (removal will ignore the hold).
+      if (current_vib_pattern == 0 && triggerReleased()) current_vib_pattern = 6;
     }
     else if (!fm_advised && held >= kMagFmHoldMs)
     {
       fm_advised = true;
       // One short buzz = "release now". In MAG_ROLE_BOTH that means FM; in the
       // single-role modes it means whichever mode this remote is configured for.
-      if (current_vib_pattern == 0) current_vib_pattern = 5;
+      // V2.5-Evo - 2026-10-07 - Q-8: in MAG_ROLE_RTM it promises Return-To-Me, so not with the trigger held.
+      if (current_vib_pattern == 0 && !(role == MAG_ROLE_RTM && !triggerReleased())) current_vib_pattern = 5;
     }
     return;
   }
@@ -1241,7 +1246,17 @@ void runMagGesture()
       // V2.5-Evo - 2026-09-30 - reads the EFFECTIVE enable (stored value, or the RAM session override a
       // mag_mode 4 hold may have set) instead of usrConf.rtm_enabled directly.
       if (!(rtmEnabledEffective() && usrConf.gps_en)) return;
-      if (rtm_tx_active || rtmIsArming())
+      // V2.5-Evo - 2026-10-07 - Q-8 / SOP-040 GESTURE RULE: THE BUG - in mag_mode 1-3 the Return-To-Me hold still armed
+      // (or ended) a return with the trigger held, which the rule forbids: with the trigger held, nudging or steering a
+      // buggy must never start or end a return. THE FIX: checked at the moment of removal, exactly like the mode 4 hold;
+      // held -> ignored silently, one serial line. The FM tier below is untouched (arming FM mid-tow is the owner's
+      // exception).
+      if (!triggerReleased())
+      {
+        Serial.printf("MAG [TX] hold ignored: trigger held (thr %u) - the Return-To-Me hold needs the trigger fully released\n",
+                      (unsigned)thr_scaled);
+      }
+      else if (rtm_tx_active || rtmIsArming())
       {
         // RTM already active (or mid arm-ceremony) → DISARM through the toggle's own path.
         // setRtmDisarmed()→rtmDisengage(true) sends 0xF1/0 and shows "St", no buzz — identical

@@ -8,7 +8,7 @@ For stable firmware use the `master` branch.
 | Firmware | TX SW27 (V2.5-Evo), `fm-stations` branch |
 | Built from commit | `c69dd68` |
 | Board / FQBN | HT-CT62 (ESP32-C3) — `esp32:esp32:esp32c3:CDCOnBoot=default,PartitionScheme=huge_app` |
-| Files | `BREmote-TX-SW27-fm-stations-c69dd68.bin` (app image) · `BREmote-TX-SW27-fm-stations-c69dd68.merged.bin` (full-flash image) |
+| File | `BREmote-TX-SW27-fm-stations-c69dd68.bin` (app image, `0x10000`) |
 
 ## Before you flash
 
@@ -17,15 +17,14 @@ For stable firmware use the `master` branch.
    stable RX is not supported.
 2. **Download your buggy's logs before flashing the RX** — the matching RX build writes log
    format 3 and will not turn older logs into CSV.
-3. This remote cannot select the front stations F4 / F5 yet; they are still in development.
 
-## Flash offsets
+## Flashing
 
-- **App image `.bin` → `0x10000`.** Use this to update a remote that already runs V2.5-Evo. Your
-  settings, pairing and calibration stay.
-- **Merged image `.merged.bin` → `0x0`.** Only for a blank or bricked board. It overwrites the
-  whole chip, **including the settings storage**: pairing, settings and calibration are erased.
-  Re-pair and re-calibrate afterwards.
+- **App image `.bin` -> `0x10000`.** This is the only image published here. Use it to update a unit
+  that already runs V2.5-Evo: your settings, pairing and calibration stay, because nothing outside the app slot is written.
+- **Blank or bricked board?** Follow the normal flashing guide,
+  [Flashing with the Flash Download Tool](../../../../docs/FLASHING_WITH_DOWNLOAD_TOOL.md). Full-chip (`.merged.bin`, `0x0`) images are not
+  published: a write at `0x0` erases the settings storage.
 
 Example (esptool): `esptool --chip esp32c3 --port COMx write-flash 0x10000 BREmote-TX-SW27-fm-stations-c69dd68.bin`
 

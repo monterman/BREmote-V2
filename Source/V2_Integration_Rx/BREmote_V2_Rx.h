@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): includes ../Common/VescImu.h; imu2_struct + extern imu2 (VESC 2's IMU, own age stamp + ever_ok), the kImu2* constants (30 ms reply cap, 1500 ms stale, backoff to 1 poll / 10 s after 3 misses), the g_diag_imu2_* counters + g_imu2_miss_streak; VescLogDataL6 = the full 126 B L5 record + two 22 B ImuLogBlocks (VESC 2, then a reserved RX IMU that always reads N/A) = 170 B (static_asserts 170 / 126 / 148); LOG_REC_MAX; logResolveLevel() 6 -> 6; LOG_CSV_HEADER_L6 (98 columns) + LOG_CSV_ROW_EXT_L6_IMU + logFormatImuBlock(); LOG_CSV_ROW_BUF 640 -> 832. Tail append to the largest record, so LOG_FILE_FORMAT_VER stays 3. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-08 - STICKY RETURN CAP (owner design): sticky_cap + sticky_armed atomics, kStickyReleaseThr (25), kStickyFallbackCap (60), kStickyRxFixMaxMs (2000), the kStickyOnRiderCancel owner switch, stickyCapArm(), rx_state_flags bit 5. Runtime only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - defaultConf.foil_num_cells 10 -> 12 (value only: same field, sizeof stays 200, SW_VERSION stays 36, a stored config keeps its own value).
 // V2.5-Evo - 2026-10-07 - N-5 backstop: comment only - arrival_handback_cap also clears after 1.0 s below 25 (PWM.ino).
@@ -550,7 +551,10 @@ struct confStruct {
     // the VESC 2 block (2026-10-06): about 1 h 19 min at 3 Hz, 48 min at 5 Hz. See VescLogDataL5.]
     // and cfgValidateCrossField() CLAMPS anything above 5 down to 5 on every path (a range rejection
     // on the load path would wipe the config). See VescLogDataL5 below.
-    uint16_t log_level;                // 0 = unset (= level 3); 1 = Basic*, 2 = VESC*, 3 = Developer, 4 = Deep, 5 = Everything. (*accepted, currently logs as level 3.) Range 0-5.
+    // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): 6 = IMU, the 126 B level-5 record plus VESC 2's IMU and a
+    // reserved RX IMU block = 170 B/record (test sessions; about 56 min at 3 Hz on empty storage). Same u16
+    // slot; the validator max is 6 now and anything above 6 clamps to 6. See VescLogDataL6 below.
+    uint16_t log_level;                // 0 = unset (= level 3); 1 = Basic*, 2 = VESC*, 3 = Developer, 4 = Deep, 5 = Everything, 6 = IMU. (*accepted, currently logs as level 3.) Range 0-6.
 
     // V2.5-Evo - 2026-08-16 - SW34->35: mag_orientation. NEW FIELD, appended at the END of
     // confStruct so every existing offset is unchanged, and SW_VERSION 34 -> 35, which DOES reset
@@ -848,7 +852,7 @@ confStruct defaultConf = {SW_VERSION, 2, 22, 1, 50 /*steering_influence: convent
   // V2.5-Evo - 2026-07-25 - STAGE 0 PART A: this slot was fm_steer_reposition_en, renamed in place
   // to log_level. The default stays 0 on purpose — 0 means "unset" and behaves exactly as level 3
   // (Developer), which is the behaviour every unit already has, so nothing changes on flash.
-  0,          // log_level: 0 = unset -> logs as level 3 (Developer). 1/2 accepted but currently log as 3; 4 = Deep.
+  0,          // log_level: 0 = unset -> logs as level 3 (Developer). 1/2 accepted but currently log as 3; 4 = Deep, 5 = Everything, 6 = IMU (V2.5-Evo - 2026-10-08).
   0,          // mag_orientation: 0 deg. Set by ?compasscal (north-to-north) or ?magalign.
   0,            // steer_during_auto: 0 = the stick CANCELS automatic steering (the tested behaviour); 1 = it takes over while deflected (was rsvd_u16_1, renamed in place 2026-09-19)
 
@@ -1599,6 +1603,11 @@ volatile uint32_t g_diag_vesc_ok    = 0;      // of those, replies that parsed a
 volatile uint32_t g_diag_vesc2_polls = 0;     // forwarded VESC 2 requests sent
 volatile uint32_t g_diag_vesc2_ok    = 0;     // of those, replies that parsed and validated (incl. the controller-ID check)
 volatile uint8_t  g_vesc2_miss_streak = 0;    // consecutive unanswered VESC 2 polls, saturates at 255; >= kVesc2MissesToBackoff = backed off
+// V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): the same trio for VESC 2's IMU poll (see imu2_struct below).
+// Written only by the loop task; the poll runs only while a level-6 log is recording.
+volatile uint32_t g_diag_imu2_polls = 0;      // forwarded COMM_GET_IMU_DATA requests sent
+volatile uint32_t g_diag_imu2_ok    = 0;      // of those, replies that parsed and validated (incl. the controller-ID check)
+volatile uint8_t  g_imu2_miss_streak = 0;     // consecutive unanswered IMU polls, saturates at 255; >= kImu2MissesToBackoff = backed off
 
 // --- loop() timing (microseconds, derived from the CPU cycle counter) ---
 volatile uint32_t g_diag_loop_count      = 0;          // completed loop() bodies
@@ -1715,6 +1724,39 @@ struct vesc2_struct {
   uint32_t last_ok_ms = 0;   // millis() of the last VALIDATED reply - VESC 2's own age stamp. Meaningful only when ever_ok.
 };
 extern vesc2_struct vesc2;   // defined in VESC.ino; written by the loop task, read by loggerTask - both under vescMutex
+
+// ============================================================
+// V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU) - VESC 2's IMU, read over CAN through VESC 1
+//
+// WHY: to tune the launch-boost tilt thresholds in VESC 2's script (12 deg pitch, 80 dps) from real
+// rides, and to see how far the buggy heels in turns and gybes. VESC 2 carries the IMU; the RX asks
+// VESC 1 to forward COMM_GET_IMU_DATA (65) to CAN ID 2 and gets roll / pitch / yaw, gyro and
+// accelerometer back. The parser and the log encoder live in ../Common/VescImu.h (host-tested).
+// LOG ONLY: nothing in the throttle, steering, PWM, motor gate, RTM or Follow-Me path reads any of it.
+//
+// WHEN (VESC.ino pollVesc2ImuIfDue()): ONLY while a level-6 log is recording, ONLY when VESC 2's
+// values poll has proven VESC 2 present and fresh, inside VESC 1's existing mux visit after VESC 1 has
+// answered (2 Hz). No extra mux switch, no extra I2C. Reply wait capped at kImu2ReplyTimeoutMs; after
+// kImu2MissesToBackoff misses in a row (IMU disabled in VESC 2, say) it backs off to every
+// kImu2BackoffEvery-th visit (10 s).
+//
+// FRESHNESS: its own age stamp; the logger decides at log time and writes the "no data" sentinels when
+// the last sample is older than kImu2StaleMs (stale data is never logged as live).
+// Compile-time constants, not config: there is no confStruct space (a new field would wipe every
+// rider's settings) and none of these is a rider tuning value - the same exception as kVesc2*.
+// ============================================================
+#include "../Common/VescImu.h"
+static const uint32_t kImu2ReplyTimeoutMs  = 30;    // ms to wait for the forwarded IMU reply. Expected ~7-9 ms (10 B out + CAN round trip + 45 B back at 115200)
+static const uint32_t kImu2StaleMs         = 1500;  // ms; older IMU data is logged as "no data". 3 poll periods at 2 Hz: one lost poll is tolerated, two are not
+static const uint8_t  kImu2MissesToBackoff = 3;     // consecutive unanswered polls before the backoff starts; one good reply ends it
+static const uint8_t  kImu2BackoffEvery    = 20;    // while backed off: every 20th VESC 1 visit = once per 10 s
+
+struct imu2_struct {
+  VescImuSample s          = {};     // last validated sample: degrees, g, deg/s, in VESC 2's own axes. Meaningful only when ever_ok.
+  bool          ever_ok    = false;  // VALIDITY FLAG (Section 14): false = VESC 2's IMU has never answered this session
+  uint32_t      last_ok_ms = 0;      // millis() of the last VALIDATED reply - the IMU's own age stamp. Meaningful only when ever_ok.
+};
+extern imu2_struct imu2;     // defined in VESC.ino; written by the loop task, read by loggerTask - both under vescMutex
 
 struct __attribute__((packed)) VescLogData {
     uint32_t timestamp;           // Local Timestamp in ms
@@ -2106,6 +2148,60 @@ static_assert(sizeof(VescLogDataL5) == 126, "VescLogDataL5 size mismatch — exp
 static_assert(offsetof(VescLogDataL5, rider_lat) == 104, "level-5 block must start right after the 104 B level-4 record (log format 3)");
 
 // ============================================================
+// V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU) RECORD - 170 B
+//
+// Owner request: IMU columns for VESC 2 and for a second IMU that could sit on the RX itself, to see
+// roll when the buggy heels in turns and gybes and to tune the launch-boost tilt thresholds. Tiers stay
+// ADDITIVE: the first 126 bytes are a byte-identical VescLogDataL5, so every earlier column decodes with
+// the same code, and two 22-byte ImuLogBlocks (../Common/VescImu.h) are appended at the TAIL of what was
+// the largest record - no existing field moves, so LOG_FILE_FORMAT_VER stays 3 and the new size (170) is
+// the marker a reader uses.
+//
+// imu_vesc2 is VESC 2's IMU (fillImuBlocks() in Logger.ino; freshness decided at log time).
+// imu_rx is RESERVED: no RX IMU driver exists, so it is always written as NO SOURCE (status 0xFF, every
+// value N/A, -999 in the CSV). Why no driver: the ESP32-C3 has ONE I2C controller, shared with the AW9523
+// that does the 100 Hz motor-enable swap - a periodic I2C reader at riding throttle is exactly the class
+// that starved a motor channel on 2026-10-03. A future source (VESC 1's own IMU over the UART is the
+// better path) needs its own design and audit; its rsvd byte is laid out to carry the source code.
+//
+// BYTE OFFSETS (from the start of the record; the Python reader is built from this table):
+//     0-125  the full level-5 record (level-4 104 B incl. the VESC 2 values block, + level-5 block 104-125)
+//   126  vesc2_imu_age_ms     u16   ms since VESC 2's last validated IMU sample; 0xFFFF = never; capped 0xFFFE
+//   128  vesc2_roll           i16   deg x 100, clamped +-18000; 0x7FFF = N/A
+//   130  vesc2_pitch          i16   deg x 100
+//   132  vesc2_yaw            i16   deg x 100 (6-axis yaw drifts; short-term use only)
+//   134  vesc2_gyro_x         i16   deg/s x 10, clamped +-32000; 0x7FFF = N/A
+//   136  vesc2_gyro_y         i16   deg/s x 10 (pitch rate with X to the nose)
+//   138  vesc2_gyro_z         i16   deg/s x 10 (turn rate)
+//   140  vesc2_acc_x          i16   milli-g, clamped +-32000; 0x7FFF = N/A
+//   142  vesc2_acc_y          i16   milli-g
+//   144  vesc2_acc_z          i16   milli-g
+//   146  vesc2_imu_status     u8    1 OK, 2 STALE, 3 IMPLAUSIBLE, 0xFF NO SOURCE (0 is never written)
+//   147  rsvd                 u8    0 (no CSV column)
+//   148-169  rx_imu_* - the same 22 B shape; today always age 0xFFFF, values 0x7FFF, status 0xFF
+//   170 = sizeof
+// Axes and signs are VESC 2's own frame as configured in VESC Tool (X to the nose) - no sign flips here.
+// 2 Hz only (one sample per VESC 1 mux visit), so gyro spikes shorter than ~1 s are not resolved: use
+// the script's own peak prints for the 80 dps threshold; this log is for pitch trend, roll and context.
+// CAPACITY on the 1690 KB the owner's RX2 reports free (no reserve subtracted, page overhead not
+// included): about 56 min at 3 Hz, about 34 min at 5 Hz. Against the figure ?logstat reports (the
+// 500 KB reserve subtracted): about 40 min / 24 min. The IMU updates at 2 Hz, so 5 Hz buys nothing.
+// ============================================================
+struct __attribute__((packed)) VescLogDataL6 {
+    VescLogDataL5 l5;          // the complete level-5 record (126 B), first - do not reorder
+    ImuLogBlock   imu_vesc2;   // bytes 126-147
+    ImuLogBlock   imu_rx;      // bytes 148-169 (reserved, always N/A today)
+};
+static_assert(sizeof(VescLogDataL6) == 170, "VescLogDataL6 size mismatch - expected 126 (VescLogDataL5) + 22 (VESC 2 IMU) + 22 (RX IMU, reserved).");
+static_assert(offsetof(VescLogDataL6, imu_vesc2) == 126, "VESC 2 IMU block must start right after the 126 B level-5 record");
+static_assert(offsetof(VescLogDataL6, imu_rx) == 148, "RX IMU block must follow the VESC 2 IMU block");
+
+// V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): the largest record this firmware writes or reads. Every
+// record-size ceiling and raw record buffer (serial ?download, WiFi download, loggerTask) uses this, so
+// the next tier is one edit here instead of six scattered sizeof(VescLogDataL5) that refuse their own files.
+#define LOG_REC_MAX sizeof(VescLogDataL6)
+
+// ============================================================
 // V2.5-Evo - 2026-09-17 - FmLogSnapshot: the controller -> logger hand-off
 //
 // runFmLoop() (loop task, 10 Hz) fills g_fm_log_snapshot exactly once per tick, inside
@@ -2193,12 +2289,16 @@ portMUX_TYPE  g_fm_log_mux      = portMUX_INITIALIZER_UNLOCKED;
 // them apart; only this number can. Both on-board readers refuse a mismatch in plain English, so files
 // recorded before this flash cannot be downloaded by this firmware: DOWNLOAD THEM BEFORE FLASHING. The PC
 // log reader (Tools/logreader/bremote_log.py) still decodes formats 1, 2 and 3.
-#define LOG_FILE_FORMAT_VER  3             // 3 = VESC 2 block in the level-4 record (2026-10-06); 2 = M-2 motor-gate block in the base record (2026-10-01); 1 = the original STAGE 0 PART B layout (2026-07-25)
+// V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): NOT bumped. The two IMU blocks are appended at the tail of the
+// LARGEST record (VescLogDataL5 126 B -> VescLogDataL6 170 B), which the rule above says does not qualify:
+// no field moved, every format-3 file on a board (62 / 104 / 126 B) still downloads after this flash, and
+// the new size 170 is the marker that the IMU columns are present.
+#define LOG_FILE_FORMAT_VER  3            // 3 = VESC 2 block in the level-4 record (2026-10-06); 2 = M-2 motor-gate block in the base record (2026-10-01); 1 = the original STAGE 0 PART B layout (2026-07-25)
 
 struct __attribute__((packed)) LogFileHeader {
     uint32_t magic;        // LOG_FILE_MAGIC — absent/mismatched means "not a BREmote log of this era"
     uint8_t  format_ver;   // LOG_FILE_FORMAT_VER — layout of THIS header
-    uint8_t  log_level;    // the level the file was actually recorded at (3, 4 or 5 since 2026-09-19)
+    uint8_t  log_level;    // the level the file was actually recorded at (3, 4 or 5 since 2026-09-19; 6 since 2026-10-08)
     uint16_t record_size;  // bytes per record in this file — the ONLY thing a reader may step by
 };
 static_assert(sizeof(LogFileHeader) == 8, "LogFileHeader must stay 8 bytes — readers step past it by sizeof().");
@@ -2206,10 +2306,11 @@ static_assert(sizeof(LogFileHeader) == 8, "LogFileHeader must stay 8 bytes — r
 // ============================================================
 // logResolveLevel - turn the stored config value into the level actually used
 //
-// Inputs:  usrConf.log_level. Outputs: 3, 4 or 5. Side effects: none.
+// Inputs:  usrConf.log_level. Outputs: 3, 4, 5 or 6. Side effects: none.
 //
 // 0 (unset), 1 (Basic), 2 (VESC), 3 (Developer) and ANY out-of-range value all resolve to 3.
 // V2.5-Evo - 2026-09-19 - 5 (Everything) resolves to 5.
+// V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): 6 resolves to 6.
 // Levels 1 and 2 are reserved for a future storage optimisation (smaller records); they are
 // accepted by the config validator so a rider can select them and a later firmware will honour
 // them, but until those records exist they are documented — here, in the field comment, and in
@@ -2217,16 +2318,18 @@ static_assert(sizeof(LogFileHeader) == 8, "LogFileHeader must stay 8 bytes — r
 // ============================================================
 static inline uint8_t logResolveLevel()
 {
+  if (usrConf.log_level == 6) return 6;   // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU)
   if (usrConf.log_level == 5) return 5;
   return (usrConf.log_level == 4) ? 4 : 3;
 }
 
 // ============================================================
 // logRecordSizeForLevel - bytes per record for a given level
-// Inputs: level (3, 4 or 5). Outputs: record size in bytes. Side effects: none.
+// Inputs: level (3, 4, 5 or 6). Outputs: record size in bytes. Side effects: none.
 // ============================================================
 static inline uint16_t logRecordSizeForLevel(uint8_t level)
 {
+  if (level >= 6) return (uint16_t)sizeof(VescLogDataL6);   // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): 170 B
   if (level >= 5) return (uint16_t)sizeof(VescLogDataL5);   // V2.5-Evo - 2026-09-19 - level 5 (126 B since the 2026-10-06 VESC 2 block)
   return (level >= 4) ? (uint16_t)sizeof(VescLogDataL4) : (uint16_t)sizeof(VescLogData);
 }
@@ -2264,6 +2367,9 @@ static inline uint16_t logRecordSizeForLevel(uint8_t level)
 #define LOG_CSV_HEADER_L4 LOG_CSV_HEADER_L4_MOTORS ",vesc2_age_ms,vesc2_motor_current_A,vesc2_battery_current_A,vesc2_duty_cycle_%,vesc2_voltage_V,vesc2_ERPM,vesc2_temp_mos_C,vesc2_temp_motor_C,vesc2_fault_code"
 // V2.5-Evo - 2026-09-19 - level 5: the 14 level-5 columns after the full level-4 set.
 #define LOG_CSV_HEADER_L5 LOG_CSV_HEADER_L4 ",rider_lat,rider_lng,rider_fix_seq,rider_fix_age_ms,rtm_approach_cap,rtm_phase,align_cap,align_influence,mix_influence,fm_return_override,fm_flags_sent,fm_keepalive_age_s,l5_rsvd_takeover_active,l5_rsvd_takeover_end"
+// V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): the 22 IMU columns after the full level-5 set (170 B, 98 columns).
+// 11 per block: age, roll / pitch / yaw (deg), gyro x / y / z (deg/s), acc x / y / z (g), status. The rsvd byte has no column.
+#define LOG_CSV_HEADER_L6 LOG_CSV_HEADER_L5 ",vesc2_imu_age_ms,vesc2_roll_deg,vesc2_pitch_deg,vesc2_yaw_deg,vesc2_gyro_x_dps,vesc2_gyro_y_dps,vesc2_gyro_z_dps,vesc2_acc_x_g,vesc2_acc_y_g,vesc2_acc_z_g,vesc2_imu_status,rx_imu_age_ms,rx_roll_deg,rx_pitch_deg,rx_yaw_deg,rx_gyro_x_dps,rx_gyro_y_dps,rx_gyro_z_dps,rx_acc_x_g,rx_acc_y_g,rx_acc_z_g,rx_imu_status"
 
 // V2.5-Evo - 2026-10-01 - M-2: 31 level-3 columns -> 33 (+ctrl_pkt_age_ms, +motor_gate_open).
 #define LOG_CSV_ROW_FMT_L3 "%u,%.2f,%.2f,%d,%.1f,%d,%u,%u,%.1f,%.6f,%.6f,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%d,%d,%u,%u,%.1f,%d,%.1f,%u,%u"
@@ -2273,6 +2379,7 @@ static inline uint16_t logRecordSizeForLevel(uint8_t level)
 #define LOG_CSV_ROW_EXT_L4_MOTORS ",%u,%u"    // (C) motor0_cmd, motor1_cmd
 #define LOG_CSV_ROW_EXT_L5 ",%.6f,%.6f,%u,%d,%u,%u,%u,%u,%u,%u,%u,%.1f,%u,%u"   // level 5: lat, lng, seq, age ms (-1 never), cap, phase, align cap, align infl, mix infl, return override, fm_flags, keepalive s (-1.0 none), rsvd x 2
 #define LOG_CSV_ROW_EXT_L4_VESC2 ",%d,%.2f,%.2f,%d,%.1f,%d,%d,%d,%d"   // V2.5-Evo - 2026-10-06 - VESC 2 (level 4 and up since log format 3): age ms, motor A, battery A, duty %, V, ERPM, FET C, motor C, fault; every N/A prints -999
+#define LOG_CSV_ROW_EXT_L6_IMU ",%d,%.2f,%.2f,%.2f,%.1f,%.1f,%.1f,%.3f,%.3f,%.3f,%d"   // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU), used once per ImuLogBlock: age ms, roll / pitch / yaw deg, gyro xyz dps, acc xyz g, status; every N/A prints -999
 
 // Row buffer size. V2.5-Evo - 2026-10-06 - audit LOW: the old running estimate here had drifted (it ended
 // "640 clears the pathological ~362"), so this is the WORST CASE recounted field by field from the format
@@ -2286,7 +2393,13 @@ static inline uint16_t logRecordSizeForLevel(uint8_t level)
 //   the column set is the same as the 2026-10-06 L5 + VESC 2 row, only reordered. Writes are clamped to the
 //   buffer anyway, so even an overrun would only truncate the row. A stack local in the Arduino loop task
 //   (8 KB stack), which is where both readers run.
-#define LOG_CSV_ROW_BUF 640
+// V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): RAISED 640 -> 832. The level-6 row (98 columns) is the level-5
+// row above plus two IMU blocks, each 86 chars at its widest: 11 commas, age 5 ("65534"), three "%.2f"
+// angles of 7 ("-180.00" / N/A "-999.00"), three "%.1f" rates of 7 ("-3200.0"), three "%.3f"
+// accelerations of 8 (N/A "-999.000"), status 4 ("-999"). 2 x 86 = 172, so the worst row is
+// ~602 + 172 = ~774 B. 832 holds it with ~58 B to spare. Same home as before: a stack local in the
+// Arduino loop task (8 KB) in both readers.
+#define LOG_CSV_ROW_BUF 832
 
 // ============================================================
 // V2.5-Evo - 2026-09-17 - logCsvHeaderFor - the column header that matches a file's own layout
@@ -2311,7 +2424,40 @@ static inline const char* logCsvHeaderFor(uint8_t level, uint16_t record_size)
   // stay so a truncated or odd-sized file still gets exactly the columns its bytes hold.
   if (record_size < (uint16_t)sizeof(VescLogDataL4))                                                    return LOG_CSV_HEADER_L4_MOTORS; // 90 B: + motor commands
   if (record_size < (uint16_t)sizeof(VescLogDataL5))                                                    return LOG_CSV_HEADER_L4;        // 104 B: + the VESC 2 block (format 3)
-  return LOG_CSV_HEADER_L5;                                                                                                              // 126 B: + the level-5 block
+  if (record_size < (uint16_t)sizeof(VescLogDataL6))                                                    return LOG_CSV_HEADER_L5;        // 126 B: + the level-5 block
+  return LOG_CSV_HEADER_L6;                                                                                                              // 170 B: + the two IMU blocks (V2.5-Evo - 2026-10-08 - LOG LEVEL 6)
+}
+
+// ============================================================
+// V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): logFormatImuBlock - append ONE IMU block's 11 CSV columns
+//
+// Inputs:  out / out_len - the row buffer and its size; n - characters already in it;
+//          b - one ImuLogBlock copied out of the record.
+// Outputs: the new character count (clamped inside the buffer, like every other block in the row).
+// Side effects: none beyond out. Every N/A prints -999 (age, status) or -999.00 / -999.0 / -999.000
+// (values), the VESC 2 block's convention. Called twice per level-6 row: VESC 2's IMU, then the RX's.
+// ============================================================
+static int logFormatImuBlock(char* out, size_t out_len, int n, const ImuLogBlock &b)
+{
+  if ((size_t)n >= (out_len - 1)) return n;
+  int k = snprintf(out + n, out_len - (size_t)n, LOG_CSV_ROW_EXT_L6_IMU,
+                   (b.age_ms      == 0xFFFF) ? -999     : (int)b.age_ms,
+                   (b.roll_cdeg   == 0x7FFF) ? -999.0f  : (b.roll_cdeg   / 100.0f),
+                   (b.pitch_cdeg  == 0x7FFF) ? -999.0f  : (b.pitch_cdeg  / 100.0f),
+                   (b.yaw_cdeg    == 0x7FFF) ? -999.0f  : (b.yaw_cdeg    / 100.0f),
+                   (b.gyro_x_ddps == 0x7FFF) ? -999.0f  : (b.gyro_x_ddps / 10.0f),
+                   (b.gyro_y_ddps == 0x7FFF) ? -999.0f  : (b.gyro_y_ddps / 10.0f),
+                   (b.gyro_z_ddps == 0x7FFF) ? -999.0f  : (b.gyro_z_ddps / 10.0f),
+                   (b.acc_x_mg    == 0x7FFF) ? -999.0f  : (b.acc_x_mg    / 1000.0f),
+                   (b.acc_y_mg    == 0x7FFF) ? -999.0f  : (b.acc_y_mg    / 1000.0f),
+                   (b.acc_z_mg    == 0x7FFF) ? -999.0f  : (b.acc_z_mg    / 1000.0f),
+                   (b.status      == 0xFF)   ? -999     : (int)b.status);
+  if (k > 0)
+  {
+    n += k;
+    if ((size_t)n >= out_len) n = (int)out_len - 1;
+  }
+  return n;
 }
 
 // ============================================================
@@ -2327,7 +2473,7 @@ static inline const char* logCsvHeaderFor(uint8_t level, uint16_t record_size)
 //   out_len   - size of that buffer
 //   rec_bytes - one raw record as read from the file, at least sizeof(VescLogData) bytes
 //   rec_size  - bytes actually read for this record, taken from the FILE HEADER, never sizeof()
-//   level     - log level from the file header (3, 4 or 5)
+//   level     - log level from the file header (3, 4, 5 or 6)
 //
 // Outputs: number of characters written (excluding the NUL); 0 on a bad argument.
 // Side effects: none — reads nothing global, writes only into out.
@@ -2513,6 +2659,17 @@ static int logFormatCsvRow(char* out, size_t out_len, const uint8_t* rec_bytes, 
         n += f;
         if ((size_t)n >= out_len) n = (int)out_len - 1;
       }
+    }
+    // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): the two IMU blocks, the tail of the record (bytes 126-169),
+    // present only in a full sizeof(VescLogDataL6) record. Only the two 22 B blocks are copied out (not the
+    // whole 170 B record), keeping the loop-task stack cost of a level-6 row small.
+    if (rec_size >= (uint16_t)sizeof(VescLogDataL6) && (size_t)n < (out_len - 1))
+    {
+      ImuLogBlock imu;
+      memcpy(&imu, rec_bytes + offsetof(VescLogDataL6, imu_vesc2), sizeof(imu));
+      n = logFormatImuBlock(out, out_len, n, imu);
+      memcpy(&imu, rec_bytes + offsetof(VescLogDataL6, imu_rx), sizeof(imu));
+      n = logFormatImuBlock(out, out_len, n, imu);
     }
   }
 

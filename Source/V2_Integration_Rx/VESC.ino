@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): pollVesc2ImuIfDue() asks VESC 1 to forward COMM_GET_IMU_DATA (65, mask 0x01FF: roll/pitch/yaw, acc xyz, gyro xyz) to CAN ID 2 inside getVescLoop()'s existing mux visit, after VESC 1 AND (when it polled) VESC 2's values poll have answered - 2 Hz, 30 ms reply cap, backoff to 1 poll / 10 s after 3 misses - and ONLY while a level-6 log is recording and VESC 2's values are fresh. Reply accepted only with our mask echoed and controller ID 2 in its last byte (Common/VescImu.h). Writes imu2 under vescMutex. Log/diag only: no throttle/PWM/mux/I2C change. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - VESC 2 OVER CAN: pollVesc2IfDue() asks VESC 1 to forward a COMM_GET_VALUES_SELECTIVE to CAN ID 2 (COMM_FORWARD_CAN) inside getVescLoop()'s existing mux visit, after VESC 1 has answered, at 1 Hz (10 s backoff after 3 misses), 50 ms reply cap; reply accepted only with our mask echoed and controller ID 2. receiveFromVESC() takes its timeout as a parameter (VESC 1 still 200 ms). Telemetry only: no throttle/PWM/mux/I2C change. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-07-25 - STAGE 1 (GPS repair): getVescLoop() now ENDS with setUartMux(1), handing the UART line back to the GPS. The mux's resting position is now GPS, not the VESC — getGPSLoop() no longer switches at all, so getVescLoop() is the only function that moves the mux in normal operation (2 switches per poll at 2 Hz = 4 switches/s, DOWN from 6/s). The leading setUartMux(0), the 20 ms SW54 settle, the pre-query drain, the 200 ms receive timeout and the whole VESC protocol path are UNTOUCHED. No confStruct change, SW_VERSION stays 34.
 // V2.5-Evo - 2026-07-25 - STAGE 0 (instrumentation only): getVescLoop() bumps g_diag_vesc_polls / g_diag_vesc_ok so ?diag can report a VESC poll success rate. Two counter increments; no protocol, timing, mux, mutex or telemetry change.
@@ -16,6 +17,13 @@
 // Define the global struct
 vesc_struct vesc;
 vesc2_struct vesc2;   // V2.5-Evo - 2026-10-06 - VESC 2 over CAN; see vesc2_struct in BREmote_V2_Rx.h
+imu2_struct  imu2;    // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): VESC 2's IMU; see imu2_struct in BREmote_V2_Rx.h
+
+// V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): the two packet ids the IMU poll hard-codes into its bytes,
+// checked against their enum positions in vesc_datatypes.h at compile time (no hardware needed).
+static_assert(COMM_GET_IMU_DATA == 65, "COMM_GET_IMU_DATA must be packet id 65 (VESC FW commands.c)");
+static_assert(COMM_FORWARD_CAN == 34, "COMM_FORWARD_CAN must be packet id 34 (VESC FW commands.c)");
+static_assert(COMM_GET_IMU_DATA == kVescImuCommId, "Common/VescImu.h and vesc_datatypes.h disagree on COMM_GET_IMU_DATA");
 
 void getVescLoop()
 {
@@ -53,7 +61,15 @@ void getVescLoop()
     // just answered (a dead UART cannot carry a forwarded request either, so there is no point
     // adding a second timeout on top of the first). Reusing the visit means no extra mux switch and
     // no extra I2C traffic. pollVesc2IfDue() decides the rate itself (1 Hz, 10 s when backed off).
+    // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): VESC 2's IMU rides in the same visit, right after. If the
+    // VESC 2 values poll ran on THIS visit and missed (its miss streak just went up), the IMU poll is
+    // skipped: CAN or VESC 2 is not answering, so a second 30 ms wait would only lengthen the GPS-deaf
+    // window. pollVesc2ImuIfDue() applies its own gates (level-6 log recording, VESC 2 fresh, backoff).
+    // Not paused while Return-to-Me / Follow-Me runs (typical +8 ms per 500 ms visit, worst +30 ms): open owner decision O-1.
+    const uint8_t v2_streak_before = g_vesc2_miss_streak;
     pollVesc2IfDue(&Serial1);
+    const bool v2_missed_now = (g_vesc2_miss_streak > v2_streak_before);
+    if (!v2_missed_now) pollVesc2ImuIfDue(&Serial1);
   }
   get_vesc_timer = millis();
   
@@ -403,6 +419,93 @@ void pollVesc2IfDue(Stream* interface)
     xSemaphoreGive(vescMutex);
     g_diag_vesc2_ok++;
     g_vesc2_miss_streak = 0;
+  }
+}
+
+// ============================================================
+// pollVesc2ImuIfDue - read VESC 2's IMU through VESC 1, over CAN (log level 6 only)
+// ============================================================
+// V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU)
+// What it does:
+//   Sends ONE request down the VESC UART that tells VESC 1 "forward this to CAN ID kVesc2CanId":
+//     [COMM_FORWARD_CAN 34][kVesc2CanId][COMM_GET_IMU_DATA 65][mask 0x01FF, 2 bytes big-endian]
+//   VESC 2 answers with roll / pitch / yaw, acc x/y/z and gyro x/y/z (mask bits 0-8) plus its own
+//   controller ID, and VESC 1 relays that reply back down the UART. vescImuParse() (Common/VescImu.h)
+//   accepts it only if it echoes our command id and exact mask, carries controller ID kVesc2CanId in
+//   its last byte, and all nine values are finite - so VESC 1, or a stray frame, can never be stored
+//   as VESC 2's IMU.
+//
+// Gates, in order - every early return costs nothing on the bus:
+//   1. logImuPollWanted(): a log is recording AND its file is level 6. Nothing is polled otherwise.
+//   2. VESC 2's values poll has proven VESC 2 present and current: ever answered, last reply no older
+//      than kVesc2StaleMs, not backed off. (Read without the mutex: this is the same task that writes
+//      vesc2, so it cannot be torn under us.)
+//   3. Its own backoff: after kImu2MissesToBackoff misses in a row (e.g. the IMU is disabled in
+//      VESC 2's App Settings while the values poll still works) it polls only every
+//      kImu2BackoffEvery-th visit (10 s). One good reply ends the backoff.
+//   4. Drain the RX ring, send, wait at most kImu2ReplyTimeoutMs (30 ms) for the reply.
+//
+// Inputs:  interface - the VESC UART. MUST already be switched to the VESC: call only from inside
+//          getVescLoop()'s mux visit, which also hands the line back to the GPS afterwards.
+// Outputs: none.
+// Side effects: writes imu2 (under vescMutex) on a valid reply; bumps g_diag_imu2_polls /
+//   g_diag_imu2_ok and g_imu2_miss_streak. When it polls, it blocks the loop task for the reply:
+//   ~7-9 ms expected, 30 ms worst case, at 2 Hz and only while a level-6 log records. Touches no
+//   throttle, steering, PWM, mux or I2C state; nothing in any control path reads imu2.
+// ============================================================
+void pollVesc2ImuIfDue(Stream* interface)
+{
+  // Gate 1: only while a level-6 log is recording.
+  if (!logImuPollWanted()) return;
+
+  // Gate 2: VESC 2 must be proven present by the values poll (which also proves its CAN ID).
+  if (!vesc2.ever_ok) return;
+  if ((millis() - vesc2.last_ok_ms) > kVesc2StaleMs) return;
+  if (g_vesc2_miss_streak >= kVesc2MissesToBackoff) return;
+
+  // Gate 3: own backoff. A visit counter rather than a timer, for the same reason as pollVesc2IfDue().
+  static uint8_t visits = 0;
+  if (g_imu2_miss_streak >= kImu2MissesToBackoff)
+  {
+    if (++visits < kImu2BackoffEvery) return;
+  }
+  visits = 0;
+
+  // Anything still in the RX ring belongs to an earlier reply this visit - drop it so it cannot prefix
+  // the IMU reply. Non-blocking: only reads bytes already received.
+  while (interface->available()) interface->read();
+
+  uint8_t fwd[5];
+  fwd[0] = COMM_FORWARD_CAN;                     // 34 - VESC 1: pass the rest of this packet to a CAN ID
+  fwd[1] = kVesc2CanId;                          // target controller
+  fwd[2] = COMM_GET_IMU_DATA;                    // 65 - the command VESC 2 runs
+  fwd[3] = (uint8_t)(kVescImuMask >> 8);         // mask bits 15-8: bit 8 gyro z
+  fwd[4] = (uint8_t)(kVescImuMask & 0xFF);       // mask bits 7-0:  roll, pitch, yaw, acc xyz, gyro x y
+
+  g_diag_imu2_polls = g_diag_imu2_polls + 1;   // (not ++: avoids the C++20 volatile-increment deprecation warning)
+  sendToVESC(fwd, sizeof(fwd), interface);
+
+  uint8_t message[48];   // same size as receiveFromVESC()'s frame ceiling; the IMU reply payload is 40 B
+  int rxLen = receiveFromVESC(message, interface, kImu2ReplyTimeoutMs);
+
+  VescImuSample s;
+  if (!vescImuParse(message, rxLen, kVesc2CanId, &s))
+  {
+    if (g_imu2_miss_streak < 255) g_imu2_miss_streak = (uint8_t)(g_imu2_miss_streak + 1);
+    return;
+  }
+
+  // Same mutex and the same "skip this update rather than tear it" rule as vesc2: loggerTask reads
+  // imu2 and can preempt this task mid-write.
+  extern SemaphoreHandle_t vescMutex;
+  if (vescMutex && xSemaphoreTake(vescMutex, pdMS_TO_TICKS(50)) == pdTRUE)
+  {
+    imu2.s          = s;
+    imu2.last_ok_ms = millis();
+    imu2.ever_ok    = true;
+    xSemaphoreGive(vescMutex);
+    g_diag_imu2_ok = g_diag_imu2_ok + 1;
+    g_imu2_miss_streak = 0;
   }
 }
 

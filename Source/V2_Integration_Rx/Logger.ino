@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU) (see BREmote_V2_Rx.h, VESC.ino): logImuPollWanted() (true only while a level-6 log is recording - the IMU poll's first gate); fillImuBlocks() fills the two 22 B IMU blocks (VESC 2's IMU with its freshness decided at log time, the reserved RX IMU always NO SOURCE); loggerTask() builds a static VescLogDataL6 for level 6, and its record buffer is static and sized LOG_REC_MAX; downloadLogFile()'s ceiling and buffer use LOG_REC_MAX, so a 170 B file is accepted. Log format stays 3. No confStruct change.
 // V2.5-Evo - 2026-10-07 - P-11: the log's link-quality test uses stampStale() (signed age). Log format unchanged.
 // V2.5-Evo - 2026-10-06 - LOG FORMAT 3 (see BREmote_V2_Rx.h): fillVesc2Block() fills the VESC 2 block in the LEVEL-4 record now (owner ruling: both VESCs at level 4), so loggerTask() calls it for level 4 AND level 5 (logData5.l4). ?download refuses a file of another log format with a plain-English message that says which firmware wrote it and what to do (download before flashing; the PC log reader still decodes it). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - VESC 2 OVER CAN, part 2 (see BREmote_V2_Rx.h): loggerTask() fills the new 14 B VESC 2 block at the tail of the level-5 record (fillVesc2Block()), deciding freshness at log time against VESC 2's own age stamp: never answered or older than kVesc2StaleMs = every value field written as its N/A sentinel, age logged as the real age. Level 5 only; levels 3 and 4 unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -101,7 +102,22 @@ static String currentLogFileName = "";
 static uint8_t  active_log_level   = 3;
 static uint16_t active_record_size = (uint16_t)sizeof(VescLogData);
 static uint32_t last_space_check = 0;
-static const uint32_t SPACE_CHECK_INTERVAL = 60000; 
+static const uint32_t SPACE_CHECK_INTERVAL = 60000;
+
+// ============================================================
+// V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): logImuPollWanted - should VESC 2's IMU be polled right now?
+//
+// Inputs: none (reads logging_active and active_log_level, both owned by this file).
+// Outputs: true only while a log is recording AND the open file was created at level 6 or above.
+// Side effects: none.
+// This is the FIRST gate of pollVesc2ImuIfDue() (VESC.ino, later in the same translation unit, which is
+// why it lives here beside the statics it reads). Gating on the recording file rather than on the config
+// means no bus time at all is spent while nothing is logging. Both reads are single-byte and atomic.
+// ============================================================
+static inline bool logImuPollWanted()
+{
+  return logging_active && active_log_level >= 6;
+}
 
 // LED Blink State Machine Variables
 static int blinksRemaining = 0;
@@ -788,6 +804,34 @@ static void fillVesc2Block(VescLogDataL4 &rec)
   rec.vesc2_fault_code      = (v2.fault_code == 0xFF) ? 0xFE : v2.fault_code;
 }
 
+// ============================================================
+// V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): fillImuBlocks - add the two IMU blocks to a level-6 record
+//
+// What it does: writes both 22 B blocks at the tail of VescLogDataL6.
+//   imu_vesc2 - VESC 2's last validated IMU sample (imu2, written by pollVesc2ImuIfDue() in VESC.ino),
+//               encoded by imuLogEncode() (Common/VescImu.h), which decides FRESHNESS HERE, at log time:
+//               never answered -> NO SOURCE; older than kImu2StaleMs -> STALE with the real age; |acc|
+//               under 0.5 g or a non-finite value -> IMPLAUSIBLE; otherwise OK. Stale or implausible
+//               data is never written as live.
+//   imu_rx    - RESERVED: no RX IMU exists in this firmware, so it is always NO SOURCE (-999 in the CSV).
+// Inputs:  rec - a VescLogDataL6 whose .l5 is already filled.
+// Outputs: none (rec is filled in place).
+// Side effects: takes vescMutex for one struct copy (the same 50 ms bound fillVesc2Block() uses); if the
+//   take fails, the VESC 2 block is left as NO SOURCE rather than torn. No I/O, no globals written.
+// ============================================================
+static void fillImuBlocks(VescLogDataL6 &rec)
+{
+  imuLogNoSource(&rec.imu_vesc2);
+  imuLogNoSource(&rec.imu_rx);
+
+  imu2_struct i2;
+  if (!(vescMutex && xSemaphoreTake(vescMutex, pdMS_TO_TICKS(50)) == pdTRUE)) return;
+  i2 = imu2;
+  xSemaphoreGive(vescMutex);
+
+  imuLogEncode(&rec.imu_vesc2, &i2.s, i2.ever_ok, millis() - i2.last_ok_ms, kImu2StaleMs);
+}
+
 // Check and manage SPIFFS space
 bool ensureFreeSpace() {
   size_t totalBytes = SPIFFS.totalBytes();
@@ -945,9 +989,23 @@ void loggerTask(void* parameter) {
       // V2.5-Evo - 2026-09-19 - level 5 added: the same shape one tier up. The controller snapshot
       // is taken ONCE per row and handed to both fill functions, so a level-5 row is one tick
       // throughout. The buffer is sized for the largest record this firmware writes (level 5).
-      uint8_t  rec_buf[sizeof(VescLogDataL5)];
+      // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): level 6 added one tier up, and the buffer is now STATIC and
+      // sized LOG_REC_MAX (170 B). loggerTask has a 4 KB stack and is the only user of both rec_buf and
+      // logData6, so moving them off the stack costs nothing and stops the level-6 path from adding 2 x 170 B
+      // of stack on top of today's level-5 peak.
+      static uint8_t rec_buf[LOG_REC_MAX];
       uint16_t rec_len;
-      if (active_log_level >= 5) {
+      if (active_log_level >= 6) {
+        static VescLogDataL6 logData6;
+        logData6.l5.l4.base = convertToLogData();
+        const FmLogSnapshot snap = logTakeFmSnapshot();
+        fillLevel4Diag(logData6.l5.l4, snap);
+        fillVesc2Block(logData6.l5.l4);
+        fillLevel5Extra(logData6.l5, snap);
+        fillImuBlocks(logData6);       // VESC 2's IMU (own freshness test) + the reserved RX IMU
+        memcpy(rec_buf, &logData6, sizeof(logData6));
+        rec_len = (uint16_t)sizeof(logData6);
+      } else if (active_log_level >= 5) {
         VescLogDataL5 logData5;
         logData5.l4.base = convertToLogData();
         const FmLogSnapshot snap = logTakeFmSnapshot();
@@ -1126,13 +1184,13 @@ void downloadLogFile(const char* filename) {
   }
   if (hdr.format_ver != LOG_FILE_FORMAT_VER ||
       hdr.record_size < (uint16_t)sizeof(VescLogData) ||
-      hdr.record_size > (uint16_t)sizeof(VescLogDataL5)) {   // V2.5-Evo - 2026-09-19 - level 5 is the largest record now
+      hdr.record_size > (uint16_t)LOG_REC_MAX) {   // V2.5-Evo - 2026-10-08 - LOG LEVEL 6: the largest record is level 6 (170 B) now
     file.close();
     Serial.printf("LOG: unsupported log format (header version %u, %u bytes/record).\n",
                   (unsigned)hdr.format_ver, (unsigned)hdr.record_size);
     Serial.printf("LOG: this firmware reads header version %u with %u-%u bytes/record. Nothing printed.\n",
                   (unsigned)LOG_FILE_FORMAT_VER,
-                  (unsigned)sizeof(VescLogData), (unsigned)sizeof(VescLogDataL5));
+                  (unsigned)sizeof(VescLogData), (unsigned)LOG_REC_MAX);
     return;
   }
 
@@ -1147,7 +1205,7 @@ void downloadLogFile(const char* filename) {
   // before the Follow-Me block gets its own 35-column header, not the 45-column one.
   Serial.println(logCsvHeaderFor(hdr.log_level, hdr.record_size));
 
-  uint8_t  rec_buf[sizeof(VescLogDataL5)];   // V2.5-Evo - 2026-09-19 - sized for the largest record (level 5)
+  uint8_t  rec_buf[LOG_REC_MAX];   // V2.5-Evo - 2026-10-08 - sized for the largest record (level 6, 170 B; was level 5)
   char     row[LOG_CSV_ROW_BUF];
   uint16_t recordCount = 0;
   bool     aborted     = false;   // V2.5-Evo - 2026-08-16 - true = stopped by an RTM/FM engagement

@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): the log_level row's max is raised 5 -> 6 (6 = IMU, the 170 B record with VESC 2's IMU and a reserved RX IMU block), and cfgValidateCrossField() CLAMPS log_level > 6 down to 6 - a clamp, never a rejection (LOAD path). An older firmware clamps a stored 6 back to 5, so a downgrade cannot wipe config either. Same u16 slot, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - audit M-20 + L-25: the fm_front_ahead_extra_m NOTE prints the real side floor (fmFrontSideFloorForConfigM), not a fixed 13 m.
 // V2.5-Evo - 2026-10-06 - L-12: cfgValidateCrossField() CLAMPS zone_angle_exit_deg (and zone_angle_enter_deg, so enter can never sit above the capped exit) to 90 deg with a NOTE - above 90 the rear-diagonal Schmitt could stay engaged with the buggy ahead of the rider. A clamp, never a rejection (LOAD path). The kCfgFields rows keep 0-180 so old backups import. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-04 - L-2: cfgValidateCrossField() now CLAMPS fm_align_cap too - outside the validated 8-80 range it falls back to the shipped default 13 (never 0, which would stop the buggy, and never above 80). It was the one of SW36's three fields with no cross-field load clamp while fm_return_mode and fm_align_influence had one. Same reasoning as those two: this validator runs on the LOAD path, so a range rejection there fails the load and falls back to defaults - the config/pairing/compass-calibration wipe this function exists to prevent. Not reachable from a valid stored value; consistency and the corrupt-blob case. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -195,6 +196,9 @@ const CfgFieldSpec kCfgFields[] = {
   //   5 = Everything (V2.5-Evo - 2026-09-19): Deep plus the 22-byte level-5 block = 109 bytes/record,
   //       for test sessions. ACCEPTED RANGE is 0-5 now; anything above 5 is CLAMPED to 5 in
   //       cfgValidateCrossField() below, never rejected (a rejection on the load path wipes config).
+  //   6 = IMU (V2.5-Evo - 2026-10-08): Everything plus VESC 2's IMU (roll / pitch / yaw, gyro, acc, polled
+  //       over CAN at 2 Hz while the log records) and a reserved RX IMU block = 170 bytes/record.
+  //       ACCEPTED RANGE is 0-6 now; anything above 6 is CLAMPED to 6 (same reasoning).
   // 1 and 2 are deliberately ACCEPTED rather than rejected: a rider can select them now and a later
   // firmware will honour them without another config migration. They are NOT silently ignored —
   // the fallback to level 3 is stated in the field comment, in both web UIs and in the standalone
@@ -202,7 +206,7 @@ const CfgFieldSpec kCfgFields[] = {
   //
   // The FM v2 "steer reposition" feature that owned this slot is NOT cancelled; when it lands it
   // will claim a FRESH confStruct field (a deliberate, announced config-wipe event), not this one.
-  {"log_level",              CFG_U16,   offsetof(confStruct, log_level),              true, false, true, 0.0f,  5.0f,    0, false},   // max 4 -> 5 (2026-09-19)
+  {"log_level",              CFG_U16,   offsetof(confStruct, log_level),              true, false, true, 0.0f,  6.0f,    0, false},   // max 4 -> 5 (2026-09-19); 5 -> 6 (2026-10-08, LOG LEVEL 6 IMU)
   // V2.5-Evo - 2026-09-19 - SW36: auto-return inside Follow-Me. All three are read live by RTMState.ino.
   //   fm_return_mode     0-1   : power-on default for auto-return (1 = FM_RETURN when the rider stops, 0 = HOLD as before).
   //                              The remote's return gesture overrides it for the session (0xF2 bits 5-6, RAM only).
@@ -312,7 +316,8 @@ bool cfgValidateCrossField(confStruct &candidate, String &err)
   }
   // V2.5-Evo - 2026-09-19 - log_level: 5 (Everything) is the top level now; anything above it means
   // "the most detail there is", so it clamps to 5 rather than failing the load. Same reasoning.
-  if (candidate.log_level > 5)            candidate.log_level = 5;
+  // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): the top level is 6 now, so the clamp moves 5 -> 6.
+  if (candidate.log_level > 6)            candidate.log_level = 6;
   // V2.5-Evo - 2026-09-19 - steer_during_auto is a 0/1 switch on the SAME terms: the slot used to
   // be a RESERVED u16 validated 0-65535, so a value above 1 could in principle be sitting in a
   // stored blob; it is corrected silently on load rather than rejected.

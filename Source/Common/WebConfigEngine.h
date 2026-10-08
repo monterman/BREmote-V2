@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): (RX only, inside ENABLE_WEB_LOG_DOWNLOAD) the WiFi log download's record-size ceiling and raw record buffer are LOG_REC_MAX (sizeof(VescLogDataL6), 170 B) instead of sizeof(VescLogDataL5), so a level-6 file is accepted and downloads with its 98 columns. No TX impact (the TX never compiles this block), no confStruct change.
 // V2.5-Evo - 2026-10-06 - (RX only, inside ENABLE_WEB_LOG_DOWNLOAD) LOG FORMAT 3: a log recorded by OLDER firmware (an older format_ver) is refused with its own plain-English ERR_LOG_FORMAT detail - recorded by older firmware, not damaged, download before flashing - instead of "predates the self-describing log format or is corrupt", which was wrong for it. The row-buffer comment no longer quotes the stale 2026-07-25 sizing.
 // V2.5-Evo - 2026-10-03 - (RX only, inside SERIAL_TEE_RING_SIZE - the TX does not include the serial capture ring, so none of this is compiled there) WiFi COMMAND CONSOLE: three routes (POST /api/cmd, GET /api/cmd/out, GET /api/cmd/list), a deferred runner called from webCfgLoop() so a command never executes inside the request that asked for it, and webCfgPumpWhileBlocked() so the four bounded blocking commands the console permits can answer HTTP from inside their own loops. The permitted set, the confirm requirement and the connection-dropping class are all read out of the RX's kCommands[] table through rxWebCommandInfo() / rxWebCommandListJson() - there is no second command list anywhere. The log-download route gains a 409 while a command is running, because the pump makes it reachable from inside one. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-19 - (RX only, inside ENABLE_WEB_LOG_DOWNLOAD) the WiFi log download accepts and buffers the level-5 record (109 B, VescLogDataL5) - the record-size ceiling and the raw buffer are sizeof(VescLogDataL5) now, the largest record the RX writes; logCsvHeaderFor() / logFormatCsvRow() already select the level-5 columns by record_size. No TX impact, no confStruct change.
@@ -702,7 +703,7 @@ static void webCfgHandleDownloadLog()
   bool hdrOk = hdrRead &&
                (hdr.format_ver == LOG_FILE_FORMAT_VER) &&
                (hdr.record_size >= (uint16_t)sizeof(VescLogData)) &&
-               (hdr.record_size <= (uint16_t)sizeof(VescLogDataL5));   // V2.5-Evo - 2026-09-19 - level 5 is the largest record
+               (hdr.record_size <= (uint16_t)LOG_REC_MAX);   // V2.5-Evo - 2026-10-08 - LOG LEVEL 6: the largest record is level 6 (170 B)
   if(!hdrOk)
   {
     file.close();
@@ -734,12 +735,12 @@ static void webCfgHandleDownloadLog()
   webCfgServer.sendContent(header);
 
   // V2.5-Evo - 2026-07-25 - STAGE 0: raw record buffer, sized for the largest record this
-  // firmware understands (level 5 since 2026-09-19). The file header guarantees hdr.record_size fits in it.
-  uint8_t rec_buf[sizeof(VescLogDataL5)];
+  // firmware understands (level 5 since 2026-09-19; level 6 since 2026-10-08). The file header guarantees hdr.record_size fits in it.
+  uint8_t rec_buf[LOG_REC_MAX];
   // V2.5-Evo - 2026-07-25 - F-WEBCSV: row buffer resized 400 -> 512 for the 31-column CSV.
   // V2.5-Evo - 2026-07-25 - STAGE 0: the buffer size and the sizing arithmetic behind it now live
-  // once, as LOG_CSV_ROW_BUF in BREmote_V2_Rx.h (640 B; the worst-case sizing is stated there - V2.5-Evo -
-  // 2026-10-06: ~602 B for a level-5 row). It is a stack local in the Arduino loop task (8 KB).
+  // once, as LOG_CSV_ROW_BUF in BREmote_V2_Rx.h (832 B since 2026-10-08; the worst-case sizing is stated there:
+  // ~774 B for a level-6 row). It is a stack local in the Arduino loop task (8 KB).
   char row[LOG_CSV_ROW_BUF];
   uint16_t recordCount = 0;
   while (file.available())

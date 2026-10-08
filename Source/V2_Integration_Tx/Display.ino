@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - Q-2 / SOP-041: renderRtmInfoDisplay() draws "rn" (waiting) with R5 dark until the buggy has
+//   confirmed the manual return (rtmReturnConfirmed()); the distance screen and RETURN bar only after that. Display only.
 // V2.5-Evo - 2026-10-07 - D-1 (TX part): the distance readout shows "0.X" under 1 m, and "--" for a 0x00 byte or a stale
 //   link as well as for 0xFF (rtmDistanceShowable()). Digit zone only; bars and dots untouched. No confStruct change.
 // V2.5-Evo - 2026-10-07 - F-8: unlockAnimation() samples the trigger during its frame waits (unlock_anim_release_seen),
@@ -1575,6 +1577,18 @@ void renderRtmInfoDisplay()
   if (remote_error == REMOTE_ERR_INPUT_FAULT)
   {
     renderInputFaultBlink();
+    xSemaphoreGive(displayMutex);
+    return;
+  }
+  // V2.5-Evo - 2026-10-07 - Q-2 / SOP-041 rules 1-2: THE BUG - the RTM distance screen and RETURN bar were drawn from the
+  // remote's own intent (rtm_tx_active) the moment the ceremony ended, even when the buggy never heard 0xF1/1 and stayed
+  // in manual. THE FIX: until the buggy confirms RTM (fm_status bit 1 on an arrival after ACTIVE began) the screen shows
+  // the waiting look - "r n" in the digit zone, R5 dark - and only then the returning screen below.
+  if (!rtmReturnConfirmed())
+  {
+    displayDigitZone("r n");
+    displayBuffer[6] = 0x0000;
+    updateDisplay();
     xSemaphoreGive(displayMutex);
     return;
   }

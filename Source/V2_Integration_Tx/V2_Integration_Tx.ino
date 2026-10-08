@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - Q-2: prototype for rtmReturnConfirmed() (RTMState.ino), used by Display.ino. No confStruct change.
 // V2.5-Evo - 2026-10-07 - S-8: setup() calls txBootIdInit() before initTasks(); prototype for txBootIdInit(). No confStruct
 //   change.
 // V2.5-Evo - 2026-10-07 - H-4: auto-sleep on buggy silence now also needs 30 s with no rider input and the trigger
@@ -58,6 +59,7 @@ bool txGpsGoodFix();
 void runRtmLoop();
 void runFmLoop();
 void txBootIdInit();          // V2.5-Evo - 2026-10-07 - S-8: pick this power-on's boot ID and queue its first burst (RTMState.ino)
+bool rtmReturnConfirmed();    // V2.5-Evo - 2026-10-07 - Q-2: the buggy has confirmed the current manual return (RTMState.ino, read by Display.ino)
 void setRtmArmed();
 void cycleFmMode();
 void cycleFmModeArmed();

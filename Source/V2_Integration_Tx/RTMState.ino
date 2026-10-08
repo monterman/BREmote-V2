@@ -1,3 +1,8 @@
+// V2.5-Evo - 2026-10-07 - Q-3 / Q-1 / Q-2 / Q-6: the remote ends its manual return when the BUGGY says how it ended:
+//   rx_state_flags bit 0 (fault) -> "St" + stop buzz, cap 255; bit 1 (arrived) -> silent "St", cap 0 until one full
+//   release; the fm_status bit-1 two-arrival end stays as the fallback (old RX). An RTM the buggy never confirms is
+//   re-sent once, then refused ("St" + stop buzz, cap kept until a release), and is drawn as "rn" until confirmed
+//   (rtmReturnConfirmed()). A release seen during the 2 s "St" lifts a kept cap at that sample. No confStruct change.
 // V2.5-Evo - 2026-10-07 - TX protocol round: S-8 boot ID (txBootIdInit() at power-on, different from the last one kept
 //   in NVS, then txBootIdTick() every 10 s on a fresh link), H-1 refresh (rtmRefreshTick(): one 0xF1/0x02 a second
 //   while RTM_ACTIVE), M-1 0xF2 bit 7 on the four gesture declarations only. Both new 0xF1 values go into a free
@@ -291,6 +296,27 @@ static bool rtm_gate4_takeover_printed = false;
 // ============================================================
 static bool rtm_end_keep_cap     = false;
 static bool rtm_arrival_cap_hold = false;
+// V2.5-Evo - 2026-10-07 - Q-1: WHICH cap is kept. THE BUG: an arrival kept the ramp cap (30-70 %), so a rider still at
+// full trigger got up to 70 % with the buggy a few metres away and pointing at him. THE FIX: the ending path sets the
+// cap to keep here - 0 after an arrival (the buggy holds its own near-zero approach cap too), the cap in force after a
+// Q-2 refusal - and rtmDisengage() applies min(current cap, this), so a kept cap can only ever go DOWN. Loop task only.
+static uint8_t rtm_end_cap_value = 0;
+
+// ============================================================
+// V2.5-Evo - 2026-10-07 - Q-2: AN RTM THE BUGGY NEVER CONFIRMS
+// THE BUG: if the buggy never heard 0xF1/1 (all three packets lost, RTM disabled on the buggy) it never reports RTM
+// in fm_status bit 1, so the A-1 end could never fire: the remote showed the RTM screen and kept its cap while the
+// buggy was in plain manual - a silent non-start that looked like a return (SOP-041 rules 1-2).
+// THE FIX: count the fm_status ARRIVALS that land more than kRtmConfirmMarginMs after the last 0xF1/1 packet went
+// out (and only once that burst has drained). The first two with bit 1 clear, and none set: re-send 0xF1/1 once.
+// The next two still clear: end it as a REFUSAL - "St" + the stop buzz, the cap in force kept until one full release.
+// Until the first confirmed arrival the screen shows "rn" (waiting), never the RTM distance screen.
+// Loop task only. Reset at every RTM_ACTIVE entry (rtmUnconfirmedReset()).
+// ============================================================
+static const unsigned long kRtmConfirmMarginMs = 300UL;
+static unsigned long rtm_q2_last_arrival_ms = 0;   // fm_status arrival already looked at
+static uint8_t       rtm_q2_clear_count     = 0;   // clear arrivals counted since the start or the re-send
+static bool          rtm_q2_requeued        = false;
 
 // ============================================================
 // V2.5-Evo - 2026-10-07 - F-1: A FOLLOW-ME FAULT THAT ARRIVES DURING AN ACTIVE RETURN IS ANNOUNCED AT THE RETURN'S END
@@ -486,7 +512,9 @@ static void rtmDisengage(bool commanded)
   if (rtm_end_keep_cap)
   {
     rtm_end_keep_cap     = false;   // A-1: consumed
-    rtm_arrival_cap_hold = true;    // rtm_thr_cap_tx keeps its current (ramp) value until a full release
+    rtm_arrival_cap_hold = true;    // the kept cap stands until a full release
+    // V2.5-Evo - 2026-10-07 - Q-1: keep the LOWER of the cap in force and the one the ending path asked for.
+    if (rtm_end_cap_value < rtm_thr_cap_tx.load()) rtm_thr_cap_tx = rtm_end_cap_value;
   }
   else
   {
@@ -530,13 +558,21 @@ static void rtmDisengage(bool commanded)
   DISP_LOCK(); displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
   if (rtm_arrival_cap_hold)
   {
-    // V2.5-Evo - 2026-10-07 - A-1: watch the trigger during the hold (the loop is blocked here); a full release
-    // seen at any 10 ms sample lifts the kept cap when the hold ends.
-    if (ceremonyDelaySeeRelease(2000))
+    // V2.5-Evo - 2026-10-07 - A-1: watch the trigger during the hold (the loop is blocked here).
+    // V2.5-Evo - 2026-10-07 - Q-6: THE BUG - a release seen during the hold lifted the cap only when the 2 s ended, so a
+    // rider who let go and squeezed again inside the hold stayed capped for up to 2 s. THE FIX: the cap is lifted AT THE
+    // 10 ms SAMPLE where the release is seen; the "St" hold itself still runs its full 2 s.
+    const unsigned long hold_start_ms = millis();
+    while (millis() - hold_start_ms < 2000UL)
     {
-      rtm_arrival_cap_hold = false;
-      rtm_thr_cap_tx       = 255;
-      Serial.println("RTM [TX] trigger fully released after the buggy ended the return -> throttle cap lifted, full manual");
+      while (Serial1.available()) gps_tx.encode(Serial1.read());
+      if (rtm_arrival_cap_hold && triggerReleased())
+      {
+        rtm_arrival_cap_hold = false;
+        rtm_thr_cap_tx       = 255;
+        Serial.println("RTM [TX] trigger fully released after the return ended -> throttle cap lifted, full manual");
+      }
+      delay(10);
     }
   }
   else
@@ -555,7 +591,61 @@ static void rtmArrivalCapUpdate()
   if (!triggerReleased()) return;
   rtm_arrival_cap_hold = false;
   rtm_thr_cap_tx       = 255;
-  Serial.println("RTM [TX] trigger fully released after the buggy ended the return -> throttle cap lifted, full manual");
+  Serial.println("RTM [TX] trigger fully released after the return ended -> throttle cap lifted, full manual");
+}
+
+// rtmReturnConfirmed - V2.5-Evo - 2026-10-07 - Q-2 / SOP-041: is a manual return running AND confirmed by the buggy
+// (an fm_status arrival with bit 1 set after this run went ACTIVE)? The screen draws the RTM returning look only while
+// this is true; before it, "rn" (waiting). Inputs: rtm_tx_state, fm_status_rtm_on_ms, rtm_active_start_ms.
+// Output: true = confirmed. No side effects. Not static: Display.ino (concatenated before this file) calls it from the
+// loop task and from the bargraph task; every read is one aligned word, so no tearing.
+bool rtmReturnConfirmed()
+{
+  if (rtm_tx_state != RTM_ACTIVE) return false;
+  const unsigned long on_ms = fm_status_rtm_on_ms;
+  return (on_ms != 0) && ((long)(on_ms - rtm_active_start_ms) > 0);
+}
+
+// rtmUnconfirmedReset - V2.5-Evo - 2026-10-07 - Q-2: start a fresh confirmation count at RTM_ACTIVE entry. Arrivals
+// already received are ignored (rtm_q2_last_arrival_ms = the current stamp). Loop task only.
+static void rtmUnconfirmedReset()
+{
+  rtm_q2_last_arrival_ms = fm_status_arrival_ms;
+  rtm_q2_clear_count     = 0;
+  rtm_q2_requeued        = false;
+}
+
+// rtmUnconfirmedCheck - V2.5-Evo - 2026-10-07 - Q-2: one tick of the "the buggy never confirmed RTM" rule (see the
+// block at the top of this file). Call only while RTM_ACTIVE and not yet confirmed.
+// Inputs: fm_status_arrival_ms, telemetry.fm_status, rtm_start_sent_ms, the meta queue, the rtm_q2_* state.
+// Returns: true if it ENDED the run (refusal: rtmDisengage(false) has run - the caller must stop). Side effects: may
+// re-queue 0xF1/1 once; one serial line per decision.
+static bool rtmUnconfirmedCheck()
+{
+  const unsigned long arr = fm_status_arrival_ms;
+  if (arr == rtm_q2_last_arrival_ms) return false;                          // no new fm_status arrival
+  rtm_q2_last_arrival_ms = arr;
+  const unsigned long sent = rtm_start_sent_ms;
+  if (sent == 0 || (long)(sent - rtm_active_start_ms) < 0) return false;   // this run's 0xF1/1 not on the air yet
+  if (metaQueuePending(0xF1, 1, false)) return false;                       // the 0xF1/1 burst is still draining
+  if ((long)(arr - sent) <= (long)kRtmConfirmMarginMs) return false;       // too soon after it to be evidence
+  if (telemetry.fm_status & FM_STATUS_RTM_ACTIVE) return false;            // bit set: that IS the confirmation
+  if (rtm_q2_clear_count < 255) rtm_q2_clear_count++;
+  if (rtm_q2_clear_count < 2) return false;
+  if (!rtm_q2_requeued)
+  {
+    rtm_q2_requeued    = true;
+    rtm_q2_clear_count = 0;
+    queueMetaPacketBurst(0xF1, 1);   // state burst: replaces a queued refresh / boot ID in place, never a stop
+    Serial.println("RTM [TX] the buggy has not confirmed Return-To-Me on 2 reports -> 0xF1/1 sent again");
+    return false;
+  }
+  Serial.printf("RTM [TX] the buggy did not confirm Return-To-Me after the re-send -> St + stop buzz; throttle cap %u kept until the trigger is fully released\n",
+                (unsigned)rtm_thr_cap_tx.load());
+  rtm_end_cap_value = rtm_thr_cap_tx.load();   // keep the cap in force
+  rtm_end_keep_cap  = true;
+  rtmDisengage(false);                         // a refusal: "St" + the stop buzz (SOP-040)
+  return true;
 }
 
 // ---- Decode telemetry.rtm_distance to metres ----
@@ -1021,6 +1111,7 @@ static void runDoubleSqueezeArm()
   rtm_tx_active       = true;
   rtm_release_ms      = 0;
   rtm_gate4_takeover_printed = false;   // V2.5-Evo - 2026-09-19 - Gate 4's stand-down notice is once per run
+  rtmUnconfirmedReset();                // V2.5-Evo - 2026-10-07 - Q-2: fresh confirmation count for this run
   rtm_arm_dist_m      = decodeRtmDistanceM();
   if (rtm_arm_dist_m < 0.0f) rtm_arm_dist_m = 0.0f;
   queueMetaPacketBurst(0xF1, 1);
@@ -1222,35 +1313,54 @@ void runRtmLoop()
 
       // V2.5-Evo - 2026-10-07 - A-1: THE BUGGY ENDED THE RETURN ITSELF. Checked first: if the buggy is no longer
       // returning, none of the remote's own gates below has anything left to supervise.
-      // Condition: the buggy CONFIRMED RTM during this run (an fm_status arrival with bit 1 set after ACTIVE began -
-      // so the arrivals that predate its hearing 0xF1/1 can never count as a drop) and then reported it OFF on 2
-      // consecutive arrivals of the byte (one corrupted-but-valid packet is not enough).
-      // Action: end RTM here through rtmDisengage() - silent "St" (an arrival is not a fault), 0xF1/0 for good
-      // measure, COOLDOWN, and the screen then lands on the true state (FM armed screen or normal) - while KEEPING
-      // the throttle cap in force until the trigger is fully released once (SOP-040 arrival rule, rtm_end_keep_cap).
-      // HOOK (the buggy will add an "RTM fault" bit later, audit H-2 / A-1): when that bit is set on these arrivals,
-      // treat it as a FAULT instead: rtmDisengage(false) ("St" + the stop buzz) WITHOUT keeping the cap, because a
-      // fault hands back full manual control (SOP-039 rule 2). Set rx_rtm_fault from that bit here.
+      // V2.5-Evo - 2026-10-07 - Q-3 / Q-1: THE BUGGY NOW SAYS HOW IT ENDED (telemetry.rx_state_flags, index 19, rising
+      // edges latched in Radio.ino; acted on only when the rise came after this run went ACTIVE):
+      //   bit 0 FAULT (Phase C, its gate timeout, the refresh expiry) -> rtmDisengage(false): "St" + the stop buzz,
+      //         0xF1/0, cap 255 - a fault hands back full manual control (SOP-039 rule 2).
+      //   bit 1 ARRIVED (its stop distance)                            -> rtmDisengage(true): silent "St", 0xF1/0, and the
+      //         throttle cap goes to 0 until the trigger is fully released once (SOP-040 arrival rule, Q-1).
+      // FALLBACK (an older RX that sends no index 19, or a lost edge): the buggy CONFIRMED RTM during this run (an
+      // fm_status arrival with bit 1 set after ACTIVE began) and then reported it OFF on 2 consecutive arrivals of the
+      // byte. It ends as a fault if the last rx_state_flags shows bit 0, otherwise as an arrival (cap 0 until release).
+      // Q-2: while the buggy has NOT confirmed, rtmUnconfirmedCheck() re-sends 0xF1/1 once, then refuses.
       {
         const bool rx_confirmed = (fm_status_rtm_on_ms != 0) &&
                                   ((long)(fm_status_rtm_on_ms - rtm_active_start_ms) > 0);
+        const unsigned long fault_rise  = rx_rtm_fault_rise_ms;
+        const unsigned long arrive_rise = rx_rtm_arrived_rise_ms;
+        const bool rx_fault_now   = (fault_rise  != 0) && ((long)(fault_rise  - rtm_active_start_ms) > 0);
+        const bool rx_arrived_now = (arrive_rise != 0) && ((long)(arrive_rise - rtm_active_start_ms) > 0);
+        if (rx_fault_now)
+        {
+          Serial.println("RTM [TX] the buggy ended Return-To-Me on a FAULT (rx_state_flags bit 0) -> St + stop buzz, full manual");
+          rtmDisengage(false);
+          break;
+        }
+        if (rx_arrived_now)
+        {
+          Serial.println("RTM [TX] the buggy ARRIVED (rx_state_flags bit 1) -> silent St; throttle cap 0 until the trigger is fully released");
+          rtm_end_cap_value = 0;
+          rtm_end_keep_cap  = true;
+          rtmDisengage(true);
+          break;
+        }
         if (rx_confirmed && fm_status_rtm_off_streak >= 2)
         {
-          const bool rx_rtm_fault = false;   // HOOK: the buggy's future RTM-fault bit goes here
-          if (rx_rtm_fault)
+          if (telemetry.rx_state_flags & RX_STATE_RTM_FAULT)
           {
-            Serial.println("RTM [TX] the buggy ended Return-To-Me on a FAULT -> St + stop buzz, full manual");
+            Serial.println("RTM [TX] the buggy ended Return-To-Me (fm_status bit 1 off on 2 arrivals, fault bit set) -> St + stop buzz, full manual");
             rtmDisengage(false);
           }
           else
           {
-            Serial.printf("RTM [TX] the buggy ended Return-To-Me (fm_status bit 1 off on 2 arrivals) -> silent St; throttle cap %u kept until the trigger is fully released\n",
-                          (unsigned)rtm_thr_cap_tx.load());
-            rtm_end_keep_cap = true;
+            Serial.println("RTM [TX] the buggy ended Return-To-Me (fm_status bit 1 off on 2 arrivals) -> silent St; throttle cap 0 until the trigger is fully released");
+            rtm_end_cap_value = 0;
+            rtm_end_keep_cap  = true;
             rtmDisengage(true);
           }
           break;
         }
+        if (!rx_confirmed && rtmUnconfirmedCheck()) break;   // Q-2 refusal ended the run
       }
 
       // Gate 1: max runtime (0 = disabled — safety gates handle all real scenarios)

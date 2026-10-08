@@ -102,7 +102,7 @@ footer{border-top:1px solid var(--line);padding-top:18px;display:flex;flex-direc
     </div>
     <div>
       <div class="remote hero-remote" id="hero"></div>
-      <div class="cap">Following, about 12 m behind you</div>
+      <div class="cap">Following: 15 m closing to 8 m</div>
     </div>
   </header>
 
@@ -167,12 +167,12 @@ footer{border-top:1px solid var(--line);padding-top:18px;display:flex;flex-direc
   const pos=[0,1,2,3,4,5,6,7,6,5,4,3,2,1];
   function scanner(g,t){ const p=pos[Math.floor(t/200)%pos.length]; for(let c=p;c<p+3&&c<10;c++) g[5][c]=true; }
   function scannerNotReady(g,t){ if((t%1500)<1000) for(let c=3;c<6;c++) g[5][c]=true; }
-  function fmBar(g,d){ const n=Math.max(2,Math.min(10,2*Math.round(d/30*5))); const s=Math.floor((10-n)/2); for(let c=s;c<s+n;c++) g[5][c]=true; }
+  function fmBar(g,d){ const n=Math.max(2,Math.min(10,2*Math.round((d-6)/9*5))); const s=Math.floor((10-n)/2); for(let c=s;c<s+n;c++) g[5][c]=true; }
   function retBar(g,d,st){ const n=Math.max(1,Math.ceil(d/st*10)); for(let c=0;c<n;c++) g[5][c]=true; }
   const W1=(g,t)=>{ g[Math.floor(t/200)%2?4:3][7]=true; };
   const F1=(g)=>{ g[3][7]=true; g[4][7]=true; };
   const R1=(g,t)=>{ const f=Math.floor(t/200)%4; if(f<3){ g[2][7]=true; if(f>=1) g[3][7]=true; if(f>=2) g[4][7]=true; } };
-  const follow=t=>12+2*Math.sin(t/1500);
+  const follow=t=>{ const k=(t%9000)/9000; return k<0.78 ? 15-7*(k/0.78) : 8; };
   const RS=40, ret=t=>{ const span=(RS-3)*250; return RS-(t%span)/250; };
   const arrow=(g,t)=>{ const p=Math.floor(t/100)%2; const W=[[1,2,3,4,5],[1,2,3,4,5],[2,3,4],[2,3,4],[3]]; W.forEach((cols,i)=>cols.forEach(c=>{ g[p+i][c]=true; })); };
 

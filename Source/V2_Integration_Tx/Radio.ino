@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - Q-9: sendData() holds the 100 ms cadence (no collision backoff) while the throttle input is
+//   stale or faulted, so the zeroed packets go out at full rate. Can only make the zero arrive sooner.
 // V2.5-Evo - 2026-10-07 - TX protocol round: queueMetaPacketIfFree() / metaQueuePending() for the boot ID (S-8) and the
 //   RTM refresh (H-1) - free slot only, never update or evict a pending burst; sendData() stamps rtm_start_sent_ms on
 //   every 0xF1/1 and keeps at most 3 non-control cycles in a row (meta budget); waitForTelemetry() latches the rising
@@ -298,7 +300,11 @@ void sendData(void *parameter)
     // Trade-off: two units both in FM/RTM will not de-sync until the mode disarms — the floor wins.
     // isFmArmed() (accessor) used instead of raw fm_armed: fm_armed lives in RTMState.ino, which
     // Arduino concatenates AFTER Radio.ino, so the raw variable is not yet declared here.
-    bool backoff_allowed = !(isFmArmed() || rtm_tx_active.load(std::memory_order_relaxed));
+    // V2.5-Evo - 2026-10-07 - Q-9: THE GAP - at the degraded 200 ms cadence a dead throttle input took up to ~320 ms to
+    // reach the buggy as a zero (vs ~250 ms at 100 ms). THE FIX: while adsInputFaultNow() reports the input stale or
+    // faulted, the backoff is suspended exactly as during FM/RTM, so every zeroed packet goes out at the 100 ms cadence.
+    // The first zeroed packet can still be one degraded cycle away: worst case about 50 ms (deadline) + 200 ms.
+    bool backoff_allowed = !(isFmArmed() || rtm_tx_active.load(std::memory_order_relaxed) || adsInputFaultNow());
     if (!backoff_allowed)
     {
       base_interval         = 100;

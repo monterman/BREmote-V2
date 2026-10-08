@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - D-1 follow-up: kDistBlankStaleMs 10000 -> 0. The distance inputs already accept a rider fix up to 10 s old, so the extra 10 s kept a frozen number on the remote for ~20 s; the byte now goes 0xFF as soon as the rider fix is > 10 s old (buggy fix > 6 s), and still needs 1 s of valid inputs to come back. Telemetry only. No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - S-3: the auto-return candidate may also form in FM_ARMED (the state a trigger release leaves, HOLD-ESCAPE-2) when Follow-Me has engaged since the declaration (fm_engaged_this_run, set on the ACTIVE edge, cleared by fmResetReturnState() on disarm / expiry / fault end / reboot / RTM yield), and only beyond D_engage, on every tick for such a candidate (fm_return_from_armed). The proof is unchanged. "Release, surf or stop, squeeze later" now earns the return. No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - AUTO-RETURN WAITS FOR THE RIDER (audits S-1, S-2, S-4, S-5, S-6): a PARKED return is no longer cancelled by the rider moving (S-1) and waits through a stale remote GPS / revoked handshake, and through a link loss when the remote sends a boot ID (S-2, fmFailingConditionsMask + fmReturnParkedTolerates); every return fault now raises fm_flags bit 3 whatever the trigger (S-2); the 60 s motion cap is gone (S-4, FmReturnReason 8 retired); a 30 s stick takeover hands the steering back and the return continues (S-5); the not-closing net stays suspended while a slow pivot is still making progress (to 45 s) and a not-closing verdict inside rtm_approach_zone_m is an arrival with the hand-back cap, not a fault (S-6, FmReturnReason 13). No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - S-8 + H-1 + M-1 (wire formats in Common/AutoReturnRules.h, decoding in Radio.ino): a remote boot-ID change (rx_tx_boot_change_seq) ends a standing RTM (hand-back cap first, no fault bit) and drops Follow-Me to IDLE with its declaration (auto-return cancelled, new FmReturnReason 12); H-1: an RTM run whose remote has refreshed (0xF1/2) ends on a fault after 5 s without a refresh (never for a remote that does not refresh); M-1: both Follow-Me fault entries set fm_redeclare_blocked; rx_state_flags bits 3 (boot ID held) and 4 (refresh armed); ?diag second line. No confStruct change, SW_VERSION stays 36.
@@ -343,7 +344,12 @@ static const uint32_t kRtmGateFaultMaxDtMs = 200;   // ms; one step can add at m
 
 // D-1: the distance byte's freshness rule (distBlankStep, Common/AutoReturnRules.h). Starts blanked.
 static DistBlankState rtm_dist_blank      = {0, 0, true};
-static const uint32_t kDistBlankStaleMs   = 10000;  // ms without a valid distance -> 0xFF ("--" on the remote)
+// kDistBlankStaleMs is 0 ON PURPOSE (2026-10-07 follow-up): the distance block's own inputs already
+// accept a rider fix up to 10 s old (gps_tx_ok, 5 s while RTM is active) and a buggy fix up to 6 s old -
+// that window IS the hiccup tolerance the FM bar needs. A further 10 s on top left a frozen number on the
+// remote for about 20 s after the rider's last fix. With 0, the byte goes to 0xFF on the first tick the
+// inputs are older than that: the rider's position more than 10 s stale = "--".
+static const uint32_t kDistBlankStaleMs   = 0;      // ms of invalid inputs before 0xFF, ON TOP of the inputs' own 10 s / 6 s age limits
 static const uint32_t kDistBlankRecoverMs = 1000;   // ms of valid inputs before a blanked byte shows a number again
 
 // H-1: how long a remote that has PROVED it refreshes RTM (0xF1/2) may go quiet before the buggy ends
@@ -545,8 +551,8 @@ static bool checkRtmSafetyGates()
   // rtm_approach_cap itself is still reset to 255 (RTM's own cap goes with the mode).
   // V2.5-Evo - 2026-10-07 - comment fix (audit D-1): the inactive path does NOT write
   // telemetry.rtm_distance = 0xFF on the next tick (it never did); the distance byte keeps reporting
-  // the real distance while both fixes are fresh and goes to 0xFF only after 10 s without a valid
-  // distance (see the distance block in runRtmLoopBody()). The remote's pre-arm check reads it.
+  // the real distance while both fixes are fresh and goes to 0xFF once the rider's fix is more than
+  // 10 s old (see the distance block in runRtmLoopBody()). The remote's pre-arm check reads it.
   // Guard: rtm_stop_distance_m==0 means SPIFFS held the pre-fix zero default;
   // use 10m (firmware hard minimum) to keep Gate 9 active regardless of stored config.
   uint16_t stop_dist_m = (usrConf.rtm_stop_distance_m > 0) ? usrConf.rtm_stop_distance_m : 10u;
@@ -3726,12 +3732,14 @@ static void runRtmLoopBody(unsigned long now)
     bool gps_tx_ok = (rx_tx_gps_timestamp > 0) &&
                      ((millis() - rx_tx_gps_timestamp) < (rtm_rx_active ? 5000UL : 10000UL));
 
-    // V2.5-Evo - 2026-10-07 - D-1: THE DISTANCE BYTE GOES TO 0xFF ("--" on the remote) AFTER 10 s
-    // WITHOUT A VALID DISTANCE. It used to keep the last value forever once either GPS went stale, so
+    // V2.5-Evo - 2026-10-07 - D-1: THE DISTANCE BYTE GOES TO 0xFF ("--" on the remote) ONCE THE RIDER'S
+    // FIX IS MORE THAN 10 s OLD (gps_tx_ok above; 5 s while RTM is active) OR THE BUGGY'S MORE THAN 6 s
+    // (gps_rx_ok). It used to keep the last value forever once either GPS went stale, so
     // the remote showed a frozen number as if it were live (SOP-041 rule 4). It must NOT blank on every
     // short gap either - that is why the active 0xFF write was taken out once (the FM bar went dark on
-    // every hiccup) - so distBlankStep() (Common/AutoReturnRules.h, host-tested) blanks only after
-    // kDistBlankStaleMs with no valid tick, and once blanked publishes a number again only after
+    // every hiccup) - the 10 s / 6 s input ages above are that hiccup tolerance, so distBlankStep()
+    // (Common/AutoReturnRules.h, host-tested) blanks once they are exceeded (kDistBlankStaleMs is 0,
+    // see its declaration), and once blanked publishes a number again only after
     // kDistBlankRecoverMs of continuously valid inputs (the hysteresis). It gates the TELEMETRY BYTE
     // ONLY: the approach cap below is computed from the live distance exactly as before.
     const bool dist_blank = distBlankStep(&rtm_dist_blank, (uint32_t)now, gps_rx_ok && gps_tx_ok,
@@ -3804,14 +3812,14 @@ static void runRtmLoopBody(unsigned long now)
     else if (!rtm_rx_active)
     {
       // FM/idle: no 0xFF on a short GPS hiccup - actively resetting to 0xFF on any gap caused the
-      // FM bar to stay dark. V2.5-Evo - 2026-10-07 - D-1: but after kDistBlankStaleMs the byte IS set
+      // FM bar to stay dark. V2.5-Evo - 2026-10-07 - D-1: but once the input ages above are exceeded the byte IS set
       // to 0xFF, by the dist_blank write after this if/else (the old "never actively write 0xFF"
       // wording is history).
       // rtm_approach_cap must be 255 when RTM is inactive — no throttle capping outside RTM.
       rtm_approach_cap = 255;
     }
     // GPS conditions failed (RTM active or inactive): keep the last cap; keep the last distance for
-    // up to kDistBlankStaleMs, then report it as unknown (D-1).
+    // up to kDistBlankStaleMs (0 - see its declaration), then report it as unknown (D-1).
     if (!(gps_rx_ok && gps_tx_ok) && dist_blank) telemetry.rtm_distance = 0xFF;
   }
 
@@ -3937,8 +3945,8 @@ static void runRtmLoopBody(unsigned long now)
 
     // V2.5-Evo - 2026-10-07 - comment fix (audit D-1): the block above does NOT set
     // telemetry.rtm_distance to 0xFF on the inactive path - it reports the real distance while both
-    // fixes are fresh (Follow-Me and the remote's pre-arm check use it) and 0xFF only after
-    // kDistBlankStaleMs without a valid distance.
+    // fixes are fresh (Follow-Me and the remote's pre-arm check use it) and 0xFF once the rider's
+    // fix is more than 10 s old (or the buggy's more than 6 s).
     return;
   }
 

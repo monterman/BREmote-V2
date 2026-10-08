@@ -113,6 +113,18 @@ static void testDistBlank()
   bool pub = false;
   for (int i = 0; i < 11 && !pub; ++i, t += 100) pub = !distBlankStep(&s, t, true, 10000, 1000);
   assert(pub);
+
+  // The RX's setting: stale_ms 0 (its inputs already tolerate a 10 s old rider fix). The first invalid
+  // tick blanks; one valid tick does not unblank; 1 s of valid inputs does.
+  DistBlankState r = {0, 0, true};
+  t = 500000;
+  for (int i = 0; i < 11; ++i, t += 100) (void)distBlankStep(&r, t, true, 0, 1000);
+  assert(!distBlankStep(&r, t, true, 0, 1000)); t += 100;
+  assert(distBlankStep(&r, t, false, 0, 1000)); t += 100;
+  assert(distBlankStep(&r, t, true, 0, 1000));  t += 100;
+  pub = false;
+  for (int i = 0; i < 11 && !pub; ++i, t += 100) pub = !distBlankStep(&r, t, true, 0, 1000);
+  assert(pub);
 }
 
 static void testParkedTolerance()

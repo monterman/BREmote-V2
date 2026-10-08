@@ -9,7 +9,7 @@
 //                                leaving it half on with the motor dead.
 //   3. txBootIdStep            - S-8: the remote's random boot ID; a change means the remote was switched off and on.
 //   4. rtmRefreshExpired       - H-1: the RX ends RTM when a remote that PROVED it refreshes stops refreshing.
-//   5. distBlankStep           - D-1: the distance telemetry byte goes to "unknown" (0xFF) after 10 s stale.
+//   5. distBlankStep           - D-1: the distance telemetry byte goes to "unknown" (0xFF) when its inputs are stale.
 //   6. fmReturnParkedTolerates - S-2: a PARKED auto-return waits through a silent / stale remote.
 //   7. fmReturnPivotSuspend    - S-6: the not-closing net stays parked while the heading error is still falling.
 //   8. fmReturnCandidateMayForm- S-3: the auto-return candidate may form from ARMED after an engagement this run.
@@ -146,13 +146,15 @@ static inline bool rtmRefreshExpired(bool rtm_active, bool refresh_seen, uint32_
 }
 
 // ============================================================
-// 5. D-1: THE DISTANCE TELEMETRY BYTE GOES TO "UNKNOWN" AFTER 10 s STALE
+// 5. D-1: THE DISTANCE TELEMETRY BYTE GOES TO "UNKNOWN" WHEN ITS INPUTS ARE STALE
 // ============================================================
 // The RX used to keep the last distance forever when either GPS went stale, so the remote showed a
 // frozen number with no warning (SOP-041 rule 4: old data is never shown as live). It also must not
 // blank on every short hiccup (that is why the active write of 0xFF was taken out once: the FM bar
 // went dark). So: blank after stale_ms with no valid distance, and once blanked, publish again only
-// after the inputs have been valid continuously for recover_ms (the hysteresis).
+// after the inputs have been valid continuously for recover_ms (the hysteresis). The RX passes
+// stale_ms = 0: its "valid" already allows a rider fix up to 10 s old, which is the hiccup tolerance;
+// another 10 s on top kept a frozen number up for about 20 s.
 struct DistBlankState {
   uint32_t last_good_ms;   // millis() of the last tick with a valid distance; 0 = none since boot
   uint32_t good_since_ms;  // while blanked: millis() the inputs became valid again; 0 = not valid

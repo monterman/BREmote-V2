@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - LINK-TIME CLOCKS (audit N-8(b), N-12): the sticky telemetry bits (fm_flags bit 3, rx_state_flags bits 0/1) count their 6 s only while the link is fresh, so a remote that was out of range when the fault happened still gets 6 s to read it; the H-1 RTM refresh expiry fires only after the link has been fresh for the whole 5 s with no refresh (link-down time no longer counts). ?diag says when the post-fault re-declaration block is set but not enforced (N-8(a), Radio.ino). No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - EVERY RTM END ARMS THE HAND-BACK CAP AT 0 (audit N-2, N-3, N-4): Phase C's three FAIL ends now arm it before rtm_rx_active goes false (they armed nothing, and the next tick dropped the emergency stop under a held trigger); Gate 9, the S-8 remote reboot and the H-1 refresh expiry arm kRtmEndHandbackCap (0) instead of rtm_approach_cap, which is 255 with the approach zone off or already reset that tick. No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - SIGNED STAMP AGES (audit N-1, N-6, N-7): every loop-task comparison of the tick's clock against a stamp the radio task writes (rx_tx_gps_timestamp, last_packet, fm_mode_last_rx_ms, rtm_refresh_last_ms) now uses stampAgeMs() / stampStale() from Common/AutoReturnRules.h - a stamp written after the loop read the clock reads as age 0 instead of wrapping to ~49 days. Sites: RTM gates 4 and 7, Phase C check 3, the Phase B revoke, the distance block, the BOOTSTRAP-1 rider distance, Follow-Me conditions 4 and 7, fmFailingConditionsMask() (now reads millis() itself, N-6), the 95 s mode-age expiry (N-7; a real expiry from an engaged state now keeps the cap in force as the hand-back cap), the RTM refresh expiry (N-1, in the header) and two level-5 log ages. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - D-1 follow-up: kDistBlankStaleMs 10000 -> 0. The distance inputs already accept a rider fix up to 10 s old, so the extra 10 s kept a frozen number on the remote for ~20 s; the byte now goes 0xFF as soon as the rider fix is > 10 s old (buggy fix > 6 s), and still needs 1 s of valid inputs to come back. Telemetry only. No confStruct change, SW_VERSION stays 36.
@@ -334,6 +335,14 @@ static unsigned long rtm_phase_c_ms  = 0;       // last Phase C check time
 static unsigned long rtm_fault_alarm_ms   = 0;
 static unsigned long rtm_arrival_alarm_ms = 0;
 static const uint32_t kRtmEndStickyMs     = 6000;   // ms; same as kFmFaultStickyMs, > 2 telemetry rotations
+// V2.5-Evo - 2026-10-07 - N-8(b): the three sticky telemetry bits (fm_flags bit 3, rx_state_flags bits 0
+// and 1) count their 6 s down ONLY on ticks with a fresh link (stickyWindowStep(), Common/AutoReturnRules.h).
+// A link-loss fault is raised exactly while the link is down; with a wall-clock window the 6 s were gone
+// before the remote heard a single telemetry byte, so it never showed "St". One window per bit, started by
+// a new value of the bit's existing *_alarm_ms stamp, so none of the places that raise an alarm changed.
+static StickyWindowState fm_fault_sticky    = {0, 0, 0};
+static StickyWindowState rtm_fault_sticky   = {0, 0, 0};
+static StickyWindowState rtm_arrival_sticky = {0, 0, 0};
 
 // H-2: gates 2-7 used to raise the emergency stop and leave rtm_rx_active TRUE - RTM half on, the
 // motor dead under a held trigger, the remote still showing RTM, and feathering never escaped it.
@@ -3410,7 +3419,9 @@ static void printReturnEndDiag(unsigned long now_ms)
   Serial.printf("Remote link: boot ID %s; RTM refresh %s; Follow-Me re-declaration %s\n",
                 bid_txt,
                 (rtm_rx_active && rtm_refresh_seen.load()) ? "ARMED this run (5 s expiry)" : "not armed",
-                fm_redeclare_blocked.load() ? "BLOCKED after a fault (disarm on the remote, or a marked gesture, clears it)" : "open");
+                !fm_redeclare_blocked.load() ? "open" :
+                (bid == kTxBootIdNone) ? "set after a fault but NOT enforced (no boot ID heard: this remote keeps the old re-arm behaviour, N-8)"
+                                       : "BLOCKED after a fault (disarm on the remote, or a marked gesture, clears it)");
 }
 
 // ---- Main RTM loop — call from RX loop() ----
@@ -3593,6 +3604,17 @@ static void runRtmLoopBody(unsigned long now)
     rtm_prev_active = rtm_now_active;
   }
 
+  // ============================================================
+  // V2.5-Evo - 2026-10-07 - N-8(b) / N-12: IS THE LINK UP THIS TICK, AND SINCE WHEN?
+  // "Fresh" is Follow-Me condition 7 / RTM gate 7: a packet of any kind within failsafe_time (signed age).
+  // link_fresh_since_ms is the millis() the link last became fresh (0 while it is down). Read by the
+  // sticky telemetry windows below and by the H-1 refresh expiry; both must count LINK time only.
+  // ============================================================
+  const bool link_fresh = !stampStale((uint32_t)now, (uint32_t)last_packet, (uint32_t)usrConf.failsafe_time);
+  static unsigned long link_fresh_since_ms = 0;
+  if (link_fresh) { if (link_fresh_since_ms == 0) link_fresh_since_ms = (now != 0) ? now : 1; }
+  else            { link_fresh_since_ms = 0; }
+
   // ---- Extended telemetry: rx_heading, fm_heading_err, fm_status ----
   // rx_heading: GPS COG÷2 (0-179 maps to 0-358°); 0xFF = no valid COG
   if (gps_last_course_deg >= 0.0f && gps_last_course_ms > 0 &&
@@ -3672,7 +3694,8 @@ static void runRtmLoopBody(unsigned long now)
     if (s == FM_ACTIVE || (s == FM_RETURN && fm_rx_active))                  f |= (1 << 1);
     if ((s == FM_ARMED || s == FM_HOLD) &&
         (!fm_sep_latched || heading_disagree_fault))        f |= (1 << 2);
-    if (fm_fault_alarm_ms != 0 && (now - fm_fault_alarm_ms) < kFmFaultStickyMs) f |= (1 << 3);
+    // V2.5-Evo - 2026-10-07 - N-8(b): 6 s of LINK-FRESH time, not wall-clock time (see fm_fault_sticky).
+    if (stickyWindowStep(&fm_fault_sticky, (uint32_t)now, (uint32_t)fm_fault_alarm_ms, link_fresh, kFmFaultStickyMs)) f |= (1 << 3);
     // V2.5-Evo - 2026-09-19 - bit 7: the EFFECTIVE auto-return mode, echoed in every FM state
     // (IDLE included - with no override standing it is simply the stored default). The remote's
     // return gesture reads this bit to set its session override to the OPPOSITE value, and the
@@ -3707,8 +3730,9 @@ static void runRtmLoopBody(unsigned long now)
   //         released once (manual RTM or auto-return arrival, or an RTM fault end). Display only.
   {
     uint8_t r = 0;
-    if (rtm_fault_alarm_ms   != 0 && (now - rtm_fault_alarm_ms)   < kRtmEndStickyMs) r |= (1 << 0);
-    if (rtm_arrival_alarm_ms != 0 && (now - rtm_arrival_alarm_ms) < kRtmEndStickyMs) r |= (1 << 1);
+    // V2.5-Evo - 2026-10-07 - N-8(b): bits 0 and 1 count 6 s of LINK-FRESH time (see rtm_fault_sticky).
+    if (stickyWindowStep(&rtm_fault_sticky,   (uint32_t)now, (uint32_t)rtm_fault_alarm_ms,   link_fresh, kRtmEndStickyMs)) r |= (1 << 0);
+    if (stickyWindowStep(&rtm_arrival_sticky, (uint32_t)now, (uint32_t)rtm_arrival_alarm_ms, link_fresh, kRtmEndStickyMs)) r |= (1 << 1);
     if (arrival_handback_cap.load(std::memory_order_relaxed) != kHandbackNone)        r |= (1 << 2);
     if (rx_tx_boot_id.load() != kTxBootIdNone)                                       r |= (1 << 3);   // S-8: boot ID held
     if (rtm_rx_active && rtm_refresh_seen.load())                                    r |= (1 << 4);   // H-1: expiry armed this run
@@ -3980,8 +4004,13 @@ static void runRtmLoopBody(unsigned long now)
   // for any run in which no refresh has been heard - today's remote never refreshes, and an
   // unconditional expiry would cut every legitimate return short.
   // ============================================================
-  if (rtmRefreshExpired(rtm_rx_active, rtm_refresh_seen.load(), (uint32_t)rtm_refresh_last_ms.load(),
-                        (uint32_t)now, kRtmRefreshExpiryMs))
+  // V2.5-Evo - 2026-10-07 - N-12: ONLY WHILE OTHER PACKETS KEEP ARRIVING. The expiry used to count
+  // link-down time too, so a remote behind a wave came back to an RTM already ended. It now needs the link
+  // fresh, without a break, for the whole kRtmRefreshExpiryMs AND no refresh in that time - "the remote is
+  // talking to us but no longer says RTM", which is the lost-0xF1/0 case this expiry exists for. A link
+  // that stays DOWN is RTM gate 7's job (emergency stop, then the H-2 end under a held trigger).
+  if (rtmRefreshExpiredOnLink(rtm_rx_active, rtm_refresh_seen.load(), (uint32_t)rtm_refresh_last_ms.load(),
+                              (uint32_t)now, kRtmRefreshExpiryMs, link_fresh, (uint32_t)link_fresh_since_ms))
   {
     handbackCapArm(kRtmEndHandbackCap);   // V2.5-Evo - 2026-10-07 - N-4: 0, not the approach cap (already 255 outside the zone this tick)
     rtm_rx_active         = false;

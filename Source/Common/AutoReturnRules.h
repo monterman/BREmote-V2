@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-07 - LINK-TIME CLOCKS (audit N-8(b), N-12): stickyWindowStep() holds a sticky telemetry bit
+//   for 6 s of LINK-FRESH time; rtmRefreshExpiredOnLink() ends RTM only after the link has been fresh for the
+//   whole expiry with no refresh.
 // V2.5-Evo - 2026-10-07 - kRtmEndHandbackCap (audit N-2, N-3, N-4): every end of manual return-to-me (Gate 9,
 //   Phase C, the refresh expiry, the gate-fault timeout, a remote reboot) arms the hand-back cap at 0.
 // V2.5-Evo - 2026-10-07 - SIGNED STAMP AGES (audit N-1, N-6, N-7): rtmRefreshExpired() treats a refresh stamped
@@ -193,6 +196,55 @@ static inline bool rtmRefreshExpired(bool rtm_active, bool refresh_seen, uint32_
 {
   if (!rtm_active || !refresh_seen) return false;
   return stampAgeMs(now_ms, last_refresh_ms) > expiry_ms;
+}
+
+// rtmRefreshExpiredOnLink - V2.5-Evo - 2026-10-07 - audit N-12: the expiry counts only time the link is UP.
+// rtmRefreshExpired() alone also counted link-down time, so a remote behind a wave for a few seconds came back
+// to an RTM already ended - the refresh it was about to send had no chance to arrive. The expiry is for "other
+// packets keep arriving but the refresh does not" (the remote left RTM and its 0xF1/0 was lost), so it now
+// needs BOTH: no refresh for expiry_ms, AND the link fresh without a break for expiry_ms.
+// Inputs: as rtmRefreshExpired(), plus link_fresh (last_packet within failsafe_time this tick) and
+//         link_fresh_since_ms (millis() the link became fresh again; 0 = not fresh).
+// Returns: true when RTM must end. Side effects: none (pure).
+static inline bool rtmRefreshExpiredOnLink(bool rtm_active, bool refresh_seen, uint32_t last_refresh_ms,
+                                           uint32_t now_ms, uint32_t expiry_ms,
+                                           bool link_fresh, uint32_t link_fresh_since_ms)
+{
+  if (!link_fresh || link_fresh_since_ms == 0) return false;
+  if (stampAgeMs(now_ms, link_fresh_since_ms) <= expiry_ms) return false;
+  return rtmRefreshExpired(rtm_active, refresh_seen, last_refresh_ms, now_ms, expiry_ms);
+}
+
+// ============================================================
+// 4b. N-8(b): A STICKY TELEMETRY BIT COUNTS DOWN ONLY WHILE THE LINK IS UP
+// ============================================================
+// fm_flags bit 3 and rx_state_flags bits 0 / 1 are held for 6 s so the remote, which receives one telemetry
+// byte per control packet (a full rotation is about 2 s), cannot miss them. But the clock ran during a link
+// loss too, and the commonest fault - a link-loss fault - happens exactly then: by the time the link came
+// back the 6 s were gone and the remote never saw "St" (audit N-8). Now the window counts down only on ticks
+// with a fresh link, so the remote gets 6 s of LINK time to read it.
+struct StickyWindowState {
+  uint32_t seen_stamp;   // the alarm stamp this window was started for (0 = none yet)
+  uint32_t left_ms;      // link-fresh time still to show the bit (0 = not showing)
+  uint32_t last_ms;      // millis() of the previous step
+};
+
+// stickyWindowStep - one tick. Inputs: now_ms; alarm_stamp_ms - the millis() the alarm was raised (the
+//   existing *_alarm_ms stamp; 0 = never; a DIFFERENT non-zero value starts a fresh full window);
+//   link_fresh; window_ms. Returns: true while the bit must be set. Side effects: updates *s only.
+static inline bool stickyWindowStep(StickyWindowState* s, uint32_t now_ms, uint32_t alarm_stamp_ms,
+                                    bool link_fresh, uint32_t window_ms)
+{
+  const uint32_t dt = (s->last_ms != 0) ? (uint32_t)(now_ms - s->last_ms) : 0u;
+  s->last_ms = (now_ms != 0) ? now_ms : 1u;
+  if (alarm_stamp_ms != 0 && alarm_stamp_ms != s->seen_stamp) {
+    s->seen_stamp = alarm_stamp_ms;
+    s->left_ms    = window_ms;
+    return window_ms > 0;
+  }
+  if (s->left_ms == 0) return false;
+  if (link_fresh) s->left_ms = (dt >= s->left_ms) ? 0u : (s->left_ms - dt);
+  return s->left_ms > 0;
 }
 
 // ============================================================

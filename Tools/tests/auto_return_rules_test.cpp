@@ -128,6 +128,60 @@ static void testRefreshExpiry()
   assert(!rtmRefreshExpired(true, true, 0x00000010u, 0xFFFFFFF0u, 5000));          // stamped 32 ms "after" now
 }
 
+// N-12: the refresh expiry counts link-fresh time only.
+static void testRefreshExpiryOnLink()
+{
+  // Link fresh for 20 s, last refresh 6 s ago: expired (the remote talks to us but no longer says RTM).
+  assert(rtmRefreshExpiredOnLink(true, true, 14000, 20000, 5000, true, 1000));
+  // Link DOWN: never (that is gate 7 / H-2's job), however old the refresh.
+  assert(!rtmRefreshExpiredOnLink(true, true, 1000, 60000, 5000, false, 0));
+  // Link just back after a 10 s gap (fresh since 1 s), refresh 12 s old: NOT yet - the remote gets 5 s
+  // of link to send its next refresh.
+  assert(!rtmRefreshExpiredOnLink(true, true, 18000, 30000, 5000, true, 29000));
+  // ... and if it still has not refreshed after 5 s of fresh link: expired.
+  assert(rtmRefreshExpiredOnLink(true, true, 18000, 34001, 5000, true, 29000));
+  // A refresh arriving while the link is back: fine.
+  assert(!rtmRefreshExpiredOnLink(true, true, 33000, 34001, 5000, true, 29000));
+  // Stamp newer than now (N-1) and link-fresh-since newer than now: fresh / not long enough.
+  assert(!rtmRefreshExpiredOnLink(true, true, 40001, 40000, 5000, true, 1000));
+  assert(!rtmRefreshExpiredOnLink(true, true, 1000, 40000, 5000, true, 40002));
+  // Today's remote (no refresh ever seen): never.
+  assert(!rtmRefreshExpiredOnLink(true, false, 0, 600000, 5000, true, 1));
+}
+
+// N-8(b): a sticky telemetry window counts down only while the link is fresh.
+static void testStickyWindow()
+{
+  StickyWindowState s = {0, 0, 0};
+  uint32_t t = 10000;
+  // No alarm yet: never set.
+  assert(!stickyWindowStep(&s, t, 0, true, 6000)); t += 100;
+  // An alarm raised at a time the link is DOWN (a link-loss fault): set, and it stays set through 20 s of
+  // link loss - the old wall-clock window was gone after 6 s, before the remote heard anything.
+  const uint32_t alarm = t;
+  assert(stickyWindowStep(&s, t, alarm, false, 6000)); t += 100;
+  for (int i = 0; i < 200; ++i, t += 100) assert(stickyWindowStep(&s, t, alarm, false, 6000));
+  // Link back: 6 s of fresh link, then it drops.
+  int shown = 0;
+  for (int i = 0; i < 100; ++i, t += 100) if (stickyWindowStep(&s, t, alarm, true, 6000)) ++shown;
+  assert(shown >= 59 && shown <= 61);
+  assert(!stickyWindowStep(&s, t, alarm, true, 6000)); t += 100;
+  // A gap in the middle pauses the count: 3 s fresh, 5 s down, then 3 s fresh more.
+  StickyWindowState w = {0, 0, 0};
+  t = 50000;
+  const uint32_t a2 = t;
+  assert(stickyWindowStep(&w, t, a2, true, 6000)); t += 100;
+  for (int i = 0; i < 29; ++i, t += 100) assert(stickyWindowStep(&w, t, a2, true, 6000));
+  for (int i = 0; i < 50; ++i, t += 100) assert(stickyWindowStep(&w, t, a2, false, 6000));
+  bool still = true; int more = 0;
+  for (int i = 0; i < 40 && still; ++i, t += 100) { still = stickyWindowStep(&w, t, a2, true, 6000); if (still) ++more; }
+  assert(more >= 29 && more <= 31);
+  // A NEW alarm (different stamp) restarts a full window.
+  const uint32_t a3 = t;
+  assert(stickyWindowStep(&w, t, a3, true, 6000)); t += 100;
+  assert(w.left_ms == 6000 || w.left_ms == 5900);
+}
+
 // N-1 / N-6 / N-7: the signed stamp age every loop-task comparison now uses.
 static void testStampAge()
 {
@@ -290,6 +344,8 @@ int main()
   testRtmGateFault();
   testBootId();
   testRefreshExpiry();
+  testRefreshExpiryOnLink();
+  testStickyWindow();
   testStampAge();
   testFailingMask();
   testDistBlank();

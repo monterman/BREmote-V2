@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - COMMENTS (audits N-2..N-8): rx_state_flags bit 2 now means 0 after every RTM end; the sticky bits (rx_state_flags 0/1, fm_flags 3) count 6 s of link-fresh time; fm_redeclare_blocked is enforced only once a boot ID is heard. No code change in this file, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - TELEMETRY (audits S-7, A-1, H-2): telemetry.fm_flags bit 6 = auto-return standing (FM_RETURN; with bit 1 = returning, without = waiting); TelemetryPacket gains index 19 rx_state_flags ([0] RTM fault-stop sticky, [1] RTM arrived sticky, [2] hand-back cap standing, [3] boot ID held, [4] RTM refresh armed) - appended, an older remote ignores it. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - ARRIVAL HAND-BACK CAP (owner rule): includes ../Common/AutoReturnRules.h and adds the arrival_handback_cap atomic (255 = none) + kHandbackReleaseThr (8 counts): manual RTM Gate 9 and auto-return arrival end the mode at once but keep the cap in force at arrival until one full trigger release. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - LOG FORMAT 3 (owner ruling: "level 4 should have both VESCs"): the 14 B VESC 2 block MOVES from the tail of VescLogDataL5 to the tail of VescLogDataL4 (L4 90 -> 104 B, static_assert 104, offsetof(vesc2_age_ms) == 90), so level 4 AND level 5 both carry it; the level-5 block now starts at byte 104 (L5 stays 126 B, offsetof(rider_lat) == 104). A field moved, so LOG_FILE_FORMAT_VER 2 -> 3 and the on-board readers refuse older files with a plain-English message (download logs BEFORE flashing; the PC log reader still decodes formats 1 and 2). CSV: LOG_CSV_HEADER_L4 = the 90 B column set (now LOG_CSV_HEADER_L4_MOTORS) + the 9 VESC 2 columns (62 columns); LOG_CSV_HEADER_L5 = L4 + the 14 level-5 columns (76); LOG_CSV_HEADER_L5_VESC2 is gone. Capacity restated for 62 / 104 / 126 B. Also (audit LOWs): "VESC 1 must not be CAN ID 2" at kVesc2CanId; the vescRelayBuffer comment; the LOG_CSV_ROW_BUF sizing comment (worst case ~602 B, 640 kept). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -1391,6 +1392,8 @@ std::atomic<unsigned long> rtm_refresh_last_ms {0};
 //   M-1). Cleared by an 0xF2/0 (the remote acknowledged the fault and disarmed - today's remote does
 //   this on fm_flags bit 3, so its next arm gesture works as before), by an 0xF2 with bit 7 set (a
 //   remote that marks its gesture declarations), and by a remote reboot (boot ID change).
+//   V2.5-Evo - 2026-10-07 - N-8(a): ENFORCED only once a boot ID has been heard (rx_tx_boot_id held); for
+//   a remote that sends none it is recorded but not enforced (Radio.ino processFmOverridePacket()).
 std::atomic<bool> fm_redeclare_blocked {false};
 std::atomic<uint8_t> rtm_approach_cap      {255};  // V2.5-Evo - 2026-04-30 - approach decel cap (0-255); 255=no cap; computed by RTMState.ino during active RTM; applied by calcPWM()
 
@@ -2492,15 +2495,20 @@ struct __attribute__((packed)) TelemetryPacket {
     // older index keeps its place; an older remote drops it (it keeps only indices below its own
     // sizeof(TelemetryPacket), Radio.ino waitForTelemetry), and the rotation grows 19 -> 20 slots
     // (about 2.0 s at 10 Hz). Bits:
+    //   V2.5-Evo - 2026-10-07 - N-8(b): "sticky 6 s" on bits 0 and 1 (and fm_flags bit 3) means 6 s of
+    //   LINK-FRESH time - the window does not run down while the link is lost, so a remote out of range
+    //   when the end happened still reads the bit when it comes back.
     //   [0] RTM FAULT-STOP, sticky 6 s: the buggy ended return-to-me on a fault (Phase C, the H-2 gate
     //       timeout, the H-1 refresh expiry). REMOTE TO DO: on the rising edge while RTM is ACTIVE, end
     //       RTM at once with "St" + the stop buzz (the RTM twin of fm_flags bit 3), send 0xF1/0, and
     //       drop its own RTM cap (the buggy holds the throttle at 0 until one full release).
     //   [1] RTM ARRIVED, sticky 6 s: the buggy ended return-to-me at Gate 9. REMOTE TO DO: end RTM with
     //       the silent "St", send 0xF1/0, drop its own RTM cap (the buggy holds the arrival cap).
-    //   [2] HAND-BACK CAP STANDING: the buggy is holding the cap that was in force at an arrival (manual
-    //       RTM or auto-return) or an RTM fault end, until the trigger is fully released once. Display
-    //       only - the remote must not add a cap of its own for it.
+    //   [2] HAND-BACK CAP STANDING: the buggy is holding a hand-back cap until the trigger is fully
+    //       released once - 0 after ANY end of manual RTM (Gate 9, Phase C, H-1, H-2, a remote reboot;
+    //       V2.5-Evo 2026-10-07 N-2/N-3/N-4), the cap in force after an auto-return arrival or a 95 s
+    //       declaration expiry from an engaged state (N-7). Display only - the remote must not add a cap
+    //       of its own for it.
     //   [3] REMOTE BOOT ID HELD (S-8): the buggy has heard a boot ID from this remote (0xF1 value
     //       0x80 | id), so a remote power cycle cancels a standing return and a parked auto-return
     //       waits through a link loss. 0 while no boot ID has been heard (every remote without S-8).

@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - N-8(a): processFmOverridePacket() enforces the post-fault re-declaration block (M-1) only once a boot ID has been heard from this remote; a remote without the boot ID keeps the R-6 keepalive re-arm, so a link-loss fault it never saw cannot leave Follow-Me silently unavailable behind an ARMED screen. GPS-integrity note (project rule 5): the 0xF3 GPS state machine, Phase A/B and the freshness gates are untouched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - S-8 + H-1 + M-1 (wire formats in Common/AutoReturnRules.h): processRtmStatePacket() accepts 0xF1 value 0x02 (RTM refresh: refreshes only, never activates; 0xF1/1 clears rtm_refresh_seen) and 0x80-0xFF (the remote boot ID; a change bumps rx_tx_boot_change_seq and clears the re-declaration block). processFmOverridePacket(): after a Follow-Me fault a mode 1-5 is ignored unless 0xF2 bit 7 (fresh declaration) is set; 0xF2/0 clears the block. Every older RX ignores the new values. GPS-integrity note (project rule 5): the 0xF3 GPS state machine, Phase A/B and the freshness gates are untouched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-29 - REVERTED the RX-only standbyXOSC line that the 2026-09-28 commit (1803869) added to startupRadio(). It does not work on this hardware: with radio.standbyXOSC = true the SX1262 never initialises and boot prints "Starting Radio... Power: 22 Region: US/AU915 TOA: 0 Failed, code: -707", i.e. RADIOLIB_ERR_SPI_CMD_FAILED (RadioLib 7.1.2, src/TypeDef.h line 430) - the chip refused a command sent to it over SPI, so there is no radio, no link and no telemetry at all. Proven by a three-flash A/B on one bench RX in one sitting with nothing else changed: parent d9873cc gave "TOA: 7488 Done", 1803869 gave "TOA: 0 Failed, code: -707", and d9873cc rebuilt and reflashed gave "TOA: 7488 Done" again, with the failure repeating over two further power-on resets. LIKELY BUT UNPROVEN REASON: this module runs a TCXO powered from the chip's DIO3 pin (initRadioHardware() passes 1.8 V for it in ../Common/RadioCommon.h), and standing by on an oscillator that has not powered up and settled leaves the chip busy and rejecting the next command; a board wired for a plain crystal instead would not hit this, which is presumably why upstream can use it. The full write-up and a DO-NOT-RE-ADD note now sit in startupRadio() where the line used to be. The R-3 motor-gate fix from that same commit is KEPT and its logic is unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-09-29 - R-3 HARDENING (review finding L-1, LOW, explicitly not a regression): the last_control_packet = millis() stamp is MOVED so it happens immediately AFTER thr_received and steering_received are written, instead of nine lines before them. Same branch, same value, no logic change - but "the motor gate is open" now structurally implies "thr_received came from that same packet", rather than only happening to be true. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -483,11 +484,18 @@ static void processFmOverridePacket(const uint8_t *pkt)
   // alive" (the caller stamped last_packet) but changes nothing else: no mode, no override bits, no
   // declaration age.
   // ============================================================
+  // V2.5-Evo - 2026-10-07 - N-8(a): THE BLOCK IS ENFORCED ONLY ONCE THIS REMOTE HAS SENT A BOOT ID. Today's
+  // remote sends none, and with it the block made Follow-Me silently unavailable after any link-loss fault
+  // longer than the 6 s sticky window: the remote never saw fm_flags bit 3, never disarmed (so never sent
+  // the 0xF2/0 that clears the block), kept showing ARMED, and every keepalive was ignored. Until a boot ID
+  // is heard the RX therefore keeps the old behaviour (the keepalive may re-arm after a fault the remote
+  // missed, audit R-6), and the block still records the fault for ?diag. A remote that sends a boot ID is
+  // the one built with the full protocol (bit 7 on gesture declarations), and for it the block applies.
   if (mode == 0)
   {
     fm_redeclare_blocked = false;
   }
-  else if (fm_redeclare_blocked.load())
+  else if (fm_redeclare_blocked.load() && rx_tx_boot_id.load() != kTxBootIdNone)
   {
     if (raw & 0x80)
     {

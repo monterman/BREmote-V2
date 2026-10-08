@@ -1,3 +1,8 @@
+// V2.5-Evo - 2026-10-07 - P-5: runFmLoopBody() reads both boot counters once per tick, back to back (rx_seq first), and
+//   runFmReturnTick() uses that snapshot. P-13: an RTM gate-fail tick stores min(zone cap, last stored cap). No
+//   confStruct change, sizeof stays 200, SW_VERSION stays 36.
+// V2.5-Evo - 2026-10-07 - P-4: the return's crawl-arrival test reads the approach-ramp term at dist_m
+//   (fmReturnApproachRampCap(), also used for cap term 1) instead of the previous tick's total cap. No confStruct change.
 // V2.5-Evo - 2026-10-07 - P-3 (owner ruling): runFmReturnTick() - a parked, released auto-return whose Phase B handshake
 //   fails only on the pairing distance stays parked as NOT READY (fm_flags bit 2) instead of ending with St. Moving,
 //   held, or the speed check: a fault as before. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -3790,6 +3795,7 @@ static void runRtmLoopBody(unsigned long now)
   // GPS-failed branch below has always meant. The inactive and mode-ending paths still write 255 directly.
   // ============================================================
   uint8_t rtm_cap_tick = rtm_approach_cap.load();
+  const uint8_t rtm_cap_last = rtm_cap_tick;   // V2.5-Evo - 2026-10-07 - P-13: the cap stored on the previous tick
 
   // ---- Distance computation: telemetry encoding + approach decel cap ----
   // Distance is always encoded when both GPS sources are valid — feeds the TX R5 proximity
@@ -4062,7 +4068,11 @@ static void runRtmLoopBody(unsigned long now)
   {
     // V2.5-Evo - 2026-10-07 - N-17: no governor runs on a gate-fail tick, so the zone value is this tick's
     // cap - the one store. Not after Gate 9 (it ended RTM and wrote 255 itself) or any other end.
-    if (rtm_rx_active) rtm_approach_cap = rtm_cap_tick;
+    // V2.5-Evo - 2026-10-07 - P-13: THE BUG - a gate-fail tick (Gate 1, the trigger released) stored the ZONE value
+    // alone, so the align / governor / bootstrap cap of the last gates-pass tick was dropped and a re-squeeze ran up to
+    // one tick (~100 ms) on the zone cap only (the ramp limited it). THE FIX: a gate-fail tick stores
+    // min(zone, the last stored cap). It can only lower the cap; the next gates-pass tick computes the full chain again.
+    if (rtm_rx_active) rtm_approach_cap = (rtm_cap_last < rtm_cap_tick) ? rtm_cap_last : rtm_cap_tick;
     // Gate 1: throttle released — no emergency stop, motor already at 0.
     // Gate 9: stop distance reached — clean disengagement, rtm_rx_active set false, no emergency stop.
     // Gates 2-8: safety failure — rtm_rx_emergency_stop=true, calcPWM() forces throttle to 0.
@@ -5815,15 +5825,12 @@ static uint8_t fmComputeReturnThrottleCap(float dist_m, float stop_m, unsigned l
 {
   uint16_t cap = 255;
 
-  if (usrConf.rtm_approach_zone_m > 0) {
-    const float approach_m = (float)usrConf.rtm_approach_zone_m;
-    if (approach_m > stop_m && dist_m < approach_m) {
-      float frac = (dist_m - stop_m) / (approach_m - stop_m);
-      if (frac < 0.0f) frac = 0.0f;
-      if (frac > 1.0f) frac = 1.0f;
-      const uint16_t c = (uint16_t)(frac * 255.0f);
-      if (c < cap) cap = c;
-    }
+  // V2.5-Evo - 2026-10-07 - P-4: term 1 now comes from fmReturnApproachRampCap() (Common/AutoReturnRules.h) - the same
+  // formula as before (255 outside the zone or with it off, 0 at the stop radius, linear between), moved so the crawl
+  // test in runFmReturnTick() reads exactly this term.
+  {
+    const uint16_t c = fmReturnApproachRampCap(dist_m, stop_m, (float)usrConf.rtm_approach_zone_m);
+    if (c < cap) cap = c;
   }
 
   if (usrConf.rtm_target_speed_kmh > 0.0f) {
@@ -6030,6 +6037,14 @@ static uint8_t fmStopReasonFromMask(uint8_t mask)
 //   steering + cap, then the not-closing judgement (slow-pivot extension and in-zone arrival, S-6).
 //   V2.5-Evo - 2026-10-07 - the 60 s runtime cap is gone (S-4); a 30 s stick takeover hands the
 //   steering back and the return continues (S-5).
+// V2.5-Evo - 2026-10-07 - P-5: THIS TICK'S snapshot of rx_tx_boot_id_rx_seq, taken by runFmLoopBody() together with
+// rx_tx_boot_change_seq at the top of the tick. THE BUG: the two radio counters were read at two different points in
+// one tick (the reboot check at the top, the post-gap boot-ID wait here), so a boot-ID packet landing in between could
+// be seen by the second read and not the first. THE FIX: both are read once, back to back, rx_seq FIRST - the radio
+// task bumps rx_seq before change_seq, so a packet between the two reads is seen as a reboot (the safe direction).
+// Loop task only.
+static uint8_t fm_tick_bootid_rx_seq = 0;
+
 static void runFmReturnTick(unsigned long now)
 {
   const bool thr_held = (thr_received >= 25);
@@ -6066,7 +6081,7 @@ static void runFmReturnTick(unsigned long now)
   const uint8_t failing      = fmFailingConditionsMask();   // V2.5-Evo - 2026-10-07 - N-6: reads its own clock
   const bool    bootid_ever  = (rx_tx_boot_id.load() != kTxBootIdNone);
   const bool    await_bootid = fmReturnGapStep(&fm_return_gap, (failing & kFmCondLink) != 0,
-                                               rx_tx_boot_id_rx_seq.load(), bootid_ever);
+                                               fm_tick_bootid_rx_seq, bootid_ever);   // P-5: this tick's snapshot
   // V2.5-Evo - 2026-10-07 - P-3 (owner ruling): a handshake that fails only on the pairing DISTANCE (the rider surfed
   // farther than gps_max_pair_dist_m) is waited through while parked and released - NOT READY, not "St". Moving, held,
   // or a speed-check failure still end the return as before.
@@ -6311,12 +6326,16 @@ static void runFmReturnTick(unsigned long now)
       // stop + 3 m, OR the previous tick's cap at or below 40 and not held low by the align cap) AND the
       // buggy's own GPS speed under 1.5 km/h (fmReturnStallIsArrival(), host-tested). A buggy circling or
       // steering mirrored at 10 m with the cap near 200 is a fault (St + stop buzz), not a silent arrival.
-      if (fmReturnStallIsArrival(in_approach_zone, dist_m, stop_m, prev_tick_cap, aligning, gps_last_speed_kmh)) {
+      // V2.5-Evo - 2026-10-07 - P-4: the crawl test reads the APPROACH-RAMP term at dist_m (fmReturnApproachRampCap()),
+      // not the previous tick's total cap - an align cap or an engage ramp holding the total low at 7-10 m no longer
+      // turns a stall there into a silent arrival.
+      const uint8_t ramp_cap = fmReturnApproachRampCap(dist_m, stop_m, (float)usrConf.rtm_approach_zone_m);
+      if (fmReturnStallIsArrival(in_approach_zone, dist_m, stop_m, ramp_cap, aligning, gps_last_speed_kmh)) {
         const float was_m = fm_return_check_dist_m;   // captured before the exit clears it
         fmReturnExitToHold(FM_RET_ARRIVED_ZONE, now, dist_m);   // motor posture first; prints the ARMED line
-        Serial.printf("FM [RX] RETURN stopped closing in the final crawl (dist=%.1f m, was %.1f m %lu ms ago, zone %u m, cap %u, buggy %.1f km/h) - treated as ARRIVAL, no alarm\n",
+        Serial.printf("FM [RX] RETURN stopped closing in the final crawl (dist=%.1f m, was %.1f m %lu ms ago, zone %u m, ramp cap %u, last cap %u, buggy %.1f km/h) - treated as ARRIVAL, no alarm\n",
                       (double)dist_m, (double)was_m, (unsigned long)kFmReturnNotClosingMs, (unsigned)usrConf.rtm_approach_zone_m,
-                      (unsigned)prev_tick_cap, (double)gps_last_speed_kmh);
+                      (unsigned)ramp_cap, (unsigned)prev_tick_cap, (double)gps_last_speed_kmh);
         return;
       }
       fmReturnFault(FM_STOP_RETURN_NOT_CLOSING, now, thr_held);
@@ -6430,6 +6449,7 @@ static void runFmLoopBody(unsigned long now)
   // ============================================================
   {
     static uint8_t fm_boot_seq_seen = 0;
+    fm_tick_bootid_rx_seq = rx_tx_boot_id_rx_seq.load();   // V2.5-Evo - 2026-10-07 - P-5: read FIRST, once per tick
     const uint8_t seq = rx_tx_boot_change_seq.load();
     if (seq != fm_boot_seq_seen)
     {

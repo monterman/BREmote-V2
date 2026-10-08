@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - P-4: fmReturnApproachRampCap() (the approach-ramp term alone); fmReturnStallIsArrival()'s crawl
+//   test takes that term at dist_m instead of the previous tick's total cap. Host-tested.
 // V2.5-Evo - 2026-10-07 - P-3 (owner ruling): fmReturnParkedTolerates() / fmReturnParkVerdict() take phase_b_distance_only -
 //   a parked, released auto-return whose handshake fails only on the pairing distance is NOT_READY, not a fault. Moving,
 //   held, or a speed-check failure: still a fault. Host-tested.
@@ -524,20 +526,36 @@ static inline uint8_t fmReturnParkVerdict(uint8_t failing_mask, bool parked, boo
 // the last metres, where the approach ramp has the cap near 0 and the motor (or the VESC deadband) stops the
 // buggy short of the stop radius. Everything else is RETURN_NOT_CLOSING with "St" + the stop buzz.
 static const float   kFmReturnCrawlExtraM    = 3.0f;   // m beyond the stop radius that still counts as the final crawl
-static const uint8_t kFmReturnCrawlCapMax    = 40;     // a previous-tick cap at or below this is a crawl (about 16 %)
+static const uint8_t kFmReturnCrawlCapMax    = 40;     // an approach-ramp cap at or below this is a crawl (about 16 %)
 static const float   kFmReturnCrawlSpeedKmh  = 1.5f;   // the buggy must be (nearly) stopped, by its own GPS
 
+// fmReturnApproachRampCap - V2.5-Evo - 2026-10-07 - P-4: the APPROACH-RAMP term of the return cap, alone.
+// Inputs: dist_m (buggy to rider); stop_m (the stop radius); approach_m (rtm_approach_zone_m; 0 = ramp off).
+// Returns: 255 outside the zone or with the ramp off (or a zone not wider than the stop radius); inside it,
+//   0 at the stop radius rising linearly to 255 at the zone edge - RTM's own shape. Side effects: none (pure).
+// The RX's fmComputeReturnThrottleCap() uses this same function for its term 1, so the crawl test below and the
+// cap the buggy actually runs on cannot drift apart.
+static inline uint8_t fmReturnApproachRampCap(float dist_m, float stop_m, float approach_m)
+{
+  if (approach_m <= 0.0f || approach_m <= stop_m || dist_m >= approach_m) return 255;
+  float frac = (dist_m - stop_m) / (approach_m - stop_m);
+  if (frac < 0.0f) frac = 0.0f;
+  if (frac > 1.0f) frac = 1.0f;
+  return (uint8_t)(frac * 255.0f);
+}
+
 // fmReturnStallIsArrival - Inputs: in_zone (inside rtm_approach_zone_m, zone enabled); dist_m; stop_m;
-//   prev_cap (the return cap on the previous tick); aligning (the align cap, not the approach ramp, is what
-//   holds the cap low - a stalled pivot is not an arrival); buggy_kmh (own GPS speed; < 0 = unknown).
+//   ramp_cap (V2.5-Evo - 2026-10-07 - P-4: the APPROACH-RAMP term at dist_m, fmReturnApproachRampCap() - it was the
+//   previous tick's TOTAL cap, which the align cap or the engage ramp could hold low at 7-10 m and turn a stall into
+//   a silent arrival); aligning (a stalled pivot is not an arrival); buggy_kmh (own GPS speed; < 0 = unknown).
 // Returns: true = treat the stall as an arrival; false = a not-closing fault. Side effects: none (pure).
-static inline bool fmReturnStallIsArrival(bool in_zone, float dist_m, float stop_m, uint8_t prev_cap,
+static inline bool fmReturnStallIsArrival(bool in_zone, float dist_m, float stop_m, uint8_t ramp_cap,
                                           bool aligning, float buggy_kmh)
 {
   if (!in_zone) return false;
   if (buggy_kmh < 0.0f || buggy_kmh >= kFmReturnCrawlSpeedKmh) return false;
   const bool close    = dist_m <= (stop_m + kFmReturnCrawlExtraM);
-  const bool crawling = (prev_cap <= kFmReturnCrawlCapMax) && !aligning;
+  const bool crawling = (ramp_cap <= kFmReturnCrawlCapMax) && !aligning;
   return close || crawling;
 }
 

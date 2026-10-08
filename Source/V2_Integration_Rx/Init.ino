@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-07 - P-6: the bus recovery retries a failed Wire.begin() once and re-asserts the AW9523 port-1
+//   outputs (both PPM enables HIGH) under the same hold. P-7: it repeats only if the PWM task attempted a swap since
+//   the last completed recovery (no noise through a link loss). No confStruct change, sizeof stays 200, SW_VERSION 36.
 // V2.5-Evo - 2026-10-07 - P-2 (owner ruling): the stuck-bus service isolates the compass only on evidence - SDA/SCL read low
 //   before the recovery, or the starvation back within ~10 s of a completed recovery; otherwise bus recovery only. No
 //   confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -53,6 +56,7 @@ void initHardware()
 // ============================================================
 // g_swap_starved is owned by PWM.ino, which the sketch concatenates AFTER this file, so it is declared here.
 extern volatile bool g_swap_starved;
+extern volatile uint32_t g_swap_attempt_seq;   // V2.5-Evo - 2026-10-07 - P-7: PWM.ino, swap attempts (wrapping)
 
 static const unsigned long kI2cRecoveryRetryMs = 2000UL;   // ms between recovery attempts while the swap stays starved
 // V2.5-Evo - 2026-10-07 - P-2: starvation again within this long of a COMPLETED recovery is evidence the bus recovery
@@ -65,6 +69,30 @@ unsigned long g_i2c_last_recovery_ms  = 0;      // millis() of the last attempt;
 uint8_t       g_i2c_last_levels       = 0;      // bit0 SDA before, bit1 SCL before, bit2 SDA after, bit3 SCL after (1 = high)
 bool          g_i2c_last_reinit_ok    = false;  // Wire.begin() succeeded after the last recovery
 bool          g_i2c_last_mutex_miss   = false;  // the last attempt could not get i2cMutex within 50 ms (tried again later)
+
+// awReassertPort1OutputsLocked - V2.5-Evo - 2026-10-07 - P-6: re-write the AW9523's port-1 OUTPUT register after a
+// bus recovery, with both PPM enable outputs (AP_EN_PWM0 / AP_EN_PWM1) driven HIGH as Init's runBootSequence() set them.
+// THE GAP: the recovery rebuilt the ESP32 side only. If the AW9523 itself lost its output latch in the event (a reset
+// or brown-out on the shared rail), the enable swap - which writes only the DIRECTION register - would ACK while the
+// enable outputs sat low and no optocoupler passed a pulse. THE FIX: read OUTPUT1, set the two enable bits, write it
+// back - so the UART-mux, AUX LED and wet-measure bits are re-written as they read now and the enables are asserted.
+// Inputs: none. THE CALLER MUST HOLD i2cMutex (called from i2cBusRecoverLocked()). Returns: true if the read and the
+// write were both acknowledged. Side effects: up to two I2C transactions on Wire.
+static bool awReassertPort1OutputsLocked()
+{
+  const uint8_t reg = AW9523_REG_OUTPUT0 + 1;   // OUTPUT1 = 0x03: output levels, pins 8-15
+  Wire.beginTransmission(AW9523_DEFAULT_ADDR);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom((uint16_t)AW9523_DEFAULT_ADDR, (size_t)1) != 1) return false;
+  uint8_t out1 = (uint8_t)Wire.read();
+  out1 |= (uint8_t)((1u << (AP_EN_PWM0 - 8)) | (1u << (AP_EN_PWM1 - 8)));   // both enables HIGH, as at boot
+  Wire.beginTransmission(AW9523_DEFAULT_ADDR);
+  Wire.write(reg);
+  Wire.write(out1);
+  return (Wire.endTransmission() == 0);
+}
+bool g_i2c_last_aw_ok = false;   // V2.5-Evo - 2026-10-07 - P-6: the AW9523 port-1 outputs were re-asserted after the last recovery
 
 // i2cBusRecoverLocked - the 9-clock recovery and Wire re-init.
 // Inputs: none. THE CALLER MUST HOLD i2cMutex, so no other holder can touch Wire while it is torn down.
@@ -103,9 +131,17 @@ static void i2cBusRecoverLocked()
 
   // Rebuild the peripheral exactly as initHardware() set it up.
   g_i2c_last_reinit_ok = Wire.begin(P_I2C_SDA, P_I2C_SCL);
+  // V2.5-Evo - 2026-10-07 - P-6: a failed Wire.begin() is retried ONCE (a fresh end + begin), still under the hold.
+  if (!g_i2c_last_reinit_ok) {
+    Wire.end();
+    delayMicroseconds(50);
+    g_i2c_last_reinit_ok = Wire.begin(P_I2C_SDA, P_I2C_SCL);
+  }
   Wire.setClock(100000);
   Wire.setTimeOut(3);
   g_i2c_last_levels = lv;
+  // V2.5-Evo - 2026-10-07 - P-6: re-assert the AW9523's port-1 outputs (the PPM enables HIGH) under the same hold.
+  g_i2c_last_aw_ok = g_i2c_last_reinit_ok && awReassertPort1OutputsLocked();
 }
 
 // i2cStuckBusService - the loop-task supervisor. Call once per loop() pass.
@@ -124,9 +160,15 @@ static void i2cBusRecoverLocked()
 void i2cStuckBusService()
 {
   static unsigned long s_last_done_ms = 0;   // P-2: millis() of the last COMPLETED recovery; 0 = none (loop task only)
+  static uint32_t      s_attempts_at_done = 0;   // P-7: g_swap_attempt_seq at the last completed recovery
   if (!g_swap_starved) return;
   const unsigned long now = millis();
   if (g_i2c_last_recovery_ms != 0 && (now - g_i2c_last_recovery_ms) < kI2cRecoveryRetryMs) return;
+  // V2.5-Evo - 2026-10-07 - P-7: THE NOISE - the recovery repeated every 2 s through a link loss, when the PWM task
+  // attempts no swaps (no link, no pulses) and g_swap_starved simply stays as it was. Recover again only if a swap has
+  // been ATTEMPTED since the last completed recovery; the first recovery of a session always runs.
+  const uint32_t attempts = g_swap_attempt_seq;
+  if (s_last_done_ms != 0 && attempts == s_attempts_at_done) return;
   g_i2c_last_recovery_ms = (now != 0) ? now : 1;
   // P-2 evidence (b), judged before this attempt overwrites the record.
   const bool recurred = (s_last_done_ms != 0) && ((now - s_last_done_ms) <= kI2cIsolateWindowMs);
@@ -140,7 +182,8 @@ void i2cStuckBusService()
   g_i2c_last_mutex_miss = false;
   i2cBusRecoverLocked();
   xSemaphoreGive(i2cMutex);
-  s_last_done_ms = (now != 0) ? now : 1;
+  s_last_done_ms     = (now != 0) ? now : 1;
+  s_attempts_at_done = attempts;   // P-7
   if (g_i2c_recoveries < 0xFFFF) g_i2c_recoveries = (uint16_t)(g_i2c_recoveries + 1);
 
   // P-2 evidence (a): SDA (bit 0) or SCL (bit 1) read low BEFORE the recovery.
@@ -148,8 +191,8 @@ void i2cStuckBusService()
   if (lines_low)      compassIsolateForSession("SDA/SCL were held low on the I2C bus before the recovery");
   else if (recurred)  compassIsolateForSession("the motor-enable swap starved again within 10 s of a bus recovery");
 
-  Serial.printf("I2C [RX] STUCK-BUS RECOVERY #%u: 9 clocks + STOP + Wire re-init (%s); SDA/SCL before %u/%u, after %u/%u; %s; the motors come back after 5 good enable swaps (%s)\n",
-                (unsigned)g_i2c_recoveries, g_i2c_last_reinit_ok ? "ok" : "FAILED",
+  Serial.printf("I2C [RX] STUCK-BUS RECOVERY #%u: 9 clocks + STOP + Wire re-init (%s), AW9523 outputs %s; SDA/SCL before %u/%u, after %u/%u; %s; the motors come back after 5 good enable swaps (%s)\n",
+                (unsigned)g_i2c_recoveries, g_i2c_last_reinit_ok ? "ok" : "FAILED", g_i2c_last_aw_ok ? "re-asserted" : "NOT re-asserted",
                 (unsigned)(g_i2c_last_levels & 0x01), (unsigned)((g_i2c_last_levels >> 1) & 0x01),
                 (unsigned)((g_i2c_last_levels >> 2) & 0x01), (unsigned)((g_i2c_last_levels >> 3) & 0x01),
                 g_compass_isolated ? "compass isolated for this session" : "compass kept in service (no evidence it holds the bus)",

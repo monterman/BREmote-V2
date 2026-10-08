@@ -412,6 +412,26 @@ static void testStallIsArrival()
   assert(!fmReturnStallIsArrival(true, 6.0f, stop, 200, false, 1.5f));
   assert(fmReturnStallIsArrival(true, 9.0f, stop, 40, false, 1.0f));
   assert(!fmReturnStallIsArrival(true, 9.0f, stop, 41, false, 1.0f));
+
+  // P-4 (2026-10-07): the cap passed in is the APPROACH-RAMP term at dist_m, fmReturnApproachRampCap().
+  // Ramp shape: 255 outside the zone / ramp off / zone not wider than the stop radius; 0 at the stop radius.
+  assert(fmReturnApproachRampCap(13.0f, stop, 12.0f) == 255);
+  assert(fmReturnApproachRampCap(12.0f, stop, 12.0f) == 255);
+  assert(fmReturnApproachRampCap(5.0f, stop, 0.0f) == 255);
+  assert(fmReturnApproachRampCap(5.0f, 12.0f, 12.0f) == 255);
+  assert(fmReturnApproachRampCap(3.0f, stop, 12.0f) == 0);
+  assert(fmReturnApproachRampCap(2.0f, stop, 12.0f) == 0);
+  assert(fmReturnApproachRampCap(7.5f, stop, 12.0f) == 127);   // half way: (4.5 / 9) x 255 = 127.5
+  // THE AUDIT CASE: a stall at 8 m in a 12 m zone (stop 3). The previous tick's TOTAL cap could be 13 there (an
+  // align cap, or a re-squeeze's engage ramp) and used to read as a crawl - a silent arrival. The ramp term at
+  // 8 m is 141: a fault (St), as it must be.
+  const uint8_t r8 = fmReturnApproachRampCap(8.0f, stop, 12.0f);
+  assert(r8 == 141);
+  assert(!fmReturnStallIsArrival(true, 8.0f, stop, r8, false, 0.3f));
+  // The real final crawl still counts: 4.4 m in the same zone gives a ramp term of 39.
+  const uint8_t r44 = fmReturnApproachRampCap(4.4f, stop, 12.0f);
+  assert(r44 <= kFmReturnCrawlCapMax);
+  assert(fmReturnStallIsArrival(true, 4.4f, stop, r44, false, 0.3f));
 }
 
 static void testPivotSuspend()

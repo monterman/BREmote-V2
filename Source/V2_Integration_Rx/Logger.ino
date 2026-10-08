@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - P-11: the log's link-quality test uses stampStale() (signed age). Log format unchanged.
 // V2.5-Evo - 2026-10-06 - LOG FORMAT 3 (see BREmote_V2_Rx.h): fillVesc2Block() fills the VESC 2 block in the LEVEL-4 record now (owner ruling: both VESCs at level 4), so loggerTask() calls it for level 4 AND level 5 (logData5.l4). ?download refuses a file of another log format with a plain-English message that says which firmware wrote it and what to do (download before flashing; the PC log reader still decodes it). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - VESC 2 OVER CAN, part 2 (see BREmote_V2_Rx.h): loggerTask() fills the new 14 B VESC 2 block at the tail of the level-5 record (fillVesc2Block()), deciding freshness at log time against VESC 2's own age stamp: never answered or older than kVesc2StaleMs = every value field written as its N/A sentinel, age logged as the real age. Level 5 only; levels 3 and 4 unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 5 of 5 (delta audit L-3; the code fix is in PWM.ino): fillLevel4Diag()'s two swap-failure delta statics are SEEDED FROM THE LIVE COUNTERS ON THE FIRST CALL instead of starting at 0. Starting at 0 made the first level-4 row of a session report the whole boot's accumulated failure count as if it had happened inside that one ~333 ms row, and because the nibbles saturate at 15 a board that had seen any swap failures before logging started wrote a first row reading 15/15 - "pinned" - from a healthy bus. Seeded inside loggerTask, so the single-writer contract is untouched: this task still reads the PWM task's volatiles and writes only its own statics. ZERO log bytes, no LOG_FILE_FORMAT_VER bump (stays 2), record sizes stay 62 / 90 / 112, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -518,7 +519,9 @@ VescLogData convertToLogData() {
 
     // Link quality: use the cached RSSI/SNR (never touch the radio SPI bus from this task). Mark N/A while
     // in failsafe (no control packet within failsafe_time) so a link drop reads as a clear gap, not stale data.
-    if ((millis() - last_packet) < usrConf.failsafe_time) {
+    // V2.5-Evo - 2026-10-07 - P-11: signed age (stampStale()): a last_packet stamped after millis() was read no longer
+    // wraps to ~49 days and logs one record as "failsafe".
+    if (!stampStale((uint32_t)millis(), (uint32_t)last_packet, (uint32_t)usrConf.failsafe_time)) {
       data.rssi_dbm = (int16_t)lroundf(g_last_rssi_dbm);
       data.snr_dx10 = (int16_t)lroundf(g_last_snr_db * 10.0f);
     } else {

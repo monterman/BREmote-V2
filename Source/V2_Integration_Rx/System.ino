@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - P-11: the BIND LED link test uses stampStale() (signed age). No confStruct change.
 // V2.5-Evo - 2026-10-07 - H-3 stop-gap: ?diag prints an "I2C bus" line under "swap fails" - stuck-bus recoveries this session, the SDA/SCL levels seen before/after the last one, whether Wire re-initialised, and whether the compass has been isolated. Read-only. No new ?command. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - ?diag gains one "Return end" line (printReturnEndDiag() in RTMState.ino): the arrival hand-back cap, the last RTM fault end / arrival, the H-2 gate-fault time and rx_state_flags. Read-only. No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - audit LOW: ?printtasks also reports the loggerTask stack high-water mark (it was the one task not measured).
@@ -2648,7 +2649,10 @@ void checkConnStatus(void *parameter)
     if (g_wdt_active) esp_task_wdt_reset();
     if(usrConf.paired)
     {
-      if(millis() - last_packet < usrConf.failsafe_time)
+      // V2.5-Evo - 2026-10-07 - P-11: signed age (stampStale(), Common/AutoReturnRules.h). The radio task can stamp
+      // last_packet after millis() is read here; the unsigned difference then wrapped to ~49 days and blinked the BIND
+      // LED to "link lost" for one pass. A last_packet of 0 (never) also reads as no link now.
+      if(!stampStale((uint32_t)millis(), (uint32_t)last_packet, (uint32_t)usrConf.failsafe_time))
       {
         if(bind_pin_state != 1)
         {

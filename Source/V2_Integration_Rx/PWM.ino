@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - P-7: generatePWM() counts swap attempts (g_swap_attempt_seq) for the stuck-bus service. No
+//   change to the swap, the pulse or the gate. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - N-5 backstop: calcPWM() also clears the arrival hand-back cap after the trigger byte stays below
 //   25 for 1.0 s continuously (handbackBackstopStep()); the instant clear below 8 is unchanged. Clear-only, subtract-only
 //   path untouched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -70,6 +72,9 @@
 // serial console and it cannot clear g_swap_starved (only five good swaps do that), so the
 // consequence is bounded and acceptable.
 volatile bool     g_swap_starved = false;   // true = enable swap starved; BOTH channels stop pulsing (fail symmetric)
+// V2.5-Evo - 2026-10-07 - P-7: enable-swap ATTEMPTS, wrapping. Written only here (generatePWM), read by Init.ino's
+// i2cStuckBusService(), which recovers the bus again only if a swap was attempted since its last recovery.
+volatile uint32_t g_swap_attempt_seq = 0;
 volatile uint16_t g_swap_ok_run  = 0;       // consecutive SUCCESSFUL swaps; recovery needs kSwapRecoverTicks of them
 
 // ============================================================
@@ -249,6 +254,10 @@ void generatePWM(void *parameter) {
       // is the whole point: the state machine below must not be able to tell the two apart, or
       // kSwapStarveTicks / kSwapRecoverTicks would need a second set of rules to stay correct.
       // The mutex is released BEFORE the outcome is acted on, so the hold is still one transaction.
+      // V2.5-Evo - 2026-10-07 - P-7: count every swap ATTEMPT (wrapping, compared only for change), so the loop task's
+      // stuck-bus service can tell a starvation that is still being tested from one frozen by a link loss (no attempts).
+      // A plain assignment, not ++ on a volatile; single writer (this task), one aligned word.
+      g_swap_attempt_seq = g_swap_attempt_seq + 1;
       if(alternatePWMChannel)
       {
         bool swap_ok = false;

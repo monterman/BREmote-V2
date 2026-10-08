@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-07 - N-5 backstop: calcPWM() also clears the arrival hand-back cap after the trigger byte stays below
+//   25 for 1.0 s continuously (handbackBackstopStep()); the instant clear below 8 is unchanged. Clear-only, subtract-only
+//   path untouched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - ARRIVAL HAND-BACK CAP (owner rule): calcPWM() applies arrival_handback_cap after fm_throttle_cap (min(), subtract-only, handbackCapStep() from Common/AutoReturnRules.h) and clears it on the first 10 ms pass with the trigger below kHandbackReleaseThr. The terminal effective_thr == 0 clamp is still the last writer. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 5 of 5 - THE SWAP NOW CHECKS THE BUS, NOT JUST THE SEMAPHORE (delta audit C-1; see Init.ino, System.ino, Logger.ino). WHAT WAS STILL BROKEN AFTER STEPS 1-4: Adafruit_AW9523::pinMode() returns void (Adafruit_AW9523.cpp:253-279), so the two enable writes could fail silently ON THE BUS while xSemaphoreTake() reported success - which is exactly what happens on a wedged bus with LOW contention, and STEP 4 made that case MORE reachable by removing contention. The enable lines never moved, alternatePWMChannel was advanced anyway, g_swap_fail_run was ZEROED and g_swap_ok_run incremented: the firmware reported a healthy bus and an OPEN motor gate while ONE VESC RECEIVED BOTH CHANNELS' WIDTHS ALTERNATELY AT 50 Hz AND THE OTHER RECEIVED NOTHING. That is the original asymmetric-thrust failure, undetected, with STEP 2's counters reading clean and STEP 3 unable to help because g_swap_starved could never become true. THE FIX: the two aw.pinMode() calls at each swap site are replaced by ONE CHECKED WRITE of the AW9523's CONFIG1 direction register (awSetEnableDirections() below) - both enables are port-1 pins (AP_EN_PWM0 13, AP_EN_PWM1 12), so both direction bits live in that single register - and the bus result is treated EXACTLY as a semaphore timeout already was: alternatePWMChannel is NOT advanced, the per-channel and consecutive failure counters increment, g_swap_ok_run is cleared. The state machine cannot tell the two failure kinds apart, so kSwapStarveTicks (25) and kSwapRecoverTicks (5) keep working unchanged and a silent bus failure now reaches the symmetric stop in 250 ms instead of never. COST, and it is in the right direction: the swap drops from four register read-modify-writes (~8-12 Wire transactions, ~28 bytes on the wire, ~2.5 ms at 100 kHz) to ONE 3-byte write (~0.3 ms), because half of what pinMode() did was rewriting the LEDMODE register identically 100 times a second. Every hold-time margin in the STEP 1-3 derivations widens by roughly 8x. NOT CHANGED: the pulse-then-2 ms-then-swap ordering, the swap being attempted on every link_ok tick, the channel index advancing only on a verified swap, and the count of gate-expression copies - still exactly TWO, and as of this commit textually identical again (audit L-2). ALSO IN THIS COMMIT: Init.ino's STEP 1 justification is corrected (audit M-2), ?diag names the third cause of a CLOSED motor gate and prints g_swap_starved (audit M-6), and the logger's delta snapshot is seeded on its first call (audit L-3). No confStruct change, sizeof stays 200, SW_VERSION stays 36, no log format change.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 4 of 4 - COMMENT ONLY in this file, no code touched (see Compass.ino, Logger.ino, System.ino): the 2026-07-22 note listed the i2cMutex sharers as "compass/ADS1115/AW9523-LED/logger". THERE IS NO ADS1115 ON THE RX. It is a TX part (0x48, Display.ino / Analog.ino) and appears nowhere in the RX firmware or on the RX schematic; the RX's AP_BMS_MEAS is a plain AW9523 pin given pinMode(INPUT) in startupAW() and then never read anywhere, and getUbatLoop() measures the battery with the ESP32's own analogRead() on GPIO 0, with no I2C involved. The stale name cost real time - it sent the 2026-10-03 audit hunting for an ADC conversion wait held inside this lock, and no such holder exists on this board. The list now names the real sharers: the compass, the AW9523 LED and UART-mux writes, the button reads and the logger. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -342,13 +345,28 @@ void calcPWM()
   // min(effective_thr, cap), host-tested). It is CLEARED here, not in the 10 Hz loop, because this
   // pass reads the trigger every 10 ms and a quick full release must not be missed; the
   // compare-exchange only clears the value this pass read, so a cap armed in between survives.
+  // V2.5-Evo - 2026-10-07 - N-5 BACKSTOP (owner ruling): besides the instant clear below kHandbackReleaseThr (8), the cap
+  // also clears once the trigger byte has stayed below kHandbackBackstopThr (25, the deadman threshold) for
+  // kHandbackBackstopMs (1.0 s) without a break (handbackBackstopStep(), host-tested). A remote whose idle trigger reads
+  // 8 or more can therefore no longer keep the buggy capped until a power cycle. The timer runs only while a cap stands.
   {
+    static uint32_t hb_low_since_ms = 0;   // N-5: start of the current below-25 run; 0 = none (this task only)
     uint8_t hb = arrival_handback_cap.load(std::memory_order_relaxed);
     if (hb != kHandbackNone)
     {
       bool hb_clear = false;
       effective_thr = handbackCapStep(hb, effective_thr, thr_received, kHandbackReleaseThr, &hb_clear);
-      if (hb_clear) arrival_handback_cap.compare_exchange_strong(hb, kHandbackNone, std::memory_order_relaxed);
+      if (handbackBackstopStep(millis(), thr_received, kHandbackBackstopThr, kHandbackBackstopMs, &hb_low_since_ms))
+        hb_clear = true;   // N-5: low for 1.0 s - this tick's output is still capped; the cap is gone from the next tick
+      if (hb_clear)
+      {
+        arrival_handback_cap.compare_exchange_strong(hb, kHandbackNone, std::memory_order_relaxed);
+        hb_low_since_ms = 0;
+      }
+    }
+    else
+    {
+      hb_low_since_ms = 0;
     }
   }
 

@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - N-5 backstop: handbackBackstopStep() - the hand-back cap also clears after the trigger byte
+//   stays below 25 for 1.0 s continuously (the instant clear below 8 is unchanged). Pure, host-tested.
 // V2.5-Evo - 2026-10-07 - PARKED AUTO-RETURN (audit N-9, N-10, N-13 + owner rule "waiting means it will work"):
 //   fmReturnGapStep() (no return motion after a tolerated link gap until a boot ID is heard again),
 //   fmReturnParkVerdict() (go / not-ready / fault for a parked return), fmReturnStallIsArrival() (a stall is an
@@ -92,6 +94,31 @@ static inline uint8_t handbackCapStep(uint8_t cap, uint8_t effective, uint8_t tr
   if (cap == kHandbackNone) return effective;
   if (trigger < release_below) *clear_out = true;
   return (cap < effective) ? cap : effective;
+}
+
+// V2.5-Evo - 2026-10-07 - N-5 BACKSTOP (owner ruling). THE RISK: the hand-back cap clears only when the trigger byte
+// reads below 8. A remote whose idle trigger reads 8 or more (calibration drift, a sticky Hall reading) would keep the
+// buggy at the cap (0 after most ends) until a power cycle - a cap that outlives the mode (SOP-039 rule 2).
+// THE BACKSTOP: the cap ALSO clears once the trigger byte has stayed below 25 (the deadman threshold, where the motor
+// does not drive anyway) for 1.0 s without a break. The instant clear below 8 is unchanged.
+static const uint8_t  kHandbackBackstopThr = 25;     // trigger counts; below this the rider is not driving
+static const uint32_t kHandbackBackstopMs  = 1000;   // must stay below kHandbackBackstopThr this long, continuously
+
+// handbackBackstopStep - one pass of the N-5 backstop timer.
+// Inputs:  now_ms   - the caller's clock (millis()).
+//          trigger  - the raw trigger byte from the remote (thr_received).
+//          below    - "low" means strictly below this many counts (kHandbackBackstopThr).
+//          hold_ms  - how long the trigger must stay low without a break (kHandbackBackstopMs).
+//          since_ms - the caller's timer state: millis() when the current low run began, 0 = no run. The caller
+//                     resets it to 0 whenever no hand-back cap is standing.
+// Returns: true when the trigger has been low for hold_ms or longer - the cap must clear.
+// Side effects: updates *since_ms only. Pure otherwise; any squeeze at or above `below` restarts the run.
+static inline bool handbackBackstopStep(uint32_t now_ms, uint8_t trigger, uint8_t below, uint32_t hold_ms,
+                                        uint32_t* since_ms)
+{
+  if (trigger >= below) { *since_ms = 0; return false; }
+  if (*since_ms == 0) *since_ms = (now_ms != 0) ? now_ms : 1;
+  return stampAgeMs(now_ms, *since_ms) >= hold_ms;   // signed age: a stamp of 1 at now 0 is "just now", not 49 days
 }
 
 // V2.5-Evo - 2026-10-07 - audits N-2, N-3, N-4: EVERY END OF MANUAL RETURN-TO-ME ARMS THE HAND-BACK CAP AT 0.

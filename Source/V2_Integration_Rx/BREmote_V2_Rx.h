@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - N-5 backstop: comment only - arrival_handback_cap also clears after 1.0 s below 25 (PWM.ino).
 // V2.5-Evo - 2026-10-07 - N-10: adds the rx_tx_boot_id_rx_seq atomic (bumped on every boot-ID packet; a parked auto-return after a link gap waits for it to move). Runtime global, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - COMMENTS (audits N-2..N-8): rx_state_flags bit 2 now means 0 after every RTM end; the sticky bits (rx_state_flags 0/1, fm_flags 3) count 6 s of link-fresh time; fm_redeclare_blocked is enforced only once a boot ID is heard. No code change in this file, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - TELEMETRY (audits S-7, A-1, H-2): telemetry.fm_flags bit 6 = auto-return standing (FM_RETURN; with bit 1 = returning, without = waiting); TelemetryPacket gains index 19 rx_state_flags ([0] RTM fault-stop sticky, [1] RTM arrived sticky, [2] hand-back cap standing, [3] boot ID held, [4] RTM refresh armed) - appended, an older remote ignores it. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -1463,6 +1464,9 @@ std::atomic<bool> steer_takeover_active {false};
 //   CLEARED: by calcPWM() (generatePWM task, 100 Hz) on the first pass where thr_received is below
 //           kHandbackReleaseThr - it reads the trigger every 10 ms, so a quick full release is never
 //           missed. The clear is a compare-exchange, so it can never wipe a value armed after the read.
+//           V2.5-Evo - 2026-10-07 - N-5 backstop: it ALSO clears once the trigger byte has stayed below 25 for 1.0 s
+//           without a break (handbackBackstopStep(), Common/AutoReturnRules.h), so an idle trigger that reads 8 or
+//           more cannot keep the cap standing until a power cycle.
 //   APPLIED: in calcPWM() exactly like rtm_approach_cap / fm_throttle_cap - min(), subtract-only.
 // No confStruct field: sizeof stays 200, SW_VERSION stays 36.
 std::atomic<uint8_t> arrival_handback_cap {kHandbackNone};

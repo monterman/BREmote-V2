@@ -32,6 +32,36 @@ static void testHandbackCap()
     }
 }
 
+// N-5 backstop (2026-10-07): the cap also clears after the trigger stays below 25 for 1.0 s without a break. calcPWM()
+// runs every 10 ms; this walks the same timer at 10 ms steps.
+static void testHandbackBackstop()
+{
+  uint32_t since = 0;
+  assert(kHandbackBackstopThr == 25 && kHandbackBackstopMs == 1000);
+  // A remote idling at 12 counts (above the 8-count release, below 25): no instant clear...
+  bool clr = true;
+  assert(handbackCapStep(0, 12, 12, 8, &clr) == 0 && !clr);
+  // ...but the backstop clears after exactly 1.0 s low, not before.
+  uint32_t t = 5000;
+  for (int i = 0; i < 100; ++i, t += 10) assert(!handbackBackstopStep(t, 12, 25, 1000, &since));
+  assert(handbackBackstopStep(t, 12, 25, 1000, &since));   // t = start + 1000 ms
+  // A squeeze to 25 (the threshold itself) at 0.9 s restarts the run.
+  since = 0; t = 20000;
+  for (int i = 0; i < 90; ++i, t += 10) assert(!handbackBackstopStep(t, 20, 25, 1000, &since));
+  assert(!handbackBackstopStep(t, 25, 25, 1000, &since) && since == 0); t += 10;
+  for (int i = 0; i < 100; ++i, t += 10) assert(!handbackBackstopStep(t, 0, 25, 1000, &since));
+  assert(handbackBackstopStep(t, 0, 25, 1000, &since));
+  // Held trigger: never clears, however long.
+  since = 0; t = 40000;
+  for (int i = 0; i < 1000; ++i, t += 10) assert(!handbackBackstopStep(t, 200, 25, 1000, &since));
+  // millis() == 0 is not mistaken for "no run", and the timer survives the 32-bit wrap.
+  since = 0;
+  assert(!handbackBackstopStep(0, 3, 25, 1000, &since) && since == 1);
+  since = 0; t = 0xFFFFFF00u;
+  assert(!handbackBackstopStep(t, 3, 25, 1000, &since));
+  assert(handbackBackstopStep(t + 1000u, 3, 25, 1000, &since));
+}
+
 // N-2 / N-3 / N-4: every RTM end (Phase C, Gate 9, H-1, H-2, S-8) arms kRtmEndHandbackCap. Phase C sequence:
 // tick 0 the FAIL raises the emergency stop and arms the cap; tick 1 the inactive path DROPS the emergency
 // stop - the trigger is still held at 100 %, and the motor must stay at 0; a feathered 9 counts is still not a
@@ -420,6 +450,7 @@ int main()
 {
   testHandbackCap();
   testRtmEndHandback();
+  testHandbackBackstop();
   testRtmGateFault();
   testBootId();
   testRefreshExpiry();

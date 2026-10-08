@@ -33,6 +33,12 @@ calibration, VESC/PPM wiring and setup, the wheels-up safety check, web-portal c
 arming test, and your first Follow-Me session. If you are setting up a BREmote for the first time,
 **read that guide, not this page.**
 
+### **[→ Setup wizard — get your settings in about 8 minutes](https://monterman.github.io/BREmote-V2/setup-wizard.html)**
+
+Answer a few questions about your buggy, remote and riding, and the wizard gives you the settings for
+both boards, ready to load with the web serial config tool (USB) or from your phone on the board's
+WiFi page. *Matches the nightly firmware on the `fm-stations` branch.*
+
 This README is the reference: what the hardware is, what changed in each version, what every setting
 and status code means, and what is still broken. Come back to it once you are running.
 

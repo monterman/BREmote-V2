@@ -32,6 +32,36 @@ static void testHandbackCap()
     }
 }
 
+// N-2 / N-3 / N-4: every RTM end (Phase C, Gate 9, H-1, H-2, S-8) arms kRtmEndHandbackCap. Phase C sequence:
+// tick 0 the FAIL raises the emergency stop and arms the cap; tick 1 the inactive path DROPS the emergency
+// stop - the trigger is still held at 100 %, and the motor must stay at 0; a feathered 9 counts is still not a
+// release; one full release clears it; the next squeeze is plain manual.
+static void testRtmEndHandback()
+{
+  assert(kRtmEndHandbackCap == 0);
+  uint8_t cap = kHandbackNone;
+  bool clr = false;
+  // Before the fix nothing was armed: after the e-stop dropped, the held 255 came straight back.
+  assert(handbackCapStep(cap, 255, 255, 8, &clr) == 255);
+  // With the fix: armed FIRST at the Phase C end (handbackCapArm only lowers: min(none, 0) = 0).
+  cap = (kRtmEndHandbackCap < cap) ? kRtmEndHandbackCap : cap;
+  // e-stop tick (effective already 0) and the e-stop-dropped tick (effective = the held trigger): both 0.
+  assert(handbackCapStep(cap, 0, 255, 8, &clr) == 0 && !clr);
+  assert(handbackCapStep(cap, 255, 255, 8, &clr) == 0 && !clr);
+  // Feathering (9 counts) is not a full release.
+  assert(handbackCapStep(cap, 9, 9, 8, &clr) == 0 && !clr);
+  // Full release: cleared.
+  assert(handbackCapStep(cap, 0, 0, 8, &clr) == 0 && clr);
+  if (clr) cap = kHandbackNone;
+  // Next squeeze: manual, uncapped (the ramp in calcPWM() softens it from 0).
+  assert(handbackCapStep(cap, 200, 200, 8, &clr) == 200 && !clr);
+  // N-3: Gate 9 with the approach zone off - rtm_approach_cap was 255, which used to be what was armed
+  // (no cap at all). kRtmEndHandbackCap holds the motor at 0 instead.
+  const uint8_t zone_off_cap = 255;
+  assert(handbackCapStep(zone_off_cap, 255, 255, 8, &clr) == 255);       // the old arm: nothing held
+  assert(handbackCapStep(kRtmEndHandbackCap, 255, 255, 8, &clr) == 0);   // the new arm
+}
+
 static void testRtmGateFault()
 {
   RtmGateFaultState s = {0, 0};
@@ -256,6 +286,7 @@ static void testCandidateMayForm()
 int main()
 {
   testHandbackCap();
+  testRtmEndHandback();
   testRtmGateFault();
   testBootId();
   testRefreshExpiry();

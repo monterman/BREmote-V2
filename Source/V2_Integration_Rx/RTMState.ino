@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - EVERY RTM END ARMS THE HAND-BACK CAP AT 0 (audit N-2, N-3, N-4): Phase C's three FAIL ends now arm it before rtm_rx_active goes false (they armed nothing, and the next tick dropped the emergency stop under a held trigger); Gate 9, the S-8 remote reboot and the H-1 refresh expiry arm kRtmEndHandbackCap (0) instead of rtm_approach_cap, which is 255 with the approach zone off or already reset that tick. No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - SIGNED STAMP AGES (audit N-1, N-6, N-7): every loop-task comparison of the tick's clock against a stamp the radio task writes (rx_tx_gps_timestamp, last_packet, fm_mode_last_rx_ms, rtm_refresh_last_ms) now uses stampAgeMs() / stampStale() from Common/AutoReturnRules.h - a stamp written after the loop read the clock reads as age 0 instead of wrapping to ~49 days. Sites: RTM gates 4 and 7, Phase C check 3, the Phase B revoke, the distance block, the BOOTSTRAP-1 rider distance, Follow-Me conditions 4 and 7, fmFailingConditionsMask() (now reads millis() itself, N-6), the 95 s mode-age expiry (N-7; a real expiry from an engaged state now keeps the cap in force as the hand-back cap), the RTM refresh expiry (N-1, in the header) and two level-5 log ages. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - D-1 follow-up: kDistBlankStaleMs 10000 -> 0. The distance inputs already accept a rider fix up to 10 s old, so the extra 10 s kept a frozen number on the remote for ~20 s; the byte now goes 0xFF as soon as the rider fix is > 10 s old (buggy fix > 6 s), and still needs 1 s of valid inputs to come back. Telemetry only. No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - S-3: the auto-return candidate may also form in FM_ARMED (the state a trigger release leaves, HOLD-ESCAPE-2) when Follow-Me has engaged since the declaration (fm_engaged_this_run, set on the ACTIVE edge, cleared by fmResetReturnState() on disarm / expiry / fault end / reboot / RTM yield), and only beyond D_engage, on every tick for such a candidate (fm_return_from_armed). The proof is unchanged. "Release, surf or stop, squeeze later" now earns the return. No confStruct change, SW_VERSION stays 36.
@@ -548,9 +549,8 @@ static bool checkRtmSafetyGates()
   // Clean disengagement: set rtm_rx_active=false and leave rtm_rx_emergency_stop=false.
   // V2.5-Evo - 2026-10-07 - THE ARRIVAL HAND-BACK CAP (owner rule, shared with auto-return). The
   // mode still ends here and the steering is the rider's at once, but the throttle is NOT handed back
-  // at the held trigger any more: the cap in force at arrival (rtm_approach_cap, which this tick's
-  // distance block has just set from the arrival distance - close to 0 at the stop distance) is kept
-  // by handbackCapArm() until the rider lets go of the trigger fully once, then manual is uncapped.
+  // at the held trigger any more: a hand-back cap (0 since N-3, see below) is kept by handbackCapArm()
+  // until the rider lets go of the trigger fully once, then manual is uncapped.
   // Before, a rider still at 100 % got the full held trigger back through the 1 s manual ramp, 3 m
   // from himself. handbackCapArm() runs FIRST so the motor task never sees neither cap standing.
   // rtm_approach_cap itself is still reset to 255 (RTM's own cap goes with the mode).
@@ -563,16 +563,19 @@ static bool checkRtmSafetyGates()
   uint16_t stop_dist_m = (usrConf.rtm_stop_distance_m > 0) ? usrConf.rtm_stop_distance_m : 10u;
   float dist_m = (float)TinyGPSPlus::distanceBetween(
       gps_last_lat, gps_last_lng, rx_tx_gps_lat, rx_tx_gps_lng);
+  // V2.5-Evo - 2026-10-07 - N-3: THE ARRIVAL ARMS 0, NOT rtm_approach_cap. That cap is 255 when
+  // rtm_approach_zone_m is 0 (feature off) or not larger than the stop distance, so with those settings
+  // the held trigger came straight back at the stop distance. kRtmEndHandbackCap (0) is what the approach
+  // ramp reaches at the stop distance anyway with the owner's 12 m / 3 m, so nothing changes there.
   if (dist_m < (float)stop_dist_m)
   {
-    const uint8_t arrival_cap = rtm_approach_cap.load();
-    handbackCapArm(arrival_cap);       // FIRST: the cap in force at arrival stays until one full release
+    handbackCapArm(kRtmEndHandbackCap);   // FIRST: 0 until one full release (N-3)
     rtm_rx_active         = false;   // disarm — enter inactive path next tick
     rtm_rx_emergency_stop = false;   // no emergency
     rtm_approach_cap      = 255;     // RTM's own cap goes with the mode; the hand-back cap carries the limit
     rtm_arrival_alarm_ms  = (now != 0) ? now : 1;   // V2.5-Evo - 2026-10-07 - A-1: rx_state_flags bit 1 (sticky) tells the remote
-    Serial.printf("RTM [RX] Gate 9: reached stop distance (%.1f m < %u m) — RTM ended, steering is yours; throttle held at the arrival cap %u/255 until you let go of the trigger fully once\n",
-                  dist_m, stop_dist_m, (unsigned)arrival_cap);
+    Serial.printf("RTM [RX] Gate 9: reached stop distance (%.1f m < %u m) — RTM ended, steering is yours; throttle held at %u/255 until you let go of the trigger fully once\n",
+                  dist_m, stop_dist_m, (unsigned)kRtmEndHandbackCap);
     return false;
   }
 
@@ -3278,6 +3281,11 @@ static void updateRtmSteering()
 }
 
 // ---- Phase C anti-spoofing (runs during active RTM, every 5s) ----
+// V2.5-Evo - 2026-10-07 - N-2: each of the three FAIL ends arms the hand-back cap at 0
+// (kRtmEndHandbackCap) BEFORE rtm_rx_active goes false. They raise the emergency stop, but the inactive
+// path drops it on the next tick, so without the cap a rider still holding the trigger got it back at
+// once with nothing in between - and the remote, told by rx_state_flags bit 0 that the buggy holds the
+// throttle at 0 until a full release, would have dropped its own RTM cap on that promise.
 static void runPhaseC()
 {
   if (!rtm_rx_active || rtm_rx_emergency_stop) return;
@@ -3306,6 +3314,7 @@ static void runPhaseC()
     {
       Serial.printf("RTM [PhC] FAIL convergence: dist %.0f m (was %.0f m) — not closing\n",
                     dist_m, rtm_prev_dist_m);
+      handbackCapArm(kRtmEndHandbackCap);   // V2.5-Evo - 2026-10-07 - N-2: FIRST - the held trigger is not handed back unreleased
       rtm_rx_emergency_stop = true;
       rtm_rx_active = false;
       rtm_fault_alarm_ms = (now != 0) ? now : 1;   // V2.5-Evo - 2026-10-07 - A-1: RTM ended on a fault -> rx_state_flags bit 0
@@ -3343,6 +3352,7 @@ static void runPhaseC()
         {
           Serial.printf("RTM [PhC] FAIL VESC speed: VESC=%.1f km/h GPS=%.1f km/h diff=%.1f\n",
                         vesc_speed_kmh, gps_last_speed_kmh, speed_diff);
+          handbackCapArm(kRtmEndHandbackCap);   // V2.5-Evo - 2026-10-07 - N-2: FIRST (see check 1)
           rtm_rx_emergency_stop = true;
           rtm_rx_active = false;
           rtm_fault_alarm_ms = (now != 0) ? now : 1;   // V2.5-Evo - 2026-10-07 - A-1: RTM ended on a fault -> rx_state_flags bit 0
@@ -3361,6 +3371,7 @@ static void runPhaseC()
   if (stampStale((uint32_t)millis(), (uint32_t)rx_tx_gps_timestamp, (uint32_t)usrConf.tx_gps_stale_timeout_ms))
   {
     Serial.println("RTM [PhC] FAIL TX GPS freshness");
+    handbackCapArm(kRtmEndHandbackCap);   // V2.5-Evo - 2026-10-07 - N-2: FIRST (see check 1)
     rtm_rx_emergency_stop = true;
     rtm_rx_active = false;
     rtm_fault_alarm_ms = (now != 0) ? now : 1;   // V2.5-Evo - 2026-10-07 - A-1: RTM ended on a fault -> rx_state_flags bit 0
@@ -3884,9 +3895,10 @@ static void runRtmLoopBody(unsigned long now)
   // Radio.ino bumps rx_tx_boot_change_seq when the remote's boot ID changes (a remote that sends no
   // ID never bumps it). Read on EVERY tick, active or not, so a reboot seen while RTM was idle is
   // consumed at once and can never cancel a later run. A rebooted remote is not running RTM, so the
-  // buggy ends it here instead of waiting for the remote to notice fm_status bit 1. The cap in force
-  // stays as the hand-back cap (0 while a gate fault holds the motor), FIRST, so the trigger the
-  // rider may be holding is never handed back unreleased. Not a fault: no rx_state_flags bit 0.
+  // buggy ends it here instead of waiting for the remote to notice fm_status bit 1. The hand-back cap
+  // is armed FIRST - at 0 since N-4 (it used to be the approach cap, already 255 outside the zone on
+  // this tick) - so the trigger the rider may be holding is never handed back unreleased. Not a fault:
+  // no rx_state_flags bit 0.
   // ============================================================
   {
     static uint8_t rtm_boot_seq_seen = 0;
@@ -3896,11 +3908,11 @@ static void runRtmLoopBody(unsigned long now)
       rtm_boot_seq_seen = seq;
       if (rtm_rx_active)
       {
-        handbackCapArm(rtm_rx_emergency_stop ? 0 : rtm_approach_cap.load());
+        handbackCapArm(kRtmEndHandbackCap);   // V2.5-Evo - 2026-10-07 - N-4: 0, not the approach cap (already 255 outside the zone this tick)
         rtm_rx_active         = false;
         rtm_rx_emergency_stop = false;
         rtm_approach_cap      = 255;
-        Serial.println("RTM [RX] S-8: the remote was switched off and on - return-to-me ended; throttle held at the cap in force until you let go of the trigger fully once");
+        Serial.println("RTM [RX] S-8: the remote was switched off and on - return-to-me ended; throttle held at 0 until you let go of the trigger fully once");
       }
     }
   }
@@ -3963,7 +3975,7 @@ static void runRtmLoopBody(unsigned long now)
   // rtm_rx_active is set and cleared only by 0xF1 bursts, so a lost 0xF1/0 (remote switched off,
   // deep sleep, all three packets lost) left the buggy in RTM with the remote showing manual. A
   // remote that refreshes RTM (0xF1/2 about once a second, see Radio.ino) and then goes quiet for
-  // kRtmRefreshExpiryMs ends the run here: the cap in force stays as the hand-back cap (FIRST), RTM
+  // kRtmRefreshExpiryMs ends the run here: the hand-back cap is armed FIRST (at 0 since N-4), RTM
   // ends, and rx_state_flags bit 0 tells the remote it was a fault. rtmRefreshExpired() returns false
   // for any run in which no refresh has been heard - today's remote never refreshes, and an
   // unconditional expiry would cut every legitimate return short.
@@ -3971,12 +3983,12 @@ static void runRtmLoopBody(unsigned long now)
   if (rtmRefreshExpired(rtm_rx_active, rtm_refresh_seen.load(), (uint32_t)rtm_refresh_last_ms.load(),
                         (uint32_t)now, kRtmRefreshExpiryMs))
   {
-    handbackCapArm(rtm_rx_emergency_stop ? 0 : rtm_approach_cap.load());
+    handbackCapArm(kRtmEndHandbackCap);   // V2.5-Evo - 2026-10-07 - N-4: 0, not the approach cap (already 255 outside the zone this tick)
     rtm_rx_active         = false;
     rtm_rx_emergency_stop = false;
     rtm_approach_cap      = 255;
     rtm_fault_alarm_ms    = (now != 0) ? now : 1;
-    Serial.printf("RTM [RX] H-1: no RTM refresh from the remote for %lu ms - return-to-me ENDED on a fault; throttle held at the cap in force until you let go of the trigger fully once\n",
+    Serial.printf("RTM [RX] H-1: no RTM refresh from the remote for %lu ms - return-to-me ENDED on a fault; throttle held at 0 until you let go of the trigger fully once\n",
                   (unsigned long)kRtmRefreshExpiryMs);
     return;
   }
@@ -4035,7 +4047,7 @@ static void runRtmLoopBody(unsigned long now)
       if (rtmGateFaultStep(&rtm_gate_fault, (uint32_t)now, held,
                            rtm_rx_active && rtm_rx_emergency_stop, kRtmGateFaultMs, kRtmGateFaultMaxDtMs))
       {
-        handbackCapArm(0);                 // FIRST: the motor stays at 0 until one full release
+        handbackCapArm(kRtmEndHandbackCap); // FIRST: the motor stays at 0 until one full release
         rtm_rx_active         = false;     // RTM ends - the inactive path from the next tick
         rtm_rx_emergency_stop = false;
         rtm_approach_cap      = 255;

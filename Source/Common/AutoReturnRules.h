@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - kRtmEndHandbackCap (audit N-2, N-3, N-4): every end of manual return-to-me (Gate 9,
+//   Phase C, the refresh expiry, the gate-fault timeout, a remote reboot) arms the hand-back cap at 0.
 // V2.5-Evo - 2026-10-07 - SIGNED STAMP AGES (audit N-1, N-6, N-7): rtmRefreshExpired() treats a refresh stamped
 //   AFTER the caller read the clock (age <= 0) as fresh instead of 49 days old; new stampAgeMs() / stampStale()
 //   clamp a negative age to 0 for every loop-task comparison against a stamp the radio task writes; new
@@ -84,6 +86,16 @@ static inline uint8_t handbackCapStep(uint8_t cap, uint8_t effective, uint8_t tr
   if (trigger < release_below) *clear_out = true;
   return (cap < effective) ? cap : effective;
 }
+
+// V2.5-Evo - 2026-10-07 - audits N-2, N-3, N-4: EVERY END OF MANUAL RETURN-TO-ME ARMS THE HAND-BACK CAP AT 0.
+// The RX used to arm "the cap in force" at some RTM ends and nothing at others:
+//   - Phase C (N-2) armed nothing: the emergency stop was dropped on the next tick and the held trigger came
+//     back with no cap - against the documented rx_state_flags bit 0 contract;
+//   - Gate 9 (N-3), the remote reboot and the refresh expiry (N-4) armed rtm_approach_cap, which is 255 when
+//     the approach zone is 0 or smaller than the stop distance, or was already reset to 255 that tick.
+// One number for all of them (Gate 9, Phase C, H-1, H-2, S-8): 0. The rider lets go fully once, then the
+// throttle is plain manual. Auto-return arrival keeps its own rule (the cap in force, near 0 at the stop radius).
+static const uint8_t kRtmEndHandbackCap = 0;
 
 // ============================================================
 // 2. H-2: RTM GATES 2-7 FAILING UNDER A HELD TRIGGER END RTM

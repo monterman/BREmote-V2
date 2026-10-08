@@ -77,6 +77,8 @@ two 22 B IMU blocks = **170 B/record** (98 CSV columns). Log format stays 3 (a t
   at 2 Hz — use the script's own peak prints or VESC Tool's realtime IMU view.
 - **Capacity:** about 56 min at 3 Hz / 34 min at 5 Hz on 1690 KB free (owner's RX2, no reserve
   subtracted); about 40 / 24 min against the figure `?logstat` reports. Clear old logs first.
+- **Download level-6 logs before flashing older firmware - older builds refuse 170 B records.** (The PC
+  log reader still decodes them.)
 - **`?diag`** shows a `VESC 2 IMU` line (poll success, polling / idle / waiting / backed off), the last
   sample with its age and verdict, and an `RX IMU` line.
 

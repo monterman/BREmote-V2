@@ -490,7 +490,9 @@ The RX board logs GPS position, VESC telemetry, voltage, speed, and timestamps t
 | **5 — Everything** (test sessions) | 126 B | ≈ 1 h 19 min at 3 Hz, ≈ 48 min at 5 Hz | + the rider’s position as the buggy holds it (fix counter + age), the Return-to-Me phase and approach cap, the align cap / boost / mixer influence in force, the remote’s auto-return override, the Follow-Me flags echoed to the remote, keepalive age. Clear the logs first (`?deleteallogs`). |
 | **6 — IMU** (test sessions that need the IMU) | 170 B | ≈ 59 min at 3 Hz, ≈ 35 min at 5 Hz | + VESC 2’s IMU, polled over CAN twice a second while the log records: roll / pitch / yaw (deg), gyro x / y / z (deg/s), acceleration x / y / z (g), its age and a status (1 OK, 2 stale, 3 implausible = IMU off or not detected). Plus reserved columns for a future RX-mounted IMU, which always read -999 today. Every missing, stale (> 1.5 s) or implausible value reads -999. Gyro peaks shorter than ~1 s are not resolved at 2 Hz. 5 Hz buys nothing for the IMU. Clear the logs first. |
 
-The logger deletes other log files to keep 500 KB free; once there is nothing left to delete it keeps writing until the storage is full. Old logs left on the board count against the figures above, so clear them before a long test session. Levels 1 and 2 are reserved and currently log as level 3.
+The logger deletes other log files to keep 500 KB free; once there is nothing left to delete it keeps writing until the storage is full. Old logs left on the board count against the figures above, so clear them before a long test session. Levels 1 and 2 are reserved and currently log as level 3. The figures above are on the 1757 KB the RX filesystem reports, with nothing else stored; the config page and `docs/LOGGER_NOTES.md` quote level 6 on 1690 KB free (the owner's RX2): about 56 min at 3 Hz / 34 min at 5 Hz.
+
+**Download level-6 logs before flashing older firmware - older builds refuse 170 B records.**
 
 *\* Date format changed from DDMMYY (original LudwigBre) to MMDDYY in V2.5-Evo.*
 

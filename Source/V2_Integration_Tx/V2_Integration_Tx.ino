@@ -4,7 +4,7 @@
 //   change.
 // V2.5-Evo - 2026-10-07 - H-4: auto-sleep on buggy silence now also needs 30 s with no rider input and the trigger
 //   at or below 20; the user-idle sleep is unchanged. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
-// V2.5-Evo - 2026-07-20 - BLE re-enable deep-fix (Rex): the per-loop bleTelemetryLoop()/extTelemNotify() pushes are REMOVED from loop(); the periodic BLE telemetry push now lives in the dedicated Core-0 bleNotifyTask (see Init.ino/BLE.ino) so BLE cadence can't couple to display-render timing.
+// V2.5-Evo - 2026-07-20 - BLE re-enable deep-fix (audit): the per-loop bleTelemetryLoop()/extTelemNotify() pushes are REMOVED from loop(); the periodic BLE telemetry push now lives in the dedicated Core-0 bleNotifyTask (see Init.ino/BLE.ino) so BLE cadence can't couple to display-render timing.
 // V2.5-Evo - 2026-07-20 - MagGesture FIX1: with mag_mode>0 the Hall is EXCLUSIVELY the FM/RTM gesture input — the SW33b tap→bt_dot_state (BLE-session) toggle is gated OFF and the BT dot is instead driven from BLE state (bt_enabled==2/boot-gesture). mag_mode==0 SW33b behaviour is byte-identical to baseline.
 // V2.5-Evo - 2026-07-20 - MagGesture: runMagGesture() called from loop() after the SW33b Hall block; prototype added
 // *** LATEST: V2.5-Evo - 2026-05-15 - feature/bluetooth Tier 1: NUS skeleton (BLE.ino); bt_enabled SPIFFS field; boot gesture; bleInitTask 5s delayed ***
@@ -87,7 +87,7 @@ void renderRtmInfoDisplay();
 void initBLE();
 // V2.5-Evo - 2026-07-20 - true on a live BLE connection; Display.ino uses it to make the BT dot SOLID (defined in BLE.ino).
 bool bleIsConnected();
-// V2.5-Evo - 2026-07-20 - BLE re-enable deep-fix (Rex §4.4/§4.5): consolidated back-pressured push
+// V2.5-Evo - 2026-07-20 - BLE re-enable deep-fix (audit §4.4/§4.5): consolidated back-pressured push
 // (bleServiceNotify), the dedicated Core-0 push task (bleNotifyTask), and the optional-module stream helpers.
 void bleServiceNotify();
 void bleNotifyTask(void* param);
@@ -268,7 +268,7 @@ void loop()
   runMagGesture();
 
   checkSerial();
-  // V2.5-Evo - 2026-07-20 - BLE re-enable deep-fix (Rex §4.5): the BLE telemetry push was moved OUT of
+  // V2.5-Evo - 2026-07-20 - BLE re-enable deep-fix (audit §4.5): the BLE telemetry push was moved OUT of
   // loop() into the dedicated Core-0 bleNotifyTask (spawned by bleInitTask after a successful init), so
   // that BLE cadence can never extend the same loop iteration that renders the display. Nothing BLE-
   // related runs here anymore; loop() timing (and thus GPS meta ≥2 Hz + RTM/FM cadence) is protected.

@@ -22,7 +22,7 @@
 // V2.5-Evo - 2026-10-06 - F-label hold: showFmLabelHeld() draws "F<n>" and renderOperationalDisplay() leaves the
 //   digit zone alone for kFmLabelHoldMs (2 s) afterwards, so a station/mode confirm stays readable WITHOUT blocking
 //   loop(). Used by all four F-label sites in RTMState.ino. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
-// V2.5-Evo - 2026-09-30 - MagFix (Rex delta audit LOW): updateR5ProximityBar() now CALLS fmIsEngaged() instead of
+// V2.5-Evo - 2026-09-30 - MagFix (delta audit LOW): updateR5ProximityBar() now CALLS fmIsEngaged() instead of
 //   repeating its three-part test inline, so the engaged distance bar, the C7 R3/R4 FM dots and the magnet-tap
 //   safety gate all read one predicate and cannot drift apart. Presentation only: no confStruct change, sizeof
 //   stays 136, SW_VERSION stays 27. Visible effect: the bar and the dots now wait for the same corroboration the
@@ -33,7 +33,7 @@
 //   bar. C7 R2 stays free on purpose, reserved for a future Return-To-Me dot. No new clear-mask plumbing needed —
 //   the digit-clear masks are already 0xFF80, which preserves bit 7.
 // V2.5-Evo - 2026-07-25 - displayDistanceInUnits(): decimal dot = TRUE decimal always; >=100 m scrolls non-blocking "FAR" (old ×100-dot far branch deleted); metres rendered for both dist_unit settings (feet parked)
-// V2.5-Evo - 2026-07-20 - Rex §4.6 (H4): every HT16K33 (0x70) Wire transaction below now takes i2cMutex (I2C_LOCK/UNLOCK) so it can't tear against the ADS1115 ADC read on the shared bus. displayMutex still guards displayBuffer; i2cMutex is the inner bus lock. No leaf-lock function calls another leaf-lock function, so there is no re-entrant deadlock.
+// V2.5-Evo - 2026-07-20 - audit §4.6 (H4): every HT16K33 (0x70) Wire transaction below now takes i2cMutex (I2C_LOCK/UNLOCK) so it can't tear against the ADS1115 ADC read on the shared bus. displayMutex still guards displayBuffer; i2cMutex is the inner bus lock. No leaf-lock function calls another leaf-lock function, so there is no re-entrant deadlock.
 // V2.5-Evo - 2026-07-20 - GPS dot: solid only on FM-grade fix (adds HDOP + speed-valid to match the publish gate); solid branch now calls shared txGpsGoodFix() (GPS.ino).
 // V2.5-Evo - 2026-07-20 - BT dot: SOLID when a BLE device is actually connected (e.g. Waveshare); blink (SLOW/FAST) still means advertising-only. Display-layer override in updateBargraphs(), guarded by BLE_ENABLED; does not touch bt_dot_state.
 // V2.5-Evo - 2026-05-14 - SW55: bootAnimation VI display 500→250ms; battery voltage display 500→1450ms; total boot to padlock ~4.5s
@@ -1686,7 +1686,7 @@ void renderRtmInfoDisplay()
 
 // ============================================================
 // V2.5-Evo - 2026-04-28 - P9 S4: R5 PROXIMITY BAR
-// V2.5-Evo - 2026-07-20 - Batch T (Fable FM v1.4): FM path is now STATE-DRIVEN from
+// V2.5-Evo - 2026-07-20 - Batch T (FM design v1.4): FM path is now STATE-DRIVEN from
 //   telemetry.fm_flags + TX-local state. Suppressed during showFullScreenMessage() (buffer
 //   cleared, not called during blocking messages). All R5 writes stay inside displayBuffer[6]
 //   under the caller's displayMutex (renderOperationalDisplay / renderRtmInfoDisplay hold it),
@@ -1792,7 +1792,7 @@ void updateR5ProximityBar()
   // Reuses the RX→TX distance byte (telemetry.rtm_distance). Full-scale = fm_warn_distance_m so
   // the bar fills as the buggy falls behind and is full at the proximity-warn threshold. Same
   // GROW-WITH-FAR direction as the RTM bar above (one physical row, one meaning across modes).
-  // V2.5-Evo - 2026-09-30 - MagFix (Rex delta audit LOW): this CALLS fmIsEngaged() now instead of
+  // V2.5-Evo - 2026-09-30 - MagFix (delta audit LOW): this CALLS fmIsEngaged() now instead of
   // repeating its test inline. The old inline copy (armed + link fresh + FM_FLAG_ENGAGED) happened to
   // agree with the safety gate, and a comment claimed the two "can never disagree" — true only until
   // the next edit to either one, and that edit came immediately: fmIsEngaged() now also demands

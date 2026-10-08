@@ -8,12 +8,12 @@
 // V2.5-Evo - 2026-06-04 - Entire file guarded by BLE_ENABLED (BREmote_V2_Tx.h). With the guard
 // undefined the whole NimBLE stack is excluded from the build (disabled for water testing).
 // V2.5-Evo - 2026-07-20 - Added bleIsConnected() accessor so Display.ino can render the BT dot SOLID on a live connection.
-// V2.5-Evo - 2026-07-20 - BLE re-enable deep-fix (Rex): onConnect relaxes the connection interval (§4.3) and
+// V2.5-Evo - 2026-07-20 - BLE re-enable deep-fix (audit): onConnect relaxes the connection interval (§4.3) and
 //   stops advertising for single-peripheral operation (§4.2); the three concurrent notify streams are
 //   consolidated into ONE back-pressured stream (§4.4) pushed from a dedicated Core-0 task (§4.5), not loop().
 // V2.5-Evo - 2026-07-21 - DIAG: promoted the bleServiceNotify() heap-suspend flag to a file-scope
 //   volatile bool (ble_notify_heap_suspended) so the ?state command can report notify active/SUSPENDED.
-// V2.5-Evo - 2026-07-20 - Rex re-audit: added a RUNTIME heap-floor net in bleServiceNotify that suspends
+// V2.5-Evo - 2026-07-20 - re-audit: added a RUNTIME heap-floor net in bleServiceNotify that suspends
 //   telemetry notifies below BLE_HEAP_RUNTIME_FLOOR_BYTES (M2), and made vescProtoMode std::atomic<bool> (L3).
 #ifdef BLE_ENABLED
 
@@ -30,7 +30,7 @@ static NimBLEServer*         bleServer     = nullptr;
 static NimBLECharacteristic* nusTxChar     = nullptr;
 static NimBLECharacteristic* nusRxChar     = nullptr;
 static bool                  bleRunning    = false;
-// V2.5-Evo - 2026-07-20 - Rex L3 (re-audit): vescProtoMode is written by the NimBLE host task
+// V2.5-Evo - 2026-07-20 - audit L3 (re-audit): vescProtoMode is written by the NimBLE host task
 // (onWrite/onConnect/onDisconnect) and read by the Core-0 notify task (bleServiceNotify). As a plain
 // bool that cross-task read/write is technically a data race (benign on the single-core C3 — only
 // preemption, no true parallelism — but the owner wants it clean). Made std::atomic<bool> to match the
@@ -180,7 +180,7 @@ static void sendVescGetValues() {
 }
 
 // CSV push for non-VESC apps (Serial BT Terminal)
-// V2.5-Evo - 2026-07-20 - Rex §4.4: returns the notify() result so the caller can apply backpressure.
+// V2.5-Evo - 2026-07-20 - audit §4.4: returns the notify() result so the caller can apply backpressure.
 static bool sendCSVTelemetry() {
   if (!bleRunning || !nusTxChar) return false;
   if (!bleServer->getConnectedCount()) return false;
@@ -215,7 +215,7 @@ class BLEServerCB : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
     vescProtoMode = false;  // reset on each new connection
 
-    // Rex §4.3 — request a RELAXED connection interval the instant a central connects. This is the
+    // audit §4.3 — request a RELAXED connection interval the instant a central connects. This is the
     // single highest-leverage single-core mitigation: a longer interval = the BT controller wakes far
     // less often = far less of the one C3 core stolen from the display render and the LoRa sendData
     // path, protecting BOTH the display and LoRa/FM timing. Units: 1.25 ms per interval step,
@@ -224,7 +224,7 @@ class BLEServerCB : public NimBLEServerCallbacks {
                               BLE_CONN_MIN_INTERVAL, BLE_CONN_MAX_INTERVAL,
                               BLE_CONN_LATENCY, BLE_CONN_TIMEOUT);
 
-    // Rex §4.2 — peripheral, single connection. This firmware is server/peripheral-only by
+    // audit §4.2 — peripheral, single connection. This firmware is server/peripheral-only by
     // construction (it never scans or acts as a central). Stop advertising while connected so a
     // second central cannot attach; advertising is restarted on disconnect below.
     NimBLEDevice::stopAdvertising();
@@ -245,7 +245,7 @@ void initBLE() {
   char devName[20];
   snprintf(devName, sizeof(devName), "BRemote-TX-%02X", mac[5]);
 
-  // Rex §4.1 — log free internal DRAM immediately before and after the NimBLE stack init so the
+  // audit §4.1 — log free internal DRAM immediately before and after the NimBLE stack init so the
   // no-PSRAM C3's real cost is visible on the bench (the bleInitTask floor-guard already refused to
   // reach here if the pre-init heap was below BLE_HEAP_FLOOR_BYTES). Same instrumentation that caught
   // the sibling foilIQ S3 collapse (81776 → 11688 → init FAILED).
@@ -256,7 +256,7 @@ void initBLE() {
                 (unsigned)heap_pre, (unsigned)heap_post, (int)heap_pre - (int)heap_post);
   NimBLEDevice::setPower(9);
 
-  // Rex §4.2 — peripheral, single-connection footprint: this app creates ONLY a GATT server (no
+  // audit §4.2 — peripheral, single-connection footprint: this app creates ONLY a GATT server (no
   // scanner, no client), so it is peripheral-only by construction. Advertising is stopped on connect
   // (BLEServerCB::onConnect) so a second central can't attach.
   bleServer = NimBLEDevice::createServer();
@@ -302,7 +302,7 @@ bool bleIsConnected() {
   return bleRunning && bleServer && bleServer->getConnectedCount() > 0;
 }
 
-// V2.5-Evo - 2026-07-20 - Rex §4.4 + §4.5 — consolidated, back-pressured telemetry push. ONE stream
+// V2.5-Evo - 2026-07-20 - audit §4.4 + §4.5 — consolidated, back-pressured telemetry push. ONE stream
 // at a time, driven by bleNotifyTask() (below), NEVER from loop(). This replaces the old pair of
 // concurrent pushers (bleTelemetryLoop CSV @500ms + ext-telemNotifyLoop @200ms):
 //   - VESC-Tool mode → stay silent; the app drives its own request/response cycle (NusRxCB::onWrite).
@@ -322,7 +322,7 @@ void bleServiceNotify() {
 
   if (vescProtoMode) return;  // VESC Tool drives its own polling cycle via requests
 
-  // V2.5-Evo - 2026-07-20 - Rex M2 (re-audit): RUNTIME heap floor. The init-time floor in bleInitTask
+  // V2.5-Evo - 2026-07-20 - audit M2 (re-audit): RUNTIME heap floor. The init-time floor in bleInitTask
   // only guards NimBLEDevice::init() once at boot; it does nothing against a runtime H2 heap collapse
   // under a live connection. This is that missing net: before every push, read free INTERNAL DRAM and
   // SUSPEND telemetry notifies if it falls below BLE_HEAP_RUNTIME_FLOOR_BYTES — skipping the push keeps
@@ -359,7 +359,7 @@ void bleServiceNotify() {
   if (millis() - last_ms < BLE_TELEM_INTERVAL_MS) return;
   last_ms = millis();
 
-  // Exactly ONE stream per tick (Rex §4.4).
+  // Exactly ONE stream per tick (audit §4.4).
 #ifdef EXT_TELEM_ENABLED
   bool ok = extTelemHasSubscriber() ? sendExtTelem() : sendCSVTelemetry();
 #else
@@ -372,7 +372,7 @@ void bleServiceNotify() {
   if (!ok) last_ms += BLE_TELEM_INTERVAL_MS;
 }
 
-// V2.5-Evo - 2026-07-20 - Rex §4.5 — dedicated BLE notify task. Core 0 (ESP32-C3 is single-core),
+// V2.5-Evo - 2026-07-20 - audit §4.5 — dedicated BLE notify task. Core 0 (ESP32-C3 is single-core),
 // priority 1 (below every app task, above idle) so BLE cadence can never couple to loop()'s display-
 // render timing. It only reads telemetry/state and calls notify(); it NEVER touches displayBuffer or
 // the Wire bus. It delays every tick via vTaskDelayUntil, so idle keeps running and the native task

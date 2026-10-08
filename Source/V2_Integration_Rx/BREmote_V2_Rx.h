@@ -32,7 +32,7 @@
 // V2.5-Evo - 2026-07-25 - A2: fm_engage_dist_m promoted from RESERVED/unread to LIVE — runFmLoop() now reads it as the FM engage distance in METRES (rope length x ~1.15), 0 = auto (unchanged legacy behaviour). Comment/semantics only: no field added, moved or resized; sizeof(confStruct) stays 184, static_assert unchanged, SW_VERSION stays 34, SPIFFS config is NOT reset by this flash.
 // V2.5-Evo - 2026-07-24 - F9: VescLogData +6 bytes (tx_distance_dx10, rssi_dbm, snr_dx10) for owner-requested distance + link-quality CSV columns; sizeof 53->59; old SPIFFS logs misparse after this flash; NO confStruct change, SW_VERSION stays 34
 // V2.5-Evo - 2026-07-20 - SW33->34 config bump + defaultConf bake: appended THREE reserved confStruct slots — fm_engage_dist_m (float, 0=auto), auton_runtime_cap_s (uint16_t, 0=disabled), fm_steer_reposition_en (uint16_t, 0=off). All three are default-off storage slots and are NOT read by v1 control law — bundled together so the v2 features that will read them need NO second config wipe. sizeof(confStruct) 176->184 (float+u16+u16, naturally aligned, no tail pad); static_assert updated to 184. defaultConf carries the factory default configuration (compass cal fields made explicit, neutral). Behavior-IDENTICAL control law — config-layer only, no FM/RTM logic change. SPIFFS config IS reset by this flash (struct size changed); this is the one intended config-wipe event.
-// V2.5-Evo - 2026-07-20 - FM control brain (Fable v1.4): repurposed the unused reserved_tx_imu telemetry byte (index 16) as fm_flags — the coherent FM engagement sub-state the TX display consumes ([0]armed [1]engaged [2]armed-not-ready [3]fault-stop-sticky). No confStruct change, no telemetry-packet size change (byte was already present) — SW_VERSION stays 33, sizeof(confStruct) stays 176, SPIFFS config is NOT reset by this flash.
+// V2.5-Evo - 2026-07-20 - FM control brain (design v1.4): repurposed the unused reserved_tx_imu telemetry byte (index 16) as fm_flags — the coherent FM engagement sub-state the TX display consumes ([0]armed [1]engaged [2]armed-not-ready [3]fault-stop-sticky). No confStruct change, no telemetry-packet size change (byte was already present) — SW_VERSION stays 33, sizeof(confStruct) stays 176, SPIFFS config is NOT reset by this flash.
 // V2.5-Evo - 2026-07-19 - P3 FM: added fm_rx_active + fm_throttle_cap runtime atomics for the Follow-Me state machine. No confStruct change (FM reuses the 8 existing FM params) — SW_VERSION stays 33, sizeof stays 176, SPIFFS config is NOT reset by this flash.
 // V2.5-Evo - 2026-07-20 - FM engagement semantics: added fm_mode_last_rx_ms atomic (0xF2 declaration age, drives the 95 s mode-age expiry); R6 comment cleanup on the zone_angle_enter/exit + near_diag_offset block (described a non-existent engagement cone, wrong mode numbers, inverted signs, false "CURRENTLY UNUSED"). No confStruct change — sizeof stays 176, SW_VERSION stays 33, SPIFFS config is NOT reset by this flash.
 // V2.5-Evo - 2026-07-19 - FM triage: log the steering byte actually applied by calcPWM() (g_effective_steer global + VescLogData.effective_steer_log); VescLogData sizeof 52→53; old SPIFFS logs misparse after this flash; no confStruct change, SW_VERSION unchanged
@@ -1162,7 +1162,7 @@ double        rx_tx_gps_lat       = 0.0;  // TX latitude (degrees, WGS84)
 double        rx_tx_gps_lng       = 0.0;  // TX longitude (degrees, WGS84)
 unsigned long rx_tx_gps_timestamp = 0;    // millis() when last meta-packet received; 0 = never
 
-// V2.5-Evo - 2026-08-29 - REX R4-1. Bumped once per DISTINCT rider position by
+// V2.5-Evo - 2026-08-29 - AUDIT R4-1. Bumped once per DISTINCT rider position by
 // processMetaGpsPacket(), and read by everything downstream that needs to tell a genuinely new fix
 // from a re-broadcast. The TX transmits at 2 Hz off a 1 Hz GPS (3.0 Hz measured against 1 Hz in
 // the beta logs), so roughly every other meta packet repeats a position already seen.
@@ -1471,7 +1471,7 @@ static_assert(sizeof(VescLogData) == 62, "VescLogData size mismatch — check bi
 // WHY: a Follow-Me run that stops, holds, or refuses to engage leaves no record of WHICH gate did
 // it. These columns are the controller's own verdicts, copied out once per tick — not recomputed
 // by the logger from raw inputs — so a log row says what runFmLoop() actually decided at that
-// instant (Rex positive finding on robertzach's snapshot design).
+// instant (audit positive finding on robertzach's snapshot design).
 //
 // LAYOUT (history: 'LAYOUT IS FINAL' as written 2026-09-17; the record grew 83 -> 87 B on 2026-09-19,
 // see below). The P1 (return_candidate) and P2 (fade_bypass, transit, fm_station_deg_x10) fields

@@ -15,7 +15,7 @@
 //   the docs web serial config tool TX_FIELDS.
 // V2.5-Evo - 2026-10-06 - mag_mode text only: the 2.5 s hold now always starts the manual Return-To-Me (A1/A0 moved to the "rn" wait:
 //   RIGHT tap then LEFT hold), and taps within 1 s of a station step are ignored. Option 4 label updated. No field or range change.
-// V2.5-Evo - 2026-09-30 - MagFix (Rex delta audit): the mag_mode description is corrected where the firmware changed underneath it -
+// V2.5-Evo - 2026-09-30 - MagFix (delta audit): the mag_mode description is corrected where the firmware changed underneath it -
 //   the mode 4 tap window is 60-600 ms (was 400 ms; the real sample rate is ~110 ms, not the 20 ms the old design assumed), the 2.5 s
 //   hold is SESSION ONLY and never writes the saved setting, the OFF confirm is three firm taps instead of the long fault buzz, and
 //   mode 4 has no magnet disarm. Description text only: keys, types, ranges and defaults unchanged, and the same edit is mirrored

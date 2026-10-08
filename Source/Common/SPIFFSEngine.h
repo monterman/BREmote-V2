@@ -516,7 +516,7 @@ void getConfFromSPIFFS()
   {
     if(SW_VERSION != usrConf.version)
     {
-      // V2.5-Evo - 2026-07-21 - Stale-config trap fix (Rex MEDIUM). On a SAME-SIZE version bump the
+      // V2.5-Evo - 2026-07-21 - Stale-config trap fix (audit MEDIUM). On a SAME-SIZE version bump the
       // size guard in readConfFromSPIFFS() passes, so usrConf now holds STALE bytes from the previous
       // firmware — a field repurposed at the same offset would be silently misread. Previously we only
       // set config_version_error and RAN ON the stale config. Instead, take the same default re-bake

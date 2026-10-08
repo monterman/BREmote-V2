@@ -36,7 +36,7 @@
 //   step two stations while the rider felt only one count. (2) THE 2.5 s HOLD ALWAYS STARTS MANUAL RETURN-TO-ME,
 //   whatever the Follow-Me state (was: FM armed -> A1/A0 auto-return toggle). A1/A0 stays reachable from the "rn"
 //   wait (RIGHT tap then LEFT hold). No confStruct change, sizeof stays 136, SW_VERSION stays 27.
-// V2.5-Evo - 2026-09-30 - MagFix (Rex delta audit of 98fb7a8): runMagGesture() gains a SAMPLE-GAP GUARD (H-1) —
+// V2.5-Evo - 2026-09-30 - MagFix (delta audit of 98fb7a8): runMagGesture() gains a SAMPLE-GAP GUARD (H-1) —
 //   a hold is abandoned if loop() stalled long enough that the magnet pin went unsampled, so a blocking disarm,
 //   disengage or arm ceremony can no longer promote a 300 ms tap into the 2.5 s hold and silently turn
 //   Return-To-Me off. Applies to EVERY mag_mode role, because all of them time their holds off wall-clock.
@@ -60,7 +60,7 @@
 //   RTM/FM state change before). No confStruct change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-09-18 - comment only (review finding F8): the magnet-gesture header said "arming RTM disarms FM first"; corrected to the yield behaviour. No code change.
 // V2.5-Evo - 2026-09-18 - comment only: the magnet RTM-arm branch said setRtmArmed() disarms FM; it no longer does (Follow-Me stays armed through a return since 2026-09-18). No code change.
-// V2.5-Evo - 2026-09-17 - GestureAbort (Rex B7 case 2): handleGearToggle() now aborts any toggle hold the
+// V2.5-Evo - 2026-09-17 - GestureAbort (audit B7 case 2): handleGearToggle() now aborts any toggle hold the
 //   moment the trigger is squeezed (thr_scaled > 3 with steer_enabled, the same gate calcFilter() uses to hand
 //   the toggle to steering). Applies to the simple 2s holds, both combo holds and the post-action release wait. On abort
 //   in_menu is zeroed so the next calcFilter() pass returns the toggle to steering, and a throttle_abort flag
@@ -390,7 +390,7 @@ void handleGearToggle(int direction)
   // calcFilter() leaves the toggle in menu mode even if the rider squeezes the trigger — and
   // with the trigger squeezed the toggle IS the steering control. Before this fix a squeeze
   // mid-hold left the rider unable to steer until the hold finished or timed out, and a
-  // gear/mode/lock action could still fire on top of it (Rex B7 failure case 2).
+  // gear/mode/lock action could still fire on top of it (audit B7 failure case 2).
   //
   // The fix: any throttle above the calcFilter() steering threshold (thr_scaled > 3) abandons
   // the gesture immediately. in_menu = 0 lets the very next calcFilter() pass (10 ms task)
@@ -622,7 +622,7 @@ void handleGearToggle(int direction)
 //     them impossible to confuse with cold hands, wet hands, gloves or one-handed in chop. A hold in the
 //     dead zone is silent: the rider feels no buzz, nothing happens, and they simply tap again.
 //
-//     WHY THE TAP CEILING IS 600ms AND NOT 400ms (V2.5-Evo - 2026-09-30, Rex delta audit M-2). The original
+//     WHY THE TAP CEILING IS 600ms AND NOT 400ms (V2.5-Evo - 2026-09-30, delta audit M-2). The original
 //     400 ms ceiling was specified against a 20 ms sample rate that DOES NOT EXIST in this firmware. This
 //     function is reached once per loop() iteration and loop() ends in vTaskDelay(110), so the real magnet
 //     sample interval is ~110 ms, not 20 ms — kMagPollMs is only a floor, never the actual cadence. With
@@ -644,7 +644,7 @@ void handleGearToggle(int direction)
 //     the whip and the buggy is trailing — so a station transit pulls nobody. fmIsEngaged() is the test.
 //     Armed-but-not-engaged is exactly the tow state, and the tap is dead in it.
 //
-//     WHAT A STRAY MAGNET CAN AND CANNOT DO — CORRECTED V2.5-Evo - 2026-09-30 (Rex delta audit). An earlier
+//     WHAT A STRAY MAGNET CAN AND CANNOT DO — CORRECTED V2.5-Evo - 2026-09-30 (delta audit). An earlier
 //     version of this comment claimed a stray magnet "does nothing at all unless Follow-Me is already
 //     following". THAT WAS FALSE and is corrected here, because a comment that overstates a guard is worse
 //     than no comment. The truth:
@@ -741,7 +741,7 @@ static const uint32_t kMagRtmHoldMs  = 5000UL;   // hold >= this → arm RTM on 
 // still flutter the pin; the level must read the same for this long before it is accepted.
 // 120ms is well under the 2000ms shortest meaningful hold, so it cannot mask a real gesture.
 static const uint32_t kMagDebounceMs = 120UL;
-// kMagPollMs is a FLOOR, NOT THE ACTUAL SAMPLE RATE. V2.5-Evo - 2026-09-30 (Rex delta audit M-2): this
+// kMagPollMs is a FLOOR, NOT THE ACTUAL SAMPLE RATE. V2.5-Evo - 2026-09-30 (delta audit M-2): this
 // function is reached once per loop() iteration and loop() ends in vTaskDelay(110), so the real interval
 // between two P_MAG samples is ~110 ms. This constant only stops the gesture from re-sampling FASTER than
 // 20 ms if loop() ever gets shorter; it has never made the sampling 20 ms, and no timing rationale in this
@@ -751,7 +751,7 @@ static const uint32_t kMagPollMs     = 20UL;     // MINIMUM interval between sam
 // The real loop() period: V2_Integration_Tx.ino ends loop() with vTaskDelay(pdMS_TO_TICKS(110)). Everything
 // in this file that has to know how often the pin is actually read uses this, not kMagPollMs.
 static const uint32_t kMagLoopPeriodMs = 110UL;
-// ---- V2.5-Evo - 2026-09-30 - SAMPLE-GAP GUARD (Rex delta audit H-1) ----
+// ---- V2.5-Evo - 2026-09-30 - SAMPLE-GAP GUARD (delta audit H-1) ----
 // THE BUG THIS FIXES. Hold length was computed purely from wall-clock (now - mag_hold_start) with no check
 // that the pin had actually been READ across that interval. Any block of loop() longer than the hold
 // threshold therefore promoted a short touch into a long hold: a 300 ms tap taken while an FM fault-stop
@@ -765,7 +765,7 @@ static const uint32_t kMagLoopPeriodMs = 110UL;
 // the elapsed wall-clock, which needs a trustworthy cadence — the very thing that is missing here. One gap
 // measurement is direct evidence that the pin was not read, with nothing inferred.
 // WHY 5 LOOP PERIODS (550 ms): the real cadence is ~110 ms, so 5 periods clears ordinary jitter (display
-// writes, GPS drain, a serial command) without false-tripping, while still catching EVERY blocker Rex
+// writes, GPS drain, a serial command) without false-tripping, while still catching EVERY blocker audit
 // listed — the shortest of them is 2000 ms, and even a gear-flash hold (gear_display_time, 800 ms default)
 // is caught. THE COST OF A FALSE TRIP IS ZERO RISK: the gesture is abandoned silently and the rider taps
 // again. APPLIES TO EVERY ROLE, not just mode 4: roles 1-3 measure their 2 s / 5 s holds off the same
@@ -777,7 +777,7 @@ static const uint32_t kMagSampleGapMaxMs = 5UL * kMagLoopPeriodMs;   // 550 ms
 static const uint32_t kMagMaxHoldMs  = 30000UL;
 // ---- V2.5-Evo - 2026-09-30 - MagStations: mag_mode 4 timing (compile-time only, no confStruct change) ----
 // A TAP is 60-600 ms of magnet-present. 60 ms is the floor because anything shorter is indistinguishable
-// from contact bounce. 600 ms is the ceiling (raised from 400 ms on 2026-09-30, Rex delta audit M-2): the
+// from contact bounce. 600 ms is the ceiling (raised from 400 ms on 2026-09-30, delta audit M-2): the
 // 400 ms figure came from shipped double-tap windows (Android 300 ms, the OneButton library 400 ms), but
 // those assume a fast sampler, and this gesture is sampled once per ~110 ms loop() iteration. With ±110 ms
 // of quantisation a real 300 ms tap can measure ~410 ms, so a 400 ms ceiling dropped good taps silently.
@@ -902,7 +902,7 @@ void runMagGesture()
   if ((int32_t)(now - mag_next_poll_ms) < 0) return;
   mag_next_poll_ms = now + kMagPollMs;
 
-  // ---- V2.5-Evo - 2026-09-30 - SAMPLE-GAP GUARD (Rex delta audit H-1) ----
+  // ---- V2.5-Evo - 2026-09-30 - SAMPLE-GAP GUARD (delta audit H-1) ----
   // This sample is about to be taken, so first judge how long it has been since the last one. If loop()
   // was blocked longer than kMagSampleGapMaxMs then the pin was NOT watched over that stretch, and any
   // hold in progress cannot be trusted to be a hold at all — a brief touch could have started and ended
@@ -939,7 +939,7 @@ void runMagGesture()
   // V2.5-Evo - 2026-09-30 - MagStations: roles 1-3 keep the original 120 ms exactly. MAG_ROLE_FMSET
   // needs 40 ms instead, because 120 ms is longer than the entire 60 ms tap floor — with it, a tap
   // could never be accepted at all and the gesture would simply not work.
-  // V2.5-Evo - 2026-09-30 - comment corrected (Rex delta audit M-2): this used to claim 40 ms is "two full
+  // V2.5-Evo - 2026-09-30 - comment corrected (delta audit M-2): this used to claim 40 ms is "two full
   // 20 ms samples". It is not — the real sample interval is ~110 ms (see kMagLoopPeriodMs), so what 40 ms
   // actually requires is that the new level still be there on a LATER sample, i.e. one further loop
   // iteration. That is still a real debounce against pin flutter; only the arithmetic behind it was wrong.

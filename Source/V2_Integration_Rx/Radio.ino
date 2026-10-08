@@ -504,7 +504,7 @@ static bool gps_meta_pending = false;
 //     kTxPhaseAMaxRejects consecutive rejections the checker assumes ITSELF to be the problem,
 //     accepts, and re-seeds.
 // ============================================================
-// REX PA-4: this floor and usrConf.gps_max_teleport_kmh MULTIPLY into a blind spot -
+// AUDIT PA-4: this floor and usrConf.gps_max_teleport_kmh MULTIPLY into a blind spot -
 // (gps_max_teleport_kmh / 3.6) * kTxPhaseADtFloorS metres can always slip through regardless of
 // arrival timing. At the 80 km/h default that is 5.56 m: below the follow station, comparable to
 // ordinary GPS scatter, and 5x smaller than the worst spike in the beta logs. The validator allows
@@ -557,7 +557,7 @@ static bool gpsPhaseATxCheck(double cur_lat, double cur_lng, unsigned long now_m
   float implied_kmh = (dist_m / dt_s) * 3.6f;
 
   // ---- Check 2: teleport. THE ONLY CHECK, DELIBERATELY. ----
-  // REX PA-2 KILLED CHECK 3 (acceleration), and the reasoning is worth keeping because the same
+  // AUDIT PA-2 KILLED CHECK 3 (acceleration), and the reasoning is worth keeping because the same
   // trap will catch the next person who tries to add it back.
   //
   // Acceleration needs two successive SPEED measurements. What is available here is two successive
@@ -640,7 +640,7 @@ static void processMetaGpsPacket(uint8_t *pkt)
   double   cand_lng = (double)lng_ud / 1e6;
   unsigned long now = millis();
 
-  // REX R4-1 / Q6: is this a genuinely NEW position, or the TX re-broadcasting the last one?
+  // AUDIT R4-1 / Q6: is this a genuinely NEW position, or the TX re-broadcasting the last one?
   // The TX transmits at 2 Hz off a 1 Hz GPS (3.0 Hz measured against 1 Hz in the beta logs), so
   // roughly every other packet carries a position the RX has already seen. Compared on the RAW
   // integers, which is exact.
@@ -670,7 +670,7 @@ static void processMetaGpsPacket(uint8_t *pkt)
   rx_tx_gps_lng       = cand_lng;
   rx_tx_gps_timestamp = now;
 
-  // REX S-1: the counter is published LAST, after the position it advertises. Bumping it before
+  // AUDIT S-1: the counter is published LAST, after the position it advertises. Bumping it before
   // the writes meant a loop-task read landing in between saw "a new fix is available" with the
   // PREVIOUS position still in place. Harmless for today's only consumer, which reads the counter
   // and nothing else - but this is now the SSOT for "is there a new rider fix", and the next

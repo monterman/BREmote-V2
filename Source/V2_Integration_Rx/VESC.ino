@@ -1,6 +1,6 @@
 // V2.5-Evo - 2026-07-25 - STAGE 1 (GPS repair): getVescLoop() now ENDS with setUartMux(1), handing the UART line back to the GPS. The mux's resting position is now GPS, not the VESC — getGPSLoop() no longer switches at all, so getVescLoop() is the only function that moves the mux in normal operation (2 switches per poll at 2 Hz = 4 switches/s, DOWN from 6/s). The leading setUartMux(0), the 20 ms SW54 settle, the pre-query drain, the 200 ms receive timeout and the whole VESC protocol path are UNTOUCHED. No confStruct change, SW_VERSION stays 34.
 // V2.5-Evo - 2026-07-25 - STAGE 0 (instrumentation only): getVescLoop() bumps g_diag_vesc_polls / g_diag_vesc_ok so ?diag can report a VESC poll success rate. Two counter increments; no protocol, timing, mux, mutex or telemetry change.
-// V2.5-Evo - 2026-07-19 - SW56 F1+F2 (Rex CRITICAL + HIGH / Fable F1+F2, applied post-audit): (F1) clamp the vescRelayBuffer relay memcpy to sizeof(vescRelayBuffer) — SW56 raised the guard ceiling 30→48 but vescRelayBuffer is still 34, so a valid-CRC 35–48 B frame (which fa99429 is designed to ACCEPT from newer VESC FW) overflowed a global by up to 14 B into the adjacent volatile motor-command state (thr_received/PWM_active/PWM0_time/PWM1_time) = motor-safety class, NO-GO for field until fixed. (F2, pre-existing) validate the RAW length byte before the uint8_t `eom = raw_message[1]+5` addition — len 251–255 wrapped eom to 0–4, bypassed the guard, and let the payload copy (which uses raw_message[1], not eom) write up to 255 B into the caller's 48 B buffer. Both fixes are bounds-only; no protocol/offset/CRC/mutex change; confStruct/SW_VERSION unchanged
+// V2.5-Evo - 2026-07-19 - SW56 F1+F2 (audit CRITICAL + HIGH / FM audit +F2, applied post-audit): (F1) clamp the vescRelayBuffer relay memcpy to sizeof(vescRelayBuffer) — SW56 raised the guard ceiling 30→48 but vescRelayBuffer is still 34, so a valid-CRC 35–48 B frame (which fa99429 is designed to ACCEPT from newer VESC FW) overflowed a global by up to 14 B into the adjacent volatile motor-command state (thr_received/PWM_active/PWM0_time/PWM1_time) = motor-safety class, NO-GO for field until fixed. (F2, pre-existing) validate the RAW length byte before the uint8_t `eom = raw_message[1]+5` addition — len 251–255 wrapped eom to 0–4, bypassed the guard, and let the payload copy (which uses raw_message[1], not eom) write up to 255 B into the caller's 48 B buffer. Both fixes are bounds-only; no protocol/offset/CRC/mutex change; confStruct/SW_VERSION unchanged
 // V2.5-Evo - 2026-07-19 - SW56: receiveFromVESC()/getValuesSelective() RX buffers 30→48 — with VESC_MORE_VALUES the COMM_GET_VALUES_SELECTIVE reply is a 32-byte UART frame (27-byte payload +5 framing), but eom=raw_message[1]+5=32 tripped the 30-byte overflow guard (32>30) and returned 0, rejecting every telemetry reply (latent since the extended mask was enabled; single-value mode's 14-byte frame still fit). 48 comfortably holds it (48 > VESC_PACK_LEN+5=32). Buffer size only; mask/offsets/CRC/echo-validation/mutex unchanged; confStruct/SW_VERSION unchanged
 // V2.5-Evo - 2026-05-14 - SW55: rcv_err removed from receiveFromVESC() — flag was never cleared within 200ms window, any stray byte poisoned entire receive attempt; CRC handles frame validation
 // V2.5-Evo - 2026-05-14 - SW54: revert SW51/SW52 retry loop — rapid repeated I2C writes caused AW9523 bus corruption at idle; back to single setUartMux(0) + 20ms delay
@@ -236,7 +236,7 @@ int receiveFromVESC(uint8_t * buf, Stream* interface)
       }
       if(cnt == 2)
       {
-          // V2.5-Evo - 2026-07-19 - SW56 F2 (Rex HIGH / Fable F2): validate the RAW length
+          // V2.5-Evo - 2026-07-19 - SW56 F2 (audit HIGH / FM audit ): validate the RAW length
           // byte BEFORE the uint8_t addition. eom is uint8_t, so raw_message[1] in [251,255]
           // wraps eom to 0-4, silently PASSES the old `eom > sizeof(raw_message)` guard, and
           // the payload copy below (which uses raw_message[1], NOT eom) then writes up to
@@ -280,7 +280,7 @@ int receiveFromVESC(uint8_t * buf, Stream* interface)
     
     if(crcPayload == crcMessage)
     {
-      // V2.5-Evo - 2026-07-19 - SW56 F1 (Rex CRITICAL / Fable F1): clamp to the DESTINATION
+      // V2.5-Evo - 2026-07-19 - SW56 F1 (audit CRITICAL / FM audit ): clamp to the DESTINATION
       // size. SW56 raised the guard ceiling 30->48 with raw_message, but vescRelayBuffer is
       // still 34 (BREmote_V2_Rx.h) — so a valid-CRC 35-48 byte frame (exactly what the
       // fa99429 version-robust validation is DESIGNED to accept from newer VESC FW) would

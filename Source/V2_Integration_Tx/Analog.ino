@@ -13,13 +13,13 @@
 //   adsInputFaultUpdate() after calcFilter(), which forces throttle 0 / steering centre / toggle blocked, raises
 //   error 72 and the stop buzz, and only releases the fault after a fully refreshed buffer shows the trigger
 //   released. adsInputFaultNow() lets sendData() apply the same deadline. No confStruct change.
-// V2.5-Evo - 2026-07-20 - Rex §4.6 (H4): the ADS1115 (0x48) shares the Wire bus with the HT16K33
+// V2.5-Evo - 2026-07-20 - audit §4.6 (H4): the ADS1115 (0x48) shares the Wire bus with the HT16K33
 // display (0x70). Every ADS transaction below is now wrapped in I2C_LOCK/I2C_UNLOCK so it can never
 // interleave with a display write. Wrapping the bus access ONLY — no ADC scaling/logic is changed.
 // During setup() (before initTasks() creates i2cMutex) the macros no-op, which is safe: startup is
 // single-threaded. No display function is ever called while i2cMutex is held here, so there is no
 // lock-ordering cycle with displayMutex.
-// V2.5-Evo - 2026-07-20 - Rex M1 (re-audit): closed the one missed leaf-lock site — the ADS
+// V2.5-Evo - 2026-07-20 - audit M1 (re-audit): closed the one missed leaf-lock site — the ADS
 // startADCReading in setHallActivityEnabled() is now I2C_LOCK/I2C_UNLOCK wrapped too.
 // V2.5-Evo - 2026-07-27 - false means the ADS1115 never answered at boot. Diagnostic only;
 // a missing ADS reads as zero throttle, which is the safe direction.
@@ -85,7 +85,7 @@ void setHallActivityEnabled(bool enabled)
     filter_count = 0;
     bat_filter_count = 0;
     last_channel = 0;
-    // V2.5-Evo - 2026-07-20 - Rex M1 (re-audit): this ADS1115 startADCReading is a shared-Wire-bus
+    // V2.5-Evo - 2026-07-20 - audit M1 (re-audit): this ADS1115 startADCReading is a shared-Wire-bus
     // access that was NOT under i2cMutex. It is runtime-reachable on the loop task (prio 1) via
     // ?hall on (System.ino:216), the wake path (System.ino:224) and the unlock gesture (Hall.ino:726),
     // any of which the ADC task measBufCalc (prio 6) can preempt mid-transaction while it holds the bus
@@ -341,7 +341,7 @@ static bool adsReadConfigReg(uint16_t &cfg)
 }
 
 //3ms
-// V2.5-Evo - 2026-07-20 - Rex §4.6: entire body wrapped in I2C_LOCK/I2C_UNLOCK — this is the ADS1115
+// V2.5-Evo - 2026-07-20 - audit §4.6: entire body wrapped in I2C_LOCK/I2C_UNLOCK — this is the ADS1115
 // half of the shared-bus hardening. ADC scaling/logic is untouched; only the bus access is serialized.
 void measureAndBuffer()
 {

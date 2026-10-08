@@ -73,7 +73,7 @@
 //   NON-blocking. Was a blocking gpsKeepAliveDelay() of 2 s (toggle paths) or 1.2 s (magnet tap). The 0xF2 in
 //   the two cycleFmMode() paths now goes out immediately instead of after the 2 s hold. No confStruct change,
 //   sizeof stays 136, SW_VERSION stays 27.
-// V2.5-Evo - 2026-09-30 - MagFix (Rex delta audit of 98fb7a8), four changes here:
+// V2.5-Evo - 2026-09-30 - MagFix (delta audit of 98fb7a8), four changes here:
 //   1. RAM-ONLY ENFORCED. fmToggleRtmEnabledFromMagnet() no longer writes usrConf.rtm_enabled - it writes the new
 //      RAM rtm_enabled_session, and every gate now asks rtmEnabledEffective(). `?save` and the web-UI save persist
 //      the live usrConf wholesale, so the old code let a session flip become permanent at the next save, which is
@@ -146,7 +146,7 @@
 //   No throttle gate. Never overwrites a playing pattern or a pending STOP. Pure logic in Common/FollowMeDistanceWarning.h.
 // V2.5-Evo - 2026-09-17 - ArmTimeout: fm_arm_window_s → fm_arm_timeout_s; the arm-window auto-disarm in runFmLoop() now
 //   runs only when usrConf.fm_arm_timeout_s > 0 (0 = never, the new default). fm_throttle_seen is unchanged.
-// V2.5-Evo - 2026-09-17 - Gate1-REMOVED (Rex A2-TX, owner decision 2026-09-14): the TX 30 s throttle-release
+// V2.5-Evo - 2026-09-17 - Gate1-REMOVED (audit A2-TX, owner decision 2026-09-14): the TX 30 s throttle-release
 //   disarm (kFmGate1ReleaseMs) is gone. Follow-Me is meant to stay armed for the whole session; the RX 10 s
 //   latch clear and the RX 95 s mode-age expiry remain the backstops. The 30 s 0xF2 keepalive is unchanged.
 // V2.5-Evo - 2026-04-25 - P7: TX RTM and FM state machines.
@@ -359,7 +359,7 @@ static unsigned long fm_last_sync_ms      = 0;      // Change E: millis() of las
 static uint8_t       last_fm_return_mode  = 0xFF;   // 0xFF none, 0 OFF, 1 ON; RAM only
 
 // ============================================================
-// V2.5-Evo - 2026-09-30 - RETURN-TO-ME SESSION OVERRIDE (Rex delta audit: the RAM-only claim enforced)
+// V2.5-Evo - 2026-09-30 - RETURN-TO-ME SESSION OVERRIDE (delta audit: the RAM-only claim enforced)
 //
 // THE BUG THIS FIXES. fmToggleRtmEnabledFromMagnet() used to write usrConf.rtm_enabled directly and call
 // that "RAM only" because it never wrote SPIFFS itself. It is not RAM only: `?save` and the web-UI save
@@ -1528,7 +1528,7 @@ bool isFmArmed() { return fm_armed; }
 // updateR5ProximityBar()), and ConfigService.ino still validates it. No struct change.
 
 // ============================================================
-// V2.5-Evo - 2026-07-20 - Batch T (Fable FM v1.4): FM arm-time and display readiness gating.
+// V2.5-Evo - 2026-07-20 - Batch T (FM design v1.4): FM arm-time and display readiness gating.
 // All inputs are TX-LOCAL (paired flag, own GPS fix/age, last-reply age) plus the RX's own
 // armed-not-ready bit — instant, zero telemetry dependency, no new confStruct field. Called
 // only from the loop task: fmFundamentalReject() from cycleFmMode(), fmArmedNotReady()
@@ -1650,7 +1650,7 @@ void cycleFmMode()
     return;
   }
 
-  // V2.5-Evo - 2026-07-20 - Batch T (Fable FM v1.4): FUNDAMENTAL arm-time reject.
+  // V2.5-Evo - 2026-07-20 - Batch T (FM design v1.4): FUNDAMENTAL arm-time reject.
   // Reached only on a FRESH arm (fm_armed was false above). Covers BOTH entry points — the
   // toggle combo AND the magnet gesture both funnel through cycleFmMode() when disarmed. On a
   // fundamental not-ready state the arm DOES NOT TAKE: fire Pattern 7 (long stop buzz) + "St",
@@ -1747,7 +1747,7 @@ void cycleFmModeArmed()
 // rider is riding independently - a station transit there pulls nobody. So armed-but-not-engaged is
 // exactly the tow state, and the magnet tap must be dead in it.
 //
-// ---- V2.5-Evo - 2026-09-30 - CORROBORATION (Rex delta audit: the tow gate rested on ONE bit) ----
+// ---- V2.5-Evo - 2026-09-30 - CORROBORATION (delta audit: the tow gate rested on ONE bit) ----
 // WHAT WAS WRONG. The owner's hard rule - the buggy must never reposition while he is on the rope -
 // was carried by a SINGLE un-debounced bit (FM_FLAG_ENGAGED) arriving over a 1-byte-per-packet
 // telemetry stream protected only by CRC8. A CRC8 lets roughly 1 in 256 random corruptions through,
@@ -1846,7 +1846,7 @@ static uint8_t fmNextStationInSet(uint8_t from, uint16_t mask)
 //      ConfigService.ino). A rider who sets it to 5000 for a comfortably readable gear flash would
 //      have bought a 5 SECOND loop() stall on every magnet station change. That is not merely slow:
 //      a long stall is exactly what the sample-gap guard in runMagGesture() exists to defend against,
-//      so an unclamped blocking delay at this call site actively feeds the bug Rex filed as H-1.
+//      so an unclamped blocking delay at this call site actively feeds the bug the audit  as H-1.
 // BLOCKING CALL - freezes GPS polling, FreeRTOS task scheduling and Serial1 reads for its duration
 // (the blocking-call rule). It is bounded at 1.2 s, it is far shorter than the 2 s the toggle's own
 // station confirm already blocks for, and the throttle path is untouched by it: the throttle is read
@@ -2005,7 +2005,7 @@ void runFmLoop()
 {
   unsigned long now = millis();
 
-  // V2.5-Evo - 2026-07-20 - Batch T (Fable FM v1.4): DISARM OWNERSHIP — the display can't lie.
+  // V2.5-Evo - 2026-07-20 - Batch T (FM design v1.4): DISARM OWNERSHIP — the display can't lie.
   // The RX owns engagement; on an RX fault it stops FM and raises fm_flags bit3 (fault-stop),
   // held sticky ~6s so this ~110ms loop is guaranteed to catch the rising edge across the
   // ~2.4s telemetry rotation. On that rising edge, while WE still believe we are armed, the TX
@@ -2126,7 +2126,7 @@ void runFmLoop()
 
   // V2.5-Evo - 2026-09-17 - Gate1-REMOVED. The block that lived here disarmed FM after
   // kFmGate1ReleaseMs (30 s) of thr_scaled < 5 once fm_throttle_seen was set. Deleted on the
-  // owner's decision (Rex A2-TX): the TX keeps its arm across any length of release. The RX
+  // owner's decision (audit A2-TX): the TX keeps its arm across any length of release. The RX
   // side is unchanged and still owns the motion path — its 10 s latch clear and 95 s mode-age
   // expiry are the backstops.
 

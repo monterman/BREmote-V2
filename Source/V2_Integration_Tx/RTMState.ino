@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-07 - SOP-041 rule 3 resync: while this remote has Follow-Me armed and the link is fresh, if the
+//   buggy reports fm_flags bit 0 (armed) clear on 2+ consecutive arrivals spanning at least 3 s (and starting more than
+//   1.5 s after this remote's arm declaration), the remote disarms Follow-Me itself: "St" + the stop buzz (deferred to
+//   the end of an active return, as F-1). No confStruct change.
 // V2.5-Evo - 2026-10-07 - Q-5: Gate 4 (steer exit) always stands down - steering never ends a manual return (SOP-040);
 //   one serial line per run when the stick is pushed. No confStruct change.
 // V2.5-Evo - 2026-10-07 - Q-3 / Q-1 / Q-2 / Q-6: the remote ends its manual return when the BUGGY says how it ended:
@@ -1500,6 +1504,12 @@ volatile bool        fm_armed         = false;  // FM arm state; RAM only, clear
 static uint8_t       last_fm_mode     = 1;      // last active FM mode (1-3); defaults F1; RAM only
 static unsigned long fm_arm_ms        = 0;      // time of arm, or time of last throttle >10 while armed
 static bool          fm_throttle_seen = false;  // becomes true once thr_scaled>10 after arming
+// V2.5-Evo - 2026-10-07 - SOP-041 rule 3 resync: millis() of this remote's last Follow-Me ARM declaration (cycleFmMode()
+// arm path). The buggy needs the 0xF2 burst plus one telemetry rotation before it can report bit 0, so "not armed"
+// reports that began within kFmResyncDeclareMarginMs of the arm are not evidence. Loop task only.
+static unsigned long fm_declare_ms    = 0;
+static const unsigned long kFmResyncMs              = 3000UL;   // bit 0 clear for this long on a fresh link
+static const unsigned long kFmResyncDeclareMarginMs = 1500UL;
 
 // Returns true if FM is currently armed; called by Hall.ino to intercept LEFT hold 2s
 bool isFmArmed() { return fm_armed; }
@@ -1671,6 +1681,7 @@ void cycleFmMode()
   fm_fault_latched = false;
 
   // Arm at last used mode (never arms at F0 = disabled; last_fm_mode defaults to 1)
+  fm_declare_ms    = millis();   // V2.5-Evo - 2026-10-07 - SOP-041 rule 3 resync: evidence must come after this
   fm_armed         = true;
   fm_arm_ms        = millis();
   fm_throttle_seen = false;
@@ -2028,6 +2039,40 @@ void runFmLoop()
   }
 
   if (!fm_armed) return;   // V2.5-Evo - 2026-10-07 - the warning-scheduler reset that sat here went with Pattern 8
+
+  // ============================================================
+  // V2.5-Evo - 2026-10-07 - SOP-041 RULE 3: THE SCREEN FOLLOWS THE BUGGY - RESYNC A FOLLOW-ME THE BUGGY NO LONGER HAS
+  // THE GAP: if the buggy dropped Follow-Me without a fault edge reaching this remote (its 95 s declaration expiry, an
+  // RX reboot, an RX with Follow-Me unavailable, an edge lost to the link), the remote kept drawing Follow-Me armed and
+  // kept re-declaring it every 30 s - a "wannabe" state the owner ruled out. THE FIX: when the buggy, on a fresh link,
+  // reports its ARMED bit (fm_flags bit 0) clear on at least 2 consecutive arrivals of the byte spanning at least
+  // kFmResyncMs, and that run began more than kFmResyncDeclareMarginMs after this remote's arm declaration, the remote
+  // disarms Follow-Me itself and says so the one way the rider knows: "St" + the stop buzz (fmDisarm(false) - it also
+  // sends 0xF2/0 so the two sides agree). During an active manual return the silent half runs now and the "St" + buzz
+  // is deferred to the return's end, exactly like a Follow-Me fault (F-1). Signed elapsed time: the stamps are written
+  // by the telemetry task and can be newer than `now`.
+  // ============================================================
+  {
+    const unsigned long since      = fm_flags_unarmed_since_ms;
+    const bool          link_fresh = (last_packet != 0) && ((long)(now - last_packet) < (long)FM_LINK_HEALTHY_MS);
+    if (link_fresh && fm_flags_unarmed_streak >= 2 && since != 0 &&
+        (long)(since - fm_declare_ms) > (long)kFmResyncDeclareMarginMs &&
+        (long)(now - since) >= (long)kFmResyncMs)
+    {
+      if (rtm_tx_active)
+      {
+        Serial.println("FM [TX] the buggy reports Follow-Me NOT armed (fm_flags bit 0 clear 3 s) during Return-To-Me -> Follow-Me off now (0xF2/0); St + stop buzz when the return ends");
+        fmSilentDisarm();
+        fm_fault_deferred = true;
+      }
+      else
+      {
+        Serial.println("FM [TX] the buggy reports Follow-Me NOT armed (fm_flags bit 0 clear 3 s) -> disarm here too: St + stop buzz, 0xF2/0");
+        fmDisarm(false);
+      }
+      return;
+    }
+  }
 
   // V2.5-Evo - 2026-10-07 - the FM warning-distance haptic block (Pattern 8 every 2 s beyond
   // fm_warn_distance_m) that ran here is REMOVED by owner ruling - see the note above fmFundamentalReject().

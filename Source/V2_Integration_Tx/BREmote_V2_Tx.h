@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - SOP-041 rule 3 resync: RAM fm_flags_unarmed_since_ms / fm_flags_unarmed_streak. No struct change.
 // V2.5-Evo - 2026-10-07 - TX protocol round: TelemetryPacket gains index 19 rx_state_flags (20 bytes, appended; an old RX
 //   never sends it and 0 means nothing to report), RX_STATE_* bits, FM_FLAG_RETURN_STANDING (fm_flags bit 6), and the
 //   RAM stamps rx_rtm_fault_rise_ms / rx_rtm_arrived_rise_ms / rtm_start_sent_ms. No confStruct change: sizeof stays 136,
@@ -759,6 +760,16 @@ volatile uint8_t fm_engaged_streak = 0;   // consecutive fm_flags arrivals with 
 // tear on this core, and the RX holds the bit for seconds, so two edges can never race one clear.
 // ============================================================
 volatile bool fm_fault_latched = false;
+
+// ============================================================
+// V2.5-Evo - 2026-10-07 - SOP-041 rule 3 RESYNC: "the remote thinks Follow-Me is armed, the buggy says it is not".
+//   fm_flags_unarmed_since_ms - millis() of the FIRST of the current run of fm_flags arrivals with bit 0 (armed) clear;
+//                               0 = the last arrival had bit 0 set.
+//   fm_flags_unarmed_streak   - how many consecutive fm_flags arrivals had bit 0 clear (saturates).
+// Written only by waitForTelemetry (Radio.ino) on the arrival of index 16; read by runFmLoop() (RTMState.ino).
+// ============================================================
+volatile unsigned long fm_flags_unarmed_since_ms = 0;
+volatile uint8_t       fm_flags_unarmed_streak   = 0;
 
 /*
 ** FreeRTOS/Task handles

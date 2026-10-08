@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - SOP-041 rule 3 resync: the fm_flags unpack counts arrivals with bit 0 (armed) clear.
 // V2.5-Evo - 2026-10-07 - Q-9: sendData() holds the 100 ms cadence (no collision backoff) while the throttle input is
 //   stale or faulted, so the zeroed packets go out at full rate. Can only make the zero arrive sooner.
 // V2.5-Evo - 2026-10-07 - TX protocol round: queueMetaPacketIfFree() / metaQueuePending() for the boot ID (S-8) and the
@@ -658,6 +659,23 @@ void waitForTelemetry(void *parameter)
               fm_fault_latched = true;
             }
             fm_flags_prev_arrival = rcvArray[4];
+
+            // V2.5-Evo - 2026-10-07 - SOP-041 rule 3: count consecutive arrivals with the buggy's ARMED bit clear, and
+            // stamp when that run began (see fm_flags_unarmed_since_ms in BREmote_V2_Tx.h; read by runFmLoop()).
+            if (rcvArray[4] & FM_FLAG_ARMED)
+            {
+              fm_flags_unarmed_streak   = 0;
+              fm_flags_unarmed_since_ms = 0;
+            }
+            else
+            {
+              if (fm_flags_unarmed_streak == 0)
+              {
+                const unsigned long t = millis();
+                fm_flags_unarmed_since_ms = (t != 0) ? t : 1;
+              }
+              if (fm_flags_unarmed_streak < 255) fm_flags_unarmed_streak = (uint8_t)(fm_flags_unarmed_streak + 1);
+            }
           }
 
           // V2.5-Evo - 2026-10-07 - A-1 / Q-3: index 19 (rx_state_flags) - latch the RISING EDGE of the buggy's two sticky

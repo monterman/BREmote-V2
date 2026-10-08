@@ -101,6 +101,7 @@ pre{background:#070d18;border:1px solid var(--line);border-radius:9px;padding:11
 .optpic .ill{max-width:none}
 .opt>span{min-width:0}
 .hint a{color:var(--pri)}
+.pbtns{display:flex;gap:8px;margin:6px 0 2px;flex-wrap:wrap}.pbtn{font:inherit;font-size:12px;padding:5px 12px;border-radius:6px;border:1px solid #2c4a72;background:#13233a;color:#cfe0f5;cursor:pointer}.pbtn:hover{border-color:#4d7fb8}
 </style>
 </head>
 <body>
@@ -306,8 +307,8 @@ const SCREENS = [
     id:"cap", type:"number", showIf:a=>a.esc!=="other", min:0, max:999, def:16.8, step:0.1, unit:"Ah",
     label:"What is the capacity of your pack, in amp-hours?",
     get hint(){ return isVesc()
-      ? "It is printed on the pack, or it is the cell's Ah times the number of cells in parallel. Capacity = one cell's Ah × cells in parallel. Common cells: Molicel P42A 4.2 Ah, Molicel P45B 4.5 Ah, Samsung 40T 4.0 Ah, Samsung 50S 5.0 Ah. So 12S4P P42A = 16.8 Ah, 12S5P = 21 Ah. Need help planning a pack? The <a href=\"https://calc.esk8.news/\" target=\"_blank\" rel=\"noopener\">esk8.news calculator</a> and the <a href=\"https://forum.esk8.news/t/battery-basics-for-beginners-wiki-serious/14271\" target=\"_blank\" rel=\"noopener\">battery basics wiki</a> cover series, parallel and capacity. THIS ONE GOES IN VESC TOOL, NOT ON THE REMOTE — there is no capacity field on either board, so it produces no ?set line. It lands on the VESC card instead."
-      : "It is printed on the pack, or it is the cell's Ah times the number of cells in parallel. A typical 12S4P Molicel P42A pack is 4 × 4.2 = 16.8 Ah; 12S5P is 21 Ah. There is no capacity field on either board, so it produces no ?set line. With a non-VESC ESC nothing in this setup uses it; it is shown on the ESC card for your own records."; },
+      ? "It is printed on the pack, or it is the cell's Ah times the number of cells in parallel. Capacity = one cell's Ah × cells in parallel. Common cells: Molicel P42A 4.2 Ah, Molicel P45B 4.5 Ah, Samsung 40T 4.0 Ah, Samsung 50S 5.0 Ah. So 12S4P P42A = 16.8 Ah, 12S5P = 21 Ah. Need help planning a pack? The <a href=\"https://calc.esk8.news/\" target=\"_blank\" rel=\"noopener\">esk8.news calculator</a> and the <a href=\"https://forum.esk8.news/t/battery-basics-for-beginners-wiki-serious/14271\" target=\"_blank\" rel=\"noopener\">battery basics wiki</a> cover series, parallel and capacity. THIS ONE GOES IN VESC TOOL, NOT ON THE REMOTE — there is no capacity field on either board, so it is not written to either board. It lands on the VESC card instead."
+      : "It is printed on the pack, or it is the cell's Ah times the number of cells in parallel. A typical 12S4P Molicel P42A pack is 4 × 4.2 = 16.8 Ah; 12S5P is 21 Ah. There is no capacity field on either board, so it is not written to either board. With a non-VESC ESC nothing in this setup uses it; it is shown on the ESC card for your own records."; },
     set:()=>({}),
     derive:v=> v<=0 ? "" : isVesc()
       ? "About "+Math.round(v*3.6*(A.cells||12))+" Wh ("+(A.cells||12)+"S × 3.6 V × "+v+" Ah). si_battery_ah = "+v+" in VESC Tool. Feeds watt-hours and range THERE. It does not feed the battery percentage, any current limit, any cutoff, or the remote's battery reading."
@@ -901,15 +902,6 @@ function fmtVal(k,v){
   if(FLOATS[k]!==undefined) return v.toFixed(FLOATS[k]);
   return String(v);
 }
-function setScript(cfg){
-  /* radio_preset and rf_power are the two keys flagged radioReinitRequired in
-     kCfgFields[] on both boards, and the wizard writes radio_preset — so the
-     script ends with a reboot. ?applyconf is only needed after ?setconf. */
-  const lines = Object.keys(cfg).map(k=>'?set '+k+' '+fmtVal(k,cfg[k]));
-  lines.push('?save');
-  if(cfg.radio_preset!==undefined || cfg.rf_power!==undefined) lines.push('?reboot');
-  return lines.join('\n');
-}
 function jsonPatch(cfg){
   const parts = Object.keys(cfg).map(k=>{
     const v = cfg[k];
@@ -939,7 +931,7 @@ function vescCard(){
   return `<div class="card" style="margin:0 0 14px;background:#0e1a2c;border-color:#1e3a5f">
   <h2 style="font-size:14px">Two of your answers belong in VESC Tool, not on the boards</h2>
   <div class="hint" style="margin-bottom:4px">
-    Your cell count and your pack capacity produced no <code>?set</code> line, and that is correct:
+    Your cell count and your pack capacity are not in either board's patch, and that is correct:
     there is no capacity field on either board, and the buggy's cell count is used for one thing only —
     turning pack voltage into a battery percentage. <b>No cutoff, current limit or power limit exists
     anywhere in either board's config.</b> They all live here.
@@ -1028,8 +1020,7 @@ function renderResults(){
   </div>
 
   <div class="tabs">
-    <button class="tab on" data-t="set">Serial commands <span class="badge">recommended</span></button>
-    <button class="tab" data-t="json">JSON patch</button>
+    <button class="tab on" data-t="json">Apply your settings</button>
     <button class="tab" data-t="b64" disabled>Base64 blob</button>
   </div>
   <div id="pane"></div>
@@ -1040,36 +1031,45 @@ function renderResults(){
 </div>`;
 
   const panes = {
-    set: `<div class="cardbox" style="margin-bottom:9px">
-            <b>Why serial commands are the best way:</b> each line changes just one setting and leaves
-            everything else on the board exactly as it is — <b>your pairing, your throttle and toggle
-            calibration, and your compass calibration are not touched</b>. It replaces the factory values of
-            the settings listed below with your answers, nothing more. You see an OK for every line, so
-            you know each one landed.<br><br>
-            <b>How:</b> connect the board by USB, open the serial console (115200 baud, or the web config
-            tool's serial page), and paste the block for that board. Do one board at a time.
-            <b>For the buggy you can also do it from your phone:</b> join the buggy's WiFi and use the serial
-            console on its web page (it has buttons for everyday calibrations and a command dropdown).
-            <b>Before the final <code>?save</code>:</b> run <code>?list</code> and delete logs you do not need —
-            saving needs a little free space. The block ends with <code>?reboot</code> because a new radio
-            band only takes effect after a restart.
-          </div>
-          <b style="font-size:13px">REMOTE (TX)</b>
-          <pre>${esc(setScript(tx))}</pre>
-          <b style="font-size:13px;display:block;margin-top:11px">BUGGY (RX)</b>
-          <pre>${esc(setScript(rx))}</pre>`,
     json:`<div class="cardbox" style="margin-bottom:9px">
-            <b>Alternative, over WiFi:</b> this does the same job as the serial commands — it changes only
-            these settings and keeps your pairing and calibrations. Use it if you have no USB cable handy.<br><br>
-            <b>How:</b> put the board in WiFi setup mode, join its WiFi network on your phone or laptop, open
-            the address the board shows (usually <code>http://192.168.4.1</code>), and paste this into the
-            Import box with the format set to JSON. You have to do it yourself on the board's page; this
-            wizard cannot send it for you.
+            <b>What this does:</b> it changes only the settings listed above and leaves everything else on
+            the board exactly as it is — <b>your pairing, your throttle and toggle calibration, and your
+            compass calibration are not touched</b>.<br><br>
+            Two ways to apply it. Do one board at a time. <b>Buggy only, either way — make room first:</b>
+            saving needs at least 1000 KB of free storage, and below that the board answers "saved" but
+            stores nothing. Download the logs you want to keep, then delete them.<br><br>
+            <b>A. By USB cable, from a computer (Chrome or Edge):</b>
+            <ol style="margin:6px 0 6px 18px;padding:0">
+              <li>Tap <b>Save as file</b> under the board below.</li>
+              <li>Open the <a href="BREmote_V2.5-Evo_Web_Serial_Config_Tool.html" target="_blank" rel="noopener">BREmote
+                web serial config tool</a>, plug the board in and tap <b>Connect Serial</b>.</li>
+              <li>Tap <b>Import JSON</b> and pick the file. The changed settings are marked; check them.</li>
+              <li>Tap <b>Save to Device</b> and wait for <b>Saved and confirmed</b> — the tool reads every
+                setting back and names any that did not land.</li>
+              <li>Tap <b>Reboot</b> so a new radio band takes effect.</li>
+            </ol>
+            <b>B. Over WiFi, from a phone or laptop:</b>
+            <ol style="margin:6px 0 6px 18px;padding:0">
+              <li>Put the board in WiFi setup mode, join its WiFi network and open the address the board
+                shows (usually <code>http://192.168.4.1</code>). On the buggy, <b>Manage Logs</b> is where
+                you download and delete logs.</li>
+              <li>Tap <b>Copy</b> under the board below, paste it into the <b>Raw JSON Backup &amp; Restore</b>
+                box at the bottom of the page and tap <b>Load from Text</b>. The page says how many values it
+                took in, and the changed settings turn red.</li>
+              <li>Check the red boxes, then tap <b>Save All</b>. It sends each setting on its own, stops on the
+                first one the board refuses, and saves only when all of them landed.</li>
+              <li>Restart the board (switch it off and on) so a new radio band takes effect.</li>
+            </ol>
+            This wizard cannot send the settings for you.
+            <b>Do not paste many <code>?set</code> lines into a serial console at once:</b> the board reads
+            one line at a time and a long paste loses lines.
           </div>
           <b style="font-size:13px">REMOTE (TX)</b>
           <pre>${esc(jsonPatch(tx))}</pre>
+          <div class="pbtns"><button class="pbtn" data-copy="tx">Copy</button><button class="pbtn" data-file="tx">Save as file</button></div>
           <b style="font-size:13px;display:block;margin-top:11px">BUGGY (RX)</b>
-          <pre>${esc(jsonPatch(rx))}</pre>`,
+          <pre>${esc(jsonPatch(rx))}</pre>
+          <div class="pbtns"><button class="pbtn" data-copy="rx">Copy</button><button class="pbtn" data-file="rx">Save as file</button></div>`,
     b64:`<div class="disabledNote">
             <b>Deliberately disabled, and it should stay that way until someone proves the byte map.</b><br><br>
             The stored config is a raw copy of the firmware struct, Base64-encoded. That means a blob
@@ -1086,7 +1086,23 @@ function renderResults(){
           </div>`
   };
   const pane = document.getElementById('pane');
-  pane.innerHTML = panes.set;
+  pane.innerHTML = panes.json;
+  /* Copy / Save as file for each board's patch. The file is what the USB tool's Import JSON reads. */
+  const patches = {tx: jsonPatch(tx), rx: jsonPatch(rx)};
+  pane.addEventListener('click', e=>{
+    const b = e.target.closest('.pbtn'); if(!b) return;
+    if(b.dataset.copy){
+      const t = patches[b.dataset.copy];
+      const done = ok=>{ b.textContent = ok ? 'Copied' : 'Select the text above and copy it'; setTimeout(()=>b.textContent='Copy',2500); };
+      if(navigator.clipboard) navigator.clipboard.writeText(t).then(()=>done(true), ()=>done(false)); else done(false);
+    } else if(b.dataset.file){
+      const k = b.dataset.file;
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([JSON.stringify(JSON.parse(patches[k]), null, 2)], {type:'application/json'}));
+      a.download = 'bremote-'+(k==='tx'?'remote-tx':'buggy-rx')+'-wizard-settings.json';
+      document.body.appendChild(a); a.click(); a.remove();
+    }
+  });
   screensEl.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{
     screensEl.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));
     t.classList.add('on'); pane.innerHTML = panes[t.dataset.t];

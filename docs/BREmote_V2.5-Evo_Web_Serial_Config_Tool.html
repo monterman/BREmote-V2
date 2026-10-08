@@ -571,6 +571,15 @@ function canonV(f,v){
   if(f.type==='address3')return toHex(v).join(',');
   return String(v??'').trim();
 }
+// Numbers are compared as numbers: the board stores floats as float32 and may print 25 for 25.0
+// or 1.1000000238 for 1.1, and neither is a failed save.
+function sameStored(f,a,b){
+  if(f.type==='float'||f.type==='int'||f.type==='enum'||f.type==='bool'){
+    const x=parseFloat(a),y=parseFloat(b);
+    if(!isNaN(x)&&!isNaN(y))return Math.abs(x-y)<=1e-3*Math.max(1,Math.abs(y));
+  }
+  return canonV(f,a)===canonV(f,b);
+}
 function isDirty(k){
   if(!fields)return false;
   const f=fields.find(x=>x.key===k);
@@ -823,12 +832,23 @@ async function saveToDevice(){
     }
     await serialSend('?save');
     await delay(350);
+    // Remember what was sent, so the read-back below can CHECK each one. Before this, the
+    // read-back simply replaced the screen values, and a ?set line the board missed vanished
+    // under a green "confirmed" message.
+    const want={};for(const f of dirty)want[f.key]=st.values[f.key];
     const obj=await fetchDeviceJson();
     if(obj){
       applyDevice(obj);  // updates saved → dirty clears
+      const missed=dirty.filter(f=>obj[f.key]===undefined||!sameStored(f,normalizeVal(f,obj[f.key]),want[f.key]));
+      if(missed.length){
+        for(const f of missed)st.values[f.key]=want[f.key];  // put them back as unsaved changes
+        renderGroups();checkDirtyUI();btn.disabled=false;
+        setStatus('NOT all saved: '+missed.map(f=>f.label).join(', ')+' did not land. They are still marked as changes - press Save to Device again.','err');
+        return;
+      }
       btn.classList.add('success');
       setTimeout(()=>{btn.classList.remove('success');btn.disabled=false;},1500);
-      setStatus('Saved and confirmed '+dirty.length+' field(s).','ok');
+      setStatus('Saved and confirmed '+dirty.length+' field(s) - every one read back from the board.','ok');
     }else{
       btn.disabled=false;
       setStatus('Save sent but reload timed out — check serial console for errors.','warn');

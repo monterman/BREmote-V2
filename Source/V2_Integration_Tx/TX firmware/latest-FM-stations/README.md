@@ -6,9 +6,9 @@ For stable firmware use the `master` branch.
 | | |
 |---|---|
 | Firmware | TX SW27 (V2.5-Evo), `fm-stations` branch |
-| Built from commit | `69d89e9` |
+| Built from commit | `c979598` |
 | Board / FQBN | HT-CT62 (ESP32-C3) — `esp32:esp32:esp32c3:CDCOnBoot=default,PartitionScheme=huge_app` |
-| File | `BREmote-TX-SW27-fm-stations-69d89e9.bin` (app image, `0x10000`) |
+| File | `BREmote-TX-SW27-fm-stations-c979598.bin` (app image, `0x10000`) |
 | SHA-256 | `242a7b9486cac19577104e57d1fd361d907c0b33b3e833f276edd108e1115182` |
 
 ## Before you flash
@@ -27,6 +27,6 @@ For stable firmware use the `master` branch.
   [Flashing with the Flash Download Tool](../../../../docs/FLASHING_WITH_DOWNLOAD_TOOL.md). Full-chip (`.merged.bin`, `0x0`) images are not
   published: a write at `0x0` erases the settings storage.
 
-Example (esptool): `esptool --chip esp32c3 --port COMx write-flash 0x10000 BREmote-TX-SW27-fm-stations-69d89e9.bin`
+Example (esptool): `esptool --chip esp32c3 --port COMx write-flash 0x10000 BREmote-TX-SW27-fm-stations-c979598.bin`
 
 Known issues for this branch are listed at the top of the repository README.

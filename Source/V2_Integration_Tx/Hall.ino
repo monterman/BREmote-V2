@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - Q-10: the Follow-Me toggle combo (LEFT tap + RIGHT hold) is ignored while Return-To-Me is
+//   active or arming (serial line only), like the magnet tap. No confStruct change.
 // V2.5-Evo - 2026-10-07 - Q-8: mag_mode 1-3 - the Return-To-Me hold (arm or disarm) acts only with the trigger fully
 //   released, like the mode 4 hold; with it held the hold is ignored silently (no RTM advisory buzz either). The FM
 //   tier is unchanged (it still arms mid-tow). No confStruct change.
@@ -430,7 +432,12 @@ void handleGearToggle(int direction)
           else if (direction > 0 && last_tap_dir == -1)
           {
             // LEFT tap + RIGHT hold 5s → FM mode cycle
-            if (usrConf.fm_override_enabled && usrConf.gps_en)
+            // V2.5-Evo - 2026-10-07 - Q-10: THE BUG - the magnet tap already left Follow-Me alone during a return, but
+            // this combo did not: it could disarm Follow-Me (with its 2 s blocking "St", freezing RTM's gates and
+            // ramp) or re-declare it in the middle of a return. THE FIX: ignored while RTM is active or arming.
+            if (rtm_tx_active || rtmIsArming())
+              Serial.println("FM [TX] Follow-Me gesture ignored: Return-To-Me is active on this remote");
+            else if (usrConf.fm_override_enabled && usrConf.gps_en)
               cycleFmMode();
           }
         }

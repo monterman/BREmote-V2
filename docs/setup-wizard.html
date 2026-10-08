@@ -206,7 +206,7 @@ const SCREENS = [
     label:"What speed controllers (ESCs) drive your motors?",
     hint:'Not every build uses a VESC. This answer decides which calibration and telemetry advice you get from here on. The non-VESC example: <a href="https://sequremall.com/products/sequre-wp14200-ip68-waterproof-200a-esc-drones-efoil-board" target="_blank" rel="noopener">SEQURE WP14200 product page</a>.',
     opts:[
-      {v:"vesc", pic:0, l:"VESC (any VESC-based controller, set up in VESC Tool), e.g. VESC 75200 V2 (the owner's)", rec:true, sets:"data_src can be 2 (VESC data wire)"},
+      {v:"vesc", pic:0, l:"VESC (any VESC-based controller, set up in VESC Tool), e.g. VESC 75200 V2 (the maintainer's)", rec:true, sets:"data_src can be 2 (VESC data wire)"},
       {v:"other", pic:1, l:"A non-VESC ESC — a regular hobby/marine ESC driven by the PPM signal only, e.g. SEQURE WP14200 (waterproof 200 A ESC)", sets:"no VESC data; telemetry from a voltage wire or none"}
     ],
     set:()=>({})
@@ -234,11 +234,11 @@ const SCREENS = [
   {
     id:"sharp", type:"choice", showIf:a=>a.turns!==0,
     label:"How sharply should it turn?",
-    hint:"Two of these three are real, water-tested values: 50 is what a new board ships with, and 100 is what the owner's own buggy runs. 75 is just the midpoint between them.",
+    hint:"Two of these three are real, water-tested values: 50 is what a new board ships with, and 100 is what the maintainer's own buggy runs. 75 is just the midpoint between them.",
     opts:[
       {v:50, l:"Gentle — the factory value",sets:"steering_influence = 50"},
       {v:75, l:"Medium",sets:"steering_influence = 75"},
-      {v:100,l:"Full — what the owner's buggy runs",rec:true,sets:"steering_influence = 100"}
+      {v:100,l:"Full — what the maintainer's buggy runs",rec:true,sets:"steering_influence = 100"}
     ],
     set:v=>({rx:{steering_influence:v}})
   },
@@ -490,7 +490,7 @@ const SCREENS = [
   {
     id:"cancelnote", type:"info", showIf:a=>a.fm===1,
     label:"Steering during Follow-Me: start with cancel, change later",
-    card:"<b>Start with cancel</b> (how a new buggy ships, steer_during_auto = 0): hold the steering stick over for about half a second and Follow-Me drops back to armed. Simple to learn on your first days.<br><br><b>Best option once you are used to it: nudge</b> (steer_during_auto = 1). You steer to correct the course or dodge an obstacle, Follow-Me stays on, and when you let the stick go the buggy returns to its station. The owner runs nudge. You change it later in the buggy's settings; the wizard leaves it on cancel."
+    card:"<b>Start with cancel</b> (how a new buggy ships, steer_during_auto = 0): hold the steering stick over for about half a second and Follow-Me drops back to armed. Simple to learn on your first days.<br><br><b>Best option once you are used to it: nudge</b> (steer_during_auto = 1). You steer to correct the course or dodge an obstacle, Follow-Me stays on, and when you let the stick go the buggy returns to its station. The maintainer runs nudge. You change it later in the buggy's settings; the wizard leaves it on cancel."
   },
   {
     id:"buzz", type:"choice", showIf:a=>a.fm===1,
@@ -585,7 +585,7 @@ const SCREENS = [
     label:"Which GPS module is fitted in the BUGGY, and does it have a compass in it?",
     hint:"A compass-only heading source exists in the firmware and is deliberately not offered here: bench tests on this hardware show motor current biasing the compass by 100 degrees or more under load. <b>Mount the GPS/compass module outside the box, away from the ESCs, motors and battery leads, and raised up like on drones: on a small pole about 10 cm above the buggy makes a huge difference.</b>",
     opts:[
-      {v:3,l:"M100-5883 (M10 GPS + compass) — tested and working on the owner's buggy",rec:true,sets:"gps_chip_type = 3, rtm_use_compass = 1, rtm_compass_required = 1"},
+      {v:3,l:"M100-5883 (M10 GPS + compass) — tested and working on the maintainer's buggy",rec:true,sets:"gps_chip_type = 3, rtm_use_compass = 1, rtm_compass_required = 1"},
       {v:1,l:"BN-880 — GPS and compass",sets:"gps_chip_type = 1, rtm_use_compass = 1, rtm_compass_required = 1"},
       {v:0,l:"BN-220 — GPS only",sets:"gps_chip_type = 0, rtm_use_compass = 0, rtm_compass_required = 0"},
       {v:2,l:"M10 — GPS only",sets:"gps_chip_type = 2, rtm_use_compass = 0, rtm_compass_required = 0"}

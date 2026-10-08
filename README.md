@@ -485,11 +485,12 @@ The RX board logs GPS position, VESC telemetry, voltage, speed, and timestamps t
 
 | Level | Record | Continuous logging (1757 KB usable) | What it adds |
 |---|---|---|---|
-| **0 / 3 — Developer** (default) | 59 B | ≈ 2 h 50 min at 3 Hz, ≈ 1 h 40 min at 5 Hz | VESC, GPS, heading source, steering applied, distance to the remote, LoRa link |
-| **4 — Deep** (everyday deep log) | 87 B | ≈ 1 h 55 min at 3 Hz, ≈ 1 h 10 min at 5 Hz | + GPS feed / frozen-course / mux / loop diagnostics, the Follow-Me gate verdicts and state, the sticky auto-return reason, aligning and pivot-boost flags, the rider’s raw speed, the two mixer motor commands |
-| **5 — Everything** (test sessions) | 109 B | ≈ 1 h 30 min at 3 Hz, ≈ 55 min at 5 Hz | + the rider’s position as the buggy holds it (fix counter + age), the Return-to-Me phase and approach cap, the align cap / boost / mixer influence in force, the remote’s auto-return override, the Follow-Me flags echoed to the remote, keepalive age. Clear the logs first (`?deleteallogs`). |
+| **0 / 3 — Developer** (default) | 62 B | ≈ 2 h 41 min at 3 Hz, ≈ 1 h 37 min at 5 Hz | VESC, GPS, heading source, steering applied, distance to the remote, LoRa link, the motor gate |
+| **4 — Deep** (everyday deep log) | 104 B | ≈ 1 h 36 min at 3 Hz, ≈ 58 min at 5 Hz | + GPS feed / frozen-course / mux / loop diagnostics, the Follow-Me gate verdicts and state, the sticky auto-return reason, aligning and pivot-boost flags, the rider’s raw speed, the two mixer motor commands, and the second VESC (read over CAN; -999 when it has not answered in 2.5 s) |
+| **5 — Everything** (test sessions) | 126 B | ≈ 1 h 19 min at 3 Hz, ≈ 48 min at 5 Hz | + the rider’s position as the buggy holds it (fix counter + age), the Return-to-Me phase and approach cap, the align cap / boost / mixer influence in force, the remote’s auto-return override, the Follow-Me flags echoed to the remote, keepalive age. Clear the logs first (`?deleteallogs`). |
+| **6 — IMU** (test sessions that need the IMU) | 170 B | ≈ 59 min at 3 Hz, ≈ 35 min at 5 Hz | + VESC 2’s IMU, polled over CAN twice a second while the log records: roll / pitch / yaw (deg), gyro x / y / z (deg/s), acceleration x / y / z (g), its age and a status (1 OK, 2 stale, 3 implausible = IMU off or not detected). Plus reserved columns for a future RX-mounted IMU, which always read -999 today. Every missing, stale (> 1.5 s) or implausible value reads -999. Gyro peaks shorter than ~1 s are not resolved at 2 Hz. 5 Hz buys nothing for the IMU. Clear the logs first. |
 
-The logger keeps a 500 KB free-space reserve and deletes the oldest files to hold it, so a board with old logs on it stops that much short of the figures above. Levels 1 and 2 are reserved and currently log as level 3.
+The logger deletes other log files to keep 500 KB free; once there is nothing left to delete it keeps writing until the storage is full. Old logs left on the board count against the figures above, so clear them before a long test session. Levels 1 and 2 are reserved and currently log as level 3.
 
 *\* Date format changed from DDMMYY (original LudwigBre) to MMDDYY in V2.5-Evo.*
 

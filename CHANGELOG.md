@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-10-08 — RX: log level 6 records VESC 2's IMU (roll, pitch, yaw, gyro, acceleration)
+
+**No config wipe.** `sizeof(confStruct)` stays 200 and `SW_VERSION` stays 36. Log format stays 3, so logs
+already on the board still download after the flash.
+
+- **New `log_level` 6 = IMU**, for test sessions: everything in level 5 plus VESC 2's IMU, read over CAN
+  through VESC 1 twice a second while the log records — roll, pitch and yaw in degrees, gyro in deg/s,
+  acceleration in g, the reading's age and a status. 170 bytes per record, 98 CSV columns.
+- **Reserved columns for an IMU on the RX itself.** None is fitted; they always read -999.
+- **Stale or implausible data is never logged as live**: older than 1.5 s, or an IMU that reads under
+  0.5 g (switched off or not detected in VESC 2's App Settings), prints -999.
+- **The IMU is polled only while a level-6 log is recording** and only while VESC 2 is answering, inside
+  the existing VESC poll — no extra mux switching and no I2C traffic. Nothing that drives the motors
+  reads it.
+- **`?diag`** shows the IMU poll, the last sample and its verdict, and the RX IMU line.
+- **The PC log reader** decodes the new record and adds an IMU line to `--summary` (share of usable
+  rows, largest heel, largest pitch).
+- **Doc fix:** the logger does not stop 500 KB short of full. It deletes other log files to keep 500 KB
+  free and, once there is nothing left to delete, keeps writing until the storage is full.
+
 ## 2026-09-24 — RX: the motor ramp is the THROTTLE ramp — steering is immediate again
 
 **No config wipe.** `sizeof(confStruct)` stays 200 and `SW_VERSION` stays 36.

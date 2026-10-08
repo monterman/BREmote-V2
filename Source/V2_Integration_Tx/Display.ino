@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - F4/F5: comment only - showFmLabelHeld() draws stations 1-5 (displayDigits() renders every digit).
 // V2.5-Evo - 2026-10-07 - FM INDICATOR DOTS, owner-final ("Hybrid H", following without rails): C7 R2-R4 in
 //   updateBargraphs(). Off = dark. W1 waiting (FM armed, not ready, auto-return parked) = R3/R4 take turns every
 //   200 ms. F1 following = R3 + R4 steady. R1 returning (auto-return returning, or manual RTM confirmed by the buggy) =
@@ -744,7 +745,7 @@ static bool           fm_label_pending = false;   // true while a label is being
 static uint32_t       fm_label_shown_ms = 0;      // millis() when the label was drawn
 
 // showFmLabelHeld - draw "F<mode>" in large font and hold it for kFmLabelHoldMs.
-// Inputs: mode 1-3 (the station). Outputs: none.
+// Inputs: mode 1-5 (the station; 4 and 5 are the front pair since 2026-10-07). Outputs: none.
 // Side effects: writes the digit zone and pushes it to the display (takes displayMutex), starts the
 //   hold timer. Does NOT block. Loop task only (every caller is in RTMState.ino on the loop task).
 void showFmLabelHeld(uint8_t mode)

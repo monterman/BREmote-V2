@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-07 - F4/F5 on the remote (port of P2-d): followme_mode documents 1-5 (4 front right, 5 front left;
+//   no 6) and mag_fm_set gains bit 3 = station 4 and bit 4 = station 5 (range 1-31). Default and repair value stay 7,
+//   the three rear stations. Ranges and comments only: same fields at the same offsets, sizeof stays 136, SW_VERSION
+//   stays 27, no config reset.
 // V2.5-Evo - 2026-10-07 - SOP-041 rule 3 resync: RAM fm_flags_unarmed_since_ms / fm_flags_unarmed_streak. No struct change.
 // V2.5-Evo - 2026-10-07 - TX protocol round: TelemetryPacket gains index 19 rx_state_flags (20 bytes, appended; an old RX
 //   never sends it and 0 means nothing to report), RX_STATE_* bits, FM_FLAG_RETURN_STANDING (fm_flags bit 6), and the
@@ -318,7 +322,10 @@ struct confStruct {
 
     // GPS features related flags
     uint16_t gps_en;           // GPS runtime enable flag (0=disabled, 1=enabled)
-    uint16_t followme_mode; // Follow-me runtime mode flag (0=disabled, 1=near_right, 2=behind, 3=near_left)
+    // V2.5-Evo - 2026-10-07 - F4/F5: the station set is 1-5 and continuous round the rider. There is no 6:
+    // a station directly ahead puts the buggy on the rider's line, where a failed motor stops it in his path.
+    // Range only - same uint16_t at the same offset, so sizeof(confStruct) stays 136 and SW_VERSION stays 27.
+    uint16_t followme_mode; // Follow-me starting station (0=disabled, 1=rear_right, 2=behind, 3=rear_left, 4=front_right, 5=front_left)
     uint16_t kalman_en;        // Kalman filter runtime enable flag (0=disabled, 1=enabled)
     uint16_t speed_src;   // 0=RX km/h, 1=RX knots, 2=TX km/h, 3=TX knots, 4=RX mph, 5=TX mph
     
@@ -459,17 +466,21 @@ struct confStruct {
     // ============================================================
     // Which Follow-Me stations a magnet TAP steps through when mag_mode == 4. One bit per
     // station, so "never send me to station 2" is simply bit 1 left clear:
-    //   bit 0 = station 1 (near right) | bit 1 = station 2 (behind) | bit 2 = station 3 (near left)
-    // Valid range 1-7 (at least one station must be selected); default 7 = all three, which
-    // is what the remote already does when the toggle cycles stations, so the default changes
-    // nothing. A remote flashed from an older build reads 0 out of the old padding bytes;
-    // cfgValidateCrossField() silently corrects 0 (and anything above 7) to 7 on load rather
+    //   bit 0 = station 1 (rear right) | bit 1 = station 2 (behind) | bit 2 = station 3 (rear left)
+    // V2.5-Evo - 2026-10-07 - F4/F5: the front pair exists on this remote now, so the mask grows two bits:
+    //   bit 3 = station 4 (FRONT RIGHT) | bit 4 = station 5 (FRONT LEFT)
+    // Valid range 1-31 (at least one station must be selected). The default stays 7 = the three REAR
+    // stations: the magnet is a one-touch input with no confirmation before the fact, so sending the
+    // buggy in front of the rider has to be something he ticked, not something he inherited. Every remote
+    // in the field stores a value in 1-7, so the magnet keeps stepping the same three rear stations until
+    // he opts in. A remote flashed from an older build reads 0 out of the old padding bytes;
+    // cfgValidateCrossField() silently corrects 0 (and anything above 31) to 7 on load rather
     // than rejecting the config, because a rejection on the load path would write defaultConf
-    // and wipe the calibration this whole field placement exists to protect.
-    // Stations 4 and 5 (the two FRONT stations) DO NOT EXIST in this firmware — the mode wrap
-    // in RTMState.ino is 1 -> 2 -> 3 -> 1 — so bits 3 and up are deliberately unused and are
-    // masked off by fmNextStationInSet() in case a future build ever stores them.
-    uint16_t mag_fm_set;       // magnet-tap station set, bitmask bit0=F1 bit1=F2 bit2=F3; 1-7; default 7 (all)
+    // and wipe the calibration this whole field placement exists to protect. The repair value is 7
+    // and not 31 for the same reason the default is.
+    // (The note that used to sit here said stations 4 and 5 did not exist in this firmware and that
+    // fmNextStationInSet() masked bits 3 and up off. Both bits now address reachable stations.)
+    uint16_t mag_fm_set;       // magnet-tap station set, bitmask bit0=F1 bit1=F2 bit2=F3 bit3=F4 bit4=F5; 1-31; default 7 (the three rear stations)
 };
 
 // V2.5-Evo - 2026-07-20 - MagGesture: 132 → 136. mag_mode is a uint16_t (+2 bytes = 134), but the
@@ -627,7 +638,9 @@ confStruct defaultConf = {  // V2.5-Evo — factory default configuration
   // is exactly what the remote already does when the toggle cycles stations. Shipping the
   // permissive value means enabling mag_mode 4 changes WHICH INPUT cycles the stations, never
   // which stations exist. Narrow it per rider in the web UI (three tick boxes).
-  7,    // mag_fm_set (bit0=F1, bit1=F2, bit2=F3; 7 = all three)
+  // V2.5-Evo - 2026-10-07 - F4/F5: the toggle now steps all five stations, but this default stays 7 = the
+  // three REAR stations, so the front pair is opt-in on the magnet (bits 3 and 4, ticked in the web UI).
+  7,    // mag_fm_set (bit0=F1, bit1=F2, bit2=F3, bit3=F4, bit4=F5; 7 = the three rear stations)
 };
 
 

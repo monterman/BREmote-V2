@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-07 - F4/F5 on the remote (port of P2-d, dropped by the merge): both toggle station steppers wrap
+//   1 -> 2 -> 3 -> 4 -> 5 -> 1 (cycleFmMode() pre-throttle branch and cycleFmModeArmed()), the first-arm seed from
+//   followme_mode accepts 1-5, and fmNextStationInSet() (magnet tap) masks 0x1F and walks modulo 5, so mag_fm_set bits
+//   3 and 4 select the front pair. The 0xF2 encoding (bit 7 on gesture declarations) is unchanged. No confStruct change.
 // V2.5-Evo - 2026-10-07 - S-8 follow-up: the first boot ID after a link gap (or at the first fresh link) is a 3-packet
 //   burst, the 10 s repeats stay single packets. No confStruct change.
 // V2.5-Evo - 2026-10-07 - S-7: fmIsReturning() - Follow-Me engaged (fmIsEngaged(), corroborated) AND fm_flags bit 6, i.e.
@@ -406,7 +410,7 @@ bool rtmEnabledEffective()
 }
 
 // fmEncodeModeByte - compose the 0xF2 value byte: bits 0-2 the FM mode, bits 5-6 the override.
-// Inputs: mode 0-7 (0 = disarm, 1-3 the modes). Reads last_fm_return_mode. Output: the byte.
+// Inputs: mode 0-7 (0 = disarm, 1-5 the stations). Reads last_fm_return_mode. Output: the byte.
 // Side effects: none. EVERY 0xF2 goes through here so the RX always sees the current override.
 static uint8_t fmEncodeModeByte(uint8_t mode)
 {
@@ -1485,7 +1489,7 @@ void runRtmLoop()
 //   - FM active: user engages throttle to ride
 //
 // CHANGE MODE while armed (LEFT hold 2s, intercepted by Hall.ino):
-//   - Cycles F1→F2→F3→F1, never F0 (owner rule 2026-09-19: nothing disarms Follow-Me by cycling);
+//   - Cycles F1→F2→F3→F4→F5→F1 (F4/F5 since 2026-10-07), never F0 (owner rule 2026-09-19: nothing disarms Follow-Me by cycling);
 //     stays armed; sends new mode to RX; resets arm timer
 //
 // DISARM (any of):
@@ -1509,7 +1513,7 @@ void runRtmLoop()
 
 volatile bool        fm_armed         = false;  // FM arm state; RAM only, cleared on power cycle. Not static — extern'd by Display.ino (R5 bar)
                                                  // volatile: read by updateBargraphs() (task), written by loop()
-static uint8_t       last_fm_mode     = 1;      // last active FM mode (1-3); defaults F1; RAM only
+static uint8_t       last_fm_mode     = 1;      // last active FM station (1-5 since the F4/F5 port: 4 front-right, 5 front-left); defaults F1; RAM only
 static unsigned long fm_arm_ms        = 0;      // time of arm, or time of last throttle >10 while armed
 static bool          fm_throttle_seen = false;  // becomes true once thr_scaled>10 after arming
 // V2.5-Evo - 2026-10-07 - SOP-041 rule 3 resync: millis() of this remote's last Follow-Me ARM declaration (cycleFmMode()
@@ -1644,9 +1648,12 @@ void cycleFmMode()
       // wrap used to reach (display "F0", 0xF2/0, reset to SPIFFS default) is removed; it is
       // unreachable now. To leave Follow-Me off, don't arm it — the combo-after-throttle disarm
       // above and the magnet toggle disarm are unaffected.
-      last_fm_mode = (last_fm_mode < 3) ? last_fm_mode + 1 : 1;
+      // V2.5-Evo - 2026-10-07 - F4/F5: the wrap is 1 -> 2 -> 3 -> 4 -> 5 -> 1. The stations run round the rider -
+      // 1 rear-right, 2 behind, 3 rear-left, 4 FRONT-RIGHT, 5 FRONT-LEFT - and there is deliberately no 6: a station
+      // directly ahead would put the buggy on the rider's line, where a failed motor stops it in his path.
+      last_fm_mode = (last_fm_mode < 5) ? last_fm_mode + 1 : 1;
 
-      // Large-font mode confirm: LET_F + mode digit (1/2/3). V2.5-Evo - 2026-10-06 - held 2 s by
+      // Large-font mode confirm: LET_F + mode digit (1-5). V2.5-Evo - 2026-10-06 - held 2 s by
       // showFmLabelHeld() (Display.ino) WITHOUT blocking loop(); was a blocking gpsKeepAliveDelay(2000).
       showFmLabelHeld(last_fm_mode);
       queueMetaPacketBurst(0xF2, (uint8_t)(fmEncodeModeByte(last_fm_mode) | kFmFreshDeclBit));   // V2.5-Evo - 2026-10-07 - M-1: a gesture -> bit 7
@@ -1673,11 +1680,12 @@ void cycleFmMode()
   }
 
   // V2.5-Evo - 2026-04-28 - Change B: On first arm this session, seed last_fm_mode from SPIFFS.
-  // usrConf.followme_mode is the user's configured starting mode (range 1-3; 0 is invalid here).
-  // After seeding, fm_session_init_done prevents overriding any mode the user cycled to mid-session.
+  // usrConf.followme_mode is the user's configured starting mode (range 1-5 since the F4/F5 port; 0 is
+  // invalid here). After seeding, fm_session_init_done prevents overriding any mode the user cycled to
+  // mid-session. A front starting station still needs the buggy to prove separation before it engages.
   if (!fm_session_init_done)
   {
-    if (usrConf.followme_mode >= 1 && usrConf.followme_mode <= 3)
+    if (usrConf.followme_mode >= 1 && usrConf.followme_mode <= 5)
       last_fm_mode = usrConf.followme_mode;
     fm_session_init_done = true;
   }
@@ -1706,7 +1714,7 @@ void cycleFmMode()
 }
 
 // Called by handleGearToggle(-1) simple LEFT hold 2s when FM is armed (Hall.ino checks isFmArmed()).
-// Cycles mode 1→2→3→1 (Change C: skips mode 0 = disabled); stays armed; resets arm timer.
+// Cycles mode 1→2→3→4→5→1 (F4/F5 since 2026-10-07; Change C: skips mode 0 = disabled); stays armed; resets arm timer.
 // V2.5-Evo - 2026-09-19 - IT WRAPS, AND NEVER LANDS ON F0 (owner rule: nothing disarms Follow-Me
 // deliberately except the disarm gesture). From 2026-04-29 (F0) until today the third LEFT hold
 // while armed reached 0 = disarm, so a rider stepping through the modes on the water could disarm
@@ -1717,10 +1725,13 @@ void cycleFmMode()
 void cycleFmModeArmed()
 {
   if (!fm_armed) return;
-  // Cycle 1→2→3→1: wrap, never 0.
-  last_fm_mode = (last_fm_mode < 3) ? last_fm_mode + 1 : 1;
+  // Cycle 1→2→3→4→5→1: wrap, never 0.
+  // V2.5-Evo - 2026-10-07 - F4/F5: 1-3 becomes 1-5; the two extra steps are the FRONT stations (no 6, no
+  // dead-ahead station). A miscounted hold can land on a front station the rider did not mean to pick - a wrong
+  // station, never an unsafe one: the buggy must be measurably wide of his line before it goes ahead of him.
+  last_fm_mode = (last_fm_mode < 5) ? last_fm_mode + 1 : 1;
 
-  // Large-font mode confirm: LET_F + mode digit (1/2/3). V2.5-Evo - 2026-10-06 - held 2 s by
+  // Large-font mode confirm: LET_F + mode digit (1-5). V2.5-Evo - 2026-10-06 - held 2 s by
   // showFmLabelHeld() (Display.ino) WITHOUT blocking loop(); was a blocking gpsKeepAliveDelay(2000).
   showFmLabelHeld(last_fm_mode);
   queueMetaPacketBurst(0xF2, (uint8_t)(fmEncodeModeByte(last_fm_mode) | kFmFreshDeclBit));   // V2.5-Evo - 2026-10-07 - M-1: a gesture -> bit 7
@@ -1732,7 +1743,7 @@ void cycleFmModeArmed()
 // V2.5-Evo - 2026-09-30 - MagStations: the magnet-tap station stepper (mag_mode 4).
 //
 // WHY THESE FUNCTIONS EXIST SEPARATELY FROM cycleFmModeArmed()
-//   cycleFmModeArmed() is the toggle's stepper: it walks 1 -> 2 -> 3 -> 1 unconditionally and it
+//   cycleFmModeArmed() is the toggle's stepper: it walks 1 -> 2 -> 3 -> 4 -> 5 -> 1 unconditionally and it
 //   holds the confirm on screen for 2 s. The magnet tap needs two things that one cannot give:
 //   it must honour the rider's mag_fm_set station subset, and it must refuse to do anything at all
 //   unless Follow-Me is ACTIVELY FOLLOWING. Rather than bolt both onto the shared path and risk
@@ -1809,36 +1820,38 @@ bool fmIsReturning()
 
 // fmNextStationInSet - which station does a tap move to?
 //
-// INPUTS:  from = the station the buggy is at now (1-3; anything else counts as "outside the set")
-//          mask = usrConf.mag_fm_set, bit0 = station 1, bit1 = station 2, bit2 = station 3
-// OUTPUT:  the station to move to (1-3), or 0 for "there is nowhere to go, do nothing".
+// INPUTS:  from = the station the buggy is at now (1-5; anything else counts as "outside the set")
+//          mask = usrConf.mag_fm_set, bit0 = station 1 ... bit4 = station 5
+// OUTPUT:  the station to move to (1-5), or 0 for "there is nowhere to go, do nothing".
 // No side effects.
 //
 // Rules, straight from the design:
-//   - from IS in the set     -> the next set station going up, wrapping 3 -> 1
+//   - from IS in the set     -> the next set station going up, wrapping 5 -> 1
 //   - from is NOT in the set -> the LOWEST set station (the rider asked never to sit where he is)
 //   - the set holds only from -> returns from, which the caller treats as DO NOTHING. A tap never
 //     says "you are already there"; it either moves the buggy or it is silent.
-// Bits 3 and up are masked off: stations 4 and 5 (the front pair) DO NOT EXIST in this firmware -
-// the mode wrap is 1 -> 2 -> 3 -> 1 - and a bit for a station the buggy cannot reach would strand
-// the tap on a station it could never leave.
+// V2.5-Evo - 2026-10-07 - F4/F5: THE SET IS FIVE STATIONS NOW. The note that used to sit here said stations 4 and 5
+// did not exist and that a bit for a station the buggy cannot reach would strand the tap. They exist, so the mask is
+// 0x1F and the walk is modulo 5; both new bits address reachable stations. The tap's own gate is unchanged:
+// fmIsEngaged() still has to hold, so a tap is dead while the rider is on the rope. mag_fm_set defaults to 7, so the
+// magnet keeps stepping the three rear stations until the rider ticks bits 3 and 4.
 static uint8_t fmNextStationInSet(uint8_t from, uint16_t mask)
 {
-  mask &= 0x07;                 // stations 1-3 only
+  mask &= 0x1F;                 // stations 1-5
   if (mask == 0) return 0;      // nothing selected - validated against, but fail quietly anyway
 
   // Current station outside the chosen set -> go to the lowest station that IS in it.
-  if (from < 1 || from > 3 || !(mask & (1u << (from - 1))))
+  if (from < 1 || from > 5 || !(mask & (1u << (from - 1))))
   {
-    for (uint8_t s = 1; s <= 3; s++)
+    for (uint8_t s = 1; s <= 5; s++)
       if (mask & (1u << (s - 1))) return s;
     return 0;
   }
 
   // Current station inside the set -> walk forward and stop at the first set station.
-  for (uint8_t step = 1; step <= 3; step++)
+  for (uint8_t step = 1; step <= 5; step++)
   {
-    uint8_t s = (uint8_t)(((from - 1 + step) % 3) + 1);
+    uint8_t s = (uint8_t)(((from - 1 + step) % 5) + 1);
     if (mask & (1u << (s - 1))) return s;
   }
   return 0;

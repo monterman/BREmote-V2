@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - S-7: prototype for fmIsReturning() (RTMState.ino), used by Display.ino. No confStruct change.
 // V2.5-Evo - 2026-10-07 - Q-2: prototype for rtmReturnConfirmed() (RTMState.ino), used by Display.ino. No confStruct change.
 // V2.5-Evo - 2026-10-07 - S-8: setup() calls txBootIdInit() before initTasks(); prototype for txBootIdInit(). No confStruct
 //   change.
@@ -66,6 +67,7 @@ void cycleFmModeArmed();
 bool isFmArmed();
 // V2.5-Evo - 2026-07-20 - Batch T: FM readiness helpers (defined in RTMState.ino, called from Display.ino).
 bool fmArmedNotReady();     // true when FM is armed but not READY → scanner blinks in place instead of sweeping
+bool fmIsReturning();       // V2.5-Evo - 2026-10-07 - S-7: the buggy confirms auto-return RETURNING (fm_flags bits 6 + 1)
 bool fmFundamentalReject(); // true when a fresh FM arm must be refused (unpaired / no packet ever / no GPS fix ever)
 uint8_t calcRtmThrottleCap();
 // RTM/FM Active Display (defined in Display.ino)

@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-07 - S-7: fmIsReturning() - Follow-Me engaged (fmIsEngaged(), corroborated) AND fm_flags bit 6, i.e.
+//   the buggy confirms auto-return RETURNING. Display only. No confStruct change.
 // V2.5-Evo - 2026-10-07 - SOP-041 rule 3 resync: while this remote has Follow-Me armed and the link is fresh, if the
 //   buggy reports fm_flags bit 0 (armed) clear on 2+ consecutive arrivals spanning at least 3 s (and starting more than
 //   1.5 s after this remote's arm declaration), the remote disarms Follow-Me itself: "St" + the stop buzz (deferred to
@@ -1784,6 +1786,19 @@ bool fmIsEngaged()
   if ((f & FM_FLAG_ARMED)   == 0) return false;   // engaged without armed is not a state the RX sends
   if (fm_engaged_streak < 2)      return false;   // one corroborating arrival of the byte, minimum
   return true;
+}
+
+// fmIsReturning - V2.5-Evo - 2026-10-07 - S-7: is the buggy's AUTO-RETURN RETURNING (moving toward the rider) right now?
+// The buggy says so with fm_flags bit 6 (auto-return standing) together with bit 1 (engaged, it moves); bit 6 without
+// bit 1 is auto-return WAITING (parked), which is drawn exactly like Follow-Me armed. Built on fmIsEngaged(), so it
+// carries the same corroboration (bits 0 + 1 on 2 consecutive arrivals, fresh link, this remote armed): the returning
+// look is drawn only from buggy-confirmed telemetry (SOP-041 rule 1) and drops as soon as the link goes stale (rule 4).
+// An older RX never sets bit 6, so this is always false with it and its return looks like following, as before.
+// INPUTS: fmIsEngaged(), telemetry.fm_flags. OUTPUT: true = returning. No side effects; loop task and bargraph task.
+bool fmIsReturning()
+{
+  if (!fmIsEngaged()) return false;
+  return (telemetry.fm_flags & FM_FLAG_RETURN_STANDING) != 0;
 }
 
 // fmNextStationInSet - which station does a tap move to?

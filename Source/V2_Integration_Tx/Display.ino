@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-07 - S-7: while the buggy confirms auto-return RETURNING (fmIsReturning(): fm_flags bits 6 + 1) the
+//   Follow-Me screen shows the distance in metres whatever fm_display_mode says, and R5 shows the left-anchored RETURN
+//   bar (drawReturnBar(), the same bar as manual RTM) instead of the centre FM bar. Auto-return WAITING (bit 6 without
+//   bit 1) keeps the Follow-Me armed look. No new indicator dots. Display only, no confStruct change.
 // V2.5-Evo - 2026-10-07 - Q-2 / SOP-041: renderRtmInfoDisplay() draws "rn" (waiting) with R5 dark until the buggy has
 //   confirmed the manual return (rtmReturnConfirmed()); the distance screen and RETURN bar only after that. Display only.
 // V2.5-Evo - 2026-10-07 - D-1 (TX part): the distance readout shows "0.X" under 1 m, and "--" for a 0x00 byte or a stale
@@ -860,8 +864,11 @@ void renderOperationalDisplay()
     // Option 4: Current throttle percentage 0-100.
     // V2.5-Evo - 2026-10-06 - F-label hold: while an "F<n>" confirm is inside its 2 s hold, skip the
     // digit-zone readout so it is not painted over. The R5 bar and the push below still run.
+    // V2.5-Evo - 2026-10-07 - S-7 (SOP-040 auto-return rule 6): while the buggy is RETURNING the digits are always the
+    // distance in metres, counting down, so the rider can see it closing; otherwise the rider's chosen readout.
+    const uint16_t fm_readout = fmIsReturning() ? 2 : usrConf.fm_display_mode;
     if (!fmLabelHolding())
-    switch (usrConf.fm_display_mode)
+    switch (fm_readout)
     {
       case 2:
       {
@@ -1665,6 +1672,42 @@ void renderRtmInfoDisplay()
 //                                           full-scale from usrConf.fm_warn_distance_m (existing
 //                                           field — no new confStruct field).
 // ============================================================
+// ============================================================
+// V2.5-Evo - 2026-10-07 - S-7: THE RETURN BAR, shared by manual RTM and auto-return (SOP-041: "returning" looks like
+// ONE thing). Left-anchored on R5, square-root curve, full at the reference distance and shrinking toward the left as the
+// buggy closes; blinks with the caller's 1000/500 ms phase. This is the RTM bar that lived inline in
+// updateR5ProximityBar(), moved here unchanged so the auto-return return can draw the identical bar.
+// Inputs: ref_m - the 100 % reference (captured lazily from the first valid distance when <= 0, as before);
+//   blink_on - the caller's blink phase; telemetry.rtm_distance. Side effects: ORs pixels into displayBuffer[6] (the
+//   caller has cleared it and holds displayMutex); may set ref_m.
+// ============================================================
+static void drawReturnBar(float &ref_m, bool blink_on)
+{
+  if (!blink_on) return;  // off phase — leave R5 dark
+
+  uint8_t d = telemetry.rtm_distance;
+  if (d == 0xFF) return;  // no distance data — leave R5 dark
+
+  float current_m = (d < 100) ? d / 10.0f : (float)(d - 90);
+
+  // The reference may be captured before the buggy reports a distance; lazily capture it from the first valid
+  // render - the buggy is still near its starting distance at this point.
+  if (ref_m <= 0.0f) ref_m = current_m;
+  if (ref_m <= 0.0f) return;  // buggy literally at 0 m — skip to avoid divide-by-zero
+
+  float ratio = current_m / ref_m;
+  if (ratio > 1.0f) ratio = 1.0f;
+  uint8_t pixels = (uint8_t)(sqrtf(ratio) * 10.0f + 0.5f);  // full at the reference distance, shrinks as it closes
+  if (pixels > 10) pixels = 10;
+
+  for (uint8_t c = 0; c < pixels; c++)
+    displayBuffer[6] |= (1u << c);
+}
+
+// V2.5-Evo - 2026-10-07 - S-7: the auto-return's reference distance (RAM, the twin of rtm_arm_dist_m): captured on the
+// first returning render, cleared whenever the buggy is not returning, so every return starts with a full bar.
+static float fm_return_ref_m = 0.0f;
+
 void updateR5ProximityBar()
 {
   static unsigned long r5_blink_ms    = 0;
@@ -1690,28 +1733,22 @@ void updateR5ProximityBar()
   // ---- RTM proximity bar (unchanged): blinks, GROW-WITH-FAR (full = far) ----
   if (rtm_tx_active)
   {
-    if (!r5_blink_state) return;  // off phase — leave R5 dark
-
-    uint8_t d = telemetry.rtm_distance;
-    if (d == 0xFF) return;  // no distance data — leave R5 dark
-
-    float current_m = (d < 100) ? d / 10.0f : (float)(d - 90);
-
-    // rtm_arm_dist_m is captured at arm-engage time but RX telemetry may still be 0xFF
-    // at that instant (RX hasn't transitioned to active yet). Lazily capture it from the
-    // first valid render call — buggy is still near arm distance at this point.
-    if (rtm_arm_dist_m <= 0.0f) rtm_arm_dist_m = current_m;
-    if (rtm_arm_dist_m <= 0.0f) return;  // buggy literally at 0 m at arm — skip to avoid divide-by-zero
-
-    float ratio = current_m / rtm_arm_dist_m;
-    if (ratio > 1.0f) ratio = 1.0f;
-    uint8_t pixels = (uint8_t)(sqrtf(ratio) * 10.0f + 0.5f);  // full at arm distance, shrinks as it closes
-    if (pixels > 10) pixels = 10;
-
-    for (uint8_t c = 0; c < pixels; c++)
-      displayBuffer[6] |= (1u << c);
+    // rtm_arm_dist_m is captured at arm-engage time but RX telemetry may still be 0xFF at that instant; the lazy
+    // capture inside drawReturnBar() covers it. V2.5-Evo - 2026-10-07 - S-7: drawing moved to drawReturnBar(), unchanged.
+    drawReturnBar(rtm_arm_dist_m, r5_blink_state);
     return;
   }
+
+  // ---- V2.5-Evo - 2026-10-07 - S-7: AUTO-RETURN RETURNING -> the same RETURN bar, never the FM centre bar ----
+  // Drawn only while the buggy confirms it is returning (fmIsReturning(), RTMState.ino). Auto-return WAITING (parked)
+  // falls through to the armed scanner below - moving when ready, blinking in place when the buggy reports not-ready
+  // (fm_flags bit 2, read by fmArmedNotReady()).
+  if (fmIsReturning())
+  {
+    drawReturnBar(fm_return_ref_m, r5_blink_state);
+    return;
+  }
+  fm_return_ref_m = 0.0f;   // not returning: the next return starts from a full bar
 
   // ---- FM R5 row (Batch T): state-driven from fm_flags + TX-local readiness ----
   if (!fm_armed) return;  // Disarmed → R5 fully OFF

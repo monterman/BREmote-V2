@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-07 - defaultConf.foil_num_cells 10 -> 12 (value only: same field, sizeof stays 200, SW_VERSION stays 36, a stored config keeps its own value).
 // V2.5-Evo - 2026-10-07 - N-5 backstop: comment only - arrival_handback_cap also clears after 1.0 s below 25 (PWM.ino).
 // V2.5-Evo - 2026-10-07 - N-10: adds the rx_tx_boot_id_rx_seq atomic (bumped on every boot-ID packet; a parked auto-return after a link gap waits for it to move). Runtime global, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - COMMENTS (audits N-2..N-8): rx_state_flags bit 2 now means 0 after every RTM end; the sticky bits (rx_state_flags 0/1, fm_flags 3) count 6 s of link-fresh time; fm_redeclare_blocked is enforced only once a boot ID is heard. No code change in this file, sizeof stays 200, SW_VERSION stays 36.
@@ -783,7 +784,7 @@ static_assert(sizeof(confStruct) == 200, "confStruct size mismatch — expected 
 confStruct usrConf;
   //The orginal confs were:  ##// confStruct defaultConf = {SW_VERSION, 1, 0, 0, 50, 0, 0, 1500, 2000, 1500, 2000, 1000, 10, 0, 1, 0, 0, 0, 0, 0, 25.0f, 10.0f, 10.0f, 5.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0, 1000, 1, 0, {0, 0, 0}, {0, 0, 0}, {'1','2','3','4','5','6','7','8'}};
   // Factory default configuration.
-confStruct defaultConf = {SW_VERSION, 2, 22, 1, 50 /*steering_influence: conventional default (0-100)*/, 0 /*steering_inverted: 0 = conventional default; a fresh build MUST verify steering direction wheels-up (FM steers toward rider) before trusting FM.*/, 0, 1000, 2000, 1000, 2000, 1000, 10, 0, 1, 2, 2, 1, 2, 1, 25.0f, 10.0f, 10.0f, 8.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0f, 3000, 0, 0, {0, 0, 0}, {0, 0, 0}, {'1','2','3','4','5','6','7','8'}, // wifi_password below: documented DEFAULT AP password "12345678" — change before use
+confStruct defaultConf = {SW_VERSION, 2, 22, 1, 50 /*steering_influence: conventional default (0-100)*/, 0 /*steering_inverted: 0 = conventional default; a fresh build MUST verify steering direction wheels-up (FM steers toward rider) before trusting FM.*/, 0, 1000, 2000, 1000, 2000, 1000, 12 /*foil_num_cells: 12S default since 2026-10-07 (was 10); range 1-50*/, 0, 1, 2, 2, 1, 2, 1, 25.0f, 10.0f, 10.0f, 8.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0f, 3000, 0, 0, {0, 0, 0}, {0, 0, 0}, {'1','2','3','4','5','6','7','8'}, // wifi_password below: documented DEFAULT AP password "12345678" — change before use
   // V2.5-Evo - 2026-04-22 - Compass calibration fields (previously implicit zeros).
   // Made explicit here so gps_chip_type can follow. Safe neutral values:
   // offsets=0 (no bias), scales=1.0f (unity gain = no correction applied).

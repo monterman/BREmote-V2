@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-07 - T-1: the pre-arm distance refusal and the two squeeze timeouts keep the throttle cap at 0 while
+//   the trigger is held (rtm_arrival_cap_hold) until one full release; released -> 255 as before. The 1 s LEFT cancel
+//   is unchanged. No confStruct change.
 // V2.5-Evo - 2026-10-07 - F4/F5 on the remote (port of P2-d, dropped by the merge): both toggle station steppers wrap
 //   1 -> 2 -> 3 -> 4 -> 5 -> 1 (cycleFmMode() pre-throttle branch and cycleFmModeArmed()), the first-arm seed from
 //   followme_mode accepts 1-5, and fmNextStationInSet() (magnet tap) masks 0x1F and walks modulo 5, so mag_fm_set bits
@@ -609,6 +612,45 @@ static void rtmArrivalCapUpdate()
   Serial.println("RTM [TX] trigger fully released after the return ended -> throttle cap lifted, full manual");
 }
 
+// rtmCapHoldDelay - V2.5-Evo - 2026-10-07 - T-1: a blocking wait (the 2 s "St" hold) that also lifts a kept cap.
+// gpsKeepAliveDelay() that watches the trigger: if rtm_arrival_cap_hold is set and a full release is seen at a 10 ms
+// sample, the cap goes back to 255 at that sample (the Q-6 rule), so a rider who lets go and squeezes again inside the
+// hold is not left capped. Inputs: ms, rtm_arrival_cap_hold, triggerReleased(). Side effects: drains Serial1 into gps_tx;
+// may set rtm_thr_cap_tx = 255 and print one line. Loop task only. BLOCKS for ms.
+static void rtmCapHoldDelay(uint32_t ms)
+{
+  const unsigned long start_ms = millis();
+  while (millis() - start_ms < ms)
+  {
+    while (Serial1.available()) gps_tx.encode(Serial1.read());
+    rtmArrivalCapUpdate();
+    delay(10);
+  }
+}
+
+// rtmCeremonyKeepCapIfHeld - V2.5-Evo - 2026-10-07 - T-1: how an arm ceremony that did NOT go ACTIVE gives the throttle
+// back. THE BUG: the pre-arm distance refusal (buggy already inside the disengage distance) and the two squeeze
+// timeouts set the cap straight back to 255. A rider still squeezing to summon the buggy - which is right next to him in
+// the refusal case - got his held trigger passed to the motors uncapped the moment the ceremony ended. THE FIX (the
+// SOP-040 arrival rule): with the trigger NOT fully released, the cap stays 0 (it has been 0 for the whole ceremony) and
+// rtm_arrival_cap_hold is raised, so only a full release gives full manual back (rtmArrivalCapUpdate(), or
+// rtmCapHoldDelay() during a "St" hold). With the trigger released, the cap goes back to 255 at once, as before.
+// The 1 s LEFT cancel (ceremonyCancelToManual()) is deliberately NOT routed here: it is the rider's own way back to full
+// manual and keeps restoring 255 directly. Inputs: triggerReleased(), why (for the serial line). Side effects:
+// rtm_thr_cap_tx, rtm_arrival_cap_hold, one serial line when the cap is kept. Loop task only.
+static void rtmCeremonyKeepCapIfHeld(const char *why)
+{
+  if (triggerReleased())
+  {
+    rtm_arrival_cap_hold = false;
+    rtm_thr_cap_tx       = 255;   // released: nothing to protect, full manual at once
+    return;
+  }
+  rtm_thr_cap_tx       = 0;       // only ever lowers it: the ceremony already held it at 0
+  rtm_arrival_cap_hold = true;
+  Serial.printf("RTM [TX] %s with the trigger held -> throttle cap 0 until the trigger is fully released\n", why);
+}
+
 // rtmReturnConfirmed - V2.5-Evo - 2026-10-07 - Q-2 / SOP-041: is a manual return running AND confirmed by the buggy
 // (an fm_status arrival with bit 1 set after this run went ACTIVE)? The screen draws the RTM returning look only while
 // this is true; before it, "rn" (waiting). Inputs: rtm_tx_state, fm_status_rtm_on_ms, rtm_active_start_ms.
@@ -1013,7 +1055,8 @@ static void runDoubleSqueezeArm()
   if (!first_ok)
   {
     rtm_arm_gps_timeout_override = 0;  // ceremony aborted — restore normal GPS threshold
-    rtm_thr_cap_tx = 255;              // restore throttle passthrough — arm aborted
+    // V2.5-Evo - 2026-10-07 - T-1: was rtm_thr_cap_tx = 255 unconditionally; a held trigger now keeps cap 0 until released.
+    rtmCeremonyKeepCapIfHeld("arm timed out (no first squeeze)");
     DISP_LOCK(); for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000; updateDisplay(); DISP_UNLOCK();
     rtm_tx_state = RTM_IDLE;
     Serial.printf("RTM [TX] arm cancelled: no first squeeze within %u s\n", (unsigned)usrConf.rtm_arm_window_s);
@@ -1068,7 +1111,8 @@ static void runDoubleSqueezeArm()
     if (!second_ok)
     {
       rtm_arm_gps_timeout_override = 0;  // ceremony aborted — restore normal GPS threshold
-      rtm_thr_cap_tx = 255;              // restore throttle passthrough — arm aborted
+      // V2.5-Evo - 2026-10-07 - T-1: was rtm_thr_cap_tx = 255 unconditionally; a held trigger now keeps cap 0 until released.
+      rtmCeremonyKeepCapIfHeld("arm timed out (no second squeeze)");
       DISP_LOCK(); for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000; updateDisplay(); DISP_UNLOCK();
       rtm_tx_state = RTM_IDLE;
       Serial.printf("RTM [TX] arm cancelled: no second squeeze within %u s\n", (unsigned)usrConf.rtm_arm_window_s);
@@ -1091,13 +1135,17 @@ static void runDoubleSqueezeArm()
                                         // Finding 2-1: only exit path that previously left
                                         // the 4× override stale; all other exits
                                         // (timeouts + rtmDisengage) already clear it
-    rtm_thr_cap_tx = 255;              // restore throttle passthrough — arm rejected
+    // V2.5-Evo - 2026-10-07 - T-1: THE BUG - this restored rtm_thr_cap_tx = 255 here, so a rider still squeezing to
+    // summon a buggy that is already within the disengage distance had his held trigger passed straight to the motors
+    // when the "St" ended. THE FIX (SOP-040 arrival rule): with the trigger held the cap stays 0 until one full release;
+    // the "St" hold below watches for that release and lifts the cap at the sample it is seen.
+    rtmCeremonyKeepCapIfHeld("arm refused (buggy inside the disengage distance)");
     // Pattern 7: one long buzz = the arm was REFUSED. Kept (an arm refusal is the rider believing
     // RTM is running when it is not), and routed through the pending flag like every other stop.
     vib_stop_pending = true;
     // Large-font stop confirm on arm rejection.
     DISP_LOCK(); displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
-    gpsKeepAliveDelay(2000);
+    rtmCapHoldDelay(2000);   // T-1: was gpsKeepAliveDelay(2000); same 2 s, but a release lifts a kept cap at once
     rtm_tx_state  = RTM_IDLE;
     rtm_tx_active = false;
     queueMetaPacketBurst(0xF1, 0);

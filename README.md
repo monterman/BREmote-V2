@@ -1318,4 +1318,8 @@ Key V2 milestones:
 | **monterman** | BREmote V2.5-Evo — TX GPS implementation, dev-logger AUX button toggle with LED status feedback (5× flash = start, 2× flash = stop), date format DDMMYY → MMDDYY, web console major rebuild (upload/download/compare JSON, integrated serial console, TX+RX coverage, plain-English parameter docs for every setting), deep codebase analysis, critical bug documentation, RTM/FM mode design, VESC UART telemetry diagnosis and root-cause fix (SW55), DISPLAY_MODE_INTBAT 7th display mode, BT status dot + Hall sensor activation framework, BLE NUS + VESC Tool binary protocol (COMM_GET_VALUES live gauges — field-confirmed 2026-05-16). |
 
 
+## ☕ Support the project
+
+If BREmote is useful to you, you can support the work on **[Ko-fi](https://ko-fi.com/monterman)**.
+
 **License:** GNU General Public License v3.0 — same as the original BREmote. See LICENSE file.

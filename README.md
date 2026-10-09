@@ -185,7 +185,8 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 
 > 🔌 **Wiring the RX GPS + compass:** **[BN-880 → RX wiring guide →](docs/GPS_Wiring_BN880_RX.md)** — six wires,
 > pin map, and the three things that bite: every wire runs **straight, label to label** (the PCB does the UART
-> crossover for you), the BN-880 needs **5 V**, and `gps_chip_type` must be set to your module.
+> crossover for you), the BN-880 needs **5 V**, and `gps_chip_type` must be set to your module. A Beitian
+> BE-880 wires the same way and uses `gps_chip_type 1`.
 
 ---
 

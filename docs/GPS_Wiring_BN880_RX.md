@@ -4,6 +4,12 @@
 **Why the BN-880:** it carries a **QMC5883L magnetometer**. The RX needs a compass for
 **Return-to-Me** and **Follow-Me** heading — a BN-220 has no compass and cannot run those modes.
 
+> **Beitian BE-880?** Wire it exactly like the BN-880. It has the same 28 × 28 mm footprint and the
+> same connector, and it needs the same **5 V** supply (3.6–5.5 V). Everything on this page applies.
+> Set `gps_chip_type 1`. It usually has a u-blox M10 inside and ships at 115200, which takes its
+> settings in a different language — the RX works that out by itself. Details:
+> [GPS.md — Which GPS chip](GPS.md#which-gps-chip-and-how-the-receiver-talks-to-it).
+
 > This covers the **module-to-board** wiring only. Waterproof connectors and pack wiring are
 > deliberately not covered — everyone uses different connectors, so pick your own and keep the
 > signal mapping below.
@@ -223,7 +229,7 @@ soldermask layers), which is the authority for anything that exists only in the 
 The RX must be told it has a BN-880, or it will not configure the module correctly:
 
 ```
-?set gps_chip_type 1        # 0 = BN-220, 1 = BN-880, 2/3 = M10
+?set gps_chip_type 1        # 0 = BN-220, 1 = BN-880 or BE-880, 2/3 = M10
 ?save
 ```
 Reboot after saving.

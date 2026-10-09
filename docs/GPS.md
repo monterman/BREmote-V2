@@ -330,7 +330,9 @@ polling while they run. On the TX they're USB-only (the TX disables serial on a 
 the line reads `<-- matches gps_dyn_model` when it took.
 
 The firmware finds the module at whatever baud it ships on and configures it in whichever dialect
-it speaks. Set `gps_chip_type` (0 = BN-220, 1 = BN-880, 2/3 = M10) and reboot.
+it speaks. Set `gps_chip_type` (0 = BN-220, 1 = BN-880 or Beitian BE-880, 2/3 = M10) and reboot. What
+that setting does and does not change is under
+[Which GPS chip, and how the receiver talks to it](#which-gps-chip-and-how-the-receiver-talks-to-it).
 
 Three things to check before buying:
 
@@ -370,6 +372,72 @@ mounting rotation only as one of those four values and any odd angle leaves perm
 The current procedure is *nose on north → two full
 clockwise circles → finish on north*; see
 [Zero → Foiling § 2.4](ZERO_TO_FOILING.md#24-compass-calibration-rx--nose-on-north-two-clockwise-circles).
+
+### Which GPS chip, and how the receiver talks to it
+
+u-blox modules come in two generations, and each takes its settings in a different language. The
+detail is in [§2](#2-bn-220bn-880-and-m10-speak-different-languages); the short form:
+
+- **u-blox M8** (BN-220, BN-880, BN-880Q) takes the old `UBX-CFG` messages: `CFG-NAV5`,
+  `CFG-RATE`, `CFG-MSG` and the rest.
+- **u-blox M9 / M10** (Beitian BE-880, HGLRC M100 Mini, HGLRC M100-5883) removed those messages.
+  It only takes `CFG-VALSET` and `CFG-VALGET`.
+
+**You do not pick the language.** At boot the RX sends the first setting (`dynModel`) in the old
+form and waits for the answer. If the module accepts it, the RX uses the old form for the rest. If
+the module refuses it, the RX sends the same setting again with `CFG-VALSET` and uses `CFG-VALSET`
+for the rest. This happens whatever `gps_chip_type` says. It covers `dynModel`, the NMEA sentence
+filter and, on an M9/M10, switching NMEA output back on.
+
+**What `gps_chip_type` does change on the RX** is only the opening of the start-up:
+
+| Setting | What the RX does first |
+|---|---|
+| 0 or 1 | Listens first. If the module is on a slower baud, asks it to move to 115200. If nothing is heard, tries the 9600 → 115200 switch. Asks for 5 Hz. |
+| 2 or 3 | Opens the port at 115200 straight away. Asks for 10 Hz and four constellations (GPS, Galileo, BeiDou, GLONASS). |
+
+Those opening requests go out in the old form only, and nothing checks the answer. An M9/M10
+refuses them, so on an M9/M10 the RX does not change the baud, the update rate or the
+constellations: the module keeps its own. (The BE-880 datasheet gives 1 Hz as its default rate. `?diag` shows the
+sentences per second you are really getting.)
+
+**What it does not change:** the language (detected, as above) and the compass. The RX finds the
+compass by its I²C address at boot (`0x2C`, then `0x0D`, then `0x1E`), whatever the setting says.
+Settings 0 and 1 run the same code, and so do 2 and 3 — "with compass" is only a label on the RX.
+The TX accepts 0 and 2 only.
+
+**How to tell which chip is really inside.** The label on the module is not proof. Look for the
+boot-log line that starts `GPS config [`:
+
+```
+GPS config [legacy CFG (u-blox 6/7/8)]: dynModel=Sea OK | GSV OK | GLL OK | VTG OK
+GPS config [CFG-VALSET (u-blox M9/M10)]: dynModel=Sea OK/valset | GSV OK/valset | GLL OK/valset | VTG OK/valset
+```
+
+The first means an M8 (or older) answered. The second means an M9/M10 answered. `?gpscfg` reads the
+live setting back by either path and prints `dialect  : legacy UBX-CFG (u-blox 6/7/8)` or
+`dialect  : CFG-VALSET/VALGET (u-blox M9/M10)`. On an M9/M10 its `GSV` line reads `NO REPLY`: that
+check only exists in the old form, so this is normal there.
+
+A module sold as a BE-880 can turn out to answer the old path, which means M8 silicon inside. That
+has already happened on a real build. The firmware handles either.
+
+| Module | Chip inside | Language | Ships at | Supply | Compass | `gps_chip_type` (RX) |
+|---|---|---|---|---|---|---|
+| Beitian BN-220 | u-blox M8 | old `CFG-*` | 9600 | 3.0–5.5 V | none | 0 (also the TX setting) |
+| Beitian BN-880 | u-blox M8 | old `CFG-*` | 9600 | 3.6–5.5 V — **5 V rail** | QMC5883L, `0x0D` | 1 |
+| Beitian BN-880Q | u-blox M8 | old `CFG-*` | 9600 | 3.6–5.5 V — **5 V rail** | QMC5883 | 1 |
+| **Beitian BE-880** | u-blox M10 (M10050) per its datasheet — some units answer as M8 | `CFG-VALSET` (old `CFG-*` if M8 inside) | 115200 | 3.6–5.5 V — **5 V rail** | "QMC5883" per its datasheet; address not yet confirmed (the RX finds it either way) | **1** (3 also works) |
+| HGLRC M100 Mini | u-blox M10 | `CFG-VALSET` | 115200 | 3.3–5 V | none | 2 (also the TX setting) |
+| HGLRC M100-5883 | u-blox M10 | `CFG-VALSET` | 115200 | 3.3–5 V | QMC5883P, `0x2C` | 3 |
+
+**Why 1 for the BE-880.** It is a BN-880 in shape: same 28 × 28 mm footprint, same connector, and it
+needs the 5 V rail like the BN-880. If it has an M10 inside, 1 and 3 end the same way: the old rate
+and constellation requests are refused, the module stays at 115200 on its own rate, and `dynModel`
+and the NMEA filter go through `CFG-VALSET`. 1 is the better pick because it listens before it sends
+anything. If it has an M8 inside, 1 gives it exactly the BN-880 start-up (5 Hz). Setting 3 would
+instead ask an M8 for 10 Hz on four constellations, which is not what the BN-880 is tested with.
+Wiring is the same as the BN-880: see the [BN-880 → RX wiring guide](GPS_Wiring_BN880_RX.md).
 
 ---
 

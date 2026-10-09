@@ -207,6 +207,8 @@ void loop()
   runFmLoop();
 
   // V2.5-Evo - 2026-05-13 - SW33b: Hall mag sensor (P_MAG / GPIO 9) — polled every 20ms.
+  // (V2.5-Evo - 2026-10-09 - audit L-2: in practice NOT every 20 ms. This block sits in loop() behind a ">= 20 ms" gate,
+  // so it reads the pin once per loop() pass (~115-130 ms). It is not a fast sampler; mag_mode 4 uses an edge interrupt.)
   // Drives bt_dot_state: short hold (400ms-4999ms) toggles OFF/SLOW; long hold (5s+) → FAST; FAST + any release → OFF.
   //
   // V2.5-Evo - 2026-07-20 - MagGesture FIX1: THE BUG — with mag_mode>0 and the DRV5032 fitted, a short

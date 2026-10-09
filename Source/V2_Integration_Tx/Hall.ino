@@ -1,3 +1,14 @@
+// V2.5-Evo - 2026-10-09 - mag_mode 4 magnet tap fix (audit "magnet tap does not arm Follow-Me", M-1 to M-4, L-1, L-2):
+//   (M-1/M-2) a GPIO 9 CHANGE interrupt (magEdgeIsr(), attached after boot) stamps the real magnet edges; mode 4 now
+//   judges arrival, removal and the tap length from them, so the 40 ms debounce and the 60-600 ms band are real time
+//   and a brisk tap that starts and ends between two loop() passes is no longer lost. Actions and gates still run on
+//   the loop task, unchanged; the 2.5 s hold, the boot guard, the lock and error gates, the 1 s step lockout and the
+//   sample-gap guard keep their behaviour. Roles 1-3 are not touched. (M-3, owner ruling) no permanent new serial
+//   lines; ONE temporary bench line ("MAG [TX] TEMP contact <ms> -> <verdict>") is marked for removal once the
+//   tap window is set. (M-4) a tap with Follow-Me OFF that cannot arm because the feature or gps_en is off now shows "St" + the stop
+//   buzz (SOP-040 one signal), like the hold refusal; armed-not-engaged, Return-To-Me, auto-return, too short and
+//   the dead zone stay silent on the remote. (L-1/L-2) header and sampler comments corrected. No confStruct change,
+//   sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-07 - T-4: mag_mode 4 - a magnet tap is ignored while the buggy confirms an auto-return RETURNING
 //   (fmIsReturning()): no station step, no "F<n>" over the metres. Serial line only. No confStruct change.
 // V2.5-Evo - 2026-10-07 - T-9: mag_mode 1-3 - the magnet Follow-Me disarm is ignored while the buggy confirms an
@@ -599,10 +610,13 @@ void handleGearToggle(int direction)
 //   MAG_ROLE_FMSET (mag_mode 4) — V2.5-Evo - 2026-09-30 - MagStations. A DIFFERENT SHAPE OF GESTURE:
 //     Magnet held        Feedback while holding          On magnet REMOVAL
 //     -----------        ----------------------          -----------------
-//     < 60ms             none                            nothing (debounce, not a gesture)
+//     < 60ms             none                            nothing (too short for a tap)
 //     60-600ms (a TAP)   none (too short to buzz)        step to the next station in mag_fm_set,
 //                                                        or ARM Follow-Me if it is not armed yet
+//                                                        ("St" + stop buzz if Follow-Me is off and cannot arm)
 //     600ms - 2.5s       none                            nothing (deliberate dead zone, see below)
+//     V2.5-Evo - 2026-10-09 - the lengths in this table are REAL contact times: mag_mode 4 measures arrival and
+//     removal from GPIO 9 edge interrupts (magEdgeIsr()), not from loop() samples. See "EDGE CAPTURE" below.
 //     >= 2.5s            TWO medium pulses (Pattern 10)  start the MANUAL Return-To-Me ("rn", squeeze to confirm)
 //     (V2.5-Evo - 2026-10-06: the hold row used to read "toggle Return-To-Me on/off", and from 2026-10-02 it
 //     toggled auto-return instead while Follow-Me was armed. Owner ruling: it ALWAYS starts the manual recall.)
@@ -634,6 +648,11 @@ void handleGearToggle(int direction)
 //     absorbs that jitter and still leaves the tap band and the 2.5 s hold band far apart. A future option
 //     (NOT done here) is to move the P_MAG sample into a dedicated 20 ms task and leave only the action in
 //     loop(); that would make the sample rate match the original design instead of widening the window.
+//     V2.5-Evo - 2026-10-09 - SUPERSEDED for mag_mode 4 by the EDGE CAPTURE (audit M-1 / M-2): the loop-sampled
+//     tap needed the magnet LOW on two loop passes in a row, so a brisk 100-200 ms tap was often lost with no
+//     trace, and the length was a whole number of loop periods. A CHANGE interrupt on GPIO 9 now stamps the
+//     real edges, so a tap is judged on its true length (40 ms debounce, 60-600 ms band) and a contact that
+//     starts and ends between two loop passes is still seen. The 600 ms ceiling is kept as it was.
 //
 //     THE FIRST TAP IS NEVER A NO-OP, AND NEVER SAYS "YOU ARE ALREADY THERE":
 //       Follow-Me not armed          -> ARM it at the stored default station (cycleFmMode())
@@ -663,8 +682,25 @@ void handleGearToggle(int direction)
 //       - THE REAL MITIGATION IS THE LOCK, NOT THE GATE. This whole function returns early while
 //         system_locked is set, and the owner ships no_lock = 0, so a remote in a bag or a car boots LOCKED
 //         and no magnet gesture of any kind is honoured until the rider unlocks it deliberately.
-//     A REFUSED GESTURE IS COMPLETELY SILENT: buzzing for "I did nothing" would train the rider to expect
-//     feedback from accidental contact. Counting taps was rejected as the guard because it has a measured
+//     WHAT A REFUSED OR IGNORED mag_mode 4 GESTURE SHOWS (V2.5-Evo - 2026-10-09 - rewritten, audit L-1 / M-4;
+//     the old line "a refused gesture is completely silent" stopped being true with SOP-040):
+//       - "St" + the stop buzz (SOP-040 one-signal rule) ONLY where the rider asked to arm or start
+//         something and it cannot work:
+//           a tap with Follow-Me OFF when Follow-Me cannot arm - feature off (fm_override_enabled 0),
+//           gps_en 0, or the arm-time reject inside cycleFmMode() (unpaired, no buggy packet ever, no
+//           remote GPS fix ever);
+//           a 2.5 s hold with the trigger released when Return-To-Me cannot start.
+//       - SILENT on the remote wherever a mode is already in charge or no gesture
+//         was recognised:
+//           Follow-Me armed but not engaged (on the rope) - "St" would wrongly say Follow-Me stopped;
+//           Return-To-Me active or arming, or the buggy on an auto-return RETURNING - that screen
+//           already says which mode owns the buggy;
+//           a contact too short for a tap, or in the 600 ms - 2.5 s dead zone - no gesture, nothing
+//           to refuse, and a buzz there is feedback from accidental contact;
+//           the 1 s station-step lockout, a hold with the trigger held, a hold while Return-To-Me is
+//           already active, a parked or untrusted contact, and a locked / setup / error / input-fault
+//           remote.
+//     Counting taps was rejected as the guard because it has a measured
 //     reliability cost on competitor water remotes.
 //
 // — HARDWARE HAZARD THE RIDER MUST KNOW: GPIO 9 (P_MAG) IS AN ESP32-C3 STRAPPING PIN.
@@ -704,6 +740,8 @@ void handleGearToggle(int direction)
 //   mag_seen_high. This function only ever READS digitalRead(P_MAG) and mag_seen_high.
 //   It keeps its own private debounce/timer state and writes nothing the dot machine uses,
 //   so the dot behaves exactly as before.
+//   (V2.5-Evo - 2026-10-09 - it also attaches the mag_mode 4 edge interrupt on GPIO 9 once. The ISR only
+//   stamps its own private volatiles; the pin mode and the dot block's digitalRead() are untouched.)
 //
 // INPUTS:  P_MAG (GPIO 9, DRV5032FADBZR, LOW = magnet present), mag_seen_high boot guard
 // OUTPUTS: none (void)
@@ -750,7 +788,9 @@ static const uint32_t kMagDebounceMs = 120UL;
 // between two P_MAG samples is ~110 ms. This constant only stops the gesture from re-sampling FASTER than
 // 20 ms if loop() ever gets shorter; it has never made the sampling 20 ms, and no timing rationale in this
 // file may be reasoned from "20 ms samples". Use kMagLoopPeriodMs below for anything that needs the real
-// cadence. (The SW33b dot block in loop() does poll on its own 20 ms clock — that is a different sampler.)
+// cadence. (V2.5-Evo - 2026-10-09 - audit L-2: the SW33b dot block in loop() is NOT a 20 ms sampler either. It sits
+// in loop() behind a ">= 20 ms" gate, so it also reads the pin only once per loop() pass. Do not reuse it as a fast
+// sampler; mag_mode 4 uses the GPIO 9 edge interrupt below instead.)
 static const uint32_t kMagPollMs     = 20UL;     // MINIMUM interval between samples, not the real one
 // The real loop() period: V2_Integration_Tx.ino ends loop() with vTaskDelay(pdMS_TO_TICKS(110)). Everything
 // in this file that has to know how often the pin is actually read uses this, not kMagPollMs.
@@ -800,6 +840,9 @@ static const uint32_t kMagRtmToggleHoldMs = 2500UL;
 // not a removal of one. (V2.5-Evo - 2026-09-30: the old comment here claimed "two full 20 ms samples",
 // which described a sample rate this firmware has never run. Corrected, value unchanged.)
 // Roles 1-3 keep their original 120 ms untouched — this constant is never applied to them.
+// V2.5-Evo - 2026-10-09 - audit M-1: mode 4 now applies this to REAL edge times from magEdgeIsr(), not to loop
+// samples: a contact counts as arrived after 40 ms LOW, as removed after 40 ms HIGH, and a HIGH gap under 40 ms
+// inside a contact is flutter and is merged into it. Value unchanged.
 static const uint32_t kMagTapDebounceMs = 40UL;
 // ---- V2.5-Evo - 2026-10-06 - TAP LOCKOUT AFTER A STATION STEP (audit M-1, owner ruling: 1 second) ----
 // THE PROBLEM. Until 2026-10-06 a station step blocked loop() for 1.2 s on its display flash, and that
@@ -816,6 +859,80 @@ static const uint32_t kMagTapDebounceMs = 40UL;
 // longer buzzes at all, so only the double-step protection remains.)
 // Only taps are locked out. The 2.5 s hold is untouched: it cannot complete inside the window anyway.
 static const uint32_t kMagStepLockoutMs = 1000UL;
+
+// ---- V2.5-Evo - 2026-10-09 - mag_mode 4 EDGE CAPTURE (audits M-1 / M-2: "the magnet tap does nothing") ----
+// THE BUG. runMagGesture() read P_MAG once per loop() pass (~115-130 ms; loop() ends in vTaskDelay(110)), and the
+// 40 ms debounce could only accept a level on a LATER sample. So a contact had to read LOW on two loop passes in a
+// row before it existed at all, and its length was a whole number of loop periods. A brisk 100-200 ms tap was
+// often lost completely, with no trace, and a slow 500 ms tap could measure 625 ms and land in the dead zone.
+// THE FIX. A CHANGE interrupt on GPIO 9 stamps the real edge times (millis()) into the volatiles below. The ISR does
+// nothing else: it touches no Follow-Me, Return-To-Me, display or vibration state. runMagGesture() still runs on
+// the loop task, still applies every gate and still takes every action there. For mag_mode 4 only, it judges
+// arrival, removal and the tap length from these edges instead of from loop samples, so the 40 ms debounce and the
+// 60-600 ms tap band are real time. A contact that starts AND ends between two loop passes is no longer lost: the
+// next pass judges it as one whole contact.
+// CONTACTS. A fall (magnet arrives) opens a NEW contact only if the pin was HIGH for at least kMagTapDebounceMs;
+// a shorter HIGH gap is flutter and the contact continues. The loop counts contacts (mag_isr_contacts), so it can
+// tell "a new contact began" from "the same contact fluttered". When a new contact opens, the end of the previous
+// one is kept (mag_isr_prev_end_ms), so a removal and a fresh arrival inside one loop pass are both timed exactly.
+// GPIO 9 IS A STRAPPING PIN. The silicon samples it at reset, before any firmware runs. The interrupt is attached
+// only after boot, from runMagGesture(), the first time mag_mode 4 runs after the mag_seen_high boot guard has
+// passed, so strapping is unaffected. The pin mode (INPUT, Init.ino) is not changed.
+// The Arduino core's default GPIO ISR service is not IRAM, so a flash write only DELAYS an edge, it does not lose
+// it; and the ISR reads the level itself, so two edges folded into one delayed call still leave the right level.
+// Roles 1-3 do not use any of this: their loop-sampled 120 ms debounce and 2 s / 5 s holds are unchanged.
+static volatile bool     mag_isr_low         = false;  // pin level after the last edge (true = magnet present)
+static volatile uint32_t mag_isr_rise_ms     = 0;      // millis() of the last LOW -> HIGH edge (magnet left)
+static volatile uint32_t mag_isr_contact_ms  = 0;      // millis() the latest contact began (its first fall)
+static volatile uint32_t mag_isr_prev_end_ms = 0;      // millis() the contact BEFORE the latest one ended
+static volatile uint32_t mag_isr_contacts    = 0;      // contacts opened since attach
+static volatile uint32_t mag_isr_edges       = 0;      // every edge; lets the loop take a consistent snapshot
+static bool              mag_isr_attached    = false;  // loop task only
+
+// magEdgeIsr - GPIO 9 CHANGE interrupt. Stamps edge times only; never blocks, never calls into FM/RTM.
+static void ARDUINO_ISR_ATTR magEdgeIsr()
+{
+  uint32_t t   = millis();
+  bool     low = (digitalRead(P_MAG) == LOW);   // LOW = magnet present
+  if (low && !mag_isr_low)
+  {
+    // Magnet arrived: a new contact unless the HIGH gap since the last removal was shorter than the debounce.
+    if ((uint32_t)(t - mag_isr_rise_ms) >= kMagTapDebounceMs)
+    {
+      mag_isr_prev_end_ms = mag_isr_rise_ms;
+      mag_isr_contact_ms  = t;
+      mag_isr_contacts    = mag_isr_contacts + 1;
+    }
+  }
+  else if (!low && mag_isr_low)
+  {
+    mag_isr_rise_ms = t;   // magnet left
+  }
+  mag_isr_low   = low;
+  mag_isr_edges = mag_isr_edges + 1;
+}
+
+// magEdgeSnapshot - copy the ISR stamps as one consistent set (retried if an edge lands mid-copy). Loop task only.
+static void magEdgeSnapshot(bool *low, uint32_t *rise_ms, uint32_t *contact_ms, uint32_t *prev_end_ms, uint32_t *contacts)
+{
+  uint32_t e;
+  do
+  {
+    e            = mag_isr_edges;
+    *low         = mag_isr_low;
+    *rise_ms     = mag_isr_rise_ms;
+    *contact_ms  = mag_isr_contact_ms;
+    *prev_end_ms = mag_isr_prev_end_ms;
+    *contacts    = mag_isr_contacts;
+  } while (e != mag_isr_edges);
+}
+
+// TEMP bench measurement - remove after tap window is set. The ONE temporary serial line: the measured mag_mode 4
+// contact length (real edges) and the verdict, once per gesture. Serial only, no rider-facing effect.
+static void magTempBenchPrint(uint32_t held_ms, const char *verdict)
+{
+  Serial.printf("MAG [TX] TEMP contact %lu ms -> %s\n", (unsigned long)held_ms, verdict);
+}
 
 // ---- V2.5-Evo - 2026-10-07 - WHAT A mag_mode 4 HOLD WILL DO (audits R-2 and R-7, owner rulings) ----
 // The 2.5 s hold has three possible outcomes, decided ONCE, at the moment the hold crosses 2.5 s, so the
@@ -887,6 +1004,8 @@ void runMagGesture()
   // V2.5-Evo - 2026-10-07 - R-2 / R-7: what this mag_mode 4 hold will do, latched when it crosses 2.5 s
   // (kMagHold* above). Meaningful only while rtm_advised is true for the same hold.
   static uint8_t  mag_hold_verdict   = 0;
+  // V2.5-Evo - 2026-10-09 - M-1 edge capture: how many ISR contacts (mag_isr_contacts) this function has consumed.
+  static uint32_t mag4_contacts_seen = 0;
 
   // Role gate. With mag_mode == 0 (the default — no Hall sensor fitted) the gesture does not
   // exist: bail out before touching any state, so the Hall behaves exactly as it did before
@@ -899,6 +1018,7 @@ void runMagGesture()
     mag_raw_last   = false;
     mag_stable_low = false;
     hold_abandoned = false;
+    mag4_contacts_seen = mag_isr_contacts;   // V2.5-Evo - 2026-10-09 - M-1: no stale contact replays on a role change
     return;
   }
 
@@ -947,20 +1067,90 @@ void runMagGesture()
   // 20 ms samples". It is not — the real sample interval is ~110 ms (see kMagLoopPeriodMs), so what 40 ms
   // actually requires is that the new level still be there on a LATER sample, i.e. one further loop
   // iteration. That is still a real debounce against pin flutter; only the arithmetic behind it was wrong.
-  uint32_t debounce_ms = (role == MAG_ROLE_FMSET) ? kMagTapDebounceMs : kMagDebounceMs;
-
-  bool raw_low = (digitalRead(P_MAG) == LOW);   // LOW = magnet present
-  if (raw_low != mag_raw_last)
-  {
-    mag_raw_last  = raw_low;
-    mag_raw_since = now;   // start timing this new run
-  }
-
+  // V2.5-Evo - 2026-10-09 - M-1: that loop-sample arithmetic now applies to roles 1-3 only. Mode 4 applies its 40 ms
+  // to the real edge times from magEdgeIsr() (see kMagTapDebounceMs).
   bool edge_accepted = false;
-  if (raw_low != mag_stable_low && (now - mag_raw_since) >= debounce_ms)
+  // V2.5-Evo - 2026-10-09 - M-1 / M-2: mag_mode 4 judges arrival and removal from the GPIO 9 edge capture (see
+  // magEdgeIsr()). contact_whole = the contact arrived AND left since the last pass; it is then judged on this
+  // same pass. mag4_end_ms is its real removal edge. Roles 1-3 keep the loop-sampled debounce below unchanged.
+  bool     contact_whole = false;
+  uint32_t mag4_end_ms   = 0;
+  if (role == MAG_ROLE_FMSET)
   {
-    mag_stable_low = raw_low;
-    edge_accepted  = true;
+    // Attach once, after boot and after the boot guard above. A magnet already present at this moment is
+    // treated as parked (abandoned): its removal does nothing.
+    if (!mag_isr_attached)
+    {
+      mag_isr_low     = (digitalRead(P_MAG) == LOW);
+      mag_isr_rise_ms = now;
+      attachInterrupt(digitalPinToInterrupt(P_MAG), magEdgeIsr, CHANGE);
+      mag_isr_attached   = true;
+      mag4_contacts_seen = mag_isr_contacts;
+      mag_stable_low     = mag_isr_low;
+      mag_hold_start     = now;
+      hold_abandoned     = mag_stable_low;
+    }
+
+    bool     s_low;
+    uint32_t s_rise, s_contact, s_prev_end, s_contacts;
+    magEdgeSnapshot(&s_low, &s_rise, &s_contact, &s_prev_end, &s_contacts);
+    mag_raw_last = s_low;
+
+    if (!mag_stable_low)
+    {
+      // No contact being timed. A new one is accepted once it has been LOW for the debounce, or once it has
+      // already ended and stayed HIGH for the debounce (a whole contact between two passes).
+      if (s_contacts != mag4_contacts_seen)
+      {
+        bool settled_low  =  s_low && (uint32_t)(now - s_contact) >= kMagTapDebounceMs;
+        bool settled_gone = !s_low && (uint32_t)(now - s_rise)    >= kMagTapDebounceMs;
+        if (settled_low || settled_gone)
+        {
+          mag4_contacts_seen = s_contacts;
+          mag_stable_low     = true;
+          edge_accepted      = true;
+          mag_raw_since      = s_contact;   // the real arrival edge
+          contact_whole      = settled_gone;
+          mag4_end_ms        = s_rise;      // the real removal edge (used only when contact_whole)
+        }
+      }
+    }
+    else if (s_contacts != mag4_contacts_seen)
+    {
+      // The contact being timed ended and a NEW one opened since the last pass. It ended at s_prev_end (kept by
+      // the ISR when the new contact opened). If more than one new contact opened, that end is not this
+      // contact's, so the length is not trusted and the contact is abandoned. The newer contact is handled by
+      // the resync after this removal: still present -> parked, already gone -> consumed.
+      mag_stable_low = false;
+      edge_accepted  = true;
+      mag_raw_since  = s_prev_end;
+      if ((uint32_t)(s_contacts - mag4_contacts_seen) > 1) hold_abandoned = true;
+      mag4_contacts_seen = s_contacts;
+    }
+    else if (!s_low && (uint32_t)(now - s_rise) >= kMagTapDebounceMs)
+    {
+      // The contact being timed ended: HIGH for the debounce. Removal at the real edge.
+      mag_stable_low = false;
+      edge_accepted  = true;
+      mag_raw_since  = s_rise;
+    }
+  }
+  else
+  {
+    mag4_contacts_seen = mag_isr_contacts;   // V2.5-Evo - 2026-10-09 - keep in step if the role changes to 4 later
+
+    bool raw_low = (digitalRead(P_MAG) == LOW);   // LOW = magnet present
+    if (raw_low != mag_raw_last)
+    {
+      mag_raw_last  = raw_low;
+      mag_raw_since = now;   // start timing this new run
+    }
+
+    if (raw_low != mag_stable_low && (now - mag_raw_since) >= kMagDebounceMs)
+    {
+      mag_stable_low = raw_low;
+      edge_accepted  = true;
+    }
   }
 
   // ---- Magnet arrived: start timing the hold ----
@@ -980,8 +1170,16 @@ void runMagGesture()
     // So: back-date the hold ONLY as far as a genuinely observed edge. If the edge being back-dated to is
     // older than the sample-gap limit, it was not observed - abandon the hold instead of trusting it.
     // In normal running the edge is one or two samples old (~110-230 ms) and this never trips.
+    // V2.5-Evo - 2026-10-09 - M-1: kept for mode 4 too. With edge capture the arrival is at most one loop pass plus
+    // the debounce old in normal running, so this still trips only after a real loop stall.
     hold_abandoned = ((now - mag_raw_since) > kMagSampleGapMaxMs);
-    return;
+    // V2.5-Evo - 2026-10-09 - M-1: a mode 4 contact that arrived AND left between two passes is judged now, at its
+    // real removal edge. Without this a brisk tap was never seen at all. No advisory is skipped: a whole contact old
+    // enough to reach 2.5 s is also older than the sample-gap limit, so the line above has already abandoned it.
+    if (!contact_whole) return;
+    mag_stable_low = false;
+    mag_raw_since  = mag4_end_ms;
+    // edge_accepted stays true, so the removal branch below runs on this same pass.
   }
 
   // ---- Magnet present: fire the advisory buzzes as each threshold is crossed ----
@@ -1075,6 +1273,15 @@ void runMagGesture()
     // Abandoned by EITHER guard — the parked-magnet 30 s limit or the sample-gap guard at the top of
     // this function (V2.5-Evo - 2026-09-30 - H-1). In both cases the hold length is not evidence of
     // anything the rider did, so removal does nothing, silently.
+    // TEMP bench measurement - remove after tap window is set. Read-only: reports which shared gate below
+    // will drop this mode 4 contact; the gates themselves are unchanged.
+    const char *temp_verdict = was_abandoned ? "ignored: not trusted (parked, or loop stalled while held)"
+                             : system_locked ? "ignored: remote locked"
+                             : in_setup ? "ignored: setup in progress"
+                             : (remote_error && !remote_error_blocked) ? "ignored: error on screen"
+                             : ads_input_fault ? "ignored: throttle input fault"
+                             : nullptr;
+    if (temp_verdict && role == MAG_ROLE_FMSET) magTempBenchPrint(held, temp_verdict);   // TEMP bench measurement
     if (was_abandoned) return;
 
     // ---- Common preconditions: states in which no gesture should be honoured at all ----
@@ -1096,6 +1303,9 @@ void runMagGesture()
     // following, i.e. the rider on the rope under tow — does NOTHING AND SAYS NOTHING. That silence is
     // the point: a buzz meaning "I ignored you" teaches the rider to expect feedback from accidental
     // magnet contact, and the buggy must never reposition itself while he is attached to the rope.
+    // V2.5-Evo - 2026-10-09 - M-4 (SOP-040 one-signal rule): ONE tap refusal is NOT silent - Follow-Me off and
+    // unable to arm (feature off, gps_en 0, or cycleFmMode()'s arm-time reject) gives "St" + the stop buzz. Every
+    // other ignored tap stays silent on the remote.
     //
     // HOLD (>= 2.5 s): start the MANUAL Return-To-Me ceremony through setRtmArmed(), in every Follow-Me
     // state (V2.5-Evo - 2026-10-06, owner ruling; see the hold branch below).
@@ -1177,6 +1387,7 @@ void runMagGesture()
         // of the previous contact and the debounce state is rebuilt just below it.
         if (mag_step_seen && (uint32_t)(mag_hold_start - mag_last_step_ms) < kMagStepLockoutMs)
         {
+          temp_verdict = "tap ignored: station-step lockout";   // TEMP bench measurement
           Serial.print("MAG [TX] tap ignored: magnet arrived ");
           Serial.print((uint32_t)(mag_hold_start - mag_last_step_ms));
           Serial.print(" ms after the last station step (lockout ");
@@ -1186,10 +1397,27 @@ void runMagGesture()
         else if (rtm_tx_active || rtmIsArming())
         {
           // Return-To-Me owns the buggy right now — never touch Follow-Me underneath it.
+          temp_verdict = "tap ignored: Return-To-Me active or arming";   // TEMP bench measurement
         }
         else if (!(usrConf.fm_override_enabled && usrConf.gps_en))
         {
           // Follow-Me is not usable on this remote at all — same guard the roles 1-3 FM path applies.
+          // V2.5-Evo - 2026-10-09 - M-4: THE BUG - with Follow-Me off this refusal was silent, so the rider could
+          // believe he had armed it; the 2.5 s hold and cycleFmMode()'s own reject already say "St". THE FIX
+          // (SOP-040 one signal): Follow-Me OFF -> "St" + the normal stop buzz, BLOCKING 2 s exactly like the hold
+          // refusal above; the resync below covers the block. Follow-Me already armed (the feature was switched
+          // off live) -> silent as before: "St" would wrongly say Follow-Me stopped.
+          if (!isFmArmed())
+          {
+            temp_verdict = "tap: Follow-Me cannot arm (fm_override_enabled or gps_en off) -> St";   // TEMP bench measurement
+            vib_stop_pending = true;   // Pattern 7, the normal stop buzz
+            DISP_LOCK(); displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
+            gpsKeepAliveDelay(2000);
+          }
+          else
+          {
+            temp_verdict = "tap ignored: Follow-Me armed but disabled on this remote";   // TEMP bench measurement
+          }
         }
         else if (!isFmArmed())
         {
@@ -1197,12 +1425,15 @@ void runMagGesture()
           // fundamental-readiness check, the Pattern 4 confirm and the F<n> display, exactly as it does
           // for the toggle combo and for mag_mode 1.
           cycleFmMode();
+          temp_verdict = isFmArmed() ? "tap: Follow-Me ARMED"                                 // TEMP bench measurement
+                                     : "tap: Follow-Me arm refused (arm-time reject) -> St";  // TEMP bench measurement
         }
         else if (fmIsReturning())
         {
           // V2.5-Evo - 2026-10-07 - T-4: THE BUG - a tap while the buggy was on an auto-return back to the rider stepped
           // the Follow-Me station and covered the metres countdown with "F<n>" for 2 s (SOP-041: the returning screen
           // must stay readable). THE FIX: ignored while the buggy confirms it is RETURNING. No step, no lockout, no buzz.
+          temp_verdict = "tap ignored: auto-return returning";   // TEMP bench measurement
           Serial.println("MAG [TX] tap ignored: the buggy is on an auto-return back to you");
         }
         else if (fmIsEngaged())
@@ -1211,20 +1442,40 @@ void runMagGesture()
           // state in which the magnet is allowed to move the buggy's station.
           // V2.5-Evo - 2026-10-06 - M-1: start the lockout only when the station really moved. A silent
           // no-op tap (already at the only set station) starts nothing.
+          temp_verdict = "tap: no station change";   // TEMP bench measurement
           if (fmStepStationFromMagnet())
           {
             mag_last_step_ms = millis();
             mag_step_seen    = true;
+            temp_verdict     = "tap: station stepped";   // TEMP bench measurement
           }
         }
-        // else: armed but not following = on the rope. Nothing, and no feedback. See the block above.
+        else
+        {
+          // else: armed but not following = on the rope. Nothing, and no feedback. See the block above.
+          temp_verdict = "tap ignored: Follow-Me armed, not engaged (on the rope)";   // TEMP bench measurement
+        }
       }
+      else
+      {
+        temp_verdict = (held < kMagTapMinMs) ? "ignored: too short for a tap"          // TEMP bench measurement
+                                             : "ignored: dead zone (600 ms - 2.5 s)";  // TEMP bench measurement
+      }
+      magTempBenchPrint(held, temp_verdict ? temp_verdict : "hold (see the hold line, if any)");   // TEMP bench measurement
       // Re-synchronise the debounce state: the actions above can block for up to 2 s, so the magnet
       // may have been re-applied since. A new gesture needs a fresh, fully debounced arrival edge.
       // V2.5-Evo - 2026-09-30 - H-1: mag_last_sample_ms is re-based here too. The action we just ran IS
       // a long unsampled gap, and it is an ACCOUNTED-FOR one — the state above is rebuilt from the pin as
       // it reads right now — so the sample-gap guard must not also punish the next sample for it.
-      mag_raw_last       = (digitalRead(P_MAG) == LOW);
+      // V2.5-Evo - 2026-10-09 - M-1: rebuilt from the edge capture instead of one digitalRead(). Every contact that
+      // opened during the action is consumed, and a magnet still present now is parked, exactly as before.
+      {
+        bool     s_low;
+        uint32_t s_rise, s_contact, s_prev_end, s_contacts;
+        magEdgeSnapshot(&s_low, &s_rise, &s_contact, &s_prev_end, &s_contacts);
+        mag4_contacts_seen = s_contacts;
+        mag_raw_last       = s_low;
+      }
       mag_stable_low     = mag_raw_last;
       mag_raw_since      = millis();
       mag_hold_start     = millis();

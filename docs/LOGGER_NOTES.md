@@ -55,6 +55,8 @@ The change applies immediately and lasts until reboot (then back to the 3 Hz def
 
 ## Log level 6 — IMU (V2.5-Evo, 2026-10-08)
 
+> **Advanced, optional.** Only for builds with two VESCs on CAN and an IMU fitted to VESC 2. Without that hardware every IMU column reads -999, so use level 5 instead.
+
 `?set log_level 6`, `?save`, then start a log with AUX. Level 6 is the full 126 B level-5 record plus
 two 22 B IMU blocks = **170 B/record** (98 CSV columns). Log format stays 3 (a tail append), so every
 62 / 104 / 126 B file already on the board still downloads.

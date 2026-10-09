@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-09 - STICKY CAP SIMPLIFIED (owner): sticky_rise_open atomic + sticky_arm_mux; stickyCapArm() clamps the arm to kStickyFallbackCap (stickyArmValue()), opens the one clock-only rise on a fresh arm only, and runs in a critical section (L-1); kStickyFallbackCap re-commented as the sticky ceiling. Runtime only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): includes ../Common/VescImu.h; imu2_struct + extern imu2 (VESC 2's IMU, own age stamp + ever_ok), the kImu2* constants (30 ms reply cap, 1500 ms stale, backoff to 1 poll / 10 s after 3 misses), the g_diag_imu2_* counters + g_imu2_miss_streak; VescLogDataL6 = the full 126 B L5 record + two 22 B ImuLogBlocks (VESC 2, then a reserved RX IMU that always reads N/A) = 170 B (static_asserts 170 / 126 / 148); LOG_REC_MAX; logResolveLevel() 6 -> 6; LOG_CSV_HEADER_L6 (98 columns) + LOG_CSV_ROW_EXT_L6_IMU + logFormatImuBlock(); LOG_CSV_ROW_BUF 640 -> 832. Tail append to the largest record, so LOG_FILE_FORMAT_VER stays 3. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-08 - STICKY RETURN CAP (owner design): sticky_cap + sticky_armed atomics, kStickyReleaseThr (25), kStickyFallbackCap (60), kStickyRxFixMaxMs (2000), the kStickyOnRiderCancel owner switch, stickyCapArm(), rx_state_flags bit 5. Runtime only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - defaultConf.foil_num_cells 10 -> 12 (value only: same field, sizeof stays 200, SW_VERSION stays 36, a stored config keeps its own value).
@@ -1487,8 +1488,8 @@ static const uint8_t kHandbackReleaseThr = 8;
 // ============================================================
 // When a manual return-to-me or an auto-return ends on a FAULT - on either board, a link loss, a remote reboot (owner
 // scope 2026-10-08: never on arrival, a rider's own cancel or disarm, a Follow-Me exit or normal manual) - the mode ends and the steering is the rider's at once, but
-// the throttle keeps the RETURN'S LIMIT (the 4 km/h governor, the slow-down near the rider, or a fixed slow ceiling
-// when GPS cannot run those) for as long as the trigger stays at 10 % or more. Below 10 % once, it is gone and the
+// the throttle keeps a LIMIT (V2.5-Evo - 2026-10-09 - simplified: a fixed slow ceiling of 60 reached once on the clock,
+// lowered only by the slow-down near the rider; no GPS reading ever raises it) for as long as the trigger stays at 10 % or more. Below 10 % once, it is gone and the
 // throttle is plain manual. The buggy neither stops dead mid-return nor gets the full held trigger while it points
 // at the rider. Arrival is NOT this: it keeps arrival_handback_cap above, unchanged.
 //   sticky_cap   : the limit standing (0-255). Ignored unless sticky_armed.
@@ -1506,11 +1507,13 @@ std::atomic<bool>    sticky_armed {false};
 // The release that clears it: thr_received below 25 counts (9.8 % of the byte, the deadman threshold RTM Gate 1 and
 // auto-return use). The remote's own backstop clears at its raw trigger below 26 (audit D-6); the buggy decides.
 static const uint8_t  kStickyReleaseThr  = 25;
-// The fixed slow ceiling when the governor or the rider distance cannot run (a GPS on either board stale, rejected or
-// the governor set to 0): 60/255, about 24 %, the same "controlled start, not a lurch" number as kBootstrapMaxCap.
-// Never 0 (that would strand the rider) and never 255. OWNER: confirm after a speed measurement at 60/255.
+// V2.5-Evo - 2026-10-09 - STICKY CAP SIMPLIFIED (owner): THE STICKY CEILING. Every arm is clamped to it
+// (stickyArmValue()), the one clock-only rise after an arm stops at it, and nothing ever lifts the cap above it - no
+// GPS reading, good or bad (the speed governor is gone). 60/255, about 24 %, the same "controlled start, not a lurch"
+// number as kBootstrapMaxCap. The name is kept from the 2026-10-08 design, where it was only a fallback.
+// OWNER: confirm after a speed measurement at 60/255 (above about 4 km/h / 2.5 mph -> lower it).
 static const uint8_t  kStickyFallbackCap = 60;
-// The buggy's own fix must be this fresh for the governor to run (a stale speed is never used, audit D-4).
+// The buggy's own fix must be this fresh for the rider distance to be trusted (a stale position is never used).
 static const uint32_t kStickyRxFixMaxMs  = 2000;
 // OWNER SWITCH (audit D-8): true = the rider's own cancels of a moving auto-return (rider moving off, the mode-0 stick
 // cancel) also leave the sticky cap, in FM_ARMED; false = the old behaviour (FM_HOLD, cap 0 until one release).
@@ -1518,22 +1521,41 @@ static const uint32_t kStickyRxFixMaxMs  = 2000;
 // cap would leave it behind. The sticky cap is for FAULT ends of a return only.
 static const bool     kStickyOnRiderCancel = false;
 
+// V2.5-Evo - 2026-10-09 - STICKY CAP SIMPLIFIED (owner): true while the ONE clock-only rise after a fresh arm is still
+// open (the cap climbs to kStickyFallbackCap, then stops). Set true only by stickyCapArm() on a FRESH arm; set false
+// only by stickyCapUpdate() (RTMState.ino) when the step closes it - at the ceiling, or on any distance lowering.
+// Meaningless while sticky_armed is false. Runtime only, no confStruct change.
+std::atomic<bool>    sticky_rise_open {false};
+// V2.5-Evo - 2026-10-09 - L-1: guards stickyCapArm(), which the loop task and the radio task both call. THE BUG: an
+// arm read sticky_armed == false, was preempted by an arm from the other task, then stored its own value over the
+// other's lower one. Single core: the critical section only stops preemption for a few instructions.
+portMUX_TYPE         sticky_arm_mux = portMUX_INITIALIZER_UNLOCKED;
+
 // stickyCapArm - V2.5-Evo - 2026-10-08 - start the sticky return cap at a return's exit edge.
 // What it does: stores `initial` (the cap in force at the exit, so the limit never steps) as the standing value - or,
 // if a sticky cap already stands, keeps the LOWER of the two - then raises sticky_armed. Safe from the loop task and
 // the radio task (a re-arm can only lower the value; the clear in calcPWM() needs a released trigger anyway).
-// Inputs: initial (0-255). Side effects: sticky_cap, sticky_armed. Call it BEFORE the write that ends the mode.
+// V2.5-Evo - 2026-10-09 - STICKY CAP SIMPLIFIED (owner): the value is clamped to the ceiling first
+// (stickyArmValue(initial, kStickyFallbackCap), so 255 arms at 60 and 0 stays 0), and a FRESH arm opens the one
+// clock-only rise (sticky_rise_open). A re-arm while a cap already stands never reopens it. The whole arm runs in a
+// critical section (L-1, see sticky_arm_mux).
+// Inputs: initial (0-255). Side effects: sticky_cap, sticky_rise_open, sticky_armed. Call it BEFORE the write that
+// ends the mode.
 static inline void stickyCapArm(uint8_t initial)
 {
+  const uint8_t v = stickyArmValue(initial, kStickyFallbackCap);
+  portENTER_CRITICAL(&sticky_arm_mux);
   if (sticky_armed.load()) {
     uint8_t cur = sticky_cap.load();
-    while (initial < cur) {
-      if (sticky_cap.compare_exchange_weak(cur, initial)) break;
+    while (v < cur) {
+      if (sticky_cap.compare_exchange_weak(cur, v)) break;
     }
   } else {
-    sticky_cap.store(initial);
+    sticky_cap.store(v);
+    sticky_rise_open.store(true);    // fresh arm only: value first, then the rise, then the flag
   }
   sticky_armed.store(true);
+  portEXIT_CRITICAL(&sticky_arm_mux);
 }
 
 #include "../Common/SPIFFSEngine.h"

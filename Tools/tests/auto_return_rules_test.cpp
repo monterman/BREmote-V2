@@ -492,69 +492,94 @@ static void testCandidateMayForm()
 
 // V2.5-Evo - 2026-10-08 - the sticky return cap (owner design): a return that ends early keeps its live limit until one
 // release below 25 counts. RX constants: fallback 60, rise 1500 ms, stop 10 m, zone 12 m, target 4 km/h; 100 ms ticks.
+// V2.5-Evo - 2026-10-09 - STICKY CAP SIMPLIFIED (owner): the speed governor is gone, so its asserts are removed. The cap
+// arms at min(cap in force, 60), climbs once on the clock to the 60 ceiling, and after that only the rider distance can
+// lower it - no GPS reading ever raises it. Groups 1-7 below follow the design delta's host-test list.
 static void testStickyReturnCap()
 {
-  const float tgt = 4.0f, stop = 10.0f, zone = 12.0f;
-  const uint8_t fb = 60;
+  const float stop = 10.0f, zone = 12.0f;
+  const uint8_t ceil = 60;
   const uint32_t rise = 1500;
-  // No rise limit in play (prev 255): the live terms alone.
-  // Governor: standing still = no cap from it; half speed = 127; at or above target = 0.
-  assert(stickyReturnCapStep(255, 100, true, 0.0f, tgt, true, 50.0f, stop, zone, fb, rise) == 255);
-  assert(stickyReturnCapStep(255, 100, true, 2.0f, tgt, true, 50.0f, stop, zone, fb, rise) == 127);
-  assert(stickyReturnCapStep(255, 100, true, 4.0f, tgt, true, 50.0f, stop, zone, fb, rise) == 0);
-  assert(stickyReturnCapStep(255, 100, true, 9.0f, tgt, true, 50.0f, stop, zone, fb, rise) == 0);
-  // Distance slow-down: half way through the 12 -> 10 m zone = 127; at / inside the stop distance = 0.
-  assert(stickyReturnCapStep(255, 100, true, 0.0f, tgt, true, 11.0f, stop, zone, fb, rise) == 127);
-  assert(stickyReturnCapStep(255, 100, true, 0.0f, tgt, true, 10.0f, stop, zone, fb, rise) == 0);
-  assert(stickyReturnCapStep(255, 100, true, 0.0f, tgt, true, 3.0f, stop, zone, fb, rise) == 0);
-  // Zone switched off: still 0 at / inside the stop distance, nothing from it outside.
-  assert(stickyReturnCapStep(255, 100, true, 0.0f, tgt, true, 9.0f, stop, 0.0f, fb, rise) == 0);
-  assert(stickyReturnCapStep(255, 100, true, 0.0f, tgt, true, 30.0f, stop, 0.0f, fb, rise) == 255);
-  // Rider position unknown (the remote's GPS is what failed): fallback ceiling, never 0, never 255 - even inside
-  // the stop distance, because the stale distance is not read at all.
-  assert(stickyReturnCapStep(255, 100, true, 0.0f, tgt, false, 3.0f, stop, zone, fb, rise) == fb);
-  assert(stickyReturnCapStep(255, 100, true, 3.5f, tgt, false, 99.0f, stop, zone, fb, rise) == 31);   // governor lower
-  // The buggy's own GPS is what failed: no governor, no slow-down (the caller passes rider_known false) - the
-  // fallback alone, whatever stale speed is still lying around.
-  assert(stickyReturnCapStep(255, 100, false, 9.0f, tgt, false, 3.0f, stop, zone, fb, rise) == fb);
-  assert(stickyReturnCapStep(255, 100, false, 0.0f, tgt, false, 3.0f, stop, zone, fb, rise) == fb);
-  // Governor switched off (target 0): the slow-down plus the fallback - never "no cap".
-  assert(stickyReturnCapStep(255, 100, true, 0.0f, 0.0f, true, 50.0f, stop, zone, fb, rise) == fb);
-  assert(stickyReturnCapStep(255, 100, true, 0.0f, 0.0f, true, 9.0f, stop, zone, fb, rise) == 0);
-  // Rise limit: armed at 0 after a fault end (the emergency stop) -> 17 counts per 100 ms tick, full in 1.5 s.
+  bool ro = false;   // rise_open
+
+  // The distance term's shape (kept from 2026-10-08, rise closed, prev 255 so nothing else binds): half way through the
+  // 12 -> 10 m zone = 127; at / inside the stop distance = 0; zone off: 0 inside the stop distance, nothing outside.
+  ro = false; assert(stickyReturnCapStep(255, &ro, 100, true, 11.0f, stop, zone, ceil, rise) == 127);
+  ro = false; assert(stickyReturnCapStep(255, &ro, 100, true, 10.0f, stop, zone, ceil, rise) == 0);
+  ro = false; assert(stickyReturnCapStep(255, &ro, 100, true, 3.0f, stop, zone, ceil, rise) == 0);
+  ro = false; assert(stickyReturnCapStep(255, &ro, 100, true, 9.0f, stop, 0.0f, ceil, rise) == 0);
+  ro = false; assert(stickyReturnCapStep(255, &ro, 100, true, 30.0f, stop, 0.0f, ceil, rise) == 255);
+  // Rider unknown: the stale distance is not read at all, even "inside" the stop distance - the cap holds.
+  ro = false; assert(stickyReturnCapStep(60, &ro, 100, false, 3.0f, stop, zone, ceil, rise) == 60);
+
+  // 1. stickyArmValue: never above the ceiling.
+  assert(stickyArmValue(255, ceil) == 60);
+  assert(stickyArmValue(30, ceil) == 30);
+  assert(stickyArmValue(0, ceil) == 0);
+
+  // 2. The rise is clock only and capped: from 0, rise open, rider unknown -> 17, 34, 51, 60, then 60 for 50 more
+  //    steps; the rise is closed once it reaches 60.
   uint8_t c = 0;
-  c = stickyReturnCapStep(c, 100, true, 0.0f, tgt, true, 50.0f, stop, zone, fb, rise);
-  assert(c == 17);
-  for (int i = 1; i < 15; ++i) c = stickyReturnCapStep(c, 100, true, 0.0f, tgt, true, 50.0f, stop, zone, fb, rise);
-  assert(c == 255);
-  // Armed at the cap in force (150): no step, it rises from there and never above the live limit.
-  assert(stickyReturnCapStep(150, 100, true, 0.0f, tgt, true, 50.0f, stop, zone, fb, rise) == 167);
-  assert(stickyReturnCapStep(150, 100, true, 0.0f, tgt, false, 50.0f, stop, zone, fb, rise) == fb);   // drops at once
-  // A fault end rising toward an unknown-rider ceiling stops at the ceiling.
-  c = 0;
-  for (int i = 0; i < 30; ++i) c = stickyReturnCapStep(c, 100, true, 0.0f, tgt, false, 0.0f, stop, zone, fb, rise);
-  assert(c == fb);
+  ro = true;
+  c = stickyReturnCapStep(c, &ro, 100, false, 0.0f, stop, zone, ceil, rise); assert(c == 17 && ro);
+  c = stickyReturnCapStep(c, &ro, 100, false, 0.0f, stop, zone, ceil, rise); assert(c == 34 && ro);
+  c = stickyReturnCapStep(c, &ro, 100, false, 0.0f, stop, zone, ceil, rise); assert(c == 51 && ro);
+  c = stickyReturnCapStep(c, &ro, 100, false, 0.0f, stop, zone, ceil, rise); assert(c == 60 && !ro);
+  for (int i = 0; i < 50; ++i) {
+    c = stickyReturnCapStep(c, &ro, 100, false, 0.0f, stop, zone, ceil, rise);
+    assert(c == 60 && !ro);
+  }
   // A stalled loop (dt bounded by the caller to 200 ms) rises two ticks' worth, no more.
-  assert(stickyReturnCapStep(0, 200, true, 0.0f, tgt, true, 50.0f, stop, zone, fb, rise) == 34);
-  // Never above 255, never above the fallback when a GPS term is missing, for every prev / speed / distance.
-  for (int p = 0; p <= 255; p += 5)
-    for (int s = 0; s <= 80; s += 4)
-      for (int d = 0; d <= 40; d += 2) {
-        const uint8_t a = stickyReturnCapStep((uint8_t)p, 100, false, s * 0.1f, tgt, false, (float)d, stop, zone, fb, rise);
-        assert(a <= fb && a <= p + 17);
-        const uint8_t b = stickyReturnCapStep((uint8_t)p, 100, true, s * 0.1f, tgt, true, (float)d, stop, zone, fb, rise);
-        if (d <= (int)stop) assert(b == 0);
-        if (s >= 40) assert(b == 0);
-      }
-  // THE CLEAR (calcPWM(), handbackCapStep() with release 25): 25 counts holds it, 24 clears it; the output is never
-  // above the rider's throttle or the cap.
+  ro = true; assert(stickyReturnCapStep(0, &ro, 200, false, 0.0f, stop, zone, ceil, rise) == 34 && ro);
+
+  // 3. No GPS lift (M-1 / M-2): from 60 with the rise closed, the rider known 50 m away (distance term 255) -> 60, not
+  //    255. Rider unknown -> also 60. There is no speed input left to pass.
+  ro = false; assert(stickyReturnCapStep(60, &ro, 100, true, 50.0f, stop, zone, ceil, rise) == 60 && !ro);
+  ro = false; assert(stickyReturnCapStep(60, &ro, 100, false, 50.0f, stop, zone, ceil, rise) == 60 && !ro);
+
+  // 4. Lower only: from 60, rider known at the stop distance -> 0 and the rise closes; then rider unknown, rider at
+  //    50 m, rider at 11 m -> stays 0.
+  ro = true;
+  c = stickyReturnCapStep(60, &ro, 100, true, stop, stop, zone, ceil, rise); assert(c == 0 && !ro);
+  c = stickyReturnCapStep(c, &ro, 100, false, 0.0f, stop, zone, ceil, rise); assert(c == 0 && !ro);
+  c = stickyReturnCapStep(c, &ro, 100, true, 50.0f, stop, zone, ceil, rise); assert(c == 0 && !ro);
+  c = stickyReturnCapStep(c, &ro, 100, true, 11.0f, stop, zone, ceil, rise); assert(c == 0 && !ro);
+
+  // 5. A lowering during the rise closes it: from 20 with the rise open, a distance term of 25 (stop 10 m, zone 110 m,
+  //    so the ramp is 25 at 20 m) gives at most 25; the next step with the rider unknown gives the same value, not 60.
+  {
+    const float z5 = 110.0f, s5 = 10.0f;   // ramp: (20 - 10) / (110 - 10) x 255 = 25.5 -> 25
+    assert(fmReturnApproachRampCap(20.0f, s5, z5) == 25);
+    ro = true;
+    const uint8_t a = stickyReturnCapStep(20, &ro, 100, true, 20.0f, s5, z5, ceil, rise);
+    assert(a <= 25 && !ro);
+    const uint8_t b = stickyReturnCapStep(a, &ro, 100, false, 0.0f, s5, z5, ceil, rise);
+    assert(b == a && !ro);
+  }
+
+  // 6. Monotonic sweep: for prev 0-60 with the rise closed, every rider_known x dist (0-100 m) x dt (0-200 ms) gives
+  //    next <= prev. With the rise open, next <= 60.
+  for (int p = 0; p <= 60; ++p)
+    for (int k = 0; k <= 1; ++k)
+      for (int d = 0; d <= 100; ++d)
+        for (int dt = 0; dt <= 200; dt += 10) {
+          ro = false;
+          const uint8_t n = stickyReturnCapStep((uint8_t)p, &ro, (uint32_t)dt, k != 0, (float)d, stop, zone, ceil, rise);
+          assert(n <= p && !ro);
+          ro = true;
+          const uint8_t m = stickyReturnCapStep((uint8_t)p, &ro, (uint32_t)dt, k != 0, (float)d, stop, zone, ceil, rise);
+          assert(m <= ceil);
+        }
+
+  // 7. THE CLEAR (calcPWM(), handbackCapStep() with release 25): 25 counts holds it, 24 clears it; the output is never
+  //    above the rider's throttle or the cap.
   bool clr = true;
   assert(handbackCapStep(60, 200, 200, 25, &clr) == 60 && !clr);
   assert(handbackCapStep(60, 25, 25, 25, &clr) == 25 && !clr);    // feathering at 10 % keeps the slow buggy
   assert(handbackCapStep(60, 24, 24, 25, &clr) == 24 && clr);     // below 10 %: cleared, full manual next pass
   assert(handbackCapStep(0, 255, 255, 25, &clr) == 0 && !clr);
-  // Audit F-1: the sticky cap can stand at 255 (governor 0, rider far, rise done) - and handbackCapStep() never reports a
-  // clear at 255, its "no cap" sentinel. So calcPWM() clears the sticky cap on the TRIGGER ALONE; mirror of that rule:
+  // Audit F-1 / L-5: handbackCapStep() never reports a clear at 255, its "no cap" sentinel. So calcPWM() clears the
+  // sticky cap on the TRIGGER ALONE, whatever its value; mirror of that rule:
   assert(handbackCapStep(255, 10, 10, 25, &clr) == 10 && !clr);   // the trap the old calcPWM() code fell into
   {
     bool armed = true; uint8_t eff = 10; const uint8_t sc = 255, trig = 10;
@@ -566,16 +591,24 @@ static void testStickyReturnCap()
     if (200 < 25) armed = false;
     assert(eff == 200 && armed);                                     // cap 255 + held: stands (no limit right now)
   }
-  // THE SEQUENCE the owner asked for (H-2 end, trigger held at 200): armed at 0, it restarts under the limit - not a
-  // dead stop and never the full held trigger while the governor or a GPS fault binds; release clears it.
-  c = 0;
-  uint8_t out = 0;
-  for (int i = 0; i < 40; ++i) {
-    c = stickyReturnCapStep(c, 100, true, 4.0f * (float)i / 40.0f, tgt, true, 40.0f, stop, zone, fb, rise);
-    out = handbackCapStep(c, 200, 200, 25, &clr);
-    assert(!clr && out <= c && out <= 200);
+  {
+    // 2026-10-09: a standing cap of 60 clears on a trigger of 10 (the clear does not depend on the value).
+    bool armed = true; uint8_t eff = 10; const uint8_t sc = 60, trig = 10;
+    if (sc < eff) eff = sc;
+    if (trig < 25) armed = false;
+    assert(eff == 10 && !armed);
   }
-  assert(out > 0 && out < 200);   // moving, and still limited by the governor near the target speed
+  // THE SEQUENCE the owner asked for (H-2 end, trigger held at 200): armed at 0, it restarts 0 -> 60 on the clock and
+  // stays at or below 60 for a 10 s hold - never the held trigger; release clears it.
+  c = stickyArmValue(0, ceil);
+  ro = true;
+  uint8_t out = 0;
+  for (int i = 0; i < 100; ++i) {
+    c = stickyReturnCapStep(c, &ro, 100, true, 40.0f, stop, zone, ceil, rise);
+    out = handbackCapStep(c, 200, 200, 25, &clr);
+    assert(!clr && out <= c && out <= 60);
+    if (i >= 3) assert(c == 60 && !ro);
+  }
   out = handbackCapStep(c, 10, 10, 25, &clr);
   assert(clr);
 }

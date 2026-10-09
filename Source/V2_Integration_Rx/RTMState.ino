@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-09 - STICKY CAP SIMPLIFIED (owner): stickyCapUpdate() reads no speed (the governor is gone, M-1 and
+//   M-2 closed): the cap climbs once on the clock to the 60 ceiling after an arm and the rider distance can only lower it;
+//   it writes sticky_rise_open closed only when its compare-exchange succeeds. ?diag "Sticky cap" shows the rise open or
+//   closed and no longer says "fallback". Arm sites unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-08 - STICKY RETURN CAP (owner design): a return that ends on a FAULT keeps the return's live
 //   speed limit until the trigger drops below 10 % once - RTM Phase C, H-1, H-2 and S-8 arm it instead of the hand-back
 //   cap at 0; auto-return fmReturnFault() (audit D-1) and S-8 when leaving FM_RETURN. Rider cancels keep today's HOLD
@@ -3454,9 +3458,12 @@ static void printReturnEndDiag(unsigned long now_ms)
                 (bid == kTxBootIdNone) ? "set after a fault but NOT enforced (no boot ID heard: this remote keeps the old re-arm behaviour, N-8)"
                                        : "BLOCKED after a fault (disarm on the remote, or a marked gesture, clears it)");
   // V2.5-Evo - 2026-10-08 - the sticky return cap on a third line.
+  // V2.5-Evo - 2026-10-09 - STICKY CAP SIMPLIFIED (owner): shows whether the one clock-only rise is open or closed;
+  // the ceiling is no longer called a "fallback" (it is the limit itself now).
   if (sticky_armed.load())
-    Serial.printf("Sticky cap : STANDING at %u/255 (a return ended early; clears when the trigger drops below %u counts; fallback ceiling %u)\n",
-                  (unsigned)sticky_cap.load(), (unsigned)kStickyReleaseThr, (unsigned)kStickyFallbackCap);
+    Serial.printf("Sticky cap : STANDING at %u/255, rise %s (a return ended on a fault; clears when the trigger drops below %u counts; ceiling %u)\n",
+                  (unsigned)sticky_cap.load(), sticky_rise_open.load() ? "open" : "closed",
+                  (unsigned)kStickyReleaseThr, (unsigned)kStickyFallbackCap);
   else
     Serial.println("Sticky cap : none");
 }
@@ -3464,21 +3471,25 @@ static void printReturnEndDiag(unsigned long now_ms)
 // ------------------------------------------------------------
 // stickyCapUpdate - V2.5-Evo - 2026-10-08 - one 10 Hz tick of the sticky return cap (owner design).
 // ------------------------------------------------------------
-// What it does: while a sticky return cap stands (sticky_armed, BREmote_V2_Rx.h), recomputes the return's limit from
-// live data with stickyReturnCapStep() (Common/AutoReturnRules.h, host-tested) and stores it. The SETTINGS are the
-// return's own (rtm_target_speed_kmh, rtm_stop_distance_m, rtm_approach_zone_m); nothing is frozen as a number.
-//   - The governor runs only on a buggy fix younger than kStickyRxFixMaxMs and not Phase-A rejected (a stale speed
-//     is never used: gps_last_speed_kmh is not zeroed on fix loss, audit D-4).
-//   - The rider distance is used only with the rider's fix within tx_gps_stale_timeout_ms (RTM Gate 4's limit), the
-//     buggy's fix fresh as above and the handshake passing. Otherwise it is UNKNOWN, never "far enough".
-//   - Either term missing -> the fixed kStickyFallbackCap; never 0, never 255.
-//   - The value can rise by at most 255 counts per kFmEngageRampMs (1.5 s) and drops at once.
+// What it does: while a sticky return cap stands (sticky_armed, BREmote_V2_Rx.h), steps it with stickyReturnCapStep()
+// (Common/AutoReturnRules.h, host-tested) and stores it. The distance SETTINGS are the return's own
+// (rtm_stop_distance_m, rtm_approach_zone_m); nothing is frozen as a number.
+// V2.5-Evo - 2026-10-09 - STICKY CAP SIMPLIFIED (owner): NO SPEED IS READ. The speed governor is gone, so no GPS
+// reading can raise the cap (closes M-1: a Phase C speed-mismatch end no longer hands the cap to the speed that just
+// failed; and M-2: a stalled auto-return no longer lifts it toward 255).
+//   - After a fresh arm the cap climbs once on the clock - 255 counts per kFmEngageRampMs (1.5 s) - to the ceiling
+//     kStickyFallbackCap (60), then stops (the rise closes).
+//   - The rider distance is used only with the buggy's fix younger than kStickyRxFixMaxMs and not Phase-A rejected,
+//     the rider's fix within tx_gps_stale_timeout_ms (RTM Gate 4's limit) and the handshake passing. Otherwise it is
+//     UNKNOWN, never "far enough". It can only LOWER the cap, and any lowering closes the rise for good.
+//   - Otherwise the cap holds. Only a release below kStickyReleaseThr (calcPWM()) clears it.
 // GPS integrity (project GPS rule 5): reads the stored, already Phase-A-checked fixes only; no extrapolation, no
 // interpolation, nothing in the 0xF3 path is touched. It steers nothing.
-// Inputs: now (this tick's clock). Side effects: sticky_cap only, by compare-exchange - if the radio task armed a
-// LOWER value since this tick read it, the store is skipped, so a fresh arm is never raised. It never sets or clears
-// sticky_armed (only stickyCapArm() and calcPWM() do). Loop task only. Called every tick, armed or not, so the step
-// time is always one tick (bounded to 200 ms) and a fresh arm does not inherit a long gap.
+// Inputs: now (this tick's clock). Side effects: sticky_cap and sticky_rise_open only, by compare-exchange - if the
+// radio task armed a LOWER value since this tick read it, the store is skipped, so a fresh arm is never raised; the
+// rise is written closed only when that store succeeded. It never sets or clears sticky_armed (only stickyCapArm()
+// and calcPWM() do). Loop task only. Called every tick, armed or not, so the step time is always one tick (bounded
+// to 200 ms) and a fresh arm does not inherit a long gap.
 static void stickyCapUpdate(unsigned long now)
 {
   static unsigned long last_ms = 0;
@@ -3488,6 +3499,8 @@ static void stickyCapUpdate(unsigned long now)
   if (!sticky_armed.load()) return;
 
   uint8_t prev = sticky_cap.load();
+  const bool rise_was_open = sticky_rise_open.load();
+  bool rise_open = rise_was_open;
   const bool rx_fix_ok = (gps_last_ms != 0) && !stampStale((uint32_t)now, (uint32_t)gps_last_ms, kStickyRxFixMaxMs) &&
                          !gps_rejected;
   const bool rider_known = rx_fix_ok && gps_phase_b_ok &&
@@ -3495,10 +3508,11 @@ static void stickyCapUpdate(unsigned long now)
   float dist_m = -1.0f;
   if (rider_known) dist_m = (float)TinyGPSPlus::distanceBetween(gps_last_lat, gps_last_lng, rx_tx_gps_lat, rx_tx_gps_lng);
   const float stop_m = (float)((usrConf.rtm_stop_distance_m > 0) ? usrConf.rtm_stop_distance_m : 10u);   // as Gate 9
-  const uint8_t next = stickyReturnCapStep(prev, dt, rx_fix_ok, gps_last_speed_kmh, usrConf.rtm_target_speed_kmh,
+  const uint8_t next = stickyReturnCapStep(prev, &rise_open, dt,
                                            rider_known, dist_m, stop_m, (float)usrConf.rtm_approach_zone_m,
                                            kStickyFallbackCap, kFmEngageRampMs);
-  sticky_cap.compare_exchange_strong(prev, next);
+  if (sticky_cap.compare_exchange_strong(prev, next) && rise_was_open && !rise_open)
+    sticky_rise_open.store(false);   // closed by this step (ceiling reached, or a distance lowering)
 }
 
 // ---- Main RTM loop — call from RX loop() ----

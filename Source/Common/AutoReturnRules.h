@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-09 - STICKY CAP SIMPLIFIED (owner): stickyReturnCapStep() never rises on GPS - the speed governor
+//   is gone; the cap arms at min(cap in force, ceiling) (new stickyArmValue()), climbs once on the clock to the ceiling,
+//   and after that the rider-distance slow-down can only lower it. Header comment names fault ends only. Host-tested.
 // V2.5-Evo - 2026-10-08 - STICKY RETURN CAP (owner design): stickyReturnCapStep() - the live limit a return that ends
 //   early (not arrival) keeps until one trigger release: speed governor, distance slow-down, a fixed fallback ceiling
 //   when GPS cannot run them, and a rise limit. Pure, host-tested. kRtmEndHandbackCap now serves Gate 9 arrival only.
@@ -565,70 +568,75 @@ static inline bool fmReturnStallIsArrival(bool in_zone, float dist_m, float stop
 }
 
 // ============================================================
-// 13. THE STICKY RETURN CAP - A RETURN THAT ENDS EARLY KEEPS ITS SPEED LIMIT UNTIL ONE RELEASE
+// 13. THE STICKY RETURN CAP - A RETURN THAT ENDS ON A FAULT KEEPS A SLOW CEILING UNTIL ONE RELEASE
 // ============================================================
 // V2.5-Evo - 2026-10-08 - owner design (sticky return cap on exit). When a manual return-to-me or an auto-return
-// ends for any reason OTHER THAN ARRIVAL (a fault on either board, a link loss, a remote reboot, the rider's own
-// cancel), the mode ends and the steering is the rider's at once, but the throttle keeps the RETURN'S LIMIT for as
-// long as the trigger stays at 10 % or more. One release below 10 % (25 counts on the buggy) clears it for good.
-// The buggy must neither stop dead mid-return nor be handed the full held trigger while it points at the rider.
+// ends on a FAULT (on either board, a link loss that ends the return, a remote reboot) - never on arrival, a rider's
+// own cancel, a Follow-Me exit or the 95 s expiry - the mode ends and the steering is the rider's at once, but the
+// throttle keeps a LIMIT for as long as the trigger stays at 10 % or more. One release below 10 % (25 counts on the
+// buggy) clears it for good. The buggy must neither stop dead mid-return nor be handed the full held trigger while it
+// points at the rider.
 //
-// WHY A LIVE LIMIT AND NOT A FROZEN NUMBER (audit D-2): the return's cap is a speed governor, not a value. Frozen at
-// the exit it is about 255 (no cap) for a slow buggy and about 0 (a dead stop) for one at target speed, and after a
-// fault end it was 0 (the emergency stop). So the SETTINGS are frozen and the limit is computed every tick.
+// V2.5-Evo - 2026-10-09 - STICKY CAP SIMPLIFIED (owner): THE CAP NEVER RISES ON GPS. The 2026-10-08 version ran a speed
+// governor on the buggy's own GPS speed, and that let a GPS reading LIFT the cap toward 255: a stuck or spoofed low
+// speed after a Phase C speed-mismatch end (the very reading that just failed), or a stalled buggy reading 0 km/h
+// after an auto-return "not closing" fault. The governor is gone. Owner ruling: "a bad GPS keeps the cap".
 //
-// THE TERMS, each one can only LOWER the result (the caller applies it as min(rider, cap)):
-//   1. SPEED GOVERNOR (1 - buggy speed / target) x 255 - only while the buggy's own fix is fresh and not rejected
-//      (rx_fix_ok); a stale speed is never used (audit D-4). target_kmh 0 = governor off.
-//   2. DISTANCE SLOW-DOWN (the throttle half of the rider "bubble"; the steering half is NOT used - in manual the
-//      stick steers, audit D-3): the return's approach ramp, fmReturnApproachRampCap(), and 0 at or inside the stop
-//      distance even when the approach zone is switched off. Only while the rider's position is known (rider_known:
-//      rider fix fresh, buggy fix fresh, handshake passing). A stale position is never read as "far enough".
-//   3. FALLBACK CEILING fallback_cap whenever term 1 cannot run (buggy GPS stale or rejected, or the governor is off)
-//      OR term 2 cannot run (rider position unknown). Never 0 (that strands the rider) and never "no cap".
-//   4. RISE LIMIT: the result may RISE by at most 255 counts per rise_ms (from prev_cap, the value standing), and
-//      drops at once. The caller arms the cap at the value in force at the exit, so there is never a step; after a
-//      fault end (cap 0) this is the 0 -> 255 re-start ramp. It also softens the governor's one weakness - at a
-//      standstill it allows 255 until the GPS speed catches up.
+// THE RULES, applied by the caller as min(rider, cap):
+//   1. ARM: the cap in force at the exit, but never above the CEILING (stickyArmValue()). Under an emergency stop that
+//      is 0; a return that had no cap of its own (255) starts at the ceiling, an immediate drop.
+//   2. ONE CLOCK-ONLY RISE: right after a fresh arm the rise is OPEN and the cap climbs 255 counts per rise_ms from the
+//      arm value, stopping at the ceiling (0 -> 17 -> 34 -> 51 -> 60 at 10 Hz with 1.5 s and 60). Reaching the ceiling
+//      closes the rise. This is the only way the cap ever goes up, and it is driven by the clock, never by GPS - so
+//      an arm at 0 is a slow restart, not a dead stop until release.
+//   3. DISTANCE SLOW-DOWN, LOWER ONLY (the throttle half of the rider "bubble"; the steering half is NOT used - in
+//      manual the stick steers, audit D-3): the return's approach ramp, fmReturnApproachRampCap(), and 0 at or inside
+//      the stop distance even when the approach zone is switched off. Only while the rider's position is known
+//      (rider_known: rider fix fresh, buggy fix fresh, handshake passing). It can only LOWER the cap, and any lowering
+//      also closes the rise for good: a rider who walks away, or a GPS that comes back, never lifts it again.
+//   4. NOTHING ELSE MOVES IT: rider unknown, a stale or rejected buggy fix, a speed mismatch, a stalled buggy - the
+//      cap holds its value.
+// Invariant: with the rise closed, next <= prev on every step; with it open, next <= ceiling (or <= prev if prev was
+// already above it). No speed input exists.
 // stickyReturnCapStep - one tick of the sticky return cap.
-// Inputs:  prev_cap     - the cap standing now (0-255).
-//          dt_ms        - time since the previous step (the caller bounds it).
-//          rx_fix_ok    - the buggy's own fix is fresh and not rejected.
-//          buggy_kmh    - the buggy's own GPS speed (read only when rx_fix_ok).
-//          target_kmh   - the return's target speed (rtm_target_speed_kmh; 0 = governor off).
-//          rider_known  - the distance to the rider can be trusted this tick.
-//          dist_m       - buggy to rider (read only when rider_known).
-//          stop_m       - the stop distance; approach_m - the approach zone (0 = ramp off).
-//          fallback_cap - the fixed slow ceiling (terms 1/2 unavailable).
-//          rise_ms      - full-scale rise time (0 = no rise limit).
-// Returns: the new cap, 0-255. Side effects: none (pure).
-static inline uint8_t stickyReturnCapStep(uint8_t prev_cap, uint32_t dt_ms,
-                                          bool rx_fix_ok, float buggy_kmh, float target_kmh,
+// Inputs:  prev_cap    - the cap standing now (0-255).
+//          rise_open   - in/out: true while the one clock-only rise is still open; the step sets it false when the
+//                        cap reaches the ceiling or when the distance term lowers it. Never set true here.
+//          dt_ms       - time since the previous step (the caller bounds it).
+//          rider_known - the distance to the rider can be trusted this tick.
+//          dist_m      - buggy to rider (read only when rider_known).
+//          stop_m      - the stop distance; approach_m - the approach zone (0 = ramp off).
+//          ceiling     - the fixed slow ceiling the rise stops at (the RX passes kStickyFallbackCap, 60).
+//          rise_ms     - full-scale rise time (0 = the rise jumps straight to the ceiling).
+// Returns: the new cap, 0-255. Side effects: *rise_open only (pure otherwise).
+static inline uint8_t stickyReturnCapStep(uint8_t prev_cap, bool* rise_open, uint32_t dt_ms,
                                           bool rider_known, float dist_m, float stop_m, float approach_m,
-                                          uint8_t fallback_cap, uint32_t rise_ms)
+                                          uint8_t ceiling, uint32_t rise_ms)
 {
-  uint16_t live = 255;
-  const bool governor_runs = rx_fix_ok && (target_kmh > 0.0f);
-  if (governor_runs) {                                         // term 1
-    float frac = buggy_kmh / target_kmh;
-    if (frac < 0.0f) frac = 0.0f;
-    if (frac > 1.0f) frac = 1.0f;
-    const uint16_t c = (uint16_t)((1.0f - frac) * 255.0f);
-    if (c < live) live = c;
+  uint8_t next = prev_cap;
+  if (*rise_open) {                                            // rule 2: the clock-only rise, capped at the ceiling
+    uint32_t r = (uint32_t)ceiling;
+    if (rise_ms != 0) r = (uint32_t)prev_cap + (uint32_t)(((uint64_t)255u * dt_ms) / rise_ms);
+    if (r > (uint32_t)ceiling) r = (uint32_t)ceiling;
+    next = (uint8_t)r;
+    if (next >= ceiling) *rise_open = false;
   }
-  if (rider_known) {                                           // term 2
-    const uint16_t c = (dist_m <= stop_m) ? 0u : (uint16_t)fmReturnApproachRampCap(dist_m, stop_m, approach_m);
-    if (c < live) live = c;
+  if (rider_known) {                                           // rule 3: the distance slow-down, lower only
+    const uint8_t d = (dist_m <= stop_m) ? (uint8_t)0 : fmReturnApproachRampCap(dist_m, stop_m, approach_m);
+    if (d < next) {
+      next = d;
+      *rise_open = false;                                      // a lowering closes the rise for good
+    }
   }
-  if (!governor_runs || !rider_known) {                        // term 3
-    if (fallback_cap < live) live = fallback_cap;
-  }
-  uint32_t rise = 255u;                                        // term 4
-  if (rise_ms != 0) {
-    rise = (uint32_t)prev_cap + (uint32_t)(((uint64_t)255u * dt_ms) / rise_ms);
-    if (rise > 255u) rise = 255u;
-  }
-  return (uint8_t)((rise < live) ? rise : live);
+  return next;
+}
+
+// stickyArmValue - V2.5-Evo - 2026-10-09 - STICKY CAP SIMPLIFIED (owner): the value the sticky cap is armed at.
+// Inputs: initial (the cap in force at the exit, 0-255); ceiling (the fixed slow ceiling, 60 on the RX).
+// Returns: min(initial, ceiling) - the cap never starts above the ceiling. Side effects: none (pure).
+static inline uint8_t stickyArmValue(uint8_t initial, uint8_t ceiling)
+{
+  return (initial < ceiling) ? initial : ceiling;
 }
 
 #endif // BREMOTE_AUTO_RETURN_RULES_H

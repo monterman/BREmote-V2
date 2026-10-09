@@ -1144,6 +1144,8 @@ void vibrationTask(void *parameter) {
     // different mag_mode, so never on the same remote) and the fm_arm_timeout_s nudge (off by default).
     // V2.5-Evo - 2026-10-07 - SOP-040: that third caller is GONE - the refusal is now "St" + Pattern 7 (via
     // vib_stop_pending). Pattern 5 keeps its mag_mode 1-3 advisory and fm_arm_timeout_s nudge callers.
+    // V2.5-Evo - 2026-10-09 - NEW mag_mode 4 caller (owner ruling): runMagGesture() plays it once at 600 ms while the
+    // magnet is held, as the tap advisory "let go now for Follow-Me" - the same meaning as the mode 1-3 advisory.
     else if (current_vib_pattern == 5) {
       digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(150));
       digitalWrite(P_MOT, LOW);
@@ -1228,7 +1230,7 @@ void vibrationTask(void *parameter) {
     // manual Return-To-Me starts" ("rn" follows, then Pattern 4 when the squeeze arms it); it no longer
     // toggles anything. Since 2026-10-07 it plays only when the hold will really start the ceremony - a
     // hold that cannot start Return-To-Me gets Pattern 5 instead (R-7). The two callers can never overlap:
-    // one is the toggle combo, the other needs a magnet held for 2.5 s.
+    // one is the toggle combo, the other needs a magnet held for 2.5 s (5 s since 2026-10-09).
     else if (current_vib_pattern == 10) {
       for (int i = 0; i < 2; i++) {
         digitalWrite(P_MOT, HIGH); vTaskDelay(pdMS_TO_TICKS(300));

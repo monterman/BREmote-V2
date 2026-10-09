@@ -1,3 +1,9 @@
+// V2.5-Evo - 2026-10-09 - mag_mode 4 deliberate bands (owner ruling 2026-10-09: short contacts were being lost and the
+//   gestures should be deliberate). TAP = 600 ms - 3 s (was 60-600 ms), with ONE short pulse (Pattern 5) at 600 ms
+//   while held = "let go now for Follow-Me"; under 600 ms is ignored silently. DEAD ZONE = 3 s - 5 s, silent. RTM HOLD
+//   = 5 s or more (was 2.5 s), behaviour otherwise unchanged. Tap actions and gates unchanged. Station-step lockout
+//   1000 -> 400 ms so a deliberate second tap is not blocked. Edge timing kept. The TEMP bench line stays for one more
+//   round. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-09 - mag_mode 4 magnet tap fix (audit "magnet tap does not arm Follow-Me", M-1 to M-4, L-1, L-2):
 //   (M-1/M-2) a GPIO 9 CHANGE interrupt (magEdgeIsr(), attached after boot) stamps the real magnet edges; mode 4 now
 //   judges arrival, removal and the tap length from them, so the 40 ms debounce and the 60-600 ms band are real time
@@ -608,16 +614,22 @@ void handleGearToggle(int direction)
 //   and the Hall sensor behaves exactly as it did before this feature existed.
 //
 //   MAG_ROLE_FMSET (mag_mode 4) — V2.5-Evo - 2026-09-30 - MagStations. A DIFFERENT SHAPE OF GESTURE:
+//     V2.5-Evo - 2026-10-09 - BANDS CHANGED (owner ruling 2026-10-09: short contacts were being lost and the
+//     gestures should be deliberate). Was: tap 60-600 ms, dead zone 600 ms - 2.5 s, hold 2.5 s.
 //     Magnet held        Feedback while holding          On magnet REMOVAL
 //     -----------        ----------------------          -----------------
-//     < 60ms             none                            nothing (too short for a tap)
-//     60-600ms (a TAP)   none (too short to buzz)        step to the next station in mag_fm_set,
-//                                                        or ARM Follow-Me if it is not armed yet
-//                                                        ("St" + stop buzz if Follow-Me is off and cannot arm)
-//     600ms - 2.5s       none                            nothing (deliberate dead zone, see below)
-//     V2.5-Evo - 2026-10-09 - the lengths in this table are REAL contact times: mag_mode 4 measures arrival and
-//     removal from GPIO 9 edge interrupts (magEdgeIsr()), not from loop() samples. See "EDGE CAPTURE" below.
-//     >= 2.5s            TWO medium pulses (Pattern 10)  start the MANUAL Return-To-Me ("rn", squeeze to confirm)
+//     < 600ms            none                            nothing, silent (too short - not a gesture)
+//     600ms - 3s (TAP)   ONE short pulse at 600 ms       step to the next station in mag_fm_set,
+//                        (Pattern 5, "let go now for     or ARM Follow-Me if it is not armed yet
+//                        Follow-Me", always, like the    ("St" + stop buzz if Follow-Me is off and cannot arm)
+//                        mode 3 advisory at 2 s)
+//     3s - 5s            none                            nothing, silent (deliberate dead zone, see below)
+//     >= 5s              TWO medium pulses (Pattern 10)  start the MANUAL Return-To-Me ("rn", squeeze to confirm)
+//     The lengths in this table are REAL contact times: mag_mode 4 measures arrival and removal from GPIO 9
+//     edge interrupts (magEdgeIsr()), not from loop() samples. See "EDGE CAPTURE" below. The hold rows and
+//     notes below that say "2.5 s" are history: the hold threshold is 5 s since 2026-10-09, behaviour otherwise
+//     unchanged (Pattern 10 only when the hold will start the ceremony, trigger-released rule at 5 s and at
+//     removal, ignored while a return is active, "St" refusal).
 //     (V2.5-Evo - 2026-10-06: the hold row used to read "toggle Return-To-Me on/off", and from 2026-10-02 it
 //     toggled auto-return instead while Follow-Me was armed. Owner ruling: it ALWAYS starts the manual recall.)
 //     V2.5-Evo - 2026-10-07 - two exceptions to that row (audits R-2, R-7): while a Return-To-Me is ALREADY
@@ -628,17 +640,23 @@ void handleGearToggle(int direction)
 //     2.5 s and again at removal). With the trigger held it is ignored silently - no buzz, no "St", no ceremony.
 //     The TAP row is unchanged: with the trigger held a tap still arms Follow-Me and still steps the station.
 //     TAP LOCKOUT (V2.5-Evo - 2026-10-06, audit M-1): after a tap that actually stepped the station, a tap
-//     whose magnet arrives within kMagStepLockoutMs (1 s) is ignored completely. See the constant.
+//     whose magnet arrives within kMagStepLockoutMs is ignored completely. See the constant (1 s until
+//     2026-10-09, now 400 ms - see why there).
 //
 //     MODE 4 HAS NO MAGNET DISARM. Roles 1 and 3 make the magnet an arm↔disarm toggle; in mode 4 the
 //     magnet only ARMS Follow-Me or STEPS its station, and the hold only starts the manual Return-To-Me.
 //     To disarm Follow-Me in mode 4, use the toggle combo (LEFT tap → RIGHT hold). This is a deliberate
 //     difference.
 //
-//     WHY THE 600ms - 2.5s DEAD ZONE IS DELIBERATE. A tap is about 300 ms and the hold is 2500 ms, and the
-//     tap CEILING sits at 600 ms, so the two bands stay more than 4x apart end-to-end. That is what makes
-//     them impossible to confuse with cold hands, wet hands, gloves or one-handed in chop. A hold in the
-//     dead zone is silent: the rider feels no buzz, nothing happens, and they simply tap again.
+//     WHY THE 3s - 5s DEAD ZONE IS DELIBERATE (V2.5-Evo - 2026-10-09, owner ruling; was 600 ms - 2.5 s). The
+//     tap is "hold until the short pulse, then let go", released somewhere between 600 ms and 3 s, and the
+//     Return-To-Me hold is 5 s. Two clear seconds between the tap ceiling and the hold keep the two from being
+//     confused with cold hands, wet hands, gloves or one-handed in chop. A contact in the dead zone is silent:
+//     no buzz, nothing happens, and the rider simply tries again.
+//     WHY THE TAP FLOOR IS 600 ms (V2.5-Evo - 2026-10-09, owner ruling; was 60 ms). On the bench, short taps on
+//     the loop-sampled firmware registered only about half the time. A deliberate contact that the rider holds
+//     until he feels the 600 ms pulse cannot be mistaken for a brush, a bounce or a wobble, and the pulse tells
+//     him the remote saw it.
 //
 //     WHY THE TAP CEILING IS 600ms AND NOT 400ms (V2.5-Evo - 2026-09-30, delta audit M-2). The original
 //     400 ms ceiling was specified against a 20 ms sample rate that DOES NOT EXIST in this firmware. This
@@ -651,8 +669,8 @@ void handleGearToggle(int direction)
 //     V2.5-Evo - 2026-10-09 - SUPERSEDED for mag_mode 4 by the EDGE CAPTURE (audit M-1 / M-2): the loop-sampled
 //     tap needed the magnet LOW on two loop passes in a row, so a brisk 100-200 ms tap was often lost with no
 //     trace, and the length was a whole number of loop periods. A CHANGE interrupt on GPIO 9 now stamps the
-//     real edges, so a tap is judged on its true length (40 ms debounce, 60-600 ms band) and a contact that
-//     starts and ends between two loop passes is still seen. The 600 ms ceiling is kept as it was.
+//     real edges, so a tap is judged on its true length (40 ms debounce) and a contact that starts and ends
+//     between two loop passes is still seen. (The same day the bands became 600 ms - 3 s / 5 s, see above.)
 //
 //     THE FIRST TAP IS NEVER A NO-OP, AND NEVER SAYS "YOU ARE ALREADY THERE":
 //       Follow-Me not armed          -> ARM it at the stored default station (cycleFmMode())
@@ -689,13 +707,13 @@ void handleGearToggle(int direction)
 //           a tap with Follow-Me OFF when Follow-Me cannot arm - feature off (fm_override_enabled 0),
 //           gps_en 0, or the arm-time reject inside cycleFmMode() (unpaired, no buggy packet ever, no
 //           remote GPS fix ever);
-//           a 2.5 s hold with the trigger released when Return-To-Me cannot start.
+//           a 5 s hold with the trigger released when Return-To-Me cannot start.
 //       - SILENT on the remote wherever a mode is already in charge or no gesture
 //         was recognised:
 //           Follow-Me armed but not engaged (on the rope) - "St" would wrongly say Follow-Me stopped;
 //           Return-To-Me active or arming, or the buggy on an auto-return RETURNING - that screen
 //           already says which mode owns the buggy;
-//           a contact too short for a tap, or in the 600 ms - 2.5 s dead zone - no gesture, nothing
+//           a contact too short for a tap (under 600 ms), or in the 3 s - 5 s dead zone - no gesture, nothing
 //           to refuse, and a buzz there is feedback from accidental contact;
 //           the 1 s station-step lockout, a hold with the trigger held, a hold while Return-To-Me is
 //           already active, a parked or untrusted contact, and a locked / setup / error / input-fault
@@ -826,13 +844,20 @@ static const uint32_t kMagMaxHoldMs  = 30000UL;
 // those assume a fast sampler, and this gesture is sampled once per ~110 ms loop() iteration. With ±110 ms
 // of quantisation a real 300 ms tap can measure ~410 ms, so a 400 ms ceiling dropped good taps silently.
 // 600 ms swallows the jitter and still keeps the tap band and the 2500 ms hold band more than 4x apart.
-static const uint32_t kMagTapMinMs   = 60UL;      // shorter than this = bounce, ignored
-static const uint32_t kMagTapMaxMs   = 600UL;     // longer than this is not a tap (see the dead-zone note)
+// V2.5-Evo - 2026-10-09 - BANDS CHANGED, owner ruling 2026-10-09 (the 60-600 ms history above no longer applies):
+// short contacts were being lost and the gestures should be deliberate. A TAP is now 600 ms - 3000 ms of
+// magnet-present, measured on real edges. At 600 ms one short pulse (Pattern 5) says "let go now for Follow-Me";
+// releasing any time before 3000 ms is the tap. Under 600 ms is ignored silently. 3000-5000 ms is the dead zone.
+static const uint32_t kMagTapMinMs   = 600UL;     // shorter than this = not a gesture, ignored silently (was 60)
+static const uint32_t kMagTapMaxMs   = 3000UL;    // longer than this is not a tap (see the dead-zone note) (was 600)
 // The hold that starts the manual Return-To-Me (V2.5-Evo - 2026-10-07 - R-4: this comment said "toggles
 // Return-To-Me", which it has not done since 2026-10-06). 2500 ms is more than 4x the tap CEILING (and ~8x a typical 300 ms
 // tap), which is what makes the pair impossible to confuse. The advisory buzz fires the moment the hold
 // crosses it, so the rider never has to estimate time: hold until you feel it, then take the magnet away.
-static const uint32_t kMagRtmToggleHoldMs = 2500UL;
+// V2.5-Evo - 2026-10-09 - owner ruling: 2500 -> 5000 ms, so the tap band (600 ms - 3 s) and the hold stay 2 s apart.
+// The hold is unchanged otherwise: Pattern 10 at 5 s only when it will start the ceremony, the trigger-released
+// rule checked at 5 s and at removal, ignored while a return is active, "St" when Return-To-Me cannot start.
+static const uint32_t kMagRtmToggleHoldMs = 5000UL;
 // Debounce for mag_mode 4 ONLY. The 120 ms used by roles 1-3 is longer than the whole 60 ms tap floor, so
 // with it a tap could never be seen at all. 40 ms is the shortest window that still requires the level to
 // survive into a following sample before it is believed — and since the real sample interval is ~110 ms
@@ -857,8 +882,14 @@ static const uint32_t kMagTapDebounceMs = 40UL;
 // while a wobble or a bounce lands well inside it. (It also used to guarantee that the previous step's
 // Pattern 11 count had finished before the next one queued; V2.5-Evo - 2026-10-07 - a station step no
 // longer buzzes at all, so only the double-step protection remains.)
-// Only taps are locked out. The 2.5 s hold is untouched: it cannot complete inside the window anyway.
-static const uint32_t kMagStepLockoutMs = 1000UL;
+// Only taps are locked out. The hold (5 s since 2026-10-09) is untouched: it cannot complete inside the window anyway.
+// V2.5-Evo - 2026-10-09 - 1000 -> 400 ms, with the 600 ms tap floor (owner ruling). Still judged from the arrival
+// of the next contact to the moment the previous tap stepped (its removal). With a 600 ms floor a bounce or a
+// brush can no longer be a tap at all, so the only double-step left is a wobble: the magnet slips off and lands
+// back within a fraction of a second, then stays on past 600 ms. 400 ms still catches that. 1000 ms would now
+// block a normal deliberate second tap: hold to the pulse, lift, put it back - a lift-to-reapply gap of about
+// 0.3-0.8 s - which is exactly the "tap does nothing" complaint this change fixes.
+static const uint32_t kMagStepLockoutMs = 400UL;
 
 // ---- V2.5-Evo - 2026-10-09 - mag_mode 4 EDGE CAPTURE (audits M-1 / M-2: "the magnet tap does nothing") ----
 // THE BUG. runMagGesture() read P_MAG once per loop() pass (~115-130 ms; loop() ends in vTaskDelay(110)), and the
@@ -869,7 +900,7 @@ static const uint32_t kMagStepLockoutMs = 1000UL;
 // nothing else: it touches no Follow-Me, Return-To-Me, display or vibration state. runMagGesture() still runs on
 // the loop task, still applies every gate and still takes every action there. For mag_mode 4 only, it judges
 // arrival, removal and the tap length from these edges instead of from loop samples, so the 40 ms debounce and the
-// 60-600 ms tap band are real time. A contact that starts AND ends between two loop passes is no longer lost: the
+// tap band are real time. A contact that starts AND ends between two loop passes is no longer lost: the
 // next pass judges it as one whole contact.
 // CONTACTS. A fall (magnet arrives) opens a NEW contact only if the pin was HIGH for at least kMagTapDebounceMs;
 // a shorter HIGH gap is flutter and the contact continues. The loop counts contacts (mag_isr_contacts), so it can
@@ -935,6 +966,7 @@ static void magTempBenchPrint(uint32_t held_ms, const char *verdict)
 }
 
 // ---- V2.5-Evo - 2026-10-07 - WHAT A mag_mode 4 HOLD WILL DO (audits R-2 and R-7, owner rulings) ----
+// (V2.5-Evo - 2026-10-09 - the hold threshold is kMagRtmToggleHoldMs, 5 s; "2.5 s" in this block is the old value.)
 // The 2.5 s hold has three possible outcomes, decided ONCE, at the moment the hold crosses 2.5 s, so the
 // buzz the rider feels while holding and the action on removal always agree:
 //   kMagHoldStartRtm - start the manual Return-To-Me ceremony (Pattern 10 while holding, "rn" on removal).
@@ -1175,7 +1207,8 @@ void runMagGesture()
     hold_abandoned = ((now - mag_raw_since) > kMagSampleGapMaxMs);
     // V2.5-Evo - 2026-10-09 - M-1: a mode 4 contact that arrived AND left between two passes is judged now, at its
     // real removal edge. Without this a brisk tap was never seen at all. No advisory is skipped: a whole contact old
-    // enough to reach 2.5 s is also older than the sample-gap limit, so the line above has already abandoned it.
+    // enough to reach the tap floor or the hold is also older than the sample-gap limit, so the line above has
+    // already abandoned it.
     if (!contact_whole) return;
     mag_stable_low = false;
     mag_raw_since  = mag4_end_ms;
@@ -1208,14 +1241,23 @@ void runMagGesture()
     // Guarded on current_vib_pattern == 0 so an advisory never stomps a warning
     // pattern (signal drop, low battery, E71) that is already playing.
     // The 5s tier exists only in MAG_ROLE_BOTH; the single-role modes stop at 2s.
-    // V2.5-Evo - 2026-09-30 - MagStations: MAG_ROLE_FMSET has its own single band at 2.5 s and does
+    // V2.5-Evo - 2026-09-30 - MagStations: MAG_ROLE_FMSET has its own single band at 2.5 s (5 s since 2026-10-09) and does
     // NOT use the 2 s / 5 s thresholds at all, so it is handled first and returns. Pattern 10 (two
     // medium pulses) says "let go now and the manual Return-To-Me starts" (V2.5-Evo - 2026-10-07 - R-4:
     // it used to say "will toggle"; see the hold verdict below for when it is NOT played). Same buzz-announces-the-band
     // principle as the other roles: the rider holds until the pattern arrives, then takes the magnet
     // away — they never have to estimate 2.5 seconds.
+    // V2.5-Evo - 2026-10-09 - owner ruling: the hold band is 5 s now (kMagRtmToggleHoldMs), and the tap gets its own
+    // advisory: ONE short pulse (Pattern 5, the same cue mode 3 gives at 2 s) the moment the contact reaches 600 ms,
+    // always, meaning "let go now for Follow-Me". Like every advisory it arms nothing and never stomps a warning
+    // pattern already playing. fm_advised is otherwise unused in mode 4, so it latches this cue once per contact.
     if (role == MAG_ROLE_FMSET)
     {
+      if (!fm_advised && held >= kMagTapMinMs)
+      {
+        fm_advised = true;
+        if (current_vib_pattern == 0) current_vib_pattern = 5;
+      }
       if (!rtm_advised && held >= kMagRtmToggleHoldMs)
       {
         rtm_advised = true;
@@ -1298,7 +1340,7 @@ void runMagGesture()
     // V2.5-Evo - 2026-09-30 - MagStations: MAG_ROLE_FMSET (mag_mode 4) removal handling.
     // Entirely separate from the roles 1-3 branch below, which continues untouched.
     //
-    // TAP (60-600 ms): if Follow-Me is not armed, arm it at the stored default station; if it is
+    // TAP (600 ms - 3 s since 2026-10-09, was 60-600 ms): if Follow-Me is not armed, arm it at the stored default station; if it is
     // ACTIVELY FOLLOWING, step to the next station in mag_fm_set. Anything else — armed but not yet
     // following, i.e. the rider on the rope under tow — does NOTHING AND SAYS NOTHING. That silence is
     // the point: a buzz meaning "I ignored you" teaches the rider to expect feedback from accidental
@@ -1307,10 +1349,10 @@ void runMagGesture()
     // unable to arm (feature off, gps_en 0, or cycleFmMode()'s arm-time reject) gives "St" + the stop buzz. Every
     // other ignored tap stays silent on the remote.
     //
-    // HOLD (>= 2.5 s): start the MANUAL Return-To-Me ceremony through setRtmArmed(), in every Follow-Me
+    // HOLD (>= 5 s since 2026-10-09, was 2.5 s): start the MANUAL Return-To-Me ceremony through setRtmArmed(), in every Follow-Me
     // state (V2.5-Evo - 2026-10-06, owner ruling; see the hold branch below).
     //
-    // 600 ms - 2.5 s falls through both and does nothing: the deliberate dead zone that keeps the tap
+    // 3 s - 5 s (was 600 ms - 2.5 s) falls through both and does nothing: the deliberate dead zone that keeps the tap
     // band and the hold band more than 4x apart. See the band table in this function's header comment.
     // ============================================================
     if (role == MAG_ROLE_FMSET)
@@ -1354,7 +1396,7 @@ void runMagGesture()
         if (hold_verdict == kMagHoldTriggerHeld)
         {
           // SOP-040: the 2.5 s hold acts only with the trigger fully released. Nothing happens, no buzz.
-          Serial.printf("MAG [TX] hold ignored: trigger held (thr %u) - the 2.5 s hold needs the trigger fully released\n",
+          Serial.printf("MAG [TX] hold ignored: trigger held (thr %u) - the 5 s hold needs the trigger fully released\n",
                         (unsigned)thr_scaled);
         }
         else if (hold_verdict == kMagHoldIgnored)
@@ -1459,7 +1501,7 @@ void runMagGesture()
       else
       {
         temp_verdict = (held < kMagTapMinMs) ? "ignored: too short for a tap"          // TEMP bench measurement
-                                             : "ignored: dead zone (600 ms - 2.5 s)";  // TEMP bench measurement
+                                             : "ignored: dead zone (3 s - 5 s)";  // TEMP bench measurement
       }
       magTempBenchPrint(held, temp_verdict ? temp_verdict : "hold (see the hold line, if any)");   // TEMP bench measurement
       // Re-synchronise the debounce state: the actions above can block for up to 2 s, so the magnet

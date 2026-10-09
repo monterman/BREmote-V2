@@ -2018,7 +2018,7 @@ static uint8_t fmNextStationInSet(uint8_t from, uint16_t mask)
 
 // fmStepStationFromMagnet - act on a magnet TAP (mag_mode 4).
 //
-// Called from runMagGesture() (Hall.ino) once a 60-600 ms magnet tap has been accepted AND
+// Called from runMagGesture() (Hall.ino) once a magnet tap (600 ms - 3 s since 2026-10-09) has been accepted AND
 // fmIsEngaged() has returned true. It re-checks the gate itself so the safety rule lives with the
 // action, not only with the caller.
 //

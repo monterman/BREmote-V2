@@ -443,8 +443,8 @@ struct confStruct {
     //   3 = magnet arms FM at 2s / RTM at 5s (full two-tier gesture; the tier is decided
     //       by how long the magnet was held, and arming fires on REMOVAL)
     //
-    //   4 = magnet TAPS (60-600 ms) step through the Follow-Me stations listed in mag_fm_set, and a
-    //       2.5 s hold toggles Return-To-Me on or off FOR THE SESSION ONLY — the stored value below
+    //   4 = magnet TAPS (600 ms - 3 s since 2026-10-09; was 60-600 ms) step through the Follow-Me stations listed in mag_fm_set, and a
+    //       5 s hold (was 2.5 s) toggles Return-To-Me on or off FOR THE SESSION ONLY — the stored value below
     //       is never written, so a power cycle brings it back. See the mag_mode 4 block below and
     //       runMagGesture(). A tap only moves a station while Follow-Me is ACTIVELY FOLLOWING; if
     //       Follow-Me is not armed yet, the first tap arms it at the stored default station.
@@ -510,7 +510,7 @@ confStruct usrConf;
 // selected in mag_fm_set, but ONLY while Follow-Me is actively following; a 2.5 s hold toggles
 // Return-To-Me on or off for THIS SESSION (RAM, never SPIFFS). Roles 1-3 keep their own timings, buzzes
 // and arm-on-removal behaviour. NOTE: mode 4 has no magnet disarm — see the mag_mode field comment.
-#define MAG_ROLE_FMSET 4   // tap = next station in mag_fm_set (FM following only); 2.5s hold = RTM on/off (session)
+#define MAG_ROLE_FMSET 4   // tap (600 ms - 3 s) = next station in mag_fm_set (FM following only); 5 s hold = RTM (V2.5-Evo - 2026-10-09)
 
 // Returns what the magnet gesture should arm for the current mag_mode value.
 // Inputs: usrConf.mag_mode (0-4). Output: MAG_ROLE_NONE / _FM / _RTM / _BOTH / _FMSET.
@@ -928,7 +928,7 @@ volatile uint8_t steer_scaled = 0;
 
 // ============================================================
 // V2.5-Evo - 2026-10-07 - SOP-040 GESTURE RULE: ONE DEFINITION OF "THE TRIGGER IS FULLY RELEASED"
-// The Return-To-Me gestures (the magnet 2.5 s hold and the toggle RIGHT tap + LEFT hold) act only with the trigger
+// The Return-To-Me gestures (the magnet 5 s hold - 2.5 s before 2026-10-09 - and the toggle RIGHT tap + LEFT hold) act only with the trigger
 // fully released, and an RTM arrival keeps its throttle cap until the trigger has been fully released once. Both
 // use this test. thr_scaled < 10 (of 255, ~4 %) is the release threshold the toggle gestures and the RTM arm
 // ceremony already used (handleGearToggle(), runDoubleSqueezeArm()), so nothing that worked before changes meaning.

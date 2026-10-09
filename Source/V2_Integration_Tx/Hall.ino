@@ -1,3 +1,12 @@
+// V2.5-Evo - 2026-10-09 - mag_mode 4 cleanup after the bench round (owner: "magnet works perfect"; audits "magnet bands"
+//   M-1, L-1 to L-4 and "magnet station step" L-4). The TEMP bench line and magTempBenchPrint() are removed. (M-1)
+//   floating-pin guard: the edge snapshot retries at most 4 times, and if magEdgeIsr() counts more than 100 edges in one
+//   second (no Hall sensor fitted, pin floating) it stops stamping and runMagGesture() detaches the GPIO 9 interrupt with
+//   one serial line; mag_mode 4 gestures then stay off until reboot. A real DRV5032 gives at most ~40 edges a second.
+//   (L-1) the mode 4 cues (0.6 s pulse, 5 s Pattern 10) are skipped when the edge snapshot already shows the magnet
+//   gone. (L-2) they are also skipped on a locked / setup / error / input-fault remote, the same gates the removal
+//   applies. (L-3, L-4 and station-step L-4) stale comments corrected. No confStruct change, sizeof stays 136,
+//   SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-09 - mag_mode 4 tap steps the station in ANY armed state (owner ruling 2026-10-09: "the magnet is a
 //   shortcut to the manual gesture, so it must work the same way"; audit "magnet station step while armed" M-1, L-2,
 //   L-3). The "armed, not engaged (on the rope) -> silent" branch is gone: with Follow-Me armed (waiting, on the rope,
@@ -687,7 +696,7 @@ void handleGearToggle(int direction)
 //       ...at a station NOT in the set -> move to the lowest station that IS in the set
 //       already at the only set station -> NOTHING AT ALL, and no buzz (fmStepStationFromMagnet())
 //
-//     — THE HARD GATE: A STATION ONLY MOVES WHILE FOLLOW-ME IS ACTIVELY FOLLOWING.
+//     — THE OLD HARD GATE (superseded 2026-10-09): A STATION ONLY MOVED WHILE FOLLOW-ME WAS ACTIVELY FOLLOWING.
 //     Never while the rider is on the rope under tow. On the rope the rider is physically attached to the
 //     buggy and cannot steer away from it, so a buggy that repositions itself on its own decision would
 //     drag him. Once Follow-Me has ENGAGED the rope is slack — the rider is riding independently after
@@ -737,7 +746,7 @@ void handleGearToggle(int direction)
 //           already says which mode owns the buggy;
 //           a contact too short for a tap (under 600 ms), or in the 3 s - 5 s dead zone - no gesture, nothing
 //           to refuse, and a buzz there is feedback from accidental contact;
-//           the 1 s station-step lockout, a hold with the trigger held, a hold while Return-To-Me is
+//           the 400 ms station-step lockout (V2.5-Evo - 2026-10-09: was 1 s), a hold with the trigger held, a hold while Return-To-Me is
 //           already active, a parked or untrusted contact, and a locked / setup / error / input-fault
 //           remote.
 //     Counting taps was rejected as the guard because it has a measured
@@ -906,7 +915,8 @@ static const uint32_t kMagTapDebounceMs = 40UL;
 // longer buzzes at all, so only the double-step protection remains.)
 // Only taps are locked out. The hold (5 s since 2026-10-09) is untouched: it cannot complete inside the window anyway.
 // V2.5-Evo - 2026-10-09 - 1000 -> 400 ms, with the 600 ms tap floor (owner ruling). Still judged from the arrival
-// of the next contact to the moment the previous tap stepped (its removal). With a 600 ms floor a bounce or a
+// of the next contact to the moment the previous tap stepped (millis() just after the step, which runs 40-170 ms
+// after the real lift, so the window from the lift is about 440-570 ms; audit L-3). With a 600 ms floor a bounce or a
 // brush can no longer be a tap at all, so the only double-step left is a wobble: the magnet slips off and lands
 // back within a fraction of a second, then stays on past 600 ms. 400 ms still catches that. 1000 ms would now
 // block a normal deliberate second tap: hold to the pulse, lift, put it back - a lift-to-reapply gap of about
@@ -933,6 +943,9 @@ static const uint32_t kMagStepLockoutMs = 400UL;
 // passed, so strapping is unaffected. The pin mode (INPUT, Init.ino) is not changed.
 // The Arduino core's default GPIO ISR service is not IRAM, so a flash write only DELAYS an edge, it does not lose
 // it; and the ISR reads the level itself, so two edges folded into one delayed call still leave the right level.
+// V2.5-Evo - 2026-10-09 - audit L-4: that is true for the LEVEL, not for a whole contact. A magnet that arrives AND
+// leaves while the cache is off (a SPIFFS write) leaves only the final level, so that contact is lost. A 600 ms tap
+// is longer than most writes, so this is negligible; no code change.
 // Roles 1-3 do not use any of this: their loop-sampled 120 ms debounce and 2 s / 5 s holds are unchanged.
 static volatile bool     mag_isr_low         = false;  // pin level after the last edge (true = magnet present)
 static volatile uint32_t mag_isr_rise_ms     = 0;      // millis() of the last LOW -> HIGH edge (magnet left)
@@ -941,11 +954,33 @@ static volatile uint32_t mag_isr_prev_end_ms = 0;      // millis() the contact B
 static volatile uint32_t mag_isr_contacts    = 0;      // contacts opened since attach
 static volatile uint32_t mag_isr_edges       = 0;      // every edge; lets the loop take a consistent snapshot
 static bool              mag_isr_attached    = false;  // loop task only
+// V2.5-Evo - 2026-10-09 - audit M-1 FLOATING-PIN GUARD. P_MAG is plain INPUT with no pull, so on a remote set to
+// mag_mode 4 WITHOUT the DRV5032 fitted the pin floats and can toggle very fast, firing this interrupt on the only
+// core. The DRV5032FA samples at about 20 Hz, so a real magnet gives at most ~40 edges a second. More than
+// kMagIsrFloodEdges in one second is not a magnet: the ISR stops stamping and sets mag_isr_flooded, and
+// runMagGesture() detaches the interrupt with one serial line. Mode 4 gestures then stay off until reboot.
+static const uint32_t    kMagIsrFloodEdges   = 100UL;  // edges per 1 s window
+static volatile bool     mag_isr_flooded     = false;  // set by the ISR, never cleared (reboot clears it)
+static volatile uint32_t mag_isr_win_ms      = 0;      // millis() the current 1 s count window began
+static volatile uint32_t mag_isr_win_edges   = 0;      // edges in the current window
 
 // magEdgeIsr - GPIO 9 CHANGE interrupt. Stamps edge times only; never blocks, never calls into FM/RTM.
 static void ARDUINO_ISR_ATTR magEdgeIsr()
 {
+  if (mag_isr_flooded) return;   // V2.5-Evo - 2026-10-09 - M-1: flooded, waiting for the loop to detach
   uint32_t t   = millis();
+  // V2.5-Evo - 2026-10-09 - M-1: count edges per 1 s window; over the limit -> stop and let the loop detach.
+  if ((uint32_t)(t - mag_isr_win_ms) >= 1000UL)
+  {
+    mag_isr_win_ms    = t;
+    mag_isr_win_edges = 0;
+  }
+  mag_isr_win_edges = mag_isr_win_edges + 1;
+  if (mag_isr_win_edges > kMagIsrFloodEdges)
+  {
+    mag_isr_flooded = true;
+    return;
+  }
   bool     low = (digitalRead(P_MAG) == LOW);   // LOW = magnet present
   if (low && !mag_isr_low)
   {
@@ -966,9 +1001,12 @@ static void ARDUINO_ISR_ATTR magEdgeIsr()
 }
 
 // magEdgeSnapshot - copy the ISR stamps as one consistent set (retried if an edge lands mid-copy). Loop task only.
+// V2.5-Evo - 2026-10-09 - audit M-1: at most 4 copies, then the last one is used, so a pin that keeps toggling can
+// never hold the loop here. (A flood also trips the edge-rate guard in magEdgeIsr().)
 static void magEdgeSnapshot(bool *low, uint32_t *rise_ms, uint32_t *contact_ms, uint32_t *prev_end_ms, uint32_t *contacts)
 {
   uint32_t e;
+  uint8_t  tries = 0;
   do
   {
     e            = mag_isr_edges;
@@ -977,15 +1015,11 @@ static void magEdgeSnapshot(bool *low, uint32_t *rise_ms, uint32_t *contact_ms, 
     *contact_ms  = mag_isr_contact_ms;
     *prev_end_ms = mag_isr_prev_end_ms;
     *contacts    = mag_isr_contacts;
-  } while (e != mag_isr_edges);
+    tries        = (uint8_t)(tries + 1);
+  } while (e != mag_isr_edges && tries < 4);
 }
 
-// TEMP bench measurement - remove after tap window is set. The ONE temporary serial line: the measured mag_mode 4
-// contact length (real edges) and the verdict, once per gesture. Serial only, no rider-facing effect.
-static void magTempBenchPrint(uint32_t held_ms, const char *verdict)
-{
-  Serial.printf("MAG [TX] TEMP contact %lu ms -> %s\n", (unsigned long)held_ms, verdict);
-}
+// (V2.5-Evo - 2026-10-09 - the TEMP bench print magTempBenchPrint() that sat here is removed: the tap window is set.)
 
 // ---- V2.5-Evo - 2026-10-07 - WHAT A mag_mode 4 HOLD WILL DO (audits R-2 and R-7, owner rulings) ----
 // (V2.5-Evo - 2026-10-09 - the hold threshold is kMagRtmToggleHoldMs, 5 s; "2.5 s" in this block is the old value.)
@@ -1061,6 +1095,16 @@ void runMagGesture()
   // V2.5-Evo - 2026-10-09 - M-1 edge capture: how many ISR contacts (mag_isr_contacts) this function has consumed.
   static uint32_t mag4_contacts_seen = 0;
 
+  // V2.5-Evo - 2026-10-09 - audit M-1: the ISR saw more than kMagIsrFloodEdges edges in one second (pin floating, no
+  // sensor fitted). Detach it here, on the loop task, whatever the role is now, with one serial line. It is never
+  // re-attached this power-up (the mode 4 block below returns while mag_isr_flooded is set).
+  if (mag_isr_flooded && mag_isr_attached)
+  {
+    detachInterrupt(digitalPinToInterrupt(P_MAG));
+    mag_isr_attached = false;
+    Serial.println("MAG [TX] GPIO 9 edge interrupt off: over 100 edges in 1 s (Hall sensor not fitted?) - mag_mode 4 gestures off until reboot");
+  }
+
   // Role gate. With mag_mode == 0 (the default — no Hall sensor fitted) the gesture does not
   // exist: bail out before touching any state, so the Hall behaves exactly as it did before
   // this feature was added and a user without the optional magnet sees zero change.
@@ -1131,6 +1175,14 @@ void runMagGesture()
   uint32_t mag4_end_ms   = 0;
   if (role == MAG_ROLE_FMSET)
   {
+    // V2.5-Evo - 2026-10-09 - audit M-1: interrupt flooded and detached -> no mode 4 gesture until reboot.
+    if (mag_isr_flooded)
+    {
+      mag_raw_last   = false;
+      mag_stable_low = false;
+      hold_abandoned = false;
+      return;
+    }
     // Attach once, after boot and after the boot guard above. A magnet already present at this moment is
     // treated as parked (abandoned): its removal does nothing.
     if (!mag_isr_attached)
@@ -1275,6 +1327,13 @@ void runMagGesture()
     // pattern already playing. fm_advised is otherwise unused in mode 4, so it latches this cue once per contact.
     if (role == MAG_ROLE_FMSET)
     {
+      // V2.5-Evo - 2026-10-09 - audit L-1: no cue when the edge snapshot already shows the magnet gone. The removal is
+      // judged on the real edge, so a cue here could promise a tap or a hold that the removal then calls too short or
+      // the dead zone. Nothing is latched, so if the magnet is back within the debounce the cue fires on a later pass.
+      if (!mag_raw_last) return;
+      // V2.5-Evo - 2026-10-09 - audit L-2: no cue on a remote whose removal will refuse every gesture - the same
+      // locked / setup / error on screen / input-fault gates the removal applies below.
+      if (system_locked || in_setup || (remote_error && !remote_error_blocked) || ads_input_fault) return;
       if (!fm_advised && held >= kMagTapMinMs)
       {
         fm_advised = true;
@@ -1327,6 +1386,8 @@ void runMagGesture()
     // V2.5-Evo - 2026-10-07 - R-2 / R-7: the mode 4 hold verdict latched at the 2.5 s mark. If no
     // advisory pass ran for this hold (it always does in practice - the sample that first sees the
     // magnet gone evaluates the same held value), decide it now instead.
+    // (V2.5-Evo - 2026-10-09 - audit L-1: since the cues are skipped once the snapshot shows the magnet gone, a hold
+    // released just after 5 s can now reach here with no advisory pass; it is decided here, as stated.)
     uint8_t  hold_verdict  = rtm_advised ? mag_hold_verdict : magHoldVerdict();
 
     // Clear per-hold state before doing anything blocking.
@@ -1337,15 +1398,6 @@ void runMagGesture()
     // Abandoned by EITHER guard — the parked-magnet 30 s limit or the sample-gap guard at the top of
     // this function (V2.5-Evo - 2026-09-30 - H-1). In both cases the hold length is not evidence of
     // anything the rider did, so removal does nothing, silently.
-    // TEMP bench measurement - remove after tap window is set. Read-only: reports which shared gate below
-    // will drop this mode 4 contact; the gates themselves are unchanged.
-    const char *temp_verdict = was_abandoned ? "ignored: not trusted (parked, or loop stalled while held)"
-                             : system_locked ? "ignored: remote locked"
-                             : in_setup ? "ignored: setup in progress"
-                             : (remote_error && !remote_error_blocked) ? "ignored: error on screen"
-                             : ads_input_fault ? "ignored: throttle input fault"
-                             : nullptr;
-    if (temp_verdict && role == MAG_ROLE_FMSET) magTempBenchPrint(held, temp_verdict);   // TEMP bench measurement
     if (was_abandoned) return;
 
     // ---- Common preconditions: states in which no gesture should be honoured at all ----
@@ -1379,7 +1431,8 @@ void runMagGesture()
     // state (V2.5-Evo - 2026-10-06, owner ruling; see the hold branch below).
     //
     // 3 s - 5 s (was 600 ms - 2.5 s) falls through both and does nothing: the deliberate dead zone that keeps the tap
-    // band and the hold band more than 4x apart. See the band table in this function's header comment.
+    // band and the hold band apart (V2.5-Evo - 2026-10-09 - audit L-3: now 2 s apart, 3 s vs 5 s, about 1.7x; the
+    // "more than 4x" was the old 600 ms / 2.5 s pair). See the band table in this function's header comment.
     // ============================================================
     if (role == MAG_ROLE_FMSET)
     {
@@ -1421,7 +1474,7 @@ void runMagGesture()
         }
         if (hold_verdict == kMagHoldTriggerHeld)
         {
-          // SOP-040: the 2.5 s hold acts only with the trigger fully released. Nothing happens, no buzz.
+          // SOP-040: the 5 s hold (V2.5-Evo - 2026-10-09 - audit L-3: was "2.5 s") acts only with the trigger fully released. Nothing happens, no buzz.
           Serial.printf("MAG [TX] hold ignored: trigger held (thr %u) - the 5 s hold needs the trigger fully released\n",
                         (unsigned)thr_scaled);
         }
@@ -1455,7 +1508,6 @@ void runMagGesture()
         // of the previous contact and the debounce state is rebuilt just below it.
         if (mag_step_seen && (uint32_t)(mag_hold_start - mag_last_step_ms) < kMagStepLockoutMs)
         {
-          temp_verdict = "tap ignored: station-step lockout";   // TEMP bench measurement
           Serial.print("MAG [TX] tap ignored: magnet arrived ");
           Serial.print((uint32_t)(mag_hold_start - mag_last_step_ms));
           Serial.print(" ms after the last station step (lockout ");
@@ -1465,7 +1517,6 @@ void runMagGesture()
         else if (rtm_tx_active || rtmIsArming())
         {
           // Return-To-Me owns the buggy right now — never touch Follow-Me underneath it.
-          temp_verdict = "tap ignored: Return-To-Me active or arming";   // TEMP bench measurement
         }
         else if (!(usrConf.fm_override_enabled && usrConf.gps_en))
         {
@@ -1477,15 +1528,11 @@ void runMagGesture()
           // off live) -> silent as before: "St" would wrongly say Follow-Me stopped.
           if (!isFmArmed())
           {
-            temp_verdict = "tap: Follow-Me cannot arm (fm_override_enabled or gps_en off) -> St";   // TEMP bench measurement
             vib_stop_pending = true;   // Pattern 7, the normal stop buzz
             DISP_LOCK(); displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
             gpsKeepAliveDelay(2000);
           }
-          else
-          {
-            temp_verdict = "tap ignored: Follow-Me armed but disabled on this remote";   // TEMP bench measurement
-          }
+          // else: Follow-Me already armed but switched off live -> silent (see above).
         }
         else if (!isFmArmed())
         {
@@ -1493,8 +1540,6 @@ void runMagGesture()
           // fundamental-readiness check, the Pattern 4 confirm and the F<n> display, exactly as it does
           // for the toggle combo and for mag_mode 1.
           cycleFmMode();
-          temp_verdict = isFmArmed() ? "tap: Follow-Me ARMED"                                 // TEMP bench measurement
-                                     : "tap: Follow-Me arm refused (arm-time reject) -> St";  // TEMP bench measurement
         }
         else if (fmIsReturning() || fmReturnMovingRaw())
         {
@@ -1503,7 +1548,6 @@ void runMagGesture()
           // must stay readable). THE FIX: ignored while the buggy confirms it is RETURNING. No step, no lockout, no buzz.
           // V2.5-Evo - 2026-10-09 - L-2: also ignored when the LAST raw fm_flags say returning (fmReturnMovingRaw(), no
           // freshness or streak test), so a moving return behind a stale link cannot slip into the step branch below.
-          temp_verdict = "tap ignored: auto-return returning";   // TEMP bench measurement
           Serial.println("MAG [TX] tap ignored: the buggy is on an auto-return back to you");
         }
         else
@@ -1515,21 +1559,14 @@ void runMagGesture()
           // squeeze that one disarms.
           // V2.5-Evo - 2026-10-06 - M-1: start the lockout only when the station really moved. A silent
           // no-op tap (already at the only set station) starts nothing.
-          temp_verdict = "tap: no station change";   // TEMP bench measurement
           if (fmStepStationFromMagnet())
           {
             mag_last_step_ms = millis();
             mag_step_seen    = true;
-            temp_verdict     = "tap: station stepped";   // TEMP bench measurement
           }
         }
       }
-      else
-      {
-        temp_verdict = (held < kMagTapMinMs) ? "ignored: too short for a tap"          // TEMP bench measurement
-                                             : "ignored: dead zone (3 s - 5 s)";  // TEMP bench measurement
-      }
-      magTempBenchPrint(held, temp_verdict ? temp_verdict : "hold (see the hold line, if any)");   // TEMP bench measurement
+      // else: under 600 ms or the 3 s - 5 s dead zone -> nothing, silently.
       // Re-synchronise the debounce state: the actions above can block for up to 2 s, so the magnet
       // may have been re-applied since. A new gesture needs a fresh, fully debounced arrival edge.
       // V2.5-Evo - 2026-09-30 - H-1: mag_last_sample_ms is re-based here too. The action we just ran IS

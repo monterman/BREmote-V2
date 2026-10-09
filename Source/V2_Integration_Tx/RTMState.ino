@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-09 - comments only (audit "magnet station step" L-4): the fmStepStationFromMagnet() header no
+//   longer says it runs after fmIsEngaged(), and its tap lockout is 400 ms (was "1 s"). No code change.
 // V2.5-Evo - 2026-10-09 - mag_mode 4 tap steps the station in ANY armed state (owner ruling 2026-10-09: "the magnet is a
 //   shortcut to the manual gesture, so it must work the same way"; audit "magnet station step while armed" M-1, L-2, L-3).
 //   fmStepStationFromMagnet() now gates on fm_armed instead of fmIsEngaged(), so a tap steps while waiting, on the rope,
@@ -2048,8 +2050,8 @@ static uint8_t fmNextStationInSet(uint8_t from, uint16_t mask)
 // fmStepStationFromMagnet - act on a magnet TAP (mag_mode 4).
 //
 // Called from runMagGesture() (Hall.ino) once a magnet tap (600 ms - 3 s since 2026-10-09) has been accepted AND
-// fmIsEngaged() has returned true. It re-checks the gate itself so the safety rule lives with the
-// action, not only with the caller.
+// Follow-Me is armed and not coming back on an auto-return (V2.5-Evo - 2026-10-09 - audit L-4: was "fmIsEngaged()
+// has returned true"). It re-checks the gate itself so the safety rule lives with the action, not only with the caller.
 // V2.5-Evo - 2026-10-09 - GATE CHANGED (owner ruling: the magnet is a shortcut to the manual LEFT 2 s hold, so it
 // must work the same way). The gate is fm_armed, not fmIsEngaged(): the tap steps while waiting, on the rope, on a
 // parked auto-return and while following. It is still refused while the buggy is coming back on an auto-return
@@ -2076,7 +2078,7 @@ static uint8_t fmNextStationInSet(uint8_t from, uint16_t mask)
 //   and a NON-blocking 2 s "F<n>" hold via showFmLabelHeld() (V2.5-Evo -
 //   2026-10-06; was a blocking 1.2 s gpsKeepAliveDelay()). Loop task only - never from a FreeRTOS task.
 // OUTPUT (V2.5-Evo - 2026-10-06, audit M-1): true only when the station actually moved, false for every
-//   silent return. runMagGesture() starts its 1 s tap lockout on true only. Was void.
+//   silent return. runMagGesture() starts its tap lockout (400 ms since 2026-10-09, was 1 s) on true only. Was void.
 bool fmStepStationFromMagnet()
 {
   if (!fm_armed) return false;                       // V2.5-Evo - 2026-10-09 - any armed state (was fmIsEngaged()); the gate lives with the action too

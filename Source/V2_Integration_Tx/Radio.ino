@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-09 - comment only (audit "magnet station step" L-4): the fm_engaged_streak note no longer says
+//   the magnet tap needs it (the tap gates on fm_armed since 2026-10-09). No code change.
 // V2.5-Evo - 2026-10-07 - T-3: an rx_state_flags (index 19) end bit counts only when set on 2 consecutive arrivals.
 //   T-5: meta cycles advance gps_cycle (capped at 4) so GPS stays at 2 Hz through meta packets. T-8: sendData()
 //   stamps tx_boot_id_sent_ms when a boot ID goes on the air. No packet format change, no confStruct change.
@@ -631,6 +633,9 @@ void waitForTelemetry(void *parameter)
           }
 
           // ---- V2.5-Evo - 2026-09-30 - FOLLOW-ME "ENGAGED" CORROBORATION COUNTER ----
+          // V2.5-Evo - 2026-10-09 - audit L-4: the magnet tap no longer uses this streak. Since 2026-10-09 it steps the
+          // station in any armed state (fm_armed, Hall.ino / RTMState.ino); fmIsEngaged() and this streak still feed the
+          // display (engaged screen, R5 bar) and fmIsReturning(). The history below describes the old tap gate.
           // WHY THIS IS HERE. The magnet tap may only move a Follow-Me station while the buggy is
           // actively following - never while the rider is on the tow rope, where he is attached to the
           // buggy and cannot steer away from it. That rule used to be carried by ONE bit in ONE packet,

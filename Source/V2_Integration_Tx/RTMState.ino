@@ -1,3 +1,11 @@
+// V2.5-Evo - 2026-10-09 - mag_mode 4 tap steps the station in ANY armed state (owner ruling 2026-10-09: "the magnet is a
+//   shortcut to the manual gesture, so it must work the same way"; audit "magnet station step while armed" M-1, L-2, L-3).
+//   fmStepStationFromMagnet() now gates on fm_armed instead of fmIsEngaged(), so a tap steps while waiting, on the rope,
+//   parked on auto-return or following, with the same effects as the LEFT 2 s hold (cycleFmModeArmed()): "F<n>" held
+//   2 s, 0xF2 with the fresh bit, keepalive + arm timers reset, and NO buzz (the manual step gives none, so the audit's
+//   confirm buzz is not added). New fmReturnMovingRaw(): the last raw fm_flags say returning (bits 6 + 1), no freshness
+//   or streak test, so a moving auto-return behind a stale link still refuses the tap. Still walks mag_fm_set. Comments
+//   on the old "engaged only" gate rewritten. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-08 - STICKY RETURN CAP, remote backstop (owner design): Gate 1 (max runtime), Gate 2 (TX GPS stale)
 //   and the buggy's fault bit (and its fallback) now KEEP the RTM cap in force instead of lifting it to 255, until the raw
 //   trigger drops below 26 once (rtm_end_sticky / rtm_cap_hold_sticky, rtmKeptCapReleased()). Arrival, the Q-2 refusal and
@@ -1884,10 +1892,17 @@ void cycleFmModeArmed()
 //   unless Follow-Me is ACTIVELY FOLLOWING. Rather than bolt both onto the shared path and risk
 //   changing the toggle's behaviour, the magnet gets its own entry point. cycleFmModeArmed() and
 //   cycleFmMode() are untouched.
+//   V2.5-Evo - 2026-10-09 - SUPERSEDED in part (owner ruling: the magnet is a shortcut to the manual gesture). The
+//   "only while actively following" gate is gone: the tap now steps in any armed state, like cycleFmModeArmed().
+//   What still differs: the mag_fm_set walk, and the tap stays silent during Return-To-Me and while the buggy is
+//   coming back on an auto-return. The magnet keeps its own entry point for those reasons.
 // ============================================================
 
 // fmIsEngaged - is Follow-Me actively following right now?
 //
+// V2.5-Evo - 2026-10-09 - NO LONGER the magnet tap's gate (the tap steps in any armed state now, see
+// fmStepStationFromMagnet()). It still feeds fmIsReturning(), the FM status dots and the R5 bar. The text
+// below is the history of when it was the tap's gate.
 // This is THE safety gate for the magnet tap, and it is the SINGLE source of truth for "engaged":
 // the magnet tap, the C7 R3/R4 FM status dots and the R5 proximity bar all call this one function
 // (V2.5-Evo - 2026-09-30: the R5 bar used to repeat the test inline, which meant the display and the
@@ -1953,6 +1968,18 @@ bool fmIsReturning()
   return (telemetry.fm_flags & FM_FLAG_RETURN_STANDING) != 0;
 }
 
+// fmReturnMovingRaw - V2.5-Evo - 2026-10-09 - audit L-2: did the LAST fm_flags byte say the auto-return is moving back?
+// Bits 6 (auto-return standing) and 1 (engaged) both set, read raw: no link-freshness test, no 2-arrival streak.
+// fmIsReturning() errs toward "not returning" (stale link, short streak); once the magnet tap steps on fm_armed alone,
+// that error would let a tap flash "F<n>" over the metres of a moving return. This test errs the other way, toward
+// refusing the tap, which is the safe side for a display-only question (the RX return leg never reads the station).
+// INPUTS: telemetry.fm_flags. OUTPUT: true = treat as returning. No side effects. Loop task.
+bool fmReturnMovingRaw()
+{
+  const uint8_t want = (uint8_t)(FM_FLAG_RETURN_STANDING | FM_FLAG_ENGAGED);
+  return (telemetry.fm_flags & want) == want;
+}
+
 // fmNextStationInSet - which station does a tap move to?
 //
 // INPUTS:  from = the station the buggy is at now (1-5; anything else counts as "outside the set")
@@ -1970,6 +1997,8 @@ bool fmIsReturning()
 // 0x1F and the walk is modulo 5; both new bits address reachable stations. The tap's own gate is unchanged:
 // fmIsEngaged() still has to hold, so a tap is dead while the rider is on the rope. mag_fm_set defaults to 7, so the
 // magnet keeps stepping the three rear stations until the rider ticks bits 3 and 4.
+// V2.5-Evo - 2026-10-09 - the tap's gate is fm_armed now, not fmIsEngaged(): a tap steps on the rope too (see
+// fmStepStationFromMagnet() for why that is safe).
 static uint8_t fmNextStationInSet(uint8_t from, uint16_t mask)
 {
   mask &= 0x1F;                 // stations 1-5
@@ -2021,6 +2050,15 @@ static uint8_t fmNextStationInSet(uint8_t from, uint16_t mask)
 // Called from runMagGesture() (Hall.ino) once a magnet tap (600 ms - 3 s since 2026-10-09) has been accepted AND
 // fmIsEngaged() has returned true. It re-checks the gate itself so the safety rule lives with the
 // action, not only with the caller.
+// V2.5-Evo - 2026-10-09 - GATE CHANGED (owner ruling: the magnet is a shortcut to the manual LEFT 2 s hold, so it
+// must work the same way). The gate is fm_armed, not fmIsEngaged(): the tap steps while waiting, on the rope, on a
+// parked auto-return and while following. It is still refused while the buggy is coming back on an auto-return
+// (fmIsReturning() or the raw fmReturnMovingRaw()). WHY THE ROPE IS SAFE: the RX never reads the station before it
+// engages - in FM_ARMED it hands steering back and writes cap 255 without calling computeFmTarget() (RX RTMState.ino
+// 7792, 7801-7806, 7955-7959). The rope guard is the RX separation latch (RX 7076-7096) and the 9.5 m D_engage floor
+// (RX 7028-7031, 7118-7124), neither of which reads the station; stepping on the rope equals having armed at that
+// station. The effects below are the same as cycleFmModeArmed(): "F<n>" held 2 s, 0xF2 with the fresh bit, keepalive
+// and arm timers reset, and no buzz (the manual step gives none). The only difference is the mag_fm_set walk.
 //
 // CONFIRMATION - the display only, and only when something actually changed:
 //   display : the existing "F<n>" large-font confirm, held 2 s without blocking (V2.5-Evo - 2026-10-06;
@@ -2041,8 +2079,9 @@ static uint8_t fmNextStationInSet(uint8_t from, uint16_t mask)
 //   silent return. runMagGesture() starts its 1 s tap lockout on true only. Was void.
 bool fmStepStationFromMagnet()
 {
-  if (!fmIsEngaged()) return false;                  // the gate lives with the action too
+  if (!fm_armed) return false;                       // V2.5-Evo - 2026-10-09 - any armed state (was fmIsEngaged()); the gate lives with the action too
   if (fmIsReturning()) return false;                 // V2.5-Evo - 2026-10-07 - T-4: never during an auto-return coming back
+  if (fmReturnMovingRaw()) return false;             // V2.5-Evo - 2026-10-09 - L-2: nor when the last raw flags say it is coming back
 
   uint8_t next = fmNextStationInSet(last_fm_mode, usrConf.mag_fm_set);
   if (next == 0 || next == last_fm_mode) return false;   // nowhere to go - stay silent

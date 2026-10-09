@@ -1,3 +1,11 @@
+// V2.5-Evo - 2026-10-09 - mag_mode 4 tap steps the station in ANY armed state (owner ruling 2026-10-09: "the magnet is a
+//   shortcut to the manual gesture, so it must work the same way"; audit "magnet station step while armed" M-1, L-2,
+//   L-3). The "armed, not engaged (on the rope) -> silent" branch is gone: with Follow-Me armed (waiting, on the rope,
+//   parked auto-return, following, hold) a tap steps through mag_fm_set exactly like the LEFT 2 s hold steps through
+//   all stations ("F<n>" for 2 s, 0xF2, no buzz - the manual step gives none). Still silent while the buggy is coming
+//   back on an auto-return (fmIsReturning() or the raw fmReturnMovingRaw()), during Return-To-Me, in the lockout, or
+//   when the set leaves nowhere to go. Follow-Me off and unable to arm -> "St" + stop buzz, unchanged. The TEMP bench
+//   line stays. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-09 - mag_mode 4 deliberate bands (owner ruling 2026-10-09: short contacts were being lost and the
 //   gestures should be deliberate). TAP = 600 ms - 3 s (was 60-600 ms), with ONE short pulse (Pattern 5) at 600 ms
 //   while held = "let go now for Follow-Me"; under 600 ms is ignored silently. DEAD ZONE = 3 s - 5 s, silent. RTM HOLD
@@ -675,6 +683,7 @@ void handleGearToggle(int direction)
 //     THE FIRST TAP IS NEVER A NO-OP, AND NEVER SAYS "YOU ARE ALREADY THERE":
 //       Follow-Me not armed          -> ARM it at the stored default station (cycleFmMode())
 //       Follow-Me actively following -> move to the next station set in mag_fm_set, wrapping
+//       (V2.5-Evo - 2026-10-09: any armed state now, not only following - see THE HARD GATE below)
 //       ...at a station NOT in the set -> move to the lowest station that IS in the set
 //       already at the only set station -> NOTHING AT ALL, and no buzz (fmStepStationFromMagnet())
 //
@@ -684,6 +693,13 @@ void handleGearToggle(int direction)
 //     drag him. Once Follow-Me has ENGAGED the rope is slack — the rider is riding independently after
 //     the whip and the buggy is trailing — so a station transit pulls nobody. fmIsEngaged() is the test.
 //     Armed-but-not-engaged is exactly the tow state, and the tap is dead in it.
+//     V2.5-Evo - 2026-10-09 - SUPERSEDED (owner ruling: the magnet is a shortcut to the manual LEFT 2 s hold, which
+//     steps in every armed state, so the tap must too; audit "magnet station step while armed" M-1 / L-3). A tap now
+//     steps the station in ANY armed state, on the rope included. This is safe because the RX never reads the station
+//     before it engages: in FM_ARMED it hands steering back and writes cap 255 without computing a target (RX
+//     RTMState.ino 7792, 7801-7806, 7955-7959). The real rope guard is on the RX: the separation latch (7076-7096) and
+//     the 9.5 m D_engage floor (7028-7031, 7118-7124), and neither reads the station. Stepping on the rope therefore
+//     equals having armed at that station. The tap is still dead while the buggy is coming back on an auto-return.
 //
 //     WHAT A STRAY MAGNET CAN AND CANNOT DO — CORRECTED V2.5-Evo - 2026-09-30 (delta audit). An earlier
 //     version of this comment claimed a stray magnet "does nothing at all unless Follow-Me is already
@@ -691,6 +707,10 @@ void handleGearToggle(int direction)
 //     than no comment. The truth:
 //       - A stray tap CANNOT move the buggy's station. That is hard-gated on fmIsEngaged() above, and it is
 //         the case the safety rule is actually about.
+//         V2.5-Evo - 2026-10-09 - NO LONGER TRUE: a stray tap CAN now change the station of an armed remote
+//         (the gate is fm_armed). It still cannot produce motion - the RX does not read the station before it
+//         engages, and engaging still needs the separation latch, D_engage and the rider's trigger. The lock
+//         (no_lock = 0) stays the real guard against a remote in a bag.
 //       - A stray tap CAN ARM Follow-Me, on an unlocked and paired remote that already has a GPS fix and a
 //         live link. This is the owner's explicit requirement ("if fm mode never armed then yes it arms at
 //         default mode ie fm3, then again tap goes to fm4"), so the behaviour stays.
@@ -710,7 +730,9 @@ void handleGearToggle(int direction)
 //           a 5 s hold with the trigger released when Return-To-Me cannot start.
 //       - SILENT on the remote wherever a mode is already in charge or no gesture
 //         was recognised:
-//           Follow-Me armed but not engaged (on the rope) - "St" would wrongly say Follow-Me stopped;
+//           Follow-Me armed and the set leaves nowhere to go (already at the only set station) - "St" would
+//           wrongly say Follow-Me stopped (V2.5-Evo - 2026-10-09: was "armed but not engaged (on the rope)",
+//           which now steps);
 //           Return-To-Me active or arming, or the buggy on an auto-return RETURNING - that screen
 //           already says which mode owns the buggy;
 //           a contact too short for a tap (under 600 ms), or in the 3 s - 5 s dead zone - no gesture, nothing
@@ -1345,6 +1367,10 @@ void runMagGesture()
     // following, i.e. the rider on the rope under tow — does NOTHING AND SAYS NOTHING. That silence is
     // the point: a buzz meaning "I ignored you" teaches the rider to expect feedback from accidental
     // magnet contact, and the buggy must never reposition itself while he is attached to the rope.
+    // V2.5-Evo - 2026-10-09 - SUPERSEDED (owner ruling: the magnet works the same way as the manual LEFT 2 s hold):
+    // with Follow-Me ARMED in any state - waiting, on the rope, parked auto-return, following - the tap steps to the
+    // next station in mag_fm_set. The RX does not read the station before it engages (see THE HARD GATE note in this
+    // function's header), so a step on the rope moves nothing. Taps that cannot step stay silent.
     // V2.5-Evo - 2026-10-09 - M-4 (SOP-040 one-signal rule): ONE tap refusal is NOT silent - Follow-Me off and
     // unable to arm (feature off, gps_en 0, or cycleFmMode()'s arm-time reject) gives "St" + the stop buzz. Every
     // other ignored tap stays silent on the remote.
@@ -1470,18 +1496,23 @@ void runMagGesture()
           temp_verdict = isFmArmed() ? "tap: Follow-Me ARMED"                                 // TEMP bench measurement
                                      : "tap: Follow-Me arm refused (arm-time reject) -> St";  // TEMP bench measurement
         }
-        else if (fmIsReturning())
+        else if (fmIsReturning() || fmReturnMovingRaw())
         {
           // V2.5-Evo - 2026-10-07 - T-4: THE BUG - a tap while the buggy was on an auto-return back to the rider stepped
           // the Follow-Me station and covered the metres countdown with "F<n>" for 2 s (SOP-041: the returning screen
           // must stay readable). THE FIX: ignored while the buggy confirms it is RETURNING. No step, no lockout, no buzz.
+          // V2.5-Evo - 2026-10-09 - L-2: also ignored when the LAST raw fm_flags say returning (fmReturnMovingRaw(), no
+          // freshness or streak test), so a moving return behind a stale link cannot slip into the step branch below.
           temp_verdict = "tap ignored: auto-return returning";   // TEMP bench measurement
           Serial.println("MAG [TX] tap ignored: the buggy is on an auto-return back to you");
         }
-        else if (fmIsEngaged())
+        else
         {
-          // Actively following — the rope is slack, so a station transit is safe. This is the ONLY
-          // state in which the magnet is allowed to move the buggy's station.
+          // V2.5-Evo - 2026-10-09 - owner ruling (the magnet is a shortcut to the manual LEFT 2 s hold): Follow-Me is
+          // armed - waiting, on the rope, parked auto-return, following or on hold - so step within mag_fm_set. Was:
+          // only when fmIsEngaged(), with "armed, not engaged (on the rope)" silent. Same effects as the manual step
+          // (cycleFmModeArmed()): "F<n>" for 2 s, 0xF2 with the fresh bit, no buzz. Not cycleFmMode(): after the first
+          // squeeze that one disarms.
           // V2.5-Evo - 2026-10-06 - M-1: start the lockout only when the station really moved. A silent
           // no-op tap (already at the only set station) starts nothing.
           temp_verdict = "tap: no station change";   // TEMP bench measurement
@@ -1491,11 +1522,6 @@ void runMagGesture()
             mag_step_seen    = true;
             temp_verdict     = "tap: station stepped";   // TEMP bench measurement
           }
-        }
-        else
-        {
-          // else: armed but not following = on the rope. Nothing, and no feedback. See the block above.
-          temp_verdict = "tap ignored: Follow-Me armed, not engaged (on the rope)";   // TEMP bench measurement
         }
       }
       else

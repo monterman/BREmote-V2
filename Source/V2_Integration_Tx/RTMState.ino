@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-11 - audit 2026-10-11 D-3 (owner): runFmLoop() - fm_flags bit 3 WITH bit 0 set (same arrival, fm_fault_latched_armed) = the buggy stopped following but keeps Follow-Me armed: stop buzz + non-blocking "St" (showFmStopLabelHeld()), fm_armed kept, no 0xF2/0. Bit 3 with bit 0 clear keeps the fmDisarm(false) path. No confStruct change, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-09 - comments only (audit "magnet station step" L-4): the fmStepStationFromMagnet() header no
 //   longer says it runs after fmIsEngaged(), and its tap lockout is 400 ms (was "1 s"). No code change.
 // V2.5-Evo - 2026-10-09 - mag_mode 4 tap steps the station in ANY armed state (owner ruling 2026-10-09: "the magnet is a
@@ -2226,6 +2227,33 @@ void runFmLoop()
   if (fm_fault_latched && !fm_armed)
   {
     fm_fault_latched = false;   // nothing armed on this side to disarm
+  }
+  // ============================================================
+  // V2.5-Evo - 2026-10-11 - audit 2026-10-11 D-3 (owner ruling): "STOPPED FOLLOWING, STILL ARMED".
+  // The buggy now ends a Follow-Me ENGAGEMENT whose steering is wrong (divergence, or the compass and the GPS course newly
+  // found disagreeing) WITHOUT ending the declaration: it raises fm_flags bit 3 with bit 0 still set, keeps Follow-Me
+  // armed, holds the throttle at its sticky ceiling until one release, and needs separation re-proven before it follows
+  // again. The old rule here (any bit 3 -> fmDisarm(false): 0xF2/0 + a 2 s BLOCKING "St") would have switched off the
+  // very Follow-Me the buggy kept. So for bit 3 + bit 0 on the same arrival: the stop buzz (Pattern 7 - a fault stopped
+  // the following, the rider asked for nothing) and a NON-blocking 2 s "St" (showFmStopLabelHeld(), the showFmLabelHeld()
+  // hold, so loop() keeps running); fm_armed stays, the keepalive keeps running, no 0xF2/0. Bit 3 with bit 0 clear keeps
+  // today's disarm path below (the 30 s long-loss end, an auto-return fault). During an active return nothing is shown:
+  // the buggy yields Follow-Me to RTM, so such an edge can only be stale, and "St" over a working return reads "stopped"
+  // (the F-1 rule).
+  // ============================================================
+  else if (fm_fault_latched && fm_fault_latched_armed)
+  {
+    fm_fault_latched = false;
+    if (rtm_tx_active)
+    {
+      Serial.println("FM [TX] the buggy reported Follow-Me stopped following (still armed) during Return-To-Me - not shown");
+    }
+    else
+    {
+      Serial.println("FM [TX] the buggy stopped following (fm_flags bit 3 + bit 0) -> still armed: St + stop buzz, no disarm");
+      vib_stop_pending = true;   // Pattern 7: one long buzz = a fault stopped the following
+      showFmStopLabelHeld();     // "St" held 2 s without blocking loop() (Display.ino)
+    }
   }
   else if (fm_fault_latched && rtm_tx_active)
   {

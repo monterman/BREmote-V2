@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-11 - audit 2026-10-11 D-3: RAM flag fm_fault_latched_armed (bit 0 on the arrival that latched the fault edge). No confStruct change, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-07 - T-8: RAM stamp tx_boot_id_sent_ms. T-10: rtm_meta_count comment (counts can be 1). No struct change.
 // V2.5-Evo - 2026-10-07 - F4/F5 on the remote (port of P2-d): followme_mode documents 1-5 (4 front right, 5 front left;
 //   no 6) and mag_fm_set gains bit 3 = station 4 and bit 4 = station 5 (range 1-31). Default and repair value stay 7,
@@ -777,6 +778,13 @@ volatile uint8_t fm_engaged_streak = 0;   // consecutive fm_flags arrivals with 
 // tear on this core, and the RX holds the bit for seconds, so two edges can never race one clear.
 // ============================================================
 volatile bool fm_fault_latched = false;
+// V2.5-Evo - 2026-10-11 - audit 2026-10-11 D-3 (owner ruling): fm_fault_latched_armed - the buggy's ARMED bit (fm_flags bit 0)
+// on the SAME arrival that latched the fault edge above. Bit 3 with bit 0 still set = "stopped following, still armed" (a
+// divergence or a new compass/course disagreement: the buggy keeps Follow-Me declared and wants the stop buzz + "St" only);
+// bit 3 with bit 0 clear = Follow-Me is off on the buggy (the 30 s long-loss end, an auto-return fault) - the old disarm path.
+// Written by the telemetry unpack (Radio.ino) BEFORE fm_fault_latched, read and cleared with it by runFmLoop() (RTMState.ino).
+// An old buggy never sends bit 3 with bit 0 (its FM_STOPPING clears bit 0), so this reads false for it and nothing changes.
+volatile bool fm_fault_latched_armed = false;
 
 // ============================================================
 // V2.5-Evo - 2026-10-07 - SOP-041 rule 3 RESYNC: "the remote thinks Follow-Me is armed, the buggy says it is not".

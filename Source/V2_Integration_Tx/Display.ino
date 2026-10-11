@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-11 - audit 2026-10-11 D-3: showFmStopLabelHeld() - a non-blocking 2 s "St" on the F-label hold, for "stopped following, still armed". No confStruct change, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-07 - T-2: drawReturnBar() leaves R5 dark unless the distance is showable (rtmDistanceShowable():
 //   not 0xFF, not 0x00, link fresh), the same rule as the digits. Display only, no confStruct change.
 // V2.5-Evo - 2026-10-07 - F4/F5: comment only - showFmLabelHeld() draws stations 1-5 (displayDigits() renders every digit).
@@ -754,6 +755,21 @@ void showFmLabelHeld(uint8_t mode)
 {
   DISP_LOCK();
   displayDigits(LET_F, mode);
+  updateDisplay();
+  DISP_UNLOCK();
+  fm_label_shown_ms = millis();
+  fm_label_pending  = true;
+}
+
+// showFmStopLabelHeld - V2.5-Evo - 2026-10-11 - audit 2026-10-11 D-3: draw "St" in large font and hold it for
+// kFmLabelHoldMs exactly like showFmLabelHeld() - the shared hold keeps the Follow-Me readout from painting over it.
+// Used when the buggy stops FOLLOWING but keeps Follow-Me armed (fm_flags bit 3 with bit 0 set), so the remote stays
+// armed and loop() must keep running: unlike fmDisarm()'s "St" this does NOT block.
+// Inputs: none. Outputs: none. Side effects: the digit zone (takes displayMutex), the hold timer. Loop task only.
+void showFmStopLabelHeld()
+{
+  DISP_LOCK();
+  displayDigits(LET_S, LET_T);
   updateDisplay();
   DISP_UNLOCK();
   fm_label_shown_ms = millis();

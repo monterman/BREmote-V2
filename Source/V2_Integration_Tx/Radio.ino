@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-11 - audit 2026-10-11 D-3: the Follow-Me fault edge also captures fm_flags bit 0 from the SAME arrival (fm_fault_latched_armed), written before the latch. No confStruct change, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-09 - comment only (audit "magnet station step" L-4): the fm_engaged_streak note no longer says
 //   the magnet tap needs it (the tap gates on fm_armed since 2026-10-09). No code change.
 // V2.5-Evo - 2026-10-07 - T-3: an rx_state_flags (index 19) end bit counts only when set on 2 consecutive arrivals.
@@ -672,6 +673,9 @@ void waitForTelemetry(void *parameter)
             static uint8_t fm_flags_prev_arrival = 0;
             if ((rcvArray[4] & FM_FLAG_FAULT) && !(fm_flags_prev_arrival & FM_FLAG_FAULT))
             {
+              // V2.5-Evo - 2026-10-11 - D-3: capture bit 0 from THIS arrival, written before the latch is raised, so the
+              // reader always sees the armed bit that belongs to the edge it is handling.
+              fm_fault_latched_armed = (rcvArray[4] & FM_FLAG_ARMED) != 0;
               fm_fault_latched = true;
             }
             fm_flags_prev_arrival = rcvArray[4];

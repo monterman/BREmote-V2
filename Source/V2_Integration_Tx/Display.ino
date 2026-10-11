@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-11 - audit 2026-10-11 change 3 / D-7 (owner): the Follow-Me R5 bar - FOLLOWING = the centre distance bar, solid (arithmetic moved unchanged into fmCentreBarMask()); WAITING = the same bar breathing 400 ms on / 1200 ms off on its own timer, width latched per breath; NOT READY / PAUSED = only C0 + C9 blinking 1000/500; the sweeping scanner is retired. Display only, no confStruct change, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-11 - audit 2026-10-11 D-3: showFmStopLabelHeld() - a non-blocking 2 s "St" on the F-label hold, for "stopped following, still armed". No confStruct change, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-07 - T-2: drawReturnBar() leaves R5 dark unless the distance is showable (rtmDistanceShowable():
 //   not 0xFF, not 0x00, link fresh), the same rule as the digits. Display only, no confStruct change.
@@ -1720,6 +1721,9 @@ void renderRtmInfoDisplay()
 //                                           per ~200ms (matches the bargraph tick cadence).
 //   ARMED-NOT-READY (armed, !engaged,    → same 3-px segment BLINKS IN PLACE (centered), no sweep
 //     any not-ready per fmArmedNotReady())  — "armed, waiting on GPS/link"; flips to sweep live.
+//   [V2.5-Evo - 2026-10-11 - D-7: the two ARMED looks above are REPLACED - not ready / paused = only C0 + C9
+//    blinking 1000/500; ready (waiting) = the engaged distance bar below, breathing 400 on / 1200 off. See the
+//    block inside updateR5ProximityBar().]
 //   ENGAGED (fmIsEngaged() — the shared → static distance bar, GROW-WITH-FAR (same direction as
 //     predicate, not a copy of its test)
 //                                           RTM for consistency), center-expanding, SPIFFS-scaled
@@ -1764,14 +1768,49 @@ static void drawReturnBar(float &ref_m, bool blink_on)
 // first returning render, cleared whenever the buggy is not returning, so every return starts with a full bar.
 static float fm_return_ref_m = 0.0f;
 
+// ============================================================
+// fmCentreBarMask - V2.5-Evo - 2026-10-11 - audit 2026-10-11 change 3 / D-7: the Follow-Me CENTRE DISTANCE BAR as an R5
+// pixel mask, moved here unchanged from the ENGAGED branch of updateR5ProximityBar() so the WAITING (breathing) look
+// draws exactly the same bar with exactly the same scaling. GROW-WITH-FAR, centre-expanding: near -> just C4+C5, far
+// (at or beyond fm_warn_distance_m) -> all ten pixels; never empty (half_width 1..5).
+// Inputs: d - a telemetry.rtm_distance byte the caller has already accepted. Returns: the mask for displayBuffer[6].
+// Side effects: none.
+// ============================================================
+static uint16_t fmCentreBarMask(uint8_t d)
+{
+  float current_m = (d < 100) ? d / 10.0f : (float)(d - 90);
+  float ref_m = (float)usrConf.fm_warn_distance_m;   // dynamic SPIFFS full-scale reference
+  if (ref_m < 1.0f) ref_m = 30.0f;                   // guard against a zero/invalid config
+  float dist_ratio = current_m / ref_m;
+  if (dist_ratio > 1.0f) dist_ratio = 1.0f;
+
+  // GROW-WITH-FAR: near → just the centre pair (C4+C5); far → full 10-px bar. Never fully dark
+  // while engaged (half_width 1..5) so ENGAGED always reads distinct from the OFF/scanner states.
+  uint8_t half_width = 1 + (uint8_t)(dist_ratio * 4.0f + 0.5f);
+  if (half_width > 5) half_width = 5;
+  uint16_t mask = 0;
+  for (uint8_t i = 0; i < half_width; i++)
+  {
+    mask |= (1u << (4 - i));  // left  half: C4, C3, C2, C1, C0
+    mask |= (1u << (5 + i));  // right half: C5, C6, C7, C8, C9
+  }
+  return mask;
+}
+
+// V2.5-Evo - 2026-10-11 - D-7: the WAITING bar's own breathing timer (owner ruling: 400 ms on, 1200 ms off) - deliberately
+// NOT r5_blink_state, which the RTM bar and the not-ready end pixels use at 1000/500.
+static const unsigned long kFmBreathOnMs    = 400UL;
+static const unsigned long kFmBreathCycleMs = 1600UL;   // 400 on + 1200 off
+
 void updateR5ProximityBar()
 {
   static unsigned long r5_blink_ms    = 0;
   static bool          r5_blink_state = false;
-  // Scanner sweep state (ARMED-READY): 3-px segment ping-pongs across C0..C9, one step per ~200ms.
-  static unsigned long r5_scan_ms  = 0;
-  static int8_t        r5_scan_pos = 0;   // left column of the 3-px segment; bounds 0..COLS-3
-  static int8_t        r5_scan_dir = 1;   // +1 sweeping right, -1 sweeping left
+  // V2.5-Evo - 2026-10-11 - D-7: the scanner sweep state is gone with the scanner. The waiting bar breathes on its own
+  // cycle: fm_breath_ms is the start of the current 1600 ms cycle, fm_breath_mask the bar width latched at that start, so
+  // the width never changes inside one breath and a glance never reads it as filling.
+  static unsigned long fm_breath_ms   = 0;
+  static uint16_t      fm_breath_mask = 0;
 
   // Blink: 1000 ms on, 500 ms off — used by the RTM bar and the FM armed-not-ready blink-in-place.
   unsigned long now = millis();
@@ -1825,43 +1864,39 @@ void updateR5ProximityBar()
     uint8_t d = telemetry.rtm_distance;
     if (d == 0xFF) return;  // no distance data — leave R5 dark
 
-    float current_m = (d < 100) ? d / 10.0f : (float)(d - 90);
-    float ref_m = (float)usrConf.fm_warn_distance_m;   // dynamic SPIFFS full-scale reference
-    if (ref_m < 1.0f) ref_m = 30.0f;                   // guard against a zero/invalid config
-    float dist_ratio = current_m / ref_m;
-    if (dist_ratio > 1.0f) dist_ratio = 1.0f;
-
-    // GROW-WITH-FAR: near → just the centre pair (C4+C5); far → full 10-px bar. Never fully dark
-    // while engaged (half_width 1..5) so ENGAGED always reads distinct from the OFF/scanner states.
-    uint8_t half_width = 1 + (uint8_t)(dist_ratio * 4.0f + 0.5f);
-    if (half_width > 5) half_width = 5;
-    for (uint8_t i = 0; i < half_width; i++)
-    {
-      displayBuffer[6] |= (1u << (4 - i));  // left  half: C4, C3, C2, C1, C0
-      displayBuffer[6] |= (1u << (5 + i));  // right half: C5, C6, C7, C8, C9
-    }
+    // V2.5-Evo - 2026-10-11 - D-7: FOLLOWING = today's centre bar, SOLID. The arithmetic moved into fmCentreBarMask()
+    // unchanged, so the waiting look below can draw the identical bar.
+    displayBuffer[6] |= fmCentreBarMask(d);
     return;
   }
 
-  // ARMED (not engaged) → 3-px Knight-Rider scanner. READY = sweep, NOT-READY = blink in place.
-  const uint8_t SCAN_COLS = 10;
-  const uint8_t SCAN_SEG  = 3;   // 3-px segment (A3 correction), position bounds 0..COLS-3
-  if (fmArmedNotReady())
+  // ============================================================
+  // V2.5-Evo - 2026-10-11 - audit 2026-10-11 change 3, final spec §12 D-7 (owner: waiting breathes 400 on / 1200 off).
+  // THE SWEEPING SCANNER IS RETIRED. Armed but not following now has two looks, and neither can be mistaken for the
+  // other or for following:
+  //   NOT READY / PAUSED (fmArmedNotReady(): the buggy's fm_flags bit 2 - no separation yet, or a Follow-Me pause on
+  //     missing data - or this remote's own GPS / link not ready): ONLY THE TWO END PIXELS, C0 and C9, blinking
+  //     1000 on / 500 off. No distance bar ever lights the ends without the centre, so this never reads as a short bar.
+  //   WAITING (armed, ready): THE SAME CENTRE DISTANCE BAR as following, same scaling, drawn only in the "on" part of a
+  //     1600 ms breath (400 ms on, 1200 ms off - more off than on), its width latched at the start of each breath. If
+  //     the distance cannot be shown (rtmDistanceShowable(): 0xFF, 0x00 or a stale link) the not-ready look is used.
+  //   FOLLOWING (above): the same bar, solid.
+  // Display only: R5 bits under the caller's displayMutex, no I2C beyond the existing updateDisplay(), no radio or
+  // control timing touched. CLAUDE.md §13: one call site (this function), the owner confirms the look on the remote.
+  // ============================================================
+  const uint8_t d_wait = telemetry.rtm_distance;
+  if (fmArmedNotReady() || !rtmDistanceShowable(d_wait))
   {
-    // NOT-READY → segment blinks in place (centred), no sweep: "armed, waiting on GPS/link".
-    if (!r5_blink_state) return;                         // off phase — dark
-    const uint8_t center = (SCAN_COLS - SCAN_SEG) / 2;   // = 3 → C3, C4, C5
-    for (uint8_t i = 0; i < SCAN_SEG; i++) displayBuffer[6] |= (1u << (center + i));
+    if (!r5_blink_state) return;                          // off phase — dark
+    displayBuffer[6] |= (uint16_t)((1u << 0) | (1u << 9));  // C0 and C9 only
     return;
   }
 
-  // READY → sweep the 3-px segment one step per ~200ms, ping-pong C0→C9→C0.
-  if (now - r5_scan_ms >= 200UL)
+  // WAITING: breathe the bar. A new breath starts every kFmBreathCycleMs and latches the width once.
+  if (fm_breath_ms == 0 || (now - fm_breath_ms) >= kFmBreathCycleMs)
   {
-    r5_scan_ms = now;
-    r5_scan_pos += r5_scan_dir;
-    if (r5_scan_pos >= (int8_t)(SCAN_COLS - SCAN_SEG)) { r5_scan_pos = SCAN_COLS - SCAN_SEG; r5_scan_dir = -1; }
-    else if (r5_scan_pos <= 0)                          { r5_scan_pos = 0;                    r5_scan_dir =  1; }
+    fm_breath_ms   = (now != 0) ? now : 1;
+    fm_breath_mask = fmCentreBarMask(d_wait);
   }
-  for (uint8_t i = 0; i < SCAN_SEG; i++) displayBuffer[6] |= (1u << (r5_scan_pos + i));
+  if ((now - fm_breath_ms) < kFmBreathOnMs) displayBuffer[6] |= fm_breath_mask;   // "on" part of the breath
 }

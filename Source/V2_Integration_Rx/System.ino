@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-11 - change 1 (audit 2026-10-11): ?diag gains one "FM pause" line (printFmPauseDiag() in RTMState.ino: the pause and its input, the 30 s long-loss clock, the heading creep); the "heading" line no longer says Follow-Me will not engage (D-3, COG period). No new command. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): ?diag names level 6 "IMU" and gains three lines under "VESC 2 CAN": "VESC 2 IMU" (poll success in the window, polling / idle / waiting / backed-off state, miss streak), the last IMU values with their age and fresh / STALE / IMPLAUSIBLE verdict (the same rule the logger applies), and "RX IMU" (none fitted, columns reserved). DiagSnapshot carries the two imu2 counters; ?diagz zeroes them (the miss streak is live state and is left alone). No new ?command. Read-only. No confStruct change.
 // V2.5-Evo - 2026-10-07 - P-11: the BIND LED link test uses stampStale() (signed age). No confStruct change.
 // V2.5-Evo - 2026-10-07 - H-3 stop-gap: ?diag prints an "I2C bus" line under "swap fails" - stuck-bus recoveries this session, the SDA/SCL levels seen before/after the last one, whether Wire re-initialised, and whether the compass has been isolated. Read-only. No new ?command. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -1513,7 +1514,7 @@ void cmdDiag(const String& params) {
   // latch, so printing this changes no control state and nothing about ?diag's timing.
   Serial.printf("heading    : compass-vs-COG disagreement latch %s\n",
                 headingDisagreeLatched()
-                  ? "STANDING - compass withdrawn, Follow-Me will not engage; clears on sustained agreement, ?compasscal (full run), ?magalign or reboot"
+                  ? "STANDING - compass withdrawn, Follow-Me steers on the GPS course only (since 2026-10-11, D-3); clears on sustained agreement, ?compasscal (full run), ?magalign or reboot"
                   : "clear - compass available to the heading ladder");
   // V2.5-Evo - 2026-09-17 - the last Follow-Me fault-stop reason, so a rider can ask WHY the buggy
   // stopped following instead of reconstructing it from a scrolled-away serial line. "in progress"
@@ -1536,6 +1537,7 @@ void cmdDiag(const String& params) {
                 fmSepLatched()    ? "SET" : "clear",
                 fmNeedsDengage()  ? "yes" : "no",
                 fmYieldingToRtm() ? "yes" : "no");
+  printFmPauseDiag(now_ms);   // V2.5-Evo - 2026-10-11 - change 1: pause / long-loss clock / heading creep (RTMState.ino)
   // V2.5-Evo - 2026-09-19 - P1-b: auto-return on one line - the effective mode and where it came
   // from (the buggy's stored fm_return_mode, or the remote's session override), the RETURN proof
   // (candidate standing? what did the proof last decide?), and why the last candidate or return

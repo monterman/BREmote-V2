@@ -1,3 +1,19 @@
+// V2.5-Evo - 2026-10-11 - FOLLOW-ME NEVER SWITCHES ITSELF OFF (audit 2026-10-11 "four ride fixes" change 1 + owner
+//   rulings §12 D-1..D-4; fixes C-1, H-1, M-1). runFmLoopBody(): (1) conditions 2-7 are read ONCE through
+//   fmFailingConditionsMask() and split - positions / link (2-5, 7) prove separation and authorise steering, the heading
+//   (6) only blocks steering (M-1: the proof no longer needs a heading); checkFmFaultConditions() is retired. (2) Data
+//   loss while engaged is a PAUSE (the HOLD / HOLD-ESCAPE-2 branch: cap 0 under a held trigger, ARMED manual on a
+//   release), never FM_STOPPING; a pause of >= 2 s sets needs-D_engage; fm_flags bit 2 rises while positions are
+//   missing; hard_ok also needs a fresh CONTROL packet, so FM never resumes on a frozen trigger byte. (3) A divergence or
+//   a NEW heading disagreement while engaged arms the sticky cap FIRST, then ARMED-unlatched + needs-D_engage + the stop
+//   buzz (bit 3 with bit 0 still set), declaration kept (D-3). (4) The 30 s long-loss clock (link OR rider fix OR buggy
+//   fix; heading never counts) disarms: sticky cap FIRST (engaged states), alarm, re-declaration block, FM_STOP_LONG_LOSS
+//   (10), mode 0xFF, fmEnterIdle() (D-2). (5) Following no longer enters FM_STOPPING, so its 0 -> 255 ramp under a held
+//   trigger (C-1) is gone; the branch stays for auto-return faults only. (6) "COG, period" (D-3): a standing
+//   heading-disagree latch no longer blocks engagement or raises bit 2 - it only keeps the compass withdrawn. (7) The
+//   heading CREEP (D-4): straight ahead, <= 60/255 fading to 0 by 6 km/h, <= 3 s per squeeze, from >= max(D_engage,
+//   min_dist + 5 m). ?diag line printFmPauseDiag(); the deep log's fm_block_reason carries the pause reason. Rules in
+//   Common/FollowMePause.h (host-tested). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-09 - STICKY CAP SIMPLIFIED (owner): stickyCapUpdate() reads no speed (the governor is gone, M-1 and
 //   M-2 closed): the cap climbs once on the clock to the 60 ceiling after an arm and the rider distance can only lower it;
 //   it writes sticky_rise_open closed only when its compare-exchange succeeds. ?diag "Sticky cap" shows the rise open or
@@ -1910,6 +1926,9 @@ static const float    kFmSpeedHystKmh        = 2.0f;   // km/h
 // FAULT stop ramp. On a fault (conditions 2-7) FM hands throttle back to the rider by ramping the
 // cap 0 -> 255 over this window, then drops to FM_IDLE (re-arm required). WHY the ramp: the rider
 // may still be holding the trigger, so returning full manual throttle instantly would lurch.
+// V2.5-Evo - 2026-10-11 - audit C-1: FOLLOWING NO LONGER USES THIS RAMP. Ramping the cap toward a held
+// trigger restarted a stopped buggy at Andres twice on 10 Oct. Only an AUTO-RETURN fault (fmReturnFault(),
+// which arms the sticky cap first, so the ramp runs under it) still enters FM_STOPPING.
 static const uint32_t kFmStopRampMs          = 2000;   // ms
 
 // How long the surprise-gated fault-stop notification stays sticky in fm_flags bit 3. WHY:
@@ -2874,8 +2893,11 @@ enum FmStopReason : uint8_t {
   FM_STOP_LINK             = 6,   // condition 7: the LoRa link is down (failsafe_time exceeded)
   FM_STOP_DIVERGENCE       = 7,   // A3: sustained divergence while ACTIVE (not closing on the rider)
   FM_STOP_HEADING_DISAGREE = 8,   // the compass-vs-COG disagreement latch stood while FM had control
-  FM_STOP_RETURN_NOT_CLOSING = 9  // V2.5-Evo - 2026-09-19 - FM_RETURN: moving and aligned, yet the distance did not close 0.5 m over 5 s (the mirrored-steering net)
+  FM_STOP_RETURN_NOT_CLOSING = 9, // V2.5-Evo - 2026-09-19 - FM_RETURN: moving and aligned, yet the distance did not close 0.5 m over 5 s (the mirrored-steering net)
+  FM_STOP_LONG_LOSS        = 10   // V2.5-Evo - 2026-10-11 - D-2: the link, the rider's fix or the buggy's fix missing 30 s in a row -> Follow-Me switched itself off
 };
+// V2.5-Evo - 2026-10-11 - since change 1, codes 1-6 also name a Follow-Me PAUSE (fm_pause_reason below, the deep log's
+// fm_block_reason while paused), and 7 / 8 a steering end that keeps Follow-Me armed (D-3); neither is a stop of the run.
 static uint8_t       fm_stop_reason      = FM_STOP_NONE;
 static uint8_t       fm_last_stop_reason = FM_STOP_NONE;
 static unsigned long fm_last_stop_ms     = 0;
@@ -2895,6 +2917,7 @@ static const char* fmStopReasonName(uint8_t r)
     case FM_STOP_DIVERGENCE:       return "DIVERGENCE (not closing on the rider)";
     case FM_STOP_HEADING_DISAGREE: return "HEADING_DISAGREE (compass vs GPS course)";
     case FM_STOP_RETURN_NOT_CLOSING: return "RETURN_NOT_CLOSING (return leg did not close on the rider)";
+    case FM_STOP_LONG_LOSS:        return "LONG_LOSS (link / rider GPS / buggy GPS missing 30 s)";   // V2.5-Evo - 2026-10-11 - D-2
     default:                       return "unknown";
   }
 }
@@ -2902,6 +2925,73 @@ static const char* fmStopReasonName(uint8_t r)
 static uint8_t       fmStopReason()     { return fm_stop_reason; }
 static uint8_t       fmLastStopReason() { return fm_last_stop_reason; }
 static unsigned long fmLastStopMs()     { return fm_last_stop_ms; }
+
+// ============================================================
+// V2.5-Evo - 2026-10-11 - FOLLOW-ME PAUSE, LONG-LOSS CLOCK AND HEADING CREEP (audit 2026-10-11 change 1, §12 D-1..D-4)
+// Compile-time only, like every kFm* above: no confStruct field, no SW_VERSION bump, no settings wipe.
+// The rules themselves are pure, in Common/FollowMePause.h; this block holds the RX's numbers and memory.
+// ============================================================
+// D-2: the long-loss clock. Link OR rider fix OR buggy fix missing this long in a row -> Follow-Me switches itself off.
+static const uint32_t kFmLongLossMs          = 30000;   // ms
+// ... and it is reset only by all three good together for this long, with at least this many NEW rider fixes.
+static const uint32_t kFmLongLossResetMs     = 1000;    // ms
+static const uint8_t  kFmLongLossResetFixes  = 2;       // distinct rider fixes (rx_tx_gps_fix_seq moves)
+// The buggy's own fix counts as missing beyond the same 6 s condition 5 has always used.
+static const uint32_t kFmBuggyFixStaleMs     = 6000;    // ms
+// Invariant 5: a pause this long counts as a release for the rope rule (needs-D_engage). Same 2 s as the release timer,
+// an alias so a retune of one moves the other (the kFmReleaseDengageMs pattern).
+static const uint32_t kFmPauseDengageMs      = kFmReleaseDengageMs;   // ms
+// D-4: the heading creep. The throttle bounds are RTM's BOOTSTRAP-1 constants (kBootstrapMaxCap 60, kBootstrapSpeedKmh 6,
+// kBootstrapMaxMs 3000), reused, not copied. The distances and the course guard are the creep's own.
+static const float    kFmCreepStartMarginM   = 5.0f;    // m; start only beyond max(D_engage, min_dist_m + this)
+static const float    kFmCreepAbortMarginM   = 1.0f;    // m; abort at once inside min_dist_m + this
+static const float    kFmCreepCourseGuardDeg = 30.0f;   // deg; the last good course this close to the rider's bearing ...
+static const uint32_t kFmCreepCourseMemoryMs = 30000;   // ms; ... seen within this long raises the start to D_engage + 5 m
+
+// Memory. All written on the loop task only (runFmLoopBody(), fmEnterIdle(), the RTM yield); read by the fm_flags
+// assembly in runRtmLoopBody() (one tick later, like fm_return_not_ready), the log snapshot and ?diag.
+static FmLongLossState fm_long_loss        = {0, 0, 0, 0, 0, false};
+static uint8_t         fm_long_loss_verdict = FMLL_OFF;   // the last step's verdict, for ?diag
+static FmCreepState    fm_creep            = {0, false};
+static bool            fm_creep_active     = false;       // a creep is the reason Follow-Me is ACTIVE this tick
+static uint8_t         fm_creep_last_end   = FMCR_NONE;   // how the last creep ended (abort / timeout), for ?diag
+static float           fm_creep_course_deg = -1.0f;       // the last good buggy heading (D-4 guard), -1 = none
+static unsigned long   fm_creep_course_ms  = 0;           // when it was seen, 0 = never
+static unsigned long   fm_pause_since_ms   = 0;           // start of the current data-loss pause while engaged, 0 = none
+static uint8_t         fm_pause_reason     = FM_STOP_NONE;// the input a pause / creep is waiting on (FmStopReason 1-6), 0 = none
+static bool            fm_not_ready_data   = false;       // fm_flags bit 2 feed: armed but missing data a squeeze needs
+static bool            fm_hdg_disagree_prev = false;      // heading_disagree_fault on the previous FM tick (edge for D-3)
+
+// fmPauseClear - drop the pause, the creep and the long-loss clock (every road out of Follow-Me's own states: fmEnterIdle()
+// and the RTM yield). The creep's per-squeeze flag goes too: a new declaration starts with one creep available.
+// Inputs: none. Side effects: the statics above. Loop task only.
+static void fmPauseClear()
+{
+  fm_long_loss.since_ms      = 0;
+  fm_long_loss.good_since_ms = 0;
+  fm_long_loss.good_fixes    = 0;
+  fm_long_loss_verdict       = FMLL_OFF;
+  fm_creep.start_ms          = 0;
+  fm_creep.used              = false;
+  fm_creep_active            = false;
+  fm_pause_since_ms          = 0;
+  fm_pause_reason            = FM_STOP_NONE;
+  fm_not_ready_data          = false;
+}
+
+// fmCondBitToStopReason - the FmStopReason code for one kFmCond* bit (fmPauseReasonBit()); 0 for none.
+static uint8_t fmCondBitToStopReason(uint8_t bit)
+{
+  switch (bit) {
+    case kFmCondPhaseA:  return FM_STOP_PHASE_A;
+    case kFmCondPhaseB:  return FM_STOP_PHASE_B;
+    case kFmCondTxStale: return FM_STOP_TX_STALE;
+    case kFmCondRxStale: return FM_STOP_RX_STALE;
+    case kFmCondHeading: return FM_STOP_HEADING;
+    case kFmCondLink:    return FM_STOP_LINK;
+    default:             return FM_STOP_NONE;
+  }
+}
 
 // V2.5-Evo - 2026-10-02 - P2: the STATION facts for ?diag, so the bench protocol can be run with a
 // serial console and no log download at all - which is the difference between the owner being able
@@ -3005,7 +3095,10 @@ static void fmPublishLogSnapshot()
   s.sep_fix_count    = fm_sep_fix_count;
   s.mode             = fm_mode_runtime.load(std::memory_order_relaxed);
   s.state            = (uint8_t)fm_state;
-  s.block_reason     = fm_stop_reason;
+  // V2.5-Evo - 2026-10-11 - change 1: a live stop (an auto-return fault ramp) wins; otherwise the input a PAUSE or a CREEP
+  // is waiting on (1-6, same codes and names). fm_gate_flags has no free bit left (0-18 flags, 19-30 counters, 31 PG-4),
+  // so the pause rides here: fm_state 3 (HOLD) + a reason = paused; fm_state 2 (ACTIVE) + 5 (HEADING) = creeping.
+  s.block_reason     = (fm_stop_reason != FM_STOP_NONE) ? fm_stop_reason : fm_pause_reason;
   s.throttle_cap     = fm_throttle_cap.load(std::memory_order_relaxed);
   // V2.5-Evo - 2026-10-02 - P2: the station angle is LIVE. A copy of the atomic computeFmTarget()
   // published on this tick (0 = directly behind, positive = the rider's right, x 10 deg). The column
@@ -3469,6 +3562,39 @@ static void printReturnEndDiag(unsigned long now_ms)
 }
 
 // ------------------------------------------------------------
+// printFmPauseDiag - V2.5-Evo - 2026-10-11 - change 1 (§12 step 8): the ?diag line for the Follow-Me pause, the 30 s
+// long-loss clock and the heading creep (System.ino calls it, under the "FM engage" line).
+// ------------------------------------------------------------
+// Prints, on one line: whether a pause stands and on which input (and how long), the long-loss clock's age against its
+// 30 s limit (or idle / not running), and the creep (running for how long, spent this squeeze, or available) plus how
+// the last creep ended. Read-only: every value is a static the loop task owns. Input: now_ms. Output: Serial.
+static void printFmPauseDiag(unsigned long now_ms)
+{
+  char pause_txt[64];
+  if (fm_pause_since_ms != 0)
+    snprintf(pause_txt, sizeof(pause_txt), "PAUSED %lu s on %s", (unsigned long)(stampAgeMs((uint32_t)now_ms, (uint32_t)fm_pause_since_ms) / 1000UL),
+             fmStopReasonName(fm_pause_reason));
+  else if (fm_pause_reason != FM_STOP_NONE)
+    snprintf(pause_txt, sizeof(pause_txt), "none (waiting on %s)", fmStopReasonName(fm_pause_reason));
+  else
+    snprintf(pause_txt, sizeof(pause_txt), "none");
+  char clock_txt[48];
+  if (fm_long_loss.since_ms != 0)
+    snprintf(clock_txt, sizeof(clock_txt), "COUNTING %lu / %lu s", (unsigned long)(stampAgeMs((uint32_t)now_ms, fm_long_loss.since_ms) / 1000UL),
+             (unsigned long)(kFmLongLossMs / 1000UL));
+  else
+    snprintf(clock_txt, sizeof(clock_txt), "%s", (fm_long_loss_verdict == FMLL_OFF) ? "not running" : "idle (link + both fixes good)");
+  char creep_txt[48];
+  if (fm_creep.start_ms != 0)
+    snprintf(creep_txt, sizeof(creep_txt), "CREEPING %lu ms", (unsigned long)stampAgeMs((uint32_t)now_ms, fm_creep.start_ms));
+  else
+    snprintf(creep_txt, sizeof(creep_txt), "%s", fm_creep.used ? "spent this squeeze" : "available");
+  Serial.printf("FM pause   : %s; long-loss clock %s; heading creep %s (last end: %s)\n",
+                pause_txt, clock_txt, creep_txt,
+                (fm_creep_last_end == FMCR_TIMEOUT) ? "timed out" : (fm_creep_last_end == FMCR_ABORT) ? "aborted" : "none");
+}
+
+// ------------------------------------------------------------
 // stickyCapUpdate - V2.5-Evo - 2026-10-08 - one 10 Hz tick of the sticky return cap (owner design).
 // ------------------------------------------------------------
 // What it does: while a sticky return cap stands (sticky_armed, BREmote_V2_Rx.h), steps it with stickyReturnCapStep()
@@ -3755,7 +3881,9 @@ static void runRtmLoopBody(unsigned long now)
   //   [0] armed           - a live TX declaration is held (FM_ARMED / FM_ACTIVE / FM_HOLD). Scanner.
   //   [1] engaged         - FM is actively following (FM_ACTIVE). Grow-with-far distance bar.
   //   [2] armed-not-ready - armed but not yet engage-eligible on RX facts: no separation latch yet,
-  //                         or (V2.5-Evo - 2026-08-17) a standing heading-disagreement latch.
+  //                         or (V2.5-Evo - 2026-08-17) a standing heading-disagreement latch
+  //                         [V2.5-Evo - 2026-10-11 - replaced: the latch no longer blocks; missing data
+  //                         (a Follow-Me pause) raises it instead - see fm_not_ready_data below].
   //                         The TX ORs its own TX-local readiness (own GPS fix/age, pairing, last
   //                         reply age) on top, then renders blink-in-place (not ready) vs sweep (ready).
   //   [3] fault-stop      - a FAULT ended FM while the trigger was held; sticky kFmFaultStickyMs so
@@ -3791,9 +3919,19 @@ static void runRtmLoopBody(unsigned long now)
     // instead of "auto-return waiting", and goes back to waiting when the data returns. A squeeze while
     // not ready still ends the return with "St" (runFmReturnTick()). When the BUGGY's own side fails the
     // return has already ended with "St" + the stop buzz, so it is never shown as waiting.
-    if (((s == FM_ARMED || s == FM_HOLD) && (!fm_sep_latched || heading_disagree_fault)) ||
+    // V2.5-Evo - 2026-10-11 - change 1 + D-3 ("COG, period"): heading_disagree_fault is OUT of this bit - a standing
+    // latch no longer blocks Follow-Me (it only keeps the compass withdrawn; Follow-Me runs on the GPS course), so it is
+    // not a reason Follow-Me cannot engage. fm_not_ready_data is IN (set by the previous FM tick): positions or link
+    // missing (a PAUSE, or armed with no data), or no heading with this squeeze's creep already spent - the remote shows
+    // the not-ready look (end pixels) and goes back to waiting when the data returns. Bit 0 stays set throughout, so the
+    // remote's resync rule never disarms on a pause (invariant 7).
+    if (((s == FM_ARMED || s == FM_HOLD) && (!fm_sep_latched || fm_not_ready_data)) ||
         (s == FM_RETURN && !fm_rx_active && fm_return_not_ready))   f |= (1 << 2);
     // V2.5-Evo - 2026-10-07 - N-8(b): 6 s of LINK-FRESH time, not wall-clock time (see fm_fault_sticky).
+    // V2.5-Evo - 2026-10-11 - D-3: bit 3 now also rises for a STEERING END that keeps Follow-Me armed (divergence, a new
+    // heading disagreement). The remote tells the two apart by bit 0 on the same byte: bit 3 + bit 0 = "stopped
+    // following, still armed" (buzz + "St", stays armed); bit 3 without bit 0 = Follow-Me is off (the long-loss end, an
+    // auto-return fault) - its existing disarm path. An old RX never sends bit 3 with bit 0 (FM_STOPPING clears bit 0).
     if (stickyWindowStep(&fm_fault_sticky, (uint32_t)now, (uint32_t)fm_fault_alarm_ms, link_fresh, kFmFaultStickyMs)) f |= (1 << 3);
     // V2.5-Evo - 2026-09-19 - bit 7: the EFFECTIVE auto-return mode, echoed in every FM state
     // (IDLE included - with no override standing it is simply the stored default). The remote's
@@ -5391,60 +5529,13 @@ static void computeFmTarget(double* out_lat, double* out_lng)
 }
 
 // ------------------------------------------------------------
-// checkFmFaultConditions - the FM FAULT conditions (2-7)
+// checkFmFaultConditions - RETIRED V2.5-Evo - 2026-10-11 (audit 2026-10-11 change 1).
 // ------------------------------------------------------------
-// What it does (DESIGN_FOLLOW_ME.md section 5, A3 holds-vs-faults classification):
-//   Evaluates the six FAULT conditions only - the ones that mean something actually BROKE, so FM
-//   must end for the run and a fresh declaration is required to re-arm. Two conditions are handled
-//   by the CALLER, not here, because they are not faults:
-//     - Condition 1 (throttle >= 25) is the DEADMAN. A trigger release is never a fault (treating
-//       it as one would end FM on every release, worse than the original bug); the caller reads it
-//       as thr_held and the motor is already 0 by the base architecture when it is low.
-//     - Conditions 8 (distance) and 9 (rider speed) are geometric HOLDs: they pause FM (cap 0) but
-//       keep it ARMED and auto-resume. The caller evaluates them as dist_ok / speed_ok.
-//   Like RTM, any one of these six failing means FM must not be steering. This function does NOT
-//   set rtm_rx_emergency_stop - FM stops the motor through its own fm_throttle_cap so the two
-//   systems can never fight over one flag.
-//
-// Returns: true only if all six fault conditions hold.
-// Outputs: *out_reason (V2.5-Evo - 2026-09-17) - the FmStopReason code of the FIRST condition
-//          that failed, in the order below; FM_STOP_NONE when all six hold. Purely a name for the
-//          caller's stop latch and print; nothing reads it back into the control decision.
-// Side effects: none on control state (read-only on all globals).
-// ------------------------------------------------------------
-static bool checkFmFaultConditions(uint8_t* out_reason)
-{
-  unsigned long now = millis();
-  *out_reason = FM_STOP_NONE;
-
-  // 2. Phase A: the RX's own GPS has not been rejected as implausible/spoofed.
-  if (gps_rejected) { *out_reason = FM_STOP_PHASE_A; return false; }
-
-  // 3. Phase B: the TX<->RX cross-validation handshake is currently passing.
-  if (!gps_phase_b_ok) { *out_reason = FM_STOP_PHASE_B; return false; }
-
-  // 4. The rider's (TX) GPS position is fresh.
-  // V2.5-Evo - 2026-10-07 - N-7 scan: conditions 4 and 7 use signed ages (stampAgeMs, via stampStale): the
-  // radio task can stamp after `now` above, and the wrapped unsigned age was a false fault.
-  if (stampStale((uint32_t)now, (uint32_t)rx_tx_gps_timestamp, (uint32_t)usrConf.tx_gps_stale_timeout_ms)) { *out_reason = FM_STOP_TX_STALE; return false; }
-
-  // 5. The buggy's (RX) GPS position is fresh (same 6 s window as RTM gate 5).
-  if (gps_last_ms == 0 || (now - gps_last_ms) > 6000UL) { *out_reason = FM_STOP_RX_STALE; return false; }
-
-  // 6. A valid heading source exists. V2.5-Evo - 2026-07-20 - A3: FM ALWAYS requires a heading
-  //    source, regardless of rtm_compass_required. That flag was an RTM-arming convenience; a
-  //    missing heading source in FM means the buggy would steer blind at the ~5% align cap, which
-  //    is a FAULT, not something to silently permit. This is the R4 heading-source-loss fix.
-  {
-    float h_unused; uint8_t conf_unused;
-    if (!getRtmHeading(&h_unused, &conf_unused)) { *out_reason = FM_STOP_HEADING; return false; }
-  }
-
-  // 7. The LoRa link is healthy.
-  if (stampStale((uint32_t)now, (uint32_t)last_packet, (uint32_t)usrConf.failsafe_time)) { *out_reason = FM_STOP_LINK; return false; }
-
-  return true;
-}
+// It answered "do conditions 2-7 all hold?" with the heading as a FAULT, stopping at the first failure. Change 1 splits
+// those six by what they mean: positions and the link (2-5, 7) prove separation and authorise steering, the heading (6)
+// only blocks steering and is never a fault (H-1: a COG-only buggy has no heading every time it stops). runFmLoopBody()
+// now reads every failing condition at once through fmFailingConditionsMask() below - the same tests, the same
+// thresholds, signed ages (N-6) - and names a pause with fmPauseReasonBit() (Common/FollowMePause.h).
 
 // ------------------------------------------------------------
 // fmFailingConditionsMask - V2.5-Evo - 2026-10-07 - S-2: EVERY failing condition 2-7, as kFmCond* bits.
@@ -5460,15 +5551,22 @@ static bool checkFmFaultConditions(uint8_t* out_reason)
 // ID that turned a parked return that should wait into a fault ("St") about half the time. Now it reads
 // millis() itself, AFTER the heading call, and every age is signed and clamped to 0 (fmFailingMaskFrom()
 // in Common/AutoReturnRules.h, host-tested), so a stamp newer than the clock reads "just now".
-static uint8_t fmFailingConditionsMask()
+// V2.5-Evo - 2026-10-11 - change 1: fmFailingConditionsMaskHdg() is the same function with an out-param - out_heading_deg
+// (may be nullptr) receives the heading getRtmHeading() produced on this same call (-1 when there is none), so
+// runFmLoopBody() keeps the heading creep's last good course without a second heading call per tick. The no-argument
+// name below is unchanged for the RETURN call sites (an overload, not a default argument: the Arduino prototype
+// generator copies signatures and a default would then be specified twice).
+static uint8_t fmFailingConditionsMaskHdg(float* out_heading_deg)
 {
-  float h_unused; uint8_t conf_unused;
-  const bool heading_ok = getRtmHeading(&h_unused, &conf_unused);
+  float h_now = -1.0f; uint8_t conf_unused;
+  const bool heading_ok = getRtmHeading(&h_now, &conf_unused);
+  if (out_heading_deg) *out_heading_deg = heading_ok ? h_now : -1.0f;
   return fmFailingMaskFrom((uint32_t)millis(), gps_rejected, gps_phase_b_ok,
                            (uint32_t)rx_tx_gps_timestamp, (uint32_t)usrConf.tx_gps_stale_timeout_ms,
                            (uint32_t)gps_last_ms, 6000UL,
                            heading_ok, (uint32_t)last_packet, (uint32_t)usrConf.failsafe_time);
 }
+static uint8_t fmFailingConditionsMask() { return fmFailingConditionsMaskHdg(nullptr); }
 
 // ------------------------------------------------------------
 // fmComputeThrottleCap - the FM throttle cap chain
@@ -5702,6 +5800,39 @@ static uint16_t fmComputeThrottleCap(float dist_m, unsigned long now)
 }
 
 // ------------------------------------------------------------
+// fmCreepThrottleCap - V2.5-Evo - 2026-10-11 - D-4: the cap chain for a HEADING CREEP tick.
+// ------------------------------------------------------------
+// What it does: returns the lowest of (a) the creep ceiling fmCreepCap() - kBootstrapMaxCap (60, ~24 %) fading to 0 as the
+//   buggy's own GPS speed reaches kBootstrapSpeedKmh (6 km/h = 3.7 mph), RTM BOOTSTRAP-1's bounds; (b) cap 2, the
+//   approach ramp across the smoothing band, exactly as fmComputeThrottleCap() computes it; (c) cap 5, the engage ramp.
+//   It deliberately has NO align cap (cap 4): with no heading the align test reads "worst case" and would pin the buggy
+//   at fm_align_cap, which is the dead end the creep exists to break; and no speed governor (cap 3) - (a) is the
+//   governor here, and a far tighter one.
+// Inputs: dist_m (buggy to rider, m), now. Returns: 0..kBootstrapMaxCap. Side effects: none.
+// Every term is a CAP: calcPWM() applies min(trigger, cap); the trigger stays the only throttle source.
+static uint8_t fmCreepThrottleCap(float dist_m, unsigned long now)
+{
+  uint16_t cap = fmCreepCap(gps_last_speed_kmh, kBootstrapMaxCap, kBootstrapSpeedKmh);   // (a)
+  const float min_dist = usrConf.min_dist_m;
+  const float band     = usrConf.followme_smoothing_band_m;
+  if (band > 0.01f && dist_m < (min_dist + band)) {                                         // (b) cap 2
+    float frac = (dist_m - min_dist) / band;
+    if (frac < 0.0f) frac = 0.0f;
+    if (frac > 1.0f) frac = 1.0f;
+    const uint16_t c = (uint16_t)(frac * 255.0f);
+    if (c < cap) cap = c;
+  }
+  if (fm_engage_ms > 0) {                                                                   // (c) cap 5
+    const unsigned long elapsed = now - fm_engage_ms;
+    if (elapsed < kFmEngageRampMs) {
+      const uint16_t c = (uint16_t)(((float)elapsed / (float)kFmEngageRampMs) * 255.0f);
+      if (c < cap) cap = c;
+    }
+  }
+  return (uint8_t)cap;
+}
+
+// ------------------------------------------------------------
 // fmEnterIdle - drop FM fully out of the control path
 // ------------------------------------------------------------
 // Used when FM is switched off (mode 0) or when GPS/RTM is disabled in config. (Until 2026-09-18
@@ -5811,6 +5942,9 @@ static void fmEnterIdle()
   // fm_last_stop_ms are deliberately NOT cleared here: ?diag reports the most recent stop until
   // the next one or a reboot, and this function runs on every idle tick.
   fm_stop_reason          = FM_STOP_NONE;
+  // V2.5-Evo - 2026-10-11 - change 1: the pause, the creep and the 30 s long-loss clock end with the declaration, so a new
+  // declaration never inherits a clock that was already counting (it would fire early) or a spent creep.
+  fmPauseClear();
 
   // V2.5-Evo - 2026-07-25 - A3: leaving FM drops any part-accumulated divergence proof with it, so
   // the next engagement starts its 3 s window from scratch rather than inheriting a stale timer.
@@ -6724,6 +6858,7 @@ static void runFmLoopBody(unsigned long now)
         // the recall now. The pivot-boost request is withdrawn; RTM publishes its own.
         if (from == (uint8_t)FM_RETURN || fm_return_pending) fm_return_last_reason = FM_RET_LEFT;
         fmResetReturnState();
+        fmPauseClear();   // V2.5-Evo - 2026-10-11 - change 1: no pause, creep or long-loss clock survives the yield
         Serial.printf("FM [RX] RTM active -> Follow-Me yields: %s -> ARMED (latch cleared, needs D_engage to re-engage)\n",
                       fmStateName(from));
       }
@@ -6799,6 +6934,11 @@ static void runFmLoopBody(unsigned long now)
   // MOTOR SAFETY: the cap only ever RISES toward 255 (subtract-only, never adds throttle); the
   // rider's held trigger stays the sole throttle source, and starting the ramp from 0 means no
   // lurch. (RTM preemption / GPS-off / mode-off above still abort straight to IDLE.)
+  // V2.5-Evo - 2026-10-11 - audit C-1: ONLY AN AUTO-RETURN FAULT REACHES THIS BRANCH NOW. Following used to enter it on any
+  // fault (conditions 2-7, divergence, heading-disagree), and this ramp then handed the HELD trigger back as full throttle
+  // over 2 s - on 10 Oct that restarted a stopped buggy pointed at a stopped rider, twice. Following now PAUSES on data
+  // loss and ends a wrong-steering run through the sticky cap (D-1 / D-3), and never comes here. fmReturnFault() arms the
+  // sticky cap BEFORE entering this state, so on its path the ramp below runs UNDER that cap and cannot reach the trigger.
   if (fm_state == FM_STOPPING) {
     fm_rx_active       = false;
     rtm_steer_override = 127;
@@ -6873,9 +7013,70 @@ static void runFmLoopBody(unsigned long now)
 
   // ---- Evaluate the conditions, split by A3 class ----
   // DEADMAN = condition 1 (throttle). FAULT = conditions 2-7. HOLD = conditions 8-9.
+  // V2.5-Evo - 2026-10-11 - change 1: conditions 2-7 are no longer "faults". They are read ONCE, as a mask, and split:
+  //   fault_ok   (kept as the name; it now means POSITIONS + LINK, conditions 2-5 and 7) - the separation proof and the
+  //              authority to steer both need these (GPS rules 1/4: a rejected or stale fix is dropped, never used);
+  //   heading_ok (condition 6) - needed only to STEER (can_be_active), never for the proof (M-1), never a fault (H-1);
+  //              a COG-only buggy has no heading every time it stops, which is normal, not a loss.
+  // A missing input while engaged is a PAUSE (the HOLD branch below), not an end: see fmEngagedEndClass().
   bool  thr_held = (thr_received >= 25);       // condition 1 (DEADMAN — never a fault)
-  uint8_t fault_reason = FM_STOP_NONE;         // V2.5-Evo - 2026-09-17 - which of 2-7 failed, for the stop latch
-  bool  fault_ok = checkFmFaultConditions(&fault_reason);   // conditions 2-7 (FAULT)
+  float fm_hdg_now_deg = -1.0f;                // this tick's heading (-1 = none), for the creep's course memory
+  const uint8_t failing    = fmFailingConditionsMaskHdg(&fm_hdg_now_deg);   // conditions 2-7, every failing one
+  const bool    heading_ok = (failing & kFmCondHeading) == 0;
+  bool  fault_ok = (failing & (uint8_t)~kFmCondHeading) == 0;               // conditions 2-5 and 7
+  // Invariant 4: authority needs a FRESH control packet, not just a held byte - thr_received stays frozen at its last
+  // value through a dropout, so a resume (and staying ACTIVE) needs last_control_packet within failsafe_time. The motor
+  // gate in calcPWM() tests the same stamp. Signed age: the radio task can stamp it after `now` was read.
+  const bool    ctrl_fresh = !stampStale((uint32_t)now, (uint32_t)last_control_packet, (uint32_t)usrConf.failsafe_time);
+  // D-3 edge: a heading disagreement that ROSE this tick. A STANDING latch no longer blocks anything ("COG, period" -
+  // getRtmHeading() keeps the compass withdrawn and Follow-Me runs on the GPS course); only its rising edge while
+  // engaged ends the engagement. Read after the mask call above, which is where getRtmHeading() may latch it.
+  const bool    hdg_disagree_now  = heading_disagree_fault;
+  const bool    hdg_disagree_edge = hdg_disagree_now && !fm_hdg_disagree_prev;
+  fm_hdg_disagree_prev = hdg_disagree_now;
+  if (heading_ok && fm_hdg_now_deg >= 0.0f) {   // D-4 guard: remember the last good heading (30 s)
+    fm_creep_course_deg = fm_hdg_now_deg;
+    fm_creep_course_ms  = (now != 0) ? now : 1;
+  }
+
+  // ============================================================
+  // V2.5-Evo - 2026-10-11 - D-2: THE 30 s LONG-LOSS CLOCK (Common/FollowMePause.h fmLongLossStep(), host-tested).
+  // Inputs, OR'd: the link (last_packet within failsafe_time), the RIDER'S FIX (a new rx_tx_gps_fix_seq within
+  // tx_gps_stale_timeout_ms - the sequence counter, so a re-broadcast of an old position does not count as fresh), the
+  // BUGGY'S FIX (gps_last_ms within 6 s). The heading and Phase A / B are NOT inputs (they pause, with no timer).
+  // Runs in ARMED, ACTIVE and HOLD; RETURN and STOPPING returned above, IDLE and the RTM yield never get here.
+  // ON FIRE, IN THIS ORDER (§12 step 5): the sticky cap FIRST (only if Follow-Me was holding a cap - see below), the
+  // alarm (fm_flags bit 3, reaches the remote when the link returns: the sticky window counts link-fresh time), the
+  // re-declaration block (a keepalive may not re-arm), the stop reason, the mode, fmEnterIdle() - then the prints (F7).
+  // DEVIATION FROM §12 D-1, STATED: the sticky cap is armed only when the state is ACTIVE or HOLD. In ARMED Follow-Me holds
+  // no cap (255) and the rider is driving manually - possibly towing on the rope - so lifting "255 to 255" cannot surge,
+  // and arming the 60 ceiling there would cut a towing rider's own throttle to 24 % without warning.
+  // ============================================================
+  {
+    const bool ll_running = (fm_state == FM_ARMED || fm_state == FM_ACTIVE || fm_state == FM_HOLD);
+    const bool ll_link_ok  = !stampStale((uint32_t)now, (uint32_t)last_packet, (uint32_t)usrConf.failsafe_time);
+    const bool ll_buggy_ok = !stampStale((uint32_t)now, (uint32_t)gps_last_ms, kFmBuggyFixStaleMs);
+    fm_long_loss_verdict = fmLongLossStep(&fm_long_loss, (uint32_t)now, ll_running, ll_link_ok,
+                                          (uint32_t)rx_tx_gps_fix_seq, (uint32_t)usrConf.tx_gps_stale_timeout_ms,
+                                          ll_buggy_ok, kFmLongLossMs, kFmLongLossResetMs, kFmLongLossResetFixes);
+    if (fm_long_loss_verdict == FMLL_FIRED) {
+      const uint8_t from = (uint8_t)fm_state;
+      if (fm_state == FM_ACTIVE || fm_state == FM_HOLD) stickyCapArm(fm_throttle_cap.load());   // FIRST (D-1)
+      fm_fault_alarm_ms    = (now != 0) ? now : 1;   // "St" + stop buzz on the remote, whatever the trigger
+      fm_redeclare_blocked = true;                   // M-1: a keepalive may not re-arm after this end (Radio.ino)
+      fm_stop_reason       = FM_STOP_LONG_LOSS;
+      fm_last_stop_reason  = FM_STOP_LONG_LOSS;
+      fm_last_stop_ms      = now;
+      fm_mode_runtime.store(0xFF, std::memory_order_relaxed);
+      fmEnterIdle();                                 // lifts Follow-Me's own cap to 255 - the sticky cap is already standing
+      Serial.printf("FM [RX] LONG LOSS: %s missing for %lu s -> Follow-Me %s -> IDLE (switched off; the remote must arm again)%s\n",
+                    !ll_link_ok ? "the link" : (!ll_buggy_ok ? "the buggy's GPS fix" : "the rider's GPS fix"),
+                    (unsigned long)(kFmLongLossMs / 1000UL), fmStateName(from),
+                    (from == (uint8_t)FM_ACTIVE || from == (uint8_t)FM_HOLD) ? "; throttle held at the sticky ceiling until one release" : "");
+      Serial.printf("FM [RX] stop reason: %s [%u]\n", fmStopReasonName(FM_STOP_LONG_LOSS), (unsigned)FM_STOP_LONG_LOSS);
+      return;
+    }
+  }
   // ============================================================
   // V2.5-Evo - 2026-09-18 - P1-a: SEPARATION IS PROVEN WITHOUT THE TRIGGER. hard_ok used to gate
   // everything below - the distance, conditions 8/9, the fix-counted dwell and the latch - so a
@@ -6902,8 +7103,11 @@ static void runFmLoopBody(unsigned long now)
   // things that do not need the trigger: the fix-counted dwell (R-4), the engage floor and the
   // needs-D_engage rule (both in Common/FollowMeEngage.h), and the 10 s release clear.
   // ============================================================
+  // V2.5-Evo - 2026-10-11 - change 1 (M-1): fault_ok no longer contains the heading, so the proof runs on positions and
+  // the link alone - a stopped, heading-less buggy can now latch separation. hard_ok also needs a fresh control packet
+  // (invariant 4). The heading is added back only where steering needs it: can_be_active (or a creep grant, D-4).
   bool  proof_ok = fault_ok;                   // a trustworthy distance / latch needs the sensors, not the trigger
-  bool  hard_ok  = thr_held && fault_ok;       // authority: the trigger AND the sensors
+  bool  hard_ok  = thr_held && fault_ok && ctrl_fresh;   // authority: a FRESH held trigger AND the sensors
   bool  speed_ok = false;                      // condition 9 (HOLD — rider moving)
   bool  dist_ok  = false;                      // condition 8 (HOLD — follow geometry)
   float dist_m   = 0.0f;
@@ -7160,7 +7364,9 @@ static void runFmLoopBody(unsigned long now)
   if (fm_return_mode_effective == 1 && !fm_return_spent) {
     // V2.5-Evo - 2026-10-07 - S-3: a candidate that FORMED in ARMED must stay beyond D_engage
     // (dist_m and d_engage are both valid here: cand_now requires proof_ok, which computed them).
-    const bool cand_now = proof_ok && followMeReturnCandidate(fm_rider_raw_kmh, kFmReturnRiderRawMaxKmh) &&
+    // V2.5-Evo - 2026-10-11 - change 1: the auto-return candidate keeps its old sensor term - positions AND a heading
+    // (the proof before M-1 split them) - so FM_RETURN is entered exactly as before; only following's proof changed.
+    const bool cand_now = proof_ok && heading_ok && followMeReturnCandidate(fm_rider_raw_kmh, kFmReturnRiderRawMaxKmh) &&
                           (!fm_return_from_armed || dist_m > d_engage);
     if (cand_now) {
       // V2.5-Evo - 2026-10-07 - S-3: the candidate may now also form in FM_ARMED after an engagement
@@ -7187,7 +7393,7 @@ static void runFmLoopBody(unsigned long now)
       fm_return_pending = false;
       fm_return_from_armed = false;   // V2.5-Evo - 2026-10-07 - S-3
       fmClearReturnProof();
-      fm_return_last_reason = proof_ok ? FM_RET_RIDER_MOVED : FM_RET_SENSORS;
+      fm_return_last_reason = (proof_ok && heading_ok) ? FM_RET_RIDER_MOVED : FM_RET_SENSORS;   // V2.5-Evo - 2026-10-11 - the candidate's sensor term
       Serial.printf("FM [RX] RETURN candidate dropped: %s (rider raw %.1f km/h)\n",
                     fmReturnReasonName(fm_return_last_reason), (double)fm_rider_raw_kmh);
     }
@@ -7555,10 +7761,56 @@ static void runFmLoopBody(unsigned long now)
   // below 10 % clears the cap, and the ordinary engage rules (latch, D_engage, streak) apply from there. This is the
   // only road into FM_ACTIVE; the auto-return proof needs the cap or the trigger at 0, which a held trigger in ARMED
   // never gives, so FM_RETURN cannot start under it either.
-  bool can_be_active = hard_ok && speed_ok && dist_ok && fm_sep_latched &&
-                       !diverge_fault && !heading_disagree_fault &&
+  // V2.5-Evo - 2026-10-11 - D-3 ("COG, period", owner): THE 2026-08-17 RULE ABOVE IS REVERSED. !heading_disagree_fault is
+  // OUT of this chain. A standing latch keeps the compass withdrawn inside getRtmHeading() and Follow-Me runs on the GPS
+  // course; the accepted risk (a wrong course is no longer cross-checked) is backstopped by guard 1's frozen-course check
+  // and the divergence net. A latch that RISES while engaged still ends that engagement (D-3, below).
+  // V2.5-Evo - 2026-10-11 - change 1: the HEADING joins here, and only here - steering needs one, the proof does not (M-1).
+  // Without it the tick is not steerable unless a HEADING CREEP is granted (D-4).
+  const bool was_engaged_now = (fm_state == FM_ACTIVE || fm_state == FM_HOLD);
+  const bool eligible_but_heading = hard_ok && speed_ok && dist_ok && fm_sep_latched &&
+                       !diverge_fault &&
                        !return_candidate &&   // V2.5-Evo - 2026-09-19 - a stopped rider is never followed (raw judgement, B6)
-                       !sticky_armed.load();  // V2.5-Evo - 2026-10-08 - D-7
+                       !sticky_armed.load() && // V2.5-Evo - 2026-10-08 - D-7
+                       !(hdg_disagree_edge && was_engaged_now);   // V2.5-Evo - 2026-10-11 - D-3 edge: this engagement ends
+
+  // ============================================================
+  // V2.5-Evo - 2026-10-11 - D-4: THE HEADING CREEP (Common/FollowMePause.h fmCreepStep(), host-tested).
+  // A COG-only buggy at a standstill has no heading, so it can never be steered and Follow-Me could never resume. On a
+  // tick where Follow-Me would engage or stay engaged in EVERY respect except the heading, it may creep STRAIGHT AHEAD:
+  //   start  - rider at least max(D_engage, min_dist + 5 m) away on a fresh fix (D_engage + 5 m if the last good course,
+  //            kept 30 s, pointed within 30 deg of him - after following the nose usually points at him);
+  //   cap    - min(60, 60 x (1 - buggy speed / 6 km/h)), with the engage ramp and the approach ramp (fmCreepThrottleCap());
+  //   steer  - 127 (updateRtmSteering() holds straight with no heading); the stick may still take over if that is on;
+  //   time   - at most 3 s, ONE creep per squeeze (a release re-arms it);
+  //   abort  - rider inside min_dist + 1 m, any data loss, a release, a stale rider fix (all fall out of `eligible`);
+  //   success- a heading appears: from that tick it is ordinary Follow-Me (the align cap and pivot boost turn it).
+  // Every term is a CAP under the held trigger; a release stops the motor on the next 10 ms pass as always.
+  // ============================================================
+  bool creep_grant = false;
+  uint8_t creep_verdict = FMCR_NONE;
+  {
+    float creep_start_m = 0.0f;
+    if (proof_ok) {
+      const bool course_known = (fm_creep_course_ms != 0) && (fm_creep_course_deg >= 0.0f) &&
+                                !stampStale((uint32_t)now, (uint32_t)fm_creep_course_ms, kFmCreepCourseMemoryMs);
+      const float brg = (float)TinyGPSPlus::courseTo(gps_last_lat, gps_last_lng, rx_tx_gps_lat, rx_tx_gps_lng);
+      creep_start_m = fmCreepStartDistM(d_engage, usrConf.min_dist_m, course_known, fm_creep_course_deg, brg,
+                                        kFmCreepStartMarginM, kFmCreepCourseGuardDeg);
+    }
+    creep_verdict = fmCreepStep(&fm_creep, (uint32_t)now, thr_held, heading_ok, eligible_but_heading, dist_m,
+                                creep_start_m, usrConf.min_dist_m + kFmCreepAbortMarginM, kBootstrapMaxMs);
+    creep_grant = (creep_verdict == FMCR_GRANTED);
+    if (creep_verdict == FMCR_ABORT || creep_verdict == FMCR_TIMEOUT) fm_creep_last_end = creep_verdict;
+  }
+  fm_creep_active = creep_grant && !heading_ok;
+
+  bool can_be_active = eligible_but_heading && (heading_ok || creep_grant);
+
+  // fm_flags bit 2 feed (read next tick by runRtmLoopBody): armed but a squeeze would not engage for want of DATA -
+  // positions / link missing, or no heading with this squeeze's creep already spent. Geometry (separation, distance,
+  // rider speed) keeps its own meaning through the latch term in the bit itself.
+  fm_not_ready_data = !fault_ok || (!heading_ok && fm_creep.used && fm_creep.start_ms == 0 && thr_held);
 
   // V2.5-Evo - 2026-09-17 - P0-g: record the verdicts that just decided can_be_active, exactly as
   // evaluated, for the deep log. Pure bookkeeping — nothing below reads fm_log_*.
@@ -7790,13 +8042,29 @@ static void runFmLoopBody(unsigned long now)
 
     fm_rx_active = true;                                   // gate the steering override on
     computeFmTarget(&fm_target_lat, &fm_target_lng);       // where behind the rider to sit
-    updateRtmSteering();                                   // shared P+D controller, unchanged
-    fm_throttle_cap = (uint8_t)fmComputeThrottleCap(dist_m, now);
-    // V2.5-Evo - 2026-09-19 - PIVOT BOOST: while cap 4 is pinning the throttle to the align cap,
-    // ask the mixer for fm_align_influence (100 = one-motor pivot) instead of steering_influence.
-    // Published once at the end of this tick by the runFmLoop() wrapper; starts at 0 every tick,
-    // so leaving align by any route clears it.
-    fm_align_influence_req = fmHeadingAligning() ? (uint8_t)usrConf.fm_align_influence : 0;
+    updateRtmSteering();                                   // shared P+D controller, unchanged (no heading -> holds 127)
+    if (fm_creep_active) {
+      // V2.5-Evo - 2026-10-11 - D-4: the HEADING CREEP's own cap chain, NOT fmComputeThrottleCap() - whose align cap would
+      // pin a heading-less buggy at fm_align_cap and defeat the creep. The creep is straight (no heading -> 127 above),
+      // so no pivot boost is asked for. Still a cap: min(trigger, this) in calcPWM().
+      fm_throttle_cap = fmCreepThrottleCap(dist_m, now);
+      fm_align_influence_req = 0;
+      fm_pause_reason = FM_STOP_HEADING;   // deep log: ACTIVE + HEADING = creeping
+    } else {
+      fm_throttle_cap = (uint8_t)fmComputeThrottleCap(dist_m, now);
+      // V2.5-Evo - 2026-09-19 - PIVOT BOOST: while cap 4 is pinning the throttle to the align cap,
+      // ask the mixer for fm_align_influence (100 = one-motor pivot) instead of steering_influence.
+      // Published once at the end of this tick by the runFmLoop() wrapper; starts at 0 every tick,
+      // so leaving align by any route clears it.
+      fm_align_influence_req = fmHeadingAligning() ? (uint8_t)usrConf.fm_align_influence : 0;
+      fm_pause_reason = FM_STOP_NONE;
+    }
+    fm_pause_since_ms = 0;   // V2.5-Evo - 2026-10-11 - following (or creeping): no pause stands
+    if (creep_verdict == FMCR_GRANTED && fm_creep.start_ms == (uint32_t)((now != 0) ? now : 1)) {
+      // The creep's first tick - printed after the cap write (F7).
+      Serial.printf("FM [RX] HEADING CREEP: no heading (stopped, GPS course only) - straight ahead at <= %u/255 for <= %lu s to earn a course; rider %.1f m\n",
+                    (unsigned)kBootstrapMaxCap, (unsigned long)(kBootstrapMaxMs / 1000UL), (double)dist_m);
+    }
   }
   else {
     // ---- Not eligible to steer — classify the drop (A3 DEADMAN / HOLD / FAULT) ----
@@ -7808,98 +8076,58 @@ static void runFmLoopBody(unsigned long now)
 
     bool was_engaged = (fm_state == FM_ACTIVE || fm_state == FM_HOLD);
 
-    // V2.5-Evo - 2026-08-17 - heading_disagree_fault IS a member of this condition again, restored
-    // in the same breath as the can_be_active term it was deleted with. IT HAS TO BE, and this is
-    // not symmetry for its own sake: restoring only can_be_active would drop an engaged FM into the
-    // HOLD branch below instead of this one, because fault_ok can still be true (a live GPS course
-    // satisfies condition 6). HOLD means cap 0, stay ARMED, auto-resume when the conditions come
-    // back — and a latched fault never comes back on its own, so FM would sit at cap 0 with the
-    // rider holding the trigger and the motor dead, with no stop notification and no ramp back to
-    // manual. That is the same silent half-armed state this whole change set exists to remove,
-    // wearing FM's colours.
-    // Entering HERE instead gives it the proven fault semantics: FM_STOPPING, cap 0 now, the
-    // kFmStopRampMs ramp back to full manual throttle, FM_IDLE, re-arm required, and the sticky
-    // fm_flags bit 3 that drives St + the stop buzz on the TX.
-    // V2.5-Evo - 2026-08-17 - PRECISION ON HOW LONG THAT DEAD MOTOR LASTS, because this note used to
-    // say the buggy would sit at cap 0 "for the rest of the session" and that overstates it. The
-    // R2(a) throttle-release clear a few screens up rescues an FM_HOLD: thr_received < 25 held for
-    // kFmThrReleaseClearMs (10 s) CONTINUOUSLY puts FM back in FM_ARMED at cap 255, so a rider who
-    // simply lets go and waits does get their manual buggy back. THE REAL HAZARD IS NARROWER AND
-    // STILL WORTH FIXING: that clear needs ten CONTINUOUS seconds below 25 counts, and every squeeze
-    // resets fm_thr_low_since_ms to zero. A rider FEATHERING the trigger — squeeze, nothing happens,
-    // release, squeeze again — never accumulates the ten seconds, so they get a DEAD MOTOR ON EVERY
-    // SQUEEZE for as long as they keep trying, with no stop notification, no ramp back to manual and
-    // nothing on the TX saying why. Which is exactly what a rider does when the buggy stops
-    // responding. The code is unchanged: routing this fault through the branch below is still right.
-    if ((!fault_ok || diverge_fault || heading_disagree_fault) && was_engaged) {
-      // ---- FAULT (conditions 2-7, plus A3 divergence): something actually broke while FM had control ----
-      // End autonomy for the run: enter FM_STOPPING, which ramps the throttle cap 0 -> 255 over the
-      // next kFmStopRampMs (handled at the top of runFmLoop), then drops to FM_IDLE — re-arm
-      // required. Fire the stop notification (sticky fm_flags bit 3, drives St + stop buzz on the
-      // TX) only if the trigger was held at this instant — a fault after release is not surprising,
-      // and the bar going dark carries it. (V2.5-Evo - 2026-08-17: "only" now has exactly one
-      // documented exemption, the heading-disagree latch; see the note directly above the write.)
-      // R4: heading loss is one of these faults now.
-      // V2.5-Evo - 2026-07-25 - A3: sustained divergence enters through THIS branch and no other, so
-      // it inherits the proven fault semantics unchanged — hard stop to cap 0 now, the same ramp back
-      // to manual, the same haptic/St notification, and the same mandatory re-arm. Steering away is
-      // exactly as much of a "something broke" event as losing the compass, and a silent auto-resume
-      // after it would be the unrequested autonomy this architecture forbids.
-      // V2.5-Evo - 2026-07-25 - STAGE 2 routed a sustained COG-vs-compass disagreement through this
-      // same branch, and V2.5-Evo - 2026-08-17 it does so again after one pass in which it did not.
-      // A disagreement proven while FM has control is a "something broke" event of exactly the same
-      // kind as losing the compass or steering away: two heading sources that cannot both be right,
-      // and no way to tell which, discovered mid-engagement. It ends autonomy for the run and hands
-      // the buggy back to the rider, which is what every other member of this branch does.
-      // V2.5-Evo - 2026-08-17 - AND THE HEADING-DISAGREE FAULT IS EXEMPT FROM THE SURPRISE GATE.
-      // WHAT WAS WRONG: fm_fault_alarm_ms was set only if (thr_held), but this particular fault can
-      // ONLY be proven with the trigger RELEASED — the compass snapshot the comparison needs stops
-      // refreshing above 25 counts, so the latch completes while coasting and never while pulling.
-      // The alarm was therefore gated on a condition that is never true at the moment it fires: the
-      // sticky fm_flags bit 3 never rose, the TX never learned the run had ended on a fault (so it
-      // never cleared its own fm_armed), and Follow-Me re-armed silently on the next 0xF2 keepalive
-      // into an ARMED state that cannot engage — whose only signal in the field is the not-ready
-      // flag. WHY THE EXEMPTION IS NARROW AND CORRECT: the gate exists so a rider who CAUSED a stop
-      // is not alarmed about their own action. Nobody causes this one by holding the trigger; it is
-      // only ever provable when they are off it, so the gate defeats itself here and nowhere else.
-      // Every other fault in this branch keeps the thr_held gating exactly as it was.
-      if (thr_held || heading_disagree_fault) fm_fault_alarm_ms = now;
-      fm_stop_ms      = now;
-      fm_state        = FM_STOPPING;
-      fm_throttle_cap = 0;         // subtract-only hard stop; the ramp begins next tick
-      fm_redeclare_blocked = true; // V2.5-Evo - 2026-10-07 - M-1: a keepalive may not re-arm after this fault (Radio.ino)
-      // V2.5-Evo - 2026-07-25 - F7: ALL fault logging happens BELOW this line, never above it. The
-      // divergence detail used to print at the point of detection, which is upstream of the cap write
-      // — so if the USB CDC TX buffer was full (host not draining) Serial.printf() could block and
-      // defer the hard stop for as long as the host took. Motor to 0 first, explain afterwards.
-      // V2.5-Evo - 2026-09-17 - STOP-REASON latch, same F7 discipline (after the cap write). A
-      // concrete broken input (conditions 2-7) is named ahead of the two derived judgements so the
-      // record points at the thing that actually failed; if all six hold, divergence outranks the
-      // heading-disagree latch because it is the one measured on this run.
-      if (!fault_ok)                  fm_stop_reason = fault_reason;
-      else if (diverge_fault)         fm_stop_reason = FM_STOP_DIVERGENCE;
-      else                            fm_stop_reason = FM_STOP_HEADING_DISAGREE;
-      fm_last_stop_reason = fm_stop_reason;
-      fm_last_stop_ms     = now;
+    // ============================================================
+    // V2.5-Evo - 2026-10-11 - CHANGE 1: THE FAULT BRANCH THAT LIVED HERE IS RETIRED (audit C-1, H-1; owner rulings D-1..D-3).
+    // It sent every condition 2-7 failure, the divergence verdict and the heading-disagree latch to FM_STOPPING, whose
+    // ramp lifted the cap 0 -> 255 in 2 s under the rider's HELD trigger and then dropped Follow-Me to IDLE. On 10 Oct a
+    // stopped COG-only buggy lost its heading (condition 6) in HOLD, that ramp handed the held trigger back, and the buggy
+    // drove at the stopped rider twice (closest about 2.5 m at up to 14.5 mph). The history of that branch is in git.
+    // NOW, classified by fmEngagedEndClass() (Common/FollowMePause.h, host-tested):
+    //   STEER END (divergence, or a heading disagreement that ROSE this tick - the steering itself is wrong, D-3):
+    //     the sticky cap FIRST at the cap in force (stickyCapArm: min(cap, 60), climbs once on the clock to 60, GPS can
+    //     only lower it near the rider, cleared by one release below 25 counts), then ARMED-unlatched + needs-D_engage
+    //     with the steering handed back, the stop buzz (fm_flags bit 3 with bit 0 still set: "stopped following, still
+    //     armed"), and NO re-declaration block - Follow-Me stays declared. Re-engaging needs one release (the sticky cap
+    //     blocks engagement, D-7 of 2026-10-08) and the full separation proof.
+    //   PAUSE (data missing: conditions 2-7): the HOLD branch below - cap 0 under a held trigger, ARMED manual on a
+    //     release (HOLD-ESCAPE-2), the declaration and the latch kept, resume by itself through the engage ramp.
+    //   HOLD (geometry, rider speed, the trigger): the HOLD branch below, exactly as before.
+    // ============================================================
+    const uint8_t end_class = fmEngagedEndClass(was_engaged, failing, true, diverge_fault, hdg_disagree_edge);
+    if (end_class == FMEE_STEER_END) {
+      stickyCapArm(fm_throttle_cap.load());   // FIRST (D-1): before anything lifts Follow-Me's own cap
+      fm_state                  = FM_ARMED;   // still declared: bit 0 stays set (the remote stays armed)
+      fm_throttle_cap           = 255;        // ARMED semantics; the sticky cap above is what limits the throttle now
+      fm_sep_latched            = false;      // separation must be re-proven
+      fm_sep_over_since_ms      = 0;
+      fm_sep_fix_count          = 0;
+      fm_reengage_needs_dengage = true;       // and the next engagement must clear the full D_engage
+      fm_diverge_since_ms       = 0;
+      fm_diverge_start_dist_m   = -1.0f;
+      fm_pause_since_ms         = 0;
+      fm_pause_reason           = FM_STOP_NONE;
+      fm_fault_alarm_ms         = (now != 0) ? now : 1;   // the stop buzz + "St" on the remote, whatever the trigger
+      // The steering was judged wrong, so no AUTO-RETURN (which steers the same way) may grow out of this engagement: a
+      // standing candidate is dropped and this engagement's return is spent. The next real engagement earns a new one.
+      // (Before change 1 this end went to IDLE, which reset all of it; Follow-Me now stays declared.)
+      fm_return_pending         = false;
+      fm_return_from_armed      = false;
+      fm_return_spent           = true;
+      fmClearReturnProof();
+      fm_last_stop_reason       = diverge_fault ? FM_STOP_DIVERGENCE : FM_STOP_HEADING_DISAGREE;   // for ?diag
+      fm_last_stop_ms           = now;
+      // F7: every print below the writes.
       if (diverge_fault) {
-        Serial.printf("FM [RX] DIVERGENCE FAULT: dist=%.1f m (was %.1f m at dwell start, closed <%.1f m) > limit %.1f m sustained %lu ms — not closing\n",
+        Serial.printf("FM [RX] DIVERGENCE: dist=%.1f m (was %.1f m at dwell start, closed <%.1f m) > limit %.1f m sustained %lu ms - not closing\n",
                       (double)dist_m, (double)diverge_start_m, (double)kFmDivergeCloseEpsM,
                       (double)diverge_limit_m, (unsigned long)kFmDivergeMs);
-      }
-      // V2.5-Evo - 2026-08-17 - CAUSE AGAIN, not just context: with the fault back in the condition
-      // above, this line names the reason the run ended whenever the latch is what ended it. It
-      // still reads correctly in the other case — an FM stopped by condition 6 while the latch
-      // happens to stand — because the missing fallback is then the honest explanation for why the
-      // GPS course had no backup. Same F7 discipline as the line above: it prints AFTER
-      // fm_throttle_cap = 0, so a blocked UART can never defer the hard stop.
-      if (heading_disagree_fault) {
-        Serial.printf("FM [RX] HEADING DISAGREE FAULT: the compass and the GPS course disagreed by more than %.0f deg for %lu ms, so one of them is wrong and the board cannot tell which. Follow-Me will not steer on a guess — it stays manual until they are measured agreeing again, or you re-run ?compasscal / ?magalign.\n",
+      } else {
+        Serial.printf("FM [RX] HEADING DISAGREE: the compass and the GPS course disagreed by more than %.0f deg for %lu ms - the compass is withdrawn, Follow-Me continues on the GPS course after you re-prove separation\n",
                       (double)kHeadingDisagreeDeg, (unsigned long)kHeadingDisagreeMs);
       }
-      Serial.printf("FM [RX] FAULT -> STOPPING (ramp %lu ms) -> IDLE, re-arm required (thr_held=%d)\n",
-                    (unsigned long)kFmStopRampMs, (int)thr_held);
-      Serial.printf("FM [RX] stop reason: %s [%u]\n", fmStopReasonName(fm_stop_reason), (unsigned)fm_stop_reason);
-    } else if (was_engaged) {
+      Serial.printf("FM [RX] stopped following -> ARMED-unlatched (still armed; throttle held at the sticky ceiling %u/255 until one release; needs D_engage) - %s [%u]\n",
+                    (unsigned)kStickyFallbackCap, fmStopReasonName(fm_last_stop_reason), (unsigned)fm_last_stop_reason);
+    } else if (end_class == FMEE_PAUSE || end_class == FMEE_HOLD) {
       // ---- HOLD (cond 8/9) or DEADMAN (cond 1): a geometry / throttle pause, NOT a fault ----
       // Motor stops (cap 0) but FM stays ARMED (declaration held) and auto-resumes to FM_ACTIVE
       // once the conditions restore AND the latch is set. No alarm. This is what lets a rider
@@ -7951,12 +8179,42 @@ static void runFmLoopBody(unsigned long now)
         fm_state        = FM_HOLD;
         fm_throttle_cap = 0;         // subtract-only hard stop: motor to 0
       }
+      // V2.5-Evo - 2026-10-11 - change 1: THE PAUSE (data loss while engaged - D-2 exception 2). Same writes as the HOLD
+      // above, and NEVER FM_STOPPING: no ramp toward the held trigger, ever (C-1). The declaration and the separation
+      // latch stand; Follow-Me resumes by itself through the engage ramp once the data is back (a fresh control packet,
+      // invariant 4). Invariant 5: a pause of 2 s or more counts as a release for the rope rule - needs-D_engage, so the
+      // first resume must clear D_engage with a live 3-fix streak, and a rider who swam back to the rope during the gap
+      // can never be followed. Bookkeeping only, after the cap writes (F7).
+      if (end_class == FMEE_PAUSE) {
+        const bool pause_new = (fm_pause_since_ms == 0);
+        if (pause_new) fm_pause_since_ms = (now != 0) ? now : 1;
+        else if (stampAgeMs((uint32_t)now, (uint32_t)fm_pause_since_ms) >= kFmPauseDengageMs) fm_reengage_needs_dengage = true;
+        fm_pause_reason = fmCondBitToStopReason(fmPauseReasonBit(failing));
+        if (pause_new) {
+          Serial.printf("FM [RX] PAUSE: %s missing - %s; Follow-Me stays armed and resumes by itself when it is back (30 s of link / GPS loss switches it off)\n",
+                        fmStopReasonName(fm_pause_reason),
+                        (fm_state == FM_HOLD) ? "buggy held at 0 under the trigger, release for manual" : "trigger released, manual");
+        }
+      } else {
+        fm_pause_since_ms = 0;
+        fm_pause_reason   = FM_STOP_NONE;
+      }
+      if (creep_verdict == FMCR_ABORT || creep_verdict == FMCR_TIMEOUT) {
+        Serial.printf("FM [RX] HEADING CREEP %s - paused at 0; one creep per squeeze (release and squeeze again to retry)\n",
+                      (creep_verdict == FMCR_TIMEOUT) ? "TIMED OUT: no GPS course after 3 s" : "ABORTED: rider too close or a condition fell");
+      }
     } else {
       // ---- FM_ARMED: never engaged this arm cycle — fully manual buggy ----
       // The throttle chain stays INACTIVE (cap 255) so the rider keeps full manual control while
       // FM waits for the follow geometry. ARMED has no steer-cancel path (see the ACTIVE branch).
       fm_state        = FM_ARMED;
       fm_throttle_cap = 255;
+      // V2.5-Evo - 2026-10-11 - change 1: no pause runs in ARMED (the rider is manual); the deep log still names a
+      // missing position / link input so an armed buggy that cannot engage says why. A missing heading alone is normal
+      // for a stopped COG-only buggy and is not named here.
+      fm_pause_since_ms = 0;
+      fm_pause_reason   = fault_ok ? (uint8_t)FM_STOP_NONE
+                                   : fmCondBitToStopReason(fmPauseReasonBit((uint8_t)(failing & (uint8_t)~kFmCondHeading)));
 
       // V2.5-Evo - 2026-08-17 - THE "ARMED, NOT ENGAGING" EXPLANATION IS BACK, because the state it
       // describes is back: can_be_active carries heading_disagree_fault again, so a proven
@@ -7979,7 +8237,8 @@ static void runFmLoopBody(unsigned long now)
         if (fm_heading_block_msg_ms == 0 ||
             (now - fm_heading_block_msg_ms) >= kFmHeadingBlockMsgMs) {
           fm_heading_block_msg_ms = now;
-          Serial.printf("FM [RX] ARMED, NOT ENGAGING: the compass and the GPS course were measured disagreeing by more than %.0f deg for %lu ms, so Follow-Me will not steer on either of them. RTM still works. Clears on %lu ms of measured agreement (coast with the trigger released), or ?compasscal / ?magalign. A reboot does NOT clear it (the verdict is stored in SPIFFS since 2026-08-18).\n",
+          // V2.5-Evo - 2026-10-11 - D-3 "COG, period": the latch no longer blocks Follow-Me, so the notice says what it does now.
+          Serial.printf("FM [RX] ARMED, COMPASS WITHDRAWN: the compass and the GPS course were measured disagreeing by more than %.0f deg for %lu ms, so the compass is not used - Follow-Me steers on the GPS course only. Clears on %lu ms of measured agreement (coast with the trigger released), or ?compasscal / ?magalign. A reboot does NOT clear it (the verdict is stored in SPIFFS since 2026-08-18).\n",
                         (double)kHeadingDisagreeDeg, (unsigned long)kHeadingDisagreeMs,
                         (unsigned long)kHeadingDisagreeMs);
         }

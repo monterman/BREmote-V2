@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-11 - FOLLOW-ME NEVER SWITCHES ITSELF OFF (audit 2026-10-11 change 1): includes ../Common/FollowMePause.h (the pause classification, the 30 s long-loss clock and the heading creep, host-tested). Include only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-09 - STICKY CAP SIMPLIFIED (owner): sticky_rise_open atomic + sticky_arm_mux; stickyCapArm() clamps the arm to kStickyFallbackCap (stickyArmValue()), opens the one clock-only rise on a fresh arm only, and runs in a critical section (L-1); kStickyFallbackCap re-commented as the sticky ceiling. Runtime only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): includes ../Common/VescImu.h; imu2_struct + extern imu2 (VESC 2's IMU, own age stamp + ever_ok), the kImu2* constants (30 ms reply cap, 1500 ms stale, backoff to 1 poll / 10 s after 3 misses), the g_diag_imu2_* counters + g_imu2_miss_streak; VescLogDataL6 = the full 126 B L5 record + two 22 B ImuLogBlocks (VESC 2, then a reserved RX IMU that always reads N/A) = 170 B (static_asserts 170 / 126 / 148); LOG_REC_MAX; logResolveLevel() 6 -> 6; LOG_CSV_HEADER_L6 (98 columns) + LOG_CSV_ROW_EXT_L6_IMU + logFormatImuBlock(); LOG_CSV_ROW_BUF 640 -> 832. Tail append to the largest record, so LOG_FILE_FORMAT_VER stays 3. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-08 - STICKY RETURN CAP (owner design): sticky_cap + sticky_armed atomics, kStickyReleaseThr (25), kStickyFallbackCap (60), kStickyRxFixMaxMs (2000), the kStickyOnRiderCancel owner switch, stickyCapArm(), rx_state_flags bit 5. Runtime only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -989,6 +990,10 @@ static const float kFmFrontAheadExtraMaxM     = 10.0f;  // metres; largest legal
 // ../Common/AutoReturnRules.h so Tools/tests/auto_return_rules_test.cpp runs the exact code the RX
 // calls. The RX's constants are passed in; the header defines only wire values and sentinels.
 #include "../Common/AutoReturnRules.h"
+// V2.5-Evo - 2026-10-11 - FOLLOW-ME PAUSE / LONG-LOSS CLOCK / HEADING CREEP (audit 2026-10-11 change 1, owner rulings
+// D-1..D-4): the pure rules are in ../Common/FollowMePause.h so Tools/tests/follow_me_pause_test.cpp runs the exact code
+// runFmLoopBody() calls. The RX's constants are passed in (RTMState.ino kFmLongLoss* / kFmCreep*).
+#include "../Common/FollowMePause.h"
 
 // ============================================================
 // V2.5-Evo - 2026-07-25 - STAGE 2: HEADING-SOURCE TRUST CONSTANTS (RTM + FM)
@@ -2016,7 +2021,7 @@ struct __attribute__((packed)) VescLogDataL4 {
     uint8_t  fm_sep_fix_count;     // rider GPS fixes counted toward the separation dwell (DWELL-1); OUR counter, not a dwell time
     uint8_t  fm_mode;              // fm_mode_runtime: 1-5 declared (4/5 = front stations), 0 off, 0xFF never declared this session  // V2.5-Evo - 2026-10-06 - was "1-3 declared"
     uint8_t  fm_state;             // FmState: 0 IDLE, 1 ARMED, 2 ACTIVE, 3 HOLD, 4 STOPPING, 5 RETURN (2026-09-19)
-    uint8_t  fm_block_reason;      // FmStopReason (P0-e): the live stop latch, non-zero for the whole FM_STOPPING ramp; 0 = no fault stop in progress
+    uint8_t  fm_block_reason;      // FmStopReason (P0-e): the live stop latch, non-zero for the whole FM_STOPPING ramp; 0 = no fault stop in progress. V2.5-Evo - 2026-10-11 - change 1: with no stop in progress it carries the input a Follow-Me PAUSE waits on (1-6; fm_state 3 = paused, 1 = armed and missing data) or 5 with fm_state 2 = a HEADING CREEP - fm_gate_flags has no free bit
     uint8_t  fm_throttle_cap;      // FM's subtract-only throttle cap this tick (0-255; 255 = no cap)
     int16_t  fm_station_deg_x10;   // P2 live station angle x 10 deg (0 = behind the rider, + = his right); written since the 2026-10-02 station work  // V2.5-Evo - 2026-10-06 - comment corrected (was "always 0")
     uint8_t  fm_return_reason;     // V2.5-Evo - 2026-09-19 - DEEP LOG (A): was fm_pad (always 0). FmReturnReason (RTMState.ino): why the last

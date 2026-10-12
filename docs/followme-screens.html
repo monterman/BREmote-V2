@@ -167,7 +167,11 @@ footer{border-top:1px solid var(--line);padding-top:18px;display:flex;flex-direc
   const pos=[0,1,2,3,4,5,6,7,6,5,4,3,2,1];
   function scanner(g,t){ const p=pos[Math.floor(t/200)%pos.length]; for(let c=p;c<p+3&&c<10;c++) g[5][c]=true; }
   function scannerNotReady(g,t){ if((t%1500)<1000) for(let c=3;c<6;c++) g[5][c]=true; }
-  function fmBar(g,d){ const n=Math.max(2,Math.min(10,2*Math.round((d-6)/9*5))); const s=Math.floor((10-n)/2); for(let c=s;c<s+n;c++) g[5][c]=true; }
+  // fmCentreBarMask() in the remote firmware: out from C4+C5, grows with distance, full at fm_warn_distance_m (factory 150 m).
+  const FM_WARN_M=150;
+  function fmBar(g,d){ const h=Math.min(5,1+Math.floor(Math.min(1,d/FM_WARN_M)*4+0.5)); for(let i=0;i<h;i++){ g[5][4-i]=true; g[5][5+i]=true; } }
+  // displayDistanceInUnits(): "X.X" with the decimal dot at C3 R3 under 10 m, whole metres from 10 m.
+  function dist(g,d){ if(d<10){ const t=Math.min(99,Math.floor(d*10+0.5)); digits(g,""+Math.floor(t/10)+(t%10)); g[3][3]=true; } else digits(g,String(Math.min(99,Math.floor(d+0.5)))); }
   function retBar(g,d,st){ const n=Math.max(1,Math.ceil(d/st*10)); for(let c=0;c<n;c++) g[5][c]=true; }
   const W1=(g,t)=>{ g[Math.floor(t/200)%2?4:3][7]=true; };
   const F1=(g)=>{ g[3][7]=true; g[4][7]=true; };
@@ -180,7 +184,7 @@ footer{border-top:1px solid var(--line);padding-top:18px;display:flex;flex-direc
     off:{draw:(g)=>{ chrome(g); digits(g,"45"); }},
     waiting:{draw:(g,t)=>{ chrome(g); digits(g,"15"); scanner(g,t); W1(g,t); }},
     notready:{draw:(g,t)=>{ chrome(g); digits(g,"--"); scannerNotReady(g,t); W1(g,t); }},
-    following:{draw:(g,t)=>{ chrome(g); digits(g,String(Math.round(follow(t)))); fmBar(g,follow(t)); F1(g); }},
+    following:{draw:(g,t)=>{ chrome(g); dist(g,follow(t)); fmBar(g,follow(t)); F1(g); }},
     parked:{draw:(g,t)=>{ chrome(g); digits(g,"38"); scanner(g,t); W1(g,t); }},
     returning:{draw:(g,t)=>{ chrome(g); digits(g,String(Math.max(3,Math.round(ret(t))))); retBar(g,ret(t),RS); R1(g,t); }},
     rn:{draw:(g,t)=>{ chrome(g); if((t%1500)<1000) digits(g,"rn"); else arrow(g,t); }},
@@ -192,7 +196,7 @@ footer{border-top:1px solid var(--line);padding-top:18px;display:flex;flex-direc
     ["off","FM off — normal riding","The numbers show the readout you chose (here throttle 45 %). No Follow-Me dots, no bar.",[["What you see","your readout, Follow-Me dots dark"],["What to do","ride as usual; tap the magnet (even while holding the trigger) to arm Follow-Me"]]],
     ["waiting","Waiting — Follow-Me armed","Follow-Me is on, but the buggy is not following yet. The numbers show metres to the buggy. One dot hops between the two Follow-Me dots and the scanner sweeps along the bar.",[["One dot hopping","armed, ready"],["Starts following","once you ride away from the buggy"]]],
     ["notready","Waiting, not ready","Armed, but something the buggy needs is missing for a moment (for example your GPS fix or the link). Same hopping dot; the bar blinks in place instead of sweeping, and the distance may show “--”.",[["Bar blinking in place","not ready yet — wait for it to sweep"],["If you squeeze now","you get “St”: it will not work right now"]]],
-    ["following","Following","The buggy is towing behind you. Two steady dots; the bar grows from the centre with distance and the numbers show metres.",[["Two steady dots","following"],["Steering","nudges help; they never switch Follow-Me off"]]],
+    ["following","Following","The buggy is towing behind you. Two steady dots; the bar grows from the centre with distance and the numbers show metres. At the factory full scale (150 m) the bar is just the two centre dots up to 18 m.",[["Two steady dots","following"],["Steering","nudges help; they never switch Follow-Me off"]]],
     ["parked","Auto-return waiting (parked)","You stopped to surf or rest, far from the buggy. It parks and waits as long as you like — and looks exactly like “waiting”, so there is nothing new to learn.",[["Looks like","waiting (one dot hopping)"],["To bring it back","squeeze the trigger"]]],
     ["returning","Coming to you","Auto-return or manual return-to-me: they look the same. The top dot fills the column downward toward you, the numbers count down and the bar shrinks to the left as it closes.",[["Filling down","the buggy is coming to you"],["Let go, pause, squeeze softer","it keeps coming; pauses never cancel it"],["On arrival","you get steering back; the throttle stays limited until you let go once"]]],
     ["rn","Return-to-me: waiting for your squeeze","After the 2.5 s magnet hold (trigger released), “rn” alternates with an arrow until you squeeze to start the return.",[["Squeeze","start the return"],["Hold LEFT 1 s","cancel, full manual"]]],

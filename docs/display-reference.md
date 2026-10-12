@@ -209,8 +209,10 @@ Blink pattern: 1000 ms on / 500 ms off.
 
 ![Following](img/fm/fm-following.gif)
 
-*Nightly screen (`fm-stations` branch): the numbers are metres to the buggy, and the bar shrinks toward 2 dots as the buggy closes in
-(here 15 m to 8 m). The text above describes the older master behaviour. See
+*Nightly screen (`fm-stations` branch): the numbers are metres to the buggy (here 15 m closing to 8 m, `X.X` under 10 m). The bar
+grows from the centre with distance and is full at `fm_warn_distance_m`. At the factory 150 m it is the 2 centre dots up to 18 m,
+4 dots from 19 m, 6 from 57 m, 8 from 94 m and all 10 from 132 m, so at following distances it stays at 2 dots.
+The text above describes the older master behaviour. See
 [Follow-Me screens — nightly](#follow-me-screens--nightly-fm-stations-branch).*
 
 **`rtm_arm_dist_m` variable:**

@@ -877,9 +877,9 @@ Full bar (10 pixels) = buggy at arm distance. Shrinks from the right as the bugg
 |---|---|---|
 | ![Waiting](docs/img/fm/fm-waiting.gif) | ![Following](docs/img/fm/fm-following.gif) | ![Coming to you](docs/img/fm/fm-returning.gif) |
 
-*Nightly screens (`fm-stations` branch). Following: the numbers are metres to the buggy and the bar shrinks as it closes in.*
+*Nightly screens (`fm-stations` branch). Following: the numbers are metres to the buggy (here 15 m closing to 8 m).*
 
-2 pixels at C4–C5 = ideal following distance. Expands symmetrically outward as the buggy lags further behind. 1 pixel = buggy too close.
+2 pixels at C4–C5 = the buggy is close (up to 18 m at the factory full scale, `fm_warn_distance_m` 150 m). The bar expands symmetrically outward as the buggy falls further behind and is full at `fm_warn_distance_m`. It never shows a single pixel.
 
 > See [docs/display-reference.md](docs/display-reference.md) for full implementation details and current FM bar status.
 

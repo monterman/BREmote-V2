@@ -133,11 +133,14 @@ Not every interruption is the same. Follow-Me tells them apart:
 |---|---|---|---|
 | **You release the trigger** | deadman | motor stops instantly | no |
 | **You fall / slow down / get too close** | a **HOLD** (normal) | pauses (buggy stops), **stays armed**, resumes on its own at your next separation | **no** |
-| **GPS, compass, or radio drops out** | a **FAULT** (something broke) | **stops** → shows `St`, throttle returns, must **re-arm** | **yes** |
+| **GPS, radio or heading missing for a moment** (your GPS, the buggy's GPS, the link, a GPS check, the heading) | a **PAUSE** | buggy stops while you hold the trigger, **stays armed**; the bar shows only its two end dots. Let go once = full manual. It follows again when the data is back; after a pause of 2 s or more you must get to the engage distance again first | **no** |
+| **The link, your GPS or the buggy's GPS missing for 30 s** | a **STOP** (something broke) | shows `St` + one long buzz, Follow-Me switches off. If you're holding the trigger, the throttle stays limited until you let go once | **yes** |
+| **Steering gone wrong** (the buggy is not closing on you, or the compass and the GPS course start to disagree) | a **STOP of the following** | shows `St` + one long buzz but **stays armed**. The throttle stays limited until you let go once; then get to the engage distance again and it follows again | **no** |
 
-The idea: **falling is normal, so it stays ready.** A real failure is not, so it steps fully
-out and waits for you to deliberately re-arm — autonomy never silently restarts after a
-glitch.
+The idea: **falling is normal, so it stays ready.** A short dropout is normal too, so it pauses
+and waits for the data. A real failure is not: after 30 s it steps fully out and waits for you to
+deliberately re-arm. Autonomy never restarts on its own at full power — after a pause or a
+steering stop it comes back only through its normal slow start and engage rules.
 
 The stop alarm (`St` + one long buzz) fires **only when it would surprise you** — i.e. a
 fault while you're holding the trigger. A stop after you've already let go just goes quiet.
@@ -201,7 +204,7 @@ dots = following.*
 
 - **Toggle:** repeat the arm gesture.
 - **Magnet:** hold ~2 s again (one long buzz = off).
-- **Automatic:** arming RTM disarms FM; a fault ends it; powering the remote off drops the
+- **Automatic:** arming RTM disarms FM; 30 s of lost data ends it (§6); powering the remote off drops the
   arm (it's forgotten at power-off). It does not expire on its own — `fm_arm_timeout_s`
   defaults to **0 = never**.
 

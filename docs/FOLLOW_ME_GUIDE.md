@@ -127,9 +127,13 @@ Keep the trigger held; no release step is needed.
 
 | Screen | What you see | Meaning |
 |---|---|---|
-| ![Waiting](img/fm/fm-waiting.gif) | **One dot hopping** between two places, bar scanning | **Waiting.** Armed and ready for your whip. A parked buggy waiting for you to summon it (auto-return) looks **exactly the same**. If the bar **blinks in place** instead of scanning, it's not ready yet (GPS or link still coming). |
+| ![Waiting](img/fm/fm-waiting.gif) | **One dot hopping** between two places, the distance bar **breathing** (lit 0.4 s, dark 1.2 s) | **Waiting.** Armed and ready for your whip. It is the same bar as following, so its width shows the distance. A parked buggy waiting for you to summon it (auto-return) looks **exactly the same**. |
+| ![Not ready](img/fm/fm-notready.gif) | **One dot hopping**, only the **two end dots** of the bar blinking | **Not ready yet, or paused.** Armed, but GPS or the link is still coming, or Follow-Me paused for missing data. It goes back to the breathing bar when the data is back. |
 | ![Following](img/fm/fm-following.gif) | **Two steady dots**, bar grows and shrinks with distance | **Following you.** |
 | ![Returning](img/fm/fm-returning.gif) | **The dot column fills down from the top**, metres count down, bar shrinks from the left | **Coming to you** (auto-return or manual return-to-me). |
+
+*The breathing bar and the end dots come with the **fm-bundle** firmware (remote TX SW27, from commit 3ea44a3). The
+current nightly binaries still show a 3-dot scanner instead: sweeping = ready, blinking in place = not ready.*
 
 **The numbers** are the **metres between the remote and the buggy** (`fm_display_mode` 2, the new
 default): `X.X` under 10 m, whole metres up to 99 m, `FAR` beyond that, and `--` when there's no
@@ -225,7 +229,8 @@ Meant for **downwind runs**, where you want the buggy ahead of you instead of be
 
 **"Waiting" means it will work.** If the buggy itself can't do it (its own GPS, its heading, a
 fault) the return ends straight away with **St**. If only the remote's side is briefly missing
-(your GPS, a short link drop), the bar blinks in place (not ready); squeeze then and you get St.
+(your GPS, a short link drop), the screen shows not ready (only the bar's two end dots blinking; on the
+current nightly binaries the bar blinks in place); squeeze then and you get St.
 
 If you catch a wave while it's coming back, the return ends. Let go of the trigger fully, squeeze
 again, and once the buggy sees you moving away it follows.

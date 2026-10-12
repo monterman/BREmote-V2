@@ -871,13 +871,16 @@ Row R5 (just below the digit area, C0–C9) is a proximity indicator during RTM 
 
 Full bar (10 pixels) = buggy at arm distance. Shrinks from the right as the buggy closes in. Gone at stop distance just before RTM disengages.
 
-**FM bar** — expands outward from center sweet spot:
+**FM bar** — expands outward from the centre:
 
-| Waiting | Following | Coming to you |
-|---|---|---|
-| ![Waiting](docs/img/fm/fm-waiting.gif) | ![Following](docs/img/fm/fm-following.gif) | ![Coming to you](docs/img/fm/fm-returning.gif) |
+| Waiting | Not ready | Following | Coming to you |
+|---|---|---|---|
+| ![Waiting](docs/img/fm/fm-waiting.gif) | ![Not ready](docs/img/fm/fm-notready.gif) | ![Following](docs/img/fm/fm-following.gif) | ![Coming to you](docs/img/fm/fm-returning.gif) |
 
-*Nightly screens (`fm-stations` branch). Following: the numbers are metres to the buggy (here 15 m closing to 8 m).*
+*Nightly screens (`fm-stations` branch). Following: the numbers are metres to the buggy (here 15 m closing to 8 m).
+Waiting: the same bar breathes (lit 0.4 s, dark 1.2 s). Not ready or paused: only the two end dots blink. These two bar
+looks come with the fm-bundle firmware (TX SW27, from commit 3ea44a3); the current nightly binaries still show a
+sweeping scanner.*
 
 2 pixels at C4–C5 = the buggy is close (up to 18 m at the factory full scale, `fm_warn_distance_m` 150 m). The bar expands symmetrically outward as the buggy falls further behind and is full at `fm_warn_distance_m`. It never shows a single pixel.
 

@@ -86,7 +86,7 @@ footer{border-top:1px solid var(--line);padding-top:18px;display:flex;flex-direc
 </head>
 <body>
 <div class="wrap">
-<div role="note" style="margin:0 0 14px;padding:10px 14px;border:2px solid #d97706;border-radius:8px;background:#fff7ed;color:#7c2d12;font:15px/1.45 system-ui,sans-serif"><b>nightly firmware.</b> These docs, the setup wizard and the new screens match the <b>nightly</b> firmware on the <a href="https://github.com/monterman/BREmote-V2/tree/fm-stations" target="_blank" rel="noopener" style="color:#9a3412">fm-stations branch</a>, not the firmware on master. Nightly = bleeding edge, under water testing, use at your own risk. Binaries are in the <code>latest-FM-stations</code> folders.</div>
+<div role="note" style="margin:0 0 14px;padding:10px 14px;border:2px solid #d97706;border-radius:8px;background:#fff7ed;color:#7c2d12;font:15px/1.45 system-ui,sans-serif"><b>nightly firmware.</b> These docs, the setup wizard and the new screens match the <b>nightly</b> firmware on the <a href="https://github.com/monterman/BREmote-V2/tree/fm-stations" target="_blank" rel="noopener" style="color:#9a3412">fm-stations branch</a>, not the firmware on master. Nightly = bleeding edge, under water testing, use at your own risk. Binaries are in the <code>latest-FM-stations</code> folders.<br><b>Waiting bar:</b> the breathing bar and the “not ready” end dots shown here come with the <b>fm-bundle</b> firmware (remote TX SW27, from commit 3ea44a3), not the current nightly binaries. Those still show a 3-dot scanner that sweeps when ready and blinks in place when not ready.</div>
   <header class="top">
     <div style="display:flex;flex-direction:column;gap:12px;min-width:0">
       <span class="eyebrow">BREmote V2.5-Evo · remote screen guide · next release</span>
@@ -164,9 +164,11 @@ footer{border-top:1px solid var(--line);padding-top:18px;display:flex;flex-direc
   const blank=()=>Array.from({length:7},()=>Array(10).fill(false));
   function digits(g,txt){ const s=(txt+"").padStart(2," ").slice(-2); [0,4].forEach((c0,i)=>{ const gl=F[s[i]]||F[" "]; for(let r=0;r<5;r++)for(let c=0;c<3;c++) if(gl[r][c]==="1") g[r][c0+c]=true; }); }
   function chrome(g){ g[0][7]=true; for(let r=3;r<5;r++) g[r][8]=true; for(let r=1;r<5;r++) g[r][9]=true; for(let c=0;c<7;c++) g[6][c]=true; }
-  const pos=[0,1,2,3,4,5,6,7,6,5,4,3,2,1];
-  function scanner(g,t){ const p=pos[Math.floor(t/200)%pos.length]; for(let c=p;c<p+3&&c<10;c++) g[5][c]=true; }
-  function scannerNotReady(g,t){ if((t%1500)<1000) for(let c=3;c<6;c++) g[5][c]=true; }
+  // updateR5ProximityBar() in the remote firmware (fm-bundle, TX SW27 3ea44a3) - the sweeping scanner is retired:
+  //   waiting = the following bar, breathing: lit 400 ms, dark 1200 ms, its width taken at the start of each breath;
+  //   not ready / paused = only the end dots C0 + C9, blinking 1000 ms on, 500 ms off.
+  function breathe(g,t,dAt){ const t0=t-(t%1600); if((t-t0)<400) fmBar(g,dAt(t0)); }
+  function endsNotReady(g,t){ if((t%1500)<1000){ g[5][0]=true; g[5][9]=true; } }
   // fmCentreBarMask() in the remote firmware: out from C4+C5, grows with distance, full at fm_warn_distance_m (factory 150 m).
   const FM_WARN_M=150;
   function fmBar(g,d){ const h=Math.min(5,1+Math.floor(Math.min(1,d/FM_WARN_M)*4+0.5)); for(let i=0;i<h;i++){ g[5][4-i]=true; g[5][5+i]=true; } }
@@ -182,10 +184,10 @@ footer{border-top:1px solid var(--line);padding-top:18px;display:flex;flex-direc
 
   const STATES={
     off:{draw:(g)=>{ chrome(g); digits(g,"45"); }},
-    waiting:{draw:(g,t)=>{ chrome(g); digits(g,"15"); scanner(g,t); W1(g,t); }},
-    notready:{draw:(g,t)=>{ chrome(g); digits(g,"--"); scannerNotReady(g,t); W1(g,t); }},
+    waiting:{draw:(g,t)=>{ chrome(g); digits(g,"15"); breathe(g,t,()=>15); W1(g,t); }},
+    notready:{draw:(g,t)=>{ chrome(g); digits(g,"--"); endsNotReady(g,t); W1(g,t); }},
     following:{draw:(g,t)=>{ chrome(g); dist(g,follow(t)); fmBar(g,follow(t)); F1(g); }},
-    parked:{draw:(g,t)=>{ chrome(g); digits(g,"38"); scanner(g,t); W1(g,t); }},
+    parked:{draw:(g,t)=>{ chrome(g); digits(g,"38"); breathe(g,t,()=>38); W1(g,t); }},
     returning:{draw:(g,t)=>{ chrome(g); digits(g,String(Math.max(3,Math.round(ret(t))))); retBar(g,ret(t),RS); R1(g,t); }},
     rn:{draw:(g,t)=>{ chrome(g); if((t%1500)<1000) digits(g,"rn"); else arrow(g,t); }},
     st:{draw:(g)=>{ chrome(g); digits(g,"St"); }},
@@ -194,8 +196,8 @@ footer{border-top:1px solid var(--line);padding-top:18px;display:flex;flex-direc
   };
   const ROWS=[
     ["off","FM off — normal riding","The numbers show the readout you chose (here throttle 45 %). No Follow-Me dots, no bar.",[["What you see","your readout, Follow-Me dots dark"],["What to do","ride as usual; tap the magnet (even while holding the trigger) to arm Follow-Me"]]],
-    ["waiting","Waiting — Follow-Me armed","Follow-Me is on, but the buggy is not following yet. The numbers show metres to the buggy. One dot hops between the two Follow-Me dots and the scanner sweeps along the bar.",[["One dot hopping","armed, ready"],["Starts following","once you ride away from the buggy"]]],
-    ["notready","Waiting, not ready","Armed, but something the buggy needs is missing for a moment (for example your GPS fix or the link). Same hopping dot; the bar blinks in place instead of sweeping, and the distance may show “--”.",[["Bar blinking in place","not ready yet — wait for it to sweep"],["If you squeeze now","you get “St”: it will not work right now"]]],
+    ["waiting","Waiting — Follow-Me armed","Follow-Me is on, but the buggy is not following yet. The numbers show metres to the buggy. One dot hops between the two Follow-Me dots and the distance bar breathes: the same bar as following, lit for 0.4 s, dark for 1.2 s.",[["One dot hopping, bar breathing","armed, ready"],["Starts following","once you ride away from the buggy"]]],
+    ["notready","Waiting, not ready","Armed, but something the buggy needs is missing for a moment (for example your GPS fix or the link), or Follow-Me has paused for missing data. Same hopping dot; only the two end dots of the bar blink (1 s on, 0.5 s off), and the distance may show “--”.",[["Only the end dots blinking","not ready or paused — wait for the breathing bar"],["Parked return: squeeze now","you get “St”: it will not work right now"]]],
     ["following","Following","The buggy is towing behind you. Two steady dots; the bar grows from the centre with distance and the numbers show metres. At the factory full scale (150 m) the bar is just the two centre dots up to 18 m.",[["Two steady dots","following"],["Steering","nudges help; they never switch Follow-Me off"]]],
     ["parked","Auto-return waiting (parked)","You stopped to surf or rest, far from the buggy. It parks and waits as long as you like — and looks exactly like “waiting”, so there is nothing new to learn.",[["Looks like","waiting (one dot hopping)"],["To bring it back","squeeze the trigger"]]],
     ["returning","Coming to you","Auto-return or manual return-to-me: they look the same. The top dot fills the column downward toward you, the numbers count down and the bar shrinks to the left as it closes.",[["Filling down","the buggy is coming to you"],["Let go, pause, squeeze softer","it keeps coming; pauses never cancel it"],["On arrival","you get steering back; the throttle stays limited until you let go once"]]],

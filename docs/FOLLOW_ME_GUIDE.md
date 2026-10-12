@@ -39,8 +39,9 @@ It is **not** an autopilot. The rule never changes:
 These rules decide every Follow-Me and return feature. They are why the screens and buzzes look the
 way they do.
 
-1. **Manual always wins.** If the GPS, the compass or any automatic mode fails, the automation
-   switches itself off and hands control back to you. You can always drive the buggy home by hand.
+1. **Manual always wins.** If the link or a GPS drops out, Follow-Me pauses: the buggy waits at
+   zero while you hold the trigger, and one release gives you full manual. After 30 s without the
+   data it switches itself off. You can always drive the buggy home by hand.
    Manual throttle and steering never depend on GPS, compass, logging or the screen.
 2. **"St" is the one "not working" signal.** Something stopped, a mode was refused, a fault: you
    always get **St** on the screen, and a long buzz if you didn't cause it. No other refusal codes
@@ -132,8 +133,8 @@ Keep the trigger held; no release step is needed.
 | ![Following](img/fm/fm-following.gif) | **Two steady dots**, bar grows and shrinks with distance | **Following you.** |
 | ![Returning](img/fm/fm-returning.gif) | **The dot column fills down from the top**, metres count down, the bar **blinks** (1 s on, 0.5 s off) and shrinks to the left | **Coming to you** (auto-return or manual return-to-me). |
 
-*The breathing bar and the end dots come with the **fm-bundle** firmware (remote TX SW27, from commit 3ea44a3). The
-current nightly binaries still show a 3-dot scanner instead: sweeping = ready, blinking in place = not ready.*
+*The breathing bar and the end dots are in the nightly from commit 61ec981 (flash the remote and the receiver
+together). Older nightly binaries show a 3-dot scanner instead: sweeping = ready, blinking in place = not ready.*
 
 **The numbers** are the **metres between the remote and the buggy** (`fm_display_mode` 2, the new
 default): `X.X` under 10 m, whole metres up to 99 m, `FAR` beyond that, and `--` when there's no
@@ -263,23 +264,18 @@ trigger held.
 |---|---|---|---|
 | You release the trigger | deadman | motor stops | no |
 | You fall, slow down or get too close | a **hold** (normal) | buggy stops, stays armed; parks for auto-return if it's on | no |
-| GPS, compass or radio drops out | a **fault** | **St** + long buzz, manual control back | yes |
+| Your GPS, the buggy's GPS, its heading or the radio drops out briefly | a **pause** | the buggy waits at zero while you hold the trigger; the screen shows only the two end dots; let go once for full manual; it follows again when the data is back (after a pause of 2 s or more, get to the engage distance again first) | no |
+| No link, your GPS or the buggy's GPS for **30 s** | a **stop** | **St** + long buzz, Follow-Me switches off; if you still hold the trigger the buggy stays at zero until you let go once | yes |
+| Steering gone wrong (the buggy is not closing on you, or the compass and the GPS course disagree while following) | a **steering stop** | **St** + long buzz, Follow-Me **stays armed**; the throttle stays limited until you let go once, then get to the engage distance again | no |
 
-Falling is normal, so it stays ready. A real failure is not, so it steps fully out and waits for
-you to arm again. Autonomy never silently restarts after a glitch.
+Falling is normal, so it stays ready. A short dropout is normal on the water too, so Follow-Me
+waits for the data instead of quitting. Floating still with a good GPS fix is not a dropout. Only a
+long loss switches it off, and it never restarts without the data back and the normal engage rules
+passing.
 
-> **With the fm-bundle firmware** (buggy RX SW36 from 9c52b80, remote TX SW27 from 3ea44a3) a dropout
-> is a **pause**, not a stop:
->
-> - **Short loss** of the link, your GPS, the buggy's GPS or its heading while following: the buggy
->   stops while you hold the trigger and **stays armed**; the screen shows not ready (the two end
->   dots). Let go once for full manual. It follows again when the data is back; after a pause of 2 s
->   or more you must get to the engage distance again first.
-> - **30 s** without the link, your GPS or the buggy's GPS: **St** + long buzz, Follow-Me switches
->   off. Arm it again.
-> - **Steering gone wrong** (the buggy is not closing on you, or the compass and the GPS course start
->   to disagree): **St** + long buzz, but Follow-Me **stays armed**. The throttle stays limited until
->   you let go once; then get to the engage distance again and it follows again.
+*This behaviour is in the nightly from commit 61ec981 (buggy RX SW36 and remote TX SW27). Flash
+the receiver and the remote together.*
+
 
 ---
 

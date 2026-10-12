@@ -879,8 +879,7 @@ Full bar (10 pixels) = buggy at arm distance. Shrinks from the right as the bugg
 
 *Nightly screens (`fm-stations` branch). Following: the numbers are metres to the buggy (here 15 m closing to 8 m).
 Waiting: the same bar breathes (lit 0.4 s, dark 1.2 s). Not ready or paused: only the two end dots blink. These two bar
-looks come with the fm-bundle firmware (TX SW27, from commit 3ea44a3); the current nightly binaries still show a
-sweeping scanner.*
+looks are in the nightly from commit 61ec981; older nightly binaries show a sweeping scanner.*
 
 2 pixels at C4–C5 = the buggy is close (up to 18 m at the factory full scale, `fm_warn_distance_m` 150 m). The bar expands symmetrically outward as the buggy falls further behind and is full at `fm_warn_distance_m`. It never shows a single pixel.
 

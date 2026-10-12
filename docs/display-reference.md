@@ -19,7 +19,7 @@ The FM pair of dots is C7 R3 + R4; R2 lights only while the buggy is coming to y
 | ![returning](img/fm/fm-returning.gif) **Coming to you** (auto-return or return-to-me) | fills down: R2, R2+R3, R2+R3+R4, dark (200 ms steps) | metres counting down (`X.X` with the decimal dot under 10 m) | anchored left, shrinking, blinking 1000 ms on / 500 ms off |
 | **Stop / refused / fault** | — | `St` for 2 s, then the true state | — |
 
-\* fm-bundle firmware (TX SW27, from commit 3ea44a3). The current nightly binaries show a 3-px scanner instead:
+\* Nightly firmware from commit 61ec981 (remote TX SW27). Older nightly binaries show a 3-px scanner instead:
 sweeping C0→C9→C0 when ready, blinking in place when not ready.
 
 Numbers default to **metres to the buggy** (`fm_display_mode` 2): `X.X` under 10 m, whole metres

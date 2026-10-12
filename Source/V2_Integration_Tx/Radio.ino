@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-1: sendData() sends the v2 rider GPS packet - announcement 0xF3/0x03,
+//   then 15 bytes with this remote's GPS FIX COUNTER (Common/RiderGpsPacket.h riderGpsTxFixStep / riderGpsBuildV2), so the
+//   buggy can tell a still rider with a good fix from a dead GPS. Same 2 Hz, same 12.864 ms on air as the 14-byte v1.
+//   Flash with the matching RX (an old RX rejects v2: no rider GPS, fail-safe). No confStruct change, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-11 - audit 2026-10-11 D-3: the Follow-Me fault edge also captures fm_flags bit 0 from the SAME arrival (fm_fault_latched_armed), written before the latch. No confStruct change, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-09 - comment only (audit "magnet station step" L-4): the fm_engaged_streak note no longer says
 //   the magnet tap needs it (the tap gates on fm_armed since 2026-10-09). No code change.
@@ -402,11 +406,15 @@ void sendData(void *parameter)
         // Step 1: 6-byte announcement.
         // Primes RX to switch radio to implicitHeader(14) before the data arrives.
         // byte3=0xF3 is the meta-packet type marker. byte4=0x01 = GPS upcoming.
+        // V2.5-Evo - 2026-10-12 - audit delta A-1: byte4 = 0x03 (kRiderGpsAnnounceV2) = a 15-byte v2 GPS packet follows,
+        // with this remote's GPS FIX COUNTER (Common/RiderGpsPacket.h). A new buggy switches to implicitHeader(15); an old
+        // buggy reads any 0xF3 announcement as v1, listens for 14 bytes and rejects the v2 body (CRC position + subtype),
+        // so it has no rider GPS - fail-safe; flash both boards together.
         // ---------------------------------------------------------------
         uint8_t announcePkt[6];
         memcpy(announcePkt, usrConf.dest_address, 3);
-        announcePkt[3] = 0xF3;
-        announcePkt[4] = 0x01;
+        announcePkt[3] = kRiderGpsType;        // 0xF3
+        announcePkt[4] = kRiderGpsAnnounceV2;  // 0x03 (was 0x01)
         announcePkt[5] = esp_crc8(announcePkt, 5);
 
         rxprint("Sending GPS announcement: ");
@@ -427,30 +435,41 @@ void sendData(void *parameter)
         // Step 2: 14-byte GPS data packet.
         // lat/lng as int32_t microdegrees (degrees × 1e6), little-endian.
         // Precision: ±0.111 m — sufficient for Phase B 500 m distance check.
+        // V2.5-Evo - 2026-10-12 - audit delta A-1: NOW 15 BYTES (v2) - [dest 3][0xF3][0x04][lat 4][lng 4][fix counter]
+        // [crc8 over 0-13], built by riderGpsBuildV2(). THE BUG IT SERVES: the buggy could only tell a new rider fix from
+        // a re-broadcast by a change of coordinates, so a rider lying still looked like a dead GPS and Follow-Me switched
+        // itself off after 30 s. The FIX COUNTER moves once per NEW GPS SOLUTION (riderGpsTxFixStep(): a new UTC
+        // time-of-fix committed together with the position) - never per transmission, never per position change, and
+        // not on sentences that carry a time but no fix. Same airtime as 14 bytes (12.864 ms at SF6/BW250/CR4-7).
+        // Read order: the position, then the two ages, then the time - all inside this task, which the loop task (the
+        // only TinyGPS writer) cannot interrupt. If this task preempted the parser between its time and position
+        // commits, the position is a whole epoch older than the time: no step, and the old position goes out with the
+        // old counter - a consistent re-broadcast; the next packet steps.
         // ---------------------------------------------------------------
-        uint8_t gpsPkt[14];
-        memcpy(gpsPkt, usrConf.dest_address, 3);
-        gpsPkt[3] = 0xF3;
-        gpsPkt[4] = 0x02;  // subtype: GPS coordinate data
+        static RiderGpsTxFixState tx_fix_state = {false, 0, 0};   // sendData task only
+        uint8_t gpsPkt[kRiderGpsLenV2];
 
         int32_t lat_ud = (int32_t)(gps_tx.location.lat() * 1e6);
         int32_t lng_ud = (int32_t)(gps_tx.location.lng() * 1e6);
-        memcpy(gpsPkt + 5, &lat_ud, 4);    // bytes 5–8: latitude microdegrees
-        memcpy(gpsPkt + 9, &lng_ud, 4);    // bytes 9–12: longitude microdegrees
-        gpsPkt[13] = esp_crc8(gpsPkt, 13); // CRC over bytes 0–12
+        const uint32_t loc_age_ms  = gps_tx.location.age();
+        const uint32_t time_age_ms = gps_tx.time.age();
+        const uint8_t  fix_ctr     = riderGpsTxFixStep(&tx_fix_state, gps_tx.time.isValid(), gps_tx.time.value(),
+                                                       loc_age_ms, time_age_ms, kRiderGpsSameEpochMs);
+        riderGpsBuildV2(gpsPkt, usrConf.dest_address, lat_ud, lng_ud, fix_ctr, esp_crc8);
 
         rxprint("Sending GPS data: ");
         #ifdef DEBUG_RX
-        printHexArray(gpsPkt, 14);
+        printHexArray(gpsPkt, kRiderGpsLenV2);
         #endif
 
-        radio.implicitHeader(14);
+        radio.implicitHeader(kRiderGpsLenV2);
         {
-          int16_t _txErr = radio.startTransmit(gpsPkt, 14);
+          int16_t _txErr = radio.startTransmit(gpsPkt, kRiderGpsLenV2);
           if (_txErr != RADIOLIB_ERR_NONE)
             Serial.printf("[Radio] startTransmit error %d at line %d\n", _txErr, __LINE__);
         }
         // 14-byte packet needs slightly more air time than 6-byte at SF6/BW250
+        // (V2.5-Evo - 2026-10-12 - A-1: the 15-byte v2 packet takes the same 12.864 ms; the 15 ms wait still covers it.)
         vTaskDelay(pdMS_TO_TICKS(15));
       }
       else

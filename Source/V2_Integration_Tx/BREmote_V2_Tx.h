@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-1: includes ../Common/RiderGpsPacket.h (Radio.ino sends the v2 rider GPS packet with the GPS fix counter). Include only: no confStruct change, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-11 - audit 2026-10-11 D-3: RAM flag fm_fault_latched_armed (bit 0 on the arrival that latched the fault edge). No confStruct change, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-07 - T-8: RAM stamp tx_boot_id_sent_ms. T-10: rtm_meta_count comment (counts can be 1). No struct change.
 // V2.5-Evo - 2026-10-07 - F4/F5 on the remote (port of P2-d): followme_mode documents 1-5 (4 front right, 5 front left;
@@ -149,6 +150,7 @@
 #include <Arduino.h>
 #include <atomic>
 #include "../Common/FollowMeDistanceWarning.h"   // V2.5-Evo - 2026-09-17 - pure header, host-testable. Since 2026-10-07 the TX uses only kFmDistanceTelemetryMaxM from it (ConfigService.ino); the haptic it fed is removed
+#include "../Common/RiderGpsPacket.h"            // V2.5-Evo - 2026-10-12 - audit delta A-1: the v2 rider GPS packet (GPS fix counter) - pure, host-tested, shared with the RX
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"

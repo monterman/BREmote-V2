@@ -149,10 +149,13 @@ fault while you're holding the trigger. A stop after you've already let go just 
 | Display | Meaning |
 |---|---|
 | **No FM bar** | disarmed |
-| **Bar sweeping** (scanner) | **armed and ready** — waiting for your whip |
-| **Bar blinking in place** | **armed but not ready yet** — still getting GPS / link. It flips to sweeping the moment it's ready. |
-| **Steady distance bar** | **following you** — grows/shrinks with distance |
-| **`St`** | stopped |
+| ![Waiting](img/fm/fm-waiting.gif)<br>**Distance bar breathing** (lit 0.4 s, dark 1.2 s) | **armed and ready** — waiting for your whip. It is the same bar as following, so its width shows the distance. |
+| ![Not ready](img/fm/fm-notready.gif)<br>**Only the two end dots blinking** | **armed but not ready yet, or paused** — still getting GPS / link, or Follow-Me paused for missing data (§6). It switches to the breathing bar the moment the data is back. |
+| ![Following](img/fm/fm-following.gif)<br>**Steady distance bar** | **following you** — grows from the centre as the buggy falls further behind. At the factory full scale (`fm_warn_distance_m` 150 m) it is just the two centre dots up to 18 m. |
+| **`St`** | stopped (§6) |
+
+*In the pictures, the dot right of the digits is the Follow-Me indicator: one dot hopping = armed, two steady
+dots = following.*
 
 **Haptics (by feel, no need to look):**
 

@@ -409,7 +409,7 @@ Confirm the gestures and display before you're in the water:
 - **Arm FM (toggle, works while floating):** **LEFT tap → RIGHT hold ~3 s.** Display shows **F1/F2/F3**, remote buzzes **two quick taps** = armed. Repeat the gesture to cycle **F1→F2→F3→F0-off** before you're on the throttle.
 - **Arm FM (magnet, works during the tow — if fitted):** hold magnet ~2 s, feel one pulse, pull away → two taps = armed (toggle: same gesture disarms).
 - **Arm RTM:** **RIGHT tap → LEFT hold ~5 s** (needs `gps_en=1` + `rtm_enabled=1`).
-- **Reading the FM bar:** no bar = disarmed · **sweeping** = armed & ready · **blinking in place** = armed but still getting GPS/link · **steady distance bar** = following · **`St`** = stopped.
+- **Reading the FM bar:** no bar = disarmed · **breathing** (lit 0.4 s, dark 1.2 s) = armed & ready · **only the two end dots blinking** = armed but still getting GPS/link, or paused · **steady distance bar** = following · **`St`** = stopped.
 - **Logging (AUX):** logging is **OFF at boot by design** — that is not a fault.
 
   > **Leave `logger_en` at 0.** With it at 0 the RX boots with logging off, so it never fills SPIFFS

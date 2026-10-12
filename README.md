@@ -818,7 +818,7 @@ Once BLE is active, open **VESC Tool** (iOS or Android, free), scan for `BRemote
 
 ### R5 Proximity Bar
 
-Row R5 (just below the digit area, C0–C9) is a proximity indicator during RTM or FM. Blinks 1 s on / 500 ms off.
+Row R5 (just below the digit area, C0–C9) is a proximity indicator during RTM or FM. The RTM bar blinks 1 s on / 500 ms off.
 
 **RTM bar** — shrinks right-to-left as the buggy approaches:
 
@@ -826,11 +826,14 @@ Row R5 (just below the digit area, C0–C9) is a proximity indicator during RTM 
 
 Full bar (10 pixels) = buggy at arm distance. Shrinks from the right as the buggy closes in. Gone at stop distance just before RTM disengages.
 
-**FM bar** — expands outward from center sweet spot:
+**FM bar** — grows outward from the centre (C4–C5) as the buggy falls further behind:
 
-![FM Proximity Bar](docs/fm_bar_animation.gif)
+| Waiting (armed, ready) | Not ready / paused | Following |
+|---|---|---|
+| ![Waiting](docs/img/fm/fm-waiting.gif) | ![Not ready](docs/img/fm/fm-notready.gif) | ![Following](docs/img/fm/fm-following.gif) |
+| the bar **breathes**: lit 0.4 s, dark 1.2 s | only the **two end dots** blink, 1 s on / 0.5 s off | the bar is **solid** |
 
-2 pixels at C4–C5 = ideal following distance. Expands symmetrically outward as the buggy lags further behind. 1 pixel = buggy too close.
+No bar = Follow-Me disarmed. 2 pixels at C4–C5 = the buggy is close (up to 18 m at the factory full scale, `fm_warn_distance_m` 150 m); the bar is full at `fm_warn_distance_m`. It never shows a single pixel, and the end dots light alone only for "not ready". The old sweeping scanner is gone (TX SW27, from 3ea44a3).
 
 > See [docs/display-reference.md](docs/display-reference.md) for full implementation details and current FM bar status.
 

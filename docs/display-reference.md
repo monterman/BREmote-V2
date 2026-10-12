@@ -168,7 +168,7 @@ RTM exit shows `St` via `displayDigits(LET_S, LET_T)` (large-font, 2s). `showFul
 
 ## R5 Proximity Bar (P9 New)
 Row R5 (`displayBuffer[6]`) is used as a proximity bar during RTM or FM.
-Blink pattern: 1000 ms on / 500 ms off.
+RTM blink pattern: 1000 ms on / 500 ms off. The Follow-Me looks are below.
 
 **RTM bar (square-root curve):**
 - At RTM engage: `rtm_arm_dist_m` is captured from current `telemetry.rtm_distance`.
@@ -180,11 +180,28 @@ Blink pattern: 1000 ms on / 500 ms off.
 
 ![RTM Proximity Bar Animation](rtm_bar_animation.gif)
 
-**FM bar (Priority 10 — center-expanding from C4+C5):**
-- 2 pixels at C4+C5 = ideal following distance (sweet spot). Bar expands outward symmetrically as buggy gets closer. Dark when ≥30 m away. Full bar (C0-C9) = buggy right next to user.
-- Implemented 2026-04-30 in `Display.ino:updateR5ProximityBar()` — replaced an earlier left-to-right linear fill. Center-expanding is the current and only implementation.
+**FM bar (`Display.ino:updateR5ProximityBar()`; look per audit 2026-10-11 D-7, TX SW27 from 3ea44a3):**
 
-![FM Proximity Bar Animation](fm_bar_animation.gif)
+| FM state | R5 |
+|---|---|
+| Disarmed | dark |
+| Following (`fmIsEngaged()`) | the centre distance bar, **solid** |
+| Waiting (armed, ready) | the same centre bar, **breathing**: lit 400 ms, dark 1200 ms (1600 ms cycle, its own timer), width latched at the start of each breath |
+| Not ready / paused (`fmArmedNotReady()`: fm_flags bit 2, or this remote's GPS / link not ready; also when the distance is not showable) | **only C0 + C9**, blinking 1000 ms on / 500 ms off |
+| Auto-return returning (`fmIsReturning()`) | the RTM return bar above, blinking 1000/500 |
+
+The sweeping 3-px scanner and the blink-in-place 3-px segment are retired.
+
+Centre bar (`fmCentreBarMask()`): grows with distance, out from C4+C5.
+`half_width = 1 + round(4 × distance / fm_warn_distance_m)`, clamped 1–5, so it is never empty and its ends never
+light without its centre. At the factory `fm_warn_distance_m` of 150 m: 2 px up to 18 m, 4 px from 19 m, 6 from 57 m,
+8 from 94 m, all 10 from 132 m. Following with no distance data (0xFF) leaves R5 dark.
+
+| Waiting | Not ready / paused | Following |
+|---|---|---|
+| ![Waiting](img/fm/fm-waiting.gif) | ![Not ready](img/fm/fm-notready.gif) | ![Following](img/fm/fm-following.gif) |
+
+*Drawn by `Tools/gen_fm_bar_gifs.py` from the firmware rules: waiting at 15 m, following from 15 m closing to 8.0 m.*
 
 **`rtm_arm_dist_m` variable:**
 - RAM only — never written to SPIFFS.
@@ -215,7 +232,7 @@ Blink pattern: 1000 ms on / 500 ms off.
 | Field | Range | Default | Description |
 |---|---|---|---|
 | `rtm_display_mode` | 0-2 | 0 | RTM/FM active display: 0=distance, 1=speed, 2=alternating 2.5s |
-| `fm_warn_distance_m` | 50-164m | 150 | TX-RX distance for FM proximity warning vibration (fires at/beyond threshold, repeats every 2s) |
+| `fm_warn_distance_m` | 50-164m | 150 | Full scale of the Follow-Me R5 bar: the TX-RX distance at which the centre bar is full (the warning vibration it used to drive is removed) |
 | `rtm_steer_exit_on_input` | 0-1 | 1 | 1=steering exits RTM; 0=blend/correction mode |
 | `rtm_max_runtime_s` | 0-300s | 0 | Max RTM runtime; 0=disabled (safety gates handle scenarios) |
 

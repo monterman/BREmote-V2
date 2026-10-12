@@ -1,3 +1,10 @@
+// V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-1 (owner: the strong version): ONE RULE FOR "THE RIDER'S GPS IS
+//   ALIVE" - a new rider GPS SOLUTION within tx_gps_stale_timeout_ms (rx_tx_gps_solution_ms: a v2 remote's fix counter
+//   moved, an old remote's position moved). fmFailingConditionsMaskHdg() reads it for condition 4, and that one bit
+//   feeds the pause, fm_flags bit 2 and the 30 s long-loss clock (fmLongLossStep() now takes it as rider_ok and counts
+//   rx_tx_gps_solution_seq for its reset). A rider lying still with a good fix is no longer "lost". The RETURN mask
+//   (fmFailingConditionsMask()) and the separation proof (rx_tx_gps_fix_seq, distinct positions) are unchanged. ?diag:
+//   a "Rider GPS" line. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-11 - FOLLOW-ME NEVER SWITCHES ITSELF OFF (audit 2026-10-11 "four ride fixes" change 1 + owner
 //   rulings §12 D-1..D-4; fixes C-1, H-1, M-1). runFmLoopBody(): (1) conditions 2-7 are read ONCE through
 //   fmFailingConditionsMask() and split - positions / link (2-5, 7) prove separation and authorise steering, the heading
@@ -2935,7 +2942,7 @@ static unsigned long fmLastStopMs()     { return fm_last_stop_ms; }
 static const uint32_t kFmLongLossMs          = 30000;   // ms
 // ... and it is reset only by all three good together for this long, with at least this many NEW rider fixes.
 static const uint32_t kFmLongLossResetMs     = 1000;    // ms
-static const uint8_t  kFmLongLossResetFixes  = 2;       // distinct rider fixes (rx_tx_gps_fix_seq moves)
+static const uint8_t  kFmLongLossResetFixes  = 2;       // new rider GPS solutions (rx_tx_gps_solution_seq moves; A-1, 2026-10-12)
 // The buggy's own fix counts as missing beyond the same 6 s condition 5 has always used.
 static const uint32_t kFmBuggyFixStaleMs     = 6000;    // ms
 // Invariant 5: a pause this long counts as a release for the rope rule (needs-D_engage). Same 2 s as the release timer,
@@ -2950,7 +2957,7 @@ static const uint32_t kFmCreepCourseMemoryMs = 30000;   // ms; ... seen within t
 
 // Memory. All written on the loop task only (runFmLoopBody(), fmEnterIdle(), the RTM yield); read by the fm_flags
 // assembly in runRtmLoopBody() (one tick later, like fm_return_not_ready), the log snapshot and ?diag.
-static FmLongLossState fm_long_loss        = {0, 0, 0, 0, 0, false};
+static FmLongLossState fm_long_loss        = {0, 0, 0, 0, false};   // V2.5-Evo - 2026-10-12 - A-1: fix_ms gone (rider verdict passed in)
 static uint8_t         fm_long_loss_verdict = FMLL_OFF;   // the last step's verdict, for ?diag
 static FmCreepState    fm_creep            = {0, false};
 static bool            fm_creep_active     = false;       // a creep is the reason Follow-Me is ACTIVE this tick
@@ -3568,6 +3575,8 @@ static void printReturnEndDiag(unsigned long now_ms)
 // Prints, on one line: whether a pause stands and on which input (and how long), the long-loss clock's age against its
 // 30 s limit (or idle / not running), and the creep (running for how long, spent this squeeze, or available) plus how
 // the last creep ended. Read-only: every value is a static the loop task owns. Input: now_ms. Output: Serial.
+// V2.5-Evo - 2026-10-12 - A-1: and a second line, "Rider GPS": the packet version (v2 = with the GPS fix counter) and
+// the age of the last NEW rider solution (radio-task globals, single aligned reads).
 static void printFmPauseDiag(unsigned long now_ms)
 {
   char pause_txt[64];
@@ -3592,6 +3601,17 @@ static void printFmPauseDiag(unsigned long now_ms)
   Serial.printf("FM pause   : %s; long-loss clock %s; heading creep %s (last end: %s)\n",
                 pause_txt, clock_txt, creep_txt,
                 (fm_creep_last_end == FMCR_TIMEOUT) ? "timed out" : (fm_creep_last_end == FMCR_ABORT) ? "aborted" : "none");
+  // V2.5-Evo - 2026-10-12 - audit delta A-1: which rider GPS packet the remote sends and how old its last NEW solution
+  // is - the one input Follow-Me's "rider GPS alive" rule reads. Bench B9 (remote lying still): with a v2 remote the age
+  // stays below a second and the clock above stays idle. Read-only.
+  const uint8_t  proto  = rx_tx_gps_proto;
+  const uint32_t sol_ms = rx_tx_gps_solution_ms;
+  char sol_txt[40];
+  if (sol_ms == 0) snprintf(sol_txt, sizeof(sol_txt), "none yet");
+  else             snprintf(sol_txt, sizeof(sol_txt), "%lu ms ago", (unsigned long)stampAgeMs((uint32_t)now_ms, sol_ms));
+  Serial.printf("Rider GPS  : packet %s; last new solution %s (stale after %u ms)\n",
+                (proto == 2) ? "v2 (GPS fix counter)" : (proto == 1) ? "v1 (old remote: position changes only)" : "none heard",
+                sol_txt, (unsigned)usrConf.tx_gps_stale_timeout_ms);
 }
 
 // ------------------------------------------------------------
@@ -5556,17 +5576,30 @@ static void computeFmTarget(double* out_lat, double* out_lng)
 // runFmLoopBody() keeps the heading creep's last good course without a second heading call per tick. The no-argument
 // name below is unchanged for the RETURN call sites (an overload, not a default argument: the Arduino prototype
 // generator copies signatures and a default would then be specified twice).
-static uint8_t fmFailingConditionsMaskHdg(float* out_heading_deg)
+// V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-1: THE ONE RULE FOR "THE RIDER'S GPS IS ALIVE". For FOLLOWING
+// (fmFailingConditionsMaskHdg(), called once per tick by runFmLoopBody()) condition 4 now reads rx_tx_gps_solution_ms -
+// a NEW rider GPS solution within tx_gps_stale_timeout_ms (BREmote_V2_Rx.h: the remote's fix counter moved, or for an
+// old remote its position moved) - instead of rx_tx_gps_timestamp (ANY packet). That one bit is what the pause, fm_flags
+// bit 2 (via fm_not_ready_data) and the 30 s long-loss clock all read on the same tick, so the three can no longer
+// disagree: a rider lying still with a good fix never pauses and never starts the clock (a v2 remote), and a rider whose
+// GPS really stopped solving is paused AND shown not-ready for the whole 30 s before the clock ends it.
+// The RETURN call sites (fmFailingConditionsMask(), auto-return) keep the receipt stamp: their rules are unchanged.
+// Both names stay thin wrappers so the Arduino prototype generator sees no default argument.
+// GPS rules 1-4 (project rule 5): only STRICTER - a rejected fix still writes no stamp (Radio.ino), and a re-broadcast of
+// an old solution no longer counts as fresh; nothing is extrapolated, interpolated or written to the 0xF3 state here.
+static uint8_t fmFailingConditionsMaskSel(float* out_heading_deg, bool rider_by_solution)
 {
   float h_now = -1.0f; uint8_t conf_unused;
   const bool heading_ok = getRtmHeading(&h_now, &conf_unused);
   if (out_heading_deg) *out_heading_deg = heading_ok ? h_now : -1.0f;
+  const uint32_t rider_stamp = rider_by_solution ? (uint32_t)rx_tx_gps_solution_ms : (uint32_t)rx_tx_gps_timestamp;
   return fmFailingMaskFrom((uint32_t)millis(), gps_rejected, gps_phase_b_ok,
-                           (uint32_t)rx_tx_gps_timestamp, (uint32_t)usrConf.tx_gps_stale_timeout_ms,
+                           rider_stamp, (uint32_t)usrConf.tx_gps_stale_timeout_ms,
                            (uint32_t)gps_last_ms, 6000UL,
                            heading_ok, (uint32_t)last_packet, (uint32_t)usrConf.failsafe_time);
 }
-static uint8_t fmFailingConditionsMask() { return fmFailingConditionsMaskHdg(nullptr); }
+static uint8_t fmFailingConditionsMaskHdg(float* out_heading_deg) { return fmFailingConditionsMaskSel(out_heading_deg, true); }
+static uint8_t fmFailingConditionsMask() { return fmFailingConditionsMaskSel(nullptr, false); }
 
 // ------------------------------------------------------------
 // fmComputeThrottleCap - the FM throttle cap chain
@@ -7041,9 +7074,13 @@ static void runFmLoopBody(unsigned long now)
 
   // ============================================================
   // V2.5-Evo - 2026-10-11 - D-2: THE 30 s LONG-LOSS CLOCK (Common/FollowMePause.h fmLongLossStep(), host-tested).
-  // Inputs, OR'd: the link (last_packet within failsafe_time), the RIDER'S FIX (a new rx_tx_gps_fix_seq within
-  // tx_gps_stale_timeout_ms - the sequence counter, so a re-broadcast of an old position does not count as fresh), the
-  // BUGGY'S FIX (gps_last_ms within 6 s). The heading and Phase A / B are NOT inputs (they pause, with no timer).
+  // Inputs, OR'd: the link (last_packet within failsafe_time), the RIDER'S FIX, the BUGGY'S FIX (gps_last_ms within
+  // 6 s). The heading and Phase A / B are NOT inputs (they pause, with no timer).
+  // V2.5-Evo - 2026-10-12 - audit delta A-1: THE RIDER'S FIX IS THIS TICK'S CONDITION-4 BIT, the very verdict the pause
+  // and fm_flags bit 2 read (fmFailingConditionsMaskHdg(): a new rider GPS SOLUTION within tx_gps_stale_timeout_ms). It
+  // used to be the clock's own test on rx_tx_gps_fix_seq, which moves only with the coordinates: a still rider ran this
+  // clock with no pause and no not-ready look, and got "St" at 30 s. The reset streak counts new solutions
+  // (rx_tx_gps_solution_seq), so a still rider with a working GPS also resets it after a short link pull.
   // Runs in ARMED, ACTIVE and HOLD; RETURN and STOPPING returned above, IDLE and the RTM yield never get here.
   // ON FIRE, IN THIS ORDER (§12 step 5): the sticky cap FIRST (only if Follow-Me was holding a cap - see below), the
   // alarm (fm_flags bit 3, reaches the remote when the link returns: the sticky window counts link-fresh time), the
@@ -7056,8 +7093,9 @@ static void runFmLoopBody(unsigned long now)
     const bool ll_running = (fm_state == FM_ARMED || fm_state == FM_ACTIVE || fm_state == FM_HOLD);
     const bool ll_link_ok  = !stampStale((uint32_t)now, (uint32_t)last_packet, (uint32_t)usrConf.failsafe_time);
     const bool ll_buggy_ok = !stampStale((uint32_t)now, (uint32_t)gps_last_ms, kFmBuggyFixStaleMs);
+    const bool ll_rider_ok = (failing & kFmCondTxStale) == 0;   // A-1: the same bit the pause and bit 2 use this tick
     fm_long_loss_verdict = fmLongLossStep(&fm_long_loss, (uint32_t)now, ll_running, ll_link_ok,
-                                          (uint32_t)rx_tx_gps_fix_seq, (uint32_t)usrConf.tx_gps_stale_timeout_ms,
+                                          ll_rider_ok, (uint32_t)rx_tx_gps_solution_seq,
                                           ll_buggy_ok, kFmLongLossMs, kFmLongLossResetMs, kFmLongLossResetFixes);
     if (fm_long_loss_verdict == FMLL_FIRED) {
       const uint8_t from = (uint8_t)fm_state;

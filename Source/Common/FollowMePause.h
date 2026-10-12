@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-1: fmLongLossStep() takes the rider's fix as the caller's verdict
+//   (rider_ok - the one rule the RX's pause and fm_flags bit 2 also use) plus the rider SOLUTION counter for its reset
+//   streak; FmLongLossState loses fix_ms. See section 3.
 // V2.5-Evo - 2026-10-11 - FOLLOW-ME NEVER SWITCHES ITSELF OFF (owner ruling, audit 2026-10-11 "four ride fixes" change 1 +
 //   §12 D-1..D-4): the pure rules behind the Follow-Me PAUSE, the 30 s LONG-LOSS clock and the HEADING CREEP.
 //   Header-only, no Arduino dependencies, so Tools/tests/follow_me_pause_test.cpp exercises the exact code the RX runs.
@@ -9,6 +12,7 @@
 //                            STEERING END (divergence or a new heading disagreement - sticky cap, ARMED-unlatched).
 //   2. fmPauseReasonBit    - which missing input to name for a pause (positions and link before heading).
 //   3. fmLongLossStep      - the 30 s clock: link OR rider fix OR buggy fix missing; heading never counts.
+//                            (2026-10-12, A-1: the rider fix is the caller's one-rule verdict.)
 //   4. fmCreepStep / fmCreepCap / fmCreepStartDistM - the straight-ahead creep that earns a stopped, COG-only buggy its
 //                            GPS course (D-4), bounded exactly like RTM's BOOTSTRAP-1.
 #ifndef BREMOTE_FOLLOW_ME_PAUSE_H
@@ -59,23 +63,29 @@ static inline uint8_t fmPauseReasonBit(uint8_t failing_mask)
 // ============================================================
 // 3. fmLongLossStep - the 30 s long-loss clock (D-2, confirmed OR of three inputs).
 // ============================================================
-// What it counts: the link (any packet within failsafe_time), the RIDER'S FIX (a NEW rx_tx_gps_fix_seq within
-// rider_stale_ms - the sequence counter, never the receipt stamp, which re-broadcasts refresh), and the BUGGY'S FIX
+// What it counts: the link (any packet within failsafe_time), the RIDER'S FIX (rider_ok, see below) and the BUGGY'S FIX
 // (passed in as buggy_ok, gps_last_ms within 6 s). The heading and the Phase A / Phase B checks are NOT inputs: they
 // pause Follow-Me but carry no timer (Phase B is re-checked only every 30 s and would trip this clock by itself).
+// V2.5-Evo - 2026-10-12 - audit delta A-1: THE RIDER'S FIX IS THE CALLER'S VERDICT NOW, NOT THIS CLOCK'S OWN. It used to
+// track rx_tx_gps_fix_seq here - a counter that moves only when the rider's COORDINATES change - while the pause and the
+// remote's not-ready look judged the rider by ANY packet. A rider lying still (identical coordinates) therefore looked
+// lost to this clock alone: no pause, no not-ready look, and "St" 30 s later out of nowhere. Now the RX passes ONE
+// verdict, the same one its pause mask and fm_flags bit 2 use - "a new rider GPS SOLUTION within
+// tx_gps_stale_timeout_ms" (Common/RiderGpsPacket.h: the remote's fix counter moved; an old remote: the position moved) -
+// and rider_seq is that solution counter, read here only to count new solutions in the reset streak. So a still rider
+// whose GPS keeps solving never starts this clock, and when it does count, the rider sees the pause the whole time.
 // Starts on the first running tick on which ANY input is missing. Resets only after all three have been good together
-// for reset_ms with at least reset_fixes NEW rider fixes in that streak. Fires at fire_ms of clock age.
+// for reset_ms with at least reset_fixes NEW rider solutions in that streak. Fires at fire_ms of clock age.
 // running - the RX is in FM_ARMED, FM_ACTIVE or FM_HOLD (IDLE, STOPPING, RETURN and the RTM yield do not run it):
-//           while false the clock and the good streak are zeroed. The rider-fix tracker runs whatever `running` says,
-//           so a fix that arrived while idle is known the moment the clock starts.
+//           while false the clock and the good streak are zeroed. The solution counter is read whatever `running`
+//           says (its first reading is only a seed, never a new solution).
 // Returns: FMLL_OFF (not running), FMLL_OK (no clock), FMLL_COUNTING, FMLL_FIRED (exactly once; the clock is zeroed).
 // Side effects: *s only. Every age is stampAgeMs() (never negative), and 0 is reserved for "never".
 struct FmLongLossState {
   uint32_t since_ms;        // clock start, 0 = no clock running
   uint32_t good_since_ms;   // start of the all-good streak that may reset it, 0 = none
-  uint8_t  good_fixes;      // new rider fixes counted in that streak
-  uint32_t seq;             // the last rx_tx_gps_fix_seq seen
-  uint32_t fix_ms;          // when that sequence last moved, 0 = no new fix seen since boot
+  uint8_t  good_fixes;      // new rider solutions counted in that streak
+  uint32_t seq;             // the last rider solution counter seen
   bool     seq_seen;        // seq holds a real reading
 };
 static const uint8_t FMLL_OFF      = 0;
@@ -83,14 +93,13 @@ static const uint8_t FMLL_OK       = 1;
 static const uint8_t FMLL_COUNTING = 2;
 static const uint8_t FMLL_FIRED    = 3;
 static inline uint8_t fmLongLossStep(FmLongLossState* s, uint32_t now_ms, bool running,
-                                     bool link_ok, uint32_t rider_seq, uint32_t rider_stale_ms, bool buggy_ok,
+                                     bool link_ok, bool rider_ok, uint32_t rider_seq, bool buggy_ok,
                                      uint32_t fire_ms, uint32_t reset_ms, uint8_t reset_fixes)
 {
   const uint32_t stamp = (now_ms != 0) ? now_ms : 1u;
   bool new_fix = false;
-  if (!s->seq_seen)                { s->seq = rider_seq; s->seq_seen = true; }   // first reading: not a new fix
-  else if (rider_seq != s->seq)    { s->seq = rider_seq; s->fix_ms = stamp; new_fix = true; }
-  const bool rider_ok = (s->fix_ms != 0) && !stampStale(now_ms, s->fix_ms, rider_stale_ms);
+  if (!s->seq_seen)                { s->seq = rider_seq; s->seq_seen = true; }   // first reading: not a new solution
+  else if (rider_seq != s->seq)    { s->seq = rider_seq; new_fix = true; }
 
   if (!running) { s->since_ms = 0; s->good_since_ms = 0; s->good_fixes = 0; return FMLL_OFF; }
 

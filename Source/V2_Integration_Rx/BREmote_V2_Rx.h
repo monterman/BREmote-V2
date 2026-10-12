@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-1: includes ../Common/RiderGpsPacket.h (the v2 rider GPS packet with the remote's fix counter); new runtime globals rx_tx_gps_solution_ms / rx_tx_gps_solution_seq / rx_tx_gps_proto - "the rider's GPS is alive" is now judged by a NEW GPS SOLUTION, not by a change of coordinates. Runtime only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-11 - FOLLOW-ME NEVER SWITCHES ITSELF OFF (audit 2026-10-11 change 1): includes ../Common/FollowMePause.h (the pause classification, the 30 s long-loss clock and the heading creep, host-tested). Include only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-09 - STICKY CAP SIMPLIFIED (owner): sticky_rise_open atomic + sticky_arm_mux; stickyCapArm() clamps the arm to kStickyFallbackCap (stickyArmValue()), opens the one clock-only rise on a fresh arm only, and runs in a critical section (L-1); kStickyFallbackCap re-commented as the sticky ceiling. Runtime only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): includes ../Common/VescImu.h; imu2_struct + extern imu2 (VESC 2's IMU, own age stamp + ever_ok), the kImu2* constants (30 ms reply cap, 1500 ms stale, backoff to 1 poll / 10 s after 3 misses), the g_diag_imu2_* counters + g_imu2_miss_streak; VescLogDataL6 = the full 126 B L5 record + two 22 B ImuLogBlocks (VESC 2, then a reserved RX IMU that always reads N/A) = 170 B (static_asserts 170 / 126 / 148); LOG_REC_MAX; logResolveLevel() 6 -> 6; LOG_CSV_HEADER_L6 (98 columns) + LOG_CSV_ROW_EXT_L6_IMU + logFormatImuBlock(); LOG_CSV_ROW_BUF 640 -> 832. Tail append to the largest record, so LOG_FILE_FORMAT_VER stays 3. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -994,6 +995,10 @@ static const float kFmFrontAheadExtraMaxM     = 10.0f;  // metres; largest legal
 // D-1..D-4): the pure rules are in ../Common/FollowMePause.h so Tools/tests/follow_me_pause_test.cpp runs the exact code
 // runFmLoopBody() calls. The RX's constants are passed in (RTMState.ino kFmLongLoss* / kFmCreep*).
 #include "../Common/FollowMePause.h"
+// V2.5-Evo - 2026-10-12 - audit delta A-1: the rider GPS packet (v1 14 bytes / v2 15 bytes with the remote's GPS fix
+// counter) and the NEW / REPEAT / DROP rule, pure in ../Common/RiderGpsPacket.h so Tools/tests/rider_gps_packet_test.cpp
+// runs the exact code processMetaGpsPacket() (Radio.ino) calls. The remote builds its packets with the same header.
+#include "../Common/RiderGpsPacket.h"
 
 // ============================================================
 // V2.5-Evo - 2026-07-25 - STAGE 2: HEADING-SOURCE TRUST CONSTANTS (RTM + FM)
@@ -1340,6 +1345,22 @@ unsigned long rx_tx_gps_timestamp = 0;    // millis() when last meta-packet rece
 // volatile because the writer is the radio task and the reader is the loop task - the same
 // discipline this project documents for logging_active.
 volatile uint32_t rx_tx_gps_fix_seq = 0;   // one increment per distinct rider position
+
+// V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-1: THE ONE RULE FOR "THE RIDER'S GPS IS ALIVE".
+// rx_tx_gps_fix_seq above moves only when the rider's COORDINATES change, so a rider lying still with a perfectly good
+// fix looked exactly like a dead GPS re-sending its last position. These two move once per NEW GPS SOLUTION accepted
+// from the remote (Common/RiderGpsPacket.h riderGpsClassify(): a v2 remote's fix counter moved - identical coordinates
+// included; an old v1 remote: the position moved, as before) and Phase A passed. Follow-Me judges the rider's GPS by
+// them, in ONE place each tick (fmFailingConditionsMaskHdg(), RTMState.ino), and that one verdict drives all three
+// consumers: the pause, fm_flags bit 2 (the remote's not-ready look) and the 30 s long-loss clock.
+// rx_tx_gps_fix_seq keeps its meaning (distinct positions) for the separation proof and the raw rider speed, and
+// rx_tx_gps_timestamp (any accepted packet) keeps every other consumer - RTM, auto-return, Phase B, the distance
+// telemetry, the sticky cap - exactly as it was.
+// Single writer: processMetaGpsPacket() on the radio task, published AFTER the position (the S-1 rule). uint32_t /
+// uint8_t: single aligned accesses on this core, no tearing.
+volatile uint32_t rx_tx_gps_solution_ms  = 0;   // millis() of the last accepted NEW rider GPS solution; 0 = never
+volatile uint32_t rx_tx_gps_solution_seq = 0;   // +1 per accepted NEW rider GPS solution (the long-loss reset streak)
+volatile uint8_t  rx_tx_gps_proto        = 0;   // the last accepted rider GPS packet: 0 = none, 1 = v1 (14 B), 2 = v2 (15 B, fix counter); ?diag only
 
 // V2.5-Evo - 2026-04-25 - P7 RTM/FM runtime state (set by Radio.ino meta-packet handlers)
 // rtm_rx_active: true = TX signalled RTM active; safety gates in RTMState.ino may override.

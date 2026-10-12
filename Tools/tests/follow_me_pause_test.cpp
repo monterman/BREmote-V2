@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-1: the clock takes the rider verdict from the caller; new section 2b
+//   runs the RX's one rule end to end (still rider with a moving fix counter never pauses or starts the clock; a repeated
+//   counter pauses visibly and fires after 30 s; an old v1 remote; a link pull resets on new solutions).
 // V2.5-Evo - 2026-10-11 - Host test for Common/FollowMePause.h (audit 2026-10-11 change 1, owner rulings D-1..D-4):
 //   pause vs exit classification, the 30 s long-loss clock (start / reset / fire), the heading creep (grant / abort /
 //   timeout, one per squeeze), and two sequence models built on Common/AutoReturnRules.h: the sticky cap armed at every
@@ -11,6 +14,7 @@
 #include <stdio.h>
 
 #include "../../Source/Common/FollowMePause.h"
+#include "../../Source/Common/RiderGpsPacket.h"   // V2.5-Evo - 2026-10-12 - A-1: the rider GPS one-rule chain
 
 static const uint32_t kFire = 30000, kReset = 1000;
 static const uint8_t  kResetFixes = 2;
@@ -43,31 +47,33 @@ static void testClassification()
 }
 
 // ---- 2. the long-loss clock ----
-// Drives the clock at 100 ms ticks. rider_period_ms = 0 means no new rider fix ever arrives.
-struct Sim { FmLongLossState s; uint32_t t; uint32_t seq; };
+// Drives the clock at 100 ms ticks. new_fix = a new rider GPS SOLUTION arrived this tick.
+// V2.5-Evo - 2026-10-12 - audit delta A-1: the rider input is the caller's verdict, modelled here the way the RX makes it
+// - a new solution within kRiderStale (rx_tx_gps_solution_ms) - and the counter is the solution counter.
+struct Sim { FmLongLossState s; uint32_t t; uint32_t seq; uint32_t sol_ms; };
 static uint8_t tick(Sim* m, bool running, bool link_ok, bool new_fix, bool buggy_ok)
 {
   m->t += 100;
-  if (new_fix) m->seq++;
-  return fmLongLossStep(&m->s, m->t, running, link_ok, m->seq, kRiderStale, buggy_ok, kFire, kReset, kResetFixes);
+  if (new_fix) { m->seq++; m->sol_ms = m->t; }
+  const bool rider_ok = !stampStale(m->t, m->sol_ms, kRiderStale);
+  return fmLongLossStep(&m->s, m->t, running, link_ok, rider_ok, m->seq, buggy_ok, kFire, kReset, kResetFixes);
 }
 
 static void testLongLoss()
 {
-  // Healthy: link up, a rider fix every 300 ms, buggy fix good -> never fires. On the very first running tick the rider
-  // fix is not yet KNOWN to be fresh (the first sequence reading is only a seed), so the clock may open and is then reset
-  // by the ordinary rule (1 s good + 2 new fixes) - well inside 30 s.
+  // Healthy: link up, a rider fix every 300 ms, buggy fix good -> never fires (and, with the rider verdict now the
+  // caller's own fresh-solution test, never even opens).
   {
-    Sim m = {{0, 0, 0, 0, 0, false}, 1000, 7};
+    Sim m = {{0, 0, 0, 0, false}, 1000, 7, 0};
     for (int i = 0; i < 1000; ++i) {
       const uint8_t v = tick(&m, true, true, (i % 3) == 0, true);
       assert(v != FMLL_FIRED);
-      if (i > 15) assert(v == FMLL_OK);
+      assert(v == FMLL_OK);
     }
   }
   // Link down for 35 s while armed: counts from the first missing tick, fires exactly at 30 s, once.
   {
-    Sim m = {{0, 0, 0, 0, 0, false}, 1000, 7};
+    Sim m = {{0, 0, 0, 0, false}, 1000, 7, 0};
     for (int i = 0; i < 20; ++i) tick(&m, true, true, (i % 3) == 0, true);
     int fired_at = -1;
     for (int i = 0; i < 350; ++i) {
@@ -78,7 +84,7 @@ static void testLongLoss()
   }
   // A 3 s link pull: counts, then resets once all three are good for >= 1 s with >= 2 new rider fixes. No fire.
   {
-    Sim m = {{0, 0, 0, 0, 0, false}, 1000, 7};
+    Sim m = {{0, 0, 0, 0, false}, 1000, 7, 0};
     for (int i = 0; i < 20; ++i) tick(&m, true, true, (i % 3) == 0, true);
     for (int i = 0; i < 30; ++i) assert(tick(&m, true, false, (i % 3) == 0, true) == FMLL_COUNTING);
     uint8_t v = FMLL_COUNTING; int good = 0;
@@ -88,7 +94,7 @@ static void testLongLoss()
   }
   // Good data for 1 s but only ONE new rider fix: the clock does NOT reset (2 fixes needed), and it still fires at 30 s.
   {
-    Sim m = {{0, 0, 0, 0, 0, false}, 1000, 7};
+    Sim m = {{0, 0, 0, 0, false}, 1000, 7, 0};
     for (int i = 0; i < 20; ++i) tick(&m, true, true, (i % 3) == 0, true);
     tick(&m, true, false, false, true);                    // clock starts
     int i = 1; bool fired = false;
@@ -99,9 +105,9 @@ static void testLongLoss()
     }
     assert(fired && i == 301);
   }
-  // The rider's fix is judged by the SEQUENCE: packets whose sequence never moves (re-broadcasts) are a loss.
+  // The rider's fix is judged by NEW SOLUTIONS: packets that bring none (re-broadcasts) are a loss.
   {
-    Sim m = {{0, 0, 0, 0, 0, false}, 1000, 7};
+    Sim m = {{0, 0, 0, 0, false}, 1000, 7, 0};
     for (int i = 0; i < 20; ++i) tick(&m, true, true, (i % 3) == 0, true);
     int fired_at = -1;
     for (int i = 0; i < 400 && fired_at < 0; ++i) if (tick(&m, true, true, false, true) == FMLL_FIRED) fired_at = i;
@@ -110,7 +116,7 @@ static void testLongLoss()
   }
   // The buggy's own fix missing counts too (OR, not AND).
   {
-    Sim m = {{0, 0, 0, 0, 0, false}, 1000, 7};
+    Sim m = {{0, 0, 0, 0, false}, 1000, 7, 0};
     for (int i = 0; i < 20; ++i) tick(&m, true, true, (i % 3) == 0, true);
     int fired_at = -1;
     for (int i = 0; i < 400 && fired_at < 0; ++i) if (tick(&m, true, true, (i % 3) == 0, false) == FMLL_FIRED) fired_at = i;
@@ -118,7 +124,7 @@ static void testLongLoss()
   }
   // Not running (IDLE / RETURN / yield): never counts, and leaving the running states zeroes a running clock.
   {
-    Sim m = {{0, 0, 0, 0, 0, false}, 1000, 7};
+    Sim m = {{0, 0, 0, 0, false}, 1000, 7, 0};
     for (int i = 0; i < 500; ++i) assert(tick(&m, false, false, false, false) == FMLL_OFF);
     for (int i = 0; i < 100; ++i) tick(&m, true, false, false, true);
     assert(m.s.since_ms != 0);
@@ -126,16 +132,119 @@ static void testLongLoss()
   }
   // millis() == 0 is not "no clock", and the clock survives the 32-bit wrap.
   {
-    FmLongLossState s = {0, 0, 0, 0, 0, false};
+    FmLongLossState s = {0, 0, 0, 0, false};
     uint32_t t = 0xFFFFFFFFu - 5000u, seq = 1;
-    for (int i = 0; i < 20; ++i) { t += 100; if (i % 3 == 0) ++seq; fmLongLossStep(&s, t, true, true, seq, kRiderStale, true, kFire, kReset, kResetFixes); }
+    for (int i = 0; i < 20; ++i) { t += 100; if (i % 3 == 0) ++seq; fmLongLossStep(&s, t, true, true, true, seq, true, kFire, kReset, kResetFixes); }
     assert(s.since_ms == 0);
     int fired_at = -1;
     for (int i = 0; i < 400 && fired_at < 0; ++i) {
       t += 100;
-      if (fmLongLossStep(&s, t, true, false, seq, kRiderStale, true, kFire, kReset, kResetFixes) == FMLL_FIRED) fired_at = i;
+      if (fmLongLossStep(&s, t, true, false, true, seq, true, kFire, kReset, kResetFixes) == FMLL_FIRED) fired_at = i;
     }
     assert(fired_at == 300);
+  }
+}
+
+// ---- 2b. A-1 (V2.5-Evo - 2026-10-12): ONE RULE FOR "THE RIDER'S GPS IS ALIVE", end to end ----
+// The RX chain, modelled with the exact functions it calls: a packet -> riderGpsClassify / NoteCounter / Commit
+// (Common/RiderGpsPacket.h; Phase A assumed passing - a still rider's 0 m always passes) -> the solution stamp ->
+// fmFailingMaskFrom() condition 4 (fmFailingConditionsMaskHdg) -> that ONE bit feeds the pause (fmEngagedEndClass), the
+// remote's not-ready look (fm_not_ready_data = !fault_ok) and the long-loss clock (rider_ok). Ticks are 100 ms; the
+// remote sends a GPS packet every 3rd or 4th tick (0.3-0.4 s, as in the 10 Oct log); link and buggy fix stay good.
+struct OneRule {
+  RiderGpsRxState rx; FmLongLossState ll; uint32_t t; uint32_t sol_ms; uint32_t sol_seq; uint8_t ctr;
+};
+// One 100 ms tick. pkt: a GPS packet arrives this tick; v2: with a counter; advance: the remote's counter moved;
+// lat: the rider's latitude (microdegrees). Returns the clock verdict; *mask_out = this tick's conditions 2-7.
+static uint8_t oneRuleTick(OneRule* m, bool pkt, bool v2, bool advance, int32_t lat, bool link_ok, uint8_t* mask_out)
+{
+  m->t += 100;
+  if (pkt) {
+    if (advance) m->ctr++;
+    RiderGpsFields f = {lat, -80234567, v2, v2 ? m->ctr : (uint8_t)0};
+    const uint8_t c = riderGpsClassify(&m->rx, &f);
+    riderGpsNoteCounter(&m->rx, &f);
+    if (c == RGF_NEW) { riderGpsCommit(&m->rx, &f); m->sol_ms = m->t; m->sol_seq++; }
+  }
+  const uint8_t mask = fmFailingMaskFrom(m->t, false, true, m->sol_ms, kRiderStale, m->t, 6000, true,
+                                         link_ok ? m->t : 1u, 500);
+  *mask_out = mask;
+  const bool rider_ok = (mask & kFmCondTxStale) == 0;
+  const bool link     = (mask & kFmCondLink) == 0;
+  return fmLongLossStep(&m->ll, m->t, true, link, rider_ok, m->sol_seq, true, kFire, kReset, kResetFixes);
+}
+
+static void testRiderGpsOneRule()
+{
+  // (1) THE 10 OCT CASE, v2 remote: a rider lying still - identical coordinates on every packet - whose GPS keeps
+  //     solving (the counter moves). For 120 s: never a pause, never not-ready, the clock never even opens.
+  {
+    OneRule m = {{false, 0, 0, false, 0}, {0, 0, 0, 0, false}, 1000, 0, 0, 0};
+    for (int i = 0; i < 1200; ++i) {
+      uint8_t mask = 0;
+      const uint8_t v = oneRuleTick(&m, (i % 3) == 0 || (i % 7) == 0, true, true, 26123456, true, &mask);
+      if (i > 0) {
+        assert(mask == 0);                                                           // condition 4 holds: no pause ...
+        assert(fmEngagedEndClass(true, mask, true, false, false) == FMEE_HOLD);     // ... (HOLD = the rider is slow)
+        assert(v == FMLL_OK);                                                        // ... and no clock
+      }
+    }
+  }
+  // (2) A FROZEN remote GPS: packets keep coming with the SAME counter (re-broadcasts). The pause and the not-ready
+  //     look rise on the very tick the clock starts (no invisible countdown), and the clock fires 30 s later.
+  {
+    OneRule m = {{false, 0, 0, false, 0}, {0, 0, 0, 0, false}, 1000, 0, 0, 0};
+    uint8_t mask = 0;
+    for (int i = 0; i < 30; ++i) oneRuleTick(&m, (i % 3) == 0, true, true, 26123456, true, &mask);   // healthy
+    assert(mask == 0);
+    int start = -1, fired = -1;
+    for (int i = 0; i < 700 && fired < 0; ++i) {
+      const uint8_t v = oneRuleTick(&m, (i % 3) == 0, true, false, 26123456, true, &mask);
+      const bool paused = fmEngagedEndClass(true, mask, true, false, false) == FMEE_PAUSE;
+      const bool not_ready = (mask & (uint8_t)~kFmCondHeading) != 0;                  // fm_not_ready_data = !fault_ok
+      if (v == FMLL_COUNTING || v == FMLL_FIRED) { assert(paused && not_ready); if (start < 0) start = i; }
+      else assert(!paused && !not_ready);                                             // never one without the other
+      if (v == FMLL_FIRED) fired = i;
+    }
+    assert(start >= 28 && start <= 33);        // the last new solution aged past the 3 s stale limit
+    assert(fired == start + 300);              // then exactly 30 s of clock
+  }
+  // (3) An OLD (v1) remote and a still rider: the coordinate rule, as before - judged lost after the stale limit - but
+  //     now VISIBLY: the pause and the not-ready look stand for the whole 30 s.
+  {
+    OneRule m = {{false, 0, 0, false, 0}, {0, 0, 0, 0, false}, 1000, 0, 0, 0};
+    uint8_t mask = 0; int fired = -1, start = -1;
+    for (int i = 0; i < 700 && fired < 0; ++i) {
+      const uint8_t v = oneRuleTick(&m, (i % 3) == 0, false, false, 26123456, true, &mask);
+      if (v == FMLL_COUNTING || v == FMLL_FIRED) { assert(mask & kFmCondTxStale); if (start < 0) start = i; }
+      if (v == FMLL_FIRED) fired = i;
+    }
+    assert(start > 0 && fired == start + 300);
+  }
+  // (4) A v2 still rider and a 3 s LINK PULL: the clock opens on the link, and RESETS once the link is back, because
+  //     the reset streak counts new SOLUTIONS - it used to count distinct POSITIONS, which a still rider never makes, so
+  //     this case fired at 30 s.
+  {
+    OneRule m = {{false, 0, 0, false, 0}, {0, 0, 0, 0, false}, 1000, 0, 0, 0};
+    uint8_t mask = 0;
+    for (int i = 0; i < 30; ++i) oneRuleTick(&m, (i % 3) == 0, true, true, 26123456, true, &mask);
+    for (int i = 0; i < 30; ++i) assert(oneRuleTick(&m, false, true, true, 26123456, false, &mask) == FMLL_COUNTING);
+    bool reset = false;
+    for (int i = 0; i < 600; ++i) {
+      const uint8_t v = oneRuleTick(&m, (i % 3) == 0, true, true, 26123456, true, &mask);
+      assert(v != FMLL_FIRED);
+      if (v == FMLL_OK) { reset = true; assert(i >= 9); }   // never before 1 s of good data
+    }
+    assert(reset);
+  }
+  // (5) A moving rider on a v2 remote: same as ever - solutions every packet, no pause, no clock.
+  {
+    OneRule m = {{false, 0, 0, false, 0}, {0, 0, 0, 0, false}, 1000, 0, 0, 0};
+    for (int i = 0; i < 600; ++i) {
+      uint8_t mask = 0;
+      const uint8_t v = oneRuleTick(&m, (i % 3) == 0, true, true, 26123456 + i * 10, true, &mask);
+      if (i > 0) assert(mask == 0 && v == FMLL_OK);
+    }
   }
 }
 
@@ -243,6 +352,7 @@ int main()
 {
   testClassification();
   testLongLoss();
+  testRiderGpsOneRule();   // V2.5-Evo - 2026-10-12 - A-1
   testCreep();
   testStickyAtEveryExit();
   printf("follow_me_pause_test: all tests passed\n");

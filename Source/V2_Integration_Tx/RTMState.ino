@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-12 - comments only: fmArmedNotReady() and three R5 notes describe the D-7 looks (breathing bar / end dots) instead of the retired scanner. No code change.
 // V2.5-Evo - 2026-10-11 - audit 2026-10-11 D-3 (owner): runFmLoop() - fm_flags bit 3 WITH bit 0 set (same arrival, fm_fault_latched_armed) = the buggy stopped following but keeps Follow-Me armed: stop buzz + non-blocking "St" (showFmStopLabelHeld()), fm_armed kept, no 0xF2/0. Bit 3 with bit 0 clear keeps the fmDisarm(false) path. No confStruct change, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-09 - comments only (audit "magnet station step" L-4): the fmStepStationFromMagnet() header no
 //   longer says it runs after fmIsEngaged(), and its tap lockout is 400 ms (was "1 s"). No code change.
@@ -1695,8 +1696,8 @@ bool fmFundamentalReject()
 }
 
 // ARMED-NOT-READY vs READY — the OR of the RX's armed-not-ready bit (bit2) with the TX-local
-// transient readiness set. Any not-ready input → true (scanner blinks in place). None → false
-// (scanner sweeps). Flips live each render, so the "now it's good" moment appears for free.
+// transient readiness set. Any not-ready input → true (only the end dots C0 + C9 blink). None → false
+// (the bar breathes). Flips live each render, so the "now it's good" moment appears for free.
 bool fmArmedNotReady()
 {
   if (telemetry.fm_flags & FM_FLAG_NOTREADY)                          return true;  // RX half: latch not yet proven
@@ -1704,7 +1705,7 @@ bool fmArmedNotReady()
   if (last_packet == 0 || (millis() - last_packet) >= FM_LINK_HEALTHY_MS) return true;  // RX telemetry not recent / link unhealthy
   if (!(gps_tx.location.isValid() &&
         gps_tx.location.age() < (unsigned long)usrConf.tx_gps_stale_timeout_ms))  return true;  // TX GPS fix missing or stale
-  return false;  // all TX-local inputs fresh AND RX not-ready clear → READY → sweep
+  return false;  // all TX-local inputs fresh AND RX not-ready clear → READY → breathing bar
 }
 
 // Silent disarm: clears FM state and notifies RX, but shows no display and fires no haptic.
@@ -1717,7 +1718,7 @@ static void fmSilentDisarm()
   last_fm_return_mode = 0xFF;      // V2.5-Evo - 2026-09-19 - the override ends with the declaration (bits 5-6 = 00)
   queueMetaPacketBurst(0xF2, fmEncodeModeByte(0));   // mode 0 = FM disabled on RX
   // V2.5-Evo - 2026-10-07 - defect c: clear the whole R5 row here too (arm-timeout and the F-1 silent disarm), so no
-  // C7-C9 scanner/bar pixel outlives Follow-Me. During an active return the RTM bar redraws R5 on the next render.
+  // C7-C9 bar / end-dot pixel outlives Follow-Me. During an active return the RTM bar redraws R5 on the next render.
   DISP_LOCK(); displayBuffer[6] = 0x0000; DISP_UNLOCK();
 }
 
@@ -1754,7 +1755,7 @@ static void fmDisarm(bool commanded)
 
   // Large-font stop confirm on FM disarm.
   // V2.5-Evo - 2026-10-07 - DEFECT c: THE BUG - displayDigits() clears only C0-C6 of the R5 row (displayBuffer[6]),
-  // and the Follow-Me R5 bar / scanner also lights C7-C9 there. Nothing redraws R5 once Follow-Me is off, so those
+  // and the Follow-Me R5 bar / end dots also light C7-C9 there. Nothing redraws R5 once Follow-Me is off, so those
   // pixels stayed lit on the normal screen after a disarm - a leftover "following" look (SOP-041 rule 5). THE FIX:
   // clear the whole R5 row (as rtmDisengage() already does for the RTM bar) before the "St".
   DISP_LOCK(); displayBuffer[6] = 0x0000; displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
@@ -2325,7 +2326,7 @@ void runFmLoop()
     if (now - fm_arm_ms > (unsigned long)usrConf.fm_arm_timeout_s * 1000UL)
     {
       // V2.5-Evo - 2026-07-20 - Batch T (A2 D1): the silent disarm is no longer fully silent.
-      // The scanner going dark is the primary signal; add ONE short blip (Pattern 5, a single
+      // The R5 Follow-Me look going dark is the primary signal; add ONE short blip (Pattern 5, a single
       // 150ms pulse) as a NUDGE so a rider relying on the long arm window isn't left believing
       // he is still armed. Distinct by feel from the two-tap arm (Pattern 4) and the long stop
       // buzz (Pattern 7). Placed at the call site (not inside fmSilentDisarm) so it fires ONLY on

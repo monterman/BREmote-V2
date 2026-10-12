@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-12 - comment only: the fmArmedNotReady() prototype note describes the D-7 not-ready look (end dots C0 + C9), not the retired scanner. No code change.
 // V2.5-Evo - 2026-10-07 - S-7: prototype for fmIsReturning() (RTMState.ino), used by Display.ino. No confStruct change.
 // V2.5-Evo - 2026-10-07 - Q-2: prototype for rtmReturnConfirmed() (RTMState.ino), used by Display.ino. No confStruct change.
 // V2.5-Evo - 2026-10-07 - S-8: setup() calls txBootIdInit() before initTasks(); prototype for txBootIdInit(). No confStruct
@@ -66,7 +67,7 @@ void cycleFmMode();
 void cycleFmModeArmed();
 bool isFmArmed();
 // V2.5-Evo - 2026-07-20 - Batch T: FM readiness helpers (defined in RTMState.ino, called from Display.ino).
-bool fmArmedNotReady();     // true when FM is armed but not READY → scanner blinks in place instead of sweeping
+bool fmArmedNotReady();     // true when FM is armed but not READY → R5 shows only the end dots C0 + C9 blinking (not the breathing bar)
 bool fmIsReturning();       // V2.5-Evo - 2026-10-07 - S-7: the buggy confirms auto-return RETURNING (fm_flags bits 6 + 1)
 bool fmFundamentalReject(); // true when a fresh FM arm must be refused (unpaired / no packet ever / no GPS fix ever)
 uint8_t calcRtmThrottleCap();

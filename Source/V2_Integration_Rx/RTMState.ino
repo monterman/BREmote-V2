@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-12 - COMMENTS ONLY: the fm_flags bit-map comment describes the remote's D-7 looks (breathing bar,
+//   end dots, solid bar - no scanner) and today's bit 3 (with / without bit 0). No code change.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-3 (owner ruling (a)): the 30 s long-loss end from a HOLD under a held
 //   trigger arms the sticky cap with its rise CLOSED (stickyCapArmRise(cap, fmLongLossStickyRiseOpen(...))): the buggy
 //   stays at 0 until one release below 25 counts, then manual. From ACTIVE, unchanged. Follow-Me's 30 s end only; manual,
@@ -3906,17 +3908,17 @@ static void runRtmLoopBody(unsigned long now)
   // V2.5-Evo - 2026-07-20 - repurposed the former reserved_tx_imu byte. Kept SEPARATE from
   // fm_status (whose 8 bits are already full with aux/vesc/wetness/heading_conf/rtm_active) so no
   // working telemetry is disturbed and a TX still on the old firmware simply ignores this byte.
-  // Bit map (the TX renders these in a later pass):
-  //   [0] armed           - a live TX declaration is held (FM_ARMED / FM_ACTIVE / FM_HOLD). Scanner.
-  //   [1] engaged         - FM is actively following (FM_ACTIVE). Grow-with-far distance bar.
+  // Bit map (remote looks per D-7, 2026-10-11 - comment updated 2026-10-12; the sweeping scanner is retired):
+  //   [0] armed           - a live TX declaration is held (FM_ARMED / FM_ACTIVE / FM_HOLD / FM_RETURN). R5 lit.
+  //   [1] engaged         - FM is actively following (FM_ACTIVE). Grow-with-far centre distance bar, SOLID.
   //   [2] armed-not-ready - armed but not yet engage-eligible on RX facts: no separation latch yet,
   //                         or (V2.5-Evo - 2026-08-17) a standing heading-disagreement latch
   //                         [V2.5-Evo - 2026-10-11 - replaced: the latch no longer blocks; missing data
   //                         (a Follow-Me pause) raises it instead - see fm_not_ready_data below].
-  //                         The TX ORs its own TX-local readiness (own GPS fix/age, pairing, last
-  //                         reply age) on top, then renders blink-in-place (not ready) vs sweep (ready).
-  //   [3] fault-stop      - a FAULT ended FM while the trigger was held; sticky kFmFaultStickyMs so
-  //                         the TX cannot miss it across the ~2.4 s rotation and fires St + stop buzz.
+  //                         The TX ORs its own TX-local readiness (own GPS fix/age, pairing, last reply
+  //                         age) on top: not ready = only end dots C0 + C9 blinking; ready = the bar breathing.
+  //   [3] fault-stop      - St + stop buzz, sticky kFmFaultStickyMs of link time. With bit 0 set: stopped
+  //                         following, still armed (D-3). Without bit 0: Follow-Me is off (30 s end, return fault).
   // The four A3 disarm-ownership facts (armed drops, engaged drops, fault-sticky rises) let the TX
   // detect an RX-side fault and clear its own fm_armed so display and engagement cannot disagree.
   //
@@ -3944,7 +3946,7 @@ static void runRtmLoopBody(unsigned long now)
     // V2.5-Evo - 2026-10-07 - N-13 (owner rule "waiting means it will work"): bit 2 ALSO rises for a PARKED
     // auto-return (FM_RETURN, not moving) on which a squeeze would NOT start the return right now - the
     // remote's GPS stale, the link down, or the post-gap boot ID not yet heard (fm_return_not_ready, set by
-    // the previous FM tick). The remote shows its existing not-ready look (scanner blinking in place)
+    // the previous FM tick). The remote shows its existing not-ready look (since D-7: the end dots blinking)
     // instead of "auto-return waiting", and goes back to waiting when the data returns. A squeeze while
     // not ready still ends the return with "St" (runFmReturnTick()). When the BUGGY's own side fails the
     // return has already ended with "St" + the stop buzz, so it is never shown as waiting.

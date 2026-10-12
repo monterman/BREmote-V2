@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-12 - comments only: the stale "scanner" wording now describes the D-7 looks (breathing bar, end dots C0 + C9, solid bar); a project-notes reference in the updateR5ProximityBar() block says "project display rule". No code change.
 // V2.5-Evo - 2026-10-11 - audit 2026-10-11 change 3 / D-7 (owner): the Follow-Me R5 bar - FOLLOWING = the centre distance bar, solid (arithmetic moved unchanged into fmCentreBarMask()); WAITING = the same bar breathing 400 ms on / 1200 ms off on its own timer, width latched per breath; NOT READY / PAUSED = only C0 + C9 blinking 1000/500; the sweeping scanner is retired. Display only, no confStruct change, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-11 - audit 2026-10-11 D-3: showFmStopLabelHeld() - a non-blocking 2 s "St" on the F-label hold, for "stopped following, still armed". No confStruct change, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-07 - T-2: drawReturnBar() leaves R5 dark unless the distance is showable (rtmDistanceShowable():
@@ -1444,7 +1445,7 @@ void updateBargraphs(void *parameter)
     //   R1 RETURNING the buggy confirms auto-return returning (fm_flags    down-fill, 200 ms per frame: [R2] [R2 R3]
     //              bits 6 + 1, fmIsReturning()) OR a manual return it      [R2 R3 R4] [dark], repeating (800 ms), always
     //              has confirmed (rtmReturnConfirmed() on a fresh link)    starting at [R2] on entry
-    // R2 lights ONLY inside R1. The R5 bar and the digits carry the rest of each state (scanner / FM bar / RETURN bar,
+    // R2 lights ONLY inside R1. The R5 bar and the digits carry the rest of each state (FM bar or end dots / RETURN bar,
     // metres). Before the buggy confirms a manual return the remote shows "rn" and the dots stay on the Follow-Me state
     // (SOP-041: never drawn from the remote's own intent); a stale link drops R1 / F1 (both need a fresh link).
     // FRAMES COME FROM THE CLOCK, not from a tick count: frame = ((now - entry + 100 ms) / 200 ms) mod N, measured from
@@ -1785,7 +1786,7 @@ static uint16_t fmCentreBarMask(uint8_t d)
   if (dist_ratio > 1.0f) dist_ratio = 1.0f;
 
   // GROW-WITH-FAR: near → just the centre pair (C4+C5); far → full 10-px bar. Never fully dark
-  // while engaged (half_width 1..5) so ENGAGED always reads distinct from the OFF/scanner states.
+  // while engaged (half_width 1..5) so ENGAGED always reads distinct from the OFF / end-dots (not ready) states.
   uint8_t half_width = 1 + (uint8_t)(dist_ratio * 4.0f + 0.5f);
   if (half_width > 5) half_width = 5;
   uint16_t mask = 0;
@@ -1836,8 +1837,8 @@ void updateR5ProximityBar()
 
   // ---- V2.5-Evo - 2026-10-07 - S-7: AUTO-RETURN RETURNING -> the same RETURN bar, never the FM centre bar ----
   // Drawn only while the buggy confirms it is returning (fmIsReturning(), RTMState.ino). Auto-return WAITING (parked)
-  // falls through to the armed scanner below - moving when ready, blinking in place when the buggy reports not-ready
-  // (fm_flags bit 2, read by fmArmedNotReady()).
+  // falls through to the armed looks below - the breathing bar when ready, only the end dots C0 + C9 blinking when the
+  // buggy reports not-ready (fm_flags bit 2, read by fmArmedNotReady()). (2026-10-12: comment updated, D-7 looks.)
   if (fmIsReturning())
   {
     drawReturnBar(fm_return_ref_m, r5_blink_state);
@@ -1882,7 +1883,7 @@ void updateR5ProximityBar()
   //     the distance cannot be shown (rtmDistanceShowable(): 0xFF, 0x00 or a stale link) the not-ready look is used.
   //   FOLLOWING (above): the same bar, solid.
   // Display only: R5 bits under the caller's displayMutex, no I2C beyond the existing updateDisplay(), no radio or
-  // control timing touched. CLAUDE.md §13: one call site (this function), the owner confirms the look on the remote.
+  // control timing touched. Project display rule: one call site (this function), the owner confirms the look on the remote.
   // ============================================================
   const uint8_t d_wait = telemetry.rtm_distance;
   if (fmArmedNotReady() || !rtmDistanceShowable(d_wait))

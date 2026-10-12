@@ -16,7 +16,7 @@ The FM pair of dots is C7 R3 + R4; R2 lights only while the buggy is coming to y
 | ![waiting](img/fm/fm-waiting.gif) **Waiting** (armed; also parked auto-return) | R3 and R4 take turns every 200 ms | metres | the following bar, breathing: lit 400 ms, dark 1200 ms, width taken at the start of each breath \* |
 | ![not ready](img/fm/fm-notready.gif) **Not ready / paused** (armed) | as waiting | metres or `--` | only C0 + C9, blinking 1000 ms on / 500 ms off \* |
 | ![following](img/fm/fm-following.gif) **Following** | R3 + R4 steady | metres | grows/shrinks from the centre |
-| ![returning](img/fm/fm-returning.gif) **Coming to you** (auto-return or return-to-me) | fills down: R2, R2+R3, R2+R3+R4, dark (200 ms steps) | metres counting down | anchored left, shrinking |
+| ![returning](img/fm/fm-returning.gif) **Coming to you** (auto-return or return-to-me) | fills down: R2, R2+R3, R2+R3+R4, dark (200 ms steps) | metres counting down (`X.X` with the decimal dot under 10 m) | anchored left, shrinking, blinking 1000 ms on / 500 ms off |
 | **Stop / refused / fault** | — | `St` for 2 s, then the true state | — |
 
 \* fm-bundle firmware (TX SW27, from commit 3ea44a3). The current nightly binaries show a 3-px scanner instead:

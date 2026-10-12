@@ -3,16 +3,23 @@
 # gen_fm_bar_gifs.py - draws the Follow-Me screen GIFs for the docs
 # ============================================================
 # V2.5-Evo - 2026-10-12 - new: the waiting bar breathes, not-ready shows only the two end dots, following is solid.
+# V2.5-Evo - 2026-10-12 - fm-returning.gif added, drawn from the firmware: the return bar BLINKS 1000 ms on / 500 ms off
+#   (it used to be drawn solid), shrinks on the firmware's square-root curve, and the metres under 10 m show "X.X".
 #
-# What it does: renders the remote's 10 x 7 LED screen for three Follow-Me states and writes them as looping GIFs:
+# What it does: renders the remote's 10 x 7 LED screen for four Follow-Me states and writes them as looping GIFs:
 #   fm-waiting.gif   armed and ready: the centre distance bar BREATHES (400 ms on, 1200 ms off), one dot hopping
 #   fm-notready.gif  armed, not ready or paused: only the two end dots C0 + C9 blink (1000 ms on, 500 ms off)
 #   fm-following.gif following: the same centre distance bar, SOLID, two steady dots, metres counting down
+#   fm-returning.gif coming to you (auto-return or return-to-me): the left-anchored return bar BLINKING 1000/500 and
+#                    shrinking to the left, the dot column filling down, metres counting down (tenths under 10 m)
 #
 # The rules and timings are copied from the TX firmware, Source/V2_Integration_Tx/Display.ino:
 #   fmCentreBarMask()        the centre bar: half_width = 1 + round(4 x distance / fm_warn_distance_m), 1..5
 #   updateR5ProximityBar()   kFmBreathOnMs 400, kFmBreathCycleMs 1600; the 1000/500 blink for not ready
-#   updateBargraphs()        Follow-Me dots at C7: waiting = R3 and R4 take turns every 200 ms, following = both
+#   drawReturnBar()          the return bar: round(sqrt(distance / start distance) x 10) dots from C0, drawn only in
+#                            the "on" part of the same 1000/500 blink (r5_blink_state)
+#   updateBargraphs()        Follow-Me dots at C7: waiting = R3 and R4 take turns every 200 ms, following = both,
+#                            returning = R2, R2+R3, R2+R3+R4, dark (200 ms steps)
 #   displayDistanceInUnits() "X.X" with the C3 R3 dot under 10 m, whole metres from 10 to 99 m
 # If those change, change the constants below and run this script again.
 #
@@ -23,7 +30,7 @@
 #         python Tools/gen_fm_bar_gifs.py --out some/dir --warn-m 150 --frames
 # Inputs: --out folder, --warn-m the remote's fm_warn_distance_m (factory default 150), --frames also saves one PNG
 #         per GIF frame so the look can be checked by eye.
-# Outputs: the three GIFs (and PNG frames with --frames). Side effects: creates the output folder if needed.
+# Outputs: the four GIFs (and PNG frames with --frames). Side effects: creates the output folder if needed.
 # Needs: Pillow (pip install pillow).
 # ============================================================
 
@@ -40,6 +47,12 @@ BLINK_ON_MS = 1000          # r5_blink_state: on 1000 ms (not-ready end dots, re
 BLINK_OFF_MS = 500          # r5_blink_state: off 500 ms
 DOT_FRAME_MS = 200          # Follow-Me dots: one frame every 200 ms
 FM_WARN_M_DEFAULT = 150     # TX defaultConf.fm_warn_distance_m (the bar's full scale), range 50-164
+# The return demo (same distances as the screens page): the buggy starts 40 m away - the bar's 100 % reference, which the
+# firmware captures from the first distance it shows (rtm_arm_dist_m / fm_return_ref_m) - and closes to 3 m. The loop is
+# 12 s: a whole number of 1.5 s blinks and 0.8 s dot cycles, so the GIF loops without a hiccup.
+RETURN_START_M = 40.0
+RETURN_END_M = 3.0
+RETURN_LOOP_MS = 12000
 
 # ---- Drawing style (same as docs/followme-screens.html and the older docs/img/fm GIFs) ----
 COLS, ROWS = 10, 7
@@ -135,6 +148,30 @@ def dots_following(g):
     g[4][7] = True
 
 
+def dots_returning(g, t):
+    """R1: the C7 column fills down from the top - R2, R2+R3, R2+R3+R4, then dark - one step every 200 ms."""
+    f = (t // DOT_FRAME_MS) % 4
+    if f < 3:
+        g[2][7] = True
+        if f >= 1:
+            g[3][7] = True
+        if f >= 2:
+            g[4][7] = True
+
+
+def return_bar(g, d, ref_m, t):
+    """drawReturnBar(): left-anchored from C0, round(sqrt(d / ref) x 10) dots (0..10), full at the start distance and
+    shrinking toward the left as the buggy closes - drawn only in the "on" part of the 1000/500 blink."""
+    if (t % (BLINK_ON_MS + BLINK_OFF_MS)) >= BLINK_ON_MS:
+        return                                   # off phase: R5 dark
+    if ref_m <= 0:
+        return
+    ratio = min(1.0, d / ref_m)
+    n = min(10, round_half_up(math.sqrt(ratio) * 10.0))
+    for c in range(n):
+        g[5][c] = True
+
+
 # ---- The three states ----
 
 def frame_waiting(t, d_fn, warn_m):
@@ -173,10 +210,28 @@ def frame_following(t, d_fn, warn_m):
     return g
 
 
+def frame_returning(t, d_fn, ref_m):
+    """Coming to you (auto-return or manual return-to-me, same look): the blinking return bar, the dot column filling
+    down, and the live distance in the digits (tenths with the dot under 10 m)."""
+    g = blank()
+    chrome(g)
+    d = telemetry_m(d_fn(t))
+    distance_digits(g, d)
+    return_bar(g, d, ref_m, t)
+    dots_returning(g, t)
+    return g
+
+
 def follow_demo_m(t):
     """The screens page's following demo: closes from 15 m to 8 m over 2.8 s, holds 8 m, loops every 3.6 s."""
     k = t % 3600
     return 15 - 7 * (k / 2800.0) if k < 2800 else 8.0
+
+
+def return_demo_m(t):
+    """The return demo: closes steadily from RETURN_START_M to RETURN_END_M over one RETURN_LOOP_MS loop."""
+    k = t % RETURN_LOOP_MS
+    return RETURN_START_M - (RETURN_START_M - RETURN_END_M) * (k / float(RETURN_LOOP_MS))
 
 
 # ---- Rendering ----
@@ -251,6 +306,8 @@ def main():
         ("fm-waiting.gif", BREATH_CYCLE_MS, 100, lambda t: frame_waiting(t, waiting_m, a.warn_m)),
         ("fm-notready.gif", 6000, 100, frame_notready),   # 6 s = the 1.5 s blink and the 0.4 s dot cycle both repeat
         ("fm-following.gif", 3600, 200, lambda t: frame_following(t, follow_demo_m, a.warn_m)),
+        # 100 ms steps: the blink's 500 ms off phase is not a multiple of 200 ms.
+        ("fm-returning.gif", RETURN_LOOP_MS, 100, lambda t: frame_returning(t, return_demo_m, RETURN_START_M)),
     ]
     for name, period, step, make in jobs:
         frames = frames_over(period, step, make)

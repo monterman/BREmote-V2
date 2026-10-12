@@ -130,7 +130,7 @@ Keep the trigger held; no release step is needed.
 | ![Waiting](img/fm/fm-waiting.gif) | **One dot hopping** between two places, the distance bar **breathing** (lit 0.4 s, dark 1.2 s) | **Waiting.** Armed and ready for your whip. It is the same bar as following, so its width shows the distance. A parked buggy waiting for you to summon it (auto-return) looks **exactly the same**. |
 | ![Not ready](img/fm/fm-notready.gif) | **One dot hopping**, only the **two end dots** of the bar blinking | **Not ready yet, or paused.** Armed, but GPS or the link is still coming, or Follow-Me paused for missing data. It goes back to the breathing bar when the data is back. |
 | ![Following](img/fm/fm-following.gif) | **Two steady dots**, bar grows and shrinks with distance | **Following you.** |
-| ![Returning](img/fm/fm-returning.gif) | **The dot column fills down from the top**, metres count down, bar shrinks from the left | **Coming to you** (auto-return or manual return-to-me). |
+| ![Returning](img/fm/fm-returning.gif) | **The dot column fills down from the top**, metres count down, the bar **blinks** (1 s on, 0.5 s off) and shrinks to the left | **Coming to you** (auto-return or manual return-to-me). |
 
 *The breathing bar and the end dots come with the **fm-bundle** firmware (remote TX SW27, from commit 3ea44a3). The
 current nightly binaries still show a 3-dot scanner instead: sweeping = ready, blinking in place = not ready.*

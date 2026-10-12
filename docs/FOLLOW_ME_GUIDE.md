@@ -268,6 +268,19 @@ trigger held.
 Falling is normal, so it stays ready. A real failure is not, so it steps fully out and waits for
 you to arm again. Autonomy never silently restarts after a glitch.
 
+> **With the fm-bundle firmware** (buggy RX SW36 from 9c52b80, remote TX SW27 from 3ea44a3) a dropout
+> is a **pause**, not a stop:
+>
+> - **Short loss** of the link, your GPS, the buggy's GPS or its heading while following: the buggy
+>   stops while you hold the trigger and **stays armed**; the screen shows not ready (the two end
+>   dots). Let go once for full manual. It follows again when the data is back; after a pause of 2 s
+>   or more you must get to the engage distance again first.
+> - **30 s** without the link, your GPS or the buggy's GPS: **St** + long buzz, Follow-Me switches
+>   off. Arm it again.
+> - **Steering gone wrong** (the buggy is not closing on you, or the compass and the GPS course start
+>   to disagree): **St** + long buzz, but Follow-Me **stays armed**. The throttle stays limited until
+>   you let go once; then get to the engage distance again and it follows again.
+
 ---
 
 ## 11. Settings

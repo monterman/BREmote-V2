@@ -6,10 +6,10 @@ For stable firmware use the `master` branch.
 | | |
 |---|---|
 | Firmware | RX SW36 (V2.5-Evo), `fm-stations` branch |
-| Built from commit | `7c4c25f` |
+| Built from commit | `61ec981` |
 | Board / FQBN | HT-CT62 (ESP32-C3) — `esp32:esp32:esp32c3:CDCOnBoot=default,PartitionScheme=custom` (uses the sketch's own `partitions.csv`; never `huge_app`) |
-| File | `BREmote-RX-SW36-fm-stations-7c4c25f.bin` (app image, `0x10000`) |
-| SHA-256 | `2285e42f6fb40ab23e1766d9cf586c21fdb6c1e0ac9d460fa19d04492bb644aa` |
+| File | `BREmote-RX-SW36-fm-stations-61ec981.bin` (app image, `0x10000`) |
+| SHA-256 | `fa2a600885955861146b9655664d732012f7e8c0cd28320c1568c28b4b25d84a` |
 
 ## Before you flash
 
@@ -27,6 +27,6 @@ For stable firmware use the `master` branch.
   [Flashing with the Flash Download Tool](../../../../docs/FLASHING_WITH_DOWNLOAD_TOOL.md). Full-chip (`.merged.bin`, `0x0`) images are not
   published: a write at `0x0` erases the settings storage.
 
-Example (esptool): `esptool --chip esp32c3 --port COMx write-flash 0x10000 BREmote-RX-SW36-fm-stations-7c4c25f.bin`
+Example (esptool): `esptool --chip esp32c3 --port COMx write-flash 0x10000 BREmote-RX-SW36-fm-stations-61ec981.bin`
 
 Known issues for this branch are listed at the top of the repository README.

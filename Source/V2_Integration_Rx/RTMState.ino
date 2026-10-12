@@ -1,3 +1,8 @@
+// V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-2: the heading-disagree end (D-3) fires ONLY while FM_ACTIVE - a rise
+//   in HOLD is consumed with no end (it armed the sticky cap at 0 and climbed to 60 under the held trigger) - and its
+//   edge detector is sampled at the TOP of runFmLoopBody() on every tick, before any early return, plus once after the
+//   tick's heading call (fmHdgDisagreeSample / fmHdgDisagreeEnds, Common/FollowMePause.h), so a latch that rose during a
+//   return, the RTM yield or IDLE can never fire late. No new stop, no pause change. No confStruct change, SW_VERSION 36.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-1 (owner: the strong version): ONE RULE FOR "THE RIDER'S GPS IS
 //   ALIVE" - a new rider GPS SOLUTION within tx_gps_stale_timeout_ms (rx_tx_gps_solution_ms: a v2 remote's fix counter
 //   moved, an old remote's position moved). fmFailingConditionsMaskHdg() reads it for condition 4, and that one bit
@@ -2967,7 +2972,7 @@ static unsigned long   fm_creep_course_ms  = 0;           // when it was seen, 0
 static unsigned long   fm_pause_since_ms   = 0;           // start of the current data-loss pause while engaged, 0 = none
 static uint8_t         fm_pause_reason     = FM_STOP_NONE;// the input a pause / creep is waiting on (FmStopReason 1-6), 0 = none
 static bool            fm_not_ready_data   = false;       // fm_flags bit 2 feed: armed but missing data a squeeze needs
-static bool            fm_hdg_disagree_prev = false;      // heading_disagree_fault on the previous FM tick (edge for D-3)
+static bool            fm_hdg_disagree_prev = false;      // heading_disagree_fault at the last sample (edge for D-3; since 2026-10-12, A-2, sampled at the top of EVERY FM tick and after its heading call)
 
 // fmPauseClear - drop the pause, the creep and the long-loss clock (every road out of Follow-Me's own states: fmEnterIdle()
 // and the RTM yield). The creep's per-squeeze flag goes too: a new declaration starts with one creep available.
@@ -6687,6 +6692,14 @@ void runFmLoop()
 
 static void runFmLoopBody(unsigned long now)
 {
+  // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-2: SAMPLE THE HEADING-DISAGREE LATCH FIRST, ON EVERY TICK, BEFORE ANY
+  // EARLY RETURN (Common/FollowMePause.h fmHdgDisagreeSample()). THE BUG: the previous value was stored only on ticks
+  // that reached the end classification, so a latch that rose during an auto-return, the RTM yield or IDLE was read as a
+  // FRESH edge on the first ordinary tick afterwards. Now a rise since the last tick (usually in runRtmLoop()'s heading
+  // call, just before this) is taken here, by whichever tick comes next: an early-returning tick simply drops it. A
+  // second sample after this tick's own heading call (below) catches a rise inside it. Read only; no state is written.
+  const bool hdg_rose_at_entry = fmHdgDisagreeSample(&fm_hdg_disagree_prev, heading_disagree_fault);
+
   // Keep the rider filter and derived motion warm on every tick, in every state, so the
   // instant the conditions are met we already have a trustworthy course and speed.
   updateFmRiderTracking();
@@ -7064,9 +7077,14 @@ static void runFmLoopBody(unsigned long now)
   // D-3 edge: a heading disagreement that ROSE this tick. A STANDING latch no longer blocks anything ("COG, period" -
   // getRtmHeading() keeps the compass withdrawn and Follow-Me runs on the GPS course); only its rising edge while
   // engaged ends the engagement. Read after the mask call above, which is where getRtmHeading() may latch it.
-  const bool    hdg_disagree_now  = heading_disagree_fault;
-  const bool    hdg_disagree_edge = hdg_disagree_now && !fm_hdg_disagree_prev;
-  fm_hdg_disagree_prev = hdg_disagree_now;
+  // V2.5-Evo - 2026-10-12 - audit delta A-2: (1) the edge is the top-of-tick sample OR this second sample, so the stored
+  // previous value is refreshed on EVERY tick and a rise from an early-returning tick can never fire late; (2) it ends
+  // the engagement ONLY while FM_ACTIVE (fmHdgDisagreeEnds()). In HOLD nothing is steering and the cap is 0: ending there
+  // armed the sticky cap at 0 and let it climb to 60 under the held trigger - a stopped buggy restarting without a new
+  // squeeze. In HOLD the rise is consumed with no end: the compass stays withdrawn and Follow-Me goes on on the GPS
+  // course. No new stop; the pause is untouched.
+  const bool    hdg_disagree_edge = fmHdgDisagreeSample(&fm_hdg_disagree_prev, heading_disagree_fault) || hdg_rose_at_entry;
+  const bool    hdg_disagree_end  = fmHdgDisagreeEnds(hdg_disagree_edge, fm_state == FM_ACTIVE);
   if (heading_ok && fm_hdg_now_deg >= 0.0f) {   // D-4 guard: remember the last good heading (30 s)
     fm_creep_course_deg = fm_hdg_now_deg;
     fm_creep_course_ms  = (now != 0) ? now : 1;
@@ -7805,12 +7823,13 @@ static void runFmLoopBody(unsigned long now)
   // and the divergence net. A latch that RISES while engaged still ends that engagement (D-3, below).
   // V2.5-Evo - 2026-10-11 - change 1: the HEADING joins here, and only here - steering needs one, the proof does not (M-1).
   // Without it the tick is not steerable unless a HEADING CREEP is granted (D-4).
-  const bool was_engaged_now = (fm_state == FM_ACTIVE || fm_state == FM_HOLD);
+  // V2.5-Evo - 2026-10-12 - audit delta A-2: the D-3 term is hdg_disagree_end - a rise while FM_ACTIVE only (it was any
+  // rise while ACTIVE or HOLD, through a was_engaged_now local that is gone with it).
   const bool eligible_but_heading = hard_ok && speed_ok && dist_ok && fm_sep_latched &&
                        !diverge_fault &&
                        !return_candidate &&   // V2.5-Evo - 2026-09-19 - a stopped rider is never followed (raw judgement, B6)
                        !sticky_armed.load() && // V2.5-Evo - 2026-10-08 - D-7
-                       !(hdg_disagree_edge && was_engaged_now);   // V2.5-Evo - 2026-10-11 - D-3 edge: this engagement ends
+                       !hdg_disagree_end;      // V2.5-Evo - 2026-10-11 - D-3 edge: this engagement ends (2026-10-12, A-2: ACTIVE only)
 
   // ============================================================
   // V2.5-Evo - 2026-10-11 - D-4: THE HEADING CREEP (Common/FollowMePause.h fmCreepStep(), host-tested).
@@ -8121,7 +8140,8 @@ static void runFmLoopBody(unsigned long now)
     // stopped COG-only buggy lost its heading (condition 6) in HOLD, that ramp handed the held trigger back, and the buggy
     // drove at the stopped rider twice (closest about 2.5 m at up to 14.5 mph). The history of that branch is in git.
     // NOW, classified by fmEngagedEndClass() (Common/FollowMePause.h, host-tested):
-    //   STEER END (divergence, or a heading disagreement that ROSE this tick - the steering itself is wrong, D-3):
+    //   STEER END (divergence, or a heading disagreement that ROSE this tick - the steering itself is wrong, D-3;
+    //     V2.5-Evo - 2026-10-12 - A-2: the heading rise only while FM_ACTIVE - divergence is judged in ACTIVE only anyway):
     //     the sticky cap FIRST at the cap in force (stickyCapArm: min(cap, 60), climbs once on the clock to 60, GPS can
     //     only lower it near the rider, cleared by one release below 25 counts), then ARMED-unlatched + needs-D_engage
     //     with the steering handed back, the stop buzz (fm_flags bit 3 with bit 0 still set: "stopped following, still
@@ -8131,7 +8151,9 @@ static void runFmLoopBody(unsigned long now)
     //     release (HOLD-ESCAPE-2), the declaration and the latch kept, resume by itself through the engage ramp.
     //   HOLD (geometry, rider speed, the trigger): the HOLD branch below, exactly as before.
     // ============================================================
-    const uint8_t end_class = fmEngagedEndClass(was_engaged, failing, true, diverge_fault, hdg_disagree_edge);
+    // V2.5-Evo - 2026-10-12 - audit delta A-2: hdg_disagree_end (a rise while FM_ACTIVE), not the bare edge - a rise in HOLD
+    // is no longer a steering end.
+    const uint8_t end_class = fmEngagedEndClass(was_engaged, failing, true, diverge_fault, hdg_disagree_end);
     if (end_class == FMEE_STEER_END) {
       stickyCapArm(fm_throttle_cap.load());   // FIRST (D-1): before anything lifts Follow-Me's own cap
       fm_state                  = FM_ARMED;   // still declared: bit 0 stays set (the remote stays armed)

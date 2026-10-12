@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-2: section 2c - the heading-disagree end fires only while ACTIVE (no
+//   end from HOLD) and its edge cannot fire late after RETURN / the RTM yield / IDLE.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-1: the clock takes the rider verdict from the caller; new section 2b
 //   runs the RX's one rule end to end (still rider with a moving fix counter never pauses or starts the clock; a repeated
 //   counter pauses visibly and fires after 30 s; an old v1 remote; a link pull resets on new solutions).
@@ -248,6 +250,62 @@ static void testRiderGpsOneRule()
   }
 }
 
+// ---- 2c. A-2 (V2.5-Evo - 2026-10-12): the heading-disagree end - ACTIVE only, edge sampled on every tick ----
+// A model of runFmLoopBody(): sample at the TOP of every tick (latch_top: the latch as the tick starts - it may have
+// risen in runRtmLoop()'s heading call just before); an early-returning tick (RETURN, the RTM yield, IDLE) stops there
+// - and a RETURN tick's own heading call may still raise the latch afterwards (latch_end); an ordinary tick samples again
+// after its heading call (latch_end) and ends the engagement only if the edge stands and the state is FM_ACTIVE.
+// Returns true when the tick ENDS the engagement (the D-3 steering end).
+static bool hdgTick(bool* prev, bool latch_top, bool latch_end, bool early, bool active)
+{
+  const bool at_entry = fmHdgDisagreeSample(prev, latch_top);
+  if (early) return false;
+  const bool edge = fmHdgDisagreeSample(prev, latch_end) || at_entry;
+  const bool ends = fmHdgDisagreeEnds(edge, active);
+  // ... which is what fmEngagedEndClass() is given (data all present, no divergence):
+  assert((fmEngagedEndClass(true, 0, true, false, ends) == FMEE_STEER_END) == ends);
+  return ends;
+}
+
+static void testHdgDisagreeEnd()
+{
+  // ACTIVE: a rise between ticks (in the RTM loop's heading call) ends it once; a standing latch never again.
+  { bool p = false;
+    assert(!hdgTick(&p, false, false, false, true));
+    assert(hdgTick(&p, true, true, false, true));
+    for (int i = 0; i < 50; ++i) assert(!hdgTick(&p, true, true, false, true)); }
+  // ACTIVE: a rise inside this tick's own heading call ends it on this tick.
+  { bool p = false;
+    assert(hdgTick(&p, false, true, false, true)); }
+  // HOLD (A-2): a rise is consumed with NO end - and it does not come back as an edge when Follow-Me resumes ACTIVE.
+  { bool p = false;
+    assert(!hdgTick(&p, false, false, false, false));
+    assert(!hdgTick(&p, true, true, false, false));                     // rose between ticks, in HOLD
+    for (int i = 0; i < 50; ++i) assert(!hdgTick(&p, true, true, false, true));   // resumes ACTIVE on COG: no end
+    bool q = false;
+    assert(!hdgTick(&q, false, true, false, false));                    // rose inside a HOLD tick's heading call
+    assert(!hdgTick(&q, true, true, false, true)); }
+  // LATE EDGE (A-2): the latch rises during a run of RETURN / yield / IDLE ticks - including inside the LAST RETURN
+  // tick's own heading call, after its top sample. The next tick is never ACTIVE at its evaluation (a return exits to
+  // ARMED / HOLD / STOPPING / IDLE, the yield to ARMED), so it consumes the rise with no end; every ACTIVE tick after
+  // that sees no edge. The old code stored the previous value only on ordinary ticks and ended here.
+  { bool p = false;
+    for (int i = 0; i < 10; ++i) assert(!hdgTick(&p, false, false, true, false));   // RETURN ticks, latch down
+    assert(!hdgTick(&p, false, true, true, false));                                 // rises inside the last one
+    assert(!hdgTick(&p, true, true, false, false));                                 // exit tick (HOLD / ARMED)
+    for (int i = 0; i < 50; ++i) assert(!hdgTick(&p, true, true, false, true)); }   // ACTIVE again: never fires
+  { bool p = false;
+    for (int i = 0; i < 5; ++i) assert(!hdgTick(&p, false, false, true, false));    // yield / IDLE
+    for (int i = 0; i < 5; ++i) assert(!hdgTick(&p, true, true, true, false));      // rose between yield ticks
+    assert(!hdgTick(&p, true, true, false, false));                                 // first ordinary tick (ARMED)
+    for (int i = 0; i < 50; ++i) assert(!hdgTick(&p, true, true, false, true)); }
+  // ... while a latch that clears and RISES AGAIN during a later ACTIVE run is a new edge and ends that run.
+  { bool p = false;
+    assert(!hdgTick(&p, true, true, true, false));
+    assert(!hdgTick(&p, false, false, false, true));                                // cleared (agreement / ?compasscal)
+    assert(hdgTick(&p, true, true, false, true)); }
+}
+
 // ---- 3. the heading creep ----
 static void testCreep()
 {
@@ -353,6 +411,7 @@ int main()
   testClassification();
   testLongLoss();
   testRiderGpsOneRule();   // V2.5-Evo - 2026-10-12 - A-1
+  testHdgDisagreeEnd();    // V2.5-Evo - 2026-10-12 - A-2
   testCreep();
   testStickyAtEveryExit();
   printf("follow_me_pause_test: all tests passed\n");

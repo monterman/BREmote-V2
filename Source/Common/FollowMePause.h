@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-2: fmHdgDisagreeSample() / fmHdgDisagreeEnds() - the heading-disagree
+//   end's edge is sampled at the top of every tick and ends only an ACTIVE engagement. See section 3c.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-1: fmLongLossStep() takes the rider's fix as the caller's verdict
 //   (rider_ok - the one rule the RX's pause and fm_flags bit 2 also use) plus the rider SOLUTION counter for its reset
 //   streak; FmLongLossState loses fix_ms. See section 3.
@@ -13,6 +15,8 @@
 //   2. fmPauseReasonBit    - which missing input to name for a pause (positions and link before heading).
 //   3. fmLongLossStep      - the 30 s clock: link OR rider fix OR buggy fix missing; heading never counts.
 //                            (2026-10-12, A-1: the rider fix is the caller's one-rule verdict.)
+//   3c. fmHdgDisagreeSample / fmHdgDisagreeEnds - (2026-10-12, A-2) the heading-disagree end's edge, sampled every tick,
+//                            ending only an ACTIVE engagement.
 //   4. fmCreepStep / fmCreepCap / fmCreepStartDistM - the straight-ahead creep that earns a stopped, COG-only buggy its
 //                            GPS course (D-4), bounded exactly like RTM's BOOTSTRAP-1.
 #ifndef BREMOTE_FOLLOW_ME_PAUSE_H
@@ -124,6 +128,34 @@ static inline uint8_t fmLongLossStep(FmLongLossState* s, uint32_t now_ms, bool r
     return FMLL_FIRED;
   }
   return FMLL_COUNTING;
+}
+
+// ============================================================
+// 3c. THE HEADING-DISAGREE END'S EDGE - V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-2.
+// ============================================================
+// fmHdgDisagreeSample - the ONE sampler of the D-3 edge detector. Returns true when the compass-vs-COG latch is up now
+// and was down at the previous sample; *prev always ends equal to latch_now.
+// THE BUG IT CLOSES: the previous value was stored only on ticks that reached the end classification, so a latch that
+// rose during an auto-return, the RTM yield or IDLE (ticks that return early) was read as a FRESH edge on the first
+// ordinary tick afterwards - an engagement ended for a rise it never saw. THE RX NOW SAMPLES AT THE TOP OF EVERY
+// FOLLOW-ME TICK, before any early return (a rise since the previous tick is consumed by whichever tick comes next,
+// early-returning or not), and once more right after the tick's own heading call (a rise inside it).
+// Inputs: *prev (the stored previous sample), latch_now. Returns: rose since the previous sample. Side effects: *prev.
+static inline bool fmHdgDisagreeSample(bool* prev, bool latch_now)
+{
+  const bool rose = latch_now && !*prev;
+  *prev = latch_now;
+  return rose;
+}
+
+// fmHdgDisagreeEnds - a rise ends the engagement ONLY while FM_ACTIVE (A-2). In HOLD nothing is steering and the cap is
+// 0; ending there armed the sticky cap at 0 and let it climb to 60 under the held trigger - a stopped buggy restarting
+// without a new squeeze, the old surge pattern. In HOLD the rise is simply consumed: the compass stays withdrawn ("COG,
+// period", D-3) and Follow-Me resumes on the GPS course by its ordinary rules. No new stop, no pause change.
+// Inputs: rose_this_tick (either sample above), active (fm_state == FM_ACTIVE). Returns: end now. Side effects: none.
+static inline bool fmHdgDisagreeEnds(bool rose_this_tick, bool active)
+{
+  return rose_this_tick && active;
 }
 
 // ============================================================

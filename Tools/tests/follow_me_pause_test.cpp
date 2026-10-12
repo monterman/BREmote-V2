@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-3: section 5 - the 30 s end from a HOLD under a held trigger arms the
+//   sticky cap with its rise closed (0 until one release); from ACTIVE unchanged.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-2: section 2c - the heading-disagree end fires only while ACTIVE (no
 //   end from HOLD) and its edge cannot fire late after RETURN / the RTM yield / IDLE.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-1: the clock takes the rider verdict from the caller; new section 2b
@@ -406,6 +408,47 @@ static void testStickyAtEveryExit()
   }
 }
 
+// ---- 5. A-3 (V2.5-Evo - 2026-10-12, owner ruling (a)): the 30 s end from a HOLD under a held trigger ----
+// The RX arms the sticky cap with stickyCapArmRise(cap, fmLongLossStickyRiseOpen(from_hold, thr_held)) and steps it with
+// stickyReturnCapStep() at 10 Hz (stickyCapUpdate()). The motor sees min(trigger, sticky) until calcPWM() clears it on
+// one release below 25 counts.
+static void testLongLossStickyFromHold()
+{
+  const uint8_t trigger = 240;
+  // The rule itself: closed only from HOLD with the trigger held.
+  assert(!fmLongLossStickyRiseOpen(true, true));
+  assert(fmLongLossStickyRiseOpen(true, false));    // released this very tick: calcPWM() clears the cap on its next pass
+  assert(fmLongLossStickyRiseOpen(false, true));    // from ACTIVE: as before
+  assert(fmLongLossStickyRiseOpen(false, false));
+  // FROM HOLD, TRIGGER HELD: HOLD's cap is 0, the rise starts CLOSED -> the buggy stays at 0 for as long as the trigger
+  // is held - 10 s with no GPS, and 10 s with GPS putting the rider far away (the distance term can only lower).
+  for (int gps = 0; gps < 2; ++gps) {
+    uint8_t sticky = stickyArmValue(0, 60);
+    bool rise_open = fmLongLossStickyRiseOpen(true, true);
+    for (int i = 0; i < 100; ++i) {
+      sticky = stickyReturnCapStep(sticky, &rise_open, 100, gps == 1, 80.0f, 10.0f, 30.0f, 60, 1500);
+      const uint8_t out = (sticky < trigger) ? sticky : trigger;
+      assert(out == 0 && !rise_open);
+    }
+  }
+  // (One release below 25 counts then clears it in calcPWM() - PWM.ino, unchanged and not modelled here.)
+  // FROM ACTIVE (the cap in force, e.g. 200): unchanged - armed at the 60 ceiling, the rise open, holds 60 with no GPS.
+  {
+    uint8_t sticky = stickyArmValue(200, 60);
+    bool rise_open = fmLongLossStickyRiseOpen(false, true);
+    for (int i = 0; i < 100; ++i) sticky = stickyReturnCapStep(sticky, &rise_open, 100, false, -1.0f, 10.0f, 30.0f, 60, 1500);
+    assert(sticky == 60);
+  }
+  // FROM ACTIVE at a low cap (e.g. 0 in an engage ramp's first tick): the rise opens and climbs to 60 as before.
+  {
+    uint8_t sticky = stickyArmValue(0, 60);
+    bool rise_open = fmLongLossStickyRiseOpen(false, true);
+    int ticks = 0;
+    while (sticky < 60 && ticks < 50) { sticky = stickyReturnCapStep(sticky, &rise_open, 100, false, -1.0f, 10.0f, 30.0f, 60, 1500); ++ticks; }
+    assert(sticky == 60 && ticks == 4);   // 0 -> 17 -> 34 -> 51 -> 60
+  }
+}
+
 int main()
 {
   testClassification();
@@ -414,6 +457,7 @@ int main()
   testHdgDisagreeEnd();    // V2.5-Evo - 2026-10-12 - A-2
   testCreep();
   testStickyAtEveryExit();
+  testLongLossStickyFromHold();   // V2.5-Evo - 2026-10-12 - A-3
   printf("follow_me_pause_test: all tests passed\n");
   return 0;
 }

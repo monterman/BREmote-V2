@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-3: stickyCapArmRise(initial, open_rise) - the sticky arm with the rise chosen by the caller (closed only for the Follow-Me 30 s end from a held HOLD); stickyCapArm() = it with the rise open, unchanged for every existing caller. Runtime only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-1: includes ../Common/RiderGpsPacket.h (the v2 rider GPS packet with the remote's fix counter); new runtime globals rx_tx_gps_solution_ms / rx_tx_gps_solution_seq / rx_tx_gps_proto - "the rider's GPS is alive" is now judged by a NEW GPS SOLUTION, not by a change of coordinates. Runtime only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-11 - FOLLOW-ME NEVER SWITCHES ITSELF OFF (audit 2026-10-11 change 1): includes ../Common/FollowMePause.h (the pause classification, the 30 s long-loss clock and the heading creep, host-tested). Include only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-09 - STICKY CAP SIMPLIFIED (owner): sticky_rise_open atomic + sticky_arm_mux; stickyCapArm() clamps the arm to kStickyFallbackCap (stickyArmValue()), opens the one clock-only rise on a fresh arm only, and runs in a critical section (L-1); kStickyFallbackCap re-commented as the sticky ceiling. Runtime only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -1567,7 +1568,14 @@ portMUX_TYPE         sticky_arm_mux = portMUX_INITIALIZER_UNLOCKED;
 // critical section (L-1, see sticky_arm_mux).
 // Inputs: initial (0-255). Side effects: sticky_cap, sticky_rise_open, sticky_armed. Call it BEFORE the write that
 // ends the mode.
-static inline void stickyCapArm(uint8_t initial)
+// V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-3 (owner ruling (a)): stickyCapArmRise() is the same arm with the rise
+// chosen by the caller, and stickyCapArm() is it with the rise open - every existing caller is byte-for-byte the old
+// behaviour. With open_rise false (only the Follow-Me 30 s long-loss end from a HOLD under a held trigger,
+// fmLongLossStickyRiseOpen() in Common/FollowMePause.h): a fresh arm starts with its rise CLOSED, so the cap stays at its
+// arm value (0 from that HOLD) until one release below kStickyReleaseThr, and a re-arm onto a standing cap also closes
+// that cap's rise. Closing a rise can only keep the cap where it is or lower; nothing here can raise it.
+// Inputs: initial (0-255), open_rise. Side effects: sticky_cap, sticky_rise_open, sticky_armed (critical section, L-1).
+static inline void stickyCapArmRise(uint8_t initial, bool open_rise)
 {
   const uint8_t v = stickyArmValue(initial, kStickyFallbackCap);
   portENTER_CRITICAL(&sticky_arm_mux);
@@ -1576,13 +1584,15 @@ static inline void stickyCapArm(uint8_t initial)
     while (v < cur) {
       if (sticky_cap.compare_exchange_weak(cur, v)) break;
     }
+    if (!open_rise) sticky_rise_open.store(false);   // A-3: a closed arm also closes a standing rise (never raises)
   } else {
     sticky_cap.store(v);
-    sticky_rise_open.store(true);    // fresh arm only: value first, then the rise, then the flag
+    sticky_rise_open.store(open_rise);  // fresh arm only: value first, then the rise, then the flag
   }
   sticky_armed.store(true);
   portEXIT_CRITICAL(&sticky_arm_mux);
 }
+static inline void stickyCapArm(uint8_t initial) { stickyCapArmRise(initial, true); }
 
 #include "../Common/SPIFFSEngine.h"
 

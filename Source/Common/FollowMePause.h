@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-3: fmLongLossStickyRiseOpen() - the 30 s end from a HOLD under a held
+//   trigger arms the sticky cap with its rise CLOSED (stays 0 until one release). See section 3b.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-2: fmHdgDisagreeSample() / fmHdgDisagreeEnds() - the heading-disagree
 //   end's edge is sampled at the top of every tick and ends only an ACTIVE engagement. See section 3c.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-1: fmLongLossStep() takes the rider's fix as the caller's verdict
@@ -15,6 +17,7 @@
 //   2. fmPauseReasonBit    - which missing input to name for a pause (positions and link before heading).
 //   3. fmLongLossStep      - the 30 s clock: link OR rider fix OR buggy fix missing; heading never counts.
 //                            (2026-10-12, A-1: the rider fix is the caller's one-rule verdict.)
+//   3b. fmLongLossStickyRiseOpen - (2026-10-12, A-3) the 30 s end from a held HOLD arms the sticky cap with its rise closed.
 //   3c. fmHdgDisagreeSample / fmHdgDisagreeEnds - (2026-10-12, A-2) the heading-disagree end's edge, sampled every tick,
 //                            ending only an ACTIVE engagement.
 //   4. fmCreepStep / fmCreepCap / fmCreepStartDistM - the straight-ahead creep that earns a stopped, COG-only buggy its
@@ -128,6 +131,23 @@ static inline uint8_t fmLongLossStep(FmLongLossState* s, uint32_t now_ms, bool r
     return FMLL_FIRED;
   }
   return FMLL_COUNTING;
+}
+
+// ============================================================
+// 3b. fmLongLossStickyRiseOpen - V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-3 (owner ruling (a)).
+// ============================================================
+// How the sticky cap is armed when the 30 s long-loss end switches Follow-Me off from an ENGAGED state (in ARMED it is
+// not armed at all - accepted deviation 1). THE CASE: the rider holds the trigger through a long pause, so the buggy is
+// in HOLD, held at 0. The end arms the sticky cap at that 0 - and with the rise OPEN it then climbed to 60/255 in about
+// 0.35 s: a stopped buggy restarting on the rider's steering without a new squeeze (and with the rider's fix lost, the
+// GPS slow-down near him cannot act). THE RULE: from HOLD with the trigger held the rise starts CLOSED, so the cap stays
+// at 0 until one release below 25 counts, and the buggy is plain manual after it. From ACTIVE the rise opens exactly as
+// before (the cap in force, at most 60). Only this end uses it: manual, RTM and auto-return ends are unchanged.
+// Inputs: from_hold (fm_state == FM_HOLD on the firing tick), thr_held (thr_received >= 25 this tick).
+// Returns: true = open the clock-only rise (stickyCapArm()); false = arm it closed. Side effects: none (pure).
+static inline bool fmLongLossStickyRiseOpen(bool from_hold, bool thr_held)
+{
+  return !(from_hold && thr_held);
 }
 
 // ============================================================

@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-3 (owner ruling (a)): the 30 s long-loss end from a HOLD under a held
+//   trigger arms the sticky cap with its rise CLOSED (stickyCapArmRise(cap, fmLongLossStickyRiseOpen(...))): the buggy
+//   stays at 0 until one release below 25 counts, then manual. From ACTIVE, unchanged. Follow-Me's 30 s end only; manual,
+//   RTM and auto-return rules unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-2: the heading-disagree end (D-3) fires ONLY while FM_ACTIVE - a rise
 //   in HOLD is consumed with no end (it armed the sticky cap at 0 and climbed to 60 under the held trigger) - and its
 //   edge detector is sampled at the TOP of runFmLoopBody() on every tick, before any early return, plus once after the
@@ -7117,7 +7121,16 @@ static void runFmLoopBody(unsigned long now)
                                           ll_buggy_ok, kFmLongLossMs, kFmLongLossResetMs, kFmLongLossResetFixes);
     if (fm_long_loss_verdict == FMLL_FIRED) {
       const uint8_t from = (uint8_t)fm_state;
-      if (fm_state == FM_ACTIVE || fm_state == FM_HOLD) stickyCapArm(fm_throttle_cap.load());   // FIRST (D-1)
+      // V2.5-Evo - 2026-10-12 - audit delta A-3 (owner ruling (a)): FROM A HOLD UNDER A HELD TRIGGER THE RISE STARTS CLOSED.
+      // THE CASE: the rider held the trigger through the whole pause, so the buggy sat in HOLD at cap 0. The end armed the
+      // sticky cap at that 0 with the rise OPEN, and it climbed to 60/255 in about 0.35 s - a stopped buggy moving off on
+      // the rider's steering without a new squeeze (and with the rider's fix the input that was lost, the GPS slow-down
+      // near him cannot act). NOW: armed closed (fmLongLossStickyRiseOpen() -> stickyCapArmRise()), the cap stays at 0
+      // until one release below 25 counts, then plain manual (Follow-Me is off: "St" + buzz, arm again). From ACTIVE the
+      // rise opens as before. Before 30 s nothing changes: a pause that resumes by itself. Manual, RTM and auto-return
+      // ends keep their own rules. Still the FIRST write, before fmEnterIdle() lifts Follow-Me's own cap.
+      const bool rise_open = fmLongLossStickyRiseOpen(fm_state == FM_HOLD, thr_held);
+      if (fm_state == FM_ACTIVE || fm_state == FM_HOLD) stickyCapArmRise(fm_throttle_cap.load(), rise_open);   // FIRST (D-1, A-3)
       fm_fault_alarm_ms    = (now != 0) ? now : 1;   // "St" + stop buzz on the remote, whatever the trigger
       fm_redeclare_blocked = true;                   // M-1: a keepalive may not re-arm after this end (Radio.ino)
       fm_stop_reason       = FM_STOP_LONG_LOSS;
@@ -7128,7 +7141,9 @@ static void runFmLoopBody(unsigned long now)
       Serial.printf("FM [RX] LONG LOSS: %s missing for %lu s -> Follow-Me %s -> IDLE (switched off; the remote must arm again)%s\n",
                     !ll_link_ok ? "the link" : (!ll_buggy_ok ? "the buggy's GPS fix" : "the rider's GPS fix"),
                     (unsigned long)(kFmLongLossMs / 1000UL), fmStateName(from),
-                    (from == (uint8_t)FM_ACTIVE || from == (uint8_t)FM_HOLD) ? "; throttle held at the sticky ceiling until one release" : "");
+                    (from != (uint8_t)FM_ACTIVE && from != (uint8_t)FM_HOLD) ? "" :
+                    !rise_open ? "; buggy held at 0 until the trigger is released once (A-3), then manual"
+                               : "; throttle held at the sticky ceiling until one release");
       Serial.printf("FM [RX] stop reason: %s [%u]\n", fmStopReasonName(FM_STOP_LONG_LOSS), (unsigned)FM_STOP_LONG_LOSS);
       return;
     }

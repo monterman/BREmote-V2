@@ -276,6 +276,14 @@ passing.
 *This behaviour is in the nightly from commit 61ec981 (buggy RX SW36 and remote TX SW27). Flash
 the receiver and the remote together.*
 
+**The remote's GPS after power-on.** The remote sends its GPS only once it has its own fix. Until
+then, `?diag` on the buggy shows `Rider GPS  : packet none heard` (it took about 2 minutes indoors
+on 2026-10-12). After that it shows
+`Rider GPS  : packet v2 (GPS fix counter); last new solution N ms ago`.
+Measured: 54 of 54 samples over 5 minutes, newest solution 172 ms old on average, never more than
+0.42 s (stale limit 3,000 ms). If it says `packet v1`, the remote runs older firmware: flash both
+boards.
+
 
 ---
 
@@ -298,6 +306,22 @@ the receiver and the remote together.*
 
 The [setup wizard](https://monterman.github.io/BREmote-V2/setup-wizard.html) picks these for your
 setup and gives you a config to paste. Review it before you ride.
+
+### Heading source (`rtm_use_compass`)
+
+A buggy setting. It decides where the buggy gets its heading.
+
+| Value | Heading source | What it means |
+|---|---|---|
+| 0 | GPS course only | No heading when stopped. Follow-Me auto-return is declined ("Heading Source is GPS COG only…" on serial), and from a standstill the buggy may creep straight ahead for up to 3 s to find its heading. |
+| **1** (default) | compass + GPS course (hybrid) | Above `rtm_cog_min_speed_kmh` (default 3, about 1.9 mph) it steers on GPS course. Slower or stopped, it uses a compass reading taken while the trigger is released (motors off, no magnetic noise). |
+| 2 | compass only | A bench diagnostic. The firmware marks it "DO NOT USE ON WATER". |
+
+With 1, the buggy cross-checks the compass against the GPS course while moving. A lasting
+disagreement drops the compass (back to GPS course only), ends an active Follow-Me with **St**, and
+is remembered across restarts until the two agree again. So after fitting or moving a compass, run
+`?compasscal` before the water
+([Zero → Foiling § 2.4](ZERO_TO_FOILING.md#24-compass-calibration-rx--nose-on-north-two-clockwise-circles)).
 
 ---
 

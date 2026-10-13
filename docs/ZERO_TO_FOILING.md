@@ -338,7 +338,7 @@ Power **one board at a time** (the other OFF, per 2.3), join its AP (password de
 | GPS anti-spoof (Phase A/B) | leave defaults: HDOP 2.0, accel 3.0 G, teleport 80 km/h, suspect 3, pair-dist 500 m, speed-diff 50 km/h | Tuned for this craft; only widen with reason |
 | `gps_dyn_model` | **0 (Sea)** — unless your water is above ~500 m altitude, then **4 (Automotive)** | The Sea navigation model has a 500 m ceiling and good fixes start being rejected above it. Sea is the better model below that, so leave it at 0 |
 | `rtm_compass_required` | 1 | Don't arm RTM without a good compass |
-| `rtm_use_compass` | 1 (Hybrid) — never 2 on water | Mode 2 (compass-only) is bench-diagnostic only (motor EMI biases compass 100°+) |
+| `rtm_use_compass` | 1 (Hybrid) — never 2 on water | Mode 2 (compass-only) is bench-diagnostic only (motor EMI biases compass 100°+). [What each value does →](FOLLOW_ME_GUIDE.md#heading-source-rtm_use_compass) |
 
 > **Follow-Me mode mapping.** The same on every surface — firmware, both on-device portals, and the
 > standalone config tool:

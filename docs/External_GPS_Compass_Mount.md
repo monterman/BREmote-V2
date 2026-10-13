@@ -221,6 +221,7 @@ guard working correctly, but it looks exactly like a firmware fault if you are n
 | `?magtest` still reports large error after moving | Something ferrous nearby, or still too close to the loop. Check every fastener with a magnet. |
 | Follow-Me will not engage after the move | You have not recalibrated. The disagreement latch is standing — `?diag` confirms it. |
 | GPS lost satellites after the move | The module is shielded or under metal. **Never wrap the module itself.** |
+| RX stops at boot printing `Starting AW9532...AW9523 not found!` and never reaches its serial commands. The motors get no signal. | The I²C bus is held. The AW9523 I/O expander (`0x58`) shares the bus with the compass (SDA GPIO 2, SCL GPIO 1). SDA shorted to SCL, a line shorted to GND, or an unpowered module dragging the lines low stops the RX at boot, by design. Unplug the module and power-cycle: if it boots, the module wiring is the cause. With the RX powered and the module plugged in, SDA and SCL should each read about 3.3 V to GND; a line near 0 V is shorted or pulled low. Real case (2026-10-12): a tiny solder short between SDA and SCL. |
 
 ---
 

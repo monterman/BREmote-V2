@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-13 - heading-latch design 2026-10-13, R2-F2 (owner approved): a 2 s RELEASE HOLD-OFF. The snapshot (updateCompassSnapshot(), new Gate 3b) and the compass-vs-COG comparison in getRtmHeading() (RTMState.ino) both keyed on thr_received < 25 alone, so they used the compass in the first second after a release, while it is still settling (log check W-E: up to 26 deg of movement in 2 s with the GPS course steady). Both now also need the trigger released CONTINUOUSLY for kCompassReleaseHoldOffMs (2000 ms). One timestamp, stamped once per release edge by compassTrackRelease() at the top of updateCompassSnapshot() - ahead of every compass gate, so a release while the compass is unavailable is still stamped - and read by both sites through compassReleaseHoldOffPassed(). No threshold moved, no throttle term touched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - STUCK-BUS STOP-GAP (audit H-3): compassIsolateForSession() takes the compass off the bus for the rest of the session (compass_detected false, snapshot invalidated) when Init.ino's stuck-bus service finds the motor-enable swap starved. Nothing else in this file changes. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 4 of 4 - MOTOR PRIORITY OVER COMPASS (see Logger.ino, System.ino, PWM.ino). THREE CHANGES HERE. (1) All four portMAX_DELAY takes become pdMS_TO_TICKS(10) and return false on timeout: compassWriteReg(), compassReadReg(), compassProbe() and readCompassRaw(). A compass may skip a sample; a motor may not skip an enable swap, and the swap takes this same mutex with a 10 ms bound. This does NOT shorten a single compass hold - the hold is Wire time, capped by Wire.setTimeOut(3) since STEP 1, not by the semaphore - but it stops the compass stacking its hold on top of a pile-up it was queued behind, and it REMOVES a loop-task WDT panic path (updateCompassSnapshot() runs in the WDT-registered loop task, where an unbounded take could wedge to the 3000 ms panic - the same hazard the 2026-07-22 fix removed from the PWM task, still live on this side until today). 10 ms is correct only because STEP 1 landed the 3 ms transaction ceiling; at the old 20 ms ceiling it would have been 25. Degrades safely, verified rather than assumed: every one of the four already had a false-return path and every consumer treats a failed read as "no heading" and holds straight, readCompassRaw() reads into locals so a torn read cannot leave magX fresh and magY stale, and the age windows sit on a timestamp that only advances on SUCCESS - there is no extrapolation and no last-value-held path in this chain. (2) getCompassHeading() now PUBLISHES its last successful result into compass_live_cache_deg / _ms, so the logger can RECORD a heading without triggering a fresh two-transaction I2C read on the motor path at 2.89 Hz. Updated only on success, so a refusal or a bus failure leaves the value and its timestamp alone and it simply ages out. No control path reads the cache; getCompassHeading() remains the only producer of a heading. (3) updateCompassSnapshot() gains an early return on usrConf.rtm_use_compass == 0, so that setting finally means what every owner assumes: at mode 0 the driver issues NO compass transaction. Verified safe - getRtmHeading() returns NONE at an explicit mode == 0 test that sits ABOVE the compass fallback, so mode 0 never steered on the snapshot; the only visible effect is that the log's compass_snap columns report their documented 0xFFFF "no snapshot" sentinel on a mode-0 board. Operator-initiated diagnostics (?printcompass, ?compassheading, ?magtest, ?compasscal, ?magalign) still read the part deliberately - someone who types ?magtest is asking for a reading. No confStruct change, sizeof stays 200, SW_VERSION stays 36, no log format change.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 1 of 4 (see Init.ino, System.ino): initCompass() no longer calls Wire.setTimeOut(20). That call set a GLOBAL Wire property - the per-transaction ceiling every holder on this bus runs under - from a compass-specific function, so a board with no compass fitted never reached it and silently ran the arduino-esp32 default of 50 ms, which is 2.5x worse than the ceiling everyone believed was in force. The call now lives once in initHardware() (Init.ino) at 3 ms, on the unconditional boot path, immediately after Wire.begin(). Only the line and its replacement comment change here: detection, configuration, calibration, readCompassRaw() and every heading path are untouched, and this file issues exactly the transactions it did before. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -1090,6 +1091,79 @@ float getCompassHeading()
 }
 
 // ============================================================
+// RELEASE HOLD-OFF - the compass counts only once the trigger has been released for 2 s
+// ============================================================
+// V2.5-Evo - 2026-10-13 - heading-latch design 2026-10-13, R2-F2 (owner approved).
+//
+// WHAT WAS WRONG. The snapshot below and the compass-vs-GPS-course comparison in getRtmHeading()
+// (RTMState.ino) both used the compass the moment thr_received dropped below 25. The ride logs (log
+// check W-E) show the compass still MOVING in the first second or two after a release - up to 26 deg
+// in 2 s while the GPS course held within 3 deg - while the motors spin down. A snapshot frozen
+// mid-settle could steer at low speed for up to 8 s, and a comparison made mid-settle counted the
+// settling as disagreement (a possible false latch).
+//
+// WHAT THIS DOES. Neither may use the compass until the trigger has been released CONTINUOUSLY for
+// kCompassReleaseHoldOffMs. There is ONE timestamp, stamped once per release edge, and both sites
+// read it through compassReleaseHoldOffPassed(), so they can never disagree about whether the
+// hold-off is over. Any squeeze ends it; the next release starts a fresh 2 s.
+//
+// COST, stated plainly: the snapshot can be up to 2 s older (the 3 s course hold covers that gap),
+// and there are fewer comparisons - none while the trigger is held, none in the first 2 s of a
+// coast - but every one of them is made on a settled compass.
+//
+// Compile-time constant, like every other k* here: no confStruct field, no SPIFFS slot, no web-UI
+// row, no SW_VERSION bump. Nothing here reads or writes a throttle term.
+static const unsigned long kCompassReleaseHoldOffMs = 2000UL;  // ms the trigger must stay released (thr_received < 25) before the compass counts
+
+// Loop-task state with a single writer, compassTrackRelease() below. Read only through
+// compassReleaseHoldOffPassed().
+static bool          thr_release_seen      = false;  // true while the last loop pass saw the trigger released. Starts false: boot counts as a release edge
+static unsigned long thr_released_since_ms = 0;      // millis() of the latest held -> released edge. Meaningful only while thr_release_seen is true
+
+// ------------------------------------------------------------
+// compassTrackRelease - follow the trigger and stamp each release edge, once
+// ------------------------------------------------------------
+// Input: now - millis() of this loop pass. Output: none. Side effects: updates thr_release_seen and,
+// on a held -> released edge only, thr_released_since_ms. The stamp is NOT refreshed while the
+// trigger stays released, which is what makes the age "released continuously for".
+//
+// Called from the TOP of updateCompassSnapshot(), on every loop() pass, AHEAD OF EVERY COMPASS GATE.
+// So a release that happens while the compass is unavailable - not fitted, isolated after a stuck
+// bus, switched off (rtm_use_compass 0), uncalibrated, or failing its reads - is still stamped at the
+// moment it happened. When the compass becomes usable again, the hold-off is measured from that real
+// release: it is neither restarted from the moment the compass came back nor skipped. Boot counts
+// as a release edge, so the first snapshot after power-up also waits 2 s.
+// Same idle definition (thr_received < 25) as Gate 3 below and RTM gate 1, and the same resolution:
+// the trigger is sampled once per loop() pass, so a squeeze AND release that both fall inside one
+// stalled pass (a blocking ?command) is not seen - exactly as Gate 3 would not see it either.
+// ------------------------------------------------------------
+static void compassTrackRelease(unsigned long now)
+{
+  extern volatile uint8_t thr_received;
+  const bool released = (thr_received < 25);
+  if (released && !thr_release_seen) thr_released_since_ms = now;   // the release edge
+  thr_release_seen = released;
+}
+
+// ------------------------------------------------------------
+// compassReleaseHoldOffPassed - has the trigger been released for at least 2 s?
+// ------------------------------------------------------------
+// Input: now - the caller's millis(). Returns: true only while the trigger is released AND the
+// latest release edge is at least kCompassReleaseHoldOffMs old. Side effects: none (read-only).
+//
+// Callers: Gate 3b of updateCompassSnapshot() below, and compare_possible in getRtmHeading()
+// (RTMState.ino). Both run in the loop task after this pass's compassTrackRelease(), so the stamp
+// is never newer than the caller's clock, and the unsigned subtraction is wrap-safe across the
+// 49.7-day millis() roll-over - the same form as the snapshot-age tests in getRtmHeading(). (A
+// release held unbroken across a roll-over can only re-apply the hold-off once, which is the safe
+// way round.)
+// ------------------------------------------------------------
+bool compassReleaseHoldOffPassed(unsigned long now)
+{
+  return thr_release_seen && ((now - thr_released_since_ms) >= kCompassReleaseHoldOffMs);
+}
+
+// ============================================================
 // updateCompassSnapshot - Capture a clean compass heading during motor-idle
 // ============================================================
 //
@@ -1108,6 +1182,8 @@ float getCompassHeading()
 //   Updates compass_snapshot_heading and compass_snapshot_ms when all conditions
 //   are met (compass detected, calibrated, motor idle, valid heading returned).
 //   No side effects if any condition fails — snapshot is left unchanged.
+//   V2.5-Evo - 2026-10-13 - R2-F2: also runs compassTrackRelease() first, on every call,
+//   and "motor idle" now also means released for kCompassReleaseHoldOffMs (Gate 3b).
 //
 // When called:
 //   Called every ~100ms from runRtmLoop() in RTMState.ino (top of loop).
@@ -1116,6 +1192,11 @@ float getCompassHeading()
 // ============================================================
 void updateCompassSnapshot()
 {
+  // V2.5-Evo - 2026-10-13 - R2-F2: follow the trigger FIRST, ahead of every gate below, so a
+  // release is stamped even while the compass cannot be read (see compassTrackRelease()).
+  const unsigned long now = millis();
+  compassTrackRelease(now);
+
   // Gate 1: compass hardware must be present
   if (!compass_detected) return;
 
@@ -1157,6 +1238,11 @@ void updateCompassSnapshot()
   // in RTMState.ino so snapshot and RTM arming use a consistent idle definition.
   extern volatile uint8_t thr_received;
   if (thr_received >= 25) return;
+
+  // V2.5-Evo - 2026-10-13 - Gate 3b, R2-F2: and the trigger must have been released for
+  // kCompassReleaseHoldOffMs without a break, so the motors have spun down and the compass has
+  // settled. Until then the previous snapshot is left exactly as it is (it simply ages).
+  if (!compassReleaseHoldOffPassed(now)) return;
 
   // Take a fresh heading reading. Skip update on I2C failure or uncalibrated result.
   float h = getCompassHeading();

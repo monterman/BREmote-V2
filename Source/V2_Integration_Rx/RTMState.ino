@@ -1,3 +1,9 @@
+// V2.5-Evo - 2026-10-13 - heading-latch design 2026-10-13, R2-F2 (owner approved): getRtmHeading()'s compare_possible
+//   also needs compassReleaseHoldOffPassed(now) - the trigger released continuously for 2 s, read from the same
+//   release timestamp that now gates the compass snapshot (Compass.ino) - so no comparison sample counts while the
+//   compass is still settling after a release, or while the trigger is held. Such a tick takes the existing "no
+//   comparison possible" branch. The latch's 45 deg / 5 s / 2 s-gap rules and every throttle term are unchanged. No
+//   confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-13 - heading-latch design 2026-10-13, R-16 (fixes R1-F2, owner approved): a MEASURED compass-vs-GPS-
 //   course disagreement withdraws the COMPASS only, never the GPS course. getRtmHeading() lost its per-tick veto (the
 //   `if (disagree_now)` return of "no heading" above the live-COG branch), which blanked the live course for up to ~1 s
@@ -294,6 +300,7 @@ extern unsigned long gps_last_course_ms;        // From GPS.ino (D1) — millis(
 extern float         compass_snapshot_heading;  // From Compass.ino (D2) — clean compass heading captured during motor-idle (0-360 deg, -1.0 if none)
 extern unsigned long compass_snapshot_ms;       // From Compass.ino (D2) — millis() of snapshot capture (0 if none)
 extern void          updateCompassSnapshot();   // From Compass.ino (D2) — captures clean compass heading when motor idle
+extern bool          compassReleaseHoldOffPassed(unsigned long now);  // From Compass.ino (V2.5-Evo - 2026-10-13, R2-F2) — trigger released continuously for kCompassReleaseHoldOffMs (2 s)
 // ============================================================
 // RTM/FM STEERING CONTROLLER PRESETS — Bundle 1 (2026-05-08)
 //
@@ -1359,8 +1366,21 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
   // (D-3, "COG, period"), so it may remove only the compass. The per-tick veto that blanked the live
   // course on every disagreeing sample - up to ~1 s with no heading after each squeeze, latch or no
   // latch - is gone; see the note where it used to sit, below the bookkeeping.
+  //
+  // V2.5-Evo - 2026-10-13 - R2-F2 (owner approved): A SAMPLE COUNTS ONLY AFTER A 2 s RELEASE
+  // HOLD-OFF. compare_possible also needs compassReleaseHoldOffPassed(now): the trigger released
+  // continuously for kCompassReleaseHoldOffMs, read from the SAME release timestamp that gates the
+  // snapshot (Compass.ino), so the two sites cannot disagree. Without it the comparison ran in the
+  // first second after a release, while the compass is still settling (log check W-E), and could
+  // count that settling as disagreement. So "live around the moment of the squeeze" above no longer
+  // holds: no sample counts while the trigger is held or in the first 2 s of a coast. A squeeze
+  // therefore always breaks a dwell's continuity (the hold-off alone equals
+  // kHeadingDisagreeGapMaxMs), so both a latch and its route-1 clear now need 5 s of measured
+  // samples inside one coast, from 2 s after the release. A tick that fails only this term takes
+  // the ordinary "no comparison possible" branch below, exactly like a stale snapshot.
   // ============================================================
   bool compare_possible = (mode == 1) && cog_valid &&
+                          compassReleaseHoldOffPassed(now) &&
                           (compass_snapshot_heading >= 0.0f) && (compass_snapshot_ms > 0) &&
                           ((now - compass_snapshot_ms) < (unsigned long)kHeadingCompareSnapMs);
 

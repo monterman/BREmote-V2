@@ -69,6 +69,10 @@ Before opening the Serial Monitor, look at the GPS module LEDs:
 | Red | Off | GPS searching for satellites — normal indoors |
 | Red | Blinking | ✅ GPS has a fix — satellites locked |
 
+> LED colours and blink patterns differ between GPS modules, and even between batches of the same
+> module. The table above is for the BN-220. Don't diagnose from the LEDs alone: `?printgps` showing
+> `Location valid: YES` (TX) or `Location validity: Valid` (RX) is the real test.
+
 **If blue LED is off → fix power wiring first before proceeding.**
 
 ---
@@ -240,7 +244,7 @@ Once `?gpsraw` shows clean sentences, the wiring is correct. Now get a satellite
 
 1. Take the TX unit **outside** with a clear view of the sky  
 2. Wait up to **2 minutes** for the first fix  
-3. The **red LED** on the GPS will start blinking when satellites are locked  
+3. The **red LED** on the GPS will start blinking when satellites are locked (BN-220)  
 4. Run `?printgps` — you should see `Location valid: YES` with real coordinates
 
 **Verify:** Compare the coordinates in `?printgps` against a GPS app on your phone. They should match within about 5 meters.
@@ -251,8 +255,8 @@ Once `?gpsraw` shows clean sentences, the wiring is correct. Now get a satellite
 
 **Do not seal the unit until every item is ticked:**
 
-- [ ] Blue LED on GPS is blinking  
-- [ ] Red LED on GPS is blinking  
+- [ ] Blue LED on GPS is blinking (BN-220)  
+- [ ] Red LED on GPS is blinking (BN-220)  
 - [ ] `?printgps` shows `tx_gps_initialized: YES`  
 - [ ] `?printgps` shows `Serial1 available` \> 0  
 - [ ] `?gpsraw 10` shows readable `$GNRMC` sentences  
@@ -538,6 +542,18 @@ the same firmware image.
 
 On the RX such readings feed `gpsPhaseACheck()`, which increments `gps_suspect_count` and at threshold sets **`gps_rejected` — and that blocks RTM arming.** Killing the solutions inside the receiver is far better than filtering them downstream.
 
+> **Indoors, HDOP rejections are normal.** The RX rejects any fix with HDOP above `gps_max_hdop`
+> (default 2.0). After `gps_suspect_threshold` (default 3) in a row it blocks RTM arming:
+>
+> ```
+> GPS [PhA] HDOP x.x exceeds max 2.0 — reading rejected
+> GPS [PhA] REJECTED after 3 consecutive failures — RTM arming blocked
+> ```
+>
+> Indoors or at a window this can make a working GPS look dead. Measured on the bench: one 60 s
+> window had 107 rejections, and the accepted position went 28 s without an update. Test with open
+> sky. Don't raise `gps_max_hdop` to make the messages go away.
+
 `dynModel 5 (Sea)` constrains the filter to ~25 m/s horizontal and ~0 m/s vertical and pins altitude near the surface. Removing the vertical degree of freedom also sharpens the horizontal solution — and **course-over-ground is derived from horizontal velocity**, which is exactly what FM steers on.
 
 **Applied to:** BREmote RX (all `gps_chip_type`), BREmote TX (types 0 and 2), foilIQ WaveShare.
@@ -636,6 +652,9 @@ The compass connects via I2C. Both the BN-880 and the HGLRC M100-5883 have one b
 > have them.** See the [BN-880 → RX wiring guide](../GPS_Wiring_BN880_RX.md) for a render.
 
 > The I2C bus is shared — the AW9523 I/O expander (0x58) and the compass (QMC5883L at `0x0D` **or** QMC5883P at `0x2C`) both use the same SDA/SCL lines. Pull-up resistors are on the PCB; do not add external ones.
+
+> RX stops at boot with `Starting AW9532...AW9523 not found!` after you fit the module? See
+> [Mounting the GPS + compass § Troubleshooting](../External_GPS_Compass_Mount.md#troubleshooting).
 
 ### Step 1 — Verify Compass Detection with `?i2c`
 

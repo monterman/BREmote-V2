@@ -1,3 +1,13 @@
+// V2.5-Evo - 2026-10-13 - delta audit RH-1 (HIGH), same day: the R2-F2 line below is SUPERSEDED for the comparison.
+//   compare_possible no longer calls compassReleaseHoldOffPassed(): the 2 s hold-off equals the latch's 2 s continuity
+//   gap, so every squeeze broke the dwell and a latch needed one 7 s coast at 1.9 mph or more - almost never seen (log
+//   check W-D) - switching off the only automatic bad-compass detection. The comparison now reads its own pair,
+//   compass_cmp_heading / compass_cmp_ms (Compass.ino: every motor-idle pass, no hold-off = the e03499a timing), and
+//   the hold-off gates only the steering snapshot, which the compass rung still reads. A latch can again rise in the
+//   first second of a squeeze, so D-3's rise-while-following end is reachable as on e03499a. Settling contamination of
+//   the comparison is accepted (R-16: a disagreeing sample withdraws nothing on its tick; a false latch withdraws only
+//   the compass). The 45 deg / 5 s / 2 s-gap rules and every throttle term are unchanged. No confStruct change, sizeof
+//   stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-13 - stale latch text (F-9 / A-10), TEXT AND COMMENTS ONLY. Written before D-3 (2026-10-11: a standing
 //   latch withdraws the compass only and Follow-Me runs on the GPS course) and LATCH-1 (2026-08-18: the latch is stored
 //   and survives a reboot). Serial texts corrected: the boot restore notice and the one-shot COMPASS WITHDRAWN notice no
@@ -307,7 +317,10 @@ extern unsigned long gps_last_course_ms;        // From GPS.ino (D1) — millis(
 extern float         compass_snapshot_heading;  // From Compass.ino (D2) — clean compass heading captured during motor-idle (0-360 deg, -1.0 if none)
 extern unsigned long compass_snapshot_ms;       // From Compass.ino (D2) — millis() of snapshot capture (0 if none)
 extern void          updateCompassSnapshot();   // From Compass.ino (D2) — captures clean compass heading when motor idle
-extern bool          compassReleaseHoldOffPassed(unsigned long now);  // From Compass.ino (V2.5-Evo - 2026-10-13, R2-F2) — trigger released continuously for kCompassReleaseHoldOffMs (2 s)
+// V2.5-Evo - 2026-10-13 - RH-1: the cross-check's own compass reading (Compass.ino), refreshed on every motor-idle pass
+// with NO release hold-off - the comparison's e03499a timing. The steering snapshot above waits for the hold-off.
+extern float         compass_cmp_heading;       // From Compass.ino — compass reading for the compass-vs-COG cross-check (0-360 deg, -1.0 if none). Never steers
+extern unsigned long compass_cmp_ms;            // From Compass.ino — millis() of that reading (0 if none)
 // ============================================================
 // RTM/FM STEERING CONTROLLER PRESETS — Bundle 1 (2026-05-08)
 //
@@ -717,9 +730,9 @@ static bool checkRtmSafetyGates()
 //       V2.5-Evo - 2026-10-13 - STALE SINCE D-3 (2026-10-11, "COG, period"): neither can_be_active
 //       nor the fault-stop chain carries the standing latch any more. Follow-Me engages and steers
 //       on the GPS course. Only a latch that RISES while following ends that one engagement, armed
-//       (hdg_disagree_end in runFmLoop()) - and since the 2 s release hold-off (R2-F2, 2026-10-13)
-//       a sample needs the trigger released for 2 s, when Follow-Me is never ACTIVE, so that rise
-//       no longer happens while following;
+//       (hdg_disagree_end in runFmLoop()). That rise can happen in the first second of a squeeze,
+//       as on e03499a: the comparison is not held off (RH-1, 2026-10-13), so a sample taken from
+//       the reading just before the squeeze still counts while Follow-Me is ACTIVE;
 //     - mode 2 (compass-only, diagnostic) is the one place there is nothing to fall back to, so the
 //       proven-bad compass is withheld and the function returns no heading at all. See there.
 //
@@ -1404,22 +1417,24 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
   // course on every disagreeing sample - up to ~1 s with no heading after each squeeze, latch or no
   // latch - is gone; see the note where it used to sit, below the bookkeeping.
   //
-  // V2.5-Evo - 2026-10-13 - R2-F2 (owner approved): A SAMPLE COUNTS ONLY AFTER A 2 s RELEASE
-  // HOLD-OFF. compare_possible also needs compassReleaseHoldOffPassed(now): the trigger released
-  // continuously for kCompassReleaseHoldOffMs, read from the SAME release timestamp that gates the
-  // snapshot (Compass.ino), so the two sites cannot disagree. Without it the comparison ran in the
-  // first second after a release, while the compass is still settling (log check W-E), and could
-  // count that settling as disagreement. So "live around the moment of the squeeze" above no longer
-  // holds: no sample counts while the trigger is held or in the first 2 s of a coast. A squeeze
-  // therefore always breaks a dwell's continuity (the hold-off alone equals
-  // kHeadingDisagreeGapMaxMs), so both a latch and its route-1 clear now need 5 s of measured
-  // samples inside one coast, from 2 s after the release. A tick that fails only this term takes
-  // the ordinary "no comparison possible" branch below, exactly like a stale snapshot.
+  // V2.5-Evo - 2026-10-13 - R2-F2 + delta audit RH-1 (HIGH): THE COMPARISON IS NOT HELD OFF; IT
+  // READS ITS OWN COMPASS PAIR. The 2 s release hold-off (Compass.ino) now gates only the STEERING
+  // snapshot. As first built it gated this comparison too, and since the hold-off equals
+  // kHeadingDisagreeGapMaxMs every squeeze broke the dwell: a latch (and its route-1 clear) needed
+  // one coast of 7 s or more at 1.9 mph or more, which log check W-D almost never saw (after a
+  // release the buggy drops below 1.9 mph in a median 2.2 s), so the only automatic bad-compass
+  // detection was switched off. compare_possible therefore keeps its e03499a timing on
+  // compass_cmp_heading / compass_cmp_ms - refreshed on every motor-idle pass, no hold-off - and
+  // "live around the moment of the squeeze" above holds again: from the release, and for up to
+  // ~1 s into a squeeze while that reading is under kHeadingCompareSnapMs old. Its settling
+  // contamination is accepted: since R-16 a disagreeing sample withdraws nothing on its own tick,
+  // and a false latch withdraws only the compass (Follow-Me continues on the GPS course, D-3). The
+  // real fix for settling is the Sidekick's gyro-settled rule (design R2.5). The steering rung
+  // below still reads compass_snapshot_*.
   // ============================================================
   bool compare_possible = (mode == 1) && cog_valid &&
-                          compassReleaseHoldOffPassed(now) &&
-                          (compass_snapshot_heading >= 0.0f) && (compass_snapshot_ms > 0) &&
-                          ((now - compass_snapshot_ms) < (unsigned long)kHeadingCompareSnapMs);
+                          (compass_cmp_heading >= 0.0f) && (compass_cmp_ms > 0) &&
+                          ((now - compass_cmp_ms) < (unsigned long)kHeadingCompareSnapMs);
 
   bool disagree_now = false;
   if (compare_possible) {
@@ -1427,7 +1442,7 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
     // Written out inline rather than calling fmAngleDiff(): that helper is defined ~900 lines
     // below in this same file, and a safety guard should not depend on the Arduino builder's
     // auto-prototype ordering to compile.
-    float d = gps_last_course_deg - compass_snapshot_heading;
+    float d = gps_last_course_deg - compass_cmp_heading;   // V2.5-Evo - 2026-10-13 - RH-1: the cross-check's own reading
     while (d >  180.0f) d -= 360.0f;
     while (d < -180.0f) d += 360.0f;
     disagree_now = (fabsf(d) > kHeadingDisagreeDeg);

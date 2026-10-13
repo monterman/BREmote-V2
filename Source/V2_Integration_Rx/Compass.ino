@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-13 - delta audit RH-1 (HIGH), same day: THE HOLD-OFF NOW GATES ONLY THE STEERING SNAPSHOT (the line below is superseded in part). Holding off the compass-vs-COG comparison too made every squeeze break the latch's 2 s continuity gap, so a latch needed one 7 s coast at 1.9 mph or more - almost never seen (log check W-D) - and RX1 lost its only automatic bad-compass detection. updateCompassSnapshot() now writes a second pair, compass_cmp_heading / compass_cmp_ms, from the same read on every motor-idle pass with NO hold-off (the e03499a comparison timing; one I2C read per pass, as before), and only then applies Gate 3b to the steering snapshot. compassIsolateForSession() invalidates the new pair too. Settling contamination of the comparison is accepted (since R-16 a disagreeing sample withdraws nothing on its tick; a false latch withdraws only the compass, D-3); the real settling fix is the Sidekick's gyro-settled rule. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-13 - heading-latch design 2026-10-13, R2-F2 (owner approved): a 2 s RELEASE HOLD-OFF. The snapshot (updateCompassSnapshot(), new Gate 3b) and the compass-vs-COG comparison in getRtmHeading() (RTMState.ino) both keyed on thr_received < 25 alone, so they used the compass in the first second after a release, while it is still settling (log check W-E: up to 26 deg of movement in 2 s with the GPS course steady). Both now also need the trigger released CONTINUOUSLY for kCompassReleaseHoldOffMs (2000 ms). One timestamp, stamped once per release edge by compassTrackRelease() at the top of updateCompassSnapshot() - ahead of every compass gate, so a release while the compass is unavailable is still stamped - and read by both sites through compassReleaseHoldOffPassed(). No threshold moved, no throttle term touched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - STUCK-BUS STOP-GAP (audit H-3): compassIsolateForSession() takes the compass off the bus for the rest of the session (compass_detected false, snapshot invalidated) when Init.ino's stuck-bus service finds the motor-enable swap starved. Nothing else in this file changes. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-03 - I2C ENABLE-SWAP STARVATION, STEP 4 of 4 - MOTOR PRIORITY OVER COMPASS (see Logger.ino, System.ino, PWM.ino). THREE CHANGES HERE. (1) All four portMAX_DELAY takes become pdMS_TO_TICKS(10) and return false on timeout: compassWriteReg(), compassReadReg(), compassProbe() and readCompassRaw(). A compass may skip a sample; a motor may not skip an enable swap, and the swap takes this same mutex with a 10 ms bound. This does NOT shorten a single compass hold - the hold is Wire time, capped by Wire.setTimeOut(3) since STEP 1, not by the semaphore - but it stops the compass stacking its hold on top of a pile-up it was queued behind, and it REMOVES a loop-task WDT panic path (updateCompassSnapshot() runs in the WDT-registered loop task, where an unbounded take could wedge to the 3000 ms panic - the same hazard the 2026-07-22 fix removed from the PWM task, still live on this side until today). 10 ms is correct only because STEP 1 landed the 3 ms transaction ceiling; at the old 20 ms ceiling it would have been 25. Degrades safely, verified rather than assumed: every one of the four already had a false-return path and every consumer treats a failed read as "no heading" and holds straight, readCompassRaw() reads into locals so a torn read cannot leave magX fresh and magY stale, and the age windows sit on a timestamp that only advances on SUCCESS - there is no extrapolation and no last-value-held path in this chain. (2) getCompassHeading() now PUBLISHES its last successful result into compass_live_cache_deg / _ms, so the logger can RECORD a heading without triggering a fresh two-transaction I2C read on the motor path at 2.89 Hz. Updated only on success, so a refusal or a bus failure leaves the value and its timestamp alone and it simply ages out. No control path reads the cache; getCompassHeading() remains the only producer of a heading. (3) updateCompassSnapshot() gains an early return on usrConf.rtm_use_compass == 0, so that setting finally means what every owner assumes: at mode 0 the driver issues NO compass transaction. Verified safe - getRtmHeading() returns NONE at an explicit mode == 0 test that sits ABOVE the compass fallback, so mode 0 never steered on the snapshot; the only visible effect is that the log's compass_snap columns report their documented 0xFFFF "no snapshot" sentinel on a mode-0 board. Operator-initiated diagnostics (?printcompass, ?compassheading, ?magtest, ?compasscal, ?magalign) still read the part deliberately - someone who types ?magtest is asking for a reading. No confStruct change, sizeof stays 200, SW_VERSION stays 36, no log format change.
@@ -131,6 +132,12 @@ static bool compassProbe(uint8_t addr) {
 }
 float         compass_snapshot_heading = -1.0f; // Last "clean" compass heading captured while motor was idle (degrees, 0–360 clockwise from North). -1.0f = no valid snapshot yet.
 unsigned long compass_snapshot_ms      = 0;     // millis() timestamp of last snapshot capture. 0 = no snapshot yet.
+// V2.5-Evo - 2026-10-13 - RH-1: the reading the compass-vs-GPS-course cross-check in getRtmHeading()
+// uses. Refreshed by updateCompassSnapshot() on EVERY motor-idle pass (thr_received < 25) with NO
+// release hold-off - the e03499a timing of the comparison - while the steering snapshot above waits
+// for the hold-off. Never steers. -1.0f / 0 = no reading yet (or invalidated by the stuck-bus isolation).
+float         compass_cmp_heading      = -1.0f; // degrees, 0-360 clockwise from North; -1.0f = none
+unsigned long compass_cmp_ms           = 0;     // millis() of that reading; 0 = none
 
 // ============================================================
 // V2.5-Evo - 2026-10-03 - STEP 4: THE LIVE-HEADING CACHE. Published by getCompassHeading() on every
@@ -362,6 +369,8 @@ void compassIsolateForSession(const char *why)
   compass_detected         = false;
   compass_snapshot_heading = -1.0f;
   compass_snapshot_ms      = 0;
+  compass_cmp_heading      = -1.0f;   // V2.5-Evo - 2026-10-13 - RH-1: the cross-check's reading goes too
+  compass_cmp_ms           = 0;
   Serial.printf("COMPASS [RX] ISOLATED for this session (%s)%s: no more compass reads; heading falls back to GPS course, Follow-Me / auto-return need a heading and end with St without one, manual driving is unaffected. Reboot to use the compass again.\n",
                 why, was_detected ? "" : " - no compass was in use");
 }
@@ -1091,7 +1100,7 @@ float getCompassHeading()
 }
 
 // ============================================================
-// RELEASE HOLD-OFF - the compass counts only once the trigger has been released for 2 s
+// RELEASE HOLD-OFF - the STEERING snapshot refreshes only once the trigger has been released for 2 s
 // ============================================================
 // V2.5-Evo - 2026-10-13 - heading-latch design 2026-10-13, R2-F2 (owner approved).
 //
@@ -1102,18 +1111,28 @@ float getCompassHeading()
 // mid-settle could steer at low speed for up to 8 s, and a comparison made mid-settle counted the
 // settling as disagreement (a possible false latch).
 //
-// WHAT THIS DOES. Neither may use the compass until the trigger has been released CONTINUOUSLY for
-// kCompassReleaseHoldOffMs. There is ONE timestamp, stamped once per release edge, and both sites
-// read it through compassReleaseHoldOffPassed(), so they can never disagree about whether the
-// hold-off is over. Any squeeze ends it; the next release starts a fresh 2 s.
+// WHAT THIS DOES (V2.5-Evo - 2026-10-13 - narrowed the same day by delta audit RH-1). The STEERING
+// snapshot may not take a reading until the trigger has been released CONTINUOUSLY for
+// kCompassReleaseHoldOffMs: one timestamp, stamped once per release edge, read through
+// compassReleaseHoldOffPassed(). Any squeeze ends it; the next release starts a fresh 2 s. So a
+// reading taken while the compass is still moving after a release never steers.
 //
-// COST, stated plainly: the snapshot can be up to 2 s older (the 3 s course hold covers that gap),
-// and there are fewer comparisons - none while the trigger is held, none in the first 2 s of a
-// coast - but every one of them is made on a settled compass.
+// THE COMPARISON IS NOT HELD OFF. As first built, the cross-check waited for the same 2 s. That
+// equals the latch's 2 s continuity gap (kHeadingDisagreeGapMaxMs), so every squeeze broke the dwell
+// and a latch needed one coast of 7 s or more at 1.9 mph or more - log check W-D found 0-2 of those
+// in 154 min (after a release the buggy drops below 1.9 mph in a median 2.2 s). That switched off
+// the only automatic bad-compass detection. So the cross-check now reads its own pair,
+// compass_cmp_heading / compass_cmp_ms, refreshed on every motor-idle pass with no hold-off: the
+// e03499a timing. Its settling contamination is accepted: since R-16 a disagreeing sample withdraws
+// nothing on its own tick, and a false latch withdraws only the compass (Follow-Me continues on the
+// GPS course, D-3). The real fix for settling is the Sidekick's gyro-settled rule (design R2.5).
+//
+// COST, stated plainly: the steering snapshot can be up to 2 s older (the 3 s course hold covers
+// that gap when the buggy was moving), and a release shorter than 2 s no longer refreshes it.
 //
 // Compile-time constant, like every other k* here: no confStruct field, no SPIFFS slot, no web-UI
 // row, no SW_VERSION bump. Nothing here reads or writes a throttle term.
-static const unsigned long kCompassReleaseHoldOffMs = 2000UL;  // ms the trigger must stay released (thr_received < 25) before the compass counts
+static const unsigned long kCompassReleaseHoldOffMs = 2000UL;  // ms the trigger must stay released (thr_received < 25) before the steering snapshot may refresh (not the cross-check, RH-1)
 
 // Loop-task state with a single writer, compassTrackRelease() below. Read only through
 // compassReleaseHoldOffPassed().
@@ -1151,9 +1170,9 @@ static void compassTrackRelease(unsigned long now)
 // Input: now - the caller's millis(). Returns: true only while the trigger is released AND the
 // latest release edge is at least kCompassReleaseHoldOffMs old. Side effects: none (read-only).
 //
-// Callers: Gate 3b of updateCompassSnapshot() below, and compare_possible in getRtmHeading()
-// (RTMState.ino). Both run in the loop task after this pass's compassTrackRelease(), so the stamp
-// is never newer than the caller's clock, and the unsigned subtraction is wrap-safe across the
+// Caller: Gate 3b of updateCompassSnapshot() below, only (V2.5-Evo - 2026-10-13 - RH-1: the
+// comparison in getRtmHeading() no longer calls it). It runs in the loop task after this pass's
+// compassTrackRelease(), so the stamp is never newer than the caller's clock, and the unsigned subtraction is wrap-safe across the
 // 49.7-day millis() roll-over - the same form as the snapshot-age tests in getRtmHeading(). (A
 // release held unbroken across a roll-over can only re-apply the hold-off once, which is the safe
 // way round.)
@@ -1182,8 +1201,10 @@ bool compassReleaseHoldOffPassed(unsigned long now)
 //   Updates compass_snapshot_heading and compass_snapshot_ms when all conditions
 //   are met (compass detected, calibrated, motor idle, valid heading returned).
 //   No side effects if any condition fails — snapshot is left unchanged.
-//   V2.5-Evo - 2026-10-13 - R2-F2: also runs compassTrackRelease() first, on every call,
-//   and "motor idle" now also means released for kCompassReleaseHoldOffMs (Gate 3b).
+//   V2.5-Evo - 2026-10-13 - R2-F2: also runs compassTrackRelease() first, on every call.
+//   On every motor-idle pass with a good read it updates compass_cmp_heading / compass_cmp_ms
+//   (the cross-check's reading, no hold-off - RH-1); the steering snapshot additionally
+//   needs the trigger released for kCompassReleaseHoldOffMs (Gate 3b).
 //
 // When called:
 //   Called every ~100ms from runRtmLoop() in RTMState.ino (top of loop).
@@ -1239,14 +1260,22 @@ void updateCompassSnapshot()
   extern volatile uint8_t thr_received;
   if (thr_received >= 25) return;
 
-  // V2.5-Evo - 2026-10-13 - Gate 3b, R2-F2: and the trigger must have been released for
-  // kCompassReleaseHoldOffMs without a break, so the motors have spun down and the compass has
-  // settled. Until then the previous snapshot is left exactly as it is (it simply ages).
-  if (!compassReleaseHoldOffPassed(now)) return;
-
   // Take a fresh heading reading. Skip update on I2C failure or uncalibrated result.
   float h = getCompassHeading();
   if (h < 0.0f) return;
+
+  // V2.5-Evo - 2026-10-13 - RH-1: the cross-check's reading, on every motor-idle pass with NO
+  // hold-off - exactly when the comparison got a fresh reading on e03499a. One I2C read per pass, as
+  // before; the hold-off below only decides whether the same reading may also become the steering
+  // snapshot.
+  compass_cmp_heading = h;
+  compass_cmp_ms      = millis();
+
+  // V2.5-Evo - 2026-10-13 - Gate 3b, R2-F2 (moved below the read by RH-1): the STEERING snapshot
+  // also needs the trigger released for kCompassReleaseHoldOffMs without a break, so the motors
+  // have spun down and the compass has settled. Until then the previous snapshot is left exactly
+  // as it is (it simply ages).
+  if (!compassReleaseHoldOffPassed(now)) return;
 
   compass_snapshot_heading = h;
   compass_snapshot_ms      = millis();

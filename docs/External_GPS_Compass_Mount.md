@@ -182,9 +182,12 @@ doc linked above.
 tied to the old position next to those exact wires. The mounting angle has changed too.
 
 **Until you recalibrate, the compass will be MORE wrong than before you moved it**, and the
-firmware will notice: the compass and GPS course will disagree, the heading-disagreement latch
-will set, **Follow-Me will refuse to engage** and RTM will drop to GPS-course-only. That is the
-guard working correctly, but it looks exactly like a firmware fault if you are not expecting it.
+firmware will notice: the compass and GPS course will disagree and the heading-disagreement latch
+will set. The latch withdraws the compass, so Follow-Me and RTM steer on GPS course only. If it
+sets while Follow-Me is following, that run ends with **St** (Follow-Me stays armed). It is kept
+across restarts until the two agree again, a full `?compasscal` completes or a `?magalign`
+completes. That is the guard working correctly, but it looks exactly like a firmware fault if you
+are not expecting it.
 
 ### Do these in order
 
@@ -219,7 +222,7 @@ guard working correctly, but it looks exactly like a firmware fault if you are n
 | Compass reads but headings are wrong in every direction by the same amount | Mounting rotation — run `?magalign` |
 | Headings wrong by *different* amounts per direction | Iron calibration — run a full `?compasscal` |
 | `?magtest` still reports large error after moving | Something ferrous nearby, or still too close to the loop. Check every fastener with a magnet. |
-| Follow-Me will not engage after the move | You have not recalibrated. The disagreement latch is standing — `?diag` confirms it. |
+| Follow-Me ends with **St** while following, or will not engage from a standstill, after the move | You have not recalibrated. The disagreement latch is standing (`?diag` shows `STANDING`), so the compass is withdrawn and Follow-Me steers on GPS course only. A stopped buggy then has no heading: it may creep straight ahead for up to 3 s per squeeze to find one, and if none comes it does not engage on that squeeze. Run `?compasscal`. |
 | GPS lost satellites after the move | The module is shielded or under metal. **Never wrap the module itself.** |
 | RX stops at boot printing `Starting AW9532...AW9523 not found!` and never reaches its serial commands. The motors get no signal. | The I²C bus is held. The AW9523 I/O expander (`0x58`) shares the bus with the compass (SDA GPIO 2, SCL GPIO 1). SDA shorted to SCL, a line shorted to GND, or an unpowered module dragging the lines low stops the RX at boot, by design. Unplug the module and power-cycle: if it boots, the module wiring is the cause. With the RX powered and the module plugged in, SDA and SCL should each read about 3.3 V to GND; a line near 0 V is shorted or pulled low. Real case (2026-10-12): a tiny solder short between SDA and SCL. |
 

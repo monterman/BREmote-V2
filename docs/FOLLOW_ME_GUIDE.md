@@ -319,7 +319,8 @@ A buggy setting. It decides where the buggy gets its heading.
 
 With 1, the buggy cross-checks the compass against the GPS course while moving. A lasting
 disagreement drops the compass (back to GPS course only), ends an active Follow-Me with **St**, and
-is remembered across restarts until the two agree again. So after fitting or moving a compass, run
+is remembered across restarts until the two agree again, a full `?compasscal` completes or a
+`?magalign` completes. So after fitting or moving a compass, run
 `?compasscal` before the water
 ([Zero → Foiling § 2.4](ZERO_TO_FOILING.md#24-compass-calibration-rx--nose-on-north-two-clockwise-circles)).
 

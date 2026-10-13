@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-13 - CRITICAL MAINTENANCE contract honoured (log mirror only), heading-latch design 2026-10-13 R-16: getRtmHeading() no longer returns NONE on a tick with a measured compass-vs-COG disagreement - it serves the live GPS course - so convertToLogData()'s guard 2 mirror (its own comparison and the empty disagree_now branch) is removed and such a tick now logs src 1 / conf 3, as the controller steers. The latch gate on the compass-snapshot branch stays. Read-only, no new column, no rtm_source value added, no record-size change, log format unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU), delta-audit M-1: active_log_level is volatile and reset to 3 while no file is open (start of createNewLogFile(), and in stopLog()), so the IMU poll never runs on a previous file's level or after a failed create.
 // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU) (see BREmote_V2_Rx.h, VESC.ino): logImuPollWanted() (true only while a level-6 log is recording - the IMU poll's first gate); fillImuBlocks() fills the two 22 B IMU blocks (VESC 2's IMU with its freshness decided at log time, the reserved RX IMU always NO SOURCE); loggerTask() builds a static VescLogDataL6 for level 6, and its record buffer is static and sized LOG_REC_MAX; downloadLogFile()'s ceiling and buffer use LOG_REC_MAX, so a 170 B file is accepted. Log format stays 3. No confStruct change.
 // V2.5-Evo - 2026-10-07 - P-11: the log's link-quality test uses stampStale() (signed age). Log format unchanged.
@@ -394,24 +395,16 @@ VescLogData convertToLogData() {
 
       bool cog_valid = cog_fresh_ts && cog_moving && !cog_frozen_moving;
 
-      // GUARD 2 mirror (per-tick verdict only). The 5 s escalation latch lives in RTMState.ino and
-      // is NOT read here: this function runs in loggerTask, so the mirror must stay side-effect-free
-      // and must not depend on loop-task timing. A logged NONE therefore reflects the disagreement
-      // that was measurable at this instant, which is what rtm_source/rtm_confidence describe.
-      bool compare_possible = (mode == 1) && cog_valid &&
-                              (compass_snapshot_heading >= 0.0f) && (compass_snapshot_ms > 0) &&
-                              ((now_ms - compass_snapshot_ms) < (unsigned long)kHeadingCompareSnapMs);
-      bool disagree_now = false;
-      if (compare_possible) {
-        float d = gps_last_course_deg - compass_snapshot_heading;   // wrap-correct across 0/360
-        while (d >  180.0f) d -= 360.0f;
-        while (d < -180.0f) d += 360.0f;
-        disagree_now = (fabsf(d) > kHeadingDisagreeDeg);
-      }
+      // V2.5-Evo - 2026-10-13 - R-16: THE GUARD 2 MIRROR IS GONE, because the controller no longer
+      // has a per-tick verdict to mirror. getRtmHeading() used to return NONE on any tick where the
+      // live course and a fresh compass snapshot were measured more than kHeadingDisagreeDeg apart,
+      // and this block logged src 0 / conf 0 to match. A measured disagreement now withdraws the
+      // compass only: such a tick always has a live course (the comparison needs cog_valid), the
+      // controller serves it at confidence 3, and so must the log - which the cog_valid branch below
+      // already does. The latch gate on the compass branch is the part of guard 2 that remains, and
+      // it is unchanged. Read-only as before; no column, value or record-size change.
 
-      if (disagree_now) {
-        // Both sources distrusted — src/conf stay 0, matching getRtmHeading() returning NONE.
-      } else if (cog_valid) {
+      if (cog_valid) {
         src    = 1;     // GPS_COG
         conf   = 3;     // HIGH
         chosen = gps_last_course_deg;
@@ -438,8 +431,8 @@ VescLogData convertToLogData() {
         // being steered on IS a GPS course (src 1), and confidence 2 is precisely what
         // getRtmHeading() returns for it — a real measurement, but a stale one. A live COG still
         // logs 1/3, so held and live remain distinguishable in the CSV without changing its format.
-        // ORDER MATTERS and mirrors the controller exactly: after the disagreement veto and the live
-        // COG branch, gated on mode 1 (mode 0 returns NONE before the hold, mode 2 never reaches
+        // ORDER MATTERS and mirrors the controller exactly: after the live COG branch (the
+        // disagreement veto that used to precede it was removed 2026-10-13, R-16), gated on mode 1 (mode 0 returns NONE before the hold, mode 2 never reaches
         // here) and on !cog_frozen_moving (a frozen COG is refused before the hold is consulted),
         // and ahead of the compass fallback.
         // STRICTLY SIDE-EFFECT-FREE: three reads and nothing else. This runs in loggerTask; the two

@@ -1,3 +1,10 @@
+// V2.5-Evo - 2026-10-13 - heading-latch design 2026-10-13, R-16 (fixes R1-F2, owner approved): a MEASURED compass-vs-GPS-
+//   course disagreement withdraws the COMPASS only, never the GPS course. getRtmHeading() lost its per-tick veto (the
+//   `if (disagree_now)` return of "no heading" above the live-COG branch), which blanked the live course for up to ~1 s
+//   after each squeeze even with the latch already standing. A disagreement can only be measured with a live course
+//   (compare_possible needs cog_valid), so that tick is now served the live course at confidence 3 and never reaches
+//   the compass rung. The dwell, the latch's set and clear rules and every throttle term are unchanged. Logger.ino's
+//   mirror follows. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-12 - COMMENTS ONLY: the fm_flags bit-map comment describes the remote's D-7 looks (breathing bar,
 //   end dots, solid bar - no scanner) and today's bit 3 (with / without bit 0). No code change.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-3 (owner ruling (a)): the 30 s long-loss end from a HOLD under a held
@@ -662,6 +669,8 @@ static bool checkRtmSafetyGates()
 //   ESCALATION — a transient disagreement only invalidates the heading for that tick, but a
 //   sustained one means the COMPASS is genuinely wrong (it is the sensor the ladder can promote,
 //   and the one this hardware biases under motor current).
+//   V2.5-Evo - 2026-10-13 - R-16: a transient disagreement no longer invalidates anything on its
+//   own tick (the live GPS course is served); only the latch withdraws anything, and only the compass.
 //
 //   V2.5-Evo - 2026-08-17 - WHAT IT DOES NOW: RTM DEGRADES, FOLLOW-ME DECLINES. While it stands the
 //   compass is withdrawn from the ladder, so RTM runs on GPS course alone; it is NOT a config
@@ -759,6 +768,9 @@ static bool checkRtmSafetyGates()
 //   measurable on one tick and unmeasurable on the next — at which point COG alone would look
 //   valid again and FM would happily resume steering on the source we just proved suspect. The
 //   flag is what stops a proven fault from being washed out by its own evidence going stale.
+//   V2.5-Evo - 2026-10-13 - R-16: a disagreement no longer returns "no heading" at all (the live GPS
+//   course is served on that tick), so the flag is now the ONLY thing a disagreement withdraws, and
+//   what it withdraws is the compass.
 //
 //   RTM CONSUMES IT TOO (this paragraph used to say only FM did). The 2026-08-16 close-range veer
 //   changed that: getRtmHeading() itself withdraws the compass while the fault is latched, so every
@@ -1073,6 +1085,8 @@ static const unsigned long kHeadingDisagreeEvidenceMaxMs = 3UL * (unsigned long)
 // DIRECTION OF THE CHANGE: strictly harder to set the fault, never easier. Restarting a dwell can
 // only delay an escalation, and the per-tick verdict (a measured disagreement returns confidence 0
 // on that tick regardless) is untouched, so no tick loses protection.
+// V2.5-Evo - 2026-10-13 - R-16: that per-tick verdict is gone - a measured disagreement now serves
+// the live GPS course on its own tick and withdraws the compass only through the latch.
 // Compile-time constant like every other k* in this file: no confStruct field, no SPIFFS slot, no
 // web-UI row, no SW_VERSION bump.
 static const unsigned long kHeadingDisagreeGapMaxMs = 2000UL;  // ms; max spacing between two disagreeing samples
@@ -1134,6 +1148,8 @@ unsigned long        cog_last_good_ms  = 0;
 //     stationary buggy — whose constant course is CORRECT — is never faulted.
 //   GUARD 2 (compass vs COG cross-check): if the two independent sources are more than
 //     kHeadingDisagreeDeg apart, neither is trusted and NO heading is returned.
+//     V2.5-Evo - 2026-10-13 - R-16: NO LONGER. A measured disagreement withdraws the compass only;
+//     the live GPS course is still served. See the note where the per-tick veto used to sit.
 //
 // V2.5-Evo - 2026-08-17 - A TEMPORARY LADDER THAT IS NOT A SETTING: while guard 2's latch stands,
 // the COMPASS is withdrawn from this function — the live GPS course and the kCogHoldMs held course
@@ -1336,6 +1352,13 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
   // TIMING HONESTY. Because the snapshot only refreshes with the trigger released, the comparison
   // is live around the moment of the squeeze and goes dormant while the rider holds it (see
   // kHeadingCompareSnapMs). Dormant means "not measured", never "measured and passed".
+  //
+  // V2.5-Evo - 2026-10-13 - R-16 (owner ruling, fixes R1-F2): "NEITHER is trusted" ABOVE IS
+  // SUPERSEDED. The measurement below still feeds the dwell and the latch exactly as before, but a
+  // disagreeing tick no longer returns "no heading": the cross-check is evidence about the COMPASS
+  // (D-3, "COG, period"), so it may remove only the compass. The per-tick veto that blanked the live
+  // course on every disagreeing sample - up to ~1 s with no heading after each squeeze, latch or no
+  // latch - is gone; see the note where it used to sit, below the bookkeeping.
   // ============================================================
   bool compare_possible = (mode == 1) && cog_valid &&
                           (compass_snapshot_heading >= 0.0f) && (compass_snapshot_ms > 0) &&
@@ -1353,8 +1376,8 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
     disagree_now = (fabsf(d) > kHeadingDisagreeDeg);
   }
 
-  // Persistence bookkeeping. Transient disagreement -> this tick has no heading. Sustained past
-  // kHeadingDisagreeMs -> a proven fault.
+  // Persistence bookkeeping. Transient disagreement -> nothing yet (V2.5-Evo - 2026-10-13, R-16: it
+  // used to blank this tick's heading). Sustained past kHeadingDisagreeMs -> a proven fault.
   // V2.5-Evo - 2026-08-17 - WHAT THE ESCALATION MEANS NOW. It withdraws the COMPASS from the ladder
   // for the rest of the session, so RTM keeps running on GPS course, and it makes Follow-Me decline
   // to engage (can_be_active in runFmLoop carries it, and so does the FM fault-stop classifier).
@@ -1499,11 +1522,16 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
     }
   }
 
-  if (disagree_now) {
-    *out_heading = -1.0f;
-    *out_confidence = 0;
-    return false;
-  }
+  // V2.5-Evo - 2026-10-13 - R-16 (fixes R1-F2): THE PER-TICK VETO THAT STOOD HERE IS REMOVED.
+  // It returned "no heading" on every tick a disagreement was measured, ABOVE the live-COG branch,
+  // so it withdrew the GPS course along with the compass - even with the latch already standing,
+  // when the compass was out anyway - and Follow-Me could wait up to ~1 s after a squeeze to engage
+  // or steer. A disagreement is evidence about the COMPASS only (D-3, "COG, period"), so now it
+  // withdraws the compass only, and nothing extra is needed for that: disagree_now can only be true
+  // inside compare_possible, which requires cog_valid, so a disagreeing tick is served the live
+  // course just below and never reaches the compass rung. The measurement still drives the dwell,
+  // the latch and route 1 above, unchanged. No throttle term is read or written here; the heading a
+  // disagreeing tick now gets is the same live course every other tick with a valid COG gets.
 
   if (cog_valid) {
     cog_last_good_deg = gps_last_course_deg;

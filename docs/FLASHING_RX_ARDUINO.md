@@ -58,3 +58,25 @@ The RX's real app slot is **2.0 MB**, set by the sketch's own `partitions.csv`. 
 - **Any partition-scheme change wipes SPIFFS** → you must re-pair, re-enter settings, and re-run compass calibration afterward.
 - **Libraries** (install via Library Manager): RadioLib, TinyGPS++, Adafruit AW9523. See the `#include`s at the top of the sketch for the exact set.
 - **No compass library is needed — do not install one.** `Compass.ino` drives both supported magnetometers through raw `Wire` register writes: the **QMC5883L** at `0x0D` (Beitian BN-880, HGLRC M100 Pro) and the **QMC5883P** at `0x2C` (HGLRC M100-5883). Installing a QMC5883L library changes nothing, and if your compass is dead it will send you looking in the wrong place — particularly on an **M100-5883**, whose part is a QMC5883**P** and which no QMC5883L library would drive anyway.
+
+---
+
+## Backup when the RX will not boot
+
+The normal backup is `?conf`. If the RX stops during boot (for example the `AW9523 not found!` freeze, see [External GPS + compass § Troubleshooting](External_GPS_Compass_Mount.md#troubleshooting)), `?conf` cannot run. The chip's built-in loader still works, so read the settings storage raw with esptool:
+```
+# Partition table + NVS (0x8000 up to the app at 0x10000)
+esptool --chip esp32c3 --port <COMx> -b 230400 read-flash 0x8000 0x8000 ptable-nvs.bin
+
+# SPIFFS partition: settings + logs
+esptool --chip esp32c3 --port <COMx> -b 230400 read-flash 0x210000 0x1E0000 spiffs.bin
+```
+These offsets and sizes apply to the RX's custom partition table only (`partitions.csv`, above).
+
+**Use 230400 baud.** On the RX's CH340K USB chip a full read at 921600 and at 460800 failed with `Corrupt data, expected 0x1000 bytes but received 0xfa2 bytes` (measured 2026-10-12). 230400 worked.
+
+Restore only if needed:
+```
+esptool --chip esp32c3 --port <COMx> -b 230400 write-flash 0x210000 spiffs.bin
+```
+An app-only flash (written at `0x10000`) never touches SPIFFS.

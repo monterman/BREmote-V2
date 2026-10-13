@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-13 - COMMENT ONLY: the kHeadingDisagreeDeg note says a measured disagreement no longer distrusts both sources (R-16: it withdraws the compass only). No code change, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-3: stickyCapArmRise(initial, open_rise) - the sticky arm with the rise chosen by the caller (closed only for the Follow-Me 30 s end from a held HOLD); stickyCapArm() = it with the rise open, unchanged for every existing caller. Runtime only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-1: includes ../Common/RiderGpsPacket.h (the v2 rider GPS packet with the remote's fix counter); new runtime globals rx_tx_gps_solution_ms / rx_tx_gps_solution_seq / rx_tx_gps_proto - "the rider's GPS is alive" is now judged by a NEW GPS SOLUTION, not by a change of coordinates. Runtime only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-11 - FOLLOW-ME NEVER SWITCHES ITSELF OFF (audit 2026-10-11 change 1): includes ../Common/FollowMePause.h (the pause classification, the 30 s long-loss clock and the heading creep, host-tested). Include only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -1048,6 +1049,8 @@ static const uint32_t kRtmCogFrozenMs       = 3000;   // ms of unchanged COG val
 // sensors are no longer describing the same vehicle attitude, and at 45 deg of heading error the
 // steering controller is already commanding half of full authority in a direction one of the two
 // sources says is wrong. It is a "these cannot both be right" threshold, not a tuning knob.
+// V2.5-Evo - 2026-10-13 - R-16: "BOTH are distrusted" no longer holds - a measured disagreement
+// withdraws the compass only and the live GPS course is still served (see getRtmHeading()).
 static const float    kHeadingDisagreeDeg   = 45.0f;  // degrees, shortest angular distance
 
 // GUARD 2 — how long that disagreement must persist before it is treated as a genuine FAULT rather

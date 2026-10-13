@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-13 - stale latch text (F-9 / A-10), TEXT AND COMMENTS ONLY: the ?diag "heading" STANDING text no longer says the latch clears on a reboot - it is stored (LATCH-1) and only a boot with rtm_use_compass not 1 or no compass discards it (LATCH-2) - and the comment above it no longer says "for the rest of this session" or that Follow-Me will not engage (D-3). No new command, no logic change. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-11 - change 1 (audit 2026-10-11): ?diag gains one "FM pause" line (printFmPauseDiag() in RTMState.ino: the pause and its input, the 30 s long-loss clock, the heading creep); the "heading" line no longer says Follow-Me will not engage (D-3, COG period). No new command. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): ?diag names level 6 "IMU" and gains three lines under "VESC 2 CAN": "VESC 2 IMU" (poll success in the window, polling / idle / waiting / backed-off state, miss streak), the last IMU values with their age and fresh / STALE / IMPLAUSIBLE verdict (the same rule the logger applies), and "RX IMU" (none fitted, columns reserved). DiagSnapshot carries the two imu2 counters; ?diagz zeroes them (the miss streak is live state and is left alone). No new ?command. Read-only. No confStruct change.
 // V2.5-Evo - 2026-10-07 - P-11: the BIND LED link test uses stampStale() (signed age). No confStruct change.
@@ -1509,12 +1510,17 @@ void cmdDiag(const String& params) {
   // V2.5-Evo - 2026-08-17 - the heading-disagreement latch, so a rider can ASK instead of hoping
   // they saw the one-shot notice scroll past. STANDING means the compass and the GPS course were
   // measured more than kHeadingDisagreeDeg apart for kHeadingDisagreeMs: the compass is out of the
-  // heading ladder for the rest of this session and Follow-Me will not engage, while Return-to-Me
-  // keeps running on GPS course. Read-only — headingDisagreeLatched() cannot set, clear or age the
+  // heading ladder until the latch clears, while Follow-Me and Return-to-Me keep running on the GPS
+  // course. Read-only — headingDisagreeLatched() cannot set, clear or age the
   // latch, so printing this changes no control state and nothing about ?diag's timing.
+  // V2.5-Evo - 2026-10-13 - text corrected (F-9): the comment said "for the rest of this session" and
+  // "Follow-Me will not engage" (wrong since LATCH-1 and D-3), and the STANDING text said "or reboot".
+  // A reboot does NOT clear it: the verdict is stored in SPIFFS (LATCH-1) and restored at boot, and
+  // headingDisagreeRestore() discards it only when the board boots with rtm_use_compass not 1 or
+  // finds no compass (LATCH-2) - the text now says exactly that.
   Serial.printf("heading    : compass-vs-COG disagreement latch %s\n",
                 headingDisagreeLatched()
-                  ? "STANDING - compass withdrawn, Follow-Me steers on the GPS course only (since 2026-10-11, D-3); clears on sustained agreement, ?compasscal (full run), ?magalign or reboot"
+                  ? "STANDING - compass withdrawn, Follow-Me steers on the GPS course only (since 2026-10-11, D-3); clears on sustained agreement, ?compasscal (full run) or ?magalign; stored, so a reboot keeps it (only a boot with rtm_use_compass not 1, or with no compass found, discards it)"
                   : "clear - compass available to the heading ladder");
   // V2.5-Evo - 2026-09-17 - the last Follow-Me fault-stop reason, so a rider can ask WHY the buggy
   // stopped following instead of reconstructing it from a scrolled-away serial line. "in progress"

@@ -126,6 +126,11 @@ The firmware was sending five messages that **do not exist on M10**:
 | `CFG-NAV5` | **dynModel** | ❌ rejected |
 | `CFG-GNSS` | constellations | ❌ rejected |
 
+In practice some modules sold as M10 still acknowledge the legacy messages (seen on an HGLRC M100
+Mini and an HGLRC M100-5883), so the dialect the firmware detects does not tell you which chip is
+inside. Only a UBX-MON-VER version poll would; the firmware does not run one yet. What matters for
+riding is the measured update rate.
+
 So on a genuine M10 the firmware applied **no rate, no NMEA filter, and no dynModel** — the
 module sat in Portable, and nothing said so.
 
@@ -362,6 +367,30 @@ mounting rotation only as one of those four values and any odd angle leaves perm
 The current procedure is *nose on north → two full
 clockwise circles → finish on north*; see
 [Zero → Foiling § 2.4](ZERO_TO_FOILING.md#24-compass-calibration-rx--nose-on-north-two-clockwise-circles).
+
+### HGLRC M100-5883 on the RX: use `gps_chip_type 3`
+
+Measured 2026-10-12 on the RX bench: indoors at a window, four alternating 60 s runs (3, 1, 3, 1)
+at one spot, VESCs unpowered.
+
+- **Type 3** put the module at 10 Hz every run: about 2,160-2,190 bytes/s and 9.3-9.4 sentences
+  with a fix per second.
+- **Type 1** asks for 5 Hz. That landed in one run (1,061 bytes/s, 4.5 per second) and was
+  ignored in the other: the module stayed at 10 Hz.
+
+**Why.** Type 1 sends its rate request without checking that the module is ready to accept it, so
+the rate is not predictable. Type 3 asks for 10 Hz, which is also this module's factory default.
+This module ships at 115200 baud, which is what type 3 assumes.
+
+At the same rate both types gave the same data quality: data age about 70 ms on average and at
+most about 0.4 s, 4-5 % damaged sentences, position wander about 2-3 m.
+
+This is measured for the M100-5883 only. Other modules were not tested (for example the BE-880,
+which ships at 1 Hz).
+
+About half of all GPS sentences did not reach the parser at either rate on this bench. The VESCs
+were unpowered, and the RX shares one UART between the GPS and the VESCs, so this is still to be
+re-measured with the VESCs on.
 
 ---
 

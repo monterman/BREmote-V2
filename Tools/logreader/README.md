@@ -93,10 +93,21 @@ python bremote_log.py device_download.csv --timeline --from 120 --to 180
   | 3 | 62 | `L3_V2` | 33 | level 3, unchanged |
   | 3 | 104 | `L4_V3` | 62 | level 4 + the second VESC's telemetry (2026-10-06: both VESCs at level 4) |
   | 3 | 126 | `L5_V3` | 76 | level 4 (with VESC 2) + the level-5 block |
+  | 4 | all format-3 sizes | the format-3 tiers | same | the format-3 records unchanged; the header is followed by an 8-byte **boot block** (2026-10-14) |
 
-  **Firmware that writes format 3 cannot turn format-1 or format-2 files into CSV on the board** - it
+  **Format 4 (2026-10-14)** adds the boot block right after the 8-byte header: the RX's persistent
+  boot counter (u32) and the reset reason of the boot that created the file (u8, the ESP32
+  `esp_reset_reason()` code, then 3 reserved bytes), so a log says whether the RX had just been
+  powered up (or lost power), had crashed (panic / watchdog), or had been restarted on purpose. The
+  device CSV of a format-4 file has one extra line right after the column header,
+  `=== RX boot #N / reset NAME (code): class ===`; this tool skips it as a row and reads it as the boot
+  info. `--summary` starts with an `RX boot:` line for a format-4 file. The reason names and classes
+  are the firmware's own (`Source/Common/ResetReason.h`); a test checks this tool's copy against it.
+  The firmware that writes format 4 still downloads format-3 files.
+
+  **Firmware that writes format 3 or 4 cannot turn format-1 or format-2 files into CSV on the board** - it
   refuses them with a plain-English message. Download logs before flashing. This tool still reads all
-  three formats, binary or CSV.
+  four formats, binary or CSV.
 
   Any other record size decodes the largest known layout **of the same format** that fits inside it and warns once about
   the ignored trailing bytes — the same range-tiering `logCsvHeaderFor()` uses in the firmware, so

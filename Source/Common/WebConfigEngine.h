@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-14 - (RX only, inside ENABLE_WEB_LOG_DOWNLOAD) LOG FORMAT 4: the WiFi log download reads the header through the shared logReadFileHeader() (BREmote_V2_Rx.h): formats 3 and 4 are decoded (format 4 adds the boot block: boot counter + reset reason), older formats are refused as before, and a format-4 file's CSV gets one "=== RX boot #N / reset ... ===" line after the column header, as ?download prints it.
 // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): (RX only, inside ENABLE_WEB_LOG_DOWNLOAD) the WiFi log download's record-size ceiling and raw record buffer are LOG_REC_MAX (sizeof(VescLogDataL6), 170 B) instead of sizeof(VescLogDataL5), so a level-6 file is accepted and downloads with its 98 columns. No TX impact (the TX never compiles this block), no confStruct change.
 // V2.5-Evo - 2026-10-06 - (RX only, inside ENABLE_WEB_LOG_DOWNLOAD) LOG FORMAT 3: a log recorded by OLDER firmware (an older format_ver) is refused with its own plain-English ERR_LOG_FORMAT detail - recorded by older firmware, not damaged, download before flashing - instead of "predates the self-describing log format or is corrupt", which was wrong for it. The row-buffer comment no longer quotes the stale 2026-07-25 sizing.
 // V2.5-Evo - 2026-10-03 - (RX only, inside SERIAL_TEE_RING_SIZE - the TX does not include the serial capture ring, so none of this is compiled there) WiFi COMMAND CONSOLE: three routes (POST /api/cmd, GET /api/cmd/out, GET /api/cmd/list), a deferred runner called from webCfgLoop() so a command never executes inside the request that asked for it, and webCfgPumpWhileBlocked() so the four bounded blocking commands the console permits can answer HTTP from inside their own loops. The permitted set, the confirm requirement and the connection-dropping class are all read out of the RX's kCommands[] table through rxWebCommandInfo() / rxWebCommandListJson() - there is no second command list anywhere. The log-download route gains a 409 while a command is running, because the pump makes it reachable from inside one. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -686,24 +687,23 @@ static void webCfgHandleDownloadLog()
   // timestamp), so the magic test rejects them cleanly. Those files were already undecodable
   // after the 53 -> 59 byte record change (F9, 2026-07-24).
   // ============================================================
-  LogFileHeader hdr;
-  bool hdrRead = (file.size() >= sizeof(LogFileHeader)) &&
-                 (file.read((uint8_t*)&hdr, sizeof(hdr)) == sizeof(hdr)) &&
-                 (hdr.magic == LOG_FILE_MAGIC);
+  // V2.5-Evo - 2026-10-14 - LOG FORMAT 4: read through the shared logReadFileHeader() (BREmote_V2_Rx.h), the same call
+  // ?download makes: formats 3 and 4 are decoded (same records; 4 adds a boot block), older ones are refused below.
+  LogFileHeader   hdr  = {};
+  LogFileBootInfo boot = {};
+  bool            has_boot = false;
+  const int hdr_verdict = logReadFileHeader(file, hdr, boot, &has_boot);
   // V2.5-Evo - 2026-10-06 - LOG FORMAT 3: a valid header from OLDER firmware is not "corrupt" - its records follow
   // an older layout this firmware no longer decodes (format 2 and format 3 level-5 records are both 126 B), so it
   // is refused with an answer that says what happened and what to do.
-  if(hdrRead && hdr.format_ver < LOG_FILE_FORMAT_VER)
+  if(hdr_verdict < 0)
   {
     file.close();
     webCfgMarkErr("ERR_LOG_FORMAT");
     webCfgSendJson(400, "{\"ok\":0,\"err\":\"ERR_LOG_FORMAT\",\"detail\":\"this log was recorded by older firmware (an older log format) and this firmware cannot turn it into CSV. The file is not damaged. Download logs before flashing new firmware; to read this one, flash the previous firmware and download it there.\"}");
     return;
   }
-  bool hdrOk = hdrRead &&
-               (hdr.format_ver == LOG_FILE_FORMAT_VER) &&
-               (hdr.record_size >= (uint16_t)sizeof(VescLogData)) &&
-               (hdr.record_size <= (uint16_t)LOG_REC_MAX);   // V2.5-Evo - 2026-10-08 - LOG LEVEL 6: the largest record is level 6 (170 B)
+  bool hdrOk = (hdr_verdict == 1);   // V2.5-Evo - 2026-10-14 - format 3 or 4, record size 62..LOG_REC_MAX (logReadFileHeader())
   if(!hdrOk)
   {
     file.close();
@@ -733,6 +733,12 @@ static void webCfgHandleDownloadLog()
   // V2.5-Evo - 2026-09-17 - chosen by record_size as well, see logCsvHeaderFor().
   String header = String(logCsvHeaderFor(hdr.log_level, hdr.record_size)) + "\n";
   webCfgServer.sendContent(header);
+  // V2.5-Evo - 2026-10-14 - LOG FORMAT 4: the boot line right after the column header, exactly as ?download prints it.
+  if (has_boot) {
+    char boot_line[160];
+    logBootMarker(boot_line, sizeof(boot_line), boot);
+    webCfgServer.sendContent(String(boot_line) + "\n");
+  }
 
   // V2.5-Evo - 2026-07-25 - STAGE 0: raw record buffer, sized for the largest record this
   // firmware understands (level 5 since 2026-09-19; level 6 since 2026-10-08). The file header guarantees hdr.record_size fits in it.

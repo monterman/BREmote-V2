@@ -101,6 +101,26 @@ signs below are recorded at the bench (B4–B6 of the level-6 test plan) and are
 If pitch reads about 0.35 for a 20° lift the radians-to-degrees step is missing; about 1150 means it
 was applied twice (`kImuRpyIsRadians` in `Source/Common/VescImu.h`).
 
+## Boot number and reset reason — log format 4 (V2.5-Evo, 2026-10-14)
+
+Every log file now records **which RX boot made it and why that boot started**, so a log that stops
+mid-ride can be explained: the next file's boot block says whether the RX lost power or restarted itself.
+
+- **Boot banner:** `**  Boot #N - reset reason NAME (code): class`.
+- **`?diag`:** a `boot` line with the same boot number and reason, plus the uptime.
+- **Log files:** an 8-byte boot block after the file header (log format 4). The downloaded CSV has one
+  extra line right after the column header: `=== RX boot #N / reset NAME (code): class ===`.
+  `Tools/logreader/bremote_log.py --summary` prints it as `RX boot: ...`.
+- **How to read the reason:**
+  - `POWERON` — power-up or power loss (a pack, a cable, a BMS, the switch). `BROWNOUT` — the supply sagged.
+  - `PANIC`, `TASK_WDT`, `INT_WDT`, `WDT`, `CPU_LOCKUP` — a **crash**: the firmware restarted itself.
+  - `SW` — a deliberate restart (`?reboot`, a flash, a config reset). `USB` — the flashing tool or a
+    serial monitor reset the board. `EXT` — the reset pin.
+- **The boot counter** lives in the RX's NVS (not in the config). It survives flashes and config resets;
+  0 means the counter could not be read or written on that boot.
+- **No format bump for the records:** the rows are the same as format 3, and this firmware still
+  downloads format-3 files recorded before the flash.
+
 ## Related
 
 - Partition table: `Source/V2_Integration_Rx/partitions.csv` (custom no-OTA; SPIFFS is wiped and

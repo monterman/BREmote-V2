@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-14 - RESET REASON + BOOT COUNTER (owner-approved for RX1): bootInfoInit() records esp_reset_reason() and increments a persistent boot counter in NVS (Preferences, namespace "bremote"; not the config), prints both on the boot banner, and makes them available to ?diag and to every log file's format-4 boot block. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-14 - full-system audit FS-1 / FS-13 (owner-approved for RX1): runBootSequence() sets the PPM enables through the AW9523 port-1 writer (awPort1EnableMotorsLocked(), System.ino), which forces them HIGH in every later port-1 write; the P-6 re-assert after a bus recovery re-writes the writer's whole intended byte. No timing change. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - P-6: the bus recovery retries a failed Wire.begin() once and re-asserts the AW9523 port-1
 //   outputs (both PPM enables HIGH) under the same hold. P-7: it repeats only if the PWM task attempted a swap since
@@ -335,4 +336,42 @@ void runBootSequence()
   awPort1EnableMotorsLocked();
 
   configureGPS();
+}
+
+// ============================================================
+// bootInfoInit - the reset reason of this boot and the persistent boot counter
+// ============================================================
+// V2.5-Evo - 2026-10-14 - owner-approved for RX1 (log check 2026-10-14 "RX1 unexplained reboots", recommendation 1).
+// WHY: an RX that restarts on the water leaves nothing that says whether it lost power (a pack, a cable, a BMS, the
+// switch) or restarted itself (a panic or a watchdog). The logs could only infer it from the battery voltage in the
+// last rows. Now every boot knows, says so on the boot banner and in ?diag, and writes it into every log file it
+// creates (log format 4, LogFileBootInfo), so a log that ends abruptly is explained by the NEXT log's boot block.
+// Inputs: none. Outputs: g_reset_reason (always), g_boot_count (the NVS counter after its increment; 0 if NVS could
+// not be read or written). Side effects: one NVS read and one write (namespace "bremote", key "boot_count") through
+// the core's Preferences library - NOT the config, so no confStruct change and nothing the config validator sees; one
+// banner line. Called once, at the very start of setup(), right after enterSetup() has opened Serial; needs no I2C.
+static_assert((int)ESP_RST_UNKNOWN == (int)RR_UNKNOWN && (int)ESP_RST_POWERON == (int)RR_POWERON &&
+              (int)ESP_RST_EXT == (int)RR_EXT && (int)ESP_RST_SW == (int)RR_SW && (int)ESP_RST_PANIC == (int)RR_PANIC &&
+              (int)ESP_RST_INT_WDT == (int)RR_INT_WDT && (int)ESP_RST_TASK_WDT == (int)RR_TASK_WDT &&
+              (int)ESP_RST_WDT == (int)RR_WDT && (int)ESP_RST_DEEPSLEEP == (int)RR_DEEPSLEEP &&
+              (int)ESP_RST_BROWNOUT == (int)RR_BROWNOUT && (int)ESP_RST_SDIO == (int)RR_SDIO &&
+              (int)ESP_RST_USB == (int)RR_USB && (int)ESP_RST_JTAG == (int)RR_JTAG && (int)ESP_RST_EFUSE == (int)RR_EFUSE &&
+              (int)ESP_RST_PWR_GLITCH == (int)RR_PWR_GLITCH && (int)ESP_RST_CPU_LOCKUP == (int)RR_CPU_LOCKUP,
+              "Common/ResetReason.h codes must match this core's esp_reset_reason_t");
+void bootInfoInit()
+{
+  g_reset_reason = (uint8_t)esp_reset_reason();
+  Preferences prefs;
+  if (prefs.begin("bremote", false)) {
+    const uint32_t n = prefs.getUInt("boot_count", 0) + 1;
+    if (prefs.putUInt("boot_count", n) == sizeof(uint32_t)) g_boot_count = n;
+    prefs.end();
+  }
+  if (g_boot_count != 0) {
+    Serial.printf("**  Boot #%lu - reset reason %s (%u): %s\n", (unsigned long)g_boot_count,
+                  resetReasonName(g_reset_reason), (unsigned)g_reset_reason, resetReasonClass(g_reset_reason));
+  } else {
+    Serial.printf("**  Boot # unknown (NVS counter unavailable) - reset reason %s (%u): %s\n",
+                  resetReasonName(g_reset_reason), (unsigned)g_reset_reason, resetReasonClass(g_reset_reason));
+  }
 }

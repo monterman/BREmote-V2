@@ -43,11 +43,15 @@ def pack_record(layout: dict, raw_overrides: dict) -> bytes:
 
 
 def write_binary_log(path: str, level: int, record_size: int, records: list[bytes],
-                     format_ver: int = bl.LOG_FILE_FORMAT_VER) -> None:
+                     format_ver: int = bl.LOG_FILE_FORMAT_VER, boot: tuple[int, int] = (7, 1)) -> None:
     """2026-10-06: format_ver is explicit now. The decoder picks a layout by (format_ver, record_size), so a
-    test that builds a format-1 or format-2 record must say so - exactly as a real file's header does."""
+    test that builds a format-1 or format-2 record must say so - exactly as a real file's header does.
+    2026-10-14: a format-4+ file carries the 8-byte boot block (boot_count, reset_reason) after the header,
+    exactly as the RX writes it; `boot` sets it."""
     with open(path, "wb") as f:
         f.write(struct.pack(bl.LOG_FILE_HEADER_FMT, bl.LOG_FILE_MAGIC, format_ver, level, record_size))
+        if format_ver >= 4:
+            f.write(struct.pack(bl.LOG_FILE_BOOT_FMT, *boot))
         for rec in records:
             f.write(rec)
 
@@ -792,8 +796,12 @@ class TestLogFormat3(unittest.TestCase):
             cls.fw = f.read()
 
     def test_firmware_constants_and_static_asserts(self):
-        self.assertEqual(bl.LOG_FILE_FORMAT_VER, 3)
-        self.assertIn("#define LOG_FILE_FORMAT_VER  3 ", self.fw)
+        # 2026-10-14: the current format is 4 (a boot block after the header); its records are format 3's,
+        # and the firmware still reads format-3 files (LOG_FILE_FORMAT_MIN_READ).
+        self.assertEqual(bl.LOG_FILE_FORMAT_VER, 4)
+        self.assertIn("#define LOG_FILE_FORMAT_VER  4 ", self.fw)
+        self.assertIn("#define LOG_FILE_FORMAT_MIN_READ 3 ", self.fw)
+        self.assertIs(bl.RECORD_LAYOUTS_BY_FORMAT[4], bl.RECORD_LAYOUTS_BY_FORMAT[3])
         self.assertIn("static_assert(sizeof(VescLogDataL4) == 104,", self.fw)
         self.assertIn("static_assert(offsetof(VescLogDataL4, vesc2_age_ms) == 90,", self.fw)
         self.assertIn("static_assert(sizeof(VescLogDataL5) == 126,", self.fw)
@@ -891,12 +899,13 @@ class TestLogFormat3(unittest.TestCase):
             self.assertEqual(rec["fm_state_name"], "HOLD", fv)
 
     def test_unknown_format_is_a_clear_error(self):
+        # 2026-10-14: 4 is a known format now (the boot block), so the first unknown one is 5.
         with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, "f4.log")
-            write_binary_log(path, 4, 104, [pack_record(bl.LAYOUT_L4_V3, {})], format_ver=4)
+            path = os.path.join(tmp, "f5.log")
+            write_binary_log(path, 4, 104, [pack_record(bl.LAYOUT_L4_V3, {})], format_ver=5)
             with self.assertRaises(bl.LogFormatError) as ctx:
                 list(bl.iter_binary_records(path))
-        self.assertIn("format_ver=4", str(ctx.exception))
+        self.assertIn("format_ver=5", str(ctx.exception))
 
     def test_cli_exits_nonzero_with_message_on_unknown_format(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -998,7 +1007,9 @@ class TestLogLevel6(unittest.TestCase):
         self.assertIn("static_assert(offsetof(VescLogDataL6, imu_rx) == 148,", self.fw)
         self.assertIn("static_assert(sizeof(VescLogDataL5) == 126,", self.fw)
         self.assertIn("static_assert(sizeof(ImuLogBlock) == 22,", self.imu_h)
-        self.assertIn("#define LOG_FILE_FORMAT_VER  3 ", self.fw)   # a tail append: no format bump
+        # a tail append: no format bump for level 6 (the 2026-10-14 bump to 4 changed the header, not a record)
+        self.assertIs(bl.RECORD_LAYOUTS_BY_FORMAT[3][170], bl.LAYOUT_L6_V3)
+        self.assertIs(bl.RECORD_LAYOUTS_BY_FORMAT[4][170], bl.LAYOUT_L6_V3)
         self.assertEqual(bl.LAYOUT_L6_V3["record_size"], 170)
         self.assertEqual(bl.LAYOUT_L6_V3["level"], 6)
         # the first 126 bytes are byte-identical to the format-3 level-5 record
@@ -1120,6 +1131,106 @@ class TestLogLevel6(unittest.TestCase):
         self.assertEqual(row2["vesc2_imu_status_name"], "STALE")
         summary = bl.generate_summary(records)
         self.assertIn("VESC 2 IMU: 50.0% of rows OK; max |roll| 12.3 deg; max pitch -5.5 deg", summary)
+
+
+
+# ============================================================
+# LOG FORMAT 4 (2026-10-14): the boot block - which RX boot recorded a file and why that boot started
+# ============================================================
+
+_RESET_REASON_H_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "..", "..", "Source", "Common", "ResetReason.h")
+
+
+class TestLogFormat4BootBlock(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        with open(_FW_HEADER_PATH, "r", encoding="utf-8") as f:
+            cls.fw = f.read()
+        with open(_RESET_REASON_H_PATH, "r", encoding="utf-8") as f:
+            cls.rr_h = f.read()
+
+    def _l3_record(self, ts: int) -> bytes:
+        return pack_record(bl.LAYOUT_L3_V2, {"timestamp_ms": ts})
+
+    def test_firmware_boot_block_matches_this_tool(self):
+        self.assertIn("static_assert(sizeof(LogFileBootInfo) == 8,", self.fw)
+        m = re.search(r"struct __attribute__\(\(packed\)\) LogFileBootInfo \{(.*?)\};", self.fw, re.S)
+        self.assertIsNotNone(m)
+        fields = re.findall(r"^\s*(uint\d+_t)\s+(\w+)(\[\d+\])?;", m.group(1), re.M)
+        self.assertEqual([(t, n) for t, n, _ in fields],
+                         [("uint32_t", "boot_count"), ("uint8_t", "reset_reason"), ("uint8_t", "rsvd")])
+        self.assertEqual(bl.LOG_FILE_BOOT_FMT, "<IB3x")
+        self.assertEqual(bl.LOG_FILE_BOOT_SIZE, 8)
+
+    def test_reset_reason_tables_match_the_firmware_header(self):
+        codes = {name: int(v) for name, v in re.findall(r"RR_(\w+)\s*=\s*(\d+)", self.rr_h)}
+        self.assertEqual(len(codes), 16)
+        name_fn = self.rr_h[self.rr_h.index("resetReasonName(uint8_t code)"):self.rr_h.index("resetReasonClass(uint8_t code)")]
+        class_fn = self.rr_h[self.rr_h.index("resetReasonClass(uint8_t code)"):self.rr_h.index("resetReasonIsCrash")]
+        fw_names = {codes[k]: v for k, v in re.findall(r'case RR_(\w+):\s*return "([^"]*)";', name_fn)}
+        fw_class = {codes[k]: v for k, v in re.findall(r'case RR_(\w+):\s*return "([^"]*)";', class_fn)}
+        self.assertEqual(fw_names, bl.RESET_REASON_NAMES)
+        self.assertEqual(fw_class, bl.RESET_REASON_CLASS)
+        self.assertIn('default:            return "?";', name_fn)
+        self.assertIn('default:            return "other / unknown";', class_fn)
+        self.assertEqual(bl.describe_reset_reason(200), ("?", "other / unknown"))
+        self.assertEqual(bl.describe_reset_reason(6), ("TASK_WDT", "CRASH (task watchdog: a loop stalled)"))
+
+    def test_format4_binary_decodes_like_format3_and_reports_the_boot(self):
+        recs = [self._l3_record(1000), self._l3_record(1333)]
+        with tempfile.TemporaryDirectory() as tmp:
+            p3 = os.path.join(tmp, "f3.log")
+            p4 = os.path.join(tmp, "f4.log")
+            write_binary_log(p3, 3, 62, recs, format_ver=3)
+            write_binary_log(p4, 3, 62, recs, format_ver=4, boot=(1234, 9))
+            r3 = list(bl.iter_binary_records(p3))
+            r4 = list(bl.iter_binary_records(p4))
+            self.assertEqual(r3, r4)
+            self.assertEqual([r["timestamp_ms"] for r in r4], [1000, 1333])
+            self.assertIsNone(bl.read_boot_info(p3))
+            self.assertEqual(bl.read_boot_info(p4), {"boot_count": 1234, "reset_reason": 9,
+                                                     "reset_reason_name": "BROWNOUT",
+                                                     "reset_reason_class": "supply sagged (brownout)"})
+            self.assertIn("RX boot: #1234, reset reason BROWNOUT (9): supply sagged (brownout)",
+                          bl.generate_summary(r4, bl.read_boot_info(p4)))
+            self.assertNotIn("RX boot:", bl.generate_summary(r3, bl.read_boot_info(p3)))
+
+    def test_format4_file_cut_inside_the_boot_block_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = os.path.join(tmp, "cut.log")
+            with open(p, "wb") as f:
+                f.write(struct.pack(bl.LOG_FILE_HEADER_FMT, bl.LOG_FILE_MAGIC, 4, 3, 62))
+                f.write(b"\x01\x00\x00")
+            with self.assertRaises(bl.LogFormatError):
+                list(bl.iter_binary_records(p))
+            self.assertIsNone(bl.read_boot_info(p))
+
+    def test_device_csv_boot_line_is_skipped_as_a_row_and_read_as_the_boot(self):
+        # The line exactly as logBootMarker() prints it (its snprintf format is pinned below).
+        self.assertIn('"=== RX boot #%lu / reset %s (%u): %s ==="', self.fw)
+        name, klass = bl.describe_reset_reason(6)
+        boot_line = f"=== RX boot #42 / reset {name} (6): {klass} ==="
+        self.assertNotIn(",", boot_line)
+        row = (
+            "1000,0.50,1.20,10,40.6,1500,25,0,12.3,41.123456,-87.654321,1700000000,"
+            "200,1,3,1,1,127,900,3600,65535,65535,900,65535,32767,32767,0,127,-1.0,-72,-99.0"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            p = os.path.join(tmp, "device4.csv")
+            with open(p, "w", encoding="utf-8", newline="") as f:
+                f.write(bl.LOG_CSV_HEADER_L3 + "\r\n" + boot_line + "\r\n" + row + "\r\n")
+            records = list(bl.iter_csv_records(p))
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["timestamp_ms"], 1000)
+            self.assertEqual(bl.read_boot_info(p), {"boot_count": 42, "reset_reason": 6,
+                                                    "reset_reason_name": "TASK_WDT",
+                                                    "reset_reason_class": "CRASH (task watchdog: a loop stalled)"})
+            # a format-3 device CSV has no boot line
+            p3 = os.path.join(tmp, "device3.csv")
+            with open(p3, "w", encoding="utf-8", newline="") as f:
+                f.write(bl.LOG_CSV_HEADER_L3 + "\n" + row + "\n")
+            self.assertIsNone(bl.read_boot_info(p3))
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-14 - LOG FORMAT 4 (owner-approved for RX1): createNewLogFile() writes a LogFileBootInfo (boot counter + reset reason of this boot) right after the 8-byte header; records unchanged. ?download reads the header through the shared logReadFileHeader(), decodes formats 3 and 4, and prints one "=== RX boot #N / reset ... ===" line after the CSV column header for a format-4 file. Old logs (format 3) still download. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-14 - full-system audit FS-13 (owner-approved for RX1): every AUX LED write (triggerBlink(), loggerLoop()'s blink and steady state, initLogger(), whose AW9523 block now also holds i2cMutex because it runs after initTasks()) goes through the AW9523 port-1 writer (awPort1SetPinLocked(), System.ino): one checked read, nothing written on a failed read, both PPM enables kept HIGH. The old aw.digitalWrite() read-modify-write could write a noise-corrupted motor-enable bit back as 0. Same locking as before at the other call sites. No log-format or behaviour change.
 // V2.5-Evo - 2026-10-13 - CRITICAL MAINTENANCE contract honoured (log mirror only), heading-latch design 2026-10-13 R-16: getRtmHeading() no longer returns NONE on a tick with a measured compass-vs-COG disagreement - it serves the live GPS course - so convertToLogData()'s guard 2 mirror (its own comparison and the empty disagree_now branch) is removed and such a tick now logs src 1 / conf 3, as the controller steers. The latch gate on the compass-snapshot branch stays. Read-only, no new column, no rtm_source value added, no record-size change, log format unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU), delta-audit M-1: active_log_level is volatile and reset to 3 while no file is open (start of createNewLogFile(), and in stopLog()), so the IMU poll never runs on a previous file's level or after a failed create.
@@ -931,6 +932,12 @@ bool createNewLogFile() {
       hdr.log_level   = active_log_level;
       hdr.record_size = active_record_size;
       currentLogFile.write((uint8_t*)&hdr, sizeof(hdr));
+      // V2.5-Evo - 2026-10-14 - LOG FORMAT 4: the boot block right after the header - which boot recorded this file
+      // and why that boot started (power-up / power loss, crash or watchdog, deliberate restart).
+      LogFileBootInfo boot = {};
+      boot.boot_count   = g_boot_count;
+      boot.reset_reason = g_reset_reason;
+      currentLogFile.write((uint8_t*)&boot, sizeof(boot));
       currentLogFile.flush();
     }
     xSemaphoreGive(fileMutex);
@@ -1164,10 +1171,14 @@ void downloadLogFile(const char* filename) {
   // were ALREADY undecodable after the 53 -> 59 byte record change (F9, 2026-07-24); this only
   // makes the failure visible instead of silent.
   // ============================================================
-  LogFileHeader hdr;
-  if (file.size() < sizeof(LogFileHeader) ||
-      file.read((uint8_t*)&hdr, sizeof(hdr)) != sizeof(hdr) ||
-      hdr.magic != LOG_FILE_MAGIC) {
+  // V2.5-Evo - 2026-10-14 - LOG FORMAT 4: the header (and a format-4 file's boot block) is read by the shared
+  // logReadFileHeader() (BREmote_V2_Rx.h), the same call the WiFi download makes. Formats 3 and 4 are both decoded
+  // (same records), so logs recorded before this flash still download. 0 = no / unknown header, -1 = older firmware.
+  LogFileHeader   hdr  = {};
+  LogFileBootInfo boot = {};
+  bool            has_boot = false;
+  const int hdr_verdict = logReadFileHeader(file, hdr, boot, &has_boot);
+  if (hdr_verdict == 0 && !(hdr.magic == LOG_FILE_MAGIC)) {
     file.close();
     Serial.println("LOG: this file has no BRLG header, so its record layout is unknown.");
     Serial.println("LOG: it was written before the self-describing log format (or is corrupt).");
@@ -1178,7 +1189,7 @@ void downloadLogFile(const char* filename) {
   // are not garbage - they follow an older layout this firmware no longer decodes (a format-2 126 B record and a
   // format-3 126 B record are the same size with different contents), so nothing is printed rather than wrong
   // columns, and the rider is told what happened and where the file CAN be read.
-  if (hdr.format_ver < LOG_FILE_FORMAT_VER) {
+  if (hdr_verdict < 0) {
     file.close();
     Serial.printf("LOG: this log was recorded by older firmware (log format %u). This firmware writes log format %u\n",
                   (unsigned)hdr.format_ver, (unsigned)LOG_FILE_FORMAT_VER);
@@ -1187,14 +1198,12 @@ void downloadLogFile(const char* filename) {
     Serial.println("LOG: firmware and download it, or decode the raw file on a PC with Tools/logreader/bremote_log.py.");
     return;
   }
-  if (hdr.format_ver != LOG_FILE_FORMAT_VER ||
-      hdr.record_size < (uint16_t)sizeof(VescLogData) ||
-      hdr.record_size > (uint16_t)LOG_REC_MAX) {   // V2.5-Evo - 2026-10-08 - LOG LEVEL 6: the largest record is level 6 (170 B) now
+  if (hdr_verdict == 0) {   // a BRLG header, but a format or record size this firmware does not decode
     file.close();
     Serial.printf("LOG: unsupported log format (header version %u, %u bytes/record).\n",
                   (unsigned)hdr.format_ver, (unsigned)hdr.record_size);
-    Serial.printf("LOG: this firmware reads header version %u with %u-%u bytes/record. Nothing printed.\n",
-                  (unsigned)LOG_FILE_FORMAT_VER,
+    Serial.printf("LOG: this firmware reads header versions %u-%u with %u-%u bytes/record. Nothing printed.\n",
+                  (unsigned)LOG_FILE_FORMAT_MIN_READ, (unsigned)LOG_FILE_FORMAT_VER,
                   (unsigned)sizeof(VescLogData), (unsigned)LOG_REC_MAX);
     return;
   }
@@ -1209,6 +1218,13 @@ void downloadLogFile(const char* filename) {
   // V2.5-Evo - 2026-09-17 - and by the file's RECORD SIZE too, so a 65 B level-4 file written
   // before the Follow-Me block gets its own 35-column header, not the 45-column one.
   Serial.println(logCsvHeaderFor(hdr.log_level, hdr.record_size));
+  // V2.5-Evo - 2026-10-14 - LOG FORMAT 4: which boot recorded this file, and why it started. One line, right after the
+  // column header, starting "===" (skipped by Tools/logreader/bremote_log.py; no comma in it).
+  if (has_boot) {
+    char boot_line[160];
+    logBootMarker(boot_line, sizeof(boot_line), boot);
+    Serial.println(boot_line);
+  }
 
   uint8_t  rec_buf[LOG_REC_MAX];   // V2.5-Evo - 2026-10-08 - sized for the largest record (level 6, 170 B; was level 5)
   char     row[LOG_CSV_ROW_BUF];

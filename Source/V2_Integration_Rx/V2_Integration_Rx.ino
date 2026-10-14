@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-14 - setup() calls bootInfoInit() (Init.ino) right after enterSetup(): the reset reason and the persistent boot counter on the banner, in ?diag and in every log file. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - H-3 stop-gap: loop() calls i2cStuckBusService() (Init.ino) after checkButtons(); it does nothing unless the PWM task has declared the motor-enable swap starved. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-03 - RX WEB CONSOLE: serialTeeInit() added as the first line of setup() so the
 // serial capture ring has its mutex before anything else prints. No control-path statement added,
@@ -37,6 +38,9 @@ void setup()
   serialTeeInit();
 
   enterSetup();
+  // V2.5-Evo - 2026-10-14 - the reset reason and the persistent boot counter, on the banner and kept for ?diag and the
+  // log files (Init.ino). First thing after Serial opens; it needs no I2C and no SPIFFS.
+  bootInfoInit();
 
   initHardware();
   initStorage();

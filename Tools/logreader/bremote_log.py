@@ -5,7 +5,8 @@ bremote_log.py - decoder for the BREmote RX on-board deep log.
 Reads either of the two forms a rider can get off the buggy:
 
   (a) a raw binary ``.log`` file straight off SPIFFS (8-byte self-describing
-      header + N fixed-size records), or
+      header, since log format 4 followed by an 8-byte boot block, + N fixed-size
+      records), or
   (b) the CSV text the firmware itself emits (serial ``?download`` or the
       WiFi ``GET /api/logs/download?file=...`` endpoint) - header line first.
 
@@ -49,8 +50,10 @@ over CAN; -999 / empty = no data or stale). Format 3 (2026-10-06) moves the
 VESC 2 block into the level-4 record: 62 -> 33 (L3, same layout as L3_V2),
 104 -> 62 (L4_V3: level 4 + VESC 2), 126 -> 76 (L5_V3: level 4 + VESC 2 +
 the level-5 block), and since 2026-10-08 170 -> 98 (L6_V3: level 5 + VESC 2's
-IMU + a reserved RX IMU block; a tail append, so still format 3). A format-2
-126 B record and a format-3 126 B record are
+IMU + a reserved RX IMU block; a tail append, so still format 3). Format 4
+(2026-10-14) keeps the format-3 records byte for byte and adds an 8-byte boot
+block after the header (boot counter + reset reason; ``read_boot_info()``).
+A format-2 126 B record and a format-3 126 B record are
 the SAME SIZE with DIFFERENT layouts, so layouts are keyed by
 (format_ver, record_size) in ``RECORD_LAYOUTS_BY_FORMAT``, never by size
 alone; an unrecognized size decodes the largest known prefix that fits
@@ -64,6 +67,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import re
 import struct
 import sys
 from datetime import datetime, timezone
@@ -74,7 +78,7 @@ from typing import Any, Callable, Optional
 # FILE HEADER - BREmote_V2_Rx.h: LogFileHeader / LOG_FILE_MAGIC / LOG_FILE_FORMAT_VER
 # ============================================================
 LOG_FILE_MAGIC = 0x474C5242          # little-endian bytes on disk read "BRLG"
-LOG_FILE_FORMAT_VER = 3              # current: 3 = the VESC 2 block in the level-4 record (2026-10-06)
+LOG_FILE_FORMAT_VER = 4              # current: 4 = a boot block after the header (2026-10-14); 3 = VESC 2 in the level-4 record
 # Both are READABLE. 1 is every file written before the M-2 flash (2026-10-02) and 2 is every
 # file after it. The two differ by 3 bytes at the tail of the BASE record, which moves every
 # block above byte 59 - record_size alone cannot express that, which is why the firmware bumped
@@ -84,10 +88,37 @@ LOG_FILE_FORMAT_VER = 3              # current: 3 = the VESC 2 block in the leve
 # tail of the level-5 record into the level-4 record, which moves the level-5 block from byte 90 to 104.
 # The firmware can no longer decode format 1 or 2 on the board (it refuses them in plain English); this
 # tool still reads all three, so every CSV or .log already downloaded keeps working.
-LOG_FILE_FORMAT_VERS_SUPPORTED = (1, 2, 3)
+# 2026-10-14: 4 is every file written after the reset-reason flash. Its RECORDS are byte-identical to format 3; the
+# 8-byte header is followed by an 8-byte BOOT BLOCK (BREmote_V2_Rx.h LogFileBootInfo): the RX's persistent boot counter
+# and the reset reason of the boot that recorded the file, so a log can tell a power loss from a crash. The device CSV
+# of a format-4 file carries one extra line right after the column header, "=== RX boot #N / reset NAME (code): ... ===",
+# which the CSV reader below skips as a row and reads as the boot info.
+LOG_FILE_FORMAT_VERS_SUPPORTED = (1, 2, 3, 4)
 LOG_FILE_HEADER_FMT = "<IBBH"        # magic u32, format_ver u8, log_level u8, record_size u16
 LOG_FILE_HEADER_SIZE = struct.calcsize(LOG_FILE_HEADER_FMT)
 assert LOG_FILE_HEADER_SIZE == 8
+LOG_FILE_BOOT_FMT = "<IB3x"          # format 4+: boot_count u32, reset_reason u8, 3 reserved bytes
+LOG_FILE_BOOT_SIZE = struct.calcsize(LOG_FILE_BOOT_FMT)
+assert LOG_FILE_BOOT_SIZE == 8
+
+# Source/Common/ResetReason.h: ESP-IDF esp_reset_reason_t names (without ESP_RST_) and the plain-English class.
+# test_bremote_log.py parses the C header and checks these two tables against it, so they cannot drift.
+RESET_REASON_NAMES = {
+    0: "UNKNOWN", 1: "POWERON", 2: "EXT", 3: "SW", 4: "PANIC", 5: "INT_WDT", 6: "TASK_WDT", 7: "WDT",
+    8: "DEEPSLEEP", 9: "BROWNOUT", 10: "SDIO", 11: "USB", 12: "JTAG", 13: "EFUSE", 14: "PWR_GLITCH", 15: "CPU_LOCKUP",
+}
+RESET_REASON_CLASS = {
+    1: "power-up or power loss", 9: "supply sagged (brownout)", 14: "power glitch",
+    4: "CRASH (firmware panic)", 5: "CRASH (interrupt watchdog)", 6: "CRASH (task watchdog: a loop stalled)",
+    7: "CRASH (watchdog)", 15: "CRASH (CPU lock-up)",
+    3: "deliberate restart (?reboot / a flash / a config reset)", 2: "reset pin",
+    11: "USB reset (flashing tool or serial monitor)", 12: "JTAG reset", 8: "wake from deep sleep",
+}
+
+
+def describe_reset_reason(code: int) -> tuple[str, str]:
+    """(name, class) for an ESP32 reset-reason code, exactly as the RX prints them."""
+    return RESET_REASON_NAMES.get(code, "?"), RESET_REASON_CLASS.get(code, "other / unknown")
 
 
 # ============================================================
@@ -577,6 +608,8 @@ RECORD_LAYOUTS_BY_FORMAT: dict[int, dict[int, dict]] = {
     2: {lay["record_size"]: lay for lay in (LAYOUT_L3_V2, LAYOUT_L4_V2, LAYOUT_L5_V2, LAYOUT_L5_VESC2)},
     3: {lay["record_size"]: lay for lay in (LAYOUT_L3_V2, LAYOUT_L4_V3, LAYOUT_L5_V3, LAYOUT_L6_V3)},   # 170 = L6 (2026-10-08)
 }
+# 2026-10-14: format 4 changed the HEADER only (a boot block after it); the records are format 3's, byte for byte.
+RECORD_LAYOUTS_BY_FORMAT[4] = RECORD_LAYOUTS_BY_FORMAT[3]
 assert set(RECORD_LAYOUTS_BY_FORMAT) == set(LOG_FILE_FORMAT_VERS_SUPPORTED)
 
 # BREmote_V2_Rx.h LOG_CSV_HEADER_L3 as of the M-2 change, copied verbatim. If the firmware adds a
@@ -864,6 +897,11 @@ def iter_binary_records(path: str):
                 f"format_ver={' and '.join(str(v) for v in LOG_FILE_FORMAT_VERS_SUPPORTED)}."
             )
 
+        if format_ver >= 4:
+            boot_bytes = f.read(LOG_FILE_BOOT_SIZE)
+            if len(boot_bytes) < LOG_FILE_BOOT_SIZE:
+                raise LogFormatError(f"{path}: format-{format_ver} file ends inside its {LOG_FILE_BOOT_SIZE}-byte boot block.")
+
         layout, decode_size = _pick_layout_for_record_size(record_size, format_ver)
 
         while True:
@@ -881,7 +919,7 @@ def iter_csv_records(path: str):
         if layout is None:
             raise LogFormatError(
                 f"{path}: first line does not match any known BREmote log CSV header "
-                "(log formats 1, 2 and 3: L3 / L4_DIAG / L4_83 / L4_RAW / L4 / L5 and their V2 / V3 "
+                "(log formats 1-4: L3 / L4_DIAG / L4_83 / L4_RAW / L4 / L5 and their V2 / V3 "
                 "variants). Not a device log CSV, or from a firmware newer than this tool."
             )
 
@@ -898,6 +936,44 @@ def iter_csv_records(path: str):
                 print(f"warning: {path}: skipping malformed row (expected {expected_cols} columns, got {len(row)})", file=sys.stderr)
                 continue
             yield build_canonical_from_csv_row(layout, row)
+
+
+_BOOT_LINE_RE = re.compile(r"^=== RX boot #(\d+) / reset ([A-Z_?]+) \((\d+)\)")
+
+
+def read_boot_info(path: str) -> Optional[dict]:
+    """The boot block of a format-4 log: which RX boot recorded the file and why that boot started.
+
+    Binary: read from the 8 bytes after the header. Device CSV: parsed from the "=== RX boot #N / reset NAME (code)"
+    line the firmware prints right after the column header. Returns None for an older format or a CSV without the
+    line. Keys: boot_count (0 = unknown on the RX), reset_reason (code), reset_reason_name, reset_reason_class."""
+    if is_binary_log(path):
+        with open(path, "rb") as f:
+            header_bytes = f.read(LOG_FILE_HEADER_SIZE)
+            if len(header_bytes) < LOG_FILE_HEADER_SIZE:
+                return None
+            _magic, format_ver, _level, _size = struct.unpack(LOG_FILE_HEADER_FMT, header_bytes)
+            if format_ver < 4:
+                return None
+            boot_bytes = f.read(LOG_FILE_BOOT_SIZE)
+            if len(boot_bytes) < LOG_FILE_BOOT_SIZE:
+                return None
+            boot_count, code = struct.unpack(LOG_FILE_BOOT_FMT, boot_bytes)
+    else:
+        boot_count = code = None
+        with open(path, "r", newline="", encoding="utf-8", errors="replace") as f:
+            for _ in range(4):           # header line, then the boot line (a pasted serial capture may add one marker)
+                line = f.readline()
+                if not line:
+                    break
+                m = _BOOT_LINE_RE.match(line.strip())
+                if m:
+                    boot_count, code = int(m.group(1)), int(m.group(3))
+                    break
+        if boot_count is None:
+            return None
+    name, klass = describe_reset_reason(code)
+    return {"boot_count": boot_count, "reset_reason": code, "reset_reason_name": name, "reset_reason_class": klass}
 
 
 def is_binary_log(path: str) -> bool:
@@ -1113,7 +1189,7 @@ def generate_timeline(records: list[dict]) -> list[str]:
 # OUTPUT 3 - SUMMARY
 # ============================================================
 
-def generate_summary(records: list[dict]) -> str:
+def generate_summary(records: list[dict], boot: Optional[dict] = None) -> str:
     if not records:
         return "no records"
 
@@ -1143,7 +1219,12 @@ def generate_summary(records: list[dict]) -> str:
                 stops_by_reason[name] = stops_by_reason.get(name, 0) + 1
         prev = rec
 
-    lines = [
+    lines = []
+    if boot is not None:
+        # 2026-10-14: format 4 - which RX boot recorded this file and why it started (power loss vs crash).
+        lines.append(f"RX boot: #{boot['boot_count']}, reset reason {boot['reset_reason_name']} "
+                     f"({boot['reset_reason']}): {boot['reset_reason_class']}")
+    lines += [
         f"session duration: {duration_s:.1f}s ({n} records)",
         f"log rate (measured): {rate_hz:.2f} Hz",
         f"RETURN episodes: {return_episodes}",
@@ -1228,7 +1309,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         for line in generate_timeline(records):
             print(line)
     if want_summary:
-        print(generate_summary(records))
+        try:
+            boot = read_boot_info(args.file)
+        except (OSError, struct.error):
+            boot = None
+        print(generate_summary(records, boot))
 
     return 0
 

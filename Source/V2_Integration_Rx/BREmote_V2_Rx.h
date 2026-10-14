@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-14 - RESET REASON + BOOT COUNTER (owner-approved for RX1): includes ../Common/ResetReason.h and <Preferences.h>; g_boot_count / g_reset_reason and the bootInfoInit() prototype (Init.ino). LOG FORMAT 4: LOG_FILE_FORMAT_VER 3 -> 4 (the header changed: an 8-byte LogFileBootInfo follows LogFileHeader, static_assert 8; records byte-identical to format 3), LOG_FILE_FORMAT_MIN_READ 3, logReadFileHeader() (shared by ?download and the WiFi download; formats 3 and 4 decode) and logBootMarker() (the one CSV line after the column header). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-14 - full-system audit FS-1 / FS-13 / FS-14 + F-1 (owner-approved for RX1): includes ../Common/UartMuxVerify.h and ../Common/AwPort1.h; prototypes for the AW9523 port-1 writer (System.ino); g_diag_mux_verify_fail; the g_diag_mux_errors / mux_err_cnt comments say a failed read counts; the kSwapStarveTicks derivation re-counted (worst burst 3 ticks of 25). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-13 - COMMENT ONLY: the kHeadingDisagreeDeg note says a measured disagreement no longer distrusts both sources (R-16: it withdraws the compass only). No code change, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-3: stickyCapArmRise(initial, open_rise) - the sticky arm with the rise chosen by the caller (closed only for the Follow-Me 30 s end from a held HOLD); stickyCapArm() = it with the rise open, unchanged for every existing caller. Runtime only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -1006,6 +1007,15 @@ static const float kFmFrontAheadExtraMaxM     = 10.0f;  // metres; largest legal
 // UART-mux read-back verdict, pure and host-tested (Tools/tests/aw_port1_test.cpp). Used by System.ino only.
 #include "../Common/UartMuxVerify.h"
 #include "../Common/AwPort1.h"
+// V2.5-Evo - 2026-10-14 - RESET REASON + BOOT COUNTER (owner-approved for RX1): reset-reason names and classes (pure,
+// host-tested); the persistent boot counter lives in NVS through the core's Preferences library (no config field).
+#include "../Common/ResetReason.h"
+#include <Preferences.h>
+// Set once, at the very start of setup(), by bootInfoInit() (Init.ino); read by the boot banner, ?diag and the log
+// file header. g_boot_count 0 = the NVS counter could not be read or written this boot.
+uint32_t g_boot_count   = 0;
+uint8_t  g_reset_reason = 0;      // esp_reset_reason() of THIS boot (RR_* in ../Common/ResetReason.h)
+void bootInfoInit();              // Init.ino
 // Defined in System.ino (the sketch concatenates Init.ino, Logger.ino and SPIFFS.ino ahead of it). THE CALLER MUST HOLD
 // i2cMutex (or be in single-threaded boot code). Each is one checked read + at most one write of OUTPUT1; returns false
 // when the read failed (nothing written) or the write was not acknowledged.
@@ -2373,7 +2383,15 @@ portMUX_TYPE  g_fm_log_mux      = portMUX_INITIALIZER_UNLOCKED;
 // LARGEST record (VescLogDataL5 126 B -> VescLogDataL6 170 B), which the rule above says does not qualify:
 // no field moved, every format-3 file on a board (62 / 104 / 126 B) still downloads after this flash, and
 // the new size 170 is the marker that the IMU columns are present.
-#define LOG_FILE_FORMAT_VER  3            // 3 = VESC 2 block in the level-4 record (2026-10-06); 2 = M-2 motor-gate block in the base record (2026-10-01); 1 = the original STAGE 0 PART B layout (2026-07-25)
+// V2.5-Evo - 2026-10-14 - LOG FORMAT 4 (owner-approved for RX1: "a log must tell a power loss from a crash"): BUMPED 3 -> 4,
+// by the rule above - the HEADER layout changed. A format-4 file has the same 8-byte LogFileHeader followed by an 8-byte
+// LogFileBootInfo (the boot counter and the reset reason of the boot that recorded it); its RECORDS are byte-identical
+// to format 3. So both readers on the board accept formats 3 AND 4 (LOG_FILE_FORMAT_MIN_READ): logs recorded before this
+// flash still download after it. The PC log reader reads both. The CSV a format-4 file produces gets ONE extra line right
+// after the column header, "=== RX boot #N / reset REASON (code) ... ===" - lines starting "===" are already skipped by
+// Tools/logreader/bremote_log.py, and the docs tool keeps everything between its BEGIN and END markers.
+#define LOG_FILE_FORMAT_MIN_READ 3        // the oldest format whose records this firmware decodes (3 and 4 share one layout)
+#define LOG_FILE_FORMAT_VER  4            // 4 = boot block after the header (2026-10-14); 3 = VESC 2 block in the level-4 record (2026-10-06); 2 = M-2 motor-gate block in the base record (2026-10-01); 1 = the original STAGE 0 PART B layout (2026-07-25)
 
 struct __attribute__((packed)) LogFileHeader {
     uint32_t magic;        // LOG_FILE_MAGIC — absent/mismatched means "not a BREmote log of this era"
@@ -2382,6 +2400,44 @@ struct __attribute__((packed)) LogFileHeader {
     uint16_t record_size;  // bytes per record in this file — the ONLY thing a reader may step by
 };
 static_assert(sizeof(LogFileHeader) == 8, "LogFileHeader must stay 8 bytes — readers step past it by sizeof().");
+
+// V2.5-Evo - 2026-10-14 - LOG FORMAT 4: written right after LogFileHeader in every format-4 file. 8 bytes, so a reader of
+// format 4 steps 16 bytes before the first record. Formats 1-3 do not have it.
+struct __attribute__((packed)) LogFileBootInfo {
+    uint32_t boot_count;    // the RX's persistent boot counter when this file was created; 0 = unknown (NVS failed)
+    uint8_t  reset_reason;  // esp_reset_reason() of that boot (RR_* in ../Common/ResetReason.h): power-up vs crash vs restart
+    uint8_t  rsvd[3];       // 0
+};
+static_assert(sizeof(LogFileBootInfo) == 8, "LogFileBootInfo must stay 8 bytes - format-4 readers step past it.");
+
+// logReadFileHeader - read a log file's header and, for format 4, its boot block; say whether this firmware decodes it.
+// Inputs: file (open for reading, at offset 0), hdr / boot (out). Returns: 1 = decodable (hdr filled; *has_boot true
+// and boot filled for format 4); 0 = no BRLG header, corrupt, or a format / record size this firmware does not know;
+// -1 = a valid header from older firmware (format < LOG_FILE_FORMAT_MIN_READ). On 1 the file is positioned at the
+// first record. Side effects: reads up to 16 bytes from file. Used by ?download (Logger.ino) and the WiFi download
+// (Common/WebConfigEngine.h), so the two cannot disagree about which files they accept.
+static inline int logReadFileHeader(File &file, LogFileHeader &hdr, LogFileBootInfo &boot, bool *has_boot)
+{
+  *has_boot = false;
+  if (file.size() < sizeof(LogFileHeader) || file.read((uint8_t *)&hdr, sizeof(hdr)) != sizeof(hdr) ||
+      hdr.magic != LOG_FILE_MAGIC) return 0;
+  if (hdr.format_ver < LOG_FILE_FORMAT_MIN_READ) return -1;
+  if (hdr.format_ver > LOG_FILE_FORMAT_VER) return 0;
+  if (hdr.format_ver >= 4) {
+    if (file.read((uint8_t *)&boot, sizeof(boot)) != sizeof(boot)) return 0;
+    *has_boot = true;
+  }
+  if (hdr.record_size < (uint16_t)sizeof(VescLogData) || hdr.record_size > (uint16_t)LOG_REC_MAX) return 0;
+  return 1;
+}
+
+// logBootMarker - the one CSV line a format-4 file adds after its column header. Inputs: buf / len (out), boot.
+// Output: "=== RX boot #N / reset REASON (code): class ===" with no comma in it. Side effects: none.
+static inline void logBootMarker(char *buf, size_t len, const LogFileBootInfo &boot)
+{
+  snprintf(buf, len, "=== RX boot #%lu / reset %s (%u): %s ===", (unsigned long)boot.boot_count,
+           resetReasonName(boot.reset_reason), (unsigned)boot.reset_reason, resetReasonClass(boot.reset_reason));
+}
 
 // ============================================================
 // logResolveLevel - turn the stored config value into the level actually used

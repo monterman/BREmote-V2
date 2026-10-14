@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-14 - full-system audit FS-1 / FS-13 / FS-14 + F-1 (owner-approved for RX1): includes ../Common/UartMuxVerify.h and ../Common/AwPort1.h; prototypes for the AW9523 port-1 writer (System.ino); g_diag_mux_verify_fail; the g_diag_mux_errors / mux_err_cnt comments say a failed read counts; the kSwapStarveTicks derivation re-counted (worst burst 3 ticks of 25). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-13 - COMMENT ONLY: the kHeadingDisagreeDeg note says a measured disagreement no longer distrusts both sources (R-16: it withdraws the compass only). No code change, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-3: stickyCapArmRise(initial, open_rise) - the sticky arm with the rise chosen by the caller (closed only for the Follow-Me 30 s end from a held HOLD); stickyCapArm() = it with the rise open, unchanged for every existing caller. Runtime only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-1: includes ../Common/RiderGpsPacket.h (the v2 rider GPS packet with the remote's fix counter); new runtime globals rx_tx_gps_solution_ms / rx_tx_gps_solution_seq / rx_tx_gps_proto - "the rider's GPS is alive" is now judged by a NEW GPS SOLUTION, not by a change of coordinates. Runtime only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -1001,6 +1002,17 @@ static const float kFmFrontAheadExtraMaxM     = 10.0f;  // metres; largest legal
 // counter) and the NEW / REPEAT / DROP rule, pure in ../Common/RiderGpsPacket.h so Tools/tests/rider_gps_packet_test.cpp
 // runs the exact code processMetaGpsPacket() (Radio.ino) calls. The remote builds its packets with the same header.
 #include "../Common/RiderGpsPacket.h"
+// V2.5-Evo - 2026-10-14 - FS-1 / F-1 / FS-13 / FS-14 (owner-approved for RX1): the AW9523 port-1 OUTPUT writer's plan and the
+// UART-mux read-back verdict, pure and host-tested (Tools/tests/aw_port1_test.cpp). Used by System.ino only.
+#include "../Common/UartMuxVerify.h"
+#include "../Common/AwPort1.h"
+// Defined in System.ino (the sketch concatenates Init.ino, Logger.ino and SPIFFS.ino ahead of it). THE CALLER MUST HOLD
+// i2cMutex (or be in single-threaded boot code). Each is one checked read + at most one write of OUTPUT1; returns false
+// when the read failed (nothing written) or the write was not acknowledged.
+bool awPort1WriteLocked(uint8_t set_mask, uint8_t set_bits);   // update the shadow for set_mask, then write the whole owned byte
+bool awPort1SetPinLocked(uint8_t pin, bool level);             // one port-1 pin (8-15): the AUX LED, the wet enable, a mux select
+bool awPort1EnableMotorsLocked();                               // the boot point that sets both PPM enables HIGH; forced HIGH in every write after it
+void awPort1DiagLine();                                        // ?diag: one checked read of OUTPUT1 vs the intended byte
 
 // ============================================================
 // V2.5-Evo - 2026-07-25 - STAGE 2: HEADING-SOURCE TRUST CONSTANTS (RTM + FM)
@@ -1282,6 +1294,12 @@ static const uint16_t kPivotDepthArmQ8     = 16;     // Q8; minimum depth to STA
 // is 36 ms = 4 ticks and 25 has ~6x margin. If Wire.setTimeOut() is ever raised, THIS NUMBER IS NO
 // LONGER JUSTIFIED and must be re-derived; the two are coupled and a change to one silently
 // invalidates the other.
+// V2.5-Evo - 2026-10-14 - full-system audit FS-1 / FS-13: RE-COUNTED for the AW9523 port-1 writer. setUartMux() no
+// longer uses aw.digitalWrite() (a read-modify-write, 2 txn each, two per attempt) or aw.digitalRead() (1 txn each, two
+// per check): each attempt is one checked read + one write of OUTPUT1 (2 txn) and each check one checked read of INPUT1
+// (1 txn). Routine path 3 txn = 9 ms (was 6); corrective path 6 txn = 18 ms (was 10 = 30 ms). Worst burst: the
+// corrective path plus a timed-out compass read (2 txn) = 8 txn = 24 ms = 3 ticks, so 25 now has about 8x margin. The
+// other port-1 writers (AUX LED, wet enable) were 2 txn each and still are (checked read + write).
 static const uint16_t kSwapStarveTicks   = 25;   // consecutive FAILED enable swaps before both channels stop pulsing (10 ms/tick => 250 ms)
 
 // WHY 5 TICKS OUT (50 ms), AND WHY RECOVERY IS NOT "the first successful swap".
@@ -1654,7 +1672,8 @@ volatile uint32_t g_diag_fix_age_max_ms = 0;  // worst fix age seen; ?diag reads
 
 // --- AW9523 UART mux (the suspected EMI failure) ---
 volatile uint32_t g_diag_mux_switches = 0;    // setUartMux() calls that actually drove the select pins
-volatile uint32_t g_diag_mux_errors   = 0;    // read-back mismatches inside setUartMux() (a write that did not stick)
+volatile uint32_t g_diag_mux_errors   = 0;    // setUartMux() read-backs that did NOT confirm the channel: a write that did not stick, or (since 2026-10-14, F-1) a read that failed - the read-back is a checked read now
+volatile uint32_t g_diag_mux_verify_fail = 0; // V2.5-Evo - 2026-10-14 - L-2/F-1: setUartMux() calls still not confirmed after the single correction
 
 // --- VESC polling ---
 volatile uint32_t g_diag_vesc_polls = 0;      // getVescLoop() query attempts
@@ -2045,7 +2064,7 @@ struct __attribute__((packed)) VescLogDataL4 {
     VescLogData base;              // the complete level-3 record, unchanged and first — do not reorder
     uint8_t  gps_sent_per_s;       // complete NMEA sentences parsed in the last full second (saturates at 255)
     uint8_t  cog_frozen_s;         // seconds since the COG VALUE last changed. SENTINEL 255 = no COG value has ever been seen this session. 254 = 254 s or longer.
-    uint16_t mux_err_cnt;          // running session total of setUartMux() I2C read-back mismatches (saturates at 0xFFFE)
+    uint16_t mux_err_cnt;          // running session total of setUartMux() read-backs that did not confirm the channel - a write that did not stick or (since 2026-10-14) a failed read (saturates at 0xFFFE)
     uint16_t loop_max_ms;          // worst loop() body duration since the PREVIOUS record, in ms, rounded to nearest; reset to 0 after every record. 0 = no loop completed since the last record, or every loop was under 0.5 ms.
     // ---- V2.5-Evo - 2026-09-17 - Follow-Me audit block (see the comment above). Byte 65 onward. ----
     uint32_t fm_gate_flags;        // FM_LOG_GATE_* bits, the controller's verdicts on this tick; 0 on ticks that never reached the condition block

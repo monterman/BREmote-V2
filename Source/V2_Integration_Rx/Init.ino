@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-14 - full-system audit FS-1 / FS-13 (owner-approved for RX1): runBootSequence() sets the PPM enables through the AW9523 port-1 writer (awPort1EnableMotorsLocked(), System.ino), which forces them HIGH in every later port-1 write; the P-6 re-assert after a bus recovery re-writes the writer's whole intended byte. No timing change. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - P-6: the bus recovery retries a failed Wire.begin() once and re-asserts the AW9523 port-1
 //   outputs (both PPM enables HIGH) under the same hold. P-7: it repeats only if the PWM task attempted a swap since
 //   the last completed recovery (no noise through a link loss). No confStruct change, sizeof stays 200, SW_VERSION 36.
@@ -80,17 +81,10 @@ bool          g_i2c_last_mutex_miss   = false;  // the last attempt could not ge
 // write were both acknowledged. Side effects: up to two I2C transactions on Wire.
 static bool awReassertPort1OutputsLocked()
 {
-  const uint8_t reg = AW9523_REG_OUTPUT0 + 1;   // OUTPUT1 = 0x03: output levels, pins 8-15
-  Wire.beginTransmission(AW9523_DEFAULT_ADDR);
-  Wire.write(reg);
-  if (Wire.endTransmission(false) != 0) return false;
-  if (Wire.requestFrom((uint16_t)AW9523_DEFAULT_ADDR, (size_t)1) != 1) return false;
-  uint8_t out1 = (uint8_t)Wire.read();
-  out1 |= (uint8_t)((1u << (AP_EN_PWM0 - 8)) | (1u << (AP_EN_PWM1 - 8)));   // both enables HIGH, as at boot
-  Wire.beginTransmission(AW9523_DEFAULT_ADDR);
-  Wire.write(reg);
-  Wire.write(out1);
-  return (Wire.endTransmission() == 0);
+  // V2.5-Evo - 2026-10-14 - FS-13: through the AW9523 port-1 writer. It re-writes the WHOLE intended byte (mux, AUX LED,
+  // wet enable from the writer's shadow, both enables forced HIGH) after one checked read, instead of carrying over
+  // whatever the read returned - after a bus event that read is exactly the one least worth trusting.
+  return awPort1WriteLocked(0, 0);
 }
 bool g_i2c_last_aw_ok = false;   // V2.5-Evo - 2026-10-07 - P-6: the AW9523 port-1 outputs were re-asserted after the last recovery
 
@@ -334,8 +328,11 @@ void runBootSequence()
   Serial1.setRxBufferSize(2048);
   Serial1.begin(115200, SERIAL_8N1, P_U1_RX, P_U1_TX);
 
-  aw.digitalWrite(AP_EN_PWM0, 1);
-  aw.digitalWrite(AP_EN_PWM1, 1);
+  // V2.5-Evo - 2026-10-14 - FS-1 / FS-13: the boot point that has always set both PPM enables HIGH now does it through
+  // the AW9523 port-1 writer, and from here on EVERY port-1 write forces them HIGH (awPort1EnableMotorsLocked(),
+  // System.ino). Single-threaded boot, no mutex, as before. If this write is skipped (failed read), configureGPS()'s
+  // setUartMux(1), the next port-1 write, sets them.
+  awPort1EnableMotorsLocked();
 
   configureGPS();
 }

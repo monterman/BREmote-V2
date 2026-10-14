@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-14 - full-system audit FS-13 (owner-approved for RX1): every AUX LED write (triggerBlink(), loggerLoop()'s blink and steady state, initLogger(), whose AW9523 block now also holds i2cMutex because it runs after initTasks()) goes through the AW9523 port-1 writer (awPort1SetPinLocked(), System.ino): one checked read, nothing written on a failed read, both PPM enables kept HIGH. The old aw.digitalWrite() read-modify-write could write a noise-corrupted motor-enable bit back as 0. Same locking as before at the other call sites. No log-format or behaviour change.
 // V2.5-Evo - 2026-10-13 - CRITICAL MAINTENANCE contract honoured (log mirror only), heading-latch design 2026-10-13 R-16: getRtmHeading() no longer returns NONE on a tick with a measured compass-vs-COG disagreement - it serves the live GPS course - so convertToLogData()'s guard 2 mirror (its own comparison and the empty disagree_now branch) is removed and such a tick now logs src 1 / conf 3, as the controller steers. The latch gate on the compass-snapshot branch stays. Read-only, no new column, no rtm_source value added, no record-size change, log format unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU), delta-audit M-1: active_log_level is volatile and reset to 3 while no file is open (start of createNewLogFile(), and in stopLog()), so the IMU poll never runs on a previous file's level or after a failed create.
 // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU) (see BREmote_V2_Rx.h, VESC.ino): logImuPollWanted() (true only while a level-6 log is recording - the IMU poll's first gate); fillImuBlocks() fills the two 22 B IMU blocks (VESC 2's IMU with its freshness decided at log time, the reserved RX IMU always NO SOURCE); loggerTask() builds a static VescLogDataL6 for level 6, and its record buffer is static and sized LOG_REC_MAX; downloadLogFile()'s ceiling and buffer use LOG_REC_MAX, so a 170 B file is accepted. Log format stays 3. No confStruct change.
@@ -137,7 +138,7 @@ void triggerBlink(int blinks, int speedMs) {
   lastBlinkTime = millis();
   blinkState = true;
   if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-    aw.digitalWrite(AP_L_AUX, LOW); // Turn ON immediately (Active-Low)
+    awPort1SetPinLocked(AP_L_AUX, LOW); // Turn ON immediately (Active-Low). V2.5-Evo - 2026-10-14 - FS-13: port-1 writer
     xSemaphoreGive(i2cMutex);
   }
 }
@@ -188,13 +189,13 @@ void loggerLoop() {
        if (blinksRemaining > 0) {
           blinkState = !blinkState;
           if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-            aw.digitalWrite(AP_L_AUX, blinkState ? LOW : HIGH);
+            awPort1SetPinLocked(AP_L_AUX, blinkState ? LOW : HIGH);   // V2.5-Evo - 2026-10-14 - FS-13: port-1 writer
             xSemaphoreGive(i2cMutex);
           }
        } else {
           // Blinking finished, set solid state based on logging status
           if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-            aw.digitalWrite(AP_L_AUX, logging_active ? LOW : HIGH);
+            awPort1SetPinLocked(AP_L_AUX, logging_active ? LOW : HIGH);   // V2.5-Evo - 2026-10-14 - FS-13: port-1 writer
             xSemaphoreGive(i2cMutex);
           }
        }
@@ -205,7 +206,7 @@ void loggerLoop() {
     if (logging_active != ledSyncState) {
       ledSyncState = logging_active;
       if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
-        aw.digitalWrite(AP_L_AUX, logging_active ? LOW : HIGH);
+        awPort1SetPinLocked(AP_L_AUX, logging_active ? LOW : HIGH);   // V2.5-Evo - 2026-10-14 - FS-13: port-1 writer
         xSemaphoreGive(i2cMutex);
       }
     }
@@ -1056,9 +1057,15 @@ void initLogger() {
   }
 
   // Setup the hardware pins on the AW9523
+  // V2.5-Evo - 2026-10-14 - FS-13: the AUX LED write goes through the port-1 writer, and this block now holds
+  // i2cMutex. initLogger() runs AFTER initTasks() (V2_Integration_Rx.ino), so the PWM task is already doing its
+  // enable swap on this same bus; these three AW9523 calls used to run unlocked alongside it (pinMode is a
+  // read-modify-write of CONFIG1, the swap's own register). Same calls, same order, now serialised with the swap.
+  xSemaphoreTake(i2cMutex, portMAX_DELAY);
   aw.pinMode(AP_S_AUX, INPUT_PULLUP);
   aw.pinMode(AP_L_AUX, OUTPUT);
-  aw.digitalWrite(AP_L_AUX, HIGH); // OFF
+  awPort1SetPinLocked(AP_L_AUX, HIGH); // OFF
+  xSemaphoreGive(i2cMutex);
 
   // Start SPIFFS Background task
   xTaskCreatePinnedToCore(loggerTask, "DataLogger", 4096, NULL, 1, &loggerTaskHandle, 0);

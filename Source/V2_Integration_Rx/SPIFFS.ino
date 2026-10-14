@@ -1,15 +1,17 @@
+// V2.5-Evo - 2026-10-14 - full-system audit FS-13: spiffsFormatNotify()'s AUX LED writes go through the AW9523 port-1 writer (System.ino). No other change.
 // RX-specific SPIFFS definitions.
 // Shared engine is in ../Common/SPIFFSEngine.h (included via BREmote_V2_Rx.h).
 
 void spiffsFormatNotify(bool starting)
 {
+  // V2.5-Evo - 2026-10-14 - FS-13: the AUX LED through the AW9523 port-1 writer (boot path, single-threaded, no mutex as before)
   if(starting)
   {
-    aw.digitalWrite(AP_L_AUX, LOW);
+    awPort1SetPinLocked(AP_L_AUX, LOW);
   }
   else
   {
-    aw.digitalWrite(AP_L_AUX, HIGH);
+    awPort1SetPinLocked(AP_L_AUX, HIGH);
   }
 }
 

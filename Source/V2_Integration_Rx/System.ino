@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-14 - full-system audit FS-1 (HIGH) + FS-13 (MEDIUM) + FS-14 (LOW) + link-layer audit F-1/L-2 + audit F1, owner-approved for RX1. (1) ONE WRITER FOR THE AW9523's PORT-1 OUTPUTS (awPort1WriteLocked() and helpers): a shadow of the intended mux / AUX LED / wet-enable levels, one checked read of OUTPUT1 before each write, NOTHING written on a failed read, and from runBootSequence() on both PPM enables forced HIGH in every byte written; the wet-measure enable is HIGH only inside checkWetness(). setUartMux(), checkWetness(), startupAW() and blinkErr() (port-1 pins) use it. The old aw.digitalWrite() read-modify-writes could write a noise-corrupted enable bit back as 0 and cut a motor until reboot. (2) setUartMux(): one checked INPUT1 read-back judged by muxReadbackVerdict() (a failed read is never a pass), the single correction as before, a second checked read-back counted in g_diag_mux_verify_fail; Serial1.flush() before a switch to channel 0. Routine 3 I2C transactions (was 6), corrective 6 (was 10). (3) audit F1: the AUX button no longer blocks the loop - its confirmation uses the logger's non-blocking triggerBlink(), and the AUX and BIND wait-for-release loops (no watchdog feed) are gone; the edge detectors already ignore a held button. blinkErr() is left to the fatal halt loops, where a watchdog reset is the recovery. (4) ?diag: "still wrong after the correction" on the UART mux line and an "AW9523 P1" line (OUTPUT1 vs intended, both enables, skipped / not-acknowledged writes); ?diagz zeroes the new counters. No new command. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-13 - stale latch text (F-9 / A-10), TEXT AND COMMENTS ONLY: the ?diag "heading" STANDING text no longer says the latch clears on a reboot - it is stored (LATCH-1) and only a boot with rtm_use_compass not 1 or no compass discards it (LATCH-2) - and the comment above it no longer says "for the rest of this session" or that Follow-Me will not engage (D-3). No new command, no logic change. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-11 - change 1 (audit 2026-10-11): ?diag gains one "FM pause" line (printFmPauseDiag() in RTMState.ino: the pause and its input, the 30 s long-loss clock, the heading creep); the "heading" line no longer says Follow-Me will not engage (D-3, COG period). No new command. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): ?diag names level 6 "IMU" and gains three lines under "VESC 2 CAN": "VESC 2 IMU" (poll success in the window, polling / idle / waiting / backed-off state, miss streak), the last IMU values with their age and fresh / STALE / IMPLAUSIBLE verdict (the same rule the logger applies), and "RX IMU" (none fitted, columns reserved). DiagSnapshot carries the two imu2 counters; ?diagz zeroes them (the miss streak is live state and is left alone). No new ?command. Read-only. No confStruct change.
@@ -37,6 +38,126 @@
 
 const char* SYS_DEVICE_LABEL = "RX";
 
+// ============================================================================================
+// AW9523 PORT-1 OUTPUT WRITER - the only way the RX writes OUTPUT1 (pins 8-15)
+// ============================================================================================
+// V2.5-Evo - 2026-10-14 - full-system audit FS-1 (HIGH) + FS-13 (MEDIUM) + FS-14 (LOW), owner-approved for RX1.
+// Port 1 holds the UART-mux selects (8, 9), the AUX button (10, input), the AUX LED (11, active LOW), both PPM enables
+// (12 = PWM1, 13 = PWM0), the wet-measure enable (14) and the wet sense (15, input). Every write used to be the
+// library's digitalWrite(): a read-modify-write of the whole register, so a read that motor noise corrupted (but the
+// chip acknowledged) was written straight back, and an enable read as 0 stayed 0 - one motor without pulses until a
+// reboot. The full reasoning, and the pure plan these functions follow, are in ../Common/AwPort1.h.
+//
+// HOW IT WORKS NOW:
+//   g_port1_shadow - the intended level of every OUTPUT pin on port 1 the RX owns, except the enables. A request first
+//     updates it; the write then puts the WHOLE owned byte on the chip, so a corrupted read cannot move the mux, flip
+//     the LED or leave the wet probe powered, and a skipped write is repaired by the next successful one.
+//   One CHECKED read of OUTPUT1 before every write: if it fails, NOTHING is written (counted in g_diag_port1_skipped).
+//   The enables: from awPort1EnableMotorsLocked() onward (Init.ino, the boot point that has always set them HIGH)
+//     every byte written has both enables FORCED HIGH. Before that point - startupAW()'s LED write, early boot - they
+//     are carried over exactly as read, as the old code did, so no opto enable turns on earlier in boot than before.
+// CONCURRENCY: every caller holds i2cMutex (the runtime callers, and initLogger(), which runs after initTasks()) or
+// is boot code that runs before initTasks() starts any other task (startupAW(), the SPIFFS format notice,
+// runBootSequence()), so the shadow has one writer at a time.
+// Forcing the enables HIGH can never ADD thrust: the enables are HIGH by design and nothing drives them LOW; a motor is
+// pulsed only by the PWM task, under the trigger, and a parked (high-Z) channel ignores its OUTPUT bit.
+static_assert(AP_U1_MUX_0 / 8 == 1 && AP_U1_MUX_1 / 8 == 1 && AP_L_AUX / 8 == 1 && AP_EN_PWM0 / 8 == 1 &&
+              AP_EN_PWM1 / 8 == 1 && AP_EN_WET_MEAS / 8 == 1 && AP_S_AUX / 8 == 1 && AP_WET_MEAS / 8 == 1,
+              "the port-1 writer assumes these AW9523 pins all sit on port 1 (OUTPUT1)");
+static const uint8_t kPort1Mux0     = (uint8_t)(1u << (AP_U1_MUX_0 - 8));
+static const uint8_t kPort1Mux1     = (uint8_t)(1u << (AP_U1_MUX_1 - 8));
+static const uint8_t kPort1Led      = (uint8_t)(1u << (AP_L_AUX - 8));
+static const uint8_t kPort1Wet      = (uint8_t)(1u << (AP_EN_WET_MEAS - 8));
+static const uint8_t kPort1Enables  = (uint8_t)((1u << (AP_EN_PWM0 - 8)) | (1u << (AP_EN_PWM1 - 8)));
+static const uint8_t kPort1Owned    = (uint8_t)(kPort1Mux0 | kPort1Mux1 | kPort1Led | kPort1Wet);   // shadowed outputs
+static const uint8_t kPort1MuxMask  = (uint8_t)(kPort1Mux0 | kPort1Mux1);
+static uint8_t g_port1_shadow        = kPort1Led;   // boot intent: AUX LED off (HIGH = off), wet probe off, mux 0/0
+static bool    g_port1_enables_armed = false;       // true from awPort1EnableMotorsLocked() on: enables forced HIGH
+volatile uint32_t g_diag_port1_skipped = 0;         // writes skipped because the OUTPUT1 read failed (nothing written)
+volatile uint32_t g_diag_port1_nak     = 0;         // writes whose OUTPUT1 write was not acknowledged
+
+// awPort1ReadLocked - one CHECKED read of an AW9523 port-1 register. Inputs: reg (0x01 INPUT1 or 0x03 OUTPUT1), out.
+// Returns: true only if the address was acknowledged AND one byte came back; *out written only then. Caller holds
+// i2cMutex. Side effects: one I2C write-then-read (3 ms Wire ceiling).
+static bool awPort1ReadLocked(uint8_t reg, uint8_t *out)
+{
+  Wire.beginTransmission(AW9523_DEFAULT_ADDR);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom((uint16_t)AW9523_DEFAULT_ADDR, (size_t)1) != 1) return false;
+  *out = (uint8_t)Wire.read();
+  return true;
+}
+
+// awPort1WriteLocked - update the shadow for set_mask, then write the whole owned byte (see the block above).
+// Inputs: set_mask (bits this request owns; kPort1Owned bits only - the enables cannot be requested here), set_bits.
+// Returns: true if the read and the write were both acknowledged; false = the read failed (nothing written) or the
+// write was not acknowledged. Side effects: g_port1_shadow, up to one read + one write on Wire, the two counters.
+bool awPort1WriteLocked(uint8_t set_mask, uint8_t set_bits)
+{
+  g_port1_shadow = port1ShadowApply(g_port1_shadow, set_mask, set_bits, kPort1Owned);
+  uint8_t cur = 0;
+  const bool read_ok = awPort1ReadLocked((uint8_t)(AW9523_REG_OUTPUT0 + 1), &cur);
+  const uint8_t owned = (uint8_t)(kPort1Owned | (g_port1_enables_armed ? kPort1Enables : 0));
+  const uint8_t force = g_port1_enables_armed ? kPort1Enables : (uint8_t)0;
+  uint8_t out = 0;
+  if (!port1WritePlan(read_ok, cur, g_port1_shadow, owned, force, &out)) {
+    g_diag_port1_skipped = g_diag_port1_skipped + 1;
+    return false;
+  }
+  Wire.beginTransmission(AW9523_DEFAULT_ADDR);
+  Wire.write((uint8_t)(AW9523_REG_OUTPUT0 + 1));
+  Wire.write(out);
+  if (Wire.endTransmission() != 0) { g_diag_port1_nak = g_diag_port1_nak + 1; return false; }
+  return true;
+}
+
+// awPort1SetPinLocked - one port-1 OUTPUT pin through the writer. Inputs: pin (AP_U1_MUX_0/1, AP_L_AUX,
+// AP_EN_WET_MEAS), level. Returns: as awPort1WriteLocked(); false without writing for any other pin (the enables are
+// set only by awPort1EnableMotorsLocked(), and the input pins have no output to set). Caller holds i2cMutex or is boot.
+bool awPort1SetPinLocked(uint8_t pin, bool level)
+{
+  if (pin < 8 || pin > 15) return false;
+  const uint8_t bit = (uint8_t)(1u << (pin - 8));
+  if ((bit & kPort1Owned) == 0) return false;
+  return awPort1WriteLocked(bit, level ? bit : (uint8_t)0);
+}
+
+// awPort1EnableMotorsLocked - the boot point that sets both PPM enables HIGH (runBootSequence(), Init.ino), and from
+// which every port-1 write forces them HIGH. Returns: as awPort1WriteLocked(). If this one write is skipped (failed
+// read), configureGPS()'s setUartMux(1) - the very next port-1 write - asserts them.
+bool awPort1EnableMotorsLocked()
+{
+  g_port1_enables_armed = true;
+  return awPort1WriteLocked(0, 0);
+}
+
+// awPort1DiagLine - ?diag: one checked read of OUTPUT1 against what the writer intends. Read-only apart from the read.
+// Takes i2cMutex with a 5 ms bound and says so if it was busy.
+void awPort1DiagLine()
+{
+  uint8_t cur = 0;
+  bool ok = false;
+  if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+    ok = awPort1ReadLocked((uint8_t)(AW9523_REG_OUTPUT0 + 1), &cur);
+    xSemaphoreGive(i2cMutex);
+  } else {
+    Serial.println("AW9523 P1 : (bus busy - try ?diag again)");
+    return;
+  }
+  const uint8_t intended = (uint8_t)(g_port1_shadow | (g_port1_enables_armed ? kPort1Enables : 0));
+  if (!ok) {
+    Serial.printf("AW9523 P1 : OUTPUT1 read FAILED; intended 0x%02X; writes skipped %lu, not acknowledged %lu\n",
+                  (unsigned)intended, (unsigned long)g_diag_port1_skipped, (unsigned long)g_diag_port1_nak);
+    return;
+  }
+  const uint8_t mask = (uint8_t)(kPort1Owned | (g_port1_enables_armed ? kPort1Enables : 0));
+  Serial.printf("AW9523 P1 : OUTPUT1 0x%02X, intended 0x%02X (%s); enables PWM0 %s PWM1 %s; writes skipped %lu, not acknowledged %lu\n",
+                (unsigned)cur, (unsigned)intended, ((cur & mask) == (intended & mask)) ? "match" : "MISMATCH",
+                (cur & (1u << (AP_EN_PWM0 - 8))) ? "HIGH" : "LOW", (cur & (1u << (AP_EN_PWM1 - 8))) ? "HIGH" : "LOW",
+                (unsigned long)g_diag_port1_skipped, (unsigned long)g_diag_port1_nak);
+}
+
 void startupAW()
 {
   Serial.print("Starting AW9532...");
@@ -60,7 +181,7 @@ void startupAW()
   aw.pinMode(AP_WET_MEAS, INPUT);
 
   aw.digitalWrite(AP_L_BIND, HIGH);
-  aw.digitalWrite(AP_L_AUX, HIGH);
+  awPort1SetPinLocked(AP_L_AUX, HIGH);   // V2.5-Evo - 2026-10-14 - FS-13: through the port-1 writer (boot: enables carried as read)
   aw.digitalWrite(AP_EN_BMS_MEAS, HIGH);
 
   Serial.println(" Done");
@@ -93,20 +214,42 @@ void setUartMux(int channel)
   // I2C critical section is not made any longer than it already is.
   g_diag_mux_switches++;
 
-  xSemaphoreTake(i2cMutex, portMAX_DELAY);
-  aw.digitalWrite(AP_U1_MUX_0, want_mux0);
-  aw.digitalWrite(AP_U1_MUX_1, want_mux1);
+  // ============================================================
+  // V2.5-Evo - 2026-10-14 - FS-1 (HIGH) + F-1 (MEDIUM), owner-approved for RX1.
+  // THE WRITES: each attempt is awPort1WriteLocked() - one checked read of OUTPUT1 and one write of the whole owned
+  // byte, both PPM enables forced HIGH - instead of two aw.digitalWrite() read-modify-writes, which could write a
+  // noise-corrupted enable bit back as 0 and cut a motor until reboot. A failed read writes nothing.
+  // THE READ-BACK: one CHECKED read of INPUT1 (awPort1ReadLocked()), judged by muxReadbackVerdict()
+  // (../Common/UartMuxVerify.h, host-tested). aw.digitalRead() returned HIGH on a failed read, which is channel 1's
+  // MUX_0 level, so a failed write plus a failed read used to pass. An attempt passes only if its write was made AND
+  // the checked read-back confirms the channel; otherwise the single correction runs (as before), and a call still
+  // not confirmed after it is counted in g_diag_mux_verify_fail (?diag).
+  // THE FLUSH: before a switch to channel 0, Serial1.flush() waits until every byte already handed to the UART has
+  // left while the line still points at channel 1, so nothing written toward the GPS slot can reach VESC 1. In normal
+  // running the TX FIFO is empty here and it returns at once.
+  // I2C transactions: routine 3 (was 6), corrective 6 (was 10). Same mutex, same single correction.
+  // ============================================================
+  if (channel == 0) Serial1.flush();
 
-  // Bounded verify-and-correct: one read-back, at most one corrective re-write.
-  if(aw.digitalRead(AP_U1_MUX_0) != want_mux0 || aw.digitalRead(AP_U1_MUX_1) != want_mux1)
+  const uint8_t want_bits = (uint8_t)((want_mux0 ? kPort1Mux0 : 0) | (want_mux1 ? kPort1Mux1 : 0));
+  uint8_t port = 0;
+  xSemaphoreTake(i2cMutex, portMAX_DELAY);
+  bool wrote   = awPort1WriteLocked(kPort1MuxMask, want_bits);
+  bool read_ok = awPort1ReadLocked((uint8_t)AW9523_REG_INPUT0 + 1, &port);   // INPUT1 = actual pad levels
+
+  // Bounded verify-and-correct: one CHECKED read-back, at most one corrective re-write.
+  if (!(wrote && muxReadbackVerdict(read_ok, port, AP_U1_MUX_0 % 8, AP_U1_MUX_1 % 8, want_mux0, want_mux1)))
   {
     // V2.5-Evo - 2026-07-25 - STAGE 0: a read-back mismatch means the write did NOT stick —
     // the documented motor-EMI-corrupts-I2C failure. Counting it is the whole point: until now
     // this event corrected itself silently, so a session log could never show how often the
-    // UART was pointed at the wrong peripheral. The corrective re-write below is UNCHANGED.
+    // UART was pointed at the wrong peripheral. The corrective re-write below is UNCHANGED
+    // (in count; since 2026-10-14 it goes through the port-1 writer, FS-1).
     g_diag_mux_errors++;
-    aw.digitalWrite(AP_U1_MUX_0, want_mux0);
-    aw.digitalWrite(AP_U1_MUX_1, want_mux1);
+    wrote   = awPort1WriteLocked(kPort1MuxMask, want_bits);
+    read_ok = awPort1ReadLocked((uint8_t)AW9523_REG_INPUT0 + 1, &port);
+    if (!(wrote && muxReadbackVerdict(read_ok, port, AP_U1_MUX_0 % 8, AP_U1_MUX_1 % 8, want_mux0, want_mux1)))
+      g_diag_mux_verify_fail = g_diag_mux_verify_fail + 1;   // plain assignment: ++ on a volatile is deprecated (C++20)
   }
   xSemaphoreGive(i2cMutex);
 }
@@ -130,8 +273,12 @@ void checkWetness()
   static uint8_t wet_strike   = 0;   // Consecutive all-wet calls; needs >=2 to trigger
   static uint8_t snooze_count = 0;   // Calls remaining in snooze window
 
+  // V2.5-Evo - 2026-10-14 - FS-13 / FS-14: the wet-measure enable goes through the port-1 writer, the ONLY place it is
+  // set HIGH. Every other port-1 write keeps it LOW (it is LOW in the writer's shadow outside this window), and no
+  // write here can clear a PPM enable. If this write is skipped (failed read) the probe stays off and the samples
+  // below read as "wet or noise", which the 2-strike rule already treats as inconclusive.
   xSemaphoreTake(i2cMutex, portMAX_DELAY);
-  aw.digitalWrite(AP_EN_WET_MEAS, HIGH);
+  awPort1SetPinLocked(AP_EN_WET_MEAS, HIGH);
   xSemaphoreGive(i2cMutex);
   vTaskDelay(pdMS_TO_TICKS(50));
 
@@ -145,7 +292,7 @@ void checkWetness()
   }
 
   xSemaphoreTake(i2cMutex, portMAX_DELAY);
-  aw.digitalWrite(AP_EN_WET_MEAS, LOW);
+  awPort1SetPinLocked(AP_EN_WET_MEAS, LOW);   // V2.5-Evo - 2026-10-14 - FS-13: if skipped, the next port-1 write applies LOW
   xSemaphoreGive(i2cMutex);
 
   // --- Genuine dry-out: clear everything immediately, regardless of state ---
@@ -245,16 +392,23 @@ uint8_t getUbatPercent(float pack_voltage)
   }
 }
 
+// V2.5-Evo - 2026-10-14 - audit F1 (owner-approved for RX1): blinkErr() is now used ONLY by the fatal halt loops
+// (radioErrorHalt(), spiffsErrorHalt(), the battery-calibration save failure): the AUX button's confirmation moved to
+// the logger's non-blocking triggerBlink() (checkButtons()). It deliberately does NOT feed the watchdog: those callers
+// spin in while(1), and if one is ever reached with the watchdog armed, the watchdog reset is the RECOVERY - feeding it
+// here would turn a halt into a permanent hang with the safety gates not running. Its port-1 LED writes (AUX LED)
+// go through the port-1 writer (FS-13), so a blink can never clear a PPM enable; port-0 pins (BIND LED) are unchanged.
+// Inputs: num (blinks), pin (an AW9523 LED pin, active LOW). Side effects: blocks ~0.4 s per blink + 0.5 s.
 void blinkErr(int num, uint8_t pin)
 {
   for(int i = 0; i < num; i++)
   {
     xSemaphoreTake(i2cMutex, portMAX_DELAY);
-    aw.digitalWrite(pin, LOW);
+    if (pin >= 8) awPort1SetPinLocked(pin, LOW); else aw.digitalWrite(pin, LOW);
     xSemaphoreGive(i2cMutex);
     delay(200);
     xSemaphoreTake(i2cMutex, portMAX_DELAY);
-    aw.digitalWrite(pin, HIGH);
+    if (pin >= 8) awPort1SetPinLocked(pin, HIGH); else aw.digitalWrite(pin, HIGH);
     xSemaphoreGive(i2cMutex);
     delay(200);
   }
@@ -1589,8 +1743,11 @@ void cmdDiag(const String& params) {
                 (unsigned)steerTakeoverEpisodes(),
                 steerTakeoverLastEndText());
   printReturnEndDiag(now_ms);   // V2.5-Evo - 2026-10-07 - hand-back cap, RTM fault/arrival ends, H-2 time (RTMState.ino)
-  Serial.printf("UART mux   : %.1f switches/s, %u read-back failures   [%u total since boot]\n",
-                (float)d_mux_sw / win_s, (unsigned)d_mux_err, (unsigned)cur.mux_errors);
+  // V2.5-Evo - 2026-10-14 - F-1 / L-2: plus the calls still not confirmed after the single correction; and the AW9523
+  // port-1 line (FS-1 / FS-13): one checked read of OUTPUT1 against what the writer intends, both enables shown.
+  Serial.printf("UART mux   : %.1f switches/s, %u read-back failures   [%u total since boot, %u still wrong after the correction]\n",
+                (float)d_mux_sw / win_s, (unsigned)d_mux_err, (unsigned)cur.mux_errors, (unsigned)g_diag_mux_verify_fail);
+  awPort1DiagLine();
   Serial.printf("VESC poll  : %u/%u ok (%.1f%%)\n",
                 (unsigned)d_vesc_ok, (unsigned)d_vesc_p, vesc_pct);
   // V2.5-Evo - 2026-10-06 - VESC 2 over CAN: ONE line (two when it has data), directly under VESC 1's.
@@ -1764,6 +1921,9 @@ void cmdDiagZ(const String& params) {
   g_diag_fix_age_max_ms  = 0;
   g_diag_mux_switches    = 0;
   g_diag_mux_errors      = 0;
+  g_diag_mux_verify_fail = 0;   // V2.5-Evo - 2026-10-14 - F-1 / L-2
+  g_diag_port1_skipped   = 0;   // V2.5-Evo - 2026-10-14 - FS-1 / FS-13: port-1 writes skipped on a failed read
+  g_diag_port1_nak       = 0;
   // V2.5-Evo - 2026-10-03 - STEP 2: the enable-swap failure counters are zeroed with the rest, so a
   // bench run ("?diagz, load the prop, walk the throttle, ?diag") reports the window and not the
   // session. This is the SECOND writer of these three - generatePWM() is the only other one, and it
@@ -2593,26 +2753,25 @@ void checkButtons()
     xSemaphoreGive(i2cMutex);
     if (aux_debounced)
     {
+      // V2.5-Evo - 2026-10-14 - audit F1 (owner-approved for RX1): THE LOOP NO LONGER STOPS HERE.
+      // WHAT WAS WRONG: the confirmation was blinkErr() - delay() for 2.5 s on START and 1.3 s on STOP - and then a
+      // wait-for-release loop with no bound and no watchdog feed. For that whole time loop() ran nothing: no RTM/FM
+      // tick, no safety gate, no GPS drain - and a button held (or a water-shorted pad) for over 3 s reset the RX
+      // through the task watchdog. Both could happen while riding.
+      // WHAT IT DOES NOW: the same confirmation pattern (5 or 2 blinks of 200 ms on / 200 ms off) through the
+      // logger's non-blocking blink engine, run by loggerLoop() every pass (its LED writes go through the port-1
+      // writer, FS-13). And no wait for the release: aux_last_state below is set to the PRESSED level read at the
+      // top of this poll, so the falling-edge test cannot fire again until the button is genuinely released and
+      // pressed again - the same pattern the BIND handler below uses.
       if (isLoggingActive())
       {
         stopLog();
-        blinkErr(2, AP_L_AUX); // Blink AUX LED 2 times to confirm STOP
+        triggerBlink(2, 200); // Blink AUX LED 2 times to confirm STOP (non-blocking)
       }
       else
       {
         startLog();
-        blinkErr(5, AP_L_AUX); // Blink AUX LED 5 times to confirm START
-      }
-
-      // Wait for the user to let go of the button before continuing
-      xSemaphoreTake(i2cMutex, portMAX_DELAY);
-      bool aux_held = (aw.digitalRead(AP_S_AUX) == false);
-      xSemaphoreGive(i2cMutex);
-      while(aux_held) {
-        vTaskDelay(pdMS_TO_TICKS(10));
-        xSemaphoreTake(i2cMutex, portMAX_DELAY);
-        aux_held = (aw.digitalRead(AP_S_AUX) == false);
-        xSemaphoreGive(i2cMutex);
+        triggerBlink(5, 200); // Blink AUX LED 5 times to confirm START (non-blocking)
       }
     }
   }
@@ -2682,15 +2841,9 @@ void checkButtons()
       } else if (compass_cal_result == CAL_PARTIAL) {
         blinkBindPartial();
       }
-      xSemaphoreTake(i2cMutex, portMAX_DELAY);
-      bool bind_held = (aw.digitalRead(AP_S_BIND) == false);
-      xSemaphoreGive(i2cMutex);
-      while (bind_held) {
-        vTaskDelay(pdMS_TO_TICKS(10));
-        xSemaphoreTake(i2cMutex, portMAX_DELAY);
-        bind_held = (aw.digitalRead(AP_S_BIND) == false);
-        xSemaphoreGive(i2cMutex);
-      }
+      // V2.5-Evo - 2026-10-14 - audit F1: the unbounded wait-for-release loop that stood here is removed (no
+      // watchdog feed: a BIND button held, or a water-shorted pad, reset the RX). bind_last_state below is set to the
+      // PRESSED level read at the top of this poll, so the edge cannot fire again until a genuine release and press.
     }
   }
   bind_last_state = bind_current;

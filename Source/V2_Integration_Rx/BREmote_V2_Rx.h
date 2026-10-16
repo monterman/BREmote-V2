@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-15 - LOG FORMAT 5 (owner-approved for RX1, diagnostic only): VescLogDataL6Compass (174 B) = the 170 B level-6 record + compass_diag_dx10 / compass_diag_norm, a log-only compass reading taken under throttle (Logger.ino fillCompassDiag(), Compass.ino compassDiagRead()); LOG_REC_MAX and logRecordSizeForLevel(6) follow it; LOG_FILE_FORMAT_VER 4 -> 5 (MIN_READ stays 3, so formats 3, 4 and 5 all download); LOG_CSV_HEADER_L6_COMPASS + LOG_CSV_ROW_EXT_L6_COMPASS; logCsvHeaderFor() / logFormatCsvRow() print the two columns only for a 174 B record, so 170 B level-6 files keep their 98 columns. VescLogDataL6 itself is unchanged (170 B). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-14 - RESET REASON + BOOT COUNTER (owner-approved for RX1): includes ../Common/ResetReason.h and <Preferences.h>; g_boot_count / g_reset_reason and the bootInfoInit() prototype (Init.ino). LOG FORMAT 4: LOG_FILE_FORMAT_VER 3 -> 4 (the header changed: an 8-byte LogFileBootInfo follows LogFileHeader, static_assert 8; records byte-identical to format 3), LOG_FILE_FORMAT_MIN_READ 3, logReadFileHeader() (shared by ?download and the WiFi download; formats 3 and 4 decode) and logBootMarker() (the one CSV line after the column header). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-14 - full-system audit FS-1 / FS-13 / FS-14 + F-1 (owner-approved for RX1): includes ../Common/UartMuxVerify.h and ../Common/AwPort1.h; prototypes for the AW9523 port-1 writer (System.ino); g_diag_mux_verify_fail; the g_diag_mux_errors / mux_err_cnt comments say a failed read counts; the kSwapStarveTicks derivation re-counted (worst burst 3 ticks of 25). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-13 - COMMENT ONLY: the kHeadingDisagreeDeg note says a measured disagreement no longer distrusts both sources (R-16: it withdraws the compass only). No code change, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -2286,10 +2287,42 @@ static_assert(sizeof(VescLogDataL6) == 170, "VescLogDataL6 size mismatch - expec
 static_assert(offsetof(VescLogDataL6, imu_vesc2) == 126, "VESC 2 IMU block must start right after the 126 B level-5 record");
 static_assert(offsetof(VescLogDataL6, imu_rx) == 148, "RX IMU block must follow the VESC 2 IMU block");
 
+// ============================================================
+// V2.5-Evo - 2026-10-15 - LOG FORMAT 5: VescLogDataL6Compass - the level-6 record + a LOG-ONLY compass reading under throttle (174 B)
+//
+// WHY: with rtm_use_compass 1 the only automatic compass read is updateCompassSnapshot() (Compass.ino), and it
+// stops reading at thr_received >= 25, so compass_live_dx10 ages out (1 s) and a ride log has NO compass value
+// under sustained throttle. The motor-current interference with the compass therefore cannot be measured on the
+// water. These two columns carry a reading taken for the log only, at level 6, while the throttle is at or above
+// that gate (fillCompassDiag() in Logger.ino, through compassDiagRead() in Compass.ino).
+// NEVER STEERS: the reading is produced into locals and written only into this record. It is not the snapshot,
+// not compass_cmp_* (the heading cross-check), not compass_live_cache_*, not magX/Y/Z - no control path,
+// cross-check or link can see it.
+// LAYOUT: the first 170 bytes are a byte-identical VescLogDataL6, so every earlier column decodes with the same
+// code; two u16 are appended at the TAIL. The new size (174) marks the columns; LOG_FILE_FORMAT_VER is also 5.
+//   170  compass_diag_dx10  u16  heading deg x 10 (0-3599), the same math and mounting rotation as
+//                                getCompassHeading(); 0xFFFF = no reading on this row (throttle below 25, compass
+//                                switched off / not fitted / isolated / uncalibrated, rate cap, or a failed I2C read)
+//   172  compass_diag_norm  u16  horizontal field magnitude after the stored hard/soft-iron calibration, sensor
+//                                counts, capped 0xFFFE; 0xFFFF = no reading. At idle it is close to the calibration
+//                                radius whatever the heading, so a change under throttle is the field the motors add
+//                                in the heading plane - visible even when the heading itself looks plausible.
+//   174 = sizeof
+// In the CSV both print as the raw integer, 65535 = no reading (the same convention as compass_live_dx10).
+// ============================================================
+struct __attribute__((packed)) VescLogDataL6Compass {
+    VescLogDataL6 l6;              // the complete level-6 record (170 B), first - do not reorder
+    uint16_t compass_diag_dx10;    // bytes 170-171; deg x 10; 0xFFFF = no reading (see above)
+    uint16_t compass_diag_norm;    // bytes 172-173; calibrated horizontal |B|, counts, capped 0xFFFE; 0xFFFF = no reading
+};
+static_assert(sizeof(VescLogDataL6Compass) == 174, "VescLogDataL6Compass size mismatch - expected 170 (VescLogDataL6) + 2 (compass_diag_dx10) + 2 (compass_diag_norm).");
+static_assert(offsetof(VescLogDataL6Compass, compass_diag_dx10) == 170, "the compass diagnostic block must start right after the 170 B level-6 record");
+
 // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): the largest record this firmware writes or reads. Every
 // record-size ceiling and raw record buffer (serial ?download, WiFi download, loggerTask) uses this, so
 // the next tier is one edit here instead of six scattered sizeof(VescLogDataL5) that refuse their own files.
-#define LOG_REC_MAX sizeof(VescLogDataL6)
+// V2.5-Evo - 2026-10-15 - LOG FORMAT 5: the level-6 record with the compass diagnostic block (174 B).
+#define LOG_REC_MAX sizeof(VescLogDataL6Compass)
 
 // ============================================================
 // V2.5-Evo - 2026-09-17 - FmLogSnapshot: the controller -> logger hand-off
@@ -2390,8 +2423,13 @@ portMUX_TYPE  g_fm_log_mux      = portMUX_INITIALIZER_UNLOCKED;
 // flash still download after it. The PC log reader reads both. The CSV a format-4 file produces gets ONE extra line right
 // after the column header, "=== RX boot #N / reset REASON (code) ... ===" - lines starting "===" are already skipped by
 // Tools/logreader/bremote_log.py, and the docs tool keeps everything between its BEGIN and END markers.
-#define LOG_FILE_FORMAT_MIN_READ 3        // the oldest format whose records this firmware decodes (3 and 4 share one layout)
-#define LOG_FILE_FORMAT_VER  4            // 4 = boot block after the header (2026-10-14); 3 = VESC 2 block in the level-4 record (2026-10-06); 2 = M-2 motor-gate block in the base record (2026-10-01); 1 = the original STAGE 0 PART B layout (2026-07-25)
+// V2.5-Evo - 2026-10-15 - LOG FORMAT 5 (owner-approved for RX1): BUMPED 4 -> 5 for the level-6 compass diagnostic block
+// (VescLogDataL6Compass, 174 B). It is a tail append, which the rule above does not require a bump for; it is bumped so
+// that a reader that does not know the two new columns refuses the file by its format number instead of guessing from
+// the size. Nothing else changed: header and boot block as format 4, levels 3-5 records and the first 170 B of a level-6
+// record byte-identical. MIN_READ stays 3, so files recorded at formats 3 and 4 still download after this flash.
+#define LOG_FILE_FORMAT_MIN_READ 3        // the oldest format whose records this firmware decodes (3, 4 and 5 share one layout up to 170 B)
+#define LOG_FILE_FORMAT_VER  5            // 5 = level 6 is 174 B with the compass diagnostic block (2026-10-15); 4 = boot block after the header (2026-10-14); 3 = VESC 2 block in the level-4 record (2026-10-06); 2 = M-2 motor-gate block in the base record (2026-10-01); 1 = the original STAGE 0 PART B layout (2026-07-25)
 
 struct __attribute__((packed)) LogFileHeader {
     uint32_t magic;        // LOG_FILE_MAGIC — absent/mismatched means "not a BREmote log of this era"
@@ -2465,7 +2503,7 @@ static inline uint8_t logResolveLevel()
 // ============================================================
 static inline uint16_t logRecordSizeForLevel(uint8_t level)
 {
-  if (level >= 6) return (uint16_t)sizeof(VescLogDataL6);   // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): 170 B
+  if (level >= 6) return (uint16_t)sizeof(VescLogDataL6Compass);   // V2.5-Evo - 2026-10-15 - LOG FORMAT 5: 174 B (was VescLogDataL6, 170 B)
   if (level >= 5) return (uint16_t)sizeof(VescLogDataL5);   // V2.5-Evo - 2026-09-19 - level 5 (126 B since the 2026-10-06 VESC 2 block)
   return (level >= 4) ? (uint16_t)sizeof(VescLogDataL4) : (uint16_t)sizeof(VescLogData);
 }
@@ -2506,6 +2544,9 @@ static inline uint16_t logRecordSizeForLevel(uint8_t level)
 // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): the 22 IMU columns after the full level-5 set (170 B, 98 columns).
 // 11 per block: age, roll / pitch / yaw (deg), gyro x / y / z (deg/s), acc x / y / z (g), status. The rsvd byte has no column.
 #define LOG_CSV_HEADER_L6 LOG_CSV_HEADER_L5 ",vesc2_imu_age_ms,vesc2_roll_deg,vesc2_pitch_deg,vesc2_yaw_deg,vesc2_gyro_x_dps,vesc2_gyro_y_dps,vesc2_gyro_z_dps,vesc2_acc_x_g,vesc2_acc_y_g,vesc2_acc_z_g,vesc2_imu_status,rx_imu_age_ms,rx_roll_deg,rx_pitch_deg,rx_yaw_deg,rx_gyro_x_dps,rx_gyro_y_dps,rx_gyro_z_dps,rx_acc_x_g,rx_acc_y_g,rx_acc_z_g,rx_imu_status"
+// V2.5-Evo - 2026-10-15 - LOG FORMAT 5: the two compass diagnostic columns after the full level-6 set (174 B, 100 columns).
+// LOG_CSV_HEADER_L6 stays the 170 B set, so level-6 files recorded at formats 3 and 4 keep their 98 columns.
+#define LOG_CSV_HEADER_L6_COMPASS LOG_CSV_HEADER_L6 ",compass_diag_dx10,compass_diag_norm"
 
 // V2.5-Evo - 2026-10-01 - M-2: 31 level-3 columns -> 33 (+ctrl_pkt_age_ms, +motor_gate_open).
 #define LOG_CSV_ROW_FMT_L3 "%u,%.2f,%.2f,%d,%.1f,%d,%u,%u,%.1f,%.6f,%.6f,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%d,%d,%u,%u,%.1f,%d,%.1f,%u,%u"
@@ -2516,6 +2557,7 @@ static inline uint16_t logRecordSizeForLevel(uint8_t level)
 #define LOG_CSV_ROW_EXT_L5 ",%.6f,%.6f,%u,%d,%u,%u,%u,%u,%u,%u,%u,%.1f,%u,%u"   // level 5: lat, lng, seq, age ms (-1 never), cap, phase, align cap, align infl, mix infl, return override, fm_flags, keepalive s (-1.0 none), rsvd x 2
 #define LOG_CSV_ROW_EXT_L4_VESC2 ",%d,%.2f,%.2f,%d,%.1f,%d,%d,%d,%d"   // V2.5-Evo - 2026-10-06 - VESC 2 (level 4 and up since log format 3): age ms, motor A, battery A, duty %, V, ERPM, FET C, motor C, fault; every N/A prints -999
 #define LOG_CSV_ROW_EXT_L6_IMU ",%d,%.2f,%.2f,%.2f,%.1f,%.1f,%.1f,%.3f,%.3f,%.3f,%d"   // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU), used once per ImuLogBlock: age ms, roll / pitch / yaw deg, gyro xyz dps, acc xyz g, status; every N/A prints -999
+#define LOG_CSV_ROW_EXT_L6_COMPASS ",%u,%u"   // V2.5-Evo - 2026-10-15 - LOG FORMAT 5: compass_diag_dx10, compass_diag_norm, both raw; 65535 = no reading
 
 // Row buffer size. V2.5-Evo - 2026-10-06 - audit LOW: the old running estimate here had drifted (it ended
 // "640 clears the pathological ~362"), so this is the WORST CASE recounted field by field from the format
@@ -2535,6 +2577,8 @@ static inline uint16_t logRecordSizeForLevel(uint8_t level)
 // accelerations of 8 (N/A "-999.000"), status 4 ("-999"). 2 x 86 = 172, so the worst row is
 // ~602 + 172 = ~774 B. 832 holds it with ~58 B to spare. Same home as before: a stack local in the
 // Arduino loop task (8 KB) in both readers.
+// V2.5-Evo - 2026-10-15 - LOG FORMAT 5: NOT raised. The two compass diagnostic columns add at most 12 chars
+// (",65535,65535"), so the worst row is ~786 B and 832 still holds it with ~46 B to spare.
 #define LOG_CSV_ROW_BUF 832
 
 // ============================================================
@@ -2561,7 +2605,8 @@ static inline const char* logCsvHeaderFor(uint8_t level, uint16_t record_size)
   if (record_size < (uint16_t)sizeof(VescLogDataL4))                                                    return LOG_CSV_HEADER_L4_MOTORS; // 90 B: + motor commands
   if (record_size < (uint16_t)sizeof(VescLogDataL5))                                                    return LOG_CSV_HEADER_L4;        // 104 B: + the VESC 2 block (format 3)
   if (record_size < (uint16_t)sizeof(VescLogDataL6))                                                    return LOG_CSV_HEADER_L5;        // 126 B: + the level-5 block
-  return LOG_CSV_HEADER_L6;                                                                                                              // 170 B: + the two IMU blocks (V2.5-Evo - 2026-10-08 - LOG LEVEL 6)
+  if (record_size < (uint16_t)sizeof(VescLogDataL6Compass))                                             return LOG_CSV_HEADER_L6;        // 170 B: + the two IMU blocks (V2.5-Evo - 2026-10-08 - LOG LEVEL 6)
+  return LOG_CSV_HEADER_L6_COMPASS;                                                                                                      // 174 B: + the compass diagnostic block (V2.5-Evo - 2026-10-15 - LOG FORMAT 5)
 }
 
 // ============================================================
@@ -2806,6 +2851,22 @@ static int logFormatCsvRow(char* out, size_t out_len, const uint8_t* rec_bytes, 
       n = logFormatImuBlock(out, out_len, n, imu);
       memcpy(&imu, rec_bytes + offsetof(VescLogDataL6, imu_rx), sizeof(imu));
       n = logFormatImuBlock(out, out_len, n, imu);
+    }
+    // V2.5-Evo - 2026-10-15 - LOG FORMAT 5: the compass diagnostic block, the tail of a 174 B level-6 record. Present
+    // only in a record that reaches sizeof(VescLogDataL6Compass), so a 170 B level-6 file prints exactly its 98 columns.
+    // Both values print raw; 65535 = no reading on that row.
+    if (rec_size >= (uint16_t)sizeof(VescLogDataL6Compass) && (size_t)n < (out_len - 1))
+    {
+      uint16_t diag_dx10, diag_norm;
+      memcpy(&diag_dx10, rec_bytes + offsetof(VescLogDataL6Compass, compass_diag_dx10), sizeof(diag_dx10));
+      memcpy(&diag_norm, rec_bytes + offsetof(VescLogDataL6Compass, compass_diag_norm), sizeof(diag_norm));
+      int g = snprintf(out + n, out_len - (size_t)n, LOG_CSV_ROW_EXT_L6_COMPASS,
+                       (unsigned)diag_dx10, (unsigned)diag_norm);
+      if (g > 0)
+      {
+        n += g;
+        if ((size_t)n >= out_len) n = (int)out_len - 1;
+      }
     }
   }
 

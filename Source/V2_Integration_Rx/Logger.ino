@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-15 - LOG FORMAT 5 (owner-approved for RX1, diagnostic only): a level-6 row is a VescLogDataL6Compass (174 B): the 170 B level-6 record + compass_diag_dx10 / compass_diag_norm, filled by the new fillCompassDiag() - one compass reading per row through compassDiagRead() (Compass.ino), only while this row's thr_received is at or above 25 (where the snapshot path stops reading), only when rtm_use_compass is not 0, and never faster than every 300 ms. The reading lives in locals and in this record only; compass_live_dx10 and every other column are unchanged. Levels 3-5 unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-14 - LOG FORMAT 4 (owner-approved for RX1): createNewLogFile() writes a LogFileBootInfo (boot counter + reset reason of this boot) right after the 8-byte header; records unchanged. ?download reads the header through the shared logReadFileHeader(), decodes formats 3 and 4, and prints one "=== RX boot #N / reset ... ===" line after the CSV column header for a format-4 file. Old logs (format 3) still download. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-14 - full-system audit FS-13 (owner-approved for RX1): every AUX LED write (triggerBlink(), loggerLoop()'s blink and steady state, initLogger(), whose AW9523 block now also holds i2cMutex because it runs after initTasks()) goes through the AW9523 port-1 writer (awPort1SetPinLocked(), System.ino): one checked read, nothing written on a failed read, both PPM enables kept HIGH. The old aw.digitalWrite() read-modify-write could write a noise-corrupted motor-enable bit back as 0. Same locking as before at the other call sites. No log-format or behaviour change.
 // V2.5-Evo - 2026-10-13 - CRITICAL MAINTENANCE contract honoured (log mirror only), heading-latch design 2026-10-13 R-16: getRtmHeading() no longer returns NONE on a tick with a measured compass-vs-COG disagreement - it serves the live GPS course - so convertToLogData()'s guard 2 mirror (its own comparison and the empty disagree_now branch) is removed and such a tick now logs src 1 / conf 3, as the controller steers. The latch gate on the compass-snapshot branch stays. Read-only, no new column, no rtm_source value added, no record-size change, log format unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -828,6 +829,48 @@ static void fillImuBlocks(VescLogDataL6 &rec)
   imuLogEncode(&rec.imu_vesc2, &i2.s, i2.ever_ok, millis() - i2.last_ok_ms, kImu2StaleMs);
 }
 
+// ============================================================
+// V2.5-Evo - 2026-10-15 - LOG FORMAT 5: fillCompassDiag - the level-6 compass diagnostic block (a log-only reading under throttle)
+//
+// What it does: decides whether this row gets a compass reading and, if so, takes ONE through compassDiagRead()
+//   (Compass.ino) and writes it into the two u16 at the tail of the level-6 record. Otherwise both stay 0xFFFF.
+// Why: under sustained throttle the snapshot path does not read the compass (thr_received >= 25), so
+//   compass_live_dx10 ages out and the motor-current pull on the compass cannot be measured from a ride log.
+// Gates, in order (any one fails = 0xFFFF, no I2C traffic):
+//   1. this row's own thr_received column >= kCompassDiagThrMin (25): below it the snapshot path already reads and
+//      compass_live_dx10 carries the value. Using the row's column keeps the gate and the logged throttle identical.
+//   2. usrConf.rtm_use_compass != 0: mode 0 means "no automatic compass transaction" (updateCompassSnapshot() Gate 1b),
+//      and this path keeps that promise.
+//   3. at least kCompassDiagMinIntervalMs (300 ms) since the last attempt, so the read rate stays at or under ~3.3 Hz
+//      whatever ?lograte is set to.
+//   compassDiagRead() then refuses a compass that is not detected, isolated or uncalibrated, and a failed read.
+// Level 6 only: called from the level-6 branch of loggerTask(), i.e. only while a file created at log level 6 records.
+// Inputs:  rec - a VescLogDataL6Compass whose .l6 is already filled (convertToLogData() wrote .l6.l5.l4.base).
+// Outputs: none (rec filled in place).
+// Side effects: at most one bounded i2cMutex hold per call (inside compassDiagRead()); one loggerTask-local static
+//   (the last attempt time). Writes no global, and nothing outside this record ever sees the reading.
+// ============================================================
+static void fillCompassDiag(VescLogDataL6Compass &rec)
+{
+  rec.compass_diag_dx10 = 0xFFFF;
+  rec.compass_diag_norm = 0xFFFF;
+
+  if (rec.l6.l5.l4.base.thr_received_log < kCompassDiagThrMin) return;   // gate 1
+  if (usrConf.rtm_use_compass == 0) return;                               // gate 2
+
+  static uint32_t s_last_attempt_ms = 0;   // loggerTask only; 0 = no attempt yet
+  const uint32_t now = millis();
+  if (s_last_attempt_ms != 0 && (now - s_last_attempt_ms) < kCompassDiagMinIntervalMs) return;   // gate 3
+  s_last_attempt_ms = (now != 0) ? now : 1;
+
+  float deg = -1.0f, norm = -1.0f;
+  if (!compassDiagRead(&deg, &norm)) return;   // not detected / isolated / uncalibrated / bus busy / failed read
+  if (!(deg >= 0.0f && deg < 360.0f) || !(norm >= 0.0f)) return;   // also rejects NaN
+
+  rec.compass_diag_dx10 = (uint16_t)(deg * 10.0f);                  // 0-3599
+  rec.compass_diag_norm = (norm > 65534.0f) ? (uint16_t)0xFFFE : (uint16_t)lroundf(norm);
+}
+
 // Check and manage SPIFFS space
 bool ensureFreeSpace() {
   size_t totalBytes = SPIFFS.totalBytes();
@@ -998,16 +1041,19 @@ void loggerTask(void* parameter) {
       // sized LOG_REC_MAX (170 B). loggerTask has a 4 KB stack and is the only user of both rec_buf and
       // logData6, so moving them off the stack costs nothing and stops the level-6 path from adding 2 x 170 B
       // of stack on top of today's level-5 peak.
+      // V2.5-Evo - 2026-10-15 - LOG FORMAT 5: a level-6 row is a VescLogDataL6Compass (174 B, = LOG_REC_MAX): the
+      // level-6 record exactly as before, then the compass diagnostic block (fillCompassDiag()).
       static uint8_t rec_buf[LOG_REC_MAX];
       uint16_t rec_len;
       if (active_log_level >= 6) {
-        static VescLogDataL6 logData6;
-        logData6.l5.l4.base = convertToLogData();
+        static VescLogDataL6Compass logData6;
+        logData6.l6.l5.l4.base = convertToLogData();
         const FmLogSnapshot snap = logTakeFmSnapshot();
-        fillLevel4Diag(logData6.l5.l4, snap);
-        fillVesc2Block(logData6.l5.l4);
-        fillLevel5Extra(logData6.l5, snap);
-        fillImuBlocks(logData6);       // VESC 2's IMU (own freshness test) + the reserved RX IMU
+        fillLevel4Diag(logData6.l6.l5.l4, snap);
+        fillVesc2Block(logData6.l6.l5.l4);
+        fillLevel5Extra(logData6.l6.l5, snap);
+        fillImuBlocks(logData6.l6);    // VESC 2's IMU (own freshness test) + the reserved RX IMU
+        fillCompassDiag(logData6);     // V2.5-Evo - 2026-10-15 - log-only compass reading under throttle (or 0xFFFF)
         memcpy(rec_buf, &logData6, sizeof(logData6));
         rec_len = (uint16_t)sizeof(logData6);
       } else if (active_log_level >= 5) {

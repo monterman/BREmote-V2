@@ -53,6 +53,10 @@ the level-5 block), and since 2026-10-08 170 -> 98 (L6_V3: level 5 + VESC 2's
 IMU + a reserved RX IMU block; a tail append, so still format 3). Format 4
 (2026-10-14) keeps the format-3 records byte for byte and adds an 8-byte boot
 block after the header (boot counter + reset reason; ``read_boot_info()``).
+Format 5 (2026-10-15) appends a compass diagnostic block to the level-6 record:
+174 -> 100 (L6_V5: L6_V3 + compass_diag_dx10 / compass_diag_norm, a log-only
+compass reading the RX takes under throttle, 65535 = no reading); every other
+record is format 3's, byte for byte.
 A format-2 126 B record and a format-3 126 B record are
 the SAME SIZE with DIFFERENT layouts, so layouts are keyed by
 (format_ver, record_size) in ``RECORD_LAYOUTS_BY_FORMAT``, never by size
@@ -78,7 +82,7 @@ from typing import Any, Callable, Optional
 # FILE HEADER - BREmote_V2_Rx.h: LogFileHeader / LOG_FILE_MAGIC / LOG_FILE_FORMAT_VER
 # ============================================================
 LOG_FILE_MAGIC = 0x474C5242          # little-endian bytes on disk read "BRLG"
-LOG_FILE_FORMAT_VER = 4              # current: 4 = a boot block after the header (2026-10-14); 3 = VESC 2 in the level-4 record
+LOG_FILE_FORMAT_VER = 5              # current: 5 = level 6 carries the compass diagnostic block (2026-10-15); 4 = a boot block after the header (2026-10-14); 3 = VESC 2 in the level-4 record
 # Both are READABLE. 1 is every file written before the M-2 flash (2026-10-02) and 2 is every
 # file after it. The two differ by 3 bytes at the tail of the BASE record, which moves every
 # block above byte 59 - record_size alone cannot express that, which is why the firmware bumped
@@ -93,7 +97,10 @@ LOG_FILE_FORMAT_VER = 4              # current: 4 = a boot block after the heade
 # and the reset reason of the boot that recorded the file, so a log can tell a power loss from a crash. The device CSV
 # of a format-4 file carries one extra line right after the column header, "=== RX boot #N / reset NAME (code): ... ===",
 # which the CSV reader below skips as a row and reads as the boot info.
-LOG_FILE_FORMAT_VERS_SUPPORTED = (1, 2, 3, 4)
+# 2026-10-15: 5 is every file written after the compass-diagnostic flash. Header and boot block as format 4; levels 3-5
+# and the first 170 B of a level-6 record are format 3's. A level-6 record is 174 B: + compass_diag_dx10 and
+# compass_diag_norm (BREmote_V2_Rx.h VescLogDataL6Compass).
+LOG_FILE_FORMAT_VERS_SUPPORTED = (1, 2, 3, 4, 5)
 LOG_FILE_HEADER_FMT = "<IBBH"        # magic u32, format_ver u8, log_level u8, record_size u16
 LOG_FILE_HEADER_SIZE = struct.calcsize(LOG_FILE_HEADER_FMT)
 assert LOG_FILE_HEADER_SIZE == 8
@@ -271,11 +278,12 @@ TIER_ORDER += ["L3_V2", "L4_V2", "L5_V2"]
 TIER_ORDER += ["L5_VESC2"]   # 2026-10-06: level 5 + the VESC 2 block (126 B)
 TIER_ORDER += ["L4_V3", "L5_V3"]   # 2026-10-06: format 3 - VESC 2 in the level-4 record (104 B / 126 B)
 TIER_ORDER += ["L6_V3"]            # 2026-10-08: format 3 level 6 - level 5 + the two IMU blocks (170 B)
+TIER_ORDER += ["L6_V5"]            # 2026-10-15: format 5 level 6 - L6_V3 + the compass diagnostic block (174 B)
 # Tiers that carry the Follow-Me block (decoded gate/state columns) and the level-5 block, by name.
-FM_BLOCK_TIERS = ("L4_83", "L4_RAW", "L4", "L5", "L4_V2", "L5_V2", "L5_VESC2", "L4_V3", "L5_V3", "L6_V3")
-L5_BLOCK_TIERS = ("L5", "L5_V2", "L5_VESC2", "L5_V3", "L6_V3")
+FM_BLOCK_TIERS = ("L4_83", "L4_RAW", "L4", "L5", "L4_V2", "L5_V2", "L5_VESC2", "L4_V3", "L5_V3", "L6_V3", "L6_V5")
+L5_BLOCK_TIERS = ("L5", "L5_V2", "L5_VESC2", "L5_V3", "L6_V3", "L6_V5")
 # 2026-10-08: tiers that carry the two IMU blocks (VESC 2's IMU + the reserved RX IMU).
-IMU_BLOCK_TIERS = ("L6_V3",)
+IMU_BLOCK_TIERS = ("L6_V3", "L6_V5")
 
 # ImuLogBlock.status (Source/Common/VescImu.h). 0xFF (NO SOURCE) is the field's sentinel, so it decodes
 # as None and is named "NO_SOURCE" in the expanded CSV; 0 is never written by the firmware.
@@ -519,6 +527,20 @@ def _imu_fields(prefix_meta: str, prefix_val: str) -> list[dict]:
 IMU_VESC2_FIELDS = _imu_fields("vesc2_imu", "vesc2")
 IMU_RX_FIELDS = _imu_fields("rx_imu", "rx")
 
+# ---- 2026-10-15: LOG FORMAT 5 - the compass diagnostic block, bytes 170-173 of the 174 B "L6_V5" record
+#      (BREmote_V2_Rx.h VescLogDataL6Compass). A compass reading the RX takes FOR THE LOG ONLY while the
+#      throttle is at or above 25 (where the steering snapshot stops reading), at most every 300 ms; it never
+#      steers. compass_diag_dx10 is the heading x 10 with the same calibration and mounting rotation as
+#      compass_live_dx10; compass_diag_norm is the horizontal field magnitude after calibration, in sensor counts
+#      (near the calibration radius at idle, so a change under throttle is the motors' added field). The firmware's
+#      CSV prints both RAW, 65535 = no reading on that row. ----
+COMPASS_DIAG_FIELDS = [
+    F("compass_diag_deg", "H", csv_col="compass_diag_dx10",
+      raw_scale=10.0, sentinel_raw=0xFFFF, unit="deg"),
+    F("compass_diag_norm", "H", csv_col="compass_diag_norm",
+      sentinel_raw=0xFFFF, unit="counts"),
+]
+
 # fm_aligning / fm_boost are spliced into the CSV header right after fm_return_reason in every
 # tier from L4_83 up - see the field-table note above for why they have no field-table entry.
 _VIRTUAL_GATE_COLUMNS = {"fm_return_reason": ["fm_aligning", "fm_boost"]}
@@ -595,10 +617,16 @@ LAYOUT_L6_V3 = _layout(6, "L6_V3",
                        + L4_RAW_EXTRA_FIELDS + L4_MOTORS_EXTRA_FIELDS + VESC2_EXTRA_FIELDS
                        + L5_EXTRA_FIELDS + IMU_VESC2_FIELDS + IMU_RX_FIELDS,
                        virtual_after=_VIRTUAL_GATE_COLUMNS)
+# ---- 2026-10-15: LOG FORMAT 5 - level 6 + the compass diagnostic block (174 B). ----
+LAYOUT_L6_V5 = _layout(6, "L6_V5",
+                       L3_FIELDS_V2 + L4_DIAG_EXTRA_FIELDS + L4_83_EXTRA_FIELDS
+                       + L4_RAW_EXTRA_FIELDS + L4_MOTORS_EXTRA_FIELDS + VESC2_EXTRA_FIELDS
+                       + L5_EXTRA_FIELDS + IMU_VESC2_FIELDS + IMU_RX_FIELDS + COMPASS_DIAG_FIELDS,
+                       virtual_after=_VIRTUAL_GATE_COLUMNS)
 
 LAYOUT_BY_NAME = {lay["name"]: lay for lay in (LAYOUT_L3, LAYOUT_L4_DIAG, LAYOUT_L4_83, LAYOUT_L4_RAW, LAYOUT_L4, LAYOUT_L5,
                                                LAYOUT_L3_V2, LAYOUT_L4_V2, LAYOUT_L5_V2, LAYOUT_L5_VESC2,
-                                               LAYOUT_L4_V3, LAYOUT_L5_V3, LAYOUT_L6_V3)}
+                                               LAYOUT_L4_V3, LAYOUT_L5_V3, LAYOUT_L6_V3, LAYOUT_L6_V5)}
 
 # Table-driven, keyed by (format_ver, record_size). 2026-10-06: it was keyed by record size alone, which
 # stopped being enough the day two formats wrote the same size with different layouts (format 2 L5_VESC2
@@ -610,6 +638,10 @@ RECORD_LAYOUTS_BY_FORMAT: dict[int, dict[int, dict]] = {
 }
 # 2026-10-14: format 4 changed the HEADER only (a boot block after it); the records are format 3's, byte for byte.
 RECORD_LAYOUTS_BY_FORMAT[4] = RECORD_LAYOUTS_BY_FORMAT[3]
+# 2026-10-15: format 5 - format 3's records plus the 174 B level-6 record. The firmware writes level 6 at 174 B only;
+# 170 stays in the table so an odd file still decodes its IMU prefix within its own format.
+RECORD_LAYOUTS_BY_FORMAT[5] = dict(RECORD_LAYOUTS_BY_FORMAT[3])
+RECORD_LAYOUTS_BY_FORMAT[5][LAYOUT_L6_V5["record_size"]] = LAYOUT_L6_V5
 assert set(RECORD_LAYOUTS_BY_FORMAT) == set(LOG_FILE_FORMAT_VERS_SUPPORTED)
 
 # BREmote_V2_Rx.h LOG_CSV_HEADER_L3 as of the M-2 change, copied verbatim. If the firmware adds a
@@ -632,6 +664,7 @@ assert LAYOUT_L3_V2["csv_header"] == _FW_CSV_HEADER_L3_V2, (
 assert RECORD_LAYOUTS_BY_FORMAT[1].keys() == {59, 65, 83, 85, 87, 109}, sorted(RECORD_LAYOUTS_BY_FORMAT[1])
 assert RECORD_LAYOUTS_BY_FORMAT[2].keys() == {62, 90, 112, 126}, sorted(RECORD_LAYOUTS_BY_FORMAT[2])
 assert RECORD_LAYOUTS_BY_FORMAT[3].keys() == {62, 104, 126, 170}, sorted(RECORD_LAYOUTS_BY_FORMAT[3])
+assert RECORD_LAYOUTS_BY_FORMAT[5].keys() == {62, 104, 126, 170, 174}, sorted(RECORD_LAYOUTS_BY_FORMAT[5])
 
 # BREmote_V2_Rx.h LOG_CSV_HEADER_L5_VESC2 is LOG_CSV_HEADER_L5 plus this suffix, copied verbatim.
 # (A test also reads the macro straight out of the firmware header, so the two cannot drift.)
@@ -657,6 +690,12 @@ _FW_CSV_SUFFIX_IMU = (
 )
 assert LAYOUT_L6_V3["csv_header"] == LAYOUT_L5_V3["csv_header"] + _FW_CSV_SUFFIX_IMU, (
     "generated level-6 IMU header has drifted from the firmware macro"
+)
+# 2026-10-15: BREmote_V2_Rx.h LOG_CSV_HEADER_L6_COMPASS is LOG_CSV_HEADER_L6 plus this suffix, copied verbatim
+# (test_bremote_log.py also expands the real macro).
+_FW_CSV_SUFFIX_COMPASS_DIAG = ",compass_diag_dx10,compass_diag_norm"
+assert LAYOUT_L6_V5["csv_header"] == LAYOUT_L6_V3["csv_header"] + _FW_CSV_SUFFIX_COMPASS_DIAG, (
+    "generated level-6 compass diagnostic header has drifted from the firmware macro"
 )
 
 # The six CSV headers the firmware itself can print (BREmote_V2_Rx.h LOG_CSV_HEADER_L3 /
@@ -703,9 +742,10 @@ CSV_HEADER_TO_LAYOUT = {
     LAYOUT_L4_V3["csv_header"]: LAYOUT_L4_V3,
     LAYOUT_L5_V3["csv_header"]: LAYOUT_L5_V3,
     LAYOUT_L6_V3["csv_header"]: LAYOUT_L6_V3,   # 2026-10-08 - level 6 (IMU)
+    LAYOUT_L6_V5["csv_header"]: LAYOUT_L6_V5,   # 2026-10-15 - level 6 + the compass diagnostic block (format 5)
 }
 # Every layout must be reachable from a DISTINCT header line - the header is the only thing a CSV carries.
-# (L3_V2 serves formats 2 and 3, so it is one entry; 13 layouts -> 13 headers.)
+# (L3_V2 serves formats 2 and 3, so it is one entry; 14 layouts -> 14 headers.)
 assert len(CSV_HEADER_TO_LAYOUT) == len(LAYOUT_BY_NAME), "two layouts print the same CSV header"
 
 
@@ -919,7 +959,7 @@ def iter_csv_records(path: str):
         if layout is None:
             raise LogFormatError(
                 f"{path}: first line does not match any known BREmote log CSV header "
-                "(log formats 1-4: L3 / L4_DIAG / L4_83 / L4_RAW / L4 / L5 and their V2 / V3 "
+                "(log formats 1-5: L3 / L4_DIAG / L4_83 / L4_RAW / L4 / L5 and their V2 / V3 / V5 "
                 "variants). Not a device log CSV, or from a firmware newer than this tool."
             )
 
@@ -1250,6 +1290,19 @@ def generate_summary(records: list[dict], boot: Optional[dict] = None) -> str:
             f"VESC 2 IMU: {pct_ok:.1f}% of rows OK; "
             f"max |roll| {_fmt_or_na(max(rolls) if rolls else None, ' deg')}; "
             f"max pitch {_fmt_or_na(max(pitches) if pitches else None, ' deg')}"
+        )
+    # 2026-10-15: format-5 level-6 files - how many throttle rows (thr_received >= 25) carry the log-only compass
+    # reading, and the spread of the field magnitude over them (a wide spread under throttle = motor interference).
+    diag_rows = [r for r in records if "compass_diag_deg" in r]
+    if diag_rows:
+        thr_rows = [r for r in diag_rows if (r.get("thr_received") or 0) >= 25]
+        got = [r for r in thr_rows if r.get("compass_diag_deg") is not None]
+        norms = sorted(r["compass_diag_norm"] for r in got if r.get("compass_diag_norm") is not None)
+        lines.append(
+            f"Compass under throttle (diagnostic): {len(got)} of {len(thr_rows)} rows at thr_received >= 25 have a reading; "
+            f"field magnitude min {_fmt_or_na(norms[0] if norms else None)} / "
+            f"median {_fmt_or_na(norms[len(norms) // 2] if norms else None)} / "
+            f"max {_fmt_or_na(norms[-1] if norms else None)} counts"
         )
     return "\n".join(lines)
 

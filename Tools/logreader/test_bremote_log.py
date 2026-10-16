@@ -796,10 +796,11 @@ class TestLogFormat3(unittest.TestCase):
             cls.fw = f.read()
 
     def test_firmware_constants_and_static_asserts(self):
-        # 2026-10-14: the current format is 4 (a boot block after the header); its records are format 3's,
-        # and the firmware still reads format-3 files (LOG_FILE_FORMAT_MIN_READ).
-        self.assertEqual(bl.LOG_FILE_FORMAT_VER, 4)
-        self.assertIn("#define LOG_FILE_FORMAT_VER  4 ", self.fw)
+        # 2026-10-14: format 4 added a boot block after the header; its records are format 3's, and the firmware
+        # still reads format-3 files (LOG_FILE_FORMAT_MIN_READ).
+        # 2026-10-15: the current format is 5 (the level-6 compass diagnostic block, 174 B); MIN_READ stays 3.
+        self.assertEqual(bl.LOG_FILE_FORMAT_VER, 5)
+        self.assertIn("#define LOG_FILE_FORMAT_VER  5 ", self.fw)
         self.assertIn("#define LOG_FILE_FORMAT_MIN_READ 3 ", self.fw)
         self.assertIs(bl.RECORD_LAYOUTS_BY_FORMAT[4], bl.RECORD_LAYOUTS_BY_FORMAT[3])
         self.assertIn("static_assert(sizeof(VescLogDataL4) == 104,", self.fw)
@@ -899,13 +900,14 @@ class TestLogFormat3(unittest.TestCase):
             self.assertEqual(rec["fm_state_name"], "HOLD", fv)
 
     def test_unknown_format_is_a_clear_error(self):
-        # 2026-10-14: 4 is a known format now (the boot block), so the first unknown one is 5.
+        # 2026-10-14: 4 is a known format now (the boot block). 2026-10-15: so is 5 (the level-6 compass
+        # diagnostic block), so the first unknown one is 6.
         with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, "f5.log")
-            write_binary_log(path, 4, 104, [pack_record(bl.LAYOUT_L4_V3, {})], format_ver=5)
+            path = os.path.join(tmp, "f6.log")
+            write_binary_log(path, 4, 104, [pack_record(bl.LAYOUT_L4_V3, {})], format_ver=6)
             with self.assertRaises(bl.LogFormatError) as ctx:
                 list(bl.iter_binary_records(path))
-        self.assertIn("format_ver=5", str(ctx.exception))
+        self.assertIn("format_ver=6", str(ctx.exception))
 
     def test_cli_exits_nonzero_with_message_on_unknown_format(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1231,6 +1233,101 @@ class TestLogFormat4BootBlock(unittest.TestCase):
             with open(p3, "w", encoding="utf-8", newline="") as f:
                 f.write(bl.LOG_CSV_HEADER_L3 + "\n" + row + "\n")
             self.assertIsNone(bl.read_boot_info(p3))
+
+
+# ============================================================
+# 2026-10-15 - LOG FORMAT 5: the 170 B level-6 record + the compass diagnostic block (two u16) = 174 B.
+# compass_diag_dx10 (heading x 10) and compass_diag_norm (calibrated horizontal |B|, counts), 0xFFFF = no reading.
+# ============================================================
+
+class TestLogFormat5CompassDiag(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        with open(_FW_HEADER_PATH, "r", encoding="utf-8") as f:
+            cls.fw = f.read()
+
+    def _decode(self, raw: dict) -> dict:
+        rec_bytes = pack_record(bl.LAYOUT_L6_V5, dict(_RX_IMU_NO_SOURCE_RAW, **raw))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "l6c.log")
+            write_binary_log(path, 6, 174, [rec_bytes], format_ver=5)
+            return list(bl.iter_binary_records(path))[0]
+
+    def test_firmware_static_asserts_and_sizes(self):
+        self.assertIn("static_assert(sizeof(VescLogDataL6Compass) == 174,", self.fw)
+        self.assertIn("static_assert(offsetof(VescLogDataL6Compass, compass_diag_dx10) == 170,", self.fw)
+        self.assertIn("static_assert(sizeof(VescLogDataL6) == 170,", self.fw)   # the 170 B record is unchanged
+        self.assertIn("#define LOG_REC_MAX sizeof(VescLogDataL6Compass)", self.fw)
+        self.assertEqual(bl.LAYOUT_L6_V5["record_size"], 174)
+        self.assertEqual(bl.LAYOUT_L6_V5["level"], 6)
+        self.assertIs(bl.RECORD_LAYOUTS_BY_FORMAT[5][174], bl.LAYOUT_L6_V5)
+        self.assertIs(bl.RECORD_LAYOUTS_BY_FORMAT[5][170], bl.LAYOUT_L6_V3)
+        self.assertIs(bl.RECORD_LAYOUTS_BY_FORMAT[5][126], bl.LAYOUT_L5_V3)
+        self.assertNotIn(174, bl.RECORD_LAYOUTS_BY_FORMAT[4])
+        # the first 170 bytes are byte-identical to the level-6 record
+        self.assertEqual(bl.LAYOUT_L6_V5["fields"][:len(bl.LAYOUT_L6_V3["fields"])], bl.LAYOUT_L6_V3["fields"])
+
+    def test_firmware_csv_macro_expands_to_the_generated_header(self):
+        self.assertEqual(_expand_fw_csv_macro(self.fw, "LOG_CSV_HEADER_L6_COMPASS"), bl.LAYOUT_L6_V5["csv_header"])
+        self.assertEqual(_expand_fw_csv_macro(self.fw, "LOG_CSV_HEADER_L6"), bl.LAYOUT_L6_V3["csv_header"])
+        cols = bl.LAYOUT_L6_V5["csv_header_cols"]
+        self.assertEqual(len(cols), 100)
+        self.assertEqual(cols[-2:], ["compass_diag_dx10", "compass_diag_norm"])
+        # every column that existed before keeps its position (a pure tail append)
+        self.assertEqual(cols[:98], bl.LAYOUT_L6_V3["csv_header_cols"])
+        self.assertIs(bl.CSV_HEADER_TO_LAYOUT[bl.LAYOUT_L6_V5["csv_header"]], bl.LAYOUT_L6_V5)
+
+    def test_byte_offsets(self):
+        rec_bytes = pack_record(bl.LAYOUT_L6_V5, dict(_RX_IMU_NO_SOURCE_RAW, compass_diag_deg=1234, compass_diag_norm=4321))
+        self.assertEqual(len(rec_bytes), 174)
+        self.assertEqual(rec_bytes[170:172], struct.pack("<H", 1234))
+        self.assertEqual(rec_bytes[172:174], struct.pack("<H", 4321))
+
+    def test_reading_and_no_reading_decode(self):
+        got = self._decode(dict(_IMU_FRESH_RAW, thr_received=180, compass_diag_deg=1234, compass_diag_norm=4321))
+        none = self._decode(dict(_IMU_FRESH_RAW, thr_received=10, compass_diag_deg=0xFFFF, compass_diag_norm=0xFFFF))
+        self.assertEqual(got["_layout_name"], "L6_V5")
+        self.assertAlmostEqual(got["compass_diag_deg"], 123.4, places=3)
+        self.assertEqual(got["compass_diag_norm"], 4321)
+        self.assertEqual(got["vesc2_imu_age_ms"], 250)                   # the IMU block is unaffected
+        self.assertIsNone(none["compass_diag_deg"])
+        self.assertIsNone(none["compass_diag_norm"])
+        self.assertIn("Compass under throttle (diagnostic): 1 of 1 rows", bl.generate_summary([got, none]))
+
+    def test_device_csv_input_with_sentinels(self):
+        base = ["0"] * len(bl.LAYOUT_L6_V3["csv_header_cols"])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "l6c.csv")
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                f.write(bl.LAYOUT_L6_V5["csv_header"] + "\n")
+                f.write(",".join(base + ["3599", "1500"]) + "\n")
+                f.write(",".join(base + ["65535", "65535"]) + "\n")
+            r_got, r_none = list(bl.iter_csv_records(path))
+        self.assertEqual(r_got["_layout_name"], "L6_V5")
+        self.assertAlmostEqual(r_got["compass_diag_deg"], 359.9, places=3)
+        self.assertEqual(r_got["compass_diag_norm"], 1500)
+        self.assertIsNone(r_none["compass_diag_deg"])
+        self.assertIsNone(r_none["compass_diag_norm"])
+
+    def test_format4_level6_file_still_decodes_without_the_block(self):
+        rec_bytes = pack_record(bl.LAYOUT_L6_V3, dict(_RX_IMU_NO_SOURCE_RAW, **_IMU_FRESH_RAW))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "f4_l6.log")
+            write_binary_log(path, 6, 170, [rec_bytes], format_ver=4)
+            rec = list(bl.iter_binary_records(path))[0]
+        self.assertEqual(rec["_layout_name"], "L6_V3")
+        self.assertNotIn("compass_diag_deg", rec)
+
+    def test_expanded_csv_carries_the_columns(self):
+        import csv
+        rec = self._decode(dict(_IMU_FRESH_RAW, compass_diag_deg=900, compass_diag_norm=0xFFFF))
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = os.path.join(tmp, "x.csv")
+            bl.write_expanded_csv([rec], out_path)
+            with open(out_path, "r", encoding="utf-8", newline="") as f:
+                row = next(csv.DictReader(f))
+        self.assertEqual(row["compass_diag_deg"], "90")
+        self.assertEqual(row["compass_diag_norm"], "")
 
 
 if __name__ == "__main__":

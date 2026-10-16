@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-15 - LOG FORMAT 5 (owner-approved for RX1, diagnostic only): new compassDiagRead() + kCompassDiagThrMin / kCompassDiagMinIntervalMs. One compass reading for the LOG ONLY, called from loggerTask (Logger.ino fillCompassDiag()) at log level 6 while the throttle is at or above the snapshot gate, so a ride log finally shows the compass under motor current. It reads into LOCALS and writes NO global - not magX/Y/Z, not compass_live_cache_*, not the snapshot, not compass_cmp_* - so nothing that steers, cross-checks or reports a heading can see it. Same bounded 10 ms i2cMutex take and the same two Wire transactions as readCompassRaw(); a busy bus or a failed read just returns false (no retry, no counter, no recovery, no isolation). readCompassRaw(), getCompassHeading() and updateCompassSnapshot() are untouched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-13 - delta audit RH-1 (HIGH), same day: THE HOLD-OFF NOW GATES ONLY THE STEERING SNAPSHOT (the line below is superseded in part). Holding off the compass-vs-COG comparison too made every squeeze break the latch's 2 s continuity gap, so a latch needed one 7 s coast at 1.9 mph or more - almost never seen (log check W-D) - and RX1 lost its only automatic bad-compass detection. updateCompassSnapshot() now writes a second pair, compass_cmp_heading / compass_cmp_ms, from the same read on every motor-idle pass with NO hold-off (the e03499a comparison timing; one I2C read per pass, as before), and only then applies Gate 3b to the steering snapshot. compassIsolateForSession() invalidates the new pair too. Settling contamination of the comparison is accepted (since R-16 a disagreeing sample withdraws nothing on its tick; a false latch withdraws only the compass, D-3); the real settling fix is the Sidekick's gyro-settled rule. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-13 - heading-latch design 2026-10-13, R2-F2 (owner approved): a 2 s RELEASE HOLD-OFF. The snapshot (updateCompassSnapshot(), new Gate 3b) and the compass-vs-COG comparison in getRtmHeading() (RTMState.ino) both keyed on thr_received < 25 alone, so they used the compass in the first second after a release, while it is still settling (log check W-E: up to 26 deg of movement in 2 s with the GPS course steady). Both now also need the trigger released CONTINUOUSLY for kCompassReleaseHoldOffMs (2000 ms). One timestamp, stamped once per release edge by compassTrackRelease() at the top of updateCompassSnapshot() - ahead of every compass gate, so a release while the compass is unavailable is still stamped - and read by both sites through compassReleaseHoldOffPassed(). No threshold moved, no throttle term touched. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - STUCK-BUS STOP-GAP (audit H-3): compassIsolateForSession() takes the compass off the bus for the rest of the session (compass_detected false, snapshot invalidated) when Init.ino's stuck-bus service finds the motor-enable swap starved. Nothing else in this file changes. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -1097,6 +1098,95 @@ float getCompassHeading()
   }
 
   return heading;
+}
+
+// ============================================================
+// V2.5-Evo - 2026-10-15 - COMPASS DIAGNOSTIC READ - one reading for the LOG ONLY, taken under throttle
+// ============================================================
+// WHY IT EXISTS: at rtm_use_compass 1 the only automatic compass read is updateCompassSnapshot() below, and it
+// returns at thr_received >= 25, so under sustained throttle nothing reads the part, compass_live_dx10 ages out and
+// a ride log cannot show how far motor current pulls the compass. Owner-approved diagnostic (level-6 logs only):
+// fillCompassDiag() in Logger.ino calls this from loggerTask and writes the result into the level-6 record's
+// compass_diag_dx10 / compass_diag_norm columns, nowhere else.
+//
+// WHY IT CANNOT REACH STEERING: it reads into LOCALS and writes NO global at all. Not magX/Y/Z (readCompassRaw()'s
+// output, which getCompassHeading() consumes in the loop task), not compass_live_cache_* (what the log mirror of
+// the heading ladder reads), not compass_snapshot_* (the steering snapshot), not compass_cmp_* (the compass-vs-GPS
+// cross-check). The heading and the magnitude go back to the caller through the two pointers and from there only
+// into the log record. Nothing in RTMState.ino, PWM.ino or Radio.ino reads those record bytes.
+//
+// I2C: the same bounded 10 ms i2cMutex take and the same two Wire transactions as readCompassRaw() (one hold,
+// ~0.9 ms at 100 kHz, at most 2 x Wire.setTimeOut(3) on a sick bus - inside the PWM task's 10 ms enable-swap
+// budget, and the mutex lends this task the PWM task's priority while it waits). On a busy bus, a NACK or a short
+// read it returns false and does NOTHING else: no retry, no error counter, no bus recovery, no compass isolation -
+// the caller logs 0xFFFF. The stuck-bus service in Init.ino is unchanged and still acts only on the enable swap's
+// own starvation (25 failed swaps in a row = 250 ms), which a single ~1-6 ms hold cannot cause.
+// compass_detected is re-checked INSIDE the hold, so once the stuck-bus isolation has landed no new transaction
+// starts (at most one read already holding the mutex can finish).
+//
+// Inputs:  none (reads compass_detected, compass_addr, compass_data_reg and usrConf.mag_*; writes none of them).
+// Outputs: *heading_deg - 0 to <360, clockwise from north, offsets, scales and mag_orientation applied exactly as
+//            getCompassHeading() does (so it compares directly with compass_live_dx10 / compass_snap_dx10);
+//          *norm - sqrt(cal_x^2 + cal_y^2), the horizontal field magnitude after the stored calibration, counts.
+//          Returns true only when both were produced from a complete read.
+// Side effects: one bounded i2cMutex hold with two Wire transactions. No global written.
+// Caller: fillCompassDiag() (Logger.ino, loggerTask) only, gated there on the file's log level (6), rtm_use_compass
+//   (0 = no transaction, the Gate 1b contract below), thr_received >= kCompassDiagThrMin and
+//   kCompassDiagMinIntervalMs.
+// KEEP THE HEADING MATH IN STEP with getCompassHeading(): if that changes, change this too, or the diagnostic
+// column stops being comparable with the live and snapshot columns.
+// ============================================================
+// The throttle at which the snapshot path stops reading (Gate 3 of updateCompassSnapshot(): thr_received < 25 is
+// idle). The diagnostic reads only at or above it, so the two paths never both cover the same throttle band.
+static const uint8_t       kCompassDiagThrMin        = 25;
+// Floor between two diagnostic reads, ms. Keeps the reading at or under ~3.3 Hz even when ?lograte runs the log
+// faster than the 3 Hz default (333 ms rows, so at the default every row can carry a reading).
+static const unsigned long kCompassDiagMinIntervalMs = 300UL;
+
+bool compassDiagRead(float *heading_deg, float *norm)
+{
+  if (heading_deg == NULL || norm == NULL) return false;
+  if (!compass_detected) return false;
+
+  // The same uncalibrated reject as getCompassHeading(): offsets 0/0 with scales ~1/1 is the never-calibrated
+  // default, and a heading through it would be meaningless.
+  if (usrConf.mag_scale_x == 0.0f || usrConf.mag_scale_y == 0.0f) return false;
+  if (usrConf.mag_offset_x == 0 && usrConf.mag_offset_y == 0 &&
+      fabsf(fabsf(usrConf.mag_scale_x) - 1.0f) < 1e-4f &&
+      fabsf(fabsf(usrConf.mag_scale_y) - 1.0f) < 1e-4f) return false;
+
+  if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(10)) != pdTRUE) return false;
+  // Re-check under the hold: the stuck-bus service may have isolated the compass while this task waited.
+  if (!compass_detected) { xSemaphoreGive(i2cMutex); return false; }
+  Wire.beginTransmission(compass_addr);
+  Wire.write(compass_data_reg);
+  if (Wire.endTransmission(false) != 0) { xSemaphoreGive(i2cMutex); return false; }
+  uint8_t b[6];
+  const bool got6 = (Wire.requestFrom(compass_addr, (uint8_t)6, (uint8_t)true) == 6);
+  if (got6) {
+    for (uint8_t i = 0; i < 6; i++) b[i] = Wire.read();
+  }
+  xSemaphoreGive(i2cMutex);
+  if (!got6) return false;
+
+  // X, Y little-endian two's complement, both parts (Z is not used: the heading is 2-D).
+  const int16_t x = (int16_t)((uint16_t)b[0] | ((uint16_t)b[1] << 8));
+  const int16_t y = (int16_t)((uint16_t)b[2] | ((uint16_t)b[3] << 8));
+
+  const float cal_x = ((float)x - (float)usrConf.mag_offset_x) * usrConf.mag_scale_x;
+  const float cal_y = ((float)y - (float)usrConf.mag_offset_y) * usrConf.mag_scale_y;
+
+  float h = atan2f(cal_y, cal_x) * (180.0f / M_PI);
+  if (h < 0.0f) h += 360.0f;
+  if (usrConf.mag_orientation) {
+    h -= (float)usrConf.mag_orientation;
+    if (h < 0.0f)    h += 360.0f;
+    if (h >= 360.0f) h -= 360.0f;
+  }
+
+  *heading_deg = h;
+  *norm        = sqrtf(cal_x * cal_x + cal_y * cal_y);
+  return true;
 }
 
 // ============================================================

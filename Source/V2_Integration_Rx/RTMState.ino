@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-17 - THROTTLE-SCALED STEERING INFLUENCE (log only in this file): fmPublishLogSnapshot() copies the
+//   level-5/6 mix_influence column from g_mix_influence (published by calcPWM()) instead of mirroring calcPWM()'s rule,
+//   which had no throttle term and missed the stick takeover. No control path in this file changes. Record layout and
+//   size unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-13 - delta audit RH-1 (HIGH), same day: the R2-F2 line below is SUPERSEDED for the comparison.
 //   compare_possible no longer calls compassReleaseHoldOffPassed(): the 2 s hold-off equals the latch's 2 s continuity
 //   gap, so every squeeze broke the dwell and a latch needed one 7 s coast at 1.9 mph or more - almost never seen (log
@@ -3263,19 +3267,20 @@ static void fmPublishLogSnapshot()
     s.l5_rtm_approach_cap = rtm_approach_cap.load(std::memory_order_relaxed);
     s.l5_rtm_phase        = rtm_log_phase;
     // The caps in force: the align cap only while aligning (bit 17 above), the boost as published
-    // (0 = none), and the influence the mixer used - calcPWM()'s own rule from the same inputs:
-    // the boost only when it is honouring an autonomous steering override with the trigger held,
-    // else steering_influence. Mirrored rather than observed so PWM.ino keeps only its two motor
-    // observers; the inputs are the atomics calcPWM() reads.
+    // (0 = none), and the influence the mixer used.
+    // V2.5-Evo - 2026-10-17 - THE MIXER INFLUENCE IS NOW OBSERVED, NOT MIRRORED. This used to
+    // recompute calcPWM()'s rule here (the boost when an autonomous steering override is honoured
+    // with the trigger held, else steering_influence). With the throttle-scaled steering influence
+    // the rule depends on pivot_thr, the ramped and pivot-assisted throttle that exists only inside
+    // calcPWM(), so a mirror here would be wrong whenever the throttle is below 60 % - and it already
+    // missed the stick takeover (it tested auto_owner, calcPWM() tests auto_cmd). It is now a copy of
+    // g_mix_influence, the value calcPWM() itself handed the mixer on its last pass (one writer, the
+    // PWM task; already clamped to 100). Same byte in the same field, so the record is unchanged.
     const bool    aligning_now = (flags & FM_LOG_GATE_ALIGNING) != 0;
     const uint8_t boost        = align_mixer_influence_override.load(std::memory_order_relaxed);
-    const bool    auto_steer   = (rtm_rx_active || fm_rx_active) && usrConf.rtm_rx_override_steering && (thr_received >= 25);
-    uint16_t      mix          = usrConf.steering_influence;
-    if (auto_steer && boost != 0) mix = boost;
-    if (mix > 100) mix = 100;
     s.l5_align_cap       = aligning_now ? fmAlignCapValue() : 0;
     s.l5_align_influence = boost;
-    s.l5_mix_influence   = (uint8_t)mix;
+    s.l5_mix_influence   = g_mix_influence;
     // The FM declaration as the RX holds it and what it echoes back.
     const uint8_t rt = fm_return_mode_runtime.load(std::memory_order_relaxed);
     s.l5_fm_return_override = (rt == 0xFF) ? 0 : ((rt == 0) ? 1 : 2);

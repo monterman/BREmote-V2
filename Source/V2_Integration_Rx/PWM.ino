@@ -1,3 +1,9 @@
+// V2.5-Evo - 2026-10-17 - THROTTLE-SCALED STEERING INFLUENCE (owner request, RX1): calcPWM() hands the mixer
+//   throttleScaledSteeringInfluence(pivot_thr, steering_influence) (Common/DifferentialMixer.h) instead of the plain
+//   setting - 100 % up to 30 % throttle (one-motor pivot), the setting from 60 %, linear between; a setting of 100 is
+//   bit-identical to before. The align pivot boost still replaces it afterwards, unchanged. The influence used is
+//   published to the new log observer g_mix_influence. Only steering_type 1 mixes with it; efoil and servo untouched.
+//   No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-08 - audit F-1: the sticky cap clears on the trigger alone (it did not clear at cap 255).
 // V2.5-Evo - 2026-10-08 - STICKY RETURN CAP (owner design): calcPWM() applies sticky_cap after the arrival hand-back cap
 //   (min(), subtract-only, handbackCapStep() with release 25) and clears sticky_armed on the first pass with the trigger
@@ -735,11 +741,28 @@ void calcPWM()
   // V2.5-Evo - 2026-09-19 - and that means auto_cmd, not auto_owner: a takeover mixes the rider's
   // stick at steering_influence (the "manual feel never changes" rule), the boost follows the
   // CONTROLLER's command only.
-  uint16_t mix_influence = usrConf.steering_influence;
+  // V2.5-Evo - 2026-10-17 - THROTTLE-SCALED STEERING INFLUENCE. The starting value is no longer the
+  // plain setting: it is throttleScaledSteeringInfluence() (Common/DifferentialMixer.h, host-tested)
+  // of the SAME throttle the mixer is given below, pivot_thr. Up to 30 % throttle that is 100 %, the
+  // one-motor pivot the owner uses at low throttle; from 60 % it is usrConf.steering_influence, the
+  // softer split he chose against the high-throttle flips; a straight line in between. It is never
+  // below the setting and never above 100, and the mixer keeps motor0 + motor1 <= 2T, so this can
+  // only change how the permitted throttle is SHARED, never add any. A setting of 100 returns 100 at
+  // every throttle: such a board is bit-identical to before. The boost below still REPLACES the
+  // value when it applies, exactly as before - the align phases are not touched. "A takeover mixes
+  // at steering_influence" above now reads "at the throttle-scaled steering_influence", the same
+  // rule as manual driving, so the manual feel and the takeover feel stay one and the same.
+  uint16_t mix_influence = throttleScaledSteeringInfluence(pivot_thr, usrConf.steering_influence);
   {
     const uint8_t boost = align_mixer_influence_override.load(std::memory_order_relaxed);
     if (auto_cmd && boost != 0) mix_influence = boost;
   }
+
+  // V2.5-Evo - 2026-10-17 - the influence just chosen, for the level-5/6 log column mix_influence
+  // (see g_mix_influence in the header). DIAGNOSTIC OBSERVER ONLY - the g_effective_steer pattern:
+  // written here on every pass, read back by nothing in any control path. Clamped to 100 the way
+  // the mixer clamps it, so the log shows the value the mixer actually works with.
+  g_mix_influence = (mix_influence > 100u) ? (uint8_t)100 : (uint8_t)mix_influence;
 
   // V2.5-Evo - 2026-07-19 - FM triage: record the steering byte actually applied this loop for
   // the logger. Diagnostic observer only — this write does not alter any PWM/motor control path.
@@ -799,7 +822,7 @@ void calcPWM()
     // effective_thr is 0. This is also the ONLY branch that reads pivot_thr; the efoil and servo
     // branches keep ramped_thr, because a throttle cut during a turn buys them nothing.
     DifferentialMotorMix motor_mix = mixThrottleRelativeDifferential(
-        pivot_thr, effective_steer, mix_influence,   // V2.5-Evo - 2026-09-19 - steering_influence, or the align pivot boost
+        pivot_thr, effective_steer, mix_influence,   // V2.5-Evo - the throttle-scaled steering_influence (2026-10-17), or the align pivot boost (2026-09-19)
         usrConf.steering_inverted);
     motor0_cmd_obs = motor_mix.motor0;   // DEEP LOG (C): post-mixer, pre-map counts, every pass of this branch
     motor1_cmd_obs = motor_mix.motor1;

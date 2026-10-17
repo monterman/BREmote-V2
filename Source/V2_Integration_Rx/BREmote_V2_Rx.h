@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-17 - THROTTLE-SCALED STEERING INFLUENCE (owner request, RX1): adds the diagnostic observer g_mix_influence (the steering influence calcPWM() handed the mixer this pass, written by the PWM task, read by fmPublishLogSnapshot() for the level-5/6 mix_influence column, which used to mirror calcPWM()'s rule and had no throttle term); the DifferentialMixer.h include note and the mix_influence column description follow it. Record layout and size unchanged (log format 5, level-6 record 174 B). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-15 - LOG FORMAT 5 (owner-approved for RX1, diagnostic only): VescLogDataL6Compass (174 B) = the 170 B level-6 record + compass_diag_dx10 / compass_diag_norm, a log-only compass reading taken under throttle (Logger.ino fillCompassDiag(), Compass.ino compassDiagRead()); LOG_REC_MAX and logRecordSizeForLevel(6) follow it; LOG_FILE_FORMAT_VER 4 -> 5 (MIN_READ stays 3, so formats 3, 4 and 5 all download); LOG_CSV_HEADER_L6_COMPASS + LOG_CSV_ROW_EXT_L6_COMPASS; logCsvHeaderFor() / logFormatCsvRow() print the two columns only for a 174 B record, so 170 B level-6 files keep their 98 columns. VescLogDataL6 itself is unchanged (170 B). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-14 - RESET REASON + BOOT COUNTER (owner-approved for RX1): includes ../Common/ResetReason.h and <Preferences.h>; g_boot_count / g_reset_reason and the bootInfoInit() prototype (Init.ino). LOG FORMAT 4: LOG_FILE_FORMAT_VER 3 -> 4 (the header changed: an 8-byte LogFileBootInfo follows LogFileHeader, static_assert 8; records byte-identical to format 3), LOG_FILE_FORMAT_MIN_READ 3, logReadFileHeader() (shared by ?download and the WiFi download; formats 3 and 4 decode) and logBootMarker() (the one CSV line after the column header). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-14 - full-system audit FS-1 / FS-13 / FS-14 + F-1 (owner-approved for RX1): includes ../Common/UartMuxVerify.h and ../Common/AwPort1.h; prototypes for the AW9523 port-1 writer (System.ino); g_diag_mux_verify_fail; the g_diag_mux_errors / mux_err_cnt comments say a failed read counts; the kSwapStarveTicks derivation re-counted (worst burst 3 ticks of 25). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -122,6 +123,10 @@
 // (turn term proportional to effective_thr), so steering can no longer add motor power past the
 // RTM/FM throttle caps or create any motor command at zero gas. Header adopted verbatim; it defines
 // no constants and reads no config of its own — influence and inversion are passed in from usrConf.
+// V2.5-Evo - 2026-10-17 - it now defines two: kSteerFullPivotThr (77) and kSteerScaleEndThr (153),
+// the thresholds of throttleScaledSteeringInfluence(), which calcPWM() applies to steering_influence
+// before the mixer (full strength up to 30 % throttle, the setting from 60 %). It still reads no
+// config of its own - the setting and the throttle are passed in.
 #include "../Common/DifferentialMixer.h"
 // V2.5-Evo - 2026-09-19 - the motor rise-limit (the "motor ramp") calcPWM() applies is a pure function
 // in ../Common/OutputRamp.h (host-tested in Tools/tests/output_ramp_test.cpp) so the two-ramp selector
@@ -2168,6 +2173,11 @@ static_assert(offsetof(VescLogDataL4, vesc2_age_ms) == 90, "VESC 2 block must st
 //   103  mix_influence        u8    the steering influence the differential mixer used this tick, %: the boost
 //                                   when calcPWM() honours it (auto-steer with the trigger held), else
 //                                   steering_influence - the same rule calcPWM() applies, from the same inputs
+//                                   [V2.5-Evo - 2026-10-17: now a COPY of g_mix_influence, the value calcPWM()
+//                                   itself handed the mixer on its last pass - the boost, or the throttle-scaled
+//                                   steering_influence (100 up to 30 % throttle, the setting from 60 %). The
+//                                   mirror could not see the throttle term or a stick takeover. Same byte, same
+//                                   offset, same size.]
 //   104  fm_return_override   u8    the remote's 0xF2 auto-return override: 0 none (stored default), 1 OFF, 2 ON
 //   105  fm_flags_sent        u8    telemetry.fm_flags as sent to the remote ([7] effective auto-return, [3] fault
 //                                   sticky, [2] armed-not-ready, [1] engaged, [0] armed)
@@ -3086,6 +3096,21 @@ volatile uint8_t g_motor1_cmd = 0;   // motor 1 command out of the mixer, 0-255;
 // by NOTHING in any control path. Single-byte volatile, atomic on the ESP32-C3. The assist's real
 // state is a uint16_t static inside calcPWM(); this is a lossy copy for the log, never the source.
 volatile uint8_t g_pivot_assist_q4 = 0;   // manual pivot assist depth, 0 = inert, 15 = full
+
+// V2.5-Evo - 2026-10-17 - THROTTLE-SCALED STEERING INFLUENCE observer: the steering influence, %,
+// calcPWM() handed the differential mixer on this pass - the align pivot boost when it applies,
+// otherwise throttleScaledSteeringInfluence(pivot_thr, steering_influence), clamped to 100 as the
+// mixer clamps it. fmPublishLogSnapshot() (RTMState.ino) copies it into the level-5/6 column
+// mix_influence. WHY AN OBSERVER AND NOT THE OLD MIRROR: the log used to recompute calcPWM()'s rule
+// from usrConf.steering_influence, and once the influence depends on the throttle the mixer is given
+// (pivot_thr, which only exists inside calcPWM()) a mirror would have to copy the ramp and the pivot
+// assist as well; the mirror also missed the stick takeover. Publishing the value used means there
+// is one rule, in one place. On steering_type 0 / 2 boards no mixer runs; the value is what the
+// mixer would have been given, as the column always showed.
+// DIAGNOSTIC OBSERVER ONLY - exactly the g_effective_steer / g_motor0_cmd pattern: written on every
+// pass by calcPWM() (generatePWM task, 100 Hz), read by fmPublishLogSnapshot() (loop task, 10 Hz),
+// and read back by NOTHING in any control path. Single-byte volatile, atomic on the ESP32-C3.
+volatile uint8_t g_mix_influence = 0;     // %, the influence the mixer used on calcPWM()'s last pass
 
 // V2.5-Evo - 2026-10-01 - M-2 (diagnosability): THE MOTOR GATE'S OWN VERDICT, published once per
 // calcPWM() pass. 1 = the gate in generatePWM() is OPEN on this tick, so generate_pulse() is being

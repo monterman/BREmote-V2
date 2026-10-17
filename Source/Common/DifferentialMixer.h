@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-17 - audit C-1: kSteerScaleMinSetting (50). Settings 0-50 (the factory default 50 and below;
+//   0 = no motor-split steering) are never scaled and mix exactly as before at every throttle; only settings 51-99
+//   follow the curve described in the line below. Settings 100 and above still return 100. Host-tested.
 // V2.5-Evo - 2026-10-17 - THROTTLE-SCALED STEERING INFLUENCE (owner request, RX1): throttleScaledSteeringInfluence()
 //   and its two compile-time constants kSteerFullPivotThr (77 = 30 %) / kSteerScaleEndThr (153 = 60 %). Below 30 %
 //   throttle the mixer is handed 100 % (the one-motor pivot), from 60 % up the stored steering_influence, linear in
@@ -69,7 +72,7 @@ static inline DifferentialMotorMix mixThrottleRelativeDifferential(
 // settings. steering_influence keeps its meaning above 60 % throttle, which is where it matters for
 // the flips.
 //
-// THE THRESHOLDS, in mixer throttle counts (0-255, the same T the mixer receives):
+// THE THRESHOLDS, in mixer throttle counts (0-255, the same T the mixer receives), for settings 51-99:
 //   kSteerFullPivotThr = 77 = 30 % of 255 (76.5, rounded up). At or below it the influence is 100,
 //     the one-motor pivot. The owner pumps the trigger to about 20 % (51 counts) when he pivots,
 //     so 30 % leaves 10 points of margin for a squeeze that goes a little deeper than he means.
@@ -85,16 +88,24 @@ static inline DifferentialMotorMix mixThrottleRelativeDifferential(
 // keeps motor0 + motor1 <= 2T. At T = 0 the mixer's turn term is 0 whatever the influence, so the
 // stopped state is unchanged.
 //
-// ONE PROPERTY WORTH KNOWING BEFORE CHOOSING A LOW SETTING. Inside the 30-60 % window the influence
-// falls while the throttle rises. For settings of 48 and above (the owner's 80 included) both motor
-// commands still rise or hold as the throttle rises, at every steering byte and both inversions
-// (host-tested for every setting 48-100). Below 48 the faster motor can dip by 1-2 counts on some
-// steps through the window - more of the throttle moves to the slower motor - while the total stays
-// 2T; at very low settings that adds up (setting 0, full lock: 173 at 45 % throttle, 153 at 60 %).
-// That is feel, not power: nothing is added. And a setting of 0 no longer means "no differential
-// steering" below 60 % throttle - a board that must never steer by motor split uses steering_type 0.
-static const uint8_t kSteerFullPivotThr = 77;    // throttle counts; at or below = influence 100 (one-motor pivot)
+// THE FLOOR: SETTINGS 0-50 ARE NEVER SCALED (kSteerScaleMinSetting, audit C-1). The curve is for a
+// board that was at 100 and has been stepped down to soften the high-throttle split while keeping
+// the low-throttle pivot - that is a setting between 51 and 99. A setting of 50 or below is
+// returned as it is at every throttle, so those boards mix exactly as before this change:
+//   - 0 keeps its meaning, no motor-split steering at all. Scaled, it would have pivoted fully
+//     below 30 % throttle, and a stick that does not centre exactly would then turn the buggy.
+//   - 50 is the factory default (steering_type 1 boards ship with it). Scaled, every such board
+//     would have had up to twice the split below 30 % throttle after a flash, and up to twice the
+//     Follow-Me / return-to-me steering gain whenever a cap held the throttle at 30 % or less -
+//     a handling change nobody asked for.
+// With the floor, every scaled setting is at least 51, and for all of them both motor commands rise
+// or hold as the throttle rises, at every steering byte and both inversions (host-tested for every
+// setting 0-100): squeezing harder never takes speed off either motor.
+static const uint8_t kSteerFullPivotThr = 77;    // throttle counts; at or below = influence 100 (one-motor pivot), settings 51-99
 static const uint8_t kSteerScaleEndThr  = 153;   // throttle counts; at or above = the stored steering_influence
+// Settings at or below this are never scaled: 0-50 (the factory default 50; 0 = no motor-split
+// steering) are returned unchanged at every throttle, so those boards mix exactly as before.
+static const uint8_t kSteerScaleMinSetting = 50;   // %, highest setting that is NOT scaled
 
 static_assert(kSteerFullPivotThr < kSteerScaleEndThr,
               "the full-pivot point must sit below the point where the stored setting takes over, or the "
@@ -106,6 +117,8 @@ static_assert(kSteerFullPivotThr < kSteerScaleEndThr,
 //          setting_pct - the stored steering_influence, % (0-100; anything above 100 counts as 100)
 // Outputs: the influence in %, always between the setting and 100 inclusive:
 //            setting >= 100            -> 100 at every throttle (bit-identical to the plain mixer)
+//            setting <= 50             -> the setting at every throttle (bit-identical to the plain mixer)
+//          and for settings 51-99:
 //            throttle <= 77 (30 %)     -> 100 (the one-motor pivot)
 //            throttle >= 153 (60 %)    -> the setting
 //            in between                -> 100 down to the setting in a straight line, rounded to the
@@ -114,6 +127,7 @@ static_assert(kSteerFullPivotThr < kSteerScaleEndThr,
 static inline uint16_t throttleScaledSteeringInfluence(uint8_t throttle, uint16_t setting_pct)
 {
   if (setting_pct >= 100u) return 100u;
+  if (setting_pct <= kSteerScaleMinSetting) return setting_pct;   // audit C-1: 0-50 are never scaled
   if (throttle <= kSteerFullPivotThr) return 100u;
   if (throttle >= kSteerScaleEndThr) return setting_pct;
 

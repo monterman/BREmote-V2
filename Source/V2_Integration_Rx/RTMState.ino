@@ -3272,7 +3272,7 @@ static void fmPublishLogSnapshot()
     // recompute calcPWM()'s rule here (the boost when an autonomous steering override is honoured
     // with the trigger held, else steering_influence). With the throttle-scaled steering influence
     // the rule depends on pivot_thr, the ramped and pivot-assisted throttle that exists only inside
-    // calcPWM(), so a mirror here would be wrong whenever the throttle is below 60 % - and it already
+    // calcPWM(), so a mirror here would be wrong below 60 % throttle on a 51-99 board - and it already
     // missed the stick takeover (it tested auto_owner, calcPWM() tests auto_cmd). It is now a copy of
     // g_mix_influence, the value calcPWM() itself handed the mixer on its last pass (one writer, the
     // PWM task; already clamped to 100). Same byte in the same field, so the record is unchanged.

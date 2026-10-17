@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-17 - audit C-1: kSteerScaleMinSetting (50) asserted; spot checks at 20 % throttle for settings
+//   0 / 50 / 51; settings 0-50 bit-identical to the plain mixer at every throttle; the motor-monotonic loop now covers
+//   every setting 0-100.
 // V2.5-Evo - 2026-10-17 - THROTTLE-SCALED STEERING INFLUENCE: tests for throttleScaledSteeringInfluence() appended at
 //   the end of main() - setting 100 bit-identical to the plain mixer, the anchor points at setting 80, monotonic and
 //   bounded for every setting 0-100, the full-lock pivot at 20 % throttle, the 2T power bound, motor commands that never
@@ -93,6 +96,14 @@ int main()
   // The thresholds are the documented 30 % and 60 % of 255.
   assert(kSteerFullPivotThr == 77);
   assert(kSteerScaleEndThr == 153);
+  // Settings 0-50 (the factory default and below) are never scaled.
+  assert(kSteerScaleMinSetting == 50);
+
+  // At 20 % throttle: 0 stays 0 (no motor-split steering), the default 50 stays 50, and the first
+  // scaled setting, 51, is already full strength.
+  assert(throttleScaledSteeringInfluence(51, 0)  == 0);
+  assert(throttleScaledSteeringInfluence(51, 50) == 50);
+  assert(throttleScaledSteeringInfluence(51, 51) == 100);
 
   // A setting of 100 (and anything above it, which the mixer clamps to 100 anyway) is bit-identical
   // to the plain mixer for every throttle, every steering byte and both inversions.
@@ -127,7 +138,8 @@ int main()
   assert(throttleScaledSteeringInfluence(255, 80) == 80);
 
   // For every setting 0-100: the result is never below the setting, never above 100, never rises as
-  // the throttle rises, is 100 at and below 30 %, and is the setting at and above 60 %.
+  // the throttle rises, and is the setting at and above 60 %. Settings 0-50 are the setting at every
+  // throttle; settings 51-100 are 100 at and below 30 %.
   for (int setting = 0; setting <= 100; ++setting)
   {
     uint16_t prev = 100;
@@ -136,7 +148,8 @@ int main()
       const uint16_t inf = throttleScaledSteeringInfluence((uint8_t)throttle, (uint16_t)setting);
       assert(inf >= setting && inf <= 100);
       assert(inf <= prev);
-      if (throttle <= kSteerFullPivotThr) assert(inf == 100);
+      if (setting <= kSteerScaleMinSetting) assert(inf == setting);
+      else if (throttle <= kSteerFullPivotThr) assert(inf == 100);
       if (throttle >= kSteerScaleEndThr)  assert(inf == setting);
       prev = inf;
     }
@@ -157,14 +170,16 @@ int main()
     assert(rightInv.motor0 == 102 && rightInv.motor1 == 0);
   }
 
-  // At and above 60 % the setting applies exactly as it did before this change, and at and below
-  // 30 % every setting mixes exactly like 100.
+  // Settings 0-50 mix exactly like the plain mixer at the setting at EVERY throttle (no window is
+  // skipped for them). For settings 51-100, at and above 60 % the setting applies exactly as it did
+  // before this change, and at and below 30 % they mix exactly like 100.
   for (int setting = 0; setting <= 100; ++setting)
   {
     for (int throttle = 0; throttle <= 255; ++throttle)
     {
-      if (throttle > kSteerFullPivotThr && throttle < kSteerScaleEndThr) continue;
-      const uint16_t expect = (throttle <= kSteerFullPivotThr) ? 100 : (uint16_t)setting;
+      if (setting > kSteerScaleMinSetting && throttle > kSteerFullPivotThr && throttle < kSteerScaleEndThr) continue;
+      const uint16_t expect = (setting <= kSteerScaleMinSetting || throttle >= kSteerScaleEndThr)
+                              ? (uint16_t)setting : (uint16_t)100;
       for (int steering = 0; steering <= 255; ++steering)
       {
         DifferentialMotorMix scaled = mixScaled((uint8_t)throttle, (uint8_t)steering, (uint16_t)setting, false);
@@ -192,10 +207,10 @@ int main()
     }
   }
 
-  // Squeezing harder never lowers either motor for settings 48-100 (the owner's 80 included), at
-  // every steering byte and both inversions. Below 48 the faster motor can dip slightly inside the
-  // 30-60 % window; that limit is documented beside the constants.
-  for (int setting = 48; setting <= 100; ++setting)
+  // Squeezing harder never lowers either motor, for every setting 0-100 (the owner's 80 included),
+  // at every steering byte and both inversions. The 0-50 floor is what makes this hold everywhere:
+  // without it, settings below 48 let the faster motor dip inside the 30-60 % window.
+  for (int setting = 0; setting <= 100; ++setting)
   {
     for (int steering = 0; steering <= 255; ++steering)
     {

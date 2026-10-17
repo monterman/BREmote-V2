@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-17 - audit C-1 / C-3, COMMENTS ONLY in this file: the throttle-scaled curve applies to settings 51-99 only (0-50 and 100 are unscaled, kSteerScaleMinSetting in Common/DifferentialMixer.h) - the include note, the mix_influence column note and the g_mix_influence declaration say so; the stale g_motor0_cmd bench check is restated for the new rule. No code change, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-17 - THROTTLE-SCALED STEERING INFLUENCE (owner request, RX1): adds the diagnostic observer g_mix_influence (the steering influence calcPWM() handed the mixer this pass, written by the PWM task, read by fmPublishLogSnapshot() for the level-5/6 mix_influence column, which used to mirror calcPWM()'s rule and had no throttle term); the DifferentialMixer.h include note and the mix_influence column description follow it. Record layout and size unchanged (log format 5, level-6 record 174 B). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-15 - LOG FORMAT 5 (owner-approved for RX1, diagnostic only): VescLogDataL6Compass (174 B) = the 170 B level-6 record + compass_diag_dx10 / compass_diag_norm, a log-only compass reading taken under throttle (Logger.ino fillCompassDiag(), Compass.ino compassDiagRead()); LOG_REC_MAX and logRecordSizeForLevel(6) follow it; LOG_FILE_FORMAT_VER 4 -> 5 (MIN_READ stays 3, so formats 3, 4 and 5 all download); LOG_CSV_HEADER_L6_COMPASS + LOG_CSV_ROW_EXT_L6_COMPASS; logCsvHeaderFor() / logFormatCsvRow() print the two columns only for a 174 B record, so 170 B level-6 files keep their 98 columns. VescLogDataL6 itself is unchanged (170 B). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-14 - RESET REASON + BOOT COUNTER (owner-approved for RX1): includes ../Common/ResetReason.h and <Preferences.h>; g_boot_count / g_reset_reason and the bootInfoInit() prototype (Init.ino). LOG FORMAT 4: LOG_FILE_FORMAT_VER 3 -> 4 (the header changed: an 8-byte LogFileBootInfo follows LogFileHeader, static_assert 8; records byte-identical to format 3), LOG_FILE_FORMAT_MIN_READ 3, logReadFileHeader() (shared by ?download and the WiFi download; formats 3 and 4 decode) and logBootMarker() (the one CSV line after the column header). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -123,10 +124,11 @@
 // (turn term proportional to effective_thr), so steering can no longer add motor power past the
 // RTM/FM throttle caps or create any motor command at zero gas. Header adopted verbatim; it defines
 // no constants and reads no config of its own — influence and inversion are passed in from usrConf.
-// V2.5-Evo - 2026-10-17 - it now defines two: kSteerFullPivotThr (77) and kSteerScaleEndThr (153),
+// V2.5-Evo - 2026-10-17 - it now defines three: kSteerFullPivotThr (77) and kSteerScaleEndThr (153),
 // the thresholds of throttleScaledSteeringInfluence(), which calcPWM() applies to steering_influence
-// before the mixer (full strength up to 30 % throttle, the setting from 60 %). It still reads no
-// config of its own - the setting and the throttle are passed in.
+// before the mixer (for settings 51-99: full strength up to 30 % throttle, the setting from 60 %),
+// and kSteerScaleMinSetting (50): settings 0-50 and 100 are never scaled. It still reads no config
+// of its own - the setting and the throttle are passed in.
 #include "../Common/DifferentialMixer.h"
 // V2.5-Evo - 2026-09-19 - the motor rise-limit (the "motor ramp") calcPWM() applies is a pure function
 // in ../Common/OutputRamp.h (host-tested in Tools/tests/output_ramp_test.cpp) so the two-ramp selector
@@ -2175,9 +2177,9 @@ static_assert(offsetof(VescLogDataL4, vesc2_age_ms) == 90, "VESC 2 block must st
 //                                   steering_influence - the same rule calcPWM() applies, from the same inputs
 //                                   [V2.5-Evo - 2026-10-17: now a COPY of g_mix_influence, the value calcPWM()
 //                                   itself handed the mixer on its last pass - the boost, or the throttle-scaled
-//                                   steering_influence (100 up to 30 % throttle, the setting from 60 %). The
-//                                   mirror could not see the throttle term or a stick takeover. Same byte, same
-//                                   offset, same size.]
+//                                   steering_influence (for settings 51-99: 100 up to 30 % throttle, the setting
+//                                   from 60 %; settings 0-50 and 100 unscaled). The mirror could not see the
+//                                   throttle term or a stick takeover. Same byte, same offset, same size.]
 //   104  fm_return_override   u8    the remote's 0xF2 auto-return override: 0 none (stored default), 1 OFF, 2 ON
 //   105  fm_flags_sent        u8    telemetry.fm_flags as sent to the remote ([7] effective auto-return, [3] fault
 //                                   sticky, [2] armed-not-ready, [1] engaged, [0] armed)
@@ -3069,7 +3071,9 @@ volatile uint8_t g_effective_steer = 127;
 // servo branches, which have no mixer. DIAGNOSTIC OBSERVERS ONLY - the g_effective_steer pattern
 // exactly: written by calcPWM() (generatePWM task, 100 Hz), read by fillLevel4Diag() (loggerTask),
 // never read back into any control path. Single-byte volatiles, atomic on the ESP32-C3. A bench
-// check: full-lock squeeze at 30 % throttle (76/255) with steering_influence 60 -> turn = 46 -> 30 / 122.
+// check (V2.5-Evo - 2026-10-17, restated for the throttle-scaled influence): full-lock squeeze at
+// 30 % throttle (76/255): steering_influence 50 (default, never scaled) -> turn = 38 -> 38 / 114;
+// any setting 51-100 is 100 % at this throttle -> turn = 76 -> 0 / 152.
 // V2.5-Evo - 2026-09-24 - the ramp is deliberately NO LONGER in that list of things these observers
 // are independent of. motor_ramp_s used to rate-limit the finished microsecond values, downstream of
 // every observer, so it was invisible in every log column; it now rate-limits the throttle BEFORE the
@@ -3099,8 +3103,9 @@ volatile uint8_t g_pivot_assist_q4 = 0;   // manual pivot assist depth, 0 = iner
 
 // V2.5-Evo - 2026-10-17 - THROTTLE-SCALED STEERING INFLUENCE observer: the steering influence, %,
 // calcPWM() handed the differential mixer on this pass - the align pivot boost when it applies,
-// otherwise throttleScaledSteeringInfluence(pivot_thr, steering_influence), clamped to 100 as the
-// mixer clamps it. fmPublishLogSnapshot() (RTMState.ino) copies it into the level-5/6 column
+// otherwise throttleScaledSteeringInfluence(pivot_thr, steering_influence) (scaled with the throttle
+// for settings 51-99; settings 0-50 and 100 pass through unscaled), clamped to 100 as the mixer
+// clamps it. fmPublishLogSnapshot() (RTMState.ino) copies it into the level-5/6 column
 // mix_influence. WHY AN OBSERVER AND NOT THE OLD MIRROR: the log used to recompute calcPWM()'s rule
 // from usrConf.steering_influence, and once the influence depends on the throttle the mixer is given
 // (pivot_thr, which only exists inside calcPWM()) a mirror would have to copy the ramp and the pivot

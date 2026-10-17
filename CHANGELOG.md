@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-10-17 — RX: steering settings 51-99 keep a full one-motor pivot at low throttle
+
+**No config wipe.** `sizeof(confStruct)` stays 200 and `SW_VERSION` stays 36.
+
+`steering_influence` used to be one fixed share of the throttle at every throttle. At 100 the inside
+motor stops at full lock however hard you squeeze: the quick pivot you want at low throttle, and also
+the split that can roll the buggy at speed. Lowering the setting softened both alike.
+
+- **Settings 51-99 now follow the throttle.** Full strength (the inside motor stops, so the buggy
+  pivots) at 30 % motor throttle and below, your setting from 60 % up, a straight blend between.
+  With 80: 100 % up to 30 %, 90 % at 45 %, 80 % from 60 %.
+- **Settings 0-50 and 100 are unchanged** at every throttle. 0 still means no motor steering, and the
+  factory default 50 behaves exactly as before.
+- **"Throttle" here is what reaches the motors**, after the soft start (`motor_ramp_s`) and any
+  Follow-Me or return limit. On a 51-99 board a squeeze from rest therefore starts at full steering
+  strength, and Follow-Me / return-to-me steering is full strength while its limit holds the throttle
+  at 30 % or less (the align turn keeps its own `fm_align_influence`, as before).
+- **Steering still cannot add power.** It only moves throttle from one motor to the other.
+- **In the log** (levels 5 and 6), `mix_influence` now shows the value the mixer actually used. On a
+  51-99 board it reads 100 whenever the motor throttle is 30 % or less. Same column, same place in the
+  record: log format stays 5, and logs already on the board still download.
+- The WiFi page and the config tool explain the new rule under Steering Influence.
+
 ## 2026-10-08 — RX: log level 6 records VESC 2's IMU (roll, pitch, yaw, gyro, acceleration)
 
 **No config wipe.** `sizeof(confStruct)` stays 200 and `SW_VERSION` stays 36. Log format stays 3, so logs

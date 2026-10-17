@@ -1,8 +1,9 @@
 // V2.5-Evo - 2026-10-17 - THROTTLE-SCALED STEERING INFLUENCE (owner request, RX1): calcPWM() hands the mixer
 //   throttleScaledSteeringInfluence(pivot_thr, steering_influence) (Common/DifferentialMixer.h) instead of the plain
-//   setting - 100 % up to 30 % throttle (one-motor pivot), the setting from 60 %, linear between; a setting of 100 is
-//   bit-identical to before. The align pivot boost still replaces it afterwards, unchanged. The influence used is
-//   published to the new log observer g_mix_influence. Only steering_type 1 mixes with it; efoil and servo untouched.
+//   setting - for settings 51-99: 100 % up to 30 % throttle (one-motor pivot), the setting from 60 %, linear between;
+//   settings 0-50 and 100 are bit-identical to before (audit C-1 floor). The align pivot boost still replaces it
+//   afterwards, unchanged. The influence used is published to the new log observer g_mix_influence. Only
+//   steering_type 1 mixes with it; efoil and servo untouched.
 //   No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-08 - audit F-1: the sticky cap clears on the trigger alone (it did not clear at cap 255).
 // V2.5-Evo - 2026-10-08 - STICKY RETURN CAP (owner design): calcPWM() applies sticky_cap after the arrival hand-back cap
@@ -743,12 +744,14 @@ void calcPWM()
   // CONTROLLER's command only.
   // V2.5-Evo - 2026-10-17 - THROTTLE-SCALED STEERING INFLUENCE. The starting value is no longer the
   // plain setting: it is throttleScaledSteeringInfluence() (Common/DifferentialMixer.h, host-tested)
-  // of the SAME throttle the mixer is given below, pivot_thr. Up to 30 % throttle that is 100 %, the
-  // one-motor pivot the owner uses at low throttle; from 60 % it is usrConf.steering_influence, the
-  // softer split he chose against the high-throttle flips; a straight line in between. It is never
-  // below the setting and never above 100, and the mixer keeps motor0 + motor1 <= 2T, so this can
-  // only change how the permitted throttle is SHARED, never add any. A setting of 100 returns 100 at
-  // every throttle: such a board is bit-identical to before. The boost below still REPLACES the
+  // of the SAME throttle the mixer is given below, pivot_thr. For settings 51-99: up to 30 % throttle
+  // that is 100 %, the one-motor pivot the owner uses at low throttle; from 60 % it is
+  // usrConf.steering_influence, the softer split he chose against the high-throttle flips; a
+  // straight line in between. It is never below the setting and never above 100, and the mixer
+  // keeps motor0 + motor1 <= 2T, so this can only change how the permitted throttle is SHARED, never
+  // add any. Settings 0-50 (the factory default 50; 0 = no motor-split steering) and 100 are
+  // returned unscaled at every throttle (audit C-1): such a board is bit-identical to before. The
+  // boost below still REPLACES the
   // value when it applies, exactly as before - the align phases are not touched. "A takeover mixes
   // at steering_influence" above now reads "at the throttle-scaled steering_influence", the same
   // rule as manual driving, so the manual feel and the takeover feel stay one and the same.

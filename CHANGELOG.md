@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-10-17 — RX: the heading-fault note is written once per change, with the trigger released
+
+**No config wipe.** `sizeof(confStruct)` stays 200 and `SW_VERSION` stays 36.
+
+When the compass and the GPS course disagree for 5 s while coasting, the RX stops using the compass
+and keeps a small note in its storage (`/hdg_fault`) so that verdict survives a power cycle. That note
+was rewritten on every heading check (10 or more times a second) for as long as the two kept
+disagreeing, instead of once. One ride made 2,205 rewrites. The storage (SPIFFS) had to keep cleaning
+up after itself: that erased a deleted ride log which could otherwise have been recovered, and every
+clean-up held up the control loop (and, during each flash erase, the whole chip).
+
+- **The note is now written once per change**: once when the compass is withdrawn, and once when it
+  comes back (5 s of the two agreeing, or a full `?compasscal` / `?magalign`). While the verdict
+  stands, nothing more is written, also after a reboot that restored it.
+- **It is written with the trigger released**, at the end of the control tick, never in the middle of
+  the safety checks. A verdict reached in the first second of a squeeze is stored at the next release.
+- **Nothing is looked up while the two sources agree.** The RX used to check for the note on every
+  heading check once they had agreed for 5 s, even when there was no note.
+- **If the storage cannot be written**, the warning prints once and the RX tries again every 5 s with
+  the trigger released. The compass stays withdrawn either way.
+- **Unchanged**: when the compass is withdrawn or comes back, what Return-to-Me and Follow-Me do
+  without it, the boot messages, and the note's name and contents.
+
 ## 2026-10-17 — RX: steering settings 51-99 keep a full one-motor pivot at low throttle
 
 **No config wipe.** `sizeof(confStruct)` stays 200 and `SW_VERSION` stays 36.

@@ -1,3 +1,13 @@
+// V2.5-Evo - 2026-10-17 - HEADING LATCH WRITTEN ONCE PER CHANGE, WITH THE TRIGGER RELEASED (audit F1-F5). THE BUG:
+//   getRtmHeading() rewrote /hdg_fault on EVERY disagreeing heading call once the 5 s dwell was complete (the set site
+//   tested the dwell, not whether the latch was already set), about 10-30 times a second, and looked the file up on
+//   every agreeing call after 5 s of agreement, latched or not. The churn ran SPIFFS garbage collection over and over,
+//   which erased a deleted ride log and stalled the loop task inside the control tick, with whole-CPU freezes during each
+//   flash erase. THE FIX: the three latch writers go through hdgLatchSet() (Common/HeadingLatchPersist.h), which only
+//   requests a store when the value really changes; headingDisagreePersistService() applies the request once, at the end
+//   of runFmLoop() and only with thr_received < 25, retrying a failure every 5 s with one WARNING; a restored latch never
+//   rewrites. getRtmHeading() does no SPIFFS I/O. The RAM latch, the dwell rules, the D-3 edge, LATCH-2 and the file's
+//   name and text are unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-17 - THROTTLE-SCALED STEERING INFLUENCE (log only in this file): fmPublishLogSnapshot() copies the
 //   level-5/6 mix_influence column from g_mix_influence (published by calcPWM()) instead of mirroring calcPWM()'s rule,
 //   which had no throttle term and missed the stick takeover. No control path in this file changes. Record layout and
@@ -712,7 +722,11 @@ static bool checkRtmSafetyGates()
 //   rider's stored settings are exactly as they left them) and it is runtime state that dies with
 //   the power cycle. [V2.5-Evo - 2026-10-13 - STALE: since LATCH-1 (2026-08-18) the verdict is
 //   stored in SPIFFS and survives a reboot (headingDisagreeRestore()), and since D-3 (2026-10-11)
-//   Follow-Me does not decline - see the third item below.] Concretely, while the flag stands:
+//   Follow-Me does not decline - see the third item below.] [V2.5-Evo - 2026-10-17 - STALE: "nothing
+//   touches SPIFFS" is wrong as well. The latch's own marker file /hdg_fault lives in SPIFFS (LATCH-1);
+//   since 2026-10-17 it is written or removed once per latch change by headingDisagreePersistService(),
+//   with the trigger released, and never from getRtmHeading(). The rider's settings are still untouched.]
+//   Concretely, while the flag stands:
 //     - getRtmHeading() withdraws the COMPASS and nothing else. Above rtm_cog_min_speed_kmh the
 //       live GPS course is served unchanged at confidence 3, and the kCogHoldMs held-COG bridge is
 //       still served at confidence 2 across a short dropout. V2.5-Evo - 2026-08-17: the hold used
@@ -920,23 +934,116 @@ static bool headingDisagreeLatched()
 //
 // FAIL-SAFE DIRECTION: a SPIFFS write that fails leaves the fault set in RAM for this session,
 // which is the conservative outcome. It is never treated as a clear.
+// (V2.5-Evo - 2026-10-17: unchanged. A failed write still leaves the RAM latch set; the service
+// below now retries it every kHdgPersistRetryMs while the trigger is released.)
+//
+// V2.5-Evo - 2026-10-17 - WRITTEN ONCE PER CHANGE, WITH THE TRIGGER RELEASED (audit F1-F5).
+// THE BUG. The set site in getRtmHeading() tested the 5 s dwell, not whether the latch was already
+// set, so once the dwell was complete EVERY later disagreeing heading call rewrote this file (open,
+// print, close). getRtmHeading() runs 1-3 times per 10 Hz tick (the fm_status telemetry call, RTM
+// steering, Follow-Me's condition mask), so that was about 10-30 rewrites a second for as long as
+// the two sources kept disagreeing, and a latch restored at boot did the same after a fresh dwell.
+// The clear site likewise looked the file up by name (SPIFFS.exists()) on every agreeing call
+// after 5 s of agreement, latched or not - the normal state of a healthy hybrid buggy coasting.
+// WHY IT FAILED. Each rewrite leaves deleted pages behind, so SPIFFS garbage collection ran over
+// and over: one ride made 2,205 rewrites (about 1.7 MB, roughly 90 % of the partition) and the
+// collection erased the blocks still holding a deleted ride log, which could not be recovered.
+// Every call also stalled the loop task, which runs the RTM gates, the Follow-Me caps and ends and
+// the steering override, and on this single-core chip every flash erase freezes the WHOLE CPU, the
+// motor task included - all of it inside the control tick, with no trigger test.
+// WHAT THE FIX DOES.
+//   - REQUEST ON THE TRANSITION. The three latch writers (the set and the clear in getRtmHeading(),
+//     and headingDisagreeClearAfterCal()) go through hdgLatchSet() (Common/HeadingLatchPersist.h),
+//     which changes the latch and records a request in hdg_persist ONLY when the value really
+//     changes. A standing verdict never asks again, and getRtmHeading() does no SPIFFS I/O at all.
+//   - APPLY LATER, ONCE. headingDisagreePersistService() writes or removes the file. It runs once per
+//     10 Hz tick at the end of runFmLoop(), after both control loops have made that tick's writes,
+//     and ONLY while thr_received < 25. That is the F7 rule the Serial notices already follow,
+//     applied more strongly here: a garbage-collection erase blocks far longer than a UART drain and
+//     freezes the motor task with it, so with the trigger released any freeze this file causes can
+//     only hold a zero-throttle command.
+//   - BOUNDED RETRY. A failed write or remove is retried no sooner than kHdgPersistRetryMs (5 s)
+//     later, and its WARNING prints once per request instead of on every call.
+//   - A RESTORED LATCH NEVER REWRITES: headingDisagreeRestore() marks the request as already matching
+//     the file it just found.
+//   - THE ONE TIMING CHANGE, STATED PLAINLY: a latch that rises in the first second of a squeeze (the
+//     comparison can still read the compass reading taken just before it) is stored at the next
+//     release instead of at once. A power cut while still on the trigger after such a rise loses the
+//     stored verdict; it re-proves itself after 5 s of coasting next session - the evidence is cheap
+//     to regather, as LATCH-2 below argues. The RAM latch, which every consumer reads, still changes
+//     on the same tick as before, so nothing that steers, caps or ends a mode sees any difference.
 #define HDG_FAULT_FILE "/hdg_fault"
 
-static void headingDisagreePersist(bool latched)
+// V2.5-Evo - 2026-10-17 - the pending store / remove of the file above (Common/HeadingLatchPersist.h).
+// want = what the file should say (true = it should exist), dirty = a write or remove is still owed,
+// fail_ms = millis() of the last failed attempt (0 = none). Loop task only, so single-writer:
+// hdgLatchSet() at the three latch writers, headingDisagreeRestore() and
+// headingDisagreePersistService().
+static HdgPersist hdg_persist = { false, false, 0 };
+// V2.5-Evo - 2026-10-17 - ms between retries of a failed /hdg_fault write or remove (5 s). Compile-time
+// constant like every other k* in this file: no confStruct field, no SPIFFS slot, no web-UI row, no
+// SW_VERSION bump.
+static const uint32_t kHdgPersistRetryMs = 5000UL;
+
+// ------------------------------------------------------------
+// headingDisagreePersist - make the marker file match the given latch value
+// ------------------------------------------------------------
+// V2.5-Evo - 2026-10-17 - now returns whether it worked and prints nothing (it used to print its
+// WARNING on every failing call, 10-30 times a second from inside the control tick). Inputs:
+// latched - true = the file should exist (it is rewritten with the uptime), false = it should not.
+// Returns: true when the file now matches. Side effects: SPIFFS I/O only - a lookup by name, a write
+// or a remove, any of which can run garbage collection. Called ONLY from
+// headingDisagreePersistService() below, which decides when, prints the warning and paces the retry;
+// never from the control path. File name and file text are unchanged.
+static bool headingDisagreePersist(bool latched)
 {
   if (latched) {
     File f = SPIFFS.open(HDG_FAULT_FILE, FILE_WRITE);
-    if (!f) {
-      // Not fatal and deliberately not escalated: the fault still stands for THIS session, which
-      // is the safe direction. Only the survival across a reboot is lost.
-      Serial.println("HEADING [RX] WARNING: could not persist the disagreement latch to SPIFFS. "
-                     "It still applies now, but will not survive a reboot.");
-      return;
-    }
+    if (!f) return false;   // the service reports it once and retries; the RAM latch still stands
     f.printf("heading_disagree_fault at %lu ms uptime\n", (unsigned long)millis());
     f.close();
-  } else {
-    if (SPIFFS.exists(HDG_FAULT_FILE)) SPIFFS.remove(HDG_FAULT_FILE);
+    return true;
+  }
+  if (!SPIFFS.exists(HDG_FAULT_FILE)) return true;
+  return SPIFFS.remove(HDG_FAULT_FILE);
+}
+
+// ------------------------------------------------------------
+// headingDisagreePersistService - store a latch change, once, with the trigger released
+// ------------------------------------------------------------
+// V2.5-Evo - 2026-10-17 - new (audit F1, F3, F4). Inputs: now - this tick's millis(). Outputs: none.
+// Side effects: when a request is due (hdgPersistDue(): one is pending, thr_received < 25, and no
+// failed attempt in the last kHdgPersistRetryMs), ONE headingDisagreePersist() call - SPIFFS I/O -
+// with the result recorded in hdg_persist; on the FIRST failure of a request, one WARNING line.
+// When nothing is due it touches nothing. It writes no control variable: not a cap, not a gate, not
+// the override, not usrConf, and not the latch itself.
+// WHERE IT RUNS. Once per 10 Hz tick, at the end of runFmLoop(), after both control loops have made
+// that tick's writes - never inside getRtmHeading(). Loop task, like every latch writer.
+// WHY thr_received < 25: the same rule headingDisagreeAnnounceDegraded() uses (F7). A write here can
+// run garbage collection, and a flash erase freezes the whole CPU, the motor task included; with the
+// trigger released such a freeze can only hold a zero-throttle command. A request made while the
+// trigger is held simply waits for the release.
+static void headingDisagreePersistService(unsigned long now)
+{
+  if (!hdgPersistDue(&hdg_persist, (uint32_t)now, thr_received < 25, kHdgPersistRetryMs)) return;
+
+  const bool first = (hdg_persist.fail_ms == 0);
+  const bool ok    = headingDisagreePersist(hdg_persist.want);
+  hdgPersistResult(&hdg_persist, (uint32_t)now, ok);
+
+  if (!ok && first) {
+    // Not fatal and deliberately not escalated: the RAM latch is what every consumer reads, so it
+    // already applies now, which is the safe direction. Only the stored copy is behind. Printed
+    // once per request (the trigger is released here, so F7 holds); the retries are silent.
+    if (hdg_persist.want) {
+      Serial.printf("HEADING [RX] WARNING: could not persist the disagreement latch to SPIFFS. "
+                    "It still applies now, but will not survive a reboot. Retrying every %lu s.\n",
+                    (unsigned long)(kHdgPersistRetryMs / 1000UL));
+    } else {
+      Serial.printf("HEADING [RX] WARNING: could not remove the stored disagreement latch from SPIFFS. "
+                    "The latch is cleared now, but a reboot may restore it. Retrying every %lu s.\n",
+                    (unsigned long)(kHdgPersistRetryMs / 1000UL));
+    }
   }
 }
 
@@ -987,6 +1094,12 @@ static void headingDisagreeRestore()
   }
 
   heading_disagree_fault = true;
+  // V2.5-Evo - 2026-10-17 - the stored copy already says "latched" (that is why we are here), so the
+  // request records want = true and leaves dirty false: nothing is owed. THE BUG this closes: a
+  // restored latch used to rewrite the file on every disagreeing heading call once a fresh 5 s dwell
+  // completed. Now the set site's hdgLatchSet() sees the latch already true and requests nothing, so a
+  // restored latch never rewrites.
+  hdg_persist.want = true;
   // heading_degrade_announced is deliberately left false, so the standing degradation notice is
   // printed once on this boot too. A rider who power-cycled needs telling again, not silence.
 
@@ -1089,8 +1202,12 @@ static void headingDisagreeClearAfterCal(const char *what)
 
   heading_disagree_since_ms     = 0;
   heading_disagree_last_seen_ms = 0;
-  heading_disagree_fault        = false;
-  headingDisagreePersist(false);         // LATCH-1: the stored verdict goes with it
+  // V2.5-Evo - 2026-10-17 - LATCH-1: the stored verdict goes with it, but as a REQUEST. This used to
+  // remove the file right here (with a lookup by name first); now hdgLatchSet() clears the latch and,
+  // only if it was set, asks headingDisagreePersistService() to remove the file at the next released-
+  // trigger tick. The request replaces any set still waiting, so a cal can never leave a stale file
+  // behind.
+  hdgLatchSet(&heading_disagree_fault, &hdg_persist, false);
   heading_degrade_announced     = false;
   // V2.5-Evo - 2026-08-17 - the agreement dwell goes with them. It is bookkeeping toward a clear
   // that has just happened by another route, so carrying it forward would describe a measurement
@@ -1230,6 +1347,13 @@ unsigned long        cog_last_good_ms  = 0;
 //         measures the agreement dwell for clear route 1, plus the heading_degrade_announced
 //         notification flag it sets through headingDisagreeAnnounceDegraded() — and the
 //         cog_last_good_deg / cog_last_good_ms pair used by the COG hold. All of it is single-writer from the loop task.
+//         V2.5-Evo - 2026-10-17 - AND IT DOES NO SPIFFS I/O. The list above was already wrong once
+//         LATCH-1 (2026-08-18) put the /hdg_fault write and remove in here: the set rewrote the file on
+//         every disagreeing call after the dwell and the clear looked it up on every agreeing call, at
+//         1-3 calls per 10 Hz tick, which is how flash I/O hid in the heading call. Now a latch
+//         TRANSITION only records a request in hdg_persist (RAM, through hdgLatchSet()), and
+//         headingDisagreePersistService() does the file work at the end of runFmLoop() with the trigger
+//         released. See the LATCH-1 block.
 //         Caller (updateRtmSteering) must handle confidence=0 as a hold-straight
 //         scenario, not as a steering command.
 static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
@@ -1488,8 +1612,18 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
       // Restarting a dwell can only ever DELAY a fault, never create one.
       heading_disagree_since_ms = now;
     } else if ((now - heading_disagree_since_ms) >= (unsigned long)kHeadingDisagreeMs) {
-      heading_disagree_fault = true;
-      headingDisagreePersist(true);       // LATCH-1: survive a power cycle
+      // V2.5-Evo - 2026-10-17 - THE REWRITE LOOP (audit F1, F3). THE BUG: this branch tests the dwell,
+      // not whether the latch is already set, so once the 5 s were complete EVERY later disagreeing
+      // call landed here and rewrote /hdg_fault through headingDisagreePersist(true) - about 10-30
+      // times a second, for as long as the disagreement lasted, and a restored latch did the same.
+      // WHY IT FAILED: the rewrites churned SPIFFS garbage collection (a deleted ride log was erased,
+      // the loop task stalled, every flash erase froze the whole CPU), all of it here, inside the
+      // control tick and ahead of the RTM gates and the Follow-Me end that the rise itself causes.
+      // THE FIX: hdgLatchSet() sets the latch and requests ONE store only on the false -> true
+      // transition (a no-op while it already stands), and headingDisagreePersistService() writes the
+      // file after the tick's control writes, with the trigger released. The latch value, and the
+      // tick it changes on, are exactly as before, so the D-3 edge sampling sees the same rise.
+      hdgLatchSet(&heading_disagree_fault, &hdg_persist, true);
       headingDisagreeAnnounceDegraded();   // one line, once per fault, on the transition only
     }
     // Stamped AFTER the continuity test above, which reads the PREVIOUS measurement's time.
@@ -1531,6 +1665,15 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
     heading_disagree_last_seen_ms = 0;
 
     if ((now - heading_agree_since_ms) >= (unsigned long)kHeadingDisagreeMs) {
+      // V2.5-Evo - 2026-10-17 - THE PER-CALL LOOKUP (audit F2). THE BUG: everything below the print
+      // used to run on EVERY agreeing call once agreement had held 5 s, latched or not - including
+      // headingDisagreePersist(false), whose SPIFFS.exists() is a lookup by name through the file
+      // system (an estimated 5-15 ms, waiting behind any logger write and its garbage collection),
+      // 10-30 times a second on every healthy hybrid buggy coasting at 1.9 mph or more. THE FIX: the
+      // whole body sits under the latch test, so it runs once, on the true -> false transition, and
+      // hdgLatchSet() only REQUESTS the remove (headingDisagreePersistService() does it later, with the
+      // trigger released). No agreeing tick makes a SPIFFS call. Moving the heading_degrade_announced
+      // reset inside the test changes nothing: that flag is only ever set while the latch stands.
       if (heading_disagree_fault) {
         // Transition only — the flag below re-arms the notice, so this cannot repeat while the
         // sources keep agreeing. Safe to print here under the F7 rule: this branch only ever
@@ -1540,10 +1683,9 @@ static bool getRtmHeading(float* out_heading, uint8_t* out_confidence)
         // (2026-10-11) the latch never stopped Follow-Me engaging - what comes back is the compass.
         Serial.printf("HEADING [RX] COMPASS RESTORED: compass and GPS course measured agreeing continuously for %lu ms — the disagreement latch is cleared and the compass is back in use.\n",
                       (unsigned long)kHeadingDisagreeMs);
+        hdgLatchSet(&heading_disagree_fault, &hdg_persist, false);   // LATCH-1: the stored verdict goes with it, as a request
+        heading_degrade_announced = false;   // re-arm the notice if it ever latches again
       }
-      heading_disagree_fault    = false;
-      headingDisagreePersist(false);       // LATCH-1: the stored verdict goes with it
-      heading_degrade_announced = false;   // re-arm the notice if it ever latches again
     }
   } else {
     // No comparison possible this tick. Restart the dwell rather than carry a half-finished proof
@@ -6812,6 +6954,12 @@ void runFmLoop()
   // has no such ordering constraint - deep-log bit 16 is set straight into fm_log_gate_flags inside
   // the body, not derived from the atomic - so it runs here, once per tick, as the side branch had it.
   publishSteerTakeover();          // V2.5-Evo - 2026-09-19 - once per tick, RTM > FM, after every exit of the body
+
+  // V2.5-Evo - 2026-10-17 - THE HEADING LATCH'S STORED COPY (audit F1, F3): any pending /hdg_fault write
+  // or remove is made HERE, last, after both control loops have made this tick's writes, and only with the
+  // trigger released (checked inside). It used to be made inside getRtmHeading(), ahead of the RTM gates
+  // and the Follow-Me ends. See the LATCH-1 block.
+  headingDisagreePersistService(millis());
 }
 
 static void runFmLoopBody(unsigned long now)

@@ -6,13 +6,17 @@ For the nightly, use `../latest-FM-stations/`. For stable firmware, use the `mas
 | | |
 |---|---|
 | Firmware | RX SW36 (V2.5-Evo), `fm-bundle` branch |
-| Built from commit | `2fca870` |
+| Built from commit | `ba0fa2a` |
 | Board / FQBN | HT-CT62 (ESP32-C3) — `esp32:esp32:esp32c3:CDCOnBoot=default,PartitionScheme=custom` (uses the sketch's own `partitions.csv`; never `huge_app`) |
-| File | `BREmote-RX-SW36-fm-bundle-2fca870.bin` (app image, `0x10000`) |
-| SHA-256 | `352d8dfcf57c57cf5958a1b1f94d158ca3dddf5d5b03ecf2c805d4caf2e6c00d` |
+| File | `BREmote-RX-SW36-fm-bundle-ba0fa2a.bin` (app image, `0x10000`) |
+| SHA-256 | `d0769c2560cb00a415d90f871168fa9bf1c0c07a89b1073224924fcd1d97c410` |
 
 ## What is new compared with the nightly (61ec981)
 
+- **Heading-fault note (fix):** the receiver used to rewrite its compass-disagreement note on every tick while
+  the compass and the GPS course disagreed, about 10 times a second while moving. That churned the log storage
+  (it can erase deleted logs) and briefly stalled the control loop. Now the note is written once per change,
+  with the trigger released. See `CHANGELOG.md`.
 - **Steering:** `steering_influence` 51-99 now gives a full-strength pivot below 30 % motor throttle (the inside
   motor stops). From 60 % up, the turn uses the stored value, and between 30 % and 60 % it blends.
   Settings 0-50 and 100 behave as before. No settings wipe. See `CHANGELOG.md`.

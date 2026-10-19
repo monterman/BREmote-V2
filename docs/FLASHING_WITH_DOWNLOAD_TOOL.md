@@ -131,9 +131,15 @@ boot the new firmware.
 >
 > These are **app-only** images. At `0x10000` the flash leaves the partition table and SPIFFS alone.
 >
-> **Never flash at `0x0`**, and ignore any reference to a `.merged.bin` — merged images are
-> deliberately not published here. A full-chip write at `0x0` **erases your SPIFFS**: pairing,
-> compass calibration and every setting, gone.
+> **Never flash at `0x0`** on a board that already runs V2.5-Evo. A full-chip write at `0x0`
+> **erases your SPIFFS**: pairing, compass calibration and every setting, gone.
+>
+> **The one exception is a first install** (coming from Ludwig's firmware, another fork, or a blank
+> board). Those use a different partition layout, so the app-only file does not fit and the board
+> stays blank. The nightly folders (`latest-FM-stations`) carry a `-merged.bin` for this case: flash
+> it once at `0x0`, set up with the
+> [Setup Wizard](https://monterman.github.io/BREmote-V2/setup-wizard.html), and use the app-only
+> `.bin` at `0x10000` from then on.
 
 ---
 
@@ -165,7 +171,7 @@ re-running `?compasscal` and turning the buggy through two full circles. Back it
 |---|---|
 | Tool cannot find the port / no COM appears | **Charge-only USB cable**, or missing USB-serial driver |
 | Connect fails, or fails partway | Use **BAUD `115200`**; try a different USB port; avoid hubs |
-| Flashes fine, board does nothing | Check the **address was `0x10000`**, and that you flashed the right image for the board |
+| Flashes fine, board does nothing | Check the **address was `0x10000`**, and that you flashed the right image for the board. **Coming from Ludwig's firmware or another fork?** The app-only file does not fit that layout: flash the nightly `-merged.bin` once at `0x0` |
 | "Success" / FINISH but nothing changed | The **file row checkbox was not ticked**, or the **`@` address box was blank** — both let it "succeed" having written nothing |
 | Board behaves oddly after flashing | You may have cross-flashed TX firmware to the RX or vice versa — confirm by MAC and reflash |
 | Downloaded file is only a few KB | You saved the GitHub **web page**, not the raw file — see Step 1 |

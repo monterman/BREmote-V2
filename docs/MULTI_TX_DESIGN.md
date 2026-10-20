@@ -6,6 +6,13 @@
 > published so the protocol, the safety rules and the test plan can be reviewed **before** any code
 > is written. Comments are welcome in the forum thread "BREmote - Future Development".
 
+> **Before you test anything**
+> - Nothing in this design is built yet. Section 14 is the maintainer's test plan, not flashing instructions.
+> - **Today's firmware, already:** a receiver obeys any remote addressed to its stored `own_address`. If a configuration was ever copied between receivers, two buggies can answer one remote. Check that no two receivers show the same `own_address` in `?conf`, and never power two buggies during any multi-remote test.
+> - `no_lock = 1` also turns off the spare-remote auto-lock. With it set, lock or switch off every remote you are not holding.
+> - Pair the remote you ride with **first**, at arm's length, one buggy at a time, and check the LED count afterwards. The -60 dBm gate and "about 5 m" are calculated, not yet measured on hardware.
+> - Bench with props off and the drivetrain secured.
+
 **Base:** V2.5-Evo at commit `652112a`: receiver SW36, `confStruct` 200 bytes; remote SW27, 136 bytes. Line references below are at that commit.
 
 **Proposed versions:** receiver SW37 (232 bytes) and remote SW29 (144 bytes). Both carry the old settings over (section 13).
@@ -245,7 +252,7 @@ The zero-proof counter is updated **after** that check. A held trigger never tak
 4. the rider-GPS state, the GPS cross-checks and the remote boot ID reset;
 5. an owner-change counter.
 
-The receiver's Follow-Me code watches that counter. It closes the short "how the last run ended" windows, so a new rider never sees the previous rider's stop on his screen.
+The receiver's return-to-me loop watches that counter. It closes the short "how the last run ended" windows for both Follow-Me and return-to-me, so a new rider never sees the previous rider's stop on his screen.
 
 **Takeover:**
 - The **takeover limit** (section 6) is published first, then the new owner's throttle.

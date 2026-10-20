@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-20 - comments only (owner: the front pair swaps numbers, the clockwise circle 1 rear-right, 2 behind,
+//   3 rear-left, 4 FRONT-LEFT, 5 FRONT-RIGHT): last_fm_mode and the cycleFmMode() wrap note name the new sides. The remote
+//   only sends the number (0xF2), so no code changes here; the RX carries the swap and must be flashed with this remote.
+//   No confStruct change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-12 - comments only: fmArmedNotReady() and three R5 notes describe the D-7 looks (breathing bar / end dots) instead of the retired scanner. No code change.
 // V2.5-Evo - 2026-10-11 - audit 2026-10-11 D-3 (owner): runFmLoop() - fm_flags bit 3 WITH bit 0 set (same arrival, fm_fault_latched_armed) = the buggy stopped following but keeps Follow-Me armed: stop buzz + non-blocking "St" (showFmStopLabelHeld()), fm_armed kept, no 0xF2/0. Bit 3 with bit 0 clear keeps the fmDisarm(false) path. No confStruct change, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-09 - comments only (audit "magnet station step" L-4): the fmStepStationFromMagnet() header no
@@ -1651,7 +1655,7 @@ void runRtmLoop()
 
 volatile bool        fm_armed         = false;  // FM arm state; RAM only, cleared on power cycle. Not static — extern'd by Display.ino (R5 bar)
                                                  // volatile: read by updateBargraphs() (task), written by loop()
-static uint8_t       last_fm_mode     = 1;      // last active FM station (1-5 since the F4/F5 port: 4 front-right, 5 front-left); defaults F1; RAM only
+static uint8_t       last_fm_mode     = 1;      // last active FM station (1-5 since the F4/F5 port: 4 front-left, 5 front-right since 2026-10-20); defaults F1; RAM only
 static unsigned long fm_arm_ms        = 0;      // time of arm, or time of last throttle >10 while armed
 static bool          fm_throttle_seen = false;  // becomes true once thr_scaled>10 after arming
 // V2.5-Evo - 2026-10-07 - SOP-041 rule 3 resync: millis() of this remote's last Follow-Me ARM declaration (cycleFmMode()
@@ -1796,7 +1800,8 @@ void cycleFmMode()
       // unreachable now. To leave Follow-Me off, don't arm it — the combo-after-throttle disarm
       // above and the magnet toggle disarm are unaffected.
       // V2.5-Evo - 2026-10-07 - F4/F5: the wrap is 1 -> 2 -> 3 -> 4 -> 5 -> 1. The stations run round the rider -
-      // 1 rear-right, 2 behind, 3 rear-left, 4 FRONT-RIGHT, 5 FRONT-LEFT - and there is deliberately no 6: a station
+      // 1 rear-right, 2 behind, 3 rear-left, 4 FRONT-LEFT, 5 FRONT-RIGHT (V2.5-Evo - 2026-10-20: the front pair swapped
+      // numbers, so the five run clockwise) - and there is deliberately no 6: a station
       // directly ahead would put the buggy on the rider's line, where a failed motor stops it in his path.
       last_fm_mode = (last_fm_mode < 5) ? last_fm_mode + 1 : 1;
 

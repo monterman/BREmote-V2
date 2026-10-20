@@ -1,3 +1,10 @@
+// V2.5-Evo - 2026-10-20 - FRONT STATIONS SWAP NUMBERS (owner): F4 = front-LEFT, F5 = front-RIGHT, so 1-5 run clockwise
+//   round the rider (1 rear-right, 2 behind, 3 rear-left, 4 front-left, 5 front-right). The presets and the same-side
+//   retreat live in Common/FollowMeStation.h; here the three places that turn a front mode into its same-side rear
+//   mode (the no-course abandon print, the latched-abort m_eff, the G-3 transit abort) now map 4 -> 3 and 5 -> 1. The
+//   buggy-side retreats (H-1, the shield, the settled-escape latch) pick by the measured side and are unchanged. The
+//   0xF2 mode byte's 4 / 5 change meaning, so the remote must carry the same swap. No confStruct change, sizeof stays
+//   200, SW_VERSION stays 36. Dated notes below that name F4 or F5 use the old numbers.
 // V2.5-Evo - 2026-10-17 - HEADING LATCH WRITTEN ONCE PER CHANGE, WITH THE TRIGGER RELEASED (audit F1-F5). THE BUG:
 //   getRtmHeading() rewrote /hdg_fault on EVERY disagreeing heading call once the 5 s dwell was complete (the set site
 //   tested the dwell, not whether the latch was already set), about 10-30 times a second, and looked the file up on
@@ -2629,7 +2636,8 @@ static bool          fm_diagonal_engaged = false;
 //   and the rider's course when it began (G-3 measures the turn against it).
 // fm_front_aborted - LATCHED: this engagement has given up on the front station (the rider turned
 //   mid-transit, or the course went invalid while a front station was held). While it stands, modes
-//   4 and 5 behave as 1 and 3 - the nearest REAR station on the SAME SIDE as the station, or (V2.5-Evo -
+//   4 and 5 behave as 3 and 1 (V2.5-Evo - 2026-10-20: 4 is front-left, 5 front-right) - the nearest REAR
+//   station on the SAME SIDE as the station, or (V2.5-Evo -
 //   2026-10-06, audit L-9) on the BUGGY'S side when the H-1 retreat or the shield latched it with the
 //   buggy measured on the other side of the rider's line (fm_front_retreat_side) - the buggy is
 //   already there, so that side is the one that never crosses ahead of him.
@@ -5177,7 +5185,7 @@ static void computeFmTarget(double* out_lat, double* out_lng)
       Serial.printf("FM [RX] front station F%u abandoned: no trustworthy rider course, so there is no "
                     "\"ahead\" to hold it in - falling back to the nearest REAR station (F%u) for this "
                     "engagement\n",
-                    (unsigned)m_decl, (unsigned)(m_decl == 4 ? 1 : 3));
+                    (unsigned)m_decl, (unsigned)(m_decl == 4 ? 3 : 1));   // V2.5-Evo - 2026-10-20 - 4 front-left -> F3, 5 front-right -> F1
     } else if ((m_decl == 4 || m_decl == 5) && !fm_front_aborted) {
       static const unsigned long kFmFrontWaitMsgMs = 5000UL;
       static unsigned long fm_front_wait_msg_ms = 0;
@@ -5282,7 +5290,8 @@ static void computeFmTarget(double* out_lat, double* out_lng)
   fm_frame_valid = true;
 
   // ---- The station the declared mode asks for ----
-  // While fm_front_aborted stands, 4 and 5 read as 1 and 3: the nearest REAR station on the SAME
+  // V2.5-Evo - 2026-10-20 - owner: 4 is front-LEFT and 5 front-RIGHT now, so the same-side rear stations are 3 and 1.
+  // While fm_front_aborted stands, 4 and 5 read as 3 and 1: the nearest REAR station on the SAME
   // side as the station - swapping sides under an ordinary abort would walk the station straight
   // across the rider's wake at the worst possible moment. (V2.5-Evo - 2026-10-06 - audit L-9: the one
   // exception, the buggy's side after an H-1 / shield retreat, is the paragraph below.)
@@ -5292,7 +5301,7 @@ static void computeFmTarget(double* out_lat, double* out_lng)
   uint8_t m_eff = m_decl;
   if (fm_front_aborted && (m_decl == 4 || m_decl == 5)) {
     if (fm_front_retreat_side != 0) m_eff = (uint8_t)((fm_front_retreat_side > 0) ? 1 : 3);
-    else                            m_eff = (uint8_t)((m_decl == 4) ? 1 : 3);
+    else                            m_eff = (uint8_t)((m_decl == 4) ? 3 : 1);   // V2.5-Evo - 2026-10-20 - same side: 4 -> 3, 5 -> 1
   }
 
   // ---- V2.5-Evo - 2026-10-06 - audit M-11: THE PENDING ENGAGE SEED ----
@@ -5357,7 +5366,7 @@ static void computeFmTarget(double* out_lat, double* out_lng)
       fmAngleDiff(course, fm_transit_start_course_deg) > kFmTransitAbortCourseDeg) {
     fm_front_aborted  = true;
     fm_transit_active = false;
-    m_eff             = (uint8_t)((m_decl == 4) ? 1 : (m_decl == 5) ? 3 : m_decl);
+    m_eff             = (uint8_t)((m_decl == 4) ? 3 : (m_decl == 5) ? 1 : m_decl);   // V2.5-Evo - 2026-10-20 - same side: 4 -> 3, 5 -> 1
     psi_target        = fmStationNearestRearPresetDeg(m_decl, near_diag);
     if ((m_eff == 1 || m_eff == 3) && !fm_diagonal_engaged) psi_target = 0.0f;
     psi_target        = fmClampStationDeg(psi_target, phi_eff);

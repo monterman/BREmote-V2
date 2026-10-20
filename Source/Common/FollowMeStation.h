@@ -1,3 +1,8 @@
+// V2.5-Evo - 2026-10-20 - FRONT STATIONS SWAP NUMBERS (owner, 2026-10-20): the stations now run in the owner's
+//   clockwise circle - 1 rear-right, 2 behind, 3 rear-left, 4 FRONT-LEFT, 5 FRONT-RIGHT. fmStationPresetDeg(): mode 4
+//   is now -(180 - phi), mode 5 +(180 - phi). fmStationNearestRearPresetDeg(): 4 retreats to rear-left, 5 to
+//   rear-right (still the same side as the station). Modes 1-3 and the sign convention (+ = the rider's right) are
+//   unchanged; every other helper treats 4 and 5 alike. Dated notes below that name F4 or F5 use the old numbers.
 // V2.5-Evo - 2026-10-06 - AUDIT M-20 + L-25: fmFrontSideFloorM() - the front side floor is now
 //   max(13, pass minimum, min_dist_m + 2), resolved once here for every RX site. No change for min_dist_m <= 11 m.
 //   L-26: the fmShieldMake input comment no longer says the half-angle is a fixed 30 deg.
@@ -42,8 +47,9 @@
 //     1 = rear-right   psi = +near_diag_offset_deg   (45 by default)
 //     2 = behind       psi =  0
 //     3 = rear-left    psi = -near_diag_offset_deg
-//     4 = front-right  psi = +(180 - phi)    phi = the angle DERIVED from the side and ahead offsets
-//     5 = front-left   psi = -(180 - phi)    (fmFrontStationGeom, 35-45 deg; +/-135 when ahead == side)
+//     4 = front-left   psi = -(180 - phi)    phi = the angle DERIVED from the side and ahead offsets
+//     5 = front-right  psi = +(180 - phi)    (fmFrontStationGeom, 35-45 deg; +/-135 when ahead == side)
+//   (V2.5-Evo - 2026-10-20: 4 and 5 swapped, so 1-5 run clockwise round the rider as the owner numbers them.)
 //   There is no mode 6 and |psi| can never reach 180.
 //
 // ---- WHY THERE IS NO DEAD-AHEAD STATION (the load-bearing safety rationale) ----
@@ -266,7 +272,8 @@ static inline float fmClampStationDeg(float psi_deg, float front_angle_eff_deg)
 
 // fmStationPresetDeg - the station angle a MODE asks for.
 //   1 = rear-right  +near_diag      2 = behind 0        3 = rear-left  -near_diag
-//   4 = front-right +(180 - phi)    5 = front-left -(180 - phi)
+//   4 = front-left  -(180 - phi)    5 = front-right +(180 - phi)
+// V2.5-Evo - 2026-10-20 - owner: 4 and 5 swapped (were 4 right, 5 left), the clockwise circle 1-5.
 // Any other mode (0, 0xFF, a corrupt byte) returns 0 = directly behind, the safe geometry - the
 // same fallback computeFmTarget() has always had.
 // front_angle_eff_deg must be the EFFECTIVE angle, so the front presets land exactly on the floor
@@ -280,15 +287,16 @@ static inline float fmStationPresetDeg(uint8_t mode, float near_diag_deg, float 
     case 1: return +near_diag_deg;
     case 2: return 0.0f;
     case 3: return -near_diag_deg;
-    case 4: return +front;
-    case 5: return -front;
+    case 4: return -front;   // V2.5-Evo - 2026-10-20 - front-LEFT (was +front)
+    case 5: return +front;   // V2.5-Evo - 2026-10-20 - front-RIGHT (was -front)
     default: return 0.0f;
   }
 }
 
 // fmStationNearestRearPresetDeg - where a front station RETREATS to when the geometry stops
-// supporting it (the rider turns mid-transit, or the course goes invalid). 4 -> rear-right,
-// 5 -> rear-left, everything else is already rear. This function never picks the opposite side:
+// supporting it (the rider turns mid-transit, or the course goes invalid). 4 -> rear-left,
+// 5 -> rear-right (V2.5-Evo - 2026-10-20: swapped with the stations, so each still retreats on its own
+// side), everything else is already rear. This function never picks the opposite side:
 // swapping sides under an abort would walk the station across the rider's wake at the worst moment.
 // V2.5-Evo - 2026-10-06 - audit L-9: the controller DOES pick the opposite side in one case - when the
 // H-1 retreat or the shield finds the BUGGY measurably on the other side of the rider's line, it goes
@@ -299,8 +307,8 @@ static inline float fmStationNearestRearPresetDeg(uint8_t mode, float near_diag_
   if (near_diag_deg < 0.0f)  near_diag_deg = 0.0f;
   if (near_diag_deg > 90.0f) near_diag_deg = 90.0f;
   switch (mode) {
-    case 1: case 4: return +near_diag_deg;
-    case 3: case 5: return -near_diag_deg;
+    case 1: case 5: return +near_diag_deg;   // V2.5-Evo - 2026-10-20 - 5 (front-right) -> rear-right
+    case 3: case 4: return -near_diag_deg;   // V2.5-Evo - 2026-10-20 - 4 (front-left)  -> rear-left
     default:        return 0.0f;
   }
 }

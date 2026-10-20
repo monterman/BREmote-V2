@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-10-20 — Remote + RX: the two front stations swap numbers (F4 is front-left, F5 front-right)
+
+**No config wipe.** `sizeof(confStruct)` stays 200 on the RX and 136 on the remote; `SW_VERSION` stays
+36 (RX) and 27 (remote).
+
+**Flash the remote and the RX together.** The remote tells the buggy which station to use by its number
+(the 0xF2 mode byte), and 4 and 5 now mean the opposite sides. A remote and an RX on different sides of
+this change would send the buggy to the opposite front station from the one the remote shows.
+
+The stations now go round you in one clockwise circle:
+**1 rear-right · 2 behind · 3 rear-left · 4 front-left · 5 front-right.**
+
+- **Stations 1, 2 and 3 are unchanged.**
+- **F4 is now ahead and to your LEFT, and F5 ahead and to your RIGHT.** Before, it was the other way
+  round. The distances, the pass rules and every safety limit are the same. Only which number is which
+  side has changed.
+- **When a front station is given up** (you turn hard while the buggy is moving out, or the GPS course is
+  lost), F4 now falls back to F3 (rear-left) and F5 to F1 (rear-right). That is still the rear station on
+  the same side. If the buggy is measured on your other side, it still goes to the rear station on the
+  buggy's side, as before.
+- **Saved settings keep their numbers, so they now point at the other side.** If a remote's Starting
+  Station is set to 4 or 5, it now starts on the other front station. A ticked Magnet Station Set box 4 or 5
+  stays on the same number, so box 4 is now front-left. The factory defaults (Starting Station 2,
+  magnet set 1-3) are not affected.
+- The WiFi pages, the config tool and the RX's `?diag` line show the new names.
+
 ## 2026-10-17 — RX: the heading-fault note is written once per change, with the trigger released
 
 **No config wipe.** `sizeof(confStruct)` stays 200 and `SW_VERSION` stays 36.

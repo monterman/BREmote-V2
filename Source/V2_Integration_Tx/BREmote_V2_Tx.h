@@ -1,7 +1,9 @@
+// V2.5-Evo - 2026-10-20 - comments only (owner: front stations swap numbers): followme_mode and mag_fm_set document 4 = front left, 5 = front right. Same fields, same offsets, sizeof stays 136, SW_VERSION stays 27, no config reset.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-1: includes ../Common/RiderGpsPacket.h (Radio.ino sends the v2 rider GPS packet with the GPS fix counter). Include only: no confStruct change, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-11 - audit 2026-10-11 D-3: RAM flag fm_fault_latched_armed (bit 0 on the arrival that latched the fault edge). No confStruct change, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-07 - T-8: RAM stamp tx_boot_id_sent_ms. T-10: rtm_meta_count comment (counts can be 1). No struct change.
-// V2.5-Evo - 2026-10-07 - F4/F5 on the remote (port of P2-d): followme_mode documents 1-5 (4 front right, 5 front left;
+// V2.5-Evo - 2026-10-07 - F4/F5 on the remote (port of P2-d): followme_mode documents 1-5 (4 front right, 5 front left
+//   [SWAPPED 2026-10-20: 4 is now front left, 5 front right];
 //   no 6) and mag_fm_set gains bit 3 = station 4 and bit 4 = station 5 (range 1-31). Default and repair value stay 7,
 //   the three rear stations. Ranges and comments only: same fields at the same offsets, sizeof stays 136, SW_VERSION
 //   stays 27, no config reset.
@@ -329,7 +331,7 @@ struct confStruct {
     // V2.5-Evo - 2026-10-07 - F4/F5: the station set is 1-5 and continuous round the rider. There is no 6:
     // a station directly ahead puts the buggy on the rider's line, where a failed motor stops it in his path.
     // Range only - same uint16_t at the same offset, so sizeof(confStruct) stays 136 and SW_VERSION stays 27.
-    uint16_t followme_mode; // Follow-me starting station (0=disabled, 1=rear_right, 2=behind, 3=rear_left, 4=front_right, 5=front_left)
+    uint16_t followme_mode; // Follow-me starting station (0=disabled, 1=rear_right, 2=behind, 3=rear_left, 4=front_left, 5=front_right; 4/5 swapped 2026-10-20)
     uint16_t kalman_en;        // Kalman filter runtime enable flag (0=disabled, 1=enabled)
     uint16_t speed_src;   // 0=RX km/h, 1=RX knots, 2=TX km/h, 3=TX knots, 4=RX mph, 5=TX mph
     
@@ -472,7 +474,7 @@ struct confStruct {
     // station, so "never send me to station 2" is simply bit 1 left clear:
     //   bit 0 = station 1 (rear right) | bit 1 = station 2 (behind) | bit 2 = station 3 (rear left)
     // V2.5-Evo - 2026-10-07 - F4/F5: the front pair exists on this remote now, so the mask grows two bits:
-    //   bit 3 = station 4 (FRONT RIGHT) | bit 4 = station 5 (FRONT LEFT)
+    //   bit 3 = station 4 (FRONT LEFT) | bit 4 = station 5 (FRONT RIGHT)   (V2.5-Evo - 2026-10-20: the two swapped numbers)
     // Valid range 1-31 (at least one station must be selected). The default stays 7 = the three REAR
     // stations: the magnet is a one-touch input with no confirmation before the fact, so sending the
     // buggy in front of the rider has to be something he ticked, not something he inherited. Every remote

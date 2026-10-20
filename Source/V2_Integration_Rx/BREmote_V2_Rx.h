@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-20 - COMMENT ONLY: the historical fm_front_angle_deg note is marked with the front-station swap (4 front-left, 5 front-right). No code, no struct, no SW_VERSION change.
 // V2.5-Evo - 2026-10-17 - HEADING LATCH WRITTEN ONCE PER CHANGE (audit F1-F5): includes ../Common/HeadingLatchPersist.h, the pure request / due / result rules RTMState.ino uses to store the compass-vs-GPS-course latch (/hdg_fault) once per latch change, with the trigger released, instead of on every heading call. Include only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-17 - audit C-1 / C-3, COMMENTS ONLY in this file: the throttle-scaled curve applies to settings 51-99 only (0-50 and 100 are unscaled, kSteerScaleMinSetting in Common/DifferentialMixer.h) - the include note, the mix_influence column note and the g_mix_influence declaration say so; the stale g_motor0_cmd bench check is restated for the new rule. No code change, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-17 - THROTTLE-SCALED STEERING INFLUENCE (owner request, RX1): adds the diagnostic observer g_mix_influence (the steering influence calcPWM() handed the mixer this pass, written by the PWM task, read by fmPublishLogSnapshot() for the level-5/6 mix_influence column, which used to mirror calcPWM()'s rule and had no throttle term); the DifferentialMixer.h include note and the mix_influence column description follow it. Record layout and size unchanged (log format 5, level-6 record 174 B). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -752,7 +753,8 @@ struct confStruct {
     // turn into 35, and a setting that surprises the person reading it back is worse than one with
     // coarser resolution.
     //
-    // fm_front_angle_deg - the angle of the FRONT stations (F4 front-right, F5 front-left) off dead
+    // fm_front_angle_deg - the angle of the FRONT stations (F4 front-right, F5 front-left [SWAPPED 2026-10-20:
+    //   F4 is now front-left, F5 front-right]) off dead
     //   ahead, in degrees, measured at the rider.
     //     0     = use kFmFrontAngleDefaultDeg (45). THIS IS WHAT EVERY BOARD IN THE FIELD READS
     //             HERE TODAY (the padding bytes of a stored blob are zero in practice), so 0 must

@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-20 - RECEIVER STEP: X-10 (c) "subtract-only whatever the order" - a model of one motor-task pass
+//   (pwmPass: the trigger byte read first, the sticky return cap, the takeover limit) can be slotted between ANY two
+//   hook calls of a frame; T21 (a lock under a running return) and T26 (a claim with a same-packet grant) try every
+//   slot. T21 also covers the receiver's MTX_REL_REBIND release.
 // V2.5-Evo - 2026-10-20 - STEP 2 HEADER FIXES (step-1 code audit Y-1..Y-5, Y-7 b/c): every event now also goes into the
 //   Sim's log as "ev<N>", so the order tests see where each line falls (Y-4). New cases: T5 the take-back claim notice
 //   (Y-7 b); T13 the pairing bounds guard (Y-2); T21 the hook-table boot check (Y-1); T25 the sparse X-2 disarm edge
@@ -83,6 +87,11 @@ struct Sim {
   bool     sticky_cap;
   uint8_t  aux;
   uint32_t now;
+  // X-10 (c): one motor-task pass (pwmPass) can be slotted in after log entry number pwm_after (-1 = never), i.e.
+  // between any two hook calls of a frame - the PWM task outranks the radio task and may run at any such point.
+  int      pwm_after;
+  uint8_t  sticky_val;                          // the value the sticky return cap is armed at (RTM's cap at the time)
+  std::vector<int> pwm_in, pwm_out, pwm_grant;  // per pass: trigger byte read, byte handed on, limit stamp set
   std::vector<std::string> log;
   std::vector<std::pair<int, int> > replies;    // slot, status
   std::vector<std::pair<int, int> > events;     // ev, arg
@@ -93,32 +102,54 @@ struct Sim {
 };
 
 static Sim* S(void* c) { return (Sim*)c; }
+
+// pwmPass - X-10 (c): the parts of one calcPWM() pass (RX PWM.ino) an ownership change can touch, in its order: the
+// trigger byte is read FIRST; the sticky return cap (armed by the synthetic "RTM off" while a return ran) applies as a
+// min() and clears on a pass with the trigger below 25; then the takeover limit (64 rising over 4 s). Records the
+// byte read, the byte handed on to the ramp, and whether a limit stamp was set. Side effects: s->sticky_cap, records.
+static void pwmPass(Sim* s)
+{
+  const uint8_t thr_read = s->thr;
+  uint8_t eff = thr_read;
+  if (s->sticky_cap) { if (s->sticky_val < eff) eff = s->sticky_val; if (thr_read < 25) s->sticky_cap = false; }
+  const uint32_t g = s->mtx_grant_ms;
+  const uint8_t lim = mtxTakeoverCap(s->now, g, 64, 4000);
+  if (lim < eff) eff = lim;
+  s->pwm_in.push_back(thr_read); s->pwm_out.push_back(eff); s->pwm_grant.push_back(g != 0 ? 1 : 0);
+}
+// slog - every hook logs through here, so a motor pass can be slotted in after any chosen step (pwm_after).
+static void slog(Sim* s, const std::string& what)
+{
+  s->log.push_back(what);
+  if ((int)s->log.size() - 1 == s->pwm_after) pwmPass(s);
+}
+
 static void hkReadEnv(void* c, MtxRxEnv* out) { *out = S(c)->env; }
-static void hkZero(void* c) { S(c)->thr = 0; S(c)->steer = 127; S(c)->log.push_back("zero"); }
+static void hkZero(void* c) { S(c)->thr = 0; S(c)->steer = 127; slog(S(c), "zero"); }
 static void hkRtmOff(void* c)
 {
   // processRtmStatePacket(0xF1/0): the sticky return cap is armed only if RTM was running.
   if (S(c)->env.rtm_rx_active) S(c)->sticky_cap = true;
   S(c)->env.rtm_rx_active = false;
-  S(c)->log.push_back("rtm_off");
+  slog(S(c), "rtm_off");
 }
-static void hkFmOff(void* c) { S(c)->env.fm_mode_runtime = 0; S(c)->log.push_back("fm_off"); }
+static void hkFmOff(void* c) { S(c)->env.fm_mode_runtime = 0; slog(S(c), "fm_off"); }
 static void hkGpsReset(void* c)
 {
   Sim* s = S(c);
   s->gps_ts = 0; s->phb_ok = false; s->phb_last = 0;            // the coordinates (gps_lat) are NOT cleared
   if (s->gps_pending) { s->gps_pending = false; s->gps_len = 6; }
-  s->log.push_back("gps_reset");
+  slog(s, "gps_reset");
 }
-static void hkBootReset(void* c) { S(c)->boot_id = 0; S(c)->log.push_back("boot_reset"); }
-static void hkLimit(void* c, uint32_t g) { S(c)->mtx_grant_ms = g; S(c)->log.push_back("limit"); }
-static void hkSeq(void* c) { S(c)->seq++; S(c)->log.push_back("seq"); }
+static void hkBootReset(void* c) { S(c)->boot_id = 0; slog(S(c), "boot_reset"); }
+static void hkLimit(void* c, uint32_t g) { S(c)->mtx_grant_ms = g; slog(S(c), "limit"); }
+static void hkSeq(void* c) { S(c)->seq++; slog(S(c), "seq"); }
 static void hkApply(void* c, int8_t, const uint8_t f[6])
 {
   // Today's control branch (RX Radio.ino): last_packet, throttle, steering, THEN the failsafe stamp.
   Sim* s = S(c);
   s->last_packet = s->now; s->thr = f[3]; s->steer = f[4]; s->last_control_packet = s->now;
-  s->log.push_back("apply");
+  slog(s, "apply");
 }
 static void hkMeta(void* c, int8_t, const uint8_t f[6])
 {
@@ -138,14 +169,14 @@ static void hkMeta(void* c, int8_t, const uint8_t f[6])
   } else if (f[3] == 0xF3) {
     s->gps_pending = true; s->gps_len = 15;
   }
-  s->log.push_back("meta");
+  slog(s, "meta");
 }
 static void hkReply(void* c, int8_t slot, uint8_t status) { S(c)->replies.push_back(std::make_pair((int)slot, (int)status)); }
 static void hkEvent(void* c, uint8_t ev, int8_t slot, uint8_t arg)
 {
   S(c)->events.push_back(std::make_pair((int)ev, (int)arg));
   S(c)->event_slots.push_back(slot);
-  S(c)->log.push_back("ev" + std::to_string((int)ev));   // Y-4: the order tests see where each line falls
+  slog(S(c), "ev" + std::to_string((int)ev));            // Y-4: the order tests see where each line falls
 }
 
 static void simInit(Sim* s, bool single, uint8_t valid_mask)
@@ -155,6 +186,7 @@ static void simInit(Sim* s, bool single, uint8_t valid_mask)
   s->thr = 0; s->steer = 127; s->last_packet = 0; s->last_control_packet = 0; s->mtx_grant_ms = 0; s->seq = 0;
   s->gps_ts = 0; s->gps_lat = 0; s->gps_pending = false; s->gps_len = 6; s->phb_ok = false; s->phb_last = 0;
   s->boot_id = 0; s->sticky_cap = false; s->aux = 0; s->now = 0;
+  s->pwm_after = -1; s->sticky_val = 40; s->pwm_in.clear(); s->pwm_out.clear(); s->pwm_grant.clear();
   s->log.clear(); s->replies.clear(); s->events.clear(); s->event_slots.clear();
   mtxRxStateInit(&s->st);
   s->cfg.single = single; s->cfg.valid_mask = valid_mask; s->cfg.claim_s = 10; s->cfg.failsafe_ms = 1000; s->cfg.seize_en = true;
@@ -1082,6 +1114,36 @@ static void t21()
   CHECK(shown >= 58 && shown <= 61);
   StickyWindowState w3; memset(&w3, 0, sizeof(w3)); stickyWindowClose(&w3, 0);
   CHECK(!stickyWindowStep(&w3, 100, 0, true, 6000));        // stamp 0 is safe
+  // X-10 (c), the lock: the owner locks while its RTM return runs, so the release arms the sticky return cap. A motor
+  // pass may run between ANY two steps of that frame; at every such point every pass is subtract-only, and from the
+  // throttle zero on it hands on 0 and clears the cap (the trigger byte is now 0, below 25).
+  { int points = 0;
+    for (int k = 0; k < 40; k++) {
+      Sim q; simInit(&q, false, 0x03);
+      grantBySqueeze(&q, 0, 1000); fr(&q, 0, 0xF1, 1, 1300); fr(&q, 0, 200, 127, 1400);
+      simClear(&q); q.pwm_after = k;
+      fr(&q, 0, 0xF1, 0x10, 1500);                               // the lock: release(LOCK)
+      const bool inserted = !q.pwm_in.empty();
+      const int zpos = logPos(&q, "zero");
+      q.pwm_after = -1; pwmPass(&q);                             // the next 10 ms pass
+      for (size_t i = 0; i < q.pwm_in.size(); i++) CHECK(q.pwm_out[i] <= q.pwm_in[i]);
+      if (inserted && k >= zpos) CHECK(q.pwm_out[0] == 0);
+      CHECK(q.pwm_out.back() == 0 && !q.sticky_cap);
+      if (!inserted) break;
+      points++;
+    }
+    CHECK(points >= 6); }
+  // The receiver's MTX_REL_REBIND (the paired list changed under an owner): the same tested order, no lock / take-back
+  // / claim counted, one line with the reason.
+  { Sim q; simInit(&q, false, 0x03);
+    grantBySqueeze(&q, 0, 1000); fr(&q, 0, 0xF1, 1, 1300);
+    simClear(&q);
+    mtxRelease(&q.st, &q.h, MTX_REL_REBIND, 1400);
+    CHECK(logPos(&q, "zero") == 0 && logPos(&q, "zero") < logPos(&q, "rtm_off") && logPos(&q, "rtm_off") < logPos(&q, "fm_off"));
+    CHECK(logPos(&q, "fm_off") < logPos(&q, "gps_reset") && logPos(&q, "boot_reset") < logPos(&q, "seq"));
+    CHECK(q.st.owner == kMtxNone && q.thr == 0 && q.sticky_cap);
+    CHECK(q.st.n.released_lock == 0 && q.st.n.released_seized == 0 && q.st.n.released_claim == 0);
+    CHECK(countEv(&q, MTX_EV_RELEASED) == 1 && q.events.back().second == MTX_REL_REBIND); }
   // Y-1: the boot check. The Sim's table is complete; with any one hook missing it is not.
   { Sim q; simInit(&q, false, 0x03);
     CHECK(mtxRxHooksComplete(&q.h) && !mtxRxHooksComplete(NULL));
@@ -1459,6 +1521,34 @@ static void t26()
     if (c == 0) CHECK(s.st.owner == 1 && s.thr == 90);
     else        CHECK(s.st.owner == 0 && s.st.token.slot == kMtxNone && !logHas(&s, "zero") && lastStatus(&s) == MTX_S_FREE);
   }
+  // X-10 (c), the claim: "subtract-only whatever the order". The owner's RTM return was running when it fell silent,
+  // so the claim's synthetic "RTM off" arms the sticky return cap (value 40), and the claimer is granted on the SAME
+  // packet at 90. A motor pass may run between ANY two steps of that frame. At every such point: every pass is
+  // subtract-only (out <= the byte it read); the claimer's 90 is never seen without the takeover limit (and so never
+  // passes above 64 in its first second); the cap stays at most until the claimer's first pass below 25.
+  { int points = 0, raced = 0;
+    for (int k = 0; k < 60; k++) {
+      Sim q; simInit(&q, false, 0x03);
+      grantBySqueeze(&q, 0, 1000); fr(&q, 0, 0xF1, 1, 1300);    // a return running
+      fr(&q, 0, 120, 127, 1400);                                // the owner's last frame: trigger held, then silent
+      for (uint32_t t = 1500; t <= 11500; t += 100) fr(&q, 1, 0, 127, t);
+      CHECK(q.st.claimable == MTX_CL_SILENT);
+      simClear(&q); q.pwm_after = k;
+      fr(&q, 1, 90, 127, 11600);                                // the claim and the same-packet grant
+      CHECK(q.st.owner == 1 && q.thr == 90);
+      const bool inserted = !q.pwm_in.empty();
+      q.pwm_after = -1; pwmPass(&q);                            // the next 10 ms pass
+      if (q.sticky_cap) raced++;                                // no pass fell between the zero and the grant
+      for (size_t i = 0; i < q.pwm_in.size(); i++) {
+        CHECK(q.pwm_out[i] <= q.pwm_in[i]);
+        if (q.pwm_in[i] == 90) CHECK(q.pwm_grant[i] == 1 && q.pwm_out[i] <= 64);
+      }
+      fr(&q, 1, 10, 127, 11700); pwmPass(&q);                   // the claimer below 25 once
+      CHECK(!q.sticky_cap && q.pwm_out.back() <= 10);
+      if (!inserted) break;
+      points++;
+    }
+    CHECK(points >= 10 && raced >= 1); }                        // the race exists, and it stays subtract-only
   // ... and the predicate itself, on a hand-built state with no mtxTimers() between (Y-3's expiry would otherwise
   // clear a proof older than 3 s first, so this pins mtxClaimOk()'s own 3000 ms rule and its PWM term directly).
   { Sim s; simInit(&s, false, 0x07);

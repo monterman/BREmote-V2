@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-21 - owner's claim rule (delta audit E-3): mtxTxSummonTry(MTX_SUMMON_FM_TAP), the mag_mode 4 tap, is always
+//   refused by the gate and sends nothing: E + the number against a busy owner, else "St". No confStruct change.
 // V2.5-Evo - 2026-10-21 - FULL AUDIT F-1: the summon's boot-ID belt is txBootIdSummonBelt() (RTMState.ino): no third burst.
 // V2.5-Evo - 2026-10-21 - E1-E4 (owner order): a summon refused against a busy owner shows "E" + the number of the remote in
 //   control (mtxTxShowE9() sets mtx_e9_digit from mtxTxRefusalDigit(); E9 while unknown); ?mtx prints the held number.
@@ -183,6 +185,7 @@ static const char* mtxSummonVerdictText(uint8_t v)
     case MTX_SV_DISABLED: return "that mode is switched off on this remote, or gps_en is 0";
     case MTX_SV_LOCKED:   return "the remote is locked";
     case MTX_SV_SETUP:    return "the remote is in setup";
+    case MTX_SV_TAP:      return "a magnet tap never takes control (squeeze from zero, or use the toggle combo or the 5 s magnet hold)";
     default:              return "-";
   }
 }
@@ -197,6 +200,9 @@ static const char* mtxSummonVerdictText(uint8_t v)
 //   only), and THE WAIT IS A POLLED STATE (X-9), NOT A BLOCKING ONE: mtxTxLoopTick() watches for an owner status for up to
 //   kMtxSummonWaitMs (1500 ms) while loop() keeps running (GPS, display, every state machine). One summon at a time.
 //   Inputs: kind (MTX_SUMMON_RTM / MTX_SUMMON_FM). Side effects: the meta queue, the summon state, the screen, Serial.
+// V2.5-Evo - 2026-10-21 - owner's claim rule (delta audit E-3): kind MTX_SUMMON_FM_TAP is the mag_mode 4 tap. The gate refuses
+//   it whatever the status (MTX_SV_TAP, Common/MultiTx.h), so it never reaches the queue below; the rider gets the same answer
+//   as any refused summon: E + the number of the remote in control against a busy owner, else "St" + the stop buzz.
 void mtxTxSummonTry(uint8_t kind)
 {
   if (s_summon_kind != 0 || s_summon_go != 0)
@@ -215,6 +221,7 @@ void mtxTxSummonTry(uint8_t kind)
   in.feature_enabled  = (kind == MTX_SUMMON_RTM) ? rtmEnabledEffective() : (usrConf.fm_override_enabled != 0);
   in.locked           = system_locked;
   in.in_setup         = in_setup;
+  in.tap              = (kind == MTX_SUMMON_FM_TAP);   // V2.5-Evo - 2026-10-21 - claim rule (E-3): the gate refuses it
   const uint32_t now = millis();
   const uint8_t  v   = mtxSummonVerdict(&t, &in, now);
   s_last_summon_v = v;

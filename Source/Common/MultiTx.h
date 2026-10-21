@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-21 - owner's claim rule (delta audit E-3): the summon gate refuses the mag_mode 4 TAP (MtxSummonIn.tap,
+//   MTX_SV_TAP) whatever the status - in that mode the tap is one contact, and a first contact never takes control. Its
+//   answer is the refused summon's: E + the number against a busy owner, else "St". Host-tested (multi_tx_test.cpp T40).
 // V2.5-Evo - 2026-10-21 - FULL AUDIT F-1: mtxTxBootIdEdgeSends() / mtxTxBootIdBeltDue() - one boot-ID burst per owner edge,
 //   one packet when the remote took control with a squeeze, three otherwise. Host-tested (multi_tx_test.cpp T39).
 // V2.5-Evo - 2026-10-21 - E1-E4 (owner order): a refused remote shows "E" + the number of the remote in control instead
@@ -1560,6 +1563,7 @@ struct MtxSummonIn {
   bool     feature_enabled;   // RTM: rtmEnabledEffective(); Follow-Me: fm_override_enabled
   bool     locked;            // system_locked
   bool     in_setup;          // a settings / calibration screen (not the gesture handler's own menu state)
+  bool     tap;               // V2.5-Evo - 2026-10-21 - the gesture is the mag_mode 4 TAP (one 0.6-3 s magnet contact): never a summon
 };
 static const uint8_t MTX_SV_OK       = 0;
 static const uint8_t MTX_SV_NOT_FREE = 1;   // the latest status is not FREE, or is older than 5 s
@@ -1568,6 +1572,7 @@ static const uint8_t MTX_SV_TRIGGER  = 3;   // the trigger is not released
 static const uint8_t MTX_SV_DISABLED = 4;   // the feature is off or gps_en is 0
 static const uint8_t MTX_SV_LOCKED   = 5;
 static const uint8_t MTX_SV_SETUP    = 6;
+static const uint8_t MTX_SV_TAP      = 7;   // V2.5-Evo - 2026-10-21 - the mag_mode 4 tap: it never takes control (owner's claim rule)
 
 // mtxTxFixFresh - THE SAME TEST that lets the remote send its rider-GPS stream: gps_en, a valid fix, and an age under
 //   tx_gps_stale_timeout_ms. A remote that would not stream may not summon. Side effects: none.
@@ -1579,10 +1584,18 @@ static inline bool mtxTxFixFresh(bool gps_en, bool loc_valid, uint32_t loc_age_m
 // mtxSummonVerdict - may this remote (not in control) summon with its RTM or Follow-Me gesture? In order: the status
 //   (FREE, at most 5 s old), a fresh own fix, then today's gesture preconditions. Any refusal: "St" + the stop buzz and
 //   NOTHING is sent. Inputs: t, in, now. Returns: MTX_SV_*. Side effects: none.
+// V2.5-Evo - 2026-10-21 - THE OWNER'S CLAIM RULE ("the first tap shouldn't be the trigger for takeover"; delta audit E-3).
+//   THE BUG: in mag_mode 4 the 0.6-3 s magnet tap IS the whole Follow-Me gesture - one contact - so on a remote not in
+//   control a single contact summoned, and an accidental one on an unlocked spare could take control and arm Follow-Me
+//   toward it (the other rider then locked out while it stays armed). THE FIX: in->tap is refused whatever the status
+//   (MTX_SV_TAP), so the builder is never reached. It is tested right AFTER the status, so the answer is the refused
+//   summon's: a busy owner (NOT_FREE) -> E + the number; a claimable owner -> "St". Every full hold and toggle combo
+//   (tap false) is judged as before.
 static inline uint8_t mtxSummonVerdict(const MtxTxStatus* t, const MtxSummonIn* in, uint32_t now)
 {
   if (!(t->count > 0 && t->last[0] == MTX_S_FREE && mtxWithin(now, t->last_ms[0], kMtxSeizeVerdictMs)))
     return MTX_SV_NOT_FREE;
+  if (in->tap)                                 return MTX_SV_TAP;
   if (!mtxTxFixFresh(in->gps_en, in->loc_valid, in->loc_age_ms, in->gps_stale_ms)) return MTX_SV_NO_FIX;
   if (!in->trigger_released)                   return MTX_SV_TRIGGER;
   if (!in->feature_enabled || !in->gps_en)     return MTX_SV_DISABLED;

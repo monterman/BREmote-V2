@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-21 - owner's claim rule (delta audit E-3): on a remote NOT in control the mag_mode 4 TAP never takes control -
+//   it goes through the summon gate as MTX_SUMMON_FM_TAP, which is always refused, so nothing is sent: E + the number of the
+//   remote in control against a busy owner, else "St". The mode 4 hold, roles 1-3 and the toggle combos are unchanged. No confStruct change.
 // V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-7 b: the unlock in runMenu() switches the radio on only if it is off, so it no longer
 //   reconfigures a live radio after the LEFT-hold lock or the auto-lock. No confStruct change.
 // V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-6 b: the toggle rows 3 / 4 (trigger held) send a remote NOT in control through the
@@ -1649,7 +1652,13 @@ void runMagGesture()
         else if (mtxTxIsNonOwner() && !isFmArmed())
         {
           // V2.5-Evo - 2026-10-20 - X-7: NOT in control - the summon gate, before the feature check below.
-          mtxTxSummonTry(MTX_SUMMON_FM);
+          // V2.5-Evo - 2026-10-21 - owner's claim rule (delta audit E-3): THE BUG - in mode 4 this tap IS the whole Follow-Me
+          // gesture, one 0.6-3 s contact, so on a remote not in control a single contact summoned ("the first tap shouldn't
+          // be the trigger for takeover"), and an accidental contact on an unlocked spare could take control and arm
+          // Follow-Me toward it. THE FIX: the tap kind - the gate refuses it whatever the status and NOTHING is sent; the
+          // rider gets the refused summon's answer (E + the number against a busy owner, else "St"). He takes control with
+          // the 5 s hold, a toggle combo or a squeeze from zero. The tap in control, and every full hold, are unchanged.
+          mtxTxSummonTry(MTX_SUMMON_FM_TAP);
         }
         else if (!(usrConf.fm_override_enabled && usrConf.gps_en))
         {

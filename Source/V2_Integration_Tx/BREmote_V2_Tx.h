@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-21 - owner's claim rule (delta audit E-3): MTX_SUMMON_FM_TAP, the mag_mode 4 tap's kind, which the summon gate
+//   always refuses (Hall.ino, MultiRemote.ino). No confStruct change, sizeof stays 144, SW_VERSION stays 29.
 // V2.5-Evo - 2026-10-21 - full audit F-1: txBootIdSummonBelt() declared (RTMState.ino). No confStruct change.
 // V2.5-Evo - 2026-10-21 - E1-E4 (owner order): RAM byte mtx_e9_digit, the digit drawn after the "E" (1-4 = the remote in control,
 //   9 = unknown). No confStruct change, sizeof stays 144, SW_VERSION stays 29.
@@ -1286,6 +1288,7 @@ volatile unsigned long  mtx_ta_until_ms   = 0;
 // The summon kinds, and how a refused gesture shows "St" (MultiRemote.ino mtxTxStopRefusal()).
 #define MTX_SUMMON_RTM 1
 #define MTX_SUMMON_FM  2
+#define MTX_SUMMON_FM_TAP 3   // V2.5-Evo - 2026-10-21 - the mag_mode 4 tap: the gate always refuses it, nothing is sent (claim rule)
 #define MTX_ST_BLOCK   0   // the usual 2 s "St", blocking loop() like every existing "St" (trigger released, nothing running)
 #define MTX_ST_HELD    1   // 2 s, held WITHOUT blocking (the trigger is held)
 #define MTX_ST_BRIEF   2   // 1 s, held without blocking, over this remote's running Follow-Me / return (interim default 2)

@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-21 - owner's claim rule (delta audit E-3): T40 (4) - the mag_mode 4 TAP on a remote that is not in control
+//   never takes control: the gate refuses it for every status and input (nothing built; E + the number against a busy owner,
+//   else St), the tap's frames leave a claimable owner in control, and the full 5 s hold's SUMMON still takes control. T29
+//   sets the new MtxSummonIn.tap (false: a full gesture).
 // V2.5-Evo - 2026-10-21 - owner rule (taking control): T40 - on a remote that is not in control only a squeeze from zero
 //   or a COMPLETED arm gesture (its SUMMON) takes control; a tap, a gear change, the display cycle, an early release,
 //   a lock or any other meta never does, even from a claimable owner. T39 (full audit F-1) the boot-ID packets at an
@@ -1754,6 +1758,7 @@ static void t29()
   MtxTxStatus t; mtxTxStatusInit(&t);
   MtxSummonIn in; in.gps_en = true; in.loc_valid = true; in.loc_age_ms = 200; in.gps_stale_ms = 3000;
   in.trigger_released = true; in.feature_enabled = true; in.locked = false; in.in_setup = false;
+  in.tap = false;                              // V2.5-Evo - 2026-10-21 - a full gesture (the mag_mode 4 tap: T40 (4))
   CHECK(mtxSummonVerdict(&t, &in, 1000) == MTX_SV_NOT_FREE);                  // never a reply
   for (int st = 0; st < 8; st++) {
     mtxTxStatusInit(&t); mtxTxOnReply(&t, (uint8_t)st, 1000);
@@ -2501,7 +2506,8 @@ static void t39()
 // On the remote the SUMMON exists only as the internal queue type kMtxQueueSummon, queued only by mtxTxSummonTry() (TX
 // MultiRemote.ino). That is called only where an arm gesture is COMPLETE (code-read): the toggle combos after their full
 // hold (Hall.ino handleGearToggle(), and returnGesture() in RTMState.ino, reached from there), and the magnet on removal
-// after its full band (Hall.ino runMagGesture()). A tap, a gear change, the display cycle or a combo released early reaches
+// after its full band (Hall.ino runMagGesture()) - except the mag_mode 4 TAP, which reaches the gate only to be refused
+// (MTX_SUMMON_FM_TAP, case (4), delta audit E-3). A tap, a gear change, the display cycle or a combo released early reaches
 // none of those sites; such a remote sends control frames with the trigger at zero only (the toggle is not steering then),
 // and a lock sends LOCKED frames plus its "RTM off" / "Follow-Me off". The gesture handler itself is board code (pins,
 // delays) and is not host-testable. What is: (1) nothing but that queue type can put 0xF1/0x3C on the air; (2) on the
@@ -2584,6 +2590,103 @@ static void t40()
     fr(&s, 1, kMtxMetaRtm, kMtxSummonValue, t + 60); fr(&s, 1, 90, 127, t + 70);
     CHECK(s.st.owner == 0 && s.st.n.claims == 0 && s.st.n.summons_refused == 1 && !logHas(&s, "zero"));
   }
+  // (4) V2.5-Evo - 2026-10-21 - owner's claim rule, delta audit E-3: the mag_mode 4 TAP (one 0.6-3 s magnet contact, the whole
+  //     Follow-Me gesture of that mode) on a remote NOT in control. Hall.ino sends it through the gate as MTX_SUMMON_FM_TAP,
+  //     which mtxTxSummonTry() turns into tap = true. (a) The gate refuses it for every status, fresh or stale, and every
+  //     other input, so the builder is never reached; the answer is the refused summon's - NOT_FREE (E + the number when the
+  //     status says busy, else "St") or, from a claimable owner, MTX_SV_TAP ("St"). With tap clear (the 5 s hold, the toggle
+  //     combos) every input is judged exactly as by the gate before the fix (t40OldVerdict(), a copy of it).
+  {
+    struct V { static uint8_t t40OldVerdict(const MtxTxStatus* t, const MtxSummonIn* in, uint32_t now) {
+      if (!(t->count > 0 && t->last[0] == MTX_S_FREE && mtxWithin(now, t->last_ms[0], kMtxSeizeVerdictMs))) return MTX_SV_NOT_FREE;
+      if (!mtxTxFixFresh(in->gps_en, in->loc_valid, in->loc_age_ms, in->gps_stale_ms)) return MTX_SV_NO_FIX;
+      if (!in->trigger_released)               return MTX_SV_TRIGGER;
+      if (!in->feature_enabled || !in->gps_en) return MTX_SV_DISABLED;
+      if (in->locked)                          return MTX_SV_LOCKED;
+      if (in->in_setup)                        return MTX_SV_SETUP;
+      return MTX_SV_OK; } };
+    MtxLinkRec v3; v3.proto = kMtxProtoV3; memcpy(v3.dest_address, kR1, 3); memcpy(v3.efuse_id, kB, 3);
+    static const uint32_t kAge[4] = { 0, 100, 5000, 5001 };
+    bool ok = true; int tap_built = 0, hold_ok = 0, e_answers = 0;
+    for (int st = -1; st < 8; st++)                                       // -1: no reply ever
+      for (int a = 0; a < 4; a++)
+        for (int m = 0; m < 128; m++) {
+          MtxTxStatus t; mtxTxStatusInit(&t);
+          if (st >= 0) mtxTxOnReply(&t, (uint8_t)st, 1000);
+          const uint32_t now = 1000 + kAge[a];
+          MtxSummonIn x;
+          x.gps_en = (m & 1) != 0; x.loc_valid = (m & 2) != 0; x.loc_age_ms = (m & 4) ? 200 : 3000; x.gps_stale_ms = 3000;
+          x.trigger_released = (m & 8) != 0; x.feature_enabled = (m & 16) != 0; x.locked = (m & 32) != 0; x.in_setup = (m & 64) != 0;
+          x.tap = true;
+          const uint8_t v = mtxSummonVerdict(&t, &x, now);
+          const bool fresh_free = (st == MTX_S_FREE && kAge[a] <= 5000);
+          const bool fresh_busy = (st >= 0 && kAge[a] <= 5000 && (st == MTX_S_BUSY || st == MTX_S_SEIZABLE || st == MTX_S_REFUSED ||
+                                                                  st == MTX_S_SEIZED || st == MTX_S_RESERVED));
+          ok = ok && v != MTX_SV_OK && v == (fresh_free ? MTX_SV_TAP : MTX_SV_NOT_FREE);
+          // The answer as mtxTxSummonTry() draws it: E + the number only for NOT_FREE with a busy signal, else "St".
+          const bool e = (v == MTX_SV_NOT_FREE && mtxTxRefusalSignal(&t, now) == MTX_RS_E9);
+          ok = ok && e == fresh_busy;
+          if (e) e_answers++;
+          uint8_t f[6];
+          if (v == MTX_SV_OK && mtxBuildUplinkFromQueue(kMtxQueueSummon, 0, &v3, f, crc8)) tap_built++;
+          x.tap = false;
+          const uint8_t w = mtxSummonVerdict(&t, &x, now);
+          ok = ok && w == V::t40OldVerdict(&t, &x, now);
+          if (w == MTX_SV_OK) hold_ok++;
+        }
+    CHECK(ok && tap_built == 0 && e_answers > 0 && hold_ok > 0);
+  }
+  //     (b) Through the model, a claimable owner (silent, or idle at zero): the tapping remote B hears FREE; its tap is refused
+  //     ("St", nothing built), so all it sends are control frames - at zero (script 0), or the trigger touched under a squeeze
+  //     with steering (script 1) - and the owner stays in control. Then B completes its 5 s hold (trigger released, frames at
+  //     zero): tap clear, the gate passes, and that SUMMON takes control. (c) A busy owner (riding): B hears BUSY with the
+  //     number; its tap answers E1 and sends nothing, and its full hold gets the same E1 (a busy owner is not claimable).
+  for (int idle = 0; idle < 2; idle++)
+    for (int script = 0; script < 2; script++) {
+      Sim s; simInit(&s, false, 0x03); uint32_t t;
+      if (!idle) { silentOwnerClaimable(&s, &t); }
+      else {
+        grantBySqueeze(&s, 0, 1000);
+        for (t = 1300; t <= 11400; t += 100) { fr(&s, 0, 0, 127, t); fr(&s, 1, 0, 127, t + 50); }
+      }
+      CHECK(claimable(&s, t) == (idle ? MTX_CL_IDLE : MTX_CL_SILENT));
+      MtxTxStatus b; mtxTxStatusInit(&b); txFeed(&b, &s, 0, 1, t);
+      CHECK(b.last[0] == MTX_S_FREE && mtxTxNotOwner(&b, true));
+      MtxSummonIn in; in.gps_en = true; in.loc_valid = true; in.loc_age_ms = 200; in.gps_stale_ms = 3000;
+      in.trigger_released = true; in.feature_enabled = true; in.locked = false; in.in_setup = false; in.tap = true;
+      CHECK(mtxSummonVerdict(&b, &in, t) == MTX_SV_TAP && mtxTxRefusalSignal(&b, t) == MTX_RS_ST);   // the tap: "St"
+      in.trigger_released = false;
+      CHECK(mtxSummonVerdict(&b, &in, t) == MTX_SV_TAP);                  // the tap mid-tow (trigger held): refused too
+      in.trigger_released = true;
+      simClear(&s);
+      t = t40Script(&s, script, t, idle != 0);                            // the tap's contact and the 5 s after it
+      CHECK(s.st.owner == 0 && s.st.token.slot == kMtxNone && s.st.n.claims == 0 && s.st.n.summons == 0);
+      CHECK(s.st.n.released_claim == 0 && !logHas(&s, "zero"));
+      // The 5 s hold, completed at removal: B's status from those replies, tap clear, the gate passes, the SUMMON claims.
+      const size_t from = s.replies.size();
+      t = t40Script(&s, 0, t, idle != 0);
+      txFeed(&b, &s, from, 1, t);
+      in.tap = false;
+      CHECK(b.last[0] == MTX_S_FREE && mtxSummonVerdict(&b, &in, t) == MTX_SV_OK);
+      MtxLinkRec v3; v3.proto = kMtxProtoV3; memcpy(v3.dest_address, kR1, 3); memcpy(v3.efuse_id, kB, 3);
+      uint8_t f[6];
+      CHECK(mtxBuildUplinkFromQueue(kMtxQueueSummon, 0, &v3, f, crc8));
+      if (idle) fr(&s, 0, 0, 127, t);
+      fr(&s, 1, f[3], f[4], t + 50);
+      CHECK(s.st.n.summons == 1 && s.st.n.claims == 1 && s.st.n.released_claim == 1 && (s.st.owner == 1 || s.st.token.slot == 1));
+    }
+  { Sim s; simInit(&s, false, 0x03);
+    grantBySqueeze(&s, 0, 1000);
+    uint32_t t = 1300;
+    for (int i = 0; i < 30; i++, t += 100) { fr(&s, 0, 120, 127, t); fr(&s, 1, 0, 127, t + 50); }
+    MtxTxStatus b; mtxTxStatusInit(&b); txFeed(&b, &s, 0, 1, t);
+    MtxSummonIn in; in.gps_en = true; in.loc_valid = true; in.loc_age_ms = 200; in.gps_stale_ms = 3000;
+    in.trigger_released = true; in.feature_enabled = true; in.locked = false; in.in_setup = false; in.tap = true;
+    CHECK(b.last[0] == MTX_S_BUSY && mtxSummonVerdict(&b, &in, t) == MTX_SV_NOT_FREE);
+    CHECK(mtxTxRefusalSignal(&b, t) == MTX_RS_E9 && mtxTxRefusalDigit(&b, t) == 1);   // the tap: E1
+    in.tap = false;
+    CHECK(mtxSummonVerdict(&b, &in, t) == MTX_SV_NOT_FREE);               // the full hold: the same E1
+    CHECK(s.st.owner == 0 && s.st.n.claims == 0 && s.st.n.summons == 0); }
   testEnd("T40");
 }
 

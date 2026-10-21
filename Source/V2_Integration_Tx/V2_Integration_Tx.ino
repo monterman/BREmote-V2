@@ -327,7 +327,10 @@ void loop()
     const unsigned long base_ms = ((long)(last_user_input_ms - autolock_input_ms) > 0) ? last_user_input_ms : autolock_input_ms;
     MtxTxStatus t;
     mtxTxStatusGet(&t);
-    const uint16_t timeout_s = mtxTxAutolockTimeoutS(&t, usrConf.mtx_autolock_s, usrConf.autolock_timeout_s);
+    // An old-style link takes autolock_timeout_s by its protocol, not only because it never records a status: a link
+    // record changed at run time (a Base64 ?setconf) leaves the last new-style statuses in g_mtx_tx until a pairing.
+    const uint16_t timeout_s = txIsV3() ? mtxTxAutolockTimeoutS(&t, usrConf.mtx_autolock_s, usrConf.autolock_timeout_s)
+                                        : usrConf.autolock_timeout_s;
     const bool     skip      = mtxTxAutolockSkip(isFmArmed(), rtm_tx_active || rtmIsArming(), mtx_gesture_armed,
                                                  in_menu != 0, in_setup, usrConf.no_lock != 0);
     if (!system_locked && mtxTxAutolockDue(timeout_s, millis(), base_ms, skip))

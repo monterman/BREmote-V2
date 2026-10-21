@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-21 - owner rule (taking control): T40 - on a remote that is not in control only a squeeze from zero
+//   or a COMPLETED arm gesture (its SUMMON) takes control; a tap, a gear change, the display cycle, an early release,
+//   a lock or any other meta never does, even from a claimable owner. T39 (full audit F-1) the boot-ID packets at an
+//   owner edge.
 // V2.5-Evo - 2026-10-21 - E1-E4 (owner order): T38 - the number of the remote in control at reply index 20: the wire, the
 //   statuses that show it, who counts as in control (owner, claim token), the send rule (REFUSED always, a change at once,
 //   else every other reply), the model's replies with two and three remotes (take-back, token, nobody -> E9), SINGLE never,
@@ -2489,6 +2493,100 @@ static void t39()
   testEnd("T39");
 }
 
+// ============================================================
+// T40 - owner rule 2026-10-21: on a remote that is NOT in control, only a squeeze from zero or a COMPLETED Return-To-Me /
+//        Follow-Me arm gesture (the SUMMON it then sends) takes control. A toggle tap, a gear change, the display cycle, a
+//        gesture let go before its hold time, a lock or any other meta never does.
+// ============================================================
+// On the remote the SUMMON exists only as the internal queue type kMtxQueueSummon, queued only by mtxTxSummonTry() (TX
+// MultiRemote.ino). That is called only where an arm gesture is COMPLETE (code-read): the toggle combos after their full
+// hold (Hall.ino handleGearToggle(), and returnGesture() in RTMState.ino, reached from there), and the magnet on removal
+// after its full band (Hall.ino runMagGesture()). A tap, a gear change, the display cycle or a combo released early reaches
+// none of those sites; such a remote sends control frames with the trigger at zero only (the toggle is not steering then),
+// and a lock sends LOCKED frames plus its "RTM off" / "Follow-Me off". The gesture handler itself is board code (pins,
+// delays) and is not host-testable. What is: (1) nothing but that queue type can put 0xF1/0x3C on the air; (2) on the
+// buggy no other frame such a remote can send takes control, even from a claimable owner, while the SUMMON and a squeeze
+// from zero do; (3) from an owner who is not claimable not even those.
+// t40Script - 5 s of what a remote that is not in control (slot 1) sends for one kind of gesture, from t; the owner (slot 0)
+// stays silent (owner_idle = false) or sends zeros (true) meanwhile. Returns the time after it.
+static uint32_t t40Script(Sim* s, int script, uint32_t t, bool owner_idle)
+{
+  static const uint8_t kSteer[5] = { 0, 60, 127, 200, 255 };
+  for (int i = 0; i < 50; i++, t += 100) {
+    if (owner_idle) fr(s, 0, 0, 127, t);
+    const uint32_t u = t + 50;
+    switch (script) {
+      case 0:  fr(s, 1, 0, 127, u); break;                                  // tap, gear change, display cycle, early release
+      case 1:  fr(s, 1, (uint8_t)(i % 12), kSteer[i % 5], u); break;        // the trigger touched under a squeeze, steering
+      case 2:  if (i == 10)      fr(s, 1, 0xF1, 0x00, u);                   // a lock: LOCKED, then its RTM-off / FM-off
+               else if (i == 11) fr(s, 1, 0xF2, 0x00, u);
+               else              fr(s, 1, 0xF1, 0x10, u);
+               break;
+      default: {                                                            // every other meta, between zero frames
+        static const uint8_t kMeta[8][2] = { {0xF1, 0x00}, {0xF1, 0x01}, {0xF1, 0x02}, {0xF1, 0x85}, {0xF2, 0x81},
+                                             {0xF2, 0x03}, {0xF4, 0x01}, {0xF3, 0x03} };
+        if (i % 2) fr(s, 1, kMeta[(i / 2) % 8][0], kMeta[(i / 2) % 8][1], u); else fr(s, 1, 0, 127, u);
+        break;
+      }
+    }
+  }
+  return t;
+}
+static void t40()
+{
+  testBegin();
+  // (1) The builder: no queue type or value but kMtxQueueSummon ever gives 0xF1/0x3C, on either link; a control frame is
+  //     always control; the SUMMON itself only on the new-style link.
+  { MtxLinkRec v3; v3.proto = kMtxProtoV3; memcpy(v3.dest_address, kR1, 3); memcpy(v3.efuse_id, kB, 3);
+    MtxLinkRec v0 = v3; v0.proto = kMtxProtoLegacy;
+    bool never = true; uint8_t f[6];
+    for (int ty = 0; ty < 256; ty++) for (int va = 0; va < 256; va++) {
+      if (ty != kMtxQueueSummon) {
+        if (mtxBuildUplinkFromQueue((uint8_t)ty, (uint8_t)va, &v3, f, crc8)) never = never && !(f[3] == kMtxMetaRtm && f[4] == kMtxSummonValue);
+        if (mtxBuildUplinkFromQueue((uint8_t)ty, (uint8_t)va, &v0, f, crc8)) never = never && !(f[3] == kMtxMetaRtm && f[4] == kMtxSummonValue);
+      }
+      if (mtxBuildUplink(MTX_B_CTRL, &v3, (uint8_t)ty, (uint8_t)va, f, crc8)) never = never && mtxKind(f[3], f[4]) == MTX_K_CTRL;
+    }
+    CHECK(never);
+    CHECK(mtxBuildUplinkFromQueue(kMtxQueueSummon, 0, &v3, f, crc8) && f[3] == kMtxMetaRtm && f[4] == kMtxSummonValue);
+    CHECK(!mtxBuildUplinkFromQueue(kMtxQueueSummon, 0, &v0, f, crc8)); }
+  // (2) A claimable owner - silent 10 s, or at zero 10 s with nothing armed: every script leaves it in control (no claim,
+  //     no release, no token, the outputs never zeroed); then the completed gesture's SUMMON, or a squeeze from zero, takes
+  //     control - so the owner WAS claimable throughout.
+  for (int idle = 0; idle < 2; idle++)
+    for (int script = 0; script < 4; script++)
+      for (int finish = 0; finish < 2; finish++) {
+        Sim s; simInit(&s, false, 0x03); uint32_t t;
+        if (!idle) { silentOwnerClaimable(&s, &t); }
+        else {
+          grantBySqueeze(&s, 0, 1000);
+          for (t = 1300; t <= 11400; t += 100) { fr(&s, 0, 0, 127, t); fr(&s, 1, 0, 127, t + 50); }
+        }
+        CHECK(claimable(&s, t) == (idle ? MTX_CL_IDLE : MTX_CL_SILENT));
+        simClear(&s);
+        t = t40Script(&s, script, t, idle != 0);
+        CHECK(s.st.owner == 0 && s.st.token.slot == kMtxNone && s.st.n.claims == 0 && s.st.n.summons == 0);
+        CHECK(s.st.n.released_claim == 0 && !logHas(&s, "zero"));
+        // The rider of slot 1 now completes an arm gesture (finish 0: its SUMMON burst) or squeezes from zero (finish 1).
+        if (idle) fr(&s, 0, 0, 127, t);
+        fr(&s, 1, 0, 127, t + 50); fr(&s, 1, 0, 127, t + 150);
+        if (finish == 0) { fr(&s, 1, kMtxMetaRtm, kMtxSummonValue, t + 250); CHECK(s.st.n.summons == 1); }
+        else             { fr(&s, 1, 90, 127, t + 250); }
+        CHECK(s.st.n.claims == 1 && s.st.n.released_claim == 1 && (s.st.owner == 1 || s.st.token.slot == 1));
+      }
+  // (3) An owner who is NOT claimable (riding, or at zero for under 10 s): nothing takes control - not the SUMMON, not a
+  //     squeeze (the master's take-back, a separate owner-approved gesture, is T5).
+  for (int ride = 0; ride < 2; ride++) {
+    Sim s; simInit(&s, false, 0x03);
+    grantBySqueeze(&s, 0, 1000);
+    uint32_t t = 1300;
+    for (int i = 0; i < 30; i++, t += 100) { fr(&s, 0, ride ? 120 : 0, 127, t); fr(&s, 1, 0, 127, t + 50); }
+    fr(&s, 1, kMtxMetaRtm, kMtxSummonValue, t + 60); fr(&s, 1, 90, 127, t + 70);
+    CHECK(s.st.owner == 0 && s.st.n.claims == 0 && s.st.n.summons_refused == 1 && !logHas(&s, "zero"));
+  }
+  testEnd("T40");
+}
+
 int main(int argc, char** argv)
 {
   printf("multi_tx_test - Common/MultiTx.h (v3.2 step 1)\n");
@@ -2498,7 +2596,7 @@ int main(int argc, char** argv)
   t7(); t8(); t9(); t10(); t11(); t12(); t13(); t14(); t15(); t16(); t17(); t18();
   printf("T19  -> Tools/tests/config_migrate_test.cpp\n");
   t20(); t21(); t22(); t23(); t24(); t25(); t26(); t27(); t28(); t29(); t30(); t31(); t32(); t33();
-  t34(); t35(); t36(); t37(); t38(); t39();
+  t34(); t35(); t36(); t37(); t38(); t39(); t40();
   printf("%s: %d checks, %d failed\n", g_fails ? "FAILED" : "PASSED", g_checks, g_fails);
   return g_fails ? 1 : 0;
 }

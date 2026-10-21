@@ -1650,7 +1650,7 @@ static inline void mtxClampTxConfig(uint16_t* autolock_timeout_s, uint16_t* seiz
 //   THE RULES (step-1 audit Q3 items 1-6, step-2 audit section 6):
 //   - from the FIRST press (the window opens at once, the first repeat is due at once), through the press, the gap to
 //     a combo's second press (the window stays open kMtxActHoldMs after the last press) and the whole RTM ceremony;
-//   - at most every kMtxActRepeatMs (2.0 s; Rex: 2.5 s or less, so one lost packet never leaves a 6 s gap);
+//   - at most every kMtxActRepeatMs (2.0 s; the audit: 2.5 s or less, so one lost packet never leaves a 6 s gap);
 //   - only on a new-style link (proto 3), only while the latest status is OWNER (S = 001: in control with other
 //     remotes paired) - never in SINGLE (S = 000), so one remote stays byte-identical; never for a non-owner, whose
 //     metas the buggy drops anyway (a non-owner claims only by a squeeze from zero);

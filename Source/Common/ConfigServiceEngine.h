@@ -1,5 +1,5 @@
 // V2.5-Evo - 2026-10-20 - MULTI-REMOTE RECEIVER STEP: cfgSetBatch() (the JSON import and the batch API) no longer rejects a read-only key - a JSON export lists them, so it made every export un-importable once the RX own_address became read-only. The value goes into the staged copy only and the cross-field validator decides (on the RX a foreign own_address drops the binding and is reset to the chip ID). ?set still refuses it. The TX has no read-only row, so it is unaffected.
-// V2.5-Evo - 2026-10-20 - MULTI-REMOTE REMOTE STEP (step-2 audit Z-3): the read-only exception in cfgSetBatch() is PER ROW now. A read-only row is carried by a batch only where the board says its validator owns it (cfgBatchReadOnlyAccepted(): the RX own_address); every other read-only row in a batch is SKIPPED - not written, and not an error, so a JSON export with it still imports (the TX mtx_link_proto, written by pairing only). And each board finishes a batch (cfgBatchFinish(), before the cross-field validator): on the RX a JSON made on ANOTHER board keeps this board's own pairing instead of unpairing it (the owner option Rex offered; Larry's default 4).
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE REMOTE STEP (step-2 audit Z-3): the read-only exception in cfgSetBatch() is PER ROW now. A read-only row is carried by a batch only where the board says its validator owns it (cfgBatchReadOnlyAccepted(): the RX own_address); every other read-only row in a batch is SKIPPED - not written, and not an error, so a JSON export with it still imports (the TX mtx_link_proto, written by pairing only). And each board finishes a batch (cfgBatchFinish(), before the cross-field validator): on the RX a JSON made on ANOTHER board keeps this board's own pairing instead of unpairing it (the owner option the audit offered; interim default 4).
 #ifndef CONFIG_SERVICE_ENGINE_H
 #define CONFIG_SERVICE_ENGINE_H
 
@@ -52,7 +52,7 @@ bool cfgValidateCrossField(confStruct &candidate, String &err);
 //   cfgBatchFinish(staged, live) - the board's last word on a parsed batch, before the cross-field validator runs on
 //     it. Inputs: staged (the batch applied to a copy of the live config, in and out), live (the config the board runs
 //     now). Side effects: staged, and one NOTE line where it changes something.
-// WHY TWO FUNCTIONS AND NOT A NEW CfgFieldSpec MEMBER (Rex offered either): a member would need an eleventh initializer
+// WHY TWO FUNCTIONS AND NOT A NEW CfgFieldSpec MEMBER (the audit offered either): a member would need an eleventh initializer
 // on every row of both tables (about 140 rows, or a -Wmissing-field-initializers warning on each), for a property one
 // row has.
 bool cfgBatchReadOnlyAccepted(const CfgFieldSpec& spec);

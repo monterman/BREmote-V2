@@ -494,7 +494,7 @@ void handleGearToggle(int direction)
             // V2.5-Evo - 2026-10-07 - Q-10: THE BUG - the magnet tap already left Follow-Me alone during a return, but
             // this combo did not: it could disarm Follow-Me (with its 2 s blocking "St", freezing RTM's gates and
             // ramp) or re-declare it in the middle of a return. THE FIX: ignored while RTM is active or arming.
-            // V2.5-Evo - 2026-10-20 - ROW 1 (owner rule; Larry's default 2): the refusal while a return runs SHOWS - a brief
+            // V2.5-Evo - 2026-10-20 - ROW 1 (owner rule; interim default 2): the refusal while a return runs SHOWS - a brief
             // "St" + the stop buzz, NOT blocking (Q-10: a blocking hold froze RTM's gates and ramp), then the return's screen.
             // X-7: a remote NOT in control summons, before the enable check (busy owner -> E9, no fix / feature off -> "St").
             // ROW 2: Follow-Me unusable here (fm_override_enabled 0 or gps_en 0) was silent (no else) - now "St" + the stop
@@ -1550,7 +1550,7 @@ void runMagGesture()
         else if (hold_verdict == kMagHoldIgnored)
         {
           // R-2: a Return-To-Me is already running. Ignore the hold; the return continues untouched.
-          // V2.5-Evo - 2026-10-20 - ROW 9 (owner rule; Larry's default 2): a BRIEF "St" + the stop buzz, NOT blocking, then the
+          // V2.5-Evo - 2026-10-20 - ROW 9 (owner rule; interim default 2): a BRIEF "St" + the stop buzz, NOT blocking, then the
           // return's screen again. The return still continues untouched.
           mtxTxStopRefusal("MAG [TX] hold refused: Return-To-Me is already active, the return continues", MTX_ST_BRIEF);
         }
@@ -1594,7 +1594,7 @@ void runMagGesture()
         else if (rtm_tx_active || rtmIsArming())
         {
           // Return-To-Me owns the buggy right now — never touch Follow-Me underneath it.
-          // V2.5-Evo - 2026-10-20 - ROW 10 (owner rule; Larry's default 2): a tap that would ARM Follow-Me (not armed) was
+          // V2.5-Evo - 2026-10-20 - ROW 10 (owner rule; interim default 2): a tap that would ARM Follow-Me (not armed) was
           // silent; now a BRIEF "St" + the stop buzz, not blocking. A tap with Follow-Me armed (a station step) stays silent.
           if (!isFmArmed()) mtxTxStopRefusal("MAG [TX] tap refused: Return-To-Me is active - Follow-Me cannot arm under it", MTX_ST_BRIEF);
         }
@@ -1753,7 +1753,7 @@ void runMagGesture()
       // Mutual exclusion: never touch FM while RTM is active or mid-ceremony.
       // V2.5-Evo - 2026-10-20 - ROW 13 (RTM running) and ROW 14 (Follow-Me unusable) were silent `return`s. Now, for an ARM
       // attempt (Follow-Me not armed; a disarm the RTM rule blocks is not a refused arm): "St" + the stop buzz - brief and
-      // non-blocking over the running return (Larry's default 2), held without blocking if the trigger is held, the usual
+      // non-blocking over the running return (interim default 2), held without blocking if the trigger is held, the usual
       // 2 s otherwise. X-7: a remote NOT in control summons before the feature check. Every branch falls through to the
       // debounce resync below.
       if (rtm_tx_active || rtmIsArming())

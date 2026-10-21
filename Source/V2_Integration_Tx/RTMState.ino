@@ -2252,7 +2252,7 @@ void returnGesture()
   // one serial line, the return continues (Gate 3 still ends it on a release).
   if (rtm_tx_active || rtmIsArming())
   {
-    // V2.5-Evo - 2026-10-20 - ROW 6 (owner rule "if it cannot engage, show stop"; Larry's default 2): was serial only. Now a
+    // V2.5-Evo - 2026-10-20 - ROW 6 (owner rule "if it cannot engage, show stop"; interim default 2): was serial only. Now a
     // BRIEF "St" + the stop buzz, NOT blocking, then straight back to the return's screen - the return continues.
     mtxTxStopRefusal("RTM [TX] return gesture refused: Return-To-Me is already active on this remote, the return continues", MTX_ST_BRIEF);
     return;

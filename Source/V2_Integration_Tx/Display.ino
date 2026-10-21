@@ -792,7 +792,7 @@ void showFmStopLabelHeld()
 //   is HELD (the rider is driving) or this remote's own Follow-Me / return is RUNNING, the old 2 s "St" would block loop()
 //   and freeze Return-To-Me's gates and ramp (the Q-10 note): so it is drawn once and HELD, like the F-label, and every
 //   render path leaves the digit zone alone until it expires - the FM readout, the normal readout and the RTM screen. Over
-//   a running mode it is brief (Larry's default 2, owner to confirm), then the running mode's screen comes straight back.
+//   a running mode it is brief (interim default 2, owner to confirm), then the running mode's screen comes straight back.
 //   The glyphs are displayDigits(LET_S, LET_T), the same as every "St"; only the hold is new. The caller requests the
 //   stop buzz (vib_stop_pending). Its own stamp, separate from the F-label's, so no existing label path changes.
 // showStopHeld - draw "St" and hold it for hold_ms. Inputs: hold_ms. Side effects: the digit zone (takes displayMutex),
@@ -1735,7 +1735,7 @@ void renderRtmInfoDisplay()
     xSemaphoreGive(displayMutex);
     return;
   }
-  // V2.5-Evo - 2026-10-20 - a brief refusal "St" over the running return (showStopHeld(), Larry's default 2): the digit
+  // V2.5-Evo - 2026-10-20 - a brief refusal "St" over the running return (showStopHeld(), interim default 2): the digit
   // zone keeps it for its 1 s; the R5 bar and the dots keep updating; then the return's screen comes straight back.
   if (stopHeldActive())
   {

@@ -1277,7 +1277,7 @@ volatile unsigned long  mtx_ta_until_ms   = 0;
 #define MTX_SUMMON_FM  2
 #define MTX_ST_BLOCK   0   // the usual 2 s "St", blocking loop() like every existing "St" (trigger released, nothing running)
 #define MTX_ST_HELD    1   // 2 s, held WITHOUT blocking (the trigger is held)
-#define MTX_ST_BRIEF   2   // 1 s, held without blocking, over this remote's running Follow-Me / return (Larry's default 2)
+#define MTX_ST_BRIEF   2   // 1 s, held without blocking, over this remote's running Follow-Me / return (interim default 2)
 static const uint32_t kMtxStHeldMs  = 2000;
 static const uint32_t kMtxStBriefMs = 1000;
 // Cross-file functions of the multi-remote remote step (declared here: the .ino files are concatenated alphabetically).

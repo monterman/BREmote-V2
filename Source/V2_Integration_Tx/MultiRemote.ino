@@ -123,7 +123,7 @@ bool mtxTxIsNonOwner()
 //   always"): "St" + the stop buzz. style: MTX_ST_BLOCK = the usual 2 s, blocking like every existing "St" (the trigger is
 //   released and nothing runs); MTX_ST_HELD = 2 s held WITHOUT blocking (the trigger is held - the rider is driving);
 //   MTX_ST_BRIEF = 1 s held without blocking, then the running mode's screen (this remote's own Follow-Me / return runs;
-//   Larry's default 2). Inputs: why (one serial line, or NULL), style. Side effects: the stop buzz, the screen, Serial.
+//   interim default 2). Inputs: why (one serial line, or NULL), style. Side effects: the stop buzz, the screen, Serial.
 void mtxTxStopRefusal(const char* why, uint8_t style)
 {
   if (why) Serial.println(why);

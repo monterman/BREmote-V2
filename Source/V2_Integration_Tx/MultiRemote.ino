@@ -160,8 +160,8 @@ void mtxTxStopRefusal(const char* why, uint8_t style)
   }
 }
 
-// mtxTxShowE9 - a takeover try against a remote that is busy in control (owner rule: E9, as for a squeeze). Opens the
-//   1.5 s E9 window the screen draws; the loop tick gives the one Pattern A buzz on its rising edge.
+// mtxTxShowE9 - a takeover try against a remote that is busy in control (owner rule: the E code, as for a squeeze). Opens the
+//   1.5 s E-code window the screen draws; the loop tick gives the one Pattern A buzz on its rising edge.
 // V2.5-Evo - 2026-10-21 - E1-E4 (owner order): the window shows "E" + the number of the remote in control, held from the
 //   buggy's last index-20 reply (mtxTxRefusalDigit(): at most 5 s old, not cleared by an OWNER or FREE since), else E9.
 //   The digit is written before the window's stamp. Inputs: t (this remote's statuses), now. Returns: the digit shown.
@@ -190,11 +190,11 @@ static const char* mtxSummonVerdictText(uint8_t v)
   }
 }
 
-// mtxTxSummonTry - V2.5-Evo - 2026-10-20 - THE SUMMON (design v3.2 3.4.2; audit X-7, X-9). Called by the six fresh-arm sites
-//   while this remote is NOT in control, BEFORE their own enable checks. The gate (mtxSummonVerdict(), host test T29): the
+// mtxTxSummonTry - V2.5-Evo - 2026-10-20 - THE SUMMON (design v3.2 3.4.2; audit X-7, X-9). Called by the eight fresh-arm calls
+//   (every completed arm gesture) while this remote is NOT in control, BEFORE their own enable checks. The gate (mtxSummonVerdict(), host test T29): the
 //   latest status FREE and at most 5 s old; a fresh own fix - the exact test that lets this remote stream its rider GPS;
 //   the trigger released; the feature on; not locked, not in setup.
-//   REFUSED: NOTHING IS SENT. A refusal because another remote is busy in control is E9 (owner rule: a takeover try
+//   REFUSED: NOTHING IS SENT. A refusal because another remote is busy in control is E1-E4 (owner rule: a takeover try
 //   against a busy owner); every other refusal is "St" + the stop buzz (held without blocking if the trigger is held).
 //   PASSED: the SUMMON burst (internal queue type kMtxQueueSummon, which only the builder turns into 0xF1/0x3C, proto 3
 //   only), and THE WAIT IS A POLLED STATE (X-9), NOT A BLOCKING ONE: mtxTxLoopTick() watches for an owner status for up to
@@ -294,7 +294,7 @@ void mtxTxSummonDrop()
 // mtxTxSummonWait - the summon's polled wait (X-9). OWNER within 1500 ms of the send: the boot ID is queued AT ONCE (X-8;
 //   the telemetry task already queued it on the edge, this is the belt - since F-1 only if that queue was refused) and the
 //   arm is handed to mtxTxSummonGo(). NO
-//   ANSWER in 1500 ms: E9 if the status now says busy, else "St" + the stop buzz (held, not blocking). THE LATE GRANT
+//   ANSWER in 1500 ms: E1-E4 if the status now says busy, else "St" + the stop buzz (held, not blocking). THE LATE GRANT
 //   (documented, X-9): if the buggy granted but its FIRST owner status arrived after the 1500 ms, the remote has shown its
 //   refusal and armed nothing, yet it IS in control - the ownership dot goes SOLID and the rider simply makes the gesture
 //   again, now on the owner path (today's arm); the old owner's Follow-Me had already ended at the claim (accepted with
@@ -368,7 +368,7 @@ static void mtxTxSeizeWait(uint32_t now, const MtxTxStatus* t)
 //   reply's arrival (about 0.1-0.4 s after the burst: the burst leaves on the next 100 ms cycles, the buggy answers the
 //   frame within 40 ms). Both waits are idempotent, so mtxTxLoopTick() running them again is harmless. The deferred
 //   summon arm is NOT run here (it can be the blocking ceremony); it starts at the next loop pass, as before.
-//   Side effects: the wait states, the confirm buzz, the screen ("St" / E9 held without blocking), Serial.
+//   Side effects: the wait states, the confirm buzz, the screen ("St" / the E code held without blocking), Serial.
 void mtxTxAnswerPoll()
 {
   if (!txIsV3()) return;
@@ -417,7 +417,7 @@ bool mtxTxSeizeSuppress()
 
 // mtxTxLoopTick - once per loop() pass, after runMenu(): the rate's input stamp, the edges the telemetry task raised
 //   (control lost -> this remote's own Follow-Me / RTM end here, no packet; 2 SEIZED -> "tA" 3 s + one Pattern A buzz),
-//   the E9 buzz on its rising edge, the summon and take-back answers, the ownership dot, and the activity repeat.
+//   the E-code buzz on its rising edge, the summon and take-back answers, the ownership dot, and the activity repeat.
 //   Side effects: as listed. Loop task only.
 void mtxTxLoopTick()
 {
@@ -456,7 +456,7 @@ void mtxTxLoopTick()
     if (was_armed && !(ev & MTX_TXE_SEIZED_NOTICE)) mtxTxStopRefusal(NULL, MTX_ST_HELD);
   }
 
-  // E9 (design 9.8): one Pattern A buzz on the rising edge of the window.
+  // The E code (design 9.8; E1-E4, E9 if unknown): one Pattern A buzz on the rising edge of the window.
   const unsigned long e9 = mtx_e9_until_ms;
   const bool e9_on = (e9 != 0) && (long)(now - e9) < 0;
   if (e9_on && !s_e9_was_on && current_vib_pattern == 0) current_vib_pattern = 1;

@@ -213,7 +213,7 @@ void loop()
   runMenu();
   if(in_menu > 0) in_menu--;
   // V2.5-Evo - 2026-10-20 - MULTI-REMOTE: the loop side of the ownership rules (MultiRemote.ino) - the edges the telemetry task
-  // raised (control lost -> local disarm, "tA"), E9, the summon and take-back answers, the ownership dot, the activity repeat.
+  // raised (control lost -> local disarm, "tA"), the E code (E1-E4), the summon and take-back answers, the ownership dot, the activity repeat.
   // Returns at once on an old-style link and does nothing with one remote.
   mtxTxLoopTick();
 

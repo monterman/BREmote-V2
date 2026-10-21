@@ -1260,7 +1260,7 @@ MtxTxStatus  g_mtx_tx     = {};
 portMUX_TYPE g_mtx_tx_mux = portMUX_INITIALIZER_UNLOCKED;
 // Edges raised by the telemetry task inside the same mux (MTX_TXE_* bits), consumed by the loop (mtxTxLoopTick()).
 volatile uint8_t       mtx_tx_events    = 0;
-// E9 (design 9.8): shown while now is before this stamp (REFUSED arrived within 1500 ms, or a summon was refused
+// The E code (design 9.8; E1-E4, E9 if unknown): shown while now is before this stamp (REFUSED arrived within 1500 ms, or a summon was refused
 //   against a busy owner); 0 = never. Written by the telemetry task and the loop; one aligned word.
 volatile unsigned long  mtx_e9_until_ms  = 0;
 // V2.5-Evo - 2026-10-21 - E1-E4 (owner order): the digit drawn after the "E" in that window - 1-4, the number of the remote in

@@ -747,7 +747,7 @@ void sendData(void *parameter)
 // THE ADDRESS: an old-style record answers to own_address, as before; a new-style one to this chip's ID
 // (mtxTxReplyAddr()). THE STATUS (new-style link only): byte 3 = status in bits 7-5, index in bits 4-0; the status goes
 // to g_mtx_tx (mtxTxOnReply(): owner / lost owner / the SEIZED notice, edges for the loop), and REFUSED starts the 1.5 s
-// E9 window. On an old-style record byte 3 IS the index, read exactly as before.
+// E-code window. On an old-style record byte 3 IS the index, read exactly as before.
 // V2.5-Evo - 2026-10-21 - E1-E4: on a new-style link a reply at index 20 carries the number of the remote in control
 // (mtxTxOnNumber()); the window then shows E1-E4 (E9 while the number is unknown).
 void waitForTelemetry(void *parameter)

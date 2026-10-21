@@ -3,7 +3,7 @@
 // V2.5-Evo - 2026-10-20 - MULTI-REMOTE REMOTE STEP (SW29), the screen: (1) showStopHeld() - the refusal "St" held WITHOUT blocking
 //   loop() (2 s, or 1 s over a running mode), respected by all three render paths, for the gestures refused with the trigger held
 //   or while this remote's own Follow-Me / Return-To-Me runs (owner rule 2026-10-20: "if it cannot engage, show stop"); the
-//   glyphs are the existing large-font S and t. (2) E9 (design 9.8) and "tA" (9.9), after E71 and the input fault, only on a
+//   glyphs are the existing large-font S and t. (2) E9 (now E1-E4; design 9.8) and "tA" (9.9), after E71 and the input fault, only on a
 //   new-style multi-remote link. (3) The 24a0371 ownership dot at C7 R2, drawn ONLY while no Follow-Me dot needs R2 - its one
 //   call site; ?mtxdot drives it for the hardware check (project display rule). One remote: R2 is exactly as before.
 // V2.5-Evo - 2026-10-20 - MULTI-REMOTE (design 9.11, audit C16): the bargraphs' "connected" test is txLinkFresh() (1000 ms, 2500 ms
@@ -819,12 +819,12 @@ static bool stopHeldActive()
 }
 
 // ============================================================
-// V2.5-Evo - 2026-10-20 - E9 AND "tA" (design 9.8, 9.9): the buggy's answer to a remote that is not in control.
-//   E9 - another remote is in control and this remote's input is ignored (REFUSED within the last 1.5 s, or a summon
-//        refused against a busy owner); "tA" - control was taken from this remote (2 SEIZED in a row), for 3 s.
+// V2.5-Evo - 2026-10-20 - THE E CODE AND "tA" (design 9.8, 9.9): the buggy's answer to a remote that is not in control.
+//   E1-E4 - another remote is in control and this remote's input is ignored (REFUSED within the last 1.5 s, or a summon
+//           refused against a busy owner); "tA" - control was taken from this remote (2 SEIZED in a row), for 3 s.
 //   V2.5-Evo - 2026-10-21 - E9 is now "E" + the number of the remote in control: E1 (the master) to E4 (mtx_e9_digit); E9
 //        only while that number is not known. Same window, same buzz, same priority.
-//   Drawn after E71 and the input fault (display priority E71 > 72 > E9 > normal), in renderOperationalDisplay() only:
+//   Drawn after E71 and the input fault (display priority E71 > 72 > E1-E4 / E9 > normal), in renderOperationalDisplay() only:
 //   a remote that is not in control runs no Return-To-Me screen (losing control ends it, MultiRemote.ino). The stamps are
 //   set only on a new-style link with other remotes paired, so one remote never sees either.
 //   Returns: true if it drew (the caller then stops). CALLER MUST HOLD displayMutex.
@@ -939,7 +939,7 @@ void renderOperationalDisplay()
     xSemaphoreGive(displayMutex);
     return;
   }
-  // V2.5-Evo - 2026-10-20 - MULTI-REMOTE: E9 / "tA" next (see renderMtxNotice()).
+  // V2.5-Evo - 2026-10-20 - MULTI-REMOTE: the E code (E1-E4, E9 if unknown) / "tA" next (see renderMtxNotice()).
   if (renderMtxNotice())
   {
     xSemaphoreGive(displayMutex);

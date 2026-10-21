@@ -195,10 +195,10 @@ The rider-GPS packets keep their layout (announce 6 B, data 15 B), with `L` as t
 
 **Each remote gets its own telemetry rotation.** With one shared rotation, a remote answered every 10th time would never see some indices.
 
-**A remote that is not in control** gets the owner's Follow-Me and Return-To-Me fields blanked, so a guest's screen never shows someone else's mode. Battery, temperature, speed, water alarm and its own link quality are sent normally (at half the rate while another remote is in control, see below).
+**A remote that is not in control** gets the owner's Follow-Me and Return-To-Me fields blanked, so a guest's screen never shows someone else's mode. Battery, temperature, speed, water alarm and its own link quality are sent normally (at about half the rate while another remote is in control, and not at all while this remote squeezes and is refused, see below).
 
 **Index 20: the number of the remote in control.** Index 20 is not a telemetry index (the telemetry is 0-19, and the remote stores only those). A reply to a remote that is **not** in control, with status BUSY, SEIZABLE, REFUSED or SEIZED, carries at index 20 the number of the remote in control instead of a telemetry byte: its slot + 1, so the master is 1; while a claim is held for a remote (section 5.5), that remote's number; 0 = nobody.
-- It is sent on every REFUSED, at once when the number changed, and otherwise on every other reply. The rotation pauses on a number reply and skips nothing, so a remote that is not in control gets its telemetry at half the rate while another remote is in control.
+- It is sent on every REFUSED, at once when the number changed, and otherwise on every other reply. The rotation pauses on a number reply and skips nothing, so a remote that is not in control gets its telemetry at about half the rate while it hears BUSY, SEIZABLE or SEIZED. While it squeezes (REFUSED) every reply carries the number, so it gets no telemetry at all until it lets go.
 - The remote holds the number only while its newest status is one of those four, for at most 5 s, and drops it on OWNER or FREE. It shows **"E" + the number** (E1-E4) where it used to show E9, and E9 only when it holds no number.
 - The remote in control (001) and a single remote (000) never get it, and the old-style link is unchanged. The reply keeps its 6 bytes and its count: no airtime change.
 
@@ -314,8 +314,9 @@ The receiver's return-to-me loop watches that counter. It closes the short "how 
 - The receiver releases the old owner (section 5.3), then grants the new one under the takeover limit.
 - If Follow-Me was running on the buggy, it takes up to one Follow-Me tick (100 ms) to go idle. For up to 1 s, the claim is held for the claiming remote only. Nobody else can take control in that time.
 
-**A summon:** the remote that is not in control does its normal Return-To-Me gesture (RIGHT tap, then LEFT hold) or its Follow-Me gesture (LEFT tap, then RIGHT hold, or the magnet), with the trigger released.
-- **Only the completed gesture summons** (the maintainer's rule, 2026-10-21): the SUMMON is queued only where that gesture would arm the mode on the remote in control - after the combo's full hold, or on the magnet's removal after its full contact - never on the first tap or a gesture let go of early. A toggle tap, a gear change, the display cycle, the telemetry views and setup gestures never send a claim or a summon (host test T40); on the remote in control they still count as busy (section 5.4).
+**A summon:** the remote that is not in control does its normal Return-To-Me gesture (RIGHT tap, then LEFT hold, or its magnet Return-To-Me hold) or its Follow-Me gesture (LEFT tap, then RIGHT hold, or its magnet Follow-Me hold), with the trigger released.
+- **Only the completed gesture summons** (the maintainer's rule, 2026-10-21): the SUMMON is queued only where that gesture would arm the mode on the remote in control - after the combo's full hold, or on the magnet's removal after its full hold - never on the first tap or a gesture let go of early. A toggle tap, a gear change, the display cycle, the telemetry views and setup gestures never send a claim or a summon (host test T40); on the remote in control they still count as busy (section 5.4).
+- **The `mag_mode 4` magnet tap never summons** (the same rule): in that mode the 0.6-3 s tap is the whole Follow-Me gesture, a single contact, so it would be a first tap that takes control. The remote's gate refuses it whatever the status and sends nothing; the answer is the refused summon's below (E + the number against a busy owner, else "St"; host test T40). A `mag_mode 4` rider summons with the 5 s magnet hold (Return-To-Me) or a toggle combo, or takes control by a squeeze from zero. On the remote in control the tap is unchanged.
 - **On the remote, first:** the summon is refused and nothing is sent, unless:
   - the latest status is FREE (and at most 5 s old);
   - the remote has a fresh GPS fix (the same test that lets it send its rider-GPS stream);
@@ -429,9 +430,10 @@ So -60 accepts about 5 m or closer, leaves 14 dB of margin at arm's length, and 
 ### 8.2 Owner-only actions, and the summon
 
 - Follow-Me arm and mode changes, Return-To-Me arm, aux, and the rider-GPS stream need ownership.
-- **A remote that is not in control:** a Return-To-Me or Follow-Me arm gesture becomes a **summon** (section 5.5) when the status is FREE and the remote has a fresh GPS fix. Otherwise it sends nothing and shows "E1"-"E4" (another remote is in control: its number) or "St" with the stop buzz (section 5.5). Only the completed gesture can summon (section 5.5).
+- **A remote that is not in control:** a Return-To-Me or Follow-Me arm gesture becomes a **summon** (section 5.5) when the status is FREE and the remote has a fresh GPS fix. Otherwise it sends nothing and shows "E1"-"E4" (another remote is in control: its number) or "St" with the stop buzz (section 5.5). Only the completed gesture can summon, and never the `mag_mode 4` magnet tap (section 5.5).
 - **A toggle tap on a remote that is not in control changes nothing:** no gear, no cap.
 - **The boot ID when control arrives:** on the first "you control" answer the remote queues its boot ID once, so the buggy can see a later reboot of the new owner: **one packet** if it took control with a squeeze (its control stream then pauses for one 100 ms cycle only), **three** after a summon or a take-back (the trigger is released, and a summon's Return-To-Me ceremony may follow). The 10 s repeat counts that burst as its first send, so no second burst follows (host test T39).
+  - **The single packet is not acknowledged.** If it is lost on the air, the next one is the 10 s repeat (later still while a combo hold or the Return-To-Me ceremony blocks the remote's loop). In that window the buggy cannot see a reboot of the new owner: it reset its copy at the grant, so the first ID it hears is taken as the starting value. A summon whose first "you control" answer follows a frame with the trigger at 8 or more also gets one packet. Accepted: nothing is armed at a grant, a return armed in that window still ends 5 s after the remote's Return-To-Me refresh stops, a parked auto-return stays not-ready until an ID arrives, and Follow-Me ends 95 s after its last declaration. Nothing moves without the new owner's trigger.
 
 ### 8.3 Lock and auto-lock
 
@@ -463,7 +465,7 @@ So -60 accepts about 5 m or closer, leaves 14 dB of margin at arm's length, and 
 
 - **E1-E4**: refused; the digit is the number of the remote in control (1 = the master). One warning buzz (two short pulses) on the rising edge; it shows for 1.5 s after the last REFUSED. This is not the remote's error state, so the next toggle press is not taken as an error acknowledgement. It shows only while the remote in control cannot be claimed. A summon refused because another remote is in control also shows it. **E9** is the same answer while the remote holds no number (after lost replies, or in the 5 s after its control was taken when nobody ended up in control).
 - **"tA"**: control was taken (a take-back or a claim). Shown 3 s, with the same two short pulses. A remote that was silent when its control was claimed shows it when it is heard again.
-- **"St"** with the stop buzz: no new glyph. With two remotes: a summon refused for any other reason (no fresh fix, the feature off, the trigger held, a stale status; held without blocking whenever the trigger is held) or not answered within 1.5 s; a take-back not confirmed within 1 s; and a remote that lost control with Follow-Me or RTM armed but without a "tA" (for example a receiver reboot).
+- **"St"** with the stop buzz: no new glyph. With two remotes: a summon refused for any other reason (no fresh fix, the feature off, the trigger held, a stale status; held without blocking whenever the trigger is held) or not answered within 1.5 s; a `mag_mode 4` magnet tap while control is available (it never summons); a take-back not confirmed within 1 s; and a remote that lost control with Follow-Me or RTM armed but without a "tA" (for example a receiver reboot).
 - **"St" for every remote, one remote included** (the maintainer's rule: "if it cannot engage, show stop"): a Follow-Me or RTM gesture that cannot engage (the feature off, or the trigger held where it must be released) now shows "St" instead of nothing; held 2 s without blocking `loop()` when the trigger is held. While this remote's own Return-To-Me is running or arming, or its own Follow-Me is armed, the refusal is a brief 1 s "St" that never blocks, then the running mode's screen comes back. The RTM arm ceremony's two timeouts (no first or no second squeeze within `rtm_arm_window_s`) also show "St", held 2 s. **No "St" for a blocked end or change:** a gesture that would only have ended or changed a running mode (a magnet RTM hold during a return, the Follow-Me combo while Follow-Me is armed) and is blocked by the held trigger shows nothing new; the mode continues and its screen stays, as in SW27. A remote that is not in control and makes a toggle gesture with the trigger held takes the summon gate, as the magnet does: the E code against a busy owner, else "St".
 - **Ownership dot:** shares the Follow-Me status dot (C7 R2) and shows only while the Follow-Me dots are off. SOLID = in control (OWNER); PULSE (on-off-on-pause, 1.2 s) = FREE; SLOW (a 200 ms blip every 3 s) = BUSY, SEIZABLE, REFUSED or SEIZED; OFF = one remote (OWNER_SOLO), an old-style link, or no reply for 5 s. `?mtxdot [0-3|auto]` forces it for the display check.
 
@@ -667,7 +669,7 @@ Losing the fix never makes the remote claimable: it is still transmitting.
 | T37 | the remote's config rules: the link protocol (0 or 3, otherwise unpaired) and the three clamps |
 | T38 | E1-E4: index 20 is outside the telemetry rotation; the statuses that carry the number; the owner or a claim's holder is "in control"; the send rule (every REFUSED, a change at once, else every other reply); two and three remotes through the model (take-back, a held claim, nobody -> E9); never with one remote; the remote's 5 s hold; a random three-remote run in which a remote never shows another remote's number |
 | T39 | the boot ID when control arrives: one burst per edge (before the fix six packets, nine with a late summon), one packet after a squeeze, three after a summon or take-back, also with the loop blocked by a held toggle; no edge = the old repeat exactly |
-| T40 | on a remote that is not in control only a squeeze from zero or the completed gesture's SUMMON takes control: nothing but the summon queue type builds `0xF1/0x3C`; a claimable owner keeps control through taps, a trigger under the squeeze threshold, a lock and every other meta |
+| T40 | on a remote that is not in control only a squeeze from zero or the completed gesture's SUMMON takes control: nothing but the summon queue type builds `0xF1/0x3C`; a claimable owner keeps control through taps, a trigger under the squeeze threshold, a lock and every other meta; the `mag_mode 4` tap is refused by the remote's gate for every status and input (E + the number, or "St"), while the full hold still summons |
 
 ### 14.2 Builds
 
@@ -693,7 +695,7 @@ Losing the fix never makes the remote claimable: it is still transmitting.
 - ownership and dots;
 - the E codes: E1 on the guest while the master rides, E2 on the master while the guest rides, the same digit for a refused summon; E9 should not appear;
 - the boot ID when control arrives (counted in the remote's radio debug output, the `RTM meta-pkt` lines): one packet after a squeeze claim, three after a summon or a take-back;
-- with the other remote claimable: a toggle tap, a gear change, the display cycle and a combo let go early claim nothing; the completed gesture does;
+- with the other remote claimable: a toggle tap, a gear change, the display cycle and a combo let go early claim nothing; the completed gesture does; with `mag_mode 4`, one accidental magnet contact (0.6-3 s) on the spare claims nothing ("St"), its 5 s hold does;
 - claimable by idle (manual only), with the presence rule; release by lock and by auto-lock;
 - takeover from zero under the limit;
 - a guest can never take from an active master;
@@ -727,7 +729,7 @@ Settled while the code was written, by the maintainer or by the code review. The
 
 - **The refusal signal.** A summon refused because another remote is in control shows the same answer a squeeze gets; every other refusal shows "St" (sections 5.5, 8.5).
 - **E1-E4 instead of E9** (the maintainer's order, 2026-10-21): that answer names the remote in control, "E" + its number, carried at reply index 20 (section 4.3). E9 remains only for "number unknown".
-- **Only the completed arm gesture summons** (the maintainer's rule, 2026-10-21; section 5.5).
+- **Only the completed arm gesture summons** (the maintainer's rule, 2026-10-21; section 5.5). The `mag_mode 4` magnet tap, a single contact, never does.
 - **The boot ID when control arrives** is one burst, and one packet after a squeeze (section 8.2).
 - **"St" when it cannot engage, on every remote.** A Follow-Me or RTM gesture that cannot engage, and the RTM arm ceremony's timeouts, show "St" instead of nothing, one remote included. Over a running return or this remote's armed Follow-Me it is a brief 1 s "St" (an interim choice, still to be confirmed); with the trigger held it does not block `loop()`. A blocked end or change of a running mode shows no "St" (section 8.5).
 - **The take-back and summon answers** are judged on the first owner status after the send and read while the button is held, so a longer hold never reads as "no answer"; the summon's arm re-checks its preconditions first (sections 5.5, 8.4).
@@ -771,7 +773,7 @@ Settled while the code was written, by the maintainer or by the code review. The
 
 ## 16. Decisions by the maintainer (2026-10-20), and what is still open
 
-1. **The takeover limit** (25 % rising to full over 4 s, at most 10 s, only lowering, never GPS-based, multi-remote only) **is accepted** as an exception to "automation never leaves a cap on manual throttle". It applies only at the moment control passes.
+1. **The takeover limit** (25 % rising to full over 4 s, at most 10 s, only lowering, never GPS-based, multi-remote only, plus once right after the paired list changes from two or more remotes to one, section 5.3) **is accepted** as an exception to "automation never leaves a cap on manual throttle". It applies only at the moment control passes.
 2. **"Another remote is in control"** is accepted as a legitimate reason a trigger does nothing (E1-E4, the number of that remote), next to the deadman, the link-loss failsafe and lock.
 3. **Follow-Me / auto-return ending with two remotes:** decided as the claim model above. Silence alone never ends Follow-Me; only a deliberate claim by the other remote does, after 10 s of silence. With one remote, nothing changes.
 4. **The older multi-remote notes in this fork are superseded** (a master timeout of 10-15 s, a guest never above the master's last throttle). They are replaced by the claim model, the takeover limit, and "new-style remotes only once two or more are paired".

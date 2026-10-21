@@ -68,7 +68,7 @@ static const uint8_t  kMtxTelemetryLen   = 20;     // TelemetryPacket indices 0-
 
 // Throttle and steering bytes (0-255 counts; steering centre 127).
 static const uint8_t  kMtxZeroThr        = 8;      // a throttle byte below this is "at zero"
-static const uint8_t  kMtxInputThr       = 12;     // a throttle byte at or above this is a squeeze (grant, claim, E9)
+static const uint8_t  kMtxInputThr       = 12;     // a throttle byte at or above this is a squeeze (grant, claim, E1-E4)
 static const uint8_t  kMtxSteerCentre    = 127;
 static const uint8_t  kMtxSteerInput     = 24;     // steering this far off centre is input
 static const uint8_t  kMtxZeroPkts       = 2;      // zero packets needed before a grant, a claim or a take-back
@@ -163,7 +163,7 @@ static inline uint8_t mtxSteerOff(uint8_t steer)
   return (steer >= kMtxSteerCentre) ? (uint8_t)(steer - kMtxSteerCentre) : (uint8_t)(kMtxSteerCentre - steer);
 }
 
-// mtxFrameHasInput - does a control frame carry input for the REFUSED (E9) answer? A squeeze (>= 12) or steering
+// mtxFrameHasInput - does a control frame carry input for the REFUSED (E1-E4) answer? A squeeze (>= 12) or steering
 //   24 or more off centre. Inputs: throttle and steering bytes. Returns: bool. Side effects: none.
 static inline bool mtxFrameHasInput(uint8_t thr, uint8_t steer)
 {
@@ -257,7 +257,7 @@ static const uint8_t MTX_S_OWNER      = 1;   // you control; other remotes are p
 static const uint8_t MTX_S_FREE       = 2;   // nobody controls, or the remote in control can be claimed
 static const uint8_t MTX_S_BUSY       = 3;   // another remote controls
 static const uint8_t MTX_S_SEIZABLE   = 4;   // a guest controls; you are the master and may take it back
-static const uint8_t MTX_S_REFUSED    = 5;   // another remote controls and your input is ignored -> E9
+static const uint8_t MTX_S_REFUSED    = 5;   // another remote controls and your input is ignored -> E1-E4
 static const uint8_t MTX_S_SEIZED     = 6;   // your control was taken (take-back or claim) -> "tA"
 static const uint8_t MTX_S_RESERVED   = 7;   // never sent; read as BUSY
 
@@ -921,7 +921,7 @@ static inline bool mtxSeizeOk(const MtxRxState* st, const MtxRxCfg* c, const Mtx
 //   1. SEIZED: control was claimed from it (the notice; the 5 s hold restarts from this frame), or within the hold;
 //   2. BUSY: a claim token is held by another slot;
 //   3. FREE: nobody owns, or the owner is claimable;
-//   4. REFUSED: this frame carries input (E9);
+//   4. REFUSED: this frame carries input (E1-E4);
 //   5. SEIZABLE: it is the master, a guest owns, take-back enabled, nothing armed;
 //   6. BUSY.
 //   Inputs: st, c, e, s, frame_has_input (false for LOCKED), now. Returns: MTX_S_*. Side effects: the claim notice

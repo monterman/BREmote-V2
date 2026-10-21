@@ -4,7 +4,7 @@
 // V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-7 b: the unlock in runMenu() switches the radio on only if it is off, so it no longer
 //   reconfigures a live radio after the LEFT-hold lock or the auto-lock. No confStruct change.
 // V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-6 b: the toggle rows 3 / 4 (trigger held) send a remote NOT in control through the
-//   summon gate, as the magnet does: E9 against a busy owner on both routes, "St" otherwise. No confStruct change.
+//   summon gate, as the magnet does: E9 (now E1-E4) against a busy owner on both routes, "St" otherwise. No confStruct change.
 // V2.5-Evo - 2026-10-21 - the mode 4 hold's "Return-To-Me cannot start" St goes through mtxTxStopRefusal() (same 2 s block),
 //   so over this remote's own Follow-Me it is the brief non-blocking one. No confStruct change.
 // V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-2: no "St" over a running mode for a gesture that could not ARM. Roles 1-3: a running
@@ -16,7 +16,7 @@
 //   2026-10-20): (1) every toggle press and magnet contact is INPUT (the spare's rate) and ACTIVITY (the remote in control repeats
 //   0xF1/0 while a press is in progress, mtxActivityNote()/Tick(); never in SINGLE). (2) A remote NOT in control on a multi-remote
 //   buggy SUMMONS from the six fresh-arm sites - the FM toggle combo here, the RTM combo inside returnGesture(), the mode 4 hold
-//   and tap, the roles 1-3 RTM and FM holds - BEFORE their enable checks (X-7), so a busy owner answers E9 and a missing fix
+//   and tap, the roles 1-3 RTM and FM holds - BEFORE their enable checks (X-7), so a busy owner answers E9 (now E1-E4) and a missing fix
 //   or a disabled feature "St"; it needs the trigger released (in the summon gate) and a magnet arrival counts as the first
 //   press. In control, with one remote, or on an old-style link every site runs today's code. (3) THE REFUSALS SHOW "St" +
 //   the stop buzz (rows 1-4, 8-14 of the 4.3 table; owner: "if it cannot engage, show stop"): non-blocking and brief over a
@@ -513,7 +513,7 @@ void handleGearToggle(int direction)
             // ramp) or re-declare it in the middle of a return. THE FIX: ignored while RTM is active or arming.
             // V2.5-Evo - 2026-10-20 - ROW 1 (owner rule; interim default 2): the refusal while a return runs SHOWS - a brief
             // "St" + the stop buzz, NOT blocking (Q-10: a blocking hold froze RTM's gates and ramp), then the return's screen.
-            // X-7: a remote NOT in control summons, before the enable check (busy owner -> E9, no fix / feature off -> "St").
+            // X-7: a remote NOT in control summons, before the enable check (busy owner -> E1-E4, no fix / feature off -> "St").
             // ROW 2: Follow-Me unusable here (fm_override_enabled 0 or gps_en 0) was silent (no else) - now "St" + the stop
             // buzz, the usual 2 s (the trigger is released: this branch needs thr < 10). Not while Follow-Me is already armed:
             // a disarm the switch-off blocks is not a refused arm, and "St" would say Follow-Me stopped.
@@ -587,8 +587,8 @@ void handleGearToggle(int direction)
                         (unsigned)thr_scaled);
         }
         // V2.5-Evo - 2026-10-21 - P3-6 b: a remote NOT in control takes the summon gate here too, as the magnet does with the
-        // trigger held (X-7): E9 against a busy owner (the owner's rule for a takeover try), else "St" held (it refuses on the
-        // held trigger and sends nothing). Before, this toggle row showed "St" where the magnet showed E9.
+        // trigger held (X-7): E1-E4 against a busy owner (the owner's rule for a takeover try), else "St" held (it refuses on the
+        // held trigger and sends nothing). Before, this toggle row showed "St" where the magnet showed the E code.
         else if (mtxTxIsNonOwner())
         {
           mtxTxSummonTry(MTX_SUMMON_RTM);
@@ -615,7 +615,7 @@ void handleGearToggle(int direction)
         }
         else if (mtxTxIsNonOwner())
         {
-          mtxTxSummonTry(MTX_SUMMON_FM);   // V2.5-Evo - 2026-10-21 - P3-6 b: as row 4 above (E9 against a busy owner, else "St")
+          mtxTxSummonTry(MTX_SUMMON_FM);   // V2.5-Evo - 2026-10-21 - P3-6 b: as row 4 above (E1-E4 against a busy owner, else "St")
         }
         else
         {
@@ -1607,7 +1607,7 @@ void runMagGesture()
         }
         else if (mtxTxIsNonOwner())
         {
-          // V2.5-Evo - 2026-10-20 - X-7: NOT in control - the summon gate, BEFORE the enable check below (busy owner -> E9;
+          // V2.5-Evo - 2026-10-20 - X-7: NOT in control - the summon gate, BEFORE the enable check below (busy owner -> E1-E4;
           // no fix, RTM off, gps_en 0 -> "St"). On success the ceremony starts once the buggy names this remote the owner.
           mtxTxSummonTry(MTX_SUMMON_RTM);
         }

@@ -2330,7 +2330,7 @@ void returnGesture()
     return;
   }
   // V2.5-Evo - 2026-10-20 - X-7: A REMOTE NOT IN CONTROL SUMMONS (design v3.2 3.4.2) - here, after the trigger and the
-  // override branches and BEFORE the enable check below, so the answer to a busy owner is E9 and a missing fix or a
+  // override branches and BEFORE the enable check below, so the answer to a busy owner is E1-E4 and a missing fix or a
   // disabled feature is "St", never silence. The summon gate (mtxTxSummonTry()) sends nothing on a refusal; on success the
   // ceremony below starts from MultiRemote.ino once the buggy names this remote the owner. In control (or with one
   // remote, or an old-style link) this is today's path.

@@ -1,6 +1,6 @@
-# Multi-remote design v3.1 ("hybrid")
+# Multi-remote design v3.2 ("hybrid")
 
-> **Design v3.1 — NOT implemented, NOT tested. For review.**
+> **Design v3.2 — NOT implemented, NOT tested. For review.**
 >
 > Nothing in this document exists in the firmware yet. No board has been flashed with it. It is
 > published so the protocol, the safety rules and the test plan can be reviewed **before** any code
@@ -15,7 +15,7 @@
 
 **Base:** V2.5-Evo at commit `652112a`: receiver SW36, `confStruct` 200 bytes; remote SW27, 136 bytes. Line references below are at that commit.
 
-**Proposed versions:** receiver SW37 (232 bytes) and remote SW29 (144 bytes). Both carry the old settings over (section 13).
+**Proposed versions:** receiver SW37 (232 bytes) and remote SW29 (144 bytes). Both carry the old settings over (section 13). v3.2 adds no new setting to v3.1.
 
 ---
 
@@ -38,7 +38,7 @@ The ideas come from the forum discussion:
   - one pairing window for all remotes;
   - minimum RF power while pairing.
 
-A design review before code produced the v3.1 changes listed in section 15.
+A design review before code produced the v3.1 changes. The maintainer's decisions of 2026-10-20 produced v3.2: the **claim model**, the **summon**, and the rule for **remotes without GPS** (section 15).
 
 ---
 
@@ -46,7 +46,8 @@ A design review before code produced the v3.1 changes listed in section 15.
 
 - **One buggy and up to two remotes.** The data structures keep room for four remotes, so a third remote later needs no layout change.
 - **Several buggies near each other are not a supported use yet.** The packet format already keeps buggies apart (section 3), and a host test checks it. A separate design pass will cover that case.
-- **With a single remote paired, nothing changes.** The receiver runs today's code path, byte for byte.
+- **With a single remote paired, nothing changes.** The receiver runs today's code path, byte for byte, **including what Follow-Me and Return-To-Me do when the remote goes silent** (section 5.6).
+- **Remotes with and without GPS can share a buggy.** A remote without a GPS fix gets manual control only (section 8.7).
 
 ---
 
@@ -65,18 +66,25 @@ A design review before code produced the v3.1 changes listed in section 15.
 - **One owner at a time.** Only the owner's packets can refresh the motor failsafe or set the throttle.
 - With no owner, the motor gate is shut, exactly like today's failsafe.
 
-**Takeover and release:**
-- **Takeover only from zero throttle**, then a limit: 25 % at the moment of takeover, rising evenly to full over 4 s.
-- **Release happens in one of three ways:**
-  - by lock;
-  - by 5 s at zero while another unlocked remote is on;
-  - by losing the owner's signal for failsafe time + 5 s while another unlocked remote is on.
-- **A spare remote that nobody touches for 120 s locks itself.** A locked remote cannot take control and does not count as "another remote on".
-- **The master can take control back from a guest:**
-  - throttle at zero;
-  - toggle RIGHT tap, then RIGHT hold 1.2 s;
-  - refused while Follow-Me or Return-To-Me is armed.
-  - About 1.6 s to motor zero. The guest's remote shows "tA".
+**How control passes: the claim model.**
+- **No timer ever releases the remote in control, and no timer ever ends Follow-Me or Return-To-Me.**
+- **Lock** releases at once.
+- With another unlocked remote on, the remote in control becomes **claimable**:
+  - after **10 s of silence** (switched off or out of range; a remote that goes to sleep switches Follow-Me and Return-To-Me off itself first); or
+  - after **10 s at zero throttle**, but only while Follow-Me and Return-To-Me are off.
+- **Claimable changes nothing on the buggy.** Follow-Me or Return-To-Me stays armed, the motor failsafe keeps the motors stopped, and if the remote in control is heard again first, nothing has changed (a remote that was switched off and on still ends Follow-Me and Return-To-Me through its boot ID, as today).
+- **Control passes only when the other remote claims it on purpose:**
+  - a **squeeze from zero throttle**: manual control, under the takeover limit; or
+  - a **summon**: its Return-To-Me or Follow-Me gesture, which needs its own GPS fix. It takes control, and the buggy then comes to that rider, through the normal arming steps.
+- **A spare remote that nobody touches for 120 s locks itself.** A locked remote cannot claim and does not count as "another remote on".
+
+**Takeover limit:** every time control passes, the new remote's throttle is limited to 25 % at that moment, rising evenly to full over 4 s, because the buggy may be near the other rider. Then it ends on its own.
+
+**Master take-back:**
+- throttle at zero;
+- toggle RIGHT tap, then RIGHT hold 1.2 s;
+- refused while Follow-Me or Return-To-Me is armed.
+- About 1.6 s to motor zero, and it works even while the guest is driving. **It zeroes the guest's throttle at once (the buggy stops), so the master should not take back while the guest depends on the buggy.** The guest's remote shows "tA".
 
 **Pairing:**
 - One receiver window for all remotes. The list is kept in RAM and saved only when the window closes, so an aborted pairing never unpairs the buggy.
@@ -128,17 +136,20 @@ This is the table referred to by `DESIGN_RETURN_TO_ME.md`.
 | `0xF4` | flags | aux (light / find-me) |
 | `0xF5-0xFF` | - | unallocated, never sent. A receiver at this commit reads them as throttle, so they must stay unused. |
 
-**Proposed by v3.1 (not implemented):**
+**Proposed by v3.2 (not implemented):**
 
 | Byte 3 | Byte 4 | Meaning | Sent by |
 |---|---|---|---|
 | `0xF1` | **`0x10`** | **LOCKED**: this remote is locked | new-style remotes only, always with a link-ID address |
 | `0xF1` | **`0x5A`** | **SEIZE**: the master takes control back | the master only, same rule |
-| `0xF5-0xFF` | - | still never sent; a v3.1 receiver **drops** them from every remote | - |
+| `0xF1` | **`0x3C`** | **SUMMON**: a remote that is not in control claims a free or claimable buggy without a squeeze (section 5.5) | a remote that is not in control and has a fresh GPS fix, same rule; never while locked |
+| `0xF5-0xFF` | - | still never sent; a v3.2 receiver **drops** them from every remote | - |
 
-**Why LOCKED and SEIZE live inside 0xF1.** Any new code must be harmless on a buggy that never got the update.
+With a single remote paired, a receiver drops SEIZE and SUMMON.
 
-| Receiver build | What `0xF1/0x10` or `0xF1/0x5A` does there |
+**Why LOCKED, SEIZE and SUMMON live inside 0xF1.** Any new code must be harmless on a buggy that never got the update.
+
+| Receiver build | What `0xF1/0x10`, `0xF1/0x5A` or `0xF1/0x3C` does there |
 |---|---|
 | before 2026-04-25, and upstream receivers | throttle 241. This is the same as every existing 0xF1-0xF4 meta packet on those builds; only the address protects them, and a link-ID frame never matches it. |
 | 2026-04-25 to 2026-09-28 | the value is ignored, but on these builds any meta packet refreshes the motor failsafe |
@@ -146,7 +157,7 @@ This is the table referred to by `DESIGN_RETURN_TO_ME.md`.
 
 A new code in `0xF5`/`0xF6` would instead be 96 % throttle on every one of these builds.
 
-**One frame builder.** On the remote, a single function produces address and byte 3 together. It is the only place that can emit LOCKED or SEIZE, and only with a link-ID address.
+**One frame builder.** On the remote, a single function produces address and byte 3 together. It is the only place that can emit LOCKED, SEIZE or SUMMON, and only with a link-ID address.
 
 ### 4.2 Uplink layout
 
@@ -172,11 +183,11 @@ The rider-GPS packets keep their layout (announce 6 B, data 15 B), with `L` as t
 |---|---|---|
 | 000 | OWNER_SOLO | you control, and you are the only remote. **The reply is then byte-identical to today's.** |
 | 001 | OWNER | you control; other remotes are paired |
-| 010 | FREE | nobody controls; take it from zero throttle |
+| 010 | FREE | nobody controls, **or the remote in control can be claimed**: take it from zero throttle, or summon it |
 | 011 | BUSY | another remote controls |
 | 100 | SEIZABLE | a guest controls; you are the master and may take it back |
 | 101 | REFUSED | another remote controls and your input is ignored → **E9** |
-| 110 | SEIZED | the master took control from you → **"tA"** |
+| 110 | SEIZED | the master took control from you, or another remote claimed it → **"tA"** |
 | 111 | reserved | read as BUSY |
 
 **Each remote gets its own telemetry rotation.** With one shared rotation, a remote answered every 10th time would never see some indices.
@@ -185,7 +196,7 @@ The rider-GPS packets keep their layout (announce 6 B, data 15 B), with `L` as t
 
 ### 4.4 Pairing frames (byte 0)
 
-| Frame | Today | v3.1 |
+| Frame | Today | v3.2 |
 |---|---|---|
 | request (remote → buggy, 5 B) | `0xAB` + address | `0xAD` + remote ID |
 | answer (buggy → remote, 8 B) | `0xBA` | `0xDA` + remote ID + buggy ID |
@@ -202,7 +213,7 @@ The rider-GPS packets keep their layout (announce 6 B, data 15 B), with `L` as t
 
 | Mode | When | Behaviour |
 |---|---|---|
-| SINGLE | exactly one remote paired (old or new) | today's code path. A LOCKED frame is handled exactly like today's locked packet (0 / 127). Status always 000. No takeover limit. |
+| SINGLE | exactly one remote paired (old or new) | today's code path. A LOCKED frame is handled exactly like today's locked packet (0 / 127). SEIZE and SUMMON are dropped. Status always 000. No takeover limit, no claim. |
 | MULTI | 2-4 remotes paired, **all new-style** | the ownership rules below |
 | unpaired | no valid entry | nothing is accepted |
 
@@ -228,10 +239,14 @@ Then:
 
 The zero-proof counter is updated **after** that check. A held trigger never takes control.
 
-**Control packet from another remote:**
+**Control packet from another remote, while the owner is NOT claimable:**
 - with input → REFUSED (E9);
 - without input → BUSY, SEIZABLE or SEIZED.
 - The owner's motors are not affected.
+
+**Control packet from another remote, while the owner IS claimable** (section 5.4):
+- zero proof (as above) and a squeeze → **a claim** (section 5.5);
+- a held trigger without zero proof → FREE (no E9, no claim).
 
 **LOCKED from the owner:** release at once. A locked frame never counts as zero proof, so an unlock squeeze cannot become a takeover.
 
@@ -241,13 +256,22 @@ The zero-proof counter is updated **after** that check. A held trigger never tak
 - Follow-Me and Return-To-Me are not armed;
 - the master sent zero throttle within the last second.
 
+It is accepted even while the guest is driving.
+
+**SUMMON from another remote:** accepted when all of these hold:
+- nobody owns, or the owner is claimable;
+- the summoning remote sent zero throttle within the last second;
+- the motor output is running.
+
+Otherwise it is dropped and the summoning remote shows "St".
+
 **Meta packets** (RTM, Follow-Me, GPS, aux): from the owner only. A guest's GPS announce never switches the receiver into 15-byte mode.
 
 ### 5.3 Release and takeover
 
-**Release does this, in this order:**
+**Release** happens on a lock, a master take-back or a claim, never on a timer. It does this, in this order:
 1. throttle 0 and steering centre (no failsafe stamp, so the gate shuts on its own clock);
-2. "RTM off" through the existing handler (which keeps the slow ceiling of a return that was running);
+2. "RTM off" through the existing handler (which arms the slow ceiling of a return that was running; it only lowers throttle, and because step 1 already zeroed the throttle it normally clears on the next motor pass);
 3. "Follow-Me off";
 4. the rider-GPS state, the GPS cross-checks and the remote boot ID reset;
 5. an owner-change counter.
@@ -258,13 +282,58 @@ The receiver's return-to-me loop watches that counter. It closes the short "how 
 - The **takeover limit** (section 6) is published first, then the new owner's throttle.
 - The limit's start time is never stored as 0, because 0 means "no limit".
 
-### 5.4 Release timers
+### 5.4 Claimable: the claim timers
 
 - **"Another remote on"** = a remote other than the owner sent a control packet (not LOCKED) within the last 3 s.
-- **Link loss:** the owner is silent for failsafe time + 5 s (6 s by default) while another remote is on.
-- **Idle:** the owner has sent zero throttle and no steering for 5 s while another remote is on, and Follow-Me / Return-To-Me are not armed.
-- **Without another remote on, the owner keeps control**, exactly as today. A solo rider is never released by a pause or a dropout.
-- The timers may run late, never early. **Motor safety never depends on them:** the existing motor failsafe shuts at failsafe time on its own.
+- **Silent:** nothing heard from the owner for 10 s in total, and never less than the failsafe time + 1 s.
+- **Idle:** the owner has sent zero throttle and no steering for 10 s, **and Follow-Me and Return-To-Me are not armed.** While either is armed, idle never counts; only silence does.
+- **Claimable** = another remote on, and the owner silent or idle.
+- **Claimable releases nothing and ends nothing.** The other remotes hear FREE. The owner keeps control until another remote claims it.
+- **The owner coming back** (any packet after silence, any input after idle) ends claimable at once. It never lost control, so it gets no limit.
+- **Without another remote on, the owner keeps control**, exactly as today.
+- One setting, `mtx_claim_s` (10 s), serves both the silence and the idle time.
+- **Motor safety never depends on these timers.** The existing motor failsafe shuts at failsafe time on its own.
+
+### 5.5 Claims and the summon
+
+**A claim by squeeze** (from a claimable owner, or after a lock or a boot when nobody owns):
+- It needs zero throttle first, then a squeeze, like any takeover.
+- The receiver releases the old owner (section 5.3), then grants the new one under the takeover limit.
+- If Follow-Me was running on the buggy, it takes up to one Follow-Me tick (100 ms) to go idle. For up to 1 s, the claim is held for the claiming remote only. Nobody else can take control in that time.
+
+**A summon:** the remote that is not in control does its normal Return-To-Me gesture (RIGHT tap, then LEFT hold) or its Follow-Me gesture (LEFT tap, then RIGHT hold, or the magnet), with the trigger released.
+- **On the remote, first:** the summon is refused with "St" and the stop buzz, and nothing is sent, unless:
+  - the latest status is FREE;
+  - the remote has a fresh GPS fix (the same test that lets it send its rider-GPS stream);
+  - the feature is enabled;
+  - the remote is not locked.
+- **On the buggy:** it is accepted only if nobody owns or the owner is claimable, and the summoning remote was at zero within the last second. **A summon can never take control from a remote that is commanding the buggy.**
+- **Then the summoning remote is the owner** (under the takeover limit), and it arms Return-To-Me or Follow-Me **through today's normal arming path.** The buggy checks every gate as it does today:
+  - the new rider's GPS stream (only the owner's stream is accepted);
+  - the GPS cross-check, including the maximum rider distance (it restarts with each owner, so it runs on the first GPS packet from the new rider);
+  - its own GPS and heading.
+- **The previous rider's fix is marked stale at the release:** its time stamp is cleared. Every check that reads the rider's position requires a fresh time stamp, and the three rider-position filters start over, so the buggy can never steer toward where the previous rider was. (The coordinates themselves stay in memory, unused.)
+- Nothing moves without the summoning rider's trigger: Return-To-Me still needs its squeeze ceremony, and auto-return needs the squeeze.
+- If the buggy then refuses the arm (for example the rider is beyond the maximum distance), the summoning remote keeps manual control and sees today's "St" or not-ready screen.
+
+**The rider whose control was claimed** sees "tA" when his remote is heard again, and his remote drops its Follow-Me screen.
+
+### 5.6 Single remote: nothing changes, including when the remote goes silent
+
+With one remote paired, or with the second remote switched off or locked, **no claim can occur**: a claim needs a second remote that is on, unlocked and transmitting. With the second remote off or locked, two things still differ from a single paired remote, and neither touches Follow-Me or Return-To-Me:
+- after the remote's own lock (which releases control) or a buggy reboot, nobody owns, so the remote's next squeeze takes control under the takeover limit;
+- in that state its Return-To-Me or Follow-Me gesture is a summon. Nothing is armed while nobody owns, so a summon there ends nothing; the arm that follows is the normal one.
+
+So the buggy does exactly what today's firmware does when its only remote goes silent:
+- **Motor:** the gate shuts at failsafe time (default 1 s). When the remote is back, it reopens with the soft ramp from 0.
+- **Return-To-Me:**
+  - trigger held when the link went: the emergency stop at once, then RTM ends after 1.5 s with "St";
+  - trigger released when the link went: RTM stays armed until the remote comes back, or until the remote reboots.
+- **Follow-Me, armed or following:** a pause; after 30 s without the link (or either GPS fix), Follow-Me ends with "St".
+- **Parked auto-return:** it waits ("not ready") through the silence, until the declaration expires 95 s after the last Follow-Me declaration packet, which is 65-95 s after the remote went silent (the keepalive is every 30 s).
+- **A remote that reboots** ends Follow-Me and RTM through its boot ID.
+
+v3.2 neither shortens nor extends any of these.
 
 ---
 
@@ -272,6 +341,7 @@ The receiver's return-to-me loop watches that counter. It closes the short "how 
 
 - One `min()` in the receiver's motor calculation, after the existing caps and before the output ramp: `throttle = min(throttle, limit)`.
 - The limit is 64 of 255 (25 %) at takeover, rising evenly to full over 4 s: 64 / 111 / 159 / 207 / 255 at 0 / 1 / 2 / 3 / 4 s.
+- **It applies only at the moment control passes** (a takeover, a claim, a summon or a take-back), **because the buggy may be near the other rider when it does.** Then it ends on its own. A remote that never lost control (for example one coming back after a silence) gets no limit.
 - Both numbers are settings. The time can never exceed 10 s.
 - It only lowers throttle, never reads GPS, and is never used with a single remote.
 - The motor failsafe expression, all existing caps, the ramp, the mixer and the steering are untouched.
@@ -321,15 +391,18 @@ So -60 accepts about 5 m or closer, leaves 14 dB of margin at arm's length, and 
 
 - **The owner** sends every 100 ms, as today, with the collision backoff unchanged.
 - **A remote that is not in control** drops to one packet per second when idle.
-  - It stays slow even with input while another remote is in control. E9 still shows within about a second.
-  - It goes fast when control is free and it is squeezed, at the first press of the take-back gesture, or when it has had no reply for 5 s.
+  - It stays slow even with input while another remote is in control and cannot be claimed. E9 still shows within about a second.
+  - It goes fast:
+    - when control is free or claimable and it is squeezed or a gesture is started;
+    - at the first press of the take-back gesture;
+    - when it has had no reply for 5 s.
 - In slow mode a missed reply shifts the next send by 33 or 66 ms, never 0, so it cannot sit in the owner's slot.
 - While slow, the "connected" window is 2.5 s instead of 1 s, and the urgent link-lost buzz is suppressed (the blink still shows).
 
-### 8.2 Owner-only actions
+### 8.2 Owner-only actions, and the summon
 
 - Follow-Me arm and mode changes, Return-To-Me arm, aux, and the rider-GPS stream need ownership.
-- Without it the remote shows "St" and the stop buzz.
+- **A remote that is not in control:** a Return-To-Me or Follow-Me arm gesture becomes a **summon** (section 5.5) when the status is FREE and the remote has a fresh GPS fix. Otherwise the remote shows "St" and the stop buzz, and sends nothing.
 
 ### 8.3 Lock and auto-lock
 
@@ -355,18 +428,44 @@ So -60 accepts about 5 m or closer, leaves 14 dB of margin at arm's length, and 
 
 **On completion** the remote sends SEIZE three times. The receiver re-checks every condition itself.
 
-**About 1.6 s from the first press to motor zero.** An accidental take-back can only slow the guest's ride to a stop; it can never start the buggy.
+**About 1.6 s from the first press to motor zero.** An accidental take-back can only slow the guest's ride to a stop; it can never start the buggy. **It works while the guest is driving, and it zeroes the guest's throttle at once (the buggy stops), so the master should not take back while the guest depends on the buggy.** It is refused while Follow-Me or Return-To-Me is armed. It is the master's only, and it can be switched off (`mtx_seize_en`).
 
 ### 8.5 Screens
 
-- **E9**: refused. One buzz on the rising edge. This is not the remote's error state, so the next toggle press is not taken as an error acknowledgement.
-- **"tA"**: control was taken. Shown 3 s, with one buzz.
-- **Ownership dot:** shares the Follow-Me status pixel and shows only while the Follow-Me dots are off. OFF solo, SOLID owner, PULSE free, SLOW busy.
+- **E9**: refused. One buzz on the rising edge. This is not the remote's error state, so the next toggle press is not taken as an error acknowledgement. It shows only while the remote in control cannot be claimed.
+- **"tA"**: control was taken (a take-back or a claim). Shown 3 s, with one buzz. A remote that was silent when its control was claimed shows it when it is heard again.
+- **"St"** with the stop buzz: a refused summon, exactly as today's refused arm. No new glyph.
+- **Ownership dot:** shares the Follow-Me status pixel and shows only while the Follow-Me dots are off. OFF solo, SOLID owner, PULSE free or claimable, SLOW busy.
 
 ### 8.6 Smaller fixes on the remote
 
 - The telemetry wait keeps listening after a frame meant for someone else, until its own reply or 40 ms after the send. It never touches the radio after that bound.
 - The random seed of the collision hop comes from the chip ID, so two remotes with copied configurations do not hop in step.
+
+### 8.7 Remotes without GPS
+
+**A remote without GPS, or without a fresh fix right now, gets manual control only.**
+- It takes control only by squeezing from zero (when the buggy is free or the remote in control is claimable), under the takeover limit.
+- **It cannot summon.** The remote refuses with "St" and sends nothing.
+- **A remote that has a GPS module but no fix counts as having no GPS until it gets one.**
+
+**How the buggy knows.** It needs no setting and no capability bit: the rider-GPS stream is the answer.
+- A remote sends its stream only while it has a valid fix that is not stale.
+- Every Follow-Me and Return-To-Me check on the buggy already needs that stream to be fresh.
+- A capability bit would say "has a module", which is the wrong question: the module may have no fix, lose it, or be unplugged.
+
+**If the remote in control loses its fix during Follow-Me,** today's behaviour applies, with one remote or two:
+- Follow-Me pauses and shows not-ready;
+- after 30 s without the fix it ends with "St";
+- a parked auto-return waits, and a squeeze while not ready gives "St".
+
+Losing the fix never makes the remote claimable: it is still transmitting.
+
+**Two typical cases:**
+- **The GPS remote is in Follow-Me and goes silent for 10 s.** The remote without GPS can take over only by squeezing from zero. That ends Follow-Me on the buggy, and it drives manually.
+- **The remote without GPS is in control, and the GPS master wants Follow-Me.**
+  - The master takes back (this stops the buggy at once), then arms Follow-Me normally.
+  - Or, once the other remote has been at zero (or silent) for 10 s, the master summons with its Follow-Me gesture.
 
 ---
 
@@ -379,7 +478,7 @@ So -60 accepts about 5 m or closer, leaves 14 dB of margin at arm's length, and 
 | old | new, tries to pair | no pairing ("EP"); restore the remote's backup to go back |
 | new (migrated) | old, existing pairing | works as today, **if** the buggy's stored address equals its chip ID; otherwise pair again |
 | new | old, paired in a new window | accepted as the single remote |
-| new | new | full v3.1 |
+| new | new | full v3.2 |
 | new | two old remotes that were cloned to one address before the update | still look like one remote (today's behaviour). Update both and pair them in one window. |
 | any buggy | a frame for another buggy | ignored (the link ID does not decode to a paired remote) |
 | new | a remote moved to another buggy | ignored by its old buggy, though still on its list |
@@ -393,21 +492,27 @@ So -60 accepts about 5 m or closer, leaves 14 dB of margin at arm's length, and 
 
 | Case | What stops the motors | When another remote may take control |
 |---|---|---|
-| Owner goes silent (switched off, out of range) | the motor failsafe at failsafe time after its last control packet; other remotes' packets cannot refresh it | after failsafe time + 5 s, only if another unlocked remote is on; from zero, under the limit |
-| Owner comes back within that time | resumes from 0 with the soft ramp | - |
+| Owner goes silent (switched off, out of range) | the motor failsafe at failsafe time after its last control packet; other remotes' packets cannot refresh it | **never by a timer.** After 10 s of silence, and only with another unlocked remote on, the owner is claimable; Follow-Me / Return-To-Me stay as they are today; control passes only on a squeeze from zero (under the limit) or a summon (needs a GPS fix) |
+| Owner comes back before any claim | resumes from 0 with the soft ramp | - (still owner, no limit, Follow-Me / Return-To-Me unchanged) |
 | Owner locks | throttle 0 at the first LOCKED frame (after the lock flush, about 300 ms) | at that frame, from zero, under the limit |
-| Owner idles 5 s at zero, another remote on, no FM/RTM | already at zero | at once, from zero, under the limit |
+| Owner at zero 10 s, another remote on, no FM/RTM armed | already at zero | the owner is claimable; its own squeeze is still its own; the other remote claims from zero under the limit, or summons |
+| Owner at zero with FM/RTM armed, however long | - | **never** (idle does not count while armed) |
+| Summon against a remote that is commanding | nothing; the summon is dropped and the summoning remote shows "St" | never |
+| Summon from a remote without a fresh GPS fix | - | refused on that remote ("St"), nothing sent; it may still claim by squeezing |
+| Summon accepted, then the buggy refuses the arm (its own GPS, the rider too far away) | - | the summoning remote keeps manual control, from zero, under the limit; the previous Follow-Me had already ended |
 | Receiver reboots with several remotes paired | no owner, gate shut | the first remote with zero proof and a squeeze; **a held trigger never restarts the buggy** |
 | A guest squeezes while the master rides | nothing; the guest sees E9 | never from an active master |
-| Master take-back | output to 0 at once | master at zero + gesture + FM/RTM off |
-| Control changes while FM/RTM was armed | FM/RTM end on the buggy; rider GPS and checks reset; the old rider's stop notices are cleared | after Follow-Me is idle (≤ 100 ms) |
-| **Unattended spare remote** | locks itself after 120 s; a locked remote is not "on", so the owner is never released and the spare cannot take control | in the first 120 s after it was last touched: an owner pause can release, and a squeeze on the spare takes control under the limit. The master's take-back stops it in about 1.6 s. **If the rider's own remote is the guest, it cannot stop a spare that stays squeezed**, which is why the rider's remote is paired first. |
+| Master take-back | output to 0 at once, also while the guest is driving | master at zero + gesture + FM/RTM off |
+| Control changes while FM/RTM was armed (a claim after 10 s of silence) | FM/RTM end on the buggy; rider GPS and checks reset; the old rider's stop notices are cleared | after Follow-Me is idle (≤ 100 ms; the claim is held for the claiming remote for up to 1 s) |
+| The rider whose control was claimed comes back | - | he sees "tA"; he can come back only by the same rules |
+| The owner's GPS fix is lost during Follow-Me | today's pause, then "St" after 30 s | never because of the fix (the owner is still transmitting) |
+| **Unattended spare remote** | locks itself after 120 s; a locked remote is not "on", so the owner is never claimable and the spare cannot take control | in the first 120 s after it was last touched: an owner silent 10 s, or at zero 10 s with nothing armed, is claimable, and a squeeze on the spare takes control under the limit. The master's take-back stops it in about 1.6 s if nothing is armed. **If the rider's own remote is the guest, it cannot stop a spare that stays squeezed**, which is why the rider's remote is paired first. |
 | A stranger's remote during the pairing window | the RSSI gate (≥ -60 dBm, about 5 m) on both ends; LED count and `?mtx` list after the window | a stranger within about 5 m during the window remains possible; pair one buggy at a time |
 | Unpaired buggy | nothing accepted | - |
 | Unpair paths (binding reset on import, `paired = 0`, factory reset) | the remote list is cleared with them | - |
 | A copied or edited buggy configuration | identity from the chip; the copied pairing is dropped | - |
 | Corrupt reply | the buggy decides; a remote needs 3 non-owner replies in a row before it slows down or disarms | - |
-| Accepted, unchanged from earlier notes | if the master's remote fails **while still transmitting** (an undetected stuck input), a guest cannot take over | only once it goes silent or the input fault fires |
+| Accepted, unchanged from earlier notes | if the master's remote fails **while still transmitting** (an undetected stuck input), a guest cannot take over | only once it goes silent (then a claim) or the input fault fires |
 
 ---
 
@@ -415,10 +520,10 @@ So -60 accepts about 5 m or closer, leaves 14 dB of margin at arm's length, and 
 
 **Rider GPS:**
 - Only the owner's stream is sent and accepted.
-- On a change of owner the GPS state and cross-checks reset.
+- On a change of owner the GPS state and cross-checks reset. A new owner's first GPS packet runs the cross-check at once.
 - The existing GPS integrity rules hold: every fix is judged, the 0xF3 sequence resets on any mismatch, int32 microdegrees are kept, and nothing is extrapolated.
 
-**Follow-Me declarations** are per owner. A new owner arms with its own gesture.
+**Follow-Me declarations** are per owner. A new owner arms with its own gesture (a summon runs that gesture for it).
 
 **Front stations (F4 / F5):** every remote paired to one buggy must run the same remote build.
 
@@ -440,6 +545,7 @@ So -60 accepts about 5 m or closer, leaves 14 dB of margin at arm's length, and 
 **Notes:**
 - The owner remote is already at about 10 % with the 2 Hz GPS stream today, independent of this design. EU users: GPS stream off or a lower GPS rate.
 - Each reply makes the receiver deaf for about 21 ms. Three idle remotes make it deaf about 6 % of the time, far inside a failsafe that needs ten owner packets lost in a row.
+- A summon costs one burst of three 6-byte packets. The remote is fast for the gesture plus 3 s, then it is the owner and the rows above apply. No row changes.
 - **US 902-928 MHz:** no duty limit. A fixed 250 kHz channel does not fit FCC 15.247 as it stands (lower power or duty, or FHSS, or a 500 kHz preset). This design neither fixes nor worsens that.
 
 ---
@@ -451,7 +557,7 @@ So -60 accepts about 5 m or closer, leaves 14 dB of margin at arm's length, and 
 | Field | Default | Range | Purpose |
 |---|---|---|---|
 | `mtx_id[12]`, `mtx_flags[4]` | 0 | written by pairing only | up to 4 remote IDs in pairing order (slot 1 = master); per slot: valid, legacy |
-| `mtx_release_s` | 5 | 3-60 s | idle time before release, and the extra time on a link loss |
+| `mtx_claim_s` | **10** | 6-60 s | with another remote on: the silence, or the time at zero with Follow-Me / Return-To-Me off, after which another remote may claim control (by a squeeze from zero or a summon). The silence is never shorter than failsafe time + 1 s. |
 | `mtx_seize_en` | 1 | 0-1 | master take-back allowed |
 | `mtx_takeover_cap` | 64 | 0-255 (255 = off) | throttle limit at takeover |
 | `mtx_takeover_ms` | 4000 | 0-10000 ms | time for the limit to reach full |
@@ -475,7 +581,10 @@ So -60 accepts about 5 m or closer, leaves 14 dB of margin at arm's length, and 
   - a legacy entry next to a new-style entry is removed;
   - a link mode other than 0 or 3 unpairs the remote.
 - `own_address` becomes read-only on the receiver.
-- New commands: `?mtx` on both boards (the list, roles, owner, status, rates, counters) and `?mtxdot` on the remote (dot test).
+- **No setting for the GPS rule.** It is decided at run time from the rider-GPS stream (section 8.7).
+- New commands:
+  - `?mtx` on both boards: the list, roles, owner, status, rates, counters, whether the owner is claimable (and why), and the last refused summon;
+  - `?mtxdot` on the remote (dot test).
 - Every new field goes into both web pages and the web serial config tool.
 - `TelemetryPacket`, the logging struct, the packet size and the radio settings do not change.
 
@@ -489,25 +598,37 @@ So -60 accepts about 5 m or closer, leaves 14 dB of margin at arm's length, and 
 |---|---|
 | T1 | link ID round trip; never zero; uplink ≠ reply address |
 | T2 | classification on two buggy IDs; a frame for one buggy is unknown on the other (this is the only coverage of the multi-buggy case for now) |
-| T3 | byte-3 decode, including LOCKED / SEIZE exactly, 0xF5-0xFF dropped |
+| T3 | byte-3 decode, including LOCKED / SEIZE / SUMMON exactly, 0xF5-0xFF dropped, SEIZE and SUMMON dropped with a single remote |
 | T4 | takeover: zero, zero, squeeze → yes; held trigger → never; FM armed → no; FM never declared → allowed |
 | T5 | take-back conditions |
-| T6 | status priority for a remote that is not in control |
-| T7 | release timers, with and without another remote; across the `millis()` wrap |
+| T6 | (see T31) |
+| T7 | (replaced by T23-T25 and T33: no timer may release) |
 | T8 | the takeover limit curve and its edge cases |
 | T9 | status packing; status always 000 with one remote |
 | T10 | the telemetry masks |
 | T11 | per-remote telemetry rotation |
 | T12 | entry and binding validation |
 | T13 | the pairing window, including the RSSI gate |
-| T14 | old/new mixes |
-| T15 | the remote's single frame builder (no LOCKED / SEIZE outside a link-ID address, nothing ≥ 0xF5) |
-| T16 | remote status, rate, auto-lock and take-back logic |
+| T14 | old/new mixes, including the SUMMON code on old receiver builds |
+| T15 | the remote's single frame builder (no LOCKED / SEIZE / SUMMON outside a link-ID address, nothing ≥ 0xF5) |
+| T16 | remote status, rate, auto-lock, take-back and summon logic |
 | T17 | link-fresh windows |
 | T18 | the bounded telemetry wait |
 | T19 | configuration migration on real configuration exports of each board. These are kept locally because they contain pairing data, and are not committed. |
 | T20 | the paired check and every unpair path |
-| T21 | the release order and the clearing of the previous rider's stop notices |
+| T21 | the release order (including a claim) and the clearing of the previous rider's stop notices |
+| **T22** | **single remote, and a second remote off or locked: packet for packet, the throttle, failsafe, Follow-Me and Return-To-Me writes equal today's reference through silences of 0.5-100 s; no claim, no release**. Also, with the second remote off: lock → nobody owns → a squeeze (takeover limit) or a summon (no Follow-Me / Return-To-Me write before the new owner's own arm) |
+| T23 | claimable but not released: silent 9.999 s → no, 10 s → yes; still the same owner after 100 s; failsafe time 10 s → 11 s |
+| T24 | the owner returns before a claim: still owner, no limit, nothing changed |
+| T25 | the idle rule: 10 s at zero → claimable; never while Follow-Me / Return-To-Me is armed; input restarts it |
+| T26 | a claim by squeeze: release order, the 1 s hold for the claiming remote, its expiry, nobody else granted meanwhile; a held trigger never claims |
+| T27 | summon gates on the buggy: free or claimable only; zero within 1 s; motor output running |
+| T28 | summon refused against a remote that is commanding (armed and transmitting, or driving), or silent under 10 s |
+| T29 | the remote's summon gate: FREE status, a fresh GPS fix (no module, no fix, stale fix → refused, nothing sent), trigger released, not locked |
+| T30 | rider GPS after a claim: the previous rider's position wiped; the cross-check (including the maximum distance) runs on the new rider's first packet |
+| T31 | status priority: taken > busy (control passing to someone else) > free / claimable > refused > take-back offered > busy; "tA" for a remote whose control was claimed while it was silent |
+| T32 | the SUMMON frame: decode, builder, never queued as a merged RTM packet |
+| T33 | claim thresholds across the full setting ranges and the `millis()` wrap |
 
 ### 14.2 Builds
 
@@ -532,23 +653,44 @@ So -60 accepts about 5 m or closer, leaves 14 dB of margin at arm's length, and 
 **Phase C: both remotes updated, paired in one window (rider's remote first).**
 - ownership and dots;
 - E9;
-- release by idle (with the presence rule), by lock and by auto-lock;
+- claimable by idle (manual only), with the presence rule; release by lock and by auto-lock;
 - takeover from zero under the limit;
 - a guest can never take from an active master;
 - the master take-back (≤ 2 s);
-- the owner switched off mid-throttle: the failsafe shuts in ≤ 1.1 s, and nothing from the other remote reopens it;
+- the owner switched off mid-throttle: the failsafe shuts in ≤ 1.1 s, nothing from the other remote reopens it, the owner becomes claimable at 10 s and is **never released on its own**;
+- Follow-Me armed and the owner silent: claimable but still armed; the owner back first changes nothing; then a claim by squeeze;
+- summon by the Return-To-Me gesture and by the Follow-Me gesture (needs a GPS on the buggy and a fix on the summoning remote);
+- summon refused: against a remote that is driving, against an armed remote that is transmitting, after only 8 s of silence, from a locked remote;
+- **a remote without GPS:** set one remote to `gps_en 0`, and separately use a remote whose module has no fix yet (indoors). Its summon is refused with "St" and nothing is sent; it can still claim by squeezing; the GPS master takes back, then arms Follow-Me;
+- **single-remote silence:** with only one remote paired, and again with the second remote off or locked, Follow-Me and Return-To-Me behave on a silence exactly as today (pause, the 30 s end, the parked wait), with no claim line at all;
 - the idle rate over 10 min, with no urgent buzz;
-- Follow-Me / Return-To-Me ownership;
 - airtime;
 - the unattended spare;
 - an owner change right after a Follow-Me fault stop;
 - the unpair paths.
 
+**If both your remotes have GPS,** that is the usual case. The no-GPS test above simulates the mixed case with `gps_en 0` (restore it afterwards).
+
 **Then the same core cases on the main buggy**, and the bench receiver's list is cleared.
 
 ---
 
-## 15. What changed from v3
+## 15. What changed
+
+### From v3.1 to v3.2 (the maintainer's decisions, 2026-10-20)
+
+- **No timer releases control any more.** The 5 s idle release and the "failsafe time + 5 s" link-loss release are gone.
+- **The claim model:** after 10 s of silence, or 10 s at zero with nothing armed, and only with another unlocked remote on, the remote in control becomes claimable. Follow-Me and Return-To-Me stay armed until another remote claims on purpose (a squeeze from zero, or a summon).
+  - The reason: with one remote, or with the other remote off, today's Follow-Me must not change at all.
+  - With two remotes, Follow-Me may end only because the other rider consciously took the buggy.
+- **The summon:** the other rider's Return-To-Me or Follow-Me gesture claims the buggy and brings it to him, with his own GPS. New code `0xF1/0x3C`.
+- **A remote without a GPS fix gets manual control only.** It is decided at run time from the rider-GPS stream; there is no setting.
+- **The owner pausing at zero no longer loses control.** It becomes claimable, and its own next squeeze is its own throttle, with no takeover limit.
+- **The takeover limit applies only at the moment control passes** (the reason is now stated: the buggy may be near the other rider).
+- **The master take-back is kept, also while the guest is driving.** It stops the buggy at once.
+- `mtx_release_s` becomes `mtx_claim_s`, default 10 s. No new setting on either board.
+
+### From v3 to v3.1
 
 - The XOR link ID is mandatory.
 - LOCKED and SEIZE moved from `0xF5` / `0xF6` into `0xF1` (section 4.1). There is one frame builder, the link mode is clamped to {0, 3}, and 0xF5-0xFF is never sent and always dropped.
@@ -566,12 +708,12 @@ So -60 accepts about 5 m or closer, leaves 14 dB of margin at arm's length, and 
 
 ---
 
-## 16. Open questions for the maintainer
+## 16. Decisions by the maintainer (2026-10-20), and what is still open
 
-1. **The takeover limit is a timed cap on manual throttle:** 25 % rising to full over 4 s, at most 10 s, only lowering, never GPS-based, multi-remote only. Is that an acceptable exception to "automation never leaves a cap on manual throttle"?
-2. **"Another remote is in control"** as a legitimate reason a trigger does nothing (E9), next to the deadman, the link-loss failsafe and lock?
-3. **Control passing to another remote** after about 6 s of the owner's silence ends Follow-Me / auto-return. That is a new way for auto-return to end, besides arriving, a fault, or switching the remote off and on. Acceptable?
-4. **Older multi-remote notes in this fork are superseded:** a master timeout of 10-15 s, a guest never above the master's last throttle, all remotes on the same firmware. They are replaced by the three release rules, the takeover limit, and "new-style remotes only once two or more are paired". Agree?
-5. **Board identities now come from the chip and cannot be changed.** They are not confidential (every packet carries them); buggies are kept apart by the link ID. Acceptable?
+1. **The takeover limit** (25 % rising to full over 4 s, at most 10 s, only lowering, never GPS-based, multi-remote only) **is accepted** as an exception to "automation never leaves a cap on manual throttle". It applies only at the moment control passes.
+2. **"Another remote is in control"** is accepted as a legitimate reason a trigger does nothing (E9), next to the deadman, the link-loss failsafe and lock.
+3. **Follow-Me / auto-return ending with two remotes:** decided as the claim model above. Silence alone never ends Follow-Me; only a deliberate claim by the other remote does, after 10 s of silence. With one remote, nothing changes.
+4. **The older multi-remote notes in this fork are superseded** (a master timeout of 10-15 s, a guest never above the master's last throttle). They are replaced by the claim model, the takeover limit, and "new-style remotes only once two or more are paired".
+5. **Board identities come from the chip and cannot be changed.** They are not confidential; buggies are kept apart by the link ID. Accepted.
 
-Feedback on the numbers is welcome too: the -60 dBm pairing gate, the 120 s spare auto-lock, the 1.2 s take-back hold, and a 1 s idle rate everywhere versus 500 ms where there is no duty limit.
+**Feedback on the numbers is still welcome:** the 10 s claim time, the -60 dBm pairing gate, the 120 s spare auto-lock, the 1.2 s take-back hold, and a 1 s idle rate everywhere versus 500 ms where there is no duty limit.

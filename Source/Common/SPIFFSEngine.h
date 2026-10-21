@@ -66,7 +66,12 @@ uint8_t esp_crc8(uint8_t *data, uint8_t length);
 //   Inputs: what - the end of the NOTE. Side effects: one Serial line when it refuses.
 static bool spiffsHeadroomOk(const char* what)
 {
-  if (CFG_SPIFFS_WRITE_MIN_FREE_BYTES == 0) return true;
+#if CFG_SPIFFS_WRITE_MIN_FREE_BYTES == 0
+  // V2.5-Evo - 2026-10-20 - a board that asks for no headroom (the TX): no check. Decided by the preprocessor, so the
+  // comparison below is not compiled with a 0 limit (that is an always-true unsigned test, -Wtype-limits).
+  (void)what;
+  return true;
+#else
   const size_t total = SPIFFS.totalBytes();
   const size_t used  = SPIFFS.usedBytes();
   const size_t freeb = (total > used) ? (total - used) : 0;
@@ -74,6 +79,7 @@ static bool spiffsHeadroomOk(const char* what)
   Serial.printf("NOTE: SPIFFS has only %u KB free, below the %u KB a safe write needs (a nearly full SPIFFS reports a write as done and stores nothing) - %s\n",
                 (unsigned)(freeb / 1024), (unsigned)(CFG_SPIFFS_WRITE_MIN_FREE_BYTES / 1024), what);
   return false;
+#endif
 }
 
 // V2.5-Evo - 2026-09-19 - the pure byte mapping of the legacy-config migration (host-tested).

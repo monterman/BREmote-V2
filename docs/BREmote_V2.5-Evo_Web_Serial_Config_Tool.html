@@ -272,6 +272,9 @@
 // TX FIELD DEFINITIONS — exact copy from Source/V2_Integration_Tx/WebUiEmbedded.h
 // V2.5-Evo - 2026-05-08 - Bundle 4: Web UI parameter regrouping. Renamed "GPS & Follow-Me" → "GPS"; "RTM & Follow-Me" → "RTM"; split RTM and Follow-Me into separate groups; moved followme_mode + rtm_vesc_speed_diff_kmh + vesc_erpm_per_kmh out of GPS group; merged "Follow-Me Tuning" into "Follow-Me". Removed leftover dummy_delete_me from RX_FIELDS. Cosmetic only — no struct/firmware changes.
 // V2.5-Evo - 2026-08-17 - rtm_double_squeeze_en def 0→1 + description rewritten, mirroring Source/V2_Integration_Tx/WebUiEmbedded.h (the TX now factory-defaults to the deliberate double-squeeze arm gesture).
+// V2.5-Evo - 2026-10-21 - tog_block_time text only, mirroring Source/V2_Integration_Tx/WebUiEmbedded.h: the wait is in
+// steps of 10 ms of real time (200 = 2 s, 300 = 3 s), it starts with the trigger released and the toggle centred, and
+// 0 means never (was "0=no block" and "Milliseconds"). Key, type, range and default unchanged.
 // V2.5-Evo - 2026-10-20 - followme_mode and mag_fm_set text only, mirroring Source/V2_Integration_Tx/WebUiEmbedded.h: the
 // front pair swaps numbers (the owner's clockwise circle) - 4 = Front Left, 5 = Front Right in the help text, the option
 // labels and the Station 4 / Station 5 tick boxes. Keys, types, ranges, defaults and the count unchanged.
@@ -319,7 +322,7 @@ const TX_FIELDS = [
 {key:"steer_expo1",label:"Steering Expo 1",description:"Reserved/unused",group:"Steering",type:"int",def:0,min:0,max:65535},
 {key:"tog_deadzone",label:"Toggle Deadzone",description:"Raw ADC deadzone around center position. 100=very sensitive (small movements register), 3000=insensitive. Increase if false inputs occur while riding.",group:"Toggle",type:"int",def:500,min:100,max:3000},
 {key:"tog_diff",label:"Toggle Diff",description:"Minimum ADC movement required to count as input. 1=most sensitive (may pick up electrical noise), 200=least sensitive.",group:"Toggle",type:"int",def:30,min:1,max:200},
-{key:"tog_block_time",label:"Toggle Block Time",description:"After a steering input, block gear-change inputs for this long. 0=no block, 5000=5 second block. Milliseconds. Default 200.",group:"Toggle",type:"int",def:200,min:0,max:5000},
+{key:"tog_block_time",label:"Toggle Block Time",description:"How long the toggle keeps steering after a ride before it works as the gear/menu button again. The wait starts once the trigger is released and the toggle is centred; moving the toggle restarts it. In steps of 10 ms of real time: 200 = 2 s (default), 300 = 3 s, 5000 = 50 s. 0 = never: after the first squeeze the toggle only steers until the remote restarts.",group:"Toggle",type:"int",def:200,min:0,max:5000},
 {key:"no_lock",label:"No Lock",description:"0=boot locked (must squeeze trigger to unlock before riding), 1=boot unlocked (no unlock step). Default 0 — use 1 with caution.",group:"Lock & Timing",type:"bool",def:0,min:0,max:1},
 {key:"trig_unlock_timeout",label:"Trigger Unlock Timeout",description:"Time allowed to complete the trigger unlock gesture. 0=very short window, 65535=very long squeeze allowed. Milliseconds. Default 3500.",group:"Lock & Timing",type:"int",def:3500,min:0,max:65535,unit:"ms"},
 {key:"lock_waittime",label:"Lock Wait Time",description:"Toggle hold duration to trigger power-off. 0=instant power-off, 65535=effectively disabled. Milliseconds.",group:"Lock & Timing",type:"int",def:2000,min:0,max:65535,unit:"ms"},

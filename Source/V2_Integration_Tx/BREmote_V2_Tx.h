@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-21 - toggle wait in real time (owner-ordered): includes ../Common/ToggleBlockTimer.h; the RAM pass counter toggle_blocked_counter becomes toggle_block_timer; the tog_block_time comments say "x 10 ms of real time, 200 = 2 s, 0 = never". Same field, same offset, sizeof stays 136, SW_VERSION stays 27, no config reset.
 // V2.5-Evo - 2026-10-20 - comments only (owner: front stations swap numbers): followme_mode and mag_fm_set document 4 = front left, 5 = front right. Same fields, same offsets, sizeof stays 136, SW_VERSION stays 27, no config reset.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-1: includes ../Common/RiderGpsPacket.h (Radio.ino sends the v2 rider GPS packet with the GPS fix counter). Include only: no confStruct change, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-11 - audit 2026-10-11 D-3: RAM flag fm_fault_latched_armed (bit 0 on the arrival that latched the fault edge). No confStruct change, SW_VERSION stays 27.
@@ -288,7 +289,7 @@ struct confStruct {
     //UI Threshold & Times
     uint16_t tog_deadzone; //Deadzone in the middle of toggle 500
     uint16_t tog_diff;  //Difference in toggle signal to register a UI input 30 
-    uint16_t tog_block_time; //How long toogle button is in steering (*10ms)
+    uint16_t tog_block_time; //How long the toggle stays steering after the trigger is released and the toggle is centred: x 10 ms of REAL time (millis(), since 2026-10-21), 200 = 2 s, 0 = never back to gear/menu. Range 0-5000 (0-50 s)
     uint16_t trig_unlock_timeout; //Time after unlock until trigger times out (ms) 5000
     uint16_t lock_waittime; //Time toggle needs to be pressed to power off or lock system (ms) 2000
     uint16_t gear_change_waittime; //Time toggle needs to be pressed to change gear (ms) 100
@@ -565,7 +566,7 @@ confStruct defaultConf = {  // V2.5-Evo — factory default configuration
   // --- end calibration block ---
   500,           // tog_deadzone
   30,            // tog_diff
-  200,           // tog_block_time   (wait to finish steering before Dynamic Throttle /was 500 5 secs)
+  200,           // tog_block_time   x 10 ms real time = 2 s (wait to finish steering before Dynamic Throttle /was 500 5 secs)
   3500,          // trig_unlock_timeout
   2000,          // lock_waittime
   80,            // gear_change_waittime
@@ -1038,7 +1039,10 @@ volatile bool system_locked = 1;
 // User can still cycle all modes via toggle. Was 0 (DISPLAY_MODE_TEMP).
 volatile uint8_t display_mode = DISPLAY_MODE_THR;
 
-volatile uint16_t toggle_blocked_counter = 0;
+// V2.5-Evo - 2026-10-21 - the pass counter toggle_blocked_counter is replaced by a real-time wait: toggle_block_timer
+// (pure, host-tested, Common/ToggleBlockTimer.h). Written only by calcFilter() on the measBufCalc task. RAM only.
+#include "../Common/ToggleBlockTimer.h"
+ToggleBlockTimer toggle_block_timer = {0u, false};
 volatile bool toggle_blocked_by_steer = 0;
 volatile int in_menu = 0;
 

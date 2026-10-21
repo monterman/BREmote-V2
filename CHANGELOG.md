@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-10-21 — Remote: the toggle's wait after a ride is now real time (Toggle Block Time)
+
+**No config wipe.** `sizeof(confStruct)` stays 136 and `SW_VERSION` stays 27 on the remote. The RX is not
+changed, so only the remote needs flashing.
+
+When you let go of the trigger, the thumb toggle keeps steering for a moment before it works as the gear /
+cap / menu button again, so a last steering move can never become a gear change. That wait is the
+**Toggle Block Time** setting (`tog_block_time`), in steps of 10 ms.
+
+- **It now counts real time.** The remote used to count its own 10 ms input passes, which matches the
+  clock only if every pass is exactly 10 ms. It now uses the clock: 200 is 2 s and 300 is 3 s. The
+  default (200 = 2 s) and your stored value are unchanged.
+- **Unchanged:** the wait starts once the trigger is released and the toggle is centred. Any squeeze, and
+  any toggle movement, starts it again. A remote error frees the toggle at once. Steering and throttle
+  are not changed.
+- **The help text is corrected.** It said "milliseconds" and "0 = no block". The unit is 10 ms, and 0
+  means the toggle never goes back to being a button after the first squeeze (until the remote
+  restarts). The WiFi page and the config tool now say so.
+- **Tip:** don't try the toggle before the wait is over. During the wait a push is a steering move, and
+  it starts the wait again.
+
 ## 2026-10-20 — Remote + RX: the two front stations swap numbers (F4 is front-left, F5 front-right)
 
 **No config wipe.** `sizeof(confStruct)` stays 200 on the RX and 136 on the remote; `SW_VERSION` stays

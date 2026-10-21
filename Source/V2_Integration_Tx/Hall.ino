@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-21 - calcFilter(): the toggle-steering wait (tog_block_time) is timed with millis() through
+//   toggleBlockStep() (Common/ToggleBlockTimer.h) instead of counting task passes, so tog_block_time x 10 ms is real
+//   time (owner-ordered). Same hold / restart / error / 0 rules. No confStruct change, sizeof stays 136, SW_VERSION
+//   stays 27.
 // V2.5-Evo - 2026-10-09 - mag_mode 4 cleanup after the bench round (owner: "magnet works perfect"; audits "magnet bands"
 //   M-1, L-1 to L-4 and "magnet station step" L-4). The TEMP bench line and magTempBenchPrint() are removed. (M-1)
 //   floating-pin guard: the edge snapshot retries at most 4 times, and if magEdgeIsr() counts more than 100 edges in one
@@ -263,42 +267,18 @@ void calcFilter()
 
 
   //Block toggle input when steering
-  if((thr_scaled > 3 && system_locked == 0 && !in_menu && usrConf.steer_enabled)||(throttleForceToggleBlock() && !remote_error && !in_setup))
+  // V2.5-Evo - 2026-10-21 - THE BUG: the wait before the toggle turns back into a gear / menu button counted passes
+  // of this 10 ms task (+1 per centred pass), so tog_block_time was real time only if every pass was exactly 10 ms.
+  // The owner observed about 5-6 s at the default 200 (labelled 2 s). THE FIX: toggleBlockStep()
+  // (Common/ToggleBlockTimer.h) times the same wait with millis(), so tog_block_time x 10 ms is real time.
+  // Unchanged: the hold condition below, the restart whenever the toggle leaves centre (steer_scaled != 127),
+  // the immediate release on a remote error, and 0 = never release. Steering and throttle values are not touched.
   {
-    //If so, block steer and reset counter
-    toggle_blocked_by_steer = 1;
-    toggle_blocked_counter = 0;
-  }
-  else
-  {
-    if(!remote_error)
-    {
-      //If trigger was released, increment
-      if(toggle_blocked_counter < usrConf.tog_block_time)
-      {
-        if(steer_scaled != 127)
-        {
-          toggle_blocked_counter = 0;
-        }
-        else
-        {
-          toggle_blocked_counter ++;
-        }
-      }
-      //Until usrConf.tog_block_time reached, then unlock toggle
-      else
-      {
-        if(usrConf.tog_block_time != 0)
-        {
-          toggle_blocked_by_steer = 0;
-        }
-      }
-    }
-    else
-    {
-      toggle_blocked_counter = usrConf.tog_block_time;
-      toggle_blocked_by_steer = 0;
-    }
+    const bool hold = (thr_scaled > 3 && system_locked == 0 && !in_menu && usrConf.steer_enabled) ||
+                      (throttleForceToggleBlock() && !remote_error && !in_setup);
+    toggle_blocked_by_steer = toggleBlockStep(&toggle_block_timer, toggle_blocked_by_steer, hold,
+                                              remote_error != 0, steer_scaled == 127,
+                                              usrConf.tog_block_time, (uint32_t)millis());
   }
   //If in steer mode, update steering
   if(toggle_blocked_by_steer)

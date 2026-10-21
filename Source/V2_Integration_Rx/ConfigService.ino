@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE REMOTE STEP (step-2 audit Z-3, Z-7 c/d): the two batch hooks of Common/ConfigServiceEngine.h - cfgBatchReadOnlyAccepted() (own_address only: the validator owns it) and cfgBatchFinish() (a JSON made on ANOTHER board keeps this board's own pairing; Larry's default 4, Rex's owner option) - and the identity NOTEs say that a reset_bind import is one way to get 'not set' and that the NOTE repeats until the corrected config is saved.
 // V2.5-Evo - 2026-10-20 - SW37 MULTI-REMOTE: four kCfgFields rows (mtx_claim_s 6-60 s, mtx_seize_en 0-1, mtx_takeover_cap 0-255, mtx_takeover_ms 0-10000 ms); own_address becomes READ-ONLY (it is this chip's ID now, audit C8); cfgValidateCrossField() starts with the binding rules - identity, unpair, entries (mtxValidateRxBinding()) - and the clamps of the four settings, each correction with a NOTE line. The paired list itself has no row: only the pairing window writes it.
 // V2.5-Evo - 2026-10-20 - COMMENT ONLY: the followme_mode row's station list follows the front-station swap (4 = FRONT-LEFT, 5 = FRONT-RIGHT). Range unchanged.
 // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): the log_level row's max is raised 5 -> 6 (6 = IMU, the 170 B record with VESC 2's IMU and a reserved RX IMU block), and cfgValidateCrossField() CLAMPS log_level > 6 down to 6 - a clamp, never a rejection (LOAD path). An older firmware clamps a stored 6 back to 5, so a downgrade cannot wipe config either. Same u16 slot, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -290,10 +291,10 @@ bool cfgValidateCrossField(confStruct &candidate, String &err)
     memcpy(candidate.mtx_id,       b.mtx_id,       sizeof(candidate.mtx_id));
     memcpy(candidate.mtx_flags,    b.mtx_flags,    sizeof(candidate.mtx_flags));
     if (notes & MTX_NOTE_ID_NOT_SET)
-      Serial.printf("NOTE: own_address was not set - set to this board's eFuse ID %02X:%02X:%02X; binding dropped, pair again\n",
+      Serial.printf("NOTE: own_address was not set (00:00:00 - for example a web import with reset_bind) - set to this board's eFuse ID %02X:%02X:%02X; binding dropped, pair again (this NOTE repeats until the corrected config is saved)\n",
                     g_efuse_id[0], g_efuse_id[1], g_efuse_id[2]);
     if (notes & MTX_NOTE_ID_MISMATCH)
-      Serial.printf("NOTE: stored own_address %02X:%02X:%02X is not this board's eFuse ID %02X:%02X:%02X (config copied or edited) - binding dropped, pair again\n",
+      Serial.printf("NOTE: stored own_address %02X:%02X:%02X is not this board's eFuse ID %02X:%02X:%02X (config copied or edited) - binding dropped, pair again (this NOTE repeats until the corrected config is saved)\n",
                     was[0], was[1], was[2], g_efuse_id[0], g_efuse_id[1], g_efuse_id[2]);
     if (notes & MTX_NOTE_ENTRY_CLEARED)
       Serial.println("NOTE: a paired remote was removed from the list (00:00:00, this buggy's own ID, a duplicate, or an old-style remote next to a new-style one)");
@@ -626,4 +627,37 @@ bool cfgValidateCrossField(confStruct &candidate, String &err)
   }
 
   return true;
+}
+
+// ============================================================
+// V2.5-Evo - 2026-10-20 - Z-3: THE TWO BATCH HOOKS (Common/ConfigServiceEngine.h, cfgSetBatch())
+// ============================================================
+// cfgBatchReadOnlyAccepted - the ONE read-only row a JSON batch may carry on this board: own_address. Its value goes
+//   into the staged copy only; cfgBatchFinish() below and the identity rule in cfgValidateCrossField() decide what is
+//   kept, so it can never become anything but this chip's ID. Inputs: the row. Returns: bool. Side effects: none.
+bool cfgBatchReadOnlyAccepted(const CfgFieldSpec& spec)
+{
+  return spec.offset == offsetof(confStruct, own_address);
+}
+
+// cfgBatchFinish - V2.5-Evo - 2026-10-20 - Z-3 (the owner option Rex offered; Larry's default 4, not yet confirmed by
+//   Andres): A JSON CONFIG MADE ON ANOTHER BOARD KEEPS THIS BOARD'S OWN PAIRING.
+//   WHAT HAPPENED BEFORE: a JSON import carries paired / own_address / dest_address but never the paired list. When
+//   its own_address was another board's, the identity rule set paired = 0, and rule 2 then cleared THIS board's own
+//   list too - the import unpaired the board (fail-safe, but a surprise: the rider had to pair again).
+//   WHAT IT DOES NOW: when the batch's own_address is not this chip's ID, the three binding fields are put back to
+//   the values this board runs now (its list is already this board's: a JSON never carries it), and one NOTE says
+//   so. Every other setting in the file is imported. A JSON made on THIS board (own_address = this chip's ID) is
+//   imported exactly as before, binding included. Still fail-safe: the result is this board's own, checked binding.
+//   A "no" from the owner is this function returning at once (the import then unpairs, as at step 2).
+//   Inputs: staged (in and out), live (usrConf). Side effects: staged's binding fields, one NOTE line.
+void cfgBatchFinish(confStruct& staged, const confStruct& live)
+{
+  if (mtxIdEqual(staged.own_address, g_efuse_id)) return;
+  Serial.printf("NOTE: this JSON config was made on another board (own_address %02X:%02X:%02X, this board is %02X:%02X:%02X) - its settings are imported, its pairing is not: this board keeps its own pairing\n",
+                staged.own_address[0], staged.own_address[1], staged.own_address[2],
+                g_efuse_id[0], g_efuse_id[1], g_efuse_id[2]);
+  staged.paired = live.paired;
+  memcpy(staged.own_address,  live.own_address,  3);
+  memcpy(staged.dest_address, live.dest_address, 3);
 }

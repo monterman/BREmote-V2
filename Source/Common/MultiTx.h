@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-20 - REMOTE STEP (TX SW29, step 3): new section 17 for the remote - the activity repeat (X-1 with the
+//   owner's widening: any button or toggle press while in control), the E9-or-St choice for a refused gesture, and the
+//   ownership-dot mapping (24a0371). The receiver gains released_rebind (step-2 audit Z-7 a), and hook rule (f) states
+//   that the claimable edge is evaluated after the reply (Z-7 b). Host-tested (multi_tx_test.cpp T34-T36).
 // V2.5-Evo - 2026-10-20 - RECEIVER STEP (RX SW37): the receiver now includes this header (through Common/
 //   SPIFFSEngine.h, for efuseIdFromMac(), and BREmote_V2_Rx.h) and runs mtxOnFrame() behind its hook table in
 //   Radio.ino. MTX_REL_REBIND added. The remote still only gets efuseIdFromMac() from it, via SPIFFSEngine.h.
@@ -587,6 +591,7 @@ struct MtxClaimToken {
 struct MtxRxCounters {
   uint16_t grants, claims, summons, summons_refused, tokens_lapsed, non_owner_meta;
   uint16_t released_lock, released_seized, released_claim, dropped;
+  uint16_t released_rebind;   // V2.5-Evo - 2026-10-20 - Z-7 (a): releases because the paired list changed (receiver)
 };
 
 // The ownership state. The radio task is its only writer.
@@ -636,8 +641,11 @@ static inline void mtxRxStateInit(MtxRxState* st)
 //      is never reached except for a dropped frame, and it prints nothing for those either (no "MTX:" line ever
 //      appears with one remote).
 //  (e) No hook calls back into this model or writes MtxRxState. The radio task is the state's only writer.
-//  (f) reply() yields (two 10 ms task delays around the send). Every state change for the frame is made before it
-//      is called, and mtxOnFrame() calls it last for every CTRL and LOCKED frame.
+//  (f) reply() yields (two 10 ms task delays around the send). Every state change a DECISION reads is made before it
+//      is called, and mtxOnFrame() calls it last of the decisions for every CTRL and LOCKED frame. V2.5-Evo -
+//      2026-10-20 - Z-7 (b): one thing runs after it - the claimable EDGE (mtxClaimableEdge(), the end of mtxOnFrame()).
+//      That writes only st->claimable / claimable_since_ms (display and ?mtx state, never an authority) and queues one
+//      line, so nothing the reply carried and no motor state can change behind the reply.
 //  (g) One millis() per wake, read after the receive semaphore was taken, passed as `now` to every call for that
 //      wake; mtxTimers() also runs on the 2 s semaphore timeout, so token expiry never waits for a frame.
 //  (h) The config is clamped (mtxClampRxConfig()) and validated before MtxRxCfg is built: a claim_s of 0 would make
@@ -918,6 +926,7 @@ static inline void mtxRelease(MtxRxState* st, const MtxRxHooks* h, uint8_t reaso
   if (reason == MTX_REL_LOCK)   st->n.released_lock++;
   if (reason == MTX_REL_SEIZED) st->n.released_seized++;
   if (reason == MTX_REL_CLAIM)  st->n.released_claim++;
+  if (reason == MTX_REL_REBIND) st->n.released_rebind++;   // V2.5-Evo - 2026-10-20 - Z-7 (a)
   h->event(h->ctx, MTX_EV_RELEASED, o, reason);
 }
 
@@ -1627,6 +1636,117 @@ static inline void mtxClampTxConfig(uint16_t* autolock_timeout_s, uint16_t* seiz
   *seize_hold_ms = mtxClampU16(*seize_hold_ms, kMtxSeizeHoldMsMin, kMtxSeizeHoldMsMax);
   if (*mtx_autolock_s != 0)
     *mtx_autolock_s = mtxClampU16(*mtx_autolock_s, kMtxAutolockSMin, kMtxAutolockSMax);
+}
+
+// ============================================================
+// 17. THE REMOTE IN CONTROL: THE ACTIVITY REPEAT, THE REFUSAL SIGNAL, THE OWNERSHIP DOT (step 3, TX SW29)
+// ============================================================
+// V2.5-Evo - 2026-10-20 - THE ACTIVITY REPEAT (audit X-1 option (a), Y-6; owner 2026-10-20: "the remote in control is
+//   busy on throttle or any button / toggle press"). A rider who presses buttons at zero throttle, or arms Return-To-Me
+//   through the toggle and its ceremony, sends throttle 0 / steering 127 the whole time, so to the buggy he looks idle
+//   and another remote could claim him mid-gesture. The remote in control therefore repeats the "RTM armed, not yet
+//   active" meta 0xF1/0 - which every buggy since P7 treats as a no-op while RTM is not running, and which the buggy's
+//   mtxOwnerActivity() counts as activity - while a press or a ceremony is in progress.
+//   THE RULES (step-1 audit Q3 items 1-6, step-2 audit section 6):
+//   - from the FIRST press (the window opens at once, the first repeat is due at once), through the press, the gap to
+//     a combo's second press (the window stays open kMtxActHoldMs after the last press) and the whole RTM ceremony;
+//   - at most every kMtxActRepeatMs (2.0 s; Rex: 2.5 s or less, so one lost packet never leaves a 6 s gap);
+//   - only on a new-style link (proto 3), only while the latest status is OWNER (S = 001: in control with other
+//     remotes paired) - never in SINGLE (S = 000), so one remote stays byte-identical; never for a non-owner, whose
+//     metas the buggy drops anyway (a non-owner claims only by a squeeze from zero);
+//   - never while locked or in setup, never while RTM is ACTIVE on this remote (an 0xF1/0 would end the return), never
+//     while an 0xF1/1 is queued, and not while the throttle byte is 8 or more (the control frames already show it).
+//   The caller queues it with queueMetaPacketIfFree() (one packet, a FREE slot only, refused while any 0xF1 is
+//   pending), so a repeat can never rewrite a queued 0xF1/1 into an 0xF1/0; and the ceremony sets RTM active before it
+//   queues 0xF1/1, so no repeat can follow it either.
+static const uint32_t kMtxActRepeatMs = 2000;   // repeat period while the window is open (<= 2.5 s)
+static const uint32_t kMtxActHoldMs   = 3000;   // the window stays open this long after the last press (= the combo gap)
+
+struct MtxTxActivity {
+  uint32_t until_ms;   // the window is open while now is before this; 0 = closed
+  uint32_t last_ms;    // the last repeat queued in this window; 0 = none yet (the next one is due at once)
+};
+
+struct MtxTxActIn {
+  bool    v3;              // mtx_link_proto == 3
+  bool    owner_multi;     // the latest valid status is OWNER (001)
+  bool    locked;          // system_locked
+  bool    in_setup;
+  bool    rtm_active;      // Return-To-Me ACTIVE on this remote
+  bool    rtm_on_queued;   // an 0xF1/1 is waiting in the meta queue
+  bool    arming;          // the RTM arm ceremony is running: the window is open throughout
+  uint8_t thr_byte;        // the last control throttle byte sent
+};
+
+static inline void mtxTxActivityInit(MtxTxActivity* a) { a->until_ms = 0; a->last_ms = 0; }
+
+// mtxTxActivityNote - a press: a toggle press, a toggle held, a magnet arriving or held. Opens the window (the first
+//   repeat is then due at once) or keeps it open for kMtxActHoldMs more. Inputs: a, now. Side effects: *a.
+static inline void mtxTxActivityNote(MtxTxActivity* a, uint32_t now)
+{
+  const bool open = (a->until_ms != 0) && (int32_t)(now - a->until_ms) < 0;
+  if (!open) a->last_ms = 0;
+  a->until_ms = mtxStampOf(now + kMtxActHoldMs);
+}
+
+// mtxTxActivityDue - should one 0xF1/0 be queued now? Closes an expired window (a ceremony keeps it open). Inputs: a,
+//   in, now. Returns: true = queue one now (then call mtxTxActivitySent() if the queue took it). Side effects: *a.
+static inline bool mtxTxActivityDue(MtxTxActivity* a, const MtxTxActIn* in, uint32_t now)
+{
+  const bool open = in->arming || ((a->until_ms != 0) && (int32_t)(now - a->until_ms) < 0);
+  if (!open) { a->until_ms = 0; a->last_ms = 0; return false; }
+  if (!in->v3 || !in->owner_multi || in->locked || in->in_setup || in->rtm_active || in->rtm_on_queued) return false;
+  if (in->thr_byte >= kMtxZeroThr) return false;
+  if (a->last_ms != 0 && mtxAgeMs(now, a->last_ms) < kMtxActRepeatMs) return false;
+  return true;
+}
+static inline void mtxTxActivitySent(MtxTxActivity* a, uint32_t now) { a->last_ms = mtxStampOf(now); }
+
+// V2.5-Evo - 2026-10-20 - THE REFUSAL SIGNAL (owner 2026-10-20: "if it cannot engage, show stop. That's the regular
+//   response always"). A Return-To-Me or Follow-Me arm gesture that cannot engage shows "St" with the stop buzz -
+//   EXCEPT a takeover try against a remote that is busy in control: that shows E9, the same answer a squeeze gets. A
+//   summon is such a try: refused because the latest status says another remote is in control and not claimable
+//   (BUSY, SEIZABLE, REFUSED) or has just taken control from this one (SEIZED), it is E9. A stale status (no reply for
+//   5 s) is not evidence of a busy owner: "St". Inputs: t, now. Returns: MTX_RS_*. Side effects: none.
+static const uint8_t MTX_RS_ST = 0;
+static const uint8_t MTX_RS_E9 = 1;
+static inline uint8_t mtxTxRefusalSignal(const MtxTxStatus* t, uint32_t now)
+{
+  if (t->count == 0 || !mtxWithin(now, t->last_ms[0], kMtxSeizeVerdictMs)) return MTX_RS_ST;
+  const uint8_t s = t->last[0];
+  return (s == MTX_S_BUSY || s == MTX_S_SEIZABLE || s == MTX_S_REFUSED || s == MTX_S_SEIZED) ? MTX_RS_E9 : MTX_RS_ST;
+}
+
+// V2.5-Evo - 2026-10-20 - THE OWNERSHIP DOT (24a0371, design 9.10): what C7 R2 shows when no Follow-Me dot needs it.
+//   SOLID = you control and others are paired (OWNER); PULSE = control is available now (FREE); SLOW = someone else
+//   controls (BUSY, SEIZABLE, REFUSED, SEIZED); OFF = an old-style link, one remote (OWNER_SOLO - so a single remote's
+//   screen is today's), no reply yet, or none for 5 s (no link: nothing to act on). Inputs: t, now, v3. Returns:
+//   MTX_DOT_*. Side effects: none.
+static const uint8_t MTX_DOT_OFF   = 0;
+static const uint8_t MTX_DOT_SOLID = 1;
+static const uint8_t MTX_DOT_SLOW  = 2;
+static const uint8_t MTX_DOT_PULSE = 3;
+static inline uint8_t mtxTxDotState(const MtxTxStatus* t, uint32_t now, bool v3)
+{
+  if (!v3 || t->count == 0 || !mtxWithin(now, t->last_ms[0], kMtxNoReplyFastMs)) return MTX_DOT_OFF;
+  switch (t->last[0])
+  {
+    case MTX_S_OWNER:    return MTX_DOT_SOLID;
+    case MTX_S_FREE:     return MTX_DOT_PULSE;
+    case MTX_S_BUSY:
+    case MTX_S_SEIZABLE:
+    case MTX_S_REFUSED:
+    case MTX_S_SEIZED:   return MTX_DOT_SLOW;
+    default:             return MTX_DOT_OFF;   // OWNER_SOLO: one remote, today's screen
+  }
+}
+
+// mtxTxNotOwner - is this remote a NON-OWNER on a multi-remote buggy right now (the summon path, design v3.2 3.4.2)?
+//   True only on a new-style link whose latest valid status is not "you control". An old-style link, one remote
+//   (OWNER_SOLO), or no reply yet keep today's paths (the buggy re-judges every frame anyway). Side effects: none.
+static inline bool mtxTxNotOwner(const MtxTxStatus* t, bool v3)
+{
+  return v3 && t->count > 0 && !mtxStatusIsOwner(t->last[0]);
 }
 
 #endif // BREMOTE_MULTI_TX_H

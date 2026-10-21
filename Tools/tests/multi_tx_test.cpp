@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-20 - REMOTE STEP (TX SW29): T34 the activity repeat (X-1 with the owner's widening: from the first
+//   press, every 2 s or less, through a combo gap and the RTM ceremony, owner-only, never in SINGLE, never with RTM
+//   active or an 0xF1/1 queued), T35 the E9-or-St choice for a refused gesture, T36 the ownership dot and the non-owner
+//   test the summon path uses. T21 also checks the receiver's released_rebind counter (step-2 audit Z-7 a).
 // V2.5-Evo - 2026-10-20 - RECEIVER STEP: X-10 (c) "subtract-only whatever the order" - a model of one motor-task pass
 //   (pwmPass: the trigger byte read first, the sticky return cap, the takeover limit) can be slotted between ANY two
 //   hook calls of a frame; T21 (a lock under a running return) and T26 (a claim with a same-packet grant) try every
@@ -1143,6 +1147,7 @@ static void t21()
     CHECK(logPos(&q, "fm_off") < logPos(&q, "gps_reset") && logPos(&q, "boot_reset") < logPos(&q, "seq"));
     CHECK(q.st.owner == kMtxNone && q.thr == 0 && q.sticky_cap);
     CHECK(q.st.n.released_lock == 0 && q.st.n.released_seized == 0 && q.st.n.released_claim == 0);
+    CHECK(q.st.n.released_rebind == 1);                                     // Z-7 (a): counted on its own
     CHECK(countEv(&q, MTX_EV_RELEASED) == 1 && q.events.back().second == MTX_REL_REBIND); }
   // Y-1: the boot check. The Sim's table is complete; with any one hook missing it is not.
   { Sim q; simInit(&q, false, 0x03);
@@ -1906,6 +1911,139 @@ static void t33()
   testEnd("T33");
 }
 
+// ============================================================
+// T34 - the remote's activity repeat (X-1 option (a), Y-6; owner 2026-10-20: busy on any button / toggle press)
+// ============================================================
+static MtxTxActIn actIn()
+{
+  MtxTxActIn in; memset(&in, 0, sizeof(in));
+  in.v3 = true; in.owner_multi = true;   // in control, others paired, nothing else in the way
+  return in;
+}
+static void t34()
+{
+  testBegin();
+  // A closed window is never due; the first press makes one due AT ONCE.
+  { MtxTxActivity a; mtxTxActivityInit(&a); MtxTxActIn in = actIn();
+    CHECK(!mtxTxActivityDue(&a, &in, 1000));
+    mtxTxActivityNote(&a, 1000);
+    CHECK(mtxTxActivityDue(&a, &in, 1000)); mtxTxActivitySent(&a, 1000);
+    CHECK(!mtxTxActivityDue(&a, &in, 2999));                             // the period
+    CHECK(mtxTxActivityDue(&a, &in, 3000)); mtxTxActivitySent(&a, 3000);
+    CHECK(!mtxTxActivityDue(&a, &in, 3999));
+    CHECK(!mtxTxActivityDue(&a, &in, 4000));                             // 3 s after the last press: closed
+    CHECK(a.until_ms == 0 && a.last_ms == 0);
+    mtxTxActivityNote(&a, 4500);                                         // a new press: due at once again
+    CHECK(mtxTxActivityDue(&a, &in, 4500)); }
+  // A queue that refused (a pending 0xF1) is retried on the next tick, never skipped.
+  { MtxTxActivity a; mtxTxActivityInit(&a); MtxTxActIn in = actIn();
+    mtxTxActivityNote(&a, 100);
+    CHECK(mtxTxActivityDue(&a, &in, 100));                               // not marked sent: the queue refused
+    CHECK(mtxTxActivityDue(&a, &in, 200)); }
+  // The ceremony keeps the window open with no press; the period holds throughout.
+  { MtxTxActivity a; mtxTxActivityInit(&a); MtxTxActIn in = actIn(); in.arming = true;
+    int sends = 0; uint32_t last = 0, maxgap = 0;
+    for (uint32_t t = 10000; t <= 40000; t += 100)
+      if (mtxTxActivityDue(&a, &in, t)) { if (sends) maxgap = (t - last > maxgap) ? t - last : maxgap; last = t; sends++; mtxTxActivitySent(&a, t); }
+    CHECK(sends >= 15 && maxgap == 2000); }
+  // The gates: never in SINGLE / old-style / non-owner / locked / setup / RTM active / 0xF1/1 queued / throttle >= 8.
+  for (int g = 0; g < 8; g++) {
+    MtxTxActivity a; mtxTxActivityInit(&a); MtxTxActIn in = actIn(); in.arming = true;
+    if (g == 0) in.v3 = false;
+    if (g == 1) in.owner_multi = false;
+    if (g == 2) in.locked = true;
+    if (g == 3) in.in_setup = true;
+    if (g == 4) in.rtm_active = true;
+    if (g == 5) in.rtm_on_queued = true;
+    if (g == 6) in.thr_byte = kMtxZeroThr;
+    if (g == 7) in.thr_byte = 200;
+    mtxTxActivityNote(&a, 500);
+    bool any = false;
+    for (uint32_t t = 500; t < 20000; t += 50) any = any || mtxTxActivityDue(&a, &in, t);
+    CHECK(!any);
+  }
+  // A press-and-combo script: a RIGHT tap, a 2.9 s gap, a 3 s LEFT hold, then the ceremony 15 s: one repeat at the
+  // first press, and never more than 2.5 s between two repeats until the ceremony ends (RTM goes active).
+  { MtxTxActivity a; mtxTxActivityInit(&a); MtxTxActIn in = actIn();
+    std::vector<uint32_t> sent;
+    for (uint32_t t = 0; t <= 22000; t += 10) {
+      const bool tap  = (t >= 1000 && t < 1400);
+      const bool hold = (t >= 4300 && t < 7300);
+      in.arming = (t >= 7300 && t < 22000);
+      if (tap || hold) mtxTxActivityNote(&a, t);
+      if (mtxTxActivityDue(&a, &in, t)) { sent.push_back(t); mtxTxActivitySent(&a, t); }
+    }
+    CHECK(!sent.empty() && sent[0] == 1000);
+    bool ok = true;
+    for (size_t i = 1; i < sent.size(); i++) ok = ok && (sent[i] - sent[i - 1] <= 2500);
+    CHECK(ok && sent.back() >= 20000); }
+  // RTM goes active: from that tick on, nothing - the ceremony's 0xF1/1 is the last word.
+  { MtxTxActivity a; mtxTxActivityInit(&a); MtxTxActIn in = actIn(); in.arming = true;
+    CHECK(mtxTxActivityDue(&a, &in, 100)); mtxTxActivitySent(&a, 100);
+    in.arming = false; in.rtm_active = true;
+    bool any = false;
+    for (uint32_t t = 100; t < 10000; t += 50) any = any || mtxTxActivityDue(&a, &in, t);
+    CHECK(!any); }
+  // Across the millis() wrap.
+  { MtxTxActivity a; mtxTxActivityInit(&a); MtxTxActIn in = actIn();
+    const uint32_t t0 = 0xFFFFF000u;
+    mtxTxActivityNote(&a, t0);
+    CHECK(mtxTxActivityDue(&a, &in, t0)); mtxTxActivitySent(&a, t0);
+    CHECK(!mtxTxActivityDue(&a, &in, t0 + 1999));
+    CHECK(mtxTxActivityDue(&a, &in, t0 + 2000));                         // past the wrap, still 2 s
+    CHECK(!mtxTxActivityDue(&a, &in, t0 + 3000)); }
+  testEnd("T34");
+}
+
+// ============================================================
+// T35 - a refused arm gesture: E9 against a busy owner, "St" otherwise (owner 2026-10-20)
+// ============================================================
+static void t35()
+{
+  testBegin();
+  MtxTxStatus t; mtxTxStatusInit(&t);
+  CHECK(mtxTxRefusalSignal(&t, 1000) == MTX_RS_ST);                      // no reply ever: St
+  const uint8_t busy[4] = { MTX_S_BUSY, MTX_S_SEIZABLE, MTX_S_REFUSED, MTX_S_SEIZED };
+  for (int i = 0; i < 4; i++) {
+    mtxTxStatusInit(&t); mtxTxOnReply(&t, busy[i], 1000);
+    CHECK(mtxTxRefusalSignal(&t, 1000) == MTX_RS_E9);
+    CHECK(mtxTxRefusalSignal(&t, 6000) == MTX_RS_E9);                    // 5 s: still fresh
+    CHECK(mtxTxRefusalSignal(&t, 6001) == MTX_RS_ST);                    // stale: not evidence of a busy owner
+  }
+  const uint8_t other[3] = { MTX_S_FREE, MTX_S_OWNER, MTX_S_OWNER_SOLO };
+  for (int i = 0; i < 3; i++) { mtxTxStatusInit(&t); mtxTxOnReply(&t, other[i], 1000); CHECK(mtxTxRefusalSignal(&t, 1100) == MTX_RS_ST); }
+  testEnd("T35");
+}
+
+// ============================================================
+// T36 - the ownership dot (24a0371) and the non-owner test of the summon path
+// ============================================================
+static void t36()
+{
+  testBegin();
+  MtxTxStatus t; mtxTxStatusInit(&t);
+  CHECK(mtxTxDotState(&t, 1000, true) == MTX_DOT_OFF && !mtxTxNotOwner(&t, true));   // no reply yet
+  struct { uint8_t s, dot; bool not_owner; } rows[] = {
+    { MTX_S_OWNER_SOLO, MTX_DOT_OFF,   false },   // one remote: today's screen, today's paths
+    { MTX_S_OWNER,      MTX_DOT_SOLID, false },
+    { MTX_S_FREE,       MTX_DOT_PULSE, true  },
+    { MTX_S_BUSY,       MTX_DOT_SLOW,  true  },
+    { MTX_S_SEIZABLE,   MTX_DOT_SLOW,  true  },
+    { MTX_S_REFUSED,    MTX_DOT_SLOW,  true  },
+    { MTX_S_SEIZED,     MTX_DOT_SLOW,  true  },
+  };
+  for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+    mtxTxStatusInit(&t); mtxTxOnReply(&t, rows[i].s, 2000);
+    CHECK(mtxTxDotState(&t, 2000, true) == rows[i].dot);
+    CHECK(mtxTxDotState(&t, 7000, true) == rows[i].dot);                 // 5 s: still shown
+    CHECK(mtxTxDotState(&t, 7001, true) == MTX_DOT_OFF);                 // no reply for 5 s: off
+    CHECK(mtxTxDotState(&t, 2000, false) == MTX_DOT_OFF);                // an old-style link: always off
+    CHECK(mtxTxNotOwner(&t, true) == rows[i].not_owner);
+    CHECK(!mtxTxNotOwner(&t, false));                                    // an old-style link: today's paths
+  }
+  testEnd("T36");
+}
+
 int main(int argc, char** argv)
 {
   printf("multi_tx_test - Common/MultiTx.h (v3.2 step 1)\n");
@@ -1915,6 +2053,7 @@ int main(int argc, char** argv)
   t7(); t8(); t9(); t10(); t11(); t12(); t13(); t14(); t15(); t16(); t17(); t18();
   printf("T19  -> Tools/tests/config_migrate_test.cpp\n");
   t20(); t21(); t22(); t23(); t24(); t25(); t26(); t27(); t28(); t29(); t30(); t31(); t32(); t33();
+  t34(); t35(); t36();
   printf("%s: %d checks, %d failed\n", g_fails ? "FAILED" : "PASSED", g_checks, g_fails);
   return g_fails ? 1 : 0;
 }

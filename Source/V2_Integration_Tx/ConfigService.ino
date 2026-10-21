@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE (step-2 audit Z-3): the two batch hooks of Common/ConfigServiceEngine.h - no read-only row of the remote is carried by a JSON batch, and nothing to finish. No row change here yet.
 // V2.5-Evo - 2026-10-20 - comments only (owner: front stations swap numbers): the followme_mode and mag_fm_set rows document 4 = front left, 5 = front right. Ranges unchanged.
 // V2.5-Evo - 2026-10-07 - F4/F5 on the remote (port of P2-d): followme_mode 0-3 -> 0-5 and mag_fm_set 1-7 -> 1-31
 //   (bit3 = station 4, bit4 = station 5). Widening only; the mag_fm_set repair value stays 0x07. No struct change.
@@ -189,4 +190,24 @@ bool cfgValidateCrossField(confStruct &candidate, String &err)
   }
 
   return true;
+}
+
+// ============================================================
+// V2.5-Evo - 2026-10-20 - Z-3: THE TWO BATCH HOOKS (Common/ConfigServiceEngine.h, cfgSetBatch())
+// ============================================================
+// cfgBatchReadOnlyAccepted - no read-only row of this board may be carried by a JSON batch: a read-only row here is
+//   skipped by cfgSetBatch() (not written, not an error), so its value can only come from where it belongs.
+//   Inputs: the row. Returns: false. Side effects: none.
+bool cfgBatchReadOnlyAccepted(const CfgFieldSpec& spec)
+{
+  (void)spec;
+  return false;
+}
+
+// cfgBatchFinish - nothing to finish on the remote: its own_address is not its identity (design v3.1 14.3), so a JSON
+//   from another remote imports as it always did. Inputs: staged, live. Side effects: none.
+void cfgBatchFinish(confStruct& staged, const confStruct& live)
+{
+  (void)staged;
+  (void)live;
 }

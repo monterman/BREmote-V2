@@ -1,4 +1,5 @@
 // V2.5-Evo - 2026-10-20 - MULTI-REMOTE RECEIVER STEP: cfgSetBatch() (the JSON import and the batch API) no longer rejects a read-only key - a JSON export lists them, so it made every export un-importable once the RX own_address became read-only. The value goes into the staged copy only and the cross-field validator decides (on the RX a foreign own_address drops the binding and is reset to the chip ID). ?set still refuses it. The TX has no read-only row, so it is unaffected.
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE REMOTE STEP (step-2 audit Z-3): the read-only exception in cfgSetBatch() is PER ROW now. A read-only row is carried by a batch only where the board says its validator owns it (cfgBatchReadOnlyAccepted(): the RX own_address); every other read-only row in a batch is SKIPPED - not written, and not an error, so a JSON export with it still imports (the TX mtx_link_proto, written by pairing only). And each board finishes a batch (cfgBatchFinish(), before the cross-field validator): on the RX a JSON made on ANOTHER board keeps this board's own pairing instead of unpairing it (the owner option Rex offered; Larry's default 4).
 #ifndef CONFIG_SERVICE_ENGINE_H
 #define CONFIG_SERVICE_ENGINE_H
 
@@ -44,6 +45,18 @@ struct CfgFieldSpec
 extern const CfgFieldSpec kCfgFields[];
 extern const size_t kCfgFieldCount;
 bool cfgValidateCrossField(confStruct &candidate, String &err);
+// V2.5-Evo - 2026-10-20 - Z-3: the two batch hooks, defined in each board's ConfigService.ino.
+//   cfgBatchReadOnlyAccepted(spec) - may a JSON batch carry this READ-ONLY row? True only where the board's
+//     cfgValidateCrossField() owns the value and corrects it (the RX own_address). Every other read-only row in a
+//     batch is skipped. Inputs: the row. Returns: bool. Side effects: none.
+//   cfgBatchFinish(staged, live) - the board's last word on a parsed batch, before the cross-field validator runs on
+//     it. Inputs: staged (the batch applied to a copy of the live config, in and out), live (the config the board runs
+//     now). Side effects: staged, and one NOTE line where it changes something.
+// WHY TWO FUNCTIONS AND NOT A NEW CfgFieldSpec MEMBER (Rex offered either): a member would need an eleventh initializer
+// on every row of both tables (about 140 rows, or a -Wmissing-field-initializers warning on each), for a property one
+// row has.
+bool cfgBatchReadOnlyAccepted(const CfgFieldSpec& spec);
+void cfgBatchFinish(confStruct& staged, const confStruct& live);
 
 // ===== Parsing Helpers =====
 
@@ -573,22 +586,27 @@ bool cfgSetBatch(const String& payload, String &err, bool &radioReinitRequired)
     }
 
     // V2.5-Evo - 2026-10-20 - A READ-ONLY KEY IN A BATCH IS NOT AN ERROR. A JSON export lists every key, the
-    // read-only ones too (today: the RX own_address only, which is its chip ID since SW37), so refusing one here made
-    // every JSON export un-importable. Its value goes into the STAGED copy only, and the cross-field validator below
-    // judges the import as a whole: on the RX, an own_address that is not this chip's ID makes the identity rule drop
-    // the binding the import carries (a config made on another board) and puts own_address back to the chip ID before
-    // anything is kept. So the key still cannot change, and a foreign one unpairs, never pairs. ?set and the web
-    // page's single-field /api/set (cfgSetValueByKey) still refuse a read-only key outright. The TX has no read-only
-    // row, so nothing changes there.
-    CfgFieldSpec batchSpec = *spec;
-    batchSpec.writable = true;
-    if (!cfgApplyFieldValue(staged, batchSpec, value, err)) return false;
-    radioReinitRequired = radioReinitRequired || spec->radioReinitRequired;
+    // read-only ones too, so refusing one here made every JSON export un-importable.
+    // V2.5-Evo - 2026-10-20 - Z-3: PER ROW. A read-only row whose value the board's validator owns (the RX own_address,
+    // its chip ID since SW37 - cfgBatchReadOnlyAccepted()) goes into the STAGED copy only, and the board's
+    // cfgBatchFinish() and the cross-field validator below judge the import as a whole. Every OTHER read-only row (the
+    // TX mtx_link_proto: pairing writes it, nothing else may) is SKIPPED: not written, and not an error, so the export
+    // that lists it still imports and the board keeps its own value. ?set and the web page's single-field /api/set
+    // (cfgSetValueByKey) still refuse every read-only key outright.
+    if (spec->writable || cfgBatchReadOnlyAccepted(*spec))
+    {
+      CfgFieldSpec batchSpec = *spec;
+      batchSpec.writable = true;
+      if (!cfgApplyFieldValue(staged, batchSpec, value, err)) return false;
+      radioReinitRequired = radioReinitRequired || spec->radioReinitRequired;
+    }
 
     // Skip trailing whitespace between pairs; comma will be consumed by top-of-loop skip.
     while (i < s.length() - 1 && (s[i] == ' ' || s[i] == '\t' || s[i] == '\r' || s[i] == '\n')) i++;
   }
 
+  // V2.5-Evo - 2026-10-20 - Z-3: the board's last word on the batch (the RX keeps its own pairing on a foreign JSON).
+  cfgBatchFinish(staged, usrConf);
   if (!cfgValidateCrossField(staged, err)) return false;
   usrConf = staged;
   return true;

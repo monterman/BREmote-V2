@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-6 d: waitForTelemetry() reads local_link_quality from this remote's accepted reply
+//   only, not from every frame seen in the 40 ms window. No confStruct change.
 // V2.5-Evo - 2026-10-20 - MULTI-REMOTE REMOTE STEP (SW29), the radio side (design v3.1 sections 5, 9, 11; audit C2, C14, C16-C18,
 //   W-2, W-7): (1) EVERY UPLINK IS BUILT BY mtxBuildUplink() (Common/MultiTx.h, host test T15): an old-style record
 //   (mtx_link_proto 0, every migrated pairing) gives today's bytes exactly - the buggy's address, the same type and value,
@@ -762,7 +764,6 @@ void waitForTelemetry(void *parameter)
       const unsigned long seen_ms = millis();
       const int16_t rd = radio.readData(rcvArray, 6);
       rfInterrupt = false;
-      local_link_quality = getLinkQuality(radio.getRSSI(), radio.getSNR());
       rxprint("Received packet: ");
       #ifdef DEBUG_RX
       printHexArray(rcvArray,6);
@@ -770,7 +771,11 @@ void waitForTelemetry(void *parameter)
       const bool match = (rd == RADIOLIB_ERR_NONE) && memcmp(rcvArray, reply_addr, 3) == 0 &&
                          rcvArray[5] == esp_crc8(rcvArray, 5);
       const uint8_t verdict = mtxReplyWaitOnFrame(seen_ms, send_ms, match);
-      if (verdict == MTX_RW_ACCEPT) { ours = true; break; }
+      // V2.5-Evo - 2026-10-21 - P3-6 d: the link quality is read from THIS remote's accepted reply only. It was read from
+      // every frame seen in the window, before the match - so on a channel shared with other remotes, another remote's frame
+      // or reply (or a corrupted one) set this remote's bars and Pattern A. Same radio call, same moment (straight after the
+      // read of that frame), one call fewer for a frame that is not ours.
+      if (verdict == MTX_RW_ACCEPT) { local_link_quality = getLinkQuality(radio.getRSSI(), radio.getSNR()); ours = true; break; }
       if (verdict == MTX_RW_STOP) break;
       radio.startReceive();   // someone else's frame, still inside the window: listen again
     }

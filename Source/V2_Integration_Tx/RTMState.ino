@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-3: setRtmArmed() and cycleFmMode() drop a pending summon (mtxTxSummonDrop(),
+//   MultiRemote.ino) when they run on the owner path, so a deferred summon arm can never act on the rider's own fresh arm.
+//   No confStruct change.
 // V2.5-Evo - 2026-10-20 - MULTI-REMOTE REMOTE STEP (SW29): (1) THE ACTIVITY REPEAT (X-1) is ticked from every blocking wait here -
 //   gpsKeepAliveDelay(), ceremonyDelaySeeRelease(), rtmCapHoldDelay() and both ceremony wait loops - so the remote in control
 //   keeps telling the buggy it is busy through the whole RTM ceremony (mtxActivityTick(), MultiRemote.ino; owner-only, never in
@@ -543,6 +546,7 @@ void setRtmArmed()
   // V2.5-Evo - 2026-09-30 - the EFFECTIVE enable: the stored usrConf.rtm_enabled unless a mag_mode 4 hold
   // has overridden it for this session (see rtmEnabledEffective()). Was usrConf.rtm_enabled directly.
   if (!rtmEnabledEffective() || !usrConf.gps_en) return;
+  mtxTxSummonDrop();   // V2.5-Evo - 2026-10-21 - P3-3: an arm on the owner path ends any pending summon (MultiRemote.ino)
   // (fmSilentDisarm() was called here until 2026-09-18 - see the header note above.)
   rtm_tx_state     = RTM_ARMED;
   rtm_arm_start_ms = millis();
@@ -1865,6 +1869,7 @@ static void fmDisarm(bool commanded)
 void cycleFmMode()
 {
   if (!usrConf.fm_override_enabled || !usrConf.gps_en) return;
+  mtxTxSummonDrop();   // V2.5-Evo - 2026-10-21 - P3-3: a Follow-Me gesture on the owner path ends any pending summon
 
   if (fm_armed)
   {

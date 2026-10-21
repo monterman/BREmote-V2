@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-3: the deferred summon arm re-checks the gesture's preconditions (in control, the
+//   trigger released, no return running, Follow-Me not armed) and an owner-path arm drops a pending summon (mtxTxSummonDrop()).
 // V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-1: the summon and take-back answers are judged on the first owner arrival
 //   (Common/MultiTx.h mtxTxOwnerWait()) and polled from handleGearToggle()'s loops too (mtxTxAnswerPoll()); the summon
 //   tick is split into the wait (mtxTxSummonWait()) and the deferred arm (mtxTxSummonGo(), loop task only).
@@ -222,16 +224,41 @@ void mtxTxSummonTry(uint8_t kind)
 //   setRtmArmed() (the "rn" ceremony and the squeezes) or cycleFmMode() (a fresh arm) - once the owner-edge boot ID has
 //   gone out (at most kMtxSummonBootIdWaitMs): the ceremony's own 0xF1/0 would otherwise replace it in the queue (same
 //   type), and the ceremony then blocks loop() for seconds. A lock in between: nothing is armed.
+// V2.5-Evo - 2026-10-21 - P3-3 (step-3 audit): THE BUG - the arm ran up to 600 ms (plus loop passes) after the grant and
+//   re-checked nothing but the lock. If the rider, now in control, had meanwhile armed the same mode on the owner path, the
+//   deferred setRtmArmed() (it has no "already active" guard) ended his fresh return with 0xF1/0 and cap 0 and started a
+//   new ceremony, and cycleFmMode() stepped his Follow-Me station; had he started driving, setRtmArmed() cut his held
+//   throttle to 0. It could only stop or re-arm, never add throttle. THE FIX: the gesture's preconditions are read again
+//   at the moment of the arm - still in control (the newest status), the trigger released, no return running or arming,
+//   and for Follow-Me not already armed - and any failure drops the arm with one line. An owner-path arm in between
+//   also drops the summon outright (mtxTxSummonDrop(), called by setRtmArmed() and cycleFmMode()).
 static void mtxTxSummonGo(uint32_t now, const MtxTxStatus* t)
 {
-  (void)t;
   if (s_summon_go == 0) return;
   if (txBootIdPending() && mtxAgeMs(now, s_summon_go_ms) < kMtxSummonBootIdWaitMs) return;
   const uint8_t kind = s_summon_go;
   s_summon_go = 0;
-  if (system_locked) { Serial.println("MTX [TX] summon: the remote locked before the arm - nothing armed"); return; }
+  const char* why = NULL;
+  if (system_locked)                       why = "the remote locked before the arm";
+  else if (!t->owner)                      why = "this remote is no longer in control";
+  else if (!triggerReleased())             why = "the trigger is not released (the rider is driving)";
+  else if (rtm_tx_active || rtmIsArming()) why = "Return-To-Me already runs on this remote";
+  else if (kind == MTX_SUMMON_FM && isFmArmed()) why = "Follow-Me is already armed on this remote";
+  if (why) { Serial.printf("MTX [TX] summon: nothing armed - %s\n", why); return; }
   if (kind == MTX_SUMMON_RTM) setRtmArmed();   // today's ceremony (blocks loop(), as from the toggle)
   else                        cycleFmMode();   // today's fresh arm (Follow-Me is not armed here)
+}
+
+// mtxTxSummonDrop - V2.5-Evo - 2026-10-21 - P3-3: an arm on the OWNER path is running (setRtmArmed() / cycleFmMode()
+//   reached from a gesture): a summon still waiting for its answer, or granted and waiting to arm, is dropped, so it can
+//   never act on top of the rider's own arm afterwards. The deferred arm itself clears its state before it calls them, so
+//   this is a no-op there. Loop task. Side effects: the summon state, one serial line when something was dropped.
+void mtxTxSummonDrop()
+{
+  if (s_summon_kind == 0 && s_summon_go == 0) return;
+  s_summon_kind = 0;
+  s_summon_go   = 0;
+  Serial.println("MTX [TX] summon dropped: an arm gesture on the owner path ran first");
 }
 
 // mtxTxSummonWait - the summon's polled wait (X-9). OWNER within 1500 ms of the send: the boot ID is queued AT ONCE (X-8;

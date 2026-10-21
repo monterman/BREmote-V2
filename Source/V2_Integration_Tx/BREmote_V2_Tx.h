@@ -1,4 +1,4 @@
-// V2.5-Evo - 2026-10-21 - step-3 audit P3-1: mtxTxAnswerPoll() declared (MultiRemote.ino). No confStruct change, sizeof stays 144, SW_VERSION stays 29.
+// V2.5-Evo - 2026-10-21 - step-3 audit P3-1 / P3-3: mtxTxAnswerPoll() and mtxTxSummonDrop() declared (MultiRemote.ino). No confStruct change, sizeof stays 144, SW_VERSION stays 29.
 // V2.5-Evo - 2026-10-20 - MULTI-REMOTE REMOTE STEP, SW27 -> SW29 (28 is never used): confStruct 136 -> 144 B, four u16 appended at
 //   136 - autolock_timeout_s (0 = off, 5-180 s, default 0; the 039b908 auto-lock for one remote or the remote in control),
 //   mtx_link_proto (0 = old-style frames, 3 = new-style link-ID frames; written by pairing only), mtx_seize_hold_ms
@@ -1290,6 +1290,7 @@ bool mtxTxIsNonOwner();
 void mtxTxSummonTry(uint8_t kind);
 void mtxTxSeizePoll();
 void mtxTxAnswerPoll();                                                    // V2.5-Evo - 2026-10-21 - P3-1
+void mtxTxSummonDrop();                                                    // V2.5-Evo - 2026-10-21 - P3-3
 bool mtxTxSeizeSuppress();
 void mtxTxStopRefusal(const char* why, uint8_t style);
 void mtxTxLoopTick();

@@ -576,7 +576,7 @@ void handleGearToggle(int direction)
         // V2.5-Evo - 2026-10-20 - ROW 4 (owner rule "if it cannot engage, show stop"): no longer silent on the remote - "St"
         // + the stop buzz, held 2 s WITHOUT blocking (the trigger is held). Still nothing is armed.
         // V2.5-Evo - 2026-10-21 - P3-2: ONLY when the gesture would ARM. With this remote's own return running or arming it
-        // could not have armed anything, and a 2 s "St" + the stop buzz over the running return reads "it stopped" (SOP-041):
+        // could not have armed anything, and a 2 s "St" + the stop buzz over the running return reads "it stopped" (the screen must show the buggy's real state):
         // serial line only there, as SW27 (reachable with steering disabled only).
         if (rtm_tx_active || rtmIsArming())
         {
@@ -604,7 +604,7 @@ void handleGearToggle(int direction)
         // disabled; with steering on, a squeeze ends the hold earlier - row 5, a cancel, silent.)
         // V2.5-Evo - 2026-10-21 - P3-2: ONLY when the gesture would ARM Follow-Me. With Follow-Me already armed it would have
         // stepped the station or disarmed (not an engage attempt), and with this remote's return running it could not act;
-        // a "St" there would say a running mode stopped (SOP-041). Serial line only in both cases, as SW27 (which did nothing).
+        // a "St" there would say a running mode stopped (the screen must show the buggy's real state). Serial line only in both cases, as SW27 (which did nothing).
         if (rtm_tx_active || rtmIsArming() || isFmArmed())
         {
           Serial.printf("FM [TX] Follow-Me gesture ignored: trigger held (thr %u) while %s - nothing changes\n",
@@ -1764,7 +1764,7 @@ void runMagGesture()
       // "RTM active -> disarm", so an RTM hold made with the trigger held DURING a return - the normal RTM state - showed "St"
       // + the stop buzz while the return went on, and the rider believed he had ended it. THE FIX: a running (or arming)
       // return is tested FIRST. A hold then means "END the return": a DISARM, not an engage attempt, so the owner's "if it
-      // cannot engage, show stop" does not apply, and any "St" would say the return stopped while it runs (SOP-041: the
+      // cannot engage, show stop" does not apply, and any "St" would say the return stopped while it runs (the rule: the
       // screen shows what the buggy does). Blocked by the held trigger (Q-8) or by Return-To-Me switched off: serial line
       // only and the return's screen stays - SW27's answer. Released and switched on: the disarm, exactly as before.
       else if (rtm_tx_active || rtmIsArming())

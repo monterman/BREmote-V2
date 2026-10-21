@@ -1,7 +1,7 @@
 // V2.5-Evo - 2026-10-21 - text only: the -60 dBm pairing gate is "about 5 m, calculated" (design 11.1), not "about 1 m", in the
 //   window comment and both PAIR lines; pair at arm's length. No code change.
 // V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-4: a paired-list change from MULTI to SINGLE also publishes the takeover limit once
-//   (mtxListChangeActions(), Common/MultiTx.h), so the remaining remote starts from zero under the soft start. No confStruct change.
+//   (mtxListChangeActions(), Common/MultiTx.h): the remaining remote's held trigger goes straight to the limit, not through zero. No confStruct change.
 // V2.5-Evo - 2026-10-20 - MULTI-REMOTE, step-2 audit Z-1 / Z-6 / Z-7 a: (Z-1) a paired-list change zeroes the outputs
 //   (throttle 0, steering 127, no failsafe stamp) whenever the list was or becomes MULTI, also with nobody in control -
 //   a list change with one remote before and after stays today's (the owner's single-remote rule; Z-1 confirmed 2026-10-21);
@@ -1406,7 +1406,7 @@ static void mtxRxStartFresh()
 //   other remote. Now that first byte meets the limit (mtx_takeover_cap rising to full over mtx_takeover_ms), and the
 //   motor ramp. The SINGLE frame path is untouched; the PWM task applies the limit in any mode (PWM.ino). Both decisions
 //   are the pure mtxListChangeActions() (Common/MultiTx.h, host test T21). This is the one case where the limit runs with
-//   a single remote paired (SOP-039's "never with a single remote" needs the owner's one-clause amendment).
+//   a single remote paired. It only lowers the throttle, never reads GPS, and ends on its own within mtx_takeover_ms.
 static void mtxRxRefresh(uint32_t now)
 {
   MtxRxBinding b;

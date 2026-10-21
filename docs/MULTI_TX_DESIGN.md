@@ -356,7 +356,7 @@ v3.2 neither shortens nor extends any of these.
 - The limit is 64 of 255 (25 %) at takeover, rising evenly to full over 4 s: 64 / 111 / 159 / 207 / 255 at 0 / 1 / 2 / 3 / 4 s.
 - **It applies only at the moment control passes** (a takeover, a claim, a summon or a take-back), **because the buggy may be near the other rider when it does.** Then it ends on its own. A remote that never lost control (for example one coming back after a silence) gets no limit.
 - Both numbers are settings. The time can never exceed 10 s.
-- It only lowers throttle, never reads GPS, and is otherwise never used with a single remote. **The one exception:** once, right after the paired list changes from two or more remotes to one (section 5.3), so the remaining remote restarts from zero under the same soft start.
+- It only lowers throttle, never reads GPS, and is otherwise never used with a single remote. **The one exception:** once, right after the paired list changes from two or more remotes to one (section 5.3). The remaining remote needs no zero proof, so its held trigger goes straight to at most the limit (25 %, rising to full over 4 s), without passing through zero.
 - The motor failsafe expression, all existing caps, the ramp, the mixer and the steering are untouched.
 
 ---
@@ -690,7 +690,7 @@ Losing the fix never makes the remote claimable: it is still transmitting.
 - summon by the Return-To-Me gesture and by the Follow-Me gesture (needs a GPS on the buggy and a fix on the summoning remote);
 - a toggle summon held 2 s past the combo: it still arms;
 - during a return, a magnet RTM hold with the trigger held: no "St", the return continues;
-- a paired-list change from two remotes to one with the remaining trigger held: the output restarts from zero at about 25 %, full after 4 s;
+- a paired-list change from two remotes to one with the remaining trigger held: the output goes straight to at most about 25 %, without passing through zero, and is full after 4 s;
 - summon refused: against a remote that is driving, against an armed remote that is transmitting, after only 8 s of silence, from a locked remote;
 - **a remote without GPS:** set one remote to `gps_en 0`, and separately use a remote whose module has no fix yet (indoors). Its summon is refused with "St" and nothing is sent; it can still claim by squeezing; the GPS master takes back, then arms Follow-Me;
 - **single-remote silence:** with only one remote paired, and again with the second remote off or locked, Follow-Me and Return-To-Me behave on a silence exactly as today (pause, the 30 s end, the parked wait), with no claim line at all;
@@ -717,7 +717,7 @@ Settled while the code was written, by the maintainer or by the code review. The
 - **The take-back and summon answers** are judged on the first owner status after the send and read while the button is held, so a longer hold never reads as "no answer"; the summon's arm re-checks its preconditions first (sections 5.5, 8.4).
 - **The remote in control is busy on any button** (the `0xF1/0` activity repeat, section 5.4).
 - **A toggle tap on a remote that is not in control changes nothing** (section 8.2).
-- **A change of the paired list while running** zeroes throttle and steering whenever two or more remotes are involved (section 5.3; confirmed by the maintainer 2026-10-21). From two or more remotes to one, the remaining remote also gets the takeover limit once ("start from zero and with a soft start").
+- **A change of the paired list while running** zeroes throttle and steering whenever two or more remotes are involved (section 5.3; confirmed by the maintainer 2026-10-21). From two or more remotes to one, the remaining remote also gets the takeover limit once (the maintainer's "start from zero and with a soft start"): the zero is written, but the remaining remote needs no zero proof, so a held trigger goes straight to at most 25 %, rising to full over 4 s, without passing through zero.
 - **A JSON made on another receiver keeps the receiver's own pairing** (section 13; confirmed by the maintainer 2026-10-21).
 - **The pairing LED** flashes N times right after each enrolment, then shows solid 1 s when the list is saved (section 7).
 - **Free storage before the first boot's writes:** the receiver saves the migrated configuration (and the web page) only with at least 1000 KB of SPIFFS free; otherwise it runs from RAM and a NOTE says what to free. Do not pair before freeing space: a pairing's save removes the stored file first, so both could be lost.

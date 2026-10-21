@@ -360,10 +360,11 @@ runs, and two or more remotes were paired before or after the change:
 - **the throttle goes to zero and the steering to centre at once**, and the remote in control is released
   (Follow-Me and Return-To-Me off);
 - afterwards, with two or more remotes paired, nobody is in control: the next squeeze from zero takes
-  control under the takeover soft start. With one remote left, it drives again from zero, and its
-  throttle goes through the takeover soft start once (25 % rising to full over 4 s, §5d) as well as the
-  motors' normal soft start. A trigger that was already squeezed is limited the same way. After that it
-  is a single remote, as today.
+  control under the takeover soft start. With one remote left, that remote is obeyed at once, with no
+  squeeze from zero needed, and its throttle goes through the takeover soft start once (25 % rising to
+  full over 4 s, §5d) as well as the motors' normal soft start. A trigger that was already squeezed goes
+  straight to at most 25 %, rising, without passing through zero. After that it is a single remote, as
+  today.
 
 With one remote before and after the change, this is today's behaviour. Make such changes on the bench,
 with the trigger released.
@@ -499,7 +500,8 @@ new buggy only as its single remote.
 2. One remote in control at a time. Another remote's packets never keep the motors running.
 3. No timer hands control over. It passes only by a lock, a deliberate claim, or the master's take-back.
 4. Control passes only from the new remote's zero throttle, and then under the takeover soft start.
-   After a list change to one remote, the outputs restart from zero under the same soft start (§10a).
+   After a list change from two or more remotes to one, the remaining remote is obeyed at once: a held
+   trigger goes straight to at most 25 %, rising to full over 4 s, without passing through zero (§10a).
 5. A held trigger never takes control.
 6. With one remote paired, the buggy runs today's code.
 

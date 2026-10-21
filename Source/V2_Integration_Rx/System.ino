@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE (SW37): new one-shot command ?mtx (cmdMtx() -> mtxPrintStatus() in Radio.ino), web_ok, not blocks_loop; it appears in the web console's dropdown on its own (the list is fetched from kCommands[]). The 1-second checkConnStatus LED and every other command are unchanged.
 // V2.5-Evo - 2026-10-20 - FRONT STATIONS SWAP NUMBERS (owner: 4 front-left, 5 front-right): the ?diag "FM station" front-abort text says F4/F5 read as F3/F1 (was F1/F3). Text only.
 // V2.5-Evo - 2026-10-14 - RESET REASON + BOOT COUNTER (owner-approved for RX1): ?diag prints a "boot" line after the window line - the boot number, this boot's reset reason (name, code, class) and the uptime. No new command. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-14 - full-system audit FS-1 (HIGH) + FS-13 (MEDIUM) + FS-14 (LOW) + link-layer audit F-1/L-2 + audit F1, owner-approved for RX1. (1) ONE WRITER FOR THE AW9523's PORT-1 OUTPUTS (awPort1WriteLocked() and helpers): a shadow of the intended mux / AUX LED / wet-enable levels, one checked read of OUTPUT1 before each write, NOTHING written on a failed read, and from runBootSequence() on both PPM enables forced HIGH in every byte written; the wet-measure enable is HIGH only inside checkWetness(). setUartMux(), checkWetness(), startupAW() and blinkErr() (port-1 pins) use it. The old aw.digitalWrite() read-modify-writes could write a noise-corrupted enable bit back as 0 and cut a motor until reboot. (2) setUartMux(): one checked INPUT1 read-back judged by muxReadbackVerdict() (a failed read is never a pass), the single correction as before, a second checked read-back counted in g_diag_mux_verify_fail; Serial1.flush() before a switch to channel 0. Routine 3 I2C transactions (was 6), corrective 6 (was 10). (3) audit F1: the AUX button no longer blocks the loop - its confirmation uses the logger's non-blocking triggerBlink(), and the AUX and BIND wait-for-release loops (no watchdog feed) are gone; the edge detectors already ignore a held button. blinkErr() is left to the fatal halt loops, where a watchdog reset is the recovery. (4) ?diag: "still wrong after the correction" on the UART mux line and an "AW9523 P1" line (OUTPUT1 vs intended, both enables, skipped / not-acknowledged writes); ?diagz zeroes the new counters. No new command. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -1963,6 +1964,17 @@ void cmdDiagZ(const String& params) {
 
 void cmdHelp(const String& params);
 
+// cmdMtx - V2.5-Evo - 2026-10-20 - ?mtx, the multi-remote status (design v3.1 14.4, v3.2 section 7): this buggy's chip
+//   ID and binding, the mode, the paired list (role, kind, per-slot heard age, zero streak, last status, RSSI, link),
+//   the owner, claimable and its age, the claim token, the takeover limit now, and the counters. A one-shot read from
+//   a consistent snapshot (mtxPrintStatus(), Radio.ino), safe at any time, so it is web_ok and not blocks_loop.
+//   Inputs: none (params ignored). Side effects: Serial only.
+void cmdMtx(const String& params)
+{
+  (void)params;
+  mtxPrintStatus();
+}
+
 // ============================================================================================
 // V2.5-Evo - 2026-10-03 - RX WEB CONSOLE: WHY EACH COMMAND IS OR IS NOT ON THE WiFi WHITELIST
 // ============================================================================================
@@ -1971,7 +1983,7 @@ void cmdHelp(const String& params);
 // why. Read it before adding `true` to a new row.
 //
 // PERMITTED - one-shot reads and setters that return and are over:
-//   ?conf ?get ?set ?keys ?save ?applyconf ?printgps ?diag ?diagz ?logstat ?list ?lograte
+//   ?conf ?get ?set ?keys ?save ?applyconf ?printgps ?diag ?diagz ?mtx ?logstat ?list ?lograte
 //   ?start ?stop ?deletelog ?wifistate ?wifierr ?wifiver ?wifidbg ?wifips and bare ? (help).
 //   None of these holds loop() for a meaningful time. ?set / ?save / ?applyconf / ?deletelog do
 //   exactly what the page's own /api/set, /api/save, /api/load and /api/logs/delete routes
@@ -2104,6 +2116,9 @@ static const SerialCommand kCommands[] = {
   {"gpssetup", "ONE-TIME full GPS setup: find, configure ACK-verified, save permanently, verify - ~20s, bench only", cmdGpsSetup, true},
   {"diag", "one-shot snapshot: GPS bytes/sentences, fix age, COG updates vs value-changes, mux errors, VESC poll rate, loop min/mean/max (safe during RTM/FM)", cmdDiag, false, true},
   {"diagz", "zero the ?diag counters so a run can be bracketed", cmdDiagZ, false, true},
+  // V2.5-Evo - 2026-10-20 - MULTI-REMOTE: ?mtx - a one-shot read (web_ok, not blocks_loop), like ?diag. All seven
+  // members are given so the row adds no missing-initializer warning.
+  {"mtx", "multi-remote status: this buggy's ID, the paired remotes, who controls, claimable, the claim token, counters", cmdMtx, false, true, false, false},
   // V2.5-Evo - 2026-10-03 - RX WEB CONSOLE. NOT web_ok: ?dump writes to the physical USB port on
   // purpose (its output must not re-enter the ring it is reading), so from a browser it would
   // look like a command that does nothing. NOT blocks_loop either: a bounded copy of at most

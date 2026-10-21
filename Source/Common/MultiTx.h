@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-20 - RECEIVER STEP (RX SW37): the receiver now includes this header (through Common/
+//   SPIFFSEngine.h, for efuseIdFromMac(), and BREmote_V2_Rx.h) and runs mtxOnFrame() behind its hook table in
+//   Radio.ino. MTX_REL_REBIND added. The remote still only gets efuseIdFromMac() from it, via SPIFFSEngine.h.
 // V2.5-Evo - 2026-10-20 - STEP 2 HEADER FIXES (step-1 code audit Y-1..Y-5, Y-7 b/c): the receiver hook contract is
 //   written out on MtxRxHooks, with mtxRxHooksComplete() for the boot check (Y-1); mtxPairOnConfirm() refuses a fifth
 //   enrolment or a closed window (Y-2); mtxTimers() expires the per-slot zero proof and "control heard" stamps after
@@ -684,6 +687,10 @@ static const uint8_t MTX_EV_NON_OWNER_META = 11;  // slot: sender; arg: byte 3
 static const uint8_t MTX_REL_LOCK   = 1;
 static const uint8_t MTX_REL_SEIZED = 2;
 static const uint8_t MTX_REL_CLAIM  = 3;
+// V2.5-Evo - 2026-10-20 - receiver step: the paired-remote list changed under a running owner (a config import or
+// ?applyconf rebuilt it, or ?set paired 0 cleared it). The slot numbers may now name other remotes, so the receiver
+// releases with the same tested order before it starts again from "nobody owns".
+static const uint8_t MTX_REL_REBIND = 4;
 
 static const uint8_t MTX_CL_NO     = 0;
 static const uint8_t MTX_CL_SILENT = 1;

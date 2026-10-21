@@ -1,3 +1,16 @@
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE RECEIVER STEP (SW37): triggeredReceive() hands every 6-byte frame that passes
+//   gate 0 and the CRC to mtxOnFrame() (Common/MultiTx.h) behind this file's hook table. With ONE remote paired
+//   (SINGLE) the hooks ARE today's code: apply_owner is the old control branch, meta the old 0xF1 / 0xF2 / 0xF4 / 0xF3
+//   branches, reply the old reply (status 000, today's address and rotation) - moved, not rewritten; the only
+//   SINGLE differences are the approved ones (0xF5-0xFF and the 0xF1 SEIZE / SUMMON codes dropped, LOCKED from a
+//   new-style remote read as 0/127). With 2-4 remotes (MULTI) the ownership rules decide who is obeyed. Gate 0 is
+//   mtxMayAcceptControl(); the boot pairing window is rebuilt for up to four remotes (RSSI gate, -9 dBm power guard,
+//   rebuild-never-append, commit or restore); the 15-byte rider GPS is accepted only from the slot that announced it
+//   while it owns; the model's timers also run on the 2 s timeout; the "MTX:" lines are queued for the loop task.
+//   The bodies of processRtmStatePacket(), processFmOverridePacket() and gpsPhaseBCheck() are untouched;
+//   processMetaGpsPacket() changes in its address test only. GPS-integrity note (project rules 1-5): Phase A still
+//   judges every accepted fix, the 0xF3 state machine still resets on every mismatch (now also a slot that does not
+//   own) and a release restores 6-byte mode, positions stay int32 microdegrees, nothing is extrapolated.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-1: the 0xF3 GPS path accepts the v2 rider GPS packet (announcement
 //   0xF3/0x03 -> a 15-byte packet with the remote's GPS fix counter) next to v1 (0xF3/0x01 or any other subtype -> 14
 //   bytes, unchanged). processMetaGpsPacket() decodes both through Common/RiderGpsPacket.h and stamps
@@ -30,6 +43,30 @@
 // SPI bus concurrently — it reads these cached copies instead (see extern in Logger.ino convertToLogData()).
 float g_last_rssi_dbm = 0.0f;   // dBm; snapshot of the last control packet's RSSI
 float g_last_snr_db   = 0.0f;   // dB;  snapshot of the last control packet's SNR
+
+// ============================================================
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE: THE RADIO TASK'S OWNERSHIP STATE
+// ============================================================
+// Everything the per-packet rules (mtxOnFrame(), Common/MultiTx.h) need between frames. ONE WRITER: the radio task
+// (triggeredReceive) - plus setup(), once, before that task exists (mtxBootReport()). Other tasks never touch it:
+// they read the atomics in BREmote_V2_Rx.h, and ?mtx copies it with the scheduler suspended (mtxPrintStatus()).
+struct MtxRxFw {
+  MtxRxState   st;                  // the model's state (hook contract Y-1 e: no hook writes it)
+  MtxRxBinding b;                   // this wake's copy of the binding from usrConf (paired, own, dest, the list)
+  bool         b_valid;             // b has been filled at least once
+  MtxRxCfg     cfg;                 // this wake's config for the model, clamped again here (Y-1 h)
+  uint8_t      mode;                // MTX_MODE_UNPAIRED / SINGLE / MULTI of b
+  uint8_t      tel_idx[kMtxSlots];  // MULTI: each remote's own telemetry rotation 0-19 (SINGLE keeps today's telemetry_index)
+  uint8_t      linkq[kMtxSlots];    // MULTI: 0-10 link quality of each remote's own last frame (reply index 18)
+  int16_t      rssi[kMtxSlots];     // MULTI: that frame's RSSI in dBm (?mtx)
+  int8_t       gps_meta_slot;       // the slot whose 0xF3 announce switched the radio to 15 bytes; kMtxNone = none
+  bool         skip_common_exit;    // set by the meta hook on the owner's 0xF3 announce: the radio already waits for 15 B
+  uint32_t     rtm_off_quiet;       // MULTI: owner 0xF1/0 with RTM off, not handed to the RTM handler (see the meta hook)
+  uint32_t     unknown;             // frames that passed the CRC but name no paired remote (another buggy's, a reply)
+  uint32_t     lines_lost;          // "MTX:" lines dropped because the loop task had not printed the last 16 yet
+};
+static MtxRxFw g_mtx;               // zero-initialised; mtxRxStartFresh() sets the "nobody" values on the first wake
+static bool    g_mtx_hooks_ok = false;   // mtxRxHooksComplete() at boot (Y-1); false = every frame is dropped
 
 void radioErrorHalt(int type)
 {
@@ -126,117 +163,275 @@ void ICACHE_RAM_ATTR packetReceived(void)
 //
 // Costs nothing on the wire, changes nothing for a paired board.
 //
-// NOTE ON PAIRING: waitForPairing() sets usrConf.paired = false while it runs,
-// and the receive task IS live at that point (initTasks() is called in setup(),
-// checkButtons() first runs from loop()). That is correct and intended — during
-// a bind the board must not also be drivable.
+// NOTE ON PAIRING: waitForPairing() sets usrConf.paired = false while it runs.
+// V2.5-Evo - 2026-10-20 - CORRECTED (design V-21): the receive task is NOT live during
+// the boot pairing window. checkButtons() runs it from runBootSequence(), which setup()
+// calls BEFORE initTasks() (V2_Integration_Rx.ino), so no task exists yet and nothing
+// can be driven - which is what the old sentence wanted, for a different reason. (It
+// said the receive task was live because checkButtons() first ran from loop(); its
+// first call is in fact the boot one, and the runtime calls never open the window.)
+//
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE (SW37): GATE 0 IS mtxMayAcceptControl()
+// (Common/MultiTx.h, host test T20): the two conditions above, AND at least one
+// paired remote - a valid list entry, or the implicit old-style entry of a migrated
+// board (paired, a dest_address, own_address = this chip's ID). The binding it reads
+// is this wake's copy (mtxRxRefresh()), taken from usrConf just before this call.
+// Every unpair path clears the list (the validator), so they all close this gate.
 static bool rxMayAcceptControl()
 {
-  if (!usrConf.paired) return false;
-  if (usrConf.own_address[0] == 0 &&
-      usrConf.own_address[1] == 0 &&
-      usrConf.own_address[2] == 0) return false;
-  return true;
+  return mtxMayAcceptControl(&g_mtx.b, g_efuse_id);
 }
 
-// Function for waiting node to pair
+// ============================================================
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE: THE BOOT PAIRING WINDOW (design 11.1; audit C10, C13, C14, C21)
+// ============================================================
+// BIND held at boot opens ONE window for up to four remotes. The list is REBUILT from this window, never appended to:
+// whoever enrols is the whole list, in enrolment order, and the FIRST one is the MASTER (slot 1) - so the rider's own
+// remote must be paired first. A legacy (old-style, 0xAB) remote is accepted only as the single remote and closes
+// the window at once (C13). Both kinds are judged by the pure mtxPairOnRequest() / mtxPairOnConfirm() (host test T13):
+// a request below -60 dBm (about 1 m at the -9 dBm both ends use here), from 00:00:00 or from this buggy's own ID, a
+// fifth remote, or a legacy remote after any enrolment is refused with one line saying why.
+// THE WINDOW: 60 s, +20 s per new remote, never past 120 s; it closes early on four remotes, a legacy enrolment, or
+// a fresh BIND press. AT THE CLOSE: with at least one enrolment the new list is committed (own_address = this chip's
+// ID, paired = 1) and saved ONCE; with none, the binding from before the window is restored and nothing is written.
+// WHY BLOCKING IS SAFE: this runs inside setup() via runBootSequence() -> checkButtons(), BEFORE initTasks(), so no
+// receive or PWM task exists, PWM_active is 0 and nothing can be driven. The loop yields every pass (delay(10)): the
+// core starts the task watchdog before setup() (audit W-8), and the idle task must keep running for up to 120 s.
+// THE RADIO POWER: -9 dBm for the whole window, and the stored rf_power back on EVERY exit - the guard's destructor
+// runs on whichever path leaves this function (C14). The RX radio is never put to sleep in here, so the restore is a
+// plain SPI write. MT-05 reads the "radio power back" line.
+
+// RxPairPowerGuard - RAII: -9 dBm while it lives, usrConf.rf_power (unchanged by pairing) when it dies, with a line.
+struct RxPairPowerGuard {
+  RxPairPowerGuard()  { radio.setOutputPower((int8_t)kMtxPairPowerDbm); }
+  ~RxPairPowerGuard()
+  {
+    const int16_t e = radio.setOutputPower((int8_t)usrConf.rf_power);
+    Serial.printf("PAIR: radio power back to the stored rf_power, %d dBm%s\n", (int)usrConf.rf_power,
+                  (e == RADIOLIB_ERR_NONE) ? "" : " - the radio REFUSED it, reboot before riding");
+  }
+};
+
+// mtxFmtId - "5C:4A:7B" for a 3-byte ID. Output: out (9 bytes). Side effects: none.
+static void mtxFmtId(char out[9], const uint8_t id[3])
+{
+  snprintf(out, 9, "%02X:%02X:%02X", id[0], id[1], id[2]);
+}
+
+// mtxRxBindingFromConf - this board's binding (paired, own_address, dest_address, the list) copied out of usrConf,
+//   padding zeroed so two copies compare with memcmp(). Output: *b. Side effects: none.
+static void mtxRxBindingFromConf(MtxRxBinding* b)
+{
+  memset(b, 0, sizeof(*b));
+  b->paired = usrConf.paired;
+  memcpy(b->own_address,  usrConf.own_address,  3);
+  memcpy(b->dest_address, usrConf.dest_address, 3);
+  memcpy(b->mtx_id,       usrConf.mtx_id,       sizeof(b->mtx_id));
+  memcpy(b->mtx_flags,    usrConf.mtx_flags,    sizeof(b->mtx_flags));
+}
+
+// mtxRxBindingToConf - write a binding back into usrConf (the pairing window's commit or restore). Side effects: usrConf.
+static void mtxRxBindingToConf(const MtxRxBinding* b)
+{
+  usrConf.paired = b->paired;
+  memcpy(usrConf.own_address,  b->own_address,  3);
+  memcpy(usrConf.dest_address, b->dest_address, 3);
+  memcpy(usrConf.mtx_id,       b->mtx_id,       sizeof(usrConf.mtx_id));
+  memcpy(usrConf.mtx_flags,    b->mtx_flags,    sizeof(usrConf.mtx_flags));
+}
+
+// rxPairBindDown / rxPairLed / rxPairFlash - the BIND button and its LED during the window (AW9523, active LOW).
+//   Boot only, so the unbounded i2cMutex take cannot meet the PWM task (it does not exist yet). Side effects: I2C.
+static bool rxPairBindDown()
+{
+  xSemaphoreTake(i2cMutex, portMAX_DELAY);
+  const bool down = !aw.digitalRead(AP_S_BIND);
+  xSemaphoreGive(i2cMutex);
+  return down;
+}
+static void rxPairLed(bool on)
+{
+  xSemaphoreTake(i2cMutex, portMAX_DELAY);
+  aw.digitalWrite(AP_L_BIND, on ? LOW : HIGH);
+  xSemaphoreGive(i2cMutex);
+}
+static void rxPairFlash(uint8_t n, uint16_t on_ms, uint16_t off_ms)
+{
+  for (uint8_t i = 0; i < n; i++) { rxPairLed(true); delay(on_ms); rxPairLed(false); delay(off_ms); }
+}
+
+// rxPairRefusalText - one plain-English reason per mtxPairOnRequest() refusal. Returns: a constant string.
+static const char* rxPairRefusalText(uint8_t v)
+{
+  switch (v)
+  {
+    case MTX_PR_ZERO:        return "its ID is 00:00:00";
+    case MTX_PR_RX_ID:       return "its ID is this buggy's own ID";
+    case MTX_PR_FULL:        return "four remotes are already paired in this window";
+    case MTX_PR_RSSI:        return "the signal is too weak";
+    case MTX_PR_LEGACY_LATE: return "an old-style remote can only be the one remote, and a remote is already paired in this window";
+    case MTX_PR_CLOSED:      return "the window is closed";
+    default:                 return "refused";
+  }
+}
+
+// rxPairExchange - one request: refuse it with a line, or OFFER (0xDA new-style, 0xBA old-style) 100 ms later and wait
+//   up to 1.5 s for the matching CONFIRM (0xAE / 0xAC naming this buggy and that remote, CRC ok), then enrol it.
+//   Frames (design 5.6): REQ [code][remote ID 3][CRC 0-3]; OFFER [code][remote ID 3][buggy ID 3][CRC 0-6];
+//   CONFIRM [code][buggy ID 3][remote ID 3][CRC 0-6] - the old-style frames have the same layout, so an SW27 remote
+//   pairs exactly as before. Inputs: w, legacy (0xAB), id (the remote's ID or address), rssi (of the request, dBm).
+//   Side effects: *w, the radio (8-byte mode while it waits; the caller goes back to 5), the LED, Serial.
+static void rxPairExchange(MtxPairWindow* w, bool legacy, const uint8_t id[3], float rssi)
+{
+  char ib[9];
+  mtxFmtId(ib, id);
+  const char* kind = legacy ? "old-style remote" : "remote";
+  const uint8_t v = mtxPairOnRequest(w, legacy, id, g_efuse_id, rssi);
+  if (v != MTX_PR_OFFER)
+  {
+    if (v == MTX_PR_RSSI)
+      Serial.printf("PAIR: request from %s %s refused - RSSI %.0f dBm is below %d (bring the remote within about 1 m)\n",
+                    kind, ib, (double)rssi, (int)kMtxPairMinRssiDbm);
+    else
+      Serial.printf("PAIR: request from %s %s refused - %s\n", kind, ib, rxPairRefusalText(v));
+    return;
+  }
+  uint8_t offer[8];
+  offer[0] = legacy ? 0xBA : 0xDA;
+  memcpy(offer + 1, id, 3);
+  memcpy(offer + 4, g_efuse_id, 3);
+  offer[7] = esp_crc8(offer, 7);
+  delay(100);
+  radio.implicitHeader(8);
+  {
+    int16_t _txErr = radio.startTransmit(offer, 8);
+    if (_txErr != RADIOLIB_ERR_NONE)
+      Serial.printf("[Radio] startTransmit error %d at line %d\n", _txErr, __LINE__);
+  }
+  delay(10);
+  radio.startReceive();
+  rfInterrupt = false;
+  const uint8_t confirm_code = legacy ? 0xAC : 0xAE;
+  const unsigned long t0 = millis();
+  bool confirmed = false;
+  while (!confirmed && (millis() - t0) < kMtxConfirmWaitMs)
+  {
+    delay(10);   // C14: yield on every pass here too
+    if (!rfInterrupt) continue;
+    uint8_t cf[8];
+    const int16_t rd = radio.readData(cf, 8);
+    rfInterrupt = false;
+    confirmed = (rd == RADIOLIB_ERR_NONE && cf[0] == confirm_code && memcmp(cf + 1, g_efuse_id, 3) == 0
+                 && memcmp(cf + 4, id, 3) == 0 && cf[7] == esp_crc8(cf, 7));
+    if (!confirmed) radio.startReceive();
+  }
+  if (!confirmed)
+  {
+    Serial.printf("PAIR: offered to %s %s, but no confirmation came within %lu ms - try again\n", kind, ib,
+                  (unsigned long)kMtxConfirmWaitMs);
+    return;
+  }
+  const int8_t slot = mtxPairOnConfirm(w, legacy, id);
+  if (slot < 0)
+  {
+    Serial.printf("PAIR: %s %s confirmed but not enrolled - the window is closed or already holds four\n", kind, ib);
+    return;
+  }
+  Serial.printf("PAIR: %s %s paired as slot %d (%s), request RSSI %.0f dBm%s\n", kind, ib, (int)slot + 1,
+                (slot == 0) ? "MASTER" : "guest", (double)rssi,
+                legacy ? " - an old-style remote is the only remote, the window closes" : "");
+  rxPairLed(false);
+  delay(400);
+  rxPairFlash((uint8_t)(slot + 1), 250, 250);   // N flashes = slot N (1 = master)
+}
+
+// waitForPairing - the boot pairing window (see the block comment above). Called from checkButtons() at boot only.
+//   Returns: true if at least one remote was paired (the new list is saved), false if the old binding was kept.
+//   Side effects: usrConf's binding, one SPIFFS save on success, the radio (power, mode), the BIND LED, Serial.
 bool waitForPairing()
 {
-  usrConf.paired = false;
-
-  uint8_t responsePacket[8];
-  unsigned long startTime = millis();
-
-  while (millis() - startTime < PAIRING_TIMEOUT)
+  MtxRxBinding cur;
+  mtxRxBindingFromConf(&cur);
+  MtxPairWindow w;
+  mtxPairOpen(&w, &cur, millis());
+  usrConf.paired = false;   // nothing is drivable while the window is open (no task exists yet either)
+  RxPairPowerGuard power_guard;
+  char me[9];
+  mtxFmtId(me, g_efuse_id);
+  Serial.printf("PAIR: window open - this buggy's ID %s. Up to %u remotes; %lu s, +%lu s per new remote, %lu s at most. Radio at %d dBm; a request must arrive at %d dBm or stronger (about 1 m). Pair the remote you RIDE WITH FIRST: it becomes the master. Press BIND again to close the window.\n",
+                me, (unsigned)kMtxSlots, (unsigned long)(kMtxPairWindowMs / 1000), (unsigned long)(kMtxPairExtendMs / 1000),
+                (unsigned long)(kMtxPairMaxMs / 1000), (int)kMtxPairPowerDbm, (int)kMtxPairMinRssiDbm);
+  radio.implicitHeader(5);
+  radio.startReceive();
+  rfInterrupt = false;
+  // BIND was held to get here, so a press only counts once the button has been RELEASED for 300 ms (a bouncing
+  // release must not close the window it just opened), and then only when it reads pressed on 3 passes (~30 ms).
+  unsigned long bind_up_since = 0;
+  bool          bind_armed    = false;
+  uint8_t       bind_down_n   = 0;
+  bool led_on = false;
+  unsigned long led_ms = 0;
+  for (;;)
   {
-    radio.implicitHeader(5);
-    radio.startReceive();
-    rxprintln("Waiting for pairing packet...");
-    uint8_t buffer[15];
-
-    while(!rfInterrupt && millis() - startTime < PAIRING_TIMEOUT) blinkBind(2);
-    delay(10);
-    if (rfInterrupt && radio.readData(buffer, 15) == RADIOLIB_ERR_NONE)
+    delay(10);   // C14: yield on every pass
+    const unsigned long now = millis();
+    if (!rxPairBindDown())
     {
-      rfInterrupt = false;
-      rxprintln("Received response");
-      #ifdef DEBUG_RX
-      printHexArray(buffer, 15);
-      #endif
-
-      if (buffer[0] == 0xAB)
-      {
-        rxprintln("1st byte matches");
-        // Verify CRC of received packet directly
-        uint8_t receivedCRC = buffer[4];
-        uint8_t calculatedCRC = esp_crc8(buffer, 4);
-
-        if (receivedCRC == calculatedCRC)
-        {
-          rxprintln("CRC ok");
-          // Store potential partner's address
-          uint8_t temp_addr[3];
-          memcpy(temp_addr, buffer + 1, 3);
-
-          // Prepare response packet
-          responsePacket[0] = 0xBA;
-          memcpy(responsePacket + 1, temp_addr, 3);
-          memcpy(responsePacket + 4, usrConf.own_address, 3);
-
-          // Calculate CRC;
-          responsePacket[7] = esp_crc8(responsePacket, 7);
-
-          delay(100);
-          rxprintln("Sending response: ");
-          #ifdef DEBUG_RX
-          printHexArray(responsePacket, 8);
-          #endif
-          // Send response
-          radio.implicitHeader(8);
-          {
-            int16_t _txErr = radio.startTransmit(responsePacket, 8);
-            if (_txErr != RADIOLIB_ERR_NONE)
-              Serial.printf("[Radio] startTransmit error %d at line %d\n", _txErr, __LINE__);
-          }
-          delay(10);
-          radio.startReceive();
-          rfInterrupt = false;
-
-          while (millis() - startTime < PAIRING_TIMEOUT)
-          {
-            while(!rfInterrupt && millis() - startTime < PAIRING_TIMEOUT) delay(10);
-            delay(10);
-            if (rfInterrupt && radio.readData(buffer, 15) == RADIOLIB_ERR_NONE)
-            {
-              rfInterrupt = false;
-              rxprintln("Received response");
-              if (buffer[0] == 0xAC && memcmp(buffer + 1, usrConf.own_address, 3) == 0)
-              {
-                rxprintln("Address matches");
-                // Verify CRC of final packet directly
-                receivedCRC = buffer[7];
-                calculatedCRC = esp_crc8(buffer, 7);
-
-                if (receivedCRC == calculatedCRC)
-                {
-                  rxprintln("CRC ok, pairing success");
-                  // Save partner's address
-                  memcpy(usrConf.dest_address, buffer + 4, 3);
-                  usrConf.paired = true;
-                  saveConfToSPIFFS(usrConf);
-                  aw.digitalWrite(AP_L_BIND, LOW);
-                  return true;
-                }
-              }
-            }
-            else rfInterrupt = false;
-          }
-        }
-      }
+      bind_down_n = 0;
+      if (bind_up_since == 0) bind_up_since = (now != 0) ? now : 1;
+      if (now - bind_up_since >= 300UL) bind_armed = true;
     }
-    else rfInterrupt = false;
+    else
+    {
+      bind_up_since = 0;
+      if (bind_armed && bind_down_n < 255) bind_down_n++;
+    }
+    if (mtxPairPoll(&w, (uint32_t)now, bind_armed && bind_down_n >= 3)) break;
+    if (now - led_ms >= 500UL) { led_ms = now; led_on = !led_on; rxPairLed(led_on); }   // slow blink: window open
+    if (!rfInterrupt) continue;
+    uint8_t req[5];
+    const int16_t rd = radio.readData(req, 5);
+    const float rssi = radio.getRSSI();
+    rfInterrupt = false;
+    if (rd == RADIOLIB_ERR_NONE && (req[0] == 0xAB || req[0] == 0xAD) && req[4] == esp_crc8(req, 4))
+      rxPairExchange(&w, req[0] == 0xAB, req + 1, rssi);
+    radio.implicitHeader(5);   // back to listening for 5-byte requests after every exchange
+    radio.startReceive();
+    rfInterrupt = false;
   }
-  return false;
+  rxPairLed(false);
+  const char* why = (w.close_reason == MTX_PC_FULL) ? "four remotes paired" : (w.close_reason == MTX_PC_LEGACY) ? "an old-style remote paired"
+                  : (w.close_reason == MTX_PC_BIND) ? "BIND pressed" : "time up";
+  MtxRxBinding nb = cur;
+  const bool enrolled = mtxPairCommit(&w, &nb, g_efuse_id);
+  if (enrolled) mtxValidateRxBinding(&nb, g_efuse_id);   // belt and braces: the window refused every bad ID already
+  mtxRxBindingToConf(&nb);
+  if (enrolled)
+  {
+    saveConfToSPIFFS(usrConf);
+    Serial.printf("PAIR: window closed (%s) - %u remote(s) paired and saved; mode %s:\n", why,
+                  (unsigned)mtxValidEntryCount(&nb), (mtxValidEntryCount(&nb) >= 2) ? "MULTI (ownership rules)" : "SINGLE (today's behaviour)");
+    for (uint8_t i = 0; i < kMtxSlots; i++)
+    {
+      if (!mtxEntryValid(&nb, i)) continue;
+      char ib[9];
+      mtxFmtId(ib, mtxEntryId(&nb, i));
+      Serial.printf("PAIR:   slot %u  %s  %s  %s\n", (unsigned)(i + 1), ib, (i == 0) ? "MASTER" : "guest ",
+                    mtxEntryLegacy(&nb, i) ? "old-style" : "new-style");
+    }
+    rxPairLed(true);
+    delay(1000);   // solid for 1 s: saved
+    rxPairLed(false);
+  }
+  else
+  {
+    Serial.printf("PAIR: window closed (%s) with nobody paired - the previous pairing is kept, nothing was written\n", why);
+    rxPairFlash(3, 50, 50);
+  }
+  // V2.5-Evo - 2026-10-20 - the old function left the radio in 8-byte mode, so the first frame after a bind was read
+  // with the wrong length; normal operation listens for 6-byte frames.
+  radio.implicitHeader(6);
+  return enrolled;
 }
 
 // ============================================================
@@ -751,9 +946,30 @@ static bool gpsPhaseATxCheck(double cur_lat, double cur_lng, unsigned long now_m
 // nothing, and the radio returns to 6-byte mode on the common exit; (3) positions stay int32 microdegrees until the
 // same double conversion as before; (4) nothing is extrapolated or interpolated: a re-broadcast or a dropped packet
 // leaves the last good position to age exactly as before.
+// rxGpsDataAddressOk - V2.5-Evo - 2026-10-20 - MULTI-REMOTE (design 5.4): may this 15-byte rider GPS packet be used?
+//   Its bytes 0-2 must be the uplink address of the slot whose 0xF3 announce switched the radio to 15 bytes - this
+//   buggy's own address for the old-style (or implicit) remote, exactly today's test; the link ID (remote ID XOR this
+//   chip's ID) for a new-style remote - and in MULTI that slot must still own the buggy (mtxGpsDataOk(), host test
+//   T30), so a non-owner's position can never become the rider's. GPS-integrity rule 2: a mismatch writes nothing.
+//   Input: pkt (bytes 0-2). Returns: bool. Side effects: none (radio task, which also wrote the state it reads).
+static bool rxGpsDataAddressOk(const uint8_t* pkt)
+{
+  const int8_t s = g_mtx.gps_meta_slot;
+  uint8_t slot_addr[3];
+  if (s == kMtxSlotImplicit || (s >= 0 && s < (int8_t)kMtxSlots && mtxEntryLegacy(&g_mtx.b, (uint8_t)s)))
+    memcpy(slot_addr, usrConf.own_address, 3);
+  else if (s >= 0 && s < (int8_t)kMtxSlots)
+    mtxIdXor(mtxEntryId(&g_mtx.b, (uint8_t)s), g_efuse_id, slot_addr);
+  else
+    return false;
+  return mtxGpsDataOk(&g_mtx.st, &g_mtx.cfg, s, pkt, slot_addr);
+}
+
 static void processMetaGpsPacket(uint8_t *pkt, uint8_t len)
 {
-  if (memcmp(pkt, usrConf.own_address, 3) != 0)
+  // V2.5-Evo - 2026-10-20 - MULTI-REMOTE: the address test is rxGpsDataAddressOk() (above). For the one old-style
+  // remote it is the same comparison with own_address as before; the rest of this function is untouched.
+  if (!rxGpsDataAddressOk(pkt))
   {
     rxprintln("META GPS: address mismatch, discarding");
     return;
@@ -846,6 +1062,498 @@ static void processMetaGpsPacket(uint8_t *pkt, uint8_t len)
   gpsPhaseBCheck();
 }
 
+// ============================================================
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE: THE HOOK TABLE BEHIND mtxOnFrame() (Common/MultiTx.h)
+// ============================================================
+// The model decides WHAT happens to a frame and IN WHICH ORDER (release, grant, claim; host-tested). These hooks do
+// the real work, on the radio task, and keep the contract written on MtxRxHooks (audit Y-1 a-h):
+//   (a) mtxHkOwnerChanged() publishes the owner atomic, THEN moves the change counter;
+//   (b) mtxHkReadEnv() reads the live atomics on every call;
+//   (c) mtxHkZeroOutputs() is two byte stores + the compiler barrier and stamps no failsafe clock; mtxHkPublishLimit()
+//       is the grant-stamp store + the barrier (the C6 order: the limit is visible before the new owner's first byte);
+//   (d) mtxHkEvent() never blocks or prints: it queues for the loop task (mtxEventService()), and never with one remote;
+//   (e) no hook calls back into the model or writes MtxRxState;
+//   (f) mtxHkReply() yields (the two 10 ms delays of today's reply) and the model calls it last for a frame;
+//   (g) one `now` per wake, read right after the semaphore (triggeredReceive()); mtxTimers() also runs on the timeout;
+//   (h) the config is clamped in mtxRxRefresh() before MtxRxCfg is built; negative slots never reach mtxOnFrame().
+// WHY THE ORDER HOLDS ON THIS CHIP (C6): single core, in-order; the PWM task (priority 10) is never preempted by this
+// task (priority 5), so one calcPWM() pass sees either none of a grant, or the limit with or without the new throttle
+// byte - never the byte without the limit. calcPWM() reads thr_received before the limit; keep it so (PWM.ino).
+
+static void mtxHkReadEnv(void* c, MtxRxEnv* out)
+{
+  (void)c;
+  out->pwm_active      = PWM_active;
+  out->fm_mode_runtime = fm_mode_runtime.load();
+  out->rtm_rx_active   = rtm_rx_active.load();
+  out->fm_rx_active    = fm_rx_active.load();
+}
+
+// Release step 1 (C7, V-19): throttle 0 and steering centre FIRST, then the barrier. Neither last_packet nor
+// last_control_packet is stamped, so the motor gate stays open at neutral until failsafe_time and shuts on its own.
+static void mtxHkZeroOutputs(void* c)
+{
+  (void)c;
+  thr_received      = 0;
+  steering_received = 127;
+  std::atomic_signal_fence(std::memory_order_seq_cst);
+}
+
+// Release step 2: today's RTM handler with a synthetic 0xF1/0. It arms the sticky return cap first if a return was
+// running (Radio.ino processRtmStatePacket(), untouched), then RTM is off - at once, on this task.
+static void mtxHkRtmOff(void* c)
+{
+  (void)c;
+  const uint8_t f[6] = { 0, 0, 0, 0xF1, 0x00, 0 };
+  processRtmStatePacket(f);
+}
+
+// Release step 3: today's Follow-Me handler with a synthetic 0xF2/0: mode 0, the override back to "none", the M-1
+// block cleared. fm_rx_active is the loop's flag and drops on its next Follow-Me tick (the claim token covers that).
+static void mtxHkFmOff(void* c)
+{
+  (void)c;
+  const uint8_t f[6] = { 0, 0, 0, 0xF2, 0x00, 0 };
+  processFmOverridePacket(f);
+}
+
+// Release / grant step 4: the rider-GPS state of the old owner. The fix's TIME STAMPS are cleared (every reader of the
+// coordinates gates on them - design 3.4.1, audit X-10 a; the coordinates themselves are left), the Phase A baseline and
+// Phase B are reset (the new owner's first GPS packet runs Phase B at once, distance check included), and a pending
+// 15-byte receive goes back to 6 bytes (V-18). GPS-integrity rules 1-2: nothing stale can pass as the new owner's fix.
+static void mtxHkResetRiderGps(void* c)
+{
+  MtxRxFw* x = (MtxRxFw*)c;
+  static const RiderGpsRxState kRiderGpsRxStateNone = { false, 0, 0, false, 0 };
+  rx_tx_gps_timestamp       = 0;
+  rx_tx_gps_solution_ms     = 0;
+  tx_gps_rx_state           = kRiderGpsRxStateNone;
+  tx_pa_prev_lat            = 0.0;   // Phase A (rider): no baseline - the next fix seeds it
+  tx_pa_prev_lng            = 0.0;
+  tx_pa_prev_ms             = 0;
+  tx_pa_reject_run          = 0;
+  gps_phase_b_ok            = false; // Phase B: not passed until the new owner's own check
+  gps_phase_b_dist_fail     = false;
+  gps_phase_b_last_check_ms = 0;     // 0 = "never run": the next GPS packet runs it at once
+  gps_phase_b_prev_tx_lat   = 0.0;
+  gps_phase_b_prev_tx_lng   = 0.0;
+  gps_phase_b_prev_tx_ms    = 0;
+  x->gps_meta_slot          = kMtxNone;
+  if (gps_meta_pending)
+  {
+    gps_meta_pending = false;
+    radio.implicitHeader(6);
+    radio.startReceive();
+  }
+}
+
+// Release / grant step 5: the remote boot ID (S-8). The next owner's first ID is a seed, not a reboot.
+static void mtxHkResetBootId(void* c)
+{
+  (void)c;
+  rx_tx_boot_id.store(kTxBootIdNone);
+}
+
+// Grant step 1 (C6, V-12): the limit's start stamp (never 0) and the barrier, BEFORE any granted byte is applied.
+static void mtxHkPublishLimit(void* c, uint32_t grant_ms)
+{
+  (void)c;
+  mtx_grant_ms.store(grant_ms, std::memory_order_seq_cst);
+  std::atomic_signal_fence(std::memory_order_seq_cst);
+}
+
+// The owner changed (a release or a grant). Y-1 (a): the owner atomic FIRST, then the counter the loop watches.
+static void mtxHkOwnerChanged(void* c)
+{
+  MtxRxFw* x = (MtxRxFw*)c;
+  mtx_owner_slot.store(x->st.owner, std::memory_order_seq_cst);
+  mtx_owner_change_seq.fetch_add(1, std::memory_order_seq_cst);
+}
+
+// TODAY'S CONTROL BRANCH, MOVED HERE VERBATIM - the only writer of thr_received besides the release's zero, and the only
+// stamp of last_control_packet (R-3). Same statements, same order, same millis() calls as the old inline code: the
+// liveness stamp, the WiFi notice, the two bytes, THEN the motor gate's stamp (L-1), then the RSSI snapshot (F9) and
+// the owner's link quality. Reached for the owner only (or the one remote, SINGLE).
+static void mtxHkApplyOwner(void* c, int8_t slot, const uint8_t f[6])
+{
+  (void)c; (void)slot;
+  last_packet = millis();
+#ifdef WIFI_ENABLED
+  webCfgNotifyRxConnected();
+#endif
+  rxprint("RSSI: ");
+  rxprint(radio.getRSSI());
+  rxprint(", SNR: ");
+  rxprintln(radio.getSNR());
+
+  thr_received      = f[3];
+  steering_received = f[4];
+
+  // V2.5-Evo - 2026-09-28 - R-3 FIX / 2026-09-29 L-1: the motor gate's own timestamp, stamped HERE, after the two
+  // bytes it vouches for, and in no other place (the full history is with the old inline branch's comments, git).
+  last_control_packet = millis();
+
+  // V2.5-Evo - 2026-07-24 - F9: snapshot RSSI/SNR while the radio SPI bus is valid (just after this reception).
+  g_last_rssi_dbm = radio.getRSSI();
+  g_last_snr_db   = radio.getSNR();
+  telemetry.link_quality = getLinkQuality(g_last_rssi_dbm, g_last_snr_db);
+}
+
+// TODAY'S META BRANCHES (0xF1 RTM state, 0xF2 Follow-Me, 0xF4 aux, 0xF3 GPS announce), MOVED HERE VERBATIM. Reached for
+// the owner only in MULTI (a non-owner's meta is dropped by the model), and for the one remote in SINGLE.
+// ONE MULTI-ONLY DIFFERENCE (step-1 code audit Q3 item 7): an owner 0xF1/0 while RTM is NOT active is not handed to
+// processRtmStatePacket(). The remote repeats 0xF1/0 every 2.5 s or less during an arm gesture and the ceremony, so the
+// buggy can see the owner is busy (the X-1 activity rule); each would print "RTM [RX] deactivated by TX" from this
+// task. With RTM inactive the handler changes nothing that matters: it does not arm the sticky cap (RTM not running),
+// rtm_rx_active is already false, and the emergency stop it clears is cleared by the inactive RTM loop on every tick
+// anyway (RTMState.ino) - leaving it up to 100 ms longer can only hold throttle at 0. The liveness stamp is kept.
+// With one remote paired this branch is today's, byte for byte.
+static void mtxHkMeta(void* c, int8_t slot, const uint8_t f[6])
+{
+  MtxRxFw* x = (MtxRxFw*)c;
+  if (f[3] == 0xF1)
+  {
+    // ---- RTM state meta-packet ----
+    last_packet = millis();  // meta-packet proves TX is alive
+    if (!x->cfg.single && f[4] == 0 && !rtm_rx_active.load())
+    {
+      x->rtm_off_quiet++;    // MULTI, RTM off: nothing to deactivate (see above)
+      return;
+    }
+    processRtmStatePacket(f);
+  }
+  else if (f[3] == 0xF2)
+  {
+    // ---- FM override meta-packet ----
+    last_packet = millis();  // meta-packet proves TX is alive
+    processFmOverridePacket(f);
+  }
+  else if (f[3] == 0xF4)
+  {
+    // ---- Aux control meta-packet ----
+    last_packet = millis();
+    rx_aux_flags = f[4];
+  }
+  else if (f[3] == 0xF3)
+  {
+    // ---- GPS announcement ---- (unchanged: switch to the promised length now, before the data arrives)
+    gps_meta_len = riderGpsDataLen(f[4]);
+    rxprintln(gps_meta_len == kRiderGpsLenV2 ? "META GPS: announcement v2, switching to 15-byte mode"
+                                             : "META GPS: announcement, switching to 14-byte mode");
+    gps_meta_pending = true;
+    x->gps_meta_slot = slot;   // design 5.4: the data is accepted only from this slot (rxGpsDataAddressOk())
+    radio.implicitHeader(gps_meta_len);
+    radio.startReceive();
+    rfInterrupt = false;
+    x->skip_common_exit = true;   // the remote expects no reply; skip the 6-byte re-arm (today's `continue`)
+  }
+}
+
+// THE REPLY. SINGLE: TODAY'S REPLY, byte for byte - byte 3 is the shared telemetry_index (status 000), byte 4 the raw
+// telemetry byte, the address the old-style remote's dest_address (or the one new-style remote's own ID). MULTI: the
+// remote's own ID, its own rotation (C15, F-11), its status in bits 7-5, and the masks (design 7.6, audit O-1): a
+// non-owner never sees the owner's Follow-Me / RTM fields, index 18 is THAT remote's own link quality, and the new
+// owner gets the non-owner mask too until the loop has rebuilt the bytes after an owner change. Then today's send:
+// 10 ms, 6-byte mode, transmit, 10 ms (this is the yield, hook contract Y-1 f).
+static void mtxHkReply(void* c, int8_t slot, uint8_t status)
+{
+  MtxRxFw* x = (MtxRxFw*)c;
+  rxprintln("Sending response");
+  uint8_t sendArray[6];
+  uint8_t* ptr = (uint8_t*)&telemetry;
+  if (x->cfg.single)
+  {
+    if (slot == kMtxSlotImplicit || mtxEntryLegacy(&x->b, (uint8_t)slot)) memcpy(sendArray, usrConf.dest_address, 3);
+    else                                                                   memcpy(sendArray, mtxEntryId(&x->b, (uint8_t)slot), 3);
+    sendArray[3] = telemetry_index;
+    sendArray[4] = ptr[telemetry_index];
+    telemetry_index++;
+    if(telemetry_index >= sizeof(TelemetryPacket))
+    {
+      telemetry_index = 0;
+    }
+  }
+  else
+  {
+    memcpy(sendArray, mtxEntryId(&x->b, (uint8_t)slot), 3);
+    const uint8_t idx     = mtxTelIndexNext(&x->tel_idx[slot]);
+    const bool    pending = (mtx_telemetry_owner_seq.load() != mtx_owner_change_seq.load());
+    sendArray[3] = mtxReplyByte3(status, idx);
+    sendArray[4] = mtxReplyValue(idx, ptr[idx], false, status == MTX_S_OWNER, pending, x->linkq[slot]);
+  }
+  sendArray[5] = esp_crc8(sendArray, 5);
+
+  #ifdef DEBUG_RX
+  printHexArray(sendArray, 6);
+  #endif
+
+  vTaskDelay(pdMS_TO_TICKS(10));
+  radio.implicitHeader(6);
+  {
+    int16_t _txErr = radio.startTransmit(sendArray, 6);
+    if (_txErr != RADIOLIB_ERR_NONE)
+      Serial.printf("[Radio] startTransmit error %d at line %d\n", _txErr, __LINE__);
+  }
+  vTaskDelay(pdMS_TO_TICKS(10));
+}
+
+// ---- The "MTX:" line queue: radio task in, loop task out (hook contract Y-1 d) ----
+// A single-producer / single-consumer ring: the radio task only moves the head, the loop task only the tail, so no
+// lock is needed and the radio task never waits. If the loop is 16 lines behind, a line is dropped and counted.
+struct MtxEvRec {
+  uint8_t  ev, arg;
+  int8_t   slot;
+  uint8_t  id[3];      // the slot's ID when the event happened
+  uint8_t  id2[3];     // the CLAIM event's old owner's ID (arg = its slot), else 0
+  uint32_t ms;
+};
+static const uint8_t kMtxEvRingLen = 16;
+static MtxEvRec             g_mtx_ev_ring[kMtxEvRingLen];
+static std::atomic<uint8_t> g_mtx_ev_head{0};   // next slot the radio task writes
+static std::atomic<uint8_t> g_mtx_ev_tail{0};   // next slot the loop task reads
+
+static void mtxHkEvent(void* c, uint8_t ev, int8_t slot, uint8_t arg)
+{
+  MtxRxFw* x = (MtxRxFw*)c;
+  if (x->cfg.single) return;                                       // no "MTX:" line ever with one remote (MT-33)
+  if (ev == MTX_EV_DROPPED || ev == MTX_EV_NON_OWNER_META) return; // counted by the model; ?mtx shows them
+  const uint8_t h    = g_mtx_ev_head.load(std::memory_order_relaxed);
+  const uint8_t next = (uint8_t)((h + 1) % kMtxEvRingLen);
+  if (next == g_mtx_ev_tail.load(std::memory_order_acquire)) { x->lines_lost++; return; }
+  MtxEvRec& r = g_mtx_ev_ring[h];
+  r.ev = ev; r.arg = arg; r.slot = slot; r.ms = millis();
+  memset(r.id, 0, 3); memset(r.id2, 0, 3);
+  if (slot >= 0 && slot < (int8_t)kMtxSlots) memcpy(r.id, mtxEntryId(&x->b, (uint8_t)slot), 3);
+  if (ev == MTX_EV_CLAIM && arg < kMtxSlots) memcpy(r.id2, mtxEntryId(&x->b, arg), 3);
+  g_mtx_ev_head.store(next, std::memory_order_release);
+}
+
+static const MtxRxHooks g_mtx_hooks = {
+  &g_mtx,
+  mtxHkReadEnv,
+  mtxHkZeroOutputs,
+  mtxHkRtmOff,
+  mtxHkFmOff,
+  mtxHkResetRiderGps,
+  mtxHkResetBootId,
+  mtxHkPublishLimit,
+  mtxHkOwnerChanged,
+  mtxHkApplyOwner,
+  mtxHkMeta,
+  mtxHkReply,
+  mtxHkEvent
+};
+
+// mtxRxStartFresh - "nobody owns, nothing heard" for the radio task's state; the counters are kept. Side effects: g_mtx.
+static void mtxRxStartFresh()
+{
+  const MtxRxCounters n = g_mtx.st.n;
+  mtxRxStateInit(&g_mtx.st);
+  g_mtx.st.n = n;
+  memset(g_mtx.tel_idx, 0, sizeof(g_mtx.tel_idx));
+  memset(g_mtx.linkq,   0, sizeof(g_mtx.linkq));
+  memset(g_mtx.rssi,    0, sizeof(g_mtx.rssi));
+  g_mtx.gps_meta_slot = kMtxNone;
+  mtx_owner_slot.store(kMtxNone);
+}
+
+// mtxRxRefresh - run once per radio-task wake (and once at boot), before anything reads g_mtx.b or g_mtx.cfg:
+//   1. this wake's copy of the binding from usrConf. If the paired list CHANGED under a running owner (a config
+//      import or ?applyconf rebuilt it, ?set paired 0 cleared it), the slot numbers may now name other remotes, so the
+//      owner is released with the tested order (throttle 0 first, RTM / Follow-Me off, ...) and everything starts
+//      again from "nobody owns". With one remote paired nobody ever owns in the model, so this is a no-op there.
+//   2. the mode, and the model's config, CLAMPED again here (hook contract Y-1 h; the validator already clamps every
+//      intake path): claim_s 6-60 s, failsafe 100-10000 ms. valid_mask = the valid NEW-STYLE entries only.
+//   Input: now (this wake's clock). Side effects: g_mtx; on a list change under an owner, the release hooks.
+static void mtxRxRefresh(uint32_t now)
+{
+  MtxRxBinding b;
+  mtxRxBindingFromConf(&b);
+  if (!g_mtx.b_valid)
+  {
+    g_mtx.b = b;
+    g_mtx.b_valid = true;
+    mtxRxStartFresh();
+  }
+  else if (memcmp(&b, &g_mtx.b, sizeof(b)) != 0)
+  {
+    if (g_mtx.st.owner != kMtxNone && g_mtx_hooks_ok) mtxRelease(&g_mtx.st, &g_mtx_hooks, MTX_REL_REBIND, now);
+    g_mtx.b = b;
+    mtxRxStartFresh();
+  }
+  g_mtx.mode = mtxRxMode(&g_mtx.b, g_efuse_id);
+  uint16_t claim_s = usrConf.mtx_claim_s, seize = usrConf.mtx_seize_en;
+  uint16_t cap = usrConf.mtx_takeover_cap, cap_ms = usrConf.mtx_takeover_ms;
+  mtxClampRxConfig(&claim_s, &seize, &cap, &cap_ms);
+  g_mtx.cfg.single     = (g_mtx.mode != MTX_MODE_MULTI);
+  g_mtx.cfg.valid_mask = 0;
+  for (uint8_t i = 0; i < kMtxSlots; i++)
+    if (mtxEntryValid(&g_mtx.b, i) && !mtxEntryLegacy(&g_mtx.b, i)) g_mtx.cfg.valid_mask |= (uint8_t)(1u << i);
+  g_mtx.cfg.claim_s     = claim_s;
+  g_mtx.cfg.failsafe_ms = mtxClampU16(usrConf.failsafe_time, 100, 10000);
+  g_mtx.cfg.seize_en    = (seize != 0);
+}
+
+// mtxModeText - the mode in words. Returns: a constant string.
+static const char* mtxModeText(uint8_t mode)
+{
+  return (mode == MTX_MODE_MULTI) ? "MULTI (2-4 remotes: the ownership rules)"
+       : (mode == MTX_MODE_SINGLE) ? "SINGLE (one remote: today's behaviour)" : "UNPAIRED (nothing is obeyed - hold BIND at boot to pair)";
+}
+
+// mtxBootReport - V2.5-Evo - 2026-10-20 - called once from setup() after the config is loaded and before any task
+//   exists: the hook-table check (Y-1: an incomplete table drops every frame, so the motor gate stays shut), the first
+//   fill of the radio task's state, and the "MTX:" boot lines - this chip's ID, the mode and the paired list (MT-00).
+//   Side effects: g_mtx, g_mtx_hooks_ok, Serial.
+void mtxBootReport()
+{
+  g_mtx_hooks_ok = mtxRxHooksComplete(&g_mtx_hooks);
+  mtxRxRefresh(millis());
+  char me[9];
+  mtxFmtId(me, g_efuse_id);
+  Serial.printf("MTX: this buggy's chip ID %s | %s | %u remote(s) in the list\n", me, mtxModeText(g_mtx.mode),
+                (unsigned)mtxValidEntryCount(&g_mtx.b));
+  for (uint8_t i = 0; i < kMtxSlots; i++)
+  {
+    if (!mtxEntryValid(&g_mtx.b, i)) continue;
+    char ib[9];
+    mtxFmtId(ib, mtxEntryId(&g_mtx.b, i));
+    Serial.printf("MTX:   slot %u  %s  %s  %s\n", (unsigned)(i + 1), ib, (i == 0) ? "MASTER" : "guest ",
+                  mtxEntryLegacy(&g_mtx.b, i) ? "old-style" : "new-style");
+  }
+  if (mtxImplicitLegacy(&g_mtx.b, g_efuse_id))
+  {
+    char ib[9];
+    mtxFmtId(ib, g_mtx.b.dest_address);
+    Serial.printf("MTX:   one old-style remote from the earlier pairing (replies go to %s); it pairs as new-style once both are on SW37 / SW29\n", ib);
+  }
+  if (!g_mtx_hooks_ok) Serial.println("MTX: ERROR - the receiver's hook table is incomplete: every frame is dropped and the motors stay off");
+}
+
+// mtxEventService - V2.5-Evo - 2026-10-20 - loop task, once per loop() pass: print the "MTX:" lines the radio task
+//   queued (at most 8 per pass, so a burst can never hold the loop). Side effects: Serial, the ring's tail.
+void mtxEventService()
+{
+  for (uint8_t n = 0; n < 8; n++)
+  {
+    const uint8_t t = g_mtx_ev_tail.load(std::memory_order_relaxed);
+    if (t == g_mtx_ev_head.load(std::memory_order_acquire)) return;
+    const MtxEvRec r = g_mtx_ev_ring[t];
+    g_mtx_ev_tail.store((uint8_t)((t + 1) % kMtxEvRingLen), std::memory_order_release);
+    char a[9], b[9];
+    mtxFmtId(a, r.id);
+    mtxFmtId(b, r.id2);
+    switch (r.ev)
+    {
+      case MTX_EV_TAKES_CONTROL:
+        Serial.printf("MTX: %s takes control (slot %d, %s)\n", a, (int)r.slot + 1, (r.slot == 0) ? "master" : "guest");
+        break;
+      case MTX_EV_RELEASED:
+        Serial.printf("MTX: %s released (%s)\n", a, (r.arg == MTX_REL_LOCK) ? "LOCK" : (r.arg == MTX_REL_SEIZED) ? "SEIZED by the master"
+                      : (r.arg == MTX_REL_CLAIM) ? "CLAIM" : (r.arg == MTX_REL_REBIND) ? "the paired list changed" : "?");
+        break;
+      case MTX_EV_CLAIM:
+        if (r.arg == 0xFF) Serial.printf("MTX: claim by %s (nobody was in control)\n", a);
+        else               Serial.printf("MTX: claim by %s - control taken from %s\n", a, b);
+        break;
+      case MTX_EV_CLAIMABLE:
+        Serial.printf("MTX: %s claimable (%s)\n", a, (r.arg == MTX_CL_SILENT) ? "SILENT" : "IDLE");
+        break;
+      case MTX_EV_NOT_CLAIMABLE:
+        Serial.printf("MTX: %s no longer claimable (%s)\n", a, (r.arg == MTX_NC_HEARD) ? "heard" : (r.arg == MTX_NC_INPUT) ? "input" : "nobody else on");
+        break;
+      case MTX_EV_TOKEN:
+        Serial.printf("MTX: claim by %s waits for Follow-Me to idle (up to %lu ms)\n", a, (unsigned long)kMtxClaimGrantMs);
+        break;
+      case MTX_EV_TOKEN_LAPSED:
+        if (r.arg == 1) Serial.printf("MTX: claim by %s ended - that remote locked\n", a);
+        else            Serial.printf("MTX: claim by %s lapsed (Follow-Me did not idle in time) - squeeze from zero again\n", a);
+        break;
+      case MTX_EV_SUMMON:
+        Serial.printf("MTX: %s summoned the buggy (its RTM or Follow-Me arm follows from it)\n", a);
+        break;
+      case MTX_EV_SUMMON_REFUSED:
+        Serial.printf("MTX: summon by %s refused - the remote in control is not claimable, or no fresh zero from %s\n", a, a);
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+// mtxPrintStatus - V2.5-Evo - 2026-10-20 - the body of ?mtx (System.ino), loop task. A CONSISTENT snapshot: the radio
+//   task's state is copied with the scheduler suspended (about a microsecond - nothing else can run, and the radio task
+//   never writes it from an interrupt), then printed from the copy. Side effects: Serial.
+void mtxPrintStatus()
+{
+  vTaskSuspendAll();
+  const MtxRxFw x = g_mtx;
+  const uint32_t grant = mtx_grant_ms.load();
+  const uint8_t  seq_owner = mtx_owner_change_seq.load(), seq_tel = mtx_telemetry_owner_seq.load();
+  xTaskResumeAll();
+  const uint32_t now = millis();
+  char me[9], own[9], dest[9];
+  mtxFmtId(me, g_efuse_id);
+  mtxFmtId(own, x.b.own_address);
+  mtxFmtId(dest, x.b.dest_address);
+  Serial.println("=== Multi-remote (?mtx) ===");
+  Serial.printf("this buggy: chip ID %s | own_address %s | paired %u | dest_address %s | hook table %s\n",
+                me, own, (unsigned)x.b.paired, dest, g_mtx_hooks_ok ? "OK" : "INCOMPLETE - every frame dropped");
+  Serial.printf("mode: %s | %u remote(s) in the list\n", mtxModeText(x.mode), (unsigned)mtxValidEntryCount(&x.b));
+  Serial.printf("settings: mtx_claim_s %u s (claimable after %lu ms of silence with failsafe_time %u ms) | take-back %s | takeover limit %u -> 255 over %u ms\n",
+                (unsigned)x.cfg.claim_s, (unsigned long)mtxClaimMs(x.cfg.claim_s, x.cfg.failsafe_ms), (unsigned)x.cfg.failsafe_ms,
+                x.cfg.seize_en ? "on" : "off", (unsigned)usrConf.mtx_takeover_cap, (unsigned)usrConf.mtx_takeover_ms);
+  static const char* const kStatusText[8] = { "OWNER (solo)", "OWNER", "FREE", "BUSY", "SEIZABLE", "REFUSED (E9)", "SEIZED (tA)", "-" };
+  for (uint8_t i = 0; i < kMtxSlots; i++)
+  {
+    if (!mtxEntryValid(&x.b, i)) continue;
+    char ib[9];
+    mtxFmtId(ib, mtxEntryId(&x.b, i));
+    const bool multi = (x.mode == MTX_MODE_MULTI);
+    if (!multi)
+    {
+      Serial.printf("slot %u  %s  %s  %s (one remote: no per-slot ownership state)\n", (unsigned)(i + 1), ib, (i == 0) ? "MASTER" : "guest ",
+                    mtxEntryLegacy(&x.b, i) ? "old-style" : "new-style");
+      continue;
+    }
+    Serial.printf("slot %u  %s  %s  new-style | heard %s%lu ms ago | zero streak %u | last status %s | RSSI %d dBm, link %u/10\n",
+                  (unsigned)(i + 1), ib, (i == 0) ? "MASTER" : "guest ",
+                  x.st.heard_ms[i] ? "" : "never/", x.st.heard_ms[i] ? (unsigned long)mtxAgeMs(now, x.st.heard_ms[i]) : 0UL,
+                  (unsigned)x.st.zero_streak[i], kStatusText[x.st.last_status[i] & 0x07], (int)x.rssi[i], (unsigned)x.linkq[i]);
+  }
+  if (mtxImplicitLegacy(&x.b, g_efuse_id)) Serial.printf("the one old-style remote of a migrated pairing: frames to %s, replies to %s\n", own, dest);
+  if (x.mode != MTX_MODE_MULTI)
+  {
+    Serial.println("(with one remote the buggy runs today's code: no owner, no claim, no limit, no MTX: lines)");
+  }
+  else
+  {
+    if (x.st.owner >= 0 && x.st.owner < (int8_t)kMtxSlots)
+    {
+      char ob[9];
+      mtxFmtId(ob, mtxEntryId(&x.b, (uint8_t)x.st.owner));
+      Serial.printf("owner: slot %d (%s)", (int)x.st.owner + 1, ob);
+    }
+    else
+    {
+      Serial.print("owner: nobody");
+    }
+    Serial.printf(" | claimable: %s", (x.st.claimable == MTX_CL_SILENT) ? "SILENT" : (x.st.claimable == MTX_CL_IDLE) ? "IDLE" : "no");
+    if (x.st.claimable != MTX_CL_NO) Serial.printf(" for %lu ms", (unsigned long)mtxAgeMs(now, x.st.claimable_since_ms));
+    if (x.st.token.slot >= 0) Serial.printf(" | claim token: slot %d, %lu ms old", (int)x.st.token.slot + 1, (unsigned long)mtxAgeMs(now, x.st.token.ms));
+    else                      Serial.print(" | claim token: none");
+    Serial.printf(" | takeover limit now %u%s\n", (unsigned)mtxTakeoverCap(now, grant, (uint8_t)mtxClampU16(usrConf.mtx_takeover_cap, 0, 255), usrConf.mtx_takeover_ms),
+                  grant ? "" : " (none running)");
+    Serial.printf("owner-change counter %u, telemetry rebuilt for %u%s\n", (unsigned)seq_owner, (unsigned)seq_tel,
+                  (seq_owner != seq_tel) ? " - the new owner gets the masked bytes until the next loop tick" : "");
+  }
+  Serial.printf("counters: grants %u, claims %u, summons %u, summons refused %u, tokens lapsed %u | released: lock %u, take-back %u, claim %u | non-owner metas %u, dropped %u, unknown %lu | quiet RTM-off repeats %lu, lines lost %lu\n",
+                (unsigned)x.st.n.grants, (unsigned)x.st.n.claims, (unsigned)x.st.n.summons, (unsigned)x.st.n.summons_refused,
+                (unsigned)x.st.n.tokens_lapsed, (unsigned)x.st.n.released_lock, (unsigned)x.st.n.released_seized,
+                (unsigned)x.st.n.released_claim, (unsigned)x.st.n.non_owner_meta, (unsigned)x.st.n.dropped,
+                (unsigned long)x.unknown, (unsigned long)x.rtm_off_quiet, (unsigned long)x.lines_lost);
+}
+
 void triggeredReceive(void *parameter) {
   while (1)
   {
@@ -858,6 +1566,9 @@ void triggeredReceive(void *parameter) {
     if (g_wdt_active) esp_task_wdt_reset();
     if (xSemaphoreTake(triggerReceiveSemaphore, pdMS_TO_TICKS(2000)) == pdTRUE)
     {
+      // V2.5-Evo - 2026-10-20 - MULTI-REMOTE, hook contract Y-1 (g): ONE clock for this wake, read right after the
+      // semaphore, handed to every model call. (The control and meta branches keep their own millis() stamps.)
+      const uint32_t now = millis();
       if (gps_meta_pending)
       {
         // ---- GPS data packet path (14 bytes v1, 15 bytes v2) ----
@@ -866,6 +1577,8 @@ void triggeredReceive(void *parameter) {
         // TX has sent the GPS coordinate packet; read and decode it.
         // V2.5-Evo - 2026-10-12 - audit delta A-1: the length is the one the announcement promised (15 for a v2 remote,
         // whose packet carries the GPS fix counter; 14 otherwise), and the buffer holds the larger of the two.
+        // V2.5-Evo - 2026-10-20 - MULTI-REMOTE: processMetaGpsPacket() now accepts it only from the slot that announced
+        // it, while that slot owns (rxGpsDataAddressOk()); with one remote that is today's own_address test.
         gps_meta_pending = false;  // clear before any early return
 
         uint8_t gpsArray[kRiderGpsLenMax];
@@ -882,7 +1595,7 @@ void triggeredReceive(void *parameter) {
       }
       else
       {
-        // ---- Normal 6-byte control packet path ----
+        // ---- Normal 6-byte packet path ----
         uint8_t rcvArray[6];
         if (radio.readData(rcvArray, 6) == RADIOLIB_ERR_NONE)
         {
@@ -891,6 +1604,10 @@ void triggeredReceive(void *parameter) {
           printHexArray(rcvArray, 6);
           #endif
 
+          // V2.5-Evo - 2026-10-20 - MULTI-REMOTE: this wake's binding and config (and, if the paired list changed
+          // under an owner, the release - mtxRxRefresh()). Gate 0 below reads the binding copied here.
+          mtxRxRefresh(now);
+
           // V2.5-Evo - 2026-08-05 - SAFETY GATE. Checked BEFORE the address compare,
           // because on an unpaired board the address IS 00:00:00 and would match a
           // stranger. See rxMayAcceptControl() above for the full reasoning.
@@ -898,120 +1615,45 @@ void triggeredReceive(void *parameter) {
           {
             rxprintln("Ignored: RX is not paired — hold BIND at boot to pair");
           }
-          else if (memcmp(rcvArray, usrConf.own_address, 3) == 0)
+          else if (rcvArray[5] != esp_crc8(rcvArray, 5))
           {
-            rxprintln("Address matches");
-
-            if (rcvArray[5] == esp_crc8(rcvArray, 5))
+            rxprintln("CRC fail");
+          }
+          else
+          {
+            // ============================================================
+            // V2.5-Evo - 2026-10-20 - MULTI-REMOTE: WHO SENT IT, THEN THE PER-PACKET RULES
+            // ============================================================
+            // The address compare is now mtxLookupSlot() (host test T2): bytes 0-2 XOR this chip's ID name the
+            // remote. 00:00:00 is dropped (gate 1); bytes 0-2 equal to this buggy's own address (XOR = 0) are the
+            // old-style remote - the implicit entry of a migrated board, or the one legacy entry - exactly today's
+            // match; anything else must be a valid new-style entry's link ID. A frame built for another buggy, and
+            // any reply, decode to an ID that is not on the list and are dropped silently, as before.
+            // Then mtxOnFrame(): with one remote it calls this file's hooks exactly as the old branches ran (control
+            // -> apply_owner + reply, metas -> meta); with 2-4 remotes it applies the ownership rules. Negative
+            // lookups never reach it (hook contract Y-1 h), nor does anything while the hook table is incomplete.
+            const int8_t s = mtxLookupSlot(&g_mtx.b, g_efuse_id, rcvArray);
+            if (s < 0 || !g_mtx_hooks_ok)
             {
-              rxprintln("CRC ok");
-
-              if (rcvArray[3] == 0xF1)
+              if (s < 0) g_mtx.unknown++;
+              rxprintln("Not for this buggy (no paired remote has this address)");
+            }
+            else
+            {
+              rxprintln("Address matches");
+              const bool legacy_entry = (s == kMtxSlotImplicit) || mtxEntryLegacy(&g_mtx.b, (uint8_t)s);
+              if (!g_mtx.cfg.single && s < (int8_t)kMtxSlots)
               {
-                // ---- RTM state meta-packet ----
-                // TX signals RTM active (1) or inactive (0). No telemetry reply.
-                last_packet = millis();  // meta-packet proves TX is alive
-                processRtmStatePacket(rcvArray);
+                // MULTI: THIS remote's own link quality, for its own replies (index 18, C15 / V-17) and ?mtx.
+                const float rssi = radio.getRSSI();
+                g_mtx.rssi[s]  = (int16_t)rssi;
+                g_mtx.linkq[s] = (uint8_t)getLinkQuality(rssi, radio.getSNR());
               }
-              else if (rcvArray[3] == 0xF2)
-              {
-                // ---- FM override meta-packet ----
-                // TX cycles follow-me mode. No telemetry reply.
-                last_packet = millis();  // meta-packet proves TX is alive
-                processFmOverridePacket(rcvArray);
-              }
-              else if (rcvArray[3] == 0xF4)
-              {
-                // ---- Aux control meta-packet ----
-                last_packet = millis();
-                rx_aux_flags = rcvArray[4];
-              }
-              else if (rcvArray[3] == 0xF3)
-              {
-                // ---- GPS announcement ----
-                // TX will send a 14-byte GPS data packet ~10ms from now.
-                // Switch radio to 14-byte mode immediately — SPI writes take
-                // <2ms, so we will be ready well before the GPS data arrives.
-                // V2.5-Evo - 2026-10-12 - audit delta A-1: subtype 0x03 announces a 15-byte v2 packet (with the GPS fix
-                // counter); 0x01 and any other subtype a 14-byte v1 packet, exactly as before. Same 12.9 ms on air.
-                gps_meta_len = riderGpsDataLen(rcvArray[4]);
-                rxprintln(gps_meta_len == kRiderGpsLenV2 ? "META GPS: announcement v2, switching to 15-byte mode"
-                                                         : "META GPS: announcement, switching to 14-byte mode");
-                gps_meta_pending = true;
-                radio.implicitHeader(gps_meta_len);
-                radio.startReceive();
-                rfInterrupt = false;
-                // TX does not expect a telemetry reply here; skip the common exit.
-                continue;
-              }
-              else
-              {
-                // ---- Normal throttle/steering control packet ----
-                last_packet = millis();
-#ifdef WIFI_ENABLED
-                webCfgNotifyRxConnected();
-#endif
-                rxprint("RSSI: ");
-                rxprint(radio.getRSSI());
-                rxprint(", SNR: ");
-                rxprintln(radio.getSNR());
-
-                thr_received      = rcvArray[3];
-                steering_received = rcvArray[4];
-
-                // V2.5-Evo - 2026-09-28 - R-3 FIX: the motor gate's own timestamp, stamped HERE and
-                // in no other branch. This is the only branch in the whole firmware that writes
-                // thr_received - the two lines directly above - so it is the only one that can
-                // honestly claim "the RX has a fresh throttle command". The 0xF1 / 0xF2 / 0xF4
-                // branches above still stamp last_packet, because the TX really is alive, but they
-                // must not be able to reopen the motor gate on a throttle byte left over from
-                // before a dropout. Full reasoning at the declaration in BREmote_V2_Rx.h; the gate
-                // itself is in PWM.ino. On a healthy 10 Hz link this is refreshed every ~100 ms, so
-                // normal riding is unchanged.
-                // V2.5-Evo - 2026-09-29 - L-1 (review finding, LOW): MOVED down to here. It used to
-                // sit nine lines up, right after last_packet and before the two bytes it vouches
-                // for. Stamping it AFTER those bytes are stored makes it structurally true that an
-                // open motor gate means thr_received came from this same packet; before, the two
-                // were merely near each other and nothing in the code required them to stay that
-                // way. Behaviour is unchanged: everything now above it is a WiFi-config
-                // notification and debug prints, none of which touch thr_received, last_packet or
-                // the motor gate, and the handful of microseconds they add to the timestamp is
-                // nothing against a failsafe_time measured in hundreds of milliseconds.
-                last_control_packet = millis();
-
-                // V2.5-Evo - 2026-07-24 - F9: snapshot RSSI/SNR while the radio SPI bus is valid (just after
-                // this reception) so the logger task can read them without touching the radio concurrently.
-                g_last_rssi_dbm = radio.getRSSI();
-                g_last_snr_db   = radio.getSNR();
-                telemetry.link_quality = getLinkQuality(g_last_rssi_dbm, g_last_snr_db);
-
-                rxprintln("Sending response");
-
-                uint8_t sendArray[6];
-                memcpy(sendArray, usrConf.dest_address, 3);
-                uint8_t* ptr = (uint8_t*)&telemetry;
-                sendArray[3] = telemetry_index;
-                sendArray[4] = ptr[telemetry_index];
-                telemetry_index++;
-                if(telemetry_index >= sizeof(TelemetryPacket))
-                {
-                  telemetry_index = 0;
-                }
-                sendArray[5] = esp_crc8(sendArray, 5);
-
-                #ifdef DEBUG_RX
-                printHexArray(sendArray, 6);
-                #endif
-
-                vTaskDelay(pdMS_TO_TICKS(10));
-                radio.implicitHeader(6);
-                {
-                  int16_t _txErr = radio.startTransmit(sendArray, 6);
-                  if (_txErr != RADIOLIB_ERR_NONE)
-                    Serial.printf("[Radio] startTransmit error %d at line %d\n", _txErr, __LINE__);
-                }
-                vTaskDelay(pdMS_TO_TICKS(10));
-              }
+              g_mtx.skip_common_exit = false;
+              mtxOnFrame(&g_mtx.st, &g_mtx.cfg, &g_mtx_hooks, s, legacy_entry, rcvArray, now);
+              // The owner's 0xF3 announce switched the radio to the GPS length and expects no reply: skip the
+              // common exit, exactly as the old announce branch's `continue` did.
+              if (g_mtx.skip_common_exit) continue;
             }
           }
         }
@@ -1044,6 +1686,15 @@ void triggeredReceive(void *parameter) {
       // last_packet until the 2026-09-28 R-3 fix, and the stale line number it used to quote has been
       // dropped rather than re-guessed). This branch never writes thr_received, last_packet,
       // last_control_packet, or any PWM state — motor-safe by construction.
+      // V2.5-Evo - 2026-10-20 - MULTI-REMOTE, hook contract Y-1 (g): the model's timers run here too, so a claim token
+      // lapses after 1 s even when nothing is heard and the claimable edges are printed. mtxTimers() RELEASES NOTHING
+      // and writes no motor state; with one remote it returns at once. The paired-list check (mtxRxRefresh()) runs
+      // first: a list cleared while everyone is silent still releases a stale owner.
+      {
+        const uint32_t now = millis();
+        mtxRxRefresh(now);
+        if (g_mtx_hooks_ok) mtxTimers(&g_mtx.st, &g_mtx.cfg, &g_mtx_hooks, now);
+      }
       radio.implicitHeader(6);
       radio.startReceive();
       rfInterrupt = false;

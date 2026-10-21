@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE TAKEOVER LIMIT (SW37): calcPWM() applies min(effective_thr, mtxTakeoverCap())
+//   right after the sticky return cap and before the ramp, and clears mtx_grant_ms with a compare-exchange once the
+//   limit has run out. Subtract-only; reads thr_received first and the limit after it (the C6 read order). With one
+//   remote paired no grant ever happens, so this is a no-op. Neither copy of the motor-gate expression is touched.
 // V2.5-Evo - 2026-10-17 - THROTTLE-SCALED STEERING INFLUENCE (owner request, RX1): calcPWM() hands the mixer
 //   throttleScaledSteeringInfluence(pivot_thr, steering_influence) (Common/DifferentialMixer.h) instead of the plain
 //   setting - for settings 51-99: 100 % up to 30 % throttle (one-motor pivot), the setting from 60 %, linear between;
@@ -405,6 +409,34 @@ void calcPWM()
     const uint8_t sc = sticky_cap.load();
     if (sc < effective_thr) effective_thr = sc;
     if (thr_received < kStickyReleaseThr) sticky_armed.store(false);   // released below 10 %: full manual from the next pass
+  }
+
+  // ============================================================
+  // V2.5-Evo - 2026-10-20 - MULTI-REMOTE: THE TAKEOVER LIMIT (design section 8; SOP rule-2 exception, owner-approved)
+  // ============================================================
+  // When control passes to another remote, that remote's throttle is limited to mtx_takeover_cap (64 = 25 %) at the
+  // moment it takes control, rising evenly to full over mtx_takeover_ms (4 s), because the buggy may be near the other
+  // rider. Same subtract-only shape as every cap above: min(effective_thr, limit) - it never raises a byte, never
+  // reads GPS, and always ends on its own. mtx_grant_ms is set ONLY by a grant (2-4 remotes paired), so with one
+  // remote it is 0 here forever and this block does nothing.
+  // THE READ ORDER IS THE SAFETY ARGUMENT (C6): thr_received was read at the top of this function, the limit is read
+  // HERE, after it. The radio task (priority 5) can never preempt this task (priority 10) in between, and a grant
+  // stores the limit BEFORE the new owner's first byte (Radio.ino mtxHkPublishLimit()). So one pass sees either no
+  // grant at all, or the limit together with the old byte or the new one - never the new owner's byte without its
+  // limit. Keep thr_received read before this line.
+  // Once the limit has run out, the stamp is cleared with a compare-exchange (the hand-back cap pattern), so a grant
+  // that happened in between is never wiped; that is also what keeps an old stamp from ever being read again (audit Y-3).
+  {
+    uint32_t grant = mtx_grant_ms.load(std::memory_order_seq_cst);
+    if (grant != 0)
+    {
+      const uint32_t now_ms = millis();
+      const uint8_t  cap0   = (uint8_t)mtxClampU16(usrConf.mtx_takeover_cap, 0, 255);
+      const uint8_t  limit  = mtxTakeoverCap(now_ms, grant, cap0, usrConf.mtx_takeover_ms);
+      if (limit < effective_thr) effective_thr = limit;
+      if (mtxTakeoverExpired(now_ms, grant, usrConf.mtx_takeover_ms))
+        mtx_grant_ms.compare_exchange_strong(grant, 0, std::memory_order_seq_cst);
+    }
   }
 
   // -- SAFETY: THROTTLE RAMPING (usrConf.motor_ramp_s / usrConf.auto_ramp_s, seconds) ----------

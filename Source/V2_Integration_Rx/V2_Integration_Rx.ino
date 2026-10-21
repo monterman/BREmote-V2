@@ -1,4 +1,4 @@
-// V2.5-Evo - 2026-10-20 - SW37 CONFIG AND IDENTITY: setup() computes g_efuse_id (this chip's ID) right after bootInfoInit(), BEFORE initStorage() loads the config, so the identity rule in cfgValidateCrossField() checks the stored own_address on the boot load too. No control-path statement removed or reordered.
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE RECEIVER STEP (SW37): setup() computes g_efuse_id (this chip's ID) right after bootInfoInit(), BEFORE initStorage() loads the config, so the identity rule checks the stored own_address on the boot load too; after initStorage() it prints the multi-remote boot report (mtxBootReport(), Radio.ino: the chip ID, the mode, the paired list, the hook-table check). loop() calls mtxEventService() (Radio.ino) after checkSerial(): it prints the "MTX:" lines the radio task queued, so the radio task itself never prints them. No control-path statement removed or reordered.
 // V2.5-Evo - 2026-10-14 - setup() calls bootInfoInit() (Init.ino) right after enterSetup(): the reset reason and the persistent boot counter on the banner, in ?diag and in every log file. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-07 - H-3 stop-gap: loop() calls i2cStuckBusService() (Init.ino) after checkButtons(); it does nothing unless the PWM task has declared the motor-enable swap starved. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-03 - RX WEB CONSOLE: serialTeeInit() added as the first line of setup() so the
@@ -28,6 +28,9 @@ void runFmLoop();
 // File-scope static in RTMState.ino; Arduino compiles the sketch as one translation unit, so this
 // declaration is what makes the call legal — the same pattern headingDisagreeLatched() already uses.
 static void headingDisagreeRestore();
+// V2.5-Evo - 2026-10-20 - multi-remote receiver step (Radio.ino): the boot report and the loop-task event printer.
+void mtxBootReport();
+void mtxEventService();
 
 void setup()
 {
@@ -51,7 +54,9 @@ void setup()
 
   initHardware();
   initStorage();
-  
+  // V2.5-Evo - 2026-10-20 - the multi-remote boot line(s): chip ID, mode, the paired list (MT-00 reads these).
+  mtxBootReport();
+
   // ---> NEW: Initialize the QMC5883L Compass <---
   initCompass();
 
@@ -95,7 +100,10 @@ void loop()
   webCfgLoop();
 #endif
   checkSerial();
-  
+  // V2.5-Evo - 2026-10-20 - MULTI-REMOTE: print the "MTX:" lines the radio task queued (it never prints them itself,
+  // hook contract Y-1 d). A few lines at most per pass; nothing is queued at all with one remote paired.
+  mtxEventService();
+
   // Process Logger LED and button in main thread (AW9523 I2C is not ISR-safe)
   loggerLoop();
 

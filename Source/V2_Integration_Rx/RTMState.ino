@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE (SW37): runRtmLoop() gains the owner-change hook (design 7.7): when
+//   mtx_owner_change_seq moves (a release or a grant on the radio task), the three sticky end windows are closed with
+//   stickyWindowClose(), so a new owner never sees the old owner's "St"; and after runRtmLoopBody() it publishes
+//   mtx_telemetry_owner_seq (audit W-3). Never fires with one remote. Nothing else in this file changes.
 // V2.5-Evo - 2026-10-20 - FRONT STATIONS SWAP NUMBERS (owner): F4 = front-LEFT, F5 = front-RIGHT, so 1-5 run clockwise
 //   round the rider (1 rear-right, 2 behind, 3 rear-left, 4 front-left, 5 front-right). The presets and the same-side
 //   retreat live in Common/FollowMeStation.h; here the three places that turn a front mode into its same-side rear
@@ -3965,7 +3969,37 @@ void runRtmLoop()
   rtm_log_phase       = 0;          // V2.5-Evo - 2026-09-19 - level-5 log: inactive unless the body commits to a branch
   rtm_log_in_approach = false;
   rtm_steer_takeover_req  = false;  // V2.5-Evo - 2026-09-19 - no takeover unless the RTM owner tick below stands one
+
+  // ============================================================
+  // V2.5-Evo - 2026-10-20 - MULTI-REMOTE: THE OWNER-CHANGE HOOK (design v3.1 7.7; audit V-9, W-3, O-1)
+  // ============================================================
+  // WHAT IT IS FOR: when control passes to another remote, the old owner's "St" / end bits (fm_flags bit 3,
+  // rx_state_flags bits 0-1) must not reach the NEW owner - the remote latches the FM fault on ONE arrival, so one
+  // stale byte would show the new rider a stop he never had. The three sticky windows below are what hold those bits
+  // up, and clearing an alarm STAMP does not close a running window (stickyWindowStep() runs on left_ms), so the
+  // windows themselves are closed here, by stickyWindowClose() (Common/AutoReturnRules.h, host test T21).
+  // SINGLE WRITER: the windows and stamps are this task's statics; the radio task only bumps mtx_owner_change_seq (on
+  // every release and grant), and this hook watches it. The STAMPS are not cleared (?diag keeps "last fault N s ago",
+  // and fmEnterIdle()'s rule that fm_fault_alarm_ms is never reset holds); an alarm raised AFTER the change opens a
+  // fresh window, so it belongs to the new owner, as it should.
+  // With one remote paired the counter never moves, so this never fires.
+  static uint8_t owner_seq_seen = 0;   // loop task only
+  {
+    const uint8_t seq = mtx_owner_change_seq.load(std::memory_order_acquire);
+    if (seq != owner_seq_seen)
+    {
+      owner_seq_seen = seq;
+      stickyWindowClose(&fm_fault_sticky,    (uint32_t)fm_fault_alarm_ms);
+      stickyWindowClose(&rtm_fault_sticky,   (uint32_t)rtm_fault_alarm_ms);
+      stickyWindowClose(&rtm_arrival_sticky, (uint32_t)rtm_arrival_alarm_ms);
+    }
+  }
   runRtmLoopBody(now);
+  // V2.5-Evo - 2026-10-20 - audit W-3: publish the sequence the telemetry is now built for HERE, right after the body
+  // (not inside it, where owner_seq_seen is out of scope). The body rebuilds indices 15, 16 and 19 on every tick
+  // before its first return, so a publish after it always follows a rebuild. Until this store the radio task gives
+  // the new owner the full non-owner mask (audit O-1), which covers the up-to-100 ms gap.
+  mtx_telemetry_owner_seq.store(owner_seq_seen, std::memory_order_release);
   stickyCapUpdate(now);             // V2.5-Evo - 2026-10-08 - the sticky return cap, every tick, after any RTM end this tick
   publishAlignMixerInfluence();     // once per tick, after every possible exit of the body
   publishSteerTakeover();           // V2.5-Evo - 2026-09-19 - once per tick, RTM > FM, after every exit of the body

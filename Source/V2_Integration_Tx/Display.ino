@@ -1736,9 +1736,12 @@ void renderRtmInfoDisplay()
     return;
   }
   // V2.5-Evo - 2026-10-20 - a brief refusal "St" over the running return (showStopHeld(), interim default 2): the digit
-  // zone keeps it for its 1 s; the R5 bar and the dots keep updating; then the return's screen comes straight back.
+  // zone keeps it for its 1 s; R5 keeps the look the return's screen would give it (dark until the buggy confirms, SOP-041
+  // rules 1-2, else the RETURN bar) and the dots keep updating; then the return's screen comes back.
   if (stopHeldActive())
   {
+    if (rtmReturnConfirmed()) updateR5ProximityBar();
+    else                      displayBuffer[6] = 0x0000;
     updateDisplay();
     xSemaphoreGive(displayMutex);
     return;

@@ -287,6 +287,7 @@ The receiver's return-to-me loop watches that counter. It closes the short "how 
 - **"Another remote on"** = a remote other than the owner sent a control packet (not LOCKED) within the last 3 s.
 - **Silent:** nothing heard from the owner for 10 s in total, and never less than the failsafe time + 1 s.
 - **Idle:** the owner has sent zero throttle and no steering for 10 s, **and Follow-Me and Return-To-Me are not armed.** While either is armed, idle never counts; only silence does.
+- **Silence and idle together:** a silence of `mtx_claim_s` (10 s) or more restarts the idle clock when the owner is heard again, so an owner that comes back from a long silence is never idle-claimable on its first packet. A shorter silence still counts as time at zero: 5 s at zero followed by 5 s unheard makes the owner idle-claimable at 10 s, before it would be silent.
 - **Claimable** = another remote on, and the owner silent or idle.
 - **Claimable releases nothing and ends nothing.** The other remotes hear FREE. The owner keeps control until another remote claims it.
 - **The owner coming back** (any packet after silence, any input after idle) ends claimable at once. It never lost control, so it gets no limit.

@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-21 - E1-E4 (owner order): a refused remote shows "E" + the number of the remote in control instead
+//   of E9. The buggy sends it at reply index 20, which is not a telemetry index (kMtxIdxInControl, mtxReplyNumberDue(),
+//   mtxInControlNumber()); the remote holds it (mtxTxOnNumber()) and draws it (mtxTxRefusalDigit(), E9 when unknown).
+//   Replies to a remote that is not in control only; same frames, no airtime change. Host-tested (multi_tx_test.cpp T38).
 // V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-1: MtxTxStatus stamps the first owner arrival (owner_since_ms) and
 //   mtxTxOwnerWait() judges the take-back / summon answer on it, not on the newest status, so a late poll no longer turns
 //   a timely grant into "St". Host-tested (multi_tx_test.cpp T16, T29).
@@ -78,7 +82,7 @@ static const uint32_t kMtxNoReplyFastMs  = 5000;   // no valid reply this long -
 static const uint32_t kMtxLinkFreshMs    = 1000;   // "connected" window at the normal rate
 static const uint32_t kMtxLinkFreshSlowMs= 2500;   // "connected" window while slow
 static const uint32_t kMtxReplyWaitMs    = 40;     // the bound of the remote's telemetry wait after a send
-static const uint32_t kMtxE9HoldMs       = 1500;   // E9 shows this long after the last REFUSED
+static const uint32_t kMtxE9HoldMs       = 1500;   // E9 (now E1-E4, E9 if the number is unknown) shows this long after the last REFUSED
 static const uint32_t kMtxSeizeConfirmMs = 1000;   // take-back: an owner status within this -> confirm buzz, else "St"
 static const uint32_t kMtxSummonWaitMs   = 1500;   // summon: an owner status within this -> the arm runs, else "St"
 static const uint32_t kMtxPairWindowMs   = 60000;  // pairing window
@@ -265,6 +269,42 @@ static inline uint8_t mtxReplyStatusOf(uint8_t b3)
 }
 static inline uint8_t mtxReplyIndexOf(uint8_t b3) { return (uint8_t)(b3 & 0x1F); }
 static inline bool    mtxStatusIsOwner(uint8_t s) { return s == MTX_S_OWNER_SOLO || s == MTX_S_OWNER; }
+
+// V2.5-Evo - 2026-10-21 - THE NUMBER OF THE REMOTE IN CONTROL (owner order: E1 / E2 / E3 / E4 instead of E9). A remote whose
+//   takeover try is refused because another remote is in control shows "E" + that remote's number: the slot + 1, so the
+//   master is 1. The number rides in the reply's index field. Index 20 is NOT a telemetry index (TelemetryPacket is 0-19,
+//   and the remote's unpack stores only indices below 20), so a reply at index 20 carries the number in byte 4 instead of
+//   a telemetry byte (0 = nobody in control). Only replies to a remote that is NOT in control carry it, and only with a
+//   status that shows it (mtxReplyNumberDue()): the remote in control and a single remote (status 000, today's reply)
+//   never see it. The reply keeps its 6 bytes and its count, so the airtime is unchanged.
+static const uint8_t kMtxIdxInControl = 20;    // reply index 20: byte 4 = the number of the remote in control
+static const uint8_t kMtxNumberNone   = 0;     // byte 4 at index 20: nobody is in control
+static const uint8_t kMtxNumberUntold = 0xFF;  // the buggy's per-remote note "this remote holds no number" (never sent)
+
+// mtxStatusShowsNumber - the statuses whose remote answers a refused takeover try with "E" + the number: BUSY, SEIZABLE,
+//   REFUSED, SEIZED (exactly the set mtxTxRefusalSignal() answers with the E code). Side effects: none.
+static inline bool mtxStatusShowsNumber(uint8_t s)
+{
+  return s == MTX_S_BUSY || s == MTX_S_SEIZABLE || s == MTX_S_REFUSED || s == MTX_S_SEIZED;
+}
+
+// mtxReplyNumberDue - V2.5-Evo - 2026-10-21 - does this reply carry the number (index 20) instead of a telemetry byte?
+//   - A status that does not show it (OWNER, FREE, OWNER_SOLO): never. The note is reset, because the remote drops its
+//     number on such a status (mtxTxOnReply()).
+//   - REFUSED: always. It opens the E window on the remote, so the number comes in the same frame as the refusal.
+//   - A number other than the one this remote was last sent: at once, so a change is told on the very next reply.
+//   - Otherwise every other reply, so the number stays fresh (every 2 s at the spare's one reply a second) and the
+//     remote still gets half of its telemetry rotation. The rotation pauses on a number reply; no index is skipped.
+//   Inputs: status; number (mtxInControlNumber()); *told and *turn, that remote's two notes (kMtxNumberUntold and 0 at
+//   the start). Returns: true = send the number. Side effects: *told, *turn.
+static inline bool mtxReplyNumberDue(uint8_t status, uint8_t number, uint8_t* told, uint8_t* turn)
+{
+  if (!mtxStatusShowsNumber(status)) { *told = kMtxNumberUntold; *turn = 0; return false; }
+  const bool due = (status == MTX_S_REFUSED) || (*told != number) || (*turn != 0);
+  if (due) { *told = number; *turn = 0; }
+  else     { *turn = 1; }
+  return due;
+}
 
 // ============================================================
 // 6. REPLY VALUES: THE MASKS AND THE PER-REMOTE ROTATION (design 7.6, 7.7)
@@ -823,6 +863,16 @@ static inline bool mtxZeroProofOk(const MtxRxState* st, int8_t s, uint32_t now, 
   return st->zero_streak[s] >= kMtxZeroPkts && mtxWithin(now, st->last_zero_ms[s], fresh_ms);
 }
 
+// mtxInControlNumber - V2.5-Evo - 2026-10-21 - the number of the remote in control, 1-4 (the slot + 1; 1 = the master): the
+//   owner, or, while a claim token stands, the remote holding it (control passes to it on its next frame, and every other
+//   remote hears BUSY or SEIZED meanwhile). 0 (kMtxNumberNone) = nobody. Input: st. Side effects: none.
+static inline uint8_t mtxInControlNumber(const MtxRxState* st)
+{
+  if (st->owner >= 0 && st->owner < (int8_t)kMtxSlots) return (uint8_t)(st->owner + 1);
+  if (st->token.slot >= 0 && st->token.slot < (int8_t)kMtxSlots) return (uint8_t)(st->token.slot + 1);
+  return kMtxNumberNone;
+}
+
 // mtxGrantOk - R1: a remote may take a FREE buggy (nobody owns). Read BEFORE this frame's zero-proof update.
 //   Needs: nobody owns; a valid slot; the motor output runs; this frame is a squeeze (>= 12); 2 or more zero frames
 //   before it, the last within 3 s; nothing armed; no claim token held by another slot. Side effects: none.
@@ -1269,6 +1319,9 @@ struct MtxTxStatus {
   bool     lost_owner;     // 3 non-owner replies in a row, or 2 SEIZED: slow down, disarm locally
   uint32_t owner_since_ms; // V2.5-Evo - 2026-10-21 - P3-1: the arrival of the owner status that made `owner` true (the
                            //   MTX_TXE_BECAME_OWNER edge); kept while `owner` stays true; 0 = never. mtxTxOwnerWait() reads it.
+  uint8_t  number;         // V2.5-Evo - 2026-10-21 - the number (1-4) of the remote in control, from the last index-20 reply;
+                           //   0 = unknown. Cleared by any status that does not show it (OWNER, FREE). mtxTxRefusalDigit().
+  uint32_t number_ms;      //   its arrival stamp
 };
 static const uint8_t MTX_TXE_BECAME_OWNER  = 0x01;
 static const uint8_t MTX_TXE_LOST_OWNER    = 0x02;   // rising edge: disarm the remote's own FM/RTM state and screen
@@ -1284,6 +1337,7 @@ static inline uint8_t mtxTxOnReply(MtxTxStatus* t, uint8_t status, uint32_t now)
   t->last[1] = t->last[0];   t->last_ms[1] = t->last_ms[0];
   t->last[0] = s;            t->last_ms[0] = mtxStampOf(now);
   if (t->count < 2) t->count++;
+  if (!mtxStatusShowsNumber(s)) t->number = 0;   // V2.5-Evo - 2026-10-21 - OWNER or FREE: the held number no longer applies
   uint8_t ev = 0;
   if (mtxStatusIsOwner(s))
   {
@@ -1302,6 +1356,22 @@ static inline uint8_t mtxTxOnReply(MtxTxStatus* t, uint8_t status, uint32_t now)
     ev |= MTX_TXE_LOST_OWNER;
   }
   return ev;
+}
+
+// mtxTxOnNumber - V2.5-Evo - 2026-10-21 - a reply at index 20 (kMtxIdxInControl): byte 4 is the number of the remote in
+//   control. A value 1-4 is held, with its stamp, while the newest status shows it; anything else (0 = nobody, or a value
+//   no buggy sends) leaves the number unknown. Call it AFTER mtxTxOnReply() for the same frame. Side effects: *t.
+static inline void mtxTxOnNumber(MtxTxStatus* t, uint8_t value, uint32_t now)
+{
+  if (t->count > 0 && mtxStatusShowsNumber(t->last[0]) && value >= 1 && value <= kMtxSlots)
+  {
+    t->number    = value;
+    t->number_ms = mtxStampOf(now);
+  }
+  else
+  {
+    t->number = 0;
+  }
 }
 
 // mtxTxFast - the normal 100 ms rate, or slow (1 in 10)? Fast unless ALL of: lost owner, no meta pending, no gesture
@@ -1745,6 +1815,8 @@ static inline void mtxTxActivitySent(MtxTxActivity* a, uint32_t now) { a->last_m
 //   summon is such a try: refused because the latest status says another remote is in control and not claimable
 //   (BUSY, SEIZABLE, REFUSED) or has just taken control from this one (SEIZED), it is E9. A stale status (no reply for
 //   5 s) is not evidence of a busy owner: "St". Inputs: t, now. Returns: MTX_RS_*. Side effects: none.
+//   (V2.5-Evo - 2026-10-21 - MTX_RS_E9 keeps its name; the screen now shows "E" + mtxTxRefusalDigit(): E1-E4, or E9 when
+//   the number of the remote in control is not known.)
 static const uint8_t MTX_RS_ST = 0;
 static const uint8_t MTX_RS_E9 = 1;
 static inline uint8_t mtxTxRefusalSignal(const MtxTxStatus* t, uint32_t now)
@@ -1752,6 +1824,17 @@ static inline uint8_t mtxTxRefusalSignal(const MtxTxStatus* t, uint32_t now)
   if (t->count == 0 || !mtxWithin(now, t->last_ms[0], kMtxSeizeVerdictMs)) return MTX_RS_ST;
   const uint8_t s = t->last[0];
   return (s == MTX_S_BUSY || s == MTX_S_SEIZABLE || s == MTX_S_REFUSED || s == MTX_S_SEIZED) ? MTX_RS_E9 : MTX_RS_ST;
+}
+
+// mtxTxRefusalDigit - V2.5-Evo - 2026-10-21 - the digit after the "E" when the answer is MTX_RS_E9 or a REFUSED reply (owner
+//   order: E1 / E2 / E3 / E4, the number of the remote in control, instead of E9). The held number while it is known: from an
+//   index-20 reply at most 5 s old (kMtxSeizeVerdictMs, the same freshness as the status itself), and not cleared since by
+//   an OWNER or FREE status. Otherwise 9 = "another remote is busy in control, number unknown" (the old E9).
+//   Inputs: t, now. Returns: 1-4, or 9. Side effects: none.
+static inline uint8_t mtxTxRefusalDigit(const MtxTxStatus* t, uint32_t now)
+{
+  if (t->number >= 1 && t->number <= kMtxSlots && mtxWithin(now, t->number_ms, kMtxSeizeVerdictMs)) return t->number;
+  return 9;
 }
 
 // V2.5-Evo - 2026-10-20 - THE OWNERSHIP DOT (24a0371, design 9.10): what C7 R2 shows when no Follow-Me dot needs it.

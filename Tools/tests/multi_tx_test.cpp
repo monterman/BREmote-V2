@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-21 - E1-E4 (owner order): T38 - the number of the remote in control at reply index 20: the wire, the
+//   statuses that show it, who counts as in control (owner, claim token), the send rule (REFUSED always, a change at once,
+//   else every other reply), the model's replies with two and three remotes (take-back, token, nobody -> E9), SINGLE never,
+//   the remote's hold and freshness, and a random three-remote property (never another remote's number).
 // V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-1: T16 and T29 judge the take-back / summon answer on the FIRST owner arrival: a
 //   grant at send + 0.4 s polled at send + 3 s is OWNER, no owner status is TIMEOUT, the window edge, a control that came
 //   and went, the millis() wrap, and the late summon grant stays late.
@@ -104,6 +108,10 @@ struct Sim {
   std::vector<int> pwm_in, pwm_out, pwm_grant;  // per pass: trigger byte read, byte handed on, limit stamp set
   std::vector<std::string> log;
   std::vector<std::pair<int, int> > replies;    // slot, status
+  // V2.5-Evo - 2026-10-21 - E1-E4 (T38): what the receiver's reply hook (RX Radio.ino mtxHkReply()) puts at index 20 - per
+  // reply the number sent (1-4, 0 = nobody) or -1 for a telemetry byte, from the same two notes per remote it keeps.
+  uint8_t  num_told[kMtxSlots], num_turn[kMtxSlots];
+  std::vector<int> reply_num;
   std::vector<std::pair<int, int> > events;     // ev, arg
   std::vector<int> event_slots;
   MtxRxState st;
@@ -181,7 +189,19 @@ static void hkMeta(void* c, int8_t, const uint8_t f[6])
   }
   slog(s, "meta");
 }
-static void hkReply(void* c, int8_t slot, uint8_t status) { S(c)->replies.push_back(std::make_pair((int)slot, (int)status)); }
+static void hkReply(void* c, int8_t slot, uint8_t status)
+{
+  Sim* s = S(c);
+  s->replies.push_back(std::make_pair((int)slot, (int)status));
+  // E1-E4: as mtxHkReply()'s MULTI branch (the SINGLE branch never carries the number).
+  int num = -1;
+  if (!s->cfg.single && slot >= 0 && slot < (int8_t)kMtxSlots)
+  {
+    const uint8_t n = mtxInControlNumber(&s->st);
+    if (mtxReplyNumberDue(status, n, &s->num_told[slot], &s->num_turn[slot])) num = n;
+  }
+  s->reply_num.push_back(num);
+}
 static void hkEvent(void* c, uint8_t ev, int8_t slot, uint8_t arg)
 {
   S(c)->events.push_back(std::make_pair((int)ev, (int)arg));
@@ -198,6 +218,7 @@ static void simInit(Sim* s, bool single, uint8_t valid_mask)
   s->boot_id = 0; s->sticky_cap = false; s->aux = 0; s->now = 0;
   s->pwm_after = -1; s->sticky_val = 40; s->pwm_in.clear(); s->pwm_out.clear(); s->pwm_grant.clear();
   s->log.clear(); s->replies.clear(); s->events.clear(); s->event_slots.clear();
+  memset(s->num_told, kMtxNumberUntold, sizeof(s->num_told)); memset(s->num_turn, 0, sizeof(s->num_turn)); s->reply_num.clear();
   mtxRxStateInit(&s->st);
   s->cfg.single = single; s->cfg.valid_mask = valid_mask; s->cfg.claim_s = 10; s->cfg.failsafe_ms = 1000; s->cfg.seize_en = true;
   s->h.ctx = s; s->h.read_env = hkReadEnv; s->h.zero_outputs = hkZero; s->h.synthetic_rtm_off = hkRtmOff;
@@ -205,7 +226,7 @@ static void simInit(Sim* s, bool single, uint8_t valid_mask)
   s->h.publish_limit = hkLimit; s->h.owner_changed = hkSeq; s->h.apply_owner = hkApply; s->h.meta = hkMeta;
   s->h.reply = hkReply; s->h.event = hkEvent;
 }
-static void simClear(Sim* s) { s->log.clear(); s->replies.clear(); s->events.clear(); s->event_slots.clear(); }
+static void simClear(Sim* s) { s->log.clear(); s->replies.clear(); s->events.clear(); s->event_slots.clear(); s->reply_num.clear(); }
 
 // One frame from slot at time t.
 static void fr(Sim* s, int8_t slot, uint8_t b3, uint8_t b4, uint32_t t, bool legacy = false)
@@ -2153,6 +2174,210 @@ static void t37()
   testEnd("T37");
 }
 
+// ============================================================
+// T38 - E1-E4 (owner order 2026-10-21): the number of the remote in control, at reply index 20
+// ============================================================
+// txFeed - one remote's replies since reply number `from`, into that remote's MtxTxStatus, as waitForTelemetry() does
+// (TX Radio.ino): the status first, then, for a reply at index 20, the number.
+static void txFeed(MtxTxStatus* t, const Sim* s, size_t from, int slot, uint32_t now)
+{
+  for (size_t i = from; i < s->replies.size(); i++) {
+    if (s->replies[i].first != slot) continue;
+    mtxTxOnReply(t, (uint8_t)s->replies[i].second, now);
+    if (s->reply_num[i] >= 0) mtxTxOnNumber(t, (uint8_t)s->reply_num[i], now);
+  }
+}
+// numsTo - what the replies to one slot carried since reply number `from`: the number, or -1 for a telemetry byte.
+static std::vector<int> numsTo(const Sim* s, size_t from, int slot)
+{
+  std::vector<int> v;
+  for (size_t i = from; i < s->replies.size(); i++) if (s->replies[i].first == slot) v.push_back(s->reply_num[i]);
+  return v;
+}
+static void t38()
+{
+  testBegin();
+  // (1) The wire: index 20 is not a telemetry index (the rotation never reaches it) and packs with every status.
+  CHECK(kMtxIdxInControl >= kMtxTelemetryLen && kMtxIdxInControl <= 0x1F);
+  { uint8_t idx = 0; bool hit = false;
+    for (int i = 0; i < 1000; i++) hit = hit || (mtxTelIndexNext(&idx) >= kMtxTelemetryLen);
+    CHECK(!hit); }
+  for (uint8_t st = 0; st < MTX_S_RESERVED; st++) {
+    const uint8_t b3 = mtxReplyByte3(st, kMtxIdxInControl);
+    CHECK(mtxReplyStatusOf(b3) == st && mtxReplyIndexOf(b3) == kMtxIdxInControl);
+  }
+  // (2) The statuses that show the number are exactly the ones whose refusal is the E code (mtxTxRefusalSignal()).
+  for (uint8_t st = 0; st < MTX_S_RESERVED; st++) {
+    const bool want = (st == MTX_S_BUSY || st == MTX_S_SEIZABLE || st == MTX_S_REFUSED || st == MTX_S_SEIZED);
+    CHECK(mtxStatusShowsNumber(st) == want);
+    MtxTxStatus t; mtxTxStatusInit(&t); mtxTxOnReply(&t, st, 1000);
+    CHECK((mtxTxRefusalSignal(&t, 1000) == MTX_RS_E9) == want);
+  }
+  CHECK(!mtxStatusShowsNumber(MTX_S_RESERVED));                          // never sent by a buggy
+  // (3) Who is in control: the owner (slot + 1), else a claim token's holder, else nobody (0).
+  { MtxRxState st; mtxRxStateInit(&st);
+    CHECK(mtxInControlNumber(&st) == kMtxNumberNone);
+    for (int8_t o = 0; o < (int8_t)kMtxSlots; o++) { st.owner = o; CHECK(mtxInControlNumber(&st) == (uint8_t)(o + 1)); }
+    st.owner = kMtxNone;
+    for (int8_t k = 0; k < (int8_t)kMtxSlots; k++) { st.token.slot = k; st.token.ms = 5; CHECK(mtxInControlNumber(&st) == (uint8_t)(k + 1)); }
+    st.owner = 2; st.token.slot = 1;
+    CHECK(mtxInControlNumber(&st) == 3); }                               // the owner first
+  // (4) The send rule: REFUSED always; a changed number at once; otherwise every other reply; any other status never,
+  //     and it resets the note (the remote drops its number on it).
+  { uint8_t told = kMtxNumberUntold, turn = 0;
+    const struct { uint8_t s, n; bool due; } seq[] = {
+      { MTX_S_BUSY, 1, true }, { MTX_S_BUSY, 1, false }, { MTX_S_BUSY, 1, true }, { MTX_S_BUSY, 2, true },
+      { MTX_S_BUSY, 2, false }, { MTX_S_REFUSED, 2, true }, { MTX_S_REFUSED, 2, true }, { MTX_S_REFUSED, 2, true },
+      { MTX_S_SEIZABLE, 2, false }, { MTX_S_SEIZABLE, 2, true }, { MTX_S_FREE, 0, false }, { MTX_S_BUSY, 2, true },
+      { MTX_S_OWNER, 3, false }, { MTX_S_OWNER_SOLO, 3, false }, { MTX_S_SEIZED, 3, true }, { MTX_S_SEIZED, 0, true },
+    };
+    bool ok = true;
+    for (size_t i = 0; i < sizeof(seq) / sizeof(seq[0]); i++) ok = ok && (mtxReplyNumberDue(seq[i].s, seq[i].n, &told, &turn) == seq[i].due);
+    CHECK(ok);
+    told = kMtxNumberUntold; turn = 0; int n = 0, run = 0, maxrun = 0;
+    for (int i = 0; i < 100; i++) { if (mtxReplyNumberDue(MTX_S_BUSY, 4, &told, &turn)) { n++; run = 0; } else if (++run > maxrun) maxrun = run; }
+    CHECK(n == 50 && maxrun == 1); }                                     // half the rotation stays telemetry
+  // (5) Through the real model, two remotes. The master (slot 0) rides; the guest squeezes: every reply is REFUSED with
+  //     "1", and the rider in control never gets the number. Then the guest lets go: BUSY, the number every other reply.
+  { Sim s; simInit(&s, false, 0x03);
+    grantBySqueeze(&s, 0, 1000); fr(&s, 0, 120, 127, 1300);
+    simClear(&s);
+    for (uint32_t t = 1400; t < 2400; t += 100) { fr(&s, 0, 120, 127, t); fr(&s, 1, 90, 127, t + 50); }
+    bool ok = true; int n = 0;
+    for (size_t i = 0; i < s.replies.size(); i++) {
+      if (s.replies[i].first == 0) ok = ok && s.replies[i].second == MTX_S_OWNER && s.reply_num[i] == -1;
+      else { ok = ok && s.replies[i].second == MTX_S_REFUSED && s.reply_num[i] == 1; n++; }
+    }
+    CHECK(ok && n == 10);
+    MtxTxStatus g; mtxTxStatusInit(&g); txFeed(&g, &s, 0, 1, 2400);
+    CHECK(mtxTxRefusalDigit(&g, 2400) == 1);                              // the guest's screen: E1
+    simClear(&s);
+    for (uint32_t t = 2400; t < 4400; t += 100) { fr(&s, 0, 120, 127, t); fr(&s, 1, 0, 127, t + 50); }
+    const std::vector<int> v = numsTo(&s, 0, 1);
+    int nums = 0, run = 0, maxrun = 0; ok = true;
+    for (size_t i = 0; i < v.size(); i++) {
+      if (v[i] >= 0) { ok = ok && v[i] == 1; nums++; run = 0; } else if (++run > maxrun) maxrun = run;
+    }
+    for (size_t i = 0; i < s.replies.size(); i++) if (s.replies[i].first == 1) ok = ok && s.replies[i].second == MTX_S_BUSY;
+    CHECK(ok && v.size() == 20 && nums == 10 && maxrun == 1);
+    mtxTxStatusInit(&g); txFeed(&g, &s, 0, 1, 4350);
+    CHECK(mtxTxRefusalDigit(&g, 4350) == 1);                              // a summon refused now: E1
+    CHECK(mtxTxRefusalDigit(&g, g.number_ms + 5000) == 1 && mtxTxRefusalDigit(&g, g.number_ms + 5001) == 9); }
+  // (6) The master's take-back, two remotes: the master hears SEIZABLE with "2" (the guest); after the take-back the guest
+  //     hears SEIZED with "1" on its very next reply.
+  { Sim s; simInit(&s, false, 0x03);
+    grantBySqueeze(&s, 1, 1000); fr(&s, 1, 120, 127, 1300);
+    simClear(&s);
+    fr(&s, 0, 0, 127, 1400); fr(&s, 0, 0, 127, 1500);
+    CHECK(s.replies.size() == 2 && s.replies[0].second == MTX_S_SEIZABLE && s.reply_num[0] == 2 && s.reply_num[1] == -1);
+    fr(&s, 1, 120, 127, 1550);
+    fr(&s, 0, 0xF1, 0x5A, 1600);
+    CHECK(s.st.owner == 0);
+    simClear(&s);
+    fr(&s, 1, 120, 127, 1700);
+    CHECK(lastStatus(&s) == MTX_S_SEIZED && s.reply_num.back() == 1);
+    fr(&s, 0, 0, 127, 1750);
+    CHECK(lastStatus(&s) == MTX_S_OWNER && s.reply_num.back() == -1); }
+  // (7) Three remotes: a bystander is told a change of the remote in control on its very next reply.
+  { Sim s; simInit(&s, false, 0x07);
+    grantBySqueeze(&s, 1, 1000); fr(&s, 1, 120, 127, 1300);
+    simClear(&s);
+    fr(&s, 2, 0, 127, 1350); fr(&s, 2, 0, 127, 1450);
+    CHECK(s.replies.size() == 2 && s.replies[0].second == MTX_S_BUSY && s.reply_num[0] == 2 && s.reply_num[1] == -1);
+    fr(&s, 0, 0, 127, 1500); fr(&s, 0, 0, 127, 1600); fr(&s, 1, 120, 127, 1650);
+    fr(&s, 0, 0xF1, 0x5A, 1700);                                          // the master takes back from the guest
+    CHECK(s.st.owner == 0);
+    fr(&s, 2, 0, 127, 1750);                                              // C's next reply: still BUSY, now "1"
+    CHECK(lastStatus(&s) == MTX_S_BUSY && s.reply_num.back() == 1);
+    MtxTxStatus c; mtxTxStatusInit(&c); txFeed(&c, &s, 0, 2, 1750);
+    CHECK(mtxTxRefusalDigit(&c, 1750) == 1); }
+  // (8) A claim token: its holder counts as in control for everyone else; once it lapses nobody is, and a SEIZED remote
+  //     falls back to E9 ("busy, number unknown") - one of the two cases where the fallback is reached.
+  { Sim s; simInit(&s, false, 0x07);
+    grantBySqueeze(&s, 0, 1000); fr(&s, 0, 0xF2, 0x81, 1300); loopTick(&s);   // A owns, Follow-Me armed
+    for (uint32_t t = 1400; t <= 11400; t += 100) { fr(&s, 1, 0, 127, t); fr(&s, 2, 0, 127, t + 10); }   // A silent
+    fr(&s, 1, 0, 127, 11500);
+    simClear(&s);
+    fr(&s, 1, 90, 127, 11600);                                            // B claims; Follow-Me still on the loop: a token
+    CHECK(s.st.owner == kMtxNone && s.st.token.slot == 1 && lastStatus(&s) == MTX_S_FREE && s.reply_num.back() == -1);
+    fr(&s, 2, 0, 127, 11650);
+    CHECK(lastStatus(&s) == MTX_S_BUSY && s.reply_num.back() == 2);       // C: E2
+    fr(&s, 0, 0, 127, 11700);
+    CHECK(lastStatus(&s) == MTX_S_SEIZED && s.reply_num.back() == 2);     // A, back: tA, and a summon would show E2
+    MtxTxStatus a; mtxTxStatusInit(&a); txFeed(&a, &s, 0, 0, 11700);
+    CHECK(mtxTxRefusalDigit(&a, 11700) == 2);
+    wake(&s, 12601);
+    CHECK(s.st.token.slot == kMtxNone && s.st.owner == kMtxNone);
+    const size_t from = s.replies.size();
+    fr(&s, 0, 0, 127, 12700);
+    CHECK(lastStatus(&s) == MTX_S_SEIZED && s.reply_num.back() == 0);     // nobody in control
+    txFeed(&a, &s, from, 0, 12700);
+    CHECK(mtxTxRefusalSignal(&a, 12700) == MTX_RS_E9 && mtxTxRefusalDigit(&a, 12700) == 9); }
+  // (9) SINGLE: no reply ever carries the number - today's reply.
+  { Sim s; simInit(&s, true, 0x01);
+    for (uint32_t t = 1000; t < 3000; t += 100) fr(&s, 0, ((t / 100) % 2) ? 0 : 90, 127, t);
+    bool none = !s.replies.empty();
+    for (size_t i = 0; i < s.replies.size(); i++) none = none && s.reply_num[i] == -1 && s.replies[i].second == MTX_S_OWNER_SOLO;
+    CHECK(none); }
+  // (10) The remote: the number is held only with a status that shows it, for at most 5 s; FREE or OWNER drops it; a
+  //      value outside 1-4 leaves it unknown; across the millis() wrap.
+  { MtxTxStatus t; mtxTxStatusInit(&t);
+    CHECK(mtxTxRefusalDigit(&t, 1000) == 9);
+    mtxTxOnReply(&t, MTX_S_BUSY, 1000); mtxTxOnNumber(&t, 3, 1000);
+    CHECK(mtxTxRefusalDigit(&t, 1000) == 3 && mtxTxRefusalDigit(&t, 6000) == 3 && mtxTxRefusalDigit(&t, 6001) == 9);
+    mtxTxOnReply(&t, MTX_S_BUSY, 1500);                                   // a telemetry reply keeps it
+    CHECK(mtxTxRefusalDigit(&t, 1500) == 3);
+    mtxTxOnReply(&t, MTX_S_FREE, 1600);  CHECK(mtxTxRefusalDigit(&t, 1600) == 9);
+    mtxTxOnReply(&t, MTX_S_BUSY, 1700);  CHECK(mtxTxRefusalDigit(&t, 1700) == 9);   // until a number comes again
+    mtxTxOnNumber(&t, 1, 1700);          CHECK(mtxTxRefusalDigit(&t, 1700) == 1);
+    mtxTxOnReply(&t, MTX_S_OWNER, 1800); CHECK(t.number == 0);
+    mtxTxOnNumber(&t, 2, 1800);          CHECK(t.number == 0);            // never held with an owner status
+    const uint8_t bad[4] = { 0, 5, 9, 255 };
+    for (int i = 0; i < 4; i++) {
+      mtxTxOnReply(&t, MTX_S_REFUSED, 2000); mtxTxOnNumber(&t, 4, 2000); CHECK(mtxTxRefusalDigit(&t, 2000) == 4);
+      mtxTxOnNumber(&t, bad[i], 2001);     CHECK(t.number == 0 && mtxTxRefusalDigit(&t, 2001) == 9);
+    }
+    mtxTxStatusInit(&t);
+    const uint32_t w = 0xFFFFF000u;
+    mtxTxOnReply(&t, MTX_S_SEIZED, w); mtxTxOnNumber(&t, 2, w);
+    CHECK(mtxTxRefusalDigit(&t, w + 5000u) == 2 && mtxTxRefusalDigit(&t, w + 5001u) == 9); }
+  // (11) Property, three remotes, random frames (squeezes, zeros, locks, take-backs, summons, Follow-Me, timer wakes): right
+  //      after every reply that shows the E code, that remote's digit is the true number of the remote in control, or 9
+  //      when nobody is in control - never another remote's number.
+  { Sim s; simInit(&s, false, 0x07);
+    MtxTxStatus tx[3]; for (int i = 0; i < 3; i++) mtxTxStatusInit(&tx[i]);
+    uint32_t t = 1000; size_t seen = 0; int checked = 0, numbered = 0; bool ok = true;
+    for (int step = 0; step < 60000; step++) {
+      t += 10 + rnd() % 90;
+      const int8_t slot = (int8_t)(rnd() % 3);
+      const uint32_t r = rnd() % 100;
+      uint8_t b3 = 0, b4 = 127;
+      if (r < 40)      { b3 = 0; }
+      else if (r < 75) { b3 = (uint8_t)(12 + rnd() % 200); }
+      else if (r < 82) { b3 = 0xF1; b4 = 0x10; }                          // LOCKED
+      else if (r < 86) { b3 = 0xF1; b4 = 0x5A; }                          // SEIZE
+      else if (r < 90) { b3 = 0xF1; b4 = 0x3C; }                          // SUMMON
+      else if (r < 94) { b3 = 0xF2; b4 = (uint8_t)(0x80 | (1 + rnd() % 5)); }
+      else             { b3 = 0xF1; b4 = 0; }
+      if (rnd() % 7 == 0)  loopTick(&s);
+      if (rnd() % 50 == 0) wake(&s, t);
+      fr(&s, slot, b3, b4, t);
+      for (; seen < s.replies.size(); seen++) {
+        const int sl = s.replies[seen].first;
+        const uint8_t st = (uint8_t)s.replies[seen].second;
+        mtxTxOnReply(&tx[sl], st, t);
+        if (s.reply_num[seen] >= 0) { mtxTxOnNumber(&tx[sl], (uint8_t)s.reply_num[seen], t); numbered++; }
+        if (mtxStatusShowsNumber(st)) {
+          const uint8_t truth = mtxInControlNumber(&s.st);
+          ok = ok && mtxTxRefusalDigit(&tx[sl], t) == (truth ? truth : 9);
+          checked++;
+        }
+      }
+    }
+    CHECK(ok && checked > 1000 && numbered > 500); }
+  testEnd("T38");
+}
+
 int main(int argc, char** argv)
 {
   printf("multi_tx_test - Common/MultiTx.h (v3.2 step 1)\n");
@@ -2162,7 +2387,7 @@ int main(int argc, char** argv)
   t7(); t8(); t9(); t10(); t11(); t12(); t13(); t14(); t15(); t16(); t17(); t18();
   printf("T19  -> Tools/tests/config_migrate_test.cpp\n");
   t20(); t21(); t22(); t23(); t24(); t25(); t26(); t27(); t28(); t29(); t30(); t31(); t32(); t33();
-  t34(); t35(); t36(); t37();
+  t34(); t35(); t36(); t37(); t38();
   printf("%s: %d checks, %d failed\n", g_fails ? "FAILED" : "PASSED", g_checks, g_fails);
   return g_fails ? 1 : 0;
 }

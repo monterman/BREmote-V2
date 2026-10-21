@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-21 - E1-E4 (owner order): RAM byte mtx_e9_digit, the digit drawn after the "E" (1-4 = the remote in control,
+//   9 = unknown). No confStruct change, sizeof stays 144, SW_VERSION stays 29.
 // V2.5-Evo - 2026-10-21 - step-3 audit P3-1 / P3-3: mtxTxAnswerPoll() and mtxTxSummonDrop() declared (MultiRemote.ino); P3-6 c: the
 //   autolock_timeout_s comment names the real idle signal (throttle or steering; a toggle press does not count). No confStruct change, sizeof stays 144, SW_VERSION stays 29.
 // V2.5-Evo - 2026-10-20 - MULTI-REMOTE REMOTE STEP, SW27 -> SW29 (28 is never used): confStruct 136 -> 144 B, four u16 appended at
@@ -1258,6 +1260,10 @@ volatile uint8_t       mtx_tx_events    = 0;
 // E9 (design 9.8): shown while now is before this stamp (REFUSED arrived within 1500 ms, or a summon was refused
 //   against a busy owner); 0 = never. Written by the telemetry task and the loop; one aligned word.
 volatile unsigned long  mtx_e9_until_ms  = 0;
+// V2.5-Evo - 2026-10-21 - E1-E4 (owner order): the digit drawn after the "E" in that window - 1-4, the number of the remote in
+//   control (Common/MultiTx.h mtxTxRefusalDigit()), or 9 while that number is not known. Set together with the window, just
+//   BEFORE its stamp, by the same two writers (telemetry task on REFUSED, loop on a refused summon). One byte.
+volatile uint8_t       mtx_e9_digit     = 9;
 // The rate rule's "input" (design 9.4): the last throttle >= 8, steering off centre, toggle press or magnet contact.
 //   Written by the loop task, read by sendData. One aligned word.
 volatile unsigned long  mtx_input_ms     = 0;

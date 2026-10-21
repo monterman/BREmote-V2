@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-21 - E1-E4 (owner order): waitForTelemetry() reads the number of the remote in control from a reply at
+//   index 20 (new-style link only; never stored as telemetry) and opens the REFUSED window with it. No confStruct change.
 // V2.5-Evo - 2026-10-21 - text only: the PAIR offer line says the -60 dBm gate is about 5 m (calculated), not about 1 m.
 // V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-6 d: waitForTelemetry() reads local_link_quality from this remote's accepted reply
 //   only, not from every frame seen in the 40 ms window. No confStruct change.
@@ -746,6 +748,8 @@ void sendData(void *parameter)
 // (mtxTxReplyAddr()). THE STATUS (new-style link only): byte 3 = status in bits 7-5, index in bits 4-0; the status goes
 // to g_mtx_tx (mtxTxOnReply(): owner / lost owner / the SEIZED notice, edges for the loop), and REFUSED starts the 1.5 s
 // E9 window. On an old-style record byte 3 IS the index, read exactly as before.
+// V2.5-Evo - 2026-10-21 - E1-E4: on a new-style link a reply at index 20 carries the number of the remote in control
+// (mtxTxOnNumber()); the window then shows E1-E4 (E9 while the number is unknown).
 void waitForTelemetry(void *parameter)
 {
   while (1) 
@@ -796,8 +800,16 @@ void waitForTelemetry(void *parameter)
             idx = mtxReplyIndexOf(rcvArray[3]);
             portENTER_CRITICAL(&g_mtx_tx_mux);
             const uint8_t ev = mtxTxOnReply(&g_mtx_tx, s, now);
+            // V2.5-Evo - 2026-10-21 - E1-E4: index 20 is not telemetry - byte 4 is the number of the remote in control
+            // (the store below skips it: only indices under 20 are telemetry). A REFUSED reply always carries it, so the
+            // E window opens with the number from this very frame; the digit is written before the window's stamp.
+            if (idx == kMtxIdxInControl) mtxTxOnNumber(&g_mtx_tx, rcvArray[4], now);
             mtx_tx_events = (uint8_t)(mtx_tx_events | ev);
-            if (s == MTX_S_REFUSED) { const unsigned long u = now + kMtxE9HoldMs; mtx_e9_until_ms = (u != 0) ? u : 1; }
+            if (s == MTX_S_REFUSED)
+            {
+              mtx_e9_digit = mtxTxRefusalDigit(&g_mtx_tx, now);
+              const unsigned long u = now + kMtxE9HoldMs; mtx_e9_until_ms = (u != 0) ? u : 1;
+            }
             portEXIT_CRITICAL(&g_mtx_tx_mux);
             // V2.5-Evo - 2026-10-20 - X-8: on EVERY edge to OWNER (001: in control with others paired - never one remote's 000)
             // the boot ID is queued HERE, at once, before the loop can start anything that blocks (RTMState.ino).

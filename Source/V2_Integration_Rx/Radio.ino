@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-21 - E1-E4 (owner order): a reply to a remote that is NOT in control can carry, at index 20 (not a
+//   telemetry index), the number of the remote in control, so that remote shows E1-E4 instead of E9 (mtxHkReply(),
+//   Common/MultiTx.h mtxReplyNumberDue()). Same 6-byte reply, same count. SINGLE and owner replies unchanged. No confStruct change.
 // V2.5-Evo - 2026-10-21 - text only: the -60 dBm pairing gate is "about 5 m, calculated" (design 11.1), not "about 1 m", in the
 //   window comment and both PAIR lines; pair at arm's length. No code change.
 // V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-4: a paired-list change from MULTI to SINGLE also publishes the takeover limit once
@@ -67,6 +70,8 @@ struct MtxRxFw {
   uint8_t      mode;                // MTX_MODE_UNPAIRED / SINGLE / MULTI of b
   uint8_t      tel_idx[kMtxSlots];  // MULTI: each remote's own telemetry rotation 0-19 (SINGLE keeps today's telemetry_index)
   uint8_t      linkq[kMtxSlots];    // MULTI: 0-10 link quality of each remote's own last frame (reply index 18)
+  uint8_t      num_told[kMtxSlots]; // V2.5-Evo - 2026-10-21 - MULTI: the in-control number each remote was last sent (index 20;
+  uint8_t      num_turn[kMtxSlots]; //   kMtxNumberUntold = none) and its every-other-reply turn - mtxReplyNumberDue()
   int16_t      rssi[kMtxSlots];     // MULTI: that frame's RSSI in dBm (?mtx)
   int8_t       gps_meta_slot;       // the slot whose 0xF3 announce switched the radio to 15 bytes; kMtxNone = none
   bool         skip_common_exit;    // set by the meta hook on the owner's 0xF3 announce: the radio already waits for 15 B
@@ -1303,10 +1308,25 @@ static void mtxHkReply(void* c, int8_t slot, uint8_t status)
   else
   {
     memcpy(sendArray, mtxEntryId(&x->b, (uint8_t)slot), 3);
-    const uint8_t idx     = mtxTelIndexNext(&x->tel_idx[slot]);
-    const bool    pending = (mtx_telemetry_owner_seq.load() != mtx_owner_change_seq.load());
-    sendArray[3] = mtxReplyByte3(status, idx);
-    sendArray[4] = mtxReplyValue(idx, ptr[idx], false, status == MTX_S_OWNER, pending, x->linkq[slot]);
+    // V2.5-Evo - 2026-10-21 - E1-E4 (owner order): a remote that is NOT in control, with a status that makes it show the E
+    // code (BUSY, SEIZABLE, REFUSED, SEIZED), gets at index 20 the number of the remote in control instead of a telemetry
+    // byte: on every REFUSED, at once when that number changed, else every other reply (mtxReplyNumberDue(), host test
+    // T38). The number is read from the model's state after its decision for this frame (the owner, or a claim token's
+    // holder); this hook only reads it (hook rule e). The telemetry rotation does not advance on a number reply. Owner
+    // replies (001) never carry it, and the SINGLE branch above is untouched.
+    const uint8_t number = mtxInControlNumber(&x->st);
+    if (mtxReplyNumberDue(status, number, &x->num_told[slot], &x->num_turn[slot]))
+    {
+      sendArray[3] = mtxReplyByte3(status, kMtxIdxInControl);
+      sendArray[4] = number;
+    }
+    else
+    {
+      const uint8_t idx     = mtxTelIndexNext(&x->tel_idx[slot]);
+      const bool    pending = (mtx_telemetry_owner_seq.load() != mtx_owner_change_seq.load());
+      sendArray[3] = mtxReplyByte3(status, idx);
+      sendArray[4] = mtxReplyValue(idx, ptr[idx], false, status == MTX_S_OWNER, pending, x->linkq[slot]);
+    }
   }
   sendArray[5] = esp_crc8(sendArray, 5);
 
@@ -1379,6 +1399,8 @@ static void mtxRxStartFresh()
   g_mtx.st.n = n;
   memset(g_mtx.tel_idx, 0, sizeof(g_mtx.tel_idx));
   memset(g_mtx.linkq,   0, sizeof(g_mtx.linkq));
+  memset(g_mtx.num_told, kMtxNumberUntold, sizeof(g_mtx.num_told));   // V2.5-Evo - 2026-10-21 - E1-E4: no remote holds a number
+  memset(g_mtx.num_turn, 0, sizeof(g_mtx.num_turn));
   memset(g_mtx.rssi,    0, sizeof(g_mtx.rssi));
   g_mtx.gps_meta_slot = kMtxNone;
   mtx_owner_slot.store(kMtxNone);
@@ -1550,7 +1572,7 @@ void mtxPrintStatus()
   Serial.printf("settings: mtx_claim_s %u s (claimable after %lu ms of silence with failsafe_time %u ms) | take-back %s | takeover limit %u -> 255 over %u ms\n",
                 (unsigned)x.cfg.claim_s, (unsigned long)mtxClaimMs(x.cfg.claim_s, x.cfg.failsafe_ms), (unsigned)x.cfg.failsafe_ms,
                 x.cfg.seize_en ? "on" : "off", (unsigned)usrConf.mtx_takeover_cap, (unsigned)usrConf.mtx_takeover_ms);
-  static const char* const kStatusText[8] = { "OWNER (solo)", "OWNER", "FREE", "BUSY", "SEIZABLE", "REFUSED (E9)", "SEIZED (tA)", "-" };
+  static const char* const kStatusText[8] = { "OWNER (solo)", "OWNER", "FREE", "BUSY", "SEIZABLE", "REFUSED (E1-E4)", "SEIZED (tA)", "-" };
   for (uint8_t i = 0; i < kMtxSlots; i++)
   {
     if (!mtxEntryValid(&x.b, i)) continue;

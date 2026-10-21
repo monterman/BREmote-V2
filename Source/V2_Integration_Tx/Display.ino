@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-21 - E1-E4 (owner order): renderMtxNotice() draws "E" + the number of the remote in control (mtx_e9_digit),
+//   E9 only when it is unknown. Display only, no confStruct change.
 // V2.5-Evo - 2026-10-20 - MULTI-REMOTE REMOTE STEP (SW29), the screen: (1) showStopHeld() - the refusal "St" held WITHOUT blocking
 //   loop() (2 s, or 1 s over a running mode), respected by all three render paths, for the gestures refused with the trigger held
 //   or while this remote's own Follow-Me / Return-To-Me runs (owner rule 2026-10-20: "if it cannot engage, show stop"); the
@@ -820,6 +822,8 @@ static bool stopHeldActive()
 // V2.5-Evo - 2026-10-20 - E9 AND "tA" (design 9.8, 9.9): the buggy's answer to a remote that is not in control.
 //   E9 - another remote is in control and this remote's input is ignored (REFUSED within the last 1.5 s, or a summon
 //        refused against a busy owner); "tA" - control was taken from this remote (2 SEIZED in a row), for 3 s.
+//   V2.5-Evo - 2026-10-21 - E9 is now "E" + the number of the remote in control: E1 (the master) to E4 (mtx_e9_digit); E9
+//        only while that number is not known. Same window, same buzz, same priority.
 //   Drawn after E71 and the input fault (display priority E71 > 72 > E9 > normal), in renderOperationalDisplay() only:
 //   a remote that is not in control runs no Return-To-Me screen (losing control ends it, MultiRemote.ino). The stamps are
 //   set only on a new-style link with other remotes paired, so one remote never sees either.
@@ -829,7 +833,9 @@ static bool renderMtxNotice()
   const unsigned long now = millis();
   const unsigned long e9  = mtx_e9_until_ms;
   const unsigned long ta  = mtx_ta_until_ms;
-  if (e9 != 0 && (long)(now - e9) < 0) { displayDigits(LET_E, 9);     updateDisplay(); return true; }
+  // V2.5-Evo - 2026-10-21 - E1-E4 (owner order): the digit is the number of the remote in control (1-4), 9 when it is not known.
+  const uint8_t       d   = mtx_e9_digit;
+  if (e9 != 0 && (long)(now - e9) < 0) { displayDigits(LET_E, (d >= 1 && d <= 4) ? d : 9); updateDisplay(); return true; }
   if (ta != 0 && (long)(now - ta) < 0) { displayDigits(LET_T, LET_A); updateDisplay(); return true; }
   return false;
 }

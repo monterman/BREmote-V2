@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-21 - E1-E4 (owner order): a summon refused against a busy owner shows "E" + the number of the remote in
+//   control (mtxTxShowE9() sets mtx_e9_digit from mtxTxRefusalDigit(); E9 while unknown); ?mtx prints the held number.
 // V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-6 a: a summon refused with the trigger held shows the held (non-blocking) St for
 //   every reason, not only MTX_SV_TRIGGER.
 // V2.5-Evo - 2026-10-21 - a refusal "St" while this remote's own Follow-Me is armed is always the brief non-blocking one
@@ -157,10 +159,16 @@ void mtxTxStopRefusal(const char* why, uint8_t style)
 
 // mtxTxShowE9 - a takeover try against a remote that is busy in control (owner rule: E9, as for a squeeze). Opens the
 //   1.5 s E9 window the screen draws; the loop tick gives the one Pattern A buzz on its rising edge.
-static void mtxTxShowE9()
+// V2.5-Evo - 2026-10-21 - E1-E4 (owner order): the window shows "E" + the number of the remote in control, held from the
+//   buggy's last index-20 reply (mtxTxRefusalDigit(): at most 5 s old, not cleared by an OWNER or FREE since), else E9.
+//   The digit is written before the window's stamp. Inputs: t (this remote's statuses), now. Returns: the digit shown.
+static uint8_t mtxTxShowE9(const MtxTxStatus* t, uint32_t now)
 {
+  const uint8_t d = mtxTxRefusalDigit(t, now);
+  mtx_e9_digit = d;
   const unsigned long u = millis() + kMtxE9HoldMs;
   mtx_e9_until_ms = (u != 0) ? u : 1;
+  return d;
 }
 
 static const char* mtxSummonVerdictText(uint8_t v)
@@ -214,8 +222,9 @@ void mtxTxSummonTry(uint8_t kind)
   {
     if (v == MTX_SV_NOT_FREE && mtxTxRefusalSignal(&t, now) == MTX_RS_E9)
     {
-      Serial.printf("MTX [TX] summon (%s) refused: another remote is in control and busy - E9\n", what);
-      mtxTxShowE9();
+      const uint8_t d = mtxTxShowE9(&t, now);
+      Serial.printf("MTX [TX] summon (%s) refused: another remote is in control and busy - E%u%s\n", what, (unsigned)d,
+                    (d == 9) ? " (its number is not known)" : "");
       return;
     }
     Serial.printf("MTX [TX] summon (%s) refused: %s\n", what, mtxSummonVerdictText(v));
@@ -308,8 +317,9 @@ static void mtxTxSummonWait(uint32_t now, const MtxTxStatus* t)
   }
   if (mtxTxRefusalSignal(t, now) == MTX_RS_E9)
   {
-    Serial.println("MTX [TX] summon refused by the buggy: another remote is in control and busy - E9");
-    mtxTxShowE9();
+    const uint8_t d = mtxTxShowE9(t, now);
+    Serial.printf("MTX [TX] summon refused by the buggy: another remote is in control and busy - E%u%s\n", (unsigned)d,
+                  (d == 9) ? " (its number is not known)" : "");
   }
   else
   {
@@ -457,7 +467,7 @@ void mtxTxLoopTick()
 //   effective auto-lock, the take-back and summon state, the screen notices and the counts. One-shot. Loop task.
 void mtxTxPrintStatus()
 {
-  static const char* const kS[8] = { "OWNER (one remote)", "OWNER", "FREE", "BUSY", "SEIZABLE", "REFUSED (E9)", "SEIZED (tA)", "-" };
+  static const char* const kS[8] = { "OWNER (one remote)", "OWNER", "FREE", "BUSY", "SEIZABLE", "REFUSED (E1-E4)", "SEIZED (tA)", "-" };
   MtxTxStatus t;
   mtxTxStatusGet(&t);
   const uint32_t now = millis();
@@ -487,9 +497,13 @@ void mtxTxPrintStatus()
                 (s_summon_kind || s_summon_go) ? "waiting" : "none",
                 (s_last_summon_v == 0xFF) ? "-" : mtxSummonVerdictText(s_last_summon_v));
   const unsigned long e9 = mtx_e9_until_ms, ta = mtx_ta_until_ms;
-  Serial.printf("screen: E9 %s, tA %s, dot %u (%s)\n", (e9 && (long)(now - e9) < 0) ? "on" : "off",
+  // V2.5-Evo - 2026-10-21 - E1-E4: the E code with its digit, and the number of the remote in control as this remote holds it.
+  Serial.printf("screen: E%u %s, tA %s, dot %u (%s) | remote in control: ", (unsigned)mtx_e9_digit, (e9 && (long)(now - e9) < 0) ? "on" : "off",
                 (ta && (long)(now - ta) < 0) ? "on" : "off", (unsigned)mtx_dot_state,
                 (mtx_dot_override != 0xFF) ? "forced by ?mtxdot" : "from the status");
+  if (t.number != 0) Serial.printf("%u (%lu ms ago; E%u now)\n", (unsigned)t.number, (unsigned long)mtxAgeMs(now, t.number_ms),
+                                   (unsigned)mtxTxRefusalDigit(&t, now));
+  else               Serial.println("not known (E9)");
   Serial.printf("sent: activity repeats %lu, summons %lu, take-backs %lu | packets sent %lu, replies %lu\n",
                 (unsigned long)s_n_activity, (unsigned long)s_n_summon, (unsigned long)s_n_seize,
                 (unsigned long)num_sent_packets, (unsigned long)num_rcv_packets);

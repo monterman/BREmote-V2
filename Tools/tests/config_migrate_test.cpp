@@ -1,12 +1,17 @@
-// Host test for Common/ConfigMigrate.h - the SW35 -> SW36 prefix migration, on a REAL image.
+// V2.5-Evo - 2026-10-20 - SYNTHETIC IMAGE: the test no longer embeds a real board's config. The image is built below
+//   from made-up values (made-up addresses, settings that match no board), and goes through the same Base64 round trip
+//   a ?conf export takes. Same coverage as before: decode, the byte-exact prefix, every named field, the defaults tail,
+//   the gate and the refusals. A real config export carries the pairing and chip-derived addresses, so it is never
+//   pasted into tracked source.
+// Host test for Common/ConfigMigrate.h - the SW35 -> SW36 prefix migration.
 //
-// The image below is the owner's RX1 config as exported by ?conf on 2026-09-18 (SW35, 192 bytes,
-// from Logs testing/conf-backups/rx1-conf-backup-2026-09-18-postalign.txt). The test decodes it,
-// migrates it exactly the way the RX does at boot (cfgPrefixMigrateImage with the factory-default
-// image as the tail source, then the version stamp), and asserts:
+// The image below is a SYNTHETIC SW35 config (192 bytes), built field by field from made-up values over a byte
+// pattern (so the struct padding is non-zero too), then Base64-encoded and decoded the way a ?conf export is read.
+// The test migrates it exactly the way the RX does at boot (cfgPrefixMigrateImage with the factory-default image as
+// the tail source, then the version stamp), and asserts:
 //   - every SW35 byte survives at its offset (the whole 192-byte prefix is identical),
-//   - the named fields the owner would notice losing carry their known values (pairing, addresses,
-//     compass calibration and orientation, throttle calibration, RTM stop distance, tuning),
+//   - the named fields the owner would notice losing carry their values (pairing, addresses, compass calibration and
+//     orientation, throttle calibration, RTM stop distance, tuning),
 //   - the three SW36 fields equal their factory defaults (1 / 13 / 80) and the tail pad is 0,
 //   - nothing from the default image leaks into the prefix,
 //   - and the gate refuses every other (size, version) pair.
@@ -90,9 +95,78 @@ static const uint16_t kLegacySw  = 35;
 static const size_t   kTargetLen = sizeof(ConfSw36);   // 200
 static const uint16_t kTargetSw  = 36;
 
-// ---- The owner's real SW35 image (?conf, 2026-09-18) ----
-static const char kBlobB64[] =
-  "IwACABYAAQA3AAEAAADoA9AH6APQB+gDCgAAAAEAAgACAAEAAgABADMz20EAAKBAAACAQAAAAEEAAAxCAAA0QgAAcEJBjhw8AAAAALgLAAABAEbJ6UbLzDEyMzQ1Njc4FwRC/w4pTz9yfKe/AQAAAAAAAEAAAEBAAACgQgMAAAAAAPpDAABIQgAAoEEAAAAAAQABAAEAAwAGAAoADAABAAMAAAAAAIBALQAAAAAAAEAAAEBBAAAEALQAAAAAAAAA";
+// ---- The SYNTHETIC SW35 image ----
+// Made-up values only. The two addresses are the made-up IDs the public design document uses (5C:10:20 and
+// 5C:4A:7B); no real board has them. Every other value is chosen to differ from the factory defaults, so a field that
+// was silently reset would show.
+static const uint8_t kSynOwn[3]  = { 0x5C, 0x10, 0x20 };
+static const uint8_t kSynDest[3] = { 0x5C, 0x4A, 0x7B };
+
+// fillSyntheticSw35 - build the synthetic image. Input: none. Output: *c, every byte set (the pattern first, so the
+// padding bytes are non-zero and the byte-exact prefix check covers them too). Side effects: none.
+static void fillSyntheticSw35(ConfSw35* c)
+{
+  uint8_t* p = (uint8_t*)c;
+  for (size_t i = 0; i < sizeof(*c); ++i) p[i] = (uint8_t)(0x11 + 7 * i);   // the pattern under every field and pad
+  c->version = 35;          c->radio_preset = 1;        c->rf_power = 14;
+  c->steering_type = 2;     c->steering_influence = 41; c->steering_inverted = 0; c->trim = -3;
+  c->PWM0_min = 1010; c->PWM0_max = 1990; c->PWM1_min = 1020; c->PWM1_max = 1980;
+  c->failsafe_time = 1200;  c->foil_num_cells = 12;
+  c->bms_det_active = 1;    c->wet_det_active = 0;
+  c->rtm_steer_response = 3; c->data_src = 1; c->gps_en = 1; c->followme_mode = 3; c->kalman_en = 0;
+  c->boogie_vmax_in_followme_kmh = 21.5f; c->min_dist_m = 6.5f; c->followme_smoothing_band_m = 3.5f;
+  c->foiler_low_speed_kmh = 7.25f;
+  c->zone_angle_enter_deg = 30.0f; c->zone_angle_exit_deg = 40.0f; c->near_diag_offset_deg = 55.0f;
+  c->ubat_cal = 0.0101f; c->ubat_offset = 0.125f;
+  c->tx_gps_stale_timeout_ms = 2500; c->logger_en = 1;
+  c->paired = 1;
+  memcpy(c->own_address, kSynOwn, 3);
+  memcpy(c->dest_address, kSynDest, 3);
+  memcpy(c->wifi_password, "synthpw1", 8);
+  c->mag_offset_x = 321; c->mag_offset_y = -123;
+  c->mag_scale_x = 0.95f; c->mag_scale_y = -1.05f;                 // a mirrored frame, as a real calibration can be
+  c->gps_chip_type = 2;
+  c->gps_max_hdop = 1.5f; c->gps_max_accel_g = 2.5f; c->gps_max_teleport_kmh = 70.0f;
+  c->gps_suspect_threshold = 4;
+  c->gps_max_pair_dist_m = 400.0f; c->gps_max_speed_diff_kmh = 40.0f;
+  c->rtm_vesc_speed_diff_kmh = 15.0f; c->vesc_erpm_per_kmh = 123.5f;
+  c->rtm_rx_enabled = 1; c->rtm_rx_override_steering = 0; c->rtm_compass_required = 1; c->rtm_stop_distance_m = 9;
+  c->vesc_timeout_s = 8;
+  c->gps_update_hz = 5;
+  c->rtm_approach_zone_m = 11;
+  c->rtm_use_compass = 0; c->rtm_cog_min_speed_kmh = 4;
+  c->rtm_target_speed_kmh = 4.5f;
+  c->rtm_align_threshold_deg = 35;
+  c->motor_ramp_s = 1.5f;
+  c->fm_engage_dist_m = 10.5f;
+  c->gps_dyn_model = 2;
+  c->log_level = 3;
+  c->mag_orientation = 90;
+  c->rsvd_u16_1 = 0;
+  c->rsvd_f32_1 = 0.0f;
+}
+
+// b64encode - RFC 4648 Base64 with '=' padding, the form ?conf prints. Inputs: in / len; out (cap bytes).
+// Returns: the string length, 0 if out is too small. Side effects: writes out (NUL-terminated).
+static size_t b64encode(const uint8_t* in, size_t len, char* out, size_t cap)
+{
+  static const char* k = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const size_t need = 4 * ((len + 2) / 3) + 1;
+  if (cap < need) return 0;
+  size_t o = 0;
+  for (size_t i = 0; i < len; i += 3) {
+    const uint32_t a = in[i];
+    const uint32_t b = (i + 1 < len) ? in[i + 1] : 0;
+    const uint32_t c = (i + 2 < len) ? in[i + 2] : 0;
+    const uint32_t v = (a << 16) | (b << 8) | c;
+    out[o++] = k[(v >> 18) & 63];
+    out[o++] = k[(v >> 12) & 63];
+    out[o++] = (i + 1 < len) ? k[(v >> 6) & 63] : '=';
+    out[o++] = (i + 2 < len) ? k[v & 63] : '=';
+  }
+  out[o] = 0;
+  return o;
+}
 
 // Minimal Base64 decoder (RFC 4648, '=' padding). Returns decoded length, 0 on a bad character.
 static size_t b64decode(const char* in, uint8_t* out, size_t out_cap)
@@ -117,21 +191,26 @@ static bool near(float a, float b, float eps) { return fabsf(a - b) <= eps; }
 
 int main()
 {
-  // ---- Decode the real image and check it is exactly what the firmware would see ----
+  // ---- Build the synthetic image, export it as ?conf would, and decode it back ----
+  ConfSw35 synth;
+  fillSyntheticSw35(&synth);
+  char b64[512];
+  assert(b64encode((const uint8_t*)&synth, sizeof(synth), b64, sizeof(b64)) == 256);   // 192 bytes -> 256 chars
   uint8_t blob[256];
-  const size_t blobLen = b64decode(kBlobB64, blob, sizeof(blob));
+  const size_t blobLen = b64decode(b64, blob, sizeof(blob));
+  assert(memcmp(blob, &synth, sizeof(synth)) == 0);                                     // the round trip is exact
   assert(blobLen == kLegacyLen);
   const uint16_t blobVersion = (uint16_t)(blob[0] | ((uint16_t)blob[1] << 8));
   assert(blobVersion == kLegacySw);
 
   ConfSw35 old;
   memcpy(&old, blob, sizeof(old));
-  // Spot-check the decode against the ?conf listing in the backup file.
-  assert(old.version == 35 && old.radio_preset == 2 && old.rf_power == 22);
-  assert(old.steering_type == 1 && old.steering_influence == 55 && old.steering_inverted == 1);
+  // Spot-check the decode against the values the image was built from.
+  assert(old.version == 35 && old.radio_preset == 1 && old.rf_power == 14);
+  assert(old.steering_type == 2 && old.steering_influence == 41 && old.steering_inverted == 0);
   assert(old.paired == 1);
-  assert(old.rtm_stop_distance_m == 3);
-  assert(old.mag_orientation == 180);
+  assert(old.rtm_stop_distance_m == 9);
+  assert(old.mag_orientation == 90);
 
   // ---- The factory-default image, poisoned everywhere it must NOT be read from ----
   // Every byte 0xA5 except the SW36 tail: the three new fields at their defaults and a zero pad.
@@ -172,41 +251,41 @@ int main()
   assert(mb[198] == 0 && mb[199] == 0);
   for (size_t i = 2; i < kLegacyLen; ++i) assert(mb[i] == blob[i]);
 
-  // ---- Every field the owner would notice losing, by name and value (from the ?conf listing) ----
+  // ---- Every field the owner would notice losing, by name and value (the values the image was built from) ----
   const ConfSw35& m = migrated.sw35;
   assert(m.paired == 1);
-  assert(m.own_address[0] == 0x46 && m.own_address[1] == 0xC9 && m.own_address[2] == 0xE9);
-  assert(m.dest_address[0] == 0x46 && m.dest_address[1] == 0xCB && m.dest_address[2] == 0xCC);
-  assert(memcmp(m.wifi_password, "12345678", 8) == 0);
-  assert(m.steering_type == 1 && m.steering_influence == 55 && m.steering_inverted == 1 && m.trim == 0);
-  assert(m.PWM0_min == 1000 && m.PWM0_max == 2000 && m.PWM1_min == 1000 && m.PWM1_max == 2000);
-  assert(m.failsafe_time == 1000 && m.foil_num_cells == 10);
-  assert(m.bms_det_active == 0 && m.wet_det_active == 1);
-  assert(m.rtm_steer_response == 2 && m.data_src == 2 && m.gps_en == 1 && m.followme_mode == 2 && m.kalman_en == 1);
-  assert(near(m.boogie_vmax_in_followme_kmh, 27.4f, 0.01f));
-  assert(near(m.min_dist_m, 5.0f, 0.001f) && near(m.followme_smoothing_band_m, 4.0f, 0.001f));
-  assert(near(m.foiler_low_speed_kmh, 8.0f, 0.001f));
-  assert(near(m.zone_angle_enter_deg, 35.0f, 0.001f) && near(m.zone_angle_exit_deg, 45.0f, 0.001f));
-  assert(near(m.near_diag_offset_deg, 60.0f, 0.001f));
-  assert(near(m.ubat_cal, 0.0095554f, 1e-7f) && near(m.ubat_offset, 0.0f, 1e-6f));
-  assert(m.tx_gps_stale_timeout_ms == 3000 && m.logger_en == 0);
-  assert(m.mag_offset_x == 1047 && m.mag_offset_y == -190);
-  assert(near(m.mag_scale_x, 0.81f, 0.005f) && near(m.mag_scale_y, -1.31f, 0.005f));   // the mirrored frame survives
-  assert(m.gps_chip_type == 1 && m.gps_dyn_model == 0);
-  assert(near(m.gps_max_hdop, 2.0f, 0.001f) && near(m.gps_max_accel_g, 3.0f, 0.001f));
-  assert(near(m.gps_max_teleport_kmh, 80.0f, 0.001f) && m.gps_suspect_threshold == 3);
-  assert(near(m.gps_max_pair_dist_m, 500.0f, 0.001f) && near(m.gps_max_speed_diff_kmh, 50.0f, 0.001f));
-  assert(near(m.rtm_vesc_speed_diff_kmh, 20.0f, 0.001f) && near(m.vesc_erpm_per_kmh, 0.0f, 1e-6f));
-  assert(m.rtm_rx_enabled == 1 && m.rtm_rx_override_steering == 1 && m.rtm_compass_required == 1);
-  assert(m.rtm_stop_distance_m == 3);      // the owner's 3 m RTM stop - now also the FM_RETURN stop radius
-  assert(m.vesc_timeout_s == 6);           // the stored value, not the newer 10 s default: nothing is "corrected"
-  assert(m.gps_update_hz == 10 && m.rtm_approach_zone_m == 12);
-  assert(m.rtm_use_compass == 1 && m.rtm_cog_min_speed_kmh == 3);
-  assert(near(m.rtm_target_speed_kmh, 4.0f, 0.001f) && m.rtm_align_threshold_deg == 45);
-  assert(near(m.motor_ramp_s, 2.0f, 0.001f));
-  assert(near(m.fm_engage_dist_m, 12.0f, 0.001f));
-  assert(m.log_level == 4);
-  assert(m.mag_orientation == 180);
+  assert(memcmp(m.own_address, kSynOwn, 3) == 0);     // the identity fields survive the migration untouched
+  assert(memcmp(m.dest_address, kSynDest, 3) == 0);
+  assert(memcmp(m.wifi_password, "synthpw1", 8) == 0);
+  assert(m.steering_type == 2 && m.steering_influence == 41 && m.steering_inverted == 0 && m.trim == -3);
+  assert(m.PWM0_min == 1010 && m.PWM0_max == 1990 && m.PWM1_min == 1020 && m.PWM1_max == 1980);
+  assert(m.failsafe_time == 1200 && m.foil_num_cells == 12);
+  assert(m.bms_det_active == 1 && m.wet_det_active == 0);
+  assert(m.rtm_steer_response == 3 && m.data_src == 1 && m.gps_en == 1 && m.followme_mode == 3 && m.kalman_en == 0);
+  assert(near(m.boogie_vmax_in_followme_kmh, 21.5f, 0.001f));
+  assert(near(m.min_dist_m, 6.5f, 0.001f) && near(m.followme_smoothing_band_m, 3.5f, 0.001f));
+  assert(near(m.foiler_low_speed_kmh, 7.25f, 0.001f));
+  assert(near(m.zone_angle_enter_deg, 30.0f, 0.001f) && near(m.zone_angle_exit_deg, 40.0f, 0.001f));
+  assert(near(m.near_diag_offset_deg, 55.0f, 0.001f));
+  assert(near(m.ubat_cal, 0.0101f, 1e-7f) && near(m.ubat_offset, 0.125f, 1e-6f));
+  assert(m.tx_gps_stale_timeout_ms == 2500 && m.logger_en == 1);
+  assert(m.mag_offset_x == 321 && m.mag_offset_y == -123);
+  assert(near(m.mag_scale_x, 0.95f, 0.0005f) && near(m.mag_scale_y, -1.05f, 0.0005f));   // the mirrored frame survives
+  assert(m.gps_chip_type == 2 && m.gps_dyn_model == 2);
+  assert(near(m.gps_max_hdop, 1.5f, 0.001f) && near(m.gps_max_accel_g, 2.5f, 0.001f));
+  assert(near(m.gps_max_teleport_kmh, 70.0f, 0.001f) && m.gps_suspect_threshold == 4);
+  assert(near(m.gps_max_pair_dist_m, 400.0f, 0.001f) && near(m.gps_max_speed_diff_kmh, 40.0f, 0.001f));
+  assert(near(m.rtm_vesc_speed_diff_kmh, 15.0f, 0.001f) && near(m.vesc_erpm_per_kmh, 123.5f, 1e-4f));
+  assert(m.rtm_rx_enabled == 1 && m.rtm_rx_override_steering == 0 && m.rtm_compass_required == 1);
+  assert(m.rtm_stop_distance_m == 9);      // the RTM stop distance - also the FM_RETURN stop radius
+  assert(m.vesc_timeout_s == 8);           // the stored value, not the newer 10 s default: nothing is "corrected"
+  assert(m.gps_update_hz == 5 && m.rtm_approach_zone_m == 11);
+  assert(m.rtm_use_compass == 0 && m.rtm_cog_min_speed_kmh == 4);
+  assert(near(m.rtm_target_speed_kmh, 4.5f, 0.001f) && m.rtm_align_threshold_deg == 35);
+  assert(near(m.motor_ramp_s, 1.5f, 0.001f));
+  assert(near(m.fm_engage_dist_m, 10.5f, 0.001f));
+  assert(m.log_level == 3);
+  assert(m.mag_orientation == 90);
   // The old-named slot reads 0 on the migrated image: a migrated board reads steer_during_auto 0 = cancel, the
   // behaviour-preserving default the rename-in-place rules require (2026-09-19).
   assert(m.rsvd_u16_1 == 0 && near(m.rsvd_f32_1, 0.0f, 1e-6f));

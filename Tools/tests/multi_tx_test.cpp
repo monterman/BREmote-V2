@@ -1,7 +1,8 @@
 // V2.5-Evo - 2026-10-20 - REMOTE STEP (TX SW29): T34 the activity repeat (X-1 with the owner's widening: from the first
 //   press, every 2 s or less, through a combo gap and the RTM ceremony, owner-only, never in SINGLE, never with RTM
 //   active or an 0xF1/1 queued), T35 the E9-or-St choice for a refused gesture, T36 the ownership dot and the non-owner
-//   test the summon path uses. T21 also checks the receiver's released_rebind counter (step-2 audit Z-7 a).
+//   test the summon path uses. T21 also checks the receiver's released_rebind counter (step-2 audit Z-7 a). T37 the
+//   remote's validator pieces its cfgValidateCrossField() runs on every intake path (the link record, the three clamps).
 // V2.5-Evo - 2026-10-20 - RECEIVER STEP: X-10 (c) "subtract-only whatever the order" - a model of one motor-task pass
 //   (pwmPass: the trigger byte read first, the sticky return cap, the takeover limit) can be slotted between ANY two
 //   hook calls of a frame; T21 (a lock under a running return) and T26 (a claim with a same-packet grant) try every
@@ -2044,6 +2045,37 @@ static void t36()
   testEnd("T36");
 }
 
+// ============================================================
+// T37 - the remote's config rules (TX cfgValidateCrossField(): mtxValidateTxLink() + mtxClampTxConfig())
+// ============================================================
+static void t37()
+{
+  testBegin();
+  // The link record: 0 and 3 stay; anything else unpairs (with the note); unpaired -> 0.
+  for (uint32_t pr = 0; pr <= 0xFFFF; pr += (pr < 8 ? 1 : 997)) {
+    uint16_t paired = 1, proto = (uint16_t)pr;
+    const uint8_t note = mtxValidateTxLink(&paired, &proto);
+    if (pr == 0 || pr == 3) CHECK(note == 0 && paired == 1 && proto == pr);
+    else                    CHECK(note == 1 && paired == 0 && proto == 0);
+  }
+  { uint16_t paired = 0, proto = 3; CHECK(mtxValidateTxLink(&paired, &proto) == 0 && proto == 0); }
+  // The clamps: never a rejection (the load path), always inside the rows' ranges afterwards.
+  for (uint32_t v = 0; v <= 0xFFFF; v += (v < 2000 ? 1 : 61)) {
+    uint16_t a = (uint16_t)v, h = (uint16_t)v, s = (uint16_t)v;
+    mtxClampTxConfig(&a, &h, &s);
+    CHECK(a == 0 || (a >= 5 && a <= 180));
+    CHECK(h >= 1000 && h <= 1800);
+    CHECK(s == 0 || (s >= 30 && s <= 600));
+    if (v == 0)                CHECK(a == 0 && s == 0);                 // 0 = off stays off
+    if (v >= 5 && v <= 180)    CHECK(a == v);                           // in range: unchanged
+    if (v >= 1 && v <= 4)      CHECK(a == 5);                           // the 1-4 gap is raised, as 039b908 asked
+    if (v >= 30 && v <= 600)   CHECK(s == v);
+    if (v >= 1 && v <= 29)     CHECK(s == 30);
+    if (v >= 1000 && v <= 1800) CHECK(h == v);
+  }
+  testEnd("T37");
+}
+
 int main(int argc, char** argv)
 {
   printf("multi_tx_test - Common/MultiTx.h (v3.2 step 1)\n");
@@ -2053,7 +2085,7 @@ int main(int argc, char** argv)
   t7(); t8(); t9(); t10(); t11(); t12(); t13(); t14(); t15(); t16(); t17(); t18();
   printf("T19  -> Tools/tests/config_migrate_test.cpp\n");
   t20(); t21(); t22(); t23(); t24(); t25(); t26(); t27(); t28(); t29(); t30(); t31(); t32(); t33();
-  t34(); t35(); t36();
+  t34(); t35(); t36(); t37();
   printf("%s: %d checks, %d failed\n", g_fails ? "FAILED" : "PASSED", g_checks, g_fails);
   return g_fails ? 1 : 0;
 }

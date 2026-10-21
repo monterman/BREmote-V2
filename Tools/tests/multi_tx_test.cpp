@@ -2378,6 +2378,117 @@ static void t38()
   testEnd("T38");
 }
 
+// ============================================================
+// T39 - full audit F-1: the boot ID at an owner edge (one burst per edge; one packet after a squeeze)
+// ============================================================
+// A model of the remote's boot-ID path around an owner edge, with the REAL pure decisions of the fix
+// (mtxTxBootIdEdgeSends(), mtxTxBootIdBeltDue()). The meta queue: another 0xF1 burst (qo, e.g. an "RTM off") and the boot
+// ID (q), sends left; queueMetaPacketIfFree() refuses while any 0xF1 is pending. sendData: one meta packet per 100 ms
+// cycle, never more than 3 in a row (then a control frame). The loop's txBootIdTick() is MIRRORED here statement for
+// statement from TX RTMState.ino (in control, link fresh) - the fixed version, and the version before the fix for the
+// "before" counts; `literal_now` is the variant that counts the edge at the tick's own time instead of its stamp.
+struct BootSim {
+  uint32_t last_ms, edge_ms, sent_ms;
+  bool     requeue, fixed, literal_now;
+  int      q, qo;                 // boot-ID sends left / another 0xF1 burst's sends left
+  int      on_air;                // boot-ID packets sent
+  int      meta_run, max_meta_run;   // non-control cycles in a row
+  std::vector<uint32_t> sends;    // the times the boot-ID packets went out
+};
+static bool bsQueue(BootSim* b, uint8_t n) { if (n == 0 || b->q > 0 || b->qo > 0) return false; b->q = n; return true; }
+// The owner edge (telemetry task): txBootIdOwnerEdge(). Before the fix: always 3, never stamped.
+static void bsEdge(BootSim* b, uint32_t now, uint8_t thr)
+{
+  if (!b->fixed) { if (!bsQueue(b, 3)) b->requeue = true; return; }
+  const uint8_t sends = mtxTxBootIdEdgeSends(b->q > 0, thr);
+  if (sends == 0 || bsQueue(b, sends)) { b->requeue = false; b->edge_ms = mtxStampOf(now); } else b->requeue = true;
+}
+// The summon's belt (loop task, at its answer): txBootIdSummonBelt(). Before the fix it called the edge again.
+static void bsBelt(BootSim* b, uint32_t now, uint8_t thr)
+{
+  if (!b->fixed) { bsEdge(b, now, thr); return; }
+  if (mtxTxBootIdBeltDue(b->edge_ms, b->last_ms)) bsEdge(b, now, thr);
+}
+// txBootIdTick() in control with a fresh link (mirror). The fixed version first counts the edge's stamp.
+static void bsTick(BootSim* b, uint32_t now)
+{
+  if (b->fixed) { const uint32_t e = b->edge_ms; if (e != 0) { b->edge_ms = 0; b->last_ms = b->literal_now ? mtxStampOf(now) : e; } }
+  if (b->requeue) { b->requeue = false; b->last_ms = 0; }
+  if (b->last_ms != 0 && b->q == 0 && (int32_t)(b->sent_ms - b->last_ms) < 0) b->last_ms = 0;   // T-8
+  if (b->last_ms != 0 && (now - b->last_ms) < 10000u) return;
+  const uint8_t sends = (b->last_ms == 0) ? 3 : 1;
+  if (bsQueue(b, sends)) b->last_ms = mtxStampOf(now);
+}
+// One run from an edge at t0 (a reply that says OWNER, answering a frame with throttle byte thr). The loop ticks every
+// 110 ms but not before t0 + block_ms (a held toggle, a blocking St); a summon's belt runs at t0 + belt_at (-1 = none; it
+// is polled inside a held toggle too). blocker: another 0xF1 burst already queued at the edge. edge = false: no edge at
+// all (one remote, an old-style link): the tick alone, from a fresh link.
+static BootSim bsRun(bool fixed, bool literal_now, bool edge, uint8_t thr, int belt_at, uint32_t block_ms, bool blocker,
+                     uint32_t span_ms)
+{
+  BootSim b; b.last_ms = b.edge_ms = b.sent_ms = 0; b.requeue = false; b.fixed = fixed; b.literal_now = literal_now;
+  b.q = 0; b.qo = blocker ? 3 : 0; b.on_air = 0; b.meta_run = 0; b.max_meta_run = 0;
+  const uint32_t t0 = 100000;
+  if (edge) bsEdge(&b, t0, thr);
+  uint32_t next_tick = t0 + 5, next_send = t0 + 60;
+  for (uint32_t t = t0; t <= t0 + span_ms; t++) {
+    if (belt_at >= 0 && t == t0 + (uint32_t)belt_at) bsBelt(&b, t, thr);
+    if (t == next_send) {
+      if ((b.qo > 0 || b.q > 0) && b.meta_run < 3) {
+        if (b.qo > 0) b.qo--; else { b.q--; b.on_air++; b.sent_ms = t; b.sends.push_back(t); }
+        if (++b.meta_run > b.max_meta_run) b.max_meta_run = b.meta_run;
+      } else {
+        b.meta_run = 0;                                                    // a control frame
+      }
+      next_send += 100;
+    }
+    if (t == next_tick) { if (t >= t0 + block_ms) bsTick(&b, t); next_tick += 110; }
+  }
+  return b;
+}
+static void t39()
+{
+  testBegin();
+  // The pure decisions: 0 if one is already queued; ONE after a squeeze (trigger byte 8 or more); 3 with the trigger
+  // released (a summon, a take-back). The belt only while neither the edge nor the tick has queued one.
+  for (int thr = 0; thr < 256; thr++) {
+    CHECK(mtxTxBootIdEdgeSends(true, (uint8_t)thr) == 0);
+    CHECK(mtxTxBootIdEdgeSends(false, (uint8_t)thr) == ((thr >= kMtxZeroThr) ? 1 : 3));
+  }
+  CHECK(mtxTxBootIdBeltDue(0, 0) && !mtxTxBootIdBeltDue(5, 0) && !mtxTxBootIdBeltDue(0, 5) && !mtxTxBootIdBeltDue(5, 5));
+  // (1) A squeeze claim (the trigger at 90), the loop free: before the fix six packets, two runs of three non-control
+  //     cycles (the F-1 finding); now ONE packet, one 100 ms cycle, and no burst from the tick.
+  { const BootSim a = bsRun(false, false, true, 90, -1, 0, false, 3000);
+    CHECK(a.on_air == 6 && a.max_meta_run == 3);
+    const BootSim b = bsRun(true, false, true, 90, -1, 0, false, 3000);
+    CHECK(b.on_air == 1 && b.max_meta_run == 1); }
+  // (2) A take-back (trigger released) with RIGHT still held, so the loop is blocked 1.5 s: three packets. Counting the
+  //     edge at the tick's own late time instead of its stamp would read the burst as overwritten (T-8) and send it again.
+  { CHECK(bsRun(false, false, true, 0, -1, 1500, false, 3000).on_air == 6);
+    const BootSim b = bsRun(true, false, true, 0, -1, 1500, false, 3000);
+    CHECK(b.on_air == 3 && b.max_meta_run == 3);
+    CHECK(bsRun(true, true, true, 0, -1, 1500, false, 3000).on_air == 6); }   // why it is a stamp
+  // (3) A toggle summon: its answer (and the belt) is polled inside the held toggle at +10 ms, the loop blocked 2 s.
+  { CHECK(bsRun(false, false, true, 0, 10, 2000, false, 3000).on_air == 6);
+    CHECK(bsRun(true, false, true, 0, 10, 2000, false, 3000).on_air == 3); }
+  // (4) A summon whose belt runs after the edge burst has gone out (+450 ms, loop blocked to +1000): before the fix a
+  //     THIRD burst (nine packets); now three.
+  { CHECK(bsRun(false, false, true, 0, 450, 1000, false, 4000).on_air == 9);
+    CHECK(bsRun(true, false, true, 0, 450, 1000, false, 4000).on_air == 3); }
+  // (5) The edge's queue refused (an RTM-off burst pending): the belt (after it drained) or the tick sends it, once.
+  { CHECK(bsRun(true, false, true, 0, 10, 2000, true, 4000).on_air == 3);    // belt refused too: the tick, after the block
+    CHECK(bsRun(true, false, true, 0, 400, 2000, true, 4000).on_air == 3);   // the belt, once the queue is free
+    CHECK(bsRun(true, false, true, 90, -1, 0, true, 4000).on_air == 3); }    // a squeeze, refused: the tick's 3, as before
+  // (6) After the edge the 10 s repeats run as before: one packet, the first no sooner than 10 s after the edge.
+  { const BootSim b = bsRun(true, false, true, 90, -1, 0, false, 25000);
+    CHECK(b.on_air == 3 && b.sends.size() == 3 && b.sends[1] - b.sends[0] >= 9900 && b.sends[2] - b.sends[1] >= 9900); }
+  // (7) No edge (one remote, an old-style link): the fixed tick is the old tick - 3 at the fresh link, then 1 every 10 s.
+  { const BootSim a = bsRun(false, false, false, 0, -1, 0, false, 25000);
+    const BootSim b = bsRun(true, false, false, 0, -1, 0, false, 25000);
+    CHECK(a.on_air == 5 && b.on_air == 5 && a.sends == b.sends); }
+  testEnd("T39");
+}
+
 int main(int argc, char** argv)
 {
   printf("multi_tx_test - Common/MultiTx.h (v3.2 step 1)\n");
@@ -2387,7 +2498,7 @@ int main(int argc, char** argv)
   t7(); t8(); t9(); t10(); t11(); t12(); t13(); t14(); t15(); t16(); t17(); t18();
   printf("T19  -> Tools/tests/config_migrate_test.cpp\n");
   t20(); t21(); t22(); t23(); t24(); t25(); t26(); t27(); t28(); t29(); t30(); t31(); t32(); t33();
-  t34(); t35(); t36(); t37(); t38();
+  t34(); t35(); t36(); t37(); t38(); t39();
   printf("%s: %d checks, %d failed\n", g_fails ? "FAILED" : "PASSED", g_checks, g_fails);
   return g_fails ? 1 : 0;
 }

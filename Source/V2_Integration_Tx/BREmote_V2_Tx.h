@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-21 - full audit F-1: txBootIdSummonBelt() declared (RTMState.ino). No confStruct change.
 // V2.5-Evo - 2026-10-21 - E1-E4 (owner order): RAM byte mtx_e9_digit, the digit drawn after the "E" (1-4 = the remote in control,
 //   9 = unknown). No confStruct change, sizeof stays 144, SW_VERSION stays 29.
 // V2.5-Evo - 2026-10-21 - step-3 audit P3-1 / P3-3: mtxTxAnswerPoll() and mtxTxSummonDrop() declared (MultiRemote.ino); P3-6 c: the
@@ -1311,6 +1312,7 @@ bool queueMetaPacketIfFree(uint8_t type, uint8_t value, uint8_t count);
 bool metaQueuePending(uint8_t type, uint8_t value, bool any_value);
 bool mtxLostOwnerDisarm();                                                 // RTMState.ino ...
 void txBootIdOwnerEdge();
+void txBootIdSummonBelt();                                                 // V2.5-Evo - 2026-10-21 - F-1
 bool txBootIdPending();
 bool rtmEnabledEffective();
 void setRtmArmed();

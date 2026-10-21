@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-21 - FULL AUDIT F-1: the summon's boot-ID belt is txBootIdSummonBelt() (RTMState.ino): no third burst.
 // V2.5-Evo - 2026-10-21 - E1-E4 (owner order): a summon refused against a busy owner shows "E" + the number of the remote in
 //   control (mtxTxShowE9() sets mtx_e9_digit from mtxTxRefusalDigit(); E9 while unknown); ?mtx prints the held number.
 // V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-6 a: a summon refused with the trigger held shows the held (non-blocking) St for
@@ -284,7 +285,8 @@ void mtxTxSummonDrop()
 }
 
 // mtxTxSummonWait - the summon's polled wait (X-9). OWNER within 1500 ms of the send: the boot ID is queued AT ONCE (X-8;
-//   the telemetry task already queued it on the edge, this is the belt) and the arm is handed to mtxTxSummonGo(). NO
+//   the telemetry task already queued it on the edge, this is the belt - since F-1 only if that queue was refused) and the
+//   arm is handed to mtxTxSummonGo(). NO
 //   ANSWER in 1500 ms: E9 if the status now says busy, else "St" + the stop buzz (held, not blocking). THE LATE GRANT
 //   (documented, X-9): if the buggy granted but its FIRST owner status arrived after the 1500 ms, the remote has shown its
 //   refusal and armed nothing, yet it IS in control - the ownership dot goes SOLID and the rider simply makes the gesture
@@ -310,7 +312,8 @@ static void mtxTxSummonWait(uint32_t now, const MtxTxStatus* t)
   {
     Serial.printf("MTX [TX] summon accepted: this remote is in control - %s\n",
                   (kind == MTX_SUMMON_RTM) ? "the Return-To-Me arm ceremony starts" : "Follow-Me arms");
-    txBootIdOwnerEdge();
+    // V2.5-Evo - 2026-10-21 - F-1: the belt tries only if the edge's own burst was refused (it was a third burst otherwise).
+    txBootIdSummonBelt();
     s_summon_go    = kind;
     s_summon_go_ms = mtxStampOf(now);
     return;

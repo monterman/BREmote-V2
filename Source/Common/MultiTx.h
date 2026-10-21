@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-21 - FULL AUDIT F-1: mtxTxBootIdEdgeSends() / mtxTxBootIdBeltDue() - one boot-ID burst per owner edge,
+//   one packet when the remote took control with a squeeze, three otherwise. Host-tested (multi_tx_test.cpp T39).
 // V2.5-Evo - 2026-10-21 - E1-E4 (owner order): a refused remote shows "E" + the number of the remote in control instead
 //   of E9. The buggy sends it at reply index 20, which is not a telemetry index (kMtxIdxInControl, mtxReplyNumberDue(),
 //   mtxInControlNumber()); the remote holds it (mtxTxOnNumber()) and draws it (mtxTxRefusalDigit(), E9 when unknown).
@@ -1860,6 +1862,30 @@ static inline uint8_t mtxTxDotState(const MtxTxStatus* t, uint32_t now, bool v3)
     default:             return MTX_DOT_OFF;   // OWNER_SOLO: one remote, today's screen
   }
 }
+
+// V2.5-Evo - 2026-10-21 - THE BOOT ID AT AN OWNER EDGE (full branch audit F-1). On every edge to OWNER (001) the telemetry
+//   task queues this remote's boot ID at once (X-8: the buggy reset its copy at the grant). THE BUG: the loop's repeat
+//   (txBootIdTick(), TX RTMState.ino) was held at "nothing sent yet" while the remote was not in control, so its first
+//   pass in control queued its OWN 3-packet burst as soon as the edge burst had drained, and a summon's second try could
+//   add a third: six packets, with two gaps of up to 300 ms without a control frame right after a squeeze claim, so a
+//   release reached the buggy up to ~400 ms late (under the takeover limit). THE FIX: one burst per edge - the edge
+//   stamps the burst it queued (or found already waiting) and the tick counts that stamp as its first send - and the
+//   burst size follows the trigger.
+// mtxTxBootIdEdgeSends - how many boot-ID packets the owner edge queues: 0 when one is already waiting in the meta queue
+//   (it goes out after the grant, so it serves this edge); ONE when the trigger is not at zero (thr_byte >= 8: this remote
+//   took control with a squeeze, so its control stream must not pause - X-8's burst matters only before a blocking
+//   ceremony, and a squeeze starts none); otherwise 3, as X-8 had it (a summon or a take-back, made with the trigger
+//   released; a summon's RTM ceremony may follow). Inputs: pending (a boot ID is queued), thr_byte (the throttle byte of
+//   the frame this reply answers). Returns: 0, 1 or 3. Side effects: none.
+static inline uint8_t mtxTxBootIdEdgeSends(bool pending, uint8_t thr_byte)
+{
+  if (pending) return 0;
+  return (thr_byte >= kMtxZeroThr) ? 1 : 3;
+}
+// mtxTxBootIdBeltDue - the summon's second try at the boot ID (its "belt", loop task, once the answer is OWNER): only while
+//   neither the edge nor the tick has queued one in this period in control. edge_ms: the edge's stamp the tick has not yet
+//   counted (0 = none); last_ms: the tick's repeat clock (0 only before its first send in control). Returns: true = try.
+static inline bool mtxTxBootIdBeltDue(uint32_t edge_ms, uint32_t last_ms) { return edge_ms == 0 && last_ms == 0; }
 
 // mtxTxNotOwner - is this remote a NON-OWNER on a multi-remote buggy right now (the summon path, design v3.2 3.4.2)?
 //   True only on a new-style link whose latest valid status is not "you control". An old-style link, one remote

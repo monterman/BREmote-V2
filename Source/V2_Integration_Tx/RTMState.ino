@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-21 - FULL AUDIT F-1: one boot-ID burst per owner edge. txBootIdOwnerEdge() stamps the burst it queued
+//   (tx_boot_id_edge_ms) and txBootIdTick() counts it as its first send in control; one packet when the remote took control
+//   with a squeeze, three after a summon or take-back; the summon's second try is txBootIdSummonBelt(). Multi-remote only
+//   (status 001); one remote unchanged. No confStruct change.
 // V2.5-Evo - 2026-10-21 - returnGesture()'s "Return-To-Me cannot start" St goes through mtxTxStopRefusal() (same 2 s block),
 //   so over this remote's own Follow-Me it is the brief non-blocking one. No confStruct change.
 // V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-3: setRtmArmed() and cycleFmMode() drop a pending summon (mtxTxSummonDrop(),
@@ -1363,6 +1367,12 @@ static const unsigned long kTxBootIdRepeatMs = 10000UL;
 // V2.5-Evo - 2026-10-20 - X-8: set by txBootIdOwnerEdge() (the telemetry task) when the owner-edge queue was refused (a burst
 // of the same type was pending); txBootIdTick() then sends the 3-packet burst on its next pass. One byte, one writer each way.
 static volatile bool tx_boot_id_requeue = false;
+// V2.5-Evo - 2026-10-21 - F-1 (full branch audit): the millis() at which the owner edge queued its boot ID (or found one
+// already waiting), never 0; 0 = none to count. Written by txBootIdOwnerEdge() (the telemetry task; the summon's belt on
+// the loop task); read and cleared by txBootIdTick() (loop task), which takes it as its own first send in control. It is a
+// STAMP, not a flag, because the tick may run late (a held toggle blocks loop() for seconds): taking "now" there would make
+// the T-8 check below read a burst that already went out as one that was overwritten, and send it again. One aligned word.
+static volatile unsigned long tx_boot_id_edge_ms = 0;
 
 // txBootIdOwnerEdge - V2.5-Evo - 2026-10-20 - audit X-8. EVERY GRANT ON THE BUGGY RESETS ITS COPY OF THIS REMOTE'S BOOT ID
 //   (release/grant step 5), so until the buggy hears the new owner's ID it cannot see that remote reboot (S-8), and a
@@ -1372,9 +1382,39 @@ static volatile bool tx_boot_id_requeue = false;
 //   in SINGLE, where the reply is 000 and the boot ID runs as today): a 3-packet burst into a free slot
 //   (queueMetaPacketIfFree(): never over a pending 0xF1/0 or 0xF1/1). If no slot is free, txBootIdTick() sends it next.
 //   Called by waitForTelemetry() (Radio.ino) on MTX_TXE_BECAME_OWNER. Side effects: the meta queue, the requeue flag.
+// V2.5-Evo - 2026-10-21 - F-1 (full branch audit): THE BUG - this burst was not counted by txBootIdTick(), whose repeat
+//   clock was held at "nothing sent" while the remote was not in control, so the tick queued a second 3-packet burst as
+//   soon as this one drained (and a summon's second try a third): six packets and two gaps of up to 300 ms without a
+//   control frame right after a squeeze claim. THE FIX: (1) the edge stamps what it queued - or a boot ID it found already
+//   waiting, which goes out after the grant and serves this edge - in tx_boot_id_edge_ms, and the tick counts that as its
+//   first send in control: one burst per edge. (2) ONE packet when the remote took control with a squeeze (the throttle
+//   byte of the frame this reply answers is 8 or more): its control stream then pauses for one 100 ms cycle, not 300 ms.
+//   X-8's 3 packets matter before a blocking ceremony, and a squeeze starts none. A summon or a take-back (the trigger
+//   released) keeps the 3 packets. A burst counted this way also clears a "requeue" left by an earlier refused try in
+//   this period (the summon's belt succeeding after the edge was refused), so the tick does not send it a second time.
+//   Common/MultiTx.h mtxTxBootIdEdgeSends(), host test T39. One remote: never called.
 void txBootIdOwnerEdge()
 {
-  if (!queueMetaPacketIfFree(0xF1, (uint8_t)(0x80 | tx_boot_id), 3)) tx_boot_id_requeue = true;
+  const unsigned long now   = millis();
+  const uint8_t       sends = mtxTxBootIdEdgeSends(txBootIdPending(), thr_sent);
+  if (sends == 0 || queueMetaPacketIfFree(0xF1, (uint8_t)(0x80 | tx_boot_id), sends))
+  {
+    tx_boot_id_requeue = false;
+    tx_boot_id_edge_ms = (now != 0) ? now : 1;
+  }
+  else
+  {
+    tx_boot_id_requeue = true;
+  }
+}
+// txBootIdSummonBelt - V2.5-Evo - 2026-10-21 - F-1: the summon's second try at the boot ID (loop task, once its answer is
+//   OWNER, before the deferred arm). It used to call txBootIdOwnerEdge() unconditionally, which queued a THIRD burst when
+//   the edge burst had already gone out. Now it tries only while neither the edge nor the tick has queued one in this
+//   period in control (mtxTxBootIdBeltDue()) - the case it exists for: the edge's queue was refused and the arm, which can
+//   block loop() for the whole RTM ceremony, comes before the tick. Side effects: as txBootIdOwnerEdge().
+void txBootIdSummonBelt()
+{
+  if (mtxTxBootIdBeltDue(tx_boot_id_edge_ms, tx_boot_id_last_ms)) txBootIdOwnerEdge();
 }
 // txBootIdPending - is this power-on's boot ID still waiting in the meta queue? (MultiRemote.ino: a summon's arm waits for
 //   it, because the ceremony's own 0xF1/0 would replace it in place.) Any task. Side effects: none.
@@ -1421,6 +1461,10 @@ static void txBootIdTick(unsigned long now)
   // it from one that is not in control. So while NOT in control, nothing is sent, and the next send is a 3-packet burst (the
   // owner edge itself queues one at once, txBootIdOwnerEdge()). One remote / an old-style link: never true, as today.
   if (mtxTxIsNonOwner()) { tx_boot_id_last_ms = 0; return; }
+  // V2.5-Evo - 2026-10-21 - F-1: the owner edge's burst is this period's first send - count it, at the time it was queued,
+  // so no second burst follows it (the T-8 check below still re-arms it if a state burst overwrote it before it went out).
+  const unsigned long edge_ms = tx_boot_id_edge_ms;
+  if (edge_ms != 0) { tx_boot_id_edge_ms = 0; tx_boot_id_last_ms = edge_ms; }
   if (tx_boot_id_requeue) { tx_boot_id_requeue = false; tx_boot_id_last_ms = 0; }   // X-8: the owner-edge queue was full
   // V2.5-Evo - 2026-10-07 - T-8: THE BUG - the repeat timer was stamped when the boot ID was QUEUED, and a state burst
   // (0xF1/0 or 0xF1/1) queued after it replaces it in place, so a boot ID could be lost without ever going on the air

@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-1: the summon and take-back answers are judged on the first owner arrival
+//   (Common/MultiTx.h mtxTxOwnerWait()) and polled from handleGearToggle()'s loops too (mtxTxAnswerPoll()); the summon
+//   tick is split into the wait (mtxTxSummonWait()) and the deferred arm (mtxTxSummonGo(), loop task only).
 // V2.5-Evo - 2026-10-20 - MULTI-REMOTE REMOTE STEP (TX SW29): new file. The remote's side of several remotes on one
 //   buggy (design v3.1 section 9, v3.2 sections 3.4.2 and 5) that is not radio code and not a gesture: the boot
 //   identity line (design 9.13). The radio side (frames, status, rate, pairing) stays in Radio.ino, the gestures in
@@ -214,27 +217,35 @@ void mtxTxSummonTry(uint8_t kind)
                 what, (unsigned long)kMtxSummonWaitMs);
 }
 
-// mtxTxSummonTick - the summon's polled wait (X-9), once per loop pass. OWNER within 1500 ms: the boot ID is queued AT
-//   ONCE (X-8; the telemetry task already queued it on the edge, this is the belt) and the gesture's own action runs
-//   exactly as today - setRtmArmed() (the "rn" ceremony and the squeezes) or cycleFmMode() (a fresh arm) - once that
-//   owner-edge boot ID has gone out (at most kMtxSummonBootIdWaitMs): the ceremony's own 0xF1/0 would otherwise replace
-//   it in the queue (same type), and the ceremony then blocks loop() for seconds. NO ANSWER in 1500 ms: E9 if the status
-//   now says busy, else "St" + the stop buzz (held, not blocking). THE LATE GRANT (documented, X-9): if the buggy granted
-//   but its owner status arrives after the 1500 ms, the remote has shown its refusal and armed nothing, yet it IS in
-//   control - the ownership dot goes SOLID and the rider simply makes the gesture again, now on the owner path (today's
-//   arm); the old owner's Follow-Me had already ended at the claim (accepted with F33). A lock cancels the wait.
-static void mtxTxSummonTick(uint32_t now, const MtxTxStatus* t)
+// mtxTxSummonGo - the summon's DEFERRED ARM, once per loop pass (loop task only, never from a gesture handler: the arm
+//   can be the blocking RTM ceremony). Once the wait below has seen OWNER, the gesture's own action runs exactly as today -
+//   setRtmArmed() (the "rn" ceremony and the squeezes) or cycleFmMode() (a fresh arm) - once the owner-edge boot ID has
+//   gone out (at most kMtxSummonBootIdWaitMs): the ceremony's own 0xF1/0 would otherwise replace it in the queue (same
+//   type), and the ceremony then blocks loop() for seconds. A lock in between: nothing is armed.
+static void mtxTxSummonGo(uint32_t now, const MtxTxStatus* t)
 {
-  if (s_summon_go != 0)
-  {
-    if (txBootIdPending() && mtxAgeMs(now, s_summon_go_ms) < kMtxSummonBootIdWaitMs) return;
-    const uint8_t kind = s_summon_go;
-    s_summon_go = 0;
-    if (system_locked) { Serial.println("MTX [TX] summon: the remote locked before the arm - nothing armed"); return; }
-    if (kind == MTX_SUMMON_RTM) setRtmArmed();   // today's ceremony (blocks loop(), as from the toggle)
-    else                        cycleFmMode();   // today's fresh arm (Follow-Me is not armed here)
-    return;
-  }
+  (void)t;
+  if (s_summon_go == 0) return;
+  if (txBootIdPending() && mtxAgeMs(now, s_summon_go_ms) < kMtxSummonBootIdWaitMs) return;
+  const uint8_t kind = s_summon_go;
+  s_summon_go = 0;
+  if (system_locked) { Serial.println("MTX [TX] summon: the remote locked before the arm - nothing armed"); return; }
+  if (kind == MTX_SUMMON_RTM) setRtmArmed();   // today's ceremony (blocks loop(), as from the toggle)
+  else                        cycleFmMode();   // today's fresh arm (Follow-Me is not armed here)
+}
+
+// mtxTxSummonWait - the summon's polled wait (X-9). OWNER within 1500 ms of the send: the boot ID is queued AT ONCE (X-8;
+//   the telemetry task already queued it on the edge, this is the belt) and the arm is handed to mtxTxSummonGo(). NO
+//   ANSWER in 1500 ms: E9 if the status now says busy, else "St" + the stop buzz (held, not blocking). THE LATE GRANT
+//   (documented, X-9): if the buggy granted but its FIRST owner status arrived after the 1500 ms, the remote has shown its
+//   refusal and armed nothing, yet it IS in control - the ownership dot goes SOLID and the rider simply makes the gesture
+//   again, now on the owner path (today's arm); the old owner's Follow-Me had already ended at the claim (accepted with
+//   F33). A lock cancels the wait.
+//   V2.5-Evo - 2026-10-21 - P3-1: the verdict is the arrival time of the first owner status (mtxTxOwnerWait()), so a poll
+//   made late gives the same answer; and this runs from mtxTxAnswerPoll() inside handleGearToggle()'s loops as well,
+//   because a toggle summon is answered while the rider still holds the button and loop() is blocked.
+static void mtxTxSummonWait(uint32_t now, const MtxTxStatus* t)
+{
   if (s_summon_kind == 0) return;
   if (system_locked)
   {
@@ -266,6 +277,47 @@ static void mtxTxSummonTick(uint32_t now, const MtxTxStatus* t)
                   (unsigned long)kMtxSummonWaitMs);
     mtxTxStopRefusal(NULL, MTX_ST_HELD);
   }
+}
+
+// mtxTxSeizeWait - the take-back's answer (C20): an owner status that FIRST arrived within 1 s of the SEIZE burst ->
+//   the arm-confirm buzz (Pattern 4: in control again); none -> "St" (held, not blocking).
+//   V2.5-Evo - 2026-10-21 - P3-1: judged on that first arrival (mtxTxOwnerWait()), and polled inside handleGearToggle()'s
+//   hold and release loops too (mtxTxAnswerPoll()): the SEIZE fires at mtx_seize_hold_ms while RIGHT is STILL held, so
+//   the confirm buzz now comes while the rider holds the button instead of a false "St" when he lets go after 2 s.
+static void mtxTxSeizeWait(uint32_t now, const MtxTxStatus* t)
+{
+  if (!s_seize_wait) return;
+  const uint8_t w = mtxTxOwnerWait(t, s_seize_sent_ms, now, kMtxSeizeConfirmMs);
+  if (w == MTX_W_OWNER)
+  {
+    s_seize_wait = false;
+    if (current_vib_pattern == 0) current_vib_pattern = 4;   // the arm-confirm buzz: in control again
+    Serial.println("MTX [TX] take-back: this remote is in control");
+  }
+  else if (w == MTX_W_TIMEOUT)
+  {
+    s_seize_wait = false;
+    Serial.println("MTX [TX] take-back: the buggy did not hand control back within 1 s - St");
+    mtxTxStopRefusal(NULL, MTX_ST_HELD);
+  }
+}
+
+// mtxTxAnswerPoll - V2.5-Evo - 2026-10-21 - P3-1: the summon and take-back ANSWERS only (no arm, no edge handling), for
+//   handleGearToggle()'s hold and release loops (Hall.ino), which block loop() - and so mtxTxLoopTick() - for as long as
+//   the button is held. Every 10 ms in the hold loop and every 100 ms in the release wait, against the first owner
+//   reply's arrival (about 0.1-0.4 s after the burst: the burst leaves on the next 100 ms cycles, the buggy answers the
+//   frame within 40 ms). Both waits are idempotent, so mtxTxLoopTick() running them again is harmless. The deferred
+//   summon arm is NOT run here (it can be the blocking ceremony); it starts at the next loop pass, as before.
+//   Side effects: the wait states, the confirm buzz, the screen ("St" / E9 held without blocking), Serial.
+void mtxTxAnswerPoll()
+{
+  if (!txIsV3()) return;
+  if (s_summon_kind == 0 && !s_seize_wait) return;
+  MtxTxStatus t;
+  mtxTxStatusGet(&t);
+  const uint32_t now = millis();
+  mtxTxSummonWait(now, &t);
+  mtxTxSeizeWait(now, &t);
 }
 
 // mtxTxSeizePoll - THE MASTER'S TAKE-BACK (design 9.7, audit C20; Common/MultiTx.h mtxSeizeGestureStep(), host test T16):
@@ -350,24 +402,11 @@ void mtxTxLoopTick()
   if (e9_on && !s_e9_was_on && current_vib_pattern == 0) current_vib_pattern = 1;
   s_e9_was_on = e9_on;
 
-  mtxTxSummonTick(now, &t);
-
-  if (s_seize_wait)
-  {
-    const uint8_t w = mtxTxOwnerWait(&t, s_seize_sent_ms, now, kMtxSeizeConfirmMs);
-    if (w == MTX_W_OWNER)
-    {
-      s_seize_wait = false;
-      if (current_vib_pattern == 0) current_vib_pattern = 4;   // the arm-confirm buzz: in control again
-      Serial.println("MTX [TX] take-back: this remote is in control");
-    }
-    else if (w == MTX_W_TIMEOUT)
-    {
-      s_seize_wait = false;
-      Serial.println("MTX [TX] take-back: the buggy did not hand control back within 1 s - St");
-      mtxTxStopRefusal(NULL, MTX_ST_HELD);
-    }
-  }
+  // The summon: the deferred arm first (granted on an earlier pass), then the wait; then the take-back's answer. The same
+  // order as before the P3-1 split (the arm, when it runs, leaves no summon waiting).
+  mtxTxSummonGo(now, &t);
+  mtxTxSummonWait(now, &t);
+  mtxTxSeizeWait(now, &t);
 
   mtx_gesture_armed = ((s_seize_out & MTX_SGO_ARMED) != 0) || s_seize_wait || s_summon_kind != 0 || s_summon_go != 0;
   mtx_dot_state     = (mtx_dot_override != 0xFF) ? mtx_dot_override : mtxTxDotState(&t, now, true);

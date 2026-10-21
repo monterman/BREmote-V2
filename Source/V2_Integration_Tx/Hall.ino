@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-1: handleGearToggle()'s hold and release loops also read the summon / take-back answer
+//   (mtxTxAnswerPoll()), because loop() is blocked while the button is held. No confStruct change.
 // V2.5-Evo - 2026-10-20 - MULTI-REMOTE REMOTE STEP (SW29), the gestures (design v3.2 3.4.2, 4.3; audit X-1, X-7, C20; owner rules
 //   2026-10-20): (1) every toggle press and magnet contact is INPUT (the spare's rate) and ACTIVITY (the remote in control repeats
 //   0xF1/0 while a press is in progress, mtxActivityNote()/Tick(); never in SINGLE). (2) A remote NOT in control on a multi-remote
@@ -463,8 +465,11 @@ void handleGearToggle(int direction)
   {
     delay(10);
     // V2.5-Evo - 2026-10-20 - the press is held: still busy (X-1), and the take-back is timed on RIGHT (C20).
+    // V2.5-Evo - 2026-10-21 - P3-1: and the summon / take-back ANSWER is read here too (mtxTxAnswerPoll()): loop() is
+    // blocked while the button is held, and the SEIZE fires mid-hold, so the confirm buzz comes while it is still held.
     mtxActivityNote();
     mtxActivityTick();
+    mtxTxAnswerPoll();
     if (direction > 0) mtxTxSeizePoll();
 
     if (thr_scaled > 3 && usrConf.steer_enabled)
@@ -580,6 +585,7 @@ void handleGearToggle(int direction)
       {
         mtxActivityNote();   // V2.5-Evo - 2026-10-20 - still pressed: still busy (X-1); the take-back sees the release
         mtxActivityTick();
+        mtxTxAnswerPoll();   // V2.5-Evo - 2026-10-21 - P3-1: a toggle summon or a take-back is answered while still held
         if (direction > 0) mtxTxSeizePoll();
         if (thr_scaled > 3 && usrConf.steer_enabled)
         {

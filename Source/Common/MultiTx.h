@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-1: MtxTxStatus stamps the first owner arrival (owner_since_ms) and
+//   mtxTxOwnerWait() judges the take-back / summon answer on it, not on the newest status, so a late poll no longer turns
+//   a timely grant into "St". Host-tested (multi_tx_test.cpp T16, T29).
 // V2.5-Evo - 2026-10-20 - REMOTE STEP (TX SW29, step 3): new section 17 for the remote - the activity repeat (X-1 with the
 //   owner's widening: any button or toggle press while in control), the E9-or-St choice for a refused gesture, and the
 //   ownership-dot mapping (24a0371). The receiver gains released_rebind (step-2 audit Z-7 a), and hook rule (f) states
@@ -1239,6 +1242,8 @@ struct MtxTxStatus {
   uint8_t  seized_run;     // SEIZED replies in a row
   bool     owner;          // the newest status says "you control"
   bool     lost_owner;     // 3 non-owner replies in a row, or 2 SEIZED: slow down, disarm locally
+  uint32_t owner_since_ms; // V2.5-Evo - 2026-10-21 - P3-1: the arrival of the owner status that made `owner` true (the
+                           //   MTX_TXE_BECAME_OWNER edge); kept while `owner` stays true; 0 = never. mtxTxOwnerWait() reads it.
 };
 static const uint8_t MTX_TXE_BECAME_OWNER  = 0x01;
 static const uint8_t MTX_TXE_LOST_OWNER    = 0x02;   // rising edge: disarm the remote's own FM/RTM state and screen
@@ -1257,7 +1262,7 @@ static inline uint8_t mtxTxOnReply(MtxTxStatus* t, uint8_t status, uint32_t now)
   uint8_t ev = 0;
   if (mtxStatusIsOwner(s))
   {
-    if (!t->owner) ev |= MTX_TXE_BECAME_OWNER;
+    if (!t->owner) { ev |= MTX_TXE_BECAME_OWNER; t->owner_since_ms = mtxStampOf(now); }   // P3-1: stamp the FIRST one
     t->owner = true; t->lost_owner = false; t->non_owner_run = 0; t->seized_run = 0;
     return ev;
   }
@@ -1336,13 +1341,20 @@ static inline bool mtxTxAutolockDue(uint16_t timeout_s, uint32_t now, uint32_t l
 
 // mtxTxOwnerWait - after a SEIZE or SUMMON burst: did an owner status arrive after the send, within window_ms?
 //   Returns: MTX_W_OWNER, MTX_W_WAIT (keep waiting) or MTX_W_TIMEOUT ("St"). Side effects: none.
+// V2.5-Evo - 2026-10-21 - P3-1 (step-3 audit): THE BUG - this judged the NEWEST status: OWNER only if the newest one had
+//   arrived within window_ms of the send. Once in control the remote is fast, so the newest status is always "just now",
+//   and a poll made late - the loop is blocked while handleGearToggle() waits for the button's release - read a timely
+//   grant as "no answer": "St" + the stop buzz while this remote WAS in control (a take-back held a little long, a toggle
+//   summon held past the combo). THE FIX: judge the FIRST owner arrival after the send (owner_since_ms, stamped on the
+//   edge by mtxTxOnReply()) - OWNER if it falls in [sent, sent + window_ms] and this remote is still in control - so the
+//   verdict is the same however late the poll. A control that came and went again is not reported as a success.
 static const uint8_t MTX_W_WAIT    = 0;
 static const uint8_t MTX_W_OWNER   = 1;
 static const uint8_t MTX_W_TIMEOUT = 2;
 static inline uint8_t mtxTxOwnerWait(const MtxTxStatus* t, uint32_t sent_ms, uint32_t now, uint32_t window_ms)
 {
-  if (t->count > 0 && mtxStatusIsOwner(t->last[0]) && (int32_t)(t->last_ms[0] - sent_ms) >= 0
-      && mtxAgeMs(t->last_ms[0], sent_ms) <= window_ms) return MTX_W_OWNER;
+  if (t->owner && t->owner_since_ms != 0 && (int32_t)(t->owner_since_ms - sent_ms) >= 0
+      && mtxAgeMs(t->owner_since_ms, sent_ms) <= window_ms) return MTX_W_OWNER;
   return (mtxAgeMs(now, sent_ms) > window_ms) ? MTX_W_TIMEOUT : MTX_W_WAIT;
 }
 

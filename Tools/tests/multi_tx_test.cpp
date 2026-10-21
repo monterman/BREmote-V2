@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-1: T16 and T29 judge the take-back / summon answer on the FIRST owner arrival: a
+//   grant at send + 0.4 s polled at send + 3 s is OWNER, no owner status is TIMEOUT, the window edge, a control that came
+//   and went, the millis() wrap, and the late summon grant stays late.
 // V2.5-Evo - 2026-10-20 - REMOTE STEP (TX SW29): T34 the activity repeat (X-1 with the owner's widening: from the first
 //   press, every 2 s or less, through a combo gap and the RTM ceremony, owner-only, never in SINGLE, never with RTM
 //   active or an 0xF1/1 queued), T35 the E9-or-St choice for a refused gesture, T36 the ownership dot and the non-owner
@@ -1005,6 +1008,34 @@ static void t16()
   CHECK(mtxTxOwnerWait(&t, 500, 960, kMtxSeizeConfirmMs) == MTX_W_OWNER);
   mtxTxStatusInit(&t); mtxTxOnReply(&t, MTX_S_OWNER, 400);                 // an owner status from BEFORE the send
   CHECK(mtxTxOwnerWait(&t, 500, 1501, kMtxSeizeConfirmMs) == MTX_W_TIMEOUT);
+  // V2.5-Evo - 2026-10-21 - P3-1: judged on the FIRST owner arrival, however late the poll. The take-back fires while RIGHT
+  // is still held (loop() blocked); the buggy grants at send + 0.4 s and then says OWNER at 10 Hz.
+  mtxTxStatusInit(&t); mtxTxOnReply(&t, MTX_S_SEIZABLE, 900); mtxTxOnReply(&t, MTX_S_SEIZABLE, 950);
+  for (uint32_t a = 1400; a <= 3900; a += 100) mtxTxOnReply(&t, MTX_S_OWNER, a);
+  CHECK(t.owner && t.owner_since_ms == 1400 && t.last_ms[0] == 3900);
+  CHECK(mtxTxOwnerWait(&t, 1000, 4000, kMtxSeizeConfirmMs) == MTX_W_OWNER);   // polled at send + 3 s: still OWNER
+  CHECK(mtxTxOwnerWait(&t, 1000, 1450, kMtxSeizeConfirmMs) == MTX_W_OWNER);   // polled at once: the same answer
+  CHECK(mtxAgeMs(t.last_ms[0], 1000) > kMtxSeizeConfirmMs);                   // (the newest status alone said "too late")
+  // No owner status at all: WAIT inside the window, TIMEOUT after it, however late the poll.
+  mtxTxStatusInit(&t); for (uint32_t a = 900; a <= 3900; a += 100) mtxTxOnReply(&t, MTX_S_SEIZABLE, a);
+  CHECK(mtxTxOwnerWait(&t, 1000, 2000, kMtxSeizeConfirmMs) == MTX_W_WAIT);
+  CHECK(mtxTxOwnerWait(&t, 1000, 4000, kMtxSeizeConfirmMs) == MTX_W_TIMEOUT);
+  // The window edge: a first owner status exactly at send + 1 s counts, 1 ms later it does not (polled late in both).
+  mtxTxStatusInit(&t); mtxTxOnReply(&t, MTX_S_SEIZABLE, 900); mtxTxOnReply(&t, MTX_S_OWNER, 2000);
+  CHECK(mtxTxOwnerWait(&t, 1000, 3000, kMtxSeizeConfirmMs) == MTX_W_OWNER);
+  mtxTxStatusInit(&t); mtxTxOnReply(&t, MTX_S_SEIZABLE, 900); mtxTxOnReply(&t, MTX_S_OWNER, 2001);
+  CHECK(mtxTxOwnerWait(&t, 1000, 3000, kMtxSeizeConfirmMs) == MTX_W_TIMEOUT);
+  // Control that came and went before the poll is not reported as a success; a second edge re-stamps the arrival.
+  mtxTxStatusInit(&t); mtxTxOnReply(&t, MTX_S_SEIZABLE, 900); mtxTxOnReply(&t, MTX_S_OWNER, 1400);
+  mtxTxOnReply(&t, MTX_S_BUSY, 1500); mtxTxOnReply(&t, MTX_S_BUSY, 1600); mtxTxOnReply(&t, MTX_S_BUSY, 1700);
+  CHECK(!t.owner && mtxTxOwnerWait(&t, 1000, 4000, kMtxSeizeConfirmMs) == MTX_W_TIMEOUT);
+  mtxTxOnReply(&t, MTX_S_OWNER, 1800);
+  CHECK(t.owner_since_ms == 1800 && mtxTxOwnerWait(&t, 1000, 4000, kMtxSeizeConfirmMs) == MTX_W_OWNER);
+  // Across the millis() wrap.
+  { const uint32_t s0 = 0xFFFFFF00u;                                    // the grant lands 144 ms after the wrap
+    mtxTxStatusInit(&t); mtxTxOnReply(&t, MTX_S_SEIZABLE, s0 - 100);
+    for (uint32_t k = 400; k <= 2900; k += 100) mtxTxOnReply(&t, MTX_S_OWNER, s0 + k);
+    CHECK(mtxTxOwnerWait(&t, s0, s0 + 3000, kMtxSeizeConfirmMs) == MTX_W_OWNER); }
   testEnd("T16");
 }
 
@@ -1711,6 +1742,18 @@ static void t29()
   // A late owner status (after the wait) is not taken as the answer to this summon.
   mtxTxOnReply(&t, MTX_S_OWNER, 2600);
   CHECK(mtxTxOwnerWait(&t, 1000, 2600, kMtxSummonWaitMs) == MTX_W_TIMEOUT);
+  // V2.5-Evo - 2026-10-21 - P3-1: a toggle summon whose button is held past the combo. Granted at send + 0.4 s, polled
+  // at send + 3 s: the arm still runs (it used to read TIMEOUT: "St" while in control).
+  mtxTxStatusInit(&t); mtxTxOnReply(&t, MTX_S_FREE, 900);
+  for (uint32_t a = 1400; a <= 3900; a += 100) mtxTxOnReply(&t, MTX_S_OWNER, a);
+  CHECK(mtxTxOwnerWait(&t, 1000, 4000, kMtxSummonWaitMs) == MTX_W_OWNER);
+  // No owner status: TIMEOUT at send + 3 s.
+  mtxTxStatusInit(&t); for (uint32_t a = 900; a <= 3900; a += 100) mtxTxOnReply(&t, MTX_S_FREE, a);
+  CHECK(mtxTxOwnerWait(&t, 1000, 4000, kMtxSummonWaitMs) == MTX_W_TIMEOUT);
+  // The late grant stays a late grant however late the poll: first owner at send + 1.6 s, polled at send + 3 s.
+  mtxTxStatusInit(&t); mtxTxOnReply(&t, MTX_S_FREE, 900);
+  for (uint32_t a = 2600; a <= 3900; a += 100) mtxTxOnReply(&t, MTX_S_OWNER, a);
+  CHECK(mtxTxOwnerWait(&t, 1000, 4000, kMtxSummonWaitMs) == MTX_W_TIMEOUT);
   testEnd("T29");
 }
 

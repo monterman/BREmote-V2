@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-21 - returnGesture()'s "Return-To-Me cannot start" St goes through mtxTxStopRefusal() (same 2 s block),
+//   so over this remote's own Follow-Me it is the brief non-blocking one. No confStruct change.
 // V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-3: setRtmArmed() and cycleFmMode() drop a pending summon (mtxTxSummonDrop(),
 //   MultiRemote.ino) when they run on the owner path, so a deferred summon arm can never act on the rider's own fresh arm.
 //   No confStruct change.
@@ -2308,9 +2310,9 @@ void returnGesture()
     // BLOCKING 2 s like every other "St"; nothing was armed, throttle is untouched.
     Serial.printf("RTM [TX] arm refused: Return-To-Me cannot start (rtm enabled %d, gps_en %d)\n",
                   rtmEnabledEffective() ? 1 : 0, (int)usrConf.gps_en);
-    vib_stop_pending = true;
-    DISP_LOCK(); displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
-    gpsKeepAliveDelay(2000);
+    // V2.5-Evo - 2026-10-21 - the same buzz + "St" + 2 s block through mtxTxStopRefusal(), so that with this remote's
+    // Follow-Me armed it is the brief non-blocking one instead (MultiRemote.ino).
+    mtxTxStopRefusal(NULL, MTX_ST_BLOCK);
   }
 }
 

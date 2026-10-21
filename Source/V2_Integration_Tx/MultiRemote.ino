@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-21 - a refusal "St" while this remote's own Follow-Me is armed is always the brief non-blocking one
+//   (interim default 2 covers FM as well as RTM), in mtxTxStopRefusal().
 // V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-3: the deferred summon arm re-checks the gesture's preconditions (in control, the
 //   trigger released, no return running, Follow-Me not armed) and an owner-path arm drops a pending summon (mtxTxSummonDrop()).
 // V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-1: the summon and take-back answers are judged on the first owner arrival
@@ -129,9 +131,16 @@ bool mtxTxIsNonOwner()
 //   released and nothing runs); MTX_ST_HELD = 2 s held WITHOUT blocking (the trigger is held - the rider is driving);
 //   MTX_ST_BRIEF = 1 s held without blocking, then the running mode's screen (this remote's own Follow-Me / return runs;
 //   interim default 2). Inputs: why (one serial line, or NULL), style. Side effects: the stop buzz, the screen, Serial.
+// V2.5-Evo - 2026-10-21 - OVER THIS REMOTE'S OWN FOLLOW-ME TOO (interim default 2 says "this remote's own FM / RTM"; until
+//   now only the RTM-running sites used MTX_ST_BRIEF). With Follow-Me armed here, a refusal can still come from an RTM
+//   gesture (rows 4, 7, 8, 11, 12 - RTM may arm over Follow-Me), a ceremony timeout (row 16) or the two "Return-To-Me cannot
+//   start" refusals, and the usual blocking 2 s "St" would freeze runFmLoop() (keepalive, fault edge) for 2 s. So whatever
+//   the caller asked, it is the BRIEF one: 1 s held without blocking, then the Follow-Me screen (its R5 bar keeps running).
+//   Callers that end Follow-Me first (the lost-owner disarm) see it disarmed and keep their style.
 void mtxTxStopRefusal(const char* why, uint8_t style)
 {
   if (why) Serial.println(why);
+  if (style != MTX_ST_BRIEF && isFmArmed()) style = MTX_ST_BRIEF;
   vib_stop_pending = true;
   if (style == MTX_ST_BLOCK)
   {

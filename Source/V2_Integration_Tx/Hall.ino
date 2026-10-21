@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-21 - the mode 4 hold's "Return-To-Me cannot start" St goes through mtxTxStopRefusal() (same 2 s block),
+//   so over this remote's own Follow-Me it is the brief non-blocking one. No confStruct change.
 // V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-2: no "St" over a running mode for a gesture that could not ARM. Roles 1-3: a running
 //   return is tested before the switch-off and trigger checks, so a disarm blocked by the held trigger is a serial line and
 //   the return's screen stays (SW27). Toggle rows 3 / 4 (trigger held): St only when the gesture would arm. No confStruct change.
@@ -1599,9 +1601,9 @@ void runMagGesture()
           // context from what he was trying to do. BLOCKING 2 s, like every other "St"; the resync below covers it.
           Serial.printf("MAG [TX] hold refused: Return-To-Me cannot start (rtm enabled %d, gps_en %d)\n",
                         rtmEnabledEffective() ? 1 : 0, (int)usrConf.gps_en);
-          vib_stop_pending = true;   // Pattern 7, the normal stop buzz
-          DISP_LOCK(); displayDigits(LET_S, LET_T); updateDisplay(); DISP_UNLOCK();
-          gpsKeepAliveDelay(2000);
+          // V2.5-Evo - 2026-10-21 - the same buzz + "St" + 2 s block through mtxTxStopRefusal(), so that with this remote's
+          // Follow-Me armed (this hold arms RTM in every Follow-Me state) it is the brief non-blocking one instead.
+          mtxTxStopRefusal(NULL, MTX_ST_BLOCK);
         }
         else
         {

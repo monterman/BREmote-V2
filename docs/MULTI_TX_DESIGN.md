@@ -382,6 +382,8 @@ v3.2 neither shortens nor extends any of these.
 
 So -60 accepts about 5 m or closer, leaves 14 dB of margin at arm's length, and refuses 15 m. Reduced power alone is not proof of proximity: at -9 dBm a pairing can still complete at well over 100 m.
 
+**An old-style remote is the exception.** The budget above assumes both ends at -9 dBm. An old-style remote sends its pairing request at its stored RF power (22 dBm by default), about 31 dB more, so the receiver's -60 dBm gate admits it from tens of metres or more. Its pairing still closes the window at once (it can only be the single remote), but pair it at arm's length anyway, and test the 15 m refusal only with a new-style remote.
+
 **Pair the remote you ride with first,** so it becomes the master.
 
 ---
@@ -582,6 +584,7 @@ Losing the fix never makes the remote claimable: it is still transmitting.
   - a legacy entry next to a new-style entry is removed;
   - a link mode other than 0 or 3 unpairs the remote.
 - `own_address` becomes read-only on the receiver.
+- **Backups:** a Base64 backup (`?conf`) carries everything, the remote list included, and restores the list only on the board it was made on. A JSON backup never carries the list: restoring one keeps the board's current list. A JSON made on **another** receiver imports its settings but not its pairing (the receiver keeps its own). `mtx_link_proto` is set by pairing only and is skipped in a JSON import.
 - **No setting for the GPS rule.** It is decided at run time from the rider-GPS stream (section 8.7).
 - New commands:
   - `?mtx` on both boards: the list, roles, owner, status, rates, counters, whether the owner is claimable (and why), and the last refused summon;
@@ -642,14 +645,14 @@ Losing the fix never makes the remote claimable: it is still transmitting.
 
 **Phase A: receiver updated, remotes still old.**
 - migration and identity notes;
-- old-style pairing as the single remote;
+- old-style pairing as the single remote (at arm's length: an old remote pairs at its normal RF power, so the receiver's RSSI line is read at 1 m only - the 15 m refusal is a Phase B test);
 - the single-remote regression (identical to today);
 - an aborted window keeps the pairing and restores the RF power.
 
 **Phase B: first remote updated.**
 - remote migration, with no calibration prompt;
 - a locked legacy-link remote still sends 0 / 127;
-- new-style pairing: refused at 15 m, accepted at 1 m, RSSI recorded on both ends.
+- new-style pairing: refused at 15 m, accepted at 1 m, RSSI recorded on both ends (both ends at -9 dBm: a new-style remote on both sides of the test).
 
 **Phase C: both remotes updated, paired in one window (rider's remote first).**
 - ownership and dots;

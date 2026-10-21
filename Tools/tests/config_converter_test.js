@@ -6,14 +6,16 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 // ═══════════════════════════════════════════════════════════════════
-// USER CONFIGS — Paste your real device configs here for round-trip testing.
+// USER CONFIGS — round-trip testing, one config per device and format version.
+// SYNTHETIC test data: made-up values, not from any real board (invented addresses, calibration and settings,
+// same layout and length as a real export). Do not paste real device exports here: this file is published.
 // Each entry: { device: 'tx'|'rx', version: '1'|'2'|'3', base64: '...' }
 // ═══════════════════════════════════════════════════════════════════
 const USER_CONFIGS = [
-     { device: 'tx', version: '1', base64: 'AQABAAAAAQBkACQxjDcoQ1Q21yr0AR4A9AGIE9AHZADoAwoA0AcAAAEACgAKAAAAMgAyADIAMgBDrkI5AQAVWYgVWag=' },
-     { device: 'rx', version: '1', base64: 'AQABAPf/AAAyAAAAAADoA9AH6APQB+gDAACgQQAASEIAAAAAAgAAAEGOHDwBABVZqBVZiA==' },
-     { device: 'tx', version: '2', base64: 'AgABAAoAAQBkAHowbDcAQWI2syj0AR4A9AGIE9AHZADoAwoA0AcAAAEACgAKAAAAMgAAADIAAABDrkI5AAAAAAAAAADoAwEAFVmIFVmoAAA=' },
-     { device: 'rx', version: '2', base64: 'AgABABQAAQBLAAEAAADoAwgH6AMIB+gDCgAAAAAAAAAAAAAAAAAAAAAAyEEAACBBAAAgQQAAoEAAAAxCAAA0QgAANEJBjhw8AAAAAOgDAQABABVcgBVZSA==' },
+     { device: 'tx', version: '1', base64: 'AQABAAAAAQB4AOAupDhoQkw2MCr0AR4A9AGIE9AHZADoAwoA0AcAAAEACgAFAAAAMgAoADIAMgAXt1E5AQChssPDsqE=' },
+     { device: 'rx', version: '1', base64: 'AQABAPn/AAA8AAAAAADoA9AH6APQB4QDAADIQQAASEIAAAAAAgAAAArXIzwBAMOyoaGyww==' },
+     { device: 'tx', version: '2', base64: 'AgABAAwAAQBuAAww3Dc8Qeg1BCn0AR4A9AGIE9AHZADoAwoA0AcAAAEACgADAAAAMgAAADIAAAC9Okc5AAAAAAAAAADcBQEAChssLBsKAAA=' },
+     { device: 'rx', version: '2', base64: 'AgABABIAAQBGAAEAAADoAzoH6AM6B+gDDAAAAAAAAAAAAAAAAAAAAAAAsEEAACBBAAAgQQAAoEAAAAxCAAA0QgAANELjpRs8AAAAAOgDAQABAF5vcHBvXg==' },
 
 
 

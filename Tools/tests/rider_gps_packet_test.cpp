@@ -21,7 +21,8 @@ static uint8_t crc8(uint8_t* data, uint8_t length)
   return crc;
 }
 
-static const uint8_t kDest[3] = { 0x46, 0xC9, 0xE9 };
+// SYNTHETIC test data: made-up values, not from any real board.
+static const uint8_t kDest[3] = { 0xA1, 0xB2, 0xC3 };
 
 // A v1 packet exactly as every remote before this change builds it (TX Radio.ino, 2026-04-24).
 static void buildV1(uint8_t out[14], int32_t lat, int32_t lng)

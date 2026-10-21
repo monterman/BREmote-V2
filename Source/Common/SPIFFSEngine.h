@@ -1,6 +1,11 @@
 #ifndef SPIFFS_ENGINE_H
 #define SPIFFS_ENGINE_H
 
+// V2.5-Evo - 2026-10-20 - step-2 audit Z-4: a FREE-SPACE CHECK before the two writes a first boot makes on its own -
+//   the web page reinstall (ensureWebUiInSPIFFS()) and the migrated-config save (readConfFromSPIFFS()). Below the
+//   board's CFG_SPIFFS_WRITE_MIN_FREE_BYTES (RX 1000 KB; a board that defines none, the TX, is not checked) the write is
+//   NOT made and one NOTE says what to do: the migrated config then runs from RAM and the stored older file is kept, so
+//   the next boot migrates it again (it was never removed); the web page stays the installed one.
 // V2.5-Evo - 2026-10-20 - MULTI-REMOTE RECEIVER STEP: (1) THE LEGACY PAIR IS NOW PER BOARD. The four
 //   CFG_LEGACY_* numbers and the NOTE's list of new defaults are defined by the board header before it includes
 //   this file (RX: SW36 200 B -> SW37 232 B); a board that defines none gets no migration at all (the TX, which was
@@ -49,6 +54,27 @@ uint8_t esp_crc8(uint8_t *data, uint8_t length);
 #ifndef CFG_LEGACY_NOTE_DEFAULTS
 #define CFG_LEGACY_NOTE_DEFAULTS   "none"
 #endif
+// V2.5-Evo - 2026-10-20 - Z-4: the free space a board asks for before an unprompted write (0 = no check).
+#ifndef CFG_SPIFFS_WRITE_MIN_FREE_BYTES
+#define CFG_SPIFFS_WRITE_MIN_FREE_BYTES 0
+#endif
+
+// spiffsHeadroomOk - V2.5-Evo - 2026-10-20 - Z-4: is there room for a write that must not fail silently? A nearly full
+//   SPIFFS can still create the file entry (so the write "succeeds") and then store nothing behind it. True when the
+//   board asks for no headroom, or the free space is at least CFG_SPIFFS_WRITE_MIN_FREE_BYTES. Otherwise one NOTE line
+//   naming the free and the needed KB, then `what` (what was skipped and what to do), and false.
+//   Inputs: what - the end of the NOTE. Side effects: one Serial line when it refuses.
+static bool spiffsHeadroomOk(const char* what)
+{
+  if (CFG_SPIFFS_WRITE_MIN_FREE_BYTES == 0) return true;
+  const size_t total = SPIFFS.totalBytes();
+  const size_t used  = SPIFFS.usedBytes();
+  const size_t freeb = (total > used) ? (total - used) : 0;
+  if (freeb >= (size_t)CFG_SPIFFS_WRITE_MIN_FREE_BYTES) return true;
+  Serial.printf("NOTE: SPIFFS has only %u KB free, below the %u KB a safe write needs (a nearly full SPIFFS reports a write as done and stores nothing) - %s\n",
+                (unsigned)(freeb / 1024), (unsigned)(CFG_SPIFFS_WRITE_MIN_FREE_BYTES / 1024), what);
+  return false;
+}
 
 // V2.5-Evo - 2026-09-19 - the pure byte mapping of the legacy-config migration (host-tested).
 #include "ConfigMigrate.h"
@@ -209,6 +235,8 @@ bool ensureWebUiInSPIFFS()
     }
   }
   if (!needsInstall) return true;
+  // V2.5-Evo - 2026-10-20 - Z-4: not on a nearly full SPIFFS (the installed page stays; ?wifiupd forces it later).
+  if (!spiffsHeadroomOk("the web page is NOT reinstalled. Free space (?list, then ?deletelog the bench logs), then ?wifiupd")) return false;
   return webUiInstallEmbedded();
 }
 
@@ -308,12 +336,17 @@ bool readConfFromSPIFFS(confStruct& data) {
                 Serial.println("Config REJECTED — live config left untouched.");
                 return false;
             }
-            saveConfToSPIFFS(migrated);
+            // V2.5-Evo - 2026-10-20 - Z-4: saved only with enough free space. Without it the migrated config runs from RAM
+            // and the stored older file is left as it is (saveConfToSPIFFS() removes the old file before it knows the new
+            // one landed, so a write into a full SPIFFS could lose both); the next boot migrates it again.
+            const bool saved = spiffsHeadroomOk("the migrated config is used from RAM and NOT saved; the stored older file is kept and is migrated again at the next boot, and a pairing made now would not be kept either. Free space (?list, then ?deletelog the bench logs), then ?save");
+            if (saved) saveConfToSPIFFS(migrated);
             data = migrated;
             // V2.5-Evo - 2026-10-20 - the list of new defaults is the board's own (CFG_LEGACY_NOTE_DEFAULTS).
-            Serial.printf("NOTE: config migrated SW%u (%u B) -> SW%u (%u B) by prefix - every stored value kept; the fields SW%u added take their factory defaults (%s) and the result is saved.\n",
+            Serial.printf("NOTE: config migrated SW%u (%u B) -> SW%u (%u B) by prefix - every stored value kept; the fields SW%u added take their factory defaults (%s)%s.\n",
                           (unsigned)blobVersion, (unsigned)decodedLen, (unsigned)SW_VERSION,
-                          (unsigned)sizeof(confStruct), (unsigned)SW_VERSION, CFG_LEGACY_NOTE_DEFAULTS);
+                          (unsigned)sizeof(confStruct), (unsigned)SW_VERSION, CFG_LEGACY_NOTE_DEFAULTS,
+                          saved ? " and the result is saved" : " - NOT saved yet, see the NOTE above");
             return true;
         }
     }

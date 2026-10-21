@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-20 - step-2 audit Z-4: CFG_SPIFFS_WRITE_MIN_FREE_BYTES (1000 KB) - the headroom the first-boot web page reinstall and the migrated-config save check for first (Common/SPIFFSEngine.h). Define only; no struct change.
 // V2.5-Evo - 2026-10-20 - MULTI-REMOTE RECEIVER STEP, SW36 -> SW37: confStruct 200 -> 232 B, the multi-remote tail appended at 200 (mtx_id[12], mtx_flags[4], mtx_claim_s 10, mtx_seize_en 1, mtx_takeover_cap 64, mtx_takeover_ms 4000, mtx_rsvd[4] banked); the SW36 -> SW37 legacy pair for the boot / ?setconf / web-import migration (every SW36 setting kept, the tail from defaultConf); Common/MultiTx.h included; g_efuse_id (this chip's ID, computed first in setup()); the ownership atomics the radio, PWM and loop tasks share (mtx_owner_slot, mtx_grant_ms, mtx_owner_change_seq, mtx_telemetry_owner_seq); TelemetryPacket pinned to 20 B (<= 32, the reply's 5-bit index). The binding (paired / own / dest / list) survives the flash only where the stored own_address is this chip's ID.
 // V2.5-Evo - 2026-10-20 - COMMENT ONLY: the historical fm_front_angle_deg note is marked with the front-station swap (4 front-left, 5 front-right). No code, no struct, no SW_VERSION change.
 // V2.5-Evo - 2026-10-17 - HEADING LATCH WRITTEN ONCE PER CHANGE (audit F1-F5): includes ../Common/HeadingLatchPersist.h, the pure request / due / result rules RTMState.ino uses to store the compass-vs-GPS-course latch (/hdg_fault) once per latch change, with the trigger released, instead of on every heading call. Include only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -1692,6 +1693,11 @@ static inline void stickyCapArm(uint8_t initial) { stickyCapArmRise(initial, tru
 #define CFG_LEGACY_TARGET_BYTES  232   // sizeof(confStruct) on the RX at SW37 - the struct it is a prefix OF
 #define CFG_LEGACY_TARGET_SW      37   // the SW_VERSION this pair was verified against
 #define CFG_LEGACY_NOTE_DEFAULTS "an empty multi-remote list, mtx_claim_s 10, mtx_seize_en 1, mtx_takeover_cap 64, mtx_takeover_ms 4000"
+// V2.5-Evo - 2026-10-20 - step-2 audit Z-4: the free SPIFFS space this board needs before the two writes the first boot
+// of a new version makes on its own - the web page reinstall and the migrated config (Common/SPIFFSEngine.h). A nearly
+// full SPIFFS reports a write as done and stores nothing (proven on RX1, 2026-10-01: ~500 KB free failed, 1274 KB
+// worked); the working rule is 1000 KB. The bench logs are what fill it, so the RX asks; the TX (no logs) does not.
+#define CFG_SPIFFS_WRITE_MIN_FREE_BYTES (1000UL * 1024UL)
 
 // ============================================================
 // V2.5-Evo - 2026-10-20 - MULTI-REMOTE RECEIVER STEP: IDENTITY AND THE SHARED OWNERSHIP STATE

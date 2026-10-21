@@ -1,3 +1,8 @@
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE, step-2 audit Z-1 / Z-6 / Z-7 a: (Z-1) a paired-list change zeroes the outputs
+//   (throttle 0, steering 127, no failsafe stamp) whenever the list was or becomes MULTI, also with nobody in control -
+//   a list change with one remote before and after stays today's (Larry's default 3, the owner's single-remote rule);
+//   (Z-6) the pairing power guard checks that -9 dBm was really set, and the window does not open if the radio
+//   refused it; (Z-7 a) ?mtx counts the list-change releases. No control-path statement changed otherwise.
 // V2.5-Evo - 2026-10-20 - MULTI-REMOTE RECEIVER STEP (SW37): triggeredReceive() hands every 6-byte frame that passes
 //   gate 0 and the CRC to mtxOnFrame() (Common/MultiTx.h) behind this file's hook table. With ONE remote paired
 //   (SINGLE) the hooks ARE today's code: apply_owner is the old control branch, meta the old 0xF1 / 0xF2 / 0xF4 / 0xF3
@@ -202,8 +207,14 @@ static bool rxMayAcceptControl()
 // plain SPI write. MT-05 reads the "radio power back" line.
 
 // RxPairPowerGuard - RAII: -9 dBm while it lives, usrConf.rf_power (unchanged by pairing) when it dies, with a line.
+// V2.5-Evo - 2026-10-20 - Z-6: THE CONSTRUCTOR'S RESULT IS KEPT. It was discarded, so if the radio refused -9 dBm the
+// window ran at the stored rf_power (22 dBm by default) and nothing said so - the buggy's own RSSI gate still held
+// (it measures the remote), but its OFFER then reached about 31 dB further than the -60 dBm budget assumes.
+// waitForPairing() reads `ok` and does not open the window when it is false (one PAIR line; MT-05 reads it).
 struct RxPairPowerGuard {
-  RxPairPowerGuard()  { radio.setOutputPower((int8_t)kMtxPairPowerDbm); }
+  bool    ok;     // -9 dBm was really set
+  int16_t err;    // RadioLib's answer to that request
+  RxPairPowerGuard()  { err = radio.setOutputPower((int8_t)kMtxPairPowerDbm); ok = (err == RADIOLIB_ERR_NONE); }
   ~RxPairPowerGuard()
   {
     const int16_t e = radio.setOutputPower((int8_t)usrConf.rf_power);
@@ -350,12 +361,23 @@ static void rxPairExchange(MtxPairWindow* w, bool legacy, const uint8_t id[3], f
 //   Side effects: usrConf's binding, one SPIFFS save on success, the radio (power, mode), the BIND LED, Serial.
 bool waitForPairing()
 {
+  // V2.5-Evo - 2026-10-20 - Z-6: the power guard FIRST, so a radio that refuses -9 dBm leaves everything as it was:
+  // no window, the binding untouched (usrConf.paired is not cleared yet), 3 fast blinks, 6-byte receive mode. The
+  // guard's destructor still runs on this return and puts the stored rf_power back with its own line.
+  RxPairPowerGuard power_guard;
+  if (!power_guard.ok)
+  {
+    Serial.printf("PAIR: the radio REFUSED the pairing power of %d dBm (error %d) - the window is NOT opened, the previous pairing is kept. Reboot and try again; if it repeats, the radio needs checking\n",
+                  (int)kMtxPairPowerDbm, (int)power_guard.err);
+    rxPairFlash(3, 50, 50);
+    radio.implicitHeader(6);
+    return false;
+  }
   MtxRxBinding cur;
   mtxRxBindingFromConf(&cur);
   MtxPairWindow w;
   mtxPairOpen(&w, &cur, millis());
   usrConf.paired = false;   // nothing is drivable while the window is open (no task exists yet either)
-  RxPairPowerGuard power_guard;
   char me[9];
   mtxFmtId(me, g_efuse_id);
   Serial.printf("PAIR: window open - this buggy's ID %s. Up to %u remotes; %lu s, +%lu s per new remote, %lu s at most. Radio at %d dBm; a request must arrive at %d dBm or stronger (about 1 m). Pair the remote you RIDE WITH FIRST: it becomes the master. Press BIND again to close the window.\n",
@@ -1365,6 +1387,15 @@ static void mtxRxStartFresh()
 //   2. the mode, and the model's config, CLAMPED again here (hook contract Y-1 h; the validator already clamps every
 //      intake path): claim_s 6-60 s, failsafe 100-10000 ms. valid_mask = the valid NEW-STYLE entries only.
 //   Input: now (this wake's clock). Side effects: g_mtx; on a list change under an owner, the release hooks.
+// V2.5-Evo - 2026-10-20 - Z-1 (step-2 audit; Larry's default 3, not yet confirmed by the owner): THE OUTPUTS ARE ZEROED
+//   ON A LIST CHANGE THAT INVOLVES MULTI. The release above runs only when someone owns, so a change with NOBODY in
+//   control zeroed nothing: going from one remote to two (an import, ?applyconf) left the single remote's last byte
+//   standing until failsafe_time, with nobody owning it any more. Now, whenever the list was MULTI before the change or
+//   is MULTI after it, the release's own first step runs as well - throttle 0, steering 127, the barrier, NO failsafe
+//   stamp, so the motor gate shuts on its own clock. It writes nothing else. A change from one remote to one remote
+//   (or to none) is left exactly as today: the owner's single-remote rule. A "yes, in SINGLE too" is the mode test
+//   below becoming `true`. NOT done (owner's call): publishing the takeover limit on a MULTI -> SINGLE change - the
+//   approved SOP-039 text says the limit never applies with a single remote.
 static void mtxRxRefresh(uint32_t now)
 {
   MtxRxBinding b;
@@ -1377,7 +1408,10 @@ static void mtxRxRefresh(uint32_t now)
   }
   else if (memcmp(&b, &g_mtx.b, sizeof(b)) != 0)
   {
+    const uint8_t old_mode = g_mtx.mode;                    // last wake's mode (of the old list)
+    const uint8_t new_mode = mtxRxMode(&b, g_efuse_id);
     if (g_mtx.st.owner != kMtxNone && g_mtx_hooks_ok) mtxRelease(&g_mtx.st, &g_mtx_hooks, MTX_REL_REBIND, now);
+    if (old_mode == MTX_MODE_MULTI || new_mode == MTX_MODE_MULTI) mtxHkZeroOutputs(&g_mtx);   // Z-1
     g_mtx.b = b;
     mtxRxStartFresh();
   }
@@ -1547,10 +1581,10 @@ void mtxPrintStatus()
     Serial.printf("owner-change counter %u, telemetry rebuilt for %u%s\n", (unsigned)seq_owner, (unsigned)seq_tel,
                   (seq_owner != seq_tel) ? " - the new owner gets the masked bytes until the next loop tick" : "");
   }
-  Serial.printf("counters: grants %u, claims %u, summons %u, summons refused %u, tokens lapsed %u | released: lock %u, take-back %u, claim %u | non-owner metas %u, dropped %u, unknown %lu | quiet RTM-off repeats %lu, lines lost %lu\n",
+  Serial.printf("counters: grants %u, claims %u, summons %u, summons refused %u, tokens lapsed %u | released: lock %u, take-back %u, claim %u, list change %u | non-owner metas %u, dropped %u, unknown %lu | quiet RTM-off repeats %lu, lines lost %lu\n",
                 (unsigned)x.st.n.grants, (unsigned)x.st.n.claims, (unsigned)x.st.n.summons, (unsigned)x.st.n.summons_refused,
                 (unsigned)x.st.n.tokens_lapsed, (unsigned)x.st.n.released_lock, (unsigned)x.st.n.released_seized,
-                (unsigned)x.st.n.released_claim, (unsigned)x.st.n.non_owner_meta, (unsigned)x.st.n.dropped,
+                (unsigned)x.st.n.released_claim, (unsigned)x.st.n.released_rebind, (unsigned)x.st.n.non_owner_meta, (unsigned)x.st.n.dropped,
                 (unsigned long)x.unknown, (unsigned long)x.rtm_off_quiet, (unsigned long)x.lines_lost);
 }
 

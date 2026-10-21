@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-6 a: a summon refused with the trigger held shows the held (non-blocking) St for
+//   every reason, not only MTX_SV_TRIGGER.
 // V2.5-Evo - 2026-10-21 - a refusal "St" while this remote's own Follow-Me is armed is always the brief non-blocking one
 //   (interim default 2 covers FM as well as RTM), in mtxTxStopRefusal().
 // V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-3: the deferred summon arm re-checks the gesture's preconditions (in control, the
@@ -217,7 +219,9 @@ void mtxTxSummonTry(uint8_t kind)
       return;
     }
     Serial.printf("MTX [TX] summon (%s) refused: %s\n", what, mtxSummonVerdictText(v));
-    mtxTxStopRefusal(NULL, (v == MTX_SV_TRIGGER) ? MTX_ST_HELD : MTX_ST_BLOCK);
+    // V2.5-Evo - 2026-10-21 - P3-6 a: held (non-blocking) whenever the trigger is held, whatever the reason - a magnet summon
+    // refused for no fix, the feature off or a stale status can be made mid-tow. It was held only for MTX_SV_TRIGGER.
+    mtxTxStopRefusal(NULL, in.trigger_released ? MTX_ST_BLOCK : MTX_ST_HELD);
     return;
   }
   queueMetaPacketBurst(kMtxQueueSummon, 0);

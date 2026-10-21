@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-6 b: the toggle rows 3 / 4 (trigger held) send a remote NOT in control through the
+//   summon gate, as the magnet does: E9 against a busy owner on both routes, "St" otherwise. No confStruct change.
 // V2.5-Evo - 2026-10-21 - the mode 4 hold's "Return-To-Me cannot start" St goes through mtxTxStopRefusal() (same 2 s block),
 //   so over this remote's own Follow-Me it is the brief non-blocking one. No confStruct change.
 // V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-2: no "St" over a running mode for a gesture that could not ARM. Roles 1-3: a running
@@ -579,6 +581,13 @@ void handleGearToggle(int direction)
           Serial.printf("RTM [TX] return gesture ignored: trigger held (thr %u) while Return-To-Me runs - the return continues\n",
                         (unsigned)thr_scaled);
         }
+        // V2.5-Evo - 2026-10-21 - P3-6 b: a remote NOT in control takes the summon gate here too, as the magnet does with the
+        // trigger held (X-7): E9 against a busy owner (the owner's rule for a takeover try), else "St" held (it refuses on the
+        // held trigger and sends nothing). Before, this toggle row showed "St" where the magnet showed E9.
+        else if (mtxTxIsNonOwner())
+        {
+          mtxTxSummonTry(MTX_SUMMON_RTM);
+        }
         else
         {
           Serial.printf("RTM [TX] return gesture refused: trigger held (thr %u) - it needs the trigger fully released\n",
@@ -598,6 +607,10 @@ void handleGearToggle(int direction)
         {
           Serial.printf("FM [TX] Follow-Me gesture ignored: trigger held (thr %u) while %s - nothing changes\n",
                         (unsigned)thr_scaled, (rtm_tx_active || rtmIsArming()) ? "Return-To-Me runs" : "Follow-Me is armed");
+        }
+        else if (mtxTxIsNonOwner())
+        {
+          mtxTxSummonTry(MTX_SUMMON_FM);   // V2.5-Evo - 2026-10-21 - P3-6 b: as row 4 above (E9 against a busy owner, else "St")
         }
         else
         {

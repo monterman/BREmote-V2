@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-21 - text only: the PAIR offer line says the -60 dBm gate is about 5 m (calculated), not about 1 m.
 // V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-6 d: waitForTelemetry() reads local_link_quality from this remote's accepted reply
 //   only, not from every frame seen in the 40 ms window. No confStruct change.
 // V2.5-Evo - 2026-10-20 - MULTI-REMOTE REMOTE STEP (SW29), the radio side (design v3.1 sections 5, 9, 11; audit C2, C14, C16-C18,
@@ -211,7 +212,7 @@ bool initiatePairing()
           if (!mtxPairOfferOk(responseBuffer + 1, g_efuse_id, responseBuffer + 4, rssi))
           {
             // C10: the RSSI gate (or a zero buggy ID). Keep listening; the remote is moved closer and tries again.
-            Serial.printf("PAIR: offer from %02X:%02X:%02X ignored - RSSI %.0f dBm below %d (bring the remote within about 1 m)\n",
+            Serial.printf("PAIR: offer from %02X:%02X:%02X ignored - RSSI %.0f dBm below %d (bring the remote closer: pair at arm's length; the gate is about 5 m, calculated)\n",
                           responseBuffer[4], responseBuffer[5], responseBuffer[6], (double)rssi, (int)kMtxPairMinRssiDbm);
             continue;
           }

@@ -1,4 +1,5 @@
-// V2.5-Evo - 2026-10-21 - step-3 audit P3-1 / P3-3: mtxTxAnswerPoll() and mtxTxSummonDrop() declared (MultiRemote.ino). No confStruct change, sizeof stays 144, SW_VERSION stays 29.
+// V2.5-Evo - 2026-10-21 - step-3 audit P3-1 / P3-3: mtxTxAnswerPoll() and mtxTxSummonDrop() declared (MultiRemote.ino); P3-6 c: the
+//   autolock_timeout_s comment names the real idle signal (throttle or steering; a toggle press does not count). No confStruct change, sizeof stays 144, SW_VERSION stays 29.
 // V2.5-Evo - 2026-10-20 - MULTI-REMOTE REMOTE STEP, SW27 -> SW29 (28 is never used): confStruct 136 -> 144 B, four u16 appended at
 //   136 - autolock_timeout_s (0 = off, 5-180 s, default 0; the 039b908 auto-lock for one remote or the remote in control),
 //   mtx_link_proto (0 = old-style frames, 3 = new-style link-ID frames; written by pairing only), mtx_seize_hold_ms
@@ -506,8 +507,10 @@ struct confStruct {
     // V2.5-Evo - 2026-10-20 - SW29: THE MULTI-REMOTE TAIL (design v3.1 14.2), appended at 136 so an SW27 blob is a
     // byte-exact prefix and migrates (nothing above moved). Four uint16_t, 8 bytes, no padding: sizeof 144.
     // ============================================================
-    // Idle auto-lock (039b908, reused). The remote locks itself after this many seconds with no throttle, steering or
-    // toggle input, exactly like the LEFT-hold lock: it keeps its link but sends neutral (a LOCKED frame on a
+    // Idle auto-lock (039b908, reused). The remote locks itself after this many seconds with no throttle or steering
+    // input (last_user_input_ms, the auto-sleep signal: throttle above 20 counts or steering more than 15 off centre - a
+    // toggle press at zero throttle does NOT count; V2.5-Evo - 2026-10-21, P3-6 c: this said "or toggle input"), exactly
+    // like the LEFT-hold lock: it keeps its link but sends neutral (a LOCKED frame on a
     // new-style link), and unlocking refuses to complete while the trigger is pulled. Not while Follow-Me or RTM is
     // armed, in a menu, in setup, during the take-back gesture, or with no_lock. 0 = off (the default: one remote, and
     // the remote in control, behave as today); 1-4 are raised to 5 (shorter fires while coasting).

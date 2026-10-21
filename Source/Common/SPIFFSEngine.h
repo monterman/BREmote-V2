@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-21 - text only (step-3 audit P3-7 d): the Z-4 NOTE on a migrated config that is not saved says not to pair
+//   before freeing space (a pairing's save removes the stored file first, so both can be lost). No code change.
 #ifndef SPIFFS_ENGINE_H
 #define SPIFFS_ENGINE_H
 
@@ -345,7 +347,7 @@ bool readConfFromSPIFFS(confStruct& data) {
             // V2.5-Evo - 2026-10-20 - Z-4: saved only with enough free space. Without it the migrated config runs from RAM
             // and the stored older file is left as it is (saveConfToSPIFFS() removes the old file before it knows the new
             // one landed, so a write into a full SPIFFS could lose both); the next boot migrates it again.
-            const bool saved = spiffsHeadroomOk("the migrated config is used from RAM and NOT saved; the stored older file is kept and is migrated again at the next boot, and a pairing made now would not be kept either. Free space (?list, then ?deletelog the bench logs), then ?save");
+            const bool saved = spiffsHeadroomOk("the migrated config is used from RAM and NOT saved; the stored older file is kept and is migrated again at the next boot. Do NOT pair before freeing space: a pairing's save removes the stored file before it writes the new one, so on a SPIFFS this full the pairing AND the stored config can both be lost. Free space (?list, then ?deletelog the bench logs), then ?save");
             if (saved) saveConfToSPIFFS(migrated);
             data = migrated;
             // V2.5-Evo - 2026-10-20 - the list of new defaults is the board's own (CFG_LEGACY_NOTE_DEFAULTS).

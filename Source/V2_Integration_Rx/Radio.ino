@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-21 - text only: the -60 dBm pairing gate is "about 5 m, calculated" (design 11.1), not "about 1 m", in the
+//   window comment and both PAIR lines; pair at arm's length. No code change.
 // V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-4: a paired-list change from MULTI to SINGLE also publishes the takeover limit once
 //   (mtxListChangeActions(), Common/MultiTx.h), so the remaining remote starts from zero under the soft start. No confStruct change.
 // V2.5-Evo - 2026-10-20 - MULTI-REMOTE, step-2 audit Z-1 / Z-6 / Z-7 a: (Z-1) a paired-list change zeroes the outputs
@@ -196,7 +198,8 @@ static bool rxMayAcceptControl()
 // whoever enrols is the whole list, in enrolment order, and the FIRST one is the MASTER (slot 1) - so the rider's own
 // remote must be paired first. A legacy (old-style, 0xAB) remote is accepted only as the single remote and closes
 // the window at once (C13). Both kinds are judged by the pure mtxPairOnRequest() / mtxPairOnConfirm() (host test T13):
-// a request below -60 dBm (about 1 m at the -9 dBm both ends use here), from 00:00:00 or from this buggy's own ID, a
+// a request below -60 dBm (about 5 m at the -9 dBm both ends use here - calculated, not measured, design 11.1 - so pair at
+// arm's length), from 00:00:00 or from this buggy's own ID, a
 // fifth remote, or a legacy remote after any enrolment is refused with one line saying why.
 // THE WINDOW: 60 s, +20 s per new remote, never past 120 s; it closes early on four remotes, a legacy enrolment, or
 // a fresh BIND press. AT THE CLOSE: with at least one enrolment the new list is committed (own_address = this chip's
@@ -303,7 +306,7 @@ static void rxPairExchange(MtxPairWindow* w, bool legacy, const uint8_t id[3], f
   if (v != MTX_PR_OFFER)
   {
     if (v == MTX_PR_RSSI)
-      Serial.printf("PAIR: request from %s %s refused - RSSI %.0f dBm is below %d (bring the remote within about 1 m)\n",
+      Serial.printf("PAIR: request from %s %s refused - RSSI %.0f dBm is below %d (bring the remote closer: pair at arm's length; the gate is about 5 m, calculated)\n",
                     kind, ib, (double)rssi, (int)kMtxPairMinRssiDbm);
     else
       Serial.printf("PAIR: request from %s %s refused - %s\n", kind, ib, rxPairRefusalText(v));
@@ -382,7 +385,7 @@ bool waitForPairing()
   usrConf.paired = false;   // nothing is drivable while the window is open (no task exists yet either)
   char me[9];
   mtxFmtId(me, g_efuse_id);
-  Serial.printf("PAIR: window open - this buggy's ID %s. Up to %u remotes; %lu s, +%lu s per new remote, %lu s at most. Radio at %d dBm; a request must arrive at %d dBm or stronger (about 1 m). Pair the remote you RIDE WITH FIRST: it becomes the master. Press BIND again to close the window.\n",
+  Serial.printf("PAIR: window open - this buggy's ID %s. Up to %u remotes; %lu s, +%lu s per new remote, %lu s at most. Radio at %d dBm; a request must arrive at %d dBm or stronger (about 5 m, calculated - pair at arm's length). Pair the remote you RIDE WITH FIRST: it becomes the master. Press BIND again to close the window.\n",
                 me, (unsigned)kMtxSlots, (unsigned long)(kMtxPairWindowMs / 1000), (unsigned long)(kMtxPairExtendMs / 1000),
                 (unsigned long)(kMtxPairMaxMs / 1000), (int)kMtxPairPowerDbm, (int)kMtxPairMinRssiDbm);
   radio.implicitHeader(5);

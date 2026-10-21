@@ -1,3 +1,11 @@
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE REMOTE STEP, SW27 -> SW29 (28 is never used): confStruct 136 -> 144 B, four u16 appended at
+//   136 - autolock_timeout_s (0 = off, 5-180 s, default 0; the 039b908 auto-lock for one remote or the remote in control),
+//   mtx_link_proto (0 = old-style frames, 3 = new-style link-ID frames; written by pairing only), mtx_seize_hold_ms
+//   (1000-1800 ms, default 1200: the master's take-back hold) and mtx_autolock_s (0 = off, 30-600 s, default 120: the
+//   auto-lock of a remote that is NOT in control on a multi-remote buggy). The SW27 blob is a byte-exact prefix and is
+//   migrated, not reset (CFG_LEGACY_* below): throttle calibration, settings and the pairing survive, the pairing as an
+//   old-style record (proto 0). Common/MultiTx.h included; g_efuse_id (this chip's ID, computed first in setup()); the
+//   remote's multi-remote state shared by the radio tasks and the loop (status, edges, E9 / tA, the dot, the rate).
 // V2.5-Evo - 2026-10-20 - comments only (owner: front stations swap numbers): followme_mode and mag_fm_set document 4 = front left, 5 = front right. Same fields, same offsets, sizeof stays 136, SW_VERSION stays 27, no config reset.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-1: includes ../Common/RiderGpsPacket.h (Radio.ino sends the v2 rider GPS packet with the GPS fix counter). Include only: no confStruct change, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-11 - audit 2026-10-11 D-3: RAM flag fm_fault_latched_armed (bit 0 on the arrival that latched the fault edge). No confStruct change, SW_VERSION stays 27.
@@ -153,6 +161,7 @@
 #include <atomic>
 #include "../Common/FollowMeDistanceWarning.h"   // V2.5-Evo - 2026-09-17 - pure header, host-testable. Since 2026-10-07 the TX uses only kFmDistanceTelemetryMaxM from it (ConfigService.ino); the haptic it fed is removed
 #include "../Common/RiderGpsPacket.h"            // V2.5-Evo - 2026-10-12 - audit delta A-1: the v2 rider GPS packet (GPS fix counter) - pure, host-tested, shared with the RX
+#include "../Common/MultiTx.h"                   // V2.5-Evo - 2026-10-20 - multi-remote v3.2: the uplink builder, the reply status, rate, take-back, summon, activity (pure, host-tested)
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -248,7 +257,11 @@
 #include <WebServer.h>
 #endif
 
-#define SW_VERSION 27  // V2.5-Evo - 2026-07-20: mag_mode added to confStruct (magnet/Hall gesture role);
+#define SW_VERSION 29  // V2.5-Evo - 2026-10-20 - 29 = the multi-remote tail appended at 136 (autolock_timeout_s, mtx_link_proto,
+                       // mtx_seize_hold_ms, mtx_autolock_s); sizeof 136 -> 144. 28 is never used (design Q10). Config is NOT
+                       // reset by this flash: the 136-byte SW27 blob is migrated by prefix (every stored value keeps its offset
+                       // and its value, the tail comes from defaultConf) - see CFG_LEGACY_* above the SPIFFSEngine.h include.
+                       // V2.5-Evo - 2026-07-20 - 27: mag_mode added to confStruct (magnet/Hall gesture role);
                        // sizeof 132→136. First flash of SW27 RESETS all TX SPIFFS settings to defaultConf.
                        // defaultConf carries the factory default configuration, so the reset writes
                        // known-safe values — see the defaultConf header block before changing any default.
@@ -487,6 +500,28 @@ struct confStruct {
     // (The note that used to sit here said stations 4 and 5 did not exist in this firmware and that
     // fmNextStationInSet() masked bits 3 and up off. Both bits now address reachable stations.)
     uint16_t mag_fm_set;       // magnet-tap station set, bitmask bit0=F1 bit1=F2 bit2=F3 bit3=F4 bit4=F5; 1-31; default 7 (the three rear stations)
+
+    // ============================================================
+    // V2.5-Evo - 2026-10-20 - SW29: THE MULTI-REMOTE TAIL (design v3.1 14.2), appended at 136 so an SW27 blob is a
+    // byte-exact prefix and migrates (nothing above moved). Four uint16_t, 8 bytes, no padding: sizeof 144.
+    // ============================================================
+    // Idle auto-lock (039b908, reused). The remote locks itself after this many seconds with no throttle, steering or
+    // toggle input, exactly like the LEFT-hold lock: it keeps its link but sends neutral (a LOCKED frame on a
+    // new-style link), and unlocking refuses to complete while the trigger is pulled. Not while Follow-Me or RTM is
+    // armed, in a menu, in setup, during the take-back gesture, or with no_lock. 0 = off (the default: one remote, and
+    // the remote in control, behave as today); 1-4 are raised to 5 (shorter fires while coasting).
+    uint16_t autolock_timeout_s;   // idle seconds before auto-lock of a single remote or the remote in control; 0 = off, else 5-180; default 0
+    // The link record's protocol. 0 = old-style frames (the buggy's address in bytes 0-2, as SW27 sends - a migrated
+    // pairing is this); 3 = new-style frames (bytes 0-2 = this chip's ID XOR the buggy's ID, the link ID). Written by
+    // pairing only (read-only in ?set and skipped in a JSON import); anything else unpairs (validator).
+    uint16_t mtx_link_proto;       // 0 or 3; read-only; default 0
+    // The master's take-back (multi-remote): trigger released, RIGHT tap, then RIGHT held this long. The buggy re-checks
+    // every gate itself; the guest's throttle goes to zero at once.
+    uint16_t mtx_seize_hold_ms;    // 1000-1800 ms; default 1200
+    // Auto-lock of a remote that is NOT in control on a multi-remote buggy (a spare in a bag): a locked remote is not
+    // "present" there, so it can neither make the rider's remote claimable nor take control. 0 = off; 1-29 are raised
+    // to 30.
+    uint16_t mtx_autolock_s;       // seconds; 0 = off, else 30-600; default 120
 };
 
 // V2.5-Evo - 2026-07-20 - MagGesture: 132 → 136. mag_mode is a uint16_t (+2 bytes = 134), but the
@@ -498,7 +533,11 @@ struct confStruct {
 // config version check passes on the next boot and nothing in SPIFFS is reset. THE TAIL IS NOW FULL:
 // the next uint16_t added to this struct grows sizeof to 140, which IS a version bump and IS a config
 // wipe. Do not add one without saying so out loud.
-static_assert(sizeof(confStruct) == 136, "confStruct size mismatch — expected 136 bytes (V2.5-Evo sleep_timeout_s + bt_enabled + mag_mode + mag_fm_set; no tail padding left). Update this assert if you change the struct.");  // pinned to exact size; catches both shrinkage and unexpected growth
+// V2.5-Evo - 2026-10-20 - SW29: 136 -> 144 (the multi-remote tail; see the block above). The offsets are pinned so the
+// SW27 prefix argument is checked by the compiler, not only by the host test (T19 uses the same numbers).
+static_assert(sizeof(confStruct) == 144, "confStruct size mismatch - expected 144 bytes (SW29: the 136-byte SW27 struct + the 8-byte multi-remote tail at 136, no padding). Update this assert, SW_VERSION and the CFG_LEGACY_* pair if you change the struct.");  // pinned to exact size; catches both shrinkage and unexpected growth
+static_assert(offsetof(confStruct, mag_fm_set) == 134 && offsetof(confStruct, autolock_timeout_s) == 136, "SW29 tail must start at the SW27 size (136)");
+static_assert(offsetof(confStruct, mtx_link_proto) == 138 && offsetof(confStruct, mtx_seize_hold_ms) == 140 && offsetof(confStruct, mtx_autolock_s) == 142, "SW29 tail layout (design v3.1 14.2)");
 confStruct usrConf;
 
 // ============================================================
@@ -647,6 +686,11 @@ confStruct defaultConf = {  // V2.5-Evo — factory default configuration
   // V2.5-Evo - 2026-10-07 - F4/F5: the toggle now steps all five stations, but this default stays 7 = the
   // three REAR stations, so the front pair is opt-in on the magnet (bits 3 and 4, ticked in the web UI).
   7,    // mag_fm_set (bit0=F1, bit1=F2, bit2=F3, bit3=F4, bit4=F5; 7 = the three rear stations)
+  // V2.5-Evo - 2026-10-20 - SW29 multi-remote tail. A migrated SW27 config gets exactly these (the tail of defaultConf).
+  0,    // autolock_timeout_s (0 = off: one remote / the remote in control behave as today; 5-180 s when set)
+  0,    // mtx_link_proto (0 = old-style frames until a new-style pairing writes 3)
+  1200, // mtx_seize_hold_ms (the take-back hold, 1000-1800 ms)
+  120,  // mtx_autolock_s (a spare that is not in control locks itself after 120 s; 0 = off)
 };
 
 
@@ -1179,6 +1223,78 @@ uint8_t col_mapper[] = { 1,2,4,3,5,6,7 };
 //uint8_t col_mapper[] = { 7,6,4,5,3,2,1 };
 
 #include "../Common/RadioCommon.h"
+// ============================================================
+// V2.5-Evo - 2026-10-20 - SW27 -> SW29 MIGRATION PAIR (Common/SPIFFSEngine.h reads these; per board since step 2).
+// The SW27 struct (136 B, mag_fm_set ending at 136, no pad) is a byte-exact prefix of SW29 (the four u16 appended), so
+// a stored or backed-up SW27 blob is migrated: the prefix from the blob, the tail from defaultConf, the version 29, the
+// full validation. The NEXT PERSON ADDING A FIELD warning in SPIFFSEngine.h applies to these numbers.
+// ============================================================
+#define CFG_LEGACY_BLOB_BYTES    136   // sizeof(confStruct) on the TX at SW27
+#define CFG_LEGACY_BLOB_SW        27   // the SW_VERSION stamped in that blob
+#define CFG_LEGACY_TARGET_BYTES  144   // sizeof(confStruct) on the TX at SW29 - the struct it is a prefix OF
+#define CFG_LEGACY_TARGET_SW      29   // the SW_VERSION this pair was verified against
+#define CFG_LEGACY_NOTE_DEFAULTS "autolock_timeout_s 0 (off), mtx_link_proto 0 (the pairing stays an old-style record until you pair again), mtx_seize_hold_ms 1200, mtx_autolock_s 120"
+
+// ============================================================
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE: THIS REMOTE'S IDENTITY AND ITS VIEW OF THE BUGGY (design v3.1 sections 4, 9)
+// ============================================================
+// g_efuse_id - THIS CHIP'S ID, {crc8(mac[0..3]), mac[4], mac[5]} (efuseIdFromMac(), the formula the default-address
+//   bake uses). Computed first thing in setup(); never read from SPIFFS. A new-style link sends it XOR the buggy's ID,
+//   and the buggy's replies on that link are addressed to it.
+uint8_t g_efuse_id[3] = {0, 0, 0};
+// The buggy's replies, as this remote has heard them (Common/MultiTx.h MtxTxStatus: the last two statuses with their
+//   times, the "in control" and "lost control" flags). ONE WRITER: the telemetry task (waitForTelemetry, Radio.ino), on
+//   a new-style link only. Read by the loop and the sendData task as a copy (mtxTxStatusGet()), taken - like every
+//   write - inside g_mtx_tx_mux, so a reader never sees half an update. Never written on an old-style link, so there
+//   it stays "no reply" (count 0) and every multi-remote path stays off.
+MtxTxStatus  g_mtx_tx     = {};
+portMUX_TYPE g_mtx_tx_mux = portMUX_INITIALIZER_UNLOCKED;
+// Edges raised by the telemetry task inside the same mux (MTX_TXE_* bits), consumed by the loop (mtxTxLoopTick()).
+volatile uint8_t       mtx_tx_events    = 0;
+// E9 (design 9.8): shown while now is before this stamp (REFUSED arrived within 1500 ms, or a summon was refused
+//   against a busy owner); 0 = never. Written by the telemetry task and the loop; one aligned word.
+volatile unsigned long  mtx_e9_until_ms  = 0;
+// The rate rule's "input" (design 9.4): the last throttle >= 8, steering off centre, toggle press or magnet contact.
+//   Written by the loop task, read by sendData. One aligned word.
+volatile unsigned long  mtx_input_ms     = 0;
+// A take-back gesture or a summon is in progress: the remote stays fast (design 9.4, 9.7). Loop task writes.
+volatile bool          mtx_gesture_armed = false;
+// The current rate mode, written by sendData each cycle: true = slow (1 send in 10). Read by txLinkFresh() and the
+//   Pattern B rule (design 9.11). Never true on an old-style link.
+volatile bool          mtx_tx_slow       = false;
+// millis() of the last uplink transmit (sendData), the start of the 40 ms reply window (design 9.12).
+volatile unsigned long  tx_last_send_ms   = 0;
+// V2.5-Evo - 2026-10-20 - 24a0371 (ported): the multi-remote ownership dot at C7 R2 (Common/MultiTx.h MTX_DOT_*). It is
+//   drawn only while no Follow-Me dot needs R2 (Display.ino). mtx_dot_override (0-3) is set by ?mtxdot for the
+//   one-call-site hardware check (project display rule); 0xFF = follow the buggy's status.
+volatile uint8_t       mtx_dot_state     = MTX_DOT_OFF;
+volatile uint8_t       mtx_dot_override  = 0xFF;
+
+// mtxTxStatusGet - a consistent copy of g_mtx_tx (any task). Output: *out. Side effects: none.
+static inline void mtxTxStatusGet(MtxTxStatus* out)
+{
+  portENTER_CRITICAL(&g_mtx_tx_mux);
+  *out = g_mtx_tx;
+  portEXIT_CRITICAL(&g_mtx_tx_mux);
+}
+// txIsV3 - is the stored link record a new-style one (mtx_link_proto 3)? Side effects: none.
+static inline bool txIsV3() { return usrConf.mtx_link_proto == kMtxProtoV3; }
+// txLinkRec - this remote's link record for the uplink builder: protocol, the buggy's ID / address, this chip's ID.
+static inline void txLinkRec(MtxLinkRec* r)
+{
+  r->proto = usrConf.mtx_link_proto;
+  memcpy(r->dest_address, usrConf.dest_address, 3);
+  memcpy(r->efuse_id, g_efuse_id, 3);
+}
+// txLinkFresh - V2.5-Evo - 2026-10-20 - design 9.11 (C16): "connected" = a valid reply within 1000 ms, or 2500 ms
+//   while this remote is in the slow rate. On an old-style link (never slow) this is exactly the expression it replaces
+//   at its three sites: millis() - last_packet < 1000.
+static inline bool txLinkFresh()
+{
+  const unsigned long w = mtx_tx_slow ? kMtxLinkFreshSlowMs : kMtxLinkFreshMs;
+  return (millis() - last_packet) < w;
+}
+
 #include "../Common/SPIFFSEngine.h"
 #ifdef WIFI_ENABLED
 #include "../Common/WebConfigEngine.h"

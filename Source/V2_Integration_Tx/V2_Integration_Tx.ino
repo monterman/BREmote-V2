@@ -1,3 +1,8 @@
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE REMOTE STEP (SW29): setup() computes g_efuse_id (this chip's ID) right after the serial
+//   port starts, before the config is loaded, and prints the identity line (mtxTxBootReport(), MultiRemote.ino) after it.
+//   loop() runs the idle AUTO-LOCK (039b908, reused) with its two timeouts - autolock_timeout_s for one remote or the remote
+//   in control (0 = off: today's behaviour), mtx_autolock_s for a remote NOT in control on a multi-remote buggy - before the
+//   auto-sleep check, as 039b908 placed it. The lock is the LEFT-hold lock: system_locked, the display, the stop flush.
 // V2.5-Evo - 2026-10-12 - comment only: the fmArmedNotReady() prototype note describes the D-7 not-ready look (end dots C0 + C9), not the retired scanner. No code change.
 // V2.5-Evo - 2026-10-07 - S-7: prototype for fmIsReturning() (RTMState.ino), used by Display.ino. No confStruct change.
 // V2.5-Evo - 2026-10-07 - Q-2: prototype for rtmReturnConfirmed() (RTMState.ino), used by Display.ino. No confStruct change.
@@ -61,6 +66,8 @@ bool txGpsGoodFix();
 void runRtmLoop();
 void runFmLoop();
 void txBootIdInit();          // V2.5-Evo - 2026-10-07 - S-8: pick this power-on's boot ID and queue its first burst (RTMState.ino)
+void mtxTxBootReport();       // V2.5-Evo - 2026-10-20 - multi-remote: the boot identity line (MultiRemote.ino)
+void rtmFmStopFlush();        // V2.5-Evo - 2026-10-20 - the lock flush, used by the auto-lock below (RTMState.ino)
 bool rtmReturnConfirmed();    // V2.5-Evo - 2026-10-07 - Q-2: the buggy has confirmed the current manual return (RTMState.ino, read by Display.ino)
 void setRtmArmed();
 void cycleFmMode();
@@ -132,9 +139,13 @@ void setup()
 {
   in_setup = true;
   enterSetup();
+  // V2.5-Evo - 2026-10-20 - MULTI-REMOTE (design 4, audit W-5): this chip's ID FIRST, before the config is loaded, from
+  // the same formula the default-address bake uses (efuseIdFromMac(), Common/MultiTx.h). No I2C, no SPIFFS needed.
+  efuseIdFromMac(ESP.getEfuseMac(), esp_crc8, g_efuse_id);
 
   initHardware();
   initStorage();
+  mtxTxBootReport();   // V2.5-Evo - 2026-10-20 - the identity line (MT-00): chip ID, link, NOTEs
   
   checkCharger();
   // V2.5-Evo - 2026-10-07 - S-8: choose the boot ID and queue its first 0xF1 burst BEFORE the radio task starts, so it
@@ -285,6 +296,45 @@ void loop()
     last_user_input_ms = millis();
   }
   last_sleep_steer = steer_scaled;
+
+  // ============================================================
+  // V2.5-Evo - 2026-10-20 - IDLE AUTO-LOCK (039b908, reused; design v3.1 9.6, audit C9), checked BEFORE auto-sleep.
+  // ============================================================
+  // The remote locks itself after a timeout with no throttle or steering input (last_user_input_ms, the same
+  // pocket-safe signal auto-sleep uses, so the two cannot disagree about what "idle" means). TWO TIMEOUTS, ONE
+  // MECHANISM (mtxTxAutolockTimeoutS()): a remote that is NOT in control on a multi-remote buggy uses mtx_autolock_s
+  // (default 120 s), so a spare in a bag locks itself and can no longer take control or make the rider's remote
+  // claimable; one remote, the remote in control, an old-style link and a remote with no reply yet use
+  // autolock_timeout_s (default 0 = off), so they behave exactly as today unless the rider sets it.
+  // Skipped while Follow-Me or RTM is armed (their own state machines own the buggy), during the take-back gesture,
+  // in a menu, in setup, and with no_lock (mtxTxAutolockSkip()).
+  // THE LOCK IS THE LEFT-HOLD LOCK: system_locked, the lock screen, the stop flush (0xF1/0 + 0xF2/0, nothing armed
+  // here so both are no-ops on the buggy). Locked, the remote sends neutral (a LOCKED frame on a new-style link), and
+  // unlocking refuses to complete while the trigger is pulled - so nobody re-takes it with throttle applied.
+  // ONE FIX AGAINST 039b908: an unlock counts as input. The unlock is done inside runMenu() and its squeeze is gone by
+  // the time this runs, so without the stamp a remote unlocked after a long idle would lock again on the next pass.
+  // A separate stamp (autolock_input_ms) keeps auto-sleep's idle signal exactly as it was.
+  {
+    static bool          autolock_prev_locked = true;
+    static unsigned long autolock_input_ms    = 0;
+    if (autolock_prev_locked && !system_locked) autolock_input_ms = millis();   // an unlock: input
+    autolock_prev_locked = system_locked;
+    const unsigned long base_ms = ((long)(last_user_input_ms - autolock_input_ms) > 0) ? last_user_input_ms : autolock_input_ms;
+    MtxTxStatus t;
+    mtxTxStatusGet(&t);
+    const uint16_t timeout_s = mtxTxAutolockTimeoutS(&t, usrConf.mtx_autolock_s, usrConf.autolock_timeout_s);
+    const bool     skip      = mtxTxAutolockSkip(isFmArmed(), rtm_tx_active || rtmIsArming(), mtx_gesture_armed,
+                                                 in_menu != 0, in_setup, usrConf.no_lock != 0);
+    if (!system_locked && mtxTxAutolockDue(timeout_s, millis(), base_ms, skip))
+    {
+      system_locked        = 1;
+      autolock_prev_locked = true;
+      Serial.printf("AUTOLOCK: %u s without input (%s) - remote locked, output neutral\n", (unsigned)timeout_s,
+                    mtxTxNotOwner(&t, txIsV3()) ? "not in control on a multi-remote buggy" : "autolock_timeout_s");
+      DISP_LOCK(); displayLock(); DISP_UNLOCK();
+      rtmFmStopFlush();
+    }
+  }
 
   // Auto-sleep: fires when EITHER condition is true for sleep_timeout_s seconds.
   // Primary:  no intentional user input (throttle or toggle above deadzone).

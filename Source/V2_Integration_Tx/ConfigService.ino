@@ -1,4 +1,5 @@
-// V2.5-Evo - 2026-10-20 - MULTI-REMOTE (step-2 audit Z-3): the two batch hooks of Common/ConfigServiceEngine.h - no read-only row of the remote is carried by a JSON batch, and nothing to finish. No row change here yet.
+// V2.5-Evo - 2026-10-20 - SW29 MULTI-REMOTE: four kCfgFields rows - autolock_timeout_s (0 or 5-180 s), mtx_link_proto (READ-ONLY: pairing writes it), mtx_seize_hold_ms (1000-1800 ms), mtx_autolock_s (0 or 30-600 s); cfgValidateCrossField() starts with the link-record rule (a protocol other than 0 or 3 unpairs; unpaired = protocol 0) and the three clamps (mtxClampTxConfig(), never a rejection: this is the load path too).
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE (step-2 audit Z-3): the two batch hooks of Common/ConfigServiceEngine.h - no read-only row of the remote is carried by a JSON batch (mtx_link_proto is skipped there), and nothing to finish.
 // V2.5-Evo - 2026-10-20 - comments only (owner: front stations swap numbers): the followme_mode and mag_fm_set rows document 4 = front left, 5 = front right. Ranges unchanged.
 // V2.5-Evo - 2026-10-07 - F4/F5 on the remote (port of P2-d): followme_mode 0-3 -> 0-5 and mag_fm_set 1-7 -> 1-31
 //   (bit3 = station 4, bit4 = station 5). Widening only; the mag_fm_set repair value stays 0x07. No struct change.
@@ -131,6 +132,16 @@ const CfgFieldSpec kCfgFields[] = {
   // V2.5-Evo - 2026-10-07 - F4/F5: range 1-7 -> 1-31 (bit3 = station 4 front left, bit4 = station 5 front
   // right - the two swapped numbers 2026-10-20). Widening only. Default stays 7 = the three rear stations: the front pair is opt-in on the magnet.
   {"mag_fm_set",      CFG_U16, offsetof(confStruct, mag_fm_set),      true, false, true, 1.0f,   31.0f, 0, false},
+  // V2.5-Evo - 2026-10-20 - SW29 MULTI-REMOTE (design v3.1 14.2). The rows accept the outer bounds; the gaps (1-4 for
+  // autolock_timeout_s, 1-29 for mtx_autolock_s) are closed by CLAMPS in cfgValidateCrossField(), never rejections.
+  //   autolock_timeout_s  0, 5-180 s    idle auto-lock of one remote / the remote in control (039b908); 0 = off (default)
+  //   mtx_link_proto      0 or 3        READ-ONLY: 0 = old-style frames, 3 = new-style link-ID frames; pairing writes it
+  //   mtx_seize_hold_ms   1000-1800 ms  the master's take-back hold; default 1200
+  //   mtx_autolock_s      0, 30-600 s   auto-lock of a remote NOT in control on a multi-remote buggy; default 120
+  {"autolock_timeout_s", CFG_U16, offsetof(confStruct, autolock_timeout_s), true,  false, true, 0.0f, (float)kMtxAutolockTimeoutSMax, 0, false},
+  {"mtx_link_proto",     CFG_U16, offsetof(confStruct, mtx_link_proto),     false, false, true, 0.0f, 3.0f, 0, false},
+  {"mtx_seize_hold_ms",  CFG_U16, offsetof(confStruct, mtx_seize_hold_ms),  true,  false, true, (float)kMtxSeizeHoldMsMin, (float)kMtxSeizeHoldMsMax, 0, false},
+  {"mtx_autolock_s",     CFG_U16, offsetof(confStruct, mtx_autolock_s),     true,  false, true, 0.0f, (float)kMtxAutolockSMax, 0, false},
   {"paired", CFG_U16, offsetof(confStruct, paired), true, false, true, 0.0f, 1.0f, 0, false},
   {"own_address", CFG_ADDR3, offsetof(confStruct, own_address), true, false, false, 0.0f, 0.0f, 0, false},
   {"dest_address", CFG_ADDR3, offsetof(confStruct, dest_address), true, false, false, 0.0f, 0.0f, 0, false}
@@ -140,6 +151,19 @@ const size_t kCfgFieldCount = sizeof(kCfgFields) / sizeof(kCfgFields[0]);
 
 bool cfgValidateCrossField(confStruct &candidate, String &err)
 {
+  // ============================================================
+  // V2.5-Evo - 2026-10-20 - SW29 MULTI-REMOTE: THE LINK RECORD AND THE CLAMPS (design v3.1 14.3, the remote's rules)
+  // ============================================================
+  // Every intake path runs this (?set, ?setconf, the boot load, the SW27 migration, the web import), so:
+  //   1. a link protocol other than 0 or 3 is not a record this firmware can send: protocol 0 and paired = 0, one NOTE
+  //      (pair again); 2. an unpaired remote has protocol 0 (the next pairing writes 3);
+  //   3. autolock_timeout_s 1-4 -> 5, mtx_seize_hold_ms into 1000-1800, mtx_autolock_s 1-29 -> 30. CLAMPS, never
+  //      rejections: a rejection on the load path would wipe the throttle calibration.
+  // The remote's own_address stays writable: it is not this remote's identity on a new-style link (g_efuse_id is).
+  if (mtxValidateTxLink(&candidate.paired, &candidate.mtx_link_proto))
+    Serial.println("NOTE: the stored link record is not one this firmware can send (mtx_link_proto must be 0 or 3) - unpaired, pair again");
+  mtxClampTxConfig(&candidate.autolock_timeout_s, &candidate.mtx_seize_hold_ms, &candidate.mtx_autolock_s);
+
   // V2.5-Evo - 2026-09-17 - fm_warn_distance_m ceiling. Older builds accepted up to 1000 m even
   // though the one-byte rtm_distance telemetry saturates at 164 m, so a stored 300 was a warning
   // that could never fire. CLAMP rather than reject: this validator runs on the config LOAD path

@@ -1,6 +1,12 @@
 #ifndef SPIFFS_ENGINE_H
 #define SPIFFS_ENGINE_H
 
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE RECEIVER STEP: (1) THE LEGACY PAIR IS NOW PER BOARD. The four
+//   CFG_LEGACY_* numbers and the NOTE's list of new defaults are defined by the board header before it includes
+//   this file (RX: SW36 200 B -> SW37 232 B); a board that defines none gets no migration at all (the TX, which was
+//   already inert here). (2) W-5: the default-address bake calls efuseIdFromMac() (Common/MultiTx.h), the one
+//   identity formula the receiver's identity rule also uses, so the two can never drift apart. Same bytes as the
+//   inline bake it replaces (host test T1 proves the equality over 20,000 MACs).
 // V2.5-Evo - 2026-09-19 - The legacy pair moves one step: an SW35 (192-byte) RX config is migrated onto the SW36 (200-byte) struct, because SW35 is a byte-exact prefix of SW36 (three u16 fields appended, plus tail padding). The byte mapping is now the pure cfgPrefixMigrateImage() in Common/ConfigMigrate.h (host-tested on the owner's real SW35 image in Tools/tests/config_migrate_test.cpp): prefix from the blob, tail from defaultConf, so the appended fields take their real defaults (1 / 13 / 80) rather than zero. And the migration now ALSO runs on the BOOT PATH: readConfFromSPIFFS() migrates a stored legacy blob, saves the migrated struct and continues with it, so the SW35 -> SW36 flash does NOT reset the config. An SW34 (184-byte) blob is no longer migratable (the path is exactly one version back, as before). Inert on the TX.
 // V2.5-Evo - 2026-08-16 - Legacy config-blob migration: an SW34 (184-byte) RX backup is now accepted and migrated onto the SW35 (192-byte) struct, because SW34 is a byte-exact prefix of SW35. Gated on that exact size/version pair only; inert on the TX.
 // V2.5-Evo - 2026-08-16 - readConfFromSPIFFS() stages the decoded blob in a local copy and only writes it into the caller's struct AFTER validation passes; a rejected config no longer runs the board.
@@ -28,8 +34,26 @@ void spiffsErrorHalt(int type);
 void spiffsFormatNotify(bool starting);
 uint8_t esp_crc8(uint8_t *data, uint8_t length);
 
+// V2.5-Evo - 2026-10-20 - THE LEGACY PAIR IS PER BOARD. The board header defines CFG_LEGACY_BLOB_BYTES / _BLOB_SW /
+// _TARGET_BYTES / _TARGET_SW and CFG_LEGACY_NOTE_DEFAULTS (the list of the new fields' defaults the NOTE names) before
+// it includes this file - the RX: SW36 200 B -> SW37 232 B, in BREmote_V2_Rx.h next to the struct. A board that
+// defines none (the TX today) gets these zeros, kCfgLegacyMigrationSupported is false at compile time and the
+// migration is compiled out - which is what the TX already had (its 136-byte struct never matched the RX numbers).
+// They sit at the top because readConfFromSPIFFS() below already uses them.
+#ifndef CFG_LEGACY_BLOB_BYTES
+#define CFG_LEGACY_BLOB_BYTES      0   // this board defines no legacy pair: no migration
+#define CFG_LEGACY_BLOB_SW         0
+#define CFG_LEGACY_TARGET_BYTES    0
+#define CFG_LEGACY_TARGET_SW       0
+#endif
+#ifndef CFG_LEGACY_NOTE_DEFAULTS
+#define CFG_LEGACY_NOTE_DEFAULTS   "none"
+#endif
+
 // V2.5-Evo - 2026-09-19 - the pure byte mapping of the legacy-config migration (host-tested).
 #include "ConfigMigrate.h"
+// V2.5-Evo - 2026-10-20 - W-5: efuseIdFromMac(), the one chip-ID formula (pure, host-tested in multi_tx_test T1).
+#include "MultiTx.h"
 
 // V2.5-Evo - 2026-09-19 - defined further down in this file (the LEGACY CONFIG BLOB MIGRATION
 // block); declared here because readConfFromSPIFFS() now calls them on the boot path.
@@ -286,9 +310,10 @@ bool readConfFromSPIFFS(confStruct& data) {
             }
             saveConfToSPIFFS(migrated);
             data = migrated;
-            Serial.printf("NOTE: config migrated SW%u (%u B) -> SW%u (%u B) by prefix - every stored value kept; the fields SW%u added take their factory defaults (fm_return_mode 1, fm_align_cap 13, fm_align_influence 80) and the result is saved.\n",
+            // V2.5-Evo - 2026-10-20 - the list of new defaults is the board's own (CFG_LEGACY_NOTE_DEFAULTS).
+            Serial.printf("NOTE: config migrated SW%u (%u B) -> SW%u (%u B) by prefix - every stored value kept; the fields SW%u added take their factory defaults (%s) and the result is saved.\n",
                           (unsigned)blobVersion, (unsigned)decodedLen, (unsigned)SW_VERSION,
-                          (unsigned)sizeof(confStruct), (unsigned)SW_VERSION);
+                          (unsigned)sizeof(confStruct), (unsigned)SW_VERSION, CFG_LEGACY_NOTE_DEFAULTS);
             return true;
         }
     }
@@ -397,10 +422,10 @@ bool readConfFromSPIFFS(confStruct& data) {
 // kCfgLegacyMigrationSupported is false at compile time there, every branch below folds away, and
 // a TX owner sees byte-for-byte the behaviour they see today.
 // ============================================================
-#define CFG_LEGACY_BLOB_BYTES    192   // sizeof(confStruct) on the RX at SW35 - the stored/backup blob's decoded length
-#define CFG_LEGACY_BLOB_SW        35   // the SW_VERSION stamped in that blob's first two bytes
-#define CFG_LEGACY_TARGET_BYTES  200   // sizeof(confStruct) on the RX at SW36 - the struct it is a prefix OF
-#define CFG_LEGACY_TARGET_SW      36   // the SW_VERSION this pairing was verified against
+// V2.5-Evo - 2026-10-20 - PER BOARD NOW. The four CFG_LEGACY_* numbers and CFG_LEGACY_NOTE_DEFAULTS are defined by
+// the BOARD HEADER (the RX: BREmote_V2_Rx.h, SW36 200 B -> SW37 232 B); the defaults for a board that defines none are
+// at the TOP of this file. The reasoning above, and the NEXT PERSON ADDING A FIELD warning, apply to the board
+// header's numbers unchanged.
 
 // True only when THIS build is the exact firmware the legacy blob is a prefix of. Both terms are
 // compile-time constants, so on the TX (136 bytes, SW27) this is false before the optimiser even
@@ -539,15 +564,11 @@ void getConfFromSPIFFS()
   if (needDefaults)
   {
     //Generate Device Address
-    uint64_t mac = ESP.getEfuseMac(); // Get MAC from ESP32 eFuse
-    uint8_t mac_address[6];
-    for (int i = 0; i < 6; i++) {
-        mac_address[i] = (mac >> (8 * i)) & 0xFF;
-    }
-
-    defaultConf.own_address[0] = esp_crc8(mac_address, 4); // Compute CRC8 over the first 4 bytes
-    defaultConf.own_address[1] = mac_address[4];
-    defaultConf.own_address[2] = mac_address[5];
+    // V2.5-Evo - 2026-10-20 - W-5: THE ONE IDENTITY FORMULA. This was an inline copy of {crc8(mac[0..3]), mac[4],
+    // mac[5]}; it now calls efuseIdFromMac() (Common/MultiTx.h), the same function the receiver's identity rule
+    // compares own_address against, so the two copies can never drift apart. Byte for byte the same result: the
+    // uint64 from getEfuseMac() has mac[0] in its low byte, and host test T1 checks the two over 20,000 MACs.
+    efuseIdFromMac(ESP.getEfuseMac(), esp_crc8, defaultConf.own_address);
 
     saveConfToSPIFFS(defaultConf);
     if (!readConfFromSPIFFS(usrConf))

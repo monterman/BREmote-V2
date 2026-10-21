@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE RECEIVER STEP: cfgSetBatch() (the JSON import and the batch API) no longer rejects a read-only key - a JSON export lists them, so it made every export un-importable once the RX own_address became read-only. The value goes into the staged copy only and the cross-field validator decides (on the RX a foreign own_address drops the binding and is reset to the chip ID). ?set still refuses it. The TX has no read-only row, so it is unaffected.
 #ifndef CONFIG_SERVICE_ENGINE_H
 #define CONFIG_SERVICE_ENGINE_H
 
@@ -571,7 +572,17 @@ bool cfgSetBatch(const String& payload, String &err, bool &radioReinitRequired)
       return false;
     }
 
-    if (!cfgApplyFieldValue(staged, *spec, value, err)) return false;
+    // V2.5-Evo - 2026-10-20 - A READ-ONLY KEY IN A BATCH IS NOT AN ERROR. A JSON export lists every key, the
+    // read-only ones too (today: the RX own_address only, which is its chip ID since SW37), so refusing one here made
+    // every JSON export un-importable. Its value goes into the STAGED copy only, and the cross-field validator below
+    // judges the import as a whole: on the RX, an own_address that is not this chip's ID makes the identity rule drop
+    // the binding the import carries (a config made on another board) and puts own_address back to the chip ID before
+    // anything is kept. So the key still cannot change, and a foreign one unpairs, never pairs. ?set and the web
+    // page's single-field /api/set (cfgSetValueByKey) still refuse a read-only key outright. The TX has no read-only
+    // row, so nothing changes there.
+    CfgFieldSpec batchSpec = *spec;
+    batchSpec.writable = true;
+    if (!cfgApplyFieldValue(staged, batchSpec, value, err)) return false;
     radioReinitRequired = radioReinitRequired || spec->radioReinitRequired;
 
     // Skip trailing whitespace between pairs; comma will be consumed by top-of-loop skip.

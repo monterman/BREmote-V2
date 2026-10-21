@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE RECEIVER STEP: ?setconf's "migrated" NOTE names the board's own list of new defaults (CFG_LEGACY_NOTE_DEFAULTS, defined by the board header) instead of the hard-coded SW36 three, and says the pairing comes across unless the identity rule's NOTE above it says it was dropped. Text only; inert on the TX (no legacy pair there).
 // V2.5-Evo - 2026-10-03 - RX WEB CONSOLE: checkSerialQuit() now also honours a quit raised from off-port
 // (gRemoteQuitRequested / requestSerialQuit() / clearSerialQuitRequest(), added just above it). The USB
 // behaviour is unchanged - the physical port is still read exactly as before, the flag is simply tested
@@ -275,16 +276,15 @@ static void serSetConf(String data) {
     Serial.print(" and has been MIGRATED to SW");
     Serial.print(SW_VERSION);
     Serial.println(", then stored.");
-    Serial.println("OK your settings came across: throttle calibration, pairing, compass calibration and all the tuning values.");
-    // V2.5-Evo - 2026-09-19 - the pair is SW35 -> SW36 now; the three fields SW36 appended are the
-    // ones a backup cannot carry, and they take their factory defaults (see SPIFFSEngine.h).
-    Serial.print("NOTE: three settings could not come from the backup, because SW");
+    // V2.5-Evo - 2026-10-20 - MULTI-REMOTE RECEIVER STEP: the pair is per board now (RX SW36 -> SW37). The settings
+    // the older version did not have are the board's own list (CFG_LEGACY_NOTE_DEFAULTS, from the board header), not
+    // a hard-coded SW36 list. And the pairing comes across only if the backup was made on THIS board: the receiver's
+    // identity rule drops a binding whose own_address is not this chip's ID, and says so in a NOTE above this line.
+    Serial.println("OK your settings came across: throttle calibration, compass calibration and all the tuning values; the pairing too, unless a NOTE above says it was dropped.");
+    Serial.print("NOTE: the settings SW");
     Serial.print(CFG_LEGACY_BLOB_SW);
-    Serial.println(" did not have them - they take their factory defaults:");
-    Serial.println("NOTE:   fm_return_mode 1 (auto-return inside Follow-Me ON), fm_align_cap 13, fm_align_influence 80.");
-    Serial.print("NOTE: SW");
-    Serial.print(CFG_LEGACY_BLOB_SW);
-    Serial.println(" always HELD when you stopped; set fm_return_mode 0 (then ?save) if you want that behaviour back.");
+    Serial.print(" did not have take their factory defaults: ");
+    Serial.println(CFG_LEGACY_NOTE_DEFAULTS);
     Serial.println("OK run ?applyconf (or ?reboot) to make it live.");
     return;
   }

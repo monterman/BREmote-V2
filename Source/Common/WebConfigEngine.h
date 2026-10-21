@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE RECEIVER STEP: the web import's "migrated" message names the board's own list of new defaults (CFG_LEGACY_NOTE_DEFAULTS, defined by the board header) instead of the hard-coded SW36 three, and says the pairing comes across only for a backup made on this board (the receiver's identity rule). Text only; inert on the TX (no legacy pair there).
 // V2.5-Evo - 2026-10-14 - (RX only, inside ENABLE_WEB_LOG_DOWNLOAD) LOG FORMAT 4: the WiFi log download reads the header through the shared logReadFileHeader() (BREmote_V2_Rx.h): formats 3 and 4 are decoded (format 4 adds the boot block: boot counter + reset reason), older formats are refused as before, and a format-4 file's CSV gets one "=== RX boot #N / reset ... ===" line after the column header, as ?download prints it.
 // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): (RX only, inside ENABLE_WEB_LOG_DOWNLOAD) the WiFi log download's record-size ceiling and raw record buffer are LOG_REC_MAX (sizeof(VescLogDataL6), 170 B) instead of sizeof(VescLogDataL5), so a level-6 file is accepted and downloads with its 98 columns. No TX impact (the TX never compiles this block), no confStruct change.
 // V2.5-Evo - 2026-10-06 - (RX only, inside ENABLE_WEB_LOG_DOWNLOAD) LOG FORMAT 3: a log recorded by OLDER firmware (an older format_ver) is refused with its own plain-English ERR_LOG_FORMAT detail - recorded by older firmware, not damaged, download before flashing - instead of "predates the self-describing log format or is corrupt", which was wrong for it. The row-buffer comment no longer quotes the stale 2026-07-25 sizing.
@@ -610,12 +611,12 @@ static void webCfgHandleImport()
     response += ",\"migrated_to_sw\":" + String(SW_VERSION);
     response += ",\"detail\":\"This backup was taken from SW" + String(CFG_LEGACY_BLOB_SW);
     response += " and has been MIGRATED to SW" + String(SW_VERSION);
-    response += ". Your settings came across: throttle calibration, pairing, compass calibration and all the tuning values.";
-    // V2.5-Evo - 2026-09-19 - the pair is SW35 -> SW36 now; the three appended fields take their defaults.
-    response += " Three settings could not come from the backup, because SW" + String(CFG_LEGACY_BLOB_SW);
-    response += " did not have them - they take their factory defaults: fm_return_mode 1 (auto-return inside Follow-Me ON), fm_align_cap 13, fm_align_influence 80.";
-    response += " SW" + String(CFG_LEGACY_BLOB_SW);
-    response += " always HELD when you stopped; set fm_return_mode 0 and save if you want that behaviour back.\"";
+    // V2.5-Evo - 2026-10-20 - MULTI-REMOTE RECEIVER STEP: the pair is per board (RX SW36 -> SW37) and so is the list
+    // of new defaults (CFG_LEGACY_NOTE_DEFAULTS, board header; it holds no quote or backslash, it is raw JSON here).
+    // The pairing survives only if the backup was made on this board (the receiver's identity rule).
+    response += ". Your settings came across: throttle calibration, compass calibration and all the tuning values; the pairing too if this backup was made on this board.";
+    response += " The settings SW" + String(CFG_LEGACY_BLOB_SW);
+    response += " did not have take their factory defaults: " + String(CFG_LEGACY_NOTE_DEFAULTS) + ".\"";
   }
   response += "}";
   webCfgSendJson(200, response);

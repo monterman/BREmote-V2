@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-20 - SW37 MULTI-REMOTE: four kCfgFields rows (mtx_claim_s 6-60 s, mtx_seize_en 0-1, mtx_takeover_cap 0-255, mtx_takeover_ms 0-10000 ms); own_address becomes READ-ONLY (it is this chip's ID now, audit C8); cfgValidateCrossField() starts with the binding rules - identity, unpair, entries (mtxValidateRxBinding()) - and the clamps of the four settings, each correction with a NOTE line. The paired list itself has no row: only the pairing window writes it.
 // V2.5-Evo - 2026-10-20 - COMMENT ONLY: the followme_mode row's station list follows the front-station swap (4 = FRONT-LEFT, 5 = FRONT-RIGHT). Range unchanged.
 // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): the log_level row's max is raised 5 -> 6 (6 = IMU, the 170 B record with VESC 2's IMU and a reserved RX IMU block), and cfgValidateCrossField() CLAMPS log_level > 6 down to 6 - a clamp, never a rejection (LOAD path). An older firmware clamps a stored 6 back to 5, so a downgrade cannot wipe config either. Same u16 slot, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - audit M-20 + L-25: the fm_front_ahead_extra_m NOTE prints the real side floor (fmFrontSideFloorForConfigM), not a fixed 13 m.
@@ -117,7 +118,10 @@ const CfgFieldSpec kCfgFields[] = {
   {"rtm_align_threshold_deg",  CFG_U16,   offsetof(confStruct, rtm_align_threshold_deg),  true, false, true, 10.0f,  90.0f,  0, false},
   {"logger_en", CFG_U16, offsetof(confStruct, logger_en), true, false, true, 0.0f, 1.0f, 0, false},
   {"paired", CFG_U16, offsetof(confStruct, paired), true, false, true, 0.0f, 1.0f, 0, false},
-  {"own_address", CFG_ADDR3, offsetof(confStruct, own_address), true, false, false, 0.0f, 0.0f, 0, false},
+  // V2.5-Evo - 2026-10-20 - MULTI-REMOTE (audit C8): own_address is READ-ONLY. Since SW37 it IS this board's chip ID
+  // (g_efuse_id); the validator below sets it on every intake path and drops a binding made for any other value, so
+  // writing it could only ever unpair the board. ?get and the web page still show it.
+  {"own_address", CFG_ADDR3, offsetof(confStruct, own_address), false, false, false, 0.0f, 0.0f, 0, false},
   {"dest_address", CFG_ADDR3, offsetof(confStruct, dest_address), true, false, false, 0.0f, 0.0f, 0, false},
   {"wifi_password", CFG_STR8, offsetof(confStruct, wifi_password), true, false, false, 0.0f, 0.0f, 8, false},
   {"motor_ramp_s", CFG_FLOAT, offsetof(confStruct, motor_ramp_s), true, false, true, 0.0f, 4.0f, 2, false},
@@ -234,13 +238,70 @@ const CfgFieldSpec kCfgFields[] = {
   // history of the slot). Whole metres a front station sits AHEAD beyond d_follow; sideways is the
   // 13 m floor, not a setting. 0 = default 7; legal 4-10. The row accepts 0-10 so 0 round-trips; the
   // 1-3 gap and any stored value above 10 are CLAMPED in cfgValidateCrossField(), never rejected.
-  {"fm_front_ahead_extra_m", CFG_U16,   offsetof(confStruct, fm_front_ahead_extra_m), true, false, true, 0.0f, kFmFrontAheadExtraMaxM, 0, false}
+  {"fm_front_ahead_extra_m", CFG_U16,   offsetof(confStruct, fm_front_ahead_extra_m), true, false, true, 0.0f, kFmFrontAheadExtraMaxM, 0, false},
+  // V2.5-Evo - 2026-10-20 - SW37 MULTI-REMOTE SETTINGS (design v3.1 14.1, v3.2 section 7). Only active with two or
+  // more remotes paired; with one remote none of them is read. All four are also CLAMPED in cfgValidateCrossField()
+  // (mtxClampRxConfig()), so a stored value outside these rows is corrected on load, never a load failure.
+  //   mtx_claim_s      6-60 s     the silence, or (with Follow-Me and RTM off) the time at zero, after which another
+  //                               remote may CLAIM control - a squeeze from zero, or a summon. Releases nothing itself.
+  //                               The silence is never shorter than failsafe_time + 1 s (computed, mtxClaimMs()).
+  //   mtx_seize_en     0-1        the master (paired first) may take control back from a guest.
+  //   mtx_takeover_cap 0-255      throttle limit at the moment control passes (64 = 25 %; 255 = no limit).
+  //   mtx_takeover_ms  0-10000 ms time for that limit to rise to full (0 = no limit; never more than 10 s).
+  // The paired list (mtx_id, mtx_flags) has NO row on purpose: only the pairing window writes it. ?mtx prints it.
+  {"mtx_claim_s",            CFG_U16,   offsetof(confStruct, mtx_claim_s),            true, false, true, (float)kMtxClaimSMin, (float)kMtxClaimSMax, 0, false},
+  {"mtx_seize_en",           CFG_U16,   offsetof(confStruct, mtx_seize_en),           true, false, true, 0.0f, 1.0f, 0, false},
+  {"mtx_takeover_cap",       CFG_U16,   offsetof(confStruct, mtx_takeover_cap),       true, false, true, 0.0f, (float)kMtxTakeoverCapMax, 0, false},
+  {"mtx_takeover_ms",        CFG_U16,   offsetof(confStruct, mtx_takeover_ms),        true, false, true, 0.0f, (float)kMtxTakeoverMsMax, 0, false}
 };
 
 const size_t kCfgFieldCount = sizeof(kCfgFields) / sizeof(kCfgFields[0]);
 
 bool cfgValidateCrossField(confStruct &candidate, String &err)
 {
+  // ============================================================
+  // V2.5-Evo - 2026-10-20 - SW37 MULTI-REMOTE: THE BINDING RULES (design v3.1 14.3; audit C5, C8, C13, C21)
+  // ============================================================
+  // This function runs on EVERY intake path - ?set, ?setconf, the boot load, the SW36 migration, the web import (after
+  // its reset_bind block) - so these four rules hold everywhere. They are the pure mtxValidateRxBinding()
+  // (Common/MultiTx.h, host tests T12 / T20 / T19), in this order:
+  //   1. IDENTITY: own_address must be THIS chip's ID (g_efuse_id, computed before the config is loaded). If it is
+  //      not, it is set to the chip ID and paired = 0: a binding made for another identity (a copied config, an edited
+  //      address) is never kept. Both of the owner's buggies store a different value today, so each re-pairs once.
+  //   2. UNPAIR: paired == 0 clears the list and dest_address. One rule for every unpair path (reset_bind,
+  //      ?set paired 0, factory defaults, an unpaired import).
+  //   3. ENTRIES: an entry that is 00:00:00, this buggy's own ID, a duplicate, a second old-style one, or an old-style
+  //      one next to a new-style one is removed; with any new-style entry, dest_address is 00:00:00.
+  //   4. The four settings are clamped to their ranges (a CLAMP, never a rejection - this is the LOAD path too).
+  // Every correction says so in one NOTE line. A board whose binding is already right prints nothing.
+  {
+    MtxRxBinding b;
+    memset(&b, 0, sizeof(b));
+    b.paired = candidate.paired;
+    memcpy(b.own_address,  candidate.own_address,  3);
+    memcpy(b.dest_address, candidate.dest_address, 3);
+    memcpy(b.mtx_id,       candidate.mtx_id,       sizeof(b.mtx_id));
+    memcpy(b.mtx_flags,    candidate.mtx_flags,    sizeof(b.mtx_flags));
+    const uint8_t was[3] = { candidate.own_address[0], candidate.own_address[1], candidate.own_address[2] };
+    const uint8_t notes = mtxValidateRxBinding(&b, g_efuse_id);
+    candidate.paired = b.paired;
+    memcpy(candidate.own_address,  b.own_address,  3);
+    memcpy(candidate.dest_address, b.dest_address, 3);
+    memcpy(candidate.mtx_id,       b.mtx_id,       sizeof(candidate.mtx_id));
+    memcpy(candidate.mtx_flags,    b.mtx_flags,    sizeof(candidate.mtx_flags));
+    if (notes & MTX_NOTE_ID_NOT_SET)
+      Serial.printf("NOTE: own_address was not set - set to this board's eFuse ID %02X:%02X:%02X; binding dropped, pair again\n",
+                    g_efuse_id[0], g_efuse_id[1], g_efuse_id[2]);
+    if (notes & MTX_NOTE_ID_MISMATCH)
+      Serial.printf("NOTE: stored own_address %02X:%02X:%02X is not this board's eFuse ID %02X:%02X:%02X (config copied or edited) - binding dropped, pair again\n",
+                    was[0], was[1], was[2], g_efuse_id[0], g_efuse_id[1], g_efuse_id[2]);
+    if (notes & MTX_NOTE_ENTRY_CLEARED)
+      Serial.println("NOTE: a paired remote was removed from the list (00:00:00, this buggy's own ID, a duplicate, or an old-style remote next to a new-style one)");
+    if (notes & MTX_NOTE_UNPAIRED)
+      Serial.println("NOTE: unpaired - the paired-remote list and dest_address were cleared");
+    mtxClampRxConfig(&candidate.mtx_claim_s, &candidate.mtx_seize_en, &candidate.mtx_takeover_cap, &candidate.mtx_takeover_ms);
+  }
+
   // ---- tx_gps_stale_timeout_ms: never storable below the floor ----
   // A CLAMP, deliberately, not a range rejection. This function runs on the config LOAD path as
   // well as every save path, and a rejection there fails the load and falls back to defaults -

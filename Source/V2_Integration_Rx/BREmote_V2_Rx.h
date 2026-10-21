@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE RECEIVER STEP, SW36 -> SW37: confStruct 200 -> 232 B, the multi-remote tail appended at 200 (mtx_id[12], mtx_flags[4], mtx_claim_s 10, mtx_seize_en 1, mtx_takeover_cap 64, mtx_takeover_ms 4000, mtx_rsvd[4] banked); the SW36 -> SW37 legacy pair for the boot / ?setconf / web-import migration (every SW36 setting kept, the tail from defaultConf); Common/MultiTx.h included; g_efuse_id (this chip's ID, computed first in setup()); the ownership atomics the radio, PWM and loop tasks share (mtx_owner_slot, mtx_grant_ms, mtx_owner_change_seq, mtx_telemetry_owner_seq); TelemetryPacket pinned to 20 B (<= 32, the reply's 5-bit index). The binding (paired / own / dest / list) survives the flash only where the stored own_address is this chip's ID.
 // V2.5-Evo - 2026-10-20 - COMMENT ONLY: the historical fm_front_angle_deg note is marked with the front-station swap (4 front-left, 5 front-right). No code, no struct, no SW_VERSION change.
 // V2.5-Evo - 2026-10-17 - HEADING LATCH WRITTEN ONCE PER CHANGE (audit F1-F5): includes ../Common/HeadingLatchPersist.h, the pure request / due / result rules RTMState.ino uses to store the compass-vs-GPS-course latch (/hdg_fault) once per latch change, with the trigger released, instead of on every heading call. Include only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-17 - audit C-1 / C-3, COMMENTS ONLY in this file: the throttle-scaled curve applies to settings 51-99 only (0-50 and 100 are unscaled, kSteerScaleMinSetting in Common/DifferentialMixer.h) - the include note, the mix_influence column note and the g_mix_influence declaration say so; the stale g_motor0_cmd bench check is restated for the new rule. No code change, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -141,6 +142,11 @@
 // block's - the header is a single-channel 0-255 throttle ramp with a Q12 accumulator, because a
 // whole-count step in that domain floors at 2.55 s and cannot express the configured 0.2-4.0 s range.
 #include "../Common/OutputRamp.h"
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE RECEIVER STEP: the pure model of one buggy and up to four remotes (the link
+// ID, the frame kinds, the ownership rules, the takeover limit, the pairing window, the binding validator). It is
+// included HERE, ahead of confStruct, because defaultConf takes its multi-remote defaults (kMtx*Default) from it.
+// Pure, header-only, host-tested in Tools/tests/multi_tx_test.cpp; the receiver supplies its hook table in Radio.ino.
+#include "../Common/MultiTx.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -199,7 +205,7 @@ static const uint16_t kTxGpsStaleFloorMs = 500;
 static const float kAutoRampMinS = 0.2f;   // s; smallest non-zero auto_ramp_s
 static const float kAutoRampMaxS = 4.0f;   // s; the ceiling, shared with motor_ramp_s
 
-#define SW_VERSION 36  // V2.5-Evo - 2026-10-02 - STILL 36, AND THE TAIL PAD IS NOW SPENT: fm_front_angle_deg (P2 front stations) took the 2 B alignment pad named below, so sizeof is still 200, this flash does NOT reset config, and the NEXT new scalar field is a real SW37 bump with a real wipe - there is no free space left in this struct and both banked reserved slots went on 2026-09-19 (steer_during_auto, auto_ramp_s). When SW37 comes, bank four slots. // V2.5-Evo - 2026-09-19 - 36 = fm_return_mode / fm_align_cap / fm_align_influence appended at the tail; sizeof 192->200 (198 + 2 B alignment pad). Config is NOT reset by this flash: the 192-byte SW35 blob is migrated by prefix (every stored value keeps its offset and its value) and the three new fields default (1 / 13 / 80) - see the LEGACY CONFIG BLOB MIGRATION block in Common/SPIFFSEngine.h. 35 = mag_orientation appended (compass mounting rotation); sizeof 184->192 (mag_orientation + 2 reserved slots banked for future no-bump features), config IS reset by this flash. 34 = added fm_engage_dist_m / auton_runtime_cap_s / fm_steer_reposition_en reserved slots + defaultConf carries factory default config (compass cal, near_diag_offset 45); first flash resets all RX SPIFFS config to defaults. NOTE (2026-07-25, STAGE 0 PART A): the third of those slots has since been RENAMED IN PLACE to log_level — same offset, same uint16_t, sizeof(confStruct) still 184 — so this stays 34 and NO further config wipe happens.
+#define SW_VERSION 37  // V2.5-Evo - 2026-10-20 - 37 = the multi-remote tail appended at offset 200 (32 B: the paired-remote list, its flags, four settings and four banked u16 slots); sizeof 200 -> 232. Config is NOT reset by this flash: the 200-byte SW36 blob is migrated by prefix (every stored value keeps its offset and its value, the tail comes from defaultConf) - see CFG_LEGACY_* below, just above the SPIFFSEngine.h include. The pairing survives only where the stored own_address equals this chip's ID (the identity rule in cfgValidateCrossField()); both of the owner's buggies store a different value, so each pairs again once. The four mtx_rsvd slots are banked so the next small field costs no bump.  // V2.5-Evo - 2026-10-02 - STILL 36, AND THE TAIL PAD IS NOW SPENT: fm_front_angle_deg (P2 front stations) took the 2 B alignment pad named below, so sizeof is still 200, this flash does NOT reset config, and the NEXT new scalar field is a real SW37 bump with a real wipe - there is no free space left in this struct and both banked reserved slots went on 2026-09-19 (steer_during_auto, auto_ramp_s). When SW37 comes, bank four slots. // V2.5-Evo - 2026-09-19 - 36 = fm_return_mode / fm_align_cap / fm_align_influence appended at the tail; sizeof 192->200 (198 + 2 B alignment pad). Config is NOT reset by this flash: the 192-byte SW35 blob is migrated by prefix (every stored value keeps its offset and its value) and the three new fields default (1 / 13 / 80) - see the LEGACY CONFIG BLOB MIGRATION block in Common/SPIFFSEngine.h. 35 = mag_orientation appended (compass mounting rotation); sizeof 184->192 (mag_orientation + 2 reserved slots banked for future no-bump features), config IS reset by this flash. 34 = added fm_engage_dist_m / auton_runtime_cap_s / fm_steer_reposition_en reserved slots + defaultConf carries factory default config (compass cal, near_diag_offset 45); first flash resets all RX SPIFFS config to defaults. NOTE (2026-07-25, STAGE 0 PART A): the third of those slots has since been RENAMED IN PLACE to log_level — same offset, same uint16_t, sizeof(confStruct) still 184 — so this stays 34 and NO further config wipe happens.
 const char* CONF_FILE_PATH = "/data.txt";
 const char* BC_FILE_PATH = "/batconf.txt";
 
@@ -801,8 +807,28 @@ struct confStruct {
     // ============================================================
     uint16_t fm_front_ahead_extra_m;   // metres ahead of d_follow for F4/F5; 0 = default 7; range 4-10. Default 0 (was fm_front_angle_deg, renamed in place 2026-10-06)
     // (the 2 bytes of tail padding are now spent: 200 used, sizeof 200, nothing left for free.)
+
+    // ============================================================
+    // V2.5-Evo - 2026-10-20 - SW37: THE MULTI-REMOTE TAIL (one buggy, up to four remotes). Appended at 200, so an
+    // SW36 blob is a byte-exact prefix and migrates (CFG_LEGACY_* below); the tail comes from defaultConf.
+    // The list is WRITTEN BY THE PAIRING WINDOW ONLY (waitForPairing(), Radio.ino) and cleared by the validator
+    // whenever paired == 0; it has no ?set row. ?mtx prints it. The four settings are clamped on every intake path.
+    // ============================================================
+    uint8_t  mtx_id[12];               // 200: the paired remotes' 3-byte chip IDs, in pairing order. Slot 1 (bytes 0-2) is the MASTER = the remote paired first. All 0 = none
+    uint8_t  mtx_flags[4];             // 212: per slot - bit 0 valid, bit 1 old-style (legacy) remote. A legacy remote is only ever the single entry
+    uint16_t mtx_claim_s;              // 216: 6-60 s, default 10. With another remote on: the remote in control's silence, or its time at zero with Follow-Me / RTM off, after which another remote may claim control (a squeeze from zero, or a summon). The silence is never shorter than failsafe_time + 1 s. Releases nothing by itself
+    uint16_t mtx_seize_en;             // 218: 0-1, default 1. The master may take control back from a guest (trigger released, RIGHT tap then hold); refused while Follow-Me / RTM is armed
+    uint16_t mtx_takeover_cap;         // 220: 0-255 counts, default 64 (25 %). The throttle limit at the moment control passes to a remote; 255 = no limit
+    uint16_t mtx_takeover_ms;          // 222: 0-10000 ms, default 4000. The time the limit takes to rise to full throttle; 0 = no limit
+    uint16_t mtx_rsvd[4];              // 224: banked for later fields, 0, unread (a later field renames one in place: no bump, no wipe)
 };
-static_assert(sizeof(confStruct) == 200, "confStruct size mismatch — expected 200 bytes (SW36: 192 + fm_return_mode/fm_align_cap/fm_align_influence 3 x u16 = 198, + fm_front_ahead_extra_m (u16, was fm_front_angle_deg) in the 2 B tail pad = 200, no padding left). Update this assert if you change the struct.");  // 2026-10-06: fm_front_angle_deg renamed in place to fm_front_ahead_extra_m, sizeof unchanged.  // 2026-10-02 P2: +fm_front_angle_deg(u16 2) took the 2 B TAIL PAD, so sizeof STAYS 200, SW_VERSION STAYS 36 and no config is wiped — the mag_fm_set trick (TX, 2026-09-30). The tail is now FULL: the next scalar is a real SW37 bump. // 192->200 SW35->36: +fm_return_mode(u16 2) +fm_align_cap(u16 2) +fm_align_influence(u16 2) appended at the tail, +2 B tail pad (2026-09-19). The SW35->36 boot-path migration in Common/SPIFFSEngine.h is pinned to 192 (legacy) and 200 (current) and disables itself if either stops matching.
+static_assert(sizeof(confStruct) == 232, "confStruct size mismatch - expected 232 bytes (SW37: the 200-byte SW36 struct + the 32-byte multi-remote tail at 200, no padding). Update this assert, SW_VERSION and the CFG_LEGACY_* pair if you change the struct.");
+static_assert(offsetof(confStruct, mtx_id) == 200 && offsetof(confStruct, mtx_flags) == 212, "SW37 multi-remote list offsets (Tools/tests/config_migrate_test.cpp T19 pins the same)");
+static_assert(offsetof(confStruct, mtx_claim_s) == 216 && offsetof(confStruct, mtx_seize_en) == 218, "SW37 multi-remote settings offsets");
+static_assert(offsetof(confStruct, mtx_takeover_cap) == 220 && offsetof(confStruct, mtx_takeover_ms) == 222 && offsetof(confStruct, mtx_rsvd) == 224, "SW37 takeover limit / reserved offsets");
+// V2.5-Evo - 2026-10-20 - THE SW36 ASSERT, as it stood, kept as the record (200 is now the SW36 PREFIX the migration copies;
+// the offset asserts above pin it). Commented out, not live:
+// static_assert(sizeof(confStruct) == 200, "confStruct size mismatch — expected 200 bytes (SW36: 192 + fm_return_mode/fm_align_cap/fm_align_influence 3 x u16 = 198, + fm_front_ahead_extra_m (u16, was fm_front_angle_deg) in the 2 B tail pad = 200, no padding left). Update this assert if you change the struct.");  // 2026-10-06: fm_front_angle_deg renamed in place to fm_front_ahead_extra_m, sizeof unchanged.  // 2026-10-02 P2: +fm_front_angle_deg(u16 2) took the 2 B TAIL PAD, so sizeof STAYS 200, SW_VERSION STAYS 36 and no config is wiped — the mag_fm_set trick (TX, 2026-09-30). The tail is now FULL: the next scalar is a real SW37 bump. // 192->200 SW35->36: +fm_return_mode(u16 2) +fm_align_cap(u16 2) +fm_align_influence(u16 2) appended at the tail, +2 B tail pad (2026-09-19). The SW35->36 boot-path migration in Common/SPIFFSEngine.h is pinned to 192 (legacy) and 200 (current) and disables itself if either stops matching.
 // HISTORY of the size assert as it stood until 2026-09-19 (192 bytes), kept verbatim: 176->184: +fm_engage_dist_m(float 4) +auton_runtime_cap_s(u16 2) +fm_steer_reposition_en(u16 2), all naturally aligned, no tail pad (2026-07-20 SW34)  // 172->176 motor_ramp_s float (2026-06-05 SW33)  // 112->128 Phase A; 128->136 Phase B; 136->152 P7 RTM; 152->156 Bundle B; 156 unchanged BundleE; 156->160 rtm_approach_zone_m (uint16_t + 2-byte tail pad) (2026-04-30); D3 rtm_use_compass + rtm_cog_min_speed_kmh (2x uint8_t) fill the 2-byte tail pad — sizeof stays 160 (2026-05-06); D3-Fix: uint8_t→uint16_t for ConfigService compatibility, sizeof unchanged at 164 (2026-05-06); Bundle 1: dummy_delete_me renamed to rtm_steer_response in-place, sizeof unchanged at 164 (2026-05-08); STAGE 0 PART A: fm_steer_reposition_en renamed to log_level in-place — same offset, same uint16_t, sizeof STILL 184 and SW_VERSION STILL 34, so this flash does NOT reset SPIFFS config (2026-07-25); auton_runtime_cap_s renamed to gps_dyn_model in-place, sizeof STILL 184, SW_VERSION STILL 34 (2026-08-16); 184->192 SW34->35: +mag_orientation(u16 2) +rsvd_u16_1(u16 2) +rsvd_f32_1(float 4), appended at the tail, naturally aligned, no tail pad — the one intended config wipe for this bump (2026-08-16). THIS NUMBER IS THE SSOT: the SW34->35 config-backup migration is pinned to 184 (legacy) and 192 (current) and disables itself if either stops matching, so any prose elsewhere that disagrees with the 192 above is stale and must be corrected rather than trusted.
 confStruct usrConf;
   //The orginal confs were:  ##// confStruct defaultConf = {SW_VERSION, 1, 0, 0, 50, 0, 0, 1500, 2000, 1500, 2000, 1000, 10, 0, 1, 0, 0, 0, 0, 0, 25.0f, 10.0f, 10.0f, 5.0f, 35.0f, 45.0f, 45.0f, 0.0095554f, 0.0, 1000, 1, 0, {0, 0, 0}, {0, 0, 0}, {'1','2','3','4','5','6','7','8'}};
@@ -886,7 +912,16 @@ confStruct defaultConf = {SW_VERSION, 2, 22, 1, 50 /*steering_influence: convent
   // the tail padding this field now occupies. So a flash changes nothing until the rider sets it.
   // V2.5-Evo - 2026-10-06 - the field is now fm_front_ahead_extra_m; 0 still means "the default"
   // (7 m), for the same load-bearing reason.
-  0             // fm_front_ahead_extra_m: 0 = default 7 m ahead of d_follow for F4/F5; else 4-10 m
+  0,            // fm_front_ahead_extra_m: 0 = default 7 m ahead of d_follow for F4/F5; else 4-10 m
+  // V2.5-Evo - 2026-10-20 - SW37 multi-remote defaults. These are also the values the boot-path migration writes
+  // into a migrated SW36 config (the tail of the struct is copied from HERE).
+  {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},   // mtx_id: no remote in the list (a migrated board keeps its one remote as the implicit legacy entry)
+  {0, 0, 0, 0},                           // mtx_flags: none valid
+  kMtxClaimSDefault,                      // mtx_claim_s: 10 s
+  kMtxSeizeEnDefault,                     // mtx_seize_en: 1 = the master may take control back
+  kMtxTakeoverCapDefault,                 // mtx_takeover_cap: 64 counts (25 %)
+  kMtxTakeoverMsDefault,                  // mtx_takeover_ms: 4000 ms
+  {0, 0, 0, 0}                            // mtx_rsvd: banked, 0
 };
 
 // ============================================================
@@ -1639,6 +1674,50 @@ static inline void stickyCapArmRise(uint8_t initial, bool open_rise)
   portEXIT_CRITICAL(&sticky_arm_mux);
 }
 static inline void stickyCapArm(uint8_t initial) { stickyCapArmRise(initial, true); }
+
+// ============================================================
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE RECEIVER STEP: THE LEGACY CONFIG PAIR FOR THIS BOARD (SW36 -> SW37)
+// ============================================================
+// Common/SPIFFSEngine.h migrates exactly one older (size, version) pair onto this firmware's struct, by prefix, on
+// the boot path and on both importers (?setconf, the web import). The pair belongs to this struct, so it is defined
+// HERE, next to it, before that header is included. WHY THIS PAIR IS SAFE: SW37 appended its 32 bytes at offset 200
+// and changed nothing inside the first 200, so an SW36 blob is a byte-exact prefix (static_asserts above; host test
+// T19 in Tools/tests/config_migrate_test.cpp). The tail comes from defaultConf, so the list is empty and the four
+// settings take their real defaults. NEXT PERSON ADDING A FIELD: re-check the prefix field by field, then move all
+// four numbers together; if the old struct is not a prefix, delete the pair instead (see SPIFFSEngine.h).
+// CFG_LEGACY_NOTE_DEFAULTS is printed by the boot NOTE and ?setconf and concatenated raw into the web import's
+// JSON, so it must never contain a double quote or a backslash.
+#define CFG_LEGACY_BLOB_BYTES    200   // sizeof(confStruct) on the RX at SW36 - the stored / backup blob's decoded length
+#define CFG_LEGACY_BLOB_SW        36   // the SW_VERSION stamped in that blob's first two bytes
+#define CFG_LEGACY_TARGET_BYTES  232   // sizeof(confStruct) on the RX at SW37 - the struct it is a prefix OF
+#define CFG_LEGACY_TARGET_SW      37   // the SW_VERSION this pair was verified against
+#define CFG_LEGACY_NOTE_DEFAULTS "an empty multi-remote list, mtx_claim_s 10, mtx_seize_en 1, mtx_takeover_cap 64, mtx_takeover_ms 4000"
+
+// ============================================================
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE RECEIVER STEP: IDENTITY AND THE SHARED OWNERSHIP STATE
+// ============================================================
+// g_efuse_id - THIS BOARD'S CHIP ID, {crc8(mac[0..3]), mac[4], mac[5]} from the eFuse MAC (efuseIdFromMac(), the one
+//   formula; the default-address bake uses it too). Computed FIRST in setup(), before the config is loaded, so the
+//   identity rule in cfgValidateCrossField() can check the stored own_address on every intake path, the boot load
+//   included. Never read from SPIFFS. Written once at boot, then read-only.
+uint8_t g_efuse_id[3] = {0, 0, 0};
+// The ownership state itself (MtxRxState) lives in Radio.ino and has ONE writer, the radio task. These atomics are
+// what the other tasks may read (single-core ESP32-C3: they guard against preemption, not against another core):
+//   mtx_owner_slot          - the slot in control (kMtxNone = nobody). Published by the owner_changed hook BEFORE
+//                             the change counter moves (hook contract Y-1 a), so a reader that sees the counter move
+//                             sees the new owner. Read by ?mtx (loop task).
+//   mtx_grant_ms            - the takeover limit's start stamp, never stored as 0 (0 = no limit). Published by the
+//                             publish_limit hook BEFORE the new owner's first byte is applied; read by calcPWM()
+//                             (PWM task), which also clears it with a compare-exchange once the limit has run out.
+//   mtx_owner_change_seq    - +1 on every release and every grant. runRtmLoop() (loop task) watches it and closes the
+//                             three sticky end windows (design 7.7), so a new owner never sees the old owner's "St".
+//   mtx_telemetry_owner_seq - the sequence the loop has rebuilt the telemetry for (published after runRtmLoopBody(),
+//                             audit W-3). While it differs from mtx_owner_change_seq the radio task gives the owner
+//                             the full non-owner mask (audit O-1). With one remote neither counter ever moves.
+std::atomic<int8_t>   mtx_owner_slot          {kMtxNone};
+std::atomic<uint32_t> mtx_grant_ms            {0};
+std::atomic<uint8_t>  mtx_owner_change_seq    {0};
+std::atomic<uint8_t>  mtx_telemetry_owner_seq {0};
 
 #include "../Common/SPIFFSEngine.h"
 
@@ -2962,6 +3041,11 @@ struct __attribute__((packed)) TelemetryPacket {
     //   [6..7] reserved, 0.
     uint8_t rx_state_flags = 0;       // index 19 - see above
 } telemetry;
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE RECEIVER STEP: the reply's byte 3 carries the index in bits 4-0 and the
+// ownership status in bits 7-5 (design 5.5), so the packet may never outgrow 32 bytes; and the per-remote rotation in
+// Common/MultiTx.h (mtxTelIndexNext, kMtxTelemetryLen) must cover exactly these 20 indices.
+static_assert(sizeof(TelemetryPacket) <= 32, "TelemetryPacket must stay within 32 bytes: the reply index is 5 bits");
+static_assert(sizeof(TelemetryPacket) == kMtxTelemetryLen, "Common/MultiTx.h kMtxTelemetryLen must equal sizeof(TelemetryPacket)");
 
 /*
 ** FreeROTS/Task handles

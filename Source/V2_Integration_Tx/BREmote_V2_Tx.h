@@ -1269,6 +1269,40 @@ volatile unsigned long  tx_last_send_ms   = 0;
 //   one-call-site hardware check (project display rule); 0xFF = follow the buggy's status.
 volatile uint8_t       mtx_dot_state     = MTX_DOT_OFF;
 volatile uint8_t       mtx_dot_override  = 0xFF;
+// "tA" (design 9.9): shown while now is before this stamp (2 SEIZED in a row: control was taken); 0 = never. Loop task.
+volatile unsigned long  mtx_ta_until_ms   = 0;
+
+// The summon kinds, and how a refused gesture shows "St" (MultiRemote.ino mtxTxStopRefusal()).
+#define MTX_SUMMON_RTM 1
+#define MTX_SUMMON_FM  2
+#define MTX_ST_BLOCK   0   // the usual 2 s "St", blocking loop() like every existing "St" (trigger released, nothing running)
+#define MTX_ST_HELD    1   // 2 s, held WITHOUT blocking (the trigger is held)
+#define MTX_ST_BRIEF   2   // 1 s, held without blocking, over this remote's running Follow-Me / return (Larry's default 2)
+static const uint32_t kMtxStHeldMs  = 2000;
+static const uint32_t kMtxStBriefMs = 1000;
+// Cross-file functions of the multi-remote remote step (declared here: the .ino files are concatenated alphabetically).
+void showStopHeld(uint32_t hold_ms);                                       // Display.ino
+void mtxTxNoteInput();                                                     // MultiRemote.ino ...
+void mtxActivityNote();
+void mtxActivityTick();
+bool mtxTxIsNonOwner();
+void mtxTxSummonTry(uint8_t kind);
+void mtxTxSeizePoll();
+bool mtxTxSeizeSuppress();
+void mtxTxStopRefusal(const char* why, uint8_t style);
+void mtxTxLoopTick();
+void mtxTxPrintStatus();
+void mtxTxDotCommand(const String& args);
+void mtxTxBootReport();
+void queueMetaPacketBurst(uint8_t type, uint8_t value);                    // Radio.ino ...
+bool queueMetaPacketIfFree(uint8_t type, uint8_t value, uint8_t count);
+bool metaQueuePending(uint8_t type, uint8_t value, bool any_value);
+bool mtxLostOwnerDisarm();                                                 // RTMState.ino ...
+void txBootIdOwnerEdge();
+bool txBootIdPending();
+bool rtmEnabledEffective();
+void setRtmArmed();
+void cycleFmMode();
 
 // mtxTxStatusGet - a consistent copy of g_mtx_tx (any task). Output: *out. Side effects: none.
 static inline void mtxTxStatusGet(MtxTxStatus* out)

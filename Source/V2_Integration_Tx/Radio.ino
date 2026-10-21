@@ -793,6 +793,9 @@ void waitForTelemetry(void *parameter)
             mtx_tx_events = (uint8_t)(mtx_tx_events | ev);
             if (s == MTX_S_REFUSED) { const unsigned long u = now + kMtxE9HoldMs; mtx_e9_until_ms = (u != 0) ? u : 1; }
             portEXIT_CRITICAL(&g_mtx_tx_mux);
+            // V2.5-Evo - 2026-10-20 - X-8: on EVERY edge to OWNER (001: in control with others paired - never one remote's 000)
+            // the boot ID is queued HERE, at once, before the loop can start anything that blocks (RTMState.ino).
+            if ((ev & MTX_TXE_BECAME_OWNER) && s == MTX_S_OWNER) txBootIdOwnerEdge();
           }
 
           uint8_t* ptr = (uint8_t*)&telemetry;  

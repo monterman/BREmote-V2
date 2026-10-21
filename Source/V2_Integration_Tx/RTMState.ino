@@ -1,3 +1,14 @@
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE REMOTE STEP (SW29): (1) THE ACTIVITY REPEAT (X-1) is ticked from every blocking wait here -
+//   gpsKeepAliveDelay(), ceremonyDelaySeeRelease(), rtmCapHoldDelay() and both ceremony wait loops - so the remote in control
+//   keeps telling the buggy it is busy through the whole RTM ceremony (mtxActivityTick(), MultiRemote.ino; owner-only, never in
+//   SINGLE, never once RTM is active). (2) returnGesture(): a refusal SHOWS "St" + the stop buzz (owner rule 2026-10-20) -
+//   brief and non-blocking while a return already runs (row 6), held and non-blocking with the trigger held (row 7) - and,
+//   after the trigger and override branches, a remote NOT in control takes the summon gate before the enable check (X-7).
+//   (3) The arm ceremony's two timeouts show "St" + the stop buzz, held without blocking (row 16, owner: yes). (4) X-8: on
+//   every edge to OWNER on a multi-remote buggy the boot ID is queued AT ONCE from the telemetry task (txBootIdOwnerEdge()),
+//   before any blocking action; the 10 s repeats run only while in control. (5) mtxLostOwnerDisarm(): control taken or lost
+//   ends this remote's own Follow-Me / RTM state and screen, with no packet (the buggy already disarmed). One remote: only (2)
+//   and (3) show, as the owner ordered. No confStruct change in this file.
 // V2.5-Evo - 2026-10-20 - comments only (owner: the front pair swaps numbers, the clockwise circle 1 rear-right, 2 behind,
 //   3 rear-left, 4 FRONT-LEFT, 5 FRONT-RIGHT): last_fm_mode and the cycleFmMode() wrap note name the new sides. The remote
 //   only sends the number (0xF2), so no code changes here; the RX carries the swap and must be flashed with this remote.
@@ -262,12 +273,15 @@ extern float rtm_arm_dist_m;  // defined in BREmote_V2_Tx.h — captured at RTM 
 // Prevents the GPS dot from blinking during blocking display animations.
 // Safe to call from loop() only — gps_tx.encode() must not be
 // called concurrently from core 0.
+// V2.5-Evo - 2026-10-20 - X-1: the activity repeat is ticked here too (mtxActivityTick(): it queues at most one 0xF1/0 every
+// 2 s, only for the remote in control on a multi-remote buggy while a press or the RTM ceremony is in progress).
 static void gpsKeepAliveDelay(uint32_t ms)
 {
   unsigned long start = millis();
   while (millis() - start < ms)
   {
     while (Serial1.available()) gps_tx.encode(Serial1.read());
+    mtxActivityTick();
     delay(10);
   }
 }
@@ -286,6 +300,7 @@ static bool ceremonyDelaySeeRelease(uint32_t ms)
   {
     while (Serial1.available()) gps_tx.encode(Serial1.read());
     if (thr_scaled < 10) seen = true;
+    mtxActivityTick();   // V2.5-Evo - 2026-10-20 - X-1
     delay(10);
   }
   return seen;
@@ -682,6 +697,7 @@ static void rtmCapHoldDelay(uint32_t ms)
   {
     while (Serial1.available()) gps_tx.encode(Serial1.read());
     rtmArrivalCapUpdate();
+    mtxActivityTick();   // V2.5-Evo - 2026-10-20 - X-1 (the pre-arm refusal holds this inside the ceremony)
     delay(10);
   }
 }
@@ -1108,6 +1124,7 @@ static void runDoubleSqueezeArm()
     if (returnGestureCeremonyPoll(false)) { ceremonyCancelForReturnGesture(); return; }
     // V2.5-Evo - 2026-10-07 - M-3 / F-2: a plain 1 s LEFT hold = cancel to full manual, "St" + stop buzz.
     if (ceremonyLeftCancelPoll(false)) { ceremonyCancelToManual(); return; }
+    mtxActivityTick();   // V2.5-Evo - 2026-10-20 - X-1: the remote in control stays busy through the ceremony
     delay(100);
     checkSerial();
   }
@@ -1119,6 +1136,10 @@ static void runDoubleSqueezeArm()
     DISP_LOCK(); for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000; updateDisplay(); DISP_UNLOCK();
     rtm_tx_state = RTM_IDLE;
     Serial.printf("RTM [TX] arm cancelled: no first squeeze within %u s\n", (unsigned)usrConf.rtm_arm_window_s);
+    // V2.5-Evo - 2026-10-20 - ROW 16 (owner 2026-10-20: the ceremony timeout shows "St"): it was a blanked screen and a serial
+    // line, so the rider could not tell that Return-To-Me never started. Now "St" + the stop buzz - the one "it did not
+    // engage" signal - held 2 s WITHOUT blocking (the trigger may be held; the kept cap above still applies).
+    mtxTxStopRefusal("RTM [TX] the arm ceremony timed out (no first squeeze): St", MTX_ST_HELD);
     return;
   }
 
@@ -1164,6 +1185,7 @@ static void runDoubleSqueezeArm()
       if (returnGestureCeremonyPoll(false)) { ceremonyCancelForReturnGesture(); return; }
       // V2.5-Evo - 2026-10-07 - M-3 / F-2: a plain 1 s LEFT hold = cancel to full manual, "St" + stop buzz.
       if (ceremonyLeftCancelPoll(false)) { ceremonyCancelToManual(); return; }
+      mtxActivityTick();   // V2.5-Evo - 2026-10-20 - X-1
       delay(100);
       checkSerial();
     }
@@ -1175,6 +1197,7 @@ static void runDoubleSqueezeArm()
       DISP_LOCK(); for (int i = 0; i < 8; i++) displayBuffer[i] = 0x0000; updateDisplay(); DISP_UNLOCK();
       rtm_tx_state = RTM_IDLE;
       Serial.printf("RTM [TX] arm cancelled: no second squeeze within %u s\n", (unsigned)usrConf.rtm_arm_window_s);
+      mtxTxStopRefusal("RTM [TX] the arm ceremony timed out (no second squeeze): St", MTX_ST_HELD);   // V2.5-Evo - 2026-10-20 - row 16
       return;
     }
 
@@ -1331,6 +1354,28 @@ void rtmFmStopFlush()
 static uint8_t       tx_boot_id         = 0;    // 0-127, chosen once per power-on
 static unsigned long tx_boot_id_last_ms = 0;    // millis() of the last repeat queued; 0 = send at the next fresh link
 static const unsigned long kTxBootIdRepeatMs = 10000UL;
+// V2.5-Evo - 2026-10-20 - X-8: set by txBootIdOwnerEdge() (the telemetry task) when the owner-edge queue was refused (a burst
+// of the same type was pending); txBootIdTick() then sends the 3-packet burst on its next pass. One byte, one writer each way.
+static volatile bool tx_boot_id_requeue = false;
+
+// txBootIdOwnerEdge - V2.5-Evo - 2026-10-20 - audit X-8. EVERY GRANT ON THE BUGGY RESETS ITS COPY OF THIS REMOTE'S BOOT ID
+//   (release/grant step 5), so until the buggy hears the new owner's ID it cannot see that remote reboot (S-8), and a
+//   parked auto-return has no link tolerance. The old re-queue (tx_boot_id_last_ms = 0) was consumed by txBootIdTick() on
+//   the loop task - which cannot run while a summon's RTM ceremony blocks loop() for 15 s and more. So the boot ID is
+//   queued HERE, directly, from the telemetry task, on the very reply that says "you control" (status OWNER, 001 - never
+//   in SINGLE, where the reply is 000 and the boot ID runs as today): a 3-packet burst into a free slot
+//   (queueMetaPacketIfFree(): never over a pending 0xF1/0 or 0xF1/1). If no slot is free, txBootIdTick() sends it next.
+//   Called by waitForTelemetry() (Radio.ino) on MTX_TXE_BECAME_OWNER. Side effects: the meta queue, the requeue flag.
+void txBootIdOwnerEdge()
+{
+  if (!queueMetaPacketIfFree(0xF1, (uint8_t)(0x80 | tx_boot_id), 3)) tx_boot_id_requeue = true;
+}
+// txBootIdPending - is this power-on's boot ID still waiting in the meta queue? (MultiRemote.ino: a summon's arm waits for
+//   it, because the ceremony's own 0xF1/0 would replace it in place.) Any task. Side effects: none.
+bool txBootIdPending()
+{
+  return metaQueuePending(0xF1, (uint8_t)(0x80 | tx_boot_id), false);
+}
 
 // txBootIdInit - choose this power-on's boot ID (different from the last one stored in NVS), store it, and queue the
 // first 0xF1/(0x80|id) burst. Called once from setup() before initTasks(). Inputs: NVS, esp_random().
@@ -1366,6 +1411,11 @@ static void txBootIdTick(unsigned long now)
   // V2.5-Evo - 2026-10-07 - signed: waitForTelemetry can stamp last_packet after `now` was read (see rtmRefreshTick()).
   const bool link_fresh = (last_packet != 0) && ((long)(now - last_packet) < (long)FM_LINK_HEALTHY_MS);
   if (!link_fresh) { tx_boot_id_last_ms = 0; return; }   // send again as soon as the link comes back
+  // V2.5-Evo - 2026-10-20 - MULTI-REMOTE (design 9.5): the boot ID is an owner-only meta - a buggy with several remotes drops
+  // it from one that is not in control. So while NOT in control, nothing is sent, and the next send is a 3-packet burst (the
+  // owner edge itself queues one at once, txBootIdOwnerEdge()). One remote / an old-style link: never true, as today.
+  if (mtxTxIsNonOwner()) { tx_boot_id_last_ms = 0; return; }
+  if (tx_boot_id_requeue) { tx_boot_id_requeue = false; tx_boot_id_last_ms = 0; }   // X-8: the owner-edge queue was full
   // V2.5-Evo - 2026-10-07 - T-8: THE BUG - the repeat timer was stamped when the boot ID was QUEUED, and a state burst
   // (0xF1/0 or 0xF1/1) queued after it replaces it in place, so a boot ID could be lost without ever going on the air
   // and the next try was 10 s away. THE FIX: once it has left the queue, check the send stamp (tx_boot_id_sent_ms,
@@ -1724,6 +1774,49 @@ static void fmSilentDisarm()
   // V2.5-Evo - 2026-10-07 - defect c: clear the whole R5 row here too (arm-timeout and the F-1 silent disarm), so no
   // C7-C9 bar / end-dot pixel outlives Follow-Me. During an active return the RTM bar redraws R5 on the next render.
   DISP_LOCK(); displayBuffer[6] = 0x0000; DISP_UNLOCK();
+}
+
+// ============================================================
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE: CONTROL TAKEN OR LOST (design 9.5, 9.9)
+// ============================================================
+// mtxLostOwnerDisarm - this remote is no longer in control (3 non-owner replies, or 2 SEIZED: a claim or the master's
+//   take-back). The buggy has ALREADY ended Follow-Me and Return-To-Me for it (its release sends the synthetic 0xF2/0 and
+//   0xF1/0 first), so only this remote's own state and screen change - NO packet (a non-owner's meta is dropped anyway).
+//   Follow-Me: disarmed as fmSilentDisarm() does, minus the 0xF2/0. Return-To-Me ACTIVE: ended as rtmDisengage() does,
+//   minus the 0xF1/0 and the blocking 2 s "St" - the caller shows "tA" or "St". The cap goes back to 255: this remote's
+//   throttle no longer drives anything, and control comes back only through the buggy's zero proof (a squeeze from zero).
+//   Returns: true if something was armed here (the caller shows "St" when it is not a take-over). Loop task only.
+bool mtxLostOwnerDisarm()
+{
+  bool was = false;
+  if (fm_armed)
+  {
+    was = true;
+    fm_armed            = false;
+    fm_throttle_seen    = false;
+    fm_last_sync_ms     = 0;
+    last_fm_return_mode = 0xFF;
+    fm_fault_deferred   = false;
+    DISP_LOCK(); displayBuffer[6] = 0x0000; DISP_UNLOCK();
+    Serial.println("FM [TX] Follow-Me ended here: this remote is no longer in control (the buggy has already ended it)");
+  }
+  if (rtm_tx_state == RTM_ACTIVE)
+  {
+    was = true;
+    rtm_tx_state         = RTM_COOLDOWN;
+    rtm_cooldown_ms      = millis();
+    rtm_tx_active        = false;
+    rtm_end_keep_cap     = false;
+    rtm_end_sticky       = false;
+    rtm_arrival_cap_hold = false;
+    rtm_cap_hold_sticky  = false;
+    rtm_thr_cap_tx       = 255;
+    rtm_arm_dist_m       = 0.0f;
+    rtm_arm_gps_timeout_override = 0;
+    DISP_LOCK(); displayBuffer[6] = 0x0000; DISP_UNLOCK();
+    Serial.println("RTM [TX] Return-To-Me ended here: this remote is no longer in control (the buggy has already ended it)");
+  }
+  return was;
 }
 
 // Internal disarm: clears state, notifies RX, shows "St" full-screen, buzzes only on a FAULT.
@@ -2159,7 +2252,9 @@ void returnGesture()
   // one serial line, the return continues (Gate 3 still ends it on a release).
   if (rtm_tx_active || rtmIsArming())
   {
-    Serial.println("RTM [TX] return gesture ignored: Return-To-Me is already active on this remote, the return continues");
+    // V2.5-Evo - 2026-10-20 - ROW 6 (owner rule "if it cannot engage, show stop"; Larry's default 2): was serial only. Now a
+    // BRIEF "St" + the stop buzz, NOT blocking, then straight back to the return's screen - the return continues.
+    mtxTxStopRefusal("RTM [TX] return gesture refused: Return-To-Me is already active on this remote, the return continues", MTX_ST_BRIEF);
     return;
   }
   // V2.5-Evo - 2026-10-07 - SOP-040 GESTURE RULE: the gesture acts only with the trigger fully released, in every
@@ -2167,8 +2262,11 @@ void returnGesture()
   // trigger; this is the same rule held at the action itself. Ignored silently (serial line only).
   if (!triggerReleased())
   {
-    Serial.printf("RTM [TX] return gesture ignored: trigger held (thr %u) - it needs the trigger fully released\n",
+    // V2.5-Evo - 2026-10-20 - ROW 7: was serial only. Now "St" + the stop buzz, held 2 s WITHOUT blocking (the rider is
+    // driving: a blocking hold would freeze loop()).
+    Serial.printf("RTM [TX] return gesture refused: trigger held (thr %u) - it needs the trigger fully released\n",
                   (unsigned)thr_scaled);
+    mtxTxStopRefusal(NULL, MTX_ST_HELD);
     return;
   }
   if (last_fm_return_mode != 0xFF)
@@ -2178,6 +2276,16 @@ void returnGesture()
     Serial.println("RETURN [TX] gesture: auto-return override cleared -> the buggy uses its stored default (next 0xF2 carries no override)");
     if (current_vib_pattern == 0) current_vib_pattern = 10;   // Pattern 10: two medium pulses = override CLEARED
     fmRequestKeepaliveNow();
+    return;
+  }
+  // V2.5-Evo - 2026-10-20 - X-7: A REMOTE NOT IN CONTROL SUMMONS (design v3.2 3.4.2) - here, after the trigger and the
+  // override branches and BEFORE the enable check below, so the answer to a busy owner is E9 and a missing fix or a
+  // disabled feature is "St", never silence. The summon gate (mtxTxSummonTry()) sends nothing on a refusal; on success the
+  // ceremony below starts from MultiRemote.ino once the buggy names this remote the owner. In control (or with one
+  // remote, or an old-style link) this is today's path.
+  if (mtxTxIsNonOwner())
+  {
+    mtxTxSummonTry(MTX_SUMMON_RTM);
     return;
   }
   // State 1: arm RTM as before. (State 2 is landed from inside the ceremony this starts.)

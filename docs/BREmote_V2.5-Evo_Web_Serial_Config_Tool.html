@@ -518,6 +518,12 @@ const TX_CMD_HTML = `
   <option value="?hall">?hall — hall sampling status</option>
   <option value="?all">?all — all activity gateways (append on|off)</option>
 </optgroup>
+<optgroup label="Multi-remote">
+  <option value="?mtx">?mtx — multi-remote status: this remote's ID, the link (old-style or new-style, the link ID), the buggy's last answers, the rate, the auto-lock, the take-back and the summon (one-shot, safe any time)</option>
+  <option value="?mtxdot 1">?mtxdot 1 — force the ownership dot SOLID (display check; also 0 off, 2 slow blip, 3 pulse)</option>
+  <option value="?mtxdot 3">?mtxdot 3 — force the ownership dot PULSE (display check)</option>
+  <option value="?mtxdot auto">?mtxdot auto — the ownership dot follows the buggy again</option>
+</optgroup>
 <optgroup label="Radio &amp; Inputs">
   <option value="?printrssi">?printrssi — live RSSI/SNR (quit to exit)</option>
   <option value="?printinputs">?printinputs — live throttle/toggle ADC (quit to exit)</option>

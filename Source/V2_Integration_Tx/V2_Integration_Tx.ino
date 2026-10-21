@@ -3,6 +3,7 @@
 //   loop() runs the idle AUTO-LOCK (039b908, reused) with its two timeouts - autolock_timeout_s for one remote or the remote
 //   in control (0 = off: today's behaviour), mtx_autolock_s for a remote NOT in control on a multi-remote buggy - before the
 //   auto-sleep check, as 039b908 placed it. The lock is the LEFT-hold lock: system_locked, the display, the stop flush.
+//   And it calls mtxTxLoopTick() (MultiRemote.ino) once per pass, right after runMenu().
 // V2.5-Evo - 2026-10-12 - comment only: the fmArmedNotReady() prototype note describes the D-7 not-ready look (end dots C0 + C9), not the retired scanner. No code change.
 // V2.5-Evo - 2026-10-07 - S-7: prototype for fmIsReturning() (RTMState.ino), used by Display.ino. No confStruct change.
 // V2.5-Evo - 2026-10-07 - Q-2: prototype for rtmReturnConfirmed() (RTMState.ino), used by Display.ino. No confStruct change.
@@ -211,6 +212,10 @@ void loop()
 
   runMenu();
   if(in_menu > 0) in_menu--;
+  // V2.5-Evo - 2026-10-20 - MULTI-REMOTE: the loop side of the ownership rules (MultiRemote.ino) - the edges the telemetry task
+  // raised (control lost -> local disarm, "tA"), E9, the summon and take-back answers, the ownership dot, the activity repeat.
+  // Returns at once on an old-style link and does nothing with one remote.
+  mtxTxLoopTick();
 
   // V2.5-Evo - 2026-04-25 - P7: RTM state machine (arming, active, cooldown) and FM mode cycle.
   runRtmLoop();

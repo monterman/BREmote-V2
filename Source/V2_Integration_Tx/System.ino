@@ -340,6 +340,17 @@ void cmdWifiStop(const String &args) {
 #endif
 }
 
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE: ?mtx (the remote's multi-remote status, one-shot) and ?mtxdot (the ownership dot for
+// the display check). Both are in the docs web serial tool's TX command list. Bodies in MultiRemote.ino.
+void cmdMtx(const String &args) {
+  (void)args;
+  mtxTxPrintStatus();
+}
+
+void cmdMtxDot(const String &args) {
+  mtxTxDotCommand(args);
+}
+
 void cmdExitChg(const String &args) {
   Serial.println(" Exit by user");
   exitChargeScreen = 1;
@@ -453,6 +464,8 @@ const CmdEntry cmdTable[] = {
   { "wifierr",      cmdWifiErr,      "",                "last wifi config error" },
   { "reboot",       cmdReboot,       "",                "reboot the remote" },
   { "exitchg",      cmdExitChg,      "",                "exit charge screen" },
+  { "mtx",          cmdMtx,          "",                "multi-remote: ID, link, status, rate, auto-lock, take-back, summon (one-shot)" },
+  { "mtxdot",       cmdMtxDot,       "[0-3|auto]",      "force the ownership dot (0 off,1 solid,2 slow,3 pulse) for the display check" },
   { "printgps",    cmdPrintGPS,     "",                "TX GPS state and fix status" },
   { "gpsraw",      cmdGpsRaw,       "[sec]",           "dump raw Serial1 NMEA output (default 5s)" },
   { "gpsreinit",   cmdGpsReinit,    "",                "re-run initTxGPS() without rebooting" },

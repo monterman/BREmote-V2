@@ -1,3 +1,15 @@
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE REMOTE STEP (SW29), the gestures (design v3.2 3.4.2, 4.3; audit X-1, X-7, C20; owner rules
+//   2026-10-20): (1) every toggle press and magnet contact is INPUT (the spare's rate) and ACTIVITY (the remote in control repeats
+//   0xF1/0 while a press is in progress, mtxActivityNote()/Tick(); never in SINGLE). (2) A remote NOT in control on a multi-remote
+//   buggy SUMMONS from the six fresh-arm sites - the FM toggle combo here, the RTM combo inside returnGesture(), the mode 4 hold
+//   and tap, the roles 1-3 RTM and FM holds - BEFORE their enable checks (X-7), so a busy owner answers E9 and a missing fix
+//   or a disabled feature "St"; it needs the trigger released (in the summon gate) and a magnet arrival counts as the first
+//   press. In control, with one remote, or on an old-style link every site runs today's code. (3) THE REFUSALS SHOW "St" +
+//   the stop buzz (rows 1-4, 8-14 of the 4.3 table; owner: "if it cannot engage, show stop"): non-blocking and brief over a
+//   running mode, non-blocking with the trigger held, the usual 2 s otherwise. Row 5 (a gesture cut short by the rider's own
+//   squeeze) is a cancel and stays silent. (4) The master's TAKE-BACK (C20): a RIGHT tap then a RIGHT hold of
+//   mtx_seize_hold_ms, polled here and in runMenu(); its second press never cycles the display. (5) While NOT in control a
+//   toggle tap changes no gear and no cap (design 9.7). No confStruct change in this file.
 // V2.5-Evo - 2026-10-09 - mag_mode 4 cleanup after the bench round (owner: "magnet works perfect"; audits "magnet bands"
 //   M-1, L-1 to L-4 and "magnet station step" L-4). The TEMP bench line and magTempBenchPrint() are removed. (M-1)
 //   floating-pin guard: the edge snapshot retries at most 4 times, and if magEdgeIsr() counts more than 100 edges in one
@@ -395,6 +407,11 @@ void handleGearToggle(int direction)
   bool (*isActive)() = (direction < 0) ? ctminus : ctplus;
 
   in_menu = usrConf.menu_timeout + 1;
+  // V2.5-Evo - 2026-10-20 - MULTI-REMOTE: a toggle press is input (the rate rule) and activity (the X-1 repeat: the FIRST press
+  // opens the window, so the buggy hears "busy" at once); RIGHT also feeds the master's take-back gesture.
+  mtxTxNoteInput();
+  mtxActivityNote();
+  if (direction > 0) mtxTxSeizePoll();
   delay(50);
   unsigned long pushtime = millis();
   bool change_once       = 1;
@@ -445,6 +462,10 @@ void handleGearToggle(int direction)
   while (isActive())
   {
     delay(10);
+    // V2.5-Evo - 2026-10-20 - the press is held: still busy (X-1), and the take-back is timed on RIGHT (C20).
+    mtxActivityNote();
+    mtxActivityTick();
+    if (direction > 0) mtxTxSeizePoll();
 
     if (thr_scaled > 3 && usrConf.steer_enabled)
     {
@@ -473,16 +494,32 @@ void handleGearToggle(int direction)
             // V2.5-Evo - 2026-10-07 - Q-10: THE BUG - the magnet tap already left Follow-Me alone during a return, but
             // this combo did not: it could disarm Follow-Me (with its 2 s blocking "St", freezing RTM's gates and
             // ramp) or re-declare it in the middle of a return. THE FIX: ignored while RTM is active or arming.
+            // V2.5-Evo - 2026-10-20 - ROW 1 (owner rule; Larry's default 2): the refusal while a return runs SHOWS - a brief
+            // "St" + the stop buzz, NOT blocking (Q-10: a blocking hold froze RTM's gates and ramp), then the return's screen.
+            // X-7: a remote NOT in control summons, before the enable check (busy owner -> E9, no fix / feature off -> "St").
+            // ROW 2: Follow-Me unusable here (fm_override_enabled 0 or gps_en 0) was silent (no else) - now "St" + the stop
+            // buzz, the usual 2 s (the trigger is released: this branch needs thr < 10). Not while Follow-Me is already armed:
+            // a disarm the switch-off blocks is not a refused arm, and "St" would say Follow-Me stopped.
             if (rtm_tx_active || rtmIsArming())
-              Serial.println("FM [TX] Follow-Me gesture ignored: Return-To-Me is active on this remote");
+              mtxTxStopRefusal("FM [TX] Follow-Me gesture refused: Return-To-Me is active on this remote, the return continues", MTX_ST_BRIEF);
+            else if (mtxTxIsNonOwner() && !isFmArmed())
+              mtxTxSummonTry(MTX_SUMMON_FM);
             else if (usrConf.fm_override_enabled && usrConf.gps_en)
               cycleFmMode();
+            else if (!isFmArmed())
+            {
+              Serial.printf("FM [TX] Follow-Me gesture refused: Follow-Me is off on this remote (fm_override_enabled %d, gps_en %d)\n",
+                            (int)usrConf.fm_override_enabled, (int)usrConf.gps_en);
+              mtxTxStopRefusal(NULL, MTX_ST_BLOCK);
+            }
           }
         }
         else if (direction > 0)
         {
           // Simple RIGHT hold 2s → cycle telemetry display mode
-          cycleDisplayMode(1);
+          // V2.5-Evo - 2026-10-20 - C20 / V-16: not when this press is the take-back's held second press (1000-1800 ms,
+          // then held on): one press, one action.
+          if (!mtxTxSeizeSuppress()) cycleDisplayMode(1);
         }
         else if (direction < 0)
         {
@@ -522,13 +559,28 @@ void handleGearToggle(int direction)
         // V2.5-Evo - 2026-10-07 - SOP-040 gesture rule: the RIGHT tap + LEFT hold Return-To-Me gesture acts only
         // with the trigger fully released. It always did nothing here with the trigger held; now it says so on
         // serial (silently on the remote, as the rule asks).
-        Serial.printf("RTM [TX] return gesture ignored: trigger held (thr %u) - it needs the trigger fully released\n",
+        // V2.5-Evo - 2026-10-20 - ROW 4 (owner rule "if it cannot engage, show stop"): no longer silent on the remote - "St"
+        // + the stop buzz, held 2 s WITHOUT blocking (the trigger is held). Still nothing is armed.
+        Serial.printf("RTM [TX] return gesture refused: trigger held (thr %u) - it needs the trigger fully released\n",
                       (unsigned)thr_scaled);
+        mtxTxStopRefusal(NULL, MTX_ST_HELD);
+      }
+      else if (has_combo && direction > 0 && last_tap_dir == -1)
+      {
+        // V2.5-Evo - 2026-10-20 - ROW 3: the LEFT tap + RIGHT hold Follow-Me gesture with the trigger held did NOTHING (this
+        // branch caught the RTM combo only). Now "St" + the stop buzz, held WITHOUT blocking. (Reachable with steering
+        // disabled; with steering on, a squeeze ends the hold earlier - row 5, a cancel, silent.)
+        Serial.printf("FM [TX] Follow-Me gesture refused: trigger held (thr %u) - it needs the trigger released\n",
+                      (unsigned)thr_scaled);
+        mtxTxStopRefusal(NULL, MTX_ST_HELD);
       }
       // Release wait after the action. A squeeze here also hands the toggle straight back to
       // steering instead of holding the rider in menu mode until the toggle is centred.
       while (isActive())
       {
+        mtxActivityNote();   // V2.5-Evo - 2026-10-20 - still pressed: still busy (X-1); the take-back sees the release
+        mtxActivityTick();
+        if (direction > 0) mtxTxSeizePoll();
         if (thr_scaled > 3 && usrConf.steer_enabled)
         {
           throttle_abort = true;
@@ -542,6 +594,14 @@ void handleGearToggle(int direction)
 
     if (millis() - pushtime > usrConf.gear_change_waittime)
     {
+      // V2.5-Evo - 2026-10-20 - design 9.7: while NOT in control on a multi-remote buggy a toggle tap changes nothing - no gear,
+      // no cap, no display step (whose 500 ms hold would also blur the take-back's tap-then-press timing). In control, with
+      // one remote, or on an old-style link: today's tap actions.
+      if (change_once && mtxTxIsNonOwner())
+      {
+        change_once = 0;
+        in_menu = usrConf.menu_timeout;
+      }
       if (change_once)
       {
         switch (usrConf.throttle_mode)
@@ -1264,6 +1324,10 @@ void runMagGesture()
   // debounce window is not silently subtracted from the rider's 2s / 5s hold.
   if (edge_accepted && mag_stable_low)
   {
+    // V2.5-Evo - 2026-10-20 - X-7: the magnet's arrival is the gesture's FIRST PRESS - input (fast at once while FREE, so the
+    // buggy has fresh zero proof by the end of the hold) and activity (X-1, the remote in control).
+    mtxTxNoteInput();
+    mtxActivityNote();
     mag_hold_start = mag_raw_since;
     fm_advised     = false;
     rtm_advised    = false;
@@ -1302,6 +1366,8 @@ void runMagGesture()
   // a buzz meaning "never mind" is exactly the feedback-on-nothing this gesture avoids everywhere else.
   if (mag_stable_low && !hold_abandoned)
   {
+    mtxTxNoteInput();    // V2.5-Evo - 2026-10-20 - the magnet is held: still input, still busy
+    mtxActivityNote();
     uint32_t held = now - mag_hold_start;
 
     if (held >= kMagMaxHoldMs)
@@ -1475,13 +1541,24 @@ void runMagGesture()
         if (hold_verdict == kMagHoldTriggerHeld)
         {
           // SOP-040: the 5 s hold (V2.5-Evo - 2026-10-09 - audit L-3: was "2.5 s") acts only with the trigger fully released. Nothing happens, no buzz.
-          Serial.printf("MAG [TX] hold ignored: trigger held (thr %u) - the 5 s hold needs the trigger fully released\n",
+          // V2.5-Evo - 2026-10-20 - ROW 8 (owner rule): nothing is armed, but the remote now SAYS so - "St" + the stop buzz,
+          // held WITHOUT blocking (the trigger is held).
+          Serial.printf("MAG [TX] hold refused: trigger held (thr %u) - the 5 s hold needs the trigger fully released\n",
                         (unsigned)thr_scaled);
+          mtxTxStopRefusal(NULL, MTX_ST_HELD);
         }
         else if (hold_verdict == kMagHoldIgnored)
         {
           // R-2: a Return-To-Me is already running. Ignore the hold; the return continues untouched.
-          Serial.println("MAG [TX] hold ignored: Return-To-Me is already active, the return continues");
+          // V2.5-Evo - 2026-10-20 - ROW 9 (owner rule; Larry's default 2): a BRIEF "St" + the stop buzz, NOT blocking, then the
+          // return's screen again. The return still continues untouched.
+          mtxTxStopRefusal("MAG [TX] hold refused: Return-To-Me is already active, the return continues", MTX_ST_BRIEF);
+        }
+        else if (mtxTxIsNonOwner())
+        {
+          // V2.5-Evo - 2026-10-20 - X-7: NOT in control - the summon gate, BEFORE the enable check below (busy owner -> E9;
+          // no fix, RTM off, gps_en 0 -> "St"). On success the ceremony starts once the buggy names this remote the owner.
+          mtxTxSummonTry(MTX_SUMMON_RTM);
         }
         else if (hold_verdict == kMagHoldRefused)
         {
@@ -1517,6 +1594,14 @@ void runMagGesture()
         else if (rtm_tx_active || rtmIsArming())
         {
           // Return-To-Me owns the buggy right now — never touch Follow-Me underneath it.
+          // V2.5-Evo - 2026-10-20 - ROW 10 (owner rule; Larry's default 2): a tap that would ARM Follow-Me (not armed) was
+          // silent; now a BRIEF "St" + the stop buzz, not blocking. A tap with Follow-Me armed (a station step) stays silent.
+          if (!isFmArmed()) mtxTxStopRefusal("MAG [TX] tap refused: Return-To-Me is active - Follow-Me cannot arm under it", MTX_ST_BRIEF);
+        }
+        else if (mtxTxIsNonOwner() && !isFmArmed())
+        {
+          // V2.5-Evo - 2026-10-20 - X-7: NOT in control - the summon gate, before the feature check below.
+          mtxTxSummonTry(MTX_SUMMON_FM);
         }
         else if (!(usrConf.fm_override_enabled && usrConf.gps_en))
         {
@@ -1619,16 +1704,31 @@ void runMagGesture()
       // Bail out entirely if RTM isn't usable — same guard the toggle path applies.
       // V2.5-Evo - 2026-09-30 - reads the EFFECTIVE enable (stored value, or the RAM session override a
       // mag_mode 4 hold may have set) instead of usrConf.rtm_enabled directly.
-      if (!(rtmEnabledEffective() && usrConf.gps_en)) return;
+      // V2.5-Evo - 2026-10-20 - X-7: a remote NOT in control (and with no return of its own running) takes the SUMMON gate
+      // first, before this enable check. ROW 11: RTM unusable was a silent `return` - now "St" + the stop buzz (held without
+      // blocking if the trigger is held, the usual 2 s if not). Every branch now FALLS THROUGH to the debounce resync at
+      // the end of this block instead of returning, because the refusal can block for 2 s.
+      if (mtxTxIsNonOwner() && !(rtm_tx_active || rtmIsArming()))
+      {
+        mtxTxSummonTry(MTX_SUMMON_RTM);
+      }
+      else if (!(rtmEnabledEffective() && usrConf.gps_en))
+      {
+        Serial.printf("MAG [TX] hold refused: Return-To-Me cannot start (rtm enabled %d, gps_en %d)\n",
+                      rtmEnabledEffective() ? 1 : 0, (int)usrConf.gps_en);
+        mtxTxStopRefusal(NULL, triggerReleased() ? MTX_ST_BLOCK : MTX_ST_HELD);
+      }
       // V2.5-Evo - 2026-10-07 - Q-8 / SOP-040 GESTURE RULE: THE BUG - in mag_mode 1-3 the Return-To-Me hold still armed
       // (or ended) a return with the trigger held, which the rule forbids: with the trigger held, nudging or steering a
       // buggy must never start or end a return. THE FIX: checked at the moment of removal, exactly like the mode 4 hold;
       // held -> ignored silently, one serial line. The FM tier below is untouched (arming FM mid-tow is the owner's
       // exception).
-      if (!triggerReleased())
+      else if (!triggerReleased())
       {
-        Serial.printf("MAG [TX] hold ignored: trigger held (thr %u) - the Return-To-Me hold needs the trigger fully released\n",
+        // V2.5-Evo - 2026-10-20 - ROW 12 (owner rule): "St" + the stop buzz, held WITHOUT blocking (the trigger is held).
+        Serial.printf("MAG [TX] hold refused: trigger held (thr %u) - the Return-To-Me hold needs the trigger fully released\n",
                       (unsigned)thr_scaled);
+        mtxTxStopRefusal(NULL, MTX_ST_HELD);
       }
       else if (rtm_tx_active || rtmIsArming())
       {
@@ -1651,9 +1751,29 @@ void runMagGesture()
     {
       // ---- toggle FM ----
       // Mutual exclusion: never touch FM while RTM is active or mid-ceremony.
-      if (rtm_tx_active || rtmIsArming()) return;
-      if (!(usrConf.fm_override_enabled && usrConf.gps_en)) return;
-      if (isFmArmed() && fmIsReturning())
+      // V2.5-Evo - 2026-10-20 - ROW 13 (RTM running) and ROW 14 (Follow-Me unusable) were silent `return`s. Now, for an ARM
+      // attempt (Follow-Me not armed; a disarm the RTM rule blocks is not a refused arm): "St" + the stop buzz - brief and
+      // non-blocking over the running return (Larry's default 2), held without blocking if the trigger is held, the usual
+      // 2 s otherwise. X-7: a remote NOT in control summons before the feature check. Every branch falls through to the
+      // debounce resync below.
+      if (rtm_tx_active || rtmIsArming())
+      {
+        if (!isFmArmed()) mtxTxStopRefusal("MAG [TX] Follow-Me hold refused: Return-To-Me is active - Follow-Me cannot arm under it", MTX_ST_BRIEF);
+      }
+      else if (mtxTxIsNonOwner() && !isFmArmed())
+      {
+        mtxTxSummonTry(MTX_SUMMON_FM);
+      }
+      else if (!(usrConf.fm_override_enabled && usrConf.gps_en))
+      {
+        if (!isFmArmed())
+        {
+          Serial.printf("MAG [TX] Follow-Me hold refused: Follow-Me is off on this remote (fm_override_enabled %d, gps_en %d)\n",
+                        (int)usrConf.fm_override_enabled, (int)usrConf.gps_en);
+          mtxTxStopRefusal(NULL, triggerReleased() ? MTX_ST_BLOCK : MTX_ST_HELD);
+        }
+      }
+      else if (isFmArmed() && fmIsReturning())
       {
         // V2.5-Evo - 2026-10-07 - T-9: THE BUG - this magnet disarm also ended an auto-return under way; SOP-040 rule 4
         // says auto-return ends only by arriving, a fault or a remote power cycle. THE FIX: ignored while the buggy
@@ -1767,6 +1887,7 @@ void runMenu()
     //System is NOT locked
     else
     {
+      mtxTxSeizePoll();   // V2.5-Evo - 2026-10-20 - C20: the take-back's tap-gap-press is timed between presses too
       if(ctminus())
       {
         handleGearToggle(-1);

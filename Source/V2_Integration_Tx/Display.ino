@@ -1,3 +1,9 @@
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE REMOTE STEP (SW29), the screen: (1) showStopHeld() - the refusal "St" held WITHOUT blocking
+//   loop() (2 s, or 1 s over a running mode), respected by all three render paths, for the gestures refused with the trigger held
+//   or while this remote's own Follow-Me / Return-To-Me runs (owner rule 2026-10-20: "if it cannot engage, show stop"); the
+//   glyphs are the existing large-font S and t. (2) E9 (design 9.8) and "tA" (9.9), after E71 and the input fault, only on a
+//   new-style multi-remote link. (3) The 24a0371 ownership dot at C7 R2, drawn ONLY while no Follow-Me dot needs R2 - its one
+//   call site; ?mtxdot drives it for the hardware check (project display rule). One remote: R2 is exactly as before.
 // V2.5-Evo - 2026-10-20 - MULTI-REMOTE (design 9.11, audit C16): the bargraphs' "connected" test is txLinkFresh() (1000 ms, 2500 ms
 //   while this remote runs the slow rate of a spare) - exactly millis() - last_packet < 1000 on an old-style link. No confStruct change.
 // V2.5-Evo - 2026-10-12 - comments only: the stale "scanner" wording now describes the D-7 looks (breathing bar, end dots C0 + C9, solid bar); a project-notes reference in the updateR5ProximityBar() block says "project display rule". No code change.
@@ -780,6 +786,54 @@ void showFmStopLabelHeld()
   fm_label_pending  = true;
 }
 
+// ============================================================
+// V2.5-Evo - 2026-10-20 - THE REFUSAL "St", HELD WITHOUT BLOCKING (owner rule 2026-10-20; design v3.2 4.3 rows 1, 3, 4, 6-10,
+//   12, 13, 16). A Follow-Me or Return-To-Me arm gesture that cannot engage shows "St" with the stop buzz. Where the trigger
+//   is HELD (the rider is driving) or this remote's own Follow-Me / return is RUNNING, the old 2 s "St" would block loop()
+//   and freeze Return-To-Me's gates and ramp (the Q-10 note): so it is drawn once and HELD, like the F-label, and every
+//   render path leaves the digit zone alone until it expires - the FM readout, the normal readout and the RTM screen. Over
+//   a running mode it is brief (Larry's default 2, owner to confirm), then the running mode's screen comes straight back.
+//   The glyphs are displayDigits(LET_S, LET_T), the same as every "St"; only the hold is new. The caller requests the
+//   stop buzz (vib_stop_pending). Its own stamp, separate from the F-label's, so no existing label path changes.
+// showStopHeld - draw "St" and hold it for hold_ms. Inputs: hold_ms. Side effects: the digit zone (takes displayMutex),
+//   the hold stamp. Does NOT block. Loop task only.
+static uint32_t st_hold_until_ms = 0;   // 0 = no "St" being held (loop task only)
+void showStopHeld(uint32_t hold_ms)
+{
+  DISP_LOCK();
+  displayDigits(LET_S, LET_T);
+  updateDisplay();
+  DISP_UNLOCK();
+  const uint32_t u = millis() + hold_ms;
+  st_hold_until_ms = (u != 0) ? u : 1;
+}
+// stopHeldActive - is a held "St" still inside its time? Clears the stamp once it is up. Wrap-safe (signed difference).
+static bool stopHeldActive()
+{
+  if (st_hold_until_ms == 0) return false;
+  if ((int32_t)(millis() - st_hold_until_ms) < 0) return true;
+  st_hold_until_ms = 0;
+  return false;
+}
+
+// ============================================================
+// V2.5-Evo - 2026-10-20 - E9 AND "tA" (design 9.8, 9.9): the buggy's answer to a remote that is not in control.
+//   E9 - another remote is in control and this remote's input is ignored (REFUSED within the last 1.5 s, or a summon
+//        refused against a busy owner); "tA" - control was taken from this remote (2 SEIZED in a row), for 3 s.
+//   Drawn after E71 and the input fault (display priority E71 > 72 > E9 > normal), in renderOperationalDisplay() only:
+//   a remote that is not in control runs no Return-To-Me screen (losing control ends it, MultiRemote.ino). The stamps are
+//   set only on a new-style link with other remotes paired, so one remote never sees either.
+//   Returns: true if it drew (the caller then stops). CALLER MUST HOLD displayMutex.
+static bool renderMtxNotice()
+{
+  const unsigned long now = millis();
+  const unsigned long e9  = mtx_e9_until_ms;
+  const unsigned long ta  = mtx_ta_until_ms;
+  if (e9 != 0 && (long)(now - e9) < 0) { displayDigits(LET_E, 9);     updateDisplay(); return true; }
+  if (ta != 0 && (long)(now - ta) < 0) { displayDigits(LET_T, LET_A); updateDisplay(); return true; }
+  return false;
+}
+
 // fmLabelHolding - is an "F<n>" label still inside its hold time?
 // Outputs: true = leave the digit zone alone. Side effects: clears the pending flag once the time is up.
 // Wrap-safe: compares an unsigned elapsed time, never two absolute millis() values.
@@ -879,6 +933,12 @@ void renderOperationalDisplay()
     xSemaphoreGive(displayMutex);
     return;
   }
+  // V2.5-Evo - 2026-10-20 - MULTI-REMOTE: E9 / "tA" next (see renderMtxNotice()).
+  if (renderMtxNotice())
+  {
+    xSemaphoreGive(displayMutex);
+    return;
+  }
   // V2.5-Evo - 2026-04-28 - ChgDZ: Persistent "FM" while Follow-Me armed, RTM not active.
   // displayDigitZone() preserves R5 proximity bar, R6 battery bar, C7 GPS dot, C8/C9 bargraphs.
   // Previous hand-written render wrote through all 7 rows, destructively clearing R5/R6.
@@ -895,7 +955,7 @@ void renderOperationalDisplay()
     // V2.5-Evo - 2026-10-07 - S-7 (SOP-040 auto-return rule 6): while the buggy is RETURNING the digits are always the
     // distance in metres, counting down, so the rider can see it closing; otherwise the rider's chosen readout.
     const uint16_t fm_readout = fmIsReturning() ? 2 : usrConf.fm_display_mode;
-    if (!fmLabelHolding())
+    if (!fmLabelHolding() && !stopHeldActive())   // V2.5-Evo - 2026-10-20 - a held refusal "St" also keeps the readout off
     switch (fm_readout)
     {
       case 2:
@@ -929,7 +989,11 @@ void renderOperationalDisplay()
 
   if(remote_error == 0)
   {
-    if(system_locked)
+    if (stopHeldActive())
+    {
+      // V2.5-Evo - 2026-10-20 - a held refusal "St" (showStopHeld()) stays until its time is up; bars and dots still update.
+    }
+    else if(system_locked)
     {
       displayLock();
     }
@@ -1485,6 +1549,32 @@ void updateBargraphs(void *parameter)
       dot_r3 = r3_turn;
       dot_r4 = !r3_turn;
     }
+    // ---- V2.5-Evo - 2026-10-20 - THE MULTI-REMOTE OWNERSHIP DOT, C7 R2 (24a0371, ported; design 9.10) ----------------
+    // R2 lights only for the Follow-Me R1 "returning" frames above, so with no Follow-Me dot state (fm_dot_state 0) the row
+    // is free and carries WHO HOLDS THE BUGGY (mtx_dot_state, set each loop pass from the buggy's status - MultiRemote.ino;
+    // ?mtxdot forces it for the hardware check):
+    //   OFF   no link, one remote, an old-style link     nothing to act on (one remote: R2 exactly as before)
+    //   SOLID you are in control                           ride
+    //   SLOW  another remote is in control                 wait (200 ms blip every 3 s - "almost off")
+    //   PULSE control is available now                     a squeeze from zero takes it (the only grouped pattern)
+    // 24a0371's reasoning, unchanged: SOLID is the commonest state so it is the calmest; SLOW is a blip, not a blink, so it
+    // never looks like the GPS dot's 1 s blink one row up; PULSE is the one pattern that asks for action. A TICK COUNTER,
+    // not millis(): this task runs every 200 ms, so a counter keeps the pulse exact; mod 30 = the LCM of 15 (SLOW) and 6
+    // (PULSE), so neither glitches at the wrap. With any Follow-Me dot state the row is the Follow-Me dots' (they win).
+    static uint8_t    mtx_dot_phase = 0;
+    static const bool MTX_PULSE[6]  = { true, false, true, false, false, false };   // on-off-on-pause = 1.2 s
+    mtx_dot_phase = (uint8_t)((mtx_dot_phase + 1) % 30);
+    if (fm_dot_state == 0)
+    {
+      switch (mtx_dot_state)
+      {
+        case MTX_DOT_SOLID: dot_r2 = true;                              break;
+        case MTX_DOT_SLOW:  dot_r2 = ((mtx_dot_phase % 15) == 0);       break;   // 200 ms blip every 3 s
+        case MTX_DOT_PULSE: dot_r2 = MTX_PULSE[mtx_dot_phase % 6];      break;
+        default:            dot_r2 = false;                             break;   // MTX_DOT_OFF
+      }
+    }
+    // ---- End multi-remote ownership dot ---------------------------------------------------------------------------------
     if (dot_r2) displayBuffer[3] |= (1u << 7); else displayBuffer[3] &= ~(1u << 7);
     if (dot_r3) displayBuffer[4] |= (1u << 7); else displayBuffer[4] &= ~(1u << 7);
     if (dot_r4) displayBuffer[5] |= (1u << 7); else displayBuffer[5] &= ~(1u << 7);
@@ -1642,6 +1732,14 @@ void renderRtmInfoDisplay()
   if (remote_error == REMOTE_ERR_INPUT_FAULT)
   {
     renderInputFaultBlink();
+    xSemaphoreGive(displayMutex);
+    return;
+  }
+  // V2.5-Evo - 2026-10-20 - a brief refusal "St" over the running return (showStopHeld(), Larry's default 2): the digit
+  // zone keeps it for its 1 s; the R5 bar and the dots keep updating; then the return's screen comes straight back.
+  if (stopHeldActive())
+  {
+    updateDisplay();
     xSemaphoreGive(displayMutex);
     return;
   }

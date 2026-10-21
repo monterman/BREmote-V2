@@ -189,7 +189,230 @@ static size_t b64decode(const char* in, uint8_t* out, size_t out_cap)
 
 static bool near(float a, float b, float eps) { return fabsf(a - b) <= eps; }
 
-int main()
+// ============================================================
+// T19 - V2.5-Evo - 2026-10-20 - multi-remote v3.2 step 1: the SW36 -> SW37 (RX) and SW27 -> SW29 (TX) prefix
+//   migrations and the receiver's identity rule, on SYNTHETIC images. Real ?conf exports are read only at run time,
+//   from paths given on the command line (the gitignored backup folder); without them the real-image part prints
+//   SKIPPED. Nothing from a real image is printed. The SW37 / SW29 layouts below are the design's (v3.1 section 14);
+//   the receiver and remote steps must match these offsets.
+// ============================================================
+#include "../../Source/Common/MultiTx.h"
+#include <stdio.h>
+
+// The exact CRC both boards use (Common/SystemCommon.h esp_crc8(), copied: that header needs Arduino).
+static uint8_t crc8(uint8_t* data, uint8_t length)
+{
+  uint8_t crc = 0xFF;
+  for (uint8_t i = 0; i < length; i++) {
+    crc ^= data[i];
+    for (uint8_t j = 0; j < 8; j++) crc = (crc & 0x80) ? (uint8_t)((crc << 1) ^ 0x31) : (uint8_t)(crc << 1);
+  }
+  return crc;
+}
+
+// The RX struct as it stands at SW36: bytes 198-199 are fm_front_ahead_extra_m since 2026-10-02 (no pad left).
+struct ConfSw36Full {
+  ConfSw35 sw35;
+  uint16_t fm_return_mode;          // 192
+  uint16_t fm_align_cap;            // 194
+  uint16_t fm_align_influence;      // 196
+  uint16_t fm_front_ahead_extra_m;  // 198
+};
+static_assert(sizeof(ConfSw36Full) == 200, "SW36 RX struct is 200 bytes with no pad");
+// SW37 = SW36 + the multi-remote tail (design v3.1 14.1, mtx_claim_s per v3.2 section 7).
+struct ConfSw37 {
+  ConfSw36Full sw36;                // 0-199, byte-exact prefix
+  uint8_t  mtx_id[12];              // 200
+  uint8_t  mtx_flags[4];            // 212
+  uint16_t mtx_claim_s;             // 216, default 10
+  uint16_t mtx_seize_en;            // 218, default 1
+  uint16_t mtx_takeover_cap;        // 220, default 64
+  uint16_t mtx_takeover_ms;         // 222, default 4000
+  uint16_t mtx_rsvd[4];             // 224, 0
+};
+static_assert(sizeof(ConfSw37) == 232, "SW37 RX struct is 232 bytes");
+static_assert(offsetof(ConfSw37, mtx_id) == 200 && offsetof(ConfSw37, mtx_flags) == 212, "SW37 list offsets");
+static_assert(offsetof(ConfSw37, mtx_claim_s) == 216 && offsetof(ConfSw37, mtx_seize_en) == 218, "SW37 settings offsets");
+static_assert(offsetof(ConfSw37, mtx_takeover_cap) == 220 && offsetof(ConfSw37, mtx_takeover_ms) == 222, "SW37 limit offsets");
+static_assert(offsetof(ConfSw37, mtx_rsvd) == 224, "SW37 reserved offset");
+// TX: SW27 is 136 bytes with no pad (kept opaque here: the migration does not read it); SW29 appends 8 bytes.
+struct ConfTx29Tail {
+  uint16_t autolock_timeout_s;      // 136, default 0
+  uint16_t mtx_link_proto;          // 138, default 0 (a migrated pairing is a legacy record)
+  uint16_t mtx_seize_hold_ms;       // 140, default 1200
+  uint16_t mtx_autolock_s;          // 142, default 120
+};
+struct ConfTx29 { uint8_t sw27[136]; ConfTx29Tail tail; };
+static_assert(sizeof(ConfTx29) == 144 && offsetof(ConfTx29, tail) == 136, "SW29 TX struct is 144 bytes");
+
+static int g_t19_checks = 0, g_t19_fails = 0;
+#define T19CHECK(c) do { g_t19_checks++; if (!(c)) { g_t19_fails++; printf("  T19 FAIL line %d: %s\n", __LINE__, #c); } } while (0)
+
+// The receiver's binding fields, read from / written back into a migrated SW37 image.
+static MtxRxBinding bindingOf(const ConfSw37& c)
+{
+  MtxRxBinding b;
+  b.paired = c.sw36.sw35.paired;
+  memcpy(b.own_address, c.sw36.sw35.own_address, 3);
+  memcpy(b.dest_address, c.sw36.sw35.dest_address, 3);
+  memcpy(b.mtx_id, c.mtx_id, 12);
+  memcpy(b.mtx_flags, c.mtx_flags, 4);
+  return b;
+}
+static void putBinding(ConfSw37* c, const MtxRxBinding& b)
+{
+  c->sw36.sw35.paired = b.paired;
+  memcpy(c->sw36.sw35.own_address, b.own_address, 3);
+  memcpy(c->sw36.sw35.dest_address, b.dest_address, 3);
+  memcpy(c->mtx_id, b.mtx_id, 12);
+  memcpy(c->mtx_flags, b.mtx_flags, 4);
+}
+
+// The factory-default SW37 image: 0xA5 everywhere the migration must NOT read, the tail at its defaults.
+static void defaults37(ConfSw37* d)
+{
+  memset(d, 0xA5, sizeof(*d));
+  d->sw36.sw35.version = 37;
+  memset(d->mtx_id, 0, 12); memset(d->mtx_flags, 0, 4);
+  d->mtx_claim_s = 10; d->mtx_seize_en = 1; d->mtx_takeover_cap = 64; d->mtx_takeover_ms = 4000;
+  memset(d->mtx_rsvd, 0, sizeof(d->mtx_rsvd));
+}
+
+// One RX SW36 image (len 200) through the SW37 migration and the identity rule: with a chip ID equal to the stored
+// address the binding is kept (and, if paired, the implicit legacy entry forms); with other_id it is dropped, and
+// nothing but the binding changes. Inputs: blob/len, other_id, expect_paired. Side effects: the T19 counters.
+static void t19Rx(const uint8_t* blob, size_t len, const uint8_t other_id[3], bool expect_paired)
+{
+  ConfSw37 d; defaults37(&d);
+  T19CHECK(cfgLegacyPairMatches(len, (uint16_t)(blob[0] | (blob[1] << 8)), 200, 36, true));
+  ConfSw37 m; memset(&m, 0x5A, sizeof(m));
+  T19CHECK(cfgPrefixMigrateImage(blob, len, 200, (const uint8_t*)&d, sizeof(ConfSw37), (uint8_t*)&m));
+  T19CHECK(memcmp(&m, blob, 200) == 0);                                    // the whole SW36 prefix, byte for byte
+  m.sw36.sw35.version = 37;
+  T19CHECK(memcmp((const uint8_t*)&m + 200, (const uint8_t*)&d + 200, 32) == 0);   // the tail = the defaults
+  T19CHECK(m.mtx_claim_s == 10 && m.mtx_seize_en == 1 && m.mtx_takeover_cap == 64 && m.mtx_takeover_ms == 4000);
+  // Identity: the chip ID equals the stored address -> nothing changes, the implicit legacy entry forms (SINGLE).
+  MtxRxBinding b = bindingOf(m);
+  uint8_t own[3]; memcpy(own, b.own_address, 3);
+  const MtxRxBinding before = b;
+  const uint8_t n_same = mtxValidateRxBinding(&b, own);
+  if (expect_paired) {
+    T19CHECK(n_same == 0 && memcmp(&b, &before, sizeof(b)) == 0);                       // validation passes, unchanged
+    T19CHECK(mtxImplicitLegacy(&b, own) && mtxRxMode(&b, own) == MTX_MODE_SINGLE);
+    T19CHECK(mtxLookupSlot(&b, own, own) == kMtxSlotImplicit);
+  }
+  // Identity: another chip ID -> the binding is dropped, and only the binding.
+  MtxRxBinding x = bindingOf(m);
+  const uint8_t notes = mtxValidateRxBinding(&x, other_id);
+  T19CHECK((notes & (MTX_NOTE_ID_MISMATCH | MTX_NOTE_ID_NOT_SET)) != 0);
+  T19CHECK(x.paired == 0 && mtxIdIsZero(x.dest_address) && mtxIdEqual(x.own_address, other_id));
+  T19CHECK(mtxRxMode(&x, other_id) == MTX_MODE_UNPAIRED);
+  ConfSw37 kept = m; putBinding(&kept, x);
+  const ConfSw35& a = m.sw36.sw35; const ConfSw35& k = kept.sw36.sw35;
+  T19CHECK(memcmp(&a, &k, offsetof(ConfSw35, paired)) == 0);                 // everything before the binding
+  T19CHECK(memcmp((const uint8_t*)&a + offsetof(ConfSw35, wifi_password), (const uint8_t*)&k + offsetof(ConfSw35, wifi_password),
+                  sizeof(ConfSw35) - offsetof(ConfSw35, wifi_password)) == 0);   // everything after it (compass cal, tuning)
+  T19CHECK(memcmp(&m.sw36.fm_return_mode, &kept.sw36.fm_return_mode, 8) == 0);
+}
+
+// One TX SW27 image (len 136) through the SW29 migration: prefix byte-exact, tail = defaults, a legacy link record.
+static void t19Tx(const uint8_t* blob, size_t len)
+{
+  ConfTx29 d; memset(&d, 0xA5, sizeof(d));
+  d.sw27[0] = 29; d.sw27[1] = 0;
+  d.tail.autolock_timeout_s = 0; d.tail.mtx_link_proto = 0; d.tail.mtx_seize_hold_ms = 1200; d.tail.mtx_autolock_s = 120;
+  T19CHECK(cfgLegacyPairMatches(len, (uint16_t)(blob[0] | (blob[1] << 8)), 136, 27, true));
+  ConfTx29 m; memset(&m, 0x5A, sizeof(m));
+  T19CHECK(cfgPrefixMigrateImage(blob, len, 136, (const uint8_t*)&d, sizeof(ConfTx29), (uint8_t*)&m));
+  T19CHECK(memcmp(&m, blob, 136) == 0);
+  T19CHECK(memcmp(&m.tail, &d.tail, sizeof(d.tail)) == 0);
+  T19CHECK(m.tail.mtx_link_proto == kMtxProtoLegacy && m.tail.mtx_seize_hold_ms == 1200 && m.tail.mtx_autolock_s == 120);
+  uint16_t paired = 1, proto = m.tail.mtx_link_proto;
+  T19CHECK(mtxValidateTxLink(&paired, &proto) == 0 && paired == 1 && proto == 0);   // the pairing survives as proto 0
+}
+
+// Read one ?conf export: the "Encoded Data Read: <base64>" line, and the banner "MAC: <12 hex>" if present.
+static size_t readConfExport(const char* path, uint8_t* out, size_t cap, uint64_t* mac, bool* has_mac)
+{
+  FILE* f = fopen(path, "r");
+  if (!f) return 0;
+  char line[1024]; size_t n = 0; *has_mac = false;
+  while (fgets(line, sizeof(line), f)) {
+    const char* p = strstr(line, "Encoded Data Read: ");
+    if (p && n == 0) {
+      char b64[1024]; size_t j = 0;
+      for (const char* q = p + 19; *q && *q != '\r' && *q != '\n' && j + 1 < sizeof(b64); ++q) b64[j++] = *q;
+      b64[j] = 0;
+      n = b64decode(b64, out, cap);
+    }
+    const char* mp = strstr(line, "MAC: ");
+    if (mp && !*has_mac) {
+      uint64_t v = 0; int d = 0;
+      for (const char* q = mp + 5; *q && d < 12; ++q) {
+        const char c = *q; int h;
+        if (c >= '0' && c <= '9') h = c - '0'; else if (c >= 'A' && c <= 'F') h = c - 'A' + 10;
+        else if (c >= 'a' && c <= 'f') h = c - 'a' + 10; else break;
+        v = (v << 4) | (uint64_t)h; d++;
+      }
+      if (d == 12) { *mac = v; *has_mac = true; }
+    }
+  }
+  fclose(f);
+  return n;
+}
+
+static void t19(int argc, char** argv)
+{
+  // ---- Synthetic RX SW36 image: the synthetic SW35 values plus the four SW36 fields, padding-free ----
+  ConfSw36Full s36;
+  fillSyntheticSw35(&s36.sw35);
+  s36.sw35.version = 36;
+  s36.fm_return_mode = 0; s36.fm_align_cap = 21; s36.fm_align_influence = 66; s36.fm_front_ahead_extra_m = 7;
+  const uint8_t other[3] = { 0x5C, 0x10, 0x21 };                          // a made-up chip ID, not the stored address
+  t19Rx((const uint8_t*)&s36, sizeof(s36), other, true);
+  // An SW35 blob is not migratable onto SW37; an SW37 blob is current, not a legacy pair.
+  T19CHECK(!cfgLegacyPairMatches(192, 35, 200, 36, true));
+  T19CHECK(!cfgLegacyPairMatches(232, 37, 200, 36, true));
+  T19CHECK(!cfgLegacyPairMatches(200, 35, 200, 36, true));
+  // ---- Synthetic TX SW27 image ----
+  uint8_t tx27[136];
+  for (size_t i = 0; i < sizeof(tx27); ++i) tx27[i] = (uint8_t)(0x21 + 5 * i);
+  tx27[0] = 27; tx27[1] = 0;
+  t19Tx(tx27, sizeof(tx27));
+  T19CHECK(!cfgLegacyPairMatches(136, 26, 136, 27, true));
+  // ---- Real exports, local only: paths on the command line. Nothing from them is printed. ----
+  int real = 0;
+  for (int i = 1; i < argc; i++) {
+    uint8_t img[512]; uint64_t mac = 0; bool has_mac = false;
+    const size_t n = readConfExport(argv[i], img, sizeof(img), &mac, &has_mac);
+    const uint16_t ver = (n >= 2) ? (uint16_t)(img[0] | (img[1] << 8)) : 0;
+    if (n == 200 && ver == 36) {
+      uint8_t notme[3] = { (uint8_t)(img[82] ^ 0xFF), img[83], img[84] };  // certainly not the stored address
+      t19Rx(img, n, notme, img[80] != 0);
+      if (has_mac) {
+        uint8_t chip[3]; efuseIdFromMac(mac, crc8, chip);
+        MtxRxBinding b; memset(&b, 0, sizeof(b)); b.paired = (uint16_t)(img[80] | (img[81] << 8));
+        memcpy(b.own_address, img + 82, 3); memcpy(b.dest_address, img + 85, 3);
+        mtxValidateRxBinding(&b, chip);
+        printf("     T19 real RX image %d: migrated; at its first SW37 boot its binding is %s\n", i,
+               b.paired ? "KEPT (stored address = chip ID)" : "DROPPED (stored address is not its chip ID) - pair again");
+      } else {
+        printf("     T19 real RX image %d: migrated (no banner MAC in the file, identity prediction skipped)\n", i);
+      }
+      real++;
+    } else if (n == 136 && ver == 27) {
+      t19Tx(img, n);
+      printf("     T19 real TX image %d: migrated, legacy link record\n", i);
+      real++;
+    } else {
+      printf("     T19 file %d: not an SW36 RX or SW27 TX export - not used\n", i);
+    }
+  }
+  if (real == 0) printf("     T19 real images: SKIPPED (no local images)\n");
+  printf("T19  %s (%d checks)\n", g_t19_fails ? "FAIL" : "ok  ", g_t19_checks);
+}
+
+int main(int argc, char** argv)
 {
   // ---- Build the synthetic image, export it as ?conf would, and decode it back ----
   ConfSw35 synth;
@@ -306,5 +529,7 @@ int main()
   assert(cfgPrefixMigrateImage(blob, blobLen, kLegacyLen, (const uint8_t*)&defaults, kLegacyLen, (uint8_t*)&scratch));
   assert(memcmp(&scratch, blob, kLegacyLen) == 0);
 
-  return 0;
+  // ---- T19: the multi-remote migrations and the identity rule (real exports only from the command line) ----
+  t19(argc, argv);
+  return g_t19_fails ? 1 : 0;
 }

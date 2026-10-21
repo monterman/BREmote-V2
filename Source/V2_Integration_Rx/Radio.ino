@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-4: a paired-list change from MULTI to SINGLE also publishes the takeover limit once
+//   (mtxListChangeActions(), Common/MultiTx.h), so the remaining remote starts from zero under the soft start. No confStruct change.
 // V2.5-Evo - 2026-10-20 - MULTI-REMOTE, step-2 audit Z-1 / Z-6 / Z-7 a: (Z-1) a paired-list change zeroes the outputs
 //   (throttle 0, steering 127, no failsafe stamp) whenever the list was or becomes MULTI, also with nobody in control -
 //   a list change with one remote before and after stays today's (the owner's single-remote rule; Z-1 confirmed 2026-10-21);
@@ -1393,9 +1395,15 @@ static void mtxRxStartFresh()
 //   standing until failsafe_time, with nobody owning it any more. Now, whenever the list was MULTI before the change or
 //   is MULTI after it, the release's own first step runs as well - throttle 0, steering 127, the barrier, NO failsafe
 //   stamp, so the motor gate shuts on its own clock. It writes nothing else. A change from one remote to one remote
-//   (or to none) is left exactly as today: the owner's single-remote rule. A "yes, in SINGLE too" is the mode test
-//   below becoming `true`. NOT done (owner's call): publishing the takeover limit on a MULTI -> SINGLE change - the
-//   approved SOP-039 text says the limit never applies with a single remote.
+//   (or to none) is left exactly as today: the owner's single-remote rule.
+// V2.5-Evo - 2026-10-21 - P3-4 (step-3 audit; the owner's "start from zero and with a soft start"): on a change from
+//   MULTI (two or more remotes) to SINGLE (one), the takeover limit is ALSO published, once, after the zero and before
+//   this wake's frame. The board is SINGLE from here on, so the remaining remote's next control frame is applied at once
+//   with no zero proof: before this, its held trigger drove at full authority the instant a config write removed the
+//   other remote. Now that first byte meets the limit (mtx_takeover_cap rising to full over mtx_takeover_ms), and the
+//   motor ramp. The SINGLE frame path is untouched; the PWM task applies the limit in any mode (PWM.ino). Both decisions
+//   are the pure mtxListChangeActions() (Common/MultiTx.h, host test T21). This is the one case where the limit runs with
+//   a single remote paired (SOP-039's "never with a single remote" needs the owner's one-clause amendment).
 static void mtxRxRefresh(uint32_t now)
 {
   MtxRxBinding b;
@@ -1411,7 +1419,9 @@ static void mtxRxRefresh(uint32_t now)
     const uint8_t old_mode = g_mtx.mode;                    // last wake's mode (of the old list)
     const uint8_t new_mode = mtxRxMode(&b, g_efuse_id);
     if (g_mtx.st.owner != kMtxNone && g_mtx_hooks_ok) mtxRelease(&g_mtx.st, &g_mtx_hooks, MTX_REL_REBIND, now);
-    if (old_mode == MTX_MODE_MULTI || new_mode == MTX_MODE_MULTI) mtxHkZeroOutputs(&g_mtx);   // Z-1
+    const uint8_t lc = mtxListChangeActions(old_mode, new_mode);
+    if (lc & MTX_LC_ZERO)  mtxHkZeroOutputs(&g_mtx);                       // Z-1
+    if (lc & MTX_LC_LIMIT) mtxHkPublishLimit(&g_mtx, mtxStampOf(now));     // P3-4: the soft start, once (MULTI -> SINGLE)
     g_mtx.b = b;
     mtxRxStartFresh();
   }

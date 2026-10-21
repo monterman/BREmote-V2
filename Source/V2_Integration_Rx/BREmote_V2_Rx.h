@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-21 - comments only (step-3 audit P3-4): mtx_grant_ms is also published once on a MULTI -> SINGLE list change. No confStruct change, sizeof stays 232, SW_VERSION stays 37.
 // V2.5-Evo - 2026-10-20 - step-2 audit Z-4: CFG_SPIFFS_WRITE_MIN_FREE_BYTES (1000 KB) - the headroom the first-boot web page reinstall and the migrated-config save check for first (Common/SPIFFSEngine.h). Define only; no struct change.
 // V2.5-Evo - 2026-10-20 - MULTI-REMOTE RECEIVER STEP, SW36 -> SW37: confStruct 200 -> 232 B, the multi-remote tail appended at 200 (mtx_id[12], mtx_flags[4], mtx_claim_s 10, mtx_seize_en 1, mtx_takeover_cap 64, mtx_takeover_ms 4000, mtx_rsvd[4] banked); the SW36 -> SW37 legacy pair for the boot / ?setconf / web-import migration (every SW36 setting kept, the tail from defaultConf); Common/MultiTx.h included; g_efuse_id (this chip's ID, computed first in setup()); the ownership atomics the radio, PWM and loop tasks share (mtx_owner_slot, mtx_grant_ms, mtx_owner_change_seq, mtx_telemetry_owner_seq); TelemetryPacket pinned to 20 B (<= 32, the reply's 5-bit index). The binding (paired / own / dest / list) survives the flash only where the stored own_address is this chip's ID.
 // V2.5-Evo - 2026-10-20 - COMMENT ONLY: the historical fm_front_angle_deg note is marked with the front-station swap (4 front-left, 5 front-right). No code, no struct, no SW_VERSION change.
@@ -1713,7 +1714,8 @@ uint8_t g_efuse_id[3] = {0, 0, 0};
 //                             the change counter moves (hook contract Y-1 a), so a reader that sees the counter move
 //                             sees the new owner. Read by ?mtx (loop task).
 //   mtx_grant_ms            - the takeover limit's start stamp, never stored as 0 (0 = no limit). Published by the
-//                             publish_limit hook BEFORE the new owner's first byte is applied; read by calcPWM()
+//                             publish_limit hook BEFORE the new owner's first byte is applied, and once by
+//                             mtxRxRefresh() on a list change from MULTI to SINGLE (P3-4, 2026-10-21); read by calcPWM()
 //                             (PWM task), which also clears it with a compare-exchange once the limit has run out.
 //   mtx_owner_change_seq    - +1 on every release and every grant. runRtmLoop() (loop task) watches it and closes the
 //                             three sticky end windows (design 7.7), so a new owner never sees the old owner's "St".

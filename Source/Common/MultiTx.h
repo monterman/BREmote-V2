@@ -1,6 +1,8 @@
 // V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-1: MtxTxStatus stamps the first owner arrival (owner_since_ms) and
 //   mtxTxOwnerWait() judges the take-back / summon answer on it, not on the newest status, so a late poll no longer turns
 //   a timely grant into "St". Host-tested (multi_tx_test.cpp T16, T29).
+// V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-4: mtxListChangeActions() - a paired-list change zeroes the outputs whenever MULTI
+//   is involved (Z-1) and, from MULTI to SINGLE, also publishes the takeover limit once (the owner's soft start). T21.
 // V2.5-Evo - 2026-10-20 - REMOTE STEP (TX SW29, step 3): new section 17 for the remote - the activity repeat (X-1 with the
 //   owner's widening: any button or toggle press while in control), the E9-or-St choice for a refused gesture, and the
 //   ownership-dot mapping (24a0371). The receiver gains released_rebind (step-2 audit Z-7 a), and hook rule (f) states
@@ -434,6 +436,29 @@ static inline uint8_t mtxRxMode(const MtxRxBinding* b, const uint8_t rx_id[3])
 {
   if (!mtxMayAcceptControl(b, rx_id)) return MTX_MODE_UNPAIRED;
   return (mtxValidEntryCount(b) >= 2) ? MTX_MODE_MULTI : MTX_MODE_SINGLE;
+}
+
+// mtxListChangeActions - V2.5-Evo - 2026-10-21 - what a change of the paired list while running does to the outputs, from
+//   the mode of the old list and the mode of the new one (the receiver's mtxRxRefresh() runs it before that wake's frame
+//   is applied). Owner, 2026-10-21: "start from zero and with a soft start".
+//   MTX_LC_ZERO (step-2 audit Z-1): throttle 0 / steering 127, the barrier, no failsafe stamp - whenever the list was
+//     MULTI before or is MULTI after, also with nobody in control. One remote before and after (or none): nothing, today's.
+//   MTX_LC_LIMIT (step-3 audit P3-4): ALSO the takeover limit, published ONCE, when the list goes from MULTI (two or more)
+//     to SINGLE (one). The board is SINGLE from that wake on, so the remaining remote's next control frame is applied at
+//     once, with no zero proof - and before this its held trigger was obeyed at full authority the instant a config write
+//     removed the other remote (a rider who was getting E9 with the trigger squeezed). Now that first byte meets
+//     mtx_takeover_cap (25 %) rising to full over mtx_takeover_ms (4 s) - the soft start - and the motor ramp as well.
+//     The SINGLE frame path itself is not touched; the PWM task already applies the limit in any mode. MULTI -> UNPAIRED
+//     obeys nobody, so no limit is needed.
+//   Returns: MTX_LC_* bits. Side effects: none.
+static const uint8_t MTX_LC_ZERO  = 0x01;
+static const uint8_t MTX_LC_LIMIT = 0x02;
+static inline uint8_t mtxListChangeActions(uint8_t old_mode, uint8_t new_mode)
+{
+  uint8_t a = 0;
+  if (old_mode == MTX_MODE_MULTI || new_mode == MTX_MODE_MULTI) a |= MTX_LC_ZERO;
+  if (old_mode == MTX_MODE_MULTI && new_mode == MTX_MODE_SINGLE) a |= MTX_LC_LIMIT;
+  return a;
 }
 
 // mtxLookupSlot - which paired remote sent this frame (design 7.2 gate 1 and the lookup).

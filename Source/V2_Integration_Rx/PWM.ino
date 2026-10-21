@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-21 - comments only (step-3 audit P3-4): mtx_grant_ms is also published once on a paired-list change from
+//   two or more remotes to one (Radio.ino mtxRxRefresh()), so the remaining remote starts under the limit. No code change here.
 // V2.5-Evo - 2026-10-20 - MULTI-REMOTE TAKEOVER LIMIT (SW37): calcPWM() applies min(effective_thr, mtxTakeoverCap())
 //   right after the sticky return cap and before the ramp, and clears mtx_grant_ms with a compare-exchange once the
 //   limit has run out. Subtract-only; reads thr_received first and the limit after it (the C6 read order). With one
@@ -417,8 +419,10 @@ void calcPWM()
   // When control passes to another remote, that remote's throttle is limited to mtx_takeover_cap (64 = 25 %) at the
   // moment it takes control, rising evenly to full over mtx_takeover_ms (4 s), because the buggy may be near the other
   // rider. Same subtract-only shape as every cap above: min(effective_thr, limit) - it never raises a byte, never
-  // reads GPS, and always ends on its own. mtx_grant_ms is set ONLY by a grant (2-4 remotes paired), so with one
-  // remote it is 0 here forever and this block does nothing.
+  // reads GPS, and always ends on its own. mtx_grant_ms is set by a grant (2-4 remotes paired) and - V2.5-Evo -
+  // 2026-10-21, P3-4, the owner's "start from zero and with a soft start" - ONCE by a paired-list change from two or more
+  // remotes to one (Radio.ino mtxRxRefresh(), after the zero and before that wake's frame), so the remaining remote's
+  // first byte meets the limit too. Otherwise, with one remote, it is 0 here and this block does nothing.
   // THE READ ORDER IS THE SAFETY ARGUMENT (C6): thr_received was read at the top of this function, the limit is read
   // HERE, after it. The radio task (priority 5) can never preempt this task (priority 10) in between, and a grant
   // stores the limit BEFORE the new owner's first byte (Radio.ino mtxHkPublishLimit()). So one pass sees either no

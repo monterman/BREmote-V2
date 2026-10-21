@@ -1,6 +1,8 @@
 // V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-1: T16 and T29 judge the take-back / summon answer on the FIRST owner arrival: a
 //   grant at send + 0.4 s polled at send + 3 s is OWNER, no owner status is TIMEOUT, the window edge, a control that came
 //   and went, the millis() wrap, and the late summon grant stays late.
+//   P3-4: T21 checks mtxListChangeActions() (zero whenever MULTI is involved, the takeover limit once on MULTI -> SINGLE) and
+//   that the remaining remote's held trigger then meets the limit (~25 % rising to full over 4 s) instead of full authority.
 // V2.5-Evo - 2026-10-20 - REMOTE STEP (TX SW29): T34 the activity repeat (X-1 with the owner's widening: from the first
 //   press, every 2 s or less, through a combo gap and the RTM ceremony, owner-only, never in SINGLE, never with RTM
 //   active or an 0xF1/1 queued), T35 the E9-or-St choice for a refused gesture, T36 the ownership dot and the non-owner
@@ -1181,6 +1183,38 @@ static void t21()
     CHECK(q.st.n.released_lock == 0 && q.st.n.released_seized == 0 && q.st.n.released_claim == 0);
     CHECK(q.st.n.released_rebind == 1);                                     // Z-7 (a): counted on its own
     CHECK(countEv(&q, MTX_EV_RELEASED) == 1 && q.events.back().second == MTX_REL_REBIND); }
+  // V2.5-Evo - 2026-10-21 - P3-4: what a paired-list change does to the outputs (mtxRxRefresh() runs this after the REBIND
+  // release, before that wake's frame). Z-1: zero whenever MULTI is on either side; P3-4: the limit once on MULTI -> SINGLE.
+  CHECK(mtxListChangeActions(MTX_MODE_MULTI, MTX_MODE_SINGLE)      == (MTX_LC_ZERO | MTX_LC_LIMIT));
+  CHECK(mtxListChangeActions(MTX_MODE_MULTI, MTX_MODE_MULTI)       == MTX_LC_ZERO);
+  CHECK(mtxListChangeActions(MTX_MODE_MULTI, MTX_MODE_UNPAIRED)    == MTX_LC_ZERO);   // nobody is obeyed: no limit needed
+  CHECK(mtxListChangeActions(MTX_MODE_SINGLE, MTX_MODE_MULTI)      == MTX_LC_ZERO);   // the next owner claims from zero anyway
+  CHECK(mtxListChangeActions(MTX_MODE_UNPAIRED, MTX_MODE_MULTI)    == MTX_LC_ZERO);
+  CHECK(mtxListChangeActions(MTX_MODE_SINGLE, MTX_MODE_SINGLE)     == 0);             // one remote before and after: today's
+  CHECK(mtxListChangeActions(MTX_MODE_SINGLE, MTX_MODE_UNPAIRED)   == 0);
+  CHECK(mtxListChangeActions(MTX_MODE_UNPAIRED, MTX_MODE_SINGLE)   == 0);
+  CHECK(mtxListChangeActions(MTX_MODE_UNPAIRED, MTX_MODE_UNPAIRED) == 0);
+  // The edge itself: two remotes, nobody in control, remote 1 holding its trigger at 200 (no zero proof, so no grant). A
+  // config write removes remote 0: remote 1 is now the single remote and its next frame takes today's SINGLE path at once.
+  { Sim q; simInit(&q, false, 0x03);
+    fr(&q, 1, 200, 127, 1000); fr(&q, 1, 200, 127, 1100);
+    CHECK(q.st.owner == kMtxNone && q.mtx_grant_ms == 0);
+    const uint8_t lc = mtxListChangeActions(MTX_MODE_MULTI, MTX_MODE_SINGLE);   // mtxRxRefresh(), in its order:
+    q.now = 1150;
+    if (lc & MTX_LC_ZERO)  q.h.zero_outputs(q.h.ctx);                            // 1. the zero (Z-1)
+    if (lc & MTX_LC_LIMIT) q.h.publish_limit(q.h.ctx, mtxStampOf(q.now));        // 2. the limit (P3-4)
+    CHECK(q.thr == 0 && q.steer == 127 && q.mtx_grant_ms == 1150);
+    pwmPass(&q); CHECK(q.pwm_out.back() == 0);                                   // a motor pass in between: zero
+    mtxRxStateInit(&q.st); q.cfg.single = true; q.cfg.valid_mask = 0x01;          // 3. the fresh SINGLE model
+    fr(&q, 0, 200, 127, 1200);                                                    // the held trigger is applied at once ...
+    CHECK(q.thr == 200);
+    q.now = 1200; pwmPass(&q);
+    CHECK(q.pwm_out.back() == mtxTakeoverCap(1200, 1150, 64, 4000) && q.pwm_out.back() <= 70);   // ... but at ~25 %
+    q.now = 3150; pwmPass(&q); CHECK(q.pwm_out.back() == 159);                    // 2 s in
+    q.now = 5150; pwmPass(&q); CHECK(q.pwm_out.back() == 200);                    // 4 s: the rider's own 200, no limit left
+    // Before P3-4 (no limit published) the same frame was handed on at 200 on the very first pass.
+    Sim r; simInit(&r, true, 0x01); fr(&r, 0, 200, 127, 1200); r.now = 1200; pwmPass(&r);
+    CHECK(r.thr == 200 && r.pwm_out.back() == 200); }
   // Y-1: the boot check. The Sim's table is complete; with any one hook missing it is not.
   { Sim q; simInit(&q, false, 0x03);
     CHECK(mtxRxHooksComplete(&q.h) && !mtxRxHooksComplete(NULL));

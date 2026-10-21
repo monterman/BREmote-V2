@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-7 b: the unlock in runMenu() switches the radio on only if it is off, so it no longer
+//   reconfigures a live radio after the LEFT-hold lock or the auto-lock. No confStruct change.
 // V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-6 b: the toggle rows 3 / 4 (trigger held) send a remote NOT in control through the
 //   summon gate, as the magnet does: E9 against a busy owner on both routes, "St" otherwise. No confStruct change.
 // V2.5-Evo - 2026-10-21 - the mode 4 hold's "Return-To-Me cannot start" St goes through mtxTxStopRefusal() (same 2 s block),
@@ -1929,7 +1931,12 @@ void runMenu()
           if(millis()-timeout < usrConf.trig_unlock_timeout)
           {
             setHallActivityEnabled(true);
-            setRadioActivityEnabled(true);
+            // V2.5-Evo - 2026-10-21 - P3-7 b (W-7, pre-existing): only a radio that is OFF is switched on. A remote that boots
+            // locked has its radio off (setup()); the LEFT-hold lock and the auto-lock leave it ON, and calling this then
+            // reconfigured the SX1262 (CRC, bandwidth, power, header, receive) underneath a live sendData transmit - more
+            // often now that a spare auto-locks after 120 s. setRadioActivityEnabled() itself is unchanged (the boot-time
+            // radioInitSuccess() call must still configure a radio whose flag is already set).
+            if (!isRadioActivityEnabled()) setRadioActivityEnabled(true);
 #ifdef WIFI_ENABLED
             webCfgNotifyTxUnlocked();  // stop WiFi AP before animation — eliminates WiFi-task preemption during frames
 #endif

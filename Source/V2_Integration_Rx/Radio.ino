@@ -1,6 +1,6 @@
 // V2.5-Evo - 2026-10-20 - MULTI-REMOTE, step-2 audit Z-1 / Z-6 / Z-7 a: (Z-1) a paired-list change zeroes the outputs
 //   (throttle 0, steering 127, no failsafe stamp) whenever the list was or becomes MULTI, also with nobody in control -
-//   a list change with one remote before and after stays today's (interim default 3, the owner's single-remote rule);
+//   a list change with one remote before and after stays today's (the owner's single-remote rule; Z-1 confirmed 2026-10-21);
 //   (Z-6) the pairing power guard checks that -9 dBm was really set, and the window does not open if the radio
 //   refused it; (Z-7 a) ?mtx counts the list-change releases. No control-path statement changed otherwise.
 // V2.5-Evo - 2026-10-20 - MULTI-REMOTE RECEIVER STEP (SW37): triggeredReceive() hands every 6-byte frame that passes
@@ -1387,7 +1387,7 @@ static void mtxRxStartFresh()
 //   2. the mode, and the model's config, CLAMPED again here (hook contract Y-1 h; the validator already clamps every
 //      intake path): claim_s 6-60 s, failsafe 100-10000 ms. valid_mask = the valid NEW-STYLE entries only.
 //   Input: now (this wake's clock). Side effects: g_mtx; on a list change under an owner, the release hooks.
-// V2.5-Evo - 2026-10-20 - Z-1 (step-2 audit; interim default 3, not yet confirmed by the owner): THE OUTPUTS ARE ZEROED
+// V2.5-Evo - 2026-10-20 - Z-1 (step-2 audit; confirmed by the owner 2026-10-21): THE OUTPUTS ARE ZEROED
 //   ON A LIST CHANGE THAT INVOLVES MULTI. The release above runs only when someone owns, so a change with NOBODY in
 //   control zeroed nothing: going from one remote to two (an import, ?applyconf) left the single remote's last byte
 //   standing until failsafe_time, with nobody owning it any more. Now, whenever the list was MULTI before the change or

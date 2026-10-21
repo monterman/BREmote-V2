@@ -1,4 +1,4 @@
-// V2.5-Evo - 2026-10-20 - MULTI-REMOTE REMOTE STEP (step-2 audit Z-3, Z-7 c/d): the two batch hooks of Common/ConfigServiceEngine.h - cfgBatchReadOnlyAccepted() (own_address only: the validator owns it) and cfgBatchFinish() (a JSON made on ANOTHER board keeps this board's own pairing; interim default 4, the audit's owner option) - and the identity NOTEs say that a reset_bind import is one way to get 'not set' and that the NOTE repeats until the corrected config is saved.
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE REMOTE STEP (step-2 audit Z-3, Z-7 c/d): the two batch hooks of Common/ConfigServiceEngine.h - cfgBatchReadOnlyAccepted() (own_address only: the validator owns it) and cfgBatchFinish() (a JSON made on ANOTHER board keeps this board's own pairing; the audit's owner option, confirmed by the owner 2026-10-21) - and the identity NOTEs say that a reset_bind import is one way to get 'not set' and that the NOTE repeats until the corrected config is saved.
 // V2.5-Evo - 2026-10-20 - SW37 MULTI-REMOTE: four kCfgFields rows (mtx_claim_s 6-60 s, mtx_seize_en 0-1, mtx_takeover_cap 0-255, mtx_takeover_ms 0-10000 ms); own_address becomes READ-ONLY (it is this chip's ID now, audit C8); cfgValidateCrossField() starts with the binding rules - identity, unpair, entries (mtxValidateRxBinding()) - and the clamps of the four settings, each correction with a NOTE line. The paired list itself has no row: only the pairing window writes it.
 // V2.5-Evo - 2026-10-20 - COMMENT ONLY: the followme_mode row's station list follows the front-station swap (4 = FRONT-LEFT, 5 = FRONT-RIGHT). Range unchanged.
 // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): the log_level row's max is raised 5 -> 6 (6 = IMU, the 170 B record with VESC 2's IMU and a reserved RX IMU block), and cfgValidateCrossField() CLAMPS log_level > 6 down to 6 - a clamp, never a rejection (LOAD path). An older firmware clamps a stored 6 back to 5, so a downgrade cannot wipe config either. Same u16 slot, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -640,8 +640,8 @@ bool cfgBatchReadOnlyAccepted(const CfgFieldSpec& spec)
   return spec.offset == offsetof(confStruct, own_address);
 }
 
-// cfgBatchFinish - V2.5-Evo - 2026-10-20 - Z-3 (the owner option the audit offered; interim default 4, not yet confirmed by
-//   Andres): A JSON CONFIG MADE ON ANOTHER BOARD KEEPS THIS BOARD'S OWN PAIRING.
+// cfgBatchFinish - V2.5-Evo - 2026-10-20 - Z-3 (the owner option the audit offered; confirmed by the owner
+//   2026-10-21): A JSON CONFIG MADE ON ANOTHER BOARD KEEPS THIS BOARD'S OWN PAIRING.
 //   WHAT HAPPENED BEFORE: a JSON import carries paired / own_address / dest_address but never the paired list. When
 //   its own_address was another board's, the identity rule set paired = 0, and rule 2 then cleared THIS board's own
 //   list too - the import unpaired the board (fail-safe, but a surprise: the rider had to pair again).

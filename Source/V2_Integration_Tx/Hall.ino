@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-2: no "St" over a running mode for a gesture that could not ARM. Roles 1-3: a running
+//   return is tested before the switch-off and trigger checks, so a disarm blocked by the held trigger is a serial line and
+//   the return's screen stays (SW27). Toggle rows 3 / 4 (trigger held): St only when the gesture would arm. No confStruct change.
 // V2.5-Evo - 2026-10-21 - STEP-3 AUDIT P3-1: handleGearToggle()'s hold and release loops also read the summon / take-back answer
 //   (mtxTxAnswerPoll()), because loop() is blocked while the button is held. No confStruct change.
 // V2.5-Evo - 2026-10-20 - MULTI-REMOTE REMOTE STEP (SW29), the gestures (design v3.2 3.4.2, 4.3; audit X-1, X-7, C20; owner rules
@@ -566,18 +569,40 @@ void handleGearToggle(int direction)
         // serial (silently on the remote, as the rule asks).
         // V2.5-Evo - 2026-10-20 - ROW 4 (owner rule "if it cannot engage, show stop"): no longer silent on the remote - "St"
         // + the stop buzz, held 2 s WITHOUT blocking (the trigger is held). Still nothing is armed.
-        Serial.printf("RTM [TX] return gesture refused: trigger held (thr %u) - it needs the trigger fully released\n",
-                      (unsigned)thr_scaled);
-        mtxTxStopRefusal(NULL, MTX_ST_HELD);
+        // V2.5-Evo - 2026-10-21 - P3-2: ONLY when the gesture would ARM. With this remote's own return running or arming it
+        // could not have armed anything, and a 2 s "St" + the stop buzz over the running return reads "it stopped" (SOP-041):
+        // serial line only there, as SW27 (reachable with steering disabled only).
+        if (rtm_tx_active || rtmIsArming())
+        {
+          Serial.printf("RTM [TX] return gesture ignored: trigger held (thr %u) while Return-To-Me runs - the return continues\n",
+                        (unsigned)thr_scaled);
+        }
+        else
+        {
+          Serial.printf("RTM [TX] return gesture refused: trigger held (thr %u) - it needs the trigger fully released\n",
+                        (unsigned)thr_scaled);
+          mtxTxStopRefusal(NULL, MTX_ST_HELD);
+        }
       }
       else if (has_combo && direction > 0 && last_tap_dir == -1)
       {
         // V2.5-Evo - 2026-10-20 - ROW 3: the LEFT tap + RIGHT hold Follow-Me gesture with the trigger held did NOTHING (this
         // branch caught the RTM combo only). Now "St" + the stop buzz, held WITHOUT blocking. (Reachable with steering
         // disabled; with steering on, a squeeze ends the hold earlier - row 5, a cancel, silent.)
-        Serial.printf("FM [TX] Follow-Me gesture refused: trigger held (thr %u) - it needs the trigger released\n",
-                      (unsigned)thr_scaled);
-        mtxTxStopRefusal(NULL, MTX_ST_HELD);
+        // V2.5-Evo - 2026-10-21 - P3-2: ONLY when the gesture would ARM Follow-Me. With Follow-Me already armed it would have
+        // stepped the station or disarmed (not an engage attempt), and with this remote's return running it could not act;
+        // a "St" there would say a running mode stopped (SOP-041). Serial line only in both cases, as SW27 (which did nothing).
+        if (rtm_tx_active || rtmIsArming() || isFmArmed())
+        {
+          Serial.printf("FM [TX] Follow-Me gesture ignored: trigger held (thr %u) while %s - nothing changes\n",
+                        (unsigned)thr_scaled, (rtm_tx_active || rtmIsArming()) ? "Return-To-Me runs" : "Follow-Me is armed");
+        }
+        else
+        {
+          Serial.printf("FM [TX] Follow-Me gesture refused: trigger held (thr %u) - it needs the trigger released\n",
+                        (unsigned)thr_scaled);
+          mtxTxStopRefusal(NULL, MTX_ST_HELD);
+        }
       }
       // Release wait after the action. A squeeze here also hands the toggle straight back to
       // steering instead of holding the rider in menu mode until the toggle is centred.
@@ -1718,6 +1743,30 @@ void runMagGesture()
       {
         mtxTxSummonTry(MTX_SUMMON_RTM);
       }
+      // V2.5-Evo - 2026-10-21 - P3-2 (step-3 audit): THE BUG - the trigger-held branch (row 12, below) was tested BEFORE
+      // "RTM active -> disarm", so an RTM hold made with the trigger held DURING a return - the normal RTM state - showed "St"
+      // + the stop buzz while the return went on, and the rider believed he had ended it. THE FIX: a running (or arming)
+      // return is tested FIRST. A hold then means "END the return": a DISARM, not an engage attempt, so the owner's "if it
+      // cannot engage, show stop" does not apply, and any "St" would say the return stopped while it runs (SOP-041: the
+      // screen shows what the buggy does). Blocked by the held trigger (Q-8) or by Return-To-Me switched off: serial line
+      // only and the return's screen stays - SW27's answer. Released and switched on: the disarm, exactly as before.
+      else if (rtm_tx_active || rtmIsArming())
+      {
+        if (!triggerReleased())
+          Serial.printf("MAG [TX] Return-To-Me hold ignored: trigger held (thr %u) - a hold ends a return only with the trigger fully released; the return continues\n",
+                        (unsigned)thr_scaled);
+        else if (!(rtmEnabledEffective() && usrConf.gps_en))
+          Serial.printf("MAG [TX] Return-To-Me hold ignored: Return-To-Me is switched off (rtm enabled %d, gps_en %d); the return continues\n",
+                        rtmEnabledEffective() ? 1 : 0, (int)usrConf.gps_en);
+        else
+        {
+          // RTM already active (or mid arm-ceremony) → DISARM through the toggle's own path.
+          // setRtmDisarmed()→rtmDisengage(true) sends 0xF1/0 and shows "St", no buzz — identical
+          // feel and RX effect to a toggle-combo disengage. (Mid-ceremony is only theoretical here:
+          // runDoubleSqueezeArm() blocks loop(), so runMagGesture() cannot be entered while arming.)
+          setRtmDisarmed();
+        }
+      }
       else if (!(rtmEnabledEffective() && usrConf.gps_en))
       {
         Serial.printf("MAG [TX] hold refused: Return-To-Me cannot start (rtm enabled %d, gps_en %d)\n",
@@ -1736,14 +1785,7 @@ void runMagGesture()
                       (unsigned)thr_scaled);
         mtxTxStopRefusal(NULL, MTX_ST_HELD);
       }
-      else if (rtm_tx_active || rtmIsArming())
-      {
-        // RTM already active (or mid arm-ceremony) → DISARM through the toggle's own path.
-        // setRtmDisarmed()→rtmDisengage(true) sends 0xF1/0 and shows "St", no buzz — identical
-        // feel and RX effect to a toggle-combo disengage. (Mid-ceremony is only theoretical here:
-        // runDoubleSqueezeArm() blocks loop(), so runMagGesture() cannot be entered while arming.)
-        setRtmDisarmed();
-      }
+      // (The "RTM already active -> DISARM" branch moved above the switch-off and trigger checks, P3-2.)
       else
       {
         // RTM disarmed → ARM. setRtmArmed() is only the gesture half of RTM arming: it sets

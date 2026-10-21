@@ -1,0 +1,1690 @@
+// V2.5-Evo - 2026-10-20 - Host test for Common/MultiTx.h (multi-remote v3.2, code step 1) and the stickyWindowClose()
+//   helper in Common/AutoReturnRules.h. T1-T18, T20-T33 (T19 lives in config_migrate_test.cpp). Every ID here is MADE UP
+//   (the 5C:xx:xx family the public design document uses); no real board ID or MAC is in this file.
+//
+// The receiver's per-packet rules are run through the REAL mtxOnFrame() with a simulated firmware behind the hooks
+// (struct Sim): the hooks do what the receiver's existing code does - the control branch writes the throttle and stamps
+// the failsafe, the 0xF1 / 0xF2 / 0xF4 handlers stamp last_packet, the 0xF3 announce switches to 15 bytes. T22 runs the
+// same frames through a reference copy of today's triggeredReceive() branch (struct Ref) and compares the writes.
+//
+// Optional local-only input (audit W-4): pass a file path as the first argument to check the owner's own boards.
+// Lines: "<banner MAC, 12 hex digits> <expected chip ID, 6 hex>" and "link <tx id 6 hex> <rx id 6 hex> <L 6 hex>".
+// Without it the owner-table check prints SKIPPED. Keep that file out of the repository.
+//
+// Build and run (per the host-test procedure):
+//   g++ -std=c++17 -O1 -Wall -Wextra multi_tx_test.cpp -o multi_tx_test && ./multi_tx_test [local-ids.txt]
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <string>
+#include <vector>
+
+#include "../../Source/Common/MultiTx.h"
+#include "../../Source/Common/AutoReturnRules.h"
+
+// ============================================================
+// Harness
+// ============================================================
+static int g_checks = 0, g_fails = 0;
+#define CHECK(cond) do { g_checks++; if (!(cond)) { g_fails++; printf("  FAIL line %d: %s\n", __LINE__, #cond); } } while (0)
+
+static int g_test_checks0 = 0, g_test_fails0 = 0;
+static void testBegin() { g_test_checks0 = g_checks; g_test_fails0 = g_fails; }
+static void testEnd(const char* name)
+{
+  printf("%-4s %s (%d checks)\n", name, (g_fails == g_test_fails0) ? "ok  " : "FAIL", g_checks - g_test_checks0);
+}
+
+// The exact CRC both boards use (Common/SystemCommon.h esp_crc8(), copied: that header needs Arduino).
+static uint8_t crc8(uint8_t* data, uint8_t length)
+{
+  uint8_t crc = 0xFF;
+  for (uint8_t i = 0; i < length; i++) {
+    crc ^= data[i];
+    for (uint8_t j = 0; j < 8; j++) crc = (crc & 0x80) ? (uint8_t)((crc << 1) ^ 0x31) : (uint8_t)(crc << 1);
+  }
+  return crc;
+}
+
+// A deterministic generator for the property checks.
+static uint32_t g_rng = 0x2545F491u;
+static uint32_t rnd() { g_rng ^= g_rng << 13; g_rng ^= g_rng >> 17; g_rng ^= g_rng << 5; return g_rng; }
+
+static void idSet(uint8_t id[3], uint8_t a, uint8_t b, uint8_t c) { id[0] = a; id[1] = b; id[2] = c; }
+
+// Made-up IDs (the public document's example family).
+static const uint8_t kR1[3] = { 0x5C, 0x10, 0x20 };   // buggy 1
+static const uint8_t kR2[3] = { 0x5C, 0x77, 0x31 };   // buggy 2
+static const uint8_t kA[3]  = { 0x5C, 0x4A, 0x7B };   // remote A
+static const uint8_t kB[3]  = { 0x5C, 0x91, 0x0E };   // remote B
+static const uint8_t kC[3]  = { 0x5C, 0x23, 0xD4 };   // remote C
+
+// ============================================================
+// The simulated receiver firmware behind MtxRxHooks
+// ============================================================
+struct Sim {
+  MtxRxEnv env;
+  uint16_t failsafe_ms;
+  uint8_t  thr, steer;
+  uint32_t last_packet, last_control_packet;
+  uint32_t mtx_grant_ms;
+  uint8_t  seq;
+  uint32_t gps_ts; int32_t gps_lat; bool gps_pending; uint8_t gps_len;
+  bool     phb_ok; uint32_t phb_last;
+  uint8_t  boot_id;
+  bool     sticky_cap;
+  uint8_t  aux;
+  uint32_t now;
+  std::vector<std::string> log;
+  std::vector<std::pair<int, int> > replies;    // slot, status
+  std::vector<std::pair<int, int> > events;     // ev, arg
+  std::vector<int> event_slots;
+  MtxRxState st;
+  MtxRxCfg   cfg;
+  MtxRxHooks h;
+};
+
+static Sim* S(void* c) { return (Sim*)c; }
+static void hkReadEnv(void* c, MtxRxEnv* out) { *out = S(c)->env; }
+static void hkZero(void* c) { S(c)->thr = 0; S(c)->steer = 127; S(c)->log.push_back("zero"); }
+static void hkRtmOff(void* c)
+{
+  // processRtmStatePacket(0xF1/0): the sticky return cap is armed only if RTM was running.
+  if (S(c)->env.rtm_rx_active) S(c)->sticky_cap = true;
+  S(c)->env.rtm_rx_active = false;
+  S(c)->log.push_back("rtm_off");
+}
+static void hkFmOff(void* c) { S(c)->env.fm_mode_runtime = 0; S(c)->log.push_back("fm_off"); }
+static void hkGpsReset(void* c)
+{
+  Sim* s = S(c);
+  s->gps_ts = 0; s->phb_ok = false; s->phb_last = 0;            // the coordinates (gps_lat) are NOT cleared
+  if (s->gps_pending) { s->gps_pending = false; s->gps_len = 6; }
+  s->log.push_back("gps_reset");
+}
+static void hkBootReset(void* c) { S(c)->boot_id = 0; S(c)->log.push_back("boot_reset"); }
+static void hkLimit(void* c, uint32_t g) { S(c)->mtx_grant_ms = g; S(c)->log.push_back("limit"); }
+static void hkSeq(void* c) { S(c)->seq++; S(c)->log.push_back("seq"); }
+static void hkApply(void* c, int8_t, const uint8_t f[6])
+{
+  // Today's control branch (RX Radio.ino): last_packet, throttle, steering, THEN the failsafe stamp.
+  Sim* s = S(c);
+  s->last_packet = s->now; s->thr = f[3]; s->steer = f[4]; s->last_control_packet = s->now;
+  s->log.push_back("apply");
+}
+static void hkMeta(void* c, int8_t, const uint8_t f[6])
+{
+  // Today's meta handlers: 0xF1 / 0xF2 / 0xF4 stamp last_packet; 0xF3 switches to 15 bytes and stamps nothing.
+  Sim* s = S(c);
+  if (f[3] == 0xF1) {
+    s->last_packet = s->now;
+    if (f[4] == 0) { if (s->env.rtm_rx_active) s->sticky_cap = true; s->env.rtm_rx_active = false; }
+    else if (f[4] == 1) s->env.rtm_rx_active = true;
+    else if (f[4] >= 0x80) s->boot_id = f[4];
+  } else if (f[3] == 0xF2) {
+    s->last_packet = s->now;
+    uint8_t m = f[4] & 0x07; if (m > 5) m = 0;
+    s->env.fm_mode_runtime = m;
+  } else if (f[3] == 0xF4) {
+    s->last_packet = s->now; s->aux = f[4];
+  } else if (f[3] == 0xF3) {
+    s->gps_pending = true; s->gps_len = 15;
+  }
+  s->log.push_back("meta");
+}
+static void hkReply(void* c, int8_t slot, uint8_t status) { S(c)->replies.push_back(std::make_pair((int)slot, (int)status)); }
+static void hkEvent(void* c, uint8_t ev, int8_t slot, uint8_t arg)
+{
+  S(c)->events.push_back(std::make_pair((int)ev, (int)arg));
+  S(c)->event_slots.push_back(slot);
+}
+
+static void simInit(Sim* s, bool single, uint8_t valid_mask)
+{
+  s->env.pwm_active = true; s->env.fm_mode_runtime = 0xFF; s->env.rtm_rx_active = false; s->env.fm_rx_active = false;
+  s->failsafe_ms = 1000;
+  s->thr = 0; s->steer = 127; s->last_packet = 0; s->last_control_packet = 0; s->mtx_grant_ms = 0; s->seq = 0;
+  s->gps_ts = 0; s->gps_lat = 0; s->gps_pending = false; s->gps_len = 6; s->phb_ok = false; s->phb_last = 0;
+  s->boot_id = 0; s->sticky_cap = false; s->aux = 0; s->now = 0;
+  s->log.clear(); s->replies.clear(); s->events.clear(); s->event_slots.clear();
+  mtxRxStateInit(&s->st);
+  s->cfg.single = single; s->cfg.valid_mask = valid_mask; s->cfg.claim_s = 10; s->cfg.failsafe_ms = 1000; s->cfg.seize_en = true;
+  s->h.ctx = s; s->h.read_env = hkReadEnv; s->h.zero_outputs = hkZero; s->h.synthetic_rtm_off = hkRtmOff;
+  s->h.synthetic_fm_off = hkFmOff; s->h.reset_rider_gps = hkGpsReset; s->h.reset_boot_id = hkBootReset;
+  s->h.publish_limit = hkLimit; s->h.owner_changed = hkSeq; s->h.apply_owner = hkApply; s->h.meta = hkMeta;
+  s->h.reply = hkReply; s->h.event = hkEvent;
+}
+static void simClear(Sim* s) { s->log.clear(); s->replies.clear(); s->events.clear(); s->event_slots.clear(); }
+
+// One frame from slot at time t.
+static void fr(Sim* s, int8_t slot, uint8_t b3, uint8_t b4, uint32_t t, bool legacy = false)
+{
+  s->now = t;
+  const uint8_t f[6] = { 0, 0, 0, b3, b4, 0 };
+  mtxOnFrame(&s->st, &s->cfg, &s->h, slot, legacy, f, t);
+}
+// The radio task's 2 s semaphore timeout (no frame).
+static void wake(Sim* s, uint32_t t) { s->now = t; mtxTimers(&s->st, &s->cfg, &s->h, t); }
+// The loop task's Follow-Me tick: fm_rx_active follows the declaration (fmEnterIdle() when not declared).
+static void loopTick(Sim* s) { s->env.fm_rx_active = mtxFmDeclared(s->env.fm_mode_runtime); }
+
+static int lastStatus(const Sim* s) { return s->replies.empty() ? -1 : s->replies.back().second; }
+static bool logHas(const Sim* s, const char* what)
+{
+  for (size_t i = 0; i < s->log.size(); i++) if (s->log[i] == what) return true;
+  return false;
+}
+static int logPos(const Sim* s, const char* what)
+{
+  for (size_t i = 0; i < s->log.size(); i++) if (s->log[i] == what) return (int)i;
+  return -1;
+}
+static int countEv(const Sim* s, int ev)
+{
+  int n = 0;
+  for (size_t i = 0; i < s->events.size(); i++) if (s->events[i].first == ev) n++;
+  return n;
+}
+static uint8_t claimable(Sim* s, uint32_t t)
+{
+  MtxRxEnv e = s->env;
+  return mtxClaimableReason(&s->st, &s->cfg, &e, t);
+}
+
+// Grant slot to an owner the normal way: zero, zero, squeeze. Ends at t+200.
+static void grantBySqueeze(Sim* s, int8_t slot, uint32_t t)
+{
+  fr(s, slot, 0, 127, t); fr(s, slot, 0, 127, t + 100); fr(s, slot, 60, 127, t + 200);
+}
+
+// ============================================================
+// T1 - link ID and the one identity function (W-4, W-5)
+// ============================================================
+static uint64_t macU64(const uint8_t m[6])   // the uint64 getEfuseMac() returns: mac[0] in the LOW byte
+{
+  uint64_t v = 0;
+  for (int i = 5; i >= 0; i--) v = (v << 8) | m[i];
+  return v;
+}
+// A copy of the default-address bake as it stands in Common/SPIFFSEngine.h, to prove efuseIdFromMac() is the same.
+static void bakeCopy(uint64_t mac, uint8_t out[3])
+{
+  uint8_t mac_address[6];
+  for (int i = 0; i < 6; i++) mac_address[i] = (mac >> (8 * i)) & 0xFF;
+  out[0] = crc8(mac_address, 4); out[1] = mac_address[4]; out[2] = mac_address[5];
+}
+static bool parseHex(const char* p, int digits, uint64_t* out)
+{
+  uint64_t v = 0;
+  for (int i = 0; i < digits; i++) {
+    const char ch = p[i]; int d;
+    if (ch >= '0' && ch <= '9') d = ch - '0'; else if (ch >= 'a' && ch <= 'f') d = ch - 'a' + 10;
+    else if (ch >= 'A' && ch <= 'F') d = ch - 'A' + 10; else return false;
+    v = (v << 4) | (uint64_t)d;
+  }
+  *out = v; return true;
+}
+static void id3(uint64_t v, uint8_t out[3]) { out[0] = (uint8_t)(v >> 16); out[1] = (uint8_t)(v >> 8); out[2] = (uint8_t)v; }
+
+static void t1(const char* local_path)
+{
+  testBegin();
+  // The public example: buggy 5C:10:20, remote A 5C:4A:7B, remote B 5C:91:0E -> L 00:5A:5B and 00:81:2E.
+  uint8_t L[3], back[3];
+  mtxIdXor(kA, kR1, L);  CHECK(L[0] == 0x00 && L[1] == 0x5A && L[2] == 0x5B);
+  mtxIdXor(kB, kR1, L);  CHECK(L[0] == 0x00 && L[1] == 0x81 && L[2] == 0x2E);
+  // Round trip, never zero for tx != rx, and the uplink address (L) is never the reply address (T) when rx != 0.
+  for (int i = 0; i < 20000; i++) {
+    uint8_t t[3], r[3];
+    idSet(t, (uint8_t)rnd(), (uint8_t)rnd(), (uint8_t)rnd());
+    idSet(r, (uint8_t)rnd(), (uint8_t)rnd(), (uint8_t)rnd());
+    mtxIdXor(t, r, L); mtxIdXor(L, r, back);
+    CHECK(mtxIdEqual(back, t));
+    if (!mtxIdEqual(t, r)) CHECK(!mtxIdIsZero(L));
+    if (!mtxIdIsZero(r))   CHECK(!mtxIdEqual(L, t));
+  }
+  // W-5 byte order, from a synthetic MAC 02:11:22:33:44:55 (mac[0] = 0x02).
+  const uint8_t m[6] = { 0x02, 0x11, 0x22, 0x33, 0x44, 0x55 };
+  const uint64_t u = macU64(m);
+  CHECK(u == 0x0000554433221102ULL);                     // the banner would print 554433221102 - the MAC backwards
+  uint8_t id[3], ref[3];
+  efuseIdFromMac(u, crc8, id);
+  uint8_t first4[4] = { 0x02, 0x11, 0x22, 0x33 };
+  CHECK(id[0] == crc8(first4, 4) && id[1] == 0x44 && id[2] == 0x55);
+  // W-5: the one function equals the default-address bake for any MAC.
+  for (int i = 0; i < 20000; i++) {
+    const uint64_t mac = ((uint64_t)rnd() << 16) ^ (uint64_t)rnd();
+    efuseIdFromMac(mac & 0xFFFFFFFFFFFFULL, crc8, id); bakeCopy(mac & 0xFFFFFFFFFFFFULL, ref);
+    CHECK(mtxIdEqual(id, ref));
+  }
+  // W-4: the owner's own boards only from a local file.
+  FILE* fp = local_path ? fopen(local_path, "r") : NULL;
+  if (!fp) {
+    printf("     T1 owner table: SKIPPED (no local input)\n");
+  } else {
+    char line[128]; int n = 0;
+    while (fgets(line, sizeof(line), fp)) {
+      if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
+      uint64_t a, b, c;
+      if (strncmp(line, "link ", 5) == 0) {
+        if (parseHex(line + 5, 6, &a) && parseHex(line + 12, 6, &b) && parseHex(line + 19, 6, &c)) {
+          uint8_t ta[3], rb[3], lc[3], l2[3]; id3(a, ta); id3(b, rb); id3(c, lc);
+          mtxIdXor(ta, rb, l2); CHECK(mtxIdEqual(l2, lc)); n++;
+        }
+      } else if (parseHex(line, 12, &a) && parseHex(line + 13, 6, &b)) {
+        uint8_t want[3]; id3(b, want); efuseIdFromMac(a, crc8, id); CHECK(mtxIdEqual(id, want)); n++;
+      }
+    }
+    fclose(fp);
+    printf("     T1 owner table: %d local lines checked\n", n);
+  }
+  testEnd("T1");
+}
+
+// ============================================================
+// T2 - classification across two buggies (the only multi-buggy coverage)
+// ============================================================
+static MtxRxBinding bindingV3(const uint8_t rx[3], const uint8_t* const* ids, int n)
+{
+  MtxRxBinding b; memset(&b, 0, sizeof(b));
+  b.paired = 1; memcpy(b.own_address, rx, 3);
+  for (int i = 0; i < n; i++) { memcpy(&b.mtx_id[i * 3], ids[i], 3); b.mtx_flags[i] = kMtxFlagValid; }
+  return b;
+}
+static void t2()
+{
+  testBegin();
+  const uint8_t* ids[2] = { kA, kB };
+  const MtxRxBinding b1 = bindingV3(kR1, ids, 2), b2 = bindingV3(kR2, ids, 2);
+  uint8_t L[3];
+  mtxIdXor(kA, kR1, L); CHECK(mtxLookupSlot(&b1, kR1, L) == 0); CHECK(mtxLookupSlot(&b2, kR2, L) == kMtxSlotUnknown);
+  mtxIdXor(kB, kR1, L); CHECK(mtxLookupSlot(&b1, kR1, L) == 1); CHECK(mtxLookupSlot(&b2, kR2, L) == kMtxSlotUnknown);
+  mtxIdXor(kA, kR2, L); CHECK(mtxLookupSlot(&b2, kR2, L) == 0); CHECK(mtxLookupSlot(&b1, kR1, L) == kMtxSlotUnknown);
+  mtxIdXor(kB, kR2, L); CHECK(mtxLookupSlot(&b2, kR2, L) == 1); CHECK(mtxLookupSlot(&b1, kR1, L) == kMtxSlotUnknown);
+  // A reply (bytes 0-2 = a remote's own ID) never classifies as an entry, on either buggy.
+  CHECK(mtxLookupSlot(&b1, kR1, kA) == kMtxSlotUnknown); CHECK(mtxLookupSlot(&b1, kR1, kB) == kMtxSlotUnknown);
+  CHECK(mtxLookupSlot(&b2, kR2, kA) == kMtxSlotUnknown); CHECK(mtxLookupSlot(&b2, kR2, kB) == kMtxSlotUnknown);
+  // Gate 1: address 00:00:00.
+  const uint8_t z[3] = { 0, 0, 0 };
+  CHECK(mtxLookupSlot(&b1, kR1, z) == kMtxSlotGate1);
+  // The legacy alias (bytes 0-2 = the buggy's own address) only as the sole entry.
+  CHECK(mtxLookupSlot(&b1, kR1, kR1) == kMtxSlotUnknown);           // two new-style entries: no alias
+  MtxRxBinding lg; memset(&lg, 0, sizeof(lg)); lg.paired = 1; memcpy(lg.own_address, kR1, 3);
+  memcpy(lg.mtx_id, kA, 3); lg.mtx_flags[0] = kMtxFlagValid | kMtxFlagLegacy; memcpy(lg.dest_address, kA, 3);
+  CHECK(mtxLookupSlot(&lg, kR1, kR1) == 0);
+  // The implicit legacy entry of a migrated board.
+  MtxRxBinding im; memset(&im, 0, sizeof(im)); im.paired = 1; memcpy(im.own_address, kR1, 3); memcpy(im.dest_address, kA, 3);
+  CHECK(mtxImplicitLegacy(&im, kR1)); CHECK(mtxLookupSlot(&im, kR1, kR1) == kMtxSlotImplicit);
+  CHECK(mtxRxMode(&im, kR1) == MTX_MODE_SINGLE);
+  CHECK(mtxRxMode(&b1, kR1) == MTX_MODE_MULTI);
+  // Never formed next to a list entry, nor when own_address is not the chip ID.
+  MtxRxBinding im2 = im; memcpy(im2.mtx_id, kB, 3); im2.mtx_flags[0] = kMtxFlagValid;
+  CHECK(!mtxImplicitLegacy(&im2, kR1));
+  CHECK(!mtxImplicitLegacy(&im, kR2));
+  // Every random frame for buggy 1 is unknown on buggy 2 unless it decodes exactly to a listed ID there.
+  for (int i = 0; i < 20000; i++) {
+    uint8_t a[3]; idSet(a, (uint8_t)rnd(), (uint8_t)rnd(), (uint8_t)rnd());
+    const int8_t s = mtxLookupSlot(&b2, kR2, a);
+    uint8_t t[3]; mtxIdXor(a, kR2, t);
+    if (s >= 0) CHECK(mtxIdEqual(t, kA) || mtxIdEqual(t, kB));
+  }
+  testEnd("T2");
+}
+
+// ============================================================
+// T3 - kind decode (+ SUMMON, T32)
+// ============================================================
+static void t3()
+{
+  testBegin();
+  for (int b3 = 0; b3 <= 0xF0; b3++) for (int b4 = 0; b4 < 256; b4 += 17) CHECK(mtxKind((uint8_t)b3, (uint8_t)b4) == MTX_K_CTRL);
+  for (int b3 = 0xF5; b3 <= 0xFF; b3++) for (int b4 = 0; b4 < 256; b4++) {
+    CHECK(mtxKind((uint8_t)b3, (uint8_t)b4) == MTX_K_DROP);
+    CHECK(mtxFrameKind((uint8_t)b3, (uint8_t)b4, true, false) == MTX_K_DROP);    // SINGLE too
+    CHECK(mtxFrameKind((uint8_t)b3, (uint8_t)b4, false, false) == MTX_K_DROP);   // MULTI
+  }
+  CHECK(mtxKind(0xF1, 0x10) == MTX_K_LOCKED);
+  CHECK(mtxKind(0xF1, 0x5A) == MTX_K_SEIZE);
+  CHECK(mtxKind(0xF1, 0x3C) == MTX_K_SUMMON);
+  for (int b4 = 0; b4 < 256; b4++) {
+    if (b4 == 0x10 || b4 == 0x5A || b4 == 0x3C) continue;
+    CHECK(mtxKind(0xF1, (uint8_t)b4) == MTX_K_META);                       // incl. 0x11, 0x5B, 0x3B, 0x3D, 0, 1, 2, 0x80+
+  }
+  for (int b3 = 0xF2; b3 <= 0xF4; b3++) for (int b4 = 0; b4 < 256; b4++) CHECK(mtxKind((uint8_t)b3, (uint8_t)b4) == MTX_K_META);
+  // The neighbours stay plain metas.
+  CHECK(mtxKind(0xF1, 0x11) == MTX_K_META && mtxKind(0xF1, 0x5B) == MTX_K_META);
+  CHECK(mtxKind(0xF1, 0x3B) == MTX_K_META && mtxKind(0xF1, 0x3D) == MTX_K_META);
+  // Legacy entry: LOCKED / SEIZE / SUMMON dropped, in both modes.
+  CHECK(mtxFrameKind(0xF1, 0x10, true, true) == MTX_K_DROP && mtxFrameKind(0xF1, 0x5A, true, true) == MTX_K_DROP);
+  CHECK(mtxFrameKind(0xF1, 0x3C, true, true) == MTX_K_DROP && mtxFrameKind(0xF1, 0x3C, false, true) == MTX_K_DROP);
+  // SINGLE: LOCKED -> control (0/127 is applied, T22); SEIZE and SUMMON dropped.
+  CHECK(mtxFrameKind(0xF1, 0x10, true, false) == MTX_K_CTRL);
+  CHECK(mtxFrameKind(0xF1, 0x5A, true, false) == MTX_K_DROP);
+  CHECK(mtxFrameKind(0xF1, 0x3C, true, false) == MTX_K_DROP);
+  // MULTI: as decoded.
+  CHECK(mtxFrameKind(0xF1, 0x10, false, false) == MTX_K_LOCKED);
+  CHECK(mtxFrameKind(0xF1, 0x5A, false, false) == MTX_K_SEIZE);
+  CHECK(mtxFrameKind(0xF1, 0x3C, false, false) == MTX_K_SUMMON);
+  testEnd("T3");
+}
+
+// ============================================================
+// T4 - grant (R1)
+// ============================================================
+static void t4()
+{
+  testBegin();
+  Sim s;
+  simInit(&s, false, 0x03);
+  grantBySqueeze(&s, 1, 1000);
+  CHECK(s.st.owner == 1); CHECK(lastStatus(&s) == MTX_S_OWNER);
+  CHECK(logPos(&s, "limit") >= 0 && logPos(&s, "limit") < logPos(&s, "apply"));   // the limit before the first byte
+  CHECK(s.thr == 60 && s.mtx_grant_ms == 1200);
+  // A squeeze held throughout never takes control.
+  simInit(&s, false, 0x03);
+  for (int i = 0; i < 30; i++) fr(&s, 1, 60, 127, 1000 + 100 * i);
+  CHECK(s.st.owner == kMtxNone); CHECK(s.thr == 0); CHECK(lastStatus(&s) == MTX_S_FREE);   // FREE, never E9
+  // zero, 9, squeeze: no.
+  simInit(&s, false, 0x03);
+  fr(&s, 1, 0, 127, 1000); fr(&s, 1, 9, 127, 1100); fr(&s, 1, 60, 127, 1200);
+  CHECK(s.st.owner == kMtxNone);
+  // Zero proof older than 3.0 s: no (3100 ms); exactly 3000: yes.
+  simInit(&s, false, 0x03);
+  fr(&s, 1, 0, 127, 1000); fr(&s, 1, 0, 127, 1100); fr(&s, 1, 60, 127, 4200);
+  CHECK(s.st.owner == kMtxNone);
+  simInit(&s, false, 0x03);
+  fr(&s, 1, 0, 127, 1000); fr(&s, 1, 0, 127, 1100); fr(&s, 1, 60, 127, 4100);
+  CHECK(s.st.owner == 1);
+  // Follow-Me 0 and 0xFF allowed; 1-5 refused; RTM and fm_rx_active refused; no PWM refused.
+  for (int m = 0; m < 256; m++) {
+    simInit(&s, false, 0x03); s.env.fm_mode_runtime = (uint8_t)m;
+    grantBySqueeze(&s, 0, 1000);
+    CHECK((s.st.owner == 0) == !(m >= 1 && m <= 5));
+  }
+  simInit(&s, false, 0x03); s.env.rtm_rx_active = true; grantBySqueeze(&s, 0, 1000); CHECK(s.st.owner == kMtxNone);
+  simInit(&s, false, 0x03); s.env.fm_rx_active = true;  grantBySqueeze(&s, 0, 1000); CHECK(s.st.owner == kMtxNone);
+  simInit(&s, false, 0x03); s.env.pwm_active = false;   grantBySqueeze(&s, 0, 1000); CHECK(s.st.owner == kMtxNone);
+  // LOCKED never counts as zero.
+  simInit(&s, false, 0x03);
+  fr(&s, 1, 0, 127, 1000); fr(&s, 1, 0xF1, 0x10, 1100); fr(&s, 1, 60, 127, 1200);
+  CHECK(s.st.owner == kMtxNone);
+  simInit(&s, false, 0x03);
+  fr(&s, 1, 0xF1, 0x10, 1000); fr(&s, 1, 0xF1, 0x10, 1100); fr(&s, 1, 60, 127, 1200);
+  CHECK(s.st.owner == kMtxNone);
+  // The grant is read BEFORE the streak update: the squeeze itself does not reset the proof it is judged on.
+  simInit(&s, false, 0x03);
+  fr(&s, 1, 0, 127, 1000); fr(&s, 1, 0, 127, 1100);
+  CHECK(s.st.zero_streak[1] == 2);
+  fr(&s, 1, 60, 127, 1200);
+  CHECK(s.st.owner == 1 && s.st.zero_streak[1] == 0);
+  // An invalid slot never acts.
+  simInit(&s, false, 0x03); grantBySqueeze(&s, 2, 1000); CHECK(s.st.owner == kMtxNone && s.replies.empty());
+  testEnd("T4");
+}
+
+// ============================================================
+// T5 - the master's take-back (R8)
+// ============================================================
+static void t5()
+{
+  testBegin();
+  Sim s;
+  simInit(&s, false, 0x03);
+  grantBySqueeze(&s, 1, 1000);                         // the guest (slot 1) owns and drives
+  fr(&s, 1, 120, 127, 1300);
+  fr(&s, 0, 0, 127, 1400); fr(&s, 0, 0, 127, 1500);    // the master at zero
+  CHECK(lastStatus(&s) == MTX_S_SEIZABLE);
+  simClear(&s);
+  fr(&s, 0, 0xF1, 0x5A, 1600);
+  CHECK(s.st.owner == 0); CHECK(s.thr == 0);            // the guest's throttle zeroed at once
+  CHECK(logPos(&s, "zero") == 0); CHECK(s.mtx_grant_ms == 1600); CHECK(s.replies.empty());   // no reply to SEIZE
+  fr(&s, 1, 120, 127, 1700); CHECK(lastStatus(&s) == MTX_S_SEIZED);
+  // Negatives.
+  const int cases = 6;
+  for (int c = 0; c < cases; c++) {
+    simInit(&s, false, 0x03);
+    grantBySqueeze(&s, 1, 1000);
+    fr(&s, 0, 0, 127, 1400); fr(&s, 0, 0, 127, 1500);
+    uint32_t t = 1600;
+    if (c == 0) s.cfg.seize_en = false;
+    if (c == 1) s.env.fm_mode_runtime = 2;
+    if (c == 2) s.env.rtm_rx_active = true;
+    if (c == 3) s.env.pwm_active = false;
+    if (c == 4) t = 2600;                               // zero proof 1100 ms old
+    if (c == 5) { fr(&s, 0, 10, 127, 1550); }           // the master not at zero
+    fr(&s, 0, 0xF1, 0x5A, t);
+    CHECK(s.st.owner == 1);
+  }
+  // A guest can never seize.
+  simInit(&s, false, 0x03);
+  grantBySqueeze(&s, 0, 1000);
+  fr(&s, 1, 0, 127, 1400); fr(&s, 1, 0, 127, 1500); fr(&s, 1, 0xF1, 0x5A, 1600);
+  CHECK(s.st.owner == 0);
+  // Nobody owns: nothing to take back.
+  simInit(&s, false, 0x03);
+  fr(&s, 0, 0, 127, 1400); fr(&s, 0, 0, 127, 1500); fr(&s, 0, 0xF1, 0x5A, 1600);
+  CHECK(s.st.owner == kMtxNone);
+  testEnd("T5");
+}
+
+// ============================================================
+// T7 - no timer releases anything (replaced by T23-T25 and T33)
+// ============================================================
+static void t7()
+{
+  testBegin();
+  Sim s;
+  for (int variant = 0; variant < 4; variant++) {
+    simInit(&s, false, 0x03);
+    grantBySqueeze(&s, 0, 1000);
+    if (variant == 1) { fr(&s, 0, 0xF2, 0x82, 1300); loopTick(&s); }    // Follow-Me armed
+    if (variant == 2) { fr(&s, 0, 0xF1, 1, 1300); }                       // RTM on
+    simClear(&s);
+    const uint8_t seq0 = s.seq;
+    for (uint32_t t = 2000; t < 400000; t += 2000) {
+      wake(&s, t);
+      if (variant == 3) fr(&s, 1, 0, 127, t + 1);                         // another remote present the whole time
+    }
+    CHECK(s.st.owner == 0); CHECK(!logHas(&s, "zero")); CHECK(s.seq == seq0);
+    CHECK(countEv(&s, MTX_EV_RELEASED) == 0);
+  }
+  testEnd("T7");
+}
+
+// ============================================================
+// T8 - the takeover limit
+// ============================================================
+static void t8()
+{
+  testBegin();
+  CHECK(mtxTakeoverCap(5000, 0, 64, 4000) == 255);
+  CHECK(mtxTakeoverCap(5000, 1000, 64, 0) == 255);
+  CHECK(mtxTakeoverCap(5000, 1000, 255, 4000) == 255);
+  const uint32_t g = 10000;
+  CHECK(mtxTakeoverCap(g, g, 64, 4000) == 64);
+  CHECK(mtxTakeoverCap(g + 1000, g, 64, 4000) == 111);
+  CHECK(mtxTakeoverCap(g + 2000, g, 64, 4000) == 159);
+  CHECK(mtxTakeoverCap(g + 3000, g, 64, 4000) == 207);
+  CHECK(mtxTakeoverCap(g + 4000, g, 64, 4000) == 255);
+  CHECK(mtxTakeoverCap(g - 50, g, 64, 4000) == 64);                 // a negative age counts as "just granted"
+  uint8_t prev = 0;
+  for (uint32_t dt = 0; dt <= 5000; dt++) {
+    const uint8_t c = mtxTakeoverCap(g + dt, g, 64, 4000);
+    CHECK(c >= prev); prev = c;
+    for (int x = 0; x < 256; x += 51) CHECK((x < c ? x : c) <= x);  // min(x, cap) never raises x
+  }
+  // Across the millis() wrap.
+  const uint32_t gw = 0xFFFFFF00u;
+  CHECK(mtxTakeoverCap(gw + 1000, gw, 64, 4000) == 111);
+  CHECK(mtxTakeoverExpired(gw + 4000, gw, 4000) && !mtxTakeoverExpired(gw + 3999, gw, 4000));
+  // A grant at millis() == 0 is stored as 1 (0 means "no limit").
+  Sim s; simInit(&s, false, 0x03);
+  fr(&s, 0, 0, 127, 0xFFFFFF00u); fr(&s, 0, 0, 127, 0xFFFFFF80u); fr(&s, 0, 60, 127, 0);
+  CHECK(s.st.owner == 0 && s.mtx_grant_ms == 1);
+  testEnd("T8");
+}
+
+// ============================================================
+// T9 - status pack / unpack; S = 000 always in SINGLE
+// ============================================================
+struct __attribute__((packed)) TelemetryMirror { uint8_t b[20]; };   // the 20-byte TelemetryPacket
+static_assert(sizeof(TelemetryMirror) <= 32, "TelemetryPacket must stay within 32 bytes (5-bit index)");
+static void t9()
+{
+  testBegin();
+  for (int s = 0; s < 8; s++) for (int i = 0; i < 20; i++) {
+    const uint8_t b3 = mtxReplyByte3((uint8_t)s, (uint8_t)i);
+    CHECK(mtxReplyIndexOf(b3) == i);
+    CHECK(mtxReplyStatusOf(b3) == ((s == 7) ? MTX_S_BUSY : s));
+  }
+  for (int i = 0; i < 20; i++) CHECK(mtxReplyByte3(MTX_S_OWNER_SOLO, (uint8_t)i) == i);   // byte-identical to today
+  Sim s; simInit(&s, true, 0x01);
+  for (int i = 0; i < 50; i++) fr(&s, 0, (uint8_t)(i * 5), 127, 1000 + 100 * i);
+  fr(&s, 0, 0xF1, 0x10, 7000);
+  bool all000 = !s.replies.empty();
+  for (size_t i = 0; i < s.replies.size(); i++) all000 = all000 && s.replies[i].second == MTX_S_OWNER_SOLO;
+  CHECK(all000);
+  testEnd("T9");
+}
+
+// ============================================================
+// T10 - the reply masks; per-slot link quality
+// ============================================================
+static void t10()
+{
+  testBegin();
+  for (int idx = 0; idx < 20; idx++) for (int raw = 0; raw < 256; raw += 7) {
+    const uint8_t r = (uint8_t)raw, i = (uint8_t)idx;
+    CHECK(mtxReplyValue(i, r, true, false, true, 33) == r);           // SINGLE: unchanged, every index
+    const uint8_t own = mtxReplyValue(i, r, false, true, false, 33);
+    const uint8_t non = mtxReplyValue(i, r, false, false, false, 33);
+    const uint8_t chg = mtxReplyValue(i, r, false, true, true, 33);
+    if (i == 18) { CHECK(own == 33 && non == 33 && chg == 33); continue; }
+    CHECK(own == r);
+    CHECK(chg == non);                                                // O-1: the full non-owner mask until rebuilt
+    switch (i) {
+      case 5: CHECK(non == 0xFF); break;
+      case 14: CHECK(non == 127); break;
+      case 15: CHECK(non == (r & 0xFC)); break;
+      case 16: CHECK(non == 0); break;
+      case 17: CHECK(non == 0xFF); break;
+      case 19: CHECK(non == 0); break;
+      default: CHECK(non == r); break;
+    }
+  }
+  // The new owner's fault bits (16 bit 3, 19 bits 0-1) are clear while the change is pending.
+  CHECK((mtxReplyValue(16, 0xFF, false, true, true, 0) & 0x08) == 0);
+  CHECK((mtxReplyValue(19, 0xFF, false, true, true, 0) & 0x03) == 0);
+  testEnd("T10");
+}
+
+// ============================================================
+// T11 - per-remote telemetry rotation
+// ============================================================
+static void t11()
+{
+  testBegin();
+  uint8_t idx_owner = 0, idx_guest = 0, shared = 0;
+  bool seen_o[20] = {}, seen_g[20] = {}, seen_shared_o[20] = {};
+  int t_all_owner = -1;
+  for (int k = 0; k < 400; k++) {             // 40 s: 10 cycles per second, cycle 9 is the guest
+    const bool guest = (k % 10) == 9;
+    if (guest) { seen_g[mtxTelIndexNext(&idx_guest)] = true; shared = (uint8_t)((shared + 1) % 20); }
+    else {
+      seen_o[mtxTelIndexNext(&idx_owner)] = true;
+      seen_shared_o[shared] = true; shared = (uint8_t)((shared + 1) % 20);
+      bool all = true; for (int i = 0; i < 20; i++) all = all && seen_o[i];
+      if (all && t_all_owner < 0) t_all_owner = k;
+    }
+  }
+  bool all_o = true, all_g = true, all_shared = true;
+  for (int i = 0; i < 20; i++) { all_o = all_o && seen_o[i]; all_g = all_g && seen_g[i]; all_shared = all_shared && seen_shared_o[i]; }
+  CHECK(all_o && all_g);
+  CHECK(t_all_owner >= 0 && t_all_owner <= 25);   // the owner sees all 20 within about 2.2 s
+  CHECK(!all_shared);                              // with ONE shared rotation the owner would miss index 9, 19, ...
+  testEnd("T11");
+}
+
+// ============================================================
+// T12 - entry, binding and identity validation
+// ============================================================
+static void t12()
+{
+  testBegin();
+  // Identity: a copied / edited own_address drops the binding.
+  MtxRxBinding b; const uint8_t* ids[2] = { kA, kB };
+  b = bindingV3(kR2, ids, 2);                                    // the stored address is buggy 2's ...
+  uint8_t n = mtxValidateRxBinding(&b, kR1);                     // ... but the chip is buggy 1
+  CHECK((n & MTX_NOTE_ID_MISMATCH) != 0); CHECK(mtxIdEqual(b.own_address, kR1)); CHECK(b.paired == 0);
+  CHECK(mtxValidEntryCount(&b) == 0 && mtxIdIsZero(b.dest_address));
+  MtxRxBinding z; memset(&z, 0, sizeof(z)); z.paired = 1; memcpy(z.dest_address, kA, 3);
+  n = mtxValidateRxBinding(&z, kR1);
+  CHECK((n & MTX_NOTE_ID_NOT_SET) != 0 && z.paired == 0 && mtxIdIsZero(z.dest_address));
+  // The migrated single-remote case, own == chip: the implicit legacy entry is kept.
+  MtxRxBinding m; memset(&m, 0, sizeof(m)); m.paired = 1; memcpy(m.own_address, kR1, 3); memcpy(m.dest_address, kA, 3);
+  n = mtxValidateRxBinding(&m, kR1);
+  CHECK(n == 0 && m.paired == 1 && mtxImplicitLegacy(&m, kR1));
+  // paired == 0 clears the list and dest.
+  b = bindingV3(kR1, ids, 2); b.paired = 0; memcpy(b.dest_address, kA, 3);
+  n = mtxValidateRxBinding(&b, kR1);
+  CHECK((n & MTX_NOTE_UNPAIRED) != 0 && mtxValidEntryCount(&b) == 0 && mtxIdIsZero(b.dest_address));
+  // Entries: 000000, the buggy's own ID, a duplicate.
+  const uint8_t zero[3] = { 0, 0, 0 };
+  const uint8_t* bad[4] = { zero, kR1, kA, kA };
+  b = bindingV3(kR1, bad, 4);
+  n = mtxValidateRxBinding(&b, kR1);
+  CHECK((n & MTX_NOTE_ENTRY_CLEARED) != 0);
+  CHECK(!mtxEntryValid(&b, 0) && !mtxEntryValid(&b, 1) && mtxEntryValid(&b, 2) && !mtxEntryValid(&b, 3));
+  // A legacy entry next to a new-style one is removed; dest goes to 000000.
+  b = bindingV3(kR1, ids, 2); b.mtx_flags[1] |= kMtxFlagLegacy; memcpy(b.dest_address, kB, 3);
+  n = mtxValidateRxBinding(&b, kR1);
+  CHECK(mtxEntryValid(&b, 0) && !mtxEntryValid(&b, 1) && mtxIdIsZero(b.dest_address));
+  // Two legacy entries: the second goes.
+  b = bindingV3(kR1, ids, 2); b.mtx_flags[0] |= kMtxFlagLegacy; b.mtx_flags[1] |= kMtxFlagLegacy;
+  n = mtxValidateRxBinding(&b, kR1);
+  CHECK(mtxEntryValid(&b, 0) && !mtxEntryValid(&b, 1));
+  // A clean list is untouched.
+  b = bindingV3(kR1, ids, 2); MtxRxBinding before = b;
+  CHECK(mtxValidateRxBinding(&b, kR1) == 0 && memcmp(&b, &before, sizeof(b)) == 0);
+  // The remote's link record.
+  for (int p = 0; p < 8; p++) {
+    uint16_t paired = 1, proto = (uint16_t)p;
+    const uint8_t note = mtxValidateTxLink(&paired, &proto);
+    if (p == 0 || p == 3) CHECK(note == 0 && paired == 1 && proto == p);
+    else CHECK(note == 1 && paired == 0 && proto == 0);
+  }
+  uint16_t pd = 0, pr = 3; mtxValidateTxLink(&pd, &pr); CHECK(pr == 0);
+  testEnd("T12");
+}
+
+// ============================================================
+// T13 - the pairing window
+// ============================================================
+static void t13()
+{
+  testBegin();
+  const uint8_t* ids[1] = { kC };
+  MtxRxBinding cur = bindingV3(kR1, ids, 1);
+  MtxPairWindow w; mtxPairOpen(&w, &cur, 1000);
+  CHECK(w.close_at_ms == 61000);
+  CHECK(mtxPairOnRequest(&w, false, kA, kR1, -50.0f) == MTX_PR_OFFER);
+  CHECK(mtxPairOnRequest(&w, false, kA, kR1, -60.0f) == MTX_PR_OFFER);       // the gate is inclusive
+  CHECK(mtxPairOnRequest(&w, false, kA, kR1, -60.5f) == MTX_PR_RSSI);
+  const uint8_t zero[3] = { 0, 0, 0 };
+  CHECK(mtxPairOnRequest(&w, false, zero, kR1, -40.0f) == MTX_PR_ZERO);
+  CHECK(mtxPairOnRequest(&w, false, kR1, kR1, -40.0f) == MTX_PR_RX_ID);
+  CHECK(mtxPairOnRequest(&w, true,  zero, kR1, -40.0f) == MTX_PR_ZERO);
+  CHECK(mtxPairOnConfirm(&w, false, kA) == 0); CHECK(w.close_at_ms == 81000);
+  CHECK(mtxPairOnConfirm(&w, false, kA) == 0); CHECK(w.n == 1 && w.close_at_ms == 81000);   // a refresh does not extend
+  CHECK(mtxPairOnRequest(&w, true, kB, kR1, -40.0f) == MTX_PR_LEGACY_LATE);                 // 0xAB after an enrolment
+  CHECK(mtxPairOnConfirm(&w, false, kB) == 1); CHECK(w.close_at_ms == 101000);
+  CHECK(mtxPairOnConfirm(&w, false, kC) == 2); CHECK(w.close_at_ms == 121000);              // 120 s cap from the open
+  const uint8_t d4[3] = { 0x5C, 0x44, 0x01 }, d5[3] = { 0x5C, 0x55, 0x02 };
+  CHECK(mtxPairOnConfirm(&w, false, d4) == 3); CHECK(w.close_at_ms == 121000 && w.closed && w.close_reason == MTX_PC_FULL);
+  CHECK(mtxPairOnRequest(&w, false, d5, kR1, -40.0f) == MTX_PR_CLOSED);
+  MtxRxBinding out = cur;
+  CHECK(mtxPairCommit(&w, &out, kR1));
+  CHECK(out.paired == 1 && mtxIdEqual(out.own_address, kR1) && mtxIdIsZero(out.dest_address));
+  CHECK(mtxIdEqual(mtxEntryId(&out, 0), kA) && mtxIdEqual(mtxEntryId(&out, 1), kB) && mtxIdEqual(mtxEntryId(&out, 2), kC));
+  CHECK(mtxValidEntryCount(&out) == 4);                     // rebuilt from this window, never appended to the old list
+  // Full list: a new ID refused, a listed one may refresh.
+  MtxPairWindow f; mtxPairOpen(&f, &cur, 0);
+  mtxPairOnConfirm(&f, false, kA); mtxPairOnConfirm(&f, false, kB); mtxPairOnConfirm(&f, false, kC);
+  f.n = 4; memcpy(&f.ids[9], d4, 3); f.closed = false;
+  CHECK(mtxPairOnRequest(&f, false, d5, kR1, -40.0f) == MTX_PR_FULL);
+  CHECK(mtxPairOnRequest(&f, false, kB, kR1, -40.0f) == MTX_PR_OFFER);
+  // A legacy enrolment is the sole entry and closes the window at once.
+  MtxPairWindow l; mtxPairOpen(&l, &cur, 0);
+  CHECK(mtxPairOnRequest(&l, true, kA, kR1, -45.0f) == MTX_PR_OFFER);
+  mtxPairOnConfirm(&l, true, kA);
+  CHECK(l.closed && l.close_reason == MTX_PC_LEGACY);
+  CHECK(mtxPairOnRequest(&l, false, kB, kR1, -45.0f) == MTX_PR_CLOSED);
+  MtxRxBinding lo; memset(&lo, 0, sizeof(lo));
+  CHECK(mtxPairCommit(&l, &lo, kR1) && mtxIdEqual(lo.dest_address, kA) && (lo.mtx_flags[0] & kMtxFlagLegacy));
+  // Abort: nobody enrolled -> the old binding back, nothing written.
+  MtxPairWindow a; mtxPairOpen(&a, &cur, 0);
+  CHECK(!mtxPairPoll(&a, 59999, false)); CHECK(mtxPairPoll(&a, 60000, false) && a.close_reason == MTX_PC_TIME);
+  MtxRxBinding ab; memset(&ab, 0xEE, sizeof(ab));
+  CHECK(!mtxPairCommit(&a, &ab, kR1) && memcmp(&ab, &cur, sizeof(ab)) == 0);
+  MtxPairWindow bp; mtxPairOpen(&bp, &cur, 0);
+  CHECK(mtxPairPoll(&bp, 100, true) && bp.close_reason == MTX_PC_BIND);
+  // The remote's OFFER gate.
+  CHECK(mtxPairOfferOk(kA, kA, kR1, -60.0f));
+  CHECK(!mtxPairOfferOk(kB, kA, kR1, -40.0f));
+  CHECK(!mtxPairOfferOk(kA, kA, zero, -40.0f));
+  CHECK(!mtxPairOfferOk(kA, kA, kR1, -61.0f));
+  testEnd("T13");
+}
+
+// ============================================================
+// T14 - old/new mixes (M1-M15), with an SW36 classifier model and a pre-R-3 model
+// ============================================================
+// SW36 (today): accepts a frame only if paired and bytes 0-2 equal its own_address (and the CRC). Byte 3 0xF1-0xF4 is
+// a meta (values outside 0/1/2/0x80+ ignored); anything else, 0xF5-0xFF included, is THROTTLE.
+static bool sw36Accepts(const uint8_t own[3], const uint8_t f[6]) { return memcmp(f, own, 3) == 0 && f[5] == crc8((uint8_t*)f, 5); }
+static bool sw36IsThrottle(const uint8_t f[6]) { return !(f[3] >= 0xF1 && f[3] <= 0xF4); }
+static void t14()
+{
+  testBegin();
+  uint8_t f[6];
+  // M2: a migrated remote (proto 0) on an old buggy sends today's frames, byte for byte.
+  MtxLinkRec leg; leg.proto = kMtxProtoLegacy; memcpy(leg.dest_address, kR1, 3); memcpy(leg.efuse_id, kA, 3);
+  for (int thr = 0; thr < 256; thr += 3) {
+    CHECK(mtxBuildUplink(MTX_B_CTRL, &leg, (uint8_t)thr, 99, f, crc8));
+    uint8_t today[6] = { kR1[0], kR1[1], kR1[2], (uint8_t)(thr > 0xF0 ? 0xF0 : thr), 99, 0 }; today[5] = crc8(today, 5);
+    CHECK(memcmp(f, today, 6) == 0 && sw36Accepts(kR1, f));
+  }
+  CHECK(mtxBuildUplink(MTX_B_LOCKED, &leg, 0, 0, f, crc8) && f[3] == 0 && f[4] == 127 && sw36Accepts(kR1, f));
+  CHECK(!mtxBuildUplink(MTX_B_SEIZE, &leg, 0, 0, f, crc8) && !mtxBuildUplink(MTX_B_SUMMON, &leg, 0, 0, f, crc8));
+  // M8 / F20: an old buggy never accepts a link-ID frame (the made-up batch: IDs start 0x5C, link IDs 0x00).
+  MtxLinkRec v3; v3.proto = kMtxProtoV3; memcpy(v3.dest_address, kR1, 3); memcpy(v3.efuse_id, kA, 3);
+  const uint8_t kinds[5] = { MTX_B_CTRL, MTX_B_LOCKED, MTX_B_SEIZE, MTX_B_SUMMON, MTX_B_META };
+  for (int k = 0; k < 5; k++) {
+    CHECK(mtxBuildUplink(kinds[k], &v3, (kinds[k] == MTX_B_META) ? 0xF2 : 50, 1, f, crc8));
+    CHECK(!sw36Accepts(kR1, f) && !sw36Accepts(kR2, f) && !sw36Accepts(kA, f));
+  }
+  // Pre-R-3 model (2026-04-25 .. 2026-09-28): any accepted 0xF1 frame refreshed the gate. The builder never produces a
+  // LOCKED / SEIZE / SUMMON code with a plain address, so such a buggy can never be held open by one.
+  for (int p = 0; p < 2; p++) {
+    MtxLinkRec r = p ? v3 : leg;
+    for (int k = 1; k <= 5; k++) for (int b = 0; b < 256; b++) {
+      if (!mtxBuildUplink((uint8_t)k, &r, (k == MTX_B_META) ? 0xF1 : 0, (uint8_t)b, f, crc8)) continue;
+      const uint8_t kind = mtxKind(f[3], f[4]);
+      if (kind == MTX_K_LOCKED || kind == MTX_K_SEIZE || kind == MTX_K_SUMMON) CHECK(r.proto == kMtxProtoV3 && !sw36Accepts(kR1, f));
+      CHECK(f[3] < 0xF5);                                        // nothing ever reads as throttle 245+
+    }
+  }
+  // M4: a migrated v3 buggy keeps an old remote only where its stored address is its chip ID.
+  MtxRxBinding mig; memset(&mig, 0, sizeof(mig)); mig.paired = 1; memcpy(mig.own_address, kR1, 3); memcpy(mig.dest_address, kA, 3);
+  MtxRxBinding mig2 = mig;
+  mtxValidateRxBinding(&mig, kR1);  CHECK(mtxRxMode(&mig, kR1) == MTX_MODE_SINGLE);
+  mtxValidateRxBinding(&mig2, kR2); CHECK(mtxRxMode(&mig2, kR2) == MTX_MODE_UNPAIRED);
+  // M7: two old remotes cloned to one address act as the one legacy entry (today's hazard, unchanged).
+  CHECK(mtxLookupSlot(&mig, kR1, kR1) == kMtxSlotImplicit);
+  // M9 / M10: another buggy's remote, or a remote re-paired elsewhere, is unknown here (T2).
+  const uint8_t* ids[1] = { kA };
+  MtxRxBinding old_list = bindingV3(kR1, ids, 1);
+  uint8_t Lnew[3]; mtxIdXor(kA, kR2, Lnew);                       // A now builds L for buggy 2
+  CHECK(mtxLookupSlot(&old_list, kR1, Lnew) == kMtxSlotUnknown);
+  // M13 / M14: identity from the chip; a config imported from another board loses its binding (T12).
+  MtxRxBinding imp = bindingV3(kR2, ids, 1);
+  mtxValidateRxBinding(&imp, kR1); CHECK(imp.paired == 0 && mtxRxMode(&imp, kR1) == MTX_MODE_UNPAIRED);
+  // M5 / M15: a legacy enrolment is the sole entry and closes the window (T13).
+  MtxPairWindow w; mtxPairOpen(&w, &old_list, 0); mtxPairOnConfirm(&w, true, kA);
+  CHECK(w.closed && mtxPairOnRequest(&w, false, kB, kR1, -40.0f) == MTX_PR_CLOSED);
+  // M6: full v3 - the round trip of a link-ID frame on its own buggy.
+  MtxRxBinding v3list = bindingV3(kR1, ids, 1);
+  CHECK(mtxBuildUplink(MTX_B_CTRL, &v3, 40, 127, f, crc8) && mtxLookupSlot(&v3list, kR1, f) == 0);
+  // SW36 reads every 0xF5-0xFF byte as throttle: the builder never makes one.
+  uint8_t t35[6] = { kR1[0], kR1[1], kR1[2], 0xF5, 0, 0 }; CHECK(sw36IsThrottle(t35));
+  testEnd("T14");
+}
+
+// ============================================================
+// T15 - the remote's frame builder (+ T32 builder rows)
+// ============================================================
+static void t15()
+{
+  testBegin();
+  MtxLinkRec v3; v3.proto = kMtxProtoV3; memcpy(v3.dest_address, kR1, 3); memcpy(v3.efuse_id, kA, 3);
+  uint8_t L[3]; mtxIdXor(kA, kR1, L);
+  uint8_t f[6];
+  CHECK(mtxBuildUplink(MTX_B_CTRL, &v3, 0xFF, 200, f, crc8) && f[3] == 0xF0 && f[4] == 200);   // clamp
+  CHECK(memcmp(f, L, 3) == 0 && f[5] == crc8(f, 5));                                               // the CRC covers L
+  CHECK(mtxBuildUplink(MTX_B_LOCKED, &v3, 0, 0, f, crc8) && f[3] == 0xF1 && f[4] == 0x10 && memcmp(f, L, 3) == 0);
+  CHECK(mtxBuildUplink(MTX_B_SEIZE,  &v3, 0, 0, f, crc8) && f[3] == 0xF1 && f[4] == 0x5A && memcmp(f, L, 3) == 0);
+  CHECK(mtxBuildUplink(MTX_B_SUMMON, &v3, 0, 0, f, crc8) && f[3] == 0xF1 && f[4] == 0x3C && memcmp(f, L, 3) == 0);
+  CHECK(mtxBuildUplink(MTX_B_META, &v3, 0xF3, 0x03, f, crc8) && f[3] == 0xF3 && memcmp(f, L, 3) == 0);   // GPS announce
+  // META can never smuggle one of the three codes, nor any type outside 0xF1-0xF4.
+  CHECK(!mtxBuildUplink(MTX_B_META, &v3, 0xF1, 0x10, f, crc8));
+  CHECK(!mtxBuildUplink(MTX_B_META, &v3, 0xF1, 0x5A, f, crc8));
+  CHECK(!mtxBuildUplink(MTX_B_META, &v3, 0xF1, 0x3C, f, crc8));
+  for (int t = 0; t < 256; t++) {
+    const bool ok = mtxBuildUplink(MTX_B_META, &v3, (uint8_t)t, 0x01, f, crc8);
+    CHECK(ok == (t >= 0xF1 && t <= 0xF4));
+  }
+  // Every protocol other than 0 and 3 builds nothing.
+  for (int p = 0; p < 16; p++) {
+    MtxLinkRec r = v3; r.proto = (uint16_t)p;
+    const bool ok = mtxBuildUplink(MTX_B_CTRL, &r, 10, 127, f, crc8);
+    CHECK(ok == (p == 0 || p == 3));
+    uint8_t a[3]; CHECK(mtxUplinkAddr(&r, a) == (p == 0 || p == 3));
+  }
+  // Exhaustive: no output with byte 3 >= 0xF5; the internal queue types never appear as byte 3.
+  for (int p = 0; p < 2; p++) {
+    MtxLinkRec r = v3; r.proto = p ? kMtxProtoV3 : kMtxProtoLegacy;
+    for (int k = 0; k < 8; k++) for (int a = 0; a < 256; a++) for (int b = 0; b < 256; b += 15) {
+      if (!mtxBuildUplink((uint8_t)k, &r, (uint8_t)a, (uint8_t)b, f, crc8)) continue;
+      CHECK(f[3] < 0xF5);
+      if (k != MTX_B_CTRL) CHECK(f[3] != kMtxQueueSeize && f[3] != kMtxQueueSummon);
+    }
+    for (int q = 0; q < 256; q++) {
+      if (!mtxBuildUplinkFromQueue((uint8_t)q, 0x00, &r, f, crc8)) continue;
+      CHECK(f[3] >= 0xF1 && f[3] <= 0xF4);                    // a queued item is always a meta-range byte 3
+    }
+  }
+  CHECK(mtxBuildUplinkFromQueue(kMtxQueueSeize, 0, &v3, f, crc8) && f[3] == 0xF1 && f[4] == 0x5A);
+  CHECK(mtxBuildUplinkFromQueue(kMtxQueueSummon, 0, &v3, f, crc8) && f[3] == 0xF1 && f[4] == 0x3C);
+  // A failed build leaves out untouched.
+  memset(f, 0xAB, 6); MtxLinkRec bad = v3; bad.proto = 7;
+  CHECK(!mtxBuildUplink(MTX_B_CTRL, &bad, 1, 1, f, crc8) && f[0] == 0xAB && f[5] == 0xAB);
+  testEnd("T15");
+}
+
+// ============================================================
+// T16 - the remote: status, rate, auto-lock, take-back
+// ============================================================
+static void t16()
+{
+  testBegin();
+  MtxTxStatus t; mtxTxStatusInit(&t);
+  CHECK(mtxTxFast(&t, 1000, false, false, 0));                         // never a reply -> fast
+  CHECK(mtxTxOnReply(&t, MTX_S_OWNER, 1000) & MTX_TXE_BECAME_OWNER); CHECK(t.owner && !t.lost_owner);
+  CHECK(mtxTxOnReply(&t, MTX_S_BUSY, 1100) == 0); CHECK(!t.owner && !t.lost_owner);
+  CHECK(mtxTxOnReply(&t, MTX_S_BUSY, 1200) == 0);
+  CHECK(mtxTxOnReply(&t, MTX_S_BUSY, 1300) & MTX_TXE_LOST_OWNER); CHECK(t.lost_owner);
+  CHECK(mtxTxOnReply(&t, MTX_S_OWNER_SOLO, 1400) & MTX_TXE_BECAME_OWNER); CHECK(!t.lost_owner);
+  // 2 SEIZED in a row: "tA" and lost owner on the second.
+  CHECK(mtxTxOnReply(&t, MTX_S_SEIZED, 1500) == 0);
+  const uint8_t e2 = mtxTxOnReply(&t, MTX_S_SEIZED, 1600);
+  CHECK((e2 & MTX_TXE_SEIZED_NOTICE) && (e2 & MTX_TXE_LOST_OWNER));
+  // The reserved status reads as BUSY.
+  mtxTxStatusInit(&t); mtxTxOnReply(&t, 7, 100); CHECK(t.last[0] == MTX_S_BUSY);
+  // Rate: slow only with all conditions; F-4: input makes it fast only while FREE.
+  mtxTxStatusInit(&t);
+  for (int i = 0; i < 3; i++) mtxTxOnReply(&t, MTX_S_BUSY, 1000 + 100 * i);
+  CHECK(!mtxTxFast(&t, 1300, false, false, 0));
+  CHECK(!mtxTxFast(&t, 1300, false, false, 1250));                      // input while BUSY: still slow
+  CHECK(mtxTxFast(&t, 1300, true, false, 0));                           // meta pending
+  CHECK(mtxTxFast(&t, 1300, false, true, 0));                           // gesture armed
+  CHECK(mtxTxFast(&t, 6300, false, false, 0));                          // no valid reply for 5 s
+  mtxTxOnReply(&t, MTX_S_FREE, 1400);
+  CHECK(!mtxTxFast(&t, 1500, false, false, 0));                         // FREE, no input
+  CHECK(mtxTxFast(&t, 1500, false, false, 1450));                       // FREE + input -> fast
+  CHECK(mtxTxFast(&t, 4450, false, false, 1450) && !mtxTxFast(&t, 4451, false, false, 1450));   // for 3 s
+  for (int st = 3; st <= 6; st++) { mtxTxOnReply(&t, (uint8_t)st, 5000); CHECK(!mtxTxFast(&t, 5010, false, false, 5005)); }
+  // Slow skip: 1 cycle in 10 transmits; the hop is 33 or 66, never 0.
+  uint8_t ctr = 0; int sends = 0;
+  for (int i = 0; i < 100; i++) sends += mtxTxCycleSends(true, &ctr) ? 1 : 0;
+  CHECK(sends == 10);
+  for (int i = 0; i < 100; i++) CHECK(mtxTxCycleSends(false, &ctr));
+  for (int i = 0; i < 1000; i++) { const uint8_t hop = mtxTxSlowMissHopMs(rnd()); CHECK(hop == 33 || hop == 66); }
+  // The auto-lock timeout selection.
+  mtxTxStatusInit(&t);
+  CHECK(mtxTxAutolockTimeoutS(&t, 120, 0) == 0);                        // never a reply
+  mtxTxOnReply(&t, MTX_S_OWNER_SOLO, 10); CHECK(mtxTxAutolockTimeoutS(&t, 120, 0) == 0);
+  mtxTxOnReply(&t, MTX_S_OWNER, 20);      CHECK(mtxTxAutolockTimeoutS(&t, 120, 30) == 30);
+  for (int st = 2; st <= 6; st++) { mtxTxOnReply(&t, (uint8_t)st, 30); CHECK(mtxTxAutolockTimeoutS(&t, 120, 0) == 120); }
+  CHECK(mtxTxAutolockDue(120, 130000, 10000, false) && !mtxTxAutolockDue(120, 129999, 10000, false));
+  CHECK(!mtxTxAutolockDue(0, 999999, 0, false) && !mtxTxAutolockDue(120, 999999, 0, true));
+  CHECK(mtxTxAutolockSkip(true, false, false, false, false, false) && mtxTxAutolockSkip(false, true, false, false, false, false));
+  CHECK(mtxTxAutolockSkip(false, false, true, false, false, false) && mtxTxAutolockSkip(false, false, false, false, false, true));
+  CHECK(!mtxTxAutolockSkip(false, false, false, false, false, false));
+  // The take-back verdict: the last two SEIZABLE, the newer at most 5 s old.
+  mtxTxStatusInit(&t);
+  mtxTxOnReply(&t, MTX_S_SEIZABLE, 1000); CHECK(!mtxTxSeizeVerdict(&t, 1000));
+  mtxTxOnReply(&t, MTX_S_SEIZABLE, 2000); CHECK(mtxTxSeizeVerdict(&t, 7000) && !mtxTxSeizeVerdict(&t, 7001));
+  // The gesture: tap, second press within 400 ms, hold 1200 ms -> FIRE; fast from the first press.
+  MtxSeizeGesture g; mtxSeizeGestureInit(&g);
+  uint32_t now = 3000;
+  CHECK(mtxSeizeGestureStep(&g, now, true, 0, false, &t, 1200) & MTX_SGO_ARMED);
+  CHECK(!(mtxSeizeGestureStep(&g, now + 300, true, 0, false, &t, 1200) & MTX_SGO_SUPPRESS));   // the tap is not suppressed
+  mtxSeizeGestureStep(&g, now + 350, false, 0, false, &t, 1200);                                // tap released
+  CHECK(mtxSeizeGestureStep(&g, now + 600, true, 0, false, &t, 1200) & MTX_SGO_SUPPRESS);       // second press
+  mtxTxOnReply(&t, MTX_S_SEIZABLE, now + 1000);
+  CHECK(!(mtxSeizeGestureStep(&g, now + 1700, true, 0, false, &t, 1200) & MTX_SGO_FIRE));
+  uint8_t o = mtxSeizeGestureStep(&g, now + 1800, true, 0, false, &t, 1200);
+  CHECK((o & MTX_SGO_FIRE) && (o & MTX_SGO_SUPPRESS));
+  CHECK(mtxSeizeGestureStep(&g, now + 2500, true, 0, false, &t, 1200) & MTX_SGO_SUPPRESS);      // still held: no display cycle
+  CHECK(mtxSeizeGestureStep(&g, now + 2600, false, 0, false, &t, 1200) == 0 && g.phase == MTX_SG_IDLE);
+  // Aborts: throttle, early release, lock, a status change, the verdict at completion.
+  for (int c = 0; c < 5; c++) {
+    mtxTxStatusInit(&t); mtxTxOnReply(&t, MTX_S_SEIZABLE, 9000); mtxTxOnReply(&t, MTX_S_SEIZABLE, 9500);
+    mtxSeizeGestureInit(&g); now = 10000;
+    mtxSeizeGestureStep(&g, now, true, 0, false, &t, 1200);
+    mtxSeizeGestureStep(&g, now + 200, false, 0, false, &t, 1200);
+    mtxSeizeGestureStep(&g, now + 400, true, 0, false, &t, 1200);
+    uint8_t thr = 0; bool locked = false, down = true;
+    if (c == 0) thr = 5;
+    if (c == 1) down = false;
+    if (c == 2) locked = true;
+    if (c == 3) mtxTxOnReply(&t, MTX_S_FREE, now + 500);
+    if (c == 4) { mtxSeizeGestureStep(&g, now + 900, true, 0, false, &t, 1200); now += 5000; }   // verdict stale at the end
+    o = mtxSeizeGestureStep(&g, now + 1700, down, thr, locked, &t, 1200);
+    CHECK((o & MTX_SGO_ABORT) && !(o & MTX_SGO_FIRE));
+  }
+  // Not SEIZABLE: a RIGHT press is a normal press; no gesture.
+  mtxTxStatusInit(&t); mtxTxOnReply(&t, MTX_S_BUSY, 100); mtxSeizeGestureInit(&g);
+  CHECK(mtxSeizeGestureStep(&g, 200, true, 0, false, &t, 1200) == 0);
+  // A long first press is a hold, not a tap.
+  mtxTxStatusInit(&t); mtxTxOnReply(&t, MTX_S_SEIZABLE, 100); mtxTxOnReply(&t, MTX_S_SEIZABLE, 150); mtxSeizeGestureInit(&g);
+  mtxSeizeGestureStep(&g, 200, true, 0, false, &t, 1200);
+  CHECK(mtxSeizeGestureStep(&g, 1200, true, 0, false, &t, 1200) == 0 && g.phase == MTX_SG_WAIT_RELEASE);
+  // After a fire: an owner status within 1 s -> confirm, else "St".
+  mtxTxStatusInit(&t); mtxTxOnReply(&t, MTX_S_SEIZABLE, 100);
+  CHECK(mtxTxOwnerWait(&t, 500, 900, kMtxSeizeConfirmMs) == MTX_W_WAIT);
+  mtxTxOnReply(&t, MTX_S_OWNER, 950);
+  CHECK(mtxTxOwnerWait(&t, 500, 960, kMtxSeizeConfirmMs) == MTX_W_OWNER);
+  mtxTxStatusInit(&t); mtxTxOnReply(&t, MTX_S_OWNER, 400);                 // an owner status from BEFORE the send
+  CHECK(mtxTxOwnerWait(&t, 500, 1501, kMtxSeizeConfirmMs) == MTX_W_TIMEOUT);
+  testEnd("T16");
+}
+
+// ============================================================
+// T17 - link-fresh windows; Pattern B while slow
+// ============================================================
+static void t17()
+{
+  testBegin();
+  CHECK(mtxTxLinkFresh(1999, 1000, false) && !mtxTxLinkFresh(2000, 1000, false));
+  CHECK(mtxTxLinkFresh(3499, 1000, true) && !mtxTxLinkFresh(3500, 1000, true));
+  CHECK(!mtxTxLinkFresh(5, 0, false));
+  CHECK(mtxTxLinkFresh(0x00000100u, 0xFFFFFF00u, false));                 // across the wrap
+  CHECK(mtxTxPatternBAllowed(false) && !mtxTxPatternBAllowed(true));
+  testEnd("T17");
+}
+
+// ============================================================
+// T18 - the bounded telemetry wait
+// ============================================================
+static void t18()
+{
+  testBegin();
+  const uint32_t send = 5000;
+  CHECK(mtxReplyWaitOnFrame(send + 10, send, false) == MTX_RW_RELISTEN);     // someone else's reply: keep listening
+  CHECK(mtxReplyWaitOnFrame(send + 30, send, true) == MTX_RW_ACCEPT);        // ours after a foreign frame
+  CHECK(mtxReplyWaitOnFrame(send + 39, send, true) == MTX_RW_ACCEPT);
+  CHECK(mtxReplyWaitOnFrame(send + 40, send, true) == MTX_RW_STOP);          // at the bound: nothing, no radio call
+  CHECK(mtxReplyWaitOnFrame(send + 45, send, false) == MTX_RW_STOP);
+  CHECK(!mtxReplyWaitOpen(send + 40, send) && mtxReplyWaitOpen(send + 39, send));
+  CHECK(mtxReplyWaitOpen(0x00000010u, 0xFFFFFFF0u) && !mtxReplyWaitOpen(0x00000018u, 0xFFFFFFF0u));   // wrap
+  // A simulated wait loop never touches the radio at or after the bound.
+  int radio_calls_after = 0;
+  for (uint32_t t = send; t < send + 100; t += 3) {
+    const uint8_t r = mtxReplyWaitOnFrame(t, send, (t == send + 42));
+    if (r == MTX_RW_RELISTEN && !mtxReplyWaitOpen(t, send)) radio_calls_after++;
+    if (r == MTX_RW_STOP || r == MTX_RW_ACCEPT) break;
+  }
+  CHECK(radio_calls_after == 0);
+  const uint8_t own[3] = { 0x5C, 0x01, 0x02 };
+  CHECK(mtxTxReplyAddr(3, kA, own) == kA && mtxTxReplyAddr(0, kA, own) == own);
+  testEnd("T18");
+}
+
+// ============================================================
+// T20 - gate 0 and every unpair path
+// ============================================================
+static void t20()
+{
+  testBegin();
+  const uint8_t* ids[2] = { kA, kB };
+  MtxRxBinding b = bindingV3(kR1, ids, 2);
+  CHECK(mtxMayAcceptControl(&b, kR1));
+  MtxRxBinding p = b; p.paired = 0; CHECK(!mtxMayAcceptControl(&p, kR1));
+  MtxRxBinding o = b; memset(o.own_address, 0, 3); CHECK(!mtxMayAcceptControl(&o, kR1));
+  MtxRxBinding e = b; memset(e.mtx_flags, 0, 4); CHECK(!mtxMayAcceptControl(&e, kR1));
+  // reset_bind (paired = 0, then the validator), ?set paired 0, factory defaults: the list is gone.
+  MtxRxBinding r = b; r.paired = 0; mtxValidateRxBinding(&r, kR1);
+  CHECK(mtxValidEntryCount(&r) == 0 && !mtxMayAcceptControl(&r, kR1) && mtxRxMode(&r, kR1) == MTX_MODE_UNPAIRED);
+  MtxRxBinding f; memset(&f, 0, sizeof(f)); mtxValidateRxBinding(&f, kR1);
+  CHECK(mtxIdEqual(f.own_address, kR1) && f.paired == 0 && !mtxMayAcceptControl(&f, kR1));
+  // An import made on THIS board keeps its list; one from another board does not.
+  MtxRxBinding same = b; CHECK(mtxValidateRxBinding(&same, kR1) == 0 && mtxValidEntryCount(&same) == 2);
+  MtxRxBinding other = bindingV3(kR2, ids, 2); mtxValidateRxBinding(&other, kR1); CHECK(mtxValidEntryCount(&other) == 0);
+  testEnd("T20");
+}
+
+// ============================================================
+// T21 - the release model, the gate model, the owner-change hook on the real stickyWindowStep()
+// ============================================================
+static void t21()
+{
+  testBegin();
+  Sim s; simInit(&s, false, 0x03);
+  grantBySqueeze(&s, 0, 1000);
+  fr(&s, 0, 0xF1, 1, 1300);                                 // RTM on
+  fr(&s, 0, 0xF2, 0x82, 1400); loopTick(&s);                // Follow-Me armed
+  fr(&s, 0, 0xF3, 0x03, 1500);                              // a GPS announce left pending
+  fr(&s, 0, 200, 127, 1600);                                // driving at 200
+  simClear(&s);
+  const uint32_t lcp = s.last_control_packet;
+  fr(&s, 0, 0xF1, 0x10, 1700);                              // the owner locks -> release(LOCK)
+  // The order: throttle 0 / steering centre FIRST, then RTM off, then Follow-Me off, then the resets, then the counter.
+  CHECK(logPos(&s, "zero") == 0);
+  CHECK(logPos(&s, "zero") < logPos(&s, "rtm_off") && logPos(&s, "rtm_off") < logPos(&s, "fm_off"));
+  CHECK(logPos(&s, "fm_off") < logPos(&s, "gps_reset") && logPos(&s, "gps_reset") < logPos(&s, "boot_reset"));
+  CHECK(logPos(&s, "boot_reset") < logPos(&s, "seq"));
+  CHECK(s.thr == 0 && s.steer == 127 && s.st.owner == kMtxNone);
+  CHECK(s.last_control_packet == lcp);                      // no failsafe stamp: the gate shuts on its own clock
+  CHECK(s.sticky_cap);                                      // the slow ceiling of the running return
+  CHECK(!s.gps_pending && s.gps_len == 6);                  // 6-byte receive mode restored
+  CHECK(countEv(&s, MTX_EV_RELEASED) == 1 && s.events[0].second == MTX_REL_LOCK);
+  // The gate model: shut at failsafe after the owner's last control packet, whatever the others send at 10 Hz.
+  bool reopened = false;
+  for (uint32_t t = 1700; t < 4000; t += 100) {
+    fr(&s, 1, 0, 127, t);                                   // the other remote at zero (no grant: it never squeezes)
+    const bool open = mtxAgeMs(t, s.last_control_packet) < s.failsafe_ms;
+    if (t >= lcp + s.failsafe_ms) reopened = reopened || open;
+  }
+  CHECK(!reopened);
+  // The owner-change hook: stickyWindowClose() on the real stickyWindowStep().
+  StickyWindowState w; memset(&w, 0, sizeof(w));
+  CHECK(stickyWindowStep(&w, 1000, 900, true, 6000));       // an alarm opens a window
+  CHECK(stickyWindowStep(&w, 1100, 900, true, 6000));
+  stickyWindowClose(&w, 900);                               // the owner changed
+  CHECK(!stickyWindowStep(&w, 1200, 900, true, 6000));      // a running window shows nothing any more
+  StickyWindowState w2; memset(&w2, 0, sizeof(w2));
+  stickyWindowClose(&w2, 950);                              // raised before the change, never shown yet
+  CHECK(!stickyWindowStep(&w2, 1300, 950, true, 6000));     // ... never shows
+  CHECK(stickyWindowStep(&w2, 1400, 1350, true, 6000));     // a stamp raised AFTER the change: a full window
+  int shown = 0; for (uint32_t t = 1500; t < 9000; t += 100) shown += stickyWindowStep(&w2, t, 1350, true, 6000) ? 1 : 0;
+  CHECK(shown >= 58 && shown <= 61);
+  StickyWindowState w3; memset(&w3, 0, sizeof(w3)); stickyWindowClose(&w3, 0);
+  CHECK(!stickyWindowStep(&w3, 100, 0, true, 6000));        // stamp 0 is safe
+  testEnd("T21");
+}
+
+// ============================================================
+// T22 - single remote, and a second remote off or locked: today's writes, packet for packet
+// ============================================================
+struct Ref {   // today's triggeredReceive() branch for a frame addressed to this buggy with a good CRC
+  uint8_t thr, steer; uint32_t last_packet, lcp; uint8_t fm_mode; bool rtm; bool gps_pending; uint8_t aux; uint32_t now;
+};
+static void refInit(Ref* r) { r->thr = 0; r->steer = 127; r->last_packet = 0; r->lcp = 0; r->fm_mode = 0xFF; r->rtm = false; r->gps_pending = false; r->aux = 0; r->now = 0; }
+static void refFrame(Ref* r, uint8_t b3, uint8_t b4, uint32_t t)
+{
+  if (b3 == 0xF1)      { r->last_packet = t; if (b4 == 0) r->rtm = false; else if (b4 == 1) r->rtm = true; }
+  else if (b3 == 0xF2) { r->last_packet = t; uint8_t m = b4 & 7; if (m > 5) m = 0; r->fm_mode = m; }
+  else if (b3 == 0xF4) { r->last_packet = t; r->aux = b4; }
+  else if (b3 == 0xF3) { r->gps_pending = true; }
+  else                 { r->last_packet = t; r->thr = b3; r->steer = b4; r->lcp = t; }
+}
+static bool same(const Sim* s, const Ref* r)
+{
+  return s->thr == r->thr && s->steer == r->steer && s->last_packet == r->last_packet && s->last_control_packet == r->lcp
+      && s->env.fm_mode_runtime == r->fm_mode && s->env.rtm_rx_active == r->rtm && s->gps_pending == r->gps_pending;
+}
+
+// One silence script. mode: 0 = FM declared m, 1 = FM never declared, 2 = RTM on with the trigger held,
+// 3 = RTM on with the trigger released. other: -1 none, 0 = never heard, 1 = LOCKED at 1 Hz.
+static bool runScript(bool single, bool legacy, int other, int mode, uint8_t m, uint32_t silence_ms, int* mismatches)
+{
+  Sim s; Ref r;
+  simInit(&s, single, single ? 0x01 : 0x03); refInit(&r);
+  s.env.fm_mode_runtime = 0xFF;
+  uint32_t t = 100000;
+  // Before the script (MULTI): the owner took the free buggy the normal way. Copy that into the reference.
+  if (!single) { grantBySqueeze(&s, 0, t - 1000); r.thr = s.thr; r.steer = s.steer; r.last_packet = s.last_packet; r.lcp = s.last_control_packet; }
+  const uint8_t seq0 = s.seq;
+  simClear(&s);
+  std::vector<std::pair<uint8_t, uint8_t> > pre;
+  if (mode == 0) pre.push_back(std::make_pair((uint8_t)0xF2, (uint8_t)(m | 0x80)));
+  if (mode >= 2) pre.push_back(std::make_pair((uint8_t)0xF1, (uint8_t)1));
+  const uint8_t drive = (mode == 2) ? 180 : 0;
+  int bad = 0;
+  auto send = [&](uint8_t b3, uint8_t b4) {
+    fr(&s, 0, b3, b4, t, legacy); refFrame(&r, b3, b4, t); loopTick(&s);
+    if (!same(&s, &r)) bad++;
+  };
+  for (size_t i = 0; i < pre.size(); i++) { send(pre[i].first, pre[i].second); t += 100; }
+  for (int i = 0; i < 30; i++) { send(drive, 127); t += 100; }
+  // The silence: the radio task wakes on its 2 s timeout; the other remote (if any) sends LOCKED at 1 Hz.
+  const uint32_t end = t + silence_ms;
+  for (uint32_t q = t; q < end; q += 100) {
+    if (other == 1 && ((q - t) % 1000) == 0) { fr(&s, 1, 0xF1, 0x10, q); if (!same(&s, &r)) bad++; }
+    if (((q - t) % 2000) == 0) { wake(&s, q); if (!same(&s, &r)) bad++; }
+  }
+  t = end;
+  for (int i = 0; i < 20; i++) { send(drive, 127); t += 100; }
+  if (mode == 0 && (t % 3) == 0) send(0xF2, m);              // a keepalive
+  *mismatches += bad;
+  bool ok = (bad == 0) && s.seq == seq0 && !logHas(&s, "zero") && !logHas(&s, "limit")
+         && countEv(&s, MTX_EV_CLAIMABLE) == 0 && countEv(&s, MTX_EV_RELEASED) == 0;
+  if (single) for (size_t i = 0; i < s.replies.size(); i++) ok = ok && s.replies[i].second == MTX_S_OWNER_SOLO;
+  if (!single) ok = ok && s.st.owner == 0;
+  return ok;
+}
+
+static void t22()
+{
+  testBegin();
+  const uint32_t silences[5] = { 500, 5000, 10000, 30000, 100000 };
+  int mismatches = 0;
+  for (int si = 0; si < 5; si++) {
+    for (int mode = 0; mode < 4; mode++) {
+      const int mmax = (mode == 0) ? 5 : 1;
+      for (int m = 1; m <= mmax; m++) {
+        CHECK(runScript(true,  false, -1, mode, (uint8_t)m, silences[si], &mismatches));   // SINGLE, a new-style remote
+        CHECK(runScript(true,  true,  -1, mode, (uint8_t)m, silences[si], &mismatches));   // SINGLE, a legacy remote
+        CHECK(runScript(false, false,  0, mode, (uint8_t)m, silences[si], &mismatches));   // MULTI, the other never heard
+        CHECK(runScript(false, false,  1, mode, (uint8_t)m, silences[si], &mismatches));   // MULTI, the other LOCKED at 1 Hz
+      }
+    }
+  }
+  CHECK(mismatches == 0);
+  // SINGLE: LOCKED is today's 0/127 control packet, stamp included.
+  { Sim s; Ref r; simInit(&s, true, 0x01); refInit(&r);
+    fr(&s, 0, 100, 140, 1000); refFrame(&r, 100, 140, 1000);
+    fr(&s, 0, 0xF1, 0x10, 1100); refFrame(&r, 0, 127, 1100);
+    CHECK(same(&s, &r) && s.last_control_packet == 1100 && lastStatus(&s) == MTX_S_OWNER_SOLO); }
+  // SINGLE: a SEIZE or SUMMON writes nothing and gets no reply.
+  { Sim s; simInit(&s, true, 0x01);
+    fr(&s, 0, 0, 127, 1000);
+    const uint32_t lp = s.last_packet; const size_t nr = s.replies.size();
+    fr(&s, 0, 0xF1, 0x5A, 1100); fr(&s, 0, 0xF1, 0x3C, 1200);
+    CHECK(s.last_packet == lp && s.replies.size() == nr && s.seq == 0 && !logHas(&s, "zero") && !logHas(&s, "limit"));
+    CHECK(claimable(&s, 1200) == MTX_CL_NO); }
+  // X-4: MULTI, the second remote off. (1) lock -> nobody owns -> a squeeze from zero is a grant under the limit.
+  { Sim s; simInit(&s, false, 0x03);
+    grantBySqueeze(&s, 0, 1000);
+    fr(&s, 0, 0xF1, 0x10, 2000);                             // lock: released
+    CHECK(s.st.owner == kMtxNone);
+    simClear(&s);
+    fr(&s, 0, 0, 127, 5000); fr(&s, 0, 0, 127, 5100); fr(&s, 0, 90, 127, 5200);
+    CHECK(s.st.owner == 0 && logHas(&s, "limit") && s.mtx_grant_ms == 5200);
+    CHECK(mtxTakeoverCap(5200, s.mtx_grant_ms, 64, 4000) == 64); }
+  // (2) lock -> nobody owns -> a summon: a grant, then the owner-path arm; no Follow-Me / RTM write before the new
+  //     owner's own metas, and the rest of the burst is a silent no-op (X-5).
+  { Sim s; simInit(&s, false, 0x03);
+    grantBySqueeze(&s, 0, 1000);
+    fr(&s, 0, 0xF1, 0x10, 2000);
+    fr(&s, 0, 0, 127, 5000); fr(&s, 0, 0, 127, 5100);
+    simClear(&s);
+    const uint8_t fm0 = s.env.fm_mode_runtime; const bool rtm0 = s.env.rtm_rx_active;
+    fr(&s, 0, 0xF1, 0x3C, 5150); fr(&s, 0, 0xF1, 0x3C, 5250); fr(&s, 0, 0xF1, 0x3C, 5350);
+    CHECK(s.st.owner == 0 && s.st.n.summons_refused == 0 && s.st.n.summons == 1);
+    CHECK(!logHas(&s, "zero") && !logHas(&s, "rtm_off") && !logHas(&s, "fm_off"));      // nothing to release
+    CHECK(s.env.fm_mode_runtime == fm0 && s.env.rtm_rx_active == rtm0 && s.replies.empty());
+    fr(&s, 0, 0, 127, 5400); fr(&s, 0, 0xF1, 1, 5500);       // the new owner's own arm
+    CHECK(s.env.rtm_rx_active); }
+  testEnd("T22");
+}
+
+// ============================================================
+// T23 - claimable, but never released
+// ============================================================
+static void t23()
+{
+  testBegin();
+  for (int fsv = 0; fsv < 2; fsv++) {
+    Sim s; simInit(&s, false, 0x03);
+    if (fsv) s.cfg.failsafe_ms = 10000;
+    const uint32_t thr_ms = fsv ? 11000 : 10000;
+    grantBySqueeze(&s, 0, 1000);
+    fr(&s, 0, 0xF2, 0x82, 1300); loopTick(&s);              // Follow-Me armed
+    const uint32_t last = 1400; fr(&s, 0, 0, 127, last);    // the owner's last frame
+    simClear(&s);
+    const uint8_t seq0 = s.seq;
+    for (uint32_t t = last + 100; t < last + thr_ms - 50; t += 100) fr(&s, 1, 0, 127, t);   // another remote present
+    CHECK(claimable(&s, last + thr_ms - 1) == MTX_CL_NO);
+    CHECK(claimable(&s, last + thr_ms) == MTX_CL_SILENT);
+    fr(&s, 1, 0, 127, last + thr_ms);
+    CHECK(lastStatus(&s) == MTX_S_FREE && countEv(&s, MTX_EV_CLAIMABLE) == 1);
+    for (uint32_t t = last + thr_ms + 100; t < last + 100000; t += 100) fr(&s, 1, 0, 127, t);
+    CHECK(s.st.owner == 0 && s.seq == seq0 && !logHas(&s, "zero") && s.env.fm_mode_runtime == 2);
+    CHECK(countEv(&s, MTX_EV_RELEASED) == 0);
+  }
+  testEnd("T23");
+}
+
+// ============================================================
+// T24 - the owner comes back before a claim
+// ============================================================
+static void t24()
+{
+  testBegin();
+  for (int meta = 0; meta < 2; meta++) {
+    Sim s; simInit(&s, false, 0x03);
+    grantBySqueeze(&s, 0, 1000);
+    fr(&s, 0, 0, 127, 1300);
+    for (uint32_t t = 1400; t <= 13300; t += 100) fr(&s, 1, 0, 127, t);
+    CHECK(s.st.claimable == MTX_CL_SILENT);
+    simClear(&s);
+    const uint32_t g0 = s.mtx_grant_ms; const uint8_t seq0 = s.seq;
+    if (meta) fr(&s, 0, 0xF2, 0x02, 13800);                  // a keepalive alone ends the silence
+    else      fr(&s, 0, 0, 127, 13800);
+    CHECK(s.st.owner == 0 && s.st.claimable == MTX_CL_NO);
+    CHECK(countEv(&s, MTX_EV_NOT_CLAIMABLE) == 1 && s.events.back().second == MTX_NC_HEARD);
+    CHECK(!logHas(&s, "limit") && s.mtx_grant_ms == g0 && s.seq == seq0);
+    CHECK(mtxTakeoverCap(13800, s.mtx_grant_ms, 64, 4000) == 255);   // no limit
+    fr(&s, 1, 0, 127, 13900); CHECK(lastStatus(&s) == MTX_S_BUSY);
+  }
+  testEnd("T24");
+}
+
+// ============================================================
+// T25 - the idle rule (with X-1 and X-2)
+// ============================================================
+static void ownerAtZeroWithOther(Sim* s, uint32_t from, uint32_t to)
+{
+  for (uint32_t t = from; t < to; t += 100) { fr(s, 0, 0, 127, t); fr(s, 1, 0, 127, t + 50); }
+}
+static void t25()
+{
+  testBegin();
+  // Manual, owner at zero 10 s with another remote present -> IDLE.
+  { Sim s; simInit(&s, false, 0x03);
+    grantBySqueeze(&s, 0, 1000); fr(&s, 0, 0, 127, 1300);
+    ownerAtZeroWithOther(&s, 1400, 11150);                   // the last input was the grant squeeze at 1200
+    CHECK(claimable(&s, 11199) == MTX_CL_NO);
+    CHECK(claimable(&s, 11200) == MTX_CL_IDLE);
+    ownerAtZeroWithOther(&s, 11150, 11400);
+    CHECK(claimable(&s, 11400) == MTX_CL_IDLE && s.st.claimable == MTX_CL_IDLE);
+    // Silence is not time at zero: an owner heard again after 10 s of silence is not claimable on its first frame.
+    { Sim q; simInit(&q, false, 0x03);
+      grantBySqueeze(&q, 0, 1000); fr(&q, 0, 0, 127, 1300);
+      for (uint32_t t = 1400; t <= 15000; t += 100) fr(&q, 1, 0, 127, t);
+      CHECK(q.st.claimable == MTX_CL_SILENT);
+      fr(&q, 0, 0, 127, 15050);
+      CHECK(q.st.claimable == MTX_CL_NO && claimable(&q, 15050) == MTX_CL_NO);
+      ownerAtZeroWithOther(&q, 15100, 25000);
+      CHECK(claimable(&q, 25049) == MTX_CL_NO && claimable(&q, 25050) == MTX_CL_IDLE); }
+    // The owner's own squeeze while claimable: its own throttle, no limit; claimable ends.
+    simClear(&s);
+    fr(&s, 0, 150, 127, 11500);
+    CHECK(s.thr == 150 && !logHas(&s, "limit") && s.st.owner == 0 && s.st.claimable == MTX_CL_NO);
+    CHECK(s.events.size() == 1 && s.events[0].first == MTX_EV_NOT_CLAIMABLE && s.events[0].second == MTX_NC_INPUT); }
+  // Armed: never idle at 10, 60 or 100 s; silence still counts.
+  for (int arm = 0; arm < 3; arm++) {
+    Sim s; simInit(&s, false, 0x03);
+    grantBySqueeze(&s, 0, 1000);
+    if (arm == 0) { fr(&s, 0, 0xF2, 0x83, 1300); loopTick(&s); }
+    if (arm == 1) fr(&s, 0, 0xF1, 1, 1300);
+    if (arm == 2) s.env.fm_rx_active = true;
+    ownerAtZeroWithOther(&s, 1400, 101400);
+    CHECK(s.st.owner == 0 && countEv(&s, MTX_EV_CLAIMABLE) == 0);
+    for (uint32_t t = 101400; t < 112000; t += 100) fr(&s, 1, 0, 127, t);   // now the owner goes silent
+    CHECK(claimable(&s, 112000) == MTX_CL_SILENT);
+  }
+  // The predicate itself (not only the X-2 tracker): an armed owner is never IDLE, however old its idle base.
+  { Sim s; simInit(&s, false, 0x03);
+    grantBySqueeze(&s, 0, 1000); fr(&s, 0, 0, 127, 1300); fr(&s, 1, 0, 127, 30000);
+    s.st.owner_heard_ms = 29950; s.st.owner_idle_base_ms = 1300; s.st.owner_armed_seen = false;
+    MtxRxEnv e = s.env;
+    CHECK(mtxClaimableReason(&s.st, &s.cfg, &e, 30000) == MTX_CL_IDLE);
+    e.fm_mode_runtime = 1; CHECK(mtxClaimableReason(&s.st, &s.cfg, &e, 30000) == MTX_CL_NO);
+    e = s.env; e.rtm_rx_active = true; CHECK(mtxClaimableReason(&s.st, &s.cfg, &e, 30000) == MTX_CL_NO);
+    e = s.env; e.fm_rx_active = true;  CHECK(mtxClaimableReason(&s.st, &s.cfg, &e, 30000) == MTX_CL_NO);
+    e = s.env; s.st.owner_armed_seen = true; CHECK(mtxClaimableReason(&s.st, &s.cfg, &e, 30000) == MTX_CL_NO); }
+  // Input restarts the clock: a byte >= 8, or steering 24 off centre; 7 and 23 do not.
+  for (int c = 0; c < 4; c++) {
+    Sim s; simInit(&s, false, 0x03);
+    grantBySqueeze(&s, 0, 1000); fr(&s, 0, 0, 127, 1300);
+    ownerAtZeroWithOther(&s, 1400, 6000);
+    const uint8_t b3 = (c == 0) ? 8 : (c == 1) ? 7 : 0;
+    const uint8_t b4 = (c == 2) ? (uint8_t)(127 + 24) : (c == 3) ? (uint8_t)(127 - 23) : 127;
+    fr(&s, 0, b3, b4, 6000);
+    ownerAtZeroWithOther(&s, 6100, 11500);
+    const bool restarted = (c == 0 || c == 2);
+    CHECK((claimable(&s, 11500) == MTX_CL_NO) == restarted);
+  }
+  // X-2: armed for 60 s, disarmed at 60 s -> not claimable until 70 s.
+  { Sim s; simInit(&s, false, 0x03);
+    grantBySqueeze(&s, 0, 1000);
+    fr(&s, 0, 0xF2, 0x82, 1300); loopTick(&s);
+    ownerAtZeroWithOther(&s, 1400, 61300);
+    fr(&s, 0, 0xF2, 0x00, 61300); loopTick(&s);              // the rider's own disarm at about 60 s
+    ownerAtZeroWithOther(&s, 61400, 71300);
+    CHECK(claimable(&s, 71250) == MTX_CL_NO);
+    ownerAtZeroWithOther(&s, 71300, 71600);
+    CHECK(claimable(&s, 71600) == MTX_CL_IDLE); }
+  // X-1 option (a): during a held combo or the RTM ceremony the remote repeats 0xF1/0 every 3 s with throttle 0: never idle.
+  { Sim s; simInit(&s, false, 0x03);
+    grantBySqueeze(&s, 0, 1000); fr(&s, 0, 0, 127, 1300);
+    uint32_t t = 1400;
+    for (; t < 31400; t += 100) {
+      if (((t - 1400) % 3000) == 0) fr(&s, 0, 0xF1, 0, t); else fr(&s, 0, 0, 127, t);
+      fr(&s, 1, 0, 127, t + 50);
+    }
+    CHECK(countEv(&s, MTX_EV_CLAIMABLE) == 0);
+    fr(&s, 0, 0xF1, 1, t);                                   // the ceremony ends: RTM on, armed from here
+    CHECK(s.env.rtm_rx_active); }
+  // X-1: 0xF2 with the fresh bit restarts the clock; a keepalive (no fresh bit), the boot ID, the refresh do not.
+  CHECK(mtxOwnerActivity(0xF2, 0x81) && !mtxOwnerActivity(0xF2, 0x01) && !mtxOwnerActivity(0xF2, 0x00));
+  CHECK(mtxOwnerActivity(0xF1, 0) && mtxOwnerActivity(0xF1, 1) && !mtxOwnerActivity(0xF1, 2) && !mtxOwnerActivity(0xF1, 0x85));
+  CHECK(!mtxOwnerActivity(0xF1, 0x10) && !mtxOwnerActivity(0xF3, 0x03) && !mtxOwnerActivity(0xF4, 0x01));
+  CHECK(mtxOwnerActivity(8, 127) && !mtxOwnerActivity(7, 127) && mtxOwnerActivity(0, 103) && !mtxOwnerActivity(0, 104));
+  testEnd("T25");
+}
+
+// ============================================================
+// T26 - the claim by squeeze and the claim token
+// ============================================================
+static void silentOwnerClaimable(Sim* s, uint32_t* t)
+{
+  grantBySqueeze(s, 0, 1000); fr(s, 0, 0, 127, 1300);
+  for (*t = 1400; *t <= 11400; *t += 100) fr(s, 1, 0, 127, *t);
+}
+static void t26()
+{
+  testBegin();
+  // fm_rx_active false -> the grant on the same packet.
+  { Sim s; simInit(&s, false, 0x03); uint32_t t; silentOwnerClaimable(&s, &t);
+    CHECK(s.st.claimable == MTX_CL_SILENT);
+    fr(&s, 1, 0, 127, t); simClear(&s);
+    fr(&s, 1, 90, 127, t + 100);
+    CHECK(s.st.owner == 1 && lastStatus(&s) == MTX_S_OWNER && s.thr == 90);
+    // The order: the release (zero first) ... the counter, then the grant (limit before the first byte).
+    CHECK(logPos(&s, "zero") == 0 && logPos(&s, "zero") < logPos(&s, "rtm_off"));
+    CHECK(logPos(&s, "seq") < logPos(&s, "limit") && logPos(&s, "limit") < logPos(&s, "apply"));
+    CHECK(s.st.claim_notice[0] && s.st.n.claims == 1 && s.st.n.released_claim == 1); }
+  // fm_rx_active true -> a token; the grant on s's next control frame once Follow-Me idled, at any throttle.
+  { Sim s; simInit(&s, false, 0x03);
+    grantBySqueeze(&s, 0, 1000); fr(&s, 0, 0xF2, 0x81, 1300); loopTick(&s);
+    for (uint32_t t = 1400; t <= 11400; t += 100) fr(&s, 1, 0, 127, t);
+    fr(&s, 1, 0, 127, 11500); simClear(&s);
+    fr(&s, 1, 90, 127, 11600);                                // the claim: FM still active on the loop
+    CHECK(s.st.owner == kMtxNone && s.st.token.slot == 1 && lastStatus(&s) == MTX_S_FREE && s.thr == 0);
+    CHECK(s.env.fm_mode_runtime == 0 && s.env.fm_rx_active);
+    // A third remote cannot take the buggy while the token stands, and hears BUSY.
+    Sim* p = &s; p->cfg.valid_mask = 0x07;
+    fr(&s, 2, 0, 127, 11650); fr(&s, 2, 0, 127, 11700); fr(&s, 2, 80, 127, 11750);
+    CHECK(s.st.owner == kMtxNone && lastStatus(&s) == MTX_S_BUSY);
+    fr(&s, 1, 200, 127, 11700);                               // FM not idle yet: still waiting
+    CHECK(s.st.owner == kMtxNone && lastStatus(&s) == MTX_S_FREE);
+    loopTick(&s);                                             // the FM tick: fmEnterIdle()
+    fr(&s, 1, 200, 127, 11800);
+    CHECK(s.st.owner == 1 && s.thr == 200 && s.st.token.slot == kMtxNone);
+    CHECK(mtxTakeoverCap(11800, s.mtx_grant_ms, 64, 4000) == 64); }   // the limit from the grant
+  // The token lapses after 1000 ms (and across the wrap).
+  for (int wrap = 0; wrap < 2; wrap++) {
+    Sim s; simInit(&s, false, 0x03);
+    const uint32_t b = wrap ? 0xFFFFD000u : 0;
+    grantBySqueeze(&s, 0, b + 1000); fr(&s, 0, 0xF2, 0x81, b + 1300); loopTick(&s);
+    for (uint32_t t = b + 1400; t != b + 11500; t += 100) fr(&s, 1, 0, 127, t);
+    fr(&s, 1, 90, 127, b + 11500);
+    CHECK(s.st.token.slot == 1);
+    wake(&s, b + 12500); CHECK(s.st.token.slot == 1);         // 1000 ms: still held
+    wake(&s, b + 12501); CHECK(s.st.token.slot == kMtxNone && s.st.n.tokens_lapsed == 1);
+    loopTick(&s);
+    fr(&s, 1, 200, 127, b + 12600);                           // R1 from now on: needs zero proof again
+    CHECK(s.st.owner == kMtxNone && lastStatus(&s) == MTX_S_FREE);
+  }
+  // A held trigger with no zero proof on a claimable owner: FREE, never a claim, never E9. (While the owner is not yet
+  // claimable the same held trigger is REFUSED, E9.)
+  { Sim s; simInit(&s, false, 0x03);
+    grantBySqueeze(&s, 0, 1000); fr(&s, 0, 50, 127, 1300);    // the owner switched off mid-throttle at 1300
+    for (uint32_t t = 1400; t < 11300; t += 100) { fr(&s, 1, 120, 127, t); CHECK(lastStatus(&s) == MTX_S_REFUSED); }
+    for (uint32_t t = 11300; t < 20000; t += 100) { fr(&s, 1, 120, 127, t); CHECK(lastStatus(&s) == MTX_S_FREE); }
+    CHECK(s.st.owner == 0 && s.st.n.claims == 0); }
+  testEnd("T26");
+}
+
+// ============================================================
+// T27 - the summon gates on the buggy (+ X-5)
+// ============================================================
+static void t27()
+{
+  testBegin();
+  // From a claimable owner: accepted, no reply; the burst's frames 2-3 are no-ops, nothing counted refused.
+  { Sim s; simInit(&s, false, 0x03); uint32_t t; silentOwnerClaimable(&s, &t);
+    simClear(&s);
+    fr(&s, 1, 0xF1, 0x3C, t); fr(&s, 1, 0xF1, 0x3C, t + 100); fr(&s, 1, 0xF1, 0x3C, t + 200);
+    CHECK(s.st.owner == 1 && s.replies.empty() && s.st.n.summons == 1 && s.st.n.summons_refused == 0);
+    CHECK(countEv(&s, MTX_EV_TAKES_CONTROL) == 1); }
+  // From a token holder: frames 2-3 never restamp the token (X-5).
+  { Sim s; simInit(&s, false, 0x03);
+    grantBySqueeze(&s, 0, 1000); fr(&s, 0, 0xF2, 0x81, 1300); loopTick(&s);
+    for (uint32_t t = 1400; t <= 11400; t += 100) fr(&s, 1, 0, 127, t);
+    fr(&s, 1, 0xF1, 0x3C, 11450);
+    CHECK(s.st.token.slot == 1 && s.st.token.ms == 11450);
+    fr(&s, 1, 0xF1, 0x3C, 11550); fr(&s, 1, 0xF1, 0x3C, 11650);
+    CHECK(s.st.token.ms == 11450 && s.st.n.summons == 1 && s.st.n.summons_refused == 0);
+    // The guard inside mtxClaim() itself (no path reaches it today): a second claim by the holder never restamps.
+    mtxClaim(&s.st, &s.h, 1, 11700);
+    CHECK(s.st.token.slot == 1 && s.st.token.ms == 11450); }
+  // Zero proof 1100 ms old -> refused; 1000 ms -> accepted.
+  for (int c = 0; c < 2; c++) {
+    Sim s; simInit(&s, false, 0x03); uint32_t t; silentOwnerClaimable(&s, &t);
+    const uint32_t last_zero = t - 100;
+    fr(&s, 1, 0xF1, 0x3C, last_zero + (c ? 1000 : 1100));
+    CHECK((s.st.owner == 1) == (c == 1));
+    CHECK(s.st.n.summons_refused == (c ? 0 : 1));
+  }
+  // A token held by another slot -> refused.
+  { Sim s; simInit(&s, false, 0x07);
+    grantBySqueeze(&s, 0, 1000); fr(&s, 0, 0xF2, 0x81, 1300); loopTick(&s);
+    for (uint32_t t = 1400; t <= 11400; t += 100) { fr(&s, 1, 0, 127, t); fr(&s, 2, 0, 127, t + 10); }
+    fr(&s, 1, 90, 127, 11450);                                 // slot 1 claims: a token
+    fr(&s, 2, 0xF1, 0x3C, 11460);
+    CHECK(s.st.token.slot == 1 && s.st.n.summons_refused == 1); }
+  // From nobody: the token or the grant, no release, no notice.
+  { Sim s; simInit(&s, false, 0x03);
+    fr(&s, 1, 0, 127, 1000); fr(&s, 1, 0, 127, 1100); simClear(&s);
+    fr(&s, 1, 0xF1, 0x3C, 1200);
+    CHECK(s.st.owner == 1 && !logHas(&s, "zero") && !s.st.claim_notice[0] && !s.st.claim_notice[1]); }
+  // No PWM, or SINGLE -> nothing.
+  { Sim s; simInit(&s, false, 0x03); s.env.pwm_active = false;
+    fr(&s, 1, 0, 127, 1000); fr(&s, 1, 0, 127, 1100); fr(&s, 1, 0xF1, 0x3C, 1200);
+    CHECK(s.st.owner == kMtxNone && s.st.n.summons_refused == 1); }
+  testEnd("T27");
+}
+
+// ============================================================
+// T28 - a summon against an owner who is commanding is refused
+// ============================================================
+static void t28()
+{
+  testBegin();
+  for (int c = 0; c < 2; c++) {                                // FM armed at zero, or driving at 40 %
+    Sim s; simInit(&s, false, 0x03);
+    grantBySqueeze(&s, 0, 1000);
+    if (c == 0) { fr(&s, 0, 0xF2, 0x81, 1300); loopTick(&s); }
+    const uint8_t drive = c ? 100 : 0;
+    simClear(&s);
+    for (uint32_t t = 1400; t < 101400; t += 100) {
+      fr(&s, 0, drive, 127, t); fr(&s, 1, 0, 127, t + 30);
+      if (((t - 1400) % 5000) == 0) fr(&s, 1, 0xF1, 0x3C, t + 60);
+    }
+    CHECK(s.st.owner == 0 && !logHas(&s, "zero") && s.st.n.summons_refused == 20 && s.st.n.summons == 0);
+  }
+  // Silent 9.9 s -> refused; 10.0 s -> accepted. (The owner's last frame carries throttle, so only silence counts.)
+  for (int c = 0; c < 2; c++) {
+    Sim s; simInit(&s, false, 0x03);
+    grantBySqueeze(&s, 0, 1000); fr(&s, 0, 50, 127, 1300);
+    uint32_t t = 1400; for (; t < 11200; t += 100) fr(&s, 1, 0, 127, t);
+    fr(&s, 1, 0xF1, 0x3C, c ? 11300 : 11200);
+    CHECK((s.st.owner == 1) == (c == 1));
+  }
+  testEnd("T28");
+}
+
+// ============================================================
+// T29 - the remote's summon gate; a remote without GPS
+// ============================================================
+static void t29()
+{
+  testBegin();
+  MtxTxStatus t; mtxTxStatusInit(&t);
+  MtxSummonIn in; in.gps_en = true; in.loc_valid = true; in.loc_age_ms = 200; in.gps_stale_ms = 3000;
+  in.trigger_released = true; in.feature_enabled = true; in.locked = false; in.in_setup = false;
+  CHECK(mtxSummonVerdict(&t, &in, 1000) == MTX_SV_NOT_FREE);                  // never a reply
+  for (int st = 0; st < 8; st++) {
+    mtxTxStatusInit(&t); mtxTxOnReply(&t, (uint8_t)st, 1000);
+    CHECK((mtxSummonVerdict(&t, &in, 1100) == MTX_SV_OK) == (st == MTX_S_FREE));
+  }
+  mtxTxStatusInit(&t); mtxTxOnReply(&t, MTX_S_FREE, 1000);
+  CHECK(mtxSummonVerdict(&t, &in, 6000) == MTX_SV_OK && mtxSummonVerdict(&t, &in, 6001) == MTX_SV_NOT_FREE);
+  MtxSummonIn x = in; x.gps_en = false;        CHECK(mtxSummonVerdict(&t, &x, 1100) == MTX_SV_NO_FIX);
+  x = in; x.loc_valid = false;                 CHECK(mtxSummonVerdict(&t, &x, 1100) == MTX_SV_NO_FIX);   // a module, no fix
+  x = in; x.loc_age_ms = 3000;                 CHECK(mtxSummonVerdict(&t, &x, 1100) == MTX_SV_NO_FIX);   // stale
+  x = in; x.loc_age_ms = 2999;                 CHECK(mtxSummonVerdict(&t, &x, 1100) == MTX_SV_OK);
+  x = in; x.loc_age_ms = 0xFFFFFFFFu;          CHECK(mtxSummonVerdict(&t, &x, 1100) == MTX_SV_NO_FIX);   // TinyGPS "never"
+  x = in; x.trigger_released = false;          CHECK(mtxSummonVerdict(&t, &x, 1100) == MTX_SV_TRIGGER);
+  x = in; x.feature_enabled = false;           CHECK(mtxSummonVerdict(&t, &x, 1100) == MTX_SV_DISABLED);
+  x = in; x.locked = true;                     CHECK(mtxSummonVerdict(&t, &x, 1100) == MTX_SV_LOCKED);
+  x = in; x.in_setup = true;                   CHECK(mtxSummonVerdict(&t, &x, 1100) == MTX_SV_SETUP);
+  // The fix test is the stream gate itself.
+  for (int i = 0; i < 2000; i++) {
+    const bool en = rnd() & 1, v = rnd() & 1; const uint32_t age = rnd() % 6000; const uint16_t stale = (uint16_t)(rnd() % 6000);
+    CHECK(mtxTxFixFresh(en, v, age, stale) == (en && v && age < stale));
+  }
+  // The remote's action: build and queue only on OK; on every refusal the builder is never called.
+  MtxLinkRec v3; v3.proto = kMtxProtoV3; memcpy(v3.dest_address, kR1, 3); memcpy(v3.efuse_id, kB, 3);
+  int built = 0;
+  for (int c = 0; c < 7; c++) {
+    MtxSummonIn y = in;
+    if (c == 1) y.gps_en = false;
+    if (c == 2) y.loc_valid = false;
+    if (c == 3) y.trigger_released = false;
+    if (c == 4) y.feature_enabled = false;
+    if (c == 5) y.locked = true;
+    if (c == 6) y.in_setup = true;
+    uint8_t f[6];
+    if (mtxSummonVerdict(&t, &y, 1100) == MTX_SV_OK && mtxBuildUplinkFromQueue(kMtxQueueSummon, 0, &v3, f, crc8)) built++;
+  }
+  CHECK(built == 1);
+  // Then: an owner status within 1500 ms -> the arm runs; none -> "St".
+  mtxTxStatusInit(&t); mtxTxOnReply(&t, MTX_S_FREE, 900);
+  CHECK(mtxTxOwnerWait(&t, 1000, 1300, kMtxSummonWaitMs) == MTX_W_WAIT);
+  mtxTxOnReply(&t, MTX_S_OWNER, 1350);
+  CHECK(mtxTxOwnerWait(&t, 1000, 1360, kMtxSummonWaitMs) == MTX_W_OWNER);
+  mtxTxStatusInit(&t); mtxTxOnReply(&t, MTX_S_FREE, 900); mtxTxOnReply(&t, MTX_S_FREE, 1900);
+  CHECK(mtxTxOwnerWait(&t, 1000, 2500, kMtxSummonWaitMs) == MTX_W_WAIT);      // 1500 ms is still inside
+  CHECK(mtxTxOwnerWait(&t, 1000, 2501, kMtxSummonWaitMs) == MTX_W_TIMEOUT);
+  // A late owner status (after the wait) is not taken as the answer to this summon.
+  mtxTxOnReply(&t, MTX_S_OWNER, 2600);
+  CHECK(mtxTxOwnerWait(&t, 1000, 2600, kMtxSummonWaitMs) == MTX_W_TIMEOUT);
+  testEnd("T29");
+}
+
+// ============================================================
+// T30 - rider GPS after a claim
+// ============================================================
+static void t30()
+{
+  testBegin();
+  Sim s; simInit(&s, false, 0x03);
+  grantBySqueeze(&s, 0, 1000);
+  s.gps_ts = 1250; s.gps_lat = 26123456; s.phb_ok = true; s.phb_last = 1250;   // the old owner's fix
+  fr(&s, 0, 0, 127, 1300);
+  for (uint32_t t = 1400; t <= 11400; t += 100) fr(&s, 1, 0, 127, t);
+  fr(&s, 1, 90, 127, 11500);                                  // claimed
+  CHECK(s.st.owner == 1);
+  // The fix's stamp is cleared; the coordinates are not (every reader gates on the stamp).
+  CHECK(s.gps_ts == 0 && s.gps_lat == 26123456);
+  CHECK(stampStale(11500, s.gps_ts, 3000));                   // an RTM Gate 4 model fails until the new owner's fix
+  CHECK(!s.phb_ok && s.phb_last == 0);                        // Phase B runs on the new owner's first GPS packet
+  const bool phase_b_due_now = (s.phb_last == 0);
+  CHECK(phase_b_due_now);
+  // GPS data: only from the owner whose announce switched to 15 bytes, with that slot's address.
+  uint8_t a0[3], a1[3]; mtxIdXor(kA, kR1, a0); mtxIdXor(kB, kR1, a1);
+  CHECK(!mtxGpsDataOk(&s.st, &s.cfg, 0, a0, a0));             // the old owner: rejected
+  CHECK(mtxGpsDataOk(&s.st, &s.cfg, 1, a1, a1));              // the new owner
+  CHECK(!mtxGpsDataOk(&s.st, &s.cfg, 1, a0, a1));             // wrong address
+  // The old owner's announce never switches the buggy to 15 bytes.
+  fr(&s, 0, 0xF3, 0x03, 11600);
+  CHECK(!s.gps_pending && countEv(&s, MTX_EV_NON_OWNER_META) == 1);
+  fr(&s, 1, 0xF3, 0x03, 11700);
+  CHECK(s.gps_pending && s.gps_len == 15);
+  // SINGLE: the address test alone (today).
+  MtxRxCfg c1 = s.cfg; c1.single = true;
+  CHECK(mtxGpsDataOk(&s.st, &c1, kMtxNone, a0, a0));
+  // Phase B distance: a model of today's check with the maximum pairing distance.
+  const float max_m = 500.0f; CHECK(!(510.0f <= max_m)); CHECK(490.0f <= max_m);
+  testEnd("T30");
+}
+
+// ============================================================
+// T31 - status priority; the claim notice; X-6
+// ============================================================
+static void t31()
+{
+  testBegin();
+  // The old owner's first frame after a silent claim: SEIZED, the hold restarted from THAT frame.
+  { Sim s; simInit(&s, false, 0x03); uint32_t t; silentOwnerClaimable(&s, &t);
+    fr(&s, 1, 0, 127, t); fr(&s, 1, 90, 127, t + 100);
+    CHECK(s.st.owner == 1 && s.st.claim_notice[0]);
+    fr(&s, 0, 0, 127, t + 20000);                             // back 20 s later
+    CHECK(lastStatus(&s) == MTX_S_SEIZED && s.st.seized_until_ms[0] == t + 20000 + 5000);
+    fr(&s, 0, 0, 127, t + 24999); CHECK(lastStatus(&s) == MTX_S_SEIZED);
+    fr(&s, 0, 0, 127, t + 25000); CHECK(lastStatus(&s) != MTX_S_SEIZED);
+    // Two SEIZED in a row on the remote -> "tA".
+    MtxTxStatus x; mtxTxStatusInit(&x); mtxTxOnReply(&x, MTX_S_OWNER, 0);
+    CHECK(!(mtxTxOnReply(&x, MTX_S_SEIZED, 1) & MTX_TXE_SEIZED_NOTICE));
+    CHECK(mtxTxOnReply(&x, MTX_S_SEIZED, 2) & MTX_TXE_SEIZED_NOTICE); }
+  // The priority, rule by rule.
+  { Sim s; simInit(&s, false, 0x07); MtxRxEnv e = s.env;
+    s.st.owner = 1; s.st.owner_heard_ms = 1000; s.st.owner_idle_base_ms = 1000; s.st.owner_last_thr = 50;
+    s.st.claim_notice[2] = true; s.st.token.slot = 0; s.st.token.ms = 1000;
+    CHECK(mtxNonOwnerStatus(&s.st, &s.cfg, &e, 2, true, 1000) == MTX_S_SEIZED);   // SEIZED > BUSY (token)
+    s.st.seized_on[2] = false; s.st.owner = kMtxNone;
+    CHECK(mtxNonOwnerStatus(&s.st, &s.cfg, &e, 2, true, 1000) == MTX_S_BUSY);     // BUSY (token) > FREE
+    s.st.token.slot = kMtxNone;
+    CHECK(mtxNonOwnerStatus(&s.st, &s.cfg, &e, 2, true, 1000) == MTX_S_FREE);     // FREE > REFUSED
+    s.st.owner = 1;
+    CHECK(mtxNonOwnerStatus(&s.st, &s.cfg, &e, 2, true, 1000) == MTX_S_REFUSED);  // REFUSED > SEIZABLE
+    CHECK(mtxNonOwnerStatus(&s.st, &s.cfg, &e, 0, true, 1000) == MTX_S_REFUSED);
+    CHECK(mtxNonOwnerStatus(&s.st, &s.cfg, &e, 0, false, 1000) == MTX_S_SEIZABLE);
+    CHECK(mtxNonOwnerStatus(&s.st, &s.cfg, &e, 2, false, 1000) == MTX_S_BUSY);
+    e.fm_mode_runtime = 3; CHECK(mtxNonOwnerStatus(&s.st, &s.cfg, &e, 0, false, 1000) == MTX_S_BUSY);   // armed: no SEIZABLE
+    e.fm_mode_runtime = 0xFF; s.cfg.seize_en = false; CHECK(mtxNonOwnerStatus(&s.st, &s.cfg, &e, 0, false, 1000) == MTX_S_BUSY);
+    s.cfg.seize_en = true; s.st.owner = 0; CHECK(mtxNonOwnerStatus(&s.st, &s.cfg, &e, 0, false, 1000) == MTX_S_BUSY); }
+  // X-6: during a token, a LOCKED remote that is not the holder hears BUSY, never FREE; the holder's lock ends the token.
+  { Sim s; simInit(&s, false, 0x07);
+    grantBySqueeze(&s, 0, 1000); fr(&s, 0, 0xF2, 0x81, 1300); loopTick(&s);
+    for (uint32_t t = 1400; t <= 11400; t += 100) fr(&s, 1, 0, 127, t);
+    fr(&s, 1, 90, 127, 11450);
+    CHECK(s.st.token.slot == 1);
+    fr(&s, 2, 0xF1, 0x10, 11500); CHECK(lastStatus(&s) == MTX_S_BUSY);
+    fr(&s, 0, 0xF1, 0x10, 11550); CHECK(lastStatus(&s) == MTX_S_SEIZED);   // the returning old owner locks first: still told
+    fr(&s, 1, 0xF1, 0x10, 11600);
+    CHECK(s.st.token.slot == kMtxNone && lastStatus(&s) != MTX_S_OWNER); }
+  testEnd("T31");
+}
+
+// ============================================================
+// T32 - SUMMON on the wire; the meta queue
+// ============================================================
+// A copy of the remote's queueMetaPacketBurst() rules 1-3 (TX Radio.ino), with mtxMetaTypePriority().
+struct Q { uint8_t ht, hv, hc, nt, nv, nc; };
+static void qBurst(Q* q, uint8_t type, uint8_t value)
+{
+  if (q->hc > 0 && q->ht == type)      { q->hv = value; q->hc = 3; }
+  else if (q->nc > 0 && q->nt == type) { q->nv = value; q->nc = 3; }
+  else if (q->hc == 0)                 { q->ht = type; q->hv = value; q->hc = 3; }
+  else if (q->nc == 0 || mtxMetaTypePriority(type) > mtxMetaTypePriority(q->nt)) { q->nt = type; q->nv = value; q->nc = 3; }
+}
+static void t32()
+{
+  testBegin();
+  CHECK(mtxMetaTypePriority(kMtxQueueSummon) == 4 && mtxMetaTypePriority(kMtxQueueSeize) == 4);
+  CHECK(mtxMetaTypePriority(0xF1) == 3 && mtxMetaTypePriority(0xF2) == 2 && mtxMetaTypePriority(0xF4) == 1);
+  CHECK(kMtxQueueSummon != 0xF1 && kMtxQueueSeize != 0xF1 && kMtxQueueSummon != kMtxQueueSeize);
+  CHECK(kMtxQueueSummon < kMtxZeroThr && kMtxQueueSeize < kMtxZeroThr);   // a leak would be a zero-throttle byte
+  // Never merged with a queued RTM 0xF1 (rule 1 is "same type"), in either order.
+  Q q; memset(&q, 0, sizeof(q));
+  qBurst(&q, 0xF1, 1); qBurst(&q, kMtxQueueSummon, 0);
+  CHECK(q.ht == 0xF1 && q.hv == 1 && q.nt == kMtxQueueSummon);
+  memset(&q, 0, sizeof(q));
+  qBurst(&q, kMtxQueueSummon, 0); qBurst(&q, 0xF1, 0);
+  CHECK(q.ht == kMtxQueueSummon && q.nt == 0xF1 && q.nv == 0);
+  // Priority 4 takes the second slot from a 0xF2.
+  memset(&q, 0, sizeof(q));
+  qBurst(&q, 0xF1, 0); qBurst(&q, 0xF2, 0x81); qBurst(&q, kMtxQueueSummon, 0);
+  CHECK(q.nt == kMtxQueueSummon);
+  // The builder rows and the decode (T3, T15).
+  MtxLinkRec v3; v3.proto = kMtxProtoV3; memcpy(v3.dest_address, kR1, 3); memcpy(v3.efuse_id, kB, 3);
+  uint8_t f[6], L[3]; mtxIdXor(kB, kR1, L);
+  CHECK(mtxBuildUplinkFromQueue(kMtxQueueSummon, 0, &v3, f, crc8));
+  CHECK(memcmp(f, L, 3) == 0 && f[3] == 0xF1 && f[4] == 0x3C && f[5] == crc8(f, 5) && mtxKind(f[3], f[4]) == MTX_K_SUMMON);
+  MtxLinkRec leg = v3; leg.proto = 0;
+  CHECK(!mtxBuildUplinkFromQueue(kMtxQueueSummon, 0, &leg, f, crc8));
+  // An L-addressed SUMMON on the SW36 classifier model: never accepted. On the v3 buggy: the summoner's slot.
+  CHECK(mtxBuildUplinkFromQueue(kMtxQueueSummon, 0, &v3, f, crc8) && !sw36Accepts(kR1, f));
+  const uint8_t* ids[2] = { kA, kB }; MtxRxBinding b = bindingV3(kR1, ids, 2);
+  CHECK(mtxLookupSlot(&b, kR1, f) == 1);
+  testEnd("T32");
+}
+
+// ============================================================
+// T33 - claim thresholds, the wrap, the clamp
+// ============================================================
+static void t33()
+{
+  testBegin();
+  for (uint16_t cs = 6; cs <= 60; cs++) for (uint16_t fs = 100; fs <= 10000; fs += 100) {
+    const uint32_t want = ((uint32_t)cs * 1000u > (uint32_t)fs + 1000u) ? (uint32_t)cs * 1000u : (uint32_t)fs + 1000u;
+    CHECK(mtxClaimMs(cs, fs) == want);
+    CHECK(mtxClaimMs(cs, fs) > fs);                                // never while the old gate could be open
+  }
+  CHECK(mtxClaimMs(10, 1000) == 10000 && mtxClaimMs(10, 10000) == 11000 && mtxClaimMs(6, 9000) == 10000);
+  // Across the wrap: silence, idle and the token.
+  { Sim s; simInit(&s, false, 0x03);
+    const uint32_t b = 0xFFFFE000u;                               // about 8 s before the wrap
+    grantBySqueeze(&s, 0, b); fr(&s, 0, 50, 127, b + 300);        // switched off mid-throttle: silence only
+    for (uint32_t t = b + 400; t != b + 10300; t += 100) fr(&s, 1, 0, 127, t);
+    CHECK(claimable(&s, b + 10299) == MTX_CL_NO);
+    CHECK(claimable(&s, b + 10300) == MTX_CL_SILENT); }
+  { Sim s; simInit(&s, false, 0x03);
+    const uint32_t b = 0xFFFFE000u;
+    grantBySqueeze(&s, 0, b); fr(&s, 0, 0, 127, b + 300);
+    for (uint32_t t = b + 400; t != b + 10500; t += 100) { fr(&s, 0, 0, 127, t); fr(&s, 1, 0, 127, t + 50); }
+    CHECK(claimable(&s, b + 10500) == MTX_CL_IDLE); }
+  // A stamp written after the caller read the clock reads as "just now", never 49 days.
+  CHECK(mtxAgeMs(1000, 1005) == 0 && mtxAgeMs(5, 0xFFFFFFF0u) == 21);
+  // The validator clamp.
+  uint16_t cs, se, cap, ms;
+  const uint16_t in_cs[6] = { 0, 5, 6, 60, 61, 65535 }, out_cs[6] = { 6, 6, 6, 60, 60, 60 };
+  for (int i = 0; i < 6; i++) { cs = in_cs[i]; se = 1; cap = 64; ms = 4000; mtxClampRxConfig(&cs, &se, &cap, &ms); CHECK(cs == out_cs[i]); }
+  cs = 10; se = 7; cap = 300; ms = 20000; mtxClampRxConfig(&cs, &se, &cap, &ms); CHECK(se == 1 && cap == 255 && ms == 10000);
+  uint16_t al = 3, hold = 900, mal = 10; mtxClampTxConfig(&al, &hold, &mal); CHECK(al == 5 && hold == 1000 && mal == 30);
+  al = 0; hold = 2000; mal = 0; mtxClampTxConfig(&al, &hold, &mal); CHECK(al == 0 && hold == 1800 && mal == 0);
+  al = 999; mal = 999; mtxClampTxConfig(&al, &hold, &mal); CHECK(al == 180 && mal == 600);
+  testEnd("T33");
+}
+
+int main(int argc, char** argv)
+{
+  printf("multi_tx_test - Common/MultiTx.h (v3.2 step 1)\n");
+  t1(argc > 1 ? argv[1] : NULL);
+  t2(); t3(); t4(); t5();
+  printf("T6   -> covered by T31 (the v3.2 status priority)\n");
+  t7(); t8(); t9(); t10(); t11(); t12(); t13(); t14(); t15(); t16(); t17(); t18();
+  printf("T19  -> Tools/tests/config_migrate_test.cpp\n");
+  t20(); t21(); t22(); t23(); t24(); t25(); t26(); t27(); t28(); t29(); t30(); t31(); t32(); t33();
+  printf("%s: %d checks, %d failed\n", g_fails ? "FAILED" : "PASSED", g_checks, g_fails);
+  return g_fails ? 1 : 0;
+}

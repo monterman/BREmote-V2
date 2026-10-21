@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-20 - stickyWindowClose() (multi-remote design v3.1 section 7.7): closes a sticky end window and
+//   marks its stamp as shown. Pure, host-tested in Tools/tests/multi_tx_test.cpp (T21). Not called yet; no behaviour change.
 // V2.5-Evo - 2026-10-09 - STICKY CAP SIMPLIFIED (owner): stickyReturnCapStep() never rises on GPS - the speed governor
 //   is gone; the cap arms at min(cap in force, ceiling) (new stickyArmValue()), climbs once on the clock to the ceiling,
 //   and after that the rider-distance slow-down can only lower it. Header comment names fault ends only. Host-tested.
@@ -289,6 +291,21 @@ static inline bool stickyWindowStep(StickyWindowState* s, uint32_t now_ms, uint3
   if (s->left_ms == 0) return false;
   if (link_fresh) s->left_ms = (dt >= s->left_ms) ? 0u : (s->left_ms - dt);
   return s->left_ms > 0;
+}
+
+// stickyWindowClose - V2.5-Evo - 2026-10-20 - multi-remote design v3.1 section 7.7 (audit V-9): end a sticky window NOW
+//   and mark the given alarm stamp as already shown, so the window cannot restart for an alarm raised before this
+//   call. WHY: clearing the alarm stamp alone does not close a running window - stickyWindowStep() keeps the bit up
+//   while left_ms > 0 whatever the stamp says, and only a NEW non-zero stamp restarts it. When control passes to
+//   another remote, the loop task calls this for the three end windows so the new rider never sees the previous
+//   rider's "St". An alarm raised AFTER the call has a different stamp and starts a fresh, full window.
+// Inputs: s (the window, owned by the loop task); alarm_stamp_ms (the window's current *_alarm_ms stamp, 0 = none).
+// Outputs: none. Side effects: updates *s only (left_ms = 0, seen_stamp = alarm_stamp_ms; last_ms untouched).
+// Not called by any firmware path yet (the owner-change hook lands with the receiver's multi-remote code).
+static inline void stickyWindowClose(StickyWindowState* s, uint32_t alarm_stamp_ms)
+{
+  s->left_ms    = 0;
+  s->seen_stamp = alarm_stamp_ms;
 }
 
 // ============================================================

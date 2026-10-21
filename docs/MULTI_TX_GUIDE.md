@@ -106,8 +106,8 @@ so (`refused - RSSI ... below -60`).
 
 ## 4. Who is in control: the screens
 
-The ownership dot, `E9` and `tA` appear only with two or more remotes paired on the new link; with one
-remote they never show. The new `St` cases at the end of the `St` list apply to every remote.
+The ownership dot, the `E` codes (`E1` to `E4`, `E9`) and `tA` appear only with two or more remotes paired on the
+new link; with one remote they never show. The new `St` cases at the end of the `St` list apply to every remote.
 
 ### The ownership dot
 
@@ -128,7 +128,8 @@ For a display check, `?mtxdot 0` to `?mtxdot 3` on the remote forces each look (
 
 | Screen | Buzz | Means |
 |---|---|---|
-| **`E9`** | two short | Another remote is in control and cannot be claimed now, so your input is ignored. It shows while you squeeze or steer, and for 1.5 s after. **The other rider's motors are not affected.** It is not an error state: your next toggle press is not taken as an error acknowledgement. You also get `E9` when you try to summon (§5c) while another remote is busy in control. |
+| **`E1`** to **`E4`** | two short | Another remote is in control and cannot be claimed now, so your input is ignored. **The digit is the number of the remote in control:** `E1` is the master (the remote paired first), `E2` the second remote paired, and so on (`?mtx` on the buggy lists them as slots 1-4). It shows while you squeeze or steer, and for 1.5 s after. **The other rider's motors are not affected.** It is not an error state: your next toggle press is not taken as an error acknowledgement. You also get it when you try to summon (§5c) while another remote is busy in control. |
+| **`E9`** | two short | The same answer when your remote does not know the number of the remote in control. It is rare: you see it only after several lost answers from the buggy, or in the first seconds after your control was taken when nobody ended up in control. |
 | **`tA`** | two short | Shown 3 s. Control was taken from you: another remote claimed it, or the master took it back. The buggy has already ended your Follow-Me or Return-To-Me, and your remote ends its own too. If your remote was switched off when it happened, it shows `tA` once it is heard again. |
 | **`St`** | one long | It did not engage. See the list below. |
 
@@ -174,13 +175,26 @@ you start the master's take-back, or after 5 s with no reply.
 
 ## 5. Taking control
 
+**On a remote that is not in control, only two things take control** (plus the master's take-back, §6):
+
+1. **A squeeze from zero** (§5b), when the buggy is free or the remote in control is claimable.
+2. **A summon** (§5c): your **complete** Return-To-Me or Follow-Me arm gesture, when the buggy is free or the remote
+   in control is claimable. The claim happens only once the whole gesture is done - the combo's full hold, or the
+   magnet's full contact, the moment that mode would arm. Never on the first tap, and never on a gesture you let go
+   of early.
+
+**Nothing else ever takes control:** not a toggle tap, a gear change, the display cycle (throttle % or GPS speed),
+the telemetry or battery views, a lock, or any setup gesture. On a remote that is not in control these send no claim
+and no summon. On the remote that **is** in control, the same presses still count as "busy" (§5f), so nobody can
+claim it while you use them.
+
 ### 5a. The claim rules
 
 | The buggy is... | Another remote can take control by... |
 |---|---|
 | **Free:** nobody is in control (after the buggy boots, after the remote in control locks, after a change of the paired list) | a squeeze from zero (§5b) |
 | **Claimable:** another unlocked remote is on, and the remote in control has been **silent for 10 s** (switched off, out of range) **or** has sat **at zero for 10 s with Follow-Me and Return-To-Me off** | a squeeze from zero, or a summon (§5c) |
-| **In use:** the remote in control is driving, busy (§5f), or has Follow-Me or Return-To-Me armed and is still transmitting | nothing: it gets `E9`. Only the master's take-back (§6), and only with nothing armed. |
+| **In use:** the remote in control is driving, busy (§5f), or has Follow-Me or Return-To-Me armed and is still transmitting | nothing: it gets `E1`-`E4` (the number of the remote in control). Only the master's take-back (§6), and only with nothing armed. |
 
 - The 10 s is `mtx_claim_s` (6-60 s). The silence is never shorter than `failsafe_time` + 1 s.
 - **"Another unlocked remote is on"** means a remote other than the one in control sent a control
@@ -208,7 +222,8 @@ tap, then LEFT hold) or your normal **Follow-Me gesture** (LEFT tap, then RIGHT 
 - **Your remote checks first.** The buggy's latest answer must say control is available and be under
   5 s old, your remote must have a **fresh GPS fix** (the same test that lets it send its GPS to the
   buggy), that mode must be switched on, and the remote must not be locked. If any check fails, **nothing
-  is sent**: you see `E9` if another remote is busy in control, `St` otherwise.
+  is sent**: you see `E1`-`E4` (the number of the remote in control) if another remote is busy in control,
+  `St` otherwise.
 - **The buggy checks too.** It accepts only if nobody is in control or the remote in control is
   claimable, and your trigger was at zero within the last second. **A summon can never take control from
   a remote that is driving, or that has Follow-Me or Return-To-Me armed and is still transmitting.**
@@ -243,7 +258,9 @@ more remotes to one (§10a).
 ### 5e. What never takes control
 
 - **Plain button presses never take control.** On a remote that is not in control, a toggle tap changes
-  nothing: no gear, no cap. Only a squeeze from zero or a summon gesture can take control.
+  nothing: no gear, no cap. The display cycle and the telemetry views only change your own screen. Only a
+  squeeze from zero or a **completed** summon gesture can take control (§5).
+- **A gesture you let go of early never takes control**, and neither does its first tap.
 - **A held trigger never takes control**, also after a buggy reboot.
 
 ### 5f. The remote in control stays busy
@@ -288,7 +305,8 @@ The master (slot 1) can take control back from a guest, also while the guest is 
   aux. Only its GPS is used: the buggy follows or returns to **that** rider.
 - **A remote that is not in control** turns its Return-To-Me or Follow-Me gesture into a **summon** (§5c).
   Its screen never shows the other rider's Follow-Me or Return-To-Me. Battery, temperature, speed, the
-  water alarm and its own link quality show as normal.
+  water alarm and its own link quality still show; while another remote is in control they update at half
+  the usual rate, because every other answer from the buggy carries the number of the remote in control.
 - **While Follow-Me or Return-To-Me is armed, the remote in control cannot be claimed by sitting idle**,
   however long. Only 10 s of silence makes it claimable, and the master cannot take back.
 - **When control passes, the buggy ends Follow-Me and Return-To-Me first** and drops the previous rider's
@@ -450,8 +468,8 @@ Props off, one buggy, every other receiver off. The full plan, step by step, is 
 - [ ] One remote paired: everything behaves as today, and no `MTX:` lines appear.
 - [ ] Pair both remotes in one window: 1 flash, then 2 flashes, then solid 1 s; `?mtx` shows MULTI with
       your remote in slot 1.
-- [ ] Dots: solid on the remote in control, slow on the other. A squeeze on the other gives `E9`, and the
-      motors do not react.
+- [ ] Dots: solid on the remote in control, slow on the other. A squeeze on the other gives `E1` while the
+      master is in control (`E2` on the master while the second remote is), and the motors do not react.
 - [ ] Idle claim: the remote in control at zero for 10 s, nothing armed: the other dot pulses. A squeeze
       from zero on it takes control under the 25 % to full soft start; the first remote shows `tA`.
 - [ ] Silence: switch the remote in control off mid-throttle. The motors stop within about 1 s, and the
@@ -461,8 +479,10 @@ Props off, one buggy, every other receiver off. The full plan, step by step, is 
 - [ ] Follow-Me armed and the remote in control switched off: claimable but still armed; switched on again
       first, nothing has changed.
 - [ ] Summon by each gesture (needs the buggy's GPS and a fix on the summoning remote). Refused against a
-      remote that is driving (`E9`), and from a remote with no fix (`St`, nothing sent). A toggle summon
-      held 2 s past the combo still arms (no `St`).
+      remote that is driving (`E1`-`E4`, its number), and from a remote with no fix (`St`, nothing sent). A
+      toggle summon held 2 s past the combo still arms (no `St`).
+- [ ] With the other remote claimable: a toggle tap, a gear change, the display cycle and a combo let go
+      before its hold time take nothing (`?mtx` on the buggy: no claim); only the completed gesture does.
 - [ ] During a return, a magnet Return-To-Me hold with the trigger held: no `St`, the return continues.
 - [ ] Spare auto-lock after 120 s untouched.
 - [ ] Pairing distance: a new-style remote refused far away, accepted at about 1 m (read the RSSI lines on

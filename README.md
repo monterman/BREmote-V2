@@ -720,6 +720,8 @@ The motors never jump to a new throttle; they ramp up over a set number of secon
 | `F2` | Follow-Me override: Behind (default) |
 | `F3` | Follow-Me override: Near-Left |
 | `St` | Stop — RTM or FM safety gate triggered, or arming blocked |
+| `E1`–`E4` | Multi-remote branch (alpha): another remote is in control and your input is ignored; the digit is the number of the remote in control (`E1` = the master, the remote paired first). See [Multi-remote guide](docs/MULTI_TX_GUIDE.md) §4 |
+| `E9` | Multi-remote branch (alpha): the same, when the number of the remote in control is not known |
 | `99` | Full throttle reached (100%) |
 
 ### RX

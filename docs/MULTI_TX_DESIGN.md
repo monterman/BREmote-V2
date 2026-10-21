@@ -216,7 +216,7 @@ The rider-GPS packets keep their layout (announce 6 B, data 15 B), with `L` as t
 
 | Mode | When | Behaviour |
 |---|---|---|
-| SINGLE | exactly one remote paired (old or new) | today's code path. A LOCKED frame is handled exactly like today's locked packet (0 / 127). SEIZE and SUMMON are dropped. Status always 000. No takeover limit, no claim. |
+| SINGLE | exactly one remote paired (old or new) | today's code path. A LOCKED frame is handled exactly like today's locked packet (0 / 127). SEIZE and SUMMON are dropped. Status always 000. No takeover limit (except once, right after a list change from MULTI, section 5.3), no claim. |
 | MULTI | 2-4 remotes paired, **all new-style** | the ownership rules below |
 | unpaired | no valid entry | nothing is accepted |
 
@@ -281,7 +281,7 @@ Otherwise it is dropped. The summoning remote, which gets no "you control" answe
 
 The receiver's return-to-me loop watches that counter. It closes the short "how the last run ended" windows for both Follow-Me and return-to-me, so a new rider never sees the previous rider's stop on his screen.
 
-**A change of the paired list while running** (a configuration import, `?applyconf`, `?set paired 0`) releases the owner with the same order, and the receiver starts again from "nobody owns". Whenever the list was MULTI before the change or is MULTI after it, step 1 (throttle 0, steering centre, no failsafe stamp) runs even with nobody in control. A change from one remote to one remote stays today's behaviour.
+**A change of the paired list while running** (a configuration import, `?applyconf`, `?set paired 0`) releases the owner with the same order, and the receiver starts again from "nobody owns". Whenever the list was MULTI before the change or is MULTI after it, step 1 (throttle 0, steering centre, no failsafe stamp) runs even with nobody in control. A change from one remote to one remote stays today's behaviour. **From MULTI to SINGLE** (two or more remotes to one) the takeover limit is also published once, after the zero and before that wake's frame: the board is SINGLE from then on, so the remaining remote's next control frame is applied at once, without zero proof, and its first byte meets the limit (section 6) and the motor ramp. Both rules are the pure `mtxListChangeActions()` (host test T21).
 
 **Takeover:**
 - The **takeover limit** (section 6) is published first, then the new owner's throttle.
@@ -318,13 +318,14 @@ The receiver's return-to-me loop watches that counter. It closes the short "how 
   - the remote is not locked.
 
   The refusal shows **"E9"** when the latest status says another remote is in control and not claimable (BUSY, SEIZABLE, REFUSED) or has just taken control from this one (SEIZED), the same answer a squeeze gets. Every other refusal (no fresh fix, the feature off, the trigger held, a status older than 5 s) shows **"St"** and the stop buzz.
-- **The wait:** after the burst the remote waits up to 1.5 s for an owner status, without blocking. None in time: "E9" if the status now says another remote is in control, else "St". If the grant arrives later than that, the remote is in control with nothing armed (its dot goes solid) and the rider makes the gesture again.
+- **The wait:** after the burst the remote waits up to 1.5 s for an owner status, without blocking. It judges the arrival time of the **first** owner status after the send, so the answer is the same however late it is read; it is read on every loop pass and also inside the toggle handler, which blocks the loop while the button is held. None in time: "E9" if the status now says another remote is in control, else "St". If the grant arrives later than that, the remote is in control with nothing armed (its dot goes solid) and the rider makes the gesture again.
 - **On the buggy:** it is accepted only if nobody owns or the owner is claimable, and the summoning remote was at zero within the last second. **A summon can never take control from a remote that is commanding the buggy.**
 - **Then the summoning remote is the owner** (under the takeover limit), and it arms Return-To-Me or Follow-Me **through today's normal arming path.** The buggy checks every gate as it does today:
   - the new rider's GPS stream (only the owner's stream is accepted);
   - the GPS cross-check, including the maximum rider distance (it restarts with each owner, so it runs on the first GPS packet from the new rider);
   - its own GPS and heading.
 - **The previous rider's fix is marked stale at the release:** its time stamp is cleared. Every check that reads the rider's position requires a fresh time stamp, and the three rider-position filters start over, so the buggy can never steer toward where the previous rider was. (The coordinates themselves stay in memory, unused.)
+- **The arm re-checks before it runs** (it waits up to 600 ms for the new owner's boot ID to go out): still in control, the trigger released, no return running or arming on this remote, and for Follow-Me not already armed. Otherwise nothing is armed. An arm the rider makes himself on the owner path in the meantime cancels the summon.
 - Nothing moves without the summoning rider's trigger: Return-To-Me still needs its squeeze ceremony, and auto-return needs the squeeze.
 - If the buggy then refuses the arm (for example the rider is beyond the maximum distance), the summoning remote keeps manual control and sees today's "St" or not-ready screen.
 
@@ -355,7 +356,7 @@ v3.2 neither shortens nor extends any of these.
 - The limit is 64 of 255 (25 %) at takeover, rising evenly to full over 4 s: 64 / 111 / 159 / 207 / 255 at 0 / 1 / 2 / 3 / 4 s.
 - **It applies only at the moment control passes** (a takeover, a claim, a summon or a take-back), **because the buggy may be near the other rider when it does.** Then it ends on its own. A remote that never lost control (for example one coming back after a silence) gets no limit.
 - Both numbers are settings. The time can never exceed 10 s.
-- It only lowers throttle, never reads GPS, and is never used with a single remote.
+- It only lowers throttle, never reads GPS, and is otherwise never used with a single remote. **The one exception:** once, right after the paired list changes from two or more remotes to one (section 5.3), so the remaining remote restarts from zero under the same soft start.
 - The motor failsafe expression, all existing caps, the ramp, the mixer and the steering are untouched.
 
 ---
@@ -447,7 +448,7 @@ So -60 accepts about 5 m or closer, leaves 14 dB of margin at arm's length, and 
 
 **Aborts:** any throttle, an early release, or a status change.
 
-**On completion** the remote sends SEIZE three times. The receiver re-checks every condition itself. An owner status within 1 s gives the arm-confirm buzz (two quick taps); none gives "St".
+**On completion** the remote sends SEIZE three times. The receiver re-checks every condition itself. An owner status that first arrives within 1 s of the send gives the arm-confirm buzz (two quick taps); none gives "St". The answer is read while RIGHT is still held (the toggle handler blocks the loop), and it is judged on that first arrival, so holding longer never turns a success into "St".
 
 **About 1.6 s from the first press to motor zero.** An accidental take-back can only slow the guest's ride to a stop; it can never start the buggy. **It works while the guest is driving, and it zeroes the guest's throttle at once (the buggy stops), so the master should not take back while the guest depends on the buggy.** It is refused while Follow-Me or Return-To-Me is armed. It is the master's only, and it can be switched off (`mtx_seize_en`).
 
@@ -455,8 +456,8 @@ So -60 accepts about 5 m or closer, leaves 14 dB of margin at arm's length, and 
 
 - **E9**: refused. One warning buzz (two short pulses) on the rising edge; it shows for 1.5 s after the last REFUSED. This is not the remote's error state, so the next toggle press is not taken as an error acknowledgement. It shows only while the remote in control cannot be claimed. A summon refused because another remote is in control also shows E9.
 - **"tA"**: control was taken (a take-back or a claim). Shown 3 s, with the same two short pulses. A remote that was silent when its control was claimed shows it when it is heard again.
-- **"St"** with the stop buzz: no new glyph. With two remotes: a summon refused for any other reason (no fresh fix, the feature off, the trigger held, a stale status) or not answered within 1.5 s; a take-back not confirmed within 1 s; and a remote that lost control with Follow-Me or RTM armed but without a "tA" (for example a receiver reboot).
-- **"St" for every remote, one remote included** (the maintainer's rule: "if it cannot engage, show stop"): a Follow-Me or RTM gesture that cannot engage (the feature off, or the trigger held where it must be released) now shows "St" instead of nothing; held 2 s without blocking `loop()` when the trigger is held. While this remote's own Return-To-Me is running or arming, the refusal is a brief 1 s "St", then the return's screen comes back. The RTM arm ceremony's two timeouts (no first or no second squeeze within `rtm_arm_window_s`) also show "St", held 2 s.
+- **"St"** with the stop buzz: no new glyph. With two remotes: a summon refused for any other reason (no fresh fix, the feature off, the trigger held, a stale status; held without blocking whenever the trigger is held) or not answered within 1.5 s; a take-back not confirmed within 1 s; and a remote that lost control with Follow-Me or RTM armed but without a "tA" (for example a receiver reboot).
+- **"St" for every remote, one remote included** (the maintainer's rule: "if it cannot engage, show stop"): a Follow-Me or RTM gesture that cannot engage (the feature off, or the trigger held where it must be released) now shows "St" instead of nothing; held 2 s without blocking `loop()` when the trigger is held. While this remote's own Return-To-Me is running or arming, or its own Follow-Me is armed, the refusal is a brief 1 s "St" that never blocks, then the running mode's screen comes back. The RTM arm ceremony's two timeouts (no first or no second squeeze within `rtm_arm_window_s`) also show "St", held 2 s. **No "St" for a blocked end or change:** a gesture that would only have ended or changed a running mode (a magnet RTM hold during a return, the Follow-Me combo while Follow-Me is armed) and is blocked by the held trigger shows nothing new; the mode continues and its screen stays, as in SW27. A remote that is not in control and makes a toggle gesture with the trigger held takes the summon gate, as the magnet does: E9 against a busy owner, else "St".
 - **Ownership dot:** shares the Follow-Me status dot (C7 R2) and shows only while the Follow-Me dots are off. SOLID = in control (OWNER); PULSE (on-off-on-pause, 1.2 s) = FREE; SLOW (a 200 ms blip every 3 s) = BUSY, SEIZABLE, REFUSED or SEIZED; OFF = one remote (OWNER_SOLO), an old-style link, or no reply for 5 s. `?mtxdot [0-3|auto]` forces it for the display check.
 
 ### 8.6 Smaller fixes on the remote
@@ -634,12 +635,12 @@ Losing the fix never makes the remote claimable: it is still transmitting.
 | T13 | the pairing window, including the RSSI gate |
 | T14 | old/new mixes, including the SUMMON code on old receiver builds |
 | T15 | the remote's single frame builder (no LOCKED / SEIZE / SUMMON outside a link-ID address, nothing ≥ 0xF5) |
-| T16 | remote status, rate, auto-lock, take-back and summon logic |
+| T16 | remote status, rate, auto-lock, take-back and summon logic; the take-back answer judged on the first owner arrival, however late it is read |
 | T17 | link-fresh windows |
 | T18 | the bounded telemetry wait |
 | T19 | configuration migration on real configuration exports of each board. These are kept locally because they contain pairing data, and are not committed. |
 | T20 | the paired check and every unpair path |
-| T21 | the release order (including a claim) and the clearing of the previous rider's stop notices |
+| T21 | the release order (including a claim) and the clearing of the previous rider's stop notices; what a paired-list change does (zero with MULTI on either side, the limit once on MULTI -> SINGLE) |
 | **T22** | **single remote, and a second remote off or locked: packet for packet, the throttle, failsafe, Follow-Me and Return-To-Me writes equal today's reference through silences of 0.5-100 s; no claim, no release**. Also, with the second remote off: lock → nobody owns → a squeeze (takeover limit) or a summon (no Follow-Me / Return-To-Me write before the new owner's own arm) |
 | T23 | claimable but not released: silent 9.999 s → no, 10 s → yes; still the same owner after 100 s; failsafe time 10 s → 11 s |
 | T24 | the owner returns before a claim: still owner, no limit, nothing changed |
@@ -647,7 +648,7 @@ Losing the fix never makes the remote claimable: it is still transmitting.
 | T26 | a claim by squeeze: release order, the 1 s hold for the claiming remote, its expiry, nobody else granted meanwhile; a held trigger never claims |
 | T27 | summon gates on the buggy: free or claimable only; zero within 1 s; motor output running |
 | T28 | summon refused against a remote that is commanding (armed and transmitting, or driving), or silent under 10 s |
-| T29 | the remote's summon gate: FREE status, a fresh GPS fix (no module, no fix, stale fix → refused, nothing sent), trigger released, not locked |
+| T29 | the remote's summon gate: FREE status, a fresh GPS fix (no module, no fix, stale fix → refused, nothing sent), trigger released, not locked; the answer judged on the first owner arrival (a late grant stays late) |
 | T30 | rider GPS after a claim: the previous rider's position wiped; the cross-check (including the maximum distance) runs on the new rider's first packet |
 | T31 | status priority: taken > busy (control passing to someone else) > free / claimable > refused > take-back offered > busy; "tA" for a remote whose control was claimed while it was silent |
 | T32 | the SUMMON frame: decode, builder, never queued as a merged RTM packet |
@@ -683,10 +684,13 @@ Losing the fix never makes the remote claimable: it is still transmitting.
 - claimable by idle (manual only), with the presence rule; release by lock and by auto-lock;
 - takeover from zero under the limit;
 - a guest can never take from an active master;
-- the master take-back (≤ 2 s);
+- the master take-back (≤ 2 s), released at once and after holding RIGHT 3 s: the confirm buzz both times, never "St";
 - the owner switched off mid-throttle: the failsafe shuts in ≤ 1.1 s, nothing from the other remote reopens it, the owner becomes claimable at 10 s and is **never released on its own**;
 - Follow-Me armed and the owner silent: claimable but still armed; the owner back first changes nothing; then a claim by squeeze;
 - summon by the Return-To-Me gesture and by the Follow-Me gesture (needs a GPS on the buggy and a fix on the summoning remote);
+- a toggle summon held 2 s past the combo: it still arms;
+- during a return, a magnet RTM hold with the trigger held: no "St", the return continues;
+- a paired-list change from two remotes to one with the remaining trigger held: the output restarts from zero at about 25 %, full after 4 s;
 - summon refused: against a remote that is driving, against an armed remote that is transmitting, after only 8 s of silence, from a locked remote;
 - **a remote without GPS:** set one remote to `gps_en 0`, and separately use a remote whose module has no fix yet (indoors). Its summon is refused with "St" and nothing is sent; it can still claim by squeezing; the GPS master takes back, then arms Follow-Me;
 - **single-remote silence:** with only one remote paired, and again with the second remote off or locked, Follow-Me and Return-To-Me behave on a silence exactly as today (pause, the 30 s end, the parked wait), with no claim line at all;
@@ -709,13 +713,14 @@ Losing the fix never makes the remote claimable: it is still transmitting.
 Settled while the code was written, by the maintainer or by the code review. The sections above already say it this way.
 
 - **The refusal signal.** A summon refused because another remote is in control shows "E9", the same answer a squeeze gets; every other refusal shows "St" (sections 5.5, 8.5).
-- **"St" when it cannot engage, on every remote.** A Follow-Me or RTM gesture that cannot engage, and the RTM arm ceremony's timeouts, show "St" instead of nothing, one remote included. Over a running return it is a brief 1 s "St" (an interim choice, still to be confirmed); with the trigger held it does not block `loop()` (section 8.5).
+- **"St" when it cannot engage, on every remote.** A Follow-Me or RTM gesture that cannot engage, and the RTM arm ceremony's timeouts, show "St" instead of nothing, one remote included. Over a running return or this remote's armed Follow-Me it is a brief 1 s "St" (an interim choice, still to be confirmed); with the trigger held it does not block `loop()`. A blocked end or change of a running mode shows no "St" (section 8.5).
+- **The take-back and summon answers** are judged on the first owner status after the send and read while the button is held, so a longer hold never reads as "no answer"; the summon's arm re-checks its preconditions first (sections 5.5, 8.4).
 - **The remote in control is busy on any button** (the `0xF1/0` activity repeat, section 5.4).
 - **A toggle tap on a remote that is not in control changes nothing** (section 8.2).
-- **A change of the paired list while running** zeroes throttle and steering whenever two or more remotes are involved (section 5.3; confirmed by the maintainer 2026-10-21).
+- **A change of the paired list while running** zeroes throttle and steering whenever two or more remotes are involved (section 5.3; confirmed by the maintainer 2026-10-21). From two or more remotes to one, the remaining remote also gets the takeover limit once ("start from zero and with a soft start").
 - **A JSON made on another receiver keeps the receiver's own pairing** (section 13; confirmed by the maintainer 2026-10-21).
 - **The pairing LED** flashes N times right after each enrolment, then shows solid 1 s when the list is saved (section 7).
-- **Free storage before the first boot's writes:** the receiver saves the migrated configuration (and the web page) only with at least 1000 KB of SPIFFS free; otherwise it runs from RAM and a NOTE says what to free. A pairing made then would not be kept either.
+- **Free storage before the first boot's writes:** the receiver saves the migrated configuration (and the web page) only with at least 1000 KB of SPIFFS free; otherwise it runs from RAM and a NOTE says what to free. Do not pair before freeing space: a pairing's save removes the stored file first, so both could be lost.
 
 ### From v3.1 to v3.2 (the maintainer's decisions, 2026-10-20)
 

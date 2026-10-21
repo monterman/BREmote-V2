@@ -137,8 +137,9 @@ For a display check, `?mtxdot 0` to `?mtxdot 3` on the remote forces each look (
 **With two remotes:**
 
 - **Your summon was refused on your own remote** (§5c): no fresh GPS fix, that mode is switched off on
-  this remote, the trigger is held, or the buggy's last answer is too old. Nothing was sent.
-- **Your summon got no "you are in control" answer** within 1.5 s.
+  this remote, the trigger is held, or the buggy's last answer is too old. Nothing was sent. With the
+  trigger held, this `St` does not freeze the remote.
+- **Your summon got no "you are in control" answer** within 1.5 s of the summon.
 - **Your take-back was not confirmed** within 1 s (§6).
 - **Your remote lost control while Follow-Me or Return-To-Me was armed on it**, without a `tA` (for
   example, the buggy rebooted).
@@ -149,10 +150,18 @@ For a display check, `?mtxdot 0` to `?mtxdot 3` on the remote forces each look (
   the mode is switched off on this remote (`fm_override_enabled`, `rtm_enabled`, `gps_en`), or a gesture
   that needs the trigger released was made with the trigger held. With the trigger held, `St` shows for
   2 s without freezing the remote.
-- **A brief `St` (1 s) while your own Return-To-Me is running or arming.** A Follow-Me or Return-To-Me
-  gesture made then cannot act. The return continues, and its screen comes back after the second.
+- **A brief `St` (1 s) while your own Return-To-Me is running or arming, or your own Follow-Me is
+  armed.** A Follow-Me or Return-To-Me gesture made then cannot act (or a Return-To-Me arm over Follow-Me
+  cannot start). The mode continues, and its screen comes back after the second. It never freezes the
+  remote.
 - **The Return-To-Me arm ceremony timed out.** After `rn`, no first or no second squeeze came within the
   arm window (`rtm_arm_window_s`, default 15 s). The screen used to go blank; it now shows `St` for 2 s.
+
+**No `St` for a blocked "end" or "change".** If the gesture would only have ended or changed a mode that
+is running, and the held trigger blocks it (for example a magnet Return-To-Me hold made with the trigger
+held during a return, or the Follow-Me combo with the trigger held while Follow-Me is armed), nothing
+shows: the mode really continues, and its screen stays. The serial line says why. Let go of the trigger
+to end a return, as today.
 
 ### A remote that is not in control
 
@@ -203,10 +212,13 @@ tap, then LEFT hold) or your normal **Follow-Me gesture** (LEFT tap, then RIGHT 
 - **The buggy checks too.** It accepts only if nobody is in control or the remote in control is
   claimable, and your trigger was at zero within the last second. **A summon can never take control from
   a remote that is driving, or that has Follow-Me or Return-To-Me armed and is still transmitting.**
-- **Then today's normal arm runs.** Once the buggy names your remote the one in control (within 1.5 s):
-  for Return-To-Me the `rn` screen and its squeezes, for Follow-Me the `F<n>` label. Every normal check
+- **Then today's normal arm runs.** Once the buggy names your remote the one in control (its first "you
+  are in control" answer within 1.5 s of the summon, however long you keep the button held): for
+  Return-To-Me the `rn` screen and its squeezes, for Follow-Me the `F<n>` label. Every normal check
   applies: your GPS, the distance cross-check, the buggy's own GPS and compass. **Nothing moves until you
   squeeze.**
+- **Nothing is armed after all** if, by the time the arm would start, you are squeezing the trigger, have
+  armed that mode yourself, or are no longer in control. You keep manual control.
 - **If the buggy refuses the arm** (for example, you are too far away), you keep manual control and see
   today's `St` or not-ready screen.
 - **A late answer.** If the buggy gave you control after your remote's 1.5 s wait, your remote shows `St`
@@ -225,7 +237,8 @@ control passes.
 
 It only lowers throttle, never reads GPS, and ends on its own. The motors' normal soft start still runs
 as well. A remote that never lost control (for example, one coming back after a silence) gets no limit.
-With one remote paired, it never applies.
+With one remote paired it never applies, except once: right after the paired list changes from two or
+more remotes to one (§10a).
 
 ### 5e. What never takes control
 
@@ -262,8 +275,9 @@ The master (slot 1) can take control back from a guest, also while the guest is 
   the take-back, about 1.6 s after your first press, and the guest's remote shows `tA`. **Use it with
   care: do not take back while the guest depends on the buggy** (on the rope, or far out). It can only
   bring the buggy to a stop; it can never start it.
-- **The answer on your remote:** two quick taps (the arm-confirm buzz) = you are in control, under the
-  takeover soft start. `St` = no confirmation within 1 s.
+- **The answer on your remote** comes while you still hold RIGHT: two quick taps (the arm-confirm buzz)
+  = you are in control, under the takeover soft start. `St` = the buggy did not hand control back within
+  1 s of the take-back. Holding RIGHT longer does not change the answer.
 - To switch it off, set `mtx_seize_en 0` on the buggy.
 
 ---
@@ -315,7 +329,8 @@ The master (slot 1) can take control back from a guest, also while the guest is 
 ## 9. The spare remote locks itself
 
 - A remote that is **not in control** on a multi-remote buggy **locks itself after 120 s untouched**
-  (`mtx_autolock_s`; 0 = off, otherwise 30-600 s). Untouched means no throttle and no toggle movement.
+  (`mtx_autolock_s`; 0 = off, otherwise 30-600 s). Untouched means no throttle (above about 8 %) and no
+  steering. Toggle presses at zero throttle do not count.
 - **A locked remote cannot take control or summon**, and it does not count as "another remote on". So a
   spare in a bag never makes the rider's remote claimable.
 - The auto-lock waits while Follow-Me or Return-To-Me is armed on that remote, during the take-back
@@ -345,8 +360,10 @@ runs, and two or more remotes were paired before or after the change:
 - **the throttle goes to zero and the steering to centre at once**, and the remote in control is released
   (Follow-Me and Return-To-Me off);
 - afterwards, with two or more remotes paired, nobody is in control: the next squeeze from zero takes
-  control under the takeover soft start. With one remote left, it drives again from zero through the
-  normal soft start.
+  control under the takeover soft start. With one remote left, it drives again from zero, and its
+  throttle goes through the takeover soft start once (25 % rising to full over 4 s, §5d) as well as the
+  motors' normal soft start. A trigger that was already squeezed is limited the same way. After that it
+  is a single remote, as today.
 
 With one remote before and after the change, this is today's behaviour. Make such changes on the bench,
 with the trigger released.
@@ -439,10 +456,13 @@ Props off, one buggy, every other receiver off. The full plan, step by step, is 
 - [ ] Silence: switch the remote in control off mid-throttle. The motors stop within about 1 s, and the
       other remote cannot restart them. It becomes claimable at 10 s and is never released on its own.
 - [ ] Master take-back with the guest at low throttle: the motors go to zero, the guest shows `tA`.
+      Release RIGHT at once, and once after holding it 3 s: the confirm buzz every time, never `St`.
 - [ ] Follow-Me armed and the remote in control switched off: claimable but still armed; switched on again
       first, nothing has changed.
 - [ ] Summon by each gesture (needs the buggy's GPS and a fix on the summoning remote). Refused against a
-      remote that is driving (`E9`), and from a remote with no fix (`St`, nothing sent).
+      remote that is driving (`E9`), and from a remote with no fix (`St`, nothing sent). A toggle summon
+      held 2 s past the combo still arms (no `St`).
+- [ ] During a return, a magnet Return-To-Me hold with the trigger held: no `St`, the return continues.
 - [ ] Spare auto-lock after 120 s untouched.
 - [ ] Pairing distance: a new-style remote refused far away, accepted at about 1 m (read the RSSI lines on
       both boards).
@@ -479,6 +499,7 @@ new buggy only as its single remote.
 2. One remote in control at a time. Another remote's packets never keep the motors running.
 3. No timer hands control over. It passes only by a lock, a deliberate claim, or the master's take-back.
 4. Control passes only from the new remote's zero throttle, and then under the takeover soft start.
+   After a list change to one remote, the outputs restart from zero under the same soft start (§10a).
 5. A held trigger never takes control.
 6. With one remote paired, the buggy runs today's code.
 

@@ -1,3 +1,8 @@
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE (design 9.11, audit C16): "connected" is txLinkFresh() at its three sites here (?printrssi
+//   twice, and the vibration task's link test): a reply within 1000 ms, or 2500 ms while this remote runs the slow rate of a
+//   spare - exactly millis() - last_packet < 1000 on an old-style link, which is never slow. While slow the urgent link-lost
+//   buzz (Pattern B) is not played (mtxTxPatternBAllowed()): a spare sending once a second would otherwise buzz on every
+//   lost reply. No confStruct change.
 // V2.5-Evo - 2026-10-07 - P-12: the dead-ADC charge-screen comment and lines credit the input fault (error 72), not
 //   g_ads_ok, and no longer point to a ?i2c command the TX does not have.
 // V2.5-Evo - 2026-10-07 - P-2: checkStartupButtons() trusts `thr_scaled > 100` only when every throttle buffer slot is
@@ -626,7 +631,7 @@ void serPrintRSSI(bool json)
     {
       if(!isRadioActivityEnabled())
         Serial.println("{\"error\":\"radio_disabled\"}");
-      else if(millis()-last_packet < 1000)
+      else if(txLinkFresh())   // V2.5-Evo - 2026-10-20 - C16 (was millis()-last_packet < 1000)
         Serial.printf("{\"rssi\":%d,\"snr\":%.1f}\n", radio.getRSSI(), radio.getSNR());
       else
         Serial.printf("{\"failsafe_ms\":%lu}\n", millis()-last_packet);
@@ -637,7 +642,7 @@ void serPrintRSSI(bool json)
       {
         Serial.println("Radio activity is disabled.");
       }
-      else if(millis()-last_packet < 1000)
+      else if(txLinkFresh())   // V2.5-Evo - 2026-10-20 - C16 (was millis()-last_packet < 1000)
       {
         Serial.print("RSSI: ");
         Serial.print(radio.getRSSI());
@@ -1005,8 +1010,9 @@ void vibrationTask(void *parameter) {
     // --- 1. MONITOR SYSTEM STATES ---
     
     // Check for Radio Failsafe (Connection Lost)
-    bool is_connected = (millis() - last_packet < 1000);
-    if (was_connected && !is_connected) {
+    // V2.5-Evo - 2026-10-20 - C16: txLinkFresh() (1000 ms, 2500 ms while slow), and no Pattern B while slow.
+    bool is_connected = txLinkFresh();
+    if (was_connected && !is_connected && mtxTxPatternBAllowed(mtx_tx_slow)) {
       current_vib_pattern = 2; // Pattern B: 5 Short (Urgent!)
     }
     was_connected = is_connected;

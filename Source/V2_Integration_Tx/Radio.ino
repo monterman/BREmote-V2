@@ -1,3 +1,17 @@
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE REMOTE STEP (SW29), the radio side (design v3.1 sections 5, 9, 11; audit C2, C14, C16-C18,
+//   W-2, W-7): (1) EVERY UPLINK IS BUILT BY mtxBuildUplink() (Common/MultiTx.h, host test T15): an old-style record
+//   (mtx_link_proto 0, every migrated pairing) gives today's bytes exactly - the buggy's address, the same type and value,
+//   LOCKED as control 0/127 - and a new-style record (3) puts the link ID in bytes 0-2 and sends LOCKED as 0xF1/0x10;
+//   the take-back and the summon leave the queue as internal types the builder turns into 0xF1/0x5A and 0xF1/0x3C
+//   (proto 3 only). (2) THE RATE (C16): on a new-style link a remote that has lost control and is not being used sends
+//   one cycle in ten; a miss there shifts the next send by 33 or 66 ms only. (3) THE REPLY WAIT IS BOUNDED (C17): 40 ms
+//   from the send, someone else's frame re-arms the receive, and no radio call is made after the bound; the reply's
+//   status (new-style link) is recorded in g_mtx_tx. (4) PAIRING (C14, W-2, C10): 0xAD + this chip's ID, an OFFER only
+//   at -60 dBm or stronger, -9 dBm while pairing with the stored power back on every exit (explicitly BEFORE the paired
+//   store on success, and never as SPI to a sleeping radio), the record written with paired last. (5) W-7: enabling the
+//   radio configures it and sets the stored power BEFORE the flag. (6) C18: the PRNG is seeded from this chip's ID.
+//   (7) The rider-GPS stream goes out only while this remote is in control (old-style link: always, as today).
+//   No confStruct change in this file.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-1: sendData() sends the v2 rider GPS packet - announcement 0xF3/0x03,
 //   then 15 bytes with this remote's GPS FIX COUNTER (Common/RiderGpsPacket.h riderGpsTxFixStep / riderGpsBuildV2), so the
 //   buggy can tell a still rider with a good fix from a dead GPS. Same 2 Hz, same 12.864 ms on air as the 14-byte v1.
@@ -39,24 +53,32 @@
 // V2.5-Evo - 2026-05-13 - SW32 L3: stale checkAndAdjustAddress TODO block removed (function never implemented)
 // V2.5-Evo - 2026-05-13 - SW32 M3: queueMetaPacketBurst uses release/relaxed; sendData consumer uses acquire load
 // V2.5-Evo - 2026-04-29 - Bundle A: radio_preset max clamped to 2; dead foil_speed != 99 sentinel removed
+// V2.5-Evo - 2026-10-20 - audit W-7 and design 11.4: (W-7) THE FLAG IS SET LAST ON THE WAY UP. It used to be published
+//   first, so the sendData task could transmit while the radio was still being reconfigured below; now the radio is
+//   configured, then the flag lets sendData use it. On the way down the flag still goes first (sendData stops using the
+//   radio before it sleeps). (11.4) The stored rf_power is set again on every enable: the pairing guard's -9 dBm
+//   survives the SX126x's sleep, and a pairing attempt that ended with the radio asleep could not restore it (the
+//   guard never sends SPI to a sleeping radio). Same value as initRadioHardware() set at boot, so nothing changes on air.
 void setRadioActivityEnabled(bool enabled)
 {
-  radio_activity_enabled = enabled;
-
-  if(!radio_driver_ready) return;
-
   if(!enabled)
   {
+    radio_activity_enabled = false;
+    if(!radio_driver_ready) return;
     rfInterrupt = false;
     radio.sleep();
     return;
   }
 
+  if(!radio_driver_ready) { radio_activity_enabled = true; return; }
+
   radio.setDio2AsRfSwitch(true);
   radio.setCRC(0);
   radio.setRxBandwidth(250);
+  radio.setOutputPower((int8_t)usrConf.rf_power);   // design 11.4: the stored power, every time
   radio.implicitHeader(6);
   radio.startReceive();
+  radio_activity_enabled = true;                    // W-7: published last
 }
 
 bool isRadioActivityEnabled()
@@ -88,27 +110,68 @@ void ICACHE_RAM_ATTR packetReceived(void)
   rfInterrupt = true;
 }
 
-// Function to initiate pairing
-bool initiatePairing() 
-{
-  if(!isRadioActivityEnabled()) return false;
+// ============================================================
+// V2.5-Evo - 2026-10-20 - PAIRING, THE REMOTE'S HALF (design v3.1 11.2, 11.4; audit C10, C14, W-2)
+// ============================================================
+// RIGHT held at power-on (checkStartupButtons() -> checkPairing()) calls this until it succeeds or the radio is turned
+// off. A NEW-STYLE REQUEST EVERY TIME: [0xAD][this chip's ID 3][CRC 0-3]. A buggy on the multi-remote firmware answers
+// [0xDA][this remote's ID 3][its own ID 3][CRC 0-6]; an older buggy ignores 0xAD, so this remote shows "EP" until its
+// pre-flash backup is restored (no ?pairlegacy, design Q8). The OFFER is taken only if it names this remote, carries a
+// non-zero buggy ID and arrives at -60 dBm or stronger (mtxPairOfferOk(), host test T13); a weaker one is ignored with
+// one line and the remote keeps listening. On an OFFER: [0xAE][the buggy's ID 3][this chip's ID 3][CRC 0-6], three
+// times, 300 ms apart (the buggy enrols on the first), then the record: dest_address = the buggy's ID, own_address =
+// this chip's ID, mtx_link_proto = 3, and paired = 1 LAST (V-11: the sendData task starts transmitting the moment it
+// reads paired, so everything it needs is in place before).
+// THE POWER (C14): -9 dBm for the whole attempt, from TxPairPowerGuard, armed after the entry check so that exit never
+// touches the power. The stored rf_power comes back on every other exit:
+//   - SUCCESS (W-2): explicitly, BEFORE the record is written - after the paired store the sendData task owns the radio,
+//     and an SPI write from here could interleave with its transmit. Nothing in this function touches the radio after it.
+//   - the timeout: the guard's destructor, the radio being awake.
+//   - the two "radio switched off during the attempt" exits: the destructor sees the radio asleep and does NOTHING (an
+//     SPI write would wake the SX126x into standby and draw current on a locked remote); setRadioActivityEnabled(true)
+//     puts the stored power back when the radio is next switched on (the -9 dBm survives the sleep).
+//   Today the two radio-off exits cannot even be reached (every caller of setRadioActivityEnabled() runs on the loop task,
+//   which is the task blocked here); the rule is there for the day one is.
+// TxPairPowerGuard - RAII for the pairing power. ok: -9 dBm was really set (a refusal ends the attempt at once, the radio
+//   keeps the stored power). restoreNow(): the success path's explicit restore; the destructor then writes nothing.
+struct TxPairPowerGuard {
+  bool    ok;
+  bool    done;
+  int16_t err;
+  TxPairPowerGuard() : done(false) { err = radio.setOutputPower((int8_t)kMtxPairPowerDbm); ok = (err == RADIOLIB_ERR_NONE); }
+  void restoreNow() { radio.setOutputPower((int8_t)usrConf.rf_power); done = true; }
+  ~TxPairPowerGuard() { if (!done && isRadioActivityEnabled()) radio.setOutputPower((int8_t)usrConf.rf_power); }
+};
 
-  uint8_t dest_address[3];
+// initiatePairing - one pairing attempt of up to PAIRING_TIMEOUT (5 s), a request per second. Returns: true once paired
+//   (the record is in usrConf; checkPairing() saves it). Side effects: the radio (power, header length, mode),
+//   usrConf.paired / dest_address / own_address / mtx_link_proto, g_mtx_tx reset on success, Serial.
+bool initiatePairing()
+{
+  if(!isRadioActivityEnabled()) return false;     // exit 1: before the guard - the power is never touched
+
+  TxPairPowerGuard power_guard;                   // -9 dBm from here (C14)
+  if (!power_guard.ok)
+  {
+    Serial.printf("PAIR: the radio REFUSED the pairing power of %d dBm (error %d) - not paired; try again\n",
+                  (int)kMtxPairPowerDbm, (int)power_guard.err);
+    return false;                                 // the destructor puts the stored power back
+  }
 
   rxprintln("Initiating Pairing...");
   usrConf.paired = false;
-  
-  uint8_t pairingPacket[8];  // 0xAB + 3 bytes address + CRC (up to 8 bytes for confirmation)
+
+  uint8_t pairingPacket[8];  // the request (5 B) and the confirmation (8 B)
   unsigned long startTime = millis();
-  
-  // Prepare pairing packet
-  pairingPacket[0] = 0xAB;
-  memcpy(pairingPacket + 1, usrConf.own_address, 3);
+
+  // The new-style request: 0xAD + this chip's ID (design 5.6). own_address is no longer sent - it is not the identity.
+  pairingPacket[0] = 0xAD;
+  memcpy(pairingPacket + 1, g_efuse_id, 3);
   pairingPacket[4] = esp_crc8(pairingPacket, 4);
-  
-  while (millis() - startTime < PAIRING_TIMEOUT) 
+
+  while (millis() - startTime < PAIRING_TIMEOUT)
   {
-    if(!isRadioActivityEnabled()) return false;
+    if(!isRadioActivityEnabled()) return false;   // exit 2: radio asleep - the guard writes nothing
     unsigned long responseTime = millis();
     rxprintln("Sending pairing request packet: ");
     #ifdef DEBUG_RX
@@ -127,66 +190,76 @@ bool initiatePairing()
     rfInterrupt = false;
     // Wait for response
     uint8_t responseBuffer[15];
-    
+
     while(millis() - responseTime < 1000)
-    {    
-      if(!isRadioActivityEnabled()) return false;
+    {
+      if(!isRadioActivityEnabled()) return false; // exit 3: radio asleep - the guard writes nothing
       while(!rfInterrupt && millis() - responseTime < 1000) delay(10);
       delay(10);
-      
-      if (rfInterrupt && radio.readData(responseBuffer, 15) == RADIOLIB_ERR_NONE) 
+
+      if (rfInterrupt && radio.readData(responseBuffer, 15) == RADIOLIB_ERR_NONE)
       {
         rfInterrupt = false;
+        const float rssi = radio.getRSSI();
         rxprintln("Received response");
-        if (responseBuffer[0] == 0xBA && memcmp(responseBuffer + 1, usrConf.own_address, 3) == 0)
+        // The OFFER for THIS remote: [0xDA][this chip's ID][the buggy's ID][CRC 0-6]. Anything else is ignored.
+        if (responseBuffer[0] == 0xDA && responseBuffer[7] == esp_crc8(responseBuffer, 7) &&
+            mtxIdEqual(responseBuffer + 1, g_efuse_id))
         {
-          rxprintln("Address correct");
-          // Verify CRC of received packet
-          uint8_t receivedCRC = responseBuffer[7];
-          uint8_t calculatedCRC = esp_crc8(responseBuffer, 7);
-          
-          if (receivedCRC == calculatedCRC) 
+          if (!mtxPairOfferOk(responseBuffer + 1, g_efuse_id, responseBuffer + 4, rssi))
           {
-            rxprintln("CRC correct");
-            // Save the other device's address
-            memcpy(dest_address, responseBuffer + 4, 3);
-            
-            // Send final confirmation
-            pairingPacket[0] = 0xAC;
-            memcpy(pairingPacket + 1, dest_address, 3);
-            memcpy(pairingPacket + 4, usrConf.own_address, 3);
-            
-            // Calculate CRC
-            pairingPacket[7] = esp_crc8(pairingPacket, 7);
-            
-            delay(100);
-            rxprintln("Sending response: ");
-            #ifdef DEBUG_RX
-            printHexArray(pairingPacket, 8);
-            #endif
-            radio.implicitHeader(8);
-            for(int i = 0; i < 3; i++)
-            {
-              {
-                int16_t _txErr = radio.startTransmit(pairingPacket, 8);
-                if (_txErr != RADIOLIB_ERR_NONE)
-                  Serial.printf("[Radio] startTransmit error %d at line %d\n", _txErr, __LINE__);
-              }
-              delay(300);
-            }
-
-            usrConf.dest_address[0] = dest_address[0];
-            usrConf.dest_address[1] = dest_address[1];
-            usrConf.dest_address[2] = dest_address[2];
-            usrConf.paired = true;
-            return true;
+            // C10: the RSSI gate (or a zero buggy ID). Keep listening; the remote is moved closer and tries again.
+            Serial.printf("PAIR: offer from %02X:%02X:%02X ignored - RSSI %.0f dBm below %d (bring the remote within about 1 m)\n",
+                          responseBuffer[4], responseBuffer[5], responseBuffer[6], (double)rssi, (int)kMtxPairMinRssiDbm);
+            continue;
           }
+          uint8_t rx_id[3];
+          memcpy(rx_id, responseBuffer + 4, 3);
+
+          // The confirmation: [0xAE][the buggy's ID][this chip's ID][CRC 0-6], three times.
+          pairingPacket[0] = 0xAE;
+          memcpy(pairingPacket + 1, rx_id, 3);
+          memcpy(pairingPacket + 4, g_efuse_id, 3);
+          pairingPacket[7] = esp_crc8(pairingPacket, 7);
+
+          delay(100);
+          rxprintln("Sending response: ");
+          #ifdef DEBUG_RX
+          printHexArray(pairingPacket, 8);
+          #endif
+          radio.implicitHeader(8);
+          for(int i = 0; i < 3; i++)
+          {
+            {
+              int16_t _txErr = radio.startTransmit(pairingPacket, 8);
+              if (_txErr != RADIOLIB_ERR_NONE)
+                Serial.printf("[Radio] startTransmit error %d at line %d\n", _txErr, __LINE__);
+            }
+            delay(300);
+          }
+
+          // W-2: the stored power back NOW, before the record - after `paired` the radio belongs to sendData.
+          power_guard.restoreNow();
+          // The record, in one critical section, paired LAST (V-11). A new link starts with no status heard.
+          portENTER_CRITICAL(&g_mtx_tx_mux);
+          memcpy(usrConf.dest_address, rx_id, 3);
+          memcpy(usrConf.own_address, g_efuse_id, 3);
+          usrConf.mtx_link_proto = kMtxProtoV3;
+          mtxTxStatusInit(&g_mtx_tx);
+          mtx_tx_events = 0;
+          std::atomic_signal_fence(std::memory_order_seq_cst);
+          usrConf.paired = true;
+          portEXIT_CRITICAL(&g_mtx_tx_mux);
+          // Nothing below touches the radio.
+          Serial.printf("PAIR: paired with buggy %02X:%02X:%02X (new-style link), offer RSSI %.0f dBm\n",
+                        rx_id[0], rx_id[1], rx_id[2], (double)rssi);
+          return true;
         }
       }
       else rfInterrupt = false;
     }
   }
-  return false;
+  return false;                                   // exit 5: the timeout - the guard puts the stored power back
 }
 
 void checkPairing()
@@ -291,12 +364,18 @@ void sendData(void *parameter)
 
   // Feature A req#4: seed the PRNG per-unit from own_address so two identical units do NOT produce
   // the same jitter sequence — a shared seed de-syncs nothing. own_address is persistent+unique.
+  // V2.5-Evo - 2026-10-20 - C18 (design 9.14): seeded from THIS CHIP'S ID (g_efuse_id) instead. own_address is a
+  // config value and a copied config copies it, so two remotes with one config hopped in step; the chip ID cannot be
+  // copied. On a remote whose stored own_address is its chip ID (the default bake) the seed is the same number.
   // NOTE (HW RNG dependency): if the ESP32-C3 Arduino core's random() already draws from esp_random()
   // (hardware RNG), this seed is redundant-but-harmless; if random() uses the newlib PRNG, this
   // per-unit seed is what actually makes two colliding TXs de-correlate.
-  randomSeed(((uint32_t)usrConf.own_address[0] << 16) |
-             ((uint32_t)usrConf.own_address[1] << 8)  |
-              (uint32_t)usrConf.own_address[2]);
+  randomSeed(((uint32_t)g_efuse_id[0] << 16) |
+             ((uint32_t)g_efuse_id[1] << 8)  |
+              (uint32_t)g_efuse_id[2]);
+
+  // V2.5-Evo - 2026-10-20 - C16: the slow rate's cycle counter (mtxTxCycleSends()). sendData task only.
+  static uint8_t slow_cycle = 0;
 
   while(1)
   {
@@ -324,6 +403,39 @@ void sendData(void *parameter)
     }
     if(usrConf.paired && isRadioActivityEnabled())
     {
+      // ---- V2.5-Evo - 2026-10-20 - MULTI-REMOTE: this cycle's link record and rate (design 5.3, 9.4; C16) ----
+      // Every frame below is built from the link record by mtxBuildUplink(): an old-style record (proto 0) gives
+      // today's bytes exactly. On a new-style link the remote that has LOST control (3 non-owner replies or 2 SEIZED)
+      // and is not being used goes SLOW - one cycle in ten transmits, the rest are skipped whole (no send, no reply
+      // wait, not scored) - so a spare costs the owner and the buggy almost no airtime. It is fast again at once on
+      // an owner status, FREE plus input, a pending meta, a take-back or summon gesture, or 5 s with no reply
+      // (mtxTxFast()). An old-style link is never slow. The rider-GPS stream is an owner-only action (design 9.5): on a
+      // new-style link it goes out only while the latest status says this remote controls (OWNER or OWNER_SOLO).
+      MtxLinkRec link;
+      txLinkRec(&link);
+      bool slow      = false;
+      bool stream_ok = true;
+      if (link.proto == kMtxProtoV3)
+      {
+        MtxTxStatus st;
+        mtxTxStatusGet(&st);
+        slow      = !mtxTxFast(&st, millis(), rtm_meta_count.load(std::memory_order_acquire) > 0, mtx_gesture_armed, mtx_input_ms);
+        stream_ok = st.owner;
+      }
+      mtx_tx_slow = slow;
+      if (slow)
+      {
+        // The degraded 200 ms cadence and its counters do not apply to a slow sender (V-10: never the 100 -> 200 step).
+        base_interval         = 100;
+        consecutive_misses    = 0;
+        consecutive_successes = 0;
+      }
+      if (!mtxTxCycleSends(slow, &slow_cycle))
+      {
+        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(100));   // a skipped slow cycle: nothing on the air
+        continue;
+      }
+
       // ---- Meta-packet burst path (highest priority, preempts GPS and control packets) ----
       // Sends one 6-byte meta-packet per iteration until count reaches 0.
       // 3 bursts × 100ms cycle = 300ms total. Type/value written before count by loop task.
@@ -332,13 +444,13 @@ void sendData(void *parameter)
       // V2.5-Evo - 2026-10-07 - H-1 / L-1: the packet now comes from the 2-deep queue (metaQueueTake(), which
       // also counts it off). Same one-packet-per-cycle cadence as before.
       uint8_t meta_type = 0, meta_value = 0;
-      if (non_control_run < kMaxNonControlRun && metaQueueTake(meta_type, meta_value))   // V2.5-Evo - 2026-10-07 - meta budget
+      // V2.5-Evo - 2026-10-20 - the packet comes from the builder (C2): proto 0 -> [dest][type][value][CRC] exactly as
+      // before; proto 3 -> the link ID in bytes 0-2; the internal SEIZE / SUMMON types -> 0xF1/0x5A / 0xF1/0x3C, proto 3
+      // only. A packet the builder refuses (SEIZE / SUMMON on an old-style record) is dropped and this cycle sends control.
+      uint8_t metaPkt[6];
+      if (non_control_run < kMaxNonControlRun && metaQueueTake(meta_type, meta_value) &&   // V2.5-Evo - 2026-10-07 - meta budget
+          mtxBuildUplinkFromQueue(meta_type, meta_value, &link, metaPkt, esp_crc8))
       {
-        uint8_t metaPkt[6];
-        memcpy(metaPkt, usrConf.dest_address, 3);
-        metaPkt[3] = meta_type;
-        metaPkt[4] = meta_value;
-        metaPkt[5] = esp_crc8(metaPkt, 5);
 
         rxprint("RTM meta-pkt: ");
         #ifdef DEBUG_RX
@@ -351,6 +463,7 @@ void sendData(void *parameter)
           if (_txErr != RADIOLIB_ERR_NONE)
             Serial.printf("[Radio] startTransmit error %d at line %d\n", _txErr, __LINE__);
         }
+        tx_last_send_ms = millis();   // V2.5-Evo - 2026-10-20 - C17: the reply window starts here
         // V2.5-Evo - 2026-10-07 - H-1: remember when an "RTM off" went on the air, so the loop task can tell a
         // fresh "buggy still in RTM" report from the cached one that predates this stop.
         if (meta_type == 0xF1 && meta_value == 0) rtm_stop_sent_ms = millis();
@@ -384,10 +497,15 @@ void sendData(void *parameter)
 
       // Send GPS meta-packet when: counter reached 0, GPS is enabled in config,
       // and TinyGPS++ reports a valid fix that is not stale.
+      // V2.5-Evo - 2026-10-20 - and only while this remote is in control (stream_ok; always true on an old-style link),
+      // with the link's own address for both packets (mtxUplinkAddr(): proto 0 -> dest_address, as before).
+      uint8_t gps_addr[3];
+      const bool gps_addr_ok = mtxUplinkAddr(&link, gps_addr);
       bool send_gps_meta = (gps_cycle == 0)
                         && usrConf.gps_en
                         && gps_tx.location.isValid()
-                        && gps_tx.location.age() < usrConf.tx_gps_stale_timeout_ms;
+                        && gps_tx.location.age() < usrConf.tx_gps_stale_timeout_ms
+                        && stream_ok && gps_addr_ok;
       // V2.5-Evo - 2026-10-07 - meta budget: a GPS cycle due right after 3 non-control cycles waits one cycle
       // (gps_cycle 4 -> the next pass makes it 0 again), so the >= 2 Hz GPS rate loses at most one 100 ms slot.
       if (send_gps_meta && non_control_run >= kMaxNonControlRun)
@@ -412,10 +530,8 @@ void sendData(void *parameter)
         // so it has no rider GPS - fail-safe; flash both boards together.
         // ---------------------------------------------------------------
         uint8_t announcePkt[6];
-        memcpy(announcePkt, usrConf.dest_address, 3);
-        announcePkt[3] = kRiderGpsType;        // 0xF3
-        announcePkt[4] = kRiderGpsAnnounceV2;  // 0x03 (was 0x01)
-        announcePkt[5] = esp_crc8(announcePkt, 5);
+        // V2.5-Evo - 2026-10-20 - built by mtxBuildUplink() (C2): [address][0xF3][0x03][CRC], the address the link's own.
+        mtxBuildUplink(MTX_B_META, &link, kRiderGpsType, kRiderGpsAnnounceV2, announcePkt, esp_crc8);   // 0xF3 / 0x03 (was 0x01)
 
         rxprint("Sending GPS announcement: ");
         #ifdef DEBUG_RX
@@ -455,7 +571,7 @@ void sendData(void *parameter)
         const uint32_t time_age_ms = gps_tx.time.age();
         const uint8_t  fix_ctr     = riderGpsTxFixStep(&tx_fix_state, gps_tx.time.isValid(), gps_tx.time.value(),
                                                        loc_age_ms, time_age_ms, kRiderGpsSameEpochMs);
-        riderGpsBuildV2(gpsPkt, usrConf.dest_address, lat_ud, lng_ud, fix_ctr, esp_crc8);
+        riderGpsBuildV2(gpsPkt, gps_addr, lat_ud, lng_ud, fix_ctr, esp_crc8);   // V2.5-Evo - 2026-10-20 - the link's address
 
         rxprint("Sending GPS data: ");
         #ifdef DEBUG_RX
@@ -468,6 +584,7 @@ void sendData(void *parameter)
           if (_txErr != RADIOLIB_ERR_NONE)
             Serial.printf("[Radio] startTransmit error %d at line %d\n", _txErr, __LINE__);
         }
+        tx_last_send_ms = millis();   // V2.5-Evo - 2026-10-20 - C17: the reply window starts at the last packet
         // 14-byte packet needs slightly more air time than 6-byte at SF6/BW250
         // (V2.5-Evo - 2026-10-12 - A-1: the 15-byte v2 packet takes the same 12.864 ms; the 15 ms wait still covers it.)
         vTaskDelay(pdMS_TO_TICKS(15));
@@ -481,15 +598,15 @@ void sendData(void *parameter)
         // must never appear in the THR field of a control packet.
         // 0xF2 = 94.9% max throttle — imperceptible difference from uncapped 95.3%.
         // ---------------------------------------------------------------
+        // V2.5-Evo - 2026-10-20 - BUILT BY mtxBuildUplink() (C2): CTRL = [address][throttle, clamped at 0xF0][steering]
+        // [CRC]; LOCKED = control 0/127 on an old-style record (exactly today's locked packet) and 0xF1/0x10 on a
+        // new-style one (the buggy then knows the remote is locked, not just at rest). thr_sent / steer_sent keep
+        // their meaning - what the throttle and steering ARE in this packet - so a locked remote reports 0 / 127.
         uint8_t sendArray[6];
-        memcpy(sendArray, usrConf.dest_address, 3);
+        uint8_t thr_out   = 0;
+        uint8_t steer_out = 127;
 
-        if(system_locked)
-        {
-          sendArray[3] = 0;
-          sendArray[4] = 127;
-        }
-        else
+        if(!system_locked)
         {
           uint8_t thr = calcFinalThrottle();
           // V2.5-Evo - 2026-06-05 - C-1: 2nd independent gate — hard-zero throttle during the RTM
@@ -507,28 +624,32 @@ void sendData(void *parameter)
           // V2.5-Evo - 2026-04-25 - P7: cap at 0xF0 (240=94.1%) to reserve 0xF1-0xFF for all meta-packet types.
           // 0xF1=RTM state, 0xF2=FM override, 0xF3=GPS coord. Was 0xF2 cap before P7.
           // 0xF1 and 0xF2 are intentionally reserved packet type bytes — do not assign.
-          sendArray[3] = (thr > 0xF0) ? 0xF0 : thr;
-          sendArray[4] = input_fault ? 127 : steer_scaled;
+          thr_out   = (thr > 0xF0) ? 0xF0 : thr;
+          steer_out = input_fault ? 127 : steer_scaled;
         }
 
-        thr_sent   = sendArray[3];
-        steer_sent = sendArray[4];
+        thr_sent   = thr_out;
+        steer_sent = steer_out;
 
-        sendArray[5] = esp_crc8(sendArray, 5);
+        const bool built = mtxBuildUplink(system_locked ? MTX_B_LOCKED : MTX_B_CTRL, &link, thr_out, steer_out, sendArray, esp_crc8);
 
         rxprint("Sending: ");
         #ifdef DEBUG_RX
         printHexArray(sendArray, 6);
         #endif
 
-        radio.implicitHeader(6);
+        if (built)   // false only for a link record the validator never lets through (protocol not 0 or 3)
         {
-          int16_t _txErr = radio.startTransmit(sendArray, 6);
-          if (_txErr != RADIOLIB_ERR_NONE)
-            Serial.printf("[Radio] startTransmit error %d at line %d\n", _txErr, __LINE__);
+          radio.implicitHeader(6);
+          {
+            int16_t _txErr = radio.startTransmit(sendArray, 6);
+            if (_txErr != RADIOLIB_ERR_NONE)
+              Serial.printf("[Radio] startTransmit error %d at line %d\n", _txErr, __LINE__);
+          }
+          tx_last_send_ms = millis();   // V2.5-Evo - 2026-10-20 - C17: the reply window starts here
+          num_sent_packets++;
+          vTaskDelay(pdMS_TO_TICKS(10));
         }
-        num_sent_packets++;
-        vTaskDelay(pdMS_TO_TICKS(10));
       }
 
       // Common exit for both GPS meta and normal paths:
@@ -553,7 +674,14 @@ void sendData(void *parameter)
       {
         vTaskDelay(pdMS_TO_TICKS(30));  // bounded reply window (matches Ludwig's 30ms)
 
-        if (millis() - last_packet > 40)
+        if (millis() - last_packet > 40 && slow)
+        {
+          // V2.5-Evo - 2026-10-20 - C16 / V-10: a miss while SLOW shifts the next send by 33 or 66 ms - never 0 (a slow
+          // sender must not stay in the owner's slot) and never the 100 -> 200 ms downgrade below. No print: at one
+          // send a second it would fill the log.
+          extra_delay = mtxTxSlowMissHopMs((uint32_t)random(0, 2));
+        }
+        else if (millis() - last_packet > 40)
         {
           // === PACKET MISSED === telemetry reply did not land this cycle (collision or obstacle).
           consecutive_misses++;
@@ -599,6 +727,22 @@ void sendData(void *parameter)
 }
 
 
+// ============================================================
+// V2.5-Evo - 2026-10-20 - THE REPLY WAIT IS BOUNDED (design 9.12, audit C17) AND READS THE STATUS (design 9.3)
+// ============================================================
+// THE BUG: after every send this task waited for the radio's interrupt with NO bound. A cycle with no reply (a meta,
+// a GPS packet, a lost reply) left it waiting until the next interrupt, which could be the NEXT send's own TX-done - it
+// then read a frame while sendData was using the radio. With several remotes on one channel there is also other
+// traffic: another remote's frame or reply would end the wait as a mismatch.
+// THE FIX: the window is 40 ms from the send (tx_last_send_ms, stamped by sendData). A frame that is not this remote's
+// reply (address or CRC wrong) re-arms the receive and the wait goes on; the first matching reply ends it; at the bound
+// it stops, and NO radio call is made after it (sendData touches the radio again no earlier than the next cycle, at
+// least 100 ms after the send). A frame is judged on the time it was SEEN, so a reply noticed just inside the window is
+// kept even if reading it ends just outside. The Feature A 30 ms window and its > 40 ms test are unchanged.
+// THE ADDRESS: an old-style record answers to own_address, as before; a new-style one to this chip's ID
+// (mtxTxReplyAddr()). THE STATUS (new-style link only): byte 3 = status in bits 7-5, index in bits 4-0; the status goes
+// to g_mtx_tx (mtxTxOnReply(): owner / lost owner / the SEIZED notice, edges for the loop), and REFUSED starts the 1.5 s
+// E9 window. On an old-style record byte 3 IS the index, read exactly as before.
 void waitForTelemetry(void *parameter)
 {
   while (1) 
@@ -606,38 +750,61 @@ void waitForTelemetry(void *parameter)
     //wait until called
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     if(!isRadioActivityEnabled()) continue;
-    //wait until interrupt
-    while(!rfInterrupt && isRadioActivityEnabled()) vTaskDelay(pdMS_TO_TICKS(5));
-    if(!isRadioActivityEnabled()) continue;
 
+    const unsigned long send_ms    = tx_last_send_ms;
+    const bool          v3         = txIsV3();
+    const uint8_t*      reply_addr = mtxTxReplyAddr(usrConf.mtx_link_proto, g_efuse_id, usrConf.own_address);
     uint8_t rcvArray[6];
-    if (radio.readData(rcvArray, 6) == RADIOLIB_ERR_NONE) 
+    bool    ours = false;
+    while (isRadioActivityEnabled() && mtxReplyWaitOpen(millis(), send_ms))
     {
+      if (!rfInterrupt) { vTaskDelay(pdMS_TO_TICKS(5)); continue; }
+      const unsigned long seen_ms = millis();
+      const int16_t rd = radio.readData(rcvArray, 6);
       rfInterrupt = false;
+      local_link_quality = getLinkQuality(radio.getRSSI(), radio.getSNR());
       rxprint("Received packet: ");
       #ifdef DEBUG_RX
       printHexArray(rcvArray,6);
       #endif
-
-      if (memcmp(rcvArray, usrConf.own_address, 3) == 0) 
-      {
-        rxprintln("Address matches");
-        
-        if (rcvArray[5] == esp_crc8(rcvArray, 5)) 
-        {
-          rxprintln("CRC ok");
+      const bool match = (rd == RADIOLIB_ERR_NONE) && memcmp(rcvArray, reply_addr, 3) == 0 &&
+                         rcvArray[5] == esp_crc8(rcvArray, 5);
+      const uint8_t verdict = mtxReplyWaitOnFrame(seen_ms, send_ms, match);
+      if (verdict == MTX_RW_ACCEPT) { ours = true; break; }
+      if (verdict == MTX_RW_STOP) break;
+      radio.startReceive();   // someone else's frame, still inside the window: listen again
+    }
+    if (ours)
+    {
+      {   // (these two scopes keep the reply processing below at its old indentation; its statements are unchanged
+        {   //  apart from reading the index from idx)
+          rxprintln("Address matches, CRC ok");
           num_rcv_packets++;
-          
-          uint8_t* ptr = (uint8_t*)&telemetry;  
-          if (rcvArray[3] < sizeof(TelemetryPacket))
+
+          // The index (and, on a new-style link, the status) of this reply.
+          uint8_t idx = rcvArray[3];
+          if (v3)
           {
-            ptr[rcvArray[3]] = rcvArray[4];
+            const uint8_t       s   = mtxReplyStatusOf(rcvArray[3]);
+            const unsigned long now = millis();
+            idx = mtxReplyIndexOf(rcvArray[3]);
+            portENTER_CRITICAL(&g_mtx_tx_mux);
+            const uint8_t ev = mtxTxOnReply(&g_mtx_tx, s, now);
+            mtx_tx_events = (uint8_t)(mtx_tx_events | ev);
+            if (s == MTX_S_REFUSED) { const unsigned long u = now + kMtxE9HoldMs; mtx_e9_until_ms = (u != 0) ? u : 1; }
+            portEXIT_CRITICAL(&g_mtx_tx_mux);
+          }
+
+          uint8_t* ptr = (uint8_t*)&telemetry;  
+          if (idx < sizeof(TelemetryPacket))
+          {
+            ptr[idx] = rcvArray[4];
           }
 
           // V2.5-Evo - 2026-10-07 - H-1: stamp each ARRIVAL of the fm_status byte (index 15). The cached byte only
           // changes when its index comes round, so runRtmLoop() acts on its RTM bit only when it arrived after
           // the last 0xF1/0 went out.
-          if (rcvArray[3] == offsetof(TelemetryPacket, fm_status))
+          if (idx == offsetof(TelemetryPacket, fm_status))
           {
             fm_status_arrival_ms = millis();
             // V2.5-Evo - 2026-10-07 - A-1: count this arrival's RTM bit for runRtmLoop() (see BREmote_V2_Tx.h).
@@ -671,7 +838,7 @@ void waitForTelemetry(void *parameter)
           // describes the CURRENT claim and never accumulates stale history. It saturates rather than
           // wrapping, because a rollover would read 0 or 1 for a moment and shut the gate on a
           // perfectly healthy link.
-          if (rcvArray[3] == offsetof(TelemetryPacket, fm_flags))
+          if (idx == offsetof(TelemetryPacket, fm_flags))
           {
             const uint8_t want = (uint8_t)(FM_FLAG_ARMED | FM_FLAG_ENGAGED);
             if ((rcvArray[4] & want) == want)
@@ -728,7 +895,7 @@ void waitForTelemetry(void *parameter)
           // THE FIX: the bit must be SET ON 2 CONSECUTIVE ARRIVALS of index 19 (the buggy holds it ~6 s, two to three
           // arrivals); the rise is stamped on the second one. A clear arrival resets the count; the count saturates, so
           // a bit that stays set is stamped once. If an edge is missed this way, the fm_status fallback still ends the run.
-          if (rcvArray[3] == offsetof(TelemetryPacket, rx_state_flags))
+          if (idx == offsetof(TelemetryPacket, rx_state_flags))
           {
             static uint8_t rx_fault_streak   = 0;   // consecutive arrivals with bit 0 set (this task only)
             static uint8_t rx_arrived_streak = 0;   // consecutive arrivals with bit 1 set (this task only)
@@ -741,7 +908,7 @@ void waitForTelemetry(void *parameter)
 
           // Speed conversion: RX sends speed in km/h; convert to the unit selected in web config.
           // 0xFF = no GPS data sentinel (V2.5-Evo fix: old V2 sentinel 99 km/h removed — collided with real speed)
-          if (rcvArray[3] == 2 && telemetry.foil_speed != 0xFF)
+          if (idx == 2 && telemetry.foil_speed != 0xFF)
           {
               if (usrConf.speed_src == 1) {
                   // Option 1: GPS RX knots (km/h * 0.539957)
@@ -767,18 +934,6 @@ void waitForTelemetry(void *parameter)
         }
       }
     }
-    else
-    {
-      rxprintln("Rx err");
-      rfInterrupt = false;
-    }
-
-    local_link_quality = getLinkQuality(radio.getRSSI(), radio.getSNR());
-
-    rxprint("RSSI: ");
-    rxprint(radio.getRSSI());
-    rxprint(", SNR: ");
-    rxprintln(radio.getSNR());
   }
 }
 
@@ -822,12 +977,12 @@ static uint8_t      meta_next_count  = 0;   // second slot: sends remaining, 0 =
 // new 0xF1 could evict a queued 0xF2 - including a Follow-Me "off". Latent (there is no 0xF4 caller today), but
 // the rule now says what it means: a burst may only replace a LOWER-priority burst, never an equal or higher one.
 // Input: type. Output: 3/2/1/0. No side effects.
+// V2.5-Evo - 2026-10-20 - the shared table (Common/MultiTx.h mtxMetaTypePriority(), host test T32): the same 3 / 2 / 1 / 0
+// for 0xF1 / 0xF2 / 0xF4 / anything else, and 4 for the two internal types (the take-back SEIZE, the SUMMON), which
+// have their own queue types so rule 1 below can never merge them with a queued RTM 0xF1.
 static uint8_t metaTypePriority(uint8_t type)
 {
-  if (type == 0xF1) return 3;
-  if (type == 0xF2) return 2;
-  if (type == 0xF4) return 1;
-  return 0;
+  return mtxMetaTypePriority(type);
 }
 
 void queueMetaPacketBurst(uint8_t type, uint8_t value)

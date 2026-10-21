@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-20 - MULTI-REMOTE (design 9.11, audit C16): the bargraphs' "connected" test is txLinkFresh() (1000 ms, 2500 ms
+//   while this remote runs the slow rate of a spare) - exactly millis() - last_packet < 1000 on an old-style link. No confStruct change.
 // V2.5-Evo - 2026-10-12 - comments only: the stale "scanner" wording now describes the D-7 looks (breathing bar, end dots C0 + C9, solid bar); a project-notes reference in the updateR5ProximityBar() block says "project display rule". No code change.
 // V2.5-Evo - 2026-10-11 - audit 2026-10-11 change 3 / D-7 (owner): the Follow-Me R5 bar - FOLLOWING = the centre distance bar, solid (arithmetic moved unchanged into fmCentreBarMask()); WAITING = the same bar breathing 400 ms on / 1200 ms off on its own timer, width latched per breath; NOT READY / PAUSED = only C0 + C9 blinking 1000/500; the sweeping scanner is retired. Display only, no confStruct change, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-11 - audit 2026-10-11 D-3: showFmStopLabelHeld() - a non-blocking 2 s "St" on the F-label hold, for "stopped following, still armed". No confStruct change, SW_VERSION stays 27.
@@ -1299,7 +1301,7 @@ void updateBargraphs(void *parameter)
       vTaskDelayUntil(&xLastWakeTime, xFrequency);  // keep 200ms cadence aligned
       continue;
     }
-    if(millis()-last_packet < 1000)
+    if(txLinkFresh())   // V2.5-Evo - 2026-10-20 - C16 (was millis()-last_packet < 1000)
     {
       if(telemetry.link_quality)
       {

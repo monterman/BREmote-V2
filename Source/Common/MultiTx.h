@@ -1,3 +1,9 @@
+// V2.5-Evo - 2026-10-20 - STEP 2 HEADER FIXES (step-1 code audit Y-1..Y-5, Y-7 b/c): the receiver hook contract is
+//   written out on MtxRxHooks, with mtxRxHooksComplete() for the boot check (Y-1); mtxPairOnConfirm() refuses a fifth
+//   enrolment or a closed window (Y-2); mtxTimers() expires the per-slot zero proof and "control heard" stamps after
+//   3 s, so neither can alias as "just now" after 24.8 days of uptime (Y-3); the claim and summon lines are emitted
+//   after the release and the grant (Y-4); a master take-back leaves a claim notice (Y-7 b); the owner's own SEIZE or
+//   SUMMON frame restarts its silence clock, as any owner frame does (Y-7 c). Host-tested (multi_tx_test.cpp).
 // V2.5-Evo - 2026-10-20 - MULTI-REMOTE v3.2, CODE STEP 1: the pure model of one buggy and up to four remotes (claim
 //   model, summon, master take-back, takeover limit). Header-only, no Arduino code, and NOT included by any firmware
 //   file yet: that starts with the receiver step. So no board behaviour changes. Host-tested by
@@ -611,6 +617,30 @@ static inline void mtxRxStateInit(MtxRxState* st)
 }
 
 // The firmware supplies these; every one must be set. All are called on the radio task.
+// ============================================================
+// THE HOOK CONTRACT (step-1 code audit Y-1). The host test proves the ORDER of every release, grant and claim; it
+// cannot see the hook bodies. The model's guarantees carry into the firmware only if every body keeps these rules:
+//  (a) THE OWNER ATOMIC. No hook is told "publish the owner", yet the loop task reads the owner and the change
+//      counter. owner_changed() is called right after st->owner has its new value (NONE in a release, s in a
+//      grant), so owner_changed() publishes st->owner to the firmware's owner atomic FIRST and only then moves the
+//      change counter. A loop that sees the counter move therefore also sees the new owner.
+//  (b) read_env() reads the LIVE atomics on every call (PWM_active, fm_mode_runtime, rtm_rx_active, fm_rx_active),
+//      never a copy taken earlier: mtxClaim() reads it again after the synthetic "RTM off" to decide grant or token.
+//  (c) zero_outputs() is two single-byte stores (thr_received = 0, steering_received = 127) and then the compiler
+//      barrier; it stamps NO failsafe clock, so the motor gate shuts on its own at failsafe_time. publish_limit()
+//      is the grant-stamp store plus the same barrier, so the limit is visible before any byte of the new owner.
+//  (d) event() never blocks and never prints on the radio task: it queues, and the loop task prints. In SINGLE it
+//      is never reached except for a dropped frame, and it prints nothing for those either (no "MTX:" line ever
+//      appears with one remote).
+//  (e) No hook calls back into this model or writes MtxRxState. The radio task is the state's only writer.
+//  (f) reply() yields (two 10 ms task delays around the send). Every state change for the frame is made before it
+//      is called, and mtxOnFrame() calls it last for every CTRL and LOCKED frame.
+//  (g) One millis() per wake, read after the receive semaphore was taken, passed as `now` to every call for that
+//      wake; mtxTimers() also runs on the 2 s semaphore timeout, so token expiry never waits for a frame.
+//  (h) The config is clamped (mtxClampRxConfig()) and validated before MtxRxCfg is built: a claim_s of 0 would make
+//      an owner at zero claimable at once. valid_mask carries new-style entries only (never a legacy one), and
+//      mtxOnFrame() is never called with a negative slot: the caller drops every negative mtxLookupSlot() result.
+// ============================================================
 struct MtxRxHooks {
   void* ctx;
   void (*read_env)(void* ctx, MtxRxEnv* out);
@@ -626,6 +656,17 @@ struct MtxRxHooks {
   void (*reply)(void* ctx, int8_t slot, uint8_t status);             // build and send the reply to that slot
   void (*event)(void* ctx, uint8_t ev, int8_t slot, uint8_t arg);    // one serial line / counter
 };
+
+// mtxRxHooksComplete - the boot check (Y-1): true only if every function pointer is set. A firmware whose table is
+//   incomplete must not run mtxOnFrame() at all (it drops every frame instead, so the motor gate stays shut).
+//   Input: h. Returns: bool. Side effects: none.
+static inline bool mtxRxHooksComplete(const MtxRxHooks* h)
+{
+  return h != NULL && h->read_env != NULL && h->zero_outputs != NULL && h->synthetic_rtm_off != NULL
+      && h->synthetic_fm_off != NULL && h->reset_rider_gps != NULL && h->reset_boot_id != NULL
+      && h->publish_limit != NULL && h->owner_changed != NULL && h->apply_owner != NULL && h->meta != NULL
+      && h->reply != NULL && h->event != NULL;
+}
 
 // Events (MtxRxHooks.event).
 static const uint8_t MTX_EV_DROPPED        = 1;   // arg: the raw MTX_K_* of the dropped frame
@@ -902,12 +943,13 @@ static inline void mtxGrant(MtxRxState* st, const MtxRxHooks* h, int8_t s, uint3
 //   notice (that remote hears SEIZED when it is next heard) and the release. Then the grant at once if nothing is armed
 //   any more, else a claim token for s (Follow-Me idles on the loop's next tick; the token lets the grant land on s's
 //   next control frame without a second zero proof). An existing token of s is never restamped (audit X-5).
+//   V2.5-Evo - 2026-10-20 - Y-4: the claim line is emitted LAST, after the release and the grant (or the token).
+//   It used to come first, so a slow event hook would have delayed the throttle zero; C6 is "zero first".
 //   Inputs: st, h, s, now. Side effects: st, and the hooks.
 static inline void mtxClaim(MtxRxState* st, const MtxRxHooks* h, int8_t s, uint32_t now)
 {
   const int8_t o = st->owner;
   st->n.claims++;
-  h->event(h->ctx, MTX_EV_CLAIM, s, (o == kMtxNone) ? (uint8_t)0xFF : (uint8_t)o);
   if (o != kMtxNone)
   {
     st->claim_notice[o]    = true;
@@ -927,6 +969,7 @@ static inline void mtxClaim(MtxRxState* st, const MtxRxHooks* h, int8_t s, uint3
     st->token.ms   = mtxStampOf(now);
     h->event(h->ctx, MTX_EV_TOKEN, s, 0);
   }
+  h->event(h->ctx, MTX_EV_CLAIM, s, (o == kMtxNone) ? (uint8_t)0xFF : (uint8_t)o);   // Y-4: after the release
 }
 
 // mtxClaimableEdge - one line on each change of the claimable state (R9, R10). Side effects: st->claimable*, events.
@@ -952,9 +995,25 @@ static inline void mtxClaimableEdge(MtxRxState* st, const MtxRxCfg* c, const Mtx
 // mtxTimers - run on every radio-task wake (each frame, before acting on it, and the 2 s semaphore timeout). It
 //   RELEASES NOTHING: it clears a claim token older than 1 s (R18), keeps the idle clock (X-2) and prints the
 //   claimable edges. Motor safety never depends on it - the gate shuts on its own clock. Side effects: st, events.
+//   V2.5-Evo - 2026-10-20 - Y-3: THE STAMPS EXPIRE. mtxAgeMs() reads a stamp 2^31 ms or more old (24.8 days) as
+//   age 0, so a remote whose last two frames were zeros and that was then unheard for 24.8 days of uptime would
+//   have been granted on its first squeeze with no fresh zeros, and a remote heard once that long ago would have
+//   counted as "present". Each slot's zero proof and its "control heard" stamp are therefore cleared here once they
+//   are older than kMtxPresentMs (3 s, the longest age any rule accepts). This runs on every wake (at least every
+//   2 s), so no stamp ever reaches the aliasing age. Nothing a rule can see changes: every reader already treats
+//   an age above 3 s as "not fresh". The owner's own clocks are left alone: they alias toward "not claimable".
 static inline void mtxTimers(MtxRxState* st, const MtxRxCfg* c, const MtxRxHooks* h, uint32_t now)
 {
   if (c->single) return;
+  for (uint8_t i = 0; i < kMtxSlots; i++)
+  {
+    if (st->last_zero_ms[i] != 0 && mtxAgeMs(now, st->last_zero_ms[i]) > kMtxPresentMs)
+    {
+      st->zero_streak[i]  = 0;
+      st->last_zero_ms[i] = 0;
+    }
+    if (st->ctrl_heard_ms[i] != 0 && mtxAgeMs(now, st->ctrl_heard_ms[i]) > kMtxPresentMs) st->ctrl_heard_ms[i] = 0;
+  }
   if (mtxTokenHeld(st) && mtxAgeMs(now, st->token.ms) > kMtxClaimGrantMs)
   {
     const int8_t holder = st->token.slot;
@@ -1081,11 +1140,17 @@ static inline void mtxOnFrame(MtxRxState* st, const MtxRxCfg* c, const MtxRxHook
   }
   else if (k == MTX_K_SEIZE)
   {
+    // V2.5-Evo - 2026-10-20 - Y-7 (c): any frame from the owner restarts its silence clock (design 3.1), its own
+    // SEIZE too (never sent by today's remote; refused below, since an owner cannot take back from itself).
+    if (s == st->owner) mtxOwnerHeard(st, c, now);
     if (mtxSeizeOk(st, c, &e, s, now))
     {
       const int8_t o = st->owner;
       st->seized_on[o]       = true;
       st->seized_until_ms[o] = now + kMtxSeizedHoldMs;
+      // V2.5-Evo - 2026-10-20 - Y-7 (b): the claim notice, as a claim leaves it. A guest that was silent at the
+      // take-back and comes back after the 5 s hold still hears SEIZED ("tA") on its first frame, not BUSY.
+      st->claim_notice[o]    = true;
       mtxRelease(st, h, MTX_REL_SEIZED, now);
       mtxGrant(st, h, s, now);
     }
@@ -1100,12 +1165,14 @@ static inline void mtxOnFrame(MtxRxState* st, const MtxRxCfg* c, const MtxRxHook
     if (s == st->owner || st->token.slot == s)
     {
       // X-5: the rest of a 3-frame burst, or a repeat - already in control or already holding the claim.
+      // V2.5-Evo - 2026-10-20 - Y-7 (c): from the owner it is still an owner frame, so the silence clock restarts.
+      if (s == st->owner) mtxOwnerHeard(st, c, now);
     }
     else if (mtxSummonOk(st, c, &e, s, now))
     {
       st->n.summons++;
-      h->event(h->ctx, MTX_EV_SUMMON, s, 0);
       mtxClaim(st, h, s, now);                              // R15
+      h->event(h->ctx, MTX_EV_SUMMON, s, 0);                // Y-4: after the release and the grant
     }
     else
     {
@@ -1477,10 +1544,15 @@ static inline uint8_t mtxPairOnRequest(const MtxPairWindow* w, bool legacy, cons
 // mtxPairOnConfirm - the matching confirm arrived (it names this buggy and that remote, within 1.5 s): enrol, or
 //   refresh an ID already enrolled in this window. A NEW enrolment extends the window by 20 s, never past 120 s from
 //   the open. A legacy enrolment, or the fourth, closes it. Returns: the slot. Side effects: *w.
+//   V2.5-Evo - 2026-10-20 - Y-2: THE BOUNDS GUARD. A new ID is never enrolled into a closed window or past the
+//   fourth slot: it returns kMtxNone and writes nothing. Before this the function relied on its caller, and a fifth
+//   confirm would have written past ids[] into flags[] and `closed`, and the commit would have copied 15 bytes into
+//   the 12-byte list. A refresh of an ID already enrolled still answers its slot and writes nothing.
 static inline int8_t mtxPairOnConfirm(MtxPairWindow* w, bool legacy, const uint8_t id[3])
 {
   const int8_t found = mtxPairFind(w, id);
   if (found != kMtxNone) return found;
+  if (w->closed || w->n >= kMtxSlots) return kMtxNone;
   const uint8_t i = w->n++;
   memcpy(&w->ids[i * 3], id, 3);
   w->flags[i] = (uint8_t)(kMtxFlagValid | (legacy ? kMtxFlagLegacy : 0));

@@ -1,3 +1,8 @@
+// V2.5-Evo - 2026-10-20 - Y-5 (c) (step-1 code audit): the SW35 -> SW36 part no longer uses assert(). assert() is
+//   compiled out under -DNDEBUG, and two of these checks CALLED the code under test inside the assert (the Base64
+//   encode and the migration itself), so a -DNDEBUG build would have skipped the migration and checked nothing. Every
+//   check is now MCHECK(), which always evaluates its argument and counts, like T19's own T19CHECK(); main() returns
+//   failure if either counter failed.
 // V2.5-Evo - 2026-10-20 - SYNTHETIC IMAGE: the test no longer embeds a real board's config. The image is built below
 //   from made-up values (made-up addresses, settings that match no board), and goes through the same Base64 round trip
 //   a ?conf export takes. Same coverage as before: decode, the byte-exact prefix, every named field, the defaults tail,
@@ -18,13 +23,18 @@
 // The two mirror structs pin the layouts (sizeof 192 and 200, checked at compile time); if the
 // firmware struct ever changes shape this test must change with it.
 
-#include <assert.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 #include <math.h>
 
 #include "../../Source/Common/ConfigMigrate.h"
+
+// MCHECK - one check of the SW35 -> SW36 part: ALWAYS evaluates its argument (unlike assert(), which -DNDEBUG removes
+// together with any call inside it), counts it, and prints the line of a failure. Side effects: the two counters.
+static int g_mig_checks = 0, g_mig_fails = 0;
+#define MCHECK(c) do { g_mig_checks++; if (!(c)) { g_mig_fails++; printf("  SW35->36 FAIL line %d: %s\n", __LINE__, #c); } } while (0)
 
 // ---- Layout mirrors of Source/V2_Integration_Rx/BREmote_V2_Rx.h confStruct ----
 // Field order and types copied one-to-one; uint16/int16/float/uint8/char have the same alignment
@@ -418,22 +428,22 @@ int main(int argc, char** argv)
   ConfSw35 synth;
   fillSyntheticSw35(&synth);
   char b64[512];
-  assert(b64encode((const uint8_t*)&synth, sizeof(synth), b64, sizeof(b64)) == 256);   // 192 bytes -> 256 chars
+  MCHECK(b64encode((const uint8_t*)&synth, sizeof(synth), b64, sizeof(b64)) == 256);   // 192 bytes -> 256 chars
   uint8_t blob[256];
   const size_t blobLen = b64decode(b64, blob, sizeof(blob));
-  assert(memcmp(blob, &synth, sizeof(synth)) == 0);                                     // the round trip is exact
-  assert(blobLen == kLegacyLen);
+  MCHECK(memcmp(blob, &synth, sizeof(synth)) == 0);                                     // the round trip is exact
+  MCHECK(blobLen == kLegacyLen);
   const uint16_t blobVersion = (uint16_t)(blob[0] | ((uint16_t)blob[1] << 8));
-  assert(blobVersion == kLegacySw);
+  MCHECK(blobVersion == kLegacySw);
 
   ConfSw35 old;
   memcpy(&old, blob, sizeof(old));
   // Spot-check the decode against the values the image was built from.
-  assert(old.version == 35 && old.radio_preset == 1 && old.rf_power == 14);
-  assert(old.steering_type == 2 && old.steering_influence == 41 && old.steering_inverted == 0);
-  assert(old.paired == 1);
-  assert(old.rtm_stop_distance_m == 9);
-  assert(old.mag_orientation == 90);
+  MCHECK(old.version == 35 && old.radio_preset == 1 && old.rf_power == 14);
+  MCHECK(old.steering_type == 2 && old.steering_influence == 41 && old.steering_inverted == 0);
+  MCHECK(old.paired == 1);
+  MCHECK(old.rtm_stop_distance_m == 9);
+  MCHECK(old.mag_orientation == 90);
 
   // ---- The factory-default image, poisoned everywhere it must NOT be read from ----
   // Every byte 0xA5 except the SW36 tail: the three new fields at their defaults and a zero pad.
@@ -447,89 +457,91 @@ int main(int argc, char** argv)
   memset((uint8_t*)&defaults + 198, 0, 2);   // the tail pad, zero as in a zero-initialised global
 
   // ---- The gate: exactly this pair and nothing else ----
-  assert(cfgLegacyPairMatches(blobLen, blobVersion, kLegacyLen, kLegacySw, true));
-  assert(!cfgLegacyPairMatches(blobLen, blobVersion, kLegacyLen, kLegacySw, false));   // build not the target
-  assert(!cfgLegacyPairMatches(184, 34, kLegacyLen, kLegacySw, true));                 // the SW34 blob: one version too old
-  assert(!cfgLegacyPairMatches(192, 34, kLegacyLen, kLegacySw, true));                 // legacy length, wrong version
-  assert(!cfgLegacyPairMatches(200, 36, kLegacyLen, kLegacySw, true));                 // already current
-  assert(!cfgLegacyPairMatches(191, 35, kLegacyLen, kLegacySw, true));                 // one byte short
+  MCHECK(cfgLegacyPairMatches(blobLen, blobVersion, kLegacyLen, kLegacySw, true));
+  MCHECK(!cfgLegacyPairMatches(blobLen, blobVersion, kLegacyLen, kLegacySw, false));   // build not the target
+  MCHECK(!cfgLegacyPairMatches(184, 34, kLegacyLen, kLegacySw, true));                 // the SW34 blob: one version too old
+  MCHECK(!cfgLegacyPairMatches(192, 34, kLegacyLen, kLegacySw, true));                 // legacy length, wrong version
+  MCHECK(!cfgLegacyPairMatches(200, 36, kLegacyLen, kLegacySw, true));                 // already current
+  MCHECK(!cfgLegacyPairMatches(191, 35, kLegacyLen, kLegacySw, true));                 // one byte short
 
   // ---- Migrate exactly as the RX does, then stamp the version as the firmware does ----
   ConfSw36 migrated;
   memset(&migrated, 0x5A, sizeof(migrated));
-  assert(cfgPrefixMigrateImage(blob, blobLen, kLegacyLen,
+  MCHECK(cfgPrefixMigrateImage(blob, blobLen, kLegacyLen,
                                (const uint8_t*)&defaults, kTargetLen, (uint8_t*)&migrated));
   // The whole prefix is the blob, byte for byte - before the stamp the version is still 35.
-  assert(memcmp(&migrated, blob, kLegacyLen) == 0);
+  MCHECK(memcmp(&migrated, blob, kLegacyLen) == 0);
   migrated.sw35.version = kTargetSw;
   // After the stamp: everything except the two version bytes is still the blob.
-  assert(memcmp((const uint8_t*)&migrated + 2, blob + 2, kLegacyLen - 2) == 0);
-  assert(migrated.sw35.version == 36);
+  MCHECK(memcmp((const uint8_t*)&migrated + 2, blob + 2, kLegacyLen - 2) == 0);
+  MCHECK(migrated.sw35.version == 36);
 
   // ---- The three new fields equal their defaults; the pad is 0; no 0xA5 anywhere in the prefix ----
-  assert(migrated.fm_return_mode == 1);
-  assert(migrated.fm_align_cap == 13);
-  assert(migrated.fm_align_influence == 80);
+  MCHECK(migrated.fm_return_mode == 1);
+  MCHECK(migrated.fm_align_cap == 13);
+  MCHECK(migrated.fm_align_influence == 80);
   const uint8_t* mb = (const uint8_t*)&migrated;
-  assert(mb[198] == 0 && mb[199] == 0);
-  for (size_t i = 2; i < kLegacyLen; ++i) assert(mb[i] == blob[i]);
+  MCHECK(mb[198] == 0 && mb[199] == 0);
+  for (size_t i = 2; i < kLegacyLen; ++i) MCHECK(mb[i] == blob[i]);
 
   // ---- Every field the owner would notice losing, by name and value (the values the image was built from) ----
   const ConfSw35& m = migrated.sw35;
-  assert(m.paired == 1);
-  assert(memcmp(m.own_address, kSynOwn, 3) == 0);     // the identity fields survive the migration untouched
-  assert(memcmp(m.dest_address, kSynDest, 3) == 0);
-  assert(memcmp(m.wifi_password, "synthpw1", 8) == 0);
-  assert(m.steering_type == 2 && m.steering_influence == 41 && m.steering_inverted == 0 && m.trim == -3);
-  assert(m.PWM0_min == 1010 && m.PWM0_max == 1990 && m.PWM1_min == 1020 && m.PWM1_max == 1980);
-  assert(m.failsafe_time == 1200 && m.foil_num_cells == 12);
-  assert(m.bms_det_active == 1 && m.wet_det_active == 0);
-  assert(m.rtm_steer_response == 3 && m.data_src == 1 && m.gps_en == 1 && m.followme_mode == 3 && m.kalman_en == 0);
-  assert(near(m.boogie_vmax_in_followme_kmh, 21.5f, 0.001f));
-  assert(near(m.min_dist_m, 6.5f, 0.001f) && near(m.followme_smoothing_band_m, 3.5f, 0.001f));
-  assert(near(m.foiler_low_speed_kmh, 7.25f, 0.001f));
-  assert(near(m.zone_angle_enter_deg, 30.0f, 0.001f) && near(m.zone_angle_exit_deg, 40.0f, 0.001f));
-  assert(near(m.near_diag_offset_deg, 55.0f, 0.001f));
-  assert(near(m.ubat_cal, 0.0101f, 1e-7f) && near(m.ubat_offset, 0.125f, 1e-6f));
-  assert(m.tx_gps_stale_timeout_ms == 2500 && m.logger_en == 1);
-  assert(m.mag_offset_x == 321 && m.mag_offset_y == -123);
-  assert(near(m.mag_scale_x, 0.95f, 0.0005f) && near(m.mag_scale_y, -1.05f, 0.0005f));   // the mirrored frame survives
-  assert(m.gps_chip_type == 2 && m.gps_dyn_model == 2);
-  assert(near(m.gps_max_hdop, 1.5f, 0.001f) && near(m.gps_max_accel_g, 2.5f, 0.001f));
-  assert(near(m.gps_max_teleport_kmh, 70.0f, 0.001f) && m.gps_suspect_threshold == 4);
-  assert(near(m.gps_max_pair_dist_m, 400.0f, 0.001f) && near(m.gps_max_speed_diff_kmh, 40.0f, 0.001f));
-  assert(near(m.rtm_vesc_speed_diff_kmh, 15.0f, 0.001f) && near(m.vesc_erpm_per_kmh, 123.5f, 1e-4f));
-  assert(m.rtm_rx_enabled == 1 && m.rtm_rx_override_steering == 0 && m.rtm_compass_required == 1);
-  assert(m.rtm_stop_distance_m == 9);      // the RTM stop distance - also the FM_RETURN stop radius
-  assert(m.vesc_timeout_s == 8);           // the stored value, not the newer 10 s default: nothing is "corrected"
-  assert(m.gps_update_hz == 5 && m.rtm_approach_zone_m == 11);
-  assert(m.rtm_use_compass == 0 && m.rtm_cog_min_speed_kmh == 4);
-  assert(near(m.rtm_target_speed_kmh, 4.5f, 0.001f) && m.rtm_align_threshold_deg == 35);
-  assert(near(m.motor_ramp_s, 1.5f, 0.001f));
-  assert(near(m.fm_engage_dist_m, 10.5f, 0.001f));
-  assert(m.log_level == 3);
-  assert(m.mag_orientation == 90);
+  MCHECK(m.paired == 1);
+  MCHECK(memcmp(m.own_address, kSynOwn, 3) == 0);     // the identity fields survive the migration untouched
+  MCHECK(memcmp(m.dest_address, kSynDest, 3) == 0);
+  MCHECK(memcmp(m.wifi_password, "synthpw1", 8) == 0);
+  MCHECK(m.steering_type == 2 && m.steering_influence == 41 && m.steering_inverted == 0 && m.trim == -3);
+  MCHECK(m.PWM0_min == 1010 && m.PWM0_max == 1990 && m.PWM1_min == 1020 && m.PWM1_max == 1980);
+  MCHECK(m.failsafe_time == 1200 && m.foil_num_cells == 12);
+  MCHECK(m.bms_det_active == 1 && m.wet_det_active == 0);
+  MCHECK(m.rtm_steer_response == 3 && m.data_src == 1 && m.gps_en == 1 && m.followme_mode == 3 && m.kalman_en == 0);
+  MCHECK(near(m.boogie_vmax_in_followme_kmh, 21.5f, 0.001f));
+  MCHECK(near(m.min_dist_m, 6.5f, 0.001f) && near(m.followme_smoothing_band_m, 3.5f, 0.001f));
+  MCHECK(near(m.foiler_low_speed_kmh, 7.25f, 0.001f));
+  MCHECK(near(m.zone_angle_enter_deg, 30.0f, 0.001f) && near(m.zone_angle_exit_deg, 40.0f, 0.001f));
+  MCHECK(near(m.near_diag_offset_deg, 55.0f, 0.001f));
+  MCHECK(near(m.ubat_cal, 0.0101f, 1e-7f) && near(m.ubat_offset, 0.125f, 1e-6f));
+  MCHECK(m.tx_gps_stale_timeout_ms == 2500 && m.logger_en == 1);
+  MCHECK(m.mag_offset_x == 321 && m.mag_offset_y == -123);
+  MCHECK(near(m.mag_scale_x, 0.95f, 0.0005f) && near(m.mag_scale_y, -1.05f, 0.0005f));   // the mirrored frame survives
+  MCHECK(m.gps_chip_type == 2 && m.gps_dyn_model == 2);
+  MCHECK(near(m.gps_max_hdop, 1.5f, 0.001f) && near(m.gps_max_accel_g, 2.5f, 0.001f));
+  MCHECK(near(m.gps_max_teleport_kmh, 70.0f, 0.001f) && m.gps_suspect_threshold == 4);
+  MCHECK(near(m.gps_max_pair_dist_m, 400.0f, 0.001f) && near(m.gps_max_speed_diff_kmh, 40.0f, 0.001f));
+  MCHECK(near(m.rtm_vesc_speed_diff_kmh, 15.0f, 0.001f) && near(m.vesc_erpm_per_kmh, 123.5f, 1e-4f));
+  MCHECK(m.rtm_rx_enabled == 1 && m.rtm_rx_override_steering == 0 && m.rtm_compass_required == 1);
+  MCHECK(m.rtm_stop_distance_m == 9);      // the RTM stop distance - also the FM_RETURN stop radius
+  MCHECK(m.vesc_timeout_s == 8);           // the stored value, not the newer 10 s default: nothing is "corrected"
+  MCHECK(m.gps_update_hz == 5 && m.rtm_approach_zone_m == 11);
+  MCHECK(m.rtm_use_compass == 0 && m.rtm_cog_min_speed_kmh == 4);
+  MCHECK(near(m.rtm_target_speed_kmh, 4.5f, 0.001f) && m.rtm_align_threshold_deg == 35);
+  MCHECK(near(m.motor_ramp_s, 1.5f, 0.001f));
+  MCHECK(near(m.fm_engage_dist_m, 10.5f, 0.001f));
+  MCHECK(m.log_level == 3);
+  MCHECK(m.mag_orientation == 90);
   // The old-named slot reads 0 on the migrated image: a migrated board reads steer_during_auto 0 = cancel, the
   // behaviour-preserving default the rename-in-place rules require (2026-09-19).
-  assert(m.rsvd_u16_1 == 0 && near(m.rsvd_f32_1, 0.0f, 1e-6f));
+  MCHECK(m.rsvd_u16_1 == 0 && near(m.rsvd_f32_1, 0.0f, 1e-6f));
 
   // ---- Refusals: the image is never reinterpreted when the sizes do not say it is a prefix ----
   ConfSw36 scratch;
   memset(&scratch, 0x5A, sizeof(scratch));
-  assert(!cfgPrefixMigrateImage(blob, 184, kLegacyLen, (const uint8_t*)&defaults, kTargetLen, (uint8_t*)&scratch));  // wrong blob length
-  assert(!cfgPrefixMigrateImage(blob, blobLen, 0, (const uint8_t*)&defaults, kTargetLen, (uint8_t*)&scratch));      // empty legacy size
-  assert(!cfgPrefixMigrateImage(blob, blobLen, kLegacyLen, (const uint8_t*)&defaults, 100, (uint8_t*)&scratch));    // target smaller than the prefix
-  assert(!cfgPrefixMigrateImage(NULL, blobLen, kLegacyLen, (const uint8_t*)&defaults, kTargetLen, (uint8_t*)&scratch));
-  assert(!cfgPrefixMigrateImage(blob, blobLen, kLegacyLen, NULL, kTargetLen, (uint8_t*)&scratch));
-  assert(!cfgPrefixMigrateImage(blob, blobLen, kLegacyLen, (const uint8_t*)&defaults, kTargetLen, NULL));
+  MCHECK(!cfgPrefixMigrateImage(blob, 184, kLegacyLen, (const uint8_t*)&defaults, kTargetLen, (uint8_t*)&scratch));  // wrong blob length
+  MCHECK(!cfgPrefixMigrateImage(blob, blobLen, 0, (const uint8_t*)&defaults, kTargetLen, (uint8_t*)&scratch));      // empty legacy size
+  MCHECK(!cfgPrefixMigrateImage(blob, blobLen, kLegacyLen, (const uint8_t*)&defaults, 100, (uint8_t*)&scratch));    // target smaller than the prefix
+  MCHECK(!cfgPrefixMigrateImage(NULL, blobLen, kLegacyLen, (const uint8_t*)&defaults, kTargetLen, (uint8_t*)&scratch));
+  MCHECK(!cfgPrefixMigrateImage(blob, blobLen, kLegacyLen, NULL, kTargetLen, (uint8_t*)&scratch));
+  MCHECK(!cfgPrefixMigrateImage(blob, blobLen, kLegacyLen, (const uint8_t*)&defaults, kTargetLen, NULL));
   const uint8_t* sb = (const uint8_t*)&scratch;
-  for (size_t i = 0; i < kTargetLen; ++i) assert(sb[i] == 0x5A);   // a refused migration writes nothing
+  for (size_t i = 0; i < kTargetLen; ++i) MCHECK(sb[i] == 0x5A);   // a refused migration writes nothing
 
   // A same-size migration (legacy_len == target_len) is legal and is a plain copy.
-  assert(cfgPrefixMigrateImage(blob, blobLen, kLegacyLen, (const uint8_t*)&defaults, kLegacyLen, (uint8_t*)&scratch));
-  assert(memcmp(&scratch, blob, kLegacyLen) == 0);
+  MCHECK(cfgPrefixMigrateImage(blob, blobLen, kLegacyLen, (const uint8_t*)&defaults, kLegacyLen, (uint8_t*)&scratch));
+  MCHECK(memcmp(&scratch, blob, kLegacyLen) == 0);
+
+  printf("SW35->36 %s (%d checks)\n", g_mig_fails ? "FAIL" : "ok  ", g_mig_checks);
 
   // ---- T19: the multi-remote migrations and the identity rule (real exports only from the command line) ----
   t19(argc, argv);
-  return g_t19_fails ? 1 : 0;
+  return (g_mig_fails || g_t19_fails) ? 1 : 0;
 }

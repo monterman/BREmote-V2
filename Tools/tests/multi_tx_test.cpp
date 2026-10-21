@@ -1,3 +1,9 @@
+// V2.5-Evo - 2026-10-20 - STEP 2 HEADER FIXES (step-1 code audit Y-1..Y-5, Y-7 b/c): every event now also goes into the
+//   Sim's log as "ev<N>", so the order tests see where each line falls (Y-4). New cases: T5 the take-back claim notice
+//   (Y-7 b); T13 the pairing bounds guard (Y-2); T21 the hook-table boot check (Y-1); T25 the sparse X-2 disarm edge
+//   (Y-5 a); T26 the claim line after the release (Y-4), R14's own zero-proof freshness and motor-output gate with a
+//   third remote keeping "present" (Y-5 b), and monotonic times (Y-5 c); T27 the summon line after the release (Y-4);
+//   T33 the per-slot stamp expiry across 2^31 ms (Y-3) and the owner's SEIZE / SUMMON restarting its silence (Y-7 c).
 // V2.5-Evo - 2026-10-20 - Host test for Common/MultiTx.h (multi-remote v3.2, code step 1) and the stickyWindowClose()
 //   helper in Common/AutoReturnRules.h. T1-T18, T20-T33 (T19 lives in config_migrate_test.cpp). Every ID here is MADE UP
 //   (the 5C:xx:xx family the public design document uses); no real board ID or MAC is in this file.
@@ -139,6 +145,7 @@ static void hkEvent(void* c, uint8_t ev, int8_t slot, uint8_t arg)
 {
   S(c)->events.push_back(std::make_pair((int)ev, (int)arg));
   S(c)->event_slots.push_back(slot);
+  S(c)->log.push_back("ev" + std::to_string((int)ev));   // Y-4: the order tests see where each line falls
 }
 
 static void simInit(Sim* s, bool single, uint8_t valid_mask)
@@ -466,6 +473,16 @@ static void t5()
   simInit(&s, false, 0x03);
   fr(&s, 0, 0, 127, 1400); fr(&s, 0, 0, 127, 1500); fr(&s, 0, 0xF1, 0x5A, 1600);
   CHECK(s.st.owner == kMtxNone);
+  // Y-7 (b): a guest that was SILENT at the take-back and comes back after the 5 s hold still hears SEIZED ("tA")
+  // on its first frame - the take-back leaves a claim notice, as a claim does - and the hold restarts from that frame.
+  simInit(&s, false, 0x03);
+  grantBySqueeze(&s, 1, 1000); fr(&s, 1, 0, 127, 1300);   // the guest owns, then goes quiet at 1300
+  fr(&s, 0, 0, 127, 1400); fr(&s, 0, 0, 127, 1500);
+  fr(&s, 0, 0xF1, 0x5A, 1600);
+  CHECK(s.st.owner == 0 && s.st.claim_notice[1]);
+  fr(&s, 0, 0, 127, 7500);                                // the master keeps sending
+  fr(&s, 1, 0, 127, 7600);                                // the guest is back 6 s later
+  CHECK(lastStatus(&s) == MTX_S_SEIZED && s.st.seized_until_ms[1] == 7600 + 5000 && !s.st.claim_notice[1]);
   testEnd("T5");
 }
 
@@ -710,6 +727,28 @@ static void t13()
   CHECK(!mtxPairCommit(&a, &ab, kR1) && memcmp(&ab, &cur, sizeof(ab)) == 0);
   MtxPairWindow bp; mtxPairOpen(&bp, &cur, 0);
   CHECK(mtxPairPoll(&bp, 100, true) && bp.close_reason == MTX_PC_BIND);
+  // Y-2: the bounds guard. A new ID is never enrolled past the fourth slot or into a closed window: kMtxNone, and
+  // nothing in the window changes (before the guard a fifth confirm wrote past ids[] into flags[] and `closed`).
+  { MtxPairWindow g; mtxPairOpen(&g, &cur, 0);
+    mtxPairOnConfirm(&g, false, kA); mtxPairOnConfirm(&g, false, kB); mtxPairOnConfirm(&g, false, kC);
+    mtxPairOnConfirm(&g, false, d4);
+    CHECK(g.n == 4 && g.closed);
+    uint8_t ids0[kMtxSlots * 3], fl0[kMtxSlots]; memcpy(ids0, g.ids, sizeof(ids0)); memcpy(fl0, g.flags, sizeof(fl0));
+    const uint32_t close0 = g.close_at_ms; const uint8_t reason0 = g.close_reason;
+    CHECK(mtxPairOnConfirm(&g, false, d5) == kMtxNone);                     // closed and full
+    g.closed = false;                                                       // a caller that ignored "closed":
+    CHECK(mtxPairOnConfirm(&g, false, d5) == kMtxNone);                     // still refused on the count
+    CHECK(mtxPairOnConfirm(&g, true, d5) == kMtxNone);                      // a legacy one too
+    CHECK(g.n == 4 && !g.closed && g.close_at_ms == close0 && g.close_reason == reason0);
+    CHECK(memcmp(g.ids, ids0, sizeof(ids0)) == 0 && memcmp(g.flags, fl0, sizeof(fl0)) == 0);
+    CHECK(mtxPairOnConfirm(&g, false, kB) == 1 && g.n == 4);               // a refresh still answers its slot
+    MtxRxBinding gb; memset(&gb, 0, sizeof(gb));
+    CHECK(mtxPairCommit(&g, &gb, kR1) && mtxValidEntryCount(&gb) == 4); }
+  // ... and a window closed with room (a legacy enrolment closes it at once) enrols nothing more.
+  { MtxPairWindow lc; mtxPairOpen(&lc, &cur, 0);
+    mtxPairOnConfirm(&lc, true, kA);
+    CHECK(lc.closed && lc.n == 1);
+    CHECK(mtxPairOnConfirm(&lc, false, kB) == kMtxNone && lc.n == 1 && lc.flags[1] == 0 && mtxIdIsZero(&lc.ids[3])); }
   // The remote's OFFER gate.
   CHECK(mtxPairOfferOk(kA, kA, kR1, -60.0f));
   CHECK(!mtxPairOfferOk(kB, kA, kR1, -40.0f));
@@ -1043,6 +1082,21 @@ static void t21()
   CHECK(shown >= 58 && shown <= 61);
   StickyWindowState w3; memset(&w3, 0, sizeof(w3)); stickyWindowClose(&w3, 0);
   CHECK(!stickyWindowStep(&w3, 100, 0, true, 6000));        // stamp 0 is safe
+  // Y-1: the boot check. The Sim's table is complete; with any one hook missing it is not.
+  { Sim q; simInit(&q, false, 0x03);
+    CHECK(mtxRxHooksComplete(&q.h) && !mtxRxHooksComplete(NULL));
+    MtxRxHooks x = q.h; x.read_env = NULL;          CHECK(!mtxRxHooksComplete(&x));
+    x = q.h; x.zero_outputs = NULL;                  CHECK(!mtxRxHooksComplete(&x));
+    x = q.h; x.synthetic_rtm_off = NULL;             CHECK(!mtxRxHooksComplete(&x));
+    x = q.h; x.synthetic_fm_off = NULL;              CHECK(!mtxRxHooksComplete(&x));
+    x = q.h; x.reset_rider_gps = NULL;               CHECK(!mtxRxHooksComplete(&x));
+    x = q.h; x.reset_boot_id = NULL;                 CHECK(!mtxRxHooksComplete(&x));
+    x = q.h; x.publish_limit = NULL;                 CHECK(!mtxRxHooksComplete(&x));
+    x = q.h; x.owner_changed = NULL;                 CHECK(!mtxRxHooksComplete(&x));
+    x = q.h; x.apply_owner = NULL;                   CHECK(!mtxRxHooksComplete(&x));
+    x = q.h; x.meta = NULL;                          CHECK(!mtxRxHooksComplete(&x));
+    x = q.h; x.reply = NULL;                         CHECK(!mtxRxHooksComplete(&x));
+    x = q.h; x.event = NULL;                         CHECK(!mtxRxHooksComplete(&x)); }
   testEnd("T21");
 }
 
@@ -1290,6 +1344,21 @@ static void t25()
     CHECK(claimable(&s, 71250) == MTX_CL_NO);
     ownerAtZeroWithOther(&s, 71300, 71600);
     CHECK(claimable(&s, 71600) == MTX_CL_IDLE); }
+  // Y-5 (a): X-2's DISARM-EDGE restart, with SPARSE evaluations. The dense script above passes without it, because
+  // its last armed evaluation is 50 ms before the disarm. Here frames come once a second: the last armed evaluation
+  // is at T, the loop disarms at T+900 with no frame, the next evaluation is at T+1000 - so the idle clock must start
+  // at T+1000 (late by one evaluation), never at T (early). Not claimable at T+10999, IDLE at T+11000.
+  { Sim s; simInit(&s, false, 0x03);
+    grantBySqueeze(&s, 0, 1000); fr(&s, 0, 0, 127, 1300);
+    s.env.fm_rx_active = true;                                 // Follow-Me active on the loop
+    const uint32_t T = 30000;
+    for (uint32_t t = 2000; t <= T; t += 1000) { fr(&s, 0, 0, 127, t); fr(&s, 1, 0, 127, t); }
+    s.env.fm_rx_active = false;                                // T+900: the loop disarms, no frame
+    for (uint32_t t = T + 1000; t <= T + 10000; t += 1000) { fr(&s, 0, 0, 127, t); fr(&s, 1, 0, 127, t); }
+    CHECK(claimable(&s, T + 10999) == MTX_CL_NO);
+    CHECK(s.st.owner_idle_base_ms == T + 1000);
+    fr(&s, 0, 0, 127, T + 11000); fr(&s, 1, 0, 127, T + 11000);
+    CHECK(claimable(&s, T + 11000) == MTX_CL_IDLE && s.st.claimable == MTX_CL_IDLE); }
   // X-1 option (a): during a held combo or the RTM ceremony the remote repeats 0xF1/0 every 3 s with throttle 0: never idle.
   { Sim s; simInit(&s, false, 0x03);
     grantBySqueeze(&s, 0, 1000); fr(&s, 0, 0, 127, 1300);
@@ -1329,7 +1398,10 @@ static void t26()
     // The order: the release (zero first) ... the counter, then the grant (limit before the first byte).
     CHECK(logPos(&s, "zero") == 0 && logPos(&s, "zero") < logPos(&s, "rtm_off"));
     CHECK(logPos(&s, "seq") < logPos(&s, "limit") && logPos(&s, "limit") < logPos(&s, "apply"));
-    CHECK(s.st.claim_notice[0] && s.st.n.claims == 1 && s.st.n.released_claim == 1); }
+    CHECK(s.st.claim_notice[0] && s.st.n.claims == 1 && s.st.n.released_claim == 1);
+    // Y-4: the claim line (ev6) comes after the release (zero ... seq) and after the grant (limit); nothing is
+    // logged before the throttle zero.
+    CHECK(logPos(&s, "ev6") > logPos(&s, "seq") && logPos(&s, "ev6") > logPos(&s, "limit")); }
   // fm_rx_active true -> a token; the grant on s's next control frame once Follow-Me idled, at any throttle.
   { Sim s; simInit(&s, false, 0x03);
     grantBySqueeze(&s, 0, 1000); fr(&s, 0, 0xF2, 0x81, 1300); loopTick(&s);
@@ -1342,7 +1414,7 @@ static void t26()
     Sim* p = &s; p->cfg.valid_mask = 0x07;
     fr(&s, 2, 0, 127, 11650); fr(&s, 2, 0, 127, 11700); fr(&s, 2, 80, 127, 11750);
     CHECK(s.st.owner == kMtxNone && lastStatus(&s) == MTX_S_BUSY);
-    fr(&s, 1, 200, 127, 11700);                               // FM not idle yet: still waiting
+    fr(&s, 1, 200, 127, 11760);                               // FM not idle yet: still waiting (Y-5 c: time runs forward)
     CHECK(s.st.owner == kMtxNone && lastStatus(&s) == MTX_S_FREE);
     loopTick(&s);                                             // the FM tick: fmEnterIdle()
     fr(&s, 1, 200, 127, 11800);
@@ -1369,6 +1441,38 @@ static void t26()
     for (uint32_t t = 1400; t < 11300; t += 100) { fr(&s, 1, 120, 127, t); CHECK(lastStatus(&s) == MTX_S_REFUSED); }
     for (uint32_t t = 11300; t < 20000; t += 100) { fr(&s, 1, 120, 127, t); CHECK(lastStatus(&s) == MTX_S_FREE); }
     CHECK(s.st.owner == 0 && s.st.n.claims == 0); }
+  // Y-5 (b): R14's OWN zero-proof freshness and its motor-output gate. With two remotes the freshness is implied by
+  // "present" (a claimer silent 3.1 s is not present, so the owner is not claimable); a THIRD remote keeps "present"
+  // here, so the only thing that can refuse the claim is the claimer's own proof or the motor output.
+  //   c = 0: proof 3000 ms old -> claim;  c = 1: proof 3100 ms old -> no claim;  c = 2: motor output off -> no claim.
+  for (int c = 0; c < 3; c++) {
+    Sim s; simInit(&s, false, 0x07);
+    grantBySqueeze(&s, 0, 1000); fr(&s, 0, 0, 127, 1300);    // the owner goes silent at 1300
+    for (uint32_t t = 1400; t <= 11600; t += 100) fr(&s, 2, 0, 127, t);   // slot 2 keeps "present"
+    CHECK(s.st.claimable == MTX_CL_SILENT);
+    fr(&s, 1, 0, 127, 11650); fr(&s, 1, 0, 127, 11700);      // slot 1: zero proof, the last zero at 11700
+    const uint32_t sq = 11700 + ((c == 1) ? 3100u : 3000u);
+    for (uint32_t t = 11800; t < sq; t += 100) fr(&s, 2, 0, 127, t);
+    if (c == 2) s.env.pwm_active = false;
+    fr(&s, 1, 90, 127, sq);
+    CHECK((s.st.n.claims == 1) == (c == 0));
+    if (c == 0) CHECK(s.st.owner == 1 && s.thr == 90);
+    else        CHECK(s.st.owner == 0 && s.st.token.slot == kMtxNone && !logHas(&s, "zero") && lastStatus(&s) == MTX_S_FREE);
+  }
+  // ... and the predicate itself, on a hand-built state with no mtxTimers() between (Y-3's expiry would otherwise
+  // clear a proof older than 3 s first, so this pins mtxClaimOk()'s own 3000 ms rule and its PWM term directly).
+  { Sim s; simInit(&s, false, 0x07);
+    s.st.owner = 0; s.st.owner_heard_ms = 1000; s.st.owner_idle_base_ms = 1000; s.st.owner_last_thr = 50;
+    s.st.ctrl_heard_ms[2] = 13900;                           // slot 2 present
+    s.st.zero_streak[1] = 2; s.st.last_zero_ms[1] = 11000;
+    MtxRxEnv e = s.env;
+    CHECK(mtxClaimableReason(&s.st, &s.cfg, &e, 14000) == MTX_CL_SILENT);
+    CHECK(mtxClaimOk(&s.st, &s.cfg, &e, 1, 90, 14000));     // 3000 ms old: accepted
+    CHECK(!mtxClaimOk(&s.st, &s.cfg, &e, 1, 90, 14001));    // 3001 ms: refused
+    e.pwm_active = false;
+    CHECK(!mtxClaimOk(&s.st, &s.cfg, &e, 1, 90, 14000));    // motor output not running: refused
+    e = s.env; s.st.zero_streak[1] = 1;
+    CHECK(!mtxClaimOk(&s.st, &s.cfg, &e, 1, 90, 14000)); }  // one zero frame only: refused
   testEnd("T26");
 }
 
@@ -1383,7 +1487,11 @@ static void t27()
     simClear(&s);
     fr(&s, 1, 0xF1, 0x3C, t); fr(&s, 1, 0xF1, 0x3C, t + 100); fr(&s, 1, 0xF1, 0x3C, t + 200);
     CHECK(s.st.owner == 1 && s.replies.empty() && s.st.n.summons == 1 && s.st.n.summons_refused == 0);
-    CHECK(countEv(&s, MTX_EV_TAKES_CONTROL) == 1); }
+    CHECK(countEv(&s, MTX_EV_TAKES_CONTROL) == 1);
+    // Y-4: the throttle zero is the first thing logged; the summon line (ev9) comes after the release (seq), the
+    // grant (limit) and the claim line (ev6).
+    CHECK(logPos(&s, "zero") == 0 && logPos(&s, "ev9") > logPos(&s, "seq") && logPos(&s, "ev9") > logPos(&s, "limit"));
+    CHECK(logPos(&s, "ev9") > logPos(&s, "ev6")); }
   // From a token holder: frames 2-3 never restamp the token (X-5).
   { Sim s; simInit(&s, false, 0x03);
     grantBySqueeze(&s, 0, 1000); fr(&s, 0, 0xF2, 0x81, 1300); loopTick(&s);
@@ -1673,6 +1781,38 @@ static void t33()
   uint16_t al = 3, hold = 900, mal = 10; mtxClampTxConfig(&al, &hold, &mal); CHECK(al == 5 && hold == 1000 && mal == 30);
   al = 0; hold = 2000; mal = 0; mtxClampTxConfig(&al, &hold, &mal); CHECK(al == 0 && hold == 1800 && mal == 0);
   al = 999; mal = 999; mtxClampTxConfig(&al, &hold, &mal); CHECK(al == 180 && mal == 600);
+  // Y-3: the per-slot stamps expire, so none can alias as "just now" after 2^31 ms (24.8 days) of uptime.
+  // (1) Zero proof: a remote sends two zeros and falls silent; the radio task wakes every 2 s for 2^31 ms; then it
+  //     squeezes. Before the expiry the 2^31-ms-old proof read as age 0 and this squeeze took the buggy.
+  { Sim s; simInit(&s, false, 0x03);
+    fr(&s, 1, 0, 127, 1000); fr(&s, 1, 0, 127, 1100);
+    wake(&s, 4100);
+    CHECK(s.st.zero_streak[1] == 2 && s.st.last_zero_ms[1] == 1100);        // 3000 ms: kept
+    wake(&s, 4101);
+    CHECK(s.st.zero_streak[1] == 0 && s.st.last_zero_ms[1] == 0 && s.st.ctrl_heard_ms[1] == 0);
+    const uint32_t T = 1100u + 0x80000000u + 200u;
+    for (uint32_t t = 6000; t < T; t += 2000) wake(&s, t);
+    fr(&s, 1, 60, 127, T);
+    CHECK(s.st.owner == kMtxNone && lastStatus(&s) == MTX_S_FREE && s.thr == 0); }
+  // (2) "Present": a remote heard once is not "on" 3 s later, and never comes back as "on" at the aliasing age.
+  { Sim s; simInit(&s, false, 0x03);
+    grantBySqueeze(&s, 0, 1000);
+    fr(&s, 1, 0, 127, 1300);
+    CHECK(mtxPresent(&s.st, &s.cfg, 4300));
+    wake(&s, 4301);
+    CHECK(s.st.ctrl_heard_ms[1] == 0 && !mtxPresent(&s.st, &s.cfg, 4301));
+    CHECK(!mtxPresent(&s.st, &s.cfg, 1300u + 0x80000000u + 500u)); }
+  // Y-7 (c): ANY frame from the owner restarts its silence clock - its own SUMMON or SEIZE frame too (today's
+  // remote never sends either while it owns). The owner's last control frame carries throttle, so only silence counts.
+  for (int kind = 0; kind < 2; kind++) {
+    Sim s; simInit(&s, false, 0x03);
+    grantBySqueeze(&s, 0, 1000); fr(&s, 0, 50, 127, 1300);
+    for (uint32_t t = 1400; t < 11200; t += 100) fr(&s, 1, 0, 127, t);
+    fr(&s, 0, 0xF1, kind ? 0x5A : 0x3C, 11200);             // the owner's own SEIZE / SUMMON: refused, but heard
+    fr(&s, 1, 0, 127, 11300);
+    CHECK(s.st.owner_heard_ms == 11200 && claimable(&s, 11300) == MTX_CL_NO && lastStatus(&s) == MTX_S_BUSY);
+    CHECK(s.st.owner == 0 && !logHas(&s, "zero"));
+  }
   testEnd("T33");
 }
 

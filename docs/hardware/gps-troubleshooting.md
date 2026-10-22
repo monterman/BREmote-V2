@@ -205,7 +205,7 @@ You can read clear text starting with `$`. GPS is alive and talking. Continue to
 
 Completely empty — nothing received at all.
 
-**Fix:** Double check all 4 wires match the table in Step 1\. GPIO19→GPS TX, GPIO18→GPS RX. Then run `?gpsreinit` and `?gpsraw 10` again.
+**Fix:** Double check all 4 wires match the table in Step 1\. GPS TX→GPIO18, GPS RX→GPIO19 (on the TX the wires cross; on the RX they go label to label). Then run `?gpsreinit` and `?gpsraw 10` again.
 
 ---
 

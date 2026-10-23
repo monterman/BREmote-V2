@@ -12,7 +12,7 @@ the boot banner still says SW 27.
   1.1 s, with the remote driving neither pin. It works at any baud, for NMEA or UBX. Data only on G19 →
   it listens on G19 and sends on G18. Otherwise it keeps the old pins, so a self-built remote wired to G18
   sees no change.
-- **What you see:** a boot line such as `TX GPS: data on G19, using RX=G19 TX=G18 (factory wiring)`, and
+- **What you see:** a boot line such as `TX GPS: data on G19, using RX=G19 TX=G18 (factory wiring - OpenFoil)`, and
   `?printgps` shows the pins in use with the edge counts. The check runs at power-up and on `?gpsreinit`,
   and only while `gps_en = 1`.
 - **Cost:** boot and `?gpsreinit` take about 1.1 s longer. No setting to change.

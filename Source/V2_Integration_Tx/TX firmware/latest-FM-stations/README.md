@@ -6,14 +6,16 @@ For stable firmware use the `master` branch.
 | | |
 |---|---|
 | Firmware | **TX SW27R4** (V2.5-Evo), `fm-stations` branch. The boot banner says SW 27; R4 is the file name only. |
-| Built from commit | `32d67b0` |
+| Built from commit | `67a007b` |
 | Board / FQBN | HT-CT62 (ESP32-C3) — `esp32:esp32:esp32c3:CDCOnBoot=default,PartitionScheme=huge_app` |
-| File (update) | `BREmote-TX-SW27R4-fm-stations-32d67b0.bin` (app image, `0x10000`) |
-| SHA-256 | `887a18049e3265a5204188e310c3faf704d8bf933bbec07a1eb9baed88c6447f` |
-| File (first install) | `BREmote-TX-SW27R4-fm-stations-32d67b0-merged.bin` (full chip, `0x0`) |
-| SHA-256 | `5ac6984dda2388f94df6f01c400717de2c72da2b8315395a6c2cc1704519a558` |
+| File (update) | `BREmote-TX-SW27R4-fm-stations-67a007b.bin` (app image, `0x10000`) |
+| SHA-256 | `2f9acdf911dd5cae1c8bd234e0a9f0ed5a05c379845f9874b96c66eac1b31501` |
+| File (first install) | `BREmote-TX-SW27R4-fm-stations-67a007b-merged.bin` (full chip, `0x0`) |
+| SHA-256 | `b900cc09d8a21c8fc1a8237a7b97dee0db4a713303351050750d28c830637d3e` |
 
-Both files were built on 2026-10-23 from a clean export of `32d67b0`.
+Both files were built on 2026-10-23 from a clean export of `67a007b`. It replaces `32d67b0` from earlier the
+same day; the only change is the boot-line text for a GPS on G19, which now names OpenFoil (the store that sells
+the factory-made remotes). If you already flashed `32d67b0`, there is no need to flash again.
 
 ## What is new in SW27R4: the remote finds its GPS on G18 or G19
 
@@ -24,7 +26,7 @@ Both files were built on 2026-10-23 from a clean export of `32d67b0`.
   pin, and then listens on the one the GPS is sending on. It works at any baud, NMEA or UBX.
 - **Self-built remotes wired to G18 see no change.** Data on G18, on neither pin or on both: the remote keeps
   the old pins.
-- **Check it on the boot log** (USB serial, 115200): `TX GPS: data on G19, using RX=G19 TX=G18 (factory wiring)`
+- **Check it on the boot log** (USB serial, 115200): `TX GPS: data on G19, using RX=G19 TX=G18 (factory wiring - OpenFoil)`
   or `TX GPS: data on G18, ... (DIY wiring)`. `?printgps` shows the pins in use and the edge counts.
 - **The check only runs while `gps_en = 1`.** If you switched the GPS off, turn it back on first:
   `?set gps_en 1`, `?save`, wait about 15 s, then power-cycle.
@@ -63,8 +65,8 @@ Both files were built on 2026-10-23 from a clean export of `32d67b0`.
 - Tool steps: [Flashing with the Flash Download Tool](../../../../docs/FLASHING_WITH_DOWNLOAD_TOOL.md).
   For the merged file, set the address to `0x0` instead of `0x10000`.
 
-Example (esptool), update: `esptool --chip esp32c3 --port COMx write-flash 0x10000 BREmote-TX-SW27R4-fm-stations-32d67b0.bin`
+Example (esptool), update: `esptool --chip esp32c3 --port COMx write-flash 0x10000 BREmote-TX-SW27R4-fm-stations-67a007b.bin`
 
-Example (esptool), first install: `esptool --chip esp32c3 --port COMx write-flash 0x0 BREmote-TX-SW27R4-fm-stations-32d67b0-merged.bin`
+Example (esptool), first install: `esptool --chip esp32c3 --port COMx write-flash 0x0 BREmote-TX-SW27R4-fm-stations-67a007b-merged.bin`
 
 Known issues for this branch are listed at the top of the repository README.

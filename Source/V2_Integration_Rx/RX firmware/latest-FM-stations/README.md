@@ -21,7 +21,7 @@ Both files were rebuilt on 2026-10-18 from a clean export of `61ec981`. The code
    recorded by older firmware into CSV.
 2. **Update the receiver AND the remote together.** Use the matching TX build in
    `Source/V2_Integration_Tx/TX firmware/latest-FM-stations/`. Mixing this RX with an older or
-   stable TX is not supported. The TX build there is now **SW27R4** (`32d67b0`); it changes only how the
+   stable TX is not supported. The TX build there is now **SW27R4** (`67a007b`); it changes only how the
    remote finds its own GPS pins, so it matches this RX.
 
 ## Flashing

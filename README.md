@@ -368,7 +368,7 @@ Two things worth knowing up front:
   on: flash the current RX firmware and run **`?gpssetup`**. This used to need u-center on a PC.
 - **A factory-made remote (Ludwig / OpenFoil) that hears nothing from its GPS:** those remotes send
   GPS data on G19, and before TX SW27R4 the remote only listened on G18. Flash SW27R4 or later: it
-  checks both pins at power-up, and the boot line says `TX GPS: data on G19 ... (factory wiring)`.
+  checks both pins at power-up, and the boot line says `TX GPS: data on G19 ... (factory wiring - OpenFoil)`.
 
 <details>
 <summary>Older detail — wiring, commands and recovery steps</summary>

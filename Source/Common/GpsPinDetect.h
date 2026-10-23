@@ -15,7 +15,7 @@
 // be NMEA or UBX-only, at 9600 or 115200.
 //
 //   edges only on the default receive pin (G18) -> DEFAULT  : RX=G18, TX=G19 (the documented DIY wiring)
-//   edges only on the default transmit pin (G19) -> SWAPPED : RX=G19, TX=G18 (factory wiring)
+//   edges only on the default transmit pin (G19) -> SWAPPED : RX=G19, TX=G18 (factory wiring - OpenFoil)
 //   edges on neither                             -> NONE    : keep the default (no GPS, no power, or a dead module)
 //   edges on both                                -> BOTH    : cannot tell, keep the default (today's behaviour)
 //
@@ -82,7 +82,7 @@ static inline const char* gpsPinVerdictLabel(uint8_t verdict)
 {
   switch (verdict) {
     case GPS_PIN_VERDICT_DEFAULT: return "DIY wiring";
-    case GPS_PIN_VERDICT_SWAPPED: return "factory wiring";
+    case GPS_PIN_VERDICT_SWAPPED: return "factory wiring - OpenFoil";
     case GPS_PIN_VERDICT_BOTH:    return "signal on both pins - cannot tell, default used";
     default:                      return "no signal on either pin - default used";
   }

@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-23 - GPS-PIN-1: initTxGPS() first finds which pin the GPS transmits on (G18 = DIY wiring, G19 = factory wiring) by counting edges on both pins with the UART closed, then opens Serial1 on the pins it found (gps_rx_pin / gps_tx_pin). Factory-wired remotes heard nothing before. The four "check that TX/RX are not swapped" hints now report what the pin check saw (gpsPrintNoNmeaHint()). RAM only: no confStruct change, sizeof stays 136, SW_VERSION stays 27, SPIFFS config NOT reset by this flash.
 // V2.5-Evo - 2026-08-15 - ubxPoll() now verifies CK_A/CK_B before accepting a frame. Was returning as soon as the payload was complete, never reading the checksum, so any B5 62 <cls> <id> <len> lookalike in the NMEA/UBX stream was believed. Same defect the RX had (fixed 1f2ba8c, after it reported an M8 as M9/M10 three times running) - it survived here because the parser exists twice instead of in Common/. Code only: no confStruct change, sizeof unchanged, SW_VERSION stays 27, SPIFFS config NOT reset by this flash.
 // V2.5-Evo - 2026-07-29 - GPS-ACK-1: every UBX config write is ACK-verified, and a NAK auto-switches the module to the modern CFG-VALSET interface (u-blox M9/M10 removed the legacy CFG messages). Adds ?gpscfg readback.
 // V2.5-Evo - 2026-06-05 - L-2: GSV/GLL/VTG NMEA filter RE-ENABLED in BOTH paths (BN-220 + M10) after the 05-06 fix-acquisition diagnostics; txGpsColdReset() retained. Audit #5 (GPS chatter choking the link) = RESOLVED.
@@ -40,6 +41,26 @@
 // getTxGPSLoop() to avoid poking an uninitialized UART (e.g.
 // if the user enables gps_en via web config without rebooting).
 static bool tx_gps_initialized = false;
+
+// ============================================================
+// V2.5-Evo - 2026-10-23 - GPS-PIN-1: THE PINS THE GPS UART ACTUALLY USES
+//
+// THE BUG: every Serial1.begin() for the GPS used the fixed defines P_U1_RX 18 / P_U1_TX 19. Factory-made remotes
+// (Ludwig / OpenFoil) have the GPS transmitting into G19, so on those remotes the firmware listened on the wrong pin
+// and heard nothing at all - no baud found, no fix, and our UART transmitter on G19 pushing against the GPS's own
+// output. Ludwig's GPS test firmware, which uses RX=G19, got a fix on the same potted remote.
+//
+// THE FIX: gpsDetectDataPin() (below, called at the top of initTxGPS()) watches both pins before Serial1 is opened and
+// sets these two. Every Serial1.begin() for the GPS uses them. They start at the defaults, so anything that opens the
+// UART before a check has run (?gpsbaud with gps_en=0, for example) behaves exactly as before.
+// RAM only - never written to SPIFFS, no confStruct change. Written and read by the loop task only.
+// ============================================================
+static uint8_t  gps_rx_pin        = P_U1_RX;               // pin Serial1 RECEIVES the GPS on (G18 or G19)
+static uint8_t  gps_tx_pin        = P_U1_TX;               // pin Serial1 TRANSMITS to the GPS on (the other one)
+static bool     gps_pin_checked   = false;                 // has gpsDetectDataPin() run since power-up?
+static uint8_t  gps_pin_verdict   = GPS_PIN_VERDICT_NONE;  // result of the last check (Common/GpsPinDetect.h)
+static uint32_t gps_pin_edges_rx  = 0;                     // edges seen on P_U1_RX (G18) in the last check
+static uint32_t gps_pin_edges_tx  = 0;                     // edges seen on P_U1_TX (G19) in the last check
 
 // ============================================================
 // UBX configuration helpers — ACK-verified and generation-agnostic
@@ -431,7 +452,7 @@ static void gpsOpenAt(uint32_t baud)
 {
   Serial1.end();
   delay(10);
-  Serial1.begin(baud, SERIAL_8N1, P_U1_RX, P_U1_TX);
+  Serial1.begin(baud, SERIAL_8N1, gps_rx_pin, gps_tx_pin);   // V2.5-Evo - 2026-10-23 - GPS-PIN-1: detected pins, was P_U1_RX/P_U1_TX
   gps_current_baud = baud;                       // keeps gpsAckWindowMs() honest
   delay(60);                                     // let the UART settle before trusting a byte
   while (Serial1.available()) Serial1.read();
@@ -603,6 +624,139 @@ static bool gpsSetModuleBaud(uint8_t dialect, uint32_t from_baud, uint32_t to_ba
 }
 
 // ============================================================
+// GPS-PIN-1 - FIND WHICH PIN THE GPS TRANSMITS ON (G18 or G19)
+// V2.5-Evo - 2026-10-23. See the gps_rx_pin block at the top of this file for the bug, and Common/GpsPinDetect.h for
+// the verdict rules.
+//
+// HOW: with the UART closed, both pins are plain inputs with the internal pull-up on (the UART's own idle level), so
+// the remote drives NEITHER pin and can never fight a GPS output. A CHANGE interrupt on each pin counts edges for
+// kGpsPinWindowMs. Counting edges works for NMEA and for binary UBX, at any baud: it never needs to understand a byte.
+//
+// WINDOW, 1100 ms: the same reasoning as gpsProbeAt() - a module at its 1 Hz default sends one burst per second, so
+// the window must outlast one second.
+//
+// LOAD: at 115200 baud a busy GPS line can toggle ~50,000 times a second. Once a pin has kGpsPinEdgeCap edges that is
+// proof enough, so its interrupt is detached at the next 10 ms check and stops costing anything. Worst case is roughly
+// 1,000 interrupt calls per pin, a few ms of CPU in total.
+//
+// SINGLE CORE: the waits are vTaskDelay(10), so the loop task yields the whole time. The LoRa task (priority 5), the
+// ADC task (6), the display/bargraph tasks and the idle task all run normally; nothing busy-waits and the watchdog is
+// fed as usual.
+//
+// SHARED GPIO INTERRUPT SERVICE (magnet on GPIO 9, LoRa DIO1 on GPIO 3): attachInterrupt()/detachInterrupt() in the
+// ESP32 Arduino core 3.3.8 add and remove the handler of ONE pin (gpio_isr_handler_add/_remove) on the single shared
+// GPIO interrupt service. Nothing here uninstalls that service or touches any pin other than G18 and G19, so the
+// magnet interrupt (Hall.ino magEdgeIsr, attached from loop() after boot) and the radio interrupt keep running and
+// keep their exact edge times. At boot this check runs in setup(), before loop() has ever attached the magnet
+// interrupt. On ?gpsreinit it runs while the magnet interrupt may be attached; the only effect there is ~1.1 s more of
+// the loop() pause that command already causes.
+//
+// PERIPHERAL MANAGER (core 3.3.8): Serial1.end() detaches both UART pins; pinMode() then claims them as GPIO.
+// detachInterrupt() removes the handler and sets the interrupt type back to DISABLE. The next Serial1.begin() sees the
+// pins owned by the GPIO bus, clears that (gpioDetachBus, nothing to undo) and attaches its own RX/TX - the same path
+// every first begin() at boot already takes. The pull-up is left on until then so the GPS's receive line never floats.
+//
+// Inputs: none (pins P_U1_RX / P_U1_TX). Outputs: gps_rx_pin, gps_tx_pin, gps_pin_verdict, gps_pin_edges_rx/_tx,
+// gps_pin_checked. Side effects: closes Serial1; prints one line; blocks the calling (loop) task ~1.1 s.
+// ============================================================
+static const uint32_t kGpsPinWindowMs = 1100u;   // how long both pins are watched, ms
+static const uint32_t kGpsPinEdgeCap  = 512u;    // edges after which a pin is proven and its interrupt is detached
+
+// Edge counters, written only by the two ISRs below, read by the loop task. One aligned 32-bit word each, so a read
+// cannot tear on this core. Zeroed only while no interrupt is attached.
+static volatile uint32_t gps_isr_edges_rx = 0;   // edges on P_U1_RX (G18)
+static volatile uint32_t gps_isr_edges_tx = 0;   // edges on P_U1_TX (G19)
+
+// Counting ISRs. One increment each: never block, never call anything. Same attribute as magEdgeIsr() in Hall.ino.
+static void ARDUINO_ISR_ATTR gpsPinEdgeIsrRx() { gps_isr_edges_rx = gps_isr_edges_rx + 1; }
+static void ARDUINO_ISR_ATTR gpsPinEdgeIsrTx() { gps_isr_edges_tx = gps_isr_edges_tx + 1; }
+
+static void gpsDetectDataPin()
+{
+  // 1. Release the UART so the remote drives neither pin. Safe when Serial1 was never opened (boot).
+  Serial1.end();
+
+  // 2. Both pins as inputs, pulled up to the UART idle level. Counters zeroed BEFORE any interrupt is attached.
+  pinMode(P_U1_RX, INPUT_PULLUP);
+  pinMode(P_U1_TX, INPUT_PULLUP);
+  vTaskDelay(pdMS_TO_TICKS(2));          // let the pull-ups settle so the first edge counted is a real one
+  gps_isr_edges_rx = 0;
+  gps_isr_edges_tx = 0;
+  attachInterrupt(digitalPinToInterrupt(P_U1_RX), gpsPinEdgeIsrRx, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(P_U1_TX), gpsPinEdgeIsrTx, CHANGE);
+  bool rx_attached = true;
+  bool tx_attached = true;
+
+  // 3. Watch. Yield every 10 ms; detach a pin as soon as it has proven itself, so a fast GPS stops costing CPU.
+  const uint32_t start = millis();
+  while ((uint32_t)(millis() - start) < kGpsPinWindowMs)
+  {
+    vTaskDelay(pdMS_TO_TICKS(10));
+    if (rx_attached && gps_isr_edges_rx >= kGpsPinEdgeCap) { detachInterrupt(digitalPinToInterrupt(P_U1_RX)); rx_attached = false; }
+    if (tx_attached && gps_isr_edges_tx >= kGpsPinEdgeCap) { detachInterrupt(digitalPinToInterrupt(P_U1_TX)); tx_attached = false; }
+    if (!rx_attached && !tx_attached) break;   // both proven: the verdict (BOTH) cannot change any more
+  }
+
+  // 4. Detach whatever is still attached. From here no ISR touches the counters, so the snapshot below is final.
+  if (rx_attached) detachInterrupt(digitalPinToInterrupt(P_U1_RX));
+  if (tx_attached) detachInterrupt(digitalPinToInterrupt(P_U1_TX));
+  gps_pin_edges_rx = gps_isr_edges_rx;
+  gps_pin_edges_tx = gps_isr_edges_tx;
+
+  // 5. Decide and apply. Only a clean "signal on G19 and not on G18" moves the UART; everything else keeps the
+  //    default, which is exactly what every remote did before this change.
+  gps_pin_verdict = gpsPinVerdict(gps_pin_edges_rx, gps_pin_edges_tx, kGpsPinMinEdges);
+  gps_rx_pin      = gpsPinRxFor(gps_pin_verdict, P_U1_RX, P_U1_TX);
+  gps_tx_pin      = gpsPinTxFor(gps_pin_verdict, P_U1_RX, P_U1_TX);
+  gps_pin_checked = true;
+
+  const unsigned d_rx = P_U1_RX, d_tx = P_U1_TX, rx = gps_rx_pin, tx = gps_tx_pin;
+  const unsigned long e_rx = gps_pin_edges_rx, e_tx = gps_pin_edges_tx;
+  if (gps_pin_verdict == GPS_PIN_VERDICT_SWAPPED || gps_pin_verdict == GPS_PIN_VERDICT_DEFAULT)
+    Serial.printf("TX GPS: data on G%u, using RX=G%u TX=G%u (%s) [edges G%u=%lu G%u=%lu]\n",
+                  rx, rx, tx, gpsPinVerdictLabel(gps_pin_verdict), d_rx, e_rx, d_tx, e_tx);
+  else if (gps_pin_verdict == GPS_PIN_VERDICT_BOTH)
+    Serial.printf("TX GPS: data on BOTH G%u and G%u - cannot tell which is the GPS, using default RX=G%u TX=G%u "
+                  "[edges G%u=%lu G%u=%lu]\n", d_rx, d_tx, rx, tx, d_rx, e_rx, d_tx, e_tx);
+  else
+    Serial.printf("TX GPS: no data on G%u or G%u, using default RX=G%u TX=G%u [edges G%u=%lu G%u=%lu]\n",
+                  d_rx, d_tx, rx, tx, d_rx, e_rx, d_tx, e_tx);
+}
+
+// ------------------------------------------------------------
+// gpsPrintNoNmeaHint - what to tell the user when no NMEA was heard at any baud.
+// V2.5-Evo - 2026-10-23 - GPS-PIN-1. Replaces four copies of "check that TX/RX are not swapped". The firmware now finds
+// the GPS on G18 or G19 by itself, so that advice can only send someone to cut open a remote for nothing - and on a
+// potted factory remote there are no wires to swap. What is left depends on what the last pin check saw:
+//   no check yet  -> it has not looked (gps_en=0 at boot): ?gpsreinit runs it.
+//   no signal     -> nothing is transmitting on either pin: power, GND, or a dead / missing module.
+//   signal seen   -> the module IS talking, just not NMEA at a listed baud (UBX-only output, or an unlisted baud).
+// Input: prefix printed before each line (matches the caller's indentation). Side effects: two Serial lines.
+// ------------------------------------------------------------
+static void gpsPrintNoNmeaHint(const char *prefix)
+{
+  const unsigned d_rx = P_U1_RX, d_tx = P_U1_TX;
+  if (!gps_pin_checked) {
+    Serial.printf("%sCheck 3.3V and GND and that a GPS module is fitted, then run ?gpsreinit:\n", prefix);
+    Serial.printf("%sit checks G%u and G%u for the GPS (wire orientation is found automatically).\n",
+                  prefix, d_rx, d_tx);
+  } else if (gps_pin_verdict == GPS_PIN_VERDICT_NONE) {
+    Serial.printf("%sNo signal on G%u or G%u. Both pins were checked, so swapped data wires are not the cause.\n",
+                  prefix, d_rx, d_tx);
+    Serial.printf("%sCheck 3.3V, GND and that the module is alive (blue LED blinking), then ?gpsreinit.\n", prefix);
+  } else if (gps_pin_verdict == GPS_PIN_VERDICT_BOTH) {
+    Serial.printf("%sSignal on BOTH G%u and G%u (edges %lu / %lu), so the default pins were used. Something other\n",
+                  prefix, d_rx, d_tx, (unsigned long)gps_pin_edges_rx, (unsigned long)gps_pin_edges_tx);
+    Serial.printf("%sthan the GPS is toggling one of them, or the two lines are linked. Run ?gpsreinit to check again.\n",
+                  prefix);
+  } else {
+    Serial.printf("%sThe GPS IS sending (edges G%u=%lu G%u=%lu), but no NMEA at any baud: it may be set to\n",
+                  prefix, d_rx, (unsigned long)gps_pin_edges_rx, d_tx, (unsigned long)gps_pin_edges_tx);
+    Serial.printf("%sUBX-only output or a baud outside the scan list. Power and wiring are not the problem.\n", prefix);
+  }
+}
+
+// ============================================================
 // initTxGPS - Initialize Serial1 GPS based on usrConf.gps_chip_type
 // ============================================================
 //
@@ -649,6 +803,9 @@ static bool gpsSetModuleBaud(uint8_t dialect, uint32_t from_baud, uint32_t to_ba
 //     the CFG-VALSET interface for u-blox M9/M10. tx_gps_initialized = true means "the UART is
 //     configured", NOT "the module accepted the settings" — that question is answered by the
 //     per-write boot report and, independently, by ?gpscfg.
+//   - V2.5-Evo - 2026-10-23 - GPS-PIN-1: FIRST of all, gpsDetectDataPin() finds which pin the GPS
+//     transmits on (G18 or G19) with the UART closed, and sets gps_rx_pin / gps_tx_pin for every
+//     Serial1.begin() that follows. Adds ~1.1 s (fixed) to every init, at boot and on ?gpsreinit.
 //
 // Reboot-required behavior (documented for the user):
 //   Changing gps_en or gps_chip_type via the web config at runtime
@@ -667,6 +824,12 @@ void initTxGPS()
   // TX GPS initializes whenever gps_en=1, regardless of speed_src.
   // Anti-spoofing (Phase B) always needs TX GPS — it compares RX vs TX position,
   // independent of which speed source the user has selected for display.
+
+  // V2.5-Evo - 2026-10-23 - GPS-PIN-1: find the GPS on G18 or G19 BEFORE anything opens Serial1 or sends a byte.
+  // Factory-made remotes have the GPS transmitting into G19, the DIY wiring into G18; the old code assumed G18 and
+  // heard nothing on a factory remote. Every init path comes through here (boot from setup(), and ?gpsreinit), so
+  // the check is redone each time. See gpsDetectDataPin() above.
+  gpsDetectDataPin();
 
   // V2.5-Evo - 2026-04-22 - Increase RX buffer to 512 bytes before any begin().
   // At 115200 baud / 5-10Hz the GPS emits several NMEA sentences per cycle;
@@ -769,7 +932,7 @@ void initTxGPS()
       // Step 1: open at 115200. If GPS was already at 115200 from a previous boot,
       // this command is delivered cleanly and confirms the config.
       Serial.println("TX GPS [BN-220]: dual-baud init, attempt 115200 first...");
-      Serial1.begin(115200, SERIAL_8N1, P_U1_RX, P_U1_TX);
+      Serial1.begin(115200, SERIAL_8N1, gps_rx_pin, gps_tx_pin);   // V2.5-Evo - 2026-10-23 - GPS-PIN-1: detected pins
       gps_current_baud = 115200;   // no ACK is read during the dance, but keep this honest
                                    // so a future edit that DOES read one is not silently wrong
       delay(200);
@@ -784,7 +947,7 @@ void initTxGPS()
       Serial1.end();
       delay(100);
       Serial.println("TX GPS [BN-220]: dual-baud init, attempt 9600 fallback...");
-      Serial1.begin(9600, SERIAL_8N1, P_U1_RX, P_U1_TX);
+      Serial1.begin(9600, SERIAL_8N1, gps_rx_pin, gps_tx_pin);   // V2.5-Evo - 2026-10-23 - GPS-PIN-1: detected pins
       gps_current_baud = 9600;
       delay(200);
 
@@ -799,7 +962,7 @@ void initTxGPS()
       // Reopen our side at 115200 to match.
       Serial1.end();
       delay(100);
-      Serial1.begin(115200, SERIAL_8N1, P_U1_RX, P_U1_TX);
+      Serial1.begin(115200, SERIAL_8N1, gps_rx_pin, gps_tx_pin);   // V2.5-Evo - 2026-10-23 - GPS-PIN-1: detected pins
       gps_current_baud = 115200;
       delay(100);
       // ⚠️ This says where OUR uart now is, NOT where the module is. On the owner's BN-220
@@ -837,8 +1000,10 @@ void initTxGPS()
       uint32_t found = gpsDetectBaud(1100, GPS_BAUD_PREFERRED);
 
       if (found == 0) {
-        Serial.println("TX GPS [M10]: !! no reply at any baud. Check 3.3V, GND, and that "
-                       "TX/RX are not swapped. Run ?gpsbaud to scan, ?gpsraw to see bytes.");
+        // V2.5-Evo - 2026-10-23 - GPS-PIN-1: no more "check that TX/RX are not swapped" - the pin check found the
+        // orientation already. gpsPrintNoNmeaHint() says what the check actually saw.
+        Serial.println("TX GPS [M10]: !! no reply at any baud. Run ?gpsbaud to scan, ?gpsraw to see bytes.");
+        gpsPrintNoNmeaHint("TX GPS [M10]: !! ");
       } else {
         Serial.printf("TX GPS [M10]: module answers at %lu baud\n", (unsigned long)found);
         baud_confirmed = true;         // heard it; transmitting is now safe
@@ -998,7 +1163,8 @@ void initTxGPS()
       Serial.println("TX GPS: !! no NMEA at any baud — GPS not detected.");
       Serial.println("TX GPS: !! NOTHING was sent. Transmitting at an unconfirmed baud is what");
       Serial.println("TX GPS: !! disables a u-blox receiver, so silence is the safe response.");
-      Serial.println("TX GPS: !! Check 3.3V, GND and that TX/RX are not swapped, then ?gpsbaud.");
+      // V2.5-Evo - 2026-10-23 - GPS-PIN-1: was "Check 3.3V, GND and that TX/RX are not swapped, then ?gpsbaud".
+      gpsPrintNoNmeaHint("TX GPS: !! ");
       return;
     }
 
@@ -1449,9 +1615,10 @@ void cmdGpsBaud(const String &args)
       // would leave the GPS unusable for the rest of the session as a side effect of merely
       // having LOOKED at it. A read-only diagnostic must not change the machine.
       gpsOpenAt(GPS_BAUD_PREFERRED);
-      Serial.println("  -> NOTHING answered at any baud.");
-      Serial.println("     That points at wiring or power, not configuration: check 3.3V,");
-      Serial.println("     GND, and that TX/RX are not swapped. ?gpsraw shows raw bytes.");
+      // V2.5-Evo - 2026-10-23 - GPS-PIN-1: the "TX/RX are not swapped" advice is gone - the pin check handles the
+      // orientation. The hint now reports what that check saw.
+      Serial.println("  -> NOTHING answered at any baud. ?gpsraw shows raw bytes.");
+      gpsPrintNoNmeaHint("     ");
       Serial.printf("     Serial1 restored to %lu.\n", (unsigned long)GPS_BAUD_PREFERRED);
     }
     Serial.println("-------------------------");
@@ -1589,10 +1756,11 @@ void cmdGpsSetup(const String &args)
   Serial.println("[1/6] locating module...");
   uint32_t cur = gpsDetectBaud(1100, GPS_BAUD_PREFERRED);
   if (!cur) {
+    // V2.5-Evo - 2026-10-23 - GPS-PIN-1: the "TX/RX are not swapped" advice is gone - the pin check handles the
+    // orientation. The hint now reports what that check saw.
     Serial.println("  FAILED: nothing answered at any baud.");
-    Serial.println("  That is wiring or power, not configuration. Check 3.3V, GND, and that");
-    Serial.printf("  TX/RX are not swapped. Serial1 restored to %lu.\n",
-                  (unsigned long)GPS_BAUD_PREFERRED);
+    gpsPrintNoNmeaHint("  ");
+    Serial.printf("  Serial1 restored to %lu.\n", (unsigned long)GPS_BAUD_PREFERRED);
     return;
   }
   Serial.printf("  found at %lu baud\n", (unsigned long)cur);

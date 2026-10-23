@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-23 - GPS-PIN-1: includes ../Common/GpsPinDetect.h; P_U1_RX / P_U1_TX are now only the DEFAULT GPS pins
+//   (initTxGPS() finds the GPS on G18 or G19 at init) and their stale "same as RX" comment is corrected. No confStruct
+//   change, sizeof stays 136, SW_VERSION stays 27, no SPIFFS reset.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-1: includes ../Common/RiderGpsPacket.h (Radio.ino sends the v2 rider GPS packet with the GPS fix counter). Include only: no confStruct change, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-11 - audit 2026-10-11 D-3: RAM flag fm_fault_latched_armed (bit 0 on the arrival that latched the fault edge). No confStruct change, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-07 - T-8: RAM stamp tx_boot_id_sent_ms. T-10: rtm_meta_count comment (counts can be 1). No struct change.
@@ -151,6 +154,7 @@
 #include <atomic>
 #include "../Common/FollowMeDistanceWarning.h"   // V2.5-Evo - 2026-09-17 - pure header, host-testable. Since 2026-10-07 the TX uses only kFmDistanceTelemetryMaxM from it (ConfigService.ino); the haptic it fed is removed
 #include "../Common/RiderGpsPacket.h"            // V2.5-Evo - 2026-10-12 - audit delta A-1: the v2 rider GPS packet (GPS fix counter) - pure, host-tested, shared with the RX
+#include "../Common/GpsPinDetect.h"              // V2.5-Evo - 2026-10-23 - GPS-PIN-1: G18-or-G19 verdict for the GPS pin check in GPS.ino - pure, host-tested
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -1097,13 +1101,15 @@ String web_cfg_last_err = "";
 //Misc Pins
 #define P_MOT 0
 
-// V2.5-Evo: GPS UART pins for TX (BN-220 on Serial1).
-// Same numeric assignment as RX (P_U1_RX=18, P_U1_TX=19) — shared physical
-// convention across TX and RX boards. Used by initTxGPS() and getTxGPSLoop()
-// in Tx/GPS.ino. No UART mux on TX (unlike RX), so Serial1 talks to the
-// GPS directly.
-#define P_U1_RX 18
-#define P_U1_TX 19
+// V2.5-Evo: GPS UART pins for TX (BN-220 on Serial1). No UART mux on TX (unlike RX), so Serial1 talks to the GPS
+// directly.
+// V2.5-Evo - 2026-10-23 - GPS-PIN-1: these are now only the DEFAULT orientation (the documented DIY wiring: GPS TX into
+// G18). The comment that used to sit here said the numbers were "the same as RX" - they are not: the RX defines the
+// opposite (P_U1_TX 18, P_U1_RX 19), and factory-made remotes are wired that way too. initTxGPS() (GPS.ino) now checks
+// which of the two pins the GPS transmits on before opening Serial1, and every Serial1.begin() for the GPS uses the
+// result (gps_rx_pin / gps_tx_pin in GPS.ino), not these defines directly.
+#define P_U1_RX 18   // default: the TX RECEIVES the GPS on G18
+#define P_U1_TX 19   // default: the TX TRANSMITS to the GPS on G19
 
 // Magnet sensor (DRV5032FADBZR, push-pull, digital) — LOW = magnet present, HIGH = no magnet
 #define P_MAG 9

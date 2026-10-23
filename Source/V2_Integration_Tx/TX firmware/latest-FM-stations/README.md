@@ -5,21 +5,47 @@ For stable firmware use the `master` branch.
 
 | | |
 |---|---|
-| Firmware | TX SW27 (V2.5-Evo), `fm-stations` branch |
-| Built from commit | `61ec981` |
+| Firmware | **TX SW27R4** (V2.5-Evo), `fm-stations` branch. The boot banner says SW 27; R4 is the file name only. |
+| Built from commit | `32d67b0` |
 | Board / FQBN | HT-CT62 (ESP32-C3) — `esp32:esp32:esp32c3:CDCOnBoot=default,PartitionScheme=huge_app` |
-| File (update) | `BREmote-TX-SW27-fm-stations-61ec981.bin` (app image, `0x10000`) |
-| SHA-256 | `234b0844fa528ab6700cbfa0c45d39850ba063508580d87114a2872c7895e305` |
-| File (first install) | `BREmote-TX-SW27-fm-stations-61ec981-merged.bin` (full chip, `0x0`) |
-| SHA-256 | `69635f22e3133a7fd9c3c9a635a6092716c74226dadec977306602ea076aacb6` |
+| File (update) | `BREmote-TX-SW27R4-fm-stations-32d67b0.bin` (app image, `0x10000`) |
+| SHA-256 | `887a18049e3265a5204188e310c3faf704d8bf933bbec07a1eb9baed88c6447f` |
+| File (first install) | `BREmote-TX-SW27R4-fm-stations-32d67b0-merged.bin` (full chip, `0x0`) |
+| SHA-256 | `5ac6984dda2388f94df6f01c400717de2c72da2b8315395a6c2cc1704519a558` |
 
-Both files were rebuilt on 2026-10-18 from a clean export of `61ec981`. The code is unchanged.
+Both files were built on 2026-10-23 from a clean export of `32d67b0`.
+
+## What is new in SW27R4: the remote finds its GPS on G18 or G19
+
+- **Factory-made remotes (Ludwig / OpenFoil) send GPS data on G19.** Every earlier build only listened on
+  G18, so those remotes never got a GPS fix (`?printgps` showed `Chars processed 0`). They are potted, so
+  this is fixed in firmware.
+- **At power-up the remote checks both pins for about 1.1 s** before it opens the GPS port, driving neither
+  pin, and then listens on the one the GPS is sending on. It works at any baud, NMEA or UBX.
+- **Self-built remotes wired to G18 see no change.** Data on G18, on neither pin or on both: the remote keeps
+  the old pins.
+- **Check it on the boot log** (USB serial, 115200): `TX GPS: data on G19, using RX=G19 TX=G18 (factory wiring)`
+  or `TX GPS: data on G18, ... (DIY wiring)`. `?printgps` shows the pins in use and the edge counts.
+- **The check only runs while `gps_en = 1`.** If you switched the GPS off, turn it back on first:
+  `?set gps_en 1`, `?save`, wait about 15 s, then power-cycle.
+- **No config wipe.** `SW_VERSION` stays 27 and the settings layout is unchanged, so the app-only update keeps
+  your settings, pairing and calibration.
+- **Limit:** the remote cannot repair a GPS module that a drone flight controller left in UBX-only mode (no
+  NMEA). It now says so at boot instead of pointing at the wiring. Fix such a module before fitting it: run
+  `?gpssetup` on a receiver with current firmware, or use u-center.
+- **Not yet run on a factory-made remote.** Audited (motor safety intact: nothing that drives the motors is
+  touched; a wrong pin choice can only mean "no remote GPS", which Follow-Me and Return-To-Me already
+  handle). Built clean, with no new compiler warnings.
+
+**Previous build, kept for rollback:** `BREmote-TX-SW27-fm-stations-61ec981.bin` (update) and
+`BREmote-TX-SW27-fm-stations-61ec981-merged.bin` (first install). Same code apart from the GPS pin check.
 
 ## Before you flash
 
 1. **Update the remote AND the receiver together.** Use the matching RX build in
-   `Source/V2_Integration_Rx/RX firmware/latest-FM-stations/`. Mixing this TX with an older or
-   stable RX is not supported.
+   `Source/V2_Integration_Rx/RX firmware/latest-FM-stations/` (RX SW36, `61ec981`; SW27R4 changes only the
+   remote's GPS pins, so that RX build is still the match). Mixing this TX with an older or stable RX is not
+   supported.
 2. **Download your buggy's logs before flashing the RX** — the matching RX build writes log
    format 3 and will not turn older logs into CSV.
 
@@ -37,8 +63,8 @@ Both files were rebuilt on 2026-10-18 from a clean export of `61ec981`. The code
 - Tool steps: [Flashing with the Flash Download Tool](../../../../docs/FLASHING_WITH_DOWNLOAD_TOOL.md).
   For the merged file, set the address to `0x0` instead of `0x10000`.
 
-Example (esptool), update: `esptool --chip esp32c3 --port COMx write-flash 0x10000 BREmote-TX-SW27-fm-stations-61ec981.bin`
+Example (esptool), update: `esptool --chip esp32c3 --port COMx write-flash 0x10000 BREmote-TX-SW27R4-fm-stations-32d67b0.bin`
 
-Example (esptool), first install: `esptool --chip esp32c3 --port COMx write-flash 0x0 BREmote-TX-SW27-fm-stations-61ec981-merged.bin`
+Example (esptool), first install: `esptool --chip esp32c3 --port COMx write-flash 0x0 BREmote-TX-SW27R4-fm-stations-32d67b0-merged.bin`
 
 Known issues for this branch are listed at the top of the repository README.

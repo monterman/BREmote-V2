@@ -46,7 +46,8 @@ See the [BN-880 → RX wiring guide](../GPS_Wiring_BN880_RX.md) for the full tra
 
 **On the TX, either way round works** (TX firmware SW27R4 and later). At power-up, and on
 `?gpsreinit`, the TX listens on both G18 and G19, finds the one the GPS is sending on, and uses it.
-The boot log says which:
+This needs `gps_en` = 1: with the GPS off, the check is skipped (`?set gps_en 1`, `?save`, wait
+about 15 s, then power-cycle or `?gpsreinit`). The boot log says which pin it found:
 
 ```
 TX GPS: data on G18, using RX=G18 TX=G19 (DIY wiring) ...
@@ -489,7 +490,7 @@ writes nothing.
 | `?gpsbaud set <rate>` | Moves **the module** and writes it to the module's flash | ~6 s |
 | `?gpssetup` | **One-time full setup**: find, raise to 115200, configure, save permanently, verify | ~15 s |
 | `?gpsraw [sec]` | Dumps raw NMEA — use when nothing else responds | 5 s |
-| `?gpsreinit` | Re-runs GPS init without rebooting | ~2 s |
+| `?gpsreinit` | Re-runs GPS init without rebooting, including the G18/G19 pin check (needs `gps_en` = 1) | a few seconds (more if no module answers) |
 | `?gpscoldreset` | Clears the module's satellite cache; forces fresh acquisition | instant |
 
 All of these are **USB only** — the TX disables its serial port on a normal battery boot.

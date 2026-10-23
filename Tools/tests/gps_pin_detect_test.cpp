@@ -87,7 +87,7 @@ static void testMappingIsAlwaysAPair()
 static void testLabels()
 {
   assert(strcmp(gpsPinVerdictLabel(GPS_PIN_VERDICT_DEFAULT), "DIY wiring") == 0);
-  assert(strcmp(gpsPinVerdictLabel(GPS_PIN_VERDICT_SWAPPED), "factory wiring") == 0);
+  assert(strcmp(gpsPinVerdictLabel(GPS_PIN_VERDICT_SWAPPED), "factory wiring - OpenFoil") == 0);
   assert(gpsPinVerdictLabel(GPS_PIN_VERDICT_NONE) != NULL);
   assert(gpsPinVerdictLabel(GPS_PIN_VERDICT_BOTH) != NULL);
   assert(gpsPinVerdictLabel(200) != NULL);   // unknown value still prints something

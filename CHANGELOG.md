@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-10-23 — TX SW27R4: the remote finds its GPS on G18 or G19 (factory-made remotes get a fix)
+
+**No config wipe.** `sizeof(confStruct)` stays 136 and `SW_VERSION` stays 27. SW27R4 is a file name only;
+the boot banner still says SW 27.
+
+- **Why:** factory-made remotes (Ludwig / OpenFoil) have the GPS sending on **G19**. The firmware only ever
+  listened on **G18**, so those remotes received nothing (`Chars processed 0`), while Ludwig's GPS test
+  firmware got a fix on the same hardware. They are potted, so the fix had to be in firmware.
+- **What it does:** before the GPS port opens, the remote counts signal edges on G18 and G19 for about
+  1.1 s, with the remote driving neither pin. It works at any baud, for NMEA or UBX. Data only on G19 →
+  it listens on G19 and sends on G18. Otherwise it keeps the old pins, so a self-built remote wired to G18
+  sees no change.
+- **What you see:** a boot line such as `TX GPS: data on G19, using RX=G19 TX=G18 (factory wiring)`, and
+  `?printgps` shows the pins in use with the edge counts. The check runs at power-up and on `?gpsreinit`,
+  and only while `gps_en = 1`.
+- **Cost:** boot and `?gpsreinit` take about 1.1 s longer. No setting to change.
+- **Also fixed:** on factory-made remotes the old firmware's GPS transmit line pushed against the GPS's own
+  transmit line for the whole session. It no longer does.
+- **Clearer hints:** the GPS hints no longer tell you to swap wires. They say which pin had data, and if the
+  GPS was switched off at boot (`gps_en = 0`), that it has to be turned on before the check can run.
+- **Limit:** the remote cannot repair a GPS module that a drone flight controller left in UBX-only mode (no
+  NMEA). It now says so at boot instead of pointing at the wiring. Fix such a module before fitting it: run
+  `?gpssetup` on a receiver with current firmware, or use u-center.
+- **Not yet run on a factory-made remote.** Nothing that drives the motors is touched; a wrong pin choice
+  can only mean "no remote GPS", which Follow-Me and Return-To-Me already handle.
+
 ## 2026-10-08 — RX: log level 6 records VESC 2's IMU (roll, pitch, yaw, gyro, acceleration)
 
 **No config wipe.** `sizeof(confStruct)` stays 200 and `SW_VERSION` stays 36. Log format stays 3, so logs

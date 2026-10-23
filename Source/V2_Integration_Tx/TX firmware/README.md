@@ -4,6 +4,11 @@ Flash these directly with **esptool** — no Arduino IDE, no toolchain, no compi
 
 Board: **HT-CT62 (ESP32-C3)** · partition scheme `huge_app` · app offset **`0x10000`**
 
+> 🆕 **Factory-made remote (Ludwig / OpenFoil) and its GPS never gets a fix?** Those remotes send GPS data
+> on G19, and every build in the table below only listens on G18. Use **TX SW27R4** in
+> [`latest-FM-stations/`](latest-FM-stations/): it checks both pins at power-up and uses the one the GPS is
+> on. Self-built remotes wired to G18 work with every build here.
+
 ## Which one do I want?
 
 | File | SW | What it is |

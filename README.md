@@ -11,6 +11,7 @@
 >
 > **Known issues on this branch**
 >
+> - **New in TX SW27R4 (2026-10-23): the remote finds its GPS on G18 or G19 by itself.** Factory-made remotes (Ludwig / OpenFoil) send GPS data on G19, and earlier builds only listened on G18, so they never got a fix. Self-built remotes wired to G18 see no change. The boot line `TX GPS: data on G18 ...` or `... on G19 ...` shows which pin it found. Not yet run on a factory-made remote.
 > - **New in this build (Follow-Me bundle, commit `61ec981`), not yet water-tested:** Follow-Me no longer switches itself off on a short data loss. If the rider's GPS, the buggy's GPS or the link drops out, Follow-Me **pauses** (the buggy waits at zero, the remote shows only the two end dots of the bar blinking) and **resumes by itself** when the data is back. After **30 s** of loss it ends with "St" and a long buzz; if you are still holding the trigger, the buggy stays at zero until you let go once. A stop because the steering looks wrong keeps Follow-Me armed ("St" + buzz, ride away again). A Follow-Me fault never hands a held trigger straight back any more. With no compass, the buggy creeps slowly straight ahead to find its GPS course (only while you hold the trigger and are well away from it; at most about 24 %, for at most 3 s), then steers.
 > - **Flash the receiver and the remote together.** The remote now sends a new GPS packet that carries its GPS fix counter (a rider floating still with a good fix stays "alive"). A new remote with an older receiver never gets Follow-Me or Return-To-Me ready (manual driving is unaffected). After flashing, the receiver's `?diag` should show "Rider GPS: packet v2".
 > - **Keep `tx_gps_stale_timeout_ms` at 3000 (the default), never below 2000**, or Follow-Me can flicker on and off with a 1 Hz remote GPS.
@@ -365,6 +366,9 @@ Two things worth knowing up front:
   Betaflight leaves u-blox modules **UBX-only with NMEA output disabled**, saved in the module's
   own memory. The RX now recognises that during its listen-only baud scan and switches NMEA back
   on: flash the current RX firmware and run **`?gpssetup`**. This used to need u-center on a PC.
+- **A factory-made remote (Ludwig / OpenFoil) that hears nothing from its GPS:** those remotes send
+  GPS data on G19, and before TX SW27R4 the remote only listened on G18. Flash SW27R4 or later: it
+  checks both pins at power-up, and the boot line says `TX GPS: data on G19 ... (factory wiring)`.
 
 <details>
 <summary>Older detail — wiring, commands and recovery steps</summary>

@@ -2,11 +2,14 @@
 
 **Applies to:** V2.5-Evo TX with an **HGLRC M100 Mini** GPS (u-blox M10 class, no compass, 3.3–5 V,
 4-pin SH1.0) — either the **V2.4 TopShield/BotShield remote** or the **Nano V2-2** board.
-**Firmware pins on both:** `P_U1_RX 18` / `P_U1_TX 19` (`BREmote_V2_Tx.h`). Set `gps_chip_type` to **2 (M10)**.
+**Firmware pins on both:** `P_U1_RX 18` / `P_U1_TX 19` (`BREmote_V2_Tx.h`) by default. Set `gps_chip_type` to **2 (M10)**.
 The Mini talks 115200 natively, so the boot skips the 9600→115200 dance the BN-220 needed.
 
-> Direction, once and for all: the **module's TX** goes to the ESP's **receive** pin **GPIO18**; the
-> **module's RX** goes to the ESP's **transmit** pin **GPIO19**. That is how every working remote is wired.
+> **Direction.** This guide wires the **module's TX** to **GPIO18** and the **module's RX** to **GPIO19**
+> (the DIY wiring, and the firmware default). **From TX SW27R4 either order works:** at power-up the remote
+> checks both pins and listens on the one the GPS is sending on. Factory-made remotes (Ludwig / OpenFoil)
+> have the GPS's TX on **GPIO19**, and builds before SW27R4 heard nothing from them. The boot line
+> `TX GPS: data on G18 ...` or `... on G19 ...` tells you which one it found.
 > If you are replacing a BN-220 that works, go **wire for wire**: Mini white where the BN-220's TX wire was,
 > Mini yellow where its RX wire was.
 

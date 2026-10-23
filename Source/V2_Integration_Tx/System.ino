@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-23 - audit L-2: ?printgps "pin check not run" label says to turn the GPS on first (gps_en 1), not
+//   just ?gpsreinit. Text only.
 // V2.5-Evo - 2026-10-23 - GPS-PIN-1: ?printgps shows the GPS pins in use (RX=G18/G19) and the pin-check edge counts. No
 //   confStruct change.
 // V2.5-Evo - 2026-10-07 - P-12: the dead-ADC charge-screen comment and lines credit the input fault (error 72), not
@@ -351,8 +353,12 @@ void cmdPrintGPS(const String &args) {
   Serial.print("tx_gps_initialized: "); Serial.println(tx_gps_initialized ? "YES" : "NO");
   // V2.5-Evo - 2026-10-23 - GPS-PIN-1: which pins the GPS UART is on, and what the power-up pin check saw.
   // gps_rx_pin / gps_tx_pin / gps_pin_* are set by gpsDetectDataPin() in GPS.ino (concatenated before this file).
+  // V2.5-Evo - 2026-10-23 - audit L-2: the not-run label used to say "?gpsreinit", which skips the check while gps_en=0
+  // (the only way it can be not run). It now says to turn the GPS on first.
   Serial.printf("GPS pins:           RX=G%u TX=G%u (%s)\n", (unsigned)gps_rx_pin, (unsigned)gps_tx_pin,
-                gps_pin_checked ? gpsPinVerdictLabel(gps_pin_verdict) : "pin check not run yet - ?gpsreinit");
+                gps_pin_checked ? gpsPinVerdictLabel(gps_pin_verdict)
+                                : "pin check not run: GPS was off at boot. ?set gps_en 1, ?save, wait about 15 s, "
+                                  "then power-cycle or ?gpsreinit");
   if (gps_pin_checked)
     Serial.printf("Pin check edges:    G%u=%lu G%u=%lu\n", (unsigned)P_U1_RX, (unsigned long)gps_pin_edges_rx,
                   (unsigned)P_U1_TX, (unsigned long)gps_pin_edges_tx);

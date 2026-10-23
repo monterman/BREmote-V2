@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-23 - audit L-1/L-2/L-6 on GPS-PIN-1, text and comments only: the pin-check comment now says the GPS's receive line reads LOW during the check on boards with 10 k pull-downs; the "no check yet" hint says to turn the GPS on first (gps_en=0 skips the check); the no-NMEA hint prints once, "GPS not detected" only when no pin had data, and it says ?gpssetup cannot fix a UBX-only module. Serial text only: nothing changes in what is sent to the GPS, on which pins, or when.
 // V2.5-Evo - 2026-10-23 - GPS-PIN-1: initTxGPS() first finds which pin the GPS transmits on (G18 = DIY wiring, G19 = factory wiring) by counting edges on both pins with the UART closed, then opens Serial1 on the pins it found (gps_rx_pin / gps_tx_pin). Factory-wired remotes heard nothing before. The four "check that TX/RX are not swapped" hints now report what the pin check saw (gpsPrintNoNmeaHint()). RAM only: no confStruct change, sizeof stays 136, SW_VERSION stays 27, SPIFFS config NOT reset by this flash.
 // V2.5-Evo - 2026-08-15 - ubxPoll() now verifies CK_A/CK_B before accepting a frame. Was returning as soon as the payload was complete, never reading the checksum, so any B5 62 <cls> <id> <len> lookalike in the NMEA/UBX stream was believed. Same defect the RX had (fixed 1f2ba8c, after it reported an M8 as M9/M10 three times running) - it survived here because the parser exists twice instead of in Common/. Code only: no confStruct change, sizeof unchanged, SW_VERSION stays 27, SPIFFS config NOT reset by this flash.
 // V2.5-Evo - 2026-07-29 - GPS-ACK-1: every UBX config write is ACK-verified, and a NAK auto-switches the module to the modern CFG-VALSET interface (u-blox M9/M10 removed the legacy CFG messages). Adds ?gpscfg readback.
@@ -628,9 +629,17 @@ static bool gpsSetModuleBaud(uint8_t dialect, uint32_t from_baud, uint32_t to_ba
 // V2.5-Evo - 2026-10-23. See the gps_rx_pin block at the top of this file for the bug, and Common/GpsPinDetect.h for
 // the verdict rules.
 //
-// HOW: with the UART closed, both pins are plain inputs with the internal pull-up on (the UART's own idle level), so
-// the remote drives NEITHER pin and can never fight a GPS output. A CHANGE interrupt on each pin counts edges for
-// kGpsPinWindowMs. Counting edges works for NMEA and for binary UBX, at any baud: it never needs to understand a byte.
+// HOW: with the UART closed, both pins are plain inputs with the internal pull-up on, so the remote drives NEITHER pin
+// and can never fight a GPS output. A CHANGE interrupt on each pin counts edges for kGpsPinWindowMs. Counting edges
+// works for NMEA and for binary UBX, at any baud: it never needs to understand a byte.
+//
+// PULL-DOWN BOARDS - V2.5-Evo - 2026-10-23 - audit L-1 (this comment used to say the pins rest at the UART idle
+// level, high; on these boards that is not true). Boards with 10 k pull-downs on these two lines (R23/R24) beat the
+// internal pull-up (~45 k, the strongest the C3 has), so the line that goes INTO the GPS's receive pin reads LOW
+// (~0.6 V) for the whole ~1.1 s window. To the GPS that is one UART break per init, not a stream of framing errors.
+// On the DIY wiring that line is G19, whose USB D+ pull-up most likely keeps it high anyway; on the factory wiring it
+// is G18, which reads LOW. Plain INPUT would be worse: both lines would float, and on G19 it also switches the USB D+
+// pull-up off.
 //
 // WINDOW, 1100 ms: the same reasoning as gpsProbeAt() - a module at its 1 Hz default sends one burst per second, so
 // the window must outlast one second.
@@ -654,7 +663,8 @@ static bool gpsSetModuleBaud(uint8_t dialect, uint32_t from_baud, uint32_t to_ba
 // PERIPHERAL MANAGER (core 3.3.8): Serial1.end() detaches both UART pins; pinMode() then claims them as GPIO.
 // detachInterrupt() removes the handler and sets the interrupt type back to DISABLE. The next Serial1.begin() sees the
 // pins owned by the GPIO bus, clears that (gpioDetachBus, nothing to undo) and attaches its own RX/TX - the same path
-// every first begin() at boot already takes. The pull-up is left on until then so the GPS's receive line never floats.
+// every first begin() at boot already takes. The pull-up is left on until then so the GPS's receive line is not left
+// floating; on pull-down boards it reads LOW until begin() drives it (see PULL-DOWN BOARDS above).
 //
 // Inputs: none (pins P_U1_RX / P_U1_TX). Outputs: gps_rx_pin, gps_tx_pin, gps_pin_verdict, gps_pin_edges_rx/_tx,
 // gps_pin_checked. Side effects: closes Serial1; prints one line; blocks the calling (loop) task ~1.1 s.
@@ -676,7 +686,8 @@ static void gpsDetectDataPin()
   // 1. Release the UART so the remote drives neither pin. Safe when Serial1 was never opened (boot).
   Serial1.end();
 
-  // 2. Both pins as inputs, pulled up to the UART idle level. Counters zeroed BEFORE any interrupt is attached.
+  // 2. Both pins as inputs with the internal pull-up (on pull-down boards the line into the GPS still reads LOW - see
+  //    PULL-DOWN BOARDS above). Counters zeroed BEFORE any interrupt is attached.
   pinMode(P_U1_RX, INPUT_PULLUP);
   pinMode(P_U1_TX, INPUT_PULLUP);
   vTaskDelay(pdMS_TO_TICKS(2));          // let the pull-ups settle so the first edge counted is a real one
@@ -728,18 +739,24 @@ static void gpsDetectDataPin()
 // V2.5-Evo - 2026-10-23 - GPS-PIN-1. Replaces four copies of "check that TX/RX are not swapped". The firmware now finds
 // the GPS on G18 or G19 by itself, so that advice can only send someone to cut open a remote for nothing - and on a
 // potted factory remote there are no wires to swap. What is left depends on what the last pin check saw:
-//   no check yet  -> it has not looked (gps_en=0 at boot): ?gpsreinit runs it.
+//   no check yet  -> it has not looked: the remote booted with gps_en=0, and initTxGPS() (boot and ?gpsreinit) skips
+//                    the check while gps_en=0. The GPS has to be turned on first.
+//                    V2.5-Evo - 2026-10-23 - audit L-2: this used to say "run ?gpsreinit", which does nothing while
+//                    gps_en=0.
 //   no signal     -> nothing is transmitting on either pin: power, GND, or a dead / missing module.
 //   signal seen   -> the module IS talking, just not NMEA at a listed baud (UBX-only output, or an unlisted baud).
-// Input: prefix printed before each line (matches the caller's indentation). Side effects: two Serial lines.
+//                    V2.5-Evo - 2026-10-23 - audit L-6: says "power and the GPS's transmit wire are fine" (edges prove
+//                    those, not the wire into the GPS), and that ?gpssetup / ?gpsbaud set cannot repair it: both
+//                    start with the same NMEA-only baud scan (gpsDetectBaud()) and stop when it finds nothing.
+// Input: prefix printed before each line (matches the caller's indentation). Side effects: two or three Serial lines.
 // ------------------------------------------------------------
 static void gpsPrintNoNmeaHint(const char *prefix)
 {
   const unsigned d_rx = P_U1_RX, d_tx = P_U1_TX;
   if (!gps_pin_checked) {
-    Serial.printf("%sCheck 3.3V and GND and that a GPS module is fitted, then run ?gpsreinit:\n", prefix);
-    Serial.printf("%sit checks G%u and G%u for the GPS (wire orientation is found automatically).\n",
+    Serial.printf("%sThe GPS was off at boot (gps_en=0), so G%u/G%u were never checked. Turn it on first:\n",
                   prefix, d_rx, d_tx);
+    Serial.printf("%s?set gps_en 1, ?save, wait about 15 s, then power-cycle or ?gpsreinit.\n", prefix);
   } else if (gps_pin_verdict == GPS_PIN_VERDICT_NONE) {
     Serial.printf("%sNo signal on G%u or G%u. Both pins were checked, so swapped data wires are not the cause.\n",
                   prefix, d_rx, d_tx);
@@ -750,9 +767,12 @@ static void gpsPrintNoNmeaHint(const char *prefix)
     Serial.printf("%sthan the GPS is toggling one of them, or the two lines are linked. Run ?gpsreinit to check again.\n",
                   prefix);
   } else {
-    Serial.printf("%sThe GPS IS sending (edges G%u=%lu G%u=%lu), but no NMEA at any baud: it may be set to\n",
-                  prefix, d_rx, (unsigned long)gps_pin_edges_rx, d_tx, (unsigned long)gps_pin_edges_tx);
-    Serial.printf("%sUBX-only output or a baud outside the scan list. Power and wiring are not the problem.\n", prefix);
+    Serial.printf("%sData seen on G%u (edges G%u=%lu G%u=%lu), but no NMEA at any baud: the module may be\n",
+                  prefix, (unsigned)gps_rx_pin, d_rx, (unsigned long)gps_pin_edges_rx,
+                  d_tx, (unsigned long)gps_pin_edges_tx);
+    Serial.printf("%sset to UBX-only output, or a baud outside the scan list. Power and the GPS's transmit wire are fine.\n",
+                  prefix);
+    Serial.printf("%s?gpssetup and ?gpsbaud set cannot fix this: they also need NMEA to find the module.\n", prefix);
   }
 }
 
@@ -1001,9 +1021,11 @@ void initTxGPS()
 
       if (found == 0) {
         // V2.5-Evo - 2026-10-23 - GPS-PIN-1: no more "check that TX/RX are not swapped" - the pin check found the
-        // orientation already. gpsPrintNoNmeaHint() says what the check actually saw.
-        Serial.println("TX GPS [M10]: !! no reply at any baud. Run ?gpsbaud to scan, ?gpsraw to see bytes.");
-        gpsPrintNoNmeaHint("TX GPS [M10]: !! ");
+        // orientation already.
+        // V2.5-Evo - 2026-10-23 - audit L-6: the hint is NOT printed here any more. This path always reaches the
+        // "baud not confirmed" block after the switch, which listens once more and prints the hint there, so it
+        // appeared twice. It is printed once, by that block, and only if the second listen also hears nothing.
+        Serial.println("TX GPS [M10]: !! no NMEA at any baud. Run ?gpsbaud to scan, ?gpsraw to see bytes.");
       } else {
         Serial.printf("TX GPS [M10]: module answers at %lu baud\n", (unsigned long)found);
         baud_confirmed = true;         // heard it; transmitting is now safe
@@ -1160,7 +1182,12 @@ void initTxGPS()
       // Nothing anywhere. Say so and send NOTHING. Blind writes here would be aimed at a
       // baud we have no evidence for, and the only thing they can reliably achieve is
       // framing errors on a module that may be perfectly healthy but slow to wake.
-      Serial.println("TX GPS: !! no NMEA at any baud — GPS not detected.");
+      // V2.5-Evo - 2026-10-23 - audit L-6: "GPS not detected" only when the pin check also saw nothing. When it saw
+      // data on a pin, the GPS WAS detected - it just does not speak NMEA at a listed baud - and the hint below says so.
+      if (gps_pin_verdict == GPS_PIN_VERDICT_DEFAULT || gps_pin_verdict == GPS_PIN_VERDICT_SWAPPED)
+        Serial.println("TX GPS: !! no NMEA at any baud.");
+      else
+        Serial.println("TX GPS: !! no NMEA at any baud — GPS not detected.");
       Serial.println("TX GPS: !! NOTHING was sent. Transmitting at an unconfirmed baud is what");
       Serial.println("TX GPS: !! disables a u-blox receiver, so silence is the safe response.");
       // V2.5-Evo - 2026-10-23 - GPS-PIN-1: was "Check 3.3V, GND and that TX/RX are not swapped, then ?gpsbaud".

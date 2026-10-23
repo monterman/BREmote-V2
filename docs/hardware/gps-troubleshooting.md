@@ -35,8 +35,8 @@ You need **4 wires** between the ESP32-C3 board and the GPS module.
 > | **TX** | `P_U1_RX` — receive | `P_U1_TX` — transmit |
 > | **RX** | `P_U1_TX` — transmit | `P_U1_RX` — receive |
 >
-> Read from `BREmote_V2_Tx.h:758-759` and `BREmote_V2_Rx.h:1142-1143`. **The comment above the TX
-> defines says the assignment matches the RX — it does not.** Do not carry an RX pinout over to a TX.
+> Read from `P_U1_RX` / `P_U1_TX` in `BREmote_V2_Tx.h` and `BREmote_V2_Rx.h`. On the TX these are only the
+> default: the firmware finds the GPS on either pin (see below). Do not carry an RX pinout over to a TX.
 
 ### Which way do the wires go?
 
@@ -44,17 +44,22 @@ You need **4 wires** between the ESP32-C3 board and the GPS module.
 silkscreened `RX` is driven by the board's transmitter, because the crossover is routed on the PCB.
 See the [BN-880 → RX wiring guide](../GPS_Wiring_BN880_RX.md) for the full trace.
 
-**On the TX this has not been verified.** There is no mux to trace, and the repo does not settle
-whether the TX's board artwork pre-crosses the UART the way the RX's does. So **test it — it takes
-two minutes and cannot damage anything** (both ends are 3.3 V logic):
+**On the TX, either way round works** (TX firmware SW27R4 and later). At power-up, and on
+`?gpsreinit`, the TX listens on both G18 and G19, finds the one the GPS is sending on, and uses it.
+The boot log says which:
 
-1. Wire it, power up, run **`?gpsbaud`** — a listen-only scan that reports whether any bytes arrive.
-   It needs no fix and no sky, so it answers the wiring question by itself.
-2. **Bytes at some baud → correct.** Confirm outdoors with `?printgps`.
-3. **Nothing at any baud →** swap the two data wires and run `?gpsbaud` again.
+```
+TX GPS: data on G18, using RX=G18 TX=G19 (DIY wiring) ...
+TX GPS: data on G19, using RX=G19 TX=G18 (factory wiring) ...
+```
 
-Whichever returns bytes is right for your board. If you settle it either way, please open an issue —
-it closes this gap for everyone.
+- The table above (GPS TX → G18) is the DIY wiring.
+- Ludwig / OpenFoil factory remotes have **GPS TX on G19**. Nothing to change: the firmware finds it.
+- `?printgps` shows the pins in use (`GPS pins: RX=G.. TX=G..`).
+- `no data on G18 or G19` means the GPS is not sending at all. Swapping the data wires will not
+  help: check 3.3 V, GND, and that the module is alive (blue LED blinking).
+
+Older TX firmware only listens on G18.
 
 ---
 
@@ -197,7 +202,7 @@ You can read clear text starting with `$`. GPS is alive and talking. Continue to
 
 ---
 
-**❌ Problem — wires swapped or broken:**
+**❌ Problem — broken wire or no power:**
 
 \--- Raw GPS bytes from Serial1 (10 seconds, type q to quit) \---
 
@@ -205,7 +210,7 @@ You can read clear text starting with `$`. GPS is alive and talking. Continue to
 
 Completely empty — nothing received at all.
 
-**Fix:** Double check all 4 wires match the table in Step 1\. GPS TX→GPIO18, GPS RX→GPIO19 (on the TX the wires cross; on the RX they go label to label). Then run `?gpsreinit` and `?gpsraw 10` again.
+**Fix:** Check that all 4 wires from Step 1 are connected. On the TX the two data wires can go either way round: the firmware finds the GPS on G18 or G19 by itself (SW27R4 and later), so a swap is not the cause. Then run `?gpsreinit` and `?gpsraw 10` again.
 
 ---
 

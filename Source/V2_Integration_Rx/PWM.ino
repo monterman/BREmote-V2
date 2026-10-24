@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-24 - throttle-byte audit T-1, fix (b), receiver half: calcPWM() starts from thrByteToCmd(thr_received)
+//   (Common/ThrottleByte.h), the remote's 0..240 byte stretched back onto 0..255, so a full squeeze reaches PWM max (2000 us,
+//   was 1941). thr_received, every cap, the three map() lines and the mixer are untouched; each cap still applies after the
+//   stretch, so a cap of c still gives map(c). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-17 - THROTTLE-SCALED STEERING INFLUENCE (owner request, RX1): calcPWM() hands the mixer
 //   throttleScaledSteeringInfluence(pivot_thr, steering_influence) (Common/DifferentialMixer.h) instead of the plain
 //   setting - for settings 51-99: 100 % up to 30 % throttle (one-motor pivot), the setting from 60 %, linear between;
@@ -336,7 +340,25 @@ void calcPWM()
   // Emergency stop: any safety gate failure forces throttle to neutral regardless of user input.
   // Steering override: bearing-derived value replaces radio steering when RTM is active.
   // RTM can only subtract from user throttle (never add). Creator safety philosophy enforced.
-  uint8_t effective_thr   = rtm_rx_emergency_stop ? 0 : thr_received;
+  // V2.5-Evo - 2026-10-24 - throttle-byte audit T-1, fix (b), receiver half: THE STRETCH.
+  //   THE BUG: the remote's throttle byte stops at 240 (0xF1-0xF4 are meta-packet types), but this function treated 255
+  //   as full, so a full squeeze mapped to 1941 us and never 2000 (bench 2026-10-24: 367 samples at 1941, never higher).
+  //   THE FIX: thrByteToCmd() (Common/ThrottleByte.h, host-tested in Tools/tests/throttle_byte_test.cpp) stretches the
+  //   byte's 0..240 back onto the 0..255 command everything below works in; the remote now scales its 0..255 onto 0..240
+  //   (thrTriggerToByte()), so the pair is within 1 count of the rider's trigger at every position and 2000 us at a full
+  //   squeeze.
+  //   WHY THIS IS SAFE, AND WHY HERE AND NOT IN THE map() LINES:
+  //   - 0 -> 0 and every other byte stays above 0, so SAFETY-NEUTRAL-1 at the end sees effective_thr == 0 on exactly
+  //     the passes it did before (the byte is 0, or a stop or a cap forced 0);
+  //   - thr_received itself is untouched and stays the byte as received, so every release, deadman and hand-back test
+  //     below and elsewhere (the hand-back clear below 8, its 25 backstop, the sticky clear below 25, the steering gate
+  //     at 25) reads the same byte as before;
+  //   - every cap below (approach, Follow-Me, arrival hand-back, sticky) is a min() applied AFTER this line, so a cap of
+  //     c still gives exactly map(c): no receiver cap gives more output than before. Stretching inside the map() calls
+  //     instead would have raised every cap by 6.25 %, and the servo branch's map() has no outer constrain;
+  //   - this receiver takes 0xF5-0xFF as throttle (only a remote on other firmware sends them); they give 255, no
+  //     higher, which is no more than they gave before.
+  uint8_t effective_thr   = rtm_rx_emergency_stop ? 0 : thrByteToCmd(thr_received);
   // Approach decel zone: cap effective_thr when RTM is guiding the buggy into the stop zone.
   // rtm_approach_cap is 255 (no cap) in manual mode and outside the approach zone.
   // Only RTMState.ino sets it below 255 — during active RTM when dist < rtm_approach_zone_m.

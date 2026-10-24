@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-10-24 — Remote + RX: a full squeeze reaches full output (2000 µs, was 1941 µs)
+
+**No config wipe.** `sizeof(confStruct)` stays 200 on the RX and 136 on the remote; `SW_VERSION` stays
+36 (RX) and 27 (remote). Same packets, same length, same airtime.
+
+**Flash every remote first, then the RX.** A new remote on an old RX is 5.9 % softer at every trigger
+position (top 1941 µs, the safe direction). An old remote on a new RX is 6.25 % hotter at every position,
+and this RX has no re-press lock, so in that state its only soft start is the motor ramp. If two remotes
+are cloned to one RX, flash both before the RX.
+
+What was wrong: the throttle byte in a control packet stops at 240, because 241-255 are kept for the
+meta-packet types. The remote clipped its throttle at 240 and the RX treated 255 as full, so a full
+squeeze gave 1941 µs and never 2000, and the last ~6 % of trigger travel did nothing.
+
+- **The remote now scales its throttle onto 0-240** instead of clipping, and **the RX stretches it back
+  onto 0-255** before any limit. A full squeeze gives `PWM0_max` (2000 µs), the whole trigger travel is
+  live, and every position is within one count of what the throttle asks for.
+- **Every limit gives exactly what it gave before**: gears, the dynamic cap and the remote's return-to-me
+  ramp (applied before the scaling), and every RX limit — return-to-me and Follow-Me caps, the arrival
+  hand-back cap and the sticky return cap (applied after the stretch).
+- **A VESC learned at about 1941 µs** (the old advice in `docs/THROTTLE_PIPELINE_ANALYSIS.md`) is
+  harmless, but it saturates over the last 6 % of the trigger. Re-run PPM Mapping at a full squeeze in
+  `throttle_mode = 1`, or set the VESC range to 1000-2000 µs, to use it.
+- **The RX's trigger thresholds sit 1-2 trigger counts later**, because the byte is about 6 % smaller for
+  the same squeeze: "released" for the hand-back cap (below 8) is unchanged, the deadman's 25 needs 27,
+  and the sticky cap's "released" (below 25) reads true up to 26. Inside the Hall sensor's noise.
+- **In the log**, `thr_received` is the byte as received (0-240, now in proportion to the trigger).
+  For what the motors got, read `motor0_cmd` / `motor1_cmd` (out of 255), not `thr_received / 255`.
+- The remote's Follow-Me throttle readout (option 4) no longer draws a wrong first digit at a full
+  squeeze (it handed 100 to a two-digit display; it now stops at 99).
+
 ## 2026-10-21 — Remote: the toggle's wait after a ride is now real time (Toggle Block Time)
 
 **No config wipe.** `sizeof(confStruct)` stays 136 and `SW_VERSION` stays 27 on the remote. The RX is not

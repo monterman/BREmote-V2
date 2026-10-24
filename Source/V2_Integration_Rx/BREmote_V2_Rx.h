@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-24 - throttle-byte audit T-1, fix (b), receiver half: includes ../Common/ThrottleByte.h (after OutputRamp.h) for calcPWM()'s stretch; the thr_received_log field comment says the byte is 0-240 and how to read it now. Log format, record sizes, confStruct unchanged: sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-20 - COMMENT ONLY: the historical fm_front_angle_deg note is marked with the front-station swap (4 front-left, 5 front-right). No code, no struct, no SW_VERSION change.
 // V2.5-Evo - 2026-10-17 - HEADING LATCH WRITTEN ONCE PER CHANGE (audit F1-F5): includes ../Common/HeadingLatchPersist.h, the pure request / due / result rules RTMState.ino uses to store the compass-vs-GPS-course latch (/hdg_fault) once per latch change, with the trigger released, instead of on every heading call. Include only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-17 - audit C-1 / C-3, COMMENTS ONLY in this file: the throttle-scaled curve applies to settings 51-99 only (0-50 and 100 are unscaled, kSteerScaleMinSetting in Common/DifferentialMixer.h) - the include note, the mix_influence column note and the g_mix_influence declaration say so; the stale g_motor0_cmd bench check is restated for the new rule. No code change, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -141,6 +142,10 @@
 // block's - the header is a single-channel 0-255 throttle ramp with a Q12 accumulator, because a
 // whole-count step in that domain floors at 2.55 s and cannot express the configured 0.2-4.0 s range.
 #include "../Common/OutputRamp.h"
+// V2.5-Evo - 2026-10-24 - throttle-byte audit T-1, fix (b): thrByteToCmd(), the stretch on the first line of calcPWM()
+// (PWM.ino) that puts the remote's 0..240 throttle byte back onto 0..255 before every cap. Pure, host-tested in
+// Tools/tests/throttle_byte_test.cpp, shared with the TX (which uses its thrTriggerToByte()).
+#include "../Common/ThrottleByte.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -1880,7 +1885,13 @@ struct __attribute__((packed)) VescLogData {
     // Populated by convertToLogData() in Logger.ino (LOG-EXT-2).
     // All ×10 fields use 0xFFFF as the "invalid/no data" sentinel.
     // rtm_heading_chosen_dx10 uses int16, -1 sentinel for "no source".
-    uint8_t  thr_received_log;          // TX throttle last received (0-255)
+    uint8_t  thr_received_log;          // TX throttle byte last received, as received: 0-240 (0xF0 is the top since 2026-04-25).
+                                        // V2.5-Evo - 2026-10-24 - reading it: since fix (b) the remote SCALES the trigger onto
+                                        // 0-240, so thr/240 is the trigger's share (within 1 count); the motor command is
+                                        // thrByteToCmd(thr), 0-255, before the caps. For what the motors got, read motor0_cmd /
+                                        // motor1_cmd (/255; steering_type 1 only, 0 on the efoil and servo branches), not
+                                        // thr/255. Before fix (b) a full squeeze also logged 240 here (clipped), and
+                                        // the output was thr/255 of the PWM span (1941 us at 240).
     uint8_t  rtm_source;                // 0=NONE, 1=GPS_COG, 2=COMPASS_SNAPSHOT, 3=COMPASS_LIVE (legacy mode)
     uint8_t  rtm_confidence;            // 0=NONE, 1=LOW, 2=MEDIUM, 3=HIGH
     uint8_t  rtm_rx_active_log;         // RTM engagement state (0/1)

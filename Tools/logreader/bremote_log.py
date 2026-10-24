@@ -353,7 +353,7 @@ L3_FIELDS = [
     F("latitude", "f", csv_prescaled=True, unit="deg"),
     F("longitude", "f", csv_prescaled=True, unit="deg"),
     F("datetime_unix", "I", csv_prescaled=True, unit="unix_s"),
-    F("thr_received", "B", csv_prescaled=True, unit="0-255"),
+    F("thr_received", "B", csv_prescaled=True, unit="0-240"),       # 2026-10-24: the raw byte as received, 0-240 (control frames stop at 0xF0 since 2026-04-25); the motors' share is motor0_cmd / motor1_cmd out of 255
     F("rtm_source", "B", csv_prescaled=True, unit="code"),
     F("rtm_confidence", "B", csv_prescaled=True, unit="code"),
     F("rtm_rx_active", "B", csv_prescaled=True, unit="bool"),

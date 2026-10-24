@@ -78,7 +78,10 @@ VESC is powerful but fiddly. Easiest path to replicate mine:
 1. **Import my config backups** in VESC Tool (`Load Configuration` → choose the XML). Motor config and App config are separate files.
 2. **Run Motor Detection for YOUR motor** — this overwrites the electrical params (R / L / flux) with values matched to your hardware. **Do not keep my detected values.**
 3. **Set battery cutoffs for your cell count** (mine are 10S).
-4. Copy the **App / PPM** settings below as-is (they match what the BREmote RX outputs).
+4. Set the **App / PPM** settings below. Check that the control type reads **Current No Reverse** (by name), and
+   set the pulse range as in [ZERO_TO_FOILING 2.5b](ZERO_TO_FOILING.md#25b-calibrate-the-ppm-input-on-both-controllers):
+   the receiver's `PWM0_min` / `PWM0_max`, or learn it. **Do not keep the pulse numbers my backup imports** — they
+   are from my older setup and do not match the receiver's default 1000–2000 µs.
 
 ### 2a. Motor Configuration (6384, 10S) — reference
 | Setting | My value | Note |
@@ -97,19 +100,19 @@ VESC is powerful but fiddly. Easiest path to replicate mine:
 | Wheel diameter | **0.155 m** | for VESC speed calc; set to yours |
 | FOC R / L / flux linkage | 0.02382 Ω / 18.2 µH / 0.004922 | **from MY detection — run your own, don't copy** |
 
-### 2b. App Configuration — PPM (copy these as-is)
+### 2b. App Configuration — PPM
 | Setting | My value | Note |
 |---|---|---|
 | App | **PPM and UART** | UART is required for telemetry (battery/watts/temp on the remote) |
-| Control type | **2 — Current, with brake** | |
-| **Input deadband** | **3 %** (0.03) | **Default ships at 0 — set this so the motor never creeps at idle.** Anywhere 2–5 % is fine. |
-| Pulse start / center / end | **1.249 / 1.725 / 2.200 ms** | |
+| Control type | **Current No Reverse** (number 2 in my backup) | **Choose it by name.** Not *Current*: it reverses, and a released trigger asks for full reverse current. Not *Current No Reverse with Brake*: its zero is the centre pulse, so a released trigger asks for full brake. |
+| **Input deadband** | **3 %** (0.03) | **Default ships at 0 — set this so the motor never creeps at idle.** 2–3 % is the range; [ZERO_TO_FOILING 2.5b](ZERO_TO_FOILING.md#25b-calibrate-the-ppm-input-on-both-controllers) says the same. |
+| Pulse start / center / end | **As ZERO_TO_FOILING 2.5b:** the receiver's `PWM0_min` / `PWM0_max`, or learn it | With the receiver's default 1000–2000 µs: start 1.000, centre 1.500 (the midpoint, never the rest position), end 2.000 ms. Not my old 1.249 / 1.725 / 2.200 ms: on the default range a full squeeze would read about 79 % and the first quarter of the trigger would do nothing. |
 | Median filter | **On** | |
 | Safe start | **On** | |
 | Ramp up / down | **0.4 / 0.2 s** | |
 | Throttle expo | **0** | |
 
-> **The deadband is the one people miss.** With it at 0, the tiniest pulse above idle can make the motor hum/creep. Setting it to ~3 % gives a clean, quiet idle. (The BREmote firmware also outputs a true-zero center, so this is belt-and-suspenders — but set it anyway.)
+> **The deadband is the one people miss.** With it at 0, the tiniest pulse above idle can make the motor hum/creep. Setting it to ~3 % gives a clean, quiet idle. (The BREmote RX also sends exactly `PWM0_min` / `PWM1_min` whenever the trigger is released, so this is belt-and-suspenders — but set it anyway.)
 
 > **Telemetry needs UART:** run the VESC in **PPM + UART** mode so the RX can read battery %, watts, FET temp, and motor amps and forward them to your remote screen.
 

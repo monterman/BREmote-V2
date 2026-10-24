@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-24 - throttle-byte audit T-4: the Follow-Me readout option 4 (throttle %) is clamped to 99, so a full
+//   squeeze no longer hands the two-digit helper a 100. Display only, no confStruct change.
 // V2.5-Evo - 2026-10-12 - comments only: the stale "scanner" wording now describes the D-7 looks (breathing bar, end dots C0 + C9, solid bar); a project-notes reference in the updateR5ProximityBar() block says "project display rule". No code change.
 // V2.5-Evo - 2026-10-11 - audit 2026-10-11 change 3 / D-7 (owner): the Follow-Me R5 bar - FOLLOWING = the centre distance bar, solid (arithmetic moved unchanged into fmCentreBarMask()); WAITING = the same bar breathing 400 ms on / 1200 ms off on its own timer, width latched per breath; NOT READY / PAUSED = only C0 + C9 blinking 1000/500; the sweeping scanner is retired. Display only, no confStruct change, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-11 - audit 2026-10-11 D-3: showFmStopLabelHeld() - a non-blocking 2 s "St" on the F-label hold, for "stopped following, still armed". No confStruct change, SW_VERSION stays 27.
@@ -912,7 +914,11 @@ void renderOperationalDisplay()
         displayShowTwoDigitOrDash(telemetry.foil_speed);
         break;
       case 4:
-        displayShowTwoDigitOrDash((uint8_t)(calcFinalThrottle() * 100U / 255U));
+        // V2.5-Evo - 2026-10-24 - throttle-byte audit T-4: THE BUG - at a full squeeze this passed 100 to the two-digit
+        //   helper, which drew digit index 10 (not a digit) instead of 99. THE FIX: clamped to 99, the same way the power
+        //   and amps readouts below are. With the remote now scaling instead of clipping, throttle / 255 is also the
+        //   share of output the buggy gives, so the number itself is right.
+        displayShowTwoDigitOrDash(min((uint8_t)(calcFinalThrottle() * 100U / 255U), (uint8_t)99));
         break;
       case 1:
       default:

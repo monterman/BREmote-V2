@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-24 - throttle_mode DEFAULT 2 -> 1 (No Gears; owner ruling, SOP-023). defaultConf value only - no struct
+//   change, sizeof stays 136, SW_VERSION stays 27; remotes keep their stored value. dynamic_power_start (85) and the runtime
+//   max_power_cap init are unchanged: they only matter in mode 2.
 // V2.5-Evo - 2026-10-24 - throttle-byte audit T-1, fix (b), remote half: includes ../Common/ThrottleByte.h (with the other
 //   pure headers) for the control frame's throttle scaling in Radio.ino. No confStruct change, sizeof stays 136,
 //   SW_VERSION stays 27.
@@ -582,7 +585,9 @@ confStruct defaultConf = {  // V2.5-Evo — factory default configuration
   2,             // menu_timeout
   2000,          // err_delete_time
   0,             // no_lock
-  2,             // throttle_mode
+  1,             // throttle_mode (1 = No Gears: the whole trigger is the whole range). V2.5-Evo - 2026-10-24: was 2 (Dynamic
+                 //   Cap, booting at 85 %); owner ruling - mode 1 for first setup and ESC calibration, a softer riding mode
+                 //   chosen after it (docs/ZERO_TO_FOILING.md 2.5b). Default only: a stored config keeps its value.
   6,             // max_gears
   0,             // startgear
   1,             // steer_enabled

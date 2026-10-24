@@ -15,7 +15,7 @@ Scope: Read-only analysis. No firmware files modified. All findings cite file:li
 
 1. **Throttle pipeline is clean and safe.** Five sequential stages on TX, six on RX. RTM and approach-cap **only ever subtract** from user throttle — verified at `Throttle.ino:27` and `PWM.ino:43–51`. Creator safety philosophy (Section 9) is intact.
 2. **"Dynamic throttle" is NOT a time-ramp.** It is a user-adjustable static percentage cap. Boots at `dynamic_power_start` (default 85%), user toggles step it ±`dynamic_power_step` (default 5%). If you want auto-ramp-from-zero behavior, that is a NEW feature, not a bug — see §2.4.
-3. **Gears, No-gears, Dynamic — mutually exclusive.** Picked by `throttle_mode` (0/1/2). Only one runs at a time. They never stack on each other.
+3. **Gears, No-gears, Dynamic — mutually exclusive.** Picked by `throttle_mode` (0/1/2). Only one runs at a time. They never stack on each other. **Factory default since 2026-10-24: 1 (No Gears)** — the mode the ESC calibration needs (§3.4); it was 2 (Dynamic, booting at 85 %). A stored config keeps its value. After calibration, pick a softer riding mode: Gears with `startgear = 0` is the defensive one (`docs/ZERO_TO_FOILING.md` 2.5b).
 4. **Expo always runs** (default 100 = linear). Set `thr_expo` to 50 to disable shaping.
 5. **No general slew-rate / ramp limiter on TX.** Throttle can go 0→max in one 100ms cycle. The only "ramp" is the RTM-active soft cap. **VESC's own ramp settings still apply downstream** — that is your real safety net against wheelies/jumps.
 6. **PWM output is linear.** The remote scales its 0–255 throttle onto the frame's 0–240 byte; the RX stretches that back onto 0–255 at the head of `calcPWM()` (`thrByteToCmd()`, before any cap) and maps it → `PWM0_min..PWM0_max` µs with Arduino's `map()`. No curve, no expo on the RX. A full squeeze gives `PWM0_max` (since 2026-10-24; before that it stopped at 1941 µs — §3.3). Default range 1000–2000 µs (standard servo PPM).
@@ -464,7 +464,7 @@ Per project notes Section 9 and your stated values:
 
 1. ✅ **Buggy moves only when user holds trigger.** `thr_received` originates from Hall sensor; no autonomous source ever sets it.
 2. ✅ **Autonomous modes only subtract throttle.** Verified at `Throttle.ino:27`, `PWM.ino:43–51`. Three independent code paths, all subtractive.
-3. ✅ **Manual mode works when RTM/FM/GPS are buggy.** Default `throttle_mode = 0` (gears) with RTM disarmed runs entirely in `Hall.ino → Throttle.ino → Radio.ino → PWM.ino`. None of those depend on GPS, compass, or RTM state.
+3. ✅ **Manual mode works when RTM/FM/GPS are buggy.** Any `throttle_mode` (the factory default is 1, No Gears, since 2026-10-24; this line used to say 0) with RTM disarmed runs entirely in `Hall.ino → Throttle.ino → Radio.ino → PWM.ino`. None of those depend on GPS, compass, or RTM state.
 4. ✅ **Releasing trigger stops motor.** `thr_scaled = 0` when Hall is at idle; `effective_thr = 0` flows through PWM linearly to whatever `PWM_min` you have set (1000 µs default = motor off).
 5. ✅ **RTM internal error falls back to manual.** `rtm_rx_emergency_stop` only forces `effective_thr = 0` (does not lock RTM on); `rtm_rx_active` is false by default; manual control is unchanged.
 

@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-24 - throttle-byte audit T-1, fix (b), remote half: the control packet's throttle is SCALED onto
+//   0..240 (thrTriggerToByte(), Common/ThrottleByte.h) instead of clipped at 0xF0, so the top 6 % of trigger travel is
+//   live again; the clip stays as a belt. T-2: the stale "capped at 0xF2 ... 95.3 %" comment is rewritten. No confStruct
+//   change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-1: sendData() sends the v2 rider GPS packet - announcement 0xF3/0x03,
 //   then 15 bytes with this remote's GPS FIX COUNTER (Common/RiderGpsPacket.h riderGpsTxFixStep / riderGpsBuildV2), so the
 //   buggy can tell a still rider with a good fix from a dead GPS. Same 2 Hz, same 12.864 ms on air as the 14-byte v1.
@@ -477,9 +481,14 @@ void sendData(void *parameter)
         // ---------------------------------------------------------------
         // Normal 6-byte control packet
         //
-        // THR capped at 0xF2 (242): 0xF3 is the GPS meta-packet marker and
-        // must never appear in the THR field of a control packet.
-        // 0xF2 = 94.9% max throttle — imperceptible difference from uncapped 95.3%.
+        // THR is 0..240 (kThrCtrlMax = 0xF0, Common/ThrottleByte.h): 0xF1-0xF4 are the meta-packet
+        // types (0xF1 RTM, 0xF2 Follow-Me, 0xF3 GPS, 0xF4 aux) and must never appear in the THR field
+        // of a control packet. 240 is 94.1 % of the byte, so the throttle's 0..255 is SCALED onto
+        // 0..240 below, and the receiver stretches it back onto 0..255 (thrByteToCmd()): a full
+        // squeeze is full output again.
+        // V2.5-Evo - 2026-10-24 - audit T-2: this used to say "capped at 0xF2 (242) ... imperceptible
+        // difference from uncapped 95.3 %". It was written for the old 0xF2 cap, and uncapped is 100 %,
+        // not 95.3 %: the cap that stood since 2026-04-25 cost 5.9 % of output at a full squeeze.
         // ---------------------------------------------------------------
         uint8_t sendArray[6];
         memcpy(sendArray, usrConf.dest_address, 3);
@@ -507,7 +516,20 @@ void sendData(void *parameter)
           // V2.5-Evo - 2026-04-25 - P7: cap at 0xF0 (240=94.1%) to reserve 0xF1-0xFF for all meta-packet types.
           // 0xF1=RTM state, 0xF2=FM override, 0xF3=GPS coord. Was 0xF2 cap before P7.
           // 0xF1 and 0xF2 are intentionally reserved packet type bytes — do not assign.
-          sendArray[3] = (thr > 0xF0) ? 0xF0 : thr;
+          // V2.5-Evo - 2026-10-24 - throttle-byte audit T-1, fix (b), remote half: SCALE, DO NOT CLIP.
+          //   THE BUG: this line was a clip, sendArray[3] = (thr > 0xF0) ? 0xF0 : thr. Every throttle from 240 to
+          //   255 sent the same 240, so the top 6 % of trigger travel did nothing, and the receiver (255 = full) gave
+          //   1941 us at a full squeeze instead of 2000 (bench 2026-10-24).
+          //   THE FIX: thrTriggerToByte() scales 0..255 onto 0..240, rounded (0 stays 0, 1 stays 1, 255 -> 240), and
+          //   the receiver's thrByteToCmd() stretches it back: within 1 count of this throttle at every position,
+          //   2000 us at a full squeeze. It runs AFTER the arming and input-fault zeros above, so a zeroed throttle
+          //   still sends 0, and a locked remote never reaches this line. Gears, the dynamic cap and the return-to-me
+          //   cap all act before it (calcFinalThrottle()), so with the receiver's stretch their output is today's to
+          //   within 1 count. On a receiver without the stretch the whole range is 5.9 % softer (flash remotes first).
+          //   The clip stays on the scaled byte as a belt and cannot bite.
+          uint8_t thr_out = thrTriggerToByte(thr);
+          thr_out = (thr_out > kThrCtrlMax) ? kThrCtrlMax : thr_out;
+          sendArray[3] = thr_out;
           sendArray[4] = input_fault ? 127 : steer_scaled;
         }
 

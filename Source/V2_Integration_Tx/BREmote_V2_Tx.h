@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-24 - throttle-byte audit T-1, fix (b), remote half: includes ../Common/ThrottleByte.h (with the other
+//   pure headers) for the control frame's throttle scaling in Radio.ino. No confStruct change, sizeof stays 136,
+//   SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-23 - GPS-PIN-1: includes ../Common/GpsPinDetect.h; P_U1_RX / P_U1_TX are now only the DEFAULT GPS pins
 //   (initTxGPS() finds the GPS on G18 or G19 at init) and their stale "same as RX" comment is corrected. No confStruct
 //   change, sizeof stays 136, SW_VERSION stays 27, no SPIFFS reset.
@@ -158,6 +161,7 @@
 #include "../Common/FollowMeDistanceWarning.h"   // V2.5-Evo - 2026-09-17 - pure header, host-testable. Since 2026-10-07 the TX uses only kFmDistanceTelemetryMaxM from it (ConfigService.ino); the haptic it fed is removed
 #include "../Common/RiderGpsPacket.h"            // V2.5-Evo - 2026-10-12 - audit delta A-1: the v2 rider GPS packet (GPS fix counter) - pure, host-tested, shared with the RX
 #include "../Common/GpsPinDetect.h"              // V2.5-Evo - 2026-10-23 - GPS-PIN-1: G18-or-G19 verdict for the GPS pin check in GPS.ino - pure, host-tested
+#include "../Common/ThrottleByte.h"              // V2.5-Evo - 2026-10-24 - throttle-byte audit T-1, fix (b): thrTriggerToByte(), kThrCtrlMax for the control frame in Radio.ino - pure, host-tested, shared with the RX
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"

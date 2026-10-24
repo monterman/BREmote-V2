@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-10-24 — Remote: the factory default throttle mode is No Gears (was Dynamic Cap)
+
+**No config wipe, and no change to a remote that is already set up.** This is the factory default only:
+`sizeof(confStruct)` stays 136 and `SW_VERSION` stays 27, so a stored config keeps its own
+`throttle_mode`. Only a new remote, or one reset to factory settings, starts in the new mode.
+
+- **A fresh remote starts in `throttle_mode = 1` (No Gears):** the whole trigger is the whole range, and a
+  full squeeze gives full output. That is the mode the ESC/VESC PPM calibration needs; any gear or dial
+  active during the calibration is baked into the controller. In this mode a toggle tap cycles the
+  display instead of changing power.
+- **Before the first squeeze with the motors connected**, the guide now asks for: the drive off the
+  ground, the PPM control type **Current No Reverse** (by name), the range set to the receiver's
+  1000-2000 µs (or learned in mode 1 at a full squeeze), and the released trigger reading 0 %. See
+  `docs/ZERO_TO_FOILING.md`, 2.5b.
+- **After calibration, pick a softer riding mode.** Gears (`0`) with `startgear = 0` is the defensive one:
+  it starts every ride in the lowest gear. Dynamic Cap (`2`, the old default) starts at 85 % at every
+  power-up.
+- The web pages, the config tool and the TX web preview show the new default.
+
 ## 2026-10-24 — Remote + RX: a full squeeze reaches full output (2000 µs, was 1941 µs)
 
 **No config wipe.** `sizeof(confStruct)` stays 200 on the RX and 136 on the remote; `SW_VERSION` stays

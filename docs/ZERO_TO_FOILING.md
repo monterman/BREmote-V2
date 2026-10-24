@@ -296,6 +296,26 @@ than assuming it.
 
 #### 2.5b Calibrate the PPM input on **both** controllers
 
+> ### ⚠️ Before the first squeeze with the motors connected
+>
+> The remote ships in **`throttle_mode = 1` (No Gears)**: the whole trigger is the whole range, and a full
+> squeeze sends the receiver's full `PWM0_max`. That is the mode the calibration needs — and it is not the
+> gentle one. Set each controller up first:
+>
+> 1. **Drive off the ground** — wheels up, props clear — for the whole calibration.
+> 2. **PPM control type with no reverse** (in VESC Tool, one of the *No Reverse* types). On a reversing
+>    type the released-trigger pulse (1000 µs) is **full reverse**.
+> 3. **Range = the receiver's `PWM0_min` / `PWM0_max`** (1000 / 2000 µs by default): enter them, or learn
+>    them as below **in mode 1, at a full squeeze**. Learned in any other mode, the gear or the dynamic dial
+>    you were in is baked into the controller, and from then on it stops limiting power
+>    ([THROTTLE_PIPELINE_ANALYSIS §3.4](THROTTLE_PIPELINE_ANALYSIS.md)).
+> 4. **The released trigger must read 0 %.** With the trigger released the receiver sends `PWM0_min`;
+>    that pulse must sit **at or below** the controller's mapped minimum, never above it (above it is idle
+>    creep). In practice: the controller's minimum at, or just above, 1000 µs.
+>
+> A controller learned before 2026-10-24 topped out at about 1941 µs (the remote could not send more). It
+> is harmless, but re-learn it to use the top 6 % of the trigger.
+
 This is the #1 cause of *"one motor starts before the other"* and uneven steering.
 
 - Run **VESC Tool → PPM Input calibration** on **VESC 1 and VESC 2**. Move the throttle through its
@@ -311,6 +331,19 @@ This is the #1 cause of *"one motor starts before the other"* and uneven steerin
 
 > If one VESC will not calibrate at all — bar flat at zero — **stop and go back to 2.5a.** That is a
 > power fault, not a calibration fault, and no amount of re-mapping will fix it.
+
+**After calibration — pick your riding mode.** Keep `throttle_mode = 1` while you set up and calibrate.
+Once both controllers are fully calibrated, choose how the trigger should feel on the water (remote web
+portal → Gears → *Throttle Mode*):
+
+- **`0` Gears with `startgear = 0` — the defensive choice.** Every power-up starts in the lowest gear: with
+  the default 6 gears that is 1/6 of the range (about 17 %), and the toggle steps it up.
+- **`2` Dynamic Cap** — a percentage cap the toggle steps (5 % per step by default). It starts at
+  `dynamic_power_start` (85 %) at **every** power-up, even if you had dialled it down.
+- **`1` No Gears** — the whole range on the trigger, as during calibration.
+
+Changing the mode does not need a new calibration. Changing `PWM0_min` / `PWM0_max` does: re-learn in
+mode 1.
 
 ### 2.6 Steering direction — wheels-up cross-steer check ⚠️ the top safety gate
 Differential steering is **cross-steered**:
@@ -357,6 +390,7 @@ Power **one board at a time** (the other OFF, per 2.3), join its AP (password de
 - **Units:** TX `speed_src` (lead with **mph**: value 5 = TX GPS mph, 4 = RX GPS mph) and `dist_unit` (0 = m/km, 1 = ft/mi). A common convention: **distances in metres, speeds in mph.**
 - **Display:** `fm_display_mode` (1=TX speed … 2=distance to buggy), `rtm_display_mode`.
 - **Feel:** `rtm_steer_response` preset, `motor_ramp_s` (0.75 s default; smooths throttle + steering), `near_diag_offset_deg` (offset off straight-behind).
+- **Riding mode:** TX `throttle_mode` (factory default 1 = No Gears, the calibration mode). Pick a softer one once the ESCs are calibrated — see the end of 2.5b.
 - **Timers:** `fm_arm_timeout_s` (0 = never, the default — the arm survives float→takeoff→tow→whip and stays armed for the whole session), `sleep_timeout_s`.
 - **Magnet (only if the Hall sensor is fitted):** TX `mag_mode` (0=off, 1=FM, 2=RTM, 3=FM@2s/RTM@5s).
 

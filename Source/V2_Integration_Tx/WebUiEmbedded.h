@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-24 - throttle_mode: def 2 -> 1 and the "(default)" label moves to No Gears, with the calibration and
+//   riding-mode hint (owner ruling). Key, type and range unchanged; mirrored byte-for-byte into the docs web serial config
+//   tool TX_FIELDS.
 // V2.5-Evo - 2026-10-09 - mag_mode text only (audits "magnet bands" L-3, "magnet station step" L-1 / L-2): the toggle
 //   disarm sentence no longer offers station F0 (unreachable) and says the combo steps the station before the first
 //   squeeze; the display shows F1 to F5 (was "F1, F2 or F3"); a refused 5 s hold gives "no 5 second buzz" (the 0.6 s
@@ -160,7 +163,7 @@ const fields=[
 {key:"dest_address",label:"Dest Address",description:"Paired RX device address. Set automatically by the pairing sequence — do not edit manually.",group:"Radio",type:"address3",def:"00,00,00"},
 {key:"max_gears",label:"Max Gears",description:"Total throttle gears available. 1=no gear system (single fixed power level), 10=maximum. startgear must be less than this value. Default 6.",group:"Gears",type:"int",def:6,min:1,max:10},
 {key:"startgear",label:"Start Gear",description:"Gear selected on power-on or after unlock. 0=gear 1 (lowest power). Must be less than max_gears.",group:"Gears",type:"int",def:0,min:0,max:9},
-{key:"throttle_mode",label:"Throttle Mode",description:"0=Gears, 1=No Gears, 2=Dynamic Cap (default)",group:"Gears",type:"enum",def:2,min:0,max:2,options:[{v:0,l:"Gears"},{v:1,l:"No Gears"},{v:2,l:"Dynamic Cap"}]},
+{key:"throttle_mode",label:"Throttle Mode",description:"0=Gears, 1=No Gears (default: the whole trigger is the whole range; use it to calibrate the ESC), 2=Dynamic Cap. After calibration, Gears with Start Gear 0 is the gentlest riding mode.",group:"Gears",type:"enum",def:1,min:0,max:2,options:[{v:0,l:"Gears"},{v:1,l:"No Gears"},{v:2,l:"Dynamic Cap"}]},
 {key:"dynamic_power_start",label:"Dynamic Power Start %",description:"Starting power cap in Dynamic Cap mode (throttle_mode=2). 10%=very conservative start, 100%=full power from the beginning.",group:"Gears",type:"int",def:85,min:10,max:100,unit:"%"},
 {key:"dynamic_power_step",label:"Dynamic Power Step %",description:"Power cap change per toggle press in Dynamic Cap mode (throttle_mode=2). 1%=finest control, 25%=coarsest.",group:"Gears",type:"int",def:5,min:1,max:25,unit:"%"},
 {key:"gear_change_waittime",label:"Gear Change Wait",description:"Toggle hold duration to register a gear change. 0=instant change, 65535=very long hold required. Milliseconds. Default 80.",group:"Gears",type:"int",def:80,min:0,max:65535,unit:"ms"},

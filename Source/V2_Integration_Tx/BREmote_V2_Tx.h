@@ -960,7 +960,7 @@ volatile uint8_t steer_scaled = 0;
 #define TRIGGER_RELEASED_MAX 10
 static inline bool triggerReleased() { return thr_scaled < TRIGGER_RELEASED_MAX; }
 
-volatile uint8_t thr_sent = 0;   // Post-expo+gear throttle actually sent over radio
+volatile uint8_t thr_sent = 0;   // V2.5-Evo - 2026-10-24 - audit T-7: the throttle BYTE actually sent, 0-240 (expo, gears and caps applied, then scaled onto 0..240 by thrTriggerToByte(); a full squeeze is 240). The same byte as the receiver's thr_received; as a share of 255 it tops out at 94 %
 volatile uint8_t steer_sent = 0; // Steering value actually sent over radio
 
 // V2.5-Evo - 2026-04-25 - P7 RTM meta-packet burst queue.

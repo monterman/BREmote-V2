@@ -303,12 +303,15 @@ than assuming it.
 > gentle one. Set each controller up first:
 >
 > 1. **Drive off the ground** — wheels up, props clear — for the whole calibration.
-> 2. **PPM control type with no reverse** (in VESC Tool, one of the *No Reverse* types). On a reversing
->    type the released-trigger pulse (1000 µs) is **full reverse**.
-> 3. **Range = the receiver's `PWM0_min` / `PWM0_max`** (1000 / 2000 µs by default): enter them, or learn
->    them as below **in mode 1, at a full squeeze**. Learned in any other mode, the gear or the dynamic dial
->    you were in is baked into the controller, and from then on it stops limiting power
->    ([THROTTLE_PIPELINE_ANALYSIS §3.4](THROTTLE_PIPELINE_ANALYSIS.md)).
+> 2. **PPM control type: Current No Reverse** (choose it by that name in VESC Tool). Not *Current*: on a
+>    reversing type the released-trigger pulse (1000 µs) is **full reverse**. Not *Current No Reverse with
+>    Brake* either: its zero is the centre pulse, so a released trigger is a **full brake** request.
+> 3. **Range = the receiver's `PWM0_min` / `PWM0_max`** (1000 / 2000 µs by default). Best: learn them as
+>    below **in mode 1, at a full squeeze**. Learned in any other mode, the gear or the dynamic dial you were
+>    in is baked into the controller, and from then on it stops limiting power
+>    ([THROTTLE_PIPELINE_ANALYSIS §3.4](THROTTLE_PIPELINE_ANALYSIS.md)). If you enter them by hand instead,
+>    put the start **a little above `PWM0_min`**, or keep the **2–3 % deadband** below. A start of exactly
+>    `PWM0_min` with zero deadband leaves no margin for idle creep. Centre = the midpoint (1500 µs).
 > 4. **The released trigger must read 0 %.** With the trigger released the receiver sends `PWM0_min`;
 >    that pulse must sit **at or below** the controller's mapped minimum, never above it (above it is idle
 >    creep). In practice: the controller's minimum at, or just above, 1000 µs.
@@ -319,13 +322,19 @@ than assuming it.
 This is the #1 cause of *"one motor starts before the other"* and uneven steering.
 
 - Run **VESC Tool → PPM Input calibration** on **VESC 1 and VESC 2**. Move the throttle through its
-  full travel and capture **min / centre / max** on each. A typical hobby PPM range lands somewhere
-  around 1.0–2.0 ms; what matters is not the numbers but that **both controllers see the same range**.
+  full travel and capture **min / max** on each. **For Current No Reverse, then set the centre to the
+  midpoint (1500 µs for 1000 / 2000), never the rest position.** A trigger has no natural centre: a
+  centre captured with the trigger released lands on the start, and on a control type that maps through
+  the centre a released trigger then no longer reads 0 % (the 0 % check in item 4 above catches it).
+  A typical hobby PPM range lands somewhere around 1.0–2.0 ms; what matters is not the numbers but that
+  **both controllers see the same range**.
 - Tune so **both motors start at the same low throttle and top out together** — mapped start-to-end,
   so the two match across the whole pull, not just at full throttle.
 - Set the **minimum just above the resting pulse** so there is no idle creep. Too close to rest and
   the motor will crawl with the trigger released; a small margin fixes it.
-- Use **zero deadband** unless you have a reason otherwise.
+- Keep a **2–3 % input deadband** (the [Beta Testing Sheet](Beta_Testing_Sheet.md) uses 3 %). It is the
+  margin between the released pulse and the first motor current; zero deadband with the start exactly at
+  `PWM0_min` leaves none.
 - Also run **motor / FOC detection** per VESC. See `docs/VESC_SMOOTH_START_QUICK_REFERENCE.md` and
   `docs/VESC_TUNING_PROCESS.md`.
 

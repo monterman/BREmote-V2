@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-24 - throttle-byte audit T-1, fix (b), receiver half: includes ../Common/ThrottleByte.h (after OutputRamp.h) for calcPWM()'s stretch; the thr_received_log field comment says the byte is 0-240 and how to read it now. Log format, record sizes, confStruct unchanged: sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-3: stickyCapArmRise(initial, open_rise) - the sticky arm with the rise chosen by the caller (closed only for the Follow-Me 30 s end from a held HOLD); stickyCapArm() = it with the rise open, unchanged for every existing caller. Runtime only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-1: includes ../Common/RiderGpsPacket.h (the v2 rider GPS packet with the remote's fix counter); new runtime globals rx_tx_gps_solution_ms / rx_tx_gps_solution_seq / rx_tx_gps_proto - "the rider's GPS is alive" is now judged by a NEW GPS SOLUTION, not by a change of coordinates. Runtime only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-11 - FOLLOW-ME NEVER SWITCHES ITSELF OFF (audit 2026-10-11 change 1): includes ../Common/FollowMePause.h (the pause classification, the 30 s long-loss clock and the heading creep, host-tested). Include only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -128,6 +129,10 @@
 // block's - the header is a single-channel 0-255 throttle ramp with a Q12 accumulator, because a
 // whole-count step in that domain floors at 2.55 s and cannot express the configured 0.2-4.0 s range.
 #include "../Common/OutputRamp.h"
+// V2.5-Evo - 2026-10-24 - throttle-byte audit T-1, fix (b): thrByteToCmd(), the stretch on the first line of calcPWM()
+// (PWM.ino) that puts the remote's 0..240 throttle byte back onto 0..255 before every cap. Pure, host-tested in
+// Tools/tests/throttle_byte_test.cpp, shared with the TX (which uses its thrTriggerToByte()).
+#include "../Common/ThrottleByte.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -1833,7 +1838,13 @@ struct __attribute__((packed)) VescLogData {
     // Populated by convertToLogData() in Logger.ino (LOG-EXT-2).
     // All ×10 fields use 0xFFFF as the "invalid/no data" sentinel.
     // rtm_heading_chosen_dx10 uses int16, -1 sentinel for "no source".
-    uint8_t  thr_received_log;          // TX throttle last received (0-255)
+    uint8_t  thr_received_log;          // TX throttle byte last received, as received: 0-240 (0xF0 is the top since 2026-04-25).
+                                        // V2.5-Evo - 2026-10-24 - reading it: since fix (b) the remote SCALES the trigger onto
+                                        // 0-240, so thr/240 is the trigger's share (within 1 count); the motor command is
+                                        // thrByteToCmd(thr), 0-255, before the caps. For what the motors got, read motor0_cmd /
+                                        // motor1_cmd (/255; steering_type 1 only, 0 on the efoil and servo branches), not
+                                        // thr/255. Before fix (b) a full squeeze also logged 240 here (clipped), and
+                                        // the output was thr/255 of the PWM span (1941 us at 240).
     uint8_t  rtm_source;                // 0=NONE, 1=GPS_COG, 2=COMPASS_SNAPSHOT, 3=COMPASS_LIVE (legacy mode)
     uint8_t  rtm_confidence;            // 0=NONE, 1=LOW, 2=MEDIUM, 3=HIGH
     uint8_t  rtm_rx_active_log;         // RTM engagement state (0/1)

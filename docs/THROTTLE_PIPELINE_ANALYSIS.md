@@ -3,6 +3,12 @@
 Date: 2026-05-03
 Scope: Read-only analysis. No firmware files modified. All findings cite file:line in V2.5-EVO source tree.
 
+> **Updated 2026-10-24 — the throttle byte now reaches full output.** The remote scales its 0–255 throttle onto the
+> frame's 0–240 byte and the receiver stretches it back onto 0–255 (`Source/Common/ThrottleByte.h`), so a full squeeze
+> gives `PWM0_max` (2000 µs) instead of 1941 µs. Rewritten for it: summary item 6, the stage tables, §3.1, §3.3
+> (which used to call the loss "essentially zero"), the calibration numbers in §3.4, and item D. Line numbers
+> elsewhere in this document are from 2026-05 and have moved.
+
 ---
 
 ## EXECUTIVE SUMMARY (read this first)
@@ -12,7 +18,7 @@ Scope: Read-only analysis. No firmware files modified. All findings cite file:li
 3. **Gears, No-gears, Dynamic — mutually exclusive.** Picked by `throttle_mode` (0/1/2). Only one runs at a time. They never stack on each other.
 4. **Expo always runs** (default 100 = linear). Set `thr_expo` to 50 to disable shaping.
 5. **No general slew-rate / ramp limiter on TX.** Throttle can go 0→max in one 100ms cycle. The only "ramp" is the RTM-active soft cap. **VESC's own ramp settings still apply downstream** — that is your real safety net against wheelies/jumps.
-6. **PWM output is linear.** RX maps the throttle byte 0–255 → `PWM0_min..PWM0_max` µs with Arduino's `map()`. No hidden RX-side scaling. Default range 1000–2000 µs (standard servo PPM).
+6. **PWM output is linear.** The remote scales its 0–255 throttle onto the frame's 0–240 byte; the RX stretches that back onto 0–255 at the head of `calcPWM()` (`thrByteToCmd()`, before any cap) and maps it → `PWM0_min..PWM0_max` µs with Arduino's `map()`. No curve, no expo on the RX. A full squeeze gives `PWM0_max` (since 2026-10-24; before that it stopped at 1941 µs — §3.3). Default range 1000–2000 µs (standard servo PPM).
 7. **Failsafe = no PWM pulses, not 1500µs neutral.** When LoRa drops for `failsafe_time` (default 1000ms), RX stops generating PWM. VESC sees no signal and falls into its own loss-of-signal behavior (typically coast).
 8. **Jan's upstream has 5 high/critical safety bugs.** All five appear fixed in V2.5-EVO. Three medium bugs likely fixed but not 100% verified. Use the audit table in §4 as the courtesy report back to Jan.
 9. **FreeRTOS is the right call here.** §3 explains why with file evidence. Jan's "FreeRTOS makes field debugging hard" concern is fair philosophically but overstated for *this* codebase.
@@ -27,7 +33,7 @@ Scope: Read-only analysis. No firmware files modified. All findings cite file:li
 [Hall ADC raw] → [Stage 1: filter+calibrate] → [Stage 2: expo curve] →
 [Stage 3: mode branch (gears OR no-gears OR dynamic)] →
 [Stage 4: RTM TX cap (subtract-only)] →
-[Stage 5: pack to 0xF0 max byte] → LoRa TX
+[Stage 5: scale 0–255 onto the 0–240 byte] → LoRa TX
 ```
 
 | Stage | File:Line | What it does | SPIFFS field | Conditional |
@@ -38,7 +44,7 @@ Scope: Read-only analysis. No firmware files modified. All findings cite file:li
 | 3b. No-gears (mode 1) | `Throttle.ino:12` | `result = shaped` (passthrough) | `throttle_mode=1` | mode==1 |
 | 3c. Dynamic cap (mode 2) | `Throttle.ino:15` | `result = shaped × max_power_cap / 100` | `throttle_mode=2`, `dynamic_power_start`, `dynamic_power_step` | mode==2 |
 | 4. RTM TX cap | `Throttle.ino:27` + `RTMState.ino:86–97` | `if (result > rtm_thr_cap_tx) result = rtm_thr_cap_tx` | `rtm_throttle_start_pct`, `rtm_throttle_max_pct`, `rtm_ramp_duration_s` | Only during RTM ACTIVE; else `rtm_thr_cap_tx = 255` |
-| 5. Pack to 0xF0 | `Radio.ino:362–366` | Cap at 0xF0 (240 dec) so 0xF1–0xFF stay reserved for meta-packets | — | Always |
+| 5. Scale to 0–240 | `Radio.ino` `sendData()`, `thrTriggerToByte()` in `Common/ThrottleByte.h` | `byte = (thr × 240 + 127) / 255` (rounded, 0 stays 0), so 0xF1–0xFF stay reserved for meta-packets. Until 2026-10-24 this was a clip at 0xF0, which made the top ~6 % of trigger travel dead | — | Always |
 
 ### 1.2 RX side (board unit)
 
@@ -51,7 +57,7 @@ LoRa RX → [Stage 1: unpack] → [Stage 2: RTM safety gates → emergency stop 
 | Stage | File:Line | What it does | SPIFFS field | Conditional |
 |---|---|---|---|---|
 | 1. Unpack | `Radio.ino:459–460` | `thr_received = rcvArray[3]; steering_received = rcvArray[4]` | — | On valid packet |
-| 2. RTM gates | `RTMState.ino:33–130` + `PWM.ino:43` | If any of 9 safety gates fail → `rtm_rx_emergency_stop = true` → `effective_thr = 0` | `rtm_*` family, `vesc_erpm_per_kmh`, `tx_gps_stale_timeout_ms` | RTM active only |
+| 2. RTM gates + stretch | `RTMState.ino:33–130` + the first line of `calcPWM()` | If any of 9 safety gates fail → `rtm_rx_emergency_stop = true` → `effective_thr = 0`. Otherwise `effective_thr = thrByteToCmd(thr_received)`: the 0–240 byte stretched back onto 0–255 (240 or more → 255, 0 stays 0), before every cap (since 2026-10-24) | `rtm_*` family, `vesc_erpm_per_kmh`, `tx_gps_stale_timeout_ms` | Gates: RTM active only. Stretch: always |
 | 3. Approach cap | `RTMState.ino:289–321` + `PWM.ino:48–51` | Linear ramp: cap goes 255→0 as TX-RX distance shrinks from `rtm_approach_zone_m` to `rtm_stop_distance_m` | `rtm_approach_zone_m`, `rtm_stop_distance_m` | RTM active only |
 | 4. Failsafe gate | `PWM.ino:13` | If `millis() - last_packet >= failsafe_time` → skip the entire pulse generation block | `failsafe_time` (100–10000ms, default 1000) | Always evaluated |
 | 5. Linear µs map | `PWM.ino:63–64`, `:70–71`, `:94` | `map(effective_thr, 0, 255, PWM_min, PWM_max)` (with `+/- trim` per channel) | `PWM0_min/max`, `PWM1_min/max`, `trim`, `steering_type`, `steering_inverted`, `steering_influence` | Always |
@@ -115,7 +121,7 @@ Whenever `thr_scaled = 0` (Hall reading at or below `thr_idle`) OR system locked
 **Q: Can RTM ever ADD throttle?**
 **No.** Verified at three places:
 - `Throttle.ino:27` — `if (result > rtm_thr_cap_tx) result = rtm_thr_cap_tx;` — only reduces.
-- `PWM.ino:43` — `effective_thr = rtm_rx_emergency_stop ? 0 : thr_received;` — emergency forces 0, never raises.
+- `calcPWM()`, first line — `effective_thr = rtm_rx_emergency_stop ? 0 : thrByteToCmd(thr_received);` — emergency forces 0, never raises. The stretch (2026-10-24) only rescales the rider's own byte back to 0–255 (0 stays 0), and every cap is applied after it.
 - `PWM.ino:48–51` — `if (rtm_approach_cap < effective_thr) effective_thr = rtm_approach_cap;` — only reduces.
 **Section 9 creator safety philosophy is intact.**
 
@@ -292,7 +298,7 @@ If you agree with §2.8, here's the action plan in order:
 | Field | Range | Default | Units | Meaning |
 |---|---|---|---|---|
 | `PWM0_min` | 500–2500 | 1000 | µs | Pulse width sent at throttle byte = 0 (motor 0 / right motor) |
-| `PWM0_max` | 500–2500 | 2000 | µs | Pulse width sent at throttle byte = 255 (after RX-side `effective_thr`) |
+| `PWM0_max` | 500–2500 | 2000 | µs | Pulse width sent at a full squeeze: receiver command 255, which is the remote's top byte 240 stretched (§3.3). Until 2026-10-24 a full squeeze stopped at 1941 µs |
 | `PWM1_min` / `PWM1_max` | same | 1000 / 2000 | µs | Same for motor 1 / left motor |
 | `trim` | -500..+500 | 0 | µs | Differential offset added to motor 0, subtracted from motor 1 |
 | `failsafe_time` | 100–10000 | 1000 | ms | After this much silence on LoRa, PWM output stops |
@@ -307,25 +313,34 @@ Defaults from `BREmote_V2_Rx.h:218`. Validation from `ConfigService.ino:22–25,
 
 VESC's PPM input is happy with either 1000–2000 (standard) or any subset/superset within reasonable limits. VESC does its own start/end-pulse learn during the **PPM Mapping** wizard.
 
-**1000–2000 µs vs 500–2000 µs:** 500 µs is below standard servo range; some ESCs reject it as invalid or treat it as no-signal. **Stick to 1000–2000 unless you have measured evidence the VESC accepts wider range.** Wider range is not finer resolution — the throttle byte is still 0–255, so `(2000-1000)/255 = 3.92 µs` per step vs `(2000-500)/255 = 5.88 µs` per step. **Wider range = COARSER steps**, not finer.
+**1000–2000 µs vs 500–2000 µs:** 500 µs is below standard servo range; some ESCs reject it as invalid or treat it as no-signal. **Stick to 1000–2000 unless you have measured evidence the VESC accepts wider range.** Wider range is not finer resolution — the throttle byte is 0–240 (241 steps), so `(2000-1000)/240 ≈ 4.2 µs` per step vs `(2000-500)/240 = 6.25 µs` per step. **Wider range = COARSER steps**, not finer.
 
-### 3.3 Throttle byte → PWM linearization
+### 3.3 Throttle byte → PWM linearization (rewritten 2026-10-24)
 
-From `PWM.ino:63`:
+**What 0xF0 means in plain language:** `0xF0` is hexadecimal notation for the decimal number **240**. The throttle byte that travels over LoRa is a single 8-bit number from 0 to 255. The firmware reserves the top 15 values (`0xF1`=241 through `0xFF`=255) as "meta-packet markers" so the RX can tell `0xF3` apart from a normal throttle of 243. So the control packet uses byte values 0–240 for throttle — 240 is 94.1 % of the byte — leaving 241–255 as code numbers for special packets.
+
+**How a full squeeze becomes full output.** The remote scales, the receiver stretches back, and both steps live in one shared header, `Source/Common/ThrottleByte.h` (host-tested in `Tools/tests/throttle_byte_test.cpp`):
 ```cpp
-PWM0_time = constrain(map(effective_thr, 0, 255, usrConf.PWM0_min, usrConf.PWM0_max) + usrConf.trim,
+// remote, Radio.ino sendData() - after the arming and input-fault zeros
+thr_out = thrTriggerToByte(thr);          // (thr × 240 + 127) / 255: 0..255 -> 0..240, rounded, 0 stays 0
+// receiver, PWM.ino calcPWM() - the first line, before every cap
+effective_thr = rtm_rx_emergency_stop ? 0 : thrByteToCmd(thr_received);   // 0..240 -> 0..255, 240 or more -> 255
+// ... the caps, the ramp, the mixer ...
+PWM0_time = constrain(map(ramped_thr, 0, 255, usrConf.PWM0_min, usrConf.PWM0_max) + usrConf.trim,
                       usrConf.PWM0_min, usrConf.PWM0_max);
 ```
 
-`map()` is Arduino's linear interpolation: `out = out_min + (in - in_min) × (out_max - out_min) / (in_max - in_min)`. **No curve. No scaling. No hidden expo on RX.** The throttle byte is the single source of authority — whatever shaping happened on TX (gears, dynamic cap, expo, RTM cap) is baked into the byte. RX is dumb and faithful.
+`map()` is Arduino's linear interpolation: `out = out_min + (in - in_min) × (out_max - out_min) / (in_max - in_min)`. **No curve. No hidden expo on RX.** Whatever shaping happened on TX (gears, dynamic cap, expo, RTM cap) is baked into the byte before the scaling. The round trip lands within 1 count of the remote's throttle at every position (never below it), 0 stays 0, and a full squeeze gives `PWM0_max`.
 
-**What 0xF0 means in plain language:** `0xF0` is hexadecimal notation for the decimal number **240**. The throttle byte that travels over LoRa is a single 8-bit number from 0 to 255. The firmware reserves the top 15 values (`0xF1`=241 through `0xFF`=255) as "meta-packet markers" so the RX can tell `0xF3` apart from a normal throttle of 243. As a result the throttle byte is capped at `0xF0` = 240. So the LoRa packet uses byte values 0–240 for actual throttle, leaving 241–255 as code numbers for special packets.
+- **Every receiver cap gives exactly what it gave before.** Each cap is a `min()` applied after the stretch, so the sticky return cap's ceiling of 60 still means `map(60)` = 1235 µs, and so on.
+- **`thr_received` is still the byte as received.** For the same squeeze it is about 6 % smaller than before, so the receiver's thresholds sit 1–2 trigger counts later: "below 8" still means a trigger of 7 or less, the deadman's 25 needs 27, and "released" (below 25) reads true up to 26.
+- **Logs:** `thr_received` is now 0–240 in proportion to the trigger (`thr / 240` is the trigger's share). For what the motors got, read `motor0_cmd` / `motor1_cmd` (`/ 255`), not `thr / 255`.
 
-**Effect on motor power: essentially zero.** When VESC PPM Mapping is run with the trigger fully squeezed, VESC sees `1941 µs` and remembers *that* value as 100% throttle. From then on, a fully squeezed BREmote trigger = full motor power, because VESC scales motor commands across whatever range it learned. You are NOT losing 6% of motor power, you are using 240 of 255 byte values for throttle (94% of the byte space) and VESC calibrates to that.
+**What it was before, and why this section used to call it fine.** Until 2026-10-24 the remote *clipped* the throttle at 240 and the receiver kept 255 as full: `map(240, 0, 255, 1000, 2000)` = **1941 µs**. A full squeeze never reached 2000 µs in a straight line (the bench on 2026-10-24 logged 367 samples at 1941 µs, never higher), and every throttle from 240 to 255 sent the same byte, so the top ~6 % of trigger travel did nothing. This section used to say the effect on motor power was "essentially zero", because a VESC PPM Mapping run at a full squeeze learns 1941 µs as 100 %. That only hid the loss inside one calibration: it is per buggy, invisible in the firmware and in the logs, and the top of the trigger stayed dead. The `map(0, 240, ...)` fix it then withdrew would also have raised every receiver cap by 6.25 %; the fix that shipped stretches at the input instead, so the caps do not move.
 
-**The only situation where the 0xF0 cap actually matters:** if you swap to a different remote (one that goes 0–255) without re-running VESC PPM Mapping, the new remote could overshoot beyond what VESC learned. Not a real concern for a single-remote setup.
+**If your VESC was learned at about 1941 µs** (by following the old advice): it is harmless — up to a trigger of 240 it sees the same pulses as before — but it saturates over the last 6 % of travel. Re-run PPM Mapping as in §3.4, or set its range to the receiver's 1000–2000 µs, to use that last 6 %.
 
-**Conclusion:** 0xF0 is fine as-is. No action needed. (The earlier note suggesting a `map(0, 240, ...)` fix is withdrawn — it would change nothing user-visible and adds complexity.)
+**Mixed fleet: flash every remote first, then the receiver.** A new remote on an old receiver is 5.9 % softer everywhere (top 1941 µs, the safe direction). An old remote on a new receiver is 6.25 % hotter everywhere. If two remotes are cloned to one receiver, flash both before the receiver. This receiver has no re-press lock: in the hot half-flashed state its only soft start is the motor ramp, so the order matters.
 
 ### 3.4 VESC PPM calibration — the right procedure
 
@@ -340,9 +355,11 @@ VESC's PPM Mapping wizard learns three points: pulse-at-min-stick, pulse-at-cent
 6. Release trigger to physical min and **hold** while clicking "Save Min".
 7. **After saving:** restore `thr_expo` to your preferred ride value (100 default, or whatever you tune to — see §2.9).
 
-If you do this with `throttle_mode = 0` and `gear = 3 of 6`, the VESC learns max = `(4/6) × 1941 = 1294 µs`, and it will never go above that in operation — **even if you later switch to gear 6 of 6**, because the VESC has already locked its max at 1294. You'd have to re-run the wizard.
+If you do this with `throttle_mode = 0` and `gear = 3 of 6` (the fourth of six gears, multiplier 4/6), the VESC learns max = `PWM_min + 4/6 × (PWM_max − PWM_min)` = `1000 + 667` ≈ **1666 µs** as its 100 %. The share multiplies the span above `PWM_min`, not the whole pulse. From then on the VESC reaches full power at 1666 µs: **in gear 6 of 6 that is two-thirds of the trigger**, the last third does nothing, and every lower gear is hotter than its number says. You'd have to re-run the wizard.
 
-**Same trap with dynamic cap:** if you calibrate with `max_power_cap = 50%`, VESC learns max = `0.5 × 1941 = 971 µs ≈ no throttle`. Disastrous if you don't notice.
+**Same trap with dynamic cap:** if you calibrate with `max_power_cap = 50%`, the VESC learns max ≈ `1000 + 0.5 × 1000` ≈ **1500 µs**: full power at half trigger, and the dial stops limiting anything above 50 %. Disastrous if you don't notice — it fails *hot*, not dead.
+
+(Corrected 2026-10-24: this used to give `(4/6) × 1941 = 1294 µs` and `0.5 × 1941 = 971 µs ≈ no throttle`, multiplying the whole pulse; and since 2026-10-24 a full squeeze is 2000 µs, not 1941.)
 
 **Standard procedure, every VESC calibration:**
 - `throttle_mode = 1` (or `throttle_mode = 0` with `gear = max_gears - 1`, or `throttle_mode = 2` with `max_power_cap = 100`).
@@ -350,12 +367,13 @@ If you do this with `throttle_mode = 0` and `gear = 3 of 6`, the VESC learns max
 - RTM disarmed.
 - System unlocked.
 - Then: trigger full → save max; trigger idle → save min.
+- Since 2026-10-24 a full squeeze in this setup sends `PWM0_max` (2000 µs), so the VESC learns the receiver's whole range. A VESC learned before that, at about 1941 µs, should be re-learned this way (or set to 1000–2000 µs) to use the last 6 % of the trigger.
 
 **Verify after calibration:** in VESC Tool's Realtime Data, confirm full trigger = duty cycle 95%+, mid trigger ≈ 50% duty. If full trigger is showing 70% duty, your TX endpoints are below the VESC's learned range — re-calibrate with TX at full power as above.
 
 ### 3.5 What "minimum and maximum PWM" actually controls
 - **Endpoints:** they pin where in the µs spectrum your remote's "off" and "full" land.
-- **Resolution:** is *always* 256 steps regardless of endpoint range — the LoRa byte is one byte. Wider endpoint range = bigger µs steps, not more steps.
+- **Resolution:** is *always* 241 steps (bytes 0–240) regardless of endpoint range — the LoRa byte is one byte, and its top 15 values are meta-packet types. Wider endpoint range = bigger µs steps, not more steps.
 - **VESC compatibility:** the VESC needs to see your endpoints fall within whatever range it was calibrated to. If you change BREmote endpoints after VESC PPM Mapping, the VESC sees the wrong range and behaves wrong.
 - **Other ESCs (FlipSky, Fasc):** all standard servo PPM. 1000–2000 µs works on all of them. Don't go below 1000 unless you have reason.
 
@@ -516,15 +534,12 @@ Plan only — do not edit yet:
 Output the full plan with file:line targets. Do not modify any file.
 ```
 
-**D. Throttle byte 0xF0 endpoint loss** (cosmetic / max-speed feel)
-```
-RX PWM.ino map(effective_thr, 0, 255, PWM0_min, PWM0_max) maps a TX byte
-that is in fact capped at 0xF0 (240). At full TX squeeze the RX outputs
-~1941 µs instead of full 2000 µs. Propose changing PWM.ino map() to use
-input range 0..240 so the user gets the full PWM0_max at full trigger.
-Identify all sites in PWM.ino requiring the change. Do not modify files —
-plan only.
-```
+**D. Throttle byte 0xF0 endpoint loss** — ✅ **FIXED 2026-10-24**, not by the `map()` change first proposed here
+(that would have raised every receiver cap by 6.25 %, and the servo branch's `map()` has no outer constrain). The
+fix: the remote scales its 0–255 throttle onto 0–240 instead of clipping, and the receiver stretches 0–240 back onto
+0–255 on the first line of `calcPWM()`, before every cap (`Source/Common/ThrottleByte.h`). A full squeeze gives
+`PWM0_max`, the top ~6 % of trigger travel is live again, and every receiver cap gives exactly what it gave before.
+See §3.3.
 
 ---
 
@@ -533,7 +548,7 @@ plan only.
 - TX throttle math: `Source/V2_Integration_Tx/Throttle.ino:5–30`
 - TX expo curve: `Source/V2_Integration_Tx/Hall.ino:189–215`
 - TX RTM cap: `Source/V2_Integration_Tx/RTMState.ino:86–97`
-- TX packet pack + 0xF0 cap: `Source/V2_Integration_Tx/Radio.ino:362–366`
+- TX packet, throttle scaled onto 0–240: `Source/V2_Integration_Tx/Radio.ino` `sendData()`; the scaling and the RX stretch: `Source/Common/ThrottleByte.h`
 - TX confStruct: `Source/V2_Integration_Tx/BREmote_V2_Tx.h:56–280`
 - TX defaultConf: `Source/V2_Integration_Tx/BREmote_V2_Tx.h:218`
 - RX PWM math: `Source/V2_Integration_Rx/PWM.ino:37–108`

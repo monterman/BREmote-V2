@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-25 - defaultConf.steer_during_auto 0 -> 1 (owner ruling): a fresh or factory-reset buggy lets the stick TAKE OVER automatic steering while it is held and hand back on centring, instead of cancelling. Value only: same field, sizeof stays 200, SW_VERSION stays 36, a stored config keeps its own value.
 // V2.5-Evo - 2026-10-24 - throttle-byte audit T-1, fix (b), receiver half: includes ../Common/ThrottleByte.h (after OutputRamp.h) for calcPWM()'s stretch; the thr_received_log field comment says the byte is 0-240 and how to read it now. Log format, record sizes, confStruct unchanged: sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-3: stickyCapArmRise(initial, open_rise) - the sticky arm with the rise chosen by the caller (closed only for the Follow-Me 30 s end from a held HOLD); stickyCapArm() = it with the rise open, unchanged for every existing caller. Runtime only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-1: includes ../Common/RiderGpsPacket.h (the v2 rider GPS packet with the remote's fix counter); new runtime globals rx_tx_gps_solution_ms / rx_tx_gps_solution_seq / rx_tx_gps_proto - "the rider's GPS is alive" is now judged by a NEW GPS SOLUTION, not by a change of coordinates. Runtime only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -646,11 +647,11 @@ struct confStruct {
     //
     // steer_during_auto - what the rider's steering stick does while the buggy is steering itself
     //   (Follow-Me following, auto-return FM_RETURN, and a classic return-to-me):
-    //     0 = CANCEL (default). A held push (40 counts from centre for 0.5 s, after the first 2 s
+    //     0 = CANCEL (the factory default until 2026-10-25). A held push (40 counts from centre for 0.5 s, after the first 2 s
     //         of a run) ends the automatic steering: following drops to ARMED-unlatched, an
     //         auto-return stops through HOLD, and the remote exits a classic return-to-me. Exactly
     //         the behaviour before this setting existed - the three cancel paths run unchanged.
-    //     1 = TAKE OVER. The same push makes the stick steer the buggy while it is held; centring it
+    //     1 = TAKE OVER (the factory default since 2026-10-25, owner ruling). The same push makes the stick steer the buggy while it is held; centring it
     //         (within 30 counts for 0.2 s) hands the steering back to the controller and nothing is
     //         cancelled. The takeover changes only WHICH steering byte calcPWM() applies: every
     //         throttle cap, the stop radius, the return proof and every safety gate keep running.
@@ -658,8 +659,8 @@ struct confStruct {
     //         over (a remote whose centre has drifted must never steer silently); a takeover held
     //         for 10 s ends through the mode's cancel path. See Common/SteerArbitration.h.
     //   Range 0-1; the remote learns the value from telemetry.fm_flags bit 4 (its Gate 4 cancel
-    //   stays for 0). Turn on with `?set steer_during_auto 1` + `?save`.
-    uint16_t steer_during_auto;        // 0 = stick cancels auto-steer (as before); 1 = stick takes over while deflected, resumes on centring. Range 0-1; default 0
+    //   stays for 0). A board that stores 0 turns it on with `?set steer_during_auto 1` + `?save`.
+    uint16_t steer_during_auto;        // 0 = stick cancels auto-steer (as before); 1 = stick takes over while deflected, resumes on centring. Range 0-1; default 1 (was 0 until 2026-10-25)
 
 
 
@@ -863,7 +864,10 @@ confStruct defaultConf = {SW_VERSION, 2, 22, 1, 50 /*steering_influence: convent
   // (Developer), which is the behaviour every unit already has, so nothing changes on flash.
   0,          // log_level: 0 = unset -> logs as level 3 (Developer). 1/2 accepted but currently log as 3; 4 = Deep, 5 = Everything, 6 = IMU (V2.5-Evo - 2026-10-08).
   0,          // mag_orientation: 0 deg. Set by ?compasscal (north-to-north) or ?magalign.
-  0,            // steer_during_auto: 0 = the stick CANCELS automatic steering (the tested behaviour); 1 = it takes over while deflected (was rsvd_u16_1, renamed in place 2026-09-19)
+  // V2.5-Evo - 2026-10-25 - 0 -> 1, owner ruling: the factory default is TAKE OVER - the stick steers while held and never
+  // ends a return. VALUE-ONLY: same field, sizeof stays 200, SW_VERSION stays 36, SPIFFS config is NOT reset. A board with
+  // a STORED steer_during_auto keeps it (an SW35 config migrated at boot copies this slot from the blob, so it keeps its value).
+  1,            // steer_during_auto: 1 = the stick TAKES OVER automatic steering while deflected and hands back on centring (factory default since 2026-10-25); 0 = it CANCELS (was rsvd_u16_1, renamed in place 2026-09-19)
 
 
   0.0f,         // auto_ramp_s: 0 = the automatic modes ride motor_ramp_s (today's behaviour); 0.2-4.0 = their own, faster ramp (was rsvd_f32_1, renamed in place 2026-09-19)

@@ -212,9 +212,9 @@ dots = following.*
 
 ## 10. Not yet — planned for later
 
-- **Steer-adjust while following** — nudge the buggy's position with the toggle *without*
-  canceling Follow-Me (today, steering while following cancels it for safety). Rides the
-  existing steer-blend setting; enabled after field testing.
+- **Steer-adjust while following** — no longer planned: it shipped as the buggy's
+  `steer_during_auto`, on by default since 2026-10-25. Hold the stick off centre and it steers
+  the buggy without canceling Follow-Me; centre it and the buggy goes back to its station.
 - **Continuous angle repositioning** — steer to walk the buggy around your radius to any
   angle, live. Reserved as a v2 feature (`fm_steer_reposition_en`), off by default.
 

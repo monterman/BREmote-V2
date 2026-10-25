@@ -577,7 +577,7 @@ RTM stops automatically when **any** of these conditions occur:
 | LoRa link lost | No packet for failsafe timeout |
 | Max runtime | If `rtm_max_runtime_s > 0` (default: 0 = disabled) |
 | Convergence fail | Distance to TX not decreasing (Phase C, checked every 5 s) |
-| Steering input | A stick push beyond 20 counts, when the buggy's `steer_during_auto` is 0 (cancel, default). With 1 the buggy lets the stick take over the steering while it is held and resumes when it centres; the remote does not exit (it follows the buggy through telemetry). |
+| Steering input | A stick push beyond 20 counts, when the buggy's `steer_during_auto` is 0 (cancel; the factory default is 1 since 2026-10-25). With 1 the buggy lets the stick take over the steering while it is held and resumes when it centres; the remote does not exit (it follows the buggy through telemetry). |
 
 On any gate failure: throttle → 0, TX display shows `St` for 2 s, haptic confirms disarm.
 
@@ -616,7 +616,7 @@ On any gate failure: throttle → 0, TX display shows `St` for 2 s, haptic confi
 |---|---|---|
 | `rtm_rx_enabled` | 1 | RX-side RTM enable |
 | `rtm_rx_override_steering` | 1 | Allow RX to auto-steer (0=disable steering override) |
-| `steer_during_auto` | 0 | What the stick does while the buggy steers itself (Follow-Me following, auto-return, return-to-me). 0 = cancel: a held push (40 counts for 0.5 s, after the first 2 s of a run) ends the automatic steering. 1 = take over: the stick steers while held, centre it (within 30 counts for 0.2 s) and the buggy goes back to aiming at you, nothing cancelled; throttle caps still apply; a stick not read centred since the run began cannot take over; 10 s held ends as a cancel. With `rtm_rx_override_steering` 0 the stick already steers, so 1 has nothing to take over and cancels nothing, while 0 still cancels. Off by default: `?set steer_during_auto 1` + `?save`. |
+| `steer_during_auto` | 1 | What the stick does while the buggy steers itself (Follow-Me following, auto-return, return-to-me). 0 = cancel: a held push (40 counts for 0.5 s, after the first 2 s of a run) ends the automatic steering. 1 = take over: the stick steers while held, centre it (within 30 counts for 0.2 s) and the buggy goes back to aiming at you, nothing cancelled; throttle caps still apply; a stick not read centred since the run began cannot take over; 10 s held ends as a cancel. With `rtm_rx_override_steering` 0 the stick already steers, so 1 has nothing to take over and cancels nothing, while 0 still cancels. On by default since 2026-10-25 (a buggy that stores 0 keeps it; switch it on with `?set steer_during_auto 1` + `?save`). |
 | `rtm_compass_required` | 1 | Require at least one valid heading source before RTM runs; 0=bypass (advanced only) |
 | `rtm_use_compass` | 1 | Heading source mode: 0=GPS COG only, 1=Hybrid GPS+snapshot (default), 2=Compass only (diagnostic) |
 | `rtm_cog_min_speed_kmh` | 3 | Minimum speed (km/h) for GPS COG to be considered reliable. Below this, falls back to compass snapshot. |
@@ -913,7 +913,7 @@ No bar = Follow-Me disarmed. 2 pixels at C4–C5 = the buggy is close (up to 18 
 BREmote V2.5-Evo is in Alpha. The firmware compiles, has been water tested for control flow and safety gates, and includes anti-spoofing and RTM/FM features. Currently running more water tests to graduate to Beta release.  If you are an alpha tester building on this fork, the project recommends:
 
 - Test in a controlled environment (shallow water, short range, motors disconnected for first dry run, second run with motors on a leashed test stand) before any open-water use.
-- Until the compass EMI behavior on your specific hardware is characterized, treat RTM steering as advisory, not autonomous. Keep the buggy's `steer_during_auto` at 0 (cancel: any sideways toggle disengages RTM immediately and returns full manual control) until the take-over behaviour has been bench-spun and audited on your hardware.
+- Until the compass EMI behavior on your specific hardware is characterized, treat RTM steering as advisory, not autonomous. The buggy's `steer_during_auto` ships at 1 (take over): steering never ends a return; while you hold the stick off centre it steers the buggy instead of the automatic steering, and centring it hands the steering back. Bench-spin the take-over on your hardware before you rely on it.
 - Manual control must always work even if RTM, FM, GPS, or compass fail. Do not rely on autonomous features as the primary safety path.
 - Releasing the throttle trigger always stops the motor — this is the failsafe, and it works regardless of what RTM, FM, or telemetry are doing.
 

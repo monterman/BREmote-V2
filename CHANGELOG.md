@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-10-25 — RX: by default the stick steers the buggy during automatic steering instead of cancelling it
+
+**No config wipe, and no change to a buggy that is already set up.** This is the factory default only:
+`sizeof(confStruct)` stays 200 and `SW_VERSION` stays 36, so a stored config keeps its own
+`steer_during_auto`. Only a new buggy, or one reset to factory settings, starts with the new value. A buggy
+that stores 0 (cancel) keeps cancelling; switch it with `?set steer_during_auto 1` + `?save`.
+
+- **A fresh buggy starts with `steer_during_auto = 1` (take over).** During Follow-Me following, an
+  auto-return or a return-to-me, hold the stick off centre (40 counts for half a second, after the first
+  2 s of a run) and it steers the buggy in place of the automatic steering; centre it (within 30 counts
+  for 0.2 s) and the buggy aims at you again. The throttle limits keep applying and it never adds
+  throttle.
+- **Steering does not end a return.** A takeover held 30 s hands the steering back and the return-to-me
+  or auto-return carries on. In Follow-Me following, a takeover held 30 s ends the following through
+  hold: throttle 0 until you let go of the trigger once.
+- **0 (cancel) is still there:** a held push ends Follow-Me following and an auto-return. In a
+  return-to-me the stick is then ignored and the buggy keeps steering itself.
+- **The remote is unchanged.** It has not ended a return on the stick since 2026-10-07, and it still does
+  not read its own `rtm_steer_exit_on_input`.
+- The web pages, the config tool and the guides show the new default.
+
 ## 2026-10-24 — Remote: the factory default throttle mode is No Gears (was Dynamic Cap)
 
 **No config wipe, and no change to a remote that is already set up.** This is the factory default only:

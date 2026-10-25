@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-25 - steer default review S-4 + S-5: cfgValidateCrossField()'s R-8 load clamp maps a corrupt steer_during_auto (> 1) to defaultConf.steer_during_auto (1, take over) instead of 0, and the row comment says so (it read "> 1 -> 1") and no longer says the remote exits a return-to-me. One token of code; row range unchanged; no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-25 - COMMENT ONLY: the steer_during_auto row says the factory default is now 1 (take over; defaultConf in BREmote_V2_Rx.h, owner ruling), and the R-8 clamp note says a CORRUPT value (> 1) still reads as 0. Row range and clamp unchanged.
 // V2.5-Evo - 2026-10-20 - COMMENT ONLY: the followme_mode row's station list follows the front-station swap (4 = FRONT-LEFT, 5 = FRONT-RIGHT). Range unchanged.
 // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): the log_level row's max is raised 5 -> 6 (6 = IMU, the 170 B record with VESC 2's IMU and a reserved RX IMU block), and cfgValidateCrossField() CLAMPS log_level > 6 down to 6 - a clamp, never a rejection (LOAD path). An older firmware clamps a stored 6 back to 5, so a downgrade cannot wipe config either. Same u16 slot, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -155,9 +156,9 @@ const CfgFieldSpec kCfgFields[] = {
   // IN PLACE in confStruct to steer_during_auto - same offset, same uint16_t - so sizeof stays 200,
   // SW_VERSION stays 36 and no config is wiped. Only the key, the range and the meaning change here.
   //   0 = CANCEL (the factory default until 2026-10-25, and what every board stored then): a held stick push ends the automatic
-  //       steering - following drops to ARMED, an auto-return stops, the remote exits return-to-me.
+  //       steering - following drops to ARMED and an auto-return stops; in a classic return-to-me the stick is not used.
   //   1 = TAKE OVER (the factory default since 2026-10-25, owner ruling): the push makes the stick steer while it is held; centring it hands the steering
-  //       back and cancels nothing. Also clamped (> 1 -> 1) in cfgValidateCrossField() below.
+  //       back and cancels nothing. A stored value above 1 reads as the factory default (1): cfgValidateCrossField() below.
   {"steer_during_auto", CFG_U16, offsetof(confStruct, steer_during_auto), true, false, true, 0.0f, 1.0f, 0, false},
 
   // V2.5-Evo - 2026-09-19 - this row was rsvd_f32_1 (float, -1e6..1e6, unread). The slot has been RENAMED
@@ -331,9 +332,16 @@ bool cfgValidateCrossField(confStruct &candidate, String &err)
   // default, and for this field that default is 0 (the stick CANCELS), which is what every fielded
   // board stores. A blob holding 2 now reads as "cancel", the conservative reading; a rider who
   // wants takeover asks for it explicitly with ?set steer_during_auto 1 + ?save.
-  // V2.5-Evo - 2026-10-25 - the FACTORY default is now 1 (take over, owner ruling), but this clamp is
-  // about a CORRUPT stored value, not the default, and is left as R-8 set it: > 1 still reads as 0.
-  if (candidate.steer_during_auto > 1)    candidate.steer_during_auto = 0;
+  // V2.5-Evo - 2026-10-25 - steer default review S-4: out of range now becomes the FACTORY DEFAULT
+  // (defaultConf.steer_during_auto, 1 = take over), NOT 0. The R-8 reasoning above no longer holds:
+  // since the remote stopped exiting on the stick (Q-5) and the 30 s takeover ends were settled
+  // (N-11), 1 is the audited, field-ridden setting, and 0 is the path with the one un-capped
+  // hand-back (a held push ends Follow-Me following with the full held trigger, softened only by
+  // motor_ramp_s). It also ends two answers to one question: a blob that fails validation as a
+  // whole already falls back to the defaults and gets 1, and a blob bad in this one field now gets
+  // the same. Same pattern as the motor_ramp_s NaN guard below, and it follows any future change of
+  // the default by itself. Only a blob written while the slot was still reserved can hold > 1.
+  if (candidate.steer_during_auto > 1)    candidate.steer_during_auto = defaultConf.steer_during_auto;
   // V2.5-Evo - 2026-09-25 - R-9: motor_ramp_s NaN guard, the same shape as the auto_ramp_s guard
   // below. WHAT WAS WRONG: validateConfig()'s range test is a pair of comparisons, and BOTH
   // (NaN < min) and (NaN > max) are false, so a NaN in this slot passed validation untouched. It

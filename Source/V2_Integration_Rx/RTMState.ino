@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-25 - COMMENT ONLY (steer default review S-5): two notes no longer call steer_during_auto 0 the default (the factory default is 1 since 2026-10-25). No code change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-20 - FRONT STATIONS SWAP NUMBERS (owner): F4 = front-LEFT, F5 = front-RIGHT, so 1-5 run clockwise
 //   round the rider (1 rear-right, 2 behind, 3 rear-left, 4 front-left, 5 front-right). The presets and the same-side
 //   retreat live in Common/FollowMeStation.h; here the three places that turn a front mode into its same-side rear
@@ -6712,7 +6713,7 @@ static void runFmReturnTick(unsigned long now)
   // through fmReturnExitToHold() - cap 0 and FM_HOLD, ARMED/255 only on a released tick - never a
   // direct ARMED. A rider DECLARATION, not a fault: no stop reason, no St / stop buzz.
   // V2.5-Evo - 2026-09-19 - STICK DURING AUTO-STEER: the block below is the CANCEL behaviour and
-  // runs VERBATIM when usrConf.steer_during_auto is 0 (the default). With 1 the else branch runs
+  // runs VERBATIM when usrConf.steer_during_auto is 0 (the factory default until 2026-10-25, 1 since). With 1 the else branch runs
   // the takeover arbitration in its place, at this same point in the tick order - after faults,
   // distance, arrival and the rider-moving cancel, BEFORE the trigger gate - with the same grace
   // base (fm_return_motion_ms). Everything after this block is common to both modes.
@@ -8195,7 +8196,7 @@ static void runFmLoopBody(unsigned long now)
     // that param lives on the TX, not the RX, this pass.
     // V2.5-Evo - 2026-09-19 - STICK DURING AUTO-STEER: that deferred blend is now the takeover,
     // selected by the RX's own usrConf.steer_during_auto. The block directly below is the CANCEL
-    // behaviour and runs VERBATIM when the setting is 0 (the default); with 1 the else branch runs
+    // behaviour and runs VERBATIM when the setting is 0 (the default until 2026-10-25, 1 since); with 1 the else branch runs
     // the takeover arbitration in its place, same gate (fm_state == FM_ACTIVE), same grace base
     // (fm_engage_ms). Everything after the split is common to both modes.
     if (usrConf.steer_during_auto == 0) {

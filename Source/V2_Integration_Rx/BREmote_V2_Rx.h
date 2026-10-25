@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-25 - COMMENT ONLY (steer default review S-5): the steer_during_auto field comment says what 0 does since the remote stopped exiting (the stick is not used in a classic return-to-me), what a 30 s takeover does in each mode (return-to-me and auto-return carry on; Follow-Me following stops until one release), and that the remote no longer acts on fm_flags bit 4. No code change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-25 - defaultConf.steer_during_auto 0 -> 1 (owner ruling): a fresh or factory-reset buggy lets the stick TAKE OVER automatic steering while it is held and hand back on centring, instead of cancelling. Value only: same field, sizeof stays 200, SW_VERSION stays 36, a stored config keeps its own value.
 // V2.5-Evo - 2026-10-24 - throttle-byte audit T-1, fix (b), receiver half: includes ../Common/ThrottleByte.h (after OutputRamp.h) for calcPWM()'s stretch; the thr_received_log field comment says the byte is 0-240 and how to read it now. Log format, record sizes, confStruct unchanged: sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-3: stickyCapArmRise(initial, open_rise) - the sticky arm with the rise chosen by the caller (closed only for the Follow-Me 30 s end from a held HOLD); stickyCapArm() = it with the rise open, unchanged for every existing caller. Runtime only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -648,18 +649,22 @@ struct confStruct {
     // steer_during_auto - what the rider's steering stick does while the buggy is steering itself
     //   (Follow-Me following, auto-return FM_RETURN, and a classic return-to-me):
     //     0 = CANCEL (the factory default until 2026-10-25). A held push (40 counts from centre for 0.5 s, after the first 2 s
-    //         of a run) ends the automatic steering: following drops to ARMED-unlatched, an
-    //         auto-return stops through HOLD, and the remote exits a classic return-to-me. Exactly
-    //         the behaviour before this setting existed - the three cancel paths run unchanged.
+    //         of a run) ends the automatic steering: following drops to ARMED-unlatched and an
+    //         auto-return stops through HOLD (cap 0 until one release). Those two cancel paths run
+    //         unchanged. In a classic return-to-me the stick is not used at all: the remote has not
+    //         exited on it since Q-5 (2026-10-07), and the receiver has no cancel there.
     //     1 = TAKE OVER (the factory default since 2026-10-25, owner ruling). The same push makes the stick steer the buggy while it is held; centring it
     //         (within 30 counts for 0.2 s) hands the steering back to the controller and nothing is
     //         cancelled. The takeover changes only WHICH steering byte calcPWM() applies: every
     //         throttle cap, the stop radius, the return proof and every safety gate keep running.
     //         A stick that has not been read centred at least once since the run began cannot take
-    //         over (a remote whose centre has drifted must never steer silently); a takeover held
-    //         for 10 s ends through the mode's cancel path. See Common/SteerArbitration.h.
-    //   Range 0-1; the remote learns the value from telemetry.fm_flags bit 4 (its Gate 4 cancel
-    //   stays for 0). A board that stores 0 turns it on with `?set steer_during_auto 1` + `?save`.
+    //         over (a remote whose centre has drifted must never steer silently). After 30 s of
+    //         takeover the stick is ignored until it is centred: return-to-me and auto-return take
+    //         the steering back and carry on (N-11); Follow-Me following stops (cap 0) until one
+    //         trigger release, then ARMED. See Common/SteerArbitration.h.
+    //   Range 0-1. The value is echoed to the remote in telemetry.fm_flags bit 4, which the remote no
+    //   longer acts on (since Q-5 its Gate 4 never ends a return on the stick). A board that stores 0
+    //   turns it on with `?set steer_during_auto 1` + `?save`.
     uint16_t steer_during_auto;        // 0 = stick cancels auto-steer (as before); 1 = stick takes over while deflected, resumes on centring. Range 0-1; default 1 (was 0 until 2026-10-25)
 
 

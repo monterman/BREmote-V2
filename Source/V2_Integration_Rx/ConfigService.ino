@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-25 - COMMENT ONLY: the steer_during_auto row says the factory default is now 1 (take over; defaultConf in BREmote_V2_Rx.h, owner ruling), and the R-8 clamp note says a CORRUPT value (> 1) still reads as 0. Row range and clamp unchanged.
 // V2.5-Evo - 2026-10-20 - COMMENT ONLY: the followme_mode row's station list follows the front-station swap (4 = FRONT-LEFT, 5 = FRONT-RIGHT). Range unchanged.
 // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): the log_level row's max is raised 5 -> 6 (6 = IMU, the 170 B record with VESC 2's IMU and a reserved RX IMU block), and cfgValidateCrossField() CLAMPS log_level > 6 down to 6 - a clamp, never a rejection (LOAD path). An older firmware clamps a stored 6 back to 5, so a downgrade cannot wipe config either. Same u16 slot, no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - audit M-20 + L-25: the fm_front_ahead_extra_m NOTE prints the real side floor (fmFrontSideFloorForConfigM), not a fixed 13 m.
@@ -153,9 +154,9 @@ const CfgFieldSpec kCfgFields[] = {
   // V2.5-Evo - 2026-09-19 - this row was rsvd_u16_1 (u16, 0-65535, unread). The slot has been RENAMED
   // IN PLACE in confStruct to steer_during_auto - same offset, same uint16_t - so sizeof stays 200,
   // SW_VERSION stays 36 and no config is wiped. Only the key, the range and the meaning change here.
-  //   0 = CANCEL (default, what every board already stores): a held stick push ends the automatic
+  //   0 = CANCEL (the factory default until 2026-10-25, and what every board stored then): a held stick push ends the automatic
   //       steering - following drops to ARMED, an auto-return stops, the remote exits return-to-me.
-  //   1 = TAKE OVER: the push makes the stick steer while it is held; centring it hands the steering
+  //   1 = TAKE OVER (the factory default since 2026-10-25, owner ruling): the push makes the stick steer while it is held; centring it hands the steering
   //       back and cancels nothing. Also clamped (> 1 -> 1) in cfgValidateCrossField() below.
   {"steer_during_auto", CFG_U16, offsetof(confStruct, steer_during_auto), true, false, true, 0.0f, 1.0f, 0, false},
 
@@ -330,6 +331,8 @@ bool cfgValidateCrossField(confStruct &candidate, String &err)
   // default, and for this field that default is 0 (the stick CANCELS), which is what every fielded
   // board stores. A blob holding 2 now reads as "cancel", the conservative reading; a rider who
   // wants takeover asks for it explicitly with ?set steer_during_auto 1 + ?save.
+  // V2.5-Evo - 2026-10-25 - the FACTORY default is now 1 (take over, owner ruling), but this clamp is
+  // about a CORRUPT stored value, not the default, and is left as R-8 set it: > 1 still reads as 0.
   if (candidate.steer_during_auto > 1)    candidate.steer_during_auto = 0;
   // V2.5-Evo - 2026-09-25 - R-9: motor_ramp_s NaN guard, the same shape as the auto_ramp_s guard
   // below. WHAT WAS WRONG: validateConfig()'s range test is a pair of comparisons, and BOTH

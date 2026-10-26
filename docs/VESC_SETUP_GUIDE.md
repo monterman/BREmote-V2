@@ -125,7 +125,8 @@ Phone: App Cfg → General, then **Write**.
 full squeeze sends the full range ([ZERO_TO_FOILING § 2.5b](ZERO_TO_FOILING.md#25b-calibrate-the-ppm-input-on-both-controllers)).
 Drive still off the ground.
 - **Twin build: set Control Type = Off on both VESCs before the first squeeze.** Off holds only the VESC it
-  is set on: a VESC that is already live drives its motor at full power while you map the other one.
+  is set on: a VESC that is already live drives its motor at full power while you map the other one. On a
+  twin build, map BOTH VESCs (step 7, Control Type Off on both) before you set either one live in step 8.
 - Write Control Type Off first, then plug the receiver's PPM lead back in (it was unplugged at step 3).
 - Desktop: App Settings → PPM → General: **Control Type = Off** → Write. Then PPM → **Mapping** tab, turn on
   **Stream realtime app data** in the toolbar. Trigger released → **Reset**, full squeeze, release →
@@ -136,8 +137,8 @@ Drive still off the ground.
   procedure: the motor cannot move.
 - Desktop: **Apply alone is not enough** — press **Write app configuration** too.
 
-**8. PPM settings.** Desktop: App Settings → PPM → General and Mapping. Phone: App Cfg → PPM → General and
-Mapping.
+**8. PPM settings.** **Twin build: only once both VESCs are mapped** (step 7 on each). Desktop: App Settings
+→ PPM → General and Mapping. Phone: App Cfg → PPM → General and Mapping.
 - **Control Type = Current No Reverse** (not *Current*, not *Current No Reverse With Brake* — see § 5).
 - **Input Deadband = 2-3 %.** The VESC default is **15 %**, which makes the first 15 % of the trigger dead.
 - **Safe Start = Regular.**
@@ -155,8 +156,8 @@ Mapping.
 - A gentle squeeze: each motor turns the forward way; if not, step 4 on that VESC.
 - **Released trigger above 0 %, or creep: do not ride.** Map again (step 7) and check the deadband (step 8).
 
-**10. Twin build: VESC 2.** Do steps 2-6 on VESC 2 too. Map both VESCs (step 7, each on **its own** PPM
-channel, Control Type Off on both) before you set either one live (step 8), then check both (step 9). Map
+**10. Twin build: the order, on both VESCs.** Steps 2-6 on each VESC, then map both (step 7, each on **its
+own** PPM channel, Control Type Off on both), then set both live (step 8), then check both (step 9). Map
 them the same way: **both motors must start together and top out together.**
 
 **11. Before the first ride, go back to [ZERO_TO_FOILING](ZERO_TO_FOILING.md).** The remote is still in

@@ -18,8 +18,12 @@ quieter and more efficient, and it is the setup to end up with ([§ 4](#4-later-
 > A **CAN cable between the two VESCs is optional.** Choose now; the steps say where the two differ.
 >
 > - **Without CAN:** the two VESCs are fully independent. Skip the CAN ID (step 5). **Multiple VESCs Over
->   CAN = OFF** (there is nothing to forward to). Battery negative is the shared ground.
-> - **With CAN:** each VESC gets its own CAN ID (step 5). **Multiple VESCs Over CAN must still be OFF**,
+>   CAN = OFF** (there is nothing to forward to). Battery negative is the only ground the two VESCs share;
+>   each PPM lead still needs all three wires (signal, 5 V, ground).
+> - **With CAN:** each VESC gets its own CAN ID (step 5). **Wire CAN-H and CAN-L only** (twisted
+>   together); leave the CAN cable's GND and 5 V unconnected. Battery negative is already the shared
+>   ground, and a second ground through the CAN cable bypasses the receiver's isolated channel to VESC 2.
+>   **Multiple VESCs Over CAN must still be OFF**,
 >   because BREmote mixes the steering into the two channels ([§ 7](#7-twin-vescs)). What CAN adds: the
 >   second VESC's telemetry reaches the BREmote log. The receiver reads VESC 2's currents, temperatures,
 >   duty, ERPM, voltage and fault code through VESC 1 and logs them at log level 4 and up; without CAN
@@ -156,7 +160,7 @@ Drive still off the ground.
 - A gentle squeeze: each motor turns the forward way; if not, step 4 on that VESC.
 - **Released trigger above 0 %, or creep: do not ride.** Map again (step 7) and check the deadband (step 8).
 
-**10. Twin build: the order, on both VESCs.** Steps 2-6 on each VESC, then map both (step 7, each on **its
+**10. Twin build: the order, on both VESCs.** Steps 1-6 on each VESC, then map both (step 7, each on **its
 own** PPM channel, Control Type Off on both), then set both live (step 8), then check both (step 9). Map
 them the same way: **both motors must start together and top out together.**
 
@@ -173,7 +177,7 @@ When everything works in BLDC: desktop Wizards → **Setup Motors FOC**, phone S
 Usage: **Propeller**.
 
 **Same rules as steps 2-10:** drive off the ground, props clear and nobody near them, and the receiver's PPM
-lead unplugged while the wizard detects. The detection spins the motors.
+leads unplugged (both, on a twin build) while the wizard detects. The detection spins the motors.
 
 1. **"Load Default Parameters": answer No.** Yes resets the **motor and the app config of every VESC on the
    CAN bus** — IDs, App to Use, the PPM mapping and the PPM settings. If you answered Yes, redo steps 5-9 on
@@ -224,7 +228,8 @@ throttle plus the turn. **So each VESC must follow its own channel.**
 | **Each VESC on its own PPM channel, Multiple VESCs Over CAN OFF on both**, with or without a CAN cable | **Yes** |
 | One PPM into a "master" VESC with Multiple VESCs Over CAN ON, the other VESC commanded over CAN | **No** — the master sends its own command to every VESC it hears on CAN, so the steering is lost and the two commands fight |
 
-- **CAN between the VESCs is optional.** With CAN only: it carries VESC 2's telemetry to the BREmote log
+- **CAN between the VESCs is optional.** CAN-H and CAN-L only (box at the top).
+  With CAN only: it carries VESC 2's telemetry to the BREmote log
   (nightly firmware) and lets VESC Tool configure VESC 2 through VESC 1. It never carries throttle or
   steering. Without CAN: skip step 5 and connect VESC Tool to each VESC directly.
 - VESC Tool's help says "only the master needs an app". That applies to the master / CAN setup, not this one.

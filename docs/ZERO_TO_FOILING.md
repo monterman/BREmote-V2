@@ -292,9 +292,13 @@ testing. Take 5 V for each channel from **that channel's own controller**.
 **Ground:** each PPM lead carries all three wires, and its ground comes from
 **that channel's own controller**. Channel 1 (`JP4`, VESC 2) has its own isolated ground, `ESC1_GND`,
 which reaches VESC 2 only through `JP4.3` (or `JP3.3`): never leave that wire out, and never bridge it
-to the receiver's main ground. Between the two controllers, battery negative is the only shared ground.
-If you add a CAN cable, connect **CAN-H and CAN-L only**: a ground wire in the CAN cable joins the two
-grounds through the back door and undoes channel 1's isolation.
+to the receiver's main ground.
+That bridge is the ground mistake that puts the controllers' ground difference onto motor 2's
+signal. Between the two controllers, battery negative is the main shared ground. A CAN cable between
+the VESCs does not change any of this: its GND wire joins the two controllers, not the receiver's
+channels, so it is optional (keep it in a one-box build, leave it out across two boxes), and its 5V
+wire may only go to the other VESC's `PWR.ON`, never to its 5 V. Details: the box at the top of the
+[VESC setup guide](VESC_SETUP_GUIDE.md).
 
 #### 2.5b Calibrate the PPM input on **both** controllers
 

@@ -1,3 +1,14 @@
+// V2.5-Evo - 2026-10-26 - delta audit N-1, N-2, N-6: the gaps the delta audit found are closed.
+//     G1 also pins: Follow-Me is switched off BEFORE the P-7 Return-To-Me end, not only before the flush; the lock sits
+//        inside handleGearToggle()'s thr_scaled < 10 action gate and nowhere else in it; and fmSilentDisarm()'s body
+//        really turns Follow-Me off (fm_armed = false, fm_last_sync_ms = 0, the 0xF2 / mode 0 burst), so it cannot be
+//        emptied without the guard noticing.
+//     G2 also pins the POLARITY: the station step sits under if (isFmArmed()), never under !isFmArmed(). On a multi-remote
+//        build the take-back suppression is now tested FIRST, as if (mtxTxSeizeSuppress()) { } (N-1); the old order -
+//        Follow-Me first, the suppression only in front of the display cycle - fails.
+//     G6 (new, N-2): handleGearToggle() keeps the gear and the power cap from the start of the press (gear_at_press,
+//        cap_at_press, before the press loop), and the RIGHT hold's station-step block puts both back.
+//   Each new rule has made-up sources that break it below.
 // V2.5-Evo - 2026-10-26 - Host test: a SOURCE-TEXT GUARD over the remote's toggle and magnet gesture map (audit "LEFT-hold
 //   lock" F-1 to F-6, owner design 2026-10-26: no new gestures). The host cannot compile the remote's .ino files (they need
 //   Arduino), so this reads Hall.ino and RTMState.ino as TEXT, with every comment and every string's contents blanked, and
@@ -6,7 +17,8 @@
 //        the lock and no station step, and it switches Follow-Me off (fmSilentDisarm()) before the stop flush, with the
 //        P-7 Return-To-Me end (setRtmDisarmed()) kept before the flush too;
 //     G2 the RIGHT 2 s hold steps the station only while Follow-Me is armed (cycleFmModeArmed()), and the display cycle
-//        is the else branch (on a multi-remote build still behind the take-back suppression, mtxTxSeizeSuppress());
+//        is the else branch (on a multi-remote build the take-back suppression, mtxTxSeizeSuppress(), is tested first -
+//        see the N-1 entry above);
 //        cycleFmModeArmed() is called from no other branch of handleGearToggle();
 //     G3 cycleFmModeArmed() carries the F-4 guards - Return-To-Me active or arming, the auto-return coming back
 //        (fmIsReturning() and the raw fmReturnMovingRaw()) - each returning before the station changes;
@@ -157,6 +169,31 @@ static size_t srcPos(const std::string& s, const char* id)
   return s.find(id);
 }
 static bool srcHas(const std::string& s, const char* id) { return srcPos(s, id) != std::string::npos; }
+// srcHasTokens - does the token sequence toks start anywhere in s (white space between tokens ignored)?
+static bool srcHasTokens(const std::string& s, const std::vector<std::string>& toks)
+{
+  size_t e;
+  for (size_t p = s.find(toks[0]); p != std::string::npos; p = s.find(toks[0], p + 1))
+    if (srcTokensAt(s, p, toks, &e)) return true;
+  return false;
+}
+// srcNegated - is any occurrence of the identifier id preceded (white space skipped) by a '!'?
+static bool srcNegated(const std::string& s, const char* id)
+{
+  for (size_t p : srcFindIdent(s, id)) {
+    size_t q = p;
+    while (q > 0 && isspace((unsigned char)s[q - 1])) q--;
+    if (q > 0 && s[q - 1] == '!') return true;
+  }
+  return false;
+}
+// srcCount - how many times the text t occurs in s.
+static int srcCount(const std::string& s, const char* t)
+{
+  int n = 0;
+  for (size_t p = s.find(t); p != std::string::npos; p = s.find(t, p + 1)) n++;
+  return n;
+}
 // srcBefore - a and b both present, and the first a comes before the first b.
 static bool srcBefore(const std::string& s, const char* a, const char* b)
 {
@@ -171,8 +208,13 @@ static bool srcBefore(const std::string& s, const char* a, const char* b)
 struct MapGuard {
   // G1 - the LEFT 2 s hold
   bool left_found, left_locks, left_no_fm_before_lock, left_no_step, left_fm_clear, left_clear_before_flush, left_p7_kept;
+  bool left_clear_before_p7, lock_in_gate, silent_found, silent_body_ok;   // V2.5-Evo - 2026-10-26 - N-6
   // G2 - the RIGHT 2 s hold
   bool right_found, right_steps_if_armed, right_display_is_else, right_takeback_ok, step_only_in_right;
+  bool right_polarity_ok;                                                   // V2.5-Evo - 2026-10-26 - N-6
+  // G6 - V2.5-Evo - 2026-10-26 - N-2: the RIGHT hold's station step keeps the gear and the power cap
+  bool n2_snapshot, n2_restore;
+  bool multi;   // a multi-remote build (the take-back exists)
   // G3 - cycleFmModeArmed()'s F-4 guards
   bool armed_found, armed_rtm_guard, armed_return_guard, armed_returns_before_step;
   // G4 - the combo on an armed remote
@@ -191,6 +233,7 @@ static MapGuard mapGuard(const std::string& hall_text, const std::string& rtm_te
   // A multi-remote build has the take-back: its suppression is named in Hall.ino or defined in another file (MultiRemote.ino).
   bool multi = srcHas(hall, "mtxTxSeizeSuppress");
   for (const std::string& c : others) if (srcHas(c, "mtxTxSeizeSuppress")) multi = true;
+  g.multi = multi;
 
   const std::string hgt = srcFuncBody(hall, "handleGearToggle");
   const std::vector<std::string> left  = srcBlocksAfter(hgt, {"else", "if", "(", "direction", "<", "0", ")", "{"});
@@ -207,6 +250,23 @@ static MapGuard mapGuard(const std::string& hall_text, const std::string& rtm_te
     g.left_fm_clear          = g.left_locks && srcHas(L.substr(lock), "fmSilentDisarm");
     g.left_clear_before_flush = srcBefore(L, "fmSilentDisarm", "rtmFmStopFlush");
     g.left_p7_kept           = srcBefore(L, "setRtmDisarmed", "rtmFmStopFlush");
+    // V2.5-Evo - 2026-10-26 - N-6 (3): Follow-Me off comes before the P-7 Return-To-Me end too, not only before the flush.
+    g.left_clear_before_p7   = srcBefore(L, "fmSilentDisarm", "setRtmDisarmed");
+  }
+  // V2.5-Evo - 2026-10-26 - N-6 (4): the lock sits inside the one thr_scaled < 10 action gate, and nowhere else in the handler.
+  {
+    const std::vector<std::string> gate = srcBlocksAfter(hgt, {"if", "(", "thr_scaled", "<", "10", ")", "{"});
+    g.lock_in_gate = gate.size() == 1 && srcCount(srcSquash(gate[0]), "system_locked = 1;") == 1 &&
+                     srcCount(srcSquash(hgt), "system_locked = 1;") == 1;
+  }
+  // V2.5-Evo - 2026-10-26 - N-6 (2): fmSilentDisarm() - the lock's Follow-Me off - really turns it off: not armed, the 30 s
+  // keepalive stopped, and the 0xF2 / mode 0 burst queued for the buggy.
+  {
+    const std::string sb = srcSquash(srcFuncBody(rtm, "fmSilentDisarm"));
+    g.silent_found   = !sb.empty();
+    g.silent_body_ok = g.silent_found && sb.find("fm_armed = false;") != std::string::npos &&
+                       sb.find("fm_last_sync_ms = 0;") != std::string::npos &&
+                       sb.find("queueMetaPacketBurst(0xF2, fmEncodeModeByte(0));") != std::string::npos;
   }
   // G2
   g.right_found = (right.size() == 1);
@@ -216,9 +276,31 @@ static MapGuard mapGuard(const std::string& hall_text, const std::string& rtm_te
     const size_t ps = srcPos(R, "cycleFmModeArmed"), pd = srcPos(R, "cycleDisplayMode");
     g.right_display_is_else = ps != std::string::npos && pd != std::string::npos && ps < pd &&
                               srcHas(R.substr(ps, pd - ps), "else");
-    g.right_takeback_ok = !multi || (srcBefore(R, "cycleFmModeArmed", "mtxTxSeizeSuppress") &&
+    // V2.5-Evo - 2026-10-26 - N-1: on a multi-remote build the take-back's held second press is tested FIRST and its branch is
+    // empty - if (mtxTxSeizeSuppress()) { } - before the Follow-Me test and the display cycle. (Was: the suppression only in
+    // front of the display cycle, after the station step, which pinned the order N-1 found wrong.)
+    g.right_takeback_ok = !multi || (srcHasTokens(R, {"if", "(", "mtxTxSeizeSuppress", "(", ")", ")", "{", "}"}) &&
+                                     !srcNegated(R, "mtxTxSeizeSuppress") &&
+                                     srcBefore(R, "mtxTxSeizeSuppress", "isFmArmed") &&
                                      srcBefore(R, "mtxTxSeizeSuppress", "cycleDisplayMode"));
     g.step_only_in_right = srcFindIdent(hgt, "cycleFmModeArmed").size() == 1 && srcFindIdent(R, "cycleFmModeArmed").size() == 1;
+    // V2.5-Evo - 2026-10-26 - N-6 (1): the polarity - the step is under if (isFmArmed()), and nothing in the branch negates it.
+    g.right_polarity_ok = srcHasTokens(R, {"if", "(", "isFmArmed", "(", ")", ")"}) && !srcNegated(R, "isFmArmed");
+    // V2.5-Evo - 2026-10-26 - N-2: the block that runs the station step also puts the gear and the power cap back.
+    const std::vector<std::string> armed_blk = srcBlocksAfter(R, {"if", "(", "isFmArmed", "(", ")", ")", "{"});
+    if (armed_blk.size() == 1) {
+      const std::string A = srcSquash(armed_blk[0]);
+      g.n2_restore = srcHas(armed_blk[0], "cycleFmModeArmed") && A.find("gear = gear_at_press;") != std::string::npos &&
+                     A.find("max_power_cap = cap_at_press;") != std::string::npos;
+    }
+  }
+  // V2.5-Evo - 2026-10-26 - N-2: the snapshot is taken at the start of the press, before the press loop (whose tap action
+  // changes the gear or the cap at gear_change_waittime).
+  {
+    const std::string H = srcSquash(hgt);
+    const size_t sg = H.find("gear_at_press = gear;"), sc = H.find("cap_at_press = max_power_cap;");
+    const size_t w  = H.find("while (isActive())");
+    g.n2_snapshot = sg != std::string::npos && sc != std::string::npos && w != std::string::npos && sg < w && sc < w;
   }
   // G3
   const std::string armed = srcFuncBody(rtm, "cycleFmModeArmed");
@@ -247,27 +329,43 @@ static MapGuard mapGuard(const std::string& hall_text, const std::string& rtm_te
   return g;
 }
 
-static bool g1(const MapGuard& g) { return g.left_found && g.left_locks && g.left_no_fm_before_lock && g.left_no_step && g.left_fm_clear && g.left_clear_before_flush && g.left_p7_kept; }
-static bool g2(const MapGuard& g) { return g.right_found && g.right_steps_if_armed && g.right_display_is_else && g.right_takeback_ok && g.step_only_in_right; }
+static bool g1(const MapGuard& g) { return g.left_found && g.left_locks && g.left_no_fm_before_lock && g.left_no_step && g.left_fm_clear && g.left_clear_before_flush && g.left_p7_kept &&
+                                           g.left_clear_before_p7 && g.lock_in_gate && g.silent_body_ok; }
+static bool g2(const MapGuard& g) { return g.right_found && g.right_steps_if_armed && g.right_display_is_else && g.right_takeback_ok && g.step_only_in_right &&
+                                           g.right_polarity_ok; }
 static bool g3(const MapGuard& g) { return g.armed_found && g.armed_rtm_guard && g.armed_return_guard && g.armed_returns_before_step; }
 static bool g4(const MapGuard& g) { return g.combo_found && g.combo_steps && g.combo_never_disarms; }
 static bool g5(const MapGuard& g) { return g.mag_found && g.mag_all_five && g.mag_set_unread; }
-static bool mapGuardOk(const MapGuard& g) { return g1(g) && g2(g) && g3(g) && g4(g) && g5(g); }
+static bool g6(const MapGuard& g) { return g.n2_snapshot && g.n2_restore; }
+static bool mapGuardOk(const MapGuard& g) { return g1(g) && g2(g) && g3(g) && g4(g) && g5(g) && g6(g); }
 
 // ---- Made-up sources: one that keeps every rule (single-remote shape), and the pieces a mutation swaps ----
 
 static const char* kRightGood =
-  "        else if (direction > 0)\n        {\n          if (isFmArmed())\n          {\n            cycleFmModeArmed();\n          }\n"
+  "        else if (direction > 0)\n        {\n          if (isFmArmed())\n          {\n            gear          = gear_at_press;\n"
+  "            max_power_cap = cap_at_press;\n            cycleFmModeArmed();\n          }\n"
+  "          else cycleDisplayMode(1);\n        }\n";
+// V2.5-Evo - 2026-10-26 - N-1: the multi-remote shape - the take-back's held second press first, doing nothing.
+static const char* kRightMultiGood =
+  "        else if (direction > 0)\n        {\n          if (mtxTxSeizeSuppress())\n          {\n            // the take-back's held second press\n"
+  "          }\n          else if (isFmArmed())\n          {\n            gear          = gear_at_press;\n"
+  "            max_power_cap = cap_at_press;\n            cycleFmModeArmed();\n          }\n"
   "          else cycleDisplayMode(1);\n        }\n";
 static const char* kLeftGood =
   "        else if (direction < 0)\n        {\n          if (!usrConf.no_lock)\n          {\n            system_locked = 1;\n"
   "            if (isFmArmed()) { Serial.println(\"FM [TX] lock\"); fmSilentDisarm(); }\n"
   "            if (rtm_tx_active) setRtmDisarmed();\n            displayLock();\n            rtmFmStopFlush();\n          }\n        }\n";
 
-static std::string fakeHall(const std::string& right, const std::string& left)
+// fakeHall - a made-up handleGearToggle() in the real one's shape (V2.5-Evo - 2026-10-26 - N-6: with the snapshot, the press
+// loop, the thr_scaled < 10 action gate and the tap action). after_gate is text placed just after the gate's block.
+static std::string fakeHall(const std::string& right, const std::string& left, const std::string& after_gate = "")
 {
-  return std::string("void handleGearToggle(int direction)\n{\n  if (has_combo)\n  {\n    if (direction < 0 && last_tap_dir == 1) returnGesture();\n"
-                     "    else if (direction > 0 && last_tap_dir == -1) cycleFmMode();\n  }\n") + right + left + "}\n";
+  return std::string("void handleGearToggle(int direction)\n{\n  const int     gear_at_press = gear;\n  const uint8_t cap_at_press  = max_power_cap;\n"
+                     "  while (isActive())\n  {\n    if (millis() - pushtime > long_press_ms)\n    {\n      if (thr_scaled < 10)\n      {\n"
+                     "        if (has_combo)\n        {\n          if (direction < 0 && last_tap_dir == 1) returnGesture();\n"
+                     "          else if (direction > 0 && last_tap_dir == -1) cycleFmMode();\n        }\n") + right + left +
+         "      }\n" + after_gate + "      break;\n    }\n    if (change_once)\n    {\n      switch (usrConf.throttle_mode)\n      {\n"
+         "        case 0: if (direction > 0) gear++; break;\n        case 2: throttleAdjustCap(direction); break;\n      }\n    }\n  }\n}\n";
 }
 
 static const char* kArmedGood =
@@ -279,9 +377,14 @@ static const char* kComboGood =
 static const char* kMagGood =
   "bool fmStepStationFromMagnet()\n{\n  if (!fm_armed) return false;\n  uint8_t next = fmNextStationInSet(last_fm_mode, 0x1F);\n  return next != 0;\n}\n";
 
+// V2.5-Evo - 2026-10-26 - N-6: the lock's Follow-Me off, as RTMState.ino has it.
+static const char* kSilentGood =
+  "static void fmSilentDisarm()\n{\n  fm_armed         = false;\n  fm_throttle_seen = false;\n  fm_last_sync_ms  = 0;\n"
+  "  queueMetaPacketBurst(0xF2, fmEncodeModeByte(0));\n  displayBuffer[6] = 0x0000;\n}\n";
+
 static std::string fakeRtm(const std::string& armed, const std::string& combo, const std::string& mag)
 {
-  return combo + armed + mag;
+  return combo + armed + mag + kSilentGood;
 }
 
 // replaceOnce - s with the first `from` replaced by `to` (from must be present: a made-up mutation that does not apply is a bug).
@@ -313,9 +416,9 @@ int main(int argc, char** argv)
   const std::string rtm_ok  = fakeRtm(kArmedGood, kComboGood, kMagGood);
   const std::vector<std::string> none;
   { const MapGuard g = mapGuard(hall_ok, rtm_ok, none); CHECK(mapGuardOk(g)); }                 // keeps every rule
-  { // a multi-remote RIGHT block with the take-back suppression in the display branch keeps the rules too
-    const std::string r = replaceOnce(kRightGood, "else cycleDisplayMode(1);", "else if (!mtxTxSeizeSuppress()) cycleDisplayMode(1);");
-    const MapGuard g = mapGuard(fakeHall(r, kLeftGood), rtm_ok, none); CHECK(mapGuardOk(g)); }
+  { // a multi-remote RIGHT block with the take-back suppression tested first keeps the rules too (V2.5-Evo - 2026-10-26 - N-1;
+    // until then this case put the suppression in front of the display cycle only, the order N-1 found wrong)
+    const MapGuard g = mapGuard(fakeHall(kRightMultiGood, kLeftGood), rtm_ok, none); CHECK(mapGuardOk(g)); }
   { // G1 bites: the old P8.1 intercept is back (FM armed -> station step, else lock)
     const std::string l = replaceOnce(kLeftGood, "if (!usrConf.no_lock)", "if (isFmArmed()) cycleFmModeArmed();\n          else if (!usrConf.no_lock)");
     const MapGuard g = mapGuard(fakeHall(kRightGood, l), rtm_ok, none);
@@ -349,8 +452,7 @@ int main(int argc, char** argv)
   { // G2 bites (multi-remote build: MultiRemote.ino defines the suppression): Hall.ino dropped it altogether
     const std::vector<std::string> mr = { "bool mtxTxSeizeSuppress()\n{\n  return (s_seize_out & 4) != 0;\n}\n" };
     CHECK(!g2(mapGuard(hall_ok, rtm_ok, mr)));
-    const std::string r = replaceOnce(kRightGood, "else cycleDisplayMode(1);", "else if (!mtxTxSeizeSuppress()) cycleDisplayMode(1);");
-    CHECK(mapGuardOk(mapGuard(fakeHall(r, kLeftGood), rtm_ok, mr))); }
+    CHECK(mapGuardOk(mapGuard(fakeHall(kRightMultiGood, kLeftGood), rtm_ok, mr))); }
   { // G2 bites: a second station step elsewhere in handleGearToggle() (say the LEFT tap)
     const std::string h = replaceOnce(hall_ok, "if (has_combo)", "if (direction < 0 && tapped) cycleFmModeArmed();\n  if (has_combo)");
     const MapGuard g = mapGuard(h, rtm_ok, none);
@@ -385,6 +487,81 @@ int main(int argc, char** argv)
     const std::vector<std::string> fine = { "// mag_fm_set is no longer read\nconst char* k = \"mag_fm_set\";\n" };
     CHECK(!g5(mapGuard(hall_ok, rtm_ok, bad)));
     CHECK(g5(mapGuard(hall_ok, rtm_ok, fine))); }
+
+  // ---- V2.5-Evo - 2026-10-26 - delta audit N-6, N-1, N-2: the new rules bite ----
+  const std::vector<std::string> mr = { "bool mtxTxSeizeSuppress()\n{\n  return (s_seize_out & 4) != 0;\n}\n" };
+  { // N-6 (1) polarity: the station step under !isFmArmed() - the presence-and-order check alone still passes, polarity does not
+    const std::string r = replaceOnce(kRightGood, "if (isFmArmed())", "if (!isFmArmed())");
+    const MapGuard g = mapGuard(fakeHall(r, kLeftGood), rtm_ok, none);
+    CHECK(g.right_steps_if_armed && !g.right_polarity_ok && !g2(g)); }
+  { // N-6 (1) polarity, multi-remote shape: else if (!isFmArmed())
+    const std::string r = replaceOnce(kRightMultiGood, "else if (isFmArmed())", "else if (! isFmArmed())");
+    const MapGuard g = mapGuard(fakeHall(r, kLeftGood), rtm_ok, mr);
+    CHECK(!g.right_polarity_ok && !g2(g)); }
+  { // N-6 (1) polarity: a comparison instead of the plain test (if (isFmArmed() == false))
+    const std::string r = replaceOnce(kRightGood, "if (isFmArmed())", "if (isFmArmed() == false)");
+    const MapGuard g = mapGuard(fakeHall(r, kLeftGood), rtm_ok, none);
+    CHECK(!g.right_polarity_ok && !g2(g)); }
+  { // N-1: the old order - Follow-Me tested first, the suppression only in front of the display cycle
+    const std::string r = replaceOnce(kRightGood, "else cycleDisplayMode(1);", "else if (!mtxTxSeizeSuppress()) cycleDisplayMode(1);");
+    const MapGuard g = mapGuard(fakeHall(r, kLeftGood), rtm_ok, mr);
+    CHECK(g.right_polarity_ok && !g.right_takeback_ok && !g2(g)); }
+  { // N-1: the suppression inverted (if (!mtxTxSeizeSuppress()) { } else if (isFmArmed()) ...)
+    const std::string r = replaceOnce(kRightMultiGood, "if (mtxTxSeizeSuppress())", "if (!mtxTxSeizeSuppress())");
+    const MapGuard g = mapGuard(fakeHall(r, kLeftGood), rtm_ok, mr);
+    CHECK(!g.right_takeback_ok && !g2(g)); }
+  { // N-1: the take-back's held second press does something (here the station step)
+    const std::string r = replaceOnce(kRightMultiGood, "            // the take-back's held second press\n", "            cycleFmModeArmed();\n");
+    const MapGuard g = mapGuard(fakeHall(r, kLeftGood), rtm_ok, mr);
+    CHECK(!g.right_takeback_ok && !g2(g)); }
+  { // N-6 (3): Follow-Me switched off after the P-7 Return-To-Me end (still before the flush)
+    std::string l = replaceOnce(kLeftGood, "            if (isFmArmed()) { Serial.println(\"FM [TX] lock\"); fmSilentDisarm(); }\n", "");
+    l = replaceOnce(l, "            displayLock();\n", "            if (isFmArmed()) fmSilentDisarm();\n            displayLock();\n");
+    const MapGuard g = mapGuard(fakeHall(kRightGood, l), rtm_ok, none);
+    CHECK(g.left_clear_before_flush && !g.left_clear_before_p7 && !g1(g)); }
+  { // N-6 (4): the lock moved out of the thr_scaled < 10 action gate (it would fire with the trigger held)
+    const MapGuard g = mapGuard(fakeHall(kRightGood, "", std::string("      if (thr_scaled >= 10)\n      {\n      }\n") + kLeftGood), rtm_ok, none);
+    CHECK(g.left_found && g.left_locks && !g.lock_in_gate && !g1(g)); }
+  { // N-6 (4): a second lock elsewhere in the handler, outside the gate
+    const MapGuard g = mapGuard(fakeHall(kRightGood, kLeftGood, "      system_locked = 1;\n"), rtm_ok, none);
+    CHECK(!g.lock_in_gate && !g1(g)); }
+  { // N-6 (2): fmSilentDisarm() no longer clears fm_armed
+    const MapGuard g = mapGuard(hall_ok, replaceOnce(rtm_ok, "  fm_armed         = false;\n", ""), none);
+    CHECK(g.silent_found && !g.silent_body_ok && !g1(g)); }
+  { // N-6 (2): ... no longer stops the keepalive (left only in a comment, which is not code)
+    const MapGuard g = mapGuard(hall_ok, replaceOnce(rtm_ok, "  fm_last_sync_ms  = 0;\n", "  // fm_last_sync_ms = 0;\n"), none);
+    CHECK(!g.silent_body_ok && !g1(g)); }
+  { // N-6 (2): ... no longer tells the buggy (no 0xF2 / 0 burst)
+    const MapGuard g = mapGuard(hall_ok, replaceOnce(rtm_ok, "  queueMetaPacketBurst(0xF2, fmEncodeModeByte(0));\n", ""), none);
+    CHECK(!g.silent_body_ok && !g1(g)); }
+  { // N-6 (2): ... sends a station instead of mode 0
+    const MapGuard g = mapGuard(hall_ok, replaceOnce(rtm_ok, "fmEncodeModeByte(0)", "fmEncodeModeByte(last_fm_mode)"), none);
+    CHECK(!g.silent_body_ok && !g1(g)); }
+  { // N-6 (2): ... emptied altogether
+    const std::string rtm = replaceOnce(rtm_ok, kSilentGood, "static void fmSilentDisarm()\n{\n}\n");
+    const MapGuard g = mapGuard(hall_ok, rtm, none);
+    CHECK(!g.silent_body_ok && !g1(g) && !mapGuardOk(g)); }
+  { // N-2: the station step no longer puts the gear back
+    const std::string r = replaceOnce(kRightGood, "            gear          = gear_at_press;\n", "");
+    const MapGuard g = mapGuard(fakeHall(r, kLeftGood), rtm_ok, none);
+    CHECK(g.n2_snapshot && !g.n2_restore && !g6(g) && !mapGuardOk(g)); }
+  { // N-2: ... nor the power cap
+    const std::string r = replaceOnce(kRightGood, "            max_power_cap = cap_at_press;\n", "");
+    const MapGuard g = mapGuard(fakeHall(r, kLeftGood), rtm_ok, none);
+    CHECK(!g.n2_restore && !g6(g)); }
+  { // N-2: the restore moved out of the station-step block (after the if / else)
+    std::string r = replaceOnce(kRightGood, "            gear          = gear_at_press;\n            max_power_cap = cap_at_press;\n", "");
+    r = replaceOnce(r, "          else cycleDisplayMode(1);\n", "          else cycleDisplayMode(1);\n          gear = gear_at_press;\n          max_power_cap = cap_at_press;\n");
+    const MapGuard g = mapGuard(fakeHall(r, kLeftGood), rtm_ok, none);
+    CHECK(!g.n2_restore && !g6(g)); }
+  { // N-2: no snapshot of the gear at the start of the press
+    const MapGuard g = mapGuard(replaceOnce(hall_ok, "  const int     gear_at_press = gear;\n", ""), rtm_ok, none);
+    CHECK(!g.n2_snapshot && !g6(g)); }
+  { // N-2: the cap snapshot taken inside the press loop, after the tap action could have changed it
+    std::string h = replaceOnce(hall_ok, "  const uint8_t cap_at_press  = max_power_cap;\n", "");
+    h = replaceOnce(h, "    if (change_once)\n", "    const uint8_t cap_at_press  = max_power_cap;\n    if (change_once)\n");
+    const MapGuard g = mapGuard(h, rtm_ok, none);
+    CHECK(!g.n2_snapshot && !g6(g)); }
 
   // ---- The remote's real source: argv[1], else Source/V2_Integration_Tx from Tools/tests or next to this file ----
   namespace fs = std::filesystem;
@@ -424,10 +601,15 @@ int main(int argc, char** argv)
   CHECK(g.left_fm_clear);            //     F-6: the lock switches Follow-Me off ...
   CHECK(g.left_clear_before_flush);  //     ... before the stop flush
   CHECK(g.left_p7_kept);             //     P-7: the lock still ends the remote's own return before the flush
+  CHECK(g.left_clear_before_p7);     //     N-6: Follow-Me off comes before the P-7 end too
+  CHECK(g.lock_in_gate);             //     N-6: the lock sits inside the thr_scaled < 10 action gate, and only there
+  CHECK(g.silent_found);             //     N-6: fmSilentDisarm() is defined in RTMState.ino ...
+  CHECK(g.silent_body_ok);           //     ... and turns Follow-Me off: fm_armed false, keepalive 0, 0xF2 / mode 0 queued
   CHECK(g.right_found);              // G2: one RIGHT simple-hold branch
   CHECK(g.right_steps_if_armed);     //     Follow-Me armed -> station step
+  CHECK(g.right_polarity_ok);        //     N-6: under if (isFmArmed()), never !isFmArmed()
   CHECK(g.right_display_is_else);    //     otherwise the display cycle
-  CHECK(g.right_takeback_ok);        //     (multi-remote) the take-back suppression still guards the display cycle
+  CHECK(g.right_takeback_ok);        //     N-1 (multi-remote): the take-back's held second press is tested first and does nothing
   CHECK(g.step_only_in_right);       //     and no other branch of handleGearToggle() steps the station
   CHECK(g.armed_found);              // G3: cycleFmModeArmed() exists
   CHECK(g.armed_rtm_guard);          //     Return-To-Me active or arming -> ignored
@@ -439,8 +621,11 @@ int main(int argc, char** argv)
   CHECK(g.mag_found);                // G5: fmStepStationFromMagnet() exists
   CHECK(g.mag_all_five);             //     it walks all five stations
   CHECK(g.mag_set_unread);           //     and nothing outside the config layer reads mag_fm_set
-  printf("  G1 lock %s, G2 RIGHT hold %s, G3 F-4 guards %s, G4 combo %s, G5 magnet %s\n",
-         g1(g) ? "ok" : "FAIL", g2(g) ? "ok" : "FAIL", g3(g) ? "ok" : "FAIL", g4(g) ? "ok" : "FAIL", g5(g) ? "ok" : "FAIL");
+  CHECK(g.n2_snapshot);              // G6 (N-2): the gear and the cap are kept at the start of the press ...
+  CHECK(g.n2_restore);               //     ... and the RIGHT hold's station step puts both back
+  printf("  G1 lock %s, G2 RIGHT hold %s, G3 F-4 guards %s, G4 combo %s, G5 magnet %s, G6 gear / cap kept %s (%s build)\n",
+         g1(g) ? "ok" : "FAIL", g2(g) ? "ok" : "FAIL", g3(g) ? "ok" : "FAIL", g4(g) ? "ok" : "FAIL", g5(g) ? "ok" : "FAIL",
+         g6(g) ? "ok" : "FAIL", g.multi ? "multi-remote" : "single-remote");
 
   printf("%s: %d checks, %d failed\n", g_fails ? "FAILED" : "PASSED", g_checks, g_fails);
   return g_fails ? 1 : 0;

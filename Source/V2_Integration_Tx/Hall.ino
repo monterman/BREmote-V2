@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-26 - gesture fix follow-up (delta audit N-2): a RIGHT 2 s hold that steps the station puts back the
+//   gear and the power cap its own press changed at gear_change_waittime, so walking the stations never raises the throttle
+//   the rider set. Follow-Me not armed: unchanged. No confStruct change.
 // V2.5-Evo - 2026-10-26 - gesture fix (audit "LEFT-hold lock" F-1, F-3 to F-6; owner design 2026-10-26, no new gestures):
 //   (1) LEFT hold 2 s LOCKS in every unlocked state. The isFmArmed() -> cycleFmModeArmed() intercept is gone, and the lock
 //   now also switches this remote's Follow-Me off (fmSilentDisarm(), before the stop flush), so the padlock shows, the 30 s
@@ -410,6 +413,12 @@ void handleGearToggle(int direction)
 {
   bool (*isActive)() = (direction < 0) ? ctminus : ctplus;
 
+  // V2.5-Evo - 2026-10-26 - N-2: the gear and the power cap as they were when this press began. Every press, holds included,
+  // fires its tap action once at gear_change_waittime (gear +/-1 in throttle_mode 0, the cap +/- dynamic_power_step in mode
+  // 2), so the RIGHT hold's station step below puts them back. Loop task only, like every other writer of both.
+  const int     gear_at_press = gear;
+  const uint8_t cap_at_press  = max_power_cap;
+
   in_menu = usrConf.menu_timeout + 1;
   delay(50);
   unsigned long pushtime = millis();
@@ -505,6 +514,13 @@ void handleGearToggle(int direction)
           // the buggy is coming back on an auto-return.
           if (isFmArmed())
           {
+            // V2.5-Evo - 2026-10-26 - N-2: THE BUG - this same press had already raised the gear (throttle_mode 0) or the
+            // power cap (mode 2) by one step at gear_change_waittime, so walking F1 -> F5 raised the rider's next squeeze
+            // by four steps. THE FIX: both go back to their value at the start of the press, then the station steps. In
+            // mode 1 the gear is fixed and the cap unused, so nothing changes there. The "L<n>" or cap figure shown during
+            // the hold is replaced by the "F<n>" confirm, or by the next screen when the step is ignored.
+            gear          = gear_at_press;
+            max_power_cap = cap_at_press;
             cycleFmModeArmed();
           }
           // Simple RIGHT hold 2s, Follow-Me not armed → cycle telemetry display mode (unchanged)

@@ -437,6 +437,10 @@ Unavailable modes (no VESC lock or no GPS fix) are skipped automatically. `MA` r
 | RIGHT tap → LEFT hold (default 5 s, tunable 3–10 s) | Arm **Return-to-Me** (RTM) — display shows `rn` |
 | LEFT tap → RIGHT hold (default 5 s, tunable 3–10 s) | Arm **Follow-Me**. With Follow-Me armed: next station (F1 → F5 → F1). It never turns Follow-Me off — the lock does |
 
+> **RIGHT tap, then LEFT hold:** a RIGHT tap in the 3 s before a LEFT hold turns that hold into the Return-To-Me gesture, so it does not lock at 2 s. To lock, wait 3 s after a RIGHT tap, or hold LEFT without tapping first.
+>
+> **`no_lock = 1`:** the LEFT hold does not lock, so the toggle cannot turn Follow-Me off. Use the power switch (or the magnet in `mag_mode` 1 or 3).
+
 > 💡 **Optional — magnet / Hall input for hands-free control.** A DRV5032 Hall sensor on GPIO 9 (P_MAG) lets a magnet gesture activate **BLE** and arm **Follow-Me** without reaching for the toggles (great mid-ride). Wiring + firmware: **[Hall Sensor Expansion guide →](docs/Hall_Sensor_Expansion.md)** · step-by-step fitting (incl. easier-to-solder parts): **[install tutorial →](docs/Hall_Sensor_Install_Tutorial.md)**.
 
 > 

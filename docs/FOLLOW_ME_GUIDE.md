@@ -48,7 +48,7 @@ Arming is a **declaration of intent.** It does not move anything. There are two 
 While floating, before takeoff:
 
 1. **LEFT tap, then RIGHT hold** (~3 s — set by `fm_hold_duration_s`).
-2. The remote shows **F1 / F2 / F3** and buzzes **two quick taps** = armed.
+2. The remote shows the station, **F1 to F5**, and buzzes **two quick taps** = armed.
 3. To change station while armed, repeat the gesture or hold RIGHT for 2 s, before or after you ride
    (**F1 → F2 → F3 → F4 → F5 → F1**, it wraps and never disarms). To turn Follow-Me off, lock the
    remote (LEFT hold 2 s).
@@ -62,7 +62,8 @@ If your remote has the Hall sensor fitted and `mag_mode` is set:
 
 - **Hold the magnet to the sensor for ~2 s, then pull it away.** You feel one short pulse
   at 2 s (get-ready), then **two quick taps** on release = armed.
-- It's a **toggle**: armed already → the same gesture **disarms** (one long buzz).
+- It's a **toggle** (`mag_mode` 1 or 3): armed already → the same gesture **disarms**, silently — `St`
+  on the screen, no buzz.
 - **It works with the throttle held** — so if you forgot to arm and you're already towing,
   you can arm mid-tow. This is the magnet's whole purpose.
 
@@ -206,10 +207,13 @@ dots = following.*
 - **Toggle:** lock the remote (LEFT hold 2 s). The lock turns Follow-Me off, and it also ends an
   auto-return that is coming back (the buggy stops). After the unlock Follow-Me stays off until you
   arm it again. (Repeating the arm gesture steps the station; it does not disarm.)
-- **Magnet:** hold ~2 s again (one long buzz = off).
-- **Automatic:** arming RTM disarms FM; 30 s of lost data ends it (§6); powering the remote off drops the
+- **`no_lock = 1`:** the LEFT hold does not lock, so the toggle cannot turn Follow-Me off. Use the
+  power switch (or the magnet in `mag_mode` 1 or 3).
+- **Magnet** (`mag_mode` 1 or 3): hold ~2 s again. It turns off silently — `St` on the screen, no buzz.
+- **Automatic:** 30 s of lost data ends it (§6); powering the remote off drops the
   arm (it's forgotten at power-off). It does not expire on its own — `fm_arm_timeout_s`
-  defaults to **0 = never**.
+  defaults to **0 = never**. Arming Return-to-Me does not disarm it: the buggy yields to the return
+  while it runs, and Follow-Me is still armed afterwards.
 
 ---
 
@@ -229,7 +233,8 @@ dots = following.*
 2. Follow-Me only steers and only reduces throttle — never adds.
 3. Releasing the trigger stops the buggy at the hardware level, in every mode.
 4. Manual control always works, even if GPS / compass / radio fail.
-5. Follow-Me and Return-to-Me are mutually exclusive — arming one disarms the other.
+5. Follow-Me and Return-to-Me never steer at the same time — while a Return-to-Me runs, Follow-Me
+   yields (it stays armed).
 
 *See `BUGGY_FOIL_DOMAIN.md` for the domain model and `DESIGN_FOLLOW_ME.md` for the full
 engineering design.*

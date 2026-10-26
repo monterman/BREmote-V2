@@ -11,6 +11,8 @@ gestures: the existing ones were reassigned.
   off. It still ends a return-to-me, and it now also ends an auto-return that is coming back: the lock is a stop.
 - **RIGHT hold 2 s with Follow-Me armed = next station**, F1 → F2 → F3 → F4 → F5 → F1 (never off). Without
   Follow-Me armed it cycles the display, as before.
+- **That RIGHT-hold station step leaves your gear and power cap as they were** (throttle modes 0 and 2). Each
+  step used to raise them one notch too, because the press first counted as a gear tap.
 - **LEFT tap → RIGHT hold with Follow-Me armed = next station**, before and after your first squeeze. It no
   longer turns Follow-Me off; lock the remote for that.
 - Both station steps are ignored while a return-to-me runs and while an auto-return is coming back, so `F<n>`
@@ -18,6 +20,9 @@ gestures: the existing ones were reassigned.
 - **Magnet mode 4:** a tap steps through all five stations. Magnet Station Set (`mag_fm_set`) is no longer used;
   it stays in the config so stored settings load.
 - The web page, the config tool and the guides show the new map.
+- The guides and the No Lock help now say that with `no_lock = 1` the toggle cannot turn Follow-Me off (use the
+  power switch or the magnet), and that a RIGHT tap in the 3 s before a LEFT hold makes it the Return-To-Me
+  gesture instead of a lock.
 
 ## 2026-10-25 — RX: by default the stick steers the buggy during automatic steering instead of cancelling it
 

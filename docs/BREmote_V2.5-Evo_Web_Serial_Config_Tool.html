@@ -302,6 +302,8 @@ const TX_GROUP_ORDER = ["Radio","Gears","Throttle","Steering","Toggle","Lock & T
 // V2.5-Evo - 2026-10-26 - mag_mode, mag_fm_set, fm_hold_duration_s and fm_arm_timeout_s text only, mirroring
 // Source/V2_Integration_Tx/WebUiEmbedded.h (gesture fix: LEFT hold always locks, RIGHT hold steps the station while
 // Follow-Me is armed, the combo never disarms, the magnet tap walks all five stations, mag_fm_set no longer used).
+// V2.5-Evo - 2026-10-26 - no_lock text only (delta audit N-3), mirroring Source/V2_Integration_Tx/WebUiEmbedded.h: with 1
+// the LEFT hold does not lock either, so the toggle cannot turn Follow-Me off.
 const TX_FIELDS = [
 {key:"radio_preset",label:"Radio Preset",description:"Radio frequency band. 1=EU 868 MHz, 2=US/AU 915 MHz. Only these two bands exist. Any invalid value safely defaults to EU868 instead of halting boot. Factory default 2 (US/AU915).",group:"Radio",type:"enum",def:2,min:1,max:2,options:[{v:1,l:"EU868"},{v:2,l:"US/AU915"}]},
 {key:"rf_power",label:"RF Power",description:"LoRa transmit power in dBm. -9=minimum range (bench testing only), 22=maximum range. Higher values draw more current. Default 22.",group:"Radio",type:"int",def:22,min:-9,max:22,unit:"dBm"},
@@ -322,7 +324,7 @@ const TX_FIELDS = [
 {key:"tog_deadzone",label:"Toggle Deadzone",description:"Raw ADC deadzone around center position. 100=very sensitive (small movements register), 3000=insensitive. Increase if false inputs occur while riding.",group:"Toggle",type:"int",def:500,min:100,max:3000},
 {key:"tog_diff",label:"Toggle Diff",description:"Minimum ADC movement required to count as input. 1=most sensitive (may pick up electrical noise), 200=least sensitive.",group:"Toggle",type:"int",def:30,min:1,max:200},
 {key:"tog_block_time",label:"Toggle Block Time",description:"After a steering input, block gear-change inputs for this long. 0=no block, 5000=5 second block. Milliseconds. Default 200.",group:"Toggle",type:"int",def:200,min:0,max:5000},
-{key:"no_lock",label:"No Lock",description:"0=boot locked (must squeeze trigger to unlock before riding), 1=boot unlocked (no unlock step). Default 0 — use 1 with caution.",group:"Lock & Timing",type:"bool",def:0,min:0,max:1},
+{key:"no_lock",label:"No Lock",description:"0=boot locked (must squeeze trigger to unlock before riding), 1=boot unlocked (no unlock step). Default 0 — use 1 with caution. With 1 the LEFT hold does not lock either, so the toggle cannot turn Follow-Me off: use the power switch (or the magnet in mag_mode 1 or 3).",group:"Lock & Timing",type:"bool",def:0,min:0,max:1},
 {key:"trig_unlock_timeout",label:"Trigger Unlock Timeout",description:"Time allowed to complete the trigger unlock gesture. 0=very short window, 65535=very long squeeze allowed. Milliseconds. Default 3500.",group:"Lock & Timing",type:"int",def:3500,min:0,max:65535,unit:"ms"},
 {key:"lock_waittime",label:"Lock Wait Time",description:"Toggle hold duration to trigger power-off. 0=instant power-off, 65535=effectively disabled. Milliseconds.",group:"Lock & Timing",type:"int",def:2000,min:0,max:65535,unit:"ms"},
 {key:"menu_timeout",label:"Menu Timeout",description:"Delay after menu exit before steering re-enables. 0=immediate re-engage, 1000=1 second delay. Default 2.",group:"Lock & Timing",type:"int",def:2,min:0,max:1000},

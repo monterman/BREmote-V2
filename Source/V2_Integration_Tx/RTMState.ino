@@ -1,3 +1,9 @@
+// V2.5-Evo - 2026-10-26 - gesture fix (audit "LEFT-hold lock" F-1, F-4, F-5; owner design 2026-10-26): (1) cycleFmModeArmed()
+//   is the RIGHT 2 s hold's station step now (the LEFT hold always locks) and carries the F-4 guards: ignored, one serial
+//   line, while Return-To-Me runs or arms and while the buggy is coming back on an auto-return. (2) cycleFmMode() on an
+//   armed remote steps the station through cycleFmModeArmed(), before AND after the first squeeze: the combo no longer
+//   disarms (the lock turns Follow-Me off, Hall.ino). (3) fmStepStationFromMagnet() walks all five stations; mag_fm_set
+//   is no longer read. No confStruct change.
 // V2.5-Evo - 2026-10-12 - comments only: fmArmedNotReady() and three R5 notes describe the D-7 looks (breathing bar / end dots) instead of the retired scanner. No code change.
 // V2.5-Evo - 2026-10-11 - audit 2026-10-11 D-3 (owner): runFmLoop() - fm_flags bit 3 WITH bit 0 set (same arrival, fm_fault_latched_armed) = the buggy stopped following but keeps Follow-Me armed: stop buzz + non-blocking "St" (showFmStopLabelHeld()), fm_armed kept, no 0xF2/0. Bit 3 with bit 0 clear keeps the fmDisarm(false) path. No confStruct change, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-09 - comments only (audit "magnet station step" L-4): the fmStepStationFromMagnet() header no
@@ -10,6 +16,8 @@
 //   confirm buzz is not added). New fmReturnMovingRaw(): the last raw fm_flags say returning (bits 6 + 1), no freshness
 //   or streak test, so a moving auto-return behind a stale link still refuses the tap. Still walks mag_fm_set. Comments
 //   on the old "engaged only" gate rewritten. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
+//   (V2.5-Evo - 2026-10-26 - superseded in part: the toggle step is the RIGHT 2 s hold now, and the tap walks all five
+//   stations instead of mag_fm_set.)
 // V2.5-Evo - 2026-10-08 - STICKY RETURN CAP, remote backstop (owner design): Gate 1 (max runtime), Gate 2 (TX GPS stale)
 //   and the buggy's fault bit (and its fallback) now KEEP the RTM cap in force instead of lifting it to 255, until the raw
 //   trigger drops below 26 once (rtm_end_sticky / rtm_cap_hold_sticky, rtmKeptCapReleased()). Arrival, the Q-2 refusal and
@@ -1626,12 +1634,14 @@ void runRtmLoop()
 //   - Blinks "F[mode]" x2 on display; fires Pattern 4 (2 fast buzzes) as arm confirm
 //   - FM active: user engages throttle to ride
 //
-// CHANGE MODE while armed (LEFT hold 2s, intercepted by Hall.ino):
+// CHANGE MODE while armed (V2.5-Evo - 2026-10-26: the RIGHT 2 s hold, or the same combo again; was the LEFT 2 s hold):
 //   - Cycles F1→F2→F3→F4→F5→F1 (F4/F5 since 2026-10-07), never F0 (owner rule 2026-09-19: nothing disarms Follow-Me by cycling);
-//     stays armed; sends new mode to RX; resets arm timer
+//     stays armed; sends new mode to RX; resets arm timer. Ignored while Return-To-Me runs and while an auto-return comes back.
 //
 // DISARM (any of):
-//   - Same combo again (LEFT tap + RIGHT hold 5s) — toggle
+//   - The lock (LEFT hold 2 s, Hall.ino) - V2.5-Evo - 2026-10-26: it switches Follow-Me off silently and also ends an
+//     auto-return that is coming back. (Until 2026-10-26 the same combo after the first squeeze disarmed; it steps now.)
+//   - The magnet in mag_mode 1 / 3 (a hold again)
 //   - Arm timeout expires (fm_arm_timeout_s) before any throttle input — auto-disarm.
 //     0 = never (the default since 2026-09-17): armed with no throttle stays armed indefinitely.
 //   - RX fault-stop (fm_flags bit3 rising edge) — the TX follows the RX's decision
@@ -1661,7 +1671,8 @@ static unsigned long fm_declare_ms    = 0;
 static const unsigned long kFmResyncMs              = 3000UL;   // bit 0 clear for this long on a fresh link
 static const unsigned long kFmResyncDeclareMarginMs = 1500UL;
 
-// Returns true if FM is currently armed; called by Hall.ino to intercept LEFT hold 2s
+// Returns true if FM is currently armed; called by Hall.ino (V2.5-Evo - 2026-10-26: the RIGHT 2 s hold steps the station on
+// it, and the LEFT 2 s lock switches Follow-Me off on it; it no longer turns the LEFT hold into a station step)
 bool isFmArmed() { return fm_armed; }
 
 // V2.5-Evo - 2026-07-20 - Batch T: a previous telemetry.fm_flags snapshot (fm_flags_prev) lived here for the
@@ -1710,6 +1721,7 @@ bool fmArmedNotReady()
 
 // Silent disarm: clears FM state and notifies RX, but shows no display and fires no haptic.
 // Used when arm-window expires before any throttle input — nothing active to confirm.
+// V2.5-Evo - 2026-10-26 - F-6: also used by the LEFT-hold lock (Hall.ino), whose padlock is the confirm.
 static void fmSilentDisarm()
 {
   fm_armed         = false;
@@ -1729,6 +1741,7 @@ static void fmSilentDisarm()
 //        revision the test is "FAULT or TIMEOUT", not "did the rider press something": true for the
 //        deliberate disarms (toggle combo, magnet toggle); false only for the RX fault-stop.
 //        (The Gate 1 release backstop that also passed true was removed 2026-09-17.)
+//        (V2.5-Evo - 2026-10-26 - the toggle combo no longer disarms, so the magnet toggle is the only commanded caller.)
 // OUTPUT: none. SIDE EFFECTS: fm_armed cleared, keepalive stopped, 0xF2/0 sent to RX, STOP buzz
 //        requested when uncommanded, and a BLOCKING 2s "St" display hold.
 static void fmDisarm(bool commanded)
@@ -1762,7 +1775,8 @@ static void fmDisarm(bool commanded)
   gpsKeepAliveDelay(2000);
 }
 
-// Called by handleGearToggle() combo (LEFT tap + RIGHT hold 5s) — toggles arm/disarm.
+// Called by handleGearToggle() combo (LEFT tap + RIGHT hold 5s) — arms Follow-Me, or steps the station when it is armed.
+// (V2.5-Evo - 2026-10-26: it no longer disarms; until then it toggled arm/disarm after the first squeeze.)
 // On arm: seeds last_fm_mode from SPIFFS on first arm this session (Change B); fires Pattern 4;
 // shows "FM" confirm (Change D, 6 cols ≤ C0-C5); sends 0xF2 to RX; starts keepalive timer (Change E).
 void cycleFmMode()
@@ -1771,42 +1785,15 @@ void cycleFmMode()
 
   if (fm_armed)
   {
-    if (fm_throttle_seen)
-    {
-      // V2.5-Evo - 2026-10-07 - T-9: THE BUG - this deliberate disarm also ended an auto-return that was under way
-      // (the buggy dropped Follow-Me mid-return), but SOP-040 rule 4 says auto-return ends only by arriving, a fault or
-      // a remote power cycle. THE FIX: while the buggy confirms it is RETURNING (fmIsReturning()) the gesture is ignored,
-      // serial line only. Parked (waiting) or following, the disarm works exactly as before.
-      if (fmIsReturning())
-      {
-        Serial.println("FM [TX] disarm gesture ignored: the buggy is on an auto-return back to you (it ends by arriving, a fault or a remote power cycle)");
-        return;
-      }
-      // User already rode — treat gesture as disarm toggle
-      Serial.println("FM [TX] disarm: the disarm gesture after riding -> 0xF2/0");   // V2.5-Evo - 2026-09-19
-      fmDisarm(true);   // COMMANDED: the rider made the disarm gesture → silent
-    }
-    else
-    {
-      // No throttle yet — cycle to next mode. V2.5-Evo - 2026-09-19 (owner ruling 12:45): wraps
-      // 1 -> 2 -> 3 -> 1 and never lands on F0 any more, the same wrap cycleFmModeArmed() uses.
-      // F0 had no purpose as a cycle-stop — bench testing showed the tap+hold combo landing on it
-      // (an unwanted disarm) twice in five minutes before any throttle. The F0-disarm branch this
-      // wrap used to reach (display "F0", 0xF2/0, reset to SPIFFS default) is removed; it is
-      // unreachable now. To leave Follow-Me off, don't arm it — the combo-after-throttle disarm
-      // above and the magnet toggle disarm are unaffected.
-      // V2.5-Evo - 2026-10-07 - F4/F5: the wrap is 1 -> 2 -> 3 -> 4 -> 5 -> 1. The stations run round the rider -
-      // 1 rear-right, 2 behind, 3 rear-left, 4 FRONT-RIGHT, 5 FRONT-LEFT - and there is deliberately no 6: a station
-      // directly ahead would put the buggy on the rider's line, where a failed motor stops it in his path.
-      last_fm_mode = (last_fm_mode < 5) ? last_fm_mode + 1 : 1;
-
-      // Large-font mode confirm: LET_F + mode digit (1-5). V2.5-Evo - 2026-10-06 - held 2 s by
-      // showFmLabelHeld() (Display.ino) WITHOUT blocking loop(); was a blocking gpsKeepAliveDelay(2000).
-      showFmLabelHeld(last_fm_mode);
-      queueMetaPacketBurst(0xF2, (uint8_t)(fmEncodeModeByte(last_fm_mode) | kFmFreshDeclBit));   // V2.5-Evo - 2026-10-07 - M-1: a gesture -> bit 7
-      fm_last_sync_ms = millis();
-      fm_arm_ms       = millis();   // reset arm window — user is actively choosing a mode
-    }
+    // V2.5-Evo - 2026-10-26 - owner design (audit "LEFT-hold lock"): on an armed remote the combo ALWAYS steps to the next
+    // station, F1 -> F5 -> F1, before AND after the first squeeze. THE CHANGE: after the first squeeze it used to DISARM
+    // (fmDisarm(true), "St"); now that the LEFT hold always locks, the lock is how Follow-Me is turned off (it also ends an
+    // auto-return that is coming back), and the combo means one thing in every armed state. The step is
+    // cycleFmModeArmed(), the same one the RIGHT 2 s hold uses, with the F-4 guards: ignored, serial line only, while the
+    // buggy is coming back on an auto-return (this was T-9's "disarm gesture ignored") and while Return-To-Me runs
+    // (handleGearToggle() answers that case first). The old pre-squeeze wrap note (F0 removed 2026-09-19, F4/F5
+    // 2026-10-07, no station 6) applies unchanged: cycleFmModeArmed() wraps the same way.
+    cycleFmModeArmed();
     return;
   }
 
@@ -1860,8 +1847,12 @@ void cycleFmMode()
   queueMetaPacketBurst(0xF2, (uint8_t)(fmEncodeModeByte(last_fm_mode) | kFmFreshDeclBit));   // V2.5-Evo - 2026-10-07 - M-1: the arm gesture -> bit 7
 }
 
-// Called by handleGearToggle(-1) simple LEFT hold 2s when FM is armed (Hall.ino checks isFmArmed()).
+// V2.5-Evo - 2026-10-26 - called by handleGearToggle(+1), the simple RIGHT hold 2s, when FM is armed (Hall.ino checks
+// isFmArmed()), and by cycleFmMode() when the combo is made on an armed remote. Until 2026-10-26 it was the LEFT hold 2s,
+// which now always locks.
 // Cycles mode 1→2→3→4→5→1 (F4/F5 since 2026-10-07; Change C: skips mode 0 = disabled); stays armed; resets arm timer.
+// V2.5-Evo - 2026-10-26 - F-4: ignored (one serial line, nothing on the remote) while Return-To-Me runs or arms on this
+// remote, and while the buggy is coming back on an auto-return - the magnet tap's two guards.
 // V2.5-Evo - 2026-09-19 - IT WRAPS, AND NEVER LANDS ON F0 (owner rule: nothing disarms Follow-Me
 // deliberately except the disarm gesture). From 2026-04-29 (F0) until today the third LEFT hold
 // while armed reached 0 = disarm, so a rider stepping through the modes on the water could disarm
@@ -1869,9 +1860,24 @@ void cycleFmMode()
 // toggle; cycleFmMode()'s pre-throttle cycle now uses this same 1->2->3->1 wrap too (owner ruling
 // 12:45 the same day — F0 had no purpose as a cycle-stop; see the header note at the top of this
 // file). No buzz on a mode cycle (2026-08-16 haptic cut).
+// (V2.5-Evo - 2026-10-26: the disarm is the lock now - LEFT hold 2 s - not the combo-after-throttle, which steps here.)
 void cycleFmModeArmed()
 {
   if (!fm_armed) return;
+  // V2.5-Evo - 2026-10-26 - F-4: THE BUG - the toggle station step had neither of the magnet tap's guards (T-4, RTM), so
+  // during a moving auto-return "F<n>" covered the metres countdown for 2 s (SOP-041: the returning screen must stay
+  // readable), and during Return-To-Me it re-declared Follow-Me under the return. THE FIX: the same two guards, here with
+  // the action, so every toggle step (the RIGHT 2 s hold and the combo) has them. Ignored silently on the remote.
+  if (rtm_tx_active || rtmIsArming())
+  {
+    Serial.println("FM [TX] station step ignored: Return-To-Me is active on this remote");
+    return;
+  }
+  if (fmIsReturning() || fmReturnMovingRaw())
+  {
+    Serial.println("FM [TX] station step ignored: the buggy is on an auto-return back to you");
+    return;
+  }
   // Cycle 1→2→3→4→5→1: wrap, never 0.
   // V2.5-Evo - 2026-10-07 - F4/F5: 1-3 becomes 1-5; the two extra steps are the FRONT stations (no 6, no
   // dead-ahead station). A miscounted hold can land on a front station the rider did not mean to pick - a wrong
@@ -1900,6 +1906,9 @@ void cycleFmModeArmed()
 //   "only while actively following" gate is gone: the tap now steps in any armed state, like cycleFmModeArmed().
 //   What still differs: the mag_fm_set walk, and the tap stays silent during Return-To-Me and while the buggy is
 //   coming back on an auto-return. The magnet keeps its own entry point for those reasons.
+//   V2.5-Evo - 2026-10-26 - SUPERSEDED again: the tap walks all five stations (mag_fm_set is not read), and
+//   cycleFmModeArmed() has the same two guards now (F-4). What still differs: the tap's true/false result, which
+//   starts its 400 ms lockout in runMagGesture().
 // ============================================================
 
 // fmIsEngaged - is Follow-Me actively following right now?
@@ -1988,6 +1997,7 @@ bool fmReturnMovingRaw()
 //
 // INPUTS:  from = the station the buggy is at now (1-5; anything else counts as "outside the set")
 //          mask = usrConf.mag_fm_set, bit0 = station 1 ... bit4 = station 5
+//                 (V2.5-Evo - 2026-10-26: the only caller passes 0x1F, all five stations; mag_fm_set is not read)
 // OUTPUT:  the station to move to (1-5), or 0 for "there is nowhere to go, do nothing".
 // No side effects.
 //
@@ -2001,6 +2011,7 @@ bool fmReturnMovingRaw()
 // 0x1F and the walk is modulo 5; both new bits address reachable stations. The tap's own gate is unchanged:
 // fmIsEngaged() still has to hold, so a tap is dead while the rider is on the rope. mag_fm_set defaults to 7, so the
 // magnet keeps stepping the three rear stations until the rider ticks bits 3 and 4.
+// (V2.5-Evo - 2026-10-26 - superseded: the tap walks all five stations, mask 0x1F; mag_fm_set is no longer read.)
 // V2.5-Evo - 2026-10-09 - the tap's gate is fm_armed now, not fmIsEngaged(): a tap steps on the rope too (see
 // fmStepStationFromMagnet() for why that is safe).
 static uint8_t fmNextStationInSet(uint8_t from, uint16_t mask)
@@ -2063,6 +2074,10 @@ static uint8_t fmNextStationInSet(uint8_t from, uint16_t mask)
 // (RX 7028-7031, 7118-7124), neither of which reads the station; stepping on the rope equals having armed at that
 // station. The effects below are the same as cycleFmModeArmed(): "F<n>" held 2 s, 0xF2 with the fresh bit, keepalive
 // and arm timers reset, and no buzz (the manual step gives none). The only difference is the mag_fm_set walk.
+// V2.5-Evo - 2026-10-26 - owner design: the manual step is the RIGHT 2 s hold now (the LEFT hold always locks), and the
+// tap walks ALL FIVE stations like it, F1 -> F5 -> F1, never F0: fmNextStationInSet() gets 0x1F, mag_fm_set is no longer
+// read (the field stays for stored configs). With five stations the tap always moves one on, so the silent "nowhere to
+// go" return below cannot happen for an armed remote any more; it is kept as a guard.
 //
 // CONFIRMATION - the display only, and only when something actually changed:
 //   display : the existing "F<n>" large-font confirm, held 2 s without blocking (V2.5-Evo - 2026-10-06;
@@ -2074,8 +2089,8 @@ static uint8_t fmNextStationInSet(uint8_t from, uint16_t mask)
 // flash, no packet. A confirmation for "nothing happened" teaches the rider to expect
 // feedback from accidental magnet contact, which is the opposite of what we want.
 //
-// INPUTS: last_fm_mode, usrConf.mag_fm_set. (usrConf.gear_display_time is NO LONGER read here - see
-//   the constants above for why.)
+// INPUTS: last_fm_mode (V2.5-Evo - 2026-10-26: usrConf.mag_fm_set is no longer read). (usrConf.gear_display_time is NO
+//   LONGER read here - see the constants above for why.)
 // SIDE EFFECTS: last_fm_mode updated, one 0xF2 burst to the buggy, keepalive + arm timers reset,
 //   and a NON-blocking 2 s "F<n>" hold via showFmLabelHeld() (V2.5-Evo -
 //   2026-10-06; was a blocking 1.2 s gpsKeepAliveDelay()). Loop task only - never from a FreeRTOS task.
@@ -2087,7 +2102,7 @@ bool fmStepStationFromMagnet()
   if (fmIsReturning()) return false;                 // V2.5-Evo - 2026-10-07 - T-4: never during an auto-return coming back
   if (fmReturnMovingRaw()) return false;             // V2.5-Evo - 2026-10-09 - L-2: nor when the last raw flags say it is coming back
 
-  uint8_t next = fmNextStationInSet(last_fm_mode, usrConf.mag_fm_set);
+  uint8_t next = fmNextStationInSet(last_fm_mode, 0x1F);   // V2.5-Evo - 2026-10-26 - all five stations (mag_fm_set not read)
   if (next == 0 || next == last_fm_mode) return false;   // nowhere to go - stay silent
 
   last_fm_mode = next;
@@ -2339,8 +2354,9 @@ void runFmLoop()
     }
   }
 
-  // Track throttle engagement. fm_throttle_seen is what turns the arm combo into a disarm
-  // toggle (cycleFmMode) once the rider has ridden, and what ends the arm-window check above.
+  // Track throttle engagement. fm_throttle_seen is what ends the arm-window check above. (Until
+  // V2.5-Evo - 2026-10-26 it also turned the arm combo into a disarm once the rider had ridden; the
+  // combo steps the station in every armed state now.)
   // fm_arm_ms is still refreshed here, but since the Gate 1 removal (2026-09-17) nothing reads
   // it once fm_throttle_seen is set — kept as-is rather than widening this change.
   if (thr_scaled > 10)

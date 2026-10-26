@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-26 - comments only (gesture fix, audit "LEFT-hold lock"): mag_fm_set is no longer read (the mag_mode 4
+//   tap steps through all five stations) and Follow-Me is turned off by the lock. Same fields, same offsets, no struct change.
 // V2.5-Evo - 2026-10-24 - throttle_mode DEFAULT 2 -> 1 (No Gears; owner ruling, SOP-023). defaultConf value only - no struct
 //   change, sizeof stays 136, SW_VERSION stays 27; remotes keep their stored value. dynamic_power_start (85) and the runtime
 //   max_power_cap init are unchanged: they only matter in mode 2.
@@ -467,6 +469,8 @@ struct confStruct {
     //       the magnet is an arm↔DISARM toggle, while in mode 4 the magnet only ever ARMS Follow-Me
     //       or STEPS its station, and the hold only flips the Return-To-Me enable. To disarm
     //       Follow-Me in mode 4, use the toggle combo (LEFT tap → RIGHT hold) or select F0.
+    //       (V2.5-Evo - 2026-10-26: the taps step through all five stations - mag_fm_set is not read - and Follow-Me
+    //       is turned off by the lock, LEFT hold 2 s; the combo no longer disarms.)
     //       (V2.5-Evo - 2026-09-30: documented after the audit  the silent capability change.)
     //
     // Valid range 0-4; default 0. Implemented by runMagGesture() in Hall.ino.
@@ -495,7 +499,9 @@ struct confStruct {
     // and not 31 for the same reason the default is.
     // (The note that used to sit here said stations 4 and 5 did not exist in this firmware and that
     // fmNextStationInSet() masked bits 3 and up off. Both bits now address reachable stations.)
-    uint16_t mag_fm_set;       // magnet-tap station set, bitmask bit0=F1 bit1=F2 bit2=F3 bit3=F4 bit4=F5; 1-31; default 7 (the three rear stations)
+    // V2.5-Evo - 2026-10-26 - NO LONGER READ (owner design): the mag_mode 4 tap steps through all five stations, like the
+    // RIGHT 2 s hold. The field, its range check and its default stay, so stored configs load unchanged (no struct change).
+    uint16_t mag_fm_set;       // NO LONGER READ since 2026-10-26; was the magnet-tap station set, bit0=F1 ... bit4=F5; 1-31; default 7
 };
 
 // V2.5-Evo - 2026-07-20 - MagGesture: 132 → 136. mag_mode is a uint16_t (+2 bytes = 134), but the
@@ -524,7 +530,7 @@ confStruct usrConf;
 // selected in mag_fm_set, but ONLY while Follow-Me is actively following; a 2.5 s hold toggles
 // Return-To-Me on or off for THIS SESSION (RAM, never SPIFFS). Roles 1-3 keep their own timings, buzzes
 // and arm-on-removal behaviour. NOTE: mode 4 has no magnet disarm — see the mag_mode field comment.
-#define MAG_ROLE_FMSET 4   // tap (600 ms - 3 s) = next station in mag_fm_set (FM following only); 5 s hold = RTM (V2.5-Evo - 2026-10-09)
+#define MAG_ROLE_FMSET 4   // tap (600 ms - 3 s) = next station, all five since 2026-10-26 (FM armed); 5 s hold = RTM (V2.5-Evo - 2026-10-09)
 
 // Returns what the magnet gesture should arm for the current mag_mode value.
 // Inputs: usrConf.mag_mode (0-4). Output: MAG_ROLE_NONE / _FM / _RTM / _BOTH / _FMSET.
@@ -657,6 +663,7 @@ confStruct defaultConf = {  // V2.5-Evo — factory default configuration
   // which stations exist. Narrow it per rider in the web UI (three tick boxes).
   // V2.5-Evo - 2026-10-07 - F4/F5: the toggle now steps all five stations, but this default stays 7 = the
   // three REAR stations, so the front pair is opt-in on the magnet (bits 3 and 4, ticked in the web UI).
+  // (V2.5-Evo - 2026-10-26: no longer read - the magnet steps all five stations too; the value stays for stored configs.)
   7,    // mag_fm_set (bit0=F1, bit1=F2, bit2=F3, bit3=F4, bit4=F5; 7 = the three rear stations)
 };
 

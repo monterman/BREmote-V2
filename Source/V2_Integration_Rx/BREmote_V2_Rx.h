@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-26 - COMMENT ONLY (N-1): the steer_during_auto field note now tells the 30 s takeover end per mode - return-to-me and auto-return ignore the stick until it is centred; Follow-Me following ends through FM_HOLD, so the stick is the rider's at once with no centring, and under a trigger that stays held a fresh separation or the auto-return can move the buggy again with no release, each through its own ramp and caps. No code change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-25 - COMMENT ONLY (steer default review S-5): the steer_during_auto field comment says what 0 does since the remote stopped exiting (the stick is not used in a classic return-to-me), what a 30 s takeover does in each mode (return-to-me and auto-return carry on; Follow-Me following stops until one release), and that the remote no longer acts on fm_flags bit 4. No code change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-25 - defaultConf.steer_during_auto 0 -> 1 (owner ruling): a fresh or factory-reset buggy lets the stick TAKE OVER automatic steering while it is held and hand back on centring, instead of cancelling. Value only: same field, sizeof stays 200, SW_VERSION stays 36, a stored config keeps its own value.
 // V2.5-Evo - 2026-10-24 - throttle-byte audit T-1, fix (b), receiver half: includes ../Common/ThrottleByte.h (after OutputRamp.h) for calcPWM()'s stretch; the thr_received_log field comment says the byte is 0-240 and how to read it now. Log format, record sizes, confStruct unchanged: sizeof stays 200, SW_VERSION stays 36.
@@ -659,9 +660,15 @@ struct confStruct {
     //         throttle cap, the stop radius, the return proof and every safety gate keep running.
     //         A stick that has not been read centred at least once since the run began cannot take
     //         over (a remote whose centre has drifted must never steer silently). After 30 s of
-    //         takeover the stick is ignored until it is centred: return-to-me and auto-return take
-    //         the steering back and carry on (N-11); Follow-Me following stops (cap 0) until one
-    //         trigger release, then ARMED. See Common/SteerArbitration.h.
+    //         takeover: return-to-me and auto-return take the steering back and carry on, and the
+    //         stick is ignored until it is centred (N-11). Follow-Me following ends through FM_HOLD
+    //         (cap 0, fm_rx_active false, latch cleared, needs-D_engage), so the stick is the
+    //         rider's at once with no centring; one release gives ARMED and manual (HOLD-ESCAPE-2).
+    //         Under a trigger that stays held, two things can move the buggy again with no
+    //         release, each through its own 1.5 s ramp and caps: a fresh separation past D_engage
+    //         (following again), and, with the effective fm_return_mode at 1, auto-return (the
+    //         candidate forms in HOLD when the rider stops; FM_RETURN after its proof, about 7 s).
+    //         See Common/SteerArbitration.h.
     //   Range 0-1. The value is echoed to the remote in telemetry.fm_flags bit 4, which the remote no
     //   longer acts on (since Q-5 its Gate 4 never ends a return on the stick). A board that stores 0
     //   turns it on with `?set steer_during_auto 1` + `?save`.

@@ -72,6 +72,7 @@ Every section of this README has a longer document behind it. Start here when yo
 | Read the TX screen | [Display reference](docs/display-reference.md) |
 | Ride with Follow-Me | [Follow-Me guide](docs/FOLLOW_ME_GUIDE.md) · [design notes](DESIGN_FOLLOW_ME.md) |
 | Use Return-to-Me | [RTM design notes](DESIGN_RETURN_TO_ME.md) |
+| **Set up a VESC for the first time** | **[VESC setup guide](docs/VESC_SETUP_GUIDE.md)** ⭐ beginners: BLDC first, motor before input, FOC later |
 | Set up or tune the VESCs | [Smooth-start quick reference](docs/VESC_SMOOTH_START_QUICK_REFERENCE.md) · [tuning process](docs/VESC_TUNING_PROCESS.md) · [FOC notes](docs/VESC_FOC_TUNING_NOTES.md) |
 | Fix VESC telemetry | [VESC telemetry fix](docs/VESC_Telemetry_Fix.md) · [telemetry sources & prop baseline](docs/TELEMETRY_SOURCE_AND_PROP_BASELINE.md) |
 | Use Bluetooth / BLE | [BLE implementation](docs/BLE_Implementation.md) · [app brief](docs/BLE_App_Brief.md) |

@@ -123,9 +123,14 @@ When you do re-run PPM Mapping, follow the §3.4 procedure from `THROTTLE_PIPELI
 - Trigger to physical min → save min
 
 ### Step 5 — order of operations on first calibration
-1. Set `foc_sl_openloop_boost_q = 3` first.
-2. Run motor detection (FOC wizard) to confirm motor parameters didn't drift.
-3. Run input PPM Mapping with BREmote at full range.
+> **2026-10-26 — order corrected:** detection first, then the open-loop tuning. The FOC wizard rewrites Open loop
+> ERPM and Sensorless ERPM, and its "Load Default Parameters" resets the motor and app config of every VESC on
+> the CAN bus, so a boost set before it is lost. The whole first-time order is in the
+> [VESC setup guide](VESC_SETUP_GUIDE.md).
+
+1. Run motor detection (FOC wizard) first, and answer **No** to "Load Default Parameters".
+2. Then set `foc_sl_openloop_boost_q = 3` — after detection, not before.
+3. Run input PPM Mapping with BREmote at full range (or check that it survived the wizard).
 4. Bench test the motor with no prop — confirm smooth start at <15% trigger.
 5. In-water test with prop submerged but board out of water (or in a tub) — confirm break-free at ~15–20% trigger.
 6. If too eager (motor wants to start before you're ready), lower boost to 2. If still sluggish, raise to 5.

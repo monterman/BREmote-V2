@@ -296,6 +296,10 @@ than assuming it.
 
 #### 2.5b Calibrate the PPM input on **both** controllers
 
+**Motor setup and detection come first**, on each VESC, before this calibration: the step-by-step order is
+in the **[VESC setup guide](VESC_SETUP_GUIDE.md)** (BLDC first, FOC later; more in
+`docs/VESC_SMOOTH_START_QUICK_REFERENCE.md` and `docs/VESC_TUNING_PROCESS.md`).
+
 > ### ⚠️ Before the first squeeze with the motors connected
 >
 > The remote ships in **`throttle_mode = 1` (No Gears)**: the whole trigger is the whole range, and a full
@@ -322,10 +326,10 @@ than assuming it.
 This is the #1 cause of *"one motor starts before the other"* and uneven steering.
 
 - Run **VESC Tool → PPM Input calibration** on **VESC 1 and VESC 2**. Move the throttle through its
-  full travel and capture **min / max** on each. **For Current No Reverse, then set the centre to the
-  midpoint (1500 µs for 1000 / 2000), never the rest position.** A trigger has no natural centre: a
-  centre captured with the trigger released lands on the start, and on a control type that maps through
-  the centre a released trigger then no longer reads 0 % (the 0 % check in item 4 above catches it).
+  full travel and capture **min / max** on each. **For Current No Reverse, the centre sits at the
+  midpoint (1500 µs for 1000 / 2000), never the rest position.** VESC Tool's mapper puts it there by
+  itself when the trigger is released at Apply, and Current No Reverse does not read the centre at all;
+  if you type the range in by hand, set the centre to the midpoint too.
   A typical hobby PPM range lands somewhere around 1.0–2.0 ms; what matters is not the numbers but that
   **both controllers see the same range**.
 - Tune so **both motors start at the same low throttle and top out together** — mapped start-to-end,
@@ -335,8 +339,6 @@ This is the #1 cause of *"one motor starts before the other"* and uneven steerin
 - Keep a **2–3 % input deadband** (the [Beta Testing Sheet](Beta_Testing_Sheet.md) uses 3 %). It is the
   margin between the released pulse and the first motor current; zero deadband with the start exactly at
   `PWM0_min` leaves none.
-- Also run **motor / FOC detection** per VESC. See `docs/VESC_SMOOTH_START_QUICK_REFERENCE.md` and
-  `docs/VESC_TUNING_PROCESS.md`.
 
 > If one VESC will not calibrate at all — bar flat at zero — **stop and go back to 2.5a.** That is a
 > power fault, not a calibration fault, and no amount of re-mapping will fix it.

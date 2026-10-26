@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-26 - comment only: the mag_fm_set row notes the field is no longer read (the mag_mode 4 tap steps through all
+//   five stations). Key, type and range unchanged.
 // V2.5-Evo - 2026-10-20 - comments only (owner: front stations swap numbers): the followme_mode and mag_fm_set rows document 4 = front left, 5 = front right. Ranges unchanged.
 // V2.5-Evo - 2026-10-07 - F4/F5 on the remote (port of P2-d): followme_mode 0-3 -> 0-5 and mag_fm_set 1-7 -> 1-31
 //   (bit3 = station 4, bit4 = station 5). Widening only; the mag_fm_set repair value stays 0x07. No struct change.
@@ -129,6 +131,8 @@ const CfgFieldSpec kCfgFields[] = {
   // go. Default 7 = all three. Stations 4 and 5 do not exist in this firmware, so there is no bit 3/4.
   // V2.5-Evo - 2026-10-07 - F4/F5: range 1-7 -> 1-31 (bit3 = station 4 front left, bit4 = station 5 front
   // right - the two swapped numbers 2026-10-20). Widening only. Default stays 7 = the three rear stations: the front pair is opt-in on the magnet.
+  // V2.5-Evo - 2026-10-26 - NO LONGER READ by the firmware (the mag_mode 4 tap steps through all five stations); the row and
+  // its range stay so stored configs and ?set keep working.
   {"mag_fm_set",      CFG_U16, offsetof(confStruct, mag_fm_set),      true, false, true, 1.0f,   31.0f, 0, false},
   {"paired", CFG_U16, offsetof(confStruct, paired), true, false, true, 0.0f, 1.0f, 0, false},
   {"own_address", CFG_ADDR3, offsetof(confStruct, own_address), true, false, false, 0.0f, 0.0f, 0, false},

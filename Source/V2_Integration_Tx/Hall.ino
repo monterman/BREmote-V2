@@ -1,3 +1,12 @@
+// V2.5-Evo - 2026-10-26 - gesture fix (audit "LEFT-hold lock" F-1, F-3 to F-6; owner design 2026-10-26, no new gestures):
+//   (1) LEFT hold 2 s LOCKS in every unlocked state. The isFmArmed() -> cycleFmModeArmed() intercept is gone, and the lock
+//   now also switches this remote's Follow-Me off (fmSilentDisarm(), before the stop flush), so the padlock shows, the 30 s
+//   keepalive stops and the remote is manual after the unlock. A lock during a moving auto-return ends it (owner: lock =
+//   stop). P-7 and the H-1 flush are unchanged. (2) RIGHT hold 2 s with Follow-Me ARMED steps to the next station
+//   (cycleFmModeArmed(), F1 -> F5 -> F1, with the F-4 guards); not armed, it is the display cycle exactly as before.
+//   (3) The LEFT tap -> RIGHT hold combo on an armed remote steps the station before AND after the first squeeze (it no
+//   longer disarms; RTMState.ino). (4) The mag_mode 4 tap steps through all five stations; mag_fm_set is not read.
+//   Comments describing the old map are corrected. No confStruct change.
 // V2.5-Evo - 2026-10-21 - calcFilter(): the toggle-steering wait (tog_block_time) is timed with millis() through
 //   toggleBlockStep() (Common/ToggleBlockTimer.h) instead of counting task passes, so tog_block_time x 10 ms is real
 //   time (owner-ordered). Same hold / restart / error / 0 rules. No confStruct change, sizeof stays 136, SW_VERSION
@@ -19,6 +28,8 @@
 //   back on an auto-return (fmIsReturning() or the raw fmReturnMovingRaw()), during Return-To-Me, in the lockout, or
 //   when the set leaves nowhere to go. Follow-Me off and unable to arm -> "St" + stop buzz, unchanged. The TEMP bench
 //   line stays. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
+//   (V2.5-Evo - 2026-10-26 - superseded in part: the toggle station step is the RIGHT 2 s hold now, the LEFT hold always
+//   locks, and the tap walks all five stations instead of mag_fm_set.)
 // V2.5-Evo - 2026-10-09 - mag_mode 4 deliberate bands (owner ruling 2026-10-09: short contacts were being lost and the
 //   gestures should be deliberate). TAP = 600 ms - 3 s (was 60-600 ms), with ONE short pulse (Pattern 5) at 600 ms
 //   while held = "let go now for Follow-Me"; under 600 ms is ignored silently. DEAD ZONE = 3 s - 5 s, silent. RTM HOLD
@@ -347,12 +358,14 @@ bool ctminus()
 // (gear_change_waittime = 100ms), but the tap is still recorded for combo purposes.
 // Combo = opposite tap within COMBO_WINDOW_MS followed by a long hold.
 //
-// Gesture map:
-//   RIGHT hold 2s (simple)             → cycle telemetry display mode
-//   LEFT hold 2s (simple)              → lock remote (unlock: left hold + throttle touch)
+// Gesture map (V2.5-Evo - 2026-10-26 - owner design: the LEFT hold always locks; no new gestures):
+//   RIGHT hold 2s (simple)             → Follow-Me NOT armed: cycle telemetry display mode
+//                                         Follow-Me armed: next station (cycleFmModeArmed(), F1 -> F5 -> F1)
+//   LEFT hold 2s (simple)              → lock remote in every unlocked state; it also switches this remote's
+//                                         Follow-Me off and ends its own RTM (unlock: left hold + throttle touch)
 //   RIGHT tap → LEFT hold 5s (combo)   → the return gesture (returnGesture(), RTMState.ino):
 //                                         arm RTM / cancel the arm + flip auto-return / back to default
-//   LEFT tap → RIGHT hold 5s (combo)   → FM mode cycle
+//   LEFT tap → RIGHT hold 5s (combo)   → Follow-Me not armed: arm it; armed: next station (it never disarms)
 // ============================================================
 // V2.5-Evo - 2026-09-19 - defined in RTMState.ino (concatenated after this file).
 void returnGesture();
@@ -361,6 +374,9 @@ void rtmFmStopFlush();
 // V2.5-Evo - 2026-10-07 - P-7: static in RTMState.ino (concatenated after this file); used by the lock branch below. The
 // same declaration appears again above runMagGesture(); repeating a static declaration is allowed.
 static void setRtmDisarmed();
+// V2.5-Evo - 2026-10-26 - F-6: static in RTMState.ino (concatenated after this file); the lock branch below switches this
+// remote's Follow-Me off with it, before the stop flush.
+static void fmSilentDisarm();
 static int           last_tap_dir   = 0;    // last recorded tap direction: +1=right, -1=left, 0=none
 static unsigned long last_tap_ms    = 0;    // millis() when last tap was recorded
 static const unsigned long COMBO_WINDOW_MS  = 3000UL;  // max gap between tap and hold for combo
@@ -449,7 +465,8 @@ void handleGearToggle(int direction)
           }
           else if (direction > 0 && last_tap_dir == -1)
           {
-            // LEFT tap + RIGHT hold 5s → FM mode cycle
+            // LEFT tap + RIGHT hold 5s → arm Follow-Me, or step to the next station when it is armed (V2.5-Evo - 2026-10-26:
+            // before AND after the first squeeze - it no longer disarms; see cycleFmMode() in RTMState.ino)
             // V2.5-Evo - 2026-10-07 - Q-10: THE BUG - the magnet tap already left Follow-Me alone during a return, but
             // this combo did not: it could disarm Follow-Me (with its 2 s blocking "St", freezing RTM's gates and
             // ramp) or re-declare it in the middle of a return. THE FIX: ignored while RTM is active or arming.
@@ -461,20 +478,39 @@ void handleGearToggle(int direction)
         }
         else if (direction > 0)
         {
-          // Simple RIGHT hold 2s → cycle telemetry display mode
-          cycleDisplayMode(1);
+          // V2.5-Evo - 2026-10-26 - audit "LEFT-hold lock" option B (owner design): with Follow-Me ARMED the simple RIGHT
+          // hold steps to the next station, F1 -> F5 -> F1, never F0 (it was the LEFT hold's job, which now always locks).
+          // Before, this hold only changed the hidden display_mode under the Follow-Me readout, so nothing visible is lost.
+          // cycleFmModeArmed() carries the F-4 guards: ignored, one serial line, while Return-To-Me runs or arms and while
+          // the buggy is coming back on an auto-return.
+          if (isFmArmed())
+          {
+            cycleFmModeArmed();
+          }
+          // Simple RIGHT hold 2s, Follow-Me not armed → cycle telemetry display mode (unchanged)
+          else cycleDisplayMode(1);
         }
         else if (direction < 0)
         {
-          if (isFmArmed())
+          // V2.5-Evo - 2026-10-26 - F-1 / F-3: THE BUG - with Follow-Me armed this hold stepped the station instead of
+          // locking (the P8.1 intercept), and since Follow-Me stays armed all session the lock - the rider's own stop and
+          // the P-7 end of a return - was unreachable. THE FIX: the LEFT hold locks in every unlocked state; the station
+          // step moved to the RIGHT hold.
+          if (!usrConf.no_lock)
           {
-            // FM armed: LEFT hold 2s → cycle FM mode (stays armed)
-            cycleFmModeArmed();
-          }
-          else if (!usrConf.no_lock)
-          {
-            // FM not armed: LEFT hold 2s → lock remote
+            // LEFT hold 2s → lock remote
             system_locked = 1;
+            // V2.5-Evo - 2026-10-26 - F-6: THE BUG it would leave - the Follow-Me readout outranks the lock screen, the 30 s
+            // keepalive runs while locked and would re-declare Follow-Me, and after the unlock the remote would still say
+            // armed. THE FIX: switch this remote's Follow-Me off here, silently (fmSilentDisarm(): fm_armed, keepalive and
+            // override cleared, 0xF2/0 queued, R5 row cleared), before the RTM end and the flush. On the buggy 0xF2/0 also
+            // ends an auto-return that is coming back (owner ruling 2026-10-26: the lock is a stop). After the unlock the
+            // remote is manual and Follow-Me is off until it is armed again.
+            if (isFmArmed())
+            {
+              Serial.println("FM [TX] lock: Follow-Me off on this remote too -> 0xF2/0");
+              fmSilentDisarm();
+            }
             // V2.5-Evo - 2026-10-07 - P-7: THE BUG - a lock during an active Return-To-Me flushed 0xF1/0 to the buggy
             // but left THIS remote in RTM_ACTIVE (RTM screen, ramp cap, gates) until Gate 3 after the unlock, so the
             // two sides disagreed. THE FIX (chosen over refusing the lock - locking is the rider's own stop and must
@@ -489,7 +525,8 @@ void handleGearToggle(int direction)
             DISP_LOCK(); displayLock(); DISP_UNLOCK();
             // V2.5-Evo - 2026-10-07 - H-1 (TX part): a locked remote sends zero throttle, but a buggy left in
             // Return-To-Me or Follow-Me would stay there. Send "RTM off" + "FM off" and let them go out
-            // (>= 400 ms, RTMState.ino). Follow-Me is never armed here (that branch is above).
+            // (>= 400 ms, RTMState.ino). (V2.5-Evo - 2026-10-26 - Follow-Me was switched off on this remote above, F-6;
+            // the 0xF2/0 queued there and the one here are the same burst.)
             rtmFmStopFlush();
           }
         }
@@ -616,7 +653,7 @@ void handleGearToggle(int direction)
 //     Magnet held        Feedback while holding          On magnet REMOVAL
 //     -----------        ----------------------          -----------------
 //     < 600ms            none                            nothing, silent (too short - not a gesture)
-//     600ms - 3s (TAP)   ONE short pulse at 600 ms       step to the next station in mag_fm_set,
+//     600ms - 3s (TAP)   ONE short pulse at 600 ms       step to the next station (all five since 2026-10-26),
 //                        (Pattern 5, "let go now for     or ARM Follow-Me if it is not armed yet
 //                        Follow-Me", always, like the    ("St" + stop buzz if Follow-Me is off and cannot arm)
 //                        mode 3 advisory at 2 s)
@@ -643,7 +680,7 @@ void handleGearToggle(int direction)
 //     MODE 4 HAS NO MAGNET DISARM. Roles 1 and 3 make the magnet an arm↔disarm toggle; in mode 4 the
 //     magnet only ARMS Follow-Me or STEPS its station, and the hold only starts the manual Return-To-Me.
 //     To disarm Follow-Me in mode 4, use the toggle combo (LEFT tap → RIGHT hold). This is a deliberate
-//     difference.
+//     difference. (V2.5-Evo - 2026-10-26: the combo no longer disarms; Follow-Me is turned off by the lock, LEFT hold 2 s.)
 //
 //     WHY THE 3s - 5s DEAD ZONE IS DELIBERATE (V2.5-Evo - 2026-10-09, owner ruling; was 600 ms - 2.5 s). The
 //     tap is "hold until the short pulse, then let go", released somewhere between 600 ms and 3 s, and the
@@ -675,6 +712,8 @@ void handleGearToggle(int direction)
 //       (V2.5-Evo - 2026-10-09: any armed state now, not only following - see THE HARD GATE below)
 //       ...at a station NOT in the set -> move to the lowest station that IS in the set
 //       already at the only set station -> NOTHING AT ALL, and no buzz (fmStepStationFromMagnet())
+//       (V2.5-Evo - 2026-10-26: the set is always all five stations now - mag_fm_set is not read - so an armed tap
+//       always moves one station on, F5 wrapping to F1.)
 //
 //     — THE OLD HARD GATE (superseded 2026-10-09): A STATION ONLY MOVED WHILE FOLLOW-ME WAS ACTIVELY FOLLOWING.
 //     Never while the rider is on the rope under tow. On the rope the rider is physically attached to the
@@ -689,6 +728,8 @@ void handleGearToggle(int direction)
 //     RTMState.ino 7792, 7801-7806, 7955-7959). The real rope guard is on the RX: the separation latch (7076-7096) and
 //     the 9.5 m D_engage floor (7028-7031, 7118-7124), and neither reads the station. Stepping on the rope therefore
 //     equals having armed at that station. The tap is still dead while the buggy is coming back on an auto-return.
+//     (V2.5-Evo - 2026-10-26: the manual station step is the RIGHT 2 s hold now - the LEFT hold always locks - and both
+//     walk all five stations.)
 //
 //     WHAT A STRAY MAGNET CAN AND CANNOT DO — CORRECTED V2.5-Evo - 2026-09-30 (delta audit). An earlier
 //     version of this comment claimed a stray magnet "does nothing at all unless Follow-Me is already
@@ -798,6 +839,8 @@ bool rtmEnabledEffective();
 // so the linkage agrees — so the magnet TOGGLE can fire the identical disarm the toggle uses
 // (fmDisarm: 0xF2/0 + "St"; setRtmDisarmed→rtmDisengage: 0xF1/0 + "St" — both silent, because a
 // gesture disarm is a stop the rider asked for).
+// (V2.5-Evo - 2026-10-26: the toggle combo no longer calls fmDisarm() - it steps the station when armed - so the magnet
+// roles 1 / 3 are its only gesture caller; the toggle turns Follow-Me off with the lock, through fmSilentDisarm().)
 // V2.5-Evo - 2026-08-17 - fmDisarm() now takes a `commanded` flag (true = the rider asked for the
 // stop → silent, false = a safety gate stopped it → Pattern 7). The magnet toggle always passes
 // true: removing the magnet IS the rider asking. setRtmDisarmed() is unchanged — it is the
@@ -1403,6 +1446,8 @@ void runMagGesture()
     // with Follow-Me ARMED in any state - waiting, on the rope, parked auto-return, following - the tap steps to the
     // next station in mag_fm_set. The RX does not read the station before it engages (see THE HARD GATE note in this
     // function's header), so a step on the rope moves nothing. Taps that cannot step stay silent.
+    // V2.5-Evo - 2026-10-26 - the manual step is the RIGHT 2 s hold now (the LEFT hold always locks), and the tap walks all
+    // five stations, F1 -> F5 -> F1, like it; mag_fm_set is no longer read.
     // V2.5-Evo - 2026-10-09 - M-4 (SOP-040 one-signal rule): ONE tap refusal is NOT silent - Follow-Me off and
     // unable to arm (feature off, gps_en 0, or cycleFmMode()'s arm-time reject) gives "St" + the stop buzz. Every
     // other ignored tap stays silent on the remote.
@@ -1537,6 +1582,9 @@ void runMagGesture()
           // only when fmIsEngaged(), with "armed, not engaged (on the rope)" silent. Same effects as the manual step
           // (cycleFmModeArmed()): "F<n>" for 2 s, 0xF2 with the fresh bit, no buzz. Not cycleFmMode(): after the first
           // squeeze that one disarms.
+          // V2.5-Evo - 2026-10-26 - superseded: the manual step is the RIGHT 2 s hold, the tap walks all five stations like
+          // it (mag_fm_set is not read), and cycleFmMode() no longer disarms. The tap keeps its own entry point for its
+          // lockout (the return value below) and its own guards.
           // V2.5-Evo - 2026-10-06 - M-1: start the lockout only when the station really moved. A silent
           // no-op tap (already at the only set station) starts nothing.
           if (fmStepStationFromMagnet())
@@ -1638,7 +1686,8 @@ void runMagGesture()
         // V2.5-Evo - 2026-10-07 - T-9: THE BUG - this magnet disarm also ended an auto-return under way; SOP-040 rule 4
         // says auto-return ends only by arriving, a fault or a remote power cycle. THE FIX: ignored while the buggy
         // confirms it is RETURNING (fmIsReturning()), serial line only. Parked or following, the disarm is unchanged.
-        Serial.println("MAG [TX] Follow-Me disarm ignored: the buggy is on an auto-return back to you (it ends by arriving, a fault or a remote power cycle)");
+        // V2.5-Evo - 2026-10-26 - owner ruling: the lock (LEFT hold 2 s) is now also a way to end a return (lock = stop).
+        Serial.println("MAG [TX] Follow-Me disarm ignored: the buggy is on an auto-return back to you (it ends by arriving, a fault, a lock or a remote power cycle)");
       }
       else if (isFmArmed())
       {
@@ -1646,6 +1695,7 @@ void runMagGesture()
         // 0xF2/0 and shows "St" with no buzz — so the magnet disarm feels and behaves exactly like the
         // toggle disarm the owner used successfully. (This is a hard disarm, not cycleFmMode()'s
         // arm/cycle/disarm behaviour: the magnet is a pure arm↔disarm toggle.)
+        // (V2.5-Evo - 2026-10-26: the toggle combo no longer disarms - cycleFmMode() steps the station when armed.)
         Serial.println("FM [TX] disarm: magnet gesture -> 0xF2/0");   // V2.5-Evo - 2026-09-19
         fmDisarm(true);   // COMMANDED: the magnet gesture IS the rider asking → silent
       }

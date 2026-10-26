@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-10-26 — Remote: LEFT hold locks again with Follow-Me armed; RIGHT hold steps the station
+
+**No config wipe.** Remote firmware only: `sizeof(confStruct)` stays 136 and `SW_VERSION` stays 27. No new
+gestures: the existing ones were reassigned.
+
+- **LEFT hold 2 s always locks the remote**, Follow-Me armed or not. Before, with Follow-Me armed (which is all
+  session now) it stepped the station instead, so the lock could not be reached. The lock also switches
+  Follow-Me off on the remote, so the padlock shows, and after the unlock the remote is manual with Follow-Me
+  off. It still ends a return-to-me, and it now also ends an auto-return that is coming back: the lock is a stop.
+- **RIGHT hold 2 s with Follow-Me armed = next station**, F1 → F2 → F3 → F4 → F5 → F1 (never off). Without
+  Follow-Me armed it cycles the display, as before.
+- **LEFT tap → RIGHT hold with Follow-Me armed = next station**, before and after your first squeeze. It no
+  longer turns Follow-Me off; lock the remote for that.
+- Both station steps are ignored while a return-to-me runs and while an auto-return is coming back, so `F<n>`
+  never covers the metres.
+- **Magnet mode 4:** a tap steps through all five stations. Magnet Station Set (`mag_fm_set`) is no longer used;
+  it stays in the config so stored settings load.
+- The web page, the config tool and the guides show the new map.
+
 ## 2026-10-25 — RX: by default the stick steers the buggy during automatic steering instead of cancelling it
 
 **No config wipe, and no change to a buggy that is already set up.** This is the factory default only:

@@ -449,7 +449,7 @@ chop, one-handed, with a foil under you. Learn them dry first.
 
 Confirm the gestures and display before you're in the water:
 
-- **Arm FM (toggle, works while floating):** **LEFT tap → RIGHT hold ~3 s.** Display shows **F1/F2/F3**, remote buzzes **two quick taps** = armed. Repeat the gesture to cycle **F1→F2→F3→F0-off** before you're on the throttle.
+- **Arm FM (toggle, works while floating):** **LEFT tap → RIGHT hold ~3 s.** Display shows **F1/F2/F3**, remote buzzes **two quick taps** = armed. With Follow-Me armed, repeat the gesture or hold RIGHT 2 s to step the station (**F1→F2→F3→F4→F5→F1**); lock the remote (LEFT hold 2 s) to turn it off.
 - **Arm FM (magnet, works during the tow — if fitted):** hold magnet ~2 s, feel one pulse, pull away → two taps = armed (toggle: same gesture disarms).
 - **Arm RTM:** **RIGHT tap → LEFT hold ~5 s** (needs `gps_en=1` + `rtm_enabled=1`).
 - **Reading the FM bar:** no bar = disarmed · **breathing** (lit 0.4 s, dark 1.2 s) = armed & ready · **only the two end dots blinking** = armed but still getting GPS/link, or paused · **steady distance bar** = following · **`St`** = stopped.
@@ -468,7 +468,7 @@ Confirm the gestures and display before you're in the water:
 
 Preconditions to *engage* (you can arm before these are perfect; it won't engage until they're met): paired, **GPS fix on both** units, healthy radio + telemetry, calibrated compass.
 
-1. **Float & arm** (toggle: LEFT tap → RIGHT hold; or magnet mid-tow). Two taps = armed. The arm survives the whole session with no throttle — `fm_arm_timeout_s` defaults to 0 = never; only the disarm gesture, a fault, or powering the remote off ends it.
+1. **Float & arm** (toggle: LEFT tap → RIGHT hold; or magnet mid-tow). Two taps = armed. The arm survives the whole session with no throttle — `fm_arm_timeout_s` defaults to 0 = never; only a lock (LEFT hold 2 s), a magnet disarm, a fault, or powering the remote off ends it.
 2. **Whip / separate**, throttle held. FM **engages only when the geometry proves you've separated** — beyond the engage distance for **2 continuous seconds**, confirmed by both GPS units. No button, no timer.
    - Two ways to separate: whip yourself past the buggy, or keep throttle and steer the buggy to its offset side so it peels off while you carry into the wave.
 3. **Following:** the buggy trails at your set side/distance, steering itself. You keep the throttle held; the buggy only ever moves on **your** throttle and only *subtracts* from it.

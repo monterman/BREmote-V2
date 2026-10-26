@@ -428,10 +428,10 @@ Unavailable modes (no VESC lock or no GPS fix) are skipped automatically. `MA` r
 | Boot + hold RIGHT toggle | Pairing mode |
 | Boot + THR + LEFT toggle | Force BLE for session — activates BLE regardless of `bt_enabled` setting; display shows `bt`; persists until reboot |
 | Boot + THR + RIGHT toggle | Delete SPIFFS config (factory reset) |
-| LEFT hold 2 s | Lock the Remote |
-| RIGHT hold 2 s | Cycle telemetry display mode |
+| LEFT hold 2 s | Lock the Remote — always, Follow-Me armed or not. The lock also switches Follow-Me off and ends a return-to-me or an auto-return coming back (the buggy stops) |
+| RIGHT hold 2 s | Cycle telemetry display mode. With Follow-Me armed: next station (F1 → F5 → F1) |
 | RIGHT tap → LEFT hold (default 5 s, tunable 3–10 s) | Arm **Return-to-Me** (RTM) — display shows `rn` |
-| LEFT tap → RIGHT hold (default 5 s, tunable 3–10 s) | Cycle **Follow-Me** override mode (F0/F1/F2/F3) |
+| LEFT tap → RIGHT hold (default 5 s, tunable 3–10 s) | Arm **Follow-Me**. With Follow-Me armed: next station (F1 → F5 → F1). It never turns Follow-Me off — the lock does |
 
 > 💡 **Optional — magnet / Hall input for hands-free control.** A DRV5032 Hall sensor on GPIO 9 (P_MAG) lets a magnet gesture activate **BLE** and arm **Follow-Me** without reaching for the toggles (great mid-ride). Wiring + firmware: **[Hall Sensor Expansion guide →](docs/Hall_Sensor_Expansion.md)** · step-by-step fitting (incl. easier-to-solder parts): **[install tutorial →](docs/Hall_Sensor_Install_Tutorial.md)**.
 
@@ -637,9 +637,9 @@ The override is RAM-only — RX returns to its web-configured `followme_mode` on
 ### Activation
 
 1. **Combo gesture:** Quick-tap LEFT toggle, then within 3 seconds hold RIGHT toggle for the hold duration (`fm_hold_duration_s`, default 5 s, tunable 3–10 s)
-2. TX display shows `F` + mode number (e.g. `F0`, `F1`, `F2`, `F3`)
-3. Continue holding RIGHT or re-hold within 2 s to keep cycling modes
-4. Release and wait 2 s — TX sends the selected mode to RX via 0xF2 meta-packet
+2. TX display shows `F` + station number (e.g. `F1`) and buzzes twice = armed; the station goes to the RX at once (0xF2 meta-packet)
+3. To change station while armed, repeat the gesture or hold RIGHT for 2 s: F1 → F2 → F3 → F4 → F5 → F1 (never off)
+4. To turn Follow-Me off, lock the remote (LEFT hold 2 s)
 
 ### Modes
 
@@ -689,7 +689,7 @@ The motors never jump to a new throttle; they ramp up over a set number of secon
 | Parameter | Default | Description |
 |---|---|---|
 | `fm_override_enabled` | 1 | Master on/off switch |
-| `fm_hold_duration_s` | 5 | RIGHT-hold duration to cycle FM mode, in seconds (4–10) |
+| `fm_hold_duration_s` | 5 | RIGHT-hold duration of the Follow-Me gesture (arm, or next station while armed), in seconds (4–10) |
 | `fm_warn_distance_m` | 150 | Proximity warning threshold in metres, at or beyond which the buggy triggers the warning (50–164) |
 
 </details>

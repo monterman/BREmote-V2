@@ -49,8 +49,9 @@ While floating, before takeoff:
 
 1. **LEFT tap, then RIGHT hold** (~3 s — set by `fm_hold_duration_s`).
 2. The remote shows **F1 / F2 / F3** and buzzes **two quick taps** = armed.
-3. Cycle the mode by repeating the gesture before you touch the throttle
-   (**F1 → F2 → F3 → F1**, it wraps and never disarms — to leave Follow-Me off, don't arm it).
+3. To change station while armed, repeat the gesture or hold RIGHT for 2 s, before or after you ride
+   (**F1 → F2 → F3 → F4 → F5 → F1**, it wraps and never disarms). To turn Follow-Me off, lock the
+   remote (LEFT hold 2 s).
 
 > The toggle **cannot arm once you're on the throttle** — while you hold the trigger, the
 > toggle *is* your steering. That's what the magnet is for.
@@ -67,7 +68,7 @@ If your remote has the Hall sensor fitted and `mag_mode` is set:
 
 **The arm survives for the whole session.** `fm_arm_timeout_s` defaults to **0 = never**, so a
 slow takeoff, a wait, or a short swim won't lose your arm even with no throttle touched. Only
-the disarm gesture, a fault, or powering the remote off ends it — the remote forgets the arm
+a lock (LEFT hold 2 s), a magnet disarm, a fault, or powering the remote off ends it — the remote forgets the arm
 at power-off, and the buggy drops to idle 95 s after the remote stops talking.
 
 ---
@@ -202,7 +203,9 @@ dots = following.*
 
 ## 9. Disarming
 
-- **Toggle:** repeat the arm gesture.
+- **Toggle:** lock the remote (LEFT hold 2 s). The lock turns Follow-Me off, and it also ends an
+  auto-return that is coming back (the buggy stops). After the unlock Follow-Me stays off until you
+  arm it again. (Repeating the arm gesture steps the station; it does not disarm.)
 - **Magnet:** hold ~2 s again (one long buzz = off).
 - **Automatic:** arming RTM disarms FM; 30 s of lost data ends it (§6); powering the remote off drops the
   arm (it's forgotten at power-off). It does not expire on its own — `fm_arm_timeout_s`

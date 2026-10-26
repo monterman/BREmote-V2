@@ -115,12 +115,7 @@ In the same tab:
 ### Step 4 — verify input config for full BREmote range
 This is independent but mandatory after the smooth-start tuning. The app config file you tried to upload (`app vesc1 bremote v1 (1)`) appears empty or unreadable on my end — I couldn't parse it. **Re-export from VESC Tool** as XML and drop it in the same folder; I'll review the PPM input mapping next session.
 
-When you do re-run PPM Mapping, follow the §3.4 procedure from `THROTTLE_PIPELINE_ANALYSIS.md`:
-- BREmote `throttle_mode = 1` (no gears)
-- BREmote `thr_expo = 50` (true linear — your planned change)
-- RTM disarmed, system unlocked
-- Trigger to physical max → save max
-- Trigger to physical min → save min
+When you re-run the PPM mapping, follow the [VESC setup guide, step 7](VESC_SETUP_GUIDE.md#3-the-steps): drive off the ground (wheels up), Control Type Off while you map, BREmote in `throttle_mode = 1`.
 
 ### Step 5 — order of operations on first calibration
 > **2026-10-26 — order corrected:** detection first, then the open-loop tuning. The FOC wizard rewrites Open loop

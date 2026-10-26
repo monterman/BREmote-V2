@@ -9,6 +9,23 @@ This guide takes a VESC from the box to a working throttle, in the order the VES
 wiring, 5 V, mapping or remote fault shows up on its own. **Only after everything works, try FOC** — it is
 quieter and more efficient, and it is the setup to end up with ([§ 4](#4-later-try-foc--and-its-three-traps)).
 
+> ### Wiring: one PPM lead per VESC, and CAN is optional
+>
+> **Each VESC always gets its own PPM lead from the receiver**, into that VESC's own PPM connector. This
+> is fixed: BREmote mixes the steering into its two channels, so each VESC must follow its own.
+> **Never drive a VESC's throttle over CAN. CAN is never used for throttle or steering.**
+>
+> A **CAN cable between the two VESCs is optional.** Choose now; the steps say where the two differ.
+>
+> - **Without CAN:** the two VESCs are fully independent. Skip the CAN ID (step 5). **Multiple VESCs Over
+>   CAN = OFF** (there is nothing to forward to). Battery negative is the shared ground.
+> - **With CAN:** each VESC gets its own CAN ID (step 5). **Multiple VESCs Over CAN must still be OFF**,
+>   because BREmote mixes the steering into the two channels ([§ 7](#7-twin-vescs)). What CAN adds: the
+>   second VESC's telemetry reaches the BREmote log. The receiver reads VESC 2's currents, temperatures,
+>   duty, ERPM, voltage and fault code through VESC 1 and logs them at log level 4 and up; without CAN
+>   those columns read -999. This is in the nightly firmware; the master firmware reads VESC 1 only.
+>   The remote's screen shows VESC 1's values, with or without CAN.
+
 Other guides this one leans on:
 - [ZERO_TO_FOILING § 2.5a](ZERO_TO_FOILING.md#25a-power--does-your-esc-put-5-v-on-the-ppm-connector) — 5 V on
   the PPM connector. **Without it the receiver's signal never reaches that VESC.**
@@ -36,8 +53,8 @@ different signal. The VESC input does not decode it, and BREmote does not send i
   step 2 to step 10.
 - **VESC Tool and the VESC firmware must match.** If VESC Tool says **Limited Mode**, update first.
 - **5 V on each PPM connector:** check it now ([ZERO_TO_FOILING § 2.5a](ZERO_TO_FOILING.md#25a-power--does-your-esc-put-5-v-on-the-ppm-connector)).
-- **Two VESCs?** Do every step on **each** VESC. Connect to each one directly, or to VESC 2 through
-  VESC 1 over CAN.
+- **Two VESCs?** Do every step on **each** VESC. Connect to each one directly, or, with CAN, to VESC 2
+  through VESC 1.
 - Menu names are given for **desktop** VESC Tool 6.x and the **phone** app where they differ.
 
 ---
@@ -80,8 +97,9 @@ different signal. The VESC input does not decode it, and BREmote does not send i
 - **Re-check the direction after every detection.** The final check is the wheels-up cross-steer test in
   [ZERO_TO_FOILING § 2.6](ZERO_TO_FOILING.md).
 
-**5. CAN ID.** Desktop: App Settings → General → **VESC ID**. Phone: **App Cfg** → General → VESC ID.
-On a twin build **each VESC needs its own ID** (the reference build uses 1 and 2).
+**5. CAN ID — with CAN only; skip it without CAN.** Desktop: App Settings → General → **VESC ID**. Phone:
+**App Cfg** → General → VESC ID. **Each VESC needs its own ID:** VESC 1 (the one on the receiver's UART) is
+ID 1, VESC 2 is ID 2. The nightly firmware asks CAN ID 2 for VESC 2's telemetry.
 
 ### Then the App / PPM input
 
@@ -97,7 +115,8 @@ Phone: App Cfg → General, then **Write**.
 > Both Input wizards (desktop and phone) turn **Multiple VESCs Over CAN ON** — the desktop wizard never
 > even shows that setting — and they pick **Current No Reverse With Brake**, where a released trigger asks
 > for full brake. Both are wrong for BREmote: Multiple VESCs Over CAN makes one VESC send its command to the
-> other, which fights the differential steering. **Skip the input wizard and follow steps 7-9, or fix those
+> other, which fights the differential steering. Without a CAN cable that setting has nothing to send to
+> and does no harm, but set it OFF anyway. **Skip the input wizard and follow steps 7-9, or fix those
 > two settings by hand afterwards** (step 8).
 
 ### Then the PPM calibration
@@ -105,6 +124,9 @@ Phone: App Cfg → General, then **Write**.
 **7. Map the PPM input (calibration).** Remote **paired** and in **`throttle_mode = 1` (No Gears)**, so a
 full squeeze sends the full range ([ZERO_TO_FOILING § 2.5b](ZERO_TO_FOILING.md#25b-calibrate-the-ppm-input-on-both-controllers)).
 Drive still off the ground.
+- **Twin build: set Control Type = Off on both VESCs before the first squeeze.** Off holds only the VESC it
+  is set on: a VESC that is already live drives its motor at full power while you map the other one.
+- Write Control Type Off first, then plug the receiver's PPM lead back in (it was unplugged at step 3).
 - Desktop: App Settings → PPM → General: **Control Type = Off** → Write. Then PPM → **Mapping** tab, turn on
   **Stream realtime app data** in the toolbar. Trigger released → **Reset**, full squeeze, release →
   **Apply** → **Write app configuration**.
@@ -119,7 +141,7 @@ Mapping.
 - **Control Type = Current No Reverse** (not *Current*, not *Current No Reverse With Brake* — see § 5).
 - **Input Deadband = 2-3 %.** The VESC default is **15 %**, which makes the first 15 % of the trigger dead.
 - **Safe Start = Regular.**
-- **Multiple VESCs Over CAN = OFF.**
+- **Multiple VESCs Over CAN = OFF**, with CAN or without.
 - **Traction Control = OFF.**
 - **Median Filter = on.**
 - **Positive / Negative Ramping Time = 0.4 / 0.2 s** (the defaults).
@@ -130,12 +152,17 @@ Mapping.
 - The **released trigger reads 0 %**, a full squeeze about 100 %, the same on both VESCs.
 - No creep with the trigger released.
 - After power-up nothing runs until the trigger has been released for about 1 s (Safe Start).
+- A gentle squeeze: each motor turns the forward way; if not, step 4 on that VESC.
+- **Released trigger above 0 %, or creep: do not ride.** Map again (step 7) and check the deadband (step 8).
 
-**10. Twin build: VESC 2.** Do steps 2-9 on VESC 2 too, on **its own** PPM channel. Map both VESCs the same
-way: **both motors must start together and top out together.**
+**10. Twin build: VESC 2.** Do steps 2-6 on VESC 2 too. Map both VESCs (step 7, each on **its own** PPM
+channel, Control Type Off on both) before you set either one live (step 8), then check both (step 9). Map
+them the same way: **both motors must start together and top out together.**
 
-**11. Ride in BLDC.** Get the whole craft working first — remote, steering, Follow-Me — before you change
-the motor mode.
+**11. Before the first ride, go back to [ZERO_TO_FOILING](ZERO_TO_FOILING.md).** The remote is still in
+`throttle_mode = 1`, the full range: pick a gentler riding mode (end of § 2.5b). Then pass the wheels-up
+cross-steer check (§ 2.6, the top safety gate) and the dry test (Phase 4). Only then ride in BLDC, and get
+the whole craft working (remote, steering, Follow-Me) before you change the motor mode.
 
 ---
 
@@ -143,6 +170,9 @@ the motor mode.
 
 When everything works in BLDC: desktop Wizards → **Setup Motors FOC**, phone Start → **Setup Motors**.
 Usage: **Propeller**.
+
+**Same rules as steps 2-10:** drive off the ground, props clear and nobody near them, and the receiver's PPM
+lead unplugged while the wizard detects. The detection spins the motors.
 
 1. **"Load Default Parameters": answer No.** Yes resets the **motor and the app config of every VESC on the
    CAN bus** — IDs, App to Use, the PPM mapping and the PPM settings. If you answered Yes, redo steps 5-9 on
@@ -154,7 +184,9 @@ Usage: **Propeller**.
 3. **Tune the open-loop values after the wizard, not before.** The wizard rewrites Open loop ERPM and
    Sensorless ERPM, so earlier tuning is lost. Startup tuning: [VESC FOC tuning notes § 3](VESC_FOC_TUNING_NOTES.md#3-recommended-vesc-config-changes--in-priority-order).
 
-Afterwards re-check **Motor and Battery Current Max**, the **cutoff** and the **direction** on each VESC.
+Afterwards re-check **Motor and Battery Current Max**, the **cutoff** and the **direction** on each VESC,
+repeat **step 9**, and pass the cross-steer check ([ZERO_TO_FOILING § 2.6](ZERO_TO_FOILING.md)) again
+before you ride.
 The PPM mapping survives if you answered No.
 
 ---
@@ -188,11 +220,12 @@ throttle plus the turn. **So each VESC must follow its own channel.**
 
 | Setup | BREmote? |
 |---|---|
-| **Each VESC on its own PPM channel, Multiple VESCs Over CAN OFF on both** | **Yes** |
+| **Each VESC on its own PPM channel, Multiple VESCs Over CAN OFF on both**, with or without a CAN cable | **Yes** |
 | One PPM into a "master" VESC with Multiple VESCs Over CAN ON, the other VESC commanded over CAN | **No** — the master sends its own command to every VESC it hears on CAN, so the steering is lost and the two commands fight |
 
-- CAN can stay connected: it is used to configure VESC 2 through VESC 1 and for telemetry. With the setting
-  off it carries status only.
+- **CAN between the VESCs is optional.** With CAN only: it carries VESC 2's telemetry to the BREmote log
+  (nightly firmware) and lets VESC Tool configure VESC 2 through VESC 1. It never carries throttle or
+  steering. Without CAN: skip step 5 and connect VESC Tool to each VESC directly.
 - VESC Tool's help says "only the master needs an app". That applies to the master / CAN setup, not this one.
 - Never split one receiver signal into several VESCs with a Y-cable. BREmote does not: it has two separate
   channels, each powered by its own VESC ([ZERO_TO_FOILING § 2.5a](ZERO_TO_FOILING.md#25a-power--does-your-esc-put-5-v-on-the-ppm-connector)).

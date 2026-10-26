@@ -307,9 +307,10 @@ in the **[VESC setup guide](VESC_SETUP_GUIDE.md)** (BLDC first, FOC later; more 
 > gentle one. Set each controller up first:
 >
 > 1. **Drive off the ground** — wheels up, props clear — for the whole calibration.
-> 2. **PPM control type: Current No Reverse** (choose it by that name in VESC Tool). Not *Current*: on a
->    reversing type the released-trigger pulse (1000 µs) is **full reverse**. Not *Current No Reverse with
->    Brake* either: its zero is the centre pulse, so a released trigger is a **full brake** request.
+> 2. **PPM control type: map with Control Type Off ([VESC setup guide](VESC_SETUP_GUIDE.md), step 7),
+>    then Current No Reverse** (choose it by that name in VESC Tool), never *Current*: on a reversing type
+>    the released-trigger pulse (1000 µs) is **full reverse**. Not *Current No Reverse with Brake* either:
+>    its zero is the centre pulse, so a released trigger is a **full brake** request.
 > 3. **Range = the receiver's `PWM0_min` / `PWM0_max`** (1000 / 2000 µs by default). Best: learn them as
 >    below **in mode 1, at a full squeeze**. Learned in any other mode, the gear or the dynamic dial you were
 >    in is baked into the controller, and from then on it stops limiting power
@@ -334,8 +335,8 @@ This is the #1 cause of *"one motor starts before the other"* and uneven steerin
   **both controllers see the same range**.
 - Tune so **both motors start at the same low throttle and top out together** — mapped start-to-end,
   so the two match across the whole pull, not just at full throttle.
-- Set the **minimum just above the resting pulse** so there is no idle creep. Too close to rest and
-  the motor will crawl with the trigger released; a small margin fixes it.
+- **No idle creep:** a learned minimum sits at the resting pulse, and the 2–3 % deadband is the margin;
+  typed by hand, put it a little above. With no margin the motor will crawl with the trigger released.
 - Keep a **2–3 % input deadband** (the [Beta Testing Sheet](Beta_Testing_Sheet.md) uses 3 %). It is the
   margin between the released pulse and the first motor current; zero deadband with the start exactly at
   `PWM0_min` leaves none.
@@ -378,7 +379,7 @@ Power **one board at a time** (the other OFF, per 2.3), join its AP (password de
 | `followme_smoothing_band_m` | **10 m** | Decel band above the hard stop (follow distance = min_dist_m + band) |
 | `boogie_vmax_in_followme_kmh` | 25 km/h or lower for your terrain | FM speed ceiling |
 | `foiler_low_speed_kmh` | **8 km/h** | Below this rider speed FM holds (won't chase a swimmer) |
-| `followme_mode` | **2 = Behind** (shipped default) | Pick the side you want and confirm it on the display — F1/F2/F3 |
+| `followme_mode` | **2 = Behind** (shipped default) | Pick the side you want and confirm it on the display — F1 to F5 |
 | GPS anti-spoof (Phase A/B) | leave defaults: HDOP 2.0, accel 3.0 G, teleport 80 km/h, suspect 3, pair-dist 500 m, speed-diff 50 km/h | Tuned for this craft; only widen with reason |
 | `gps_dyn_model` | **0 (Sea)** — unless your water is above ~500 m altitude, then **4 (Automotive)** | The Sea navigation model has a 500 m ceiling and good fixes start being rejected above it. Sea is the better model below that, so leave it at 0 |
 | `rtm_compass_required` | 1 | Don't arm RTM without a good compass |
@@ -451,7 +452,7 @@ chop, one-handed, with a foil under you. Learn them dry first.
 
 Confirm the gestures and display before you're in the water:
 
-- **Arm FM (toggle, works while floating):** **LEFT tap → RIGHT hold ~3 s.** Display shows **F1/F2/F3**, remote buzzes **two quick taps** = armed. With Follow-Me armed, repeat the gesture or hold RIGHT 2 s to step the station (**F1→F2→F3→F4→F5→F1**); lock the remote (LEFT hold 2 s) to turn it off.
+- **Arm FM (toggle, works while floating):** **LEFT tap → RIGHT hold ~3 s.** Display shows **F1 to F5**, remote buzzes **two quick taps** = armed. With Follow-Me armed, repeat the gesture or hold RIGHT 2 s to step the station (**F1→F2→F3→F4→F5→F1**); lock the remote (LEFT hold 2 s) to turn it off.
 - **Arm FM (magnet, works during the tow — if fitted):** hold magnet ~2 s, feel one pulse, pull away → two taps = armed (toggle: same gesture disarms).
 - **Arm RTM:** **RIGHT tap → LEFT hold ~5 s** (needs `gps_en=1` + `rtm_enabled=1`).
 - **Reading the FM bar:** no bar = disarmed · **breathing** (lit 0.4 s, dark 1.2 s) = armed & ready · **only the two end dots blinking** = armed but still getting GPS/link, or paused · **steady distance bar** = following · **`St`** = stopped.

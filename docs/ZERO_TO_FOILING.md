@@ -20,7 +20,7 @@ Steps are tagged **[DESK]** · **[BENCH]** · **[WEB PORTAL]** · **[WATER]**. A
 3. **Releasing the trigger stops the buggy instantly, at the hardware level, in every mode.**
 4. **Manual control always works**, even if GPS / compass / radio fail.
 5. **GPS distance is an ASSIST, not the authority.** At close range GPS can read ~15 m off. Trust your eyes (line-of-sight), not the number. This is why the follow distance ships deliberately generous.
-6. **FM and RTM are mutually exclusive** — arming one disarms the other.
+6. **The lock turns Follow-Me off** (LEFT hold 2 s); repeating the arm gesture only steps the station. Arming RTM does not disarm FM: the buggy yields to the return while it runs, and FM is still armed after it.
 
 > The single most dangerous mistake is a **wrong steering sign**: it makes Follow-Me steer the buggy *toward* you instead of trailing you (closed-loop runaway). The wheels-up steering check in the BENCH phase is the top pre-water gate — do not skip it.
 
@@ -474,7 +474,7 @@ Preconditions to *engage* (you can arm before these are perfect; it won't engage
 3. **Following:** the buggy trails at your set side/distance, steering itself. You keep the throttle held; the buggy only ever moves on **your** throttle and only *subtracts* from it.
    - Keep your eyes on the wave. Trust line-of-sight — the distance bar/number is an assist and can read ~15 m off up close.
 4. **Fall / slow / too close →** it HOLDs (stays armed, resumes). **Let go of the trigger →** instant stop. **Fault →** `St`, re-arm to continue.
-5. **Disarm:** repeat the arm gesture (toggle), or hold the magnet ~2 s (long buzz = off); arming RTM also disarms FM.
+5. **Disarm:** lock the remote (LEFT hold 2 s) — the lock turns Follow-Me off and also ends an auto-return that is coming back. Repeating the arm gesture only steps the station. Magnet (`mag_mode` 1 or 3): hold ~2 s again; it turns off silently (`St`, no buzz). Arming RTM does not disarm FM.
 
 ---
 

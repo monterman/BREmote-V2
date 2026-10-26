@@ -20,15 +20,35 @@ quieter and more efficient, and it is the setup to end up with ([§ 4](#4-later-
 > - **Without CAN:** the two VESCs are fully independent. Skip the CAN ID (step 5). **Multiple VESCs Over
 >   CAN = OFF** (there is nothing to forward to). Battery negative is the only ground the two VESCs share;
 >   each PPM lead still needs all three wires (signal, 5 V, ground).
-> - **With CAN:** each VESC gets its own CAN ID (step 5). **Wire CAN-H and CAN-L only** (twisted
->   together); leave the CAN cable's GND and 5 V unconnected. Battery negative is already the shared
->   ground, and a second ground through the CAN cable bypasses the receiver's isolated channel to VESC 2.
+> - **With CAN:** each VESC gets its own CAN ID (step 5); wire the cable as below.
 >   **Multiple VESCs Over CAN must still be OFF**,
 >   because BREmote mixes the steering into the two channels ([§ 7](#7-twin-vescs)). What CAN adds: the
 >   second VESC's telemetry reaches the BREmote log. The receiver reads VESC 2's currents, temperatures,
 >   duty, ERPM, voltage and fault code through VESC 1 and logs them at log level 4 and up; without CAN
 >   those columns read -999. This is in the nightly firmware; the master firmware reads VESC 1 only.
 >   The remote's screen shows VESC 1's values, with or without CAN.
+>
+> **Wiring the CAN cable.** Count the pins on each VESC's CAN plug and read the labels printed on the
+> board. Do not go by wire colour or by a drawing: Flipsky's own drawings give the two CAN pins in
+> different orders.
+>
+> - **A 2-pin plug (CAN-H, CAN-L) on either VESC:** H to H and L to L, the two wires twisted together.
+>   Nothing else.
+> - **5-pin "CAN+POWER" plugs on both (GND, CAN-L, CAN-H, 5V, PWR.ON),** as on Flipsky V2.0 boards with
+>   a power button: **Flipsky's own cable is correct as it comes.** It runs GND, CAN-L and CAN-H straight
+>   through and crosses 5V over to the other VESC's **PWR.ON** (POWER-ON on some boards), a switch-on
+>   input, so VESC 2 powers up with VESC 1. Keep that wire if you want that; without it, switch each
+>   VESC on with its own button.
+> - **Never connect 5V to 5V.** That puts two VESC 5 V supplies in parallel, the same fault as bridging
+>   5 V between the two PPM leads ([ZERO_TO_FOILING § 2.5a](ZERO_TO_FOILING.md#25a-power--does-your-esc-put-5-v-on-the-ppm-connector)).
+>   A generic straight-through cable does exactly that. Check the cable with a meter before you plug it
+>   in: the 5V pin at one end must beep to PWR.ON at the other end, never to 5V. If it beeps 5V to 5V,
+>   remove that wire.
+> - **The CAN cable's GND wire is optional.** Battery negative stays the main ground between the two
+>   VESCs, and the CAN GND does not touch the receiver's PPM channels. **Both VESCs in one box:** keep
+>   the cable as it comes. **Two boxes:** leave the GND out; on longer battery leads it would carry part
+>   of the motor current through a thin wire and a small connector pin. **Two packs whose negatives are
+>   not joined:** keep it; it is then CAN's only ground.
 
 Other guides this one leans on:
 - [ZERO_TO_FOILING § 2.5a](ZERO_TO_FOILING.md#25a-power--does-your-esc-put-5-v-on-the-ppm-connector) — 5 V on
@@ -228,7 +248,7 @@ throttle plus the turn. **So each VESC must follow its own channel.**
 | **Each VESC on its own PPM channel, Multiple VESCs Over CAN OFF on both**, with or without a CAN cable | **Yes** |
 | One PPM into a "master" VESC with Multiple VESCs Over CAN ON, the other VESC commanded over CAN | **No** — the master sends its own command to every VESC it hears on CAN, so the steering is lost and the two commands fight |
 
-- **CAN between the VESCs is optional.** CAN-H and CAN-L only (box at the top).
+- **CAN between the VESCs is optional.** Wire it as in the box at the top: never 5V to 5V; the GND wire is optional.
   With CAN only: it carries VESC 2's telemetry to the BREmote log
   (nightly firmware) and lets VESC Tool configure VESC 2 through VESC 1. It never carries throttle or
   steering. Without CAN: skip step 5 and connect VESC Tool to each VESC directly.

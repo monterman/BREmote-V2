@@ -13,8 +13,12 @@ that stores 0 (cancel) keeps cancelling; switch it with `?set steer_during_auto 
   for 0.2 s) and the buggy aims at you again. The throttle limits keep applying and it never adds
   throttle.
 - **Steering does not end a return.** A takeover held 30 s hands the steering back and the return-to-me
-  or auto-return carries on. In Follow-Me following, a takeover held 30 s ends the following through
-  hold: throttle 0 until you let go of the trigger once.
+  or auto-return carries on; the stick is then ignored until you centre it. In Follow-Me following, a
+  takeover held 30 s ends the following: the stick is yours at once, with no centring needed, and the
+  buggy stops. Let go of the trigger once and you drive, with Follow-Me (and its auto-return) still
+  armed as usual. If you keep holding instead, the buggy can move again without a release, with a soft
+  start: Follow-Me picks you up once you ride more than the engage distance away, and with auto-return
+  on it comes back to you once you have been stopped for about 7 s.
 - **0 (cancel) is still there:** a held push ends Follow-Me following and an auto-return. In a
   return-to-me the stick is then ignored and the buggy keeps steering itself.
 - **The remote is unchanged.** It has not ended a return on the stick since 2026-10-07, and it still does

@@ -289,10 +289,12 @@ JP1 / JP4:   pin 1 = SIGNAL      pin 2 = 5 V      pin 3 = GND
 parallels two BEC regulators with no diode between them. That arrangement has failed **twice** in
 testing. Take 5 V for each channel from **that channel's own controller**.
 
-**Ground:** in a twin-VESC buggy the two controllers already share ground through the CAN link and
-through battery negative — heavy gauge and low impedance. A common ground here is correct, and you
-do not need a third wire into the connector if ground is already bonded. Confirm continuity rather
-than assuming it.
+**Ground:** each PPM lead carries all three wires, and its ground comes from
+**that channel's own controller**. Channel 1 (`JP4`, VESC 2) has its own isolated ground, `ESC1_GND`,
+which reaches VESC 2 only through `JP4.3` (or `JP3.3`): never leave that wire out, and never bridge it
+to the receiver's main ground. Between the two controllers, battery negative is the only shared ground.
+If you add a CAN cable, connect **CAN-H and CAN-L only**: a ground wire in the CAN cable joins the two
+grounds through the back door and undoes channel 1's isolation.
 
 #### 2.5b Calibrate the PPM input on **both** controllers
 

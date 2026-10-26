@@ -105,7 +105,7 @@ VESC is powerful but fiddly. Easiest path to replicate mine:
 |---|---|---|
 | App | **PPM and UART** | UART is required for telemetry (battery/watts/temp on the remote) |
 | Control type | **Current No Reverse** (number 2 in my backup) | **Choose it by name.** Not *Current*: it reverses, and a released trigger asks for full reverse current. Not *Current No Reverse with Brake*: its zero is the centre pulse, so a released trigger asks for full brake. |
-| **Input deadband** | **3 %** (0.03) | **Default ships at 0 — set this so the motor never creeps at idle.** 2–3 % is the range; [ZERO_TO_FOILING 2.5b](ZERO_TO_FOILING.md#25b-calibrate-the-ppm-input-on-both-controllers) says the same. |
+| **Input deadband** | **3 %** (0.03) | **The VESC default is 15 % (the first 15 % of the trigger does nothing) — set 2–3 %.** 2–3 % is the range; [ZERO_TO_FOILING 2.5b](ZERO_TO_FOILING.md#25b-calibrate-the-ppm-input-on-both-controllers) says the same. |
 | Pulse start / center / end | **As ZERO_TO_FOILING 2.5b:** the receiver's `PWM0_min` / `PWM0_max`, or learn it | With the receiver's default 1000–2000 µs: start 1.000, centre 1.500 (the midpoint, never the rest position), end 2.000 ms. Not my old 1.249 / 1.725 / 2.200 ms: on the default range a full squeeze would read about 79 % and the first quarter of the trigger would do nothing. |
 | Median filter | **On** | |
 | Safe start | **On** | |

@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-27 - TX GPS pass: the ?gpscfg / ?gpsbaud / ?gpssetup help rows say what the commands now do
+//   (rate + chip version readback, ~6 s; no Flash layer on 'set'; NMEA repair and the ~40 s worst case). Text only.
 // V2.5-Evo - 2026-10-23 - audit L-2: ?printgps "pin check not run" label says to turn the GPS on first (gps_en 1), not
 //   just ?gpsreinit. Text only.
 // V2.5-Evo - 2026-10-23 - GPS-PIN-1: ?printgps shows the GPS pins in use (RX=G18/G19) and the pin-check edge counts. No
@@ -472,16 +474,22 @@ const CmdEntry cmdTable[] = {
   // V2.5-Evo - 2026-07-30 - blocks the MAIN LOOP ~3s (display, RTM/FM, GPS parsing). It does
   // NOT stall the LoRa task — that runs at priority 5 on core 0 — so the RX failsafe is not
   // tripped. The earlier "stalls the LoRa cycle" note was wrong. 'quit' aborts.
-  { "gpscfg",      cmdGpsCfg,       "",                "read back live GPS config (dynModel) - verifies initTxGPS() actually took; ~3s main-loop block, quit aborts" },
+  // V2.5-Evo - 2026-10-27 - also reads the update rate back and the chip's version report (UBX-MON-VER),
+  // so up to four 1.5 s polls: ~6 s worst case (was ~3 s). 'quit' is checked before each poll.
+  { "gpscfg",      cmdGpsCfg,       "",                "read back live GPS config (dynModel + update rate + chip version) - verifies initTxGPS() actually took; up to ~6s main-loop block, quit aborts" },
   // V2.5-Evo - 2026-07-29 - GPS-BAUD-1. M9/M10 dropped UBX-CFG-PRT, so the firmware cannot
   // always move a module's baud on its own. Bare = scan, <rate> = our uart only,
   // "set <rate>" = move the module and ask IT to save it (not usrConf — a confStruct
   // change would bump SW_VERSION and wipe the TX SPIFFS config).
-  { "gpsbaud",     cmdGpsBaud,      "[set] [<rate>]",  "scan / set GPS baud; 'set' asks the module to save it (BBR always, flash only if fitted); ~2s block, quit aborts" },
+  // V2.5-Evo - 2026-10-27 - "set" no longer asks for the module's Flash layer: the move is RAM +
+  // battery-backed memory (GPS.ino ubxValset()), and ?gpssetup's save makes it permanent where it can.
+  { "gpsbaud",     cmdGpsBaud,      "[set] [<rate>]",  "scan (NMEA and UBX) / set GPS baud; 'set' moves the module (RAM + battery-backed; ?gpssetup saves it); ~2s block, quit aborts" },
   // V2.5-Evo - 2026-07-30 - GPS-SETUP-1. Run ONCE per assembled remote. Finds the module,
   // raises it to 115200, applies every setting ACK-verified, commits to the MODULE's own
   // non-volatile memory, then reads it back to prove it. Boot then only has to verify.
-  { "gpssetup",    cmdGpsSetup,     "",                "ONE-TIME full GPS setup: find, raise to 115200, configure, save to the module permanently, verify (~15s, bench only)" },
+  // V2.5-Evo - 2026-10-27 - "save" is the step-5 CFG-CFG request, permanent only where the module has
+  // flash (the HGLRC M100s have none); boot re-applies every setting anyway. Up to ~40 s worst case.
+  { "gpssetup",    cmdGpsSetup,     "",                "ONE-TIME full GPS setup: find, raise to 115200, configure, switch NMEA back on if needed, ask the module to save, verify (~15s, up to ~40s; bench only)" },
 };
 const size_t cmdTableSize = sizeof(cmdTable) / sizeof(cmdTable[0]);
 

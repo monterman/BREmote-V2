@@ -241,9 +241,10 @@ Worse, the repair was unreachable even once written, because the **detector** wa
 listen-only baud scan looked only for `$G…`, so "no NMEA" was read as "no module" and every entry
 point bailed out first.
 
-**Both halves are fixed on the RX, and the recovery is now two steps:**
+**Both halves are fixed on the RX and, since 2026-10-27, on the TX (the remote's own GPS), and the
+recovery is now two steps:**
 
-1. Flash the current RX firmware.
+1. Flash the current firmware on the board the module is fitted to.
 2. Run **`?gpssetup`**.
 
 The baud scan now accepts a **complete, checksum-valid UBX frame** as evidence of life — the same
@@ -268,7 +269,13 @@ Two caveats, in the spirit of the rest of this design: it is **reported, never e
 that refuses the writes still navigates on its own defaults, and the line says `REJECTED` rather than
 failing boot, which is the one remaining case that needs u-center on a PC. And the repair needs a
 module that answers a config message: one that answers none cannot be repaired this way, and the boot
-log says `NMEA output NOT switched back on`. **The TX does not carry this yet.**
+log says `NMEA output NOT switched back on`.
+
+**The TX carries the same repair since 2026-10-27**, with one difference: it runs only when the
+module was heard sending UBX and no NMEA. The RX also writes the `CFG-VALSET` NMEA-on settings to every
+module that answers `CFG-VALSET`, on every boot; the remote writes nothing to a module whose NMEA it
+has heard. Its lines start `TX GPS`, for example
+`TX GPS NMEA output on UART1: CFG-PRT OK | GGA OK | RMC OK | UBX-out OK/valset | NMEA-out OK/valset`.
 
 If you have written off a GPS module as dead for exactly this reason, it is probably fine. Try it
 again.
@@ -285,12 +292,16 @@ At 8N1 every byte costs 10 bits on the wire. GGA + RMC is roughly 142 bytes per 
 | 5 Hz | ~7,100 bit/s | ⚠️ **74%** — no headroom, drops sentences | ✅ 6% |
 | 10 Hz | ~14,200 bit/s | ❌ **impossible** | ✅ 12% |
 
-The firmware warns at boot when the configured rate doesn't fit the link:
+The firmware warns at boot when the configured rate doesn't fit the link, computed on the baud the
+module is on after any baud move:
 
 ```
-TX GPS: !! 9600 baud is only 27% clear of what 5 Hz needs — sentences WILL drop.
-        Run '?gpssetup' to move the module to 115200 permanently.
+TX GPS: !! at 9600 baud, GGA+RMC alone at 5 Hz need ~73% of the line - sentences WILL drop. Run ?gpssetup to move the module to 115200.
 ```
+
+The RX prints the same line starting `GPS: !!`. The line gives the share of the line **used**; at
+10 Hz on 9600 it reads `~147%`. (Until 2026-10-27 the remote printed "only N% clear", and on an
+over-full line that subtraction wrapped to a number in the billions.)
 
 GSV, GLL and VTG are switched off because TinyGPS++ never parses them — GSV alone can be 6–10
 sentences per epoch with multiple constellations. GSA is deliberately left enabled.
@@ -316,9 +327,9 @@ it was first written, on a receiver that had reported success.
 
 | Command | What it does | Blocks |
 |---|---|---|
-| `?gpscfg` | Reads the settings back out of the module. RX: `dynModel`, the GSV filter, the update rate and the chip's version report (UBX-MON-VER), four polls. TX: `dynModel`. Works on both dialects. | RX up to ~6 s, TX ~3 s |
-| `?gpsbaud` | Listen-only baud scan + UBX-alive check | ~2–6 s |
-| `?gpssetup` | **One-time full setup**: find, raise to 115200, configure ACK-verified, save into the module, verify | up to ~30 s |
+| `?gpscfg` | Reads the settings back out of the module. RX: `dynModel`, the GSV filter, the update rate and the chip's version report (UBX-MON-VER), four polls. TX: the same without the GSV check. Works on both dialects. | up to ~6 s on both |
+| `?gpsbaud` | Listen-only baud scan (NMEA and UBX) + UBX-alive check | ~2–6 s |
+| `?gpssetup` | **One-time full setup**: find, raise to 115200, configure ACK-verified, switch NMEA back on if needed, ask the module to save, verify | up to ~30 s (RX), ~40 s (TX) |
 | `?gpsraw [sec]` | Raw NMEA dump — use when nothing else responds | 5 s |
 | `?gpsreinit` | Re-run GPS init without rebooting | ~2 s |
 | `?gpscoldreset` | Clear the satellite cache, force fresh acquisition | instant |
@@ -439,6 +450,24 @@ two per update.
 compass by its I²C address at boot (`0x2C`, then `0x0D`, then `0x1E`), whatever the setting says.
 Settings 0 and 1 run the same code, and so do 2 and 3 — "with compass" is only a label on the RX.
 The TX accepts 0 and 2 only.
+
+**The remote (TX) follows the same rules since 2026-10-27.** It first finds which pin the GPS sends
+on (G18 or G19). Setting 0 then listens and falls back to the 9600 → 115200 switch only when nothing
+is heard; setting 2 sends nothing until the module is heard. Then `dynModel` (the language probe), a
+move to 115200 in that language for a module heard on a slower baud (proven by listening; one
+`CFG-VALSET` retry after an old-form move that did not land; nothing sent after a move that loses the
+module until it is heard again), the sentence filter, the rate (5 Hz for 0, 10 Hz for 2) and, for a
+module heard sending UBX but no NMEA, the NMEA repair. It asks for no constellations either: the
+four-constellation request it used to send could hold an M10 that accepts the old form, such as the
+M100 Mini, to 4 Hz. Its boot line:
+
+```
+TX GPS config [legacy CFG form]: dynModel=Sea OK | rate=100ms OK | GLL OK | GSV OK | VTG OK
+```
+
+`?gpscfg` on the remote prints the same `rate` and `silicon` lines as the RX (it has no GSV line).
+The remote has no `?gpsdiag`: to see the rate it achieves, run `?gpsraw 5` with a fix and count the
+`GGA` lines (÷ 5 = Hz).
 
 **How to tell which chip is really inside.** The label on the module is not proof. Look for the
 boot-log line that starts `GPS config [`:

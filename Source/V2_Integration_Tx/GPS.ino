@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-27 - TX GPS PASS, the remote's start-up brought in line with the receiver's 2026-10-27 GPS work (audits 2026-10-27 §4.3/§4.4 and delta §8 item 3): (1) NO CONSTELLATION REQUEST: the old-form four-constellation CFG-GNSS write in the type 2 branch is gone and no CFG-SIGNAL key is added, so the module keeps its own set (HGLRC ships GPS+Galileo, which u-blox rates at 10 Hz; all four would cap an M10 at 4 Hz). (2) THREE-RESULT BAUD MOVE, AFTER THE DIALECT PROBE: gpsSetModuleBaud() returns GPS_MOVE_OK / GPS_MOVE_STAYED (heard again at the old baud, listening 1100 ms; it listened 300 ms and ignored the answer) / GPS_MOVE_LOST. initTxGPS() moves a module heard below 115200 once, in the form it answers, never one that answers nothing; an old-form move that STAYED is tried once in CFG-VALSET; LOST rescans with gpsDetectBaud() and, if nothing answers, sends nothing more and returns. The type 0 branch no longer moves the baud before the probe, and the type 2 branch no longer sends the move in both forms before the dialect is known. ?gpssetup and ?gpsbaud set use the same three results. (3) NMEA REPAIR KEYED TO THE SYMPTOM: gpsProbeAt() also recognises a complete, checksum-valid UBX frame (it still transmits nothing), so a module left UBX-only is heard; when the listen heard UBX but no NMEA and the module answers a config message, gpsEnableNmeaOut(dialect) runs at boot and in ?gpssetup step 4 (old form: CFG-PRT at the proven baud, ACK-checked; GGA/RMC through gpsApplyCfg(); then the CFG-VALSET NMEA-out writes). A module that answers no config message is skipped and the log says so; a module whose NMEA was heard is not touched. (4) NO FLASH LAYER on any CFG-VALSET write (ubxValset(), gpsSetModuleBaud(), so ?gpssetup and ?gpsbaud set too): RAM|BBR only; ?gpssetup's CFG-CFG save is unchanged. (5) the link-budget warning prints the share of the line USED, computed on the baud after the move (it printed 100 - used in unsigned arithmetic, a huge number at 10 Hz on 9600). (6) ?gpscfg reads the rate back (CFG-RATE poll, or CFG-VALGET CFG-RATE-MEAS with the key echo checked) and polls UBX-MON-VER (silicon / sw / ext lines), with a quit check before each new poll; the dialect labels name the format, not the chip. Pin auto-detect, dynModel, the GSV/GLL/VTG filter and everything outside GPS unchanged. No confStruct change, sizeof stays 136, SW_VERSION stays 27, SPIFFS config NOT reset by this flash.
 // V2.5-Evo - 2026-10-23 - audit L-1/L-2/L-6 on GPS-PIN-1, text and comments only: the pin-check comment now says the GPS's receive line reads LOW during the check on boards with 10 k pull-downs; the "no check yet" hint says to turn the GPS on first (gps_en=0 skips the check); the no-NMEA hint prints once, "GPS not detected" only when no pin had data, and it says ?gpssetup cannot fix a UBX-only module. Serial text only: nothing changes in what is sent to the GPS, on which pins, or when.
 // V2.5-Evo - 2026-10-23 - GPS-PIN-1: initTxGPS() first finds which pin the GPS transmits on (G18 = DIY wiring, G19 = factory wiring) by counting edges on both pins with the UART closed, then opens Serial1 on the pins it found (gps_rx_pin / gps_tx_pin). Factory-wired remotes heard nothing before. The four "check that TX/RX are not swapped" hints now report what the pin check saw (gpsPrintNoNmeaHint()). RAM only: no confStruct change, sizeof stays 136, SW_VERSION stays 27, SPIFFS config NOT reset by this flash.
 // V2.5-Evo - 2026-08-15 - ubxPoll() now verifies CK_A/CK_B before accepting a frame. Was returning as soon as the payload was complete, never reading the checksum, so any B5 62 <cls> <id> <len> lookalike in the NMEA/UBX stream was believed. Same defect the RX had (fixed 1f2ba8c, after it reported an M8 as M9/M10 three times running) - it survived here because the parser exists twice instead of in Common/. Code only: no confStruct change, sizeof unchanged, SW_VERSION stays 27, SPIFFS config NOT reset by this flash.
@@ -99,6 +100,11 @@ static uint32_t gps_pin_edges_tx  = 0;                     // edges seen on P_U1
 // written applied NO measurement rate, NO NMEA filter and — the one that matters — NO
 // dynModel. The module silently stayed in Portable. That is not hypothetical: it is the
 // current state of the gps_chip_type=2 path.
+// V2.5-Evo - 2026-10-27 - TOO STRONG, corrected: the M10 interface description lists only those
+// five in its UBX-CFG class, but it also says M10 firmware keeps some backwards compatibility with
+// the old UBX-CFG messages (SPG 5.10 §1.3 and §4.10). The owner's HGLRC M100 Mini and M100-5883
+// accept them. So the form a module answers in does not say which chip it is; UBX-MON-VER
+// (?gpscfg's silicon line) does. Everything below still holds for a module that refuses them.
 //
 // A NAK therefore means "wrong dialect", not "bad hardware", and is used here to
 // AUTO-DETECT the module generation and re-send the same setting through the modern
@@ -142,6 +148,17 @@ static const uint32_t KEY_MSGOUT_NMEA_GSV_U1 = 0x209100c5UL; // U1, rate on UART
 static const uint32_t KEY_MSGOUT_NMEA_VTG_U1 = 0x209100b1UL; // U1, rate on UART1
 static const uint32_t KEY_UART1_BAUDRATE     = 0x40520001UL; // U4, bits/s. Table 58 maps
                                                              // UBX-CFG-PRT.baudRate here.
+// V2.5-Evo - 2026-10-27 - the NMEA-output keys, for gpsEnableNmeaOut() (the repair for a module left
+// UBX-only). The same four keys the receiver has used since 2026-08-16 (V2_Integration_Rx/GPS.ino,
+// GPS-NMEA-1), where each was checked two ways: bits 30-28 carry the storage size (0x1 = L, one
+// bit; 0x2 = U1, one byte), then the group byte, then the item id; and in the CFG-MSGOUT NMEA block
+// the ports run I2C, UART1, UART2, USB, SPI, so UART1 is the I2C id + 1 (GGA 0xba -> 0xbb, RMC 0xab
+// -> 0xac), the same rule the GLL/GSV/VTG keys above follow. CFG-UART1OUTPROT is group 0x74,
+// item 1 = UBX, item 2 = NMEA, type L.
+static const uint32_t KEY_UART1OUTPROT_UBX   = 0x10740001UL; // L, output UBX on UART1
+static const uint32_t KEY_UART1OUTPROT_NMEA  = 0x10740002UL; // L, output NMEA on UART1
+static const uint32_t KEY_MSGOUT_NMEA_GGA_U1 = 0x209100bbUL; // U1, rate on UART1
+static const uint32_t KEY_MSGOUT_NMEA_RMC_U1 = 0x209100acUL; // U1, rate on UART1
 
 // Baud rates probed when hunting for a module, most likely first. The scan cost is
 // ~250 ms per entry, so order matters more than length.
@@ -284,6 +301,20 @@ static inline const char* gpsDynModelName(uint8_t dyn) {
 }
 
 // ============================================================
+// gpsSelectedMeasMs - the measurement period asked of the module, resolved in ONE place
+// ============================================================
+// V2.5-Evo - 2026-10-27 - 100 ms (10 Hz) for gps_chip_type 2 (M10), 200 ms (5 Hz) otherwise
+// (0 = BN-220; the TX accepts 0 and 2 only). Read by initTxGPS() and ?gpssetup when they write the
+// rate and by ?gpscfg when it judges the readback, so the three cannot disagree. ?gpssetup used to
+// carry its own copy of this rule, and ?gpscfg had none.
+// Input: usrConf.gps_chip_type. Output: the period in ms. No side effects.
+// ============================================================
+static inline uint16_t gpsSelectedMeasMs()
+{
+  return (usrConf.gps_chip_type == 2) ? 100 : 200;
+}
+
+// ============================================================
 // gpsBuildNav5 - CFG-NAV5 frame carrying the CONFIGURED dynamic model
 // ============================================================
 // ONE builder, called from both initTxGPS() and cmdGpsSetup(). The payload used to be a
@@ -325,10 +356,16 @@ static uint8_t gpsBuildNav5(byte out[GPS_NAV5_FRAME_LEN])
 // Layers RAM|BBR: the setting takes effect now and survives a hot restart, but flash is
 // never written. Deliberate — flash has a finite erase budget and this runs on every boot.
 //
+// V2.5-Evo - 2026-10-27 - RAM|BBR ALWAYS. The optional Flash layer (persist=true, asked for only by
+// ?gpssetup) is gone, as on the receiver (audit 2026-10-27 §4.4). The Flash layer exists only on a
+// module with external flash, the HGLRC M100s have none, and what a CFG-VALSET asking for a missing
+// layer does is not documented: if the module refuses the whole message, every ?gpssetup write on
+// such a module read REJECTED. ?gpssetup's step 5 CFG-CFG save makes the result permanent where the
+// module can keep it.
+//
 // Payload: version(0) | layers | reserved[2] | key(4, little-endian) | value(valLen, LE).
 // ------------------------------------------------------------
-static uint8_t ubxValset(uint32_t key, const byte *val, uint8_t valLen, uint8_t tries,
-                         bool persist = false)
+static uint8_t ubxValset(uint32_t key, const byte *val, uint8_t valLen, uint8_t tries)
 {
   if (valLen == 0 || valLen > 8) return UBX_NOREPLY;   // defensive; all our keys are 1-2 bytes
 
@@ -341,10 +378,7 @@ static uint8_t ubxValset(uint32_t key, const byte *val, uint8_t valLen, uint8_t 
   f[n++] = (byte)(payload & 0xFF);
   f[n++] = (byte)(payload >> 8);
   f[n++] = 0x00;                                     // version 0
-  // Layers. Boot-time writes use RAM|BBR only — flash has a finite erase budget and boot
-  // runs constantly. ?gpssetup passes persist=true to add the Flash layer, which is the
-  // whole point of a one-time setup: it must outlive a power cycle.
-  f[n++] = persist ? (0x01 | 0x02 | 0x04) : (0x01 | 0x02);
+  f[n++] = 0x01 | 0x02;                              // layers: RAM | BBR (never Flash, see above)
   f[n++] = 0x00; f[n++] = 0x00;                      // reserved
   f[n++] = (byte)( key        & 0xFF);               // key, little-endian
   f[n++] = (byte)((key >>  8) & 0xFF);
@@ -365,14 +399,14 @@ static uint8_t ubxValset(uint32_t key, const byte *val, uint8_t valLen, uint8_t 
 //   "OK/valset" - legacy refused, the modern interface accepted it
 //   "REJECTED"  - both refused; the module does not support this setting at all
 //   "no-ACK"    - the module never answered; write was sent blind (pre-2026-07-29 behavior)
+// V2.5-Evo - 2026-10-27 - the persist argument is gone with the Flash layer (see ubxValset()).
 // ------------------------------------------------------------
 static const char *gpsApplyCfg(uint8_t dialect,
                                const byte *legacy, size_t legacyLen,
-                               uint32_t key, const byte *val, uint8_t valLen,
-                               bool persist = false)
+                               uint32_t key, const byte *val, uint8_t valLen)
 {
   if (dialect == UBX_DIALECT_VALSET)
-    return (ubxValset(key, val, valLen, 2, persist) == UBX_ACK) ? "OK/valset" : "REJECTED";
+    return (ubxValset(key, val, valLen, 2) == UBX_ACK) ? "OK/valset" : "REJECTED";
 
   if (dialect == UBX_DIALECT_MUTE) {
     // Module does not answer. Send it anyway — this is exactly what the firmware did
@@ -388,7 +422,7 @@ static const char *gpsApplyCfg(uint8_t dialect,
   if (r == UBX_NAK) {
     // Legacy message unsupported on this generation even though the probe suggested
     // otherwise. Fall through to the modern interface rather than giving up.
-    return (ubxValset(key, val, valLen, 2, persist) == UBX_ACK) ? "OK/valset" : "REJECTED";
+    return (ubxValset(key, val, valLen, 2) == UBX_ACK) ? "OK/valset" : "REJECTED";
   }
   return "no-ACK";
 }
@@ -397,9 +431,10 @@ static const char *gpsApplyCfg(uint8_t dialect,
 // gpsSaveConfig - commit the module's CURRENT settings to its own non-volatile memory.
 //
 // UBX-CFG-CFG (0x06 0x09), save-all. This is one of the FIVE messages M10 kept, so the same
-// frame works on u-blox 6/7/8 AND on M9/M10 — no special-casing. On M9/M10 the VALSET Flash
-// layer has usually already done the job, but sending this is harmless and covers a setting
-// that went out RAM-only.
+// frame works on u-blox 6/7/8 AND on M9/M10 — no special-casing.
+// V2.5-Evo - 2026-10-27 - this said "On M9/M10 the VALSET Flash layer has usually already done the
+// job". No write asks for the Flash layer any more (see ubxValset()), so this save is now the one
+// step that makes ?gpssetup's settings permanent, in either form, wherever the module has flash.
 //
 // Payload (13 B): clearMask(4) | saveMask(4) | loadMask(4) | deviceMask(1).
 // saveMask 0x0000FFFF = every config section. deviceMask 0x17 = BBR + Flash + EEPROM + SPI.
@@ -488,7 +523,26 @@ static void gpsOpenAt(uint32_t baud)
 // The window must outlast one sentence interval: a module at its 1 Hz default emits roughly
 // every second, so a 300 ms window would miss it and report the baud dead. Callers pass ~1100 ms.
 // Returns early the moment NMEA is seen, so a healthy 5 Hz module costs ~200 ms.
-// ------------------------------------------------------------
+//
+// ============================================================
+// V2.5-Evo - 2026-10-27 - ALSO RECOGNISE UBX, STILL WITHOUT TRANSMITTING (the receiver's GPS-NMEA-2
+// of 2026-08-16, ported).
+//
+// WHAT WAS WRONG: this window looked for NMEA and nothing else, so "no NMEA" was read as "no module".
+// A u-blox left UBX-only by a flight controller (Betaflight turns NMEA output off and saves it) is
+// not silent: it streams UBX frames continuously. Every entry point bailed out with "no NMEA at any
+// baud", so the NMEA repair (gpsEnableNmeaOut()) could never be reached.
+//
+// The NMEA test and its early break are UNCHANGED and still run FIRST on every byte, so a module
+// that sends NMEA exits at the same byte, after the same time, with the same return value as before.
+// UBX evidence never breaks early: the window runs its full length, so a module sending BOTH is never
+// reported as UBX-only, and no window gets longer. A candidate must be a COMPLETE, CHECKSUM-VALID
+// frame (sync B5 62, class, id, little-endian length, payload, Fletcher-8 pair over class..payload),
+// the same parse ubxPoll() uses: a false positive would mark a WRONG baud as proven and let the
+// caller transmit into it, the framing-error hazard this listen-only design exists to avoid.
+// GPS_SAW_UBX is set here by RECOGNISING a frame; GPS-BAUD-4 retired the old bit, which came from
+// transmitting a poll.
+// ============================================================
 static uint8_t gpsProbeAt(uint32_t baud, uint16_t window_ms)
 {
   gpsOpenAt(baud);
@@ -496,6 +550,13 @@ static uint8_t gpsProbeAt(uint32_t baud, uint16_t window_ms)
   uint8_t  seen = 0;
   byte     prev = 0;
   uint32_t deadline = millis() + window_ms;
+
+  // UBX recogniser state (V2.5-Evo - 2026-10-27). Shares only the byte with the NMEA test.
+  uint8_t  ubx_state = 0;
+  uint16_t ubx_len   = 0;
+  uint16_t ubx_idx   = 0;
+  byte     ubx_ckA   = 0;
+  byte     ubx_ckB   = 0;
 
   while ((int32_t)(millis() - deadline) < 0)
   {
@@ -505,8 +566,60 @@ static uint8_t gpsProbeAt(uint32_t baud, uint16_t window_ms)
     // Any "$G.." talker id is proof of life at this speed. Nothing is sent to obtain it.
     if (prev == '$' && c == 'G') { seen |= GPS_SAW_NMEA; break; }
     prev = c;
+
+    // ---- parallel UBX frame recogniser (V2.5-Evo - 2026-10-27, see the note above) ----
+    if (seen & GPS_SAW_UBX) continue;      // already proven; only NMEA is still worth watching
+    switch (ubx_state)
+    {
+      case 0: ubx_state = (c == 0xB5) ? 1 : 0; break;
+      case 1: ubx_state = (c == 0x62) ? 2 : 0; break;
+      case 2: ubx_ckA = c; ubx_ckB = ubx_ckA; ubx_state = 3; break;            // class
+      case 3: ubx_ckA += c; ubx_ckB += ubx_ckA; ubx_state = 4; break;          // id
+      case 4: ubx_len  = c; ubx_ckA += c; ubx_ckB += ubx_ckA; ubx_state = 5; break;
+      case 5:
+        ubx_len |= ((uint16_t)c << 8);
+        ubx_ckA += c; ubx_ckB += ubx_ckA;
+        ubx_idx  = 0;
+        // A garbage length must not park this machine in the payload state for thousands of bytes
+        // and swallow the real frames behind it. The largest frame expected here is UBX-NAV-PVT
+        // (92 bytes of payload).
+        if (ubx_len > 512)      { ubx_state = 0; break; }
+        ubx_state = (ubx_len == 0) ? 7 : 6;
+        break;
+      case 6:
+        ubx_ckA += c; ubx_ckB += ubx_ckA;
+        if (++ubx_idx >= ubx_len) ubx_state = 7;
+        break;
+      case 7: ubx_state = (c == ubx_ckA) ? 8 : 0; break;   // bad CK_A: not a frame, resync
+      case 8:
+        if (c == ubx_ckB) seen |= GPS_SAW_UBX;             // verified: the module speaks UBX
+        ubx_state = 0;
+        break;
+    }
   }
   return seen;
+}
+
+// V2.5-Evo - 2026-10-27 - plain-English name for what a listen window heard, for the log lines.
+static const char *gpsProtoName(uint8_t seen)
+{
+  if ((seen & GPS_SAW_NMEA) && (seen & GPS_SAW_UBX)) return "NMEA+UBX";
+  if (seen & GPS_SAW_NMEA)                           return "NMEA";
+  if (seen & GPS_SAW_UBX)                            return "UBX only";
+  return "nothing";
+}
+
+// V2.5-Evo - 2026-10-27 - the diagnosis for a module heard in UBX only, said in one place because boot,
+// ?gpssetup and ?gpsbaud can all meet it. States the diagnosis only: what is done about it differs
+// per caller, and ?gpsbaud writes nothing. Side effect: five Serial lines.
+static void gpsReportUbxOnly(uint32_t baud)
+{
+  Serial.printf("TX GPS: !! module is ALIVE at %lu baud but speaking UBX ONLY — no NMEA at all.\n",
+                (unsigned long)baud);
+  Serial.println("TX GPS: !! That is the signature of a flight-controller setup: Betaflight puts");
+  Serial.println("TX GPS: !! u-blox in UBX-only mode and saves it to battery-backed RAM and flash,");
+  Serial.println("TX GPS: !! so it survives every power cycle. This firmware parses NMEA, so until");
+  Serial.println("TX GPS: !! NMEA output is switched back on it sees an empty wire.");
 }
 
 // NOTE - V2.5-Evo - 2026-07-30 - GPS-BAUD-5. A gpsUbxAliveHere() helper used to live here and
@@ -541,11 +654,24 @@ static uint8_t gpsProbeAt(uint32_t baud, uint16_t window_ms)
 // The restore belongs HERE, not at the call sites: a helper that can strand the UART is a
 // trap for every future caller, and the audit found the trap had already been stepped in
 // three times out of four.
+//
+// V2.5-Evo - 2026-10-27 - seen_out optionally reports WHICH protocol answered (gpsProbeAt() now
+// hears UBX too), so a caller can tell a healthy module from one that is alive but UBX-only. The
+// candidate list, its order, the window and the return value are unchanged; callers that pass
+// nothing behave exactly as before.
 // ------------------------------------------------------------
-static uint32_t gpsDetectBaud(uint16_t window_ms, uint32_t fallback_baud)
+static uint32_t gpsDetectBaud(uint16_t window_ms, uint32_t fallback_baud,
+                              uint8_t *seen_out = nullptr)
 {
-  for (uint8_t i = 0; i < kGpsBaudCount; i++)
-    if (gpsProbeAt(kGpsBauds[i], window_ms)) return kGpsBauds[i];
+  if (seen_out) *seen_out = 0;
+
+  for (uint8_t i = 0; i < kGpsBaudCount; i++) {
+    const uint8_t s = gpsProbeAt(kGpsBauds[i], window_ms);
+    if (s) {
+      if (seen_out) *seen_out = s;
+      return kGpsBauds[i];
+    }
+  }
 
   gpsOpenAt(fallback_baud);   // never leave the port on the last baud we happened to try
   return 0;
@@ -584,11 +710,28 @@ static void gpsBuildCfgPrt(byte *f, uint32_t baud)
 // target, and PROVE the move by probing. If the proof fails we reopen where we came from,
 // so a wrong guess can never strand the GPS at a baud nothing is listening on.
 //
-// persist=true also writes the module's FLASH layer, so the setting outlives a power cycle
-// — the whole point of `?gpsbaud set`. Boot-time changes use RAM|BBR only, because flash
-// has a finite erase budget and boot runs far more often than a manual reconfigure.
+// V2.5-Evo - 2026-10-27 - RAM|BBR ONLY, from every caller. persist=true used to add the FLASH layer
+// for ?gpsbaud set and ?gpssetup; it is gone (see ubxValset()). ?gpssetup's step 5 CFG-CFG save
+// makes a move permanent where the module has flash.
+//
+// V2.5-Evo - 2026-10-27 - THREE RESULTS, NOT A BOOL (the receiver's audit of 2026-10-27, LOW row
+// "failed move"). A failed move used to listen at the old baud for 300 ms and ignore the answer -
+// shorter than one 1 Hz epoch, so it proved nothing - and return false either way, so the caller went
+// on writing at a baud nobody had proven. Now the listen back is as long as the proof (1100 ms) and
+// its answer is returned:
+//   GPS_MOVE_OK     heard at to_baud; the port is open there.
+//   GPS_MOVE_STAYED not heard at to_baud, heard again at from_baud; the port is open there, and
+//                   from_baud is proven, so the caller may keep writing at it.
+//   GPS_MOVE_LOST   heard at neither. The port is left at from_baud, but nothing proves the module
+//                   is there: the caller must find it again (gpsDetectBaud) or send nothing more.
+// Inputs: dialect (the form to send the move in), from_baud (where the module was proven),
+// to_baud. Side effects: one frame at from_baud, then up to two 1100 ms listens; ~2.3 s worst case.
 // ------------------------------------------------------------
-static bool gpsSetModuleBaud(uint8_t dialect, uint32_t from_baud, uint32_t to_baud, bool persist)
+static const uint8_t GPS_MOVE_OK     = 0;
+static const uint8_t GPS_MOVE_STAYED = 1;
+static const uint8_t GPS_MOVE_LOST   = 2;
+
+static uint8_t gpsSetModuleBaud(uint8_t dialect, uint32_t from_baud, uint32_t to_baud)
 {
   if (dialect == UBX_DIALECT_VALSET) {
     byte f[6 + 4 + 4 + 4 + 2];
@@ -597,7 +740,7 @@ static bool gpsSetModuleBaud(uint8_t dialect, uint32_t from_baud, uint32_t to_ba
     f[n++] = 0xB5; f[n++] = 0x62; f[n++] = 0x06; f[n++] = 0x8A;   // CFG-VALSET
     f[n++] = (byte)(payload & 0xFF); f[n++] = (byte)(payload >> 8);
     f[n++] = 0x00;                                                 // version 0
-    f[n++] = persist ? (0x01 | 0x02 | 0x04) : (0x01 | 0x02);       // RAM|BBR[|Flash]
+    f[n++] = 0x01 | 0x02;                                          // RAM|BBR (never Flash)
     f[n++] = 0x00; f[n++] = 0x00;
     f[n++] = (byte)( KEY_UART1_BAUDRATE        & 0xFF);
     f[n++] = (byte)((KEY_UART1_BAUDRATE >>  8) & 0xFF);
@@ -618,10 +761,106 @@ static bool gpsSetModuleBaud(uint8_t dialect, uint32_t from_baud, uint32_t to_ba
   Serial1.flush();
   delay(100);                       // let the frame drain and the module switch
 
-  if (gpsProbeAt(to_baud, 1100)) return true;   // listen-only; must outlast a 1 Hz interval
+  if (gpsProbeAt(to_baud, 1100)) return GPS_MOVE_OK;     // listen-only; must outlast a 1 Hz interval
 
-  gpsProbeAt(from_baud, 300);       // follow it back; the caller is no worse off than before
-  return false;
+  // V2.5-Evo - 2026-10-27 - follow it back and PROVE it is there, with the same 1100 ms as the proof
+  // above (was gpsProbeAt(from_baud, 300) with the answer ignored).
+  if (gpsProbeAt(from_baud, 1100)) return GPS_MOVE_STAYED;
+  return GPS_MOVE_LOST;
+}
+
+// ============================================================
+// gpsEnableNmeaOut - put NMEA output back on UART1, in whichever form the module answers
+// ============================================================
+// V2.5-Evo - 2026-10-27 - ported from V2_Integration_Rx/GPS.ino (GPS-NMEA-1 of 2026-08-16, keyed to
+// the symptom by the receiver's audit of 2026-10-27, GGA/RMC in either form by its delta audit).
+//
+// WHY: Betaflight's GPS auto-config switches u-blox modules to UBX-only and saves it to the module's
+// battery-backed RAM and flash. A module that has been on a flight controller - or was set up for
+// the drone market, which is most of what is sold as an "M10 GPS" - arrives with NMEA output off and
+// stays that way through every power cycle. TinyGPS++ reads NMEA and nothing else, so the remote had
+// no GPS, and nothing in this file ever wrote the output-protocol configuration.
+//
+// WHAT IT WRITES, in this order:
+//   0. On a module that answers the OLD form (dialect LEGACY): UBX-CFG-PRT from gpsBuildCfgPrt() at
+//      gps_current_baud, the baud the module has just been proven on by listening. So it is NOT a
+//      baud move, and the ACK comes back readable. Its output mask is UBX+NMEA, which is the old-form
+//      way to switch NMEA output back on. ACK-checked through ubxSendAcked(). A module whose firmware
+//      keeps some old messages but not CFG-PRT (some M10) refuses it, and writes 1-3 do the job.
+//   1. GGA and RMC message rates, through gpsApplyCfg(): old-form UBX-CFG-MSG in its 3-byte "current
+//      port" form (class F0, id 00 = GGA / 04 = RMC, rate 1 on the port the message arrives on, i.e.
+//      UART1), ACK-checked and re-sent as CFG-VALSET on a NAK; a CFG-VALSET module goes straight to
+//      the key. These are the two sentences TinyGPS++ reads, and Betaflight may have zeroed them one
+//      by one, in which case turning the protocol back on by itself changes nothing.
+//   2. CFG-UART1OUTPROT-UBX, kept ON on purpose: our own ACK checking and ?gpscfg are UBX.
+//   3. CFG-UART1OUTPROT-NMEA, LAST, so the sentence stream only restarts once every write above has
+//      been answered. Writes 2-3 are CFG-VALSET whichever form answered; an M8 has no CFG-VALSET and
+//      refuses or ignores them, which at a proven baud costs time, not harm (CFG-PRT has done their
+//      job there).
+// RAM|BBR, at boot and in ?gpssetup alike (no Flash layer, see ubxValset()); ?gpssetup's step 5
+// CFG-CFG save makes it permanent where the module can keep it.
+//
+// WHO CALLS IT: initTxGPS() and ?gpssetup step 4, only when the listen heard UBX but no NMEA (the
+// symptom) and the module answers a config message (never UBX_DIALECT_MUTE). A module whose NMEA was
+// heard is not touched, so the BN-220 and M100 Mini boots are unchanged. Because MUTE never reaches
+// here, gpsApplyCfg()'s blind-write branch is never used: every write below is ACK-checked.
+//
+// NEVER FATAL: the outcome is REPORTED; a module that refuses these still navigates on its defaults.
+// Input: dialect (LEGACY or VALSET). Output: none. Side effects: up to five ACK-checked writes and two
+// or three Serial lines. Cost: a few milliseconds when the module answers; if it stops answering, up
+// to ~3.5 s at 115200 and ~7 s at 9600. Loop task (boot or a serial command) only.
+// ============================================================
+static void gpsEnableNmeaOut(uint8_t dialect)
+{
+  static const byte on = 1;    // U1 rate 1 = one sentence per nav epoch; type L 1 = enabled
+
+  // 0. The old form first, on a module that answers it. Same baud as the one the module was heard
+  //    on, so this changes the output mask and nothing else.
+  const char *prt = nullptr;
+  if (dialect == UBX_DIALECT_LEGACY) {
+    byte f[28];
+    gpsBuildCfgPrt(f, gps_current_baud);
+    const uint8_t r = ubxSendAcked(f, sizeof(f), 2);
+    prt = (r == UBX_ACK) ? "OK" : (r == UBX_NAK) ? "REJECTED" : "no-ACK";
+  }
+
+  // 1. GGA and RMC in the form the module answers. UBX-CFG-MSG, 3-byte payload: msgClass F0
+  //    (standard NMEA), msgID 00 = GGA / 04 = RMC, rate 1. The checksum is computed here, never typed
+  //    in (it comes out FB 10 for GGA and FF 18 for RMC).
+  byte enableGGA[] = { 0xB5, 0x62, 0x06, 0x01, 0x03, 0x00, 0xF0, 0x00, 0x01, 0x00, 0x00 };
+  byte enableRMC[] = { 0xB5, 0x62, 0x06, 0x01, 0x03, 0x00, 0xF0, 0x04, 0x01, 0x00, 0x00 };
+  ubxAppendChecksum(enableGGA, sizeof(enableGGA));
+  ubxAppendChecksum(enableRMC, sizeof(enableRMC));
+  const char *s_gga  = gpsApplyCfg(dialect, enableGGA, sizeof(enableGGA), KEY_MSGOUT_NMEA_GGA_U1, &on, 1);
+  const char *s_rmc  = gpsApplyCfg(dialect, enableRMC, sizeof(enableRMC), KEY_MSGOUT_NMEA_RMC_U1, &on, 1);
+  const bool ok_gga  = (strcmp(s_gga, "OK") == 0 || strcmp(s_gga, "OK/valset") == 0);
+  const bool ok_rmc  = (strcmp(s_rmc, "OK") == 0 || strcmp(s_rmc, "OK/valset") == 0);
+  // 2-3. Output protocols, NMEA last.
+  const bool ok_ubx  = (ubxValset(KEY_UART1OUTPROT_UBX,  &on, 1, 2) == UBX_ACK);
+  const bool ok_nmea = (ubxValset(KEY_UART1OUTPROT_NMEA, &on, 1, 2) == UBX_ACK);
+
+  Serial.printf("TX GPS NMEA output on UART1: %s%s%sGGA %s | RMC %s | UBX-out %s | NMEA-out %s\n",
+                prt ? "CFG-PRT " : "", prt ? prt : "", prt ? " | " : "",
+                s_gga, s_rmc,
+                ok_ubx  ? "OK/valset" : "REJECTED",
+                ok_nmea ? "OK/valset" : "REJECTED");
+
+  // The verdict says only what is known: NMEA output is back on if CFG-PRT or the NMEA-out write was
+  // accepted, and GGA and RMC are known to be on only if their writes were accepted.
+  const bool prt_ok   = (prt != nullptr && strcmp(prt, "OK") == 0);
+  const bool proto_on = prt_ok || ok_nmea;
+  if (proto_on && ok_gga && ok_rmc)
+    Serial.println("TX GPS: NMEA output re-enabled on UART1 — GGA and RMC are the two sentences "
+                   "this firmware parses.");
+  else if (proto_on)
+    Serial.printf("TX GPS: NMEA output switched back on (%s), but the GGA and RMC rates were not "
+                  "confirmed (see their fields above). If ?gpsraw shows binary but no $G lines, "
+                  "they are still off and need u-center.\n",
+                  prt_ok ? "CFG-PRT, UBX+NMEA" : "CFG-VALSET NMEA-out");
+  else
+    Serial.println("TX GPS: !! NMEA output could NOT be fully re-enabled. If ?gpsraw shows binary "
+                   "but no $G lines, this module is still UBX-only — a flight controller leaves "
+                   "them that way — and needs u-center to recover.");
 }
 
 // ============================================================
@@ -745,9 +984,12 @@ static void gpsDetectDataPin()
 //                    gps_en=0.
 //   no signal     -> nothing is transmitting on either pin: power, GND, or a dead / missing module.
 //   signal seen   -> the module IS talking, just not NMEA at a listed baud (UBX-only output, or an unlisted baud).
+//                    V2.5-Evo - 2026-10-27 - UBX-only output is now heard by the scan, so only the
+//                    unlisted baud (or a line that is not a u-blox stream) is left here.
 //                    V2.5-Evo - 2026-10-23 - audit L-6: says "power and the GPS's transmit wire are fine" (edges prove
 //                    those, not the wire into the GPS), and that ?gpssetup / ?gpsbaud set cannot repair it: both
-//                    start with the same NMEA-only baud scan (gpsDetectBaud()) and stop when it finds nothing.
+//                    start with the same baud scan (gpsDetectBaud(); NMEA or UBX since 2026-10-27) and stop when
+//                    it finds nothing.
 // Input: prefix printed before each line (matches the caller's indentation). Side effects: two or three Serial lines.
 // ------------------------------------------------------------
 static void gpsPrintNoNmeaHint(const char *prefix)
@@ -767,12 +1009,15 @@ static void gpsPrintNoNmeaHint(const char *prefix)
     Serial.printf("%sthan the GPS is toggling one of them, or the two lines are linked. Run ?gpsreinit to check again.\n",
                   prefix);
   } else {
-    Serial.printf("%sData seen on G%u (edges G%u=%lu G%u=%lu), but no NMEA at any baud: the module may be\n",
+    // V2.5-Evo - 2026-10-27 - the scan now hears a UBX-only module too (gpsProbeAt()), so that is no
+    // longer a reason to land here: what is left is a baud outside the scan list, or a line that is
+    // not a u-blox stream. The three lines used to name UBX-only output first.
+    Serial.printf("%sData seen on G%u (edges G%u=%lu G%u=%lu), but no NMEA or UBX at any listed baud:\n",
                   prefix, (unsigned)gps_rx_pin, d_rx, (unsigned long)gps_pin_edges_rx,
                   d_tx, (unsigned long)gps_pin_edges_tx);
-    Serial.printf("%sset to UBX-only output, or a baud outside the scan list. Power and the GPS's transmit wire are fine.\n",
+    Serial.printf("%sthe module is likely on a baud outside the scan list. Power and the GPS's transmit wire are fine.\n",
                   prefix);
-    Serial.printf("%s?gpssetup and ?gpsbaud set cannot fix this: they also need NMEA to find the module.\n", prefix);
+    Serial.printf("%s?gpssetup and ?gpsbaud set cannot fix this: they also need to hear the module at a listed baud.\n", prefix);
   }
 }
 
@@ -781,16 +1026,18 @@ static void gpsPrintNoNmeaHint(const char *prefix)
 // ============================================================
 //
 // What it does:
-//   Branches on usrConf.gps_chip_type and sends the appropriate
-//   UBX binary commands to the GPS module attached to Serial1:
-//     Type 0 (BN-220):
-//       1) UBX-CFG-PRT : switch from factory 9600 baud to 115200
-//       2) UBX-CFG-RATE: set measurement rate to 5Hz (200ms period)
-//       3) UBX-CFG-MSG : disable GPGSV, GPGLL, GPVTG sentences
-//     Type 2 (M10):
-//       1) UBX-CFG-RATE: set measurement rate to 10Hz (100ms period)
-//       2) UBX-CFG-GNSS: enable GPS+Galileo+BDS+GLONASS constellations
-//       3) UBX-CFG-MSG : disable GPGSV, GPGLL, GPVTG sentences
+//   V2.5-Evo - 2026-10-27 - rewritten for the TX GPS pass (the list said type 2 sends a
+//   four-constellation CFG-GNSS and type 0 moves the baud first; neither is true any more).
+//   1) finds which pin the GPS sends on (G18 or G19), then LISTENS for the module (NMEA or
+//      UBX, nothing sent). Type 0 (BN-220) falls back to the blind dual-baud dance only when
+//      nothing is heard; type 2 (M10) sends nothing until the module is heard.
+//   2) dynModel (CFG-NAV5), which is also the dialect probe: old UBX-CFG form or CFG-VALSET.
+//   3) a module heard below 115200 is moved there in the form it answers (three results:
+//      OK / STAYED / LOST; see gpsSetModuleBaud()).
+//   4) GSV, GLL and VTG off, then the rate (5 Hz type 0, 10 Hz type 2, gpsSelectedMeasMs()),
+//      every write ACK-checked.
+//   5) a module heard in UBX only gets its NMEA output switched back on (gpsEnableNmeaOut()).
+//   No constellation request, in either form: the module keeps its own set.
 //     Types 1/3 (compass variants): rejected by cfgValidateCrossField()
 //       before this is reached — TX has no compass hardware.
 //     Unknown types: skipped with a Serial error message.
@@ -826,6 +1073,18 @@ static void gpsPrintNoNmeaHint(const char *prefix)
 //   - V2.5-Evo - 2026-10-23 - GPS-PIN-1: FIRST of all, gpsDetectDataPin() finds which pin the GPS
 //     transmits on (G18 or G19) with the UART closed, and sets gps_rx_pin / gps_tx_pin for every
 //     Serial1.begin() that follows. Adds ~1.1 s (fixed) to every init, at boot and on ?gpsreinit.
+//   - V2.5-Evo - 2026-10-27 - BOOT TIME, with the 1.1 s pin check included: a healthy module heard
+//     at 115200 takes ~1.3-1.5 s. A module heard below 115200 adds the baud move: ~1.3 s when it
+//     lands, ~2.5 s when it stays put (~5 s with the one CFG-VALSET retry after an old-form move).
+//     A move that loses the module adds a ~6 s rescan (~12-15 s in all, up to ~18 s when the retry
+//     ran first). No module at all: ~13 s on type 2, ~14 s on type 0 (two full scans; type 0 also
+//     runs the dual-baud dance between them). The NMEA repair, only on a module heard in UBX only,
+//     adds a few ms, or up to ~3.5 s at 115200 / ~7 s at 9600 if the module stops answering.
+//     WATCHDOG: initWatchdog() runs on the line after this call in setup() and arms nothing (the
+//     Arduino core's task watchdog is initialised but watches neither the idle task nor the loop
+//     task on this build), and every wait here yields (delay(1), vTaskDelay), so no length of this
+//     function can trip it. initTasks() runs BEFORE this call, so the radio and ADC tasks are
+//     already running while it blocks the loop task.
 //
 // Reboot-required behavior (documented for the user):
 //   Changing gps_en or gps_chip_type via the web config at runtime
@@ -870,6 +1129,13 @@ void initTxGPS()
   // its receiver until it loses power. Silence is the one state in which we must not talk.
   bool baud_confirmed = false;
 
+  // V2.5-Evo - 2026-10-27 - WHERE the module was heard and IN WHAT (GPS_SAW_NMEA / GPS_SAW_UBX), from
+  // whichever listen proved the baud: the chip branch's, or the listen after the switch. The baud
+  // move after the dialect probe reads `heard`; the NMEA repair reads `heard_proto` (UBX heard, no
+  // NMEA = the symptom). Both are updated by the rescan if a baud move loses the module.
+  uint32_t heard       = 0;
+  uint8_t  heard_proto = 0;
+
   // V2.5-Evo - 2026-04-22 - Branch on GPS chip type. Each chip type requires a
   // different init sequence (factory baud, rate, constellation config).
   // TX hardware has no compass, so types 1/3 are blocked by ConfigService.
@@ -900,7 +1166,9 @@ void initTxGPS()
 
       // V2.5-Evo - 2026-07-29 - GPS-ACK-1: 5 Hz. The rate frame itself is built and sent
       // after the switch, in the dialect the module actually speaks.
-      meas_ms = 200;
+      // V2.5-Evo - 2026-10-27 - from gpsSelectedMeasMs() (200 ms for type 0), the one place the
+      // period is decided, so ?gpssetup and ?gpscfg's readback cannot disagree with boot.
+      meas_ms = gpsSelectedMeasMs();
 
       // ============================================================
       // V2.5-Evo - 2026-07-30 - GPS-BAUD-6: LISTEN BEFORE DANCING.
@@ -920,18 +1188,18 @@ void initTxGPS()
       //
       // Net effect for a NEW module: found by listening at its factory 9600, moved cleanly to
       // 115200, configured, verified. No wrong-baud bytes at any point.
+      //
+      // V2.5-Evo - 2026-10-27 - THE MOVE IS NO LONGER MADE HERE. It used to go out right after this
+      // listen, as old-form CFG-PRT, before anything had shown the module answers config messages,
+      // and its failure was ignored ("failed, staying put"). It now runs once, after the dialect
+      // probe, in the form the module answers, with three results (OK / STAYED / LOST) - see the
+      // BAUD block after the probe. This branch only listens, and sends nothing when it hears.
       // ============================================================
-      uint32_t seen_baud = gpsDetectBaud(1100, 115200);
+      uint32_t seen_baud = gpsDetectBaud(1100, 115200, &heard_proto);
       if (seen_baud) {
-        Serial.printf("TX GPS [BN-220]: heard the module at %lu — skipping the dual-baud dance\n",
-                      (unsigned long)seen_baud);
-        if (seen_baud != GPS_BAUD_PREFERRED) {
-          Serial.printf("TX GPS [BN-220]: moving %lu -> %lu ... ",
-                        (unsigned long)seen_baud, (unsigned long)GPS_BAUD_PREFERRED);
-          // Legacy CFG-PRT, sent at the module's ACTUAL baud so it is understood.
-          Serial.println(gpsSetModuleBaud(UBX_DIALECT_LEGACY, seen_baud, GPS_BAUD_PREFERRED, false)
-                         ? "OK" : "failed, staying put");
-        }
+        Serial.printf("TX GPS [BN-220]: heard the module at %lu (%s) — skipping the dual-baud dance\n",
+                      (unsigned long)seen_baud, gpsProtoName(heard_proto));
+        heard = seen_baud;
         baud_confirmed = true;         // we HEARD it; transmitting is now safe
         tx_gps_initialized = true;
         break;   // configuration happens after the switch, as usual
@@ -1000,7 +1268,8 @@ void initTxGPS()
     }
 
     // --------------------------------------------------------
-    // Type 2: M10 — auto-detect the baud, then raise it if it is too slow for 10 Hz
+    // Type 2: M10 — auto-detect the baud (V2.5-Evo - 2026-10-27 - listen only; a module below
+    // 115200 is moved after the dialect probe, and no constellations are requested)
     // --------------------------------------------------------
     case 2:
     {
@@ -1014,10 +1283,10 @@ void initTxGPS()
       // Asking the module where it is costs one scan and works on hardware we have never
       // seen, which hard-coding a per-module baud cannot.
       // ============================================================
-      Serial.println("TX GPS [M10]: probing for the module...");
+      Serial.println("TX GPS [M10]: listening first; nothing is sent until the module is heard");
       // gpsDetectBaud() guarantees the port is left at GPS_BAUD_PREFERRED if nothing answers,
       // so the config block below still runs and reports honestly instead of failing silently.
-      uint32_t found = gpsDetectBaud(1100, GPS_BAUD_PREFERRED);
+      uint32_t found = gpsDetectBaud(1100, GPS_BAUD_PREFERRED, &heard_proto);
 
       if (found == 0) {
         // V2.5-Evo - 2026-10-23 - GPS-PIN-1: no more "check that TX/RX are not swapped" - the pin check found the
@@ -1025,70 +1294,38 @@ void initTxGPS()
         // V2.5-Evo - 2026-10-23 - audit L-6: the hint is NOT printed here any more. This path always reaches the
         // "baud not confirmed" block after the switch, which listens once more and prints the hint there, so it
         // appeared twice. It is printed once, by that block, and only if the second listen also hears nothing.
-        Serial.println("TX GPS [M10]: !! no NMEA at any baud. Run ?gpsbaud to scan, ?gpsraw to see bytes.");
+        // V2.5-Evo - 2026-10-27 - "in NMEA or UBX": the listen hears a UBX-only module too.
+        Serial.println("TX GPS [M10]: !! nothing heard at any baud, in NMEA or UBX. Run ?gpsbaud to scan, ?gpsraw to see bytes.");
       } else {
-        Serial.printf("TX GPS [M10]: module answers at %lu baud\n", (unsigned long)found);
+        Serial.printf("TX GPS [M10]: module answers at %lu baud (%s)\n", (unsigned long)found,
+                      gpsProtoName(heard_proto));
+        heard = found;
         baud_confirmed = true;         // heard it; transmitting is now safe
-
-        // 9600 physically cannot carry 10 Hz: GGA+RMC is ~1400 B/s, and at 8N1 that is
-        // ~14000 bits/s of payload. Raise anything below 38400 before configuring the rate,
-        // or the rate write succeeds and the UART quietly drops sentences.
-        if (found < 38400) {
-          Serial.printf("TX GPS [M10]: %lu is too slow for 10 Hz — raising to %lu\n",
-                        (unsigned long)found, (unsigned long)GPS_BAUD_PREFERRED);
-          // Dialect is not known yet, so try the modern interface first (this branch is the
-          // M10 path) and fall back to legacy for an M8 wired to chip_type 2 by mistake.
-          if (gpsSetModuleBaud(UBX_DIALECT_VALSET, found, GPS_BAUD_PREFERRED, false) ||
-              gpsSetModuleBaud(UBX_DIALECT_LEGACY, found, GPS_BAUD_PREFERRED, false)) {
-            Serial.printf("TX GPS [M10]: now at %lu\n", (unsigned long)GPS_BAUD_PREFERRED);
-            Serial.println("TX GPS [M10]: this is RAM/BBR only — it reverts on a full power "
-                           "cycle. Run '?gpsbaud set 115200' once to write it to the module.");
-          } else {
-            Serial.printf("TX GPS [M10]: !! could not raise the baud; staying at %lu. "
-                          "10 Hz will drop sentences — run ?gpsbaud.\n", (unsigned long)found);
-          }
-        }
       }
-      Serial.println("TX GPS [M10]: sending GNSS config...");
+
+      // ============================================================
+      // V2.5-Evo - 2026-10-27 - NOTHING IS SENT FROM THIS BRANCH ANY MORE.
+      //
+      // BAUD: a module heard below 38400 used to be moved here, before the dialect was known, by
+      // sending the move in BOTH forms one after the other (CFG-VALSET, then old-form CFG-PRT) and
+      // keeping whichever proof landed; a failed proof was ignored. The move now runs once, after the
+      // dialect probe, in the form the module answers, with three results (OK / STAYED / LOST) - see
+      // the BAUD block after the probe - and for anything below 115200, not only below 38400.
+      //
+      // CONSTELLATIONS: the four-constellation UBX-CFG-GNSS (GPS + Galileo + BeiDou + GLONASS) that
+      // was sent here is GONE, and no CFG-SIGNAL key replaces it: the module keeps its own set. On an
+      // M10 that accepts the old form (the owner's HGLRC M100 Mini does) that request could land, and
+      // u-blox rates an M10 with all four on at 4 Hz, below the 10 Hz asked for below; with BeiDou B1I
+      // and GLONASS together it is an invalid set. HGLRC ships GPS + Galileo, which u-blox rates at
+      // 10 Hz. Same ruling as the receiver (audit 2026-10-27 §4.3).
+      // ============================================================
 
       // V2.5-Evo - 2026-07-29 - GPS-ACK-1: 10 Hz. Applied after the switch, in the dialect
       // the module speaks. On a genuine M10 the legacy CFG-RATE frame that used to be sent
       // here does not exist and was being NAKed, so this path was silently running at the
       // module default of 1 Hz — not the 10 Hz the boot message claimed.
-      meas_ms = 100;
-
-      // UBX-CFG-GNSS: enable GPS, Galileo, BDS (BeiDou), and GLONASS.
-      // This gives the M10 all available constellations for best fix accuracy.
-      // Payload: 4-byte header (msgver=0, numTrkChHw=0, numTrkChUse=0xFF, numConfigBlocks=4)
-      // + 4 blocks of 8 bytes each (gnssId, resTrkCh, maxTrkCh, reserved, flags).
-      // Fletcher-8 checksum: CK_A=0xCE, CK_B=0xC0 (pre-calculated over class→payload).
-      byte setGNSS[] = {
-        0xB5, 0x62, 0x06, 0x3E, 0x24, 0x00,
-        0x00, 0x00, 0xFF, 0x04,
-        0x00, 0x08, 0x10, 0x00, 0x01, 0x00, 0x00, 0x00,  // GPS (id=0)
-        0x02, 0x04, 0x08, 0x00, 0x01, 0x00, 0x00, 0x00,  // Galileo (id=2)
-        0x03, 0x08, 0x10, 0x00, 0x01, 0x00, 0x00, 0x00,  // BDS (id=3)
-        0x06, 0x08, 0x10, 0x00, 0x01, 0x00, 0x00, 0x00,  // GLONASS (id=6)
-        0xCE, 0xC0
-      };
-      // V2.5-Evo - 2026-07-29 - GPS-ACK-1: constellation selection is left on the legacy
-      // frame ONLY, and is allowed to fail quietly. UBX-CFG-GNSS does not exist on M9/M10,
-      // where the equivalent lives in the CFG-SIGNAL key group with a separate enable key
-      // per constellation. That mapping is not worth carrying here because M10 modules
-      // already enable multiple constellations by default — unlike dynModel, rate and the
-      // NMEA filter, a NAK here costs accuracy at worst, not safety. Reported at boot so it
-      // is visible rather than assumed.
-      // V2.5-Evo - 2026-07-30 - M-1: gated on `found`. If nothing was heard, the baud is a
-      // GUESS, and pushing 44 more bytes at a guessed baud is exactly the framing-error spray
-      // that disabled the module's receiver on 2026-07-30. Silence is the one state in which
-      // we must not talk.
-      if (found) {
-        uint8_t gnss_r = ubxSendAcked(setGNSS, sizeof(setGNSS), 2);
-        Serial.printf("TX GPS [M10]: constellations %s\n",
-                      gnss_r == UBX_ACK ? "GPS+Galileo+BDS+GLONASS OK"
-                    : gnss_r == UBX_NAK ? "left at module defaults (CFG-GNSS not supported — normal on M10)"
-                                        : "no ACK (unverified)");
-      }
+      // V2.5-Evo - 2026-10-27 - from gpsSelectedMeasMs() (100 ms for type 2).
+      meas_ms = gpsSelectedMeasMs();
 
       tx_gps_initialized = true;
       break;
@@ -1152,6 +1389,8 @@ void initTxGPS()
     //   NAK     -> M9/M10. Legacy CFG messages were REMOVED, so re-send via CFG-VALSET.
     //   silence -> module does not answer at all. Fall back to blind writes, i.e. exactly
     //              how this firmware behaved before today. Never a hard failure.
+    // V2.5-Evo - 2026-10-27 - the ACK line names the FORM, not the chip: the owner's HGLRC M100 Mini
+    // (an M10) ACKs the old form too, and "REMOVED" is too strong for M10 (see the UBX helpers note).
     // ============================================================
     uint8_t dialect;
     const char *nav5_status;
@@ -1171,9 +1410,11 @@ void initTxGPS()
     // ============================================================
     if (!baud_confirmed) {
       Serial.println("TX GPS: baud not confirmed yet — listening before sending anything...");
-      uint32_t found = gpsDetectBaud(1100, GPS_BAUD_PREFERRED);
+      uint32_t found = gpsDetectBaud(1100, GPS_BAUD_PREFERRED, &heard_proto);
       if (found) {
-        Serial.printf("TX GPS: heard the module at %lu baud\n", (unsigned long)found);
+        Serial.printf("TX GPS: heard the module at %lu baud (%s)\n", (unsigned long)found,
+                      gpsProtoName(heard_proto));
+        heard = found;
         baud_confirmed = true;
       }
     }
@@ -1184,15 +1425,27 @@ void initTxGPS()
       // framing errors on a module that may be perfectly healthy but slow to wake.
       // V2.5-Evo - 2026-10-23 - audit L-6: "GPS not detected" only when the pin check also saw nothing. When it saw
       // data on a pin, the GPS WAS detected - it just does not speak NMEA at a listed baud - and the hint below says so.
+      // V2.5-Evo - 2026-10-27 - "no NMEA or UBX": the listen hears a UBX-only module too.
       if (gps_pin_verdict == GPS_PIN_VERDICT_DEFAULT || gps_pin_verdict == GPS_PIN_VERDICT_SWAPPED)
-        Serial.println("TX GPS: !! no NMEA at any baud.");
+        Serial.println("TX GPS: !! no NMEA or UBX at any baud.");
       else
-        Serial.println("TX GPS: !! no NMEA at any baud — GPS not detected.");
+        Serial.println("TX GPS: !! no NMEA or UBX at any baud — GPS not detected.");
       Serial.println("TX GPS: !! NOTHING was sent. Transmitting at an unconfirmed baud is what");
       Serial.println("TX GPS: !! disables a u-blox receiver, so silence is the safe response.");
       // V2.5-Evo - 2026-10-23 - GPS-PIN-1: was "Check 3.3V, GND and that TX/RX are not swapped, then ?gpsbaud".
       gpsPrintNoNmeaHint("TX GPS: !! ");
       return;
+    }
+
+    // V2.5-Evo - 2026-10-27 - a module heard in UBX only is confirmed like any other (gpsProbeAt() now
+    // recognises a checksum-valid UBX frame), which is what lets the NMEA repair at the end of this
+    // block run at a baud PROVEN by listening. Whether it runs depends on the module answering a
+    // config message, which is not known yet here - so this says so, and the "NMEA output" line after
+    // the config report (or a "NOT switched back on" line) says what was done.
+    if (!(heard_proto & GPS_SAW_NMEA)) {
+      gpsReportUbxOnly(heard);
+      Serial.println("TX GPS: !! NMEA output is switched back on below if the module answers a config");
+      Serial.println("TX GPS: !! message - see the NMEA line after the config report.");
     }
 
     uint8_t probe = ubxSendAcked(setNav5Sea, sizeof(setNav5Sea), 3);
@@ -1215,6 +1468,57 @@ void initTxGPS()
       Serial1.flush();
       delay(20);
       nav5_status = "no-ACK";
+    }
+
+    // ============================================================
+    // V2.5-Evo - 2026-10-27 - BAUD, IN THE FORM THE MODULE ANSWERS, AFTER THE PROBE.
+    //
+    // WHAT WAS WRONG: the type 0 branch moved a module heard below 115200 with old-form CFG-PRT
+    // before anything had shown it answers config messages; the type 2 branch moved one heard below
+    // 38400 by sending CFG-VALSET and then old-form CFG-PRT, one after the other, before the form was
+    // known. Both ignored a failed move: gpsSetModuleBaud() listened back at the old baud for 300 ms
+    // (shorter than one 1 Hz epoch, so it proved nothing) and threw the answer away, so every write
+    // after it went out at a baud nobody had proven.
+    //
+    // NOW: one move, here, only when the module was heard below 115200 and answered the probe above
+    // (a MUTE module answers nothing, so a move could not be checked and is not tried), sent in the
+    // form it answered. The move is proven by LISTENING at the new baud, never by the ACK, which can
+    // be lost across the switch. Three results (see gpsSetModuleBaud()):
+    //   GPS_MOVE_STAYED after an old-form CFG-PRT: an M10 that keeps old CFG-NAV5 may still refuse
+    //     old CFG-PRT, so the move is tried ONCE more in CFG-VALSET, at the baud just proven. An M8
+    //     refuses or ignores that frame; at a proven baud it adds no framing errors.
+    //   GPS_MOVE_STAYED otherwise: carry on at the old baud; the link-budget line below says whether
+    //     the rate fits there.
+    //   GPS_MOVE_LOST: rescan with gpsDetectBaud() (listen only) before anything else is sent. If
+    //     nothing answers, send NOTHING more and return: the port is left at 115200 by the rescan.
+    // Cost when it runs: one frame plus a 1.1 s listen; +1.1 s when the move does not land; +2.3 s
+    // for the retry; +~6 s for the rescan. RAM|BBR only - ?gpssetup's save makes it permanent.
+    // ============================================================
+    if (heard < GPS_BAUD_PREFERRED && dialect != UBX_DIALECT_MUTE) {
+      Serial.printf("TX GPS: heard at %lu - moving the module to %lu (%s) ... ",
+                    (unsigned long)heard, (unsigned long)GPS_BAUD_PREFERRED,
+                    dialect == UBX_DIALECT_VALSET ? "CFG-VALSET" : "CFG-PRT");
+      uint8_t mv = gpsSetModuleBaud(dialect, heard, GPS_BAUD_PREFERRED);
+      if (mv == GPS_MOVE_STAYED && dialect == UBX_DIALECT_LEGACY) {
+        Serial.printf("not taken, heard again at %lu; trying once in CFG-VALSET ... ",
+                      (unsigned long)heard);
+        mv = gpsSetModuleBaud(UBX_DIALECT_VALSET, heard, GPS_BAUD_PREFERRED);
+      }
+      if (mv == GPS_MOVE_OK) {
+        Serial.println("OK, heard at the new baud (RAM/BBR; ?gpssetup saves it)");
+      } else if (mv == GPS_MOVE_STAYED) {
+        Serial.printf("failed, heard again at %lu and staying there\n", (unsigned long)heard);
+      } else if (mv == GPS_MOVE_LOST) {
+        Serial.println("LOST - heard at neither baud. Rescanning; nothing is sent until it is heard.");
+        heard = gpsDetectBaud(1100, GPS_BAUD_PREFERRED, &heard_proto);
+        if (!heard) {
+          Serial.println("TX GPS: !! the module was lost during the baud move and is not heard at any baud.");
+          Serial.println("TX GPS: !! NOTHING more was sent. Power-cycle the remote and its GPS, then run ?gpsbaud.");
+          return;
+        }
+        Serial.printf("TX GPS: found again at %lu baud (%s)\n", (unsigned long)heard,
+                      gpsProtoName(heard_proto));
+      }
     }
 
     // ============================================================
@@ -1271,21 +1575,32 @@ void initTxGPS()
     // ⚠️ Link-budget check. At 9600 baud, GGA+RMC at 5 Hz is ~710 B/s against 960 B/s
     // available — 74% utilisation with no headroom, so the link drops sentences under any
     // extra load. Warn rather than silently run saturated; ?gpssetup raises the baud.
+    //
+    // V2.5-Evo - 2026-10-27 - THE BUG: this printed "only (100 - used)% clear" with both sides
+    // unsigned, so on a line that is over-full (10 Hz at 9600 needs ~148% of it) the subtraction
+    // wrapped and printed a number near 4.3 billion. It now prints the share USED, as the receiver
+    // does (no subtraction, so nothing can wrap; the largest product is 14200 x 100 = 1.42e6). It
+    // reads gps_current_baud, which every listen sets (gpsOpenAt()), so this is the baud AFTER the
+    // move above: it speaks up for a move that stayed put, a module that answers no config message
+    // (no move tried), or one a rescan found elsewhere. GSA (one per constellation) is not counted.
     if (meas_ms > 0 && gps_current_baud > 0) {
-      uint32_t need = (uint32_t)((1000 / meas_ms) * 142UL * 10UL);   // GGA+RMC, 8N1
-      if (need * 100UL / gps_current_baud > 70UL)
-        Serial.printf("TX GPS: !! %lu baud is only %lu%% clear of what %u Hz needs — sentences "
-                      "WILL drop. Run '?gpssetup' to move the module to 115200 permanently.\n",
-                      (unsigned long)gps_current_baud,
-                      (unsigned long)(100UL - (need * 100UL / gps_current_baud)),
-                      (unsigned)(1000 / meas_ms));
+      const uint32_t need = (1000UL / meas_ms) * 142UL * 10UL;       // bit/s for GGA+RMC, 8N1
+      const uint32_t used = need * 100UL / gps_current_baud;         // % of the line
+      if (used > 70UL)
+        Serial.printf("TX GPS: !! at %lu baud, GGA+RMC alone at %u Hz need ~%lu%% of the line - "
+                      "sentences WILL drop. Run ?gpssetup to move the module to 115200.\n",
+                      (unsigned long)gps_current_baud, (unsigned)(1000 / meas_ms),
+                      (unsigned long)used);
     }
 
     // --- Report every write, so a rejected config is visible at boot rather than shipped. ---
     // V2.5-Evo - 2026-08-18 - GPS-DYN-TX. Was the literal "dynModel=Sea", which printed Sea even
     // on a board configured for Automotive — reassurance in the exact spot a failure shows up.
+    // V2.5-Evo - 2026-10-27 - "legacy CFG form" (was "legacy CFG (u-blox 6/7/8)"): the label names the
+    // FORMAT the module answered in, not the chip - the M100 Mini, an M10, answers the old form.
+    // ?gpscfg's silicon line (UBX-MON-VER) names the chip.
     Serial.printf("TX GPS config [%s]: dynModel=%s %s | rate=%ums %s | GLL %s | GSV %s | VTG %s\n",
-                  dialect == UBX_DIALECT_LEGACY ? "legacy CFG (u-blox 6/7/8)"
+                  dialect == UBX_DIALECT_LEGACY ? "legacy CFG form"
                 : dialect == UBX_DIALECT_VALSET ? "CFG-VALSET (u-blox M9/M10)"
                                                 : "UNVERIFIED - module sends no ACK",
                   gpsDynModelName(dyn_sel),
@@ -1303,6 +1618,31 @@ void initTxGPS()
     if (strcmp(nav5_status, "OK") != 0 && strcmp(nav5_status, "OK/valset") != 0)
       Serial.println("TX GPS: !! dynModel NOT confirmed — module may still be in Portable, "
                      "which permits 310 m/s / 50 m/s solutions. Run ?gpscfg.");
+
+    // ============================================================
+    // V2.5-Evo - 2026-10-27 - NMEA OUTPUT, KEYED TO THE SYMPTOM (ported from the receiver, whose
+    // audit of 2026-10-27 graded the format-keyed version MEDIUM).
+    //
+    // The remote never wrote the output-protocol configuration, so a module left UBX-only by a
+    // flight controller gave it no GPS on every boot. Now, LAST, after every write above has been
+    // answered:
+    //   - the listen heard UBX but no NMEA (the symptom) and the module answers config messages:
+    //     gpsEnableNmeaOut() in whichever form it answers (old form: CFG-PRT at the proven baud
+    //     first, ACK-checked; then GGA/RMC; then the CFG-VALSET NMEA-out writes);
+    //   - a module whose NMEA was heard is NOT touched, whatever form it answers, so the BN-220 and
+    //     M100 Mini boots send nothing new (the receiver also writes these to every CFG-VALSET module
+    //     on every boot; the remote never did, and does not start now);
+    //   - a MUTE module with the symptom is skipped: nothing sent to it could be checked. The log
+    //     says so instead of promising a repair.
+    // heard_proto is the last listen's answer, the rescan's if a lost baud move needed one.
+    // ============================================================
+    const bool ubx_only = !(heard_proto & GPS_SAW_NMEA);
+    if (dialect != UBX_DIALECT_MUTE && ubx_only)
+      gpsEnableNmeaOut(dialect);        // RAM|BBR
+    else if (ubx_only)
+      Serial.println("TX GPS: !! NMEA output NOT switched back on: the module answered no config "
+                     "message, so nothing sent to it could be checked. Run ?gpsbaud; u-center can "
+                     "switch NMEA output back on.");
   }
 }
 
@@ -1321,8 +1661,20 @@ void initTxGPS()
 // Polls in whichever dialect answers:
 //   legacy  UBX-CFG-NAV5  (0x06 0x24) -> dynModel is byte 2 of the payload
 //   modern  UBX-CFG-VALGET(0x06 0x8B) -> CFG-NAVSPG-DYNMODEL, value after the 4-byte key
+// V2.5-Evo - 2026-10-27 - and two more, as on the receiver:
+//   UBX-CFG-RATE (0x06 0x08, empty payload) -> measRate in ms, on a module that answered the
+//                old-form poll; CFG-VALGET CFG-RATE-MEAS (key echo checked) on one that answered
+//                VALGET. Not polled when neither dynModel poll was answered.
+//   UBX-MON-VER  (0x0A 0x04) -> swVersion, hwVersion and the extension strings, so the remote says
+//                which silicon is fitted. The dialect does NOT say that: the M100 Mini, an M10,
+//                answers the old form.
+// ABORT: 'quit' is checked before each new poll begins, never between a request and its reply
+// (ubxPoll() writes and reads inside one call), so nothing is left half-asked. Nothing is
+// transmitted on the way out, and nothing here changes the baud or the module's settings.
 //
-// ⚠️ WARNING: blocks the main loop for up to ~3 s. Bench use only. Type 'quit' to abort.
+// ⚠️ WARNING: blocks the main loop for up to ~6 s (V2.5-Evo - 2026-10-27 - was ~3 s: four 1.5 s
+// polls can go unanswered - legacy NAV5, VALGET dynModel, VALGET rate, MON-VER; a healthy module
+// answers each in milliseconds). Bench use only. Type 'quit' to abort.
 //
 // V2.5-Evo - 2026-07-30 - the earlier version of this warning said the block "stalls the
 // 10 Hz LoRa TX cycle, which will trip the RX failsafe". That is WRONG and was corrected in
@@ -1469,6 +1821,40 @@ static uint16_t ubxPoll(const byte *req, size_t reqLen,
   return 0;
 }
 
+// ------------------------------------------------------------
+// gpsValgetOk - is this a GENUINE CFG-VALGET response for the key we asked for?
+// V2.5-Evo - 2026-10-27 - ported from the receiver (RX-POLL-1) for ?gpscfg's rate readback. The
+// checksum in ubxPoll() proves the frame is intact; this proves it is the answer to OUR question: a
+// CFG-VALGET response carries version | layer | position(2) | key(4) | value(...), so the key we
+// sent must come back at bytes 4-7. Inputs: payload, its length, the key asked for. Output: true =
+// the key echoes. No side effects.
+// ------------------------------------------------------------
+static bool gpsValgetOk(const byte *pl, uint16_t n, uint32_t key)
+{
+  if (n < 9) return false;
+  return pl[4] == (byte)( key        & 0xFF)
+      && pl[5] == (byte)((key >>  8) & 0xFF)
+      && pl[6] == (byte)((key >> 16) & 0xFF)
+      && pl[7] == (byte)((key >> 24) & 0xFF);
+}
+
+// ------------------------------------------------------------
+// gpsHwGenName - UBX-MON-VER hwVersion (8 ASCII characters) -> u-blox generation, for ?gpscfg's
+// silicon line. V2.5-Evo - 2026-10-27 - ported from the receiver. Only the published generation codes
+// are named (00080000 = M8, 00190000 = M9 and F9, 000A0000 = M10; audit 2026-10-27 §4.4); anything
+// else (a clone, or a part not listed) says so, and the version strings printed under it are the
+// evidence. Input: pointer to the 8 hwVersion characters. Output: a name. No side effects.
+// ------------------------------------------------------------
+static const char *gpsHwGenName(const byte *hw)
+{
+  if (memcmp(hw, "00040007", 8) == 0) return "u-blox 6";
+  if (memcmp(hw, "00070000", 8) == 0) return "u-blox 7";
+  if (memcmp(hw, "00080000", 8) == 0) return "u-blox M8";
+  if (memcmp(hw, "00190000", 8) == 0) return "u-blox M9 (the F9 parts report the same)";
+  if (memcmp(hw, "000A0000", 8) == 0) return "u-blox M10";
+  return "not a generation this firmware knows - read the strings below";
+}
+
 void cmdGpsCfg(const String &args)
 {
   (void)args;   // no arguments — signature matches the command-table dispatcher
@@ -1482,18 +1868,26 @@ void cmdGpsCfg(const String &args)
   }
 
   byte pl[64];
+  // V2.5-Evo - 2026-10-27 - which poll answered, so the rate readback below asks in the same form,
+  // and whether the operator typed 'quit' (checked before each new poll, never mid-poll).
+  uint8_t cfg_dialect = UBX_DIALECT_MUTE;
+  bool    aborted     = false;
 
-  // --- Try the legacy poll first (u-blox 6/7/8). ---
+  // --- Try the legacy poll first (the old UBX-CFG form). ---
   static const byte pollNav5[] = { 0xB5,0x62,0x06,0x24,0x00,0x00,0x2A,0x84 };
   uint16_t n = ubxPoll(pollNav5, sizeof(pollNav5), 0x06, 0x24, pl, sizeof(pl));
 
   if (n >= 3) {
-    Serial.println("  dialect  : legacy UBX-CFG (u-blox 6/7/8)");
+    cfg_dialect = UBX_DIALECT_LEGACY;
+    // V2.5-Evo - 2026-10-27 - names the format, not the chip (was "(u-blox 6/7/8)"): the M100 Mini,
+    // an M10, answers the old form. The silicon line further down names the chip.
+    Serial.println("  dialect  : legacy UBX-CFG form (the format it answers; see silicon below)");
     Serial.printf("  dynModel : %u  (%s)%s\n", pl[2], dynModelName(pl[2]), dynModelVerdict(pl[2]));
     Serial.printf("  fixMode  : %u  (1=2D 2=3D 3=auto)\n", pl[3]);
   } else if (checkSerialQuit()) {
     // The legacy poll already cost 1.5 s; let the operator skip the second one.
     Serial.println("  aborted after the legacy poll (no reply).");
+    aborted = true;
   } else {
     // --- No legacy answer. Try the modern configuration interface (M9/M10). ---
     byte pollDyn[16];
@@ -1501,6 +1895,7 @@ void cmdGpsCfg(const String &args)
     n = ubxPoll(pollDyn, sizeof(pollDyn), 0x06, 0x8B, pl, sizeof(pl));
 
     if (n >= 9) {
+      cfg_dialect = UBX_DIALECT_VALSET;
       // Response payload: version | layer | position(2) | key(4) | value(...)
       Serial.println("  dialect  : CFG-VALSET/VALGET (u-blox M9/M10)");
       Serial.printf("  dynModel : %u  (%s)%s\n", pl[8], dynModelName(pl[8]), dynModelVerdict(pl[8]));
@@ -1513,13 +1908,93 @@ void cmdGpsCfg(const String &args)
     }
   }
 
+  // ============================================================
+  // V2.5-Evo - 2026-10-27 - RATE READBACK (ported from the receiver).
+  //
+  // The rate is written ACK-checked at boot, but an ACK cannot catch a setting a later write or a
+  // warm restart undid, so it is read back like dynModel: the old-form CFG-RATE poll (empty payload)
+  // on a module that answered the old-form NAV5 poll, CFG-VALGET CFG-RATE-MEAS (key echo checked)
+  // on one that answered VALGET. A module that answered neither is not asked: that would only add a
+  // 1.5 s wait to a report that has already said the module answers no config poll.
+  // "setting matches": this is the module's SETTING, not the rate it achieves. An M10 accepts a rate
+  // its constellations cannot keep up with (u-blox rates GPS+Galileo+BeiDou B1I at 3 Hz). On the
+  // remote, ?gpsraw for a few seconds shows how many GGA lines arrive per second.
+  // ============================================================
+  const uint16_t rate_want = gpsSelectedMeasMs();
+  if (!aborted && cfg_dialect != UBX_DIALECT_MUTE && checkSerialQuit()) {
+    Serial.println("  aborted before the rate poll.");
+    aborted = true;
+  }
+  if (!aborted) {
+    uint16_t rate_got  = 0;
+    bool     rate_read = false;
+    if (cfg_dialect == UBX_DIALECT_LEGACY) {
+      byte pollRate[8] = { 0xB5,0x62,0x06,0x08,0x00,0x00,0x00,0x00 };   // UBX-CFG-RATE poll
+      ubxAppendChecksum(pollRate, sizeof(pollRate));
+      n = ubxPoll(pollRate, sizeof(pollRate), 0x06, 0x08, pl, sizeof(pl));
+      if (n >= 6) { rate_got = (uint16_t)(pl[0] | (pl[1] << 8)); rate_read = true; }   // measRate U2
+    } else if (cfg_dialect == UBX_DIALECT_VALSET) {
+      byte pollRateV[16];
+      gpsBuildValget(pollRateV, KEY_RATE_MEAS);
+      n = ubxPoll(pollRateV, sizeof(pollRateV), 0x06, 0x8B, pl, sizeof(pl));
+      // version | layer | position(2) | key(4) | value U2
+      if (n >= 10 && gpsValgetOk(pl, n, KEY_RATE_MEAS)) {
+        rate_got  = (uint16_t)(pl[8] | (pl[9] << 8));
+        rate_read = true;
+      }
+    }
+    if (rate_read)
+      Serial.printf("  rate     : %u ms (%.1f Hz)%s %u ms asked for (achieved rate: ?gpsraw)\n",
+                    (unsigned)rate_got,
+                    rate_got ? 1000.0f / (float)rate_got : 0.0f,
+                    rate_got == rate_want ? "  <-- setting matches the" : "  <-- setting is NOT the",
+                    (unsigned)rate_want);
+    else if (cfg_dialect == UBX_DIALECT_MUTE)
+      Serial.println("  rate     : not read (the module answered no config poll above)");
+    else
+      Serial.println("  rate     : NO REPLY");
+  }
+
+  // ============================================================
+  // V2.5-Evo - 2026-10-27 - UBX-MON-VER: WHICH SILICON (ported from the receiver).
+  //
+  // The dialect lines above cannot say it. MON-VER does: payload is swVersion char[30] | hwVersion
+  // char[10] | then extension strings of char[30] each (firmware, protocol version, module name,
+  // GNSS list). Polled here, on a port that has been open and quiet, never right after a reopen
+  // (GPS-BAUD-5: a MON-VER probe straight after Serial1.end()/begin() gave false "dead" verdicts).
+  // The buffer is static (BSS, not the loop task's stack) and sized for 12 extensions; a longer reply
+  // is not accepted by ubxPoll() and reads NO REPLY rather than being cut. The %.10s / %.30s limits
+  // keep the prints inside the fields, which carry no terminating zero when full.
+  // ============================================================
+  if (!aborted && checkSerialQuit()) {
+    Serial.println("  aborted before the MON-VER poll.");
+    aborted = true;
+  }
+  if (!aborted) {
+    static byte ver[40 + 30 * 12];
+    byte pollVer[8] = { 0xB5,0x62,0x0A,0x04,0x00,0x00,0x00,0x00 };   // UBX-MON-VER poll
+    ubxAppendChecksum(pollVer, sizeof(pollVer));
+    const uint16_t vn = ubxPoll(pollVer, sizeof(pollVer), 0x0A, 0x04, ver, sizeof(ver));
+    if (vn >= 40) {
+      Serial.printf("  silicon  : %s  (MON-VER hwVersion %.10s)\n", gpsHwGenName(&ver[30]),
+                    (const char *)&ver[30]);
+      Serial.printf("  sw       : %.30s\n", (const char *)ver);
+      for (uint16_t i = 40; i + 30 <= vn; i += 30)
+        Serial.printf("  ext      : %.30s\n", (const char *)&ver[i]);
+    } else {
+      Serial.println("  silicon  : NO REPLY to UBX-MON-VER (silent module, its UART receiver");
+      Serial.println("             disabled, or a clone that does not implement MON-VER)");
+    }
+  }
+
   Serial.printf("  chip_type: %u (0=BN-220 2=M10, from usrConf)\n", usrConf.gps_chip_type);
   // V2.5-Evo - 2026-08-18 - GPS-DYN-TX. Was hard-coded "Expect dynModel=5 (Sea)", which told an
   // Automotive-configured owner to expect the one value the firmware was no longer sending.
-  Serial.printf("  Expect dynModel=%u (%s), per gps_dyn_model. Anything else means initTxGPS()\n",
-                gpsSelectedDynModel(), gpsDynModelName(gpsSelectedDynModel()));
-  Serial.println("  did not stick; Portable (0) permits 310 m/s / 50 m/s solutions and must");
-  Serial.println("  not go afloat.");
+  // V2.5-Evo - 2026-10-27 - and the rate, per gps_chip_type (gpsSelectedMeasMs()).
+  Serial.printf("  Expect dynModel=%u (%s) and rate=%ums, per gps_dyn_model and gps_chip_type.\n",
+                gpsSelectedDynModel(), gpsDynModelName(gpsSelectedDynModel()), (unsigned)rate_want);
+  Serial.println("  Anything else means initTxGPS() did not stick; Portable (0) permits");
+  Serial.println("  310 m/s / 50 m/s solutions and must not go afloat.");
   Serial.println("-------------------------------------------------------");
 }
 
@@ -1535,6 +2010,9 @@ void cmdGpsCfg(const String &args)
 //                        Pair with ?gpsraw to eyeball the output before committing.
 //   ?gpsbaud set <rate>  move the MODULE and ask it to save the setting to its own
 //                        survives a power cycle.
+//                        V2.5-Evo - 2026-10-27 - NO LONGER SAVED HERE: the move is RAM|BBR, with
+//                        no Flash layer (see ubxValset()), and three results (OK / STAYED / LOST,
+//                        see gpsSetModuleBaud()). ?gpssetup's step 5 asks the module to save.
 //
 // WHY THE BAUD IS STORED IN THE MODULE AND NOT IN usrConf: adding a field to confStruct
 // would push sizeof past its pinned 136 bytes and force a SW_VERSION bump, which RESETS the
@@ -1584,13 +2062,18 @@ void cmdGpsBaud(const String &args)
     // the baud that answered, because transmitting at a wrong baud is what disabled the
     // module's receiver on 2026-07-30.
     Serial.println("----- GPS baud scan (listen-only) -----");
-    Serial.println("  baud     NMEA");
+    // V2.5-Evo - 2026-10-27 - the UBX column is back, backed by a bit that is really set now:
+    // gpsProbeAt() recognises an unsolicited, checksum-valid UBX frame (nothing is transmitted to earn
+    // it). Without it a UBX-only module would be "found" with "-" under NMEA and nothing saying why.
+    Serial.println("  baud     NMEA  UBX");
     uint32_t found = 0;
+    uint8_t  found_proto = 0;
     for (uint8_t i = 0; i < kGpsBaudCount; i++) {
       uint8_t s = gpsProbeAt(kGpsBauds[i], 1100);
-      Serial.printf("  %-7lu  %s\n", (unsigned long)kGpsBauds[i],
-                    (s & GPS_SAW_NMEA) ? "yes" : "-");
-      if (s && !found) { found = kGpsBauds[i]; break; }   // stop; no need to poke the rest
+      Serial.printf("  %-7lu  %-4s  %s\n", (unsigned long)kGpsBauds[i],
+                    (s & GPS_SAW_NMEA) ? "yes" : "-",
+                    (s & GPS_SAW_UBX)  ? "yes" : "-");
+      if (s && !found) { found = kGpsBauds[i]; found_proto = s; break; }   // stop; no need to poke the rest
 
       // Abort between probes, matching ?gpsraw / ?printrssi. Checked HERE rather than inside
       // gpsProbeAt() because that helper also runs during boot, where reading Serial would
@@ -1605,7 +2088,9 @@ void cmdGpsBaud(const String &args)
 
     if (found) {
       gpsOpenAt(found);                    // park the UART where the module actually is
-      Serial.printf("  -> NMEA at %lu; Serial1 left open there.\n", (unsigned long)found);
+      // V2.5-Evo - 2026-10-27 - names what was heard (was "-> NMEA at"): a UBX-only module is found too.
+      Serial.printf("  -> heard %s at %lu; Serial1 left open there.\n", gpsProtoName(found_proto),
+                    (unsigned long)found);
 
       // Now — and only now, at a CONFIRMED baud — it is safe to transmit. This is what
       // distinguishes a healthy module from one whose receiver u-blox has disabled after too
@@ -1617,7 +2102,7 @@ void cmdGpsBaud(const String &args)
       uint8_t d = gpsDetectDialect();
       bool ubx = (d != UBX_DIALECT_MUTE);
       Serial.printf("  -> UBX input: %s\n",
-                    d == UBX_DIALECT_LEGACY ? "alive — legacy UBX-CFG (u-blox 6/7/8)"
+                    d == UBX_DIALECT_LEGACY ? "alive — legacy UBX-CFG form"   // the format, not the chip (V2.5-Evo - 2026-10-27)
                   : d == UBX_DIALECT_VALSET ? "alive — CFG-VALSET (u-blox M9/M10)"
                                             : "DEAD — module is NOT accepting UBX");
       if (!ubx) {
@@ -1636,6 +2121,20 @@ void cmdGpsBaud(const String &args)
         Serial.printf("     Run '?gpssetup' to move it to %lu and make it permanent.\n",
                       (unsigned long)GPS_BAUD_PREFERRED);
       }
+      // V2.5-Evo - 2026-10-27 - a UBX-only module: this command only LOOKS, so it names the repair
+      // rather than performing one. Boot and ?gpssetup switch NMEA output back on, but only on a
+      // module that answers config messages.
+      if (!(found_proto & GPS_SAW_NMEA)) {
+        Serial.println("     UBX frames but no NMEA: a flight controller left this module in");
+        if (!ubx) {
+          Serial.println("     UBX-only mode, and it answers no config message, so neither boot");
+          Serial.println("     nor ?gpssetup can switch NMEA output back on. Power-cycle it (above)");
+          Serial.println("     and reboot; if it still answers nothing, it needs u-center.");
+        } else {
+          Serial.println("     UBX-only mode. Reboot (initTxGPS() switches NMEA output back on)");
+          Serial.println("     or run ?gpssetup, which does the same and asks the module to save it.");
+        }
+      }
     } else {
       // The scan above walked the whole list, so the port is sitting on the LAST baud tried.
       // Put it back somewhere sane before returning — otherwise a scan that finds nothing
@@ -1644,7 +2143,7 @@ void cmdGpsBaud(const String &args)
       gpsOpenAt(GPS_BAUD_PREFERRED);
       // V2.5-Evo - 2026-10-23 - GPS-PIN-1: the "TX/RX are not swapped" advice is gone - the pin check handles the
       // orientation. The hint now reports what that check saw.
-      Serial.println("  -> NOTHING answered at any baud. ?gpsraw shows raw bytes.");
+      Serial.println("  -> NOTHING answered at any baud, in NMEA or UBX. ?gpsraw shows raw bytes.");   // V2.5-Evo - 2026-10-27 - "in NMEA or UBX"
       gpsPrintNoNmeaHint("     ");
       Serial.printf("     Serial1 restored to %lu.\n", (unsigned long)GPS_BAUD_PREFERRED);
     }
@@ -1660,7 +2159,7 @@ void cmdGpsBaud(const String &args)
   if (rate < 4800 || rate > 921600) {
     Serial.println("Usage: ?gpsbaud            scan every baud (read-only)");
     Serial.println("       ?gpsbaud <rate>     move OUR uart only (reverts on reboot)");
-    Serial.println("       ?gpsbaud set <rate> move the MODULE and ask it to save that permanently");
+    Serial.println("       ?gpsbaud set <rate> move the MODULE (RAM + battery-backed; ?gpssetup saves)");   // V2.5-Evo - 2026-10-27 - no Flash layer
     return;
   }
 
@@ -1677,7 +2176,7 @@ void cmdGpsBaud(const String &args)
       delay(250);                       // settle after the reopen before polling
       uint8_t d = gpsDetectDialect();
       Serial.printf("  UBX input: %s\n",
-                    d == UBX_DIALECT_LEGACY ? "alive — legacy UBX-CFG (u-blox 6/7/8)"
+                    d == UBX_DIALECT_LEGACY ? "alive — legacy UBX-CFG form"   // the format, not the chip (V2.5-Evo - 2026-10-27)
                   : d == UBX_DIALECT_VALSET ? "alive — CFG-VALSET (u-blox M9/M10)"
                                             : "DEAD — module is NOT accepting UBX");
     }
@@ -1727,26 +2226,40 @@ void cmdGpsBaud(const String &args)
 
   uint8_t dialect = gpsDetectDialect();
   Serial.printf("  dialect: %s\n",
-                dialect == UBX_DIALECT_LEGACY ? "legacy UBX-CFG (u-blox 6/7/8)"
+                dialect == UBX_DIALECT_LEGACY ? "legacy UBX-CFG form"   // the format, not the chip (V2.5-Evo - 2026-10-27)
               : dialect == UBX_DIALECT_VALSET ? "CFG-VALSET (u-blox M9/M10)"
                                               : "unknown - module answers no config poll");
 
   // An unknown dialect is still worth attempting: try the modern form, then the legacy one.
-  bool ok = (dialect == UBX_DIALECT_LEGACY)
-              ? gpsSetModuleBaud(UBX_DIALECT_LEGACY, cur, rate, true)
-              : gpsSetModuleBaud(UBX_DIALECT_VALSET, cur, rate, true);
-  if (!ok && dialect == UBX_DIALECT_MUTE)
-    ok = gpsSetModuleBaud(UBX_DIALECT_LEGACY, cur, rate, true);
+  // V2.5-Evo - 2026-10-27 - THREE RESULTS, NO FLASH LAYER (see gpsSetModuleBaud()). The second form is
+  // tried only after STAYED, i.e. only when the module has just been heard again at cur, so it goes
+  // out at a proven baud: after an old-form move that is the one CFG-VALSET retry boot also makes,
+  // on an unknown dialect it is the old form after CFG-VALSET (as before). Never after LOST: nothing
+  // is proven there, so nothing more is sent. This used to retry on any failure and to say the baud
+  // had been written to the module's flash.
+  uint8_t mv = (dialect == UBX_DIALECT_LEGACY)
+                 ? gpsSetModuleBaud(UBX_DIALECT_LEGACY, cur, rate)
+                 : gpsSetModuleBaud(UBX_DIALECT_VALSET, cur, rate);
+  if (mv == GPS_MOVE_STAYED && dialect != UBX_DIALECT_VALSET)
+    mv = gpsSetModuleBaud(dialect == UBX_DIALECT_LEGACY ? UBX_DIALECT_VALSET : UBX_DIALECT_LEGACY, cur, rate);
 
-  if (ok) {
-    Serial.printf("  OK — module is now at %lu and it was written to the module's own\n",
+  if (mv == GPS_MOVE_OK) {
+    Serial.printf("  OK — module is now at %lu (its live settings, plus battery-backed memory\n",
                   (unsigned long)rate);
-    Serial.println("  flash, so it survives a power cycle and a battery pull.");
+    Serial.println("  on a CFG-VALSET module; the Flash layer is never asked for). To keep it");
+    Serial.println("  across a power cycle run ?gpssetup, which asks the module to save its settings");
+    Serial.println("  (permanent only on a module with its own flash; the HGLRC M100s have none).");
     Serial.println("  Reboot the TX so initTxGPS() runs cleanly at the new speed, then ?gpscfg.");
-  } else {
-    Serial.printf("  FAILED — nothing answered at %lu afterwards; reverted to %lu.\n",
+  } else if (mv == GPS_MOVE_STAYED) {
+    Serial.printf("  FAILED — not heard at %lu afterwards; heard again at %lu, so the module\n",
                   (unsigned long)rate, (unsigned long)cur);
-    Serial.println("  The module kept its old baud, so the GPS is no worse off than before.");
+    Serial.printf("  kept its old baud and the GPS is no worse off. Serial1 is left at %lu.\n",
+                  (unsigned long)cur);
+  } else if (mv == GPS_MOVE_LOST) {
+    Serial.printf("  LOST — heard at neither %lu nor %lu afterwards. Nothing more was sent.\n",
+                  (unsigned long)rate, (unsigned long)cur);
+    Serial.println("  Run ?gpsbaud to find it (it leaves the port where the module answers), or");
+    Serial.println("  power-cycle the remote and its GPS, then ?gpsreinit.");
   }
 }
 
@@ -1766,6 +2279,12 @@ void cmdGpsBaud(const String &args)
 // It finds the module wherever it is, moves it to 115200, applies every setting with the ACK
 // checked, writes the lot to the MODULE's own non-volatile memory, then reads it back to
 // prove it. After that, boot only has to VERIFY rather than reconfigure.
+// V2.5-Evo - 2026-10-27 - corrected: steps 3 and 4 write RAM and battery-backed memory, like boot (no
+// Flash layer, see ubxValset()); step 5 asks the module to save, which is permanent only where it
+// has flash (the HGLRC M100s have none). And boot does not merely verify: initTxGPS() re-applies
+// every setting on every boot, so a module that lost them is put right at the next power-up.
+// Step 3 now has three results (OK / STAYED / LOST, see gpsSetModuleBaud()); a module heard in UBX
+// only gets its NMEA output switched back on in step 4 (gpsEnableNmeaOut()).
 //
 // Deliberately NOT stored in usrConf: adding a field would push sizeof(confStruct) past its
 // pinned 136 bytes, forcing a SW_VERSION bump, which RESETS the TX SPIFFS config — pairing,
@@ -1773,6 +2292,10 @@ void cmdGpsBaud(const String &args)
 // there, costs nothing, and follows the module if it is moved to another remote.
 //
 // ⚠️ Blocks the main loop for up to ~15 s. Bench only, USB only. 'quit' aborts between steps.
+// V2.5-Evo - 2026-10-27 - ~15 s is the usual time; with every listen and poll running to its timeout
+// the worst case is about 40 s (scan ~6 s, dialect ~3 s, move with retry and re-check ~8 s, writes
+// and the NMEA repair ~7 s each at 9600, save ~2 s, readback ~6 s). A module that answers promptly
+// takes a few seconds.
 // ============================================================
 void cmdGpsSetup(const String &args)
 {
@@ -1781,21 +2304,29 @@ void cmdGpsSetup(const String &args)
 
   // --- 1. Find the module ---
   Serial.println("[1/6] locating module...");
-  uint32_t cur = gpsDetectBaud(1100, GPS_BAUD_PREFERRED);
+  // V2.5-Evo - 2026-10-27 - cur_proto: what the listen heard (NMEA / UBX), so step 4 can repair a
+  // module heard in UBX only.
+  uint8_t  cur_proto = 0;
+  uint32_t cur = gpsDetectBaud(1100, GPS_BAUD_PREFERRED, &cur_proto);
   if (!cur) {
     // V2.5-Evo - 2026-10-23 - GPS-PIN-1: the "TX/RX are not swapped" advice is gone - the pin check handles the
     // orientation. The hint now reports what that check saw.
-    Serial.println("  FAILED: nothing answered at any baud.");
+    Serial.println("  FAILED: nothing answered at any baud, in NMEA or UBX.");   // V2.5-Evo - 2026-10-27 - "in NMEA or UBX"
     gpsPrintNoNmeaHint("  ");
     Serial.printf("  Serial1 restored to %lu.\n", (unsigned long)GPS_BAUD_PREFERRED);
     return;
   }
-  Serial.printf("  found at %lu baud\n", (unsigned long)cur);
+  Serial.printf("  found at %lu baud (%s)\n", (unsigned long)cur, gpsProtoName(cur_proto));
+  if (!(cur_proto & GPS_SAW_NMEA)) {
+    gpsReportUbxOnly(cur);
+    Serial.println("TX GPS: !! step [4/6] switches NMEA output back on if the module answers config");
+    Serial.println("TX GPS: !! messages (see [2/6]); step [5/6] asks the module to save it.");
+  }
 
   // --- 2. Which dialect? ---
   uint8_t dialect = gpsDetectDialect();
   Serial.printf("[2/6] dialect: %s\n",
-                dialect == UBX_DIALECT_LEGACY ? "legacy UBX-CFG (u-blox 6/7/8)"
+                dialect == UBX_DIALECT_LEGACY ? "legacy UBX-CFG form"   // the format, not the chip (V2.5-Evo - 2026-10-27)
               : dialect == UBX_DIALECT_VALSET ? "CFG-VALSET (u-blox M9/M10)"
                                               : "UNKNOWN - answers no config poll");
   if (dialect == UBX_DIALECT_MUTE) {
@@ -1806,25 +2337,50 @@ void cmdGpsSetup(const String &args)
   if (checkSerialQuit()) { Serial.println("  aborted before any write."); return; }
 
   // --- 3. Raise the baud, if needed ---
+  // V2.5-Evo - 2026-10-27 - THREE RESULTS, NO FLASH LAYER (see gpsSetModuleBaud()). STAYED: the module
+  // is proven at the old baud; an old-form move is tried once more in CFG-VALSET there (the retry
+  // boot makes), then the steps below write at whatever baud is proven. LOST: heard at neither baud,
+  // so no baud is left that it is proven on - the command STOPS and sends nothing more. After a move
+  // that lands, a dialect re-check that answers nothing stops the command the way step [2/6] does.
   Serial.printf("[3/6] baud: ");
   if (cur == GPS_BAUD_PREFERRED) {
     Serial.printf("already %lu\n", (unsigned long)GPS_BAUD_PREFERRED);
   } else {
-    Serial.printf("%lu -> %lu ... ", (unsigned long)cur, (unsigned long)GPS_BAUD_PREFERRED);
-    if (gpsSetModuleBaud(dialect, cur, GPS_BAUD_PREFERRED, true)) {
+    Serial.printf("%lu -> %lu (%s) ... ", (unsigned long)cur, (unsigned long)GPS_BAUD_PREFERRED,
+                  dialect == UBX_DIALECT_VALSET ? "CFG-VALSET" : "CFG-PRT");
+    uint8_t mv = gpsSetModuleBaud(dialect, cur, GPS_BAUD_PREFERRED);
+    if (mv == GPS_MOVE_STAYED && dialect == UBX_DIALECT_LEGACY) {
+      Serial.printf("not taken, heard again at %lu; trying once in CFG-VALSET ... ", (unsigned long)cur);
+      mv = gpsSetModuleBaud(UBX_DIALECT_VALSET, cur, GPS_BAUD_PREFERRED);
+    }
+    if (mv == GPS_MOVE_OK) {
       Serial.println("OK");
       cur = GPS_BAUD_PREFERRED;
       // The dialect probe is cheap and the link just changed underneath us; re-confirm.
       dialect = gpsDetectDialect();
-    } else {
-      Serial.printf("FAILED (still at %lu)\n", (unsigned long)cur);
+      if (dialect == UBX_DIALECT_MUTE) {
+        Serial.println("  dialect at the new baud: UNKNOWN - answers no config poll");
+        Serial.println("  Nothing can be verified, so nothing will be written. Refusing to write");
+        Serial.println("  blind. Power-cycle the remote and its GPS, then run ?gpssetup again.");
+        Serial.println("  NMEA output was not switched back on.");
+        return;
+      }
+    } else if (mv == GPS_MOVE_STAYED) {
+      Serial.printf("FAILED, heard again at %lu and staying there\n", (unsigned long)cur);
       Serial.println("  Continuing at the old baud — a slow link is better than none, but");
       Serial.println("  10 Hz will drop sentences. See the warning at the end.");
+    } else if (mv == GPS_MOVE_LOST) {
+      Serial.println("LOST");
+      Serial.println("  The module was heard at neither baud after the move, so nothing more is");
+      Serial.println("  sent. Run ?gpsbaud to find it (it leaves the port where the module");
+      Serial.println("  answers), or power-cycle the remote and its GPS, then run ?gpssetup again.");
+      return;
     }
   }
 
-  // --- 4. Apply everything, persisted ---
-  Serial.println("[4/6] applying config (persisted)...");
+  // --- 4. Apply everything (RAM + battery-backed; step 5 saves) ---
+  // V2.5-Evo - 2026-10-27 - was "(persisted)": the writes no longer ask for the Flash layer.
+  Serial.println("[4/6] applying config (RAM + battery-backed; step [5/6] saves it)...");
   // V2.5-Evo - 2026-08-18 - GPS-DYN-TX. Second copy of the pre-checksummed Sea literal, now
   // built from usrConf.gps_dyn_model like the boot path. ?gpssetup writes to the module's OWN
   // non-volatile memory, so a hard-coded Sea here would have persisted the wrong model into the
@@ -1840,16 +2396,18 @@ void cmdGpsSetup(const String &args)
 
   // Same ordering rule as boot: dynModel first (it is the setting that must not be missed),
   // then silence the NMEA chatter, then the rate once the link is quiet.
+  // V2.5-Evo - 2026-10-27 - the trailing persist=true is gone from all five calls (no Flash layer).
   const char *s_nav5 = gpsApplyCfg(dialect, setNav5Sea, sizeof(setNav5Sea),
-                                   KEY_NAVSPG_DYNMODEL, &dyn_valset, 1, true);
+                                   KEY_NAVSPG_DYNMODEL, &dyn_valset, 1);
   const char *s_gsv  = gpsApplyCfg(dialect, disableGSV, sizeof(disableGSV),
-                                   KEY_MSGOUT_NMEA_GSV_U1, &off, 1, true);
+                                   KEY_MSGOUT_NMEA_GSV_U1, &off, 1);
   const char *s_gll  = gpsApplyCfg(dialect, disableGLL, sizeof(disableGLL),
-                                   KEY_MSGOUT_NMEA_GLL_U1, &off, 1, true);
+                                   KEY_MSGOUT_NMEA_GLL_U1, &off, 1);
   const char *s_vtg  = gpsApplyCfg(dialect, disableVTG, sizeof(disableVTG),
-                                   KEY_MSGOUT_NMEA_VTG_U1, &off, 1, true);
+                                   KEY_MSGOUT_NMEA_VTG_U1, &off, 1);
 
-  const uint16_t meas_ms = (usrConf.gps_chip_type == 2) ? 100 : 200;
+  // V2.5-Evo - 2026-10-27 - gpsSelectedMeasMs() (was its own copy of the type 2 -> 100 ms rule).
+  const uint16_t meas_ms = gpsSelectedMeasMs();
   byte setRate[] = {
     0xB5, 0x62, 0x06, 0x08, 0x06, 0x00,
     (byte)(meas_ms & 0xFF), (byte)(meas_ms >> 8),
@@ -1858,10 +2416,19 @@ void cmdGpsSetup(const String &args)
   ubxAppendChecksum(setRate, sizeof(setRate));
   const byte rate_val[2] = { (byte)(meas_ms & 0xFF), (byte)(meas_ms >> 8) };
   const char *s_rate = gpsApplyCfg(dialect, setRate, sizeof(setRate),
-                                   KEY_RATE_MEAS, rate_val, 2, true);
+                                   KEY_RATE_MEAS, rate_val, 2);
 
   Serial.printf("  dynModel=%s %s | GSV %s | GLL %s | VTG %s | rate=%ums %s\n",
                 gpsDynModelName(dyn_sel), s_nav5, s_gsv, s_gll, s_vtg, meas_ms, s_rate);
+
+  // V2.5-Evo - 2026-10-27 - NMEA output, the same rule as initTxGPS(): only when step 1 heard UBX but
+  // no NMEA (the symptom), in whichever form the module answers; a module whose NMEA was heard is not
+  // touched. MUTE cannot reach this line (steps 2 and 3 stop on it); the test is kept so the rule
+  // reads the same in both places. RAM|BBR - step 5 saves it. Last, so the NMEA stream restarts only
+  // once every write above has been answered.
+  const bool ubx_only = !(cur_proto & GPS_SAW_NMEA);
+  if (dialect != UBX_DIALECT_MUTE && ubx_only)
+    gpsEnableNmeaOut(dialect);
 
   // --- 5. Commit to the module's own non-volatile memory ---
   // V2.5-Evo - 2026-07-30 - M-3: say what actually happens. CFG-CFG asks the module to save to

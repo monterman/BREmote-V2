@@ -303,7 +303,7 @@ Once `?gpsraw` shows clean sentences, the wiring is correct. Now get a satellite
 |---|---|---|---|
 | **BN-220** | 3.3V | ✅ Confirmed | Recommended for TX. Set `gps_chip_type=0` |
 | **BN-880** | **5V** | ❌ No | **The RX module** — the only one in this table with a compass, which RTM and Follow-Me need. Set `gps_chip_type=1`. Take 5 V from the VESC and put the UART header's selector on `5V`; the TX supplies 3.3 V only, so this is not a TX option. [Wiring guide →](../GPS_Wiring_BN880_RX.md) |
-| **[HGLRC M100 Micro](https://www.hglrc.com/products/hglrc-m100_mini-gps)** | 3.3–5V | ⚠️ **Untested** | M10 chip, no compass. Set `gps_chip_type=2`. 🚨 **Do not assume this works yet.** The M10 removed the legacy UBX config messages, so the TX cannot change its baud (`CFG-PRT` does not exist on M10 — see [u-blox M10 SPG 5.10 interface description](https://content.u-blox.com/sites/default/files/u-blox-M10-SPG-5.10_InterfaceDescription_UBX-21035062.pdf) §3.10). If the module does not already ship at 115200 the TX will open the UART at the wrong speed and show **no NMEA at all**. Also note 9600 cannot physically carry 10 Hz (GGA+RMC ≈ 1400 B/s ≈ 14000 baud needed) — 38400 minimum. Verify with `?gpsbaud` before trusting this row. |
+| **[HGLRC M100 Mini](https://www.hglrc.com/products/hglrc-m100_mini-gps)** | 3.3–5V | ✅ Confirmed (owner's units) | M10 chip, no compass. Set `gps_chip_type=2`. Ships at 115200 and 10 Hz with GPS + Galileo. The TX finds it by listening, configures it in whichever form it answers (the owner's units accept the old `UBX-CFG` form too; one that refuses it gets `CFG-VALSET`, including the baud move), and asks for no constellations. About 15 × 15 mm, so it fits inside the Nano remote. 9600 cannot carry 10 Hz (GGA+RMC needs ~14,200 bit/s), so a module found below 115200 is moved there at boot. |
 | [HGLRC M100 Pro](https://www.hglrc.com/products/m100-pro-gps) | 3.6–5.5V | ❌ No | Needs >3.3V — UART corrupted at ESP32-C3 3.3V supply |
 | M101Q / M10Q | 5V | ❌ No | Needs 5V — TX only provides 3.3V |
 
@@ -335,8 +335,11 @@ so boot only has to verify them rather than re-apply them:
 ```
 
 This finds the module, raises it to 115200, applies every setting with the acknowledgement
-checked, writes the result to the **module's own flash**, and reads it back to prove it.
-Run it once on the bench when you assemble a remote or swap a GPS. Takes ~15 s.
+checked, switches NMEA output back on if the module was sending UBX only, asks the module to save
+its settings, and reads them back to prove it. The save is permanent only on a module with its own
+flash (the HGLRC M100s have none); boot re-applies every setting anyway.
+Run it once on the bench when you assemble a remote or swap a GPS. Takes ~15 s (up to ~40 s when
+nothing answers promptly).
 
 > The baud is stored **in the GPS module**, not in the TX config. That is deliberate: adding a
 > field to the TX config struct would force a `SW_VERSION` bump, which **wipes TX SPIFFS** —
@@ -345,21 +348,28 @@ Run it once on the bench when you assemble a remote or swap a GPS. Takes ~15 s.
 
 ## What the firmware does at boot
 
-1. **Listens** for NMEA across 115200 / 38400 / 9600 / 57600 / 19200. It transmits nothing
-   while the baud is unknown — see the warning below for why that matters.
-2. If the module is heard below 115200, moves it up **at the module's own baud**, so the
-   command is understood rather than sprayed at a guess.
-3. Detects which configuration dialect the module speaks — legacy `UBX-CFG` (u-blox 6/7/8) or
-   `CFG-VALSET` (u-blox M9/M10) — by sending `CFG-NAV5` and reading the answer.
-4. Applies `dynModel=Sea`, silences GSV/GLL/VTG, then sets the measurement rate — **in that
-   order**, because silencing the chatter first makes every later acknowledgement arrive
-   promptly.
+1. **Listens** for NMEA — or binary UBX — across 115200 / 38400 / 9600 / 57600 / 19200. It
+   transmits nothing while the baud is unknown — see the warning below for why that matters.
+2. Detects which configuration form the module answers — the old `UBX-CFG` form, or
+   `CFG-VALSET` — by sending `CFG-NAV5` (`dynModel`) and reading the answer. That is the form,
+   not the chip: the HGLRC M100 Mini, an M10, answers the old form. `?gpscfg`'s `silicon` line
+   names the chip.
+3. If the module was heard below 115200, moves it up **at the module's own baud**, in that form,
+   and proves the move by listening at 115200. If the move does not land, it listens at the old
+   baud again; an old-form move is then tried once more with `CFG-VALSET`. If the module is heard
+   at neither baud, it looks for it again and sends nothing until it is found.
+4. Silences GSV/GLL/VTG, then sets the measurement rate (5 Hz for `gps_chip_type` 0, 10 Hz for 2)
+   — **in that order**, because silencing the chatter first makes every later acknowledgement
+   arrive promptly. No constellations are asked for: the module keeps its own set.
 5. **Checks the acknowledgement on every single write** and prints the result:
 
 ```
-TX GPS [BN-220]: heard the module at 115200 — skipping the dual-baud dance
-TX GPS config [legacy CFG (u-blox 6/7/8)]: dynModel=Sea OK | rate=200ms OK | GLL OK | GSV OK | VTG OK
+TX GPS [BN-220]: heard the module at 115200 (NMEA) — skipping the dual-baud dance
+TX GPS config [legacy CFG form]: dynModel=Sea OK | rate=200ms OK | GLL OK | GSV OK | VTG OK
 ```
+
+6. If the module was heard sending UBX but no NMEA, switches NMEA output back on (see the drone
+   module section below). A module whose NMEA was heard gets nothing more.
 
 Nothing here can block boot or disable the GPS. If a module is unfamiliar or silent, the
 settings are sent anyway and the outcome is **reported**, not enforced.
@@ -369,14 +379,14 @@ settings are sent anyway and the outcome is **reported**, not enforced.
 **Symptom.** The GPS still streams position, but every configuration write fails:
 
 ```
-TX GPS config [UNVERIFIED - module sends no ACK]: dynModel=Sea no-ACK | rate no-ACK | GLL no-ACK ...
+TX GPS config [UNVERIFIED - module sends no ACK]: dynModel=Sea no-ACK | rate=200ms no-ACK | GLL no-ACK ...
 ```
 
 and `?gpsbaud` shows the signature — **NMEA present, UBX dead**:
 
 ```
-  baud     NMEA
-  9600     yes
+  baud     NMEA  UBX
+  9600     yes   -
   -> UBX input: DEAD — module is NOT accepting UBX
 ```
 
@@ -441,12 +451,12 @@ battery-backed memory and flash — so it survives every power cycle. This firmw
 nothing else, so it sees an empty wire. **Most modules sold as an "M10 GPS" are aimed at the drone
 market**, so a brand-new one can arrive in this state too, not just a second-hand one.
 
-**Recovery on the RX — two steps, no PC tooling:**
+**Recovery — two steps, no PC tooling (the RX, and the TX since 2026-10-27):**
 
-1. Flash the **current RX firmware**.
+1. Flash the **current firmware** on the board the module is fitted to.
 2. Run **`?gpssetup`**.
 
-That is the whole procedure. The RX's listen-only baud scan now recognises a **complete,
+That is the whole procedure. The listen-only baud scan now recognises a **complete,
 checksum-valid UBX frame** as evidence of life, not just `$G…`, so a UBX-only module is detected at
 its real baud instead of being written off as "no module". Having found it, the firmware switches
 NMEA output on UART1 back on — the port's NMEA output protocol plus the GGA and RMC message rates — in
@@ -474,7 +484,8 @@ GPS: NMEA output re-enabled on UART1 — GGA and RMC are the two sentences this 
 
 That is a module that takes the old configuration form. One that refuses it has no `CFG-PRT` field
 and reads `OK/valset` throughout. On an M8 the two `-out` fields read `REJECTED`: it has no
-`CFG-VALSET`, and `CFG-PRT` has already switched NMEA back on.
+`CFG-VALSET`, and `CFG-PRT` has already switched NMEA back on. On the remote the same lines start
+`TX GPS: !!` and `TX GPS NMEA output on UART1:`.
 
 `?gpsbaud` also reports the diagnosis on its own — it prints `UBX only` in the protocol column and
 writes nothing.
@@ -489,7 +500,9 @@ writes nothing.
 - **It is reported, never enforced.** If the module refuses the writes the firmware says so — look
   for `REJECTED` in the line above — and carries on rather than failing boot. That is the one case
   left that still needs u-center on a PC.
-- This is the **RX**. The TX firmware does not yet carry the repair.
+- The **TX** carries the same repair since 2026-10-27. Unlike the RX, it writes nothing to a module
+  whose NMEA it has heard, whichever form that module answers; the RX also re-sends the
+  `CFG-VALSET` NMEA-on settings to every `CFG-VALSET` module on every boot.
 - Before this firmware, this failure was indistinguishable from dead hardware and needed u-center
   to fix. If you gave up on a module for this reason, it is probably fine — try it again.
 
@@ -497,11 +510,11 @@ writes nothing.
 
 | Command | What it does | Blocks |
 |---|---|---|
-| `?gpscfg` | Reads the settings back **out of the module** — proves what it is actually running, not what we asked for. RX: `dynModel`, the GSV filter, the update rate and the chip's version report (UBX-MON-VER). TX: `dynModel`. | RX up to ~6 s, TX ~3 s |
-| `?gpsbaud` | Listen-only scan; reports which baud has NMEA and whether UBX input is alive | ~2 s |
+| `?gpscfg` | Reads the settings back **out of the module** — proves what it is actually running, not what we asked for. RX: `dynModel`, the GSV filter, the update rate and the chip's version report (UBX-MON-VER). TX: the same without the GSV check. | up to ~6 s on both |
+| `?gpsbaud` | Listen-only scan; reports which baud has NMEA or UBX and whether UBX input is alive | ~2 s |
 | `?gpsbaud <rate>` | Moves **our UART only**, module untouched. Reverts on reboot | <1 s |
-| `?gpsbaud set <rate>` | Moves **the module** and writes it to the module's flash | ~6 s |
-| `?gpssetup` | **One-time full setup**: find, raise to 115200, configure, save permanently, verify | ~15 s |
+| `?gpsbaud set <rate>` | Moves **the module** (RAM and battery-backed memory; run `?gpssetup` to ask the module to save it) | ~3 s, up to ~14 s |
+| `?gpssetup` | **One-time full setup**: find, raise to 115200, configure, switch NMEA back on if needed, ask the module to save, verify | ~15 s, up to ~40 s |
 | `?gpsraw [sec]` | Dumps raw NMEA — use when nothing else responds | 5 s |
 | `?gpsreinit` | Re-runs GPS init without rebooting, including the G18/G19 pin check (needs `gps_en` = 1) | a few seconds (more if no module answers) |
 | `?gpscoldreset` | Clears the module's satellite cache; forces fresh acquisition | instant |
@@ -520,11 +533,11 @@ At 8N1 each byte costs 10 bits. GGA + RMC is roughly 142 bytes per fix:
 | 5 Hz | ~7,100 bit/s | ⚠️ **74 %** — no headroom, drops sentences | ✅ 6 % |
 | 10 Hz | ~14,200 bit/s | ❌ **impossible** | ✅ 12 % |
 
-The firmware warns at boot if the configured rate does not fit the link:
+The firmware warns at boot if the configured rate does not fit the link, on the baud the module is
+on after any baud move. It gives the share of the line used:
 
 ```
-TX GPS: !! 9600 baud is only 27% clear of what 5 Hz needs — sentences WILL drop.
-        Run '?gpssetup' to move the module to 115200 permanently.
+TX GPS: !! at 9600 baud, GGA+RMC alone at 5 Hz need ~73% of the line - sentences WILL drop. Run ?gpssetup to move the module to 115200.
 ```
 
 ## u-blox M10 modules (HGLRC M100 Micro and similar)
@@ -563,7 +576,7 @@ On the RX such readings feed `gpsPhaseACheck()`, which increments `gps_suspect_c
 `dynModel 5 (Sea)` constrains the filter to ~25 m/s horizontal and ~0 m/s vertical and pins altitude near the surface. Removing the vertical degree of freedom also sharpens the horizontal solution — and **course-over-ground is derived from horizontal velocity**, which is exactly what FM steers on.
 
 **Applied to:** BREmote RX (all `gps_chip_type`), BREmote TX (types 0 and 2), foilIQ WaveShare.
-**Re-sent on every boot** by `configureGPS()` / `initTxGPS()`, so it survives a backup-battery death, a module swap, or a factory reset. On the RX, `?gpssetup` writes it to RAM and battery-backed memory like boot, then asks the module to save its settings (step 5); the TX's `?gpssetup` also asks for the module's flash layer on a `CFG-VALSET` module. Either way it is permanent only on a module with its own flash, and the HGLRC M100s have none.
+**Re-sent on every boot** by `configureGPS()` / `initTxGPS()`, so it survives a backup-battery death, a module swap, or a factory reset. On both boards `?gpssetup` writes it to RAM and battery-backed memory like boot, then asks the module to save its settings (step 5); the TX's `?gpssetup` asked for the module's Flash layer on a `CFG-VALSET` module until 2026-10-27. It is permanent only on a module with its own flash, and the HGLRC M100s have none.
 
 **Payload:** u-blox defaults with only `dynModel` altered, `mask = 0x0001`.
 
@@ -617,7 +630,7 @@ The firmware checks the module's ACK on every configuration write, but an ACK on
   chip_type: 1 (0=BN-220 1=BN-880 2/3=M10)
 ```
 
-That is the RX. The `sw` and `ext` lines carry the module's own version strings, which vary by module. On the RX at most four 1.5 s polls can go unanswered, so it is bounded at about 6 s; a healthy module answers each in milliseconds. The TX's `?gpscfg` reads `dynModel` only (about 3 s). Safe on the bench. The verdict on the `dynModel` line is compared against **your `gps_dyn_model` setting**, so an Automotive board reads `dynModel : 4 <-- matches gps_dyn_model`. **`<-- FACTORY DEFAULT, the write did NOT take` or `GSV : STILL ENABLED` means the write was silently rejected** — wrong checksum, unsupported on that chip, or the module still at the old baud. Also available from the web-UI quick-commands dropdown.
+That is the RX. The `sw` and `ext` lines carry the module's own version strings, which vary by module. On the RX at most four 1.5 s polls can go unanswered, so it is bounded at about 6 s; a healthy module answers each in milliseconds. The TX's `?gpscfg` prints the same lines without the GSV one (header `----- TX GPS live config ...`, chip_type `0=BN-220 2=M10`), also bounded at about 6 s, and checks for `quit` before each poll. Safe on the bench. The verdict on the `dynModel` line is compared against **your `gps_dyn_model` setting**, so an Automotive board reads `dynModel : 4 <-- matches gps_dyn_model`. **`<-- FACTORY DEFAULT, the write did NOT take` or `GSV : STILL ENABLED` means the write was silently rejected** — wrong checksum, unsupported on that chip, or the module still at the old baud. Also available from the web-UI quick-commands dropdown.
 
 ---
 
@@ -804,12 +817,11 @@ If heading is erratic → calibrate away from motors, batteries, and metal objec
 
 ## GPS Update Rate and Bench Testing Notes
 
-The TX GPS update rate is controlled by `gps_update_hz` in TX SPIFFS (default: **2 Hz**).
-
-- **2 Hz** — recommended for normal use. Conserves bandwidth on the LoRa link.
-- **5 Hz** — recommended during RTM direction and steering tuning on a bench or in controlled water tests. Finer position updates help tune approach behavior and decel zone feel.
-
-Set via TX web config or `?set gps_update_hz 5` in the TX serial monitor. Reboot TX to apply.
+*(Corrected 2026-10-27: this section said the TX rate was set by `gps_update_hz` in TX SPIFFS. The
+TX has no such setting; `gps_update_hz` is the receiver's.)* The TX GPS module's update rate follows
+`gps_chip_type`: 5 Hz for 0 (BN-220), 10 Hz for 2 (M10, e.g. the HGLRC M100 Mini). The remote sets
+it at every boot, with the answer checked, and `?gpscfg` reads it back. Change `gps_chip_type` in the
+TX web config or with `?set gps_chip_type 2`, `?save`, then reboot the TX.
 
 ---
 

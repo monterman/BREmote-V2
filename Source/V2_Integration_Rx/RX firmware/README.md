@@ -293,8 +293,8 @@ a good run. That is why it now has its own pattern instead of blinking 2 like ev
 For everything else, serial is the diagnostic surface. Watch the boot log:
 
 ```
-GPS: heard the module at 115200 baud
-GPS config [legacy CFG (u-blox 6/7/8)]: dynModel=Sea OK | GSV OK | GLL OK | VTG OK
+GPS: heard the module at 115200 baud (NMEA)
+GPS config [legacy CFG form]: dynModel=Sea OK | GSV OK | GLL OK | VTG OK | rate=200ms OK
 ```
 
 Then confirm independently:

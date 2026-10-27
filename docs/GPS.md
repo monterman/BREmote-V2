@@ -113,12 +113,18 @@ did not change, so it caused no settings wipe of its own.
 This is the part that took the most work, and it's the reason a straightforward "just send the
 config" approach quietly fails.
 
-**u-blox M10 removed the legacy configuration messages.** Not deprecated — *removed*. Its entire
-`UBX-CFG` class is five messages: `CFG-CFG`, `CFG-RST`, `CFG-VALDEL`, `CFG-VALGET`, `CFG-VALSET`.
+**Some u-blox M9/M10 modules refuse the old configuration messages.** The M10 interface
+description documents only five `UBX-CFG` messages: `CFG-CFG`, `CFG-RST`, `CFG-VALDEL`,
+`CFG-VALGET`, `CFG-VALSET`. It also says the M10 firmware keeps *some* backwards compatibility with
+the old `UBX-CFG` messages (M10 SPG 5.10 interface description §1.3 and §4.10). So it depends on
+the module: the owner's HGLRC M100 Mini and M100-5883 accept the old messages, and other modules
+refuse them. A module that keeps some of them may accept one old message and refuse another. Which
+form a module answers does not prove which chip is inside; only the module's own version report
+(the `silicon` line of `?gpscfg`) does.
 
-The firmware was sending five messages that **do not exist on M10**:
+The firmware used to send these five old messages and nothing else:
 
-| Legacy message (u-blox 6/7/8) | Sets | On M10 |
+| Old message (the u-blox 6/7/8 form) | Sets | On a module that refuses the old form |
 |---|---|---|
 | `CFG-PRT` | UART baud rate | ❌ rejected |
 | `CFG-RATE` | measurement rate | ❌ rejected |
@@ -126,7 +132,7 @@ The firmware was sending five messages that **do not exist on M10**:
 | `CFG-NAV5` | **dynModel** | ❌ rejected |
 | `CFG-GNSS` | constellations | ❌ rejected |
 
-So on a genuine M10 the firmware applied **no rate, no NMEA filter, and no dynModel** — the
+So on such a module the firmware applied **no rate, no NMEA filter, and no dynModel** — the
 module sat in Portable, and nothing said so.
 
 ### How it's solved: the rejection *is* the detection
@@ -137,7 +143,7 @@ on u-blox 6, 7, 8, M9 and M10.
 
 So the firmware sends `CFG-NAV5` and reads the answer:
 
-- **ACK** → u-blox 6/7/8. Legacy dialect. Carry on.
+- **ACK** → the module takes the old form (an M8, or an M10 that keeps it). Carry on in the old form.
 - **NAK** → "I don't speak that." Automatically re-send the same setting via **`CFG-VALSET`**,
   the modern key/value interface.
 - **silence** → unknown module. Send blind (old behaviour), **report it**, never fail.
@@ -305,7 +311,7 @@ it was first written, on a receiver that had reported success.
 |---|---|---|
 | `?gpscfg` | Reads `dynModel` back out of the module. Works on both dialects. | ~3 s |
 | `?gpsbaud` | Listen-only baud scan + UBX-alive check | ~2–6 s |
-| `?gpssetup` | **One-time full setup**: find, raise to 115200, configure ACK-verified, save into the module, verify | ~15–20 s |
+| `?gpssetup` | **One-time full setup**: find, raise to 115200, configure ACK-verified, save into the module, verify | up to ~30 s |
 | `?gpsraw [sec]` | Raw NMEA dump — use when nothing else responds | 5 s |
 | `?gpsreinit` | Re-run GPS init without rebooting | ~2 s |
 | `?gpscoldreset` | Clear the satellite cache, force fresh acquisition | instant |
@@ -382,15 +388,19 @@ detail is in [§2](#2-bn-220bn-880-and-m10-speak-different-languages); the short
 
 - **u-blox M8** (BN-220, BN-880, BN-880Q) takes the old `UBX-CFG` messages: `CFG-NAV5`,
   `CFG-RATE`, `CFG-MSG` and the rest.
-- **u-blox M9 / M10** (Beitian BE-880, HGLRC M100 Mini, HGLRC M100-5883) removed those messages.
-  It only takes `CFG-VALSET` and `CFG-VALGET`.
+- **u-blox M9 / M10** (Beitian BE-880, HGLRC M100 Mini, HGLRC M100-5883) takes `CFG-VALSET` and
+  `CFG-VALGET`. M10 firmware also keeps some of the old messages, so some modules take both: the
+  owner's M100 Mini and M100-5883 accept the old form. Others refuse it.
 
 **You do not pick the language.** At boot the RX sends the first setting (`dynModel`) in the old
 form and waits for the answer. If the module accepts it, the RX uses the old form for the rest. If
 the module refuses it, the RX sends the same setting again with `CFG-VALSET` and uses `CFG-VALSET`
 for the rest. This happens whatever `gps_chip_type` says. It covers `dynModel`, the NMEA sentence
-filter, the update rate, moving the module to 115200 when it was heard on a slower baud, and, on an
-M9/M10, switching NMEA output back on.
+filter, the update rate, moving the module to 115200 when it was heard on a slower baud, and
+switching NMEA output back on when the module was heard sending UBX but no NMEA (a flight
+controller leaves modules that way). That repair works in either language: in the old form
+`CFG-PRT` turns NMEA output back on, and the `CFG-VALSET` writes then set GGA and RMC. A module that
+answers no setting at all cannot be repaired this way, and the boot log says so.
 
 **What `gps_chip_type` does change on the RX** is only the opening of the start-up:
 
@@ -401,11 +411,20 @@ M9/M10, switching NMEA output back on.
 
 After the opening, the RX listens until it hears the module, then asks for `dynModel` to learn the
 language. If the module is still below 115200, the RX moves it there in that language and proves the
-move by listening at the new baud. The update rate (5 Hz for 0 and 1, 10 Hz for 2 and 3) goes out
-last, in that language, and the answer is checked. The RX never asks for constellations, on any
-setting: the module keeps its own set, because turning more on can lower an M10's highest update rate.
-The boot line shows the rate and its answer, `?gpscfg` reads it back, and `?diag` shows the sentences
-per second you are really getting.
+move by listening at the new baud. If the move does not land, the RX listens at the old baud again
+to prove the module is still there; an old-form move is then tried once more with `CFG-VALSET`. If
+the module is heard at neither baud, the RX looks for it again and sends nothing until it is found.
+If it stays below 115200, the boot log warns when the rate does not fit that baud. The update rate
+(5 Hz for 0 and 1, 10 Hz for 2 and 3) goes out last, in that language, and the answer is checked.
+The RX never asks for constellations, on any setting: the module keeps its own set, because turning
+more on can lower an M10's highest update rate.
+
+The boot line shows the rate and its answer, and `?gpscfg` reads the setting back (`setting
+matches`). That is the module's **setting**, not the rate it achieves: an M10 accepts a rate its
+constellations cannot keep up with (u-blox rates GPS + Galileo + BeiDou B1I at 3 Hz). To measure
+the real rate, run `?gpsdiag` for about 10 s and note `sent=` at the start and at the end:
+Hz ≈ (change in `sent=`) ÷ seconds ÷ 2. `sent` counts the GGA and RMC sentences that carry a fix,
+two per update.
 
 **What it does not change:** the language (detected, as above) and the compass. The RX finds the
 compass by its I²C address at boot (`0x2C`, then `0x0D`, then `0x1E`), whatever the setting says.
@@ -416,17 +435,17 @@ The TX accepts 0 and 2 only.
 boot-log line that starts `GPS config [`:
 
 ```
-GPS config [legacy CFG (u-blox 6/7/8)]: dynModel=Sea OK | GSV OK | GLL OK | VTG OK | rate=200ms OK
+GPS config [legacy CFG form]: dynModel=Sea OK | GSV OK | GLL OK | VTG OK | rate=200ms OK
 GPS config [CFG-VALSET (u-blox M9/M10)]: dynModel=Sea OK/valset | GSV OK/valset | GLL OK/valset | VTG OK/valset | rate=100ms OK/valset
 ```
 
 The first means the module accepted the old form. The second means it refused the old form and took
 `CFG-VALSET`. That is the language, not the chip: some modules sold as M10 accept the old form.
-`?gpscfg` reads the live settings back by either path and prints `dialect  : legacy UBX-CFG (u-blox 6/7/8)`
+`?gpscfg` reads the live settings back by either path and prints `dialect  : legacy UBX-CFG form`
 or `dialect  : CFG-VALSET/VALGET (u-blox M9/M10)`, the rate, and a `silicon  :` line from the
 module's own version report (UBX-MON-VER): hardware `00080000` is an M8, `000A0000` an M10. The
 version strings under it name the firmware and, on most modules, the part.
-On an M9/M10 its `GSV` line reads `NO REPLY`: that
+On a module that refuses the old form its `GSV` line reads `NO REPLY`: that
 check only exists in the old form, so this is normal there.
 
 A module sold as a BE-880 can turn out to answer the old path. That has already happened on a real
@@ -437,9 +456,9 @@ build. The `silicon` line in `?gpscfg` tells you what is inside. The firmware ha
 | Beitian BN-220 | u-blox M8 | old `CFG-*` | 9600 | 3.0–5.5 V | none | 0 (also the TX setting) |
 | Beitian BN-880 | u-blox M8 | old `CFG-*` | 9600 | 3.6–5.5 V — **5 V rail** | QMC5883L, `0x0D` | 1 |
 | Beitian BN-880Q | u-blox M8 | old `CFG-*` | 9600 | 3.6–5.5 V — **5 V rail** | QMC5883 | 1 |
-| **Beitian BE-880** | u-blox M10 (M10050) per its datasheet — some units answer as M8 | `CFG-VALSET` (old `CFG-*` if M8 inside) | 115200 | 3.6–5.5 V — **5 V rail** | "QMC5883" per its datasheet; address not yet confirmed (the RX finds it either way) | **1** (3 also works) |
-| HGLRC M100 Mini | u-blox M10 | `CFG-VALSET` | 115200 | 3.3–5 V | none | 2 (also the TX setting) |
-| HGLRC M100-5883 | u-blox M10 | `CFG-VALSET` | 115200 | 3.3–5 V | QMC5883P, `0x2C` | 3 |
+| **Beitian BE-880** | u-blox M10 (M10050) per its datasheet | `CFG-VALSET`; the unit seen on one RX also accepts old `CFG-*`, which does not prove an M8 inside (`?gpscfg`'s `silicon` line does) | 115200 | 3.6–5.5 V — **5 V rail** | "QMC5883" per its datasheet; address not yet confirmed (the RX finds it either way) | **1** (3 also works) |
+| HGLRC M100 Mini | u-blox M10 | `CFG-VALSET`, and old `CFG-*` too (the owner's units) | 115200 | 3.3–5 V | none | 2 (also the TX setting) |
+| HGLRC M100-5883 | u-blox M10 | `CFG-VALSET`, and old `CFG-*` too (the owner's units) | 115200 | 3.3–5 V | QMC5883P, `0x2C` | 3 |
 
 **Why 1 for the BE-880.** It is a BN-880 in shape: same 28 × 28 mm footprint, same connector, and it
 needs the 5 V rail like the BN-880. Both 1 and 3 listen before they send and configure the module in

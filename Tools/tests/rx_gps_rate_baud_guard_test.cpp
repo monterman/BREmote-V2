@@ -21,9 +21,27 @@
 //   rate call commented out, a CFG-SIGNAL key added, ...) and each must FAIL the rule it breaks. Given a path as the
 //   first argument it checks that file instead, which is how the pre-fix GPS.ino is shown to fail.
 //   A file that cannot be read, or an anchor a red edit needs that is missing, is a FAIL, not a skip.
+// V2.5-Evo - 2026-10-27 - follow-ups from the audit of the change above:
+//     R4 NARROWED to "no constellation WRITE in configureGPS()": no CFG-SIGNAL key (a 0x1031xxxx literal, or a name
+//        bound to one anywhere in the file), no CFG-GNSS frame and no SIGNAL/GNSS-named identifier in configureGPS()
+//        or in a function it calls. A read-only constellation check elsewhere (?gpscfg) is allowed, and a green edit
+//        proves it.
+//     R7 the calls drop the persist argument (no Flash layer), and configureGPS() may call the move twice, both inside
+//        the "below 115200, not MUTE" block.
+//     R9 NMEA-on is keyed to the symptom: configureGPS() and ?gpssetup call gpsEnableNmeaOut(dialect) when the listen
+//        heard UBX but no NMEA (ubx_only) or the module answers CFG-VALSET, never on a MUTE module; on an old-form
+//        module gpsEnableNmeaOut() first sends CFG-PRT built at gps_current_baud through ubxSendAckedT(), before its
+//        four CFG-VALSET writes, and writes nothing unchecked.
+//     R10 the baud move has three results: gpsSetModuleBaud() returns GPS_MOVE_OK (heard at to_baud, 1100 ms),
+//        GPS_MOVE_STAYED (heard again at from_baud, 1100 ms) or GPS_MOVE_LOST; configureGPS() retries in CFG-VALSET
+//        only after STAYED in the old form, and on LOST rescans with gpsDetectBaud() and returns without sending if
+//        nothing answers; ?gpssetup stops on LOST without sending.
+//   Carriage returns are dropped on reading, so the checks and the red-edit anchors see the same text whichever line
+//   endings the checkout has.
 // Build and run (Git Bash, from Tools/tests, PATH and TMP as in the host-test note of the compile procedure):
 //   g++ -std=c++17 -Wall -Wextra -o rx_gps_rate_baud_guard_test rx_gps_rate_baud_guard_test.cpp && ./rx_gps_rate_baud_guard_test
 
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -219,12 +237,36 @@ static bool hexList(const std::string& init, std::vector<int>* out)
 }
 
 // Guard - one flag per rule; all true means the file keeps every rule.
-struct Guard { bool r1, r2, r3, r4, r5, r6, r7, r8; };
-static bool guardOk(const Guard& g) { return g.r1 && g.r2 && g.r3 && g.r4 && g.r5 && g.r6 && g.r7 && g.r8; }
+struct Guard { bool r1, r2, r3, r4, r5, r6, r7, r8, r9, r10; };
+static bool guardOk(const Guard& g)
+{
+  return g.r1 && g.r2 && g.r3 && g.r4 && g.r5 && g.r6 && g.r7 && g.r8 && g.r9 && g.r10;
+}
+
+// srcHasConstellationWrite - true when r holds a CFG-SIGNAL key (a 0x1031xxxx literal, or one of the names in sig,
+// which are bound to such a literal somewhere in the file), a CFG-GNSS frame (06 3E), or an identifier whose name
+// contains SIGNAL or GNSS.
+static bool srcHasConstellationWrite(const std::string& code, Range r, const std::vector<std::string>& sig)
+{
+  if (!r.ok) return false;
+  const std::string tight = srcTight(code.substr(r.b, r.e - r.b));
+  if (tight.find("0x1031") != std::string::npos || tight.find("0x06,0x3e") != std::string::npos) return true;
+  for (size_t p = r.b; p < r.e; ) {
+    if (!srcIdChar(code[p])) { p++; continue; }
+    size_t e = p;
+    while (e < r.e && srcIdChar(code[e])) e++;
+    std::string id = code.substr(p, e - p);
+    for (const std::string& s : sig) if (id == s) return true;
+    for (char& c : id) c = (char)std::toupper((unsigned char)c);
+    if (id.find("SIGNAL") != std::string::npos || id.find("GNSS") != std::string::npos) return true;
+    p = e;
+  }
+  return false;
+}
 
 static Guard guard(const std::string& text)
 {
-  Guard g = { false, false, false, false, false, false, false, false };
+  Guard g = { false, false, false, false, false, false, false, false, false, false };
   const std::string code = srcCode(text);
   const Range cfg   = srcFuncBody(code, "configureGPS");
   const Range setup = srcFuncBody(code, "cmdGpsSetup");
@@ -234,7 +276,8 @@ static Guard guard(const std::string& text)
   const Range prt   = srcFuncBody(code, "gpsBuildCfgPrt");
   if (!cfg.ok || !setup.ok || !rdbk.ok) return g;
 
-  // ---- R1: one rate call in configureGPS(), after probe, baud move and filters; ?gpssetup persisted ----
+  // ---- R1: one rate call in configureGPS(), after probe, baud move and filters; ?gpssetup makes the same call ----
+  // (2026-10-27: ?gpssetup's call lost its persist argument with the Flash layer, so the two calls now read the same.)
   {
     const std::string call = "gpsApplyCfg(dialect, setRate, sizeof(setRate), KEY_RATE_MEAS, rate_val, 2)";
     const size_t rate  = srcPos(code, cfg, call);
@@ -242,7 +285,7 @@ static Guard guard(const std::string& text)
     const size_t baud  = srcPos(code, cfg, "gpsSetModuleBaud(dialect, heard");
     const size_t vtg   = srcPos(code, cfg, "KEY_MSGOUT_NMEA_VTG_U1");
     g.r1 = srcCount(code, cfg, call) == 1 && rate != std::string::npos && probe < rate && baud < rate && vtg < rate &&
-           srcCount(code, setup, "gpsApplyCfg(dialect, setRate, sizeof(setRate), KEY_RATE_MEAS, rate_val, 2, true)") == 1;
+           srcCount(code, setup, call) == 1;
   }
 
   // ---- R2: no blind rate write anywhere ----
@@ -285,20 +328,41 @@ static Guard guard(const std::string& text)
     g.r3 = ok;
   }
 
-  // ---- R4: no constellation request ----
+  // ---- R4: no constellation WRITE in configureGPS() ----
+  // V2.5-Evo - 2026-10-27 - narrowed. This used to forbid any SIGNAL name and any 0x1031 key anywhere in the file, which
+  // would also block the read-only constellation check planned for ?gpscfg. The rule is about boot: configureGPS(),
+  // and any function it calls, must not carry a CFG-SIGNAL key or a CFG-GNSS frame.
   {
-    bool ok = true;
-    const std::string tight = srcTight(code);
-    ok = ok && tight.find("0x1031") == std::string::npos;              // CFG-SIGNAL group 0x31, L-type keys
-    ok = ok && tight.find("0x06,0x3e") == std::string::npos;           // UBX-CFG-GNSS
-    ok = ok && srcFindIdent(code, "setGNSS").empty();
-    for (size_t p = 0; p < code.size(); ) {                             // no identifier naming SIGNAL
-      if (!srcIdChar(code[p])) { p++; continue; }
+    // Names bound to a CFG-SIGNAL key anywhere in the file (NAME = 0x1031....), so a key cannot hide behind an
+    // innocent name.
+    std::vector<std::string> sig;
+    std::string low = code;
+    for (char& c : low) c = (char)std::tolower((unsigned char)c);
+    for (size_t p = low.find("0x1031"); p != std::string::npos; p = low.find("0x1031", p + 1)) {
+      size_t q = p;
+      while (q > 0 && std::isspace((unsigned char)code[q - 1])) q--;
+      if (q == 0 || code[q - 1] != '=') continue;
+      q--;
+      while (q > 0 && std::isspace((unsigned char)code[q - 1])) q--;
+      const size_t e = q;
+      while (q > 0 && srcIdChar(code[q - 1])) q--;
+      if (q < e) sig.push_back(code.substr(q, e - q));
+    }
+    bool ok = !srcHasConstellationWrite(code, cfg, sig);
+    // One level down: every function configureGPS() calls that is defined in this file.
+    static const char* kKeywords[] = { "if", "for", "while", "switch", "return", "sizeof", "do", "else", "case" };
+    for (size_t p = cfg.b; ok && p < cfg.e; ) {
+      if (!srcIdChar(code[p]) || (p > 0 && srcIdChar(code[p - 1]))) { p++; continue; }
       size_t e = p;
-      while (e < code.size() && srcIdChar(code[e])) e++;
-      std::string id = code.substr(p, e - p);
-      for (char& c : id) c = (char)std::toupper((unsigned char)c);
-      if (id.find("SIGNAL") != std::string::npos) ok = false;
+      while (e < cfg.e && srcIdChar(code[e])) e++;
+      size_t q = e;
+      while (q < cfg.e && std::isspace((unsigned char)code[q])) q++;
+      if (q < cfg.e && code[q] == '(') {
+        const std::string fn = code.substr(p, e - p);
+        bool kw = (fn == "configureGPS");
+        for (const char* k : kKeywords) if (fn == k) kw = true;
+        if (!kw && srcHasConstellationWrite(code, srcFuncBody(code, fn.c_str()), sig)) ok = false;
+      }
       p = e;
     }
     g.r4 = ok;
@@ -358,23 +422,25 @@ static Guard guard(const std::string& text)
   }
 
   // ---- R7: the baud move ----
+  // V2.5-Evo - 2026-10-27 - no persist argument any more (no Flash layer), the proof returns GPS_MOVE_OK, and
+  // configureGPS() makes two calls (the move, and the one CFG-VALSET retry - see R10), both inside the guard block.
   {
     bool ok = smb.ok && prt.ok;
     ok = ok && srcCount(code, smb, "KEY_UART1_BAUDRATE") >= 1 && srcCount(code, smb, "if (dialect == UBX_DIALECT_VALSET)") == 1 &&
          srcCount(code, smb, "gpsBuildCfgPrt(f, to_baud);") == 1 &&
-         srcCount(code, smb, "if (gpsProbeAt(to_baud, 1100)) return true;") == 1 &&
+         srcCount(code, smb, "if (gpsProbeAt(to_baud, 1100)) return GPS_MOVE_OK;") == 1 &&
          srcCount(code, smb, "ubxSendAckedT(") == 0 && srcCount(code, smb, "ubxPoll(") == 0;
     // configureGPS(): below 115200 only, never on a MUTE module
     const size_t guardAt = srcPos(code, cfg, "if (heard < GPS_BAUD_PREFERRED && dialect != UBX_DIALECT_MUTE) {");
-    const size_t callAt  = srcPos(code, cfg, "gpsSetModuleBaud(dialect, heard, GPS_BAUD_PREFERRED, false)");
     const Range gb = (guardAt != std::string::npos)
                        ? srcBlockAfter(code, "if (heard < GPS_BAUD_PREFERRED && dialect != UBX_DIALECT_MUTE)", guardAt, cfg.e)
                        : Range{ false, 0, 0 };
-    ok = ok && gb.ok && callAt != std::string::npos && gb.b <= callAt && callAt < gb.e &&
-         srcCount(code, cfg, "gpsSetModuleBaud(") == 1;
-    // ?gpssetup: persisted, in the established dialect, and no raw frame of its own
-    ok = ok && srcCount(code, setup, "gpsSetModuleBaud(dialect, cur, GPS_BAUD_PREFERRED, true)") == 1 &&
-         srcCount(code, setup, "Serial1.write(") == 0;
+    ok = ok && gb.ok && srcCount(code, cfg, "gpsSetModuleBaud(") == 2 && srcCount(code, gb, "gpsSetModuleBaud(") == 2 &&
+         srcCount(code, gb, "gpsSetModuleBaud(dialect, heard, GPS_BAUD_PREFERRED)") == 1 &&
+         srcCount(code, gb, "gpsSetModuleBaud(UBX_DIALECT_VALSET, heard, GPS_BAUD_PREFERRED)") == 1;
+    // ?gpssetup: in the established dialect, and no raw frame of its own
+    ok = ok && srcCount(code, setup, "gpsSetModuleBaud(dialect, cur, GPS_BAUD_PREFERRED)") == 1 &&
+         srcCount(code, setup, "gpsSetModuleBaud(") == 1 && srcCount(code, setup, "Serial1.write(") == 0;
     // gpsBuildCfgPrt(115200) is the old CFG-PRT literal byte for byte (checksum C0 7E)
     if (ok) {
       const size_t t0 = code.find("tmpl[28] =", prt.b);
@@ -406,6 +472,68 @@ static Guard guard(const std::string& text)
            srcCount(code, rdbk, "gpsValgetOk(pl, n, KEY_RATE_MEAS)") == 1 &&
            tight.find("{0xb5,0x62,0x0a,0x04,0x00,0x00,") != std::string::npos &&
            srcCount(code, rdbk, "ubxPoll(pollVer, sizeof(pollVer), 0x0A, 0x04, ver, sizeof(ver))") == 1;
+  }
+
+  // ---- R9 (2026-10-27): NMEA-on keyed to the symptom, in either form, never on a MUTE module ----
+  {
+    const Range nmea = srcFuncBody(code, "gpsEnableNmeaOut");
+    const std::string cond = "if (dialect != UBX_DIALECT_MUTE && (ubx_only || dialect == UBX_DIALECT_VALSET)) "
+                             "gpsEnableNmeaOut(dialect);";
+    bool ok = nmea.ok && srcSquash(code).find("static void gpsEnableNmeaOut(uint8_t dialect)") != std::string::npos;
+    // The old-form step: CFG-PRT built at the baud the module is proven on, ACK-checked, before any CFG-VALSET write.
+    const Range leg = ok ? srcBlockAfter(code, "if (dialect == UBX_DIALECT_LEGACY)", nmea.b, nmea.e) : Range{ false, 0, 0 };
+    const size_t firstValset = srcPos(code, nmea, "ubxValset(");
+    ok = ok && leg.ok && srcCount(code, leg, "gpsBuildCfgPrt(f, gps_current_baud);") == 1 &&
+         srcCount(code, leg, "ubxSendAckedT(f, sizeof(f), 2)") == 1 &&
+         firstValset != std::string::npos && leg.e < firstValset &&
+         srcCount(code, nmea, "ubxValset(") == 4 && srcCount(code, nmea, "Serial1.write(") == 0;
+    // configureGPS(): the symptom is the listen's answer; the call comes after the rate write.
+    const size_t rateAt = srcPos(code, cfg, "gpsApplyCfg(dialect, setRate");
+    const size_t callAt = srcPos(code, cfg, cond);
+    ok = ok && srcCount(code, cfg, "const bool ubx_only = !(heard_proto & GPS_SAW_NMEA);") == 1 &&
+         srcCount(code, cfg, cond) == 1 && srcCount(code, cfg, "gpsEnableNmeaOut(") == 1 &&
+         rateAt != std::string::npos && callAt != std::string::npos && rateAt < callAt;
+    // ?gpssetup step 4: the same rule on step 1's listen, before the step 5 save.
+    const size_t setupCall = srcPos(code, setup, cond);
+    const size_t saveAt    = srcPos(code, setup, "gpsSaveConfig(");
+    ok = ok && srcCount(code, setup, "const bool ubx_only = !(cur_proto & GPS_SAW_NMEA);") == 1 &&
+         srcCount(code, setup, cond) == 1 && srcCount(code, setup, "gpsEnableNmeaOut(") == 1 &&
+         setupCall != std::string::npos && saveAt != std::string::npos && setupCall < saveAt;
+    // Nowhere else: the definition and those two calls.
+    ok = ok && srcFindIdent(code, "gpsEnableNmeaOut").size() == 3;
+    g.r9 = ok;
+  }
+
+  // ---- R10 (2026-10-27): the baud move has three results, and only a proven baud is written to ----
+  {
+    bool ok = smb.ok &&
+              srcSquash(code).find("static const uint8_t GPS_MOVE_OK = 0; static const uint8_t GPS_MOVE_STAYED = 1; "
+                                   "static const uint8_t GPS_MOVE_LOST = 2;") != std::string::npos &&
+              srcSquash(code).find("static uint8_t gpsSetModuleBaud(uint8_t dialect, uint32_t from_baud, uint32_t to_baud)") !=
+                std::string::npos;
+    // gpsSetModuleBaud(): proof at to_baud, then proof at from_baud with the same 1100 ms, then LOST.
+    const size_t pOk = srcPos(code, smb, "if (gpsProbeAt(to_baud, 1100)) return GPS_MOVE_OK;");
+    const size_t pSt = srcPos(code, smb, "if (gpsProbeAt(from_baud, 1100)) return GPS_MOVE_STAYED;");
+    const size_t pLo = srcPos(code, smb, "return GPS_MOVE_LOST;");
+    ok = ok && pOk != std::string::npos && pSt != std::string::npos && pLo != std::string::npos && pOk < pSt && pSt < pLo &&
+         srcCount(code, smb, "gpsProbeAt(") == 2 && srcCount(code, smb, "return true") == 0 &&
+         srcCount(code, smb, "return false") == 0;
+    // configureGPS(): the CFG-VALSET retry only after STAYED in the old form; LOST rescans (listen-only) and returns
+    // without sending if nothing answers.
+    const size_t first = srcPos(code, cfg, "uint8_t mv = gpsSetModuleBaud(dialect, heard, GPS_BAUD_PREFERRED);");
+    const Range retry = srcBlockAfter(code, "if (mv == GPS_MOVE_STAYED && dialect == UBX_DIALECT_LEGACY)", cfg.b, cfg.e);
+    const Range lost  = srcBlockAfter(code, "if (mv == GPS_MOVE_LOST)", cfg.b, cfg.e);
+    const Range none  = lost.ok ? srcBlockAfter(code, "if (!heard)", lost.b, lost.e) : Range{ false, 0, 0 };
+    ok = ok && first != std::string::npos && retry.ok && first < retry.b &&
+         srcCount(code, retry, "mv = gpsSetModuleBaud(UBX_DIALECT_VALSET, heard, GPS_BAUD_PREFERRED);") == 1 &&
+         lost.ok && srcFirstTx(code, lost) == std::string::npos &&
+         srcCount(code, lost, "heard = gpsDetectBaud(1100, GPS_BAUD_PREFERRED, &heard_proto);") == 1 &&
+         none.ok && srcCount(code, none, "return;") == 1;
+    // ?gpssetup: LOST stops the command, sending nothing.
+    const Range slost = srcBlockAfter(code, "if (mv == GPS_MOVE_LOST)", setup.b, setup.e);
+    ok = ok && srcCount(code, setup, "const uint8_t mv = gpsSetModuleBaud(dialect, cur, GPS_BAUD_PREFERRED);") == 1 &&
+         slost.ok && srcFirstTx(code, slost) == std::string::npos && srcCount(code, slost, "return;") == 1;
+    g.r10 = ok;
   }
   return g;
 }
@@ -474,17 +602,48 @@ static void testRedRuns(const std::string& real)
     const Guard g = guard(m);
     CHECK(f && !g.r3 && !guardOk(g));
   }
-  { // R4: a CFG-SIGNAL key added
-    const std::string m = mutate(real, "static const uint32_t KEY_UART1_BAUDRATE",
-                                 "static const uint32_t KEY_SIGNAL_GAL_ENA = 0x10310021UL;\nstatic const uint32_t KEY_UART1_BAUDRATE", &f);
+  // R4 (narrowed 2026-10-27): the write has to reach configureGPS() to fail; the anchor
+  // "  const uint16_t meas_ms = gpsSelectedMeasMs();" is configureGPS()'s (it comes before ?gpssetup's in the file).
+  { // R4: a CFG-SIGNAL key declared and written in configureGPS()
+    bool f2 = false;
+    std::string m = mutate(real, "static const uint32_t KEY_UART1_BAUDRATE",
+                           "static const uint32_t KEY_SIGNAL_GAL_ENA = 0x10310021UL;\nstatic const uint32_t KEY_UART1_BAUDRATE", &f);
+    m = mutate(m, "  const uint16_t meas_ms = gpsSelectedMeasMs();",
+               "  ubxValset(KEY_SIGNAL_GAL_ENA, &off, 1, 2);\n  const uint16_t meas_ms = gpsSelectedMeasMs();", &f2);
     const Guard g = guard(m);
-    CHECK(f && !g.r4 && !guardOk(g));
+    CHECK(f && f2 && !g.r4 && !guardOk(g));
   }
-  { // R4: the same key written under an innocent name
-    const std::string m = mutate(real, "static const uint32_t KEY_UART1_BAUDRATE",
-                                 "static const uint32_t KEY_GAL = 0x10310021UL;\nstatic const uint32_t KEY_UART1_BAUDRATE", &f);
+  { // R4: the same key under an innocent name, written in configureGPS()
+    bool f2 = false;
+    std::string m = mutate(real, "static const uint32_t KEY_UART1_BAUDRATE",
+                           "static const uint32_t KEY_GAL = 0x10310021UL;\nstatic const uint32_t KEY_UART1_BAUDRATE", &f);
+    m = mutate(m, "  const uint16_t meas_ms = gpsSelectedMeasMs();",
+               "  ubxValset(KEY_GAL, &off, 1, 2);\n  const uint16_t meas_ms = gpsSelectedMeasMs();", &f2);
     const Guard g = guard(m);
-    CHECK(f && !g.r4 && !guardOk(g));
+    CHECK(f && f2 && !g.r4 && !guardOk(g));
+  }
+  { // R4: the key hidden in a helper that configureGPS() calls
+    bool f2 = false;
+    std::string m = mutate(real, "void configureGPS() {",
+                           "static void gpsSetConstellations() { static const byte z = 0; ubxValset(0x10310021UL, &z, 1, 2); }\n"
+                           "void configureGPS() {", &f);
+    m = mutate(m, "  const uint16_t meas_ms = gpsSelectedMeasMs();",
+               "  gpsSetConstellations();\n  const uint16_t meas_ms = gpsSelectedMeasMs();", &f2);
+    const Guard g = guard(m);
+    CHECK(f && f2 && !g.r4 && !guardOk(g));
+  }
+  { // R4 GREEN: a read-only CFG-SIGNAL VALGET in ?gpscfg is allowed - the narrowing, proven
+    bool f2 = false;
+    std::string m = mutate(real, "static const uint32_t KEY_UART1_BAUDRATE",
+                           "static const uint32_t KEY_SIGNAL_BDS_ENA = 0x10310022UL;\nstatic const uint32_t KEY_UART1_BAUDRATE", &f);
+    m = mutate(m, "  const uint16_t rate_want = gpsSelectedMeasMs();",
+               "  { byte pollSig[16] = { 0xB5, 0x62, 0x06, 0x8B, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, "
+               "(byte)(KEY_SIGNAL_BDS_ENA & 0xFF), (byte)((KEY_SIGNAL_BDS_ENA >> 8) & 0xFF), "
+               "(byte)((KEY_SIGNAL_BDS_ENA >> 16) & 0xFF), (byte)((KEY_SIGNAL_BDS_ENA >> 24) & 0xFF), 0x00, 0x00 };\n"
+               "    ubxAppendChecksum(pollSig, sizeof(pollSig)); n = ubxPoll(pollSig, sizeof(pollSig), 0x06, 0x8B, pl, sizeof(pl)); }\n"
+               "  const uint16_t rate_want = gpsSelectedMeasMs();", &f2);
+    const Guard g = guard(m);
+    CHECK(f && f2 && g.r4 && guardOk(g));
   }
   { // R4+R6: the four-constellation CFG-GNSS put back into the type 2/3 branch
     const std::string m = mutate(real, "Serial.println(\"GPS [M10]: listening first",
@@ -516,15 +675,89 @@ static void testRedRuns(const std::string& real)
     CHECK(f && !g.r7 && !guardOk(g));
   }
   { // R7: the move "proven" by an ACK instead of by listening
-    const std::string m = mutate(real, "  if (gpsProbeAt(to_baud, 1100)) return true;", "  if (ubxSendAckedT(f, 1, 1) == 0) return true;", &f);
+    const std::string m = mutate(real, "  if (gpsProbeAt(to_baud, 1100)) return GPS_MOVE_OK;",
+                                 "  if (ubxSendAckedT(f, 1, 1) == 0) return GPS_MOVE_OK;", &f);
     const Guard g = guard(m);
     CHECK(f && !g.r7 && !guardOk(g));
   }
   { // R7: ?gpssetup back to a raw old-form CFG-PRT
-    const std::string m = mutate(real, "if (gpsSetModuleBaud(dialect, cur, GPS_BAUD_PREFERRED, true)) {",
-                                 "Serial1.write(setNav5Sea, 1); if (gpsProbeAt(GPS_BAUD_PREFERRED, 1100)) {", &f);
+    const std::string m = mutate(real, "const uint8_t mv = gpsSetModuleBaud(dialect, cur, GPS_BAUD_PREFERRED);",
+                                 "Serial1.write(setNav5Sea, 1); "
+                                 "const uint8_t mv = gpsProbeAt(GPS_BAUD_PREFERRED, 1100) ? GPS_MOVE_OK : GPS_MOVE_LOST;", &f);
     const Guard g = guard(m);
     CHECK(f && !g.r7 && !guardOk(g));
+  }
+  { // R7: the Flash layer back on ?gpssetup's move (the persist argument returns)
+    const std::string m = mutate(real, "const uint8_t mv = gpsSetModuleBaud(dialect, cur, GPS_BAUD_PREFERRED);",
+                                 "const uint8_t mv = gpsSetModuleBaud(dialect, cur, GPS_BAUD_PREFERRED, true);", &f);
+    const Guard g = guard(m);
+    CHECK(f && !g.r7 && !guardOk(g));
+  }
+  { // R9: configureGPS() back to CFG-VALSET-only (the 2026-08-16 condition)
+    const std::string m = mutate(real, "  if (dialect != UBX_DIALECT_MUTE && (ubx_only || dialect == UBX_DIALECT_VALSET))\n"
+                                       "    gpsEnableNmeaOut(dialect);",
+                                 "  if (dialect == UBX_DIALECT_VALSET)\n    gpsEnableNmeaOut(dialect);", &f);
+    const Guard g = guard(m);
+    CHECK(f && !g.r9 && !guardOk(g));
+  }
+  { // R9: the MUTE exclusion dropped - an unverifiable module would be written to
+    const std::string m = mutate(real, "  if (dialect != UBX_DIALECT_MUTE && (ubx_only || dialect == UBX_DIALECT_VALSET))",
+                                 "  if (ubx_only || dialect == UBX_DIALECT_VALSET)", &f);
+    const Guard g = guard(m);
+    CHECK(f && !g.r9 && !guardOk(g));
+  }
+  { // R9: ?gpssetup back to CFG-VALSET-only (its condition is the second occurrence; the first is configureGPS()'s)
+    const std::string from = "  if (dialect != UBX_DIALECT_MUTE && (ubx_only || dialect == UBX_DIALECT_VALSET))\n"
+                             "    gpsEnableNmeaOut(dialect);\n\n  Serial.print(\"[5/6]";
+    const std::string m = mutate(real, from, "  if (dialect == UBX_DIALECT_VALSET)\n    gpsEnableNmeaOut(dialect);\n\n"
+                                             "  Serial.print(\"[5/6]", &f);
+    const Guard g = guard(m);
+    CHECK(f && !g.r9 && !guardOk(g));
+  }
+  { // R9: the old-form CFG-PRT step dropped from gpsEnableNmeaOut()
+    const std::string m = mutate(real, "    const uint8_t r = ubxSendAckedT(f, sizeof(f), 2);", "    const uint8_t r = UBX_NOREPLY;", &f);
+    const Guard g = guard(m);
+    CHECK(f && !g.r9 && !guardOk(g));
+  }
+  { // R9: CFG-PRT built at a fixed baud - on a module heard at 9600 that is a baud move, not a repair
+    const std::string m = mutate(real, "    gpsBuildCfgPrt(f, gps_current_baud);", "    gpsBuildCfgPrt(f, GPS_BAUD_PREFERRED);", &f);
+    const Guard g = guard(m);
+    CHECK(f && !g.r9 && !guardOk(g));
+  }
+  { // R10: the listen back shortened to 300 ms and its answer ignored (the code before 2026-10-27)
+    const std::string m = mutate(real, "  if (gpsProbeAt(from_baud, 1100)) return GPS_MOVE_STAYED;",
+                                 "  gpsProbeAt(from_baud, 300); return GPS_MOVE_STAYED;", &f);
+    const Guard g = guard(m);
+    CHECK(f && !g.r10 && !guardOk(g));
+  }
+  { // R10: the CFG-VALSET retry after a LOST move too, at a baud nobody has proven
+    const std::string m = mutate(real, "if (mv == GPS_MOVE_STAYED && dialect == UBX_DIALECT_LEGACY) {",
+                                 "if (mv != GPS_MOVE_OK && dialect == UBX_DIALECT_LEGACY) {", &f);
+    const Guard g = guard(m);
+    CHECK(f && !g.r10 && !guardOk(g));
+  }
+  { // R10: LOST carries on at the old baud without a rescan
+    const std::string m = mutate(real, "      heard = gpsDetectBaud(1100, GPS_BAUD_PREFERRED, &heard_proto);",
+                                 "      heard = GPS_BAUD_PREFERRED;", &f);
+    const Guard g = guard(m);
+    CHECK(f && !g.r10 && !guardOk(g));
+  }
+  { // R10: a write slipped into the LOST branch before the rescan
+    const std::string m = mutate(real, "      Serial.println(\"LOST - heard at neither baud.",
+                                 "      Serial1.write(setNav5Sea, 1);\n      Serial.println(\"LOST - heard at neither baud.", &f);
+    const Guard g = guard(m);
+    CHECK(f && !g.r10 && !guardOk(g));
+  }
+  { // R10: the "nothing answers" exit after the rescan made unreachable
+    const std::string m = mutate(real, "      if (!heard) {", "      if (false) {", &f);
+    const Guard g = guard(m);
+    CHECK(f && !g.r10 && !guardOk(g));
+  }
+  { // R10: ?gpssetup carries on after LOST
+    const std::string m = mutate(real, "then run ?gpssetup again.\");\n      setUartMux(1);\n      return;",
+                                 "then run ?gpssetup again.\");\n      setUartMux(1);", &f);
+    const Guard g = guard(m);
+    CHECK(f && !g.r10 && !guardOk(g));
   }
   { // R8: the MON-VER poll removed
     const std::string m = mutate(real, "ubxPoll(pollVer, sizeof(pollVer), 0x0A, 0x04, ver, sizeof(ver))", "0", &f);
@@ -538,7 +771,7 @@ static void testRedRuns(const std::string& real)
   }
   { // a file with no configureGPS() at all fails every rule
     const Guard g = guard("int x;\n");
-    CHECK(!g.r1 && !g.r2 && !g.r3 && !g.r4 && !g.r5 && !g.r6 && !g.r7 && !g.r8);
+    CHECK(!g.r1 && !g.r2 && !g.r3 && !g.r4 && !g.r5 && !g.r6 && !g.r7 && !g.r8 && !g.r9 && !g.r10);
   }
 }
 
@@ -559,17 +792,21 @@ int main(int argc, char** argv)
   std::string text;
   const bool read_ok = readFile(gps, &text);
   CHECK(read_ok && !text.empty());
+  text.erase(std::remove(text.begin(), text.end(), '\r'), text.end());   // same text whatever the line endings
 
   const Guard g = guard(text);
   std::printf("  R1 rate via gpsApplyCfg, after probe/baud/filters ... %s\n", g.r1 ? "ok" : "BROKEN");
   std::printf("  R2 no blind rate write ............................ %s\n", g.r2 ? "ok" : "BROKEN");
   std::printf("  R3 200 ms types 0/1, 100 ms types 2/3 ............. %s\n", g.r3 ? "ok" : "BROKEN");
-  std::printf("  R4 no CFG-SIGNAL key, no CFG-GNSS ................. %s\n", g.r4 ? "ok" : "BROKEN");
+  std::printf("  R4 no CFG-SIGNAL/CFG-GNSS write in configureGPS() . %s\n", g.r4 ? "ok" : "BROKEN");
   std::printf("  R5 boot line prints rate=%%ums %%s ................... %s\n", g.r5 ? "ok" : "BROKEN");
   std::printf("  R6 types 2/3 listen before any write .............. %s\n", g.r6 ? "ok" : "BROKEN");
   std::printf("  R7 baud move proven by listening .................. %s\n", g.r7 ? "ok" : "BROKEN");
   std::printf("  R8 ?gpscfg reads rate back + MON-VER .............. %s\n", g.r8 ? "ok" : "BROKEN");
+  std::printf("  R9 NMEA-on keyed to the symptom, either form ...... %s\n", g.r9 ? "ok" : "BROKEN");
+  std::printf("  R10 baud move: OK / STAYED / LOST ................. %s\n", g.r10 ? "ok" : "BROKEN");
   CHECK(g.r1); CHECK(g.r2); CHECK(g.r3); CHECK(g.r4); CHECK(g.r5); CHECK(g.r6); CHECK(g.r7); CHECK(g.r8);
+  CHECK(g.r9); CHECK(g.r10);
 
   if (!given && read_ok) testRedRuns(text);   // the red edits are anchored on the fixed file
 

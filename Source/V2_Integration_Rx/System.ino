@@ -1844,8 +1844,9 @@ void cmdHelp(const String& params);
 //     checked path for this and runs the same validation; a truncated paste here is a lost
 //     config, and a config has already been lost once this week.
 //   ?clearconf ?clearbc - delete the stored config / battery calibration outright.
-//   ?gpssetup - one indivisible ~20 s sequence that writes the GPS module's own NVM and has no
-//     abort point by design; stopped part-way it leaves the module worse than before.
+//   ?gpssetup - one indivisible sequence of up to about 30 s (V2.5-Evo - 2026-10-27, was "~20 s")
+//     that writes the GPS module's own NVM and has no abort point by design; stopped part-way it
+//     leaves the module worse than before.
 //   ?wifiupd - rewrites ~50 KB of web UI into SPIFFS, non-abortable, and the file it rewrites is
 //     the page being used to ask for it.
 //   ?wifi - would call webCfgServer.stop() from inside that server's own request handler, then
@@ -1930,7 +1931,9 @@ static const SerialCommand kCommands[] = {
   {"gpsbaud", "listen-only baud scan + UBX-alive check (spots the u-blox UART-RX-disable state) - ~6s block, bench only", cmdGpsBaud, true, true},
   // One-time full setup, saved into the MODULE's own memory (not usrConf - a confStruct change
   // would bump SW_VERSION and wipe RX SPIFFS config, compass cal and logs).
-  {"gpssetup", "ONE-TIME full GPS setup: find, configure ACK-verified, save permanently, verify - ~20s, bench only", cmdGpsSetup, true},
+  // V2.5-Evo - 2026-10-27 - "up to ~30s" (was "~20s"): with every listen and poll running to its
+  // timeout the worst case is about 30 s. Help text only; the row's flags are unchanged.
+  {"gpssetup", "ONE-TIME full GPS setup: find, configure ACK-verified, save permanently, verify - up to ~30s, bench only", cmdGpsSetup, true},
   {"diag", "one-shot snapshot: GPS bytes/sentences, fix age, COG updates vs value-changes, mux errors, VESC poll rate, loop min/mean/max (safe during RTM/FM)", cmdDiag, false, true},
   {"diagz", "zero the ?diag counters so a run can be bracketed", cmdDiagZ, false, true},
   // V2.5-Evo - 2026-10-03 - RX WEB CONSOLE. NOT web_ok: ?dump writes to the physical USB port on

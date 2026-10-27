@@ -590,7 +590,7 @@ The firmware checks the module's ACK on every configuration write, but an ACK on
 
 ```
 ----- GPS live config (polled from the module) -----
-  dialect  : legacy UBX-CFG (u-blox 6/7/8)
+  dialect  : legacy UBX-CFG form (the format it answers; see silicon below)
   dynModel : 5  (Sea)  <-- matches gps_dyn_model
   fixMode  : 3  (1=2D 2=3D 3=auto)
   GSV      : disabled (good)   rates: 0 0 0 0 0 0

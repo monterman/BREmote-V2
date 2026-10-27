@@ -342,7 +342,9 @@ u-blox part: ArduPilot users with five units found the UBX configuration ACKs un
 messages unanswered, and it ships UBX-only. BREmote parses NMEA and relies on those ACKs to switch NMEA
 back on, so a B101 module can sit silent on a perfectly good board. Known-good with compass:
 **HGLRC M100-5883** (u-blox M10 + QMC5883P, 3.3–5 V, pads `SCL · SDA · RX · TX · 5V · GND`) and the
-Beitian **BN-880** (M8 + QMC5883L, 5 V). Known-good without compass (TX): **HGLRC M100 Mini**, BN-220.
+Beitian **BN-880** (M8 + QMC5883L, 5 V). Known-good without compass (TX): **HGLRC M100 Mini**, BN-220. Both are good remote modules; the M100
+Mini's advantage is size, about 15 × 15 mm against the BN-220's 22 × 20 mm, small enough to fit inside the
+Nano remote.
 
 **Voltage.** The TX supplies **3.3 V only**. Modules needing 3.6 V+ (e.g. HGLRC M100 Pro at
 3.6–5.5 V) will have corrupted UART on the TX. Measure the red wire on your board before
@@ -387,19 +389,23 @@ detail is in [§2](#2-bn-220bn-880-and-m10-speak-different-languages); the short
 form and waits for the answer. If the module accepts it, the RX uses the old form for the rest. If
 the module refuses it, the RX sends the same setting again with `CFG-VALSET` and uses `CFG-VALSET`
 for the rest. This happens whatever `gps_chip_type` says. It covers `dynModel`, the NMEA sentence
-filter and, on an M9/M10, switching NMEA output back on.
+filter, the update rate, moving the module to 115200 when it was heard on a slower baud, and, on an
+M9/M10, switching NMEA output back on.
 
 **What `gps_chip_type` does change on the RX** is only the opening of the start-up:
 
 | Setting | What the RX does first |
 |---|---|
-| 0 or 1 | Listens first. If the module is on a slower baud, asks it to move to 115200. If nothing is heard, tries the 9600 → 115200 switch. Asks for 5 Hz. |
-| 2 or 3 | Opens the port at 115200 straight away. Asks for 10 Hz and four constellations (GPS, Galileo, BeiDou, GLONASS). |
+| 0 or 1 | Listens first. If the module is on a slower baud, asks it (old form) to move to 115200. If nothing is heard, tries the 9600 → 115200 switch. Rate asked for later: 5 Hz. |
+| 2 or 3 | Sends nothing until the module is heard. Rate asked for later: 10 Hz. |
 
-Those opening requests go out in the old form only, and nothing checks the answer. An M9/M10
-refuses them, so on an M9/M10 the RX does not change the baud, the update rate or the
-constellations: the module keeps its own. (The BE-880 datasheet gives 1 Hz as its default rate. `?diag` shows the
-sentences per second you are really getting.)
+After the opening, the RX listens until it hears the module, then asks for `dynModel` to learn the
+language. If the module is still below 115200, the RX moves it there in that language and proves the
+move by listening at the new baud. The update rate (5 Hz for 0 and 1, 10 Hz for 2 and 3) goes out
+last, in that language, and the answer is checked. The RX never asks for constellations, on any
+setting: the module keeps its own set, because turning more on can lower an M10's highest update rate.
+The boot line shows the rate and its answer, `?gpscfg` reads it back, and `?diag` shows the sentences
+per second you are really getting.
 
 **What it does not change:** the language (detected, as above) and the compass. The RX finds the
 compass by its I²C address at boot (`0x2C`, then `0x0D`, then `0x1E`), whatever the setting says.
@@ -410,17 +416,21 @@ The TX accepts 0 and 2 only.
 boot-log line that starts `GPS config [`:
 
 ```
-GPS config [legacy CFG (u-blox 6/7/8)]: dynModel=Sea OK | GSV OK | GLL OK | VTG OK
-GPS config [CFG-VALSET (u-blox M9/M10)]: dynModel=Sea OK/valset | GSV OK/valset | GLL OK/valset | VTG OK/valset
+GPS config [legacy CFG (u-blox 6/7/8)]: dynModel=Sea OK | GSV OK | GLL OK | VTG OK | rate=200ms OK
+GPS config [CFG-VALSET (u-blox M9/M10)]: dynModel=Sea OK/valset | GSV OK/valset | GLL OK/valset | VTG OK/valset | rate=100ms OK/valset
 ```
 
-The first means an M8 (or older) answered. The second means an M9/M10 answered. `?gpscfg` reads the
-live setting back by either path and prints `dialect  : legacy UBX-CFG (u-blox 6/7/8)` or
-`dialect  : CFG-VALSET/VALGET (u-blox M9/M10)`. On an M9/M10 its `GSV` line reads `NO REPLY`: that
+The first means the module accepted the old form. The second means it refused the old form and took
+`CFG-VALSET`. That is the language, not the chip: some modules sold as M10 accept the old form.
+`?gpscfg` reads the live settings back by either path and prints `dialect  : legacy UBX-CFG (u-blox 6/7/8)`
+or `dialect  : CFG-VALSET/VALGET (u-blox M9/M10)`, the rate, and a `silicon  :` line from the
+module's own version report (UBX-MON-VER): hardware `00080000` is an M8, `000A0000` an M10. The
+version strings under it name the firmware and, on most modules, the part.
+On an M9/M10 its `GSV` line reads `NO REPLY`: that
 check only exists in the old form, so this is normal there.
 
-A module sold as a BE-880 can turn out to answer the old path, which means M8 silicon inside. That
-has already happened on a real build. The firmware handles either.
+A module sold as a BE-880 can turn out to answer the old path. That has already happened on a real
+build. The `silicon` line in `?gpscfg` tells you what is inside. The firmware handles either.
 
 | Module | Chip inside | Language | Ships at | Supply | Compass | `gps_chip_type` (RX) |
 |---|---|---|---|---|---|---|
@@ -432,11 +442,9 @@ has already happened on a real build. The firmware handles either.
 | HGLRC M100-5883 | u-blox M10 | `CFG-VALSET` | 115200 | 3.3–5 V | QMC5883P, `0x2C` | 3 |
 
 **Why 1 for the BE-880.** It is a BN-880 in shape: same 28 × 28 mm footprint, same connector, and it
-needs the 5 V rail like the BN-880. If it has an M10 inside, 1 and 3 end the same way: the old rate
-and constellation requests are refused, the module stays at 115200 on its own rate, and `dynModel`
-and the NMEA filter go through `CFG-VALSET`. 1 is the better pick because it listens before it sends
-anything. If it has an M8 inside, 1 gives it exactly the BN-880 start-up (5 Hz). Setting 3 would
-instead ask an M8 for 10 Hz on four constellations, which is not what the BN-880 is tested with.
+needs the 5 V rail like the BN-880. Both 1 and 3 listen before they send and configure the module in
+whichever language it speaks; the difference is the rate. 1 asks for 5 Hz, 3 for 10 Hz. If it has an
+M8 inside, 1 gives it exactly the BN-880 start-up (5 Hz), which is what the BN-880 is tested with.
 Wiring is the same as the BN-880: see the [BN-880 → RX wiring guide](GPS_Wiring_BN880_RX.md).
 
 ---

@@ -221,8 +221,10 @@ power. That's also why no serial command can fix it: the module has stopped list
 
 ### The *other* "dead" module: UBX-only, straight off a flight controller
 
-The failure above still emits NMEA. There is a second one that emits **nothing** — no sentences at
-any baud, `?gpsraw` empty, `Chars processed: 0` — while the module is entirely healthy.
+The failure above still emits NMEA. There is a second one that emits **no NMEA at all**, at any baud,
+while the module is entirely healthy. It is not silent: it streams binary UBX, so bytes do arrive but
+not one sentence is parsed. On the RX, `?diag`'s `GPS feed` line shows bytes/s and 0.0 sentences/s; on
+the TX, `?gpsraw` prints binary instead of `$G…` lines.
 
 **Betaflight's GPS auto-config switches u-blox modules to UBX only and turns NMEA output off**, and
 saves that to the module's battery-backed memory *and* its flash. It survives every power cycle.
@@ -251,17 +253,22 @@ still runs first on every byte and still breaks early, so a healthy BN-220/880 e
 byte after the same elapsed time: that path is untouched. UBX evidence never breaks early, so a
 module emitting both is never misreported as UBX-only.
 
-Having found the module at a **proven** baud, the firmware re-enables NMEA output on UART1 — the GGA
-and RMC message rates first (Betaflight may have zeroed those individually, in which case flipping
-the port-level protocol back on alone would change nothing), then `CFG-UART1OUTPROT-UBX`, then
-`CFG-UART1OUTPROT-NMEA` last, so the sentence stream only restarts once every ACK is in. Boot writes
-RAM|BBR; **`?gpssetup` is what commits it to the module's flash.**
+Having found the module at a **proven** baud, the firmware re-enables NMEA output on UART1, in
+whichever form the module answers. On a module that takes the old form, `CFG-PRT` goes first, sent at
+the baud the module is already on: its output mask is UBX+NMEA, so it switches NMEA back on without
+moving the module. Then the GGA and RMC message rates (Betaflight may have zeroed those individually,
+in which case flipping the port-level protocol back on alone would change nothing): old-form `CFG-MSG`
+where the module takes it, `CFG-VALSET` where it does not. Then `CFG-UART1OUTPROT-UBX` and, last,
+`CFG-UART1OUTPROT-NMEA` (both `CFG-VALSET`; on an M8, `CFG-PRT` has already done their job), so the
+sentence stream only restarts once every ACK is in. Boot and `?gpssetup` both write RAM|BBR.
+`?gpssetup`'s step 5 then asks the module to save its settings (`CFG-CFG`), which is permanent only
+where the module has its own flash; the HGLRC M100s have none.
 
 Two caveats, in the spirit of the rest of this design: it is **reported, never enforced** — a module
 that refuses the writes still navigates on its own defaults, and the line says `REJECTED` rather than
-failing boot, which is the one remaining case that needs u-center on a PC. And the automatic repair
-uses the `CFG-VALSET` (M9/M10) interface, which is what a drone-market module is; a legacy u-blox
-6/7/8 is still rescued by the `CFG-PRT` route. **The TX does not carry this yet.**
+failing boot, which is the one remaining case that needs u-center on a PC. And the repair needs a
+module that answers a config message: one that answers none cannot be repaired this way, and the boot
+log says `NMEA output NOT switched back on`. **The TX does not carry this yet.**
 
 If you have written off a GPS module as dead for exactly this reason, it is probably fine. Try it
 again.
@@ -309,15 +316,17 @@ it was first written, on a receiver that had reported success.
 
 | Command | What it does | Blocks |
 |---|---|---|
-| `?gpscfg` | Reads `dynModel` back out of the module. Works on both dialects. | ~3 s |
+| `?gpscfg` | Reads the settings back out of the module. RX: `dynModel`, the GSV filter, the update rate and the chip's version report (UBX-MON-VER), four polls. TX: `dynModel`. Works on both dialects. | RX up to ~6 s, TX ~3 s |
 | `?gpsbaud` | Listen-only baud scan + UBX-alive check | ~2–6 s |
 | `?gpssetup` | **One-time full setup**: find, raise to 115200, configure ACK-verified, save into the module, verify | up to ~30 s |
 | `?gpsraw [sec]` | Raw NMEA dump — use when nothing else responds | 5 s |
 | `?gpsreinit` | Re-run GPS init without rebooting | ~2 s |
 | `?gpscoldreset` | Clear the satellite cache, force fresh acquisition | instant |
 
-**Run `?gpssetup` once per assembled unit.** It writes the settings into the *module's own*
-non-volatile memory, so boot only has to verify rather than reconfigure.
+**Run `?gpssetup` once per assembled unit.** It asks the module to save the settings in its *own*
+memory, which is permanent only where the module has flash (the HGLRC M100s have none, so on those the
+settings last as long as the module's battery-backed memory). It does not shorten boot: the RX re-applies every setting
+on every boot anyway, so a module that has lost them is put right at the next power-up.
 
 > The baud lives in the GPS module, **not** in the remote's config. Adding a field to the config
 > struct would change its size and force a settings wipe — pairing, calibration, everything. The

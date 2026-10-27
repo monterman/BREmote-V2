@@ -1,3 +1,15 @@
+// V2.5-Evo - 2026-10-27 - audit N2-b (owner ruling 2026-10-27, option B): G7 pins that both combos leave the gear and the
+//   power cap as they were before the combo's TAP:
+//     the tap record (if (!long_press_done && !throttle_abort && held_ms < COMBO_TAP_MAX_MS) { ... }) keeps
+//        last_tap_gear = gear_at_press and last_tap_cap = cap_at_press with last_tap_dir - the values from BEFORE the tap's
+//        own step - and nothing else in handleGearToggle() writes them;
+//     the LEFT tap -> RIGHT hold block (direction > 0 && last_tap_dir == -1) and the RIGHT tap -> LEFT hold block
+//        (direction < 0 && last_tap_dir == 1) each START with gear = last_tap_gear; max_power_cap = last_tap_cap; before
+//        the gesture acts (cycleFmMode() / returnGesture()), and both sit inside the thr_scaled < 10 action gate, the only
+//        two places that read them.
+//   The made-up handler gained both combo blocks with braces and the tap record; red edits drop each restore, restore the
+//   post-tap value instead (recording gear after the step, or restoring this press's own gear_at_press), restore after
+//   the action or only under a condition, and add a second writer.
 // V2.5-Evo - 2026-10-26 - delta audit N-1, N-2, N-6: the gaps the delta audit found are closed.
 //     G1 also pins: Follow-Me is switched off BEFORE the P-7 Return-To-Me end, not only before the flush; the lock sits
 //        inside handleGearToggle()'s thr_scaled < 10 action gate and nowhere else in it; and fmSilentDisarm()'s body
@@ -214,6 +226,8 @@ struct MapGuard {
   bool right_polarity_ok;                                                   // V2.5-Evo - 2026-10-26 - N-6
   // G6 - V2.5-Evo - 2026-10-26 - N-2: the RIGHT hold's station step keeps the gear and the power cap
   bool n2_snapshot, n2_restore;
+  // G7 - V2.5-Evo - 2026-10-27 - N2-b: both combos put back the gear and the cap from before the combo's tap
+  bool n2b_record, n2b_writes_once, n2b_restore_fm, n2b_restore_rtm, n2b_in_gate;
   bool multi;   // a multi-remote build (the take-back exists)
   // G3 - cycleFmModeArmed()'s F-4 guards
   bool armed_found, armed_rtm_guard, armed_return_guard, armed_returns_before_step;
@@ -302,6 +316,34 @@ static MapGuard mapGuard(const std::string& hall_text, const std::string& rtm_te
     const size_t w  = H.find("while (isActive())");
     g.n2_snapshot = sg != std::string::npos && sc != std::string::npos && w != std::string::npos && sg < w && sc < w;
   }
+  // G7 - V2.5-Evo - 2026-10-27 - N2-b: the tap record keeps the PRE-tap gear and cap, and both combo blocks put them back first.
+  {
+    const std::string H = srcSquash(hgt);
+    const std::vector<std::string> rec = srcBlocksAfter(hgt, {"if", "(", "!", "long_press_done", "&&", "!", "throttle_abort", "&&",
+                                                              "held_ms", "<", "COMBO_TAP_MAX_MS", ")", "{"});
+    if (rec.size() == 1) {
+      const std::string R = srcSquash(rec[0]);
+      g.n2b_record = R.find("last_tap_dir = direction;") != std::string::npos &&
+                     R.find("last_tap_gear = gear_at_press;") != std::string::npos &&
+                     R.find("last_tap_cap = cap_at_press;") != std::string::npos;
+    }
+    g.n2b_writes_once = srcCount(H, "last_tap_gear =") == 1 && srcCount(H, "last_tap_cap =") == 1;
+    const std::string restore = "gear = last_tap_gear; max_power_cap = last_tap_cap;";
+    const std::vector<std::string> fm  = srcBlocksAfter(hgt, {"if", "(", "direction", ">", "0", "&&", "last_tap_dir", "==", "-1", ")", "{"});
+    const std::vector<std::string> ret = srcBlocksAfter(hgt, {"if", "(", "direction", "<", "0", "&&", "last_tap_dir", "==", "1", ")", "{"});
+    if (fm.size() == 1) {
+      const std::string F = srcSquash(fm[0]);
+      g.n2b_restore_fm = F.compare(0, restore.size(), restore) == 0 && F.find("cycleFmMode();") != std::string::npos;
+    }
+    if (ret.size() == 1) {
+      const std::string T = srcSquash(ret[0]);
+      g.n2b_restore_rtm = T.compare(0, restore.size(), restore) == 0 && T.find("returnGesture();") != std::string::npos;
+    }
+    const std::vector<std::string> gate = srcBlocksAfter(hgt, {"if", "(", "thr_scaled", "<", "10", ")", "{"});
+    g.n2b_in_gate = gate.size() == 1 && srcCount(srcSquash(gate[0]), "= last_tap_gear;") == 2 &&
+                    srcCount(srcSquash(gate[0]), "= last_tap_cap;") == 2 &&
+                    srcCount(H, "= last_tap_gear;") == 2 && srcCount(H, "= last_tap_cap;") == 2;
+  }
   // G3
   const std::string armed = srcFuncBody(rtm, "cycleFmModeArmed");
   g.armed_found = !armed.empty();
@@ -337,7 +379,9 @@ static bool g3(const MapGuard& g) { return g.armed_found && g.armed_rtm_guard &&
 static bool g4(const MapGuard& g) { return g.combo_found && g.combo_steps && g.combo_never_disarms; }
 static bool g5(const MapGuard& g) { return g.mag_found && g.mag_all_five && g.mag_set_unread; }
 static bool g6(const MapGuard& g) { return g.n2_snapshot && g.n2_restore; }
-static bool mapGuardOk(const MapGuard& g) { return g1(g) && g2(g) && g3(g) && g4(g) && g5(g) && g6(g); }
+// V2.5-Evo - 2026-10-27 - N2-b.
+static bool g7(const MapGuard& g) { return g.n2b_record && g.n2b_writes_once && g.n2b_restore_fm && g.n2b_restore_rtm && g.n2b_in_gate; }
+static bool mapGuardOk(const MapGuard& g) { return g1(g) && g2(g) && g3(g) && g4(g) && g5(g) && g6(g) && g7(g); }
 
 // ---- Made-up sources: one that keeps every rule (single-remote shape), and the pieces a mutation swaps ----
 
@@ -358,14 +402,26 @@ static const char* kLeftGood =
 
 // fakeHall - a made-up handleGearToggle() in the real one's shape (V2.5-Evo - 2026-10-26 - N-6: with the snapshot, the press
 // loop, the thr_scaled < 10 action gate and the tap action). after_gate is text placed just after the gate's block.
+// V2.5-Evo - 2026-10-27 - N2-b: both combo blocks now have braces and start with the pre-tap restore, and the tap record
+// after the press loop keeps the pre-tap gear and cap (kComboRet / kComboFm / kTapRecord, so a red edit can swap one).
+static const char* kComboRet =
+  "          if (direction < 0 && last_tap_dir == 1)\n          {\n            gear          = last_tap_gear;\n"
+  "            max_power_cap = last_tap_cap;\n            returnGesture();\n          }\n";
+static const char* kComboFm =
+  "          else if (direction > 0 && last_tap_dir == -1)\n          {\n            gear          = last_tap_gear;\n"
+  "            max_power_cap = last_tap_cap;\n            cycleFmMode();\n          }\n";
+static const char* kTapRecord =
+  "  if (!long_press_done && !throttle_abort && held_ms < COMBO_TAP_MAX_MS)\n  {\n    last_tap_dir  = direction;\n"
+  "    last_tap_ms   = millis();\n    last_tap_gear = gear_at_press;\n    last_tap_cap  = cap_at_press;\n  }\n";
+
 static std::string fakeHall(const std::string& right, const std::string& left, const std::string& after_gate = "")
 {
   return std::string("void handleGearToggle(int direction)\n{\n  const int     gear_at_press = gear;\n  const uint8_t cap_at_press  = max_power_cap;\n"
                      "  while (isActive())\n  {\n    if (millis() - pushtime > long_press_ms)\n    {\n      if (thr_scaled < 10)\n      {\n"
-                     "        if (has_combo)\n        {\n          if (direction < 0 && last_tap_dir == 1) returnGesture();\n"
-                     "          else if (direction > 0 && last_tap_dir == -1) cycleFmMode();\n        }\n") + right + left +
+                     "        if (has_combo)\n        {\n") + kComboRet + kComboFm + "        }\n" + right + left +
          "      }\n" + after_gate + "      break;\n    }\n    if (change_once)\n    {\n      switch (usrConf.throttle_mode)\n      {\n"
-         "        case 0: if (direction > 0) gear++; break;\n        case 2: throttleAdjustCap(direction); break;\n      }\n    }\n  }\n}\n";
+         "        case 0: if (direction > 0) gear++; break;\n        case 2: throttleAdjustCap(direction); break;\n      }\n    }\n  }\n" +
+         kTapRecord + "}\n";
 }
 
 static const char* kArmedGood =
@@ -563,6 +619,52 @@ int main(int argc, char** argv)
     const MapGuard g = mapGuard(h, rtm_ok, none);
     CHECK(!g.n2_snapshot && !g6(g)); }
 
+  // ---- V2.5-Evo - 2026-10-27 - N2-b: G7 bites ----
+  { // the made-up good source keeps G7 (single-remote and multi-remote shapes)
+    CHECK(g7(mapGuard(hall_ok, rtm_ok, none)));
+    CHECK(g7(mapGuard(fakeHall(kRightMultiGood, kLeftGood), rtm_ok, mr))); }
+  { // the restore removed from the Follow-Me combo (the bug as shipped: gear 0 -> 1 at the bottom)
+    const std::string h = replaceOnce(hall_ok, kComboFm, "          else if (direction > 0 && last_tap_dir == -1)\n          {\n            cycleFmMode();\n          }\n");
+    const MapGuard g = mapGuard(h, rtm_ok, none);
+    CHECK(!g.n2b_restore_fm && !g.n2b_in_gate && !g7(g) && !mapGuardOk(g)); }
+  { // the restore removed from the return combo (one gear lower at the top)
+    const std::string h = replaceOnce(hall_ok, kComboRet, "          if (direction < 0 && last_tap_dir == 1)\n          {\n            returnGesture();\n          }\n");
+    const MapGuard g = mapGuard(h, rtm_ok, none);
+    CHECK(!g.n2b_restore_rtm && !g7(g) && !mapGuardOk(g)); }
+  { // the POST-tap value restored: the tap records the gear after its own step (gear, not gear_at_press)
+    const std::string h = replaceOnce(hall_ok, "    last_tap_gear = gear_at_press;\n", "    last_tap_gear = gear;\n");
+    const MapGuard g = mapGuard(h, rtm_ok, none);
+    CHECK(!g.n2b_record && !g7(g) && !mapGuardOk(g)); }
+  { // the POST-tap cap restored the same way
+    const std::string h = replaceOnce(hall_ok, "    last_tap_cap  = cap_at_press;\n", "    last_tap_cap  = max_power_cap;\n");
+    const MapGuard g = mapGuard(h, rtm_ok, none);
+    CHECK(!g.n2b_record && !g7(g)); }
+  { // the POST-tap value restored in the combo: this press's own start (gear_at_press) is the value AFTER the tap
+    std::string fm = replaceOnce(kComboFm, "gear          = last_tap_gear;", "gear          = gear_at_press;");
+    fm = replaceOnce(fm, "max_power_cap = last_tap_cap;", "max_power_cap = cap_at_press;");
+    const MapGuard g = mapGuard(replaceOnce(hall_ok, kComboFm, fm), rtm_ok, none);
+    CHECK(!g.n2b_restore_fm && !g7(g)); }
+  { // the restore AFTER the gesture acted (the arm / step would run on the bumped gear)
+    const std::string fm = "          else if (direction > 0 && last_tap_dir == -1)\n          {\n            cycleFmMode();\n"
+                           "            gear          = last_tap_gear;\n            max_power_cap = last_tap_cap;\n          }\n";
+    const MapGuard g = mapGuard(replaceOnce(hall_ok, kComboFm, fm), rtm_ok, none);
+    CHECK(!g.n2b_restore_fm && !g7(g)); }
+  { // the restore only under a condition (here only when Follow-Me is already armed)
+    const std::string fm = "          else if (direction > 0 && last_tap_dir == -1)\n          {\n            if (isFmArmed()) { gear = last_tap_gear;"
+                           " max_power_cap = last_tap_cap; }\n            cycleFmMode();\n          }\n";
+    const MapGuard g = mapGuard(replaceOnce(hall_ok, kComboFm, fm), rtm_ok, none);
+    CHECK(!g.n2b_restore_fm && !g7(g)); }
+  { // the cap left out of the return combo's restore
+    const MapGuard g = mapGuard(replaceOnce(hall_ok, kComboRet, replaceOnce(kComboRet, "            max_power_cap = last_tap_cap;\n", "")), rtm_ok, none);
+    CHECK(!g.n2b_restore_rtm && !g7(g)); }
+  { // a second writer of the record (say the RIGHT hold) - the combo would restore a value that is not the tap's
+    const std::string r = replaceOnce(kRightGood, "          else cycleDisplayMode(1);\n", "          else cycleDisplayMode(1);\n          last_tap_gear = gear;\n");
+    const MapGuard g = mapGuard(fakeHall(r, kLeftGood), rtm_ok, none);
+    CHECK(!g.n2b_writes_once && !g7(g)); }
+  { // a restore outside the thr_scaled < 10 gate (it would also run with the trigger held)
+    const MapGuard g = mapGuard(fakeHall(kRightGood, kLeftGood, "      gear = last_tap_gear;\n      max_power_cap = last_tap_cap;\n"), rtm_ok, none);
+    CHECK(!g.n2b_in_gate && !g7(g)); }
+
   // ---- The remote's real source: argv[1], else Source/V2_Integration_Tx from Tools/tests or next to this file ----
   namespace fs = std::filesystem;
   std::error_code ec;
@@ -623,9 +725,14 @@ int main(int argc, char** argv)
   CHECK(g.mag_set_unread);           //     and nothing outside the config layer reads mag_fm_set
   CHECK(g.n2_snapshot);              // G6 (N-2): the gear and the cap are kept at the start of the press ...
   CHECK(g.n2_restore);               //     ... and the RIGHT hold's station step puts both back
-  printf("  G1 lock %s, G2 RIGHT hold %s, G3 F-4 guards %s, G4 combo %s, G5 magnet %s, G6 gear / cap kept %s (%s build)\n",
+  CHECK(g.n2b_record);               // G7 (N2-b): the tap records the gear and the cap from BEFORE its own step ...
+  CHECK(g.n2b_writes_once);          //     ... and nothing else in the handler writes that record
+  CHECK(g.n2b_restore_fm);           //     the LEFT tap -> RIGHT hold block puts both back first, then acts
+  CHECK(g.n2b_restore_rtm);          //     the RIGHT tap -> LEFT hold block too
+  CHECK(g.n2b_in_gate);              //     both restores sit in the thr_scaled < 10 action gate, and nowhere else
+  printf("  G1 lock %s, G2 RIGHT hold %s, G3 F-4 guards %s, G4 combo %s, G5 magnet %s, G6 gear / cap kept %s, G7 combos neutral %s (%s build)\n",
          g1(g) ? "ok" : "FAIL", g2(g) ? "ok" : "FAIL", g3(g) ? "ok" : "FAIL", g4(g) ? "ok" : "FAIL", g5(g) ? "ok" : "FAIL",
-         g6(g) ? "ok" : "FAIL", g.multi ? "multi-remote" : "single-remote");
+         g6(g) ? "ok" : "FAIL", g7(g) ? "ok" : "FAIL", g.multi ? "multi-remote" : "single-remote");
 
   printf("%s: %d checks, %d failed\n", g_fails ? "FAILED" : "PASSED", g_checks, g_fails);
   return g_fails ? 1 : 0;

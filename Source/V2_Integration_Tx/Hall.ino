@@ -1,3 +1,11 @@
+// V2.5-Evo - 2026-10-27 - gesture fix (audit N2-b; owner ruling 2026-10-27, option B): both combos leave the gear and the
+//   power cap exactly as they were before the combo's TAP. The tap records the gear and the cap from the start of its press
+//   together with last_tap_dir (last_tap_gear, last_tap_cap); when the combo's hold fires with the trigger released - LEFT
+//   tap -> RIGHT hold (Follow-Me arm / station step) and RIGHT tap -> LEFT hold (the return gesture) - both are put back to
+//   those values before the gesture acts. Before, the tap's step was clamped at the bottom (gear 0, the cap's 10 % floor)
+//   or at the top while the hold's opposite step still applied, so the Follow-Me combo left one step MORE at the bottom and
+//   the return combo one step LESS at the top. Plain taps, the RIGHT-hold restore (N-2), the lock, the take-back of a
+//   multi-remote build and throttle_mode 1 are unchanged. Loop task only. No confStruct change.
 // V2.5-Evo - 2026-10-26 - gesture fix follow-up (delta audit N-2): a RIGHT 2 s hold that steps the station puts back the
 //   gear and the power cap its own press changed at gear_change_waittime, so walking the stations never raises the throttle
 //   the rider set. Follow-Me not armed: unchanged. No confStruct change.
@@ -402,6 +410,12 @@ static void setRtmDisarmed();
 static void fmSilentDisarm();
 static int           last_tap_dir   = 0;    // last recorded tap direction: +1=right, -1=left, 0=none
 static unsigned long last_tap_ms    = 0;    // millis() when last tap was recorded
+// V2.5-Evo - 2026-10-27 - N2-b: the gear and the power cap at the START of the press that recorded last_tap_dir, i.e. before
+// that tap's own step (gear +/-1 in throttle_mode 0, the cap +/- dynamic_power_step in mode 2). Written only together with
+// last_tap_dir, in the tap record at the end of handleGearToggle(); read only by the two combo branches, which put both back
+// when the combo's hold fires. Range: gear 0..max_gears-1, cap 10..100 (%), as the tap found them. Loop task only.
+static int           last_tap_gear  = 0;    // gear when the recorded tap's press began
+static uint8_t       last_tap_cap   = 0;    // max_power_cap when the recorded tap's press began
 static const unsigned long COMBO_WINDOW_MS  = 3000UL;  // max gap between tap and hold for combo
 // Separate from gear_change_waittime — gives users a comfortable ~500ms window to perform
 // a tap without needing sub-100ms precision. A slightly-long tap may also adjust gear/cap
@@ -490,12 +504,25 @@ void handleGearToggle(int direction)
             // before when no auto-return override stands (the rtm_enabled / gps_en gate is inside),
             // and otherwise clears the override; the cancel-and-flip state is landed from inside
             // the arm ceremony. See returnGesture() in RTMState.ino.
+            // V2.5-Evo - 2026-10-27 - N2-b: THE BUG - the RIGHT tap's +1 is clamped at the top gear (or the cap's 100 %)
+            // while this hold's -1 still applied at gear_change_waittime, so at the top the gesture left the rider one
+            // step LOWER than before the tap (everywhere else the two cancel). THE FIX (owner: the gesture leaves gear and
+            // cap as they were): both go back to their value from before the tap, then the gesture acts. That is never
+            // more than the rider had before the tap, and this branch runs only with the trigger released (thr < 10).
+            gear          = last_tap_gear;
+            max_power_cap = last_tap_cap;
             returnGesture();
           }
           else if (direction > 0 && last_tap_dir == -1)
           {
             // LEFT tap + RIGHT hold 5s → arm Follow-Me, or step to the next station when it is armed (V2.5-Evo - 2026-10-26:
             // before AND after the first squeeze - it no longer disarms; see cycleFmMode() in RTMState.ino)
+            // V2.5-Evo - 2026-10-27 - N2-b: THE BUG - the LEFT tap's -1 is clamped at gear 0 (or the cap's 10 % floor)
+            // while this hold's +1 still applied at gear_change_waittime, so at the bottom arming Follow-Me or stepping
+            // the station left the rider one step HIGHER than before the tap (with startgear 0, gear 1 instead of 0). THE
+            // FIX: both go back to their value from before the tap, whatever the gesture then does (arm, step, or ignored).
+            gear          = last_tap_gear;
+            max_power_cap = last_tap_cap;
             // V2.5-Evo - 2026-10-07 - Q-10: THE BUG - the magnet tap already left Follow-Me alone during a return, but
             // this combo did not: it could disarm Follow-Me (with its 2 s blocking "St", freezing RTM's gates and
             // ramp) or re-declare it in the middle of a return. THE FIX: ignored while RTM is active or arming.
@@ -632,6 +659,11 @@ void handleGearToggle(int direction)
   {
     last_tap_dir = direction;  // +1 or -1
     last_tap_ms  = millis();
+    // V2.5-Evo - 2026-10-27 - N2-b: the gear and the cap from before THIS tap's own step, for the combo branches above. Set
+    // here, before the post-tap wait below, because the combo's hold can start inside that wait (runMenu() calls this
+    // handler again for it).
+    last_tap_gear = gear_at_press;
+    last_tap_cap  = cap_at_press;
   }
 
   // GestureAbort 2026-09-17: skipped on a throttle abort — this block waits for toggle release

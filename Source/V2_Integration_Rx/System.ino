@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-27 - GPS COMMANDS, COMMENTS AND HELP TEXT ONLY (RX GPS audits of 2026-10-27): the ?gpscfg row's help text names the update-rate and chip-version (UBX-MON-VER) reads it gained, ~6 s worst case (was ~4.5 s); the ?gpssetup row's says up to ~30 s (was ~20 s); and the ?gpscfg note no longer says configureGPS() never checks a UBX ACK - it has since GPS-ACK-1/2. This tag was missing: those changes were tagged inline only. No row flag, gate or command changed. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-11 - change 1 (audit 2026-10-11): ?diag gains one "FM pause" line (printFmPauseDiag() in RTMState.ino: the pause and its input, the 30 s long-loss clock, the heading creep); the "heading" line no longer says Follow-Me will not engage (D-3, COG period). No new command. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): ?diag names level 6 "IMU" and gains three lines under "VESC 2 CAN": "VESC 2 IMU" (poll success in the window, polling / idle / waiting / backed-off state, miss streak), the last IMU values with their age and fresh / STALE / IMPLAUSIBLE verdict (the same rule the logger applies), and "RX IMU" (none fitted, columns reserved). DiagSnapshot carries the two imu2 counters; ?diagz zeroes them (the miss streak is live state and is left alone). No new ?command. Read-only. No confStruct change.
 // V2.5-Evo - 2026-10-07 - P-11: the BIND LED link test uses stampStale() (signed age). No confStruct change.
@@ -1919,8 +1920,12 @@ static const SerialCommand kCommands[] = {
   // is ever changed again, this number and the one in Init.ino's header are both derived from it.
   {"i2c", "scan I2C bus for compass", cmdScanI2C, true, true},
   {"gpsdiag", "2Hz GPS feed + RTM COG-valid breakdown (diagnose why GPS COG heading never engages)", cmdGpsDiag, true},
-  // V2.5-Evo - 2026-07-28 - reads dynModel + GSV state back OUT of the module. configureGPS()
-  // never checks a UBX ACK, so until now "sent" and "applied" were indistinguishable.
+  // V2.5-Evo - 2026-07-28 - reads dynModel + GSV state back OUT of the module. When this was
+  // written, configureGPS() did not check a UBX ACK, so "sent" and "applied" were indistinguishable.
+  // (V2.5-Evo - 2026-10-27 - corrected: this said configureGPS() "never checks a UBX ACK", which
+  // stopped being true with GPS-ACK-1/2 - every write there is ACK-checked unless the module answers
+  // nothing. The readback still matters: an ACK says a write was accepted at that moment, not that
+  // the setting is still in force after a later write or a warm restart.)
   // blocks_loop: each ubxPoll() waits up to 1500 ms for a reply and this makes up to three of
   // them, so a silent module costs ~4.5 s of frozen loop.
   // V2.5-Evo - 2026-10-27 - it now also reads the update rate back and polls UBX-MON-VER (which

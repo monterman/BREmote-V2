@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-27 - GPS DELTA FOLLOW-UPS (delta audit 2026-10-27, LOW rows 1-5): (1) gpsEnableNmeaOut() sets the GGA and RMC rates through gpsApplyCfg(): old-form UBX-CFG-MSG in its 3-byte "current port" form (F0 00 / F0 04, rate 1, checksum computed), ACK-checked, re-sent as CFG-VALSET on a NAK, and straight CFG-VALSET on a VALSET module. They used to be CFG-VALSET only, which an M8 does not have, so on an M8 left UBX-only the repair switched the protocol back on and left both sentences off. (2) ?gpssetup step 3: after a move that lands, a dialect re-check that answers nothing (MUTE) stops the command with the step-2 message and "NMEA output was not switched back on"; it used to write blind and skip the NMEA repair without a word. (3) ?gpssetup step 3: an old-form move that STAYED (module proven at the old baud) is tried once in CFG-VALSET, the same retry boot makes. (4) text: the NMEA-on verdict lines name the write that took and describe a UBX-only module as bytes with no parsed sentences (it streams UBX, it is not silent); the boot cost of the repair gives the 9600 figure too. No CFG-SIGNAL read or write, no MON-VER at boot. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-27 - GPS FOLLOW-UPS (audit 2026-10-27): (1) NMEA-ON KEYED TO THE SYMPTOM, NOT THE FORMAT: when the listen heard UBX but no NMEA and the module answers config messages, gpsEnableNmeaOut(dialect) now runs whichever form the module answers - on an old-form module it first sends CFG-PRT at the baud the module is proven at (gps_current_baud, so the ACK is readable; its output mask is UBX+NMEA), then the four CFG-VALSET writes - at boot and in ?gpssetup step 4. It used to run on CFG-VALSET modules only, so an old-form module left UBX-only by a flight controller and heard at 115200 was never repaired while the boot text said it was being repaired; the boot text now says what is done, including "NOT switched back on" when the module answers no config message. A CFG-VALSET module still gets the writes on every boot. (2) gpsSetModuleBaud() returns one of three results - GPS_MOVE_OK, GPS_MOVE_STAYED (heard again at the old baud, listening 1100 ms; it used to listen 300 ms and ignore the answer) or GPS_MOVE_LOST. On LOST configureGPS() rescans with gpsDetectBaud() and, if nothing answers, sends nothing more and returns; ?gpssetup stops with a message. (3) no Flash layer bit anywhere: ?gpssetup steps 3/4 and the NMEA-on writes are RAM|BBR like boot; step 5's CFG-CFG save is unchanged. (4) ?gpscfg's rate line says "setting matches": it is the module's setting, not the rate achieved. (5) an old-form baud move that left the module proven at the old baud is tried once in CFG-VALSET, and the link-budget warning from the remote's firmware is printed, computed on gps_current_baud after the move. (6) comments: the "M10 removed the old form" claims are corrected (M10 firmware keeps some old UBX-CFG messages; the owner's M100 Mini and M100-5883 accept them), the "(u-blox 6/7/8)" labels now name the format, timings brought up to date. No CFG-SIGNAL read or write, no MON-VER at boot. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-27 - RATE AND BAUD ON EVERY DIALECT (audit 2026-10-09, Part 2): on a module that refuses the old UBX-CFG form (some M9/M10), the RX never set the update rate or the baud - every rate request was an old-form CFG-RATE frame written blind, and the baud move was old-form CFG-PRT only. Now: (1) the rate goes out ONCE, after the dialect probe and the GSV/GLL/VTG filters, through gpsApplyCfg() - ACK-checked in the old form, CFG-VALSET CFG-RATE-MEAS on a NAK or on a VALSET module - at 200 ms for gps_chip_type 0/1 and 100 ms for 2/3 (gpsSelectedMeasMs()), frame built at runtime; the blind setRate5Hz / setRate10Hz writes are gone from every branch, and the boot line prints rate=<ms> <status>. (2) a module heard below 115200 is moved there in the dialect it speaks (gpsSetModuleBaud(), ported from the TX: CFG-VALSET CFG-UART1-BAUDRATE or old-form CFG-PRT), the move proven by listening at the new baud, not by an ACK; ?gpssetup uses the same call (persisted) and now writes the rate too. (3) types 2/3 send NOTHING before the module is heard (they used to write CFG-RATE and CFG-GNSS at 115200 before listening); the type 0/1 "failed, rescanning" path no longer writes a rate at an unproven baud - the unconditional rescan after the switch is the rescan. (4) no constellation request at all: the CFG-GNSS write is removed and no CFG-SIGNAL key is added, so the module keeps its own set (more constellations can lower an M10's top rate). (5) ?gpscfg reads the rate back (old-form CFG-RATE poll, or CFG-VALGET CFG-RATE-MEAS) and polls UBX-MON-VER, printing the hardware generation and the version strings, so "is it really an M10" is answered on the board. dynModel, the GSV/GLL/VTG filter, NMEA-on and the compass are unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-08-17 - COMMENTS ONLY, no code touched: the ?gpsbaud entry_baud restore justified itself with a claim the code does not support - "every path that opens Serial1 after boot goes through gpsOpenAt()". Two paths do not: the BN-220/880 baud switch and the unknown-chip fallback both call Serial1.begin() DIRECTLY and leave gps_current_baud stale for the rest of the function (the first says 9600 while the port runs at 115200; the second never sets it at all). The restore is nevertheless correct today, and the comment now names the reason it is correct: EVERY path through configureGPS(), including the early break that skips the dual-baud dance, reaches the UNCONDITIONAL gpsDetectBaud() rescan, which re-establishes the invariant through gpsProbeAt() -> gpsOpenAt() (or through gpsOpenAt(fallback) when nothing answers). That rescan is the actual guarantor, so it is now documented as one - the restore becomes silently wrong the day someone conditionalises or short-circuits it, and the failure mode is a GPS link left at a scan baud until reboot, i.e. losing the heading source Follow-Me steers on. Short warning notes added at the two direct-begin sites pointing at the same dependency. The restore logic itself, the abort points, the UBX/NMEA detection and every timing value are UNCHANGED. No confStruct change, sizeof stays 192, SW_VERSION stays 35.
@@ -188,8 +189,10 @@ static bool gpsPhaseACheck(double cur_lat, double cur_lng, float cur_speed_kmh) 
 //     start-up. A module heard below 115200 adds a baud move: about 1.3 s when it lands, about 2.5 s
 //     when it does not (about 5 s if an old-form move is retried in CFG-VALSET). A move that loses
 //     the module adds a rescan of about 6 s. Switching NMEA output back on, when it is needed, adds
-//     a few milliseconds, or up to about 3.5 s if the module stops answering. With no module at
-//     all: about 12 s on types 0/1 and about 6 s on types 2/3. The watchdog is not armed yet.
+//     a few milliseconds, or, if the module stops answering, up to about 3.5 s at 115200 and about
+//     7 s at 9600 (V2.5-Evo - 2026-10-27 - delta audit: only the 115200 figure was given). With no
+//     module at all: about 12 s on types 0/1 and about 6 s on types 2/3. The watchdog is not armed
+//     yet.
 // ============================================================
 // ============================================================
 // ubxSendAcked - send a UBX config message and CONFIRM the module accepted it
@@ -645,11 +648,19 @@ static const char *gpsApplyCfg(uint8_t dialect,
 //      Its output mask is UBX+NMEA, which is the old-form way to switch NMEA output back on.
 //      Sent through ubxSendAckedT() so the answer is reported. A module whose firmware keeps
 //      some old messages but not CFG-PRT (some M10) refuses it, and writes 1-3 do the job.
-//      Writes 1-3 below are CFG-VALSET and go out whichever form answered. An M8 has no
+//      Writes 2-3 below are CFG-VALSET and go out whichever form answered. An M8 has no
 //      CFG-VALSET and refuses or ignores them; at a proven baud that costs time, not harm.
+//      (V2.5-Evo - 2026-10-27 - this said "writes 1-3"; write 1 now goes in either form, below.)
 //   1. GGA and RMC message rates. These are the only two sentences TinyGPS++ reads, and
 //      Betaflight may have zeroed them individually — in which case flipping the port-level
 //      protocol back on by itself changes nothing.
+//      V2.5-Evo - 2026-10-27 - delta audit LOW row 1: sent through gpsApplyCfg(), so in the form
+//      the module answers. Old form: UBX-CFG-MSG in its 3-byte "current port" form (class F0,
+//      id 00 = GGA / 04 = RMC, rate 1), which sets the rate on the port the message arrives on,
+//      i.e. UART1. It is ACK-checked and re-sent as CFG-VALSET on a NAK; a CFG-VALSET module goes
+//      straight to the key. These two used to be CFG-VALSET only, which an M8 does not have, so on
+//      an M8 left UBX-only the repair switched the protocol back on (write 0) and left both
+//      sentences off.
 //   2. CFG-UART1OUTPROT-UBX, kept ON deliberately. Our own ACK checking and the ?gpscfg
 //      readback are UBX; disabling it would blind every other command here. Reaching this
 //      function at all means the module has already ACKed or NAKed something, both of which
@@ -671,10 +682,16 @@ static const char *gpsApplyCfg(uint8_t dialect,
 // nothing because the caller has no decision left to make — it has already chosen the dialect.
 // The verdict line says only what is known: NMEA output is back on if CFG-PRT or the
 // CFG-UART1OUTPROT-NMEA write was accepted, and GGA and RMC are known to be on only if their
-// CFG-VALSET writes were accepted.
+// writes were accepted (V2.5-Evo - 2026-10-27 - in either form; this said "their CFG-VALSET
+// writes").
 //
-// Cost: up to five ACKed writes, so up to ~3.5 s at 115200 in the pathological case where the
-// module answers none of them, and a few milliseconds when it answers normally.
+// Both callers skip a module that answers no config message (UBX_DIALECT_MUTE), so
+// gpsApplyCfg()'s blind-write branch is never reached from here: every write below is ACK-checked.
+//
+// Cost: up to five settings, each ACK-checked, so in the pathological case where the module
+// stops answering, up to ~3.5 s at 115200 and ~7 s at 9600; a few milliseconds when it answers
+// normally. (V2.5-Evo - 2026-10-27 - the 9600 figure added. GGA or RMC can cost two exchanges, a
+// NAK and then CFG-VALSET, but a NAK is an answer and comes back at once.)
 // ============================================================
 static void gpsEnableNmeaOut(uint8_t dialect)
 {
@@ -690,32 +707,47 @@ static void gpsEnableNmeaOut(uint8_t dialect)
     prt = (r == UBX_ACK) ? "OK" : (r == UBX_NAK) ? "REJECTED" : "no-ACK";
   }
 
-  const bool ok_gga  = (ubxValset(KEY_MSGOUT_NMEA_GGA_U1, &on, 1, 2) == UBX_ACK);
-  const bool ok_rmc  = (ubxValset(KEY_MSGOUT_NMEA_RMC_U1, &on, 1, 2) == UBX_ACK);
+  // 1. V2.5-Evo - 2026-10-27 - GGA and RMC in the form the module answers (see note 1 above).
+  //    UBX-CFG-MSG, 3-byte payload: msgClass F0 (standard NMEA), msgID 00 = GGA / 04 = RMC, then
+  //    rate 1 on the port the message arrives on. The checksum is computed here, never typed in
+  //    (it comes out FB 10 for GGA and FF 18 for RMC).
+  byte enableGGA[] = { 0xB5, 0x62, 0x06, 0x01, 0x03, 0x00, 0xF0, 0x00, 0x01, 0x00, 0x00 };
+  byte enableRMC[] = { 0xB5, 0x62, 0x06, 0x01, 0x03, 0x00, 0xF0, 0x04, 0x01, 0x00, 0x00 };
+  ubxAppendChecksum(enableGGA, sizeof(enableGGA));
+  ubxAppendChecksum(enableRMC, sizeof(enableRMC));
+  const char *s_gga  = gpsApplyCfg(dialect, enableGGA, sizeof(enableGGA), KEY_MSGOUT_NMEA_GGA_U1, &on, 1);
+  const char *s_rmc  = gpsApplyCfg(dialect, enableRMC, sizeof(enableRMC), KEY_MSGOUT_NMEA_RMC_U1, &on, 1);
+  const bool ok_gga  = (strcmp(s_gga, "OK") == 0 || strcmp(s_gga, "OK/valset") == 0);
+  const bool ok_rmc  = (strcmp(s_rmc, "OK") == 0 || strcmp(s_rmc, "OK/valset") == 0);
   const bool ok_ubx  = (ubxValset(KEY_UART1OUTPROT_UBX,   &on, 1, 2) == UBX_ACK);
   const bool ok_nmea = (ubxValset(KEY_UART1OUTPROT_NMEA,  &on, 1, 2) == UBX_ACK);
 
   Serial.printf("GPS NMEA output on UART1: %s%s%sGGA %s | RMC %s | UBX-out %s | NMEA-out %s\n",
                 prt ? "CFG-PRT " : "", prt ? prt : "", prt ? " | " : "",
-                ok_gga  ? "OK/valset" : "REJECTED",
-                ok_rmc  ? "OK/valset" : "REJECTED",
+                s_gga, s_rmc,
                 ok_ubx  ? "OK/valset" : "REJECTED",
                 ok_nmea ? "OK/valset" : "REJECTED");
 
+  // V2.5-Evo - 2026-10-27 - delta audit, text items 6 and 7. The middle line used to say
+  // "(CFG-PRT, UBX+NMEA)" and blame the M8's missing CFG-VALSET; it also printed on a CFG-VALSET
+  // module, where no CFG-PRT is sent, and GGA/RMC now go in the old form too. It names the write
+  // that took instead. The last line used to say "If ?diag shows no GPS bytes": a UBX-only module
+  // is not silent, it streams UBX, and getGPSLoop() counts every byte, so ?diag shows bytes and no
+  // parsed sentences.
   const bool prt_ok   = (prt != nullptr && strcmp(prt, "OK") == 0);
   const bool proto_on = prt_ok || ok_nmea;
   if (proto_on && ok_gga && ok_rmc)
     Serial.println("GPS: NMEA output re-enabled on UART1 — GGA and RMC are the two sentences "
                    "this firmware parses.");
   else if (proto_on)
-    Serial.println("GPS: NMEA output switched back on (CFG-PRT, UBX+NMEA), but the GGA and RMC "
-                   "rates were not confirmed: this firmware sets them only through CFG-VALSET, "
-                   "which an M8 does not have. If ?diag shows GPS bytes but no parsed sentences, "
-                   "they were turned off one by one and need u-center.");
+    Serial.printf("GPS: NMEA output switched back on (%s), but the GGA and RMC rates were not "
+                  "confirmed (see their fields above). If ?diag shows GPS bytes but no parsed "
+                  "sentences, they are still off and need u-center.\n",
+                  prt_ok ? "CFG-PRT, UBX+NMEA" : "CFG-VALSET NMEA-out");
   else
-    Serial.println("GPS: !! NMEA output could NOT be fully re-enabled. If ?diag shows no GPS "
-                   "bytes, this module is UBX-only — a flight controller leaves them that way "
-                   "— and needs u-center to recover.");
+    Serial.println("GPS: !! NMEA output could NOT be fully re-enabled. If ?diag shows GPS bytes "
+                   "but no parsed sentences, this module is still UBX-only — a flight controller "
+                   "leaves them that way — and needs u-center to recover.");
 }
 
 // V2.5-Evo - 2026-07-31 - RX-WDT-3: the bool ubxSendAcked() that shipped in f7fbcbd was
@@ -2122,18 +2154,44 @@ void cmdGpsSetup(const String &args)
   // results (see gpsSetModuleBaud()): on GPS_MOVE_STAYED the module is proven at the old baud and
   // the steps below write there; on GPS_MOVE_LOST it was heard at neither baud, so there is no
   // baud left that it is proven on and this command STOPS - nothing more is sent.
+  //
+  // V2.5-Evo - 2026-10-27 - delta audit LOW rows 2 and 3: an old-form move that STAYED is tried
+  // once in CFG-VALSET, as at boot (adds about 2.4 s when it runs); and after a move that lands, a
+  // re-check that answers no config poll stops the command the way step [2/6] does.
   // ============================================================
   if (cur != GPS_BAUD_PREFERRED) {
     Serial.printf("[3/6] baud: %lu -> %lu (%s) ... ", (unsigned long)cur,
                   (unsigned long)GPS_BAUD_PREFERRED,
                   dialect == UBX_DIALECT_VALSET ? "CFG-VALSET" : "CFG-PRT");
 
-    const uint8_t mv = gpsSetModuleBaud(dialect, cur, GPS_BAUD_PREFERRED);
+    uint8_t mv = gpsSetModuleBaud(dialect, cur, GPS_BAUD_PREFERRED);
+    // V2.5-Evo - 2026-10-27 - delta audit LOW row 2: the same one-shot CFG-VALSET retry boot makes
+    // (see configureGPS()). STAYED means the module was just heard again at cur, inside
+    // gpsSetModuleBaud()'s 1100 ms listen, and nothing has been sent since, so cur is a proven baud
+    // and the retry frame goes out at it. An M10 that keeps old CFG-NAV5 may still refuse old
+    // CFG-PRT; an M8 refuses or ignores the frame, which at a proven baud adds no framing errors.
+    // Never after LOST: nothing is proven there, and the LOST branch below stops the command.
+    if (mv == GPS_MOVE_STAYED && dialect == UBX_DIALECT_LEGACY) {
+      Serial.printf("not taken, heard again at %lu; trying once in CFG-VALSET ... ", (unsigned long)cur);
+      mv = gpsSetModuleBaud(UBX_DIALECT_VALSET, cur, GPS_BAUD_PREFERRED);
+    }
     if (mv == GPS_MOVE_OK) {
       Serial.println("OK");
       cur = GPS_BAUD_PREFERRED;
       delay(250);
       dialect = gpsDetectDialect();          // the link just changed under us; re-confirm
+      // V2.5-Evo - 2026-10-27 - delta audit LOW row 3: step [2/6]'s rule applies to this re-check
+      // too. A module that answers no config poll at the new baud gets nothing written: the steps
+      // below used to carry on (gpsApplyCfg() writes blind to a MUTE module) and skip the NMEA
+      // repair without a word, although step [1/6] had promised it. Nothing is sent on this exit.
+      if (dialect == UBX_DIALECT_MUTE) {
+        Serial.println("  dialect at the new baud: UNKNOWN — answers no config poll");
+        Serial.println("  Nothing can be verified, so nothing will be written. Writing blind is");
+        Serial.println("  what this whole change exists to stop. Power-cycle the RX and retry.");
+        Serial.println("  NMEA output was not switched back on.");
+        setUartMux(1);
+        return;
+      }
     } else if (mv == GPS_MOVE_STAYED) {
       Serial.printf("failed, heard again at %lu and staying there\n", (unsigned long)cur);
     } else if (mv == GPS_MOVE_LOST) {

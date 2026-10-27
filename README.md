@@ -180,14 +180,14 @@ BREmote is a custom wireless remote system for efoils and RC tow buggies. The TX
 | Module | HT-CT62 (ESP32-C3 + SX1262 + WiFi + **BLE** integrated) | HT-CT62 |
 | Radio | SX1262 LoRa | SX1262 LoRa |
 | BLE | Built-in (ESP32-C3) — NUS + VESC Tool protocol ✅ in master; `bt_enabled` SPIFFS config (0=off, 1=Hall-mode, 2=always-on) | Built-in (ESP32-C3) — RX BLE planned |
-| GPS | BN-220 or [HGLRC M100 Mini](https://www.hglrc.com/products/hglrc-m100_mini-gps) (M10 chip, no compass, 3.3V–5V) | BN-880 or [HGLRC M100-5883](https://www.hglrc.com/products/m100-5883-gps) (M10 chip + compass) — **not the HGLRC M100 Pro** ("B101" chip, not u-blox; see [docs/GPS.md §7](docs/GPS.md#7-fitting-a-different-gps)) |
+| GPS | BN-220 or [HGLRC M100 Mini](https://www.hglrc.com/products/hglrc-m100_mini-gps) (M10 chip, no compass, 3.3V–5V). Both are good remote modules; the M100 Mini is the smaller one. | BN-880 or [HGLRC M100-5883](https://www.hglrc.com/products/m100-5883-gps) (M10 chip + compass) — **not the HGLRC M100 Pro** ("B101" chip, not u-blox; see [docs/GPS.md §7](docs/GPS.md#7-fitting-a-different-gps)) |
 | Compass | None | QMC5883L (I2C `0x0D`) **or** QMC5883P (I2C `0x2C`) — auto-detected at boot |
 | Display | HT16K33 dot matrix (I2C 0x70) | None |
 | ADC | ADS1115 (I2C 0x48) | None |
 | I/O Expander | None | AW9523 (I2C) |
 | ESC / VESC | None | VESC UART or PWM (RMT GPIO 9) |
 
-> ⚠️ **TX GPS must be 3.3V tolerant** — the ESP32-C3 supplies 3.3V only. Both the BN-220 and HGLRC M100 Mini meet this requirement.
+> ⚠️ **TX GPS must be 3.3V tolerant** — the ESP32-C3 supplies 3.3V only. Both the BN-220 and HGLRC M100 Mini meet this requirement. The M100 Mini (about 15 × 15 mm, against the BN-220's 22 × 20 mm) is small enough to fit inside the Nano remote.
 
 > 🔌 **Wiring the RX GPS + compass:** **[BN-880 → RX wiring guide →](docs/GPS_Wiring_BN880_RX.md)** — six wires,
 > pin map, and the three things that bite: every wire runs **straight, label to label** (the PCB does the UART

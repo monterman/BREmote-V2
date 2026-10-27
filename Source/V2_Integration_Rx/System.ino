@@ -1807,7 +1807,7 @@ void cmdHelp(const String& params);
 // PERMITTED - bounded blockers. They hold loop() but they END ON THEIR OWN, so the console comes
 // back without a cable:
 //   ?checkheading (<=30 s) ?magalign (5 s) ?compasscal (45 s) ?magtest (120 s) ?i2c (<=2.5 s)
-//   ?gpscfg (~4.5 s) ?gpsbaud (~6 s).
+//   ?gpscfg (~6 s) ?gpsbaud (~6 s).
 //   ?checkheading, ?magalign, ?compasscal and ?magtest also pump the web server from inside
 //   their own loops, so their output arrives WHILE they run. ?i2c, ?gpscfg and ?gpsbaud do not -
 //   the console simply pauses for their few seconds and then catches up.
@@ -1910,7 +1910,7 @@ static const SerialCommand kCommands[] = {
   // one-shot print, but it walks all 126 addresses taking and giving i2cMutex once EACH, and
   // initHardware() sets Wire.setTimeOut(3) - so a stalled or held bus costs up to ~380 ms of
   // frozen loop, plus 126 mutex acquisitions contending with the generatePWM task's AW9523
-  // enable-swap writes. That is a lighter class than ?gpscfg (~4.5 s) but it stays gated: 126
+  // enable-swap writes. That is a lighter class than ?gpscfg (~6 s) but it stays gated: 126
   // acquisitions on the motor's own mutex is reason enough on its own.
   // V2.5-Evo - 2026-10-03 - the arithmetic above was ~2.5 s, from the 20 ms per-transaction ceiling
   // initCompass() used to set. STEP 1 of the enable-swap starvation fix moved that ceiling to
@@ -1922,7 +1922,9 @@ static const SerialCommand kCommands[] = {
   // never checks a UBX ACK, so until now "sent" and "applied" were indistinguishable.
   // blocks_loop: each ubxPoll() waits up to 1500 ms for a reply and this makes up to three of
   // them, so a silent module costs ~4.5 s of frozen loop.
-  {"gpscfg", "read back live GPS config (dynModel, GSV filter) - verifies configureGPS() actually took; now reads M9/M10 via CFG-VALGET too", cmdGpsCfg, true, true},
+  // V2.5-Evo - 2026-10-27 - it now also reads the update rate back and polls UBX-MON-VER (which
+  // silicon is fitted): at most four polls go unanswered, so ~6 s worst case.
+  {"gpscfg", "read back live GPS config (dynModel, GSV filter, update rate, chip version) - verifies configureGPS() actually took; reads M9/M10 via CFG-VALGET too", cmdGpsCfg, true, true},
   // V2.5-Evo - 2026-07-30 - RX port of the TX GPS work. Listen-only scan: never transmits at
   // an unconfirmed baud, which is what disabled the TX's GPS receiver on 2026-07-30.
   {"gpsbaud", "listen-only baud scan + UBX-alive check (spots the u-blox UART-RX-disable state) - ~6s block, bench only", cmdGpsBaud, true, true},

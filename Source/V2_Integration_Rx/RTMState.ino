@@ -1,3 +1,11 @@
+// V2.5-Evo - 2026-10-30 - SIDE ZONE ROUND THE ANCHOR, SIDE-AWARE (audit 2026-10-20 R3, finding F-3; rides 19 and 30 Oct):
+//   computeFmTarget()'s rear-diagonal Schmitt measured the buggy from the FILTERED rider point while the station sits
+//   round the lag-corrected ANCHOR (8.8 m apart at 9.8 mph), and its 35 / 45 deg zone sat inside the owner's 60 deg
+//   preset, so a buggy holding its station read "outside" and the station hunted 0 <-> 60 (26 flips in 618 following
+//   rows on 19 Oct). Now: measured round the anchor, and on the station's side the zone is near_diag + 15 in / + 25 out
+//   (75 / 85 at 60, held at or below 90, never narrower than the configured zone); the wrong side keeps the configured
+//   zone. Pure rule fmSideZoneStep() in Common/FollowMeStation.h, constants kFmZoneStation*. Steering target only - no
+//   cap, no throttle term changes. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-25 - COMMENT ONLY (steer default review S-5): two notes no longer call steer_during_auto 0 the default (the factory default is 1 since 2026-10-25). No code change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-20 - FRONT STATIONS SWAP NUMBERS (owner): F4 = front-LEFT, F5 = front-RIGHT, so 1-5 run clockwise
 //   round the rider (1 rear-right, 2 behind, 3 rear-left, 4 front-left, 5 front-right). The presets and the same-side
@@ -2438,6 +2446,17 @@ static const float    kFmStationSettleDeg    = 5.0f;    // degrees
 //   gap term uses, but SIGNED, so a buggy that has run too far ahead gives throttle back instead of
 //   being granted a standing closing allowance for ever.
 static const float    kFmAlongGainKmhPerM    = 0.5f;    // km/h per metre of along-track error
+
+// ---- V2.5-Evo - 2026-10-30 - THE SIDE ZONE ON THE STATION'S SIDE (audit 2026-10-20 R3, finding F-3) ----
+// Compile-time, like every kFm* here: no confStruct change, sizeof stays 200, SW_VERSION stays 36. Read only by
+// fmSideZoneStep() (Common/FollowMeStation.h) in computeFmTarget(). On the station's side of the rider's line the rear
+// diagonal stays engaged up to near_diag + 25 deg and re-engages below near_diag + 15 deg (the owner's 60: 85 out /
+// 75 in, where the configured 35 / 45 sat INSIDE the 60 deg preset and hunted). Held at or below 90 deg, the same cap
+// ConfigService puts on zone_angle_exit_deg (L-12): past abeam the rear diagonal must not stay engaged. The wrong side
+// keeps the configured zone_angle_enter_deg / zone_angle_exit_deg.
+static const float    kFmZoneStationEnterExtraDeg = 15.0f;   // degrees past near_diag: engage below this
+static const float    kFmZoneStationExitExtraDeg  = 25.0f;   // degrees past near_diag: release above this
+static const float    kFmZoneStationMaxDeg        = 90.0f;   // degrees; neither threshold may pass abeam
 
 // ---- V2.5-Evo - 2026-10-06 - THE RIDER SHIELD (audit H-2) AND THE SIDE BAND (audit H-3) ----
 // All five are 🔴 PROVISIONAL compile-time constants, not settings (no confStruct change). The shield
@@ -5065,6 +5084,9 @@ static void updateFmRiderTracking()
 //      release above zone_angle_exit_deg, owner defaults 35 / 45). Outside the zone we fall
 //      back to pure-behind. Without this hysteresis an unstable rider course could whip the
 //      target point across the wake from one side to the other.
+//      V2.5-Evo - 2026-10-30 - audit R3: the angle is now measured round the ANCHOR (step 1), not the
+//      filtered point, and on the station's side the zone is near_diag + 15 in / + 25 out (held at or
+//      below 90); the wrong side keeps zone_angle_enter_deg / zone_angle_exit_deg. fmSideZoneStep().
 //
 //   DEGRADED MODE. If the rider is too slow for a valid course, there is no meaningful "behind".
 //   We hold station instead: put the target d_follow from the rider along the current
@@ -5241,16 +5263,12 @@ static void computeFmTarget(double* out_lat, double* out_lng)
   double anchor_lat, anchor_lng;
   projectPoint(fm_filt_lat, fm_filt_lng, course, lag_m, &anchor_lat, &anchor_lng);
 
-  // ---- Side-zone Schmitt: is the buggy lined up enough behind the rider to use the diagonal? ----
+  // The bearing from the FILTERED rider to the buggy: the frame `course` was differentiated in. The buggy's along /
+  // cross offsets, the engage seed and every re-seed below are measured from it, as before.
+  // V2.5-Evo - 2026-10-30 - audit R3: the side-zone Schmitt that used to sit here (measured from this same filtered
+  // point, 35 / 45 on both sides) moved below the effective mode, measured round the ANCHOR - see "Side-zone Schmitt".
   float b_rider_to_buggy = (float)TinyGPSPlus::courseTo(
       fm_filt_lat, fm_filt_lng, gps_last_lat, gps_last_lng);
-  float off_axis = fmAngleDiff(b_rider_to_buggy, course + 180.0f);
-
-  if (!fm_diagonal_engaged && off_axis < usrConf.zone_angle_enter_deg) {
-    fm_diagonal_engaged = true;
-  } else if (fm_diagonal_engaged && off_axis > usrConf.zone_angle_exit_deg) {
-    fm_diagonal_engaged = false;
-  }
 
   // ==========================================================================================
   // V2.5-Evo - 2026-10-02 - P2: THE STATION MODEL REPLACES THE DISCRETE PER-MODE OFFSET SIGN.
@@ -5303,6 +5321,35 @@ static void computeFmTarget(double* out_lat, double* out_lng)
   if (fm_front_aborted && (m_decl == 4 || m_decl == 5)) {
     if (fm_front_retreat_side != 0) m_eff = (uint8_t)((fm_front_retreat_side > 0) ? 1 : 3);
     else                            m_eff = (uint8_t)((m_decl == 4) ? 3 : 1);   // V2.5-Evo - 2026-10-20 - same side: 4 -> 3, 5 -> 1
+  }
+
+  // ---- Side-zone Schmitt: is the buggy lined up enough behind the rider to use the diagonal? ----
+  // V2.5-Evo - 2026-10-30 - audit 2026-10-20 R3 (finding F-3). THE BUG: this test measured the buggy's angle from the
+  // FILTERED rider point while the station is placed round the ANCHOR (lag_m further along the course - 8.8 m at 9.8 mph
+  // on the 2 s filter), and its 35 / 45 deg zone was narrower than the owner's 60 deg preset. A buggy holding its 60 deg
+  // station therefore read as outside the zone: the station snapped to 0 (directly behind, ~30 ft sideways), the buggy
+  // turned back toward the rider's track, re-entered under 35 and the station snapped back to 60 - 26 flips in 618
+  // following rows on 19 Oct, each one an aim jump and often an align-cap event.
+  // THE FIX: (a) the angle is measured from the anchor, so the buggy and its station are in one frame; (b) on the
+  // station's side the zone is near_diag + 15 in / + 25 out (kFmZoneStation*, held at or below 90, never narrower than
+  // the configured zone), on the wrong side it is the configured zone as before (fmSideZoneStep(), FollowMeStation.h,
+  // host-tested). The side comes from the EFFECTIVE mode through fmStationNearestRearPresetDeg() (1 and 5 right, 3 and 4
+  // left, 2 none), so an aborted F4/F5 judges against the rear station it now reads as.
+  // Moved below m_eff for that reason; nothing between the old site and here reads fm_diagonal_engaged.
+  // GPS rules 1-4 (project rule 5): no new GPS input. The anchor is the one this function already places every station
+  // round (filtered rider position + the capped lag push, both from data that passed the fault checks this tick); the
+  // buggy fix is gps_last_lat/lng as before. Nothing is extrapolated or interpolated beyond the existing anchor.
+  // Throttle: none. The result only chooses the target point (PG-5).
+  {
+    const float b_anchor_to_buggy = (float)TinyGPSPlus::courseTo(
+        anchor_lat, anchor_lng, gps_last_lat, gps_last_lng);
+    const float psi_zone    = fmMeasuredStationDeg(course, b_anchor_to_buggy);
+    const float side_preset = fmStationNearestRearPresetDeg(m_eff, near_diag);
+    const int   st_side     = (side_preset > 0.0f) ? 1 : ((side_preset < 0.0f) ? -1 : 0);
+    fm_diagonal_engaged = fmSideZoneStep(fm_diagonal_engaged, psi_zone, st_side, near_diag,
+                                         usrConf.zone_angle_enter_deg, usrConf.zone_angle_exit_deg,
+                                         kFmZoneStationEnterExtraDeg, kFmZoneStationExitExtraDeg,
+                                         kFmZoneStationMaxDeg);
   }
 
   // ---- V2.5-Evo - 2026-10-06 - audit M-11: THE PENDING ENGAGE SEED ----

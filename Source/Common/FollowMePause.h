@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-30 - audit 2026-10-20 R2 (finding F-1): fmDivergeDwellStep() - the divergence net's dwell, moved here
+//   from runFmLoopBody(). Between the ceiling and 3 x D_engage a dwell ends Follow-Me only if the gap OPENED by more
+//   than 2 m (running away); beyond 3 x D_engage it is the old rule (must have closed by 2 m). See section 5.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-3: fmLongLossStickyRiseOpen() - the 30 s end from a HOLD under a held
 //   trigger arms the sticky cap with its rise CLOSED (stays 0 until one release). See section 3b.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-2: fmHdgDisagreeSample() / fmHdgDisagreeEnds() - the heading-disagree
@@ -22,6 +25,8 @@
 //                            ending only an ACTIVE engagement.
 //   4. fmCreepStep / fmCreepCap / fmCreepStartDistM - the straight-ahead creep that earns a stopped, COG-only buggy its
 //                            GPS course (D-4), bounded exactly like RTM's BOOTSTRAP-1.
+//   5. fmDivergeDwellStep  - (2026-10-30, R2) the divergence net's 3 s dwell: running away inside 3 x D_engage, not
+//                            closing beyond it.
 #ifndef BREMOTE_FOLLOW_ME_PAUSE_H
 #define BREMOTE_FOLLOW_ME_PAUSE_H
 
@@ -245,6 +250,57 @@ static inline uint8_t fmCreepStep(FmCreepState* s, uint32_t now_ms, bool thr_hel
   if (!eligible || dist_m < abort_m) { s->start_ms = 0; return FMCR_ABORT; }
   if (stampAgeMs(now_ms, s->start_ms) >= max_ms) { s->start_ms = 0; return FMCR_TIMEOUT; }
   return FMCR_GRANTED;
+}
+
+// ============================================================
+// 5. fmDivergeDwellStep - ONE TICK OF THE DIVERGENCE NET'S DWELL (V2.5-Evo - 2026-10-30 - audit 2026-10-20 R2, F-1)
+// ============================================================
+// What it does: judges whether an ACTIVE Follow-Me buggy beyond its distance ceiling is running away from the rider.
+// THE BUG IT FIXES (F-1): beyond the ceiling (2 x D_engage, 79 ft at the owner's 12 m) the old rule ended Follow-Me
+//   unless the buggy had CLOSED by kFmDivergeCloseEpsM (2 m) over the 3 s dwell - a closing speed of +1.5 mph. Its
+//   design note assumed the buggy really runs at rider + 3.1 mph; the speed governor never gets there (it is zero at its
+//   own target), so a buggy pacing the rider correctly at 80-110 ft was "not closing" and was switched off: 8 of 14
+//   stretches on 19 Oct, 4 of 9 engagements on 30 Oct - each one the stop buzz and then the 24 % sticky cap under a held
+//   trigger (53 s at about 5 mph on 30 Oct).
+// THE RULE NOW: between the ceiling and far_m (3 x D_engage, 118 ft) a dwell ends Follow-Me only if the gap OPENED by
+//   more than open_eps_m (2 m: a +1.5 mph opening rate) - "running away", not "not closing fast enough". Beyond far_m
+//   it is the old rule (must have closed by close_eps_m). Which rule applies is read at the dwell's end, from the
+//   distance then, so a buggy that has slipped past far_m is judged by the old rule at once. If far_m is not above the
+//   ceiling (a front station can raise the ceiling) the old rule applies everywhere beyond the ceiling.
+// STILL CAUGHT: wrong steering (an inverted or 180 deg course opens the gap at about the rider's speed or more), and a
+//   rider outrunning the buggy by more than 1.5 mph. A buggy holding a constant 80-118 ft is left following; the
+//   trigger, the stick takeover and the 30 s long-loss clock still apply to it.
+// Bookkeeping is the shape the RX always used: one start stamp plus the distance it started from, both cleared the
+//   instant the buggy is not judged (parked for the engage grace, a pivot or a stick takeover; not ACTIVE; no
+//   trustworthy distance) or is back inside the ceiling, and cleared after a dwell that does not end Follow-Me, so the
+//   next tick opens a fresh one. On a verdict the state is LEFT standing (the RX's steering end clears it and prints
+//   d->start_m first).
+// Inputs: *d - the RX's fm_diverge_since_ms / fm_diverge_start_dist_m (0 / -1 = no dwell); now_ms; judged - FM_ACTIVE
+//         and not parked; dist_m - buggy to rider; ceiling_m - the divergence ceiling in force; far_m - 3 x D_engage;
+//         dwell_ms (3000); close_eps_m (2.0, beyond far_m); open_eps_m (2.0, between the ceiling and far_m).
+// Returns: FMDV_NONE, FMDV_NOT_CLOSING (beyond far_m, the old rule) or FMDV_OPENING (inside the band, running away).
+// Side effects: *d only. Nothing here writes a cap: a verdict only REMOVES eligibility (the RX's steering end).
+struct FmDivergeDwell {
+  uint32_t since_ms;   // dwell start, 0 = no dwell
+  float    start_m;    // distance at the dwell start, -1 = none
+};
+static const uint8_t FMDV_NONE        = 0;
+static const uint8_t FMDV_NOT_CLOSING = 1;
+static const uint8_t FMDV_OPENING     = 2;
+static inline uint8_t fmDivergeDwellStep(FmDivergeDwell* d, uint32_t now_ms, bool judged, float dist_m,
+                                         float ceiling_m, float far_m, uint32_t dwell_ms,
+                                         float close_eps_m, float open_eps_m)
+{
+  if (!judged || !(dist_m > ceiling_m)) { d->since_ms = 0; d->start_m = -1.0f; return FMDV_NONE; }
+  if (d->since_ms == 0) { d->since_ms = now_ms; d->start_m = dist_m; return FMDV_NONE; }   // first tick beyond
+  if ((uint32_t)(now_ms - d->since_ms) < dwell_ms) return FMDV_NONE;                     // still dwelling
+  if (dist_m <= far_m) {
+    if (dist_m > d->start_m + open_eps_m) return FMDV_OPENING;          // R2: running away
+  } else {
+    if (dist_m >= d->start_m - close_eps_m) return FMDV_NOT_CLOSING;    // beyond far_m: the old rule
+  }
+  d->since_ms = 0; d->start_m = -1.0f;                                  // following: a fresh window next tick
+  return FMDV_NONE;
 }
 
 #endif // BREMOTE_FOLLOW_ME_PAUSE_H

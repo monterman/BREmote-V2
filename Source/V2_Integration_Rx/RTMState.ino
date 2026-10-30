@@ -6,15 +6,6 @@
 //   Pure rule fmDivergeDwellStep() in Common/FollowMePause.h; the steering-end print names which rule fired. Only removes
 //   eligibility: no cap, no throttle, the sticky cap and the deadman unchanged. No confStruct change, sizeof stays 200,
 //   SW_VERSION stays 36.
-// V2.5-Evo - 2026-10-30 - CATCH-UP BESIDE THE RIDER (audit 2026-10-20 R1, finding F-2; rides 19 and 30 Oct): cap 3's gap
-//   term is 1.5 km/h per metre with a 25 km/h ceiling (kFmGapGainSideKmhPerM / kFmGapMaxSideKmh) while the COMMANDED
-//   station sits at least min_dist_m + 2 m to the side of the rider's line, and the 0.5 / 15 it always was anywhere else
-//   (mode 2, the side zone's "behind" fallback, no course). The P-law is zero at its own target, so the buggy settled
-//   66 ft off a 9.8 mph rider on 19 Oct; modelled with R1, 42 ft. Cap 3 itself (the gap term, the three target branches,
-//   the vmax clamp, the fade, the floor, the P-law) moved verbatim into Common/FollowMeGovernor.h so a closed-loop host
-//   test runs it; outside the side-offset gate it is bit-for-bit the old code. Still a cap: min(trigger, cap) in
-//   calcPWM(); the vmax clamp before the fade and caps 2 / 4 / 5 are unchanged. No confStruct change, sizeof stays 200,
-//   SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-30 - SIDE ZONE ROUND THE ANCHOR, SIDE-AWARE (audit 2026-10-20 R3, finding F-3; rides 19 and 30 Oct):
 //   computeFmTarget()'s rear-diagonal Schmitt measured the buggy from the FILTERED rider point while the station sits
 //   round the lag-corrected ANCHOR (8.8 m apart at 9.8 mph), and its 35 / 45 deg zone sat inside the owner's 60 deg
@@ -2160,19 +2151,6 @@ static const float    kFmGovFloorKmh         = 3.0f;    // km/h
 // 30 m outside station, so an 80 m recall runs at the full allowance almost the whole way in.
 static const float    kFmGapGainKmhPerM      = 0.5f;    // km/h per metre outside station
 static const float    kFmGapMaxKmh           = 15.0f;   // km/h ceiling on the gap term
-// V2.5-Evo - 2026-10-30 - audit 2026-10-20 R1 (finding F-2): THE SAME TERM FOR A STATION WELL TO THE SIDE. Cap 3 is zero
-// at its own target, so the buggy settles where the cap equals the throttle that holds the rider's speed; at 0.5 km/h/m
-// that took a 66 ft gap at 9.8 mph (19 Oct) and the buggy never reached its 30 ft station. While the COMMANDED station
-// is at least min_dist_m + kFmGapSideMarginM to the side of the rider's line (fmGovSideOffset(), Common/FollowMeGovernor.h;
-// the owner's 60 deg, 9 m station is 7.8 m out against 7 m), the gain is 1.5 km/h/m (0.93 mph per metre) and the ceiling
-// 25 km/h (15.5 mph): modelled, 66 -> 42 ft at 9.8 mph and 107 -> 55 ft at 10.9 mph. A buggy beside the rider's line
-// passes a rider who stops dead at about that offset; directly behind (mode 2, the side zone's fallback, no course) the
-// droop is its only stopping margin, so there it stays 0.5 / 15. The target is still clamped to
-// boogie_vmax_in_followme_kmh before the fade, and still only a cap. Compile-time: no confStruct change, sizeof stays
-// 200, SW_VERSION stays 36.
-static const float    kFmGapGainSideKmhPerM  = 1.5f;    // km/h per metre outside station, station offset sideways
-static const float    kFmGapMaxSideKmh       = 25.0f;   // km/h ceiling on that term
-static const float    kFmGapSideMarginM      = 2.0f;    // metres past min_dist_m the station must sit to the side
 
 // ---- P2 STATION CONSTANTS (V2.5-Evo - 2026-10-02) ----
 // Compile-time, like every other kFm* above: the ONE P2 config field is fm_front_ahead_extra_m
@@ -5797,22 +5775,9 @@ static uint16_t fmComputeThrottleCap(float dist_m, unsigned long now)
 
   float d_follow_g = min_dist + band;
   if (d_follow_g < 0.5f) d_follow_g = 0.5f;                 // same degenerate-config guard as elsewhere
-  // V2.5-Evo - 2026-10-30 - audit 2026-10-20 R1 (finding F-2): THE GAP TERM IS STRONGER BESIDE THE RIDER, ONLY THERE.
-  // THE BUG (rides 19 and 30 Oct): cap 3 is 255 x (1 - buggy speed / target) and reaches ZERO at its own target, so the
-  // buggy settles where the cap equals the throttle it needs to hold the rider's speed - always well short of the
-  // target. With 0.5 km/h per metre the gap that buys that throttle is large: 66 ft standing off a 9.8 mph rider on
-  // 19 Oct; on 30 Oct the buggy averaged 9.7 mph against 11.0 with the cap near 127 and a ~115 ft gap that never closed.
-  // THE FIX: while the COMMANDED station sits at least min_dist + 2 m to the side of the rider's line (the owner's 60 deg,
-  // 9 m station: 7.8 m), the gain is kFmGapGainSideKmhPerM (1.5) and the ceiling kFmGapMaxSideKmh (25), so the same
-  // throttle is bought at a third of the gap. Anywhere else - mode 2, the side zone's "behind" fallback, no course - it
-  // is the 0.5 / 15 it always was: directly behind, the droop is the only stopping margin a buggy has if the rider stops
-  // dead, and R1 must not shorten it. Pure gate and term: fmGovSideOffset() / fmGovGapKmh(), Common/FollowMeGovernor.h.
-  // fm_station_cross_m and fm_frame_valid are this tick's: computeFmTarget() ran immediately before this function.
-  // STILL A CAP: a larger target only makes cap 3 bite less; the vmax clamp, the fade, the floor, caps 2 / 4 / 5 and the
-  // trigger as the ceiling are untouched.
-  const bool  side_offset = fmGovSideOffset(fm_frame_valid, fm_station_cross_m, min_dist, kFmGapSideMarginM);
-  const float gap_kmh     = side_offset ? fmGovGapKmh(dist_m, d_follow_g, kFmGapGainSideKmhPerM, kFmGapMaxSideKmh)
-                                        : fmGovGapKmh(dist_m, d_follow_g, kFmGapGainKmhPerM, kFmGapMaxKmh);
+  float gap_kmh = (dist_m - d_follow_g) * kFmGapGainKmhPerM;
+  if (gap_kmh < 0.0f)         gap_kmh = 0.0f;
+  if (gap_kmh > kFmGapMaxKmh) gap_kmh = kFmGapMaxKmh;
 
   // STATION-KEEPING SPEED. The buggy must travel at roughly the RIDER'S OWN SPEED simply to hold
   // a station that is itself moving, whatever the geometry - plus the closing allowance for
@@ -5856,14 +5821,15 @@ static uint16_t fmComputeThrottleCap(float dist_m, unsigned long now)
   // trigger is the ceiling of. Nothing here can add throttle, and the along-track term is SIGNED
   // precisely so it can subtract.
   // ==========================================================================================
-  // V2.5-Evo - 2026-10-30 - audit R1: the three branches are fmGovTargetKmh() (Common/FollowMeGovernor.h), same tests in
-  // the same order, so the host test runs them. The front station's along-track term keeps kFmGapMaxKmh (15): R1 is a
-  // rear-station change only.
-  const bool  front_station = fm_frame_valid && fabsf(fm_station_live_deg) > 90.0f;
-  const float along_kmh     = front_station ? fmStationAlongGovKmh(fm_station_along_m, fm_buggy_along_m,
-                                                                   kFmAlongGainKmhPerM, kFmGapMaxKmh) : 0.0f;
-  const float gov = fmGovTargetKmh(fm_aim_outward, front_station, along_kmh,
-                                   fm_rider_speed_kmh, kFmClosingMarginKmh, theta_ok, gap_kmh);   // (a) / (b) / (c)
+  float gov;
+  if (fm_aim_outward) {
+    gov = fm_rider_speed_kmh;                                               // (a)
+  } else if (fm_frame_valid && fabsf(fm_station_live_deg) > 90.0f) {
+    gov = fm_rider_speed_kmh + fmStationAlongGovKmh(fm_station_along_m, fm_buggy_along_m,
+                                                    kFmAlongGainKmhPerM, kFmGapMaxKmh);   // (b)
+  } else {
+    gov = fm_rider_speed_kmh + kFmClosingMarginKmh + (theta_ok ? gap_kmh : 0.0f);          // (c)
+  }
 
   // CONVERGENCE FADE. Past 90 deg the rider is closing the gap themselves, so the buggy needs
   // progressively less of its own - fading linearly to ZERO head-on. This is what makes a rider
@@ -5877,8 +5843,8 @@ static uint16_t fmComputeThrottleCap(float dist_m, unsigned long now)
   // FULL boogie_vmax toward a converging rider through the whole 90-120 deg band. Clamping first
   // makes the fade bite from 90 deg at every distance. Strictly more conservative above 90 deg
   // and identical below it.
-  // V2.5-Evo - 2026-10-30 - audit R1: this clamp, the fade, the floor and the P-law described here and below now run
-  // inside fmGovCap() (Common/FollowMeGovernor.h) at the end of this cap, in this same order with the same arithmetic.
+  if (gov < 0.0f) gov = 0.0f;
+  if (gov > usrConf.boogie_vmax_in_followme_kmh) gov = usrConf.boogie_vmax_in_followme_kmh;
 
   // V2.5-Evo - 2026-10-02 - P2: THE BYPASS, AND IT IS PARTIAL, NOT TOTAL.
   // fm_fade_bypass is computed by computeFmTarget() on THIS tick from measured geometry alone - the
@@ -5895,7 +5861,11 @@ static uint16_t fmComputeThrottleCap(float dist_m, unsigned long now)
   // on it. Without it a buggy lawfully holding a station ahead of an approaching rider would be
   // faded to zero and would stop in front of him, which is the failure mode the front stations exist
   // to avoid.
-  // (The fade itself: fmGovCap(), below.)
+  if (theta_ok && theta > 90.0f && !fm_fade_bypass) {
+    float frac = (180.0f - theta) / 90.0f;                  // 1.0 abeam, 0.0 straight at us
+    if (frac < 0.0f) frac = 0.0f;
+    gov *= frac;
+  }
 
   // AUDIT G-1, AND THIS LINE IS THE WHOLE REASON THE FIRST DRAFT WAS UNSHIPPABLE. The old guard was
   // `if (gov > 0.1f) { ...apply cap... }`, a divide-by-zero guard inherited from a formula whose
@@ -5912,11 +5882,13 @@ static uint16_t fmComputeThrottleCap(float dist_m, unsigned long now)
   // is NOT zeroed on fix loss. At gov = 1.4 a stale 0.3 km/h reading yields cap 201. The result
   // was motor PULSING through the final head-on approach, at the GPS update rate, with cap 0
   // killing differential steering on every trough. Flooring makes that region a clean stop.
-  // V2.5-Evo - 2026-10-30 - audit R1: clamp to [0, vmax], fade, floor and P-law in one pure call. A target at or under
-  // the floor returns 0, and min() with 0 is the old "cap = 0" assignment exactly.
-  {
-    const uint16_t c = fmGovCap(gov, usrConf.boogie_vmax_in_followme_kmh, theta_ok, theta, fm_fade_bypass,
-                                kFmGovFloorKmh, gps_last_speed_kmh);
+  if (gov <= kFmGovFloorKmh) {
+    cap = 0;                                                // 0 is the chain floor: assignment == min()
+  } else {
+    float speed_frac = gps_last_speed_kmh / gov;            // buggy's own GPS speed vs the target
+    if (speed_frac > 1.0f) speed_frac = 1.0f;
+    if (speed_frac < 0.0f) speed_frac = 0.0f;
+    uint16_t c = (uint16_t)((1.0f - speed_frac) * 255.0f);
     if (c < cap) cap = c;
   }
 

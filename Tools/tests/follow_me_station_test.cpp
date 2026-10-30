@@ -109,6 +109,35 @@ static const float kZoneEnter   = 35.0f;   // usrConf.zone_angle_enter_deg, owne
 static const float kZoneExit    = 45.0f;   // usrConf.zone_angle_exit_deg, owner default
 static const uint8_t kPrRetreat = 10, kPrOutward = 9, kPrTransit = 7, kPrFront = 8;
 static const float kLookStepM   = 1.0f;    // kFmLookStepM (audit M-14): a bigger one-tick lookahead change is a step
+// V2.5-Evo - 2026-10-30 - audit R3: the RX's station-side zone constants (kFmZoneStation*, RTMState.ino).
+static const float kZoneStEnterExtra = 15.0f;   // kFmZoneStationEnterExtraDeg
+static const float kZoneStExitExtra  = 25.0f;   // kFmZoneStationExitExtraDeg
+static const float kZoneStMax        = 90.0f;   // kFmZoneStationMaxDeg
+
+// V2.5-Evo - 2026-10-30 - audit R3: computeFmTarget()'s side-zone block, restated in the RX's order. The buggy comes in
+// already measured from the ANCHOR (a_al, a_cr: along / cross, the anchor frame); the RX takes the bearing anchor ->
+// buggy, turns it into a station angle with fmMeasuredStationDeg(), and reads the station's side from the EFFECTIVE
+// mode through fmStationNearestRearPresetDeg(). Every decision is the header's.
+static bool sideZoneTick(bool engaged, uint8_t m_eff, float near_diag, float course, float a_al, float a_cr)
+{
+  const float brg_a = atan2f(a_cr, a_al) / BREMOTE_FMS_DEG2RAD;            // bearing of the buggy off the course
+  const float psi   = fmMeasuredStationDeg(course, course + brg_a);
+  const float sp    = fmStationNearestRearPresetDeg(m_eff, near_diag);
+  const int   side  = (sp > 0.0f) ? 1 : ((sp < 0.0f) ? -1 : 0);
+  return fmSideZoneStep(engaged, psi, side, near_diag, kZoneEnter, kZoneExit,
+                        kZoneStEnterExtra, kZoneStExitExtra, kZoneStMax);
+}
+// The pre-R3 rule, kept only so the new sections can show what changed: measured from the FILTERED point, 35 / 45.
+// g_zone_old makes ctlTick() run it (section 36's comparison only; false everywhere else).
+static bool g_zone_old = false;
+static bool sideZoneTickOld(bool engaged, float b_al_f, float b_cr)
+{
+  const float brg_rel  = atan2f(b_cr, b_al_f) / BREMOTE_FMS_DEG2RAD;
+  const float off_axis = fabsf(fmsWrap180(brg_rel - 180.0f));
+  if (!engaged && off_axis < kZoneEnter) return true;
+  if (engaged && off_axis > kZoneExit)   return false;
+  return engaged;
+}
 
 struct Ctl {
   float live = 0.0f;  bool aborted = false;  int rside = 0;
@@ -151,9 +180,6 @@ static Tick ctlTick(Ctl &c, uint8_t m_decl, float near_diag, float d_follow, uin
   const float lim = fmStationLimitDeg(phi);
 
   const float brg_rel = atan2f(b_cr, b_al_f) / BREMOTE_FMS_DEG2RAD;   // bearing of the buggy, off the course
-  const float off_axis = fabsf(fmsWrap180(brg_rel - 180.0f));
-  if (!c.diag && off_axis < kZoneEnter) c.diag = true;
-  else if (c.diag && off_axis > kZoneExit) c.diag = false;
   const float meas = fmMeasuredStationDeg(course, course + brg_rel);
 
   uint8_t m_eff = m_decl;
@@ -161,6 +187,11 @@ static Tick ctlTick(Ctl &c, uint8_t m_decl, float near_diag, float d_follow, uin
     if (c.rside != 0) m_eff = (uint8_t)((c.rside > 0) ? 1 : 3);
     else              m_eff = (uint8_t)((m_decl == 4) ? 1 : 3);
   }
+  // V2.5-Evo - 2026-10-30 - audit R3: the side zone as the RX now runs it - after m_eff, the buggy measured round the
+  // ANCHOR (lag_m ahead of the filtered point), side-aware through fmSideZoneStep(). It was the filtered point and 35 / 45.
+  // g_zone_old (section 36 only) runs the pre-R3 rule instead, to show the hunting R3 removes.
+  c.diag = g_zone_old ? sideZoneTickOld(c.diag, b_al_f, b_cr)
+                      : sideZoneTick(c.diag, m_eff, near_diag, course, b_al_f - lag_m, b_cr);
   if (c.pending) {                                                   // M-11
     c.pending = false;
     const float sd = fmEngageSeedDeg(m_eff, true, meas);
@@ -2269,6 +2300,220 @@ int main()
       degradedTick(k, 5);
       assert(k.aborted);
     }
+  }
+
+  // ======================================================================================
+  // 34. V2.5-Evo - 2026-10-30 - AUDIT R3 (a): A BUGGY PARKED ON ITS PRESET KEEPS THE DIAGONAL, near_diag 0-90, 0-12 mph
+  // ======================================================================================
+  // The buggy sits exactly on its rear station - the anchor + d_follow at psi = +/-near_diag - and comes into the zone
+  // the way the RX measures it: from the FILTERED point (b_al_f = anchor along + lag), then shifted to the anchor inside
+  // sideZoneTick(). Every steering preset's tau, rider 0-12 mph (lag = min(v x tau, 2 x d_follow)), modes 1 and 3.
+  // Engaged, it must stay engaged; disengaged, it must re-engage on its first tick wherever the enter line is past the
+  // preset (near_diag < 90). At near_diag 90 the preset IS the release line (the 90 cap), so that one value is checked
+  // with the exact angle and reported: no margin there.
+  {
+    const float taus[5] = { 5.0f, 3.0f, 2.0f, 1.0f, 0.5f };
+    const float dfs[3]  = { 6.0f, 9.0f, 13.0f };
+    long checks = 0;
+    for (int nd = 0; nd <= 89; nd++) {
+      for (int mode = 1; mode <= 3; mode += 2) {
+        const float psi = (mode == 1) ? (float)nd : -(float)nd;
+        for (int di = 0; di < 3; di++) {
+          for (int ti = 0; ti < 5; ti++) {
+            for (int vm = 0; vm <= 24; vm++) {                        // 0-12 mph in 0.5 mph steps
+              const float v_ms = vm * 0.5f * 0.44704f;
+              float lag = v_ms * taus[ti];
+              if (lag > 2.0f * dfs[di]) lag = 2.0f * dfs[di];
+              float s_al, s_cr;
+              fmStationAlongCrossM(psi, dfs[di], &s_al, &s_cr);      // the preset, anchor frame
+              const float b_al_f = s_al + lag;                        // the same point seen from the filtered rider
+              bool eng = true;
+              for (int k = 0; k < 20; k++) eng = sideZoneTick(eng, (uint8_t)mode, (float)nd, 0.0f, b_al_f - lag, s_cr);
+              assert(eng);                                            // stays engaged
+              const bool fresh = sideZoneTick(false, (uint8_t)mode, (float)nd, 0.0f, b_al_f - lag, s_cr);
+              assert(fresh);                                          // and re-engages at once
+              checks++;
+            }
+          }
+        }
+      }
+    }
+    // near_diag 90: exactly on the preset is exactly on the release line - held, never released.
+    assert(fmSideZoneStep(true, +90.0f, +1, 90.0f, kZoneEnter, kZoneExit, kZoneStEnterExtra, kZoneStExitExtra, kZoneStMax));
+    assert(fmSideZoneStep(true, -90.0f, -1, 90.0f, kZoneEnter, kZoneExit, kZoneStEnterExtra, kZoneStExitExtra, kZoneStMax));
+    assert(!fmSideZoneStep(true, +90.5f, +1, 90.0f, kZoneEnter, kZoneExit, kZoneStEnterExtra, kZoneStExitExtra, kZoneStMax));
+    // The owner's case under the OLD rule, to show what changed: 60 deg, 9 m, 9.8 mph, tau 2 s. Seen from the filtered
+    // point the buggy on its station reads about 119 deg, so the old 35 / 45 zone drops it on the first tick.
+    {
+      float s_al, s_cr;
+      fmStationAlongCrossM(60.0f, 9.0f, &s_al, &s_cr);
+      const float lag = 9.8f * 0.44704f * 2.0f;
+      const float old_deg = fabsf(fmsWrap180(atan2f(s_cr, s_al + lag) / BREMOTE_FMS_DEG2RAD - 180.0f));
+      printf("R3 (a) owner's station (60 deg, 9 m, 9.8 mph): %.0f deg from the filtered point (old rule: %s), "
+             "60 deg from the anchor (new rule: engaged)\n", (double)old_deg,
+             sideZoneTickOld(true, s_al + lag, s_cr) ? "engaged" : "RELEASED");
+      assert(old_deg > 115.0f && !sideZoneTickOld(true, s_al + lag, s_cr));
+      assert(sideZoneTick(true, 1, 60.0f, 0.0f, s_al, s_cr));
+    }
+    // The release margin the 90 cap leaves (near_diag + 25 held at 90): full 25 deg up to near_diag 65, then shrinking.
+    printf("R3 (a) %ld parked-on-preset cases engaged; release margin past the preset: nd 60 -> %.0f deg, 70 -> %.0f, "
+           "80 -> %.0f, 90 -> %.0f\n", checks, 85.0 - 60.0, 90.0 - 70.0, 90.0 - 80.0, 90.0 - 90.0);
+  }
+
+  // ======================================================================================
+  // 35. V2.5-Evo - 2026-10-30 - AUDIT R3 (b): THE WRONG SIDE IS TODAY'S ZONE, AND WHAT ITS AIM LINE CLEARS
+  // ======================================================================================
+  // The audit's check: "for every engaged buggy position on the wrong side, the buggy-to-station line stays >= min_dist + 2 m
+  // from the rider, or the diagonal is off there". R3 keeps the configured 35 / 45 on the wrong side, so the honest
+  // statements are the four below. The rider is the anchor (the lag-corrected rider estimate the station is placed
+  // round); buggy positions from d_follow out to 40 m, near_diag 0-90.
+  //   (b1) The wrong side is EXACTLY the configured Schmitt at every angle and either prior state: R3 widens nothing there.
+  //   (b2) Every position R3 ADDS on the station's side (engaged now, not under a plain 35 / 45) has an aim line that
+  //        clears min_dist + 2 m and never crosses the rider's line - the widening only adds lines that stay on one side.
+  //   (b3) The audit's own worst case, pinned: near_diag 60, 9 m, 45 deg on the wrong side -> 5.48 m (18 ft).
+  //   (b4) The literal min_dist + 2 m test is REPORTED, not asserted: with 35 / 45 kept on the wrong side it does not
+  //        hold close in (see the table) - for the auditor to rule on.
+  {
+    const float min_dist = 5.0f, d_follow = 9.0f, clear = min_dist + 2.0f;
+    // (b1)
+    for (int nd = 0; nd <= 90; nd += 5) {
+      for (int side = -1; side <= 1; side += 2) {
+        for (int a10 = 1; a10 <= 1800; a10++) {
+          const float psi_wrong = -(float)side * (a10 / 10.0f);       // the buggy on the side opposite the station
+          for (int prev = 0; prev <= 1; prev++) {
+            const bool got = fmSideZoneStep(prev != 0, psi_wrong, side, (float)nd, kZoneEnter, kZoneExit,
+                                            kZoneStEnterExtra, kZoneStExitExtra, kZoneStMax);
+            const float off = fabsf(psi_wrong);
+            const bool want = (prev == 0) ? (off < kZoneEnter) : !(off > kZoneExit);
+            assert(got == want);
+          }
+        }
+      }
+    }
+    // (b2) + (b4)
+    printf("R3 (b) wrong side, closest approach of the buggy -> station line to the rider (need %.1f m), r >= %.0f m:\n",
+           (double)clear, (double)d_follow);
+    printf("  near_diag | worst wrong-side line (m) | wrong-side angle there | R3-added station-side worst (m)\n");
+    for (int nd = 0; nd <= 90; nd += 10) {
+      float s_al, s_cr;
+      fmStationAlongCrossM((float)nd, d_follow, &s_al, &s_cr);
+      float worst_wrong = 1e9f, worst_wrong_deg = 0.0f, worst_added = 1e9f;
+      for (int a = 0; a <= 180; a++) {
+        for (int r10 = (int)(d_follow * 10.0f); r10 <= 400; r10 += 5) {
+          const float r = r10 / 10.0f;
+          // wrong side (buggy LEFT of a right-hand station): engaged up to the configured exit
+          if (nd > 0 && a > 0 && a <= (int)kZoneExit) {
+            float b_al, b_cr;
+            fmStationAlongCrossM(-(float)a, r, &b_al, &b_cr);
+            const float d = sqrtf(fmsPointSegDist2(0.0f, 0.0f, b_al, b_cr, s_al, s_cr));
+            if (d < worst_wrong) { worst_wrong = d; worst_wrong_deg = (float)a; }
+          }
+          // station side: positions the new rule holds engaged but a plain 35 / 45 would have released
+          if (nd > 0 && a > 0) {
+            const bool now_eng = fmSideZoneStep(true, (float)a, +1, (float)nd, kZoneEnter, kZoneExit,
+                                                kZoneStEnterExtra, kZoneStExitExtra, kZoneStMax);
+            const bool old_eng = !((float)a > kZoneExit);
+            if (now_eng && !old_eng) {
+              float b_al, b_cr;
+              fmStationAlongCrossM((float)a, r, &b_al, &b_cr);
+              const float d = sqrtf(fmsPointSegDist2(0.0f, 0.0f, b_al, b_cr, s_al, s_cr));
+              if (d < worst_added) worst_added = d;
+              assert(d >= clear);                                     // (b2)
+              assert(b_cr > 0.0f && s_cr > 0.0f);                     // (b2) both ends right of the line: no crossing
+            }
+          }
+        }
+      }
+      char added[32];
+      if (worst_added < 1e8f) snprintf(added, sizeof(added), "%.2f", (double)worst_added);
+      else                    snprintf(added, sizeof(added), "none added");
+      if (nd == 0) printf("  %9d | no station side: the mode 2 geometry, unchanged\n", nd);
+      else printf("  %9d | %25.2f | %22.0f | %s\n", nd, (double)worst_wrong, (double)worst_wrong_deg, added);
+    }
+    // (b3) The audit's worst case, pinned: 60 deg station, buggy 9 m out at 45 deg on the wrong side.
+    {
+      float s_al, s_cr, b_al, b_cr;
+      fmStationAlongCrossM(60.0f, 9.0f, &s_al, &s_cr);
+      fmStationAlongCrossM(-45.0f, 9.0f, &b_al, &b_cr);
+      const float d = sqrtf(fmsPointSegDist2(0.0f, 0.0f, b_al, b_cr, s_al, s_cr));
+      printf("R3 (b) the audit's worst case (60 deg, 9 m, 45 deg wrong side): %.2f m = %.1f ft (min_dist + 2 = %.1f ft)\n",
+             (double)d, (double)(d / 0.3048f), (double)(clear / 0.3048f));
+      assert(near_eq(d, 5.48f, 0.05f));
+      // At riding speed the OLD rule measured that 45 deg edge from the filtered point, 8.8 m behind the anchor: the same
+      // 9 m-from-the-filtered-point buggy is further back, so its line cleared more. Reported for the auditor (frame change, R3 a).
+      const float lag = 9.8f * 0.44704f * 2.0f;
+      float bf_al, bf_cr;
+      fmStationAlongCrossM(-45.0f, 9.0f, &bf_al, &bf_cr);
+      const float d_old = sqrtf(fmsPointSegDist2(0.0f, 0.0f, bf_al - lag, bf_cr, s_al, s_cr));
+      printf("R3 (b) same 45 deg / 9 m edge measured the OLD way at 9.8 mph (from the filtered point): line %.2f m = %.1f ft\n",
+             (double)d_old, (double)(d_old / 0.3048f));
+    }
+  }
+
+  // ======================================================================================
+  // 36. V2.5-Evo - 2026-10-30 - AUDIT R3 (c): THE OWNER'S CASE - 9.8 mph, near_diag 60 - ZERO FLIPS IN 60 s
+  // ======================================================================================
+  // (c1) CONSTANT GEOMETRY: the buggy held on the station's line at the follow station (9 m), at R1's steady gap (12.7 m)
+  //      and at today's (20 m), measured with +/-3 ft of noise each tick (6 ft band, the audit's figure), 600 ticks.
+  // (c2) CLOSED LOOP: the full ctlTick() chain steering a kinematic buggy behind a rider at 9.8 mph for 60 s, with the
+  //      2 s filter's lag. The new rule must not flip once; the old rule (g_zone_old) is run on the same world to show the
+  //      hunting the 19 Oct log recorded (26 flips in 618 following rows) - it must flip, or this sim proves nothing.
+  {
+    const float v_ms = 9.8f * 0.44704f, lag = v_ms * 2.0f, d_follow = 9.0f, nd = 60.0f, dt = 0.1f;
+    float s_al, s_cr;
+    fmStationAlongCrossM(nd, d_follow, &s_al, &s_cr);
+    const float gaps[3] = { 9.0f, 12.7f, 20.0f };
+    unsigned seed = 4242u;
+    for (int g = 0; g < 3; g++) {
+      // On the station's line (cross = s_cr), gaps[g] from the anchor.
+      const float al = -sqrtf(gaps[g] * gaps[g] - s_cr * s_cr);
+      bool eng = true, eng_old = true;
+      int flips = 0, flips_old = 0;
+      for (int i = 0; i < 600; i++) {
+        seed = seed * 1103515245u + 12345u;
+        const float n1 = ((float)((seed >> 8) & 0xFFFF) / 65535.0f - 0.5f) * 2.0f * 0.646f;   // +/-0.646 m per axis:
+        seed = seed * 1103515245u + 12345u;
+        const float n2 = ((float)((seed >> 8) & 0xFFFF) / 65535.0f - 0.5f) * 2.0f * 0.646f;   // |noise| <= 0.914 m (3 ft)
+        const bool e2 = sideZoneTick(eng, 1, nd, 0.0f, al + n1, s_cr + n2);
+        const bool o2 = sideZoneTickOld(eng_old, al + n1 + lag, s_cr + n2);
+        if (e2 != eng) flips++;
+        if (o2 != eng_old) flips_old++;
+        eng = e2; eng_old = o2;
+      }
+      printf("R3 (c1) constant geometry, gap %.1f m: new rule %d flips (engaged %s), old rule %d flips (engaged %s)\n",
+             (double)gaps[g], flips, eng ? "yes" : "no", flips_old, eng_old ? "yes" : "no");
+      assert(flips == 0 && eng);
+    }
+    for (int pass = 0; pass < 2; pass++) {
+      g_zone_old = (pass == 1);
+      World w;
+      w.rc = 0.0f;
+      placeBuggy(w, -12.0f, s_cr, 0.0f);                              // following on the station's line, 12 m back
+      Ctl c;
+      engageEdge(c, 1, true, fmMeasuredStationDeg(0.0f, atan2f(s_cr, -12.0f) / BREMOTE_FMS_DEG2RAD));
+      int flips = 0, ticks_engaged = 0;
+      bool prev = c.diag;
+      for (int i = 0; i < 600; i++) {
+        float al, cr;
+        toRiderFrame(w, &al, &cr);
+        const Tick t = ctlTick(c, 1, nd, d_follow, 0, 5.0f, 9.8f * 1.609344f, 0.0f, al + lag, cr, lag, dt, kSideBand);
+        if (i > 0 && c.diag != prev) flips++;
+        prev = c.diag;
+        if (c.diag) ticks_engaged++;
+        // Speed: the rider's, plus a closing term on the distance to the aim (crude, but it settles on the station).
+        float dx = t.aim_al - al, dy = t.aim_cr - cr;
+        float closing = 0.3f * (sqrtf(dx * dx + dy * dy) - 2.0f);
+        if (closing > 1.5f) closing = 1.5f;
+        if (closing < -1.0f) closing = -1.0f;
+        buggyStep(w, t.aim_al, t.aim_cr, v_ms + closing, 45.0f, dt);
+        riderStep(w, v_ms, dt);
+      }
+      printf("R3 (c2) closed loop 60 s, 9.8 mph, near_diag 60, %s rule: %d flips, diagonal engaged %d of 600 ticks\n",
+             g_zone_old ? "OLD" : "new", flips, ticks_engaged);
+      if (!g_zone_old) assert(flips == 0 && ticks_engaged == 600);
+      else             assert(flips > 0);                             // the sim reproduces the hunting R3 removes
+    }
+    g_zone_old = false;
   }
 
   printf("largest one-tick lookahead change on an unflagged tick, all simulations: %.3f m\n", (double)g_dlook_max_quiet);

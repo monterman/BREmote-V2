@@ -1,8 +1,3 @@
-// V2.5-Evo - 2026-10-30 - SIDE ZONE MEASURED ROUND THE ANCHOR, SIDE-AWARE (audit 2026-10-20 R3, finding F-3): new
-//   fmSideZoneStep() - the rear-diagonal Schmitt, moved here from computeFmTarget() so the host test runs it. The caller
-//   measures the buggy's angle from the lag-corrected anchor (the station's own frame); on the station's side the zone
-//   is near_diag + 15 in / + 25 out (held at or below 90, never narrower than the configured zone), on the wrong side
-//   the configured zone as before. Pure, no throttle. No other helper changes.
 // V2.5-Evo - 2026-10-06 - AUDIT M-20 + L-25: fmFrontSideFloorM() - the front side floor is now
 //   max(13, pass minimum, min_dist_m + 2), resolved once here for every RX site. No change for min_dist_m <= 11 m.
 //   L-26: the fmShieldMake input comment no longer says the half-angle is a fixed 30 deg.
@@ -1099,60 +1094,6 @@ static inline float fmStationAlongGovKmh(float station_along_m, float buggy_alon
   if (v >  max_kmh) v =  max_kmh;
   if (v < -max_kmh) v = -max_kmh;
   return v;
-}
-
-// ============================================================
-// fmSideZoneStep - THE REAR-DIAGONAL SIDE ZONE, ONE TICK (V2.5-Evo - 2026-10-30 - audit 2026-10-20 R3, finding F-3)
-// ============================================================
-// What it does: the Schmitt that decides whether a rear diagonal station (modes 1 and 3) is used this tick, or the
-//   station falls back to directly behind the rider (0). It answers "is the buggy lined up enough behind the rider?".
-// THE BUG IT FIXES (F-3, the 2026-10-19 ride, 26 flips between 0 and 60 deg in 618 following rows):
-//   (a) TWO FRAMES. computeFmTarget() measured the buggy's angle from the FILTERED rider point, but placed the station
-//       round the LAG-CORRECTED anchor, which at 9.8 mph with the 2 s filter is 8.8 m (29 ft) ahead of it. Seen from
-//       the filtered point, a buggy sitting exactly on a 60 deg station reads about 119 deg - outside any zone.
-//   (b) A ZONE NARROWER THAN THE PRESET. The zone was 35 deg in / 45 deg out on both sides, so a 60 deg station sat
-//       outside it even with the rider still. Each time the buggy lined up beside its station the angle passed 45, the
-//       station snapped to 0 (about 30 ft sideways), the buggy turned back toward the rider's track, the angle fell
-//       under 35 and the station snapped back to 60. Each flip moved the aim and drove the heading error past the
-//       align threshold, which cost catch-up.
-// THE FIX: the caller passes the buggy's angle measured from the ANCHOR (the same point the station is placed round),
-//   and the zone is SIDE-AWARE:
-//   - on the STATION'S side of the rider's line it engages below near_diag + enter_extra and releases above
-//     near_diag + exit_extra (60 deg: 75 in / 85 out), each held at or below max_deg (90: above it the rear diagonal
-//     could stay engaged with the buggy ahead of the rider, the same reason ConfigService caps the zone at 90);
-//   - on the WRONG side (and with no station side: mode 2, or near_diag 0) it is today's zone_enter / zone_exit
-//     (owner 35 / 45), unchanged, so a buggy crossing behind the rider from the wrong side does so as before.
-//   The configured zone is the FLOOR on the station's side too: for near_diag under 20 deg (at 35 / 45) the
-//   near_diag-based numbers would be NARROWER than today there, which R3 did not ask for, so today's stand.
-// Inputs: engaged - last tick's state; psi_buggy_deg - the buggy's station angle measured round the ANCHOR,
-//   fmMeasuredStationDeg(course, bearing anchor -> buggy), + = the rider's right, (-180, 180];
-//   station_side - +1 the station is on the rider's right, -1 on the left, 0 none (behind, or near_diag 0);
-//   near_diag_deg (read 0-90, as fmStationPresetDeg() reads it); zone_enter_deg / zone_exit_deg - usrConf;
-//   enter_extra_deg / exit_extra_deg / max_deg - the RX's constants (15 / 25 / 90).
-// Returns: engaged this tick. Side effects: none (pure). Nothing here writes throttle (PG-5): the result only picks
-//   which TARGET POINT the steering aims at; the cap chain is untouched.
-static inline bool fmSideZoneStep(bool engaged, float psi_buggy_deg, int station_side, float near_diag_deg,
-                                  float zone_enter_deg, float zone_exit_deg,
-                                  float enter_extra_deg, float exit_extra_deg, float max_deg)
-{
-  float enter_deg = zone_enter_deg;
-  float exit_deg  = zone_exit_deg;
-  const bool station_side_now = (station_side > 0 && psi_buggy_deg > 0.0f) ||
-                                (station_side < 0 && psi_buggy_deg < 0.0f);
-  if (station_side_now) {
-    if (near_diag_deg < 0.0f)  near_diag_deg = 0.0f;
-    if (near_diag_deg > 90.0f) near_diag_deg = 90.0f;
-    float e = near_diag_deg + enter_extra_deg;
-    float x = near_diag_deg + exit_extra_deg;
-    if (e > max_deg) e = max_deg;
-    if (x > max_deg) x = max_deg;
-    if (e > enter_deg) enter_deg = e;   // never narrower than the configured zone
-    if (x > exit_deg)  exit_deg  = x;
-  }
-  const float off_axis = fabsf(psi_buggy_deg);
-  if (!engaged && off_axis < enter_deg) return true;
-  if (engaged && off_axis > exit_deg)   return false;
-  return engaged;
 }
 
 #endif

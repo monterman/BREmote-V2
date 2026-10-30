@@ -1,3 +1,11 @@
+// V2.5-Evo - 2026-10-30 - DIVERGENCE JUDGES "RUNNING AWAY" INSIDE 3 x D_engage (audit 2026-10-20 R2, finding F-1; rides 19
+//   and 30 Oct): beyond the ceiling (2 x D_engage, 79 ft) the net ended Follow-Me unless the buggy CLOSED 2 m in 3 s, which
+//   the governor never delivers while pacing a rider - 8 of 14 stretches on 19 Oct and 4 of 9 engagements on 30 Oct ended
+//   about 10 s in, then the 24 % sticky cap held the trigger. Now, between the ceiling and kFmDivergeFarFactor x D_engage
+//   (118 ft) a dwell ends it only if the gap OPENED by more than kFmDivergeOpenEpsM (2 m, +1.5 mph); beyond, the old rule.
+//   Pure rule fmDivergeDwellStep() in Common/FollowMePause.h; the steering-end print names which rule fired. Only removes
+//   eligibility: no cap, no throttle, the sticky cap and the deadman unchanged. No confStruct change, sizeof stays 200,
+//   SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-30 - CATCH-UP BESIDE THE RIDER (audit 2026-10-20 R1, finding F-2; rides 19 and 30 Oct): cap 3's gap
 //   term is 1.5 km/h per metre with a 25 km/h ceiling (kFmGapGainSideKmhPerM / kFmGapMaxSideKmh) while the COMMANDED
 //   station sits at least min_dist_m + 2 m to the side of the rider's line, and the 0.5 / 15 it always was anywhere else
@@ -2366,6 +2374,19 @@ static const uint32_t kFmDivergeMs           = 3000;   // ms
 // up to ~4.2 m — comfortably more than 2 m. 2 m is meanwhile larger than ordinary GPS scatter at these
 // distances, so noise alone cannot fake "closing" and cancel a real divergence.
 static const float    kFmDivergeCloseEpsM    = 2.0f;   // metres of closure over the dwell
+// V2.5-Evo - 2026-10-30 - audit 2026-10-20 R2 (finding F-1): THE "WHY 2.0 m" NOTE ABOVE WAS WRONG ABOUT THE GOVERNOR. Cap 3
+// is zero at its own target, so the buggy never runs at rider + 5 km/h; it settles where the cap equals the throttle that
+// holds the rider's speed, and its real closing beyond the ceiling was at most ~1.2 mph (19 Oct) - under the 1.5 mph this
+// epsilon demands. A buggy pacing the rider correctly at 80-110 ft was therefore judged "not closing" and switched off:
+// 8 of 14 stretches on 19 Oct, 4 of 9 engagements on 30 Oct, each followed by the 24 % sticky cap under a held trigger.
+// NOW: between the ceiling and kFmDivergeFarFactor x D_engage (3 x 12 m = 36 m, 118 ft) a dwell ends Follow-Me only if the
+// gap OPENED by more than kFmDivergeOpenEpsM over it (running away, +1.5 mph); beyond that this epsilon and the old rule
+// stand. Pure rule: fmDivergeDwellStep(), Common/FollowMePause.h. Wrong steering still opens the gap at about the rider's
+// speed or more and ends within one dwell; a rider outrunning the buggy by more than 1.5 mph still ends it. A buggy holding
+// a constant 80-118 ft keeps following, with the trigger, the stick takeover and the 30 s long-loss clock still applying.
+// It can only make the net fire LESS inside that band - it adds no throttle and touches no cap.
+static const float    kFmDivergeFarFactor    = 3.0f;   // multiplier on D_engage: the outer edge of the "pacing" band
+static const float    kFmDivergeOpenEpsM     = 2.0f;   // metres the gap must OPEN over the dwell to end inside the band
 
 // ---- PIVOT-SUSPEND-1 + GOVERNOR-2 constants (V2.5-Evo - 2026-08-26) ----
 // Compile-time only, like every other kFm* above: no confStruct fields, no SW_VERSION bump,
@@ -7549,6 +7570,7 @@ static void runFmLoopBody(unsigned long now)
   // it. The motor must reach 0 first and the explanation can wait; nothing else reads these.
   float diverge_limit_m = 0.0f;   // the ceiling (kFmDivergeFactor x D_engage) that was exceeded, m
   float diverge_start_m = 0.0f;   // the distance captured when the dwell started, m
+  bool  diverge_opening = false;  // V2.5-Evo - 2026-10-30 - R2: true = the in-band "running away" rule fired (for the print)
 
   if (proof_ok) {   // P1-a: was hard_ok — the trigger no longer gates the proof
     // Both GPS sources are guaranteed fresh here by conditions 4 and 5.
@@ -8094,34 +8116,41 @@ static void runFmLoopBody(unsigned long now)
       const float geom_c = fm_station_radius_m + ((band_c > 0.0f) ? band_c : 0.0f);
       if (fm_station_radius_m > 0.0f && geom_c > diverge_ceiling_m) diverge_ceiling_m = geom_c;
     }
-    if (in_engage_grace || fm_pivoting || takeover_park) {
-      // Ramping and/or aligning — not judgeable yet. Park the window so it starts fresh afterwards.
-      fm_diverge_since_ms     = 0;
-      fm_diverge_start_dist_m = -1.0f;
-    }
-    else if (fm_state == FM_ACTIVE && dist_m > diverge_ceiling_m) {
-      if (fm_diverge_since_ms == 0) {
-        // First tick beyond the ceiling: start the dwell and record what we are closing FROM.
-        fm_diverge_since_ms     = now;
-        fm_diverge_start_dist_m = dist_m;
-      } else if ((now - fm_diverge_since_ms) >= kFmDivergeMs) {
-        if (dist_m >= (fm_diverge_start_dist_m - kFmDivergeCloseEpsM)) {
-          // Beyond the ceiling for the full dwell and NOT closing — this is divergence.
-          // F7: the numbers are stashed and printed later, after fm_throttle_cap = 0.
-          diverge_fault   = true;
-          diverge_limit_m = diverge_ceiling_m;
-          diverge_start_m = fm_diverge_start_dist_m;
-        } else {
-          // It has closed by more than the epsilon: the buggy IS following, just far. No fault —
-          // clear the window so the next tick opens a fresh one from the current distance.
-          fm_diverge_since_ms     = 0;
-          fm_diverge_start_dist_m = -1.0f;
-        }
+    // ==========================================================================================
+    // V2.5-Evo - 2026-10-30 - audit 2026-10-20 R2 (finding F-1): JUDGE "RUNNING AWAY", NOT "NOT CLOSING FAST ENOUGH".
+    // THE BUG: beyond the ceiling the dwell below ended Follow-Me unless the buggy had CLOSED 2 m in 3 s (+1.5 mph). The
+    // speed governor never delivers that while pacing a rider (it is zero at its own target), so a buggy following
+    // correctly at 80-110 ft was switched off about 10 s into each engagement - 8 of 14 stretches on 19 Oct, 4 of 9 on
+    // 30 Oct - and the steering end then held the trigger at the 24 % sticky cap (53 s at about 5 mph on 30 Oct).
+    // THE FIX, in fmDivergeDwellStep() (Common/FollowMePause.h, host-tested): between this ceiling and
+    // kFmDivergeFarFactor x D_engage (36 m, 118 ft at the owner's 12 m) a dwell ends Follow-Me only if the gap OPENED by
+    // more than kFmDivergeOpenEpsM (2 m: +1.5 mph); beyond that it is the rule below as it always was (must have closed by
+    // kFmDivergeCloseEpsM). The band's rule is picked from the distance at the dwell's end. Same bookkeeping as before:
+    // parked (grace, a pivot, a takeover) or not ACTIVE or back inside the ceiling clears the dwell; a dwell that does not
+    // end Follow-Me clears it so the next tick opens a fresh one; a verdict leaves it standing for the steering end.
+    // Still only REMOVES eligibility: no cap, no throttle, the deadman and the sticky cap untouched.
+    // ==========================================================================================
+    // The three branches that used to be written out here (park / dwell / reset), in one pure call:
+    //   park  - ramping and/or aligning, not judgeable yet: the window starts fresh afterwards;
+    //   dwell - the first tick beyond the ceiling starts it and records what we are closing FROM; at kFmDivergeMs the
+    //           verdict, or a fresh window if the buggy is following;
+    //   reset - back inside the limit, or FM is not ACTIVE: the dwell restarts from scratch.
+    {
+      const bool judged = !(in_engage_grace || fm_pivoting || takeover_park) && (fm_state == FM_ACTIVE);
+      FmDivergeDwell dv = { (uint32_t)fm_diverge_since_ms, fm_diverge_start_dist_m };
+      const uint8_t dv_verdict = fmDivergeDwellStep(&dv, (uint32_t)now, judged, dist_m, diverge_ceiling_m,
+                                                    kFmDivergeFarFactor * d_engage, kFmDivergeMs,
+                                                    kFmDivergeCloseEpsM, kFmDivergeOpenEpsM);
+      fm_diverge_since_ms     = dv.since_ms;
+      fm_diverge_start_dist_m = dv.start_m;
+      if (dv_verdict != FMDV_NONE) {
+        // Beyond the ceiling for the full dwell and running away (or, past 3 x D_engage, not closing) - divergence.
+        // F7: the numbers are stashed and printed later, after the steering end's writes.
+        diverge_fault   = true;
+        diverge_limit_m = diverge_ceiling_m;
+        diverge_start_m = fm_diverge_start_dist_m;
+        diverge_opening = (dv_verdict == FMDV_OPENING);
       }
-    } else {
-      // Back inside the limit, or FM is not ACTIVE — the dwell restarts from scratch.
-      fm_diverge_since_ms     = 0;
-      fm_diverge_start_dist_m = -1.0f;
     }
   } else {
     // Trigger released, or no trustworthy distance this tick (GPS stale/rejected, link down).
@@ -8548,7 +8577,12 @@ static void runFmLoopBody(unsigned long now)
       fm_last_stop_reason       = diverge_fault ? FM_STOP_DIVERGENCE : FM_STOP_HEADING_DISAGREE;   // for ?diag
       fm_last_stop_ms           = now;
       // F7: every print below the writes.
-      if (diverge_fault) {
+      if (diverge_fault && diverge_opening) {
+        // V2.5-Evo - 2026-10-30 - R2: the in-band rule (between the ceiling and 3 x D_engage) - the gap opened.
+        Serial.printf("FM [RX] DIVERGENCE: dist=%.1f m (was %.1f m at dwell start, opened >%.1f m) beyond limit %.1f m, inside %.1f m, over %lu ms - running away\n",
+                      (double)dist_m, (double)diverge_start_m, (double)kFmDivergeOpenEpsM,
+                      (double)diverge_limit_m, (double)(kFmDivergeFarFactor * d_engage), (unsigned long)kFmDivergeMs);
+      } else if (diverge_fault) {
         Serial.printf("FM [RX] DIVERGENCE: dist=%.1f m (was %.1f m at dwell start, closed <%.1f m) > limit %.1f m sustained %lu ms - not closing\n",
                       (double)dist_m, (double)diverge_start_m, (double)kFmDivergeCloseEpsM,
                       (double)diverge_limit_m, (unsigned long)kFmDivergeMs);

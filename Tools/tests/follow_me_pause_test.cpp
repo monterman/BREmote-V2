@@ -449,6 +449,251 @@ static void testLongLossStickyFromHold()
   }
 }
 
+// ---- 6. V2.5-Evo - 2026-10-30 - audit 2026-10-20 R2 (finding F-1): the divergence dwell ----
+// fmDivergeDwellStep() at the owner's numbers: D_engage 12 m, so the ceiling is 24 m (79 ft) and the band's far edge 36 m
+// (118 ft); dwell 3000 ms; 2 m either way. Ticks are 100 ms; the rider's fix (and so the distance) moves at 3 Hz.
+// THE NOISE: up to +/-3 ft (0.914 m) on each distance sample, uniform, held between fixes - the audit's "6 ft" as a band
+// (its pacing case, 82-115 ft inside the 79-118 ft band, is exactly that band shrunk by 3 ft each side).
+static const float    kDvCeil = 24.0f, kDvFar = 36.0f, kDvEps = 2.0f, kDvNoise = 0.9144f;
+static const uint32_t kDvDwell = 3000;
+static float dvU(uint32_t *s) { *s = *s * 1103515245u + 12345u; return (float)((*s >> 8) & 0xFFFFu) / 65535.0f; }
+
+// The pre-R2 rule, restated verbatim from runFmLoopBody() (2026-10-29): park / dwell / reset, "must have closed 2 m".
+static bool oldDivergeStep(uint32_t *since, float *start, uint32_t now, bool parked, bool active, float dist, float ceil_m)
+{
+  if (parked) { *since = 0; *start = -1.0f; return false; }
+  if (active && dist > ceil_m) {
+    if (*since == 0) { *since = now; *start = dist; return false; }
+    if ((uint32_t)(now - *since) >= kDvDwell) {
+      if (dist >= (*start - kDvEps)) return true;
+      *since = 0; *start = -1.0f;
+    }
+    return false;
+  }
+  *since = 0; *start = -1.0f;
+  return false;
+}
+
+// Runs a distance trajectory through the dwell. dist_at(t_s) gives the TRUE distance; noise (if on) is added per fix.
+// judge_from_s: the grace / pivot window - the dwell is parked before it. Returns the verdict and when / where it fired.
+struct DvRun { uint8_t verdict; float t_s; float true_m; float read_m; };
+template <typename F>
+static DvRun dvRun(F dist_at, float judge_from_s, float max_s, bool noise, uint32_t seed)
+{
+  FmDivergeDwell d = { 0, -1.0f };
+  uint32_t rs = seed;
+  float n = 0.0f;
+  long fix_prev = -1;
+  for (int i = 1; i <= (int)(max_s * 10.0f); ++i) {
+    const float t = i * 0.1f;
+    const long fix = (long)floorf(t * 3.0f + 1e-4f);
+    if (fix != fix_prev) { fix_prev = fix; n = noise ? (dvU(&rs) * 2.0f - 1.0f) * kDvNoise : 0.0f; }
+    const float truth = dist_at(t);
+    const float read  = truth + n;
+    const bool judged = (t >= judge_from_s);
+    const uint8_t v = fmDivergeDwellStep(&d, (uint32_t)(i * 100), judged, read, kDvCeil, kDvFar, kDvDwell, kDvEps, kDvEps);
+    if (v != FMDV_NONE) return { v, t, truth, read };
+  }
+  return { FMDV_NONE, -1.0f, -1.0f, -1.0f };
+}
+
+static void testDivergeDwell()
+{
+  // (0) With the band empty (far edge not above the ceiling - a front station that raised the ceiling) it is the old rule
+  //     to the bit: random sequences of parking, state and distance, verdicts and state compared on every tick.
+  {
+    uint32_t rs = 4711u;
+    long verdicts = 0;
+    for (int run = 0; run < 2000; ++run) {
+      FmDivergeDwell d = { 0, -1.0f };
+      uint32_t o_since = 0; float o_start = -1.0f;
+      float dist = 10.0f + dvU(&rs) * 40.0f;
+      for (int i = 1; i <= 400; ++i) {
+        dist += (dvU(&rs) - 0.5f) * 3.0f;
+        const bool parked = dvU(&rs) < 0.05f, active = dvU(&rs) < 0.97f;
+        const bool o = oldDivergeStep(&o_since, &o_start, (uint32_t)(i * 100), parked, active, dist, kDvCeil);
+        const uint8_t v = fmDivergeDwellStep(&d, (uint32_t)(i * 100), !parked && active, dist, kDvCeil, kDvCeil,
+                                             kDvDwell, kDvEps, kDvEps);
+        assert(o == (v != FMDV_NONE));
+        assert(v != FMDV_OPENING);                       // no band, no in-band verdict
+        assert(o_since == d.since_ms && o_start == d.start_m);
+        if (o) { verdicts++; o_since = 0; o_start = -1.0f; d.since_ms = 0; d.start_m = -1.0f; }   // the RX's steering end
+      }
+    }
+    printf("R2 (0) empty band = the old rule: 2000 random runs identical (%ld verdicts)\n", verdicts);
+  }
+  // Unit: the band and the far edge.
+  {
+    FmDivergeDwell d = { 0, -1.0f };
+    assert(fmDivergeDwellStep(&d, 100, true, 25.0f, kDvCeil, kDvFar, kDvDwell, kDvEps, kDvEps) == FMDV_NONE);  // starts
+    assert(d.since_ms == 100 && d.start_m == 25.0f);
+    assert(fmDivergeDwellStep(&d, 3000, true, 25.0f, kDvCeil, kDvFar, kDvDwell, kDvEps, kDvEps) == FMDV_NONE);  // 2.9 s
+    assert(fmDivergeDwellStep(&d, 3100, true, 25.0f, kDvCeil, kDvFar, kDvDwell, kDvEps, kDvEps) == FMDV_NONE);  // pacing
+    assert(d.since_ms == 0 && d.start_m == -1.0f);                                                            // fresh
+    d = { 100, 25.0f };
+    assert(fmDivergeDwellStep(&d, 3100, true, 27.0f, kDvCeil, kDvFar, kDvDwell, kDvEps, kDvEps) == FMDV_NONE);  // +2.0: not more
+    d = { 100, 25.0f };
+    assert(fmDivergeDwellStep(&d, 3100, true, 27.1f, kDvCeil, kDvFar, kDvDwell, kDvEps, kDvEps) == FMDV_OPENING);
+    assert(d.since_ms == 100);                                                            // left standing for the RX
+    d = { 100, 37.0f };
+    assert(fmDivergeDwellStep(&d, 3100, true, 36.5f, kDvCeil, kDvFar, kDvDwell, kDvEps, kDvEps) == FMDV_NOT_CLOSING);  // beyond 36
+    d = { 100, 39.0f };
+    assert(fmDivergeDwellStep(&d, 3100, true, 36.9f, kDvCeil, kDvFar, kDvDwell, kDvEps, kDvEps) == FMDV_NONE);  // closed 2.1
+    d = { 100, 30.0f };
+    assert(fmDivergeDwellStep(&d, 3100, false, 40.0f, kDvCeil, kDvFar, kDvDwell, kDvEps, kDvEps) == FMDV_NONE);  // parked
+    assert(d.since_ms == 0);
+    d = { 100, 30.0f };
+    assert(fmDivergeDwellStep(&d, 3100, true, 23.9f, kDvCeil, kDvFar, kDvDwell, kDvEps, kDvEps) == FMDV_NONE);  // inside
+    assert(d.since_ms == 0);
+  }
+  // (a) WRONG STEERING. An inverted-steering buggy turns until it points away from its aim and drives off; the rider keeps
+  //     going. Modelled in 2-D: rider 9.8 mph north; the buggy turns the WRONG way at up to 45 deg/s and runs at 5 mph
+  //     (the align cap). Two cases, with and without the noise band:
+  //     (a1) inverted from the engagement, the buggy 20 m back: judging opens at the grace end (6.5 s) or a later pivot
+  //          window end (8 / 10 / 12 s) - by then it is past 36 m, so it is the old rule that ends it;
+  //     (a2) a fault MID-RUN, inside the band: following correctly at 25 m (82 ft) until 10 s, then inverted. The RX's
+  //          pivot net parks the judgement while the heading error rises from 55 deg (entry) until it has worsened 15 deg
+  //          past its best (PV-2), then a fresh window opens - and the R2 band rule must end it.
+  //     Either way it must end within 3 s (+ a tick) of judging opening with the buggy beyond the ceiling.
+  {
+    const float vr = 9.8f * 0.44704f, vb = 5.0f * 0.44704f;
+    float worst = 0.0f;
+    int in_band_ends = 0, runs_a = 0;
+    for (int scen = 0; scen < 5; ++scen) {                       // 0-3: (a1) at the four openings; 4: (a2)
+      const float opens_a1[4] = { 6.5f, 8.0f, 10.0f, 12.0f };
+      static float traj[1201], errs[1201];
+      float rx = 0.0f, ry = 0.0f, bx = 0.0f, by = (scen < 4) ? -20.0f : -25.0f, bh = 0.0f;
+      const float t_fault = (scen < 4) ? 0.0f : 10.0f;
+      traj[0] = ry - by; errs[0] = 0.0f;
+      for (int i = 1; i <= 1200; ++i) {
+        const float t = i * 0.1f;
+        ry += vr * 0.1f;
+        const float want = atan2f(rx - bx, ry - by) * 57.2957795f;
+        float err = want - bh;
+        while (err > 180.0f) err -= 360.0f;
+        while (err < -180.0f) err += 360.0f;
+        float turn = err;                                        // correct steering ...
+        float v = vr;                                            // ... pacing the rider
+        if (t >= t_fault) {
+          turn = -err;                                           // inverted
+          if (fabsf(err) < 1.0f) turn = 4.5f;                    // a dead-ahead start still diverges
+          v = vb;
+        }
+        if (turn >  4.5f) turn =  4.5f;
+        if (turn < -4.5f) turn = -4.5f;
+        bh += turn;
+        bx += v * 0.1f * sinf(bh / 57.2957795f);
+        by += v * 0.1f * cosf(bh / 57.2957795f);
+        traj[i] = sqrtf((rx - bx) * (rx - bx) + (ry - by) * (ry - by));
+        errs[i] = fabsf(err);
+      }
+      // When judging opens: (a1) the given opening; (a2) the end of the pivot park (error from 55 up to best + 15 = 70).
+      float open_t = 0.0f, park_from = -1.0f;
+      if (scen < 4) {
+        open_t = opens_a1[scen];
+      } else {
+        for (int i = 0; i <= 1200; ++i) if (i * 0.1f >= t_fault && errs[i] > 55.0f) { park_from = i * 0.1f; break; }
+        for (int i = 0; i <= 1200; ++i) if (park_from >= 0.0f && i * 0.1f >= park_from && errs[i] > 70.0f) { open_t = i * 0.1f; break; }
+        assert(park_from > 0.0f && open_t > park_from);
+      }
+      for (int nz = 0; nz < 2; ++nz) {
+        for (uint32_t seed = 1; seed <= (nz ? 50u : 1u); ++seed) {
+          FmDivergeDwell d = { 0, -1.0f };
+          uint32_t rs = seed;
+          float n = 0.0f;
+          long fix_prev = -1;
+          DvRun r = { FMDV_NONE, -1.0f, -1.0f, -1.0f };
+          float first_beyond_judged = -1.0f;
+          for (int i = 1; i <= 1200; ++i) {
+            const float t = i * 0.1f;
+            const long fix = (long)floorf(t * 3.0f + 1e-4f);
+            if (fix != fix_prev) { fix_prev = fix; n = nz ? (dvU(&rs) * 2.0f - 1.0f) * kDvNoise : 0.0f; }
+            const float read = traj[i] + n;
+            const bool parked = (scen < 4) ? (t < open_t) : (park_from >= 0.0f && t >= park_from && t < open_t);
+            if (!parked && t >= open_t && read > kDvCeil && first_beyond_judged < 0.0f) first_beyond_judged = t;
+            const uint8_t v = fmDivergeDwellStep(&d, (uint32_t)(i * 100), !parked, read, kDvCeil, kDvFar, kDvDwell,
+                                                 kDvEps, kDvEps);
+            if (v != FMDV_NONE && (scen < 4 || t >= t_fault)) { r = { v, t, traj[i], read }; break; }
+            assert(v == FMDV_NONE);                              // (a2): pacing before the fault never ends
+          }
+          assert(r.verdict != FMDV_NONE && first_beyond_judged >= 0.0f);
+          const float lat = r.t_s - first_beyond_judged;
+          if (lat > worst) worst = lat;
+          assert(lat <= 3.0f + 0.1f + 1e-3f);
+          if (scen == 4) { runs_a++; if (r.verdict == FMDV_OPENING) in_band_ends++; }
+        }
+      }
+    }
+    printf("R2 (a) inverted steering: ends at most %.1f s after judging opens beyond the ceiling (<= 3 s + a tick asked); "
+           "mid-run fault from 82 ft: %d of %d runs ended by the band rule, the rest by the old rule (the gap passes "
+           "118 ft inside the first dwell)\n", (double)worst, in_band_ends, runs_a);
+  }
+  // (b) PACING at a constant 82-115 ft with the 6 ft noise band at 3 Hz: no end in 120 s - 200 seeds per gap, plus the
+  //     adversarial worst case (every dwell starts at -3 ft and ends at +3 ft: 1.83 m, under the 2 m line).
+  {
+    const float gaps_ft[6] = { 82.0f, 90.0f, 98.0f, 106.0f, 112.0f, 115.0f };
+    long runs = 0;
+    for (int g = 0; g < 6; ++g) {
+      const float gap = gaps_ft[g] * 0.3048f;
+      for (uint32_t seed = 1; seed <= 200; ++seed) {
+        const DvRun r = dvRun([&](float) { return gap; }, 0.0f, 120.0f, true, seed * 7919u + g);
+        assert(r.verdict == FMDV_NONE);
+        runs++;
+      }
+      FmDivergeDwell d = { 0, -1.0f };
+      for (int i = 1; i <= 1200; ++i) {
+        const float n = ((i / 30) % 2 == 0) ? -kDvNoise : kDvNoise;   // flips every 3 s, against the dwell
+        assert(fmDivergeDwellStep(&d, (uint32_t)(i * 100), true, gap + n, kDvCeil, kDvFar, kDvDwell, kDvEps, kDvEps)
+               == FMDV_NONE);
+      }
+    }
+    printf("R2 (b) pacing 82-115 ft with the 6 ft band: %ld runs x 120 s, no end (the old rule would end every one)\n", runs);
+    // The old rule on the same pacing: it ends - that is F-1.
+    uint32_t since = 0; float start = -1.0f; bool ended = false;
+    for (int i = 1; i <= 1200 && !ended; ++i) ended = oldDivergeStep(&since, &start, (uint32_t)(i * 100), false, true, 30.0f, kDvCeil);
+    assert(ended);
+  }
+  // (c) FALLING BEHIND at 0.7 mph from 20 m: no end while the gap is inside 118 ft, then the old rule ends it - at the
+  //     first dwell end past 36 m. Noise-free asserted. With the 6 ft band the 0.94 m opening per dwell can read as more
+  //     than 2 m; how often that ends it early is reported (the audit's optional 3-fix averaging is not implemented).
+  {
+    const float rate = 0.7f * 0.44704f;
+    const DvRun r = dvRun([&](float t) { return 20.0f + rate * t; }, 0.0f, 200.0f, false, 1);
+    const float cross36 = (kDvFar - 20.0f) / rate;
+    assert(r.verdict == FMDV_NOT_CLOSING);
+    assert(r.true_m > kDvFar);
+    assert(r.t_s - cross36 <= 3.0f + 0.1f + 1e-3f);
+    int early = 0;
+    float earliest = 1e9f;
+    for (uint32_t seed = 1; seed <= 500; ++seed) {
+      const DvRun q = dvRun([&](float t) { return 20.0f + rate * t; }, 0.0f, 200.0f, true, seed);
+      assert(q.verdict != FMDV_NONE);
+      if (q.true_m <= kDvFar) { early++; if (q.true_m < earliest) earliest = q.true_m; }
+    }
+    printf("R2 (c) falling behind 0.7 mph: ends at %.1f m (%.0f ft) by the old rule, %.1f s after passing 118 ft; with the "
+           "6 ft band %d of 500 runs end inside 118 ft (earliest %.0f ft) - noise, reported\n",
+           (double)r.true_m, (double)(r.true_m / 0.3048f), (double)(r.t_s - cross36), early,
+           (double)((early ? earliest : 0.0f) / 0.3048f));
+  }
+  // (d) THE RIDER IS 2 mph FASTER: the gap opens 2.7 m per dwell - over the 2 m line - so it ends, inside the band.
+  {
+    const float rate = 2.0f * 0.44704f;
+    const DvRun r = dvRun([&](float t) { return 20.0f + rate * t; }, 0.0f, 200.0f, false, 1);
+    assert(r.verdict == FMDV_OPENING);
+    assert(r.true_m <= kDvFar);
+    const float cross24 = (kDvCeil - 20.0f) / rate;
+    assert(r.t_s - cross24 <= 3.0f + 0.2f + 1e-3f);
+    int ended_in_band = 0;
+    for (uint32_t seed = 1; seed <= 500; ++seed) {
+      const DvRun q = dvRun([&](float t) { return 20.0f + rate * t; }, 0.0f, 200.0f, true, seed);
+      assert(q.verdict != FMDV_NONE);                            // always ends
+      if (q.verdict == FMDV_OPENING) ended_in_band++;
+    }
+    printf("R2 (d) rider 2 mph faster: ends %.1f s after passing 79 ft (running away); with the 6 ft band all 500 runs end, "
+           "%d inside the band\n", (double)(r.t_s - cross24), ended_in_band);
+  }
+}
+
 int main()
 {
   testClassification();
@@ -458,6 +703,7 @@ int main()
   testCreep();
   testStickyAtEveryExit();
   testLongLossStickyFromHold();   // V2.5-Evo - 2026-10-12 - A-3
+  testDivergeDwell();             // V2.5-Evo - 2026-10-30 - audit 2026-10-20 R2
   printf("follow_me_pause_test: all tests passed\n");
   return 0;
 }

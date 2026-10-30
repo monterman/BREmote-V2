@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-29 - BIND LED RE-LIT WHILE THE LINK IS UP (owner-approved for RX1): includes ../Common/BindLedRefresh.h (after AwPort1.h), the pure rule checkConnStatus() (System.ino) uses to write the BIND LED LOW again every 5th pass while connected and to skip that write while a BIND LED pattern runs. Include only: no new global here (the pattern flag is file-scope in System.ino). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-26 - COMMENT ONLY (N-1): the steer_during_auto field note now tells the 30 s takeover end per mode - return-to-me and auto-return ignore the stick until it is centred; Follow-Me following ends through FM_HOLD, so the stick is the rider's at once with no centring, and under a trigger that stays held a fresh separation or the auto-return can move the buggy again with no release, each through its own ramp and caps. No code change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-25 - COMMENT ONLY (steer default review S-5): the steer_during_auto field comment says what 0 does since the remote stopped exiting (the stick is not used in a classic return-to-me), what a 30 s takeover does in each mode (return-to-me and auto-return carry on; Follow-Me following stops until one release), and that the remote no longer acts on fm_flags bit 4. No code change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-25 - defaultConf.steer_during_auto 0 -> 1 (owner ruling): a fresh or factory-reset buggy lets the stick TAKE OVER automatic steering while it is held and hand back on centring, instead of cancelling. Value only: same field, sizeof stays 200, SW_VERSION stays 36, a stored config keeps its own value.
@@ -1043,6 +1044,10 @@ static const float kFmFrontAheadExtraMaxM     = 10.0f;  // metres; largest legal
 // UART-mux read-back verdict, pure and host-tested (Tools/tests/aw_port1_test.cpp). Used by System.ino only.
 #include "../Common/UartMuxVerify.h"
 #include "../Common/AwPort1.h"
+// V2.5-Evo - 2026-10-29 - BIND LED REFRESH (owner-approved for RX1): when checkConnStatus() lights the BIND LED again
+// while the link is up, and that it skips while a BIND LED pattern runs - pure and host-tested
+// (Tools/tests/bind_led_refresh_test.cpp). Used by System.ino only.
+#include "../Common/BindLedRefresh.h"
 // V2.5-Evo - 2026-10-14 - RESET REASON + BOOT COUNTER (owner-approved for RX1): reset-reason names and classes (pure,
 // host-tested); the persistent boot counter lives in NVS through the core's Preferences library (no config field).
 #include "../Common/ResetReason.h"

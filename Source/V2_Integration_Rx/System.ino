@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-29 - BIND LED RE-LIT WHILE THE LINK IS UP (owner-approved for RX1; RX1 showed the BIND LED fully off while the remote drove the buggy). checkConnStatus() lit the LED only on the pass the link came up, so one lost AW9523 write, or any BIND LED pattern while connected (they all end dark: the BIND-button compass calibration, ?compasscal, ?magalign), left it dark until the link next dropped. Now, while paired with a fresh link, every 5th pass (about once a second) writes AP_L_BIND LOW again under i2cMutex - one port-0 read-modify-write a second, never port 1 or CONFIG1. blinkBind(), blinkBindPattern() and blinkErr() on the BIND LED set g_bind_led_pattern_active for as long as they run, and the refresh skips its write while it is set (read with i2cMutex held), so a compass result pattern is never drawn over; the LED is lit again at most ~1 s after a pattern ends. The rule is pure and host-tested (../Common/BindLedRefresh.h, Tools/tests/bind_led_refresh_test.cpp). The LED-on write when the link comes up, the link-lost blink and the unpaired blip are unchanged. No new task, no new delay. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-27 - GPS COMMANDS, COMMENTS AND HELP TEXT ONLY (RX GPS audits of 2026-10-27): the ?gpscfg row's help text names the update-rate and chip-version (UBX-MON-VER) reads it gained, ~6 s worst case (was ~4.5 s); the ?gpssetup row's says up to ~30 s (was ~20 s); and the ?gpscfg note no longer says configureGPS() never checks a UBX ACK - it has since GPS-ACK-1/2. This tag was missing: those changes were tagged inline only. No row flag, gate or command changed. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-20 - FRONT STATIONS SWAP NUMBERS (owner: 4 front-left, 5 front-right): the ?diag "FM station" front-abort text says F4/F5 read as F3/F1 (was F1/F3). Text only.
 // V2.5-Evo - 2026-10-14 - RESET REASON + BOOT COUNTER (owner-approved for RX1): ?diag prints a "boot" line after the window line - the boot number, this boot's reset reason (name, code, class) and the uptime. No new command. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -395,6 +396,20 @@ uint8_t getUbatPercent(float pack_voltage)
   }
 }
 
+// ============================================================
+// BIND LED PATTERN FLAG - checkConnStatus() must not draw over a pattern the rider is reading
+// ============================================================
+// V2.5-Evo - 2026-10-29 - owner-approved for RX1 (see ../Common/BindLedRefresh.h). checkConnStatus() now lights the
+// BIND LED again about once a second while the link is up. This flag is true for as long as blinkBind(),
+// blinkBindPattern() or blinkErr() on the BIND LED runs, and the refresh skips its write while it is set, so the compass
+// FULL / PARTIAL / REJECTED patterns (and the start blink) are shown exactly as before. Each function sets it BEFORE its
+// first i2cMutex take and clears it AFTER its last delay; checkConnStatus() reads it with i2cMutex held, so a refresh
+// either lands before the pattern's first write or sees the flag - never between two of the pattern's writes.
+// One writer: every caller of the three functions runs on the loop task (setup() included; the web console runs its
+// commands from webCfgLoop() in loop()). One reader: checkConnStatus(). Single core: volatile is enough.
+// No pattern calls another pattern function, so a plain flag (not a count) is enough.
+static volatile bool g_bind_led_pattern_active = false;
+
 // V2.5-Evo - 2026-10-14 - audit F1 (owner-approved for RX1): blinkErr() is now used ONLY by the fatal halt loops
 // (radioErrorHalt(), spiffsErrorHalt(), the battery-calibration save failure): the AUX button's confirmation moved to
 // the logger's non-blocking triggerBlink() (checkButtons()). It deliberately does NOT feed the watchdog: those callers
@@ -402,8 +417,14 @@ uint8_t getUbatPercent(float pack_voltage)
 // here would turn a halt into a permanent hang with the safety gates not running. Its port-1 LED writes (AUX LED)
 // go through the port-1 writer (FS-13), so a blink can never clear a PPM enable; port-0 pins (BIND LED) are unchanged.
 // Inputs: num (blinks), pin (an AW9523 LED pin, active LOW). Side effects: blocks ~0.4 s per blink + 0.5 s.
+// V2.5-Evo - 2026-10-29 - on the BIND LED it sets g_bind_led_pattern_active from before the first blink to the end of
+// the 0.5 s gap (the gap is part of the error code), and clears it before checkSerial(), so a command run from there
+// is never inside the flag. All three callers run in setup() before initTasks() starts checkConnStatus(), so the halt
+// loops blink exactly as before.
 void blinkErr(int num, uint8_t pin)
 {
+  const bool bind_led = (pin == AP_L_BIND);
+  if (bind_led) g_bind_led_pattern_active = true;
   for(int i = 0; i < num; i++)
   {
     xSemaphoreTake(i2cMutex, portMAX_DELAY);
@@ -416,11 +437,16 @@ void blinkErr(int num, uint8_t pin)
     delay(200);
   }
   delay(500);
+  if (bind_led) g_bind_led_pattern_active = false;
   checkSerial();
 }
 
+// V2.5-Evo - 2026-10-29 - sets g_bind_led_pattern_active for the whole pattern (see the flag above). Otherwise unchanged:
+// the pairing heartbeat (Radio.ino, blinkBind(2) in a loop) runs at boot with usrConf.paired false, when the refresh
+// never runs.
 void blinkBind(int num)
 {
+  g_bind_led_pattern_active = true;
   for(int i = 0; i < num; i++)
   {
     xSemaphoreTake(i2cMutex, portMAX_DELAY);
@@ -432,6 +458,7 @@ void blinkBind(int num)
     xSemaphoreGive(i2cMutex);
     delay(50);
   }
+  g_bind_led_pattern_active = false;
 }
 
 // ============================================================================================
@@ -464,8 +491,12 @@ void blinkBind(int num)
 //
 // blinkBind() itself is untouched: Radio.ino calls blinkBind(2) in a loop as the pairing-mode
 // heartbeat, so retiming it would change how pairing looks.
+// V2.5-Evo - 2026-10-29 - sets g_bind_led_pattern_active from before the lead-in to the end of the last dark gap, so
+// checkConnStatus()'s once-a-second refresh cannot light the LED inside the lead-in or between pulses (it would turn
+// the "blip-blip" / "PULSE... PULSE... PULSE" the rider reads into something else). Timings unchanged.
 static void blinkBindPattern(int count, uint16_t onMs, uint16_t offMs)
 {
+  g_bind_led_pattern_active = true;
   // Lead-in dark gap, so the start of the pattern is identifiable rather than running straight
   // out of whatever the LED was doing a moment ago.
   xSemaphoreTake(i2cMutex, portMAX_DELAY);
@@ -487,6 +518,7 @@ static void blinkBindPattern(int count, uint16_t onMs, uint16_t offMs)
     delay(offMs);
   }
   esp_task_wdt_reset();
+  g_bind_led_pattern_active = false;   // V2.5-Evo - 2026-10-29 - pattern over: the next refresh may light the LED
 }
 
 // Quick double-blip. Short and light: good news, nothing to do.
@@ -2870,6 +2902,9 @@ void checkConnStatus(void *parameter)
 {
   TickType_t xLastWakeTime = xTaskGetTickCount();
   const TickType_t xFrequency = pdMS_TO_TICKS(200);
+  // V2.5-Evo - 2026-10-29 - BIND LED refresh: passes since the LED was last lit by this task while connected
+  // (bindLedRefreshDue(), ../Common/BindLedRefresh.h). This task's own variable - one writer.
+  uint8_t bind_refresh_passes = 0;
   while (1)
   {
     // V2.5-Evo - 2026-07-31 - RX-WDT-2: gated, same as PWM.ino and Radio.ino. initTasks()
@@ -2884,11 +2919,30 @@ void checkConnStatus(void *parameter)
       // LED to "link lost" for one pass. A last_packet of 0 (never) also reads as no link now.
       if(!stampStale((uint32_t)millis(), (uint32_t)last_packet, (uint32_t)usrConf.failsafe_time))
       {
+        const bool bind_was_lit = (bind_pin_state == 1);   // V2.5-Evo - 2026-10-29 - read before the LED-on write below
         if(bind_pin_state != 1)
         {
           bind_pin_state = 1;
           xSemaphoreTake(i2cMutex, portMAX_DELAY);
           aw.digitalWrite(AP_L_BIND, LOW);
+          xSemaphoreGive(i2cMutex);
+        }
+        // ============================================================
+        // V2.5-Evo - 2026-10-29 - BIND LED REFRESH (owner-approved for RX1; ../Common/BindLedRefresh.h, host-tested)
+        // ============================================================
+        // WHAT WAS WRONG: the write above runs only on the pass the link comes up. If it was lost on the bus (the
+        // library's digitalWrite() reports nothing), or anything later drove the pin HIGH while connected - every BIND
+        // LED pattern ends dark: the BIND-button compass calibration, ?compasscal, ?magalign - the LED stayed dark with
+        // the remote driving the buggy, until the link next dropped. RX1 showed exactly that on 2026-10-29.
+        // WHAT IT DOES NOW: every 5th pass with the LED already lit (about once a second) writes it LOW again. It is
+        // skipped while a pattern runs (g_bind_led_pattern_active, read with i2cMutex held, so it cannot land between
+        // two of the pattern's writes); the LED is lit again at most ~1 s after the pattern ends.
+        // COST: one port-0 read-modify-write a second (OUTPUT0 + pin / 8 in the library - never port 1, never CONFIG1)
+        // in one i2cMutex hold, taken exactly as the write above takes it. No new task, no delay.
+        if (bindLedRefreshDue(&bind_refresh_passes, bind_was_lit))
+        {
+          xSemaphoreTake(i2cMutex, portMAX_DELAY);
+          if (bindLedRefreshMayWrite(g_bind_led_pattern_active)) aw.digitalWrite(AP_L_BIND, LOW);
           xSemaphoreGive(i2cMutex);
         }
       }

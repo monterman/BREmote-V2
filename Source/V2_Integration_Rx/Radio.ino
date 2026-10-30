@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-29 - BIND LED delta audit LOW-3: waitForPairing()'s pairing-success BIND LED write takes i2cMutex,
+//   as every other BIND LED write does, and the pairing note above rxMayAcceptControl() now gives the real boot order
+//   (pairing runs in setup() before initTasks(), with no other task alive yet). No behaviour change today.
+//   No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-1: the 0xF3 GPS path accepts the v2 rider GPS packet (announcement
 //   0xF3/0x03 -> a 15-byte packet with the remote's GPS fix counter) next to v1 (0xF3/0x01 or any other subtype -> 14
 //   bytes, unchanged). processMetaGpsPacket() decodes both through Common/RiderGpsPacket.h and stamps
@@ -126,10 +130,17 @@ void ICACHE_RAM_ATTR packetReceived(void)
 //
 // Costs nothing on the wire, changes nothing for a paired board.
 //
-// NOTE ON PAIRING: waitForPairing() sets usrConf.paired = false while it runs,
-// and the receive task IS live at that point (initTasks() is called in setup(),
-// checkButtons() first runs from loop()). That is correct and intended — during
-// a bind the board must not also be drivable.
+// NOTE ON PAIRING: waitForPairing() sets usrConf.paired = false while it runs, so
+// this gate refuses every control packet during a bind — the board must not also be
+// drivable then. waitForPairing() is reached only from the FIRST checkButtons()
+// call, which runBootSequence() (Init.ino) makes in setup() BEFORE initTasks()
+// (V2_Integration_Rx.ino): the receive task, the PWM task and checkConnStatus() do
+// not exist yet, and checkButtons()'s first_call guard keeps its later calls from
+// loop() out of pairing. The gate is what would keep the board undrivable if pairing
+// were ever made reachable at runtime.
+// V2.5-Evo - 2026-10-29 - delta audit LOW-3: corrected. This note used to say the
+// receive task is live during pairing and that checkButtons() first runs from loop();
+// both were wrong, and either could mislead whoever makes pairing reachable at runtime.
 static bool rxMayAcceptControl()
 {
   if (!usrConf.paired) return false;
@@ -224,7 +235,13 @@ bool waitForPairing()
                   memcpy(usrConf.dest_address, buffer + 4, 3);
                   usrConf.paired = true;
                   saveConfToSPIFFS(usrConf);
+                  // V2.5-Evo - 2026-10-29 - delta audit LOW-3: under i2cMutex, taken and given exactly as blinkBind()
+                  // (the heartbeat above) takes it for the same LED. No behaviour change today - pairing runs before
+                  // initTasks(), with no other task on the bus - but the write stays serialised with the PWM task's
+                  // enable swap if pairing is ever made reachable at runtime.
+                  xSemaphoreTake(i2cMutex, portMAX_DELAY);
                   aw.digitalWrite(AP_L_BIND, LOW);
+                  xSemaphoreGive(i2cMutex);
                   return true;
                 }
               }

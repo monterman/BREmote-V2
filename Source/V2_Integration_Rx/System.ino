@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-29 - BIND LED DELTA AUDIT LOW-1 / LOW-2 / LOW-4 (owner-approved LED fix for RX1). LOW-4: the BIND LED pin's DIRECTION (AW9523 CONFIG0, 0x04) was set once at boot by unchecked read-modify-writes and never read back, so one failed read left pin 1 an input for the whole boot - dark in pairing mode and while connected, RX1's symptom. startupAW() now writes the whole port-0 direction byte (kAwCfg0Dirs, built from the AP_* defines, 0xED today) as one absolute value and checks it with a read-back (3 tries, the boot log says if it never matches), and checkConnStatus()'s once-a-second refresh writes it again in its own one-transaction hold. One data byte per write, so it never reaches CONFIG1. LEDMODE (0x12) is deliberately not re-asserted (reasons above startupAW()). LOW-1: every pass that sees a BIND LED pattern running restarts the refresh count, so the LED stays dark 0.8-1.0 s after every pattern instead of relighting after as little as 50 ms. LOW-2: the link-lost blink skips its LED write while a pattern runs (flag read with i2cMutex held) but keeps toggling, so it no longer chops a calibration result. No new task, no new delay. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-29 - BIND LED RE-LIT WHILE THE LINK IS UP (owner-approved for RX1; RX1 showed the BIND LED fully off while the remote drove the buggy). checkConnStatus() lit the LED only on the pass the link came up, so one lost AW9523 write, or any BIND LED pattern while connected (they all end dark: the BIND-button compass calibration, ?compasscal, ?magalign), left it dark until the link next dropped. Now, while paired with a fresh link, every 5th pass (about once a second) writes AP_L_BIND LOW again under i2cMutex - one port-0 read-modify-write a second, never port 1 or CONFIG1. blinkBind(), blinkBindPattern() and blinkErr() on the BIND LED set g_bind_led_pattern_active for as long as they run, and the refresh skips its write while it is set (read with i2cMutex held), so a compass result pattern is never drawn over; the LED is lit again at most ~1 s after a pattern ends. The rule is pure and host-tested (../Common/BindLedRefresh.h, Tools/tests/bind_led_refresh_test.cpp). The LED-on write when the link comes up, the link-lost blink and the unpaired blip are unchanged. No new task, no new delay. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-27 - GPS COMMANDS, COMMENTS AND HELP TEXT ONLY (RX GPS audits of 2026-10-27): the ?gpscfg row's help text names the update-rate and chip-version (UBX-MON-VER) reads it gained, ~6 s worst case (was ~4.5 s); the ?gpssetup row's says up to ~30 s (was ~20 s); and the ?gpscfg note no longer says configureGPS() never checks a UBX ACK - it has since GPS-ACK-1/2. This tag was missing: those changes were tagged inline only. No row flag, gate or command changed. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-20 - FRONT STATIONS SWAP NUMBERS (owner: 4 front-left, 5 front-right): the ?diag "FM station" front-abort text says F4/F5 read as F3/F1 (was F1/F3). Text only.
@@ -83,6 +84,8 @@ volatile uint32_t g_diag_port1_nak     = 0;         // writes whose OUTPUT1 writ
 // awPort1ReadLocked - one CHECKED read of an AW9523 port-1 register. Inputs: reg (0x01 INPUT1 or 0x03 OUTPUT1), out.
 // Returns: true only if the address was acknowledged AND one byte came back; *out written only then. Caller holds
 // i2cMutex. Side effects: one I2C write-then-read (3 ms Wire ceiling).
+// V2.5-Evo - 2026-10-29 - startupAW() also reads the port-0 direction register (CONFIG0, 0x04) back through it: nothing
+// here is specific to port 1, it reads any one register.
 static bool awPort1ReadLocked(uint8_t reg, uint8_t *out)
 {
   Wire.beginTransmission(AW9523_DEFAULT_ADDR);
@@ -162,6 +165,57 @@ void awPort1DiagLine()
                 (unsigned long)g_diag_port1_skipped, (unsigned long)g_diag_port1_nak);
 }
 
+// ============================================================
+// AW9523 PORT-0 DIRECTION (CONFIG0) - keeps the BIND LED pin an OUTPUT
+// ============================================================
+// V2.5-Evo - 2026-10-29 - delta audit LOW-4 (owner-approved LED fix for RX1).
+// WHAT WAS WRONG: the direction of every port-0 pin lives in one register, CONFIG0 (0x04; bit n = pin n, 1 = input,
+// 0 = output). It was set once at boot by the aw.pinMode() calls in startupAW() - each an UNCHECKED read-modify-write -
+// and never read back. The library's failed read returns all ones, so if the CONFIG0 read inside the later
+// pinMode(AP_EN_BMS_MEAS) or pinMode(AP_BMS_MEAS) failed, the byte written back set pin 1 (the BIND LED) to INPUT, and
+// it stayed an input for the whole boot. The LED was then dark in pairing mode and while connected, whatever the level
+// writes said - RX1's exact symptom. Nothing could repair it: every other BIND LED write sets the level (OUTPUT0) only.
+// WHAT IT DOES NOW: the WHOLE port-0 direction byte is written raw, as one absolute value, the way PWM.ino writes
+// CONFIG1: (1) in startupAW(), after the pinMode() calls, then read back with a checked read; (2) by checkConnStatus()'s
+// once-a-second refresh while the link is up, so a direction lost later is put right within about a second.
+// THE BYTE is built from the AP_* defines (never a literal), so a pin-map edit cannot quietly desynchronise it:
+//   AP_S_BIND (0), AP_BMS_MEAS (7)       inputs  (bit 1)
+//   AP_L_BIND (1), AP_EN_BMS_MEAS (4)    outputs (bit 0)
+//   every other port-0 pin (2, 3, 5, 6)  inputs  (bit 1). No firmware uses them and startupAW() never gives them a
+//                                        pinMode(), so they keep what aw.begin() gives every pin: its
+//                                        configureDirection(0) writes CONFIG0 = 0xFF, all inputs (Adafruit_AW9523 1.0.5).
+//   = 0xED today: the library's default, 0xFF, with only the two output bits cleared.
+// IT CANNOT TOUCH CONFIG1 (0x05, the register the PWM task's enable swap writes): every write is one I2C transaction
+// carrying the register pointer and ONE data byte. Only a second data byte could carry on into the next register, and
+// none is sent. Port 0 carries no motor signal.
+// LEDMODE (0x12, port 0) IS DELIBERATELY NOT RE-ASSERTED. Each pin's LEDMODE bit is 1 for GPIO and 0 for constant-current
+// LED mode (dark at the default zero current); pinMode(INPUT) and pinMode(OUTPUT) both set it to 1. (1) The failure
+// above cannot clear it: a failed read returns all ones, and all ones IS the intended LEDMODE byte, so the write-back is
+// right - the opposite of CONFIG0, where pin 1's intended bit is 0. (2) Nothing on the RX ever writes a 0 there: no
+// AW9523_LED_MODE, no configureLEDMode(), no aw.analogWrite() (PWM.ino's swap note says the same). (3) What is left - a
+// read corrupted to 0 in bit 1 yet acknowledged, once, on the quiet boot bus - does not justify another I2C write every
+// second on the bus the motor swap shares.
+static_assert(AP_S_BIND < 8 && AP_L_BIND < 8 && AP_EN_BMS_MEAS < 8 && AP_BMS_MEAS < 8,
+              "the port-0 direction byte assumes these AW9523 pins all sit on port 0 (CONFIG0)");
+static const uint8_t kAwCfg0Outputs = (uint8_t)((1u << AP_L_BIND) | (1u << AP_EN_BMS_MEAS));
+static const uint8_t kAwCfg0Inputs  = (uint8_t)((1u << AP_S_BIND) | (1u << AP_BMS_MEAS));
+static_assert((kAwCfg0Outputs & kAwCfg0Inputs) == 0, "a port-0 pin cannot be both an input and an output");
+static const uint8_t kAwCfg0Unused  = (uint8_t)~(kAwCfg0Outputs | kAwCfg0Inputs);   // left as aw.begin() set them: input
+static const uint8_t kAwCfg0Dirs    = (uint8_t)(kAwCfg0Inputs | kAwCfg0Unused);     // 1 = input; 0xED today
+static const uint8_t kAwCfg0BootTries = 3;   // startupAW(): write + checked read-back attempts, ~6 ms each at worst
+
+// awPort0DirWriteLocked - write CONFIG0 (0x04) = kAwCfg0Dirs: the whole port-0 direction byte, absolute.
+// Inputs: none. Returns: true only if the address, the register pointer and the data byte were all acknowledged.
+// Side effects: ONE I2C transaction, 3 bytes on the wire (address, 0x04, the byte) - so it can never reach CONFIG1.
+// The caller holds i2cMutex, or is boot code that runs before initTasks() starts any other task (startupAW()).
+static bool awPort0DirWriteLocked()
+{
+  Wire.beginTransmission(AW9523_DEFAULT_ADDR);
+  Wire.write((uint8_t)AW9523_REG_CONFIG0);
+  Wire.write(kAwCfg0Dirs);
+  return (Wire.endTransmission() == 0);
+}
+
 void startupAW()
 {
   Serial.print("Starting AW9532...");
@@ -183,6 +237,31 @@ void startupAW()
   aw.pinMode(AP_EN_PWM1, OUTPUT);
   aw.pinMode(AP_EN_WET_MEAS, OUTPUT);
   aw.pinMode(AP_WET_MEAS, INPUT);
+
+  // V2.5-Evo - 2026-10-29 - delta audit LOW-4: the port-0 directions as ONE absolute byte, checked by reading it back
+  // (see the CONFIG0 block above). The pinMode() calls above stay - they also put each pin in GPIO mode (LEDMODE) - but
+  // CONFIG0 no longer depends on their unchecked read-modify-writes. The verdict is the read-back alone: a byte that
+  // reads back right is right, whatever its write reported. Up to kAwCfg0BootTries tries. The port-1 pinMode() calls
+  // between and after the port-0 ones touch only CONFIG1 / LEDMODE1, and nothing later in boot writes CONFIG0.
+  // Boot is single-threaded here (before initTasks()), so no mutex, as for every other AW9523 write in this function.
+  // If it never reads back right, the boot log says so: the BIND LED may then be dark in pairing mode, and
+  // checkConnStatus()'s refresh writes the byte again once the link is up.
+  {
+    bool    cfg0_ok   = false;
+    bool    cfg0_read = false;
+    uint8_t cfg0      = 0;
+    for (uint8_t i = 0; i < kAwCfg0BootTries && !cfg0_ok; i++) {
+      (void)awPort0DirWriteLocked();   // its ACK is not the verdict - the read-back on the next line is
+      cfg0_read = awPort1ReadLocked((uint8_t)AW9523_REG_CONFIG0, &cfg0);
+      cfg0_ok   = cfg0_read && (cfg0 == kAwCfg0Dirs);
+    }
+    if (!cfg0_ok) {
+      if (cfg0_read) Serial.printf(" BIND LED direction NOT confirmed (CONFIG0 reads 0x%02X, want 0x%02X)",
+                                   (unsigned)cfg0, (unsigned)kAwCfg0Dirs);
+      else           Serial.printf(" BIND LED direction NOT confirmed (CONFIG0 read failed, want 0x%02X)",
+                                   (unsigned)kAwCfg0Dirs);
+    }
+  }
 
   aw.digitalWrite(AP_L_BIND, HIGH);
   awPort1SetPinLocked(AP_L_AUX, HIGH);   // V2.5-Evo - 2026-10-14 - FS-13: through the port-1 writer (boot: enables carried as read)
@@ -408,6 +487,9 @@ uint8_t getUbatPercent(float pack_voltage)
 // One writer: every caller of the three functions runs on the loop task (setup() included; the web console runs its
 // commands from webCfgLoop() in loop()). One reader: checkConnStatus(). Single core: volatile is enough.
 // No pattern calls another pattern function, so a plain flag (not a count) is enough.
+// V2.5-Evo - 2026-10-29 - delta audit LOW-1 / LOW-2 / LOW-4: checkConnStatus() now also reads it, with i2cMutex held,
+// before the refresh's direction (CONFIG0) write and before each link-lost blink write, and skips them while it is
+// set; and once more at the end of every pass, without the mutex, to restart the refresh count. Still one reader task.
 static volatile bool g_bind_led_pattern_active = false;
 
 // V2.5-Evo - 2026-10-14 - audit F1 (owner-approved for RX1): blinkErr() is now used ONLY by the fatal halt loops
@@ -2939,27 +3021,47 @@ void checkConnStatus(void *parameter)
         // two of the pattern's writes); the LED is lit again at most ~1 s after the pattern ends.
         // COST: one port-0 read-modify-write a second (OUTPUT0 + pin / 8 in the library - never port 1, never CONFIG1)
         // in one i2cMutex hold, taken exactly as the write above takes it. No new task, no delay.
+        // V2.5-Evo - 2026-10-29 - plus one CONFIG0 write in a second one-transaction hold (delta audit LOW-4, below),
+        // and the count restarts on every pass that sees a pattern (LOW-1, at the end of the pass).
         if (bindLedRefreshDue(&bind_refresh_passes, bind_was_lit))
         {
           xSemaphoreTake(i2cMutex, portMAX_DELAY);
           if (bindLedRefreshMayWrite(g_bind_led_pattern_active)) aw.digitalWrite(AP_L_BIND, LOW);
           xSemaphoreGive(i2cMutex);
+          // V2.5-Evo - 2026-10-29 - delta audit LOW-4: and the pin's DIRECTION - the whole port-0 CONFIG0 byte, absolute
+          // (awPort0DirWriteLocked(), above startupAW()). The level write above cannot light an LED whose pin was left
+          // an input at boot. In a SECOND hold of one transaction, so no hold here is longer than two transactions: a
+          // waiting enable swap (priority 10) gets the mutex between the two holds and waits for one of them at most,
+          // ~7 ms worst case under the 3 ms Wire ceiling, inside its 10 ms bound. After the level, so the pin starts
+          // driving at the lit level. Gated like the level write: if the pin had been an input, turning it into an
+          // output inside a pattern could cut a visible pulse short. Result not used: the next refresh, ~1 s later,
+          // writes it again.
+          xSemaphoreTake(i2cMutex, portMAX_DELAY);
+          if (bindLedRefreshMayWrite(g_bind_led_pattern_active)) (void)awPort0DirWriteLocked();
+          xSemaphoreGive(i2cMutex);
         }
       }
       else
       {
+        // V2.5-Evo - 2026-10-29 - delta audit LOW-2 (owner-approved LED fix): the link-lost blink skips its LED write
+        // while a BIND LED pattern runs (the flag, read with i2cMutex held, as the refresh reads it), but still toggles
+        // bind_pin_state, so the blink keeps its phase and carries on after the pattern. It used to write every pass
+        // straight through the pattern: during a BIND-button calibration with the remote off it chopped the result into
+        // 150-350 ms pieces and could cut a PARTIAL pulse short. If a skipped LOW write leaves the LED dark while
+        // bind_pin_state says lit and the link then comes back, the refresh lights it within 1 s (no LED-on write is
+        // made then, because bind_pin_state is already 1).
         if(bind_pin_state)
         {
           bind_pin_state = 0;
           xSemaphoreTake(i2cMutex, portMAX_DELAY);
-          aw.digitalWrite(AP_L_BIND, HIGH);
+          if (bindLedRefreshMayWrite(g_bind_led_pattern_active)) aw.digitalWrite(AP_L_BIND, HIGH);
           xSemaphoreGive(i2cMutex);
         }
         else
         {
           bind_pin_state = 1;
           xSemaphoreTake(i2cMutex, portMAX_DELAY);
-          aw.digitalWrite(AP_L_BIND, LOW);
+          if (bindLedRefreshMayWrite(g_bind_led_pattern_active)) aw.digitalWrite(AP_L_BIND, LOW);
           xSemaphoreGive(i2cMutex);
         }
       }
@@ -2979,6 +3081,12 @@ void checkConnStatus(void *parameter)
         xSemaphoreGive(i2cMutex);
       }
     }
+    // V2.5-Evo - 2026-10-29 - delta audit LOW-1: every pass that sees a BIND LED pattern running restarts the refresh
+    // count, whatever the link state, so the first refresh after a pattern comes 0.8-1.0 s after it ends. It could come
+    // as little as 50 ms after it, and a relight that soon read as one more flash. Placed after the branches above, so a
+    // refresh pass that sees the flag also ends with the count at 0. A plain read, no mutex: the in-hold reads above are
+    // what keep a write out of a pattern; this one only times the next refresh (../Common/BindLedRefresh.h, host-tested).
+    bindLedRefreshPatternSeen(&bind_refresh_passes, g_bind_led_pattern_active);
     vTaskDelayUntil(&xLastWakeTime, xFrequency);
   }
 }

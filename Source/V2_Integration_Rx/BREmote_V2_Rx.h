@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-30 - FOLLOW-ME CATCH-UP (audit 2026-10-20 R1): includes ../Common/FollowMeGovernor.h (after FollowMePause.h), the pure cap-3 speed governor fmComputeThrottleCap() (RTMState.ino) now calls. Include only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-26 - COMMENT ONLY (N-1): the steer_during_auto field note now tells the 30 s takeover end per mode - return-to-me and auto-return ignore the stick until it is centred; Follow-Me following ends through FM_HOLD, so the stick is the rider's at once with no centring, and under a trigger that stays held a fresh separation or the auto-return can move the buggy again with no release, each through its own ramp and caps. No code change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-25 - COMMENT ONLY (steer default review S-5): the steer_during_auto field comment says what 0 does since the remote stopped exiting (the stick is not used in a classic return-to-me), what a 30 s takeover does in each mode (return-to-me and auto-return carry on; Follow-Me following stops until one release), and that the remote no longer acts on fm_flags bit 4. No code change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-25 - defaultConf.steer_during_auto 0 -> 1 (owner ruling): a fresh or factory-reset buggy lets the stick TAKE OVER automatic steering while it is held and hand back on centring, instead of cancelling. Value only: same field, sizeof stays 200, SW_VERSION stays 36, a stored config keeps its own value.
@@ -1017,6 +1018,11 @@ static const float kFmFrontAheadExtraMaxM     = 10.0f;  // metres; largest legal
 // D-1..D-4): the pure rules are in ../Common/FollowMePause.h so Tools/tests/follow_me_pause_test.cpp runs the exact code
 // runFmLoopBody() calls. The RX's constants are passed in (RTMState.ino kFmLongLoss* / kFmCreep*).
 #include "../Common/FollowMePause.h"
+// V2.5-Evo - 2026-10-30 - FOLLOW-ME SPEED GOVERNOR (audit 2026-10-20 R1): cap 3 - the gap term with R1's side-offset gate,
+// the target, the vmax clamp, the fade, the floor and the P-law - is pure in ../Common/FollowMeGovernor.h so
+// Tools/tests/follow_me_governor_test.cpp runs the exact law fmComputeThrottleCap() calls inside a closed-loop simulation.
+// The RX's constants (RTMState.ino kFmGap* / kFmGovFloorKmh / kFmClosingMarginKmh) are passed in; it defines none.
+#include "../Common/FollowMeGovernor.h"
 // V2.5-Evo - 2026-10-12 - audit delta A-1: the rider GPS packet (v1 14 bytes / v2 15 bytes with the remote's GPS fix
 // counter) and the NEW / REPEAT / DROP rule, pure in ../Common/RiderGpsPacket.h so Tools/tests/rider_gps_packet_test.cpp
 // runs the exact code processMetaGpsPacket() (Radio.ino) calls. The remote builds its packets with the same header.

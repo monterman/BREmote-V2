@@ -456,7 +456,9 @@ void pollVesc2IfDue(Stream* interface)
 // Side effects: writes imu2 (under vescMutex) on a valid reply; bumps g_diag_imu2_polls /
 //   g_diag_imu2_ok and g_imu2_miss_streak. When it polls, it blocks the loop task for the reply:
 //   ~7-9 ms expected, 30 ms worst case, at 2 Hz and only while a level-6 log records. Touches no
-//   throttle, steering, PWM, mux or I2C state; nothing in any control path reads imu2.
+//   throttle, steering, PWM, mux or I2C state. (V2.5-Evo - 2026-10-31 - comment corrected: with FM_PIVOT_LEARN_ENABLED,
+//   unit H's self-tuning pivot DOES read imu2 - fmPivotSampleTick() in RTMState.ino - and may lower or, once its yaw sign
+//   is calibrated and the turn direction confirmed, raise Follow-Me's align cap within its bounds. At 0 nothing reads it.)
 // ============================================================
 void pollVesc2ImuIfDue(Stream* interface)
 {

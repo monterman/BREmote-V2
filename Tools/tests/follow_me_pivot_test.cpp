@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-31 - THE FIX PASS (the delta check of unit H): unit checks 1g (P-1, the boost needs proof of direction)
+//   and 1h (N-1, NOT TURNING scaled by deflection); gate G1 in 4c(c) - no mirrored run ever above fm_align_cap; the old
+//   HARD 1 is a RECORDED row; 4b records the share of calibrated healthy pivots that still went above fm_align_cap. The
+//   harness, plant, seeds and every other number are unchanged.
 // V2.5-Evo - 2026-10-31 - Host test, Follow-Me package 2 unit H (design audit 2026-10-31 §H; the 2026-10-31 B-1 / F'
 //   close-out §4): THE SELF-TUNING PIVOT ON VESC 2's GYRO, Common/FollowMePivot.h - the exact code RTMState.ino calls.
 //   1. Unit checks on made-up sample streams: the IMU rate and its capability gates, the bounds, the learning (steps,
@@ -282,9 +286,17 @@ static void testNotTurning()
     LearnRig g; std::vector<int> caps; int nt = 0;
     learnTicks(&g, 80, true, 50, 1, [](double) { return 0.0; }, right, full, deliv, yes, &caps, &nt);
     CHECK(nt == 1);
-    CHECK(caps[27] > 50 && caps[28] == 50);                             // fired on the tick at 2.8 s
-    for (size_t i = 28; i < caps.size(); i++) CHECK(caps[i] == 50);
+    // P-1: a hull that does not turn never confirms its direction, so neither the cap out nor the learned value ever goes
+    // above 50 (before the fix pass the learned value climbed to 80 here before NOT TURNING put it back)
+    for (size_t i = 0; i < caps.size(); i++) CHECK(caps[i] == 50);
+    CHECK(g.L.cap == 50 && !g.L.confirmed);
     CHECK(g.L.nt_latched);
+    // ... and it still fires on the tick at 2.8 s
+    LearnRig h; int nt2 = 0;
+    learnTicks(&h, 28, true, 50, 1, [](double) { return 0.0; }, right, full, deliv, yes, nullptr, &nt2);
+    CHECK(nt2 == 0);
+    learnTicks(&h, 1, true, 50, 1, [](double) { return 0.0; }, right, full, deliv, yes, nullptr, &nt2);
+    CHECK(nt2 == 1);
   }
   // 11 deg in 2 s: not NOT TURNING; 9 deg in 2 s: NOT TURNING
   {
@@ -321,6 +333,104 @@ static void testNotTurning()
   }
   printf("1d. NOT TURNING: fires once at 2.8 s on a buggy that does not turn, cap back to 50 and latched; 11 deg / 2 s no, 9 deg yes;\n"
          "    a throttle dip under the cap or a change of side restarts it; under the cap it is not judged: passed\n");
+}
+
+// V2.5-Evo - 2026-10-31 - the fix pass, rule P-1: the cap goes above fm_align_cap only once the gyro confirms the commanded
+// direction, and never again in that pivot after a pair shows the hull turning against it.
+static void testP1()
+{
+  auto full  = [](double) { return 255; };
+  auto right = [](double) { return 127; };
+  auto deliv = [](double, uint8_t cap) { return (int)cap; };
+  // healthy, calibrated, slow: confirmed by the pair (0.75, 1.25) on the 1.3 s tick, before that pair's step - so 60 there
+  {
+    LearnRig g; std::vector<int> caps;
+    learnTicks(&g, 60, true, 50, 1, [](double) { return 10.0; }, right, full, deliv, yes, &caps, nullptr);
+    CHECK(caps[12] == 50 && caps[13] == 60 && g.L.confirmed && !g.L.against && caps.back() == 80);
+  }
+  // mirrored, calibrated (steered right, yawing left at 10 deg/s): AGAINST - never above 50, out or learned
+  {
+    LearnRig g; std::vector<int> caps;
+    learnTicks(&g, 60, true, 50, 1, [](double) { return -10.0; }, right, full, deliv, yes, &caps, nullptr);
+    for (int c : caps) CHECK(c <= 50);
+    CHECK(g.L.against && !g.L.confirmed && g.L.cap == 50);
+  }
+  // mirrored, with the memory at the top (the pivot starts at 74): held to 50 out, and the learned 74 does not climb
+  {
+    LearnRig g; g.L.have_last = true; g.L.last = 80; std::vector<int> caps;
+    learnTicks(&g, 60, true, 50, 1, [](double) { return -10.0; }, right, full, deliv, yes, &caps, nullptr);
+    for (int c : caps) CHECK(c <= 50);
+    CHECK(g.L.cap == 74);
+  }
+  // healthy, with the memory at the top: 50 out until the direction is confirmed on the 1.3 s tick, then 74
+  {
+    LearnRig g; g.L.have_last = true; g.L.last = 80; std::vector<int> caps;
+    learnTicks(&g, 30, true, 50, 1, [](double) { return 30.0; }, right, full, deliv, yes, &caps, nullptr);
+    CHECK(caps[12] == 50 && caps[13] == 74 && caps.back() == 74);
+  }
+  // confirmed, then a pair against: the cap above 50 is withdrawn at once and for the rest of the pivot
+  {
+    LearnRig g; std::vector<int> caps;
+    learnTicks(&g, 30, true, 50, 1, [](double) { return 10.0; }, right, full, deliv, yes, &caps, nullptr);
+    CHECK(caps.back() > 50 && g.L.confirmed);
+    caps.clear();
+    learnTicks(&g, 30, true, 50, 1, [](double ts) { return (ts < 3.5) ? -10.0 : 10.0; }, right, full, deliv, yes, &caps, nullptr);
+    CHECK(g.L.against);
+    for (size_t i = 6; i < caps.size(); i++) CHECK(caps[i] <= 50);   // the first against pair lands on the 3.3-3.8 s ticks
+  }
+  // the commanded way but under 5 deg/s: never confirmed, never above 50
+  {
+    LearnRig g; std::vector<int> caps;
+    learnTicks(&g, 60, true, 50, 1, [](double) { return 4.0; }, right, full, deliv, yes, &caps, nullptr);
+    for (int c : caps) CHECK(c <= 50);
+    CHECK(!g.L.confirmed);
+  }
+  // steps up to fm_align_cap or below are unchanged: learned down to 25, the next pivot starts at 30 and steps 40, 50 even
+  // while turning against the command - and stops at 50
+  {
+    LearnRig g; g.L.have_last = true; g.L.last = 25; std::vector<int> caps;
+    learnTicks(&g, 60, true, 50, 1, [](double) { return -10.0; }, right, full, deliv, yes, &caps, nullptr);
+    CHECK(caps[12] == 30 && caps[13] == 40 && caps[18] == 50 && g.L.cap == 50);
+  }
+  // not calibrated: the latches are never set (the sign is unknown) and nothing changes from before the fix pass
+  {
+    LearnRig g; std::vector<int> caps;
+    learnTicks(&g, 60, true, 50, 0, [](double) { return 10.0; }, right, full, deliv, yes, &caps, nullptr);
+    for (int c : caps) CHECK(c == 50);
+    CHECK(!g.L.confirmed && !g.L.against);
+  }
+  printf("1g. P-1: above 50 only after a confirming pair (the 1.3 s tick, before its step), never after one against (withdrawn at\n"
+         "    once), never under 5 deg/s; the memory's 74 held to 50 until confirmed; steps up to 50 unchanged: passed\n");
+}
+
+// V2.5-Evo - 2026-10-31 - the fix pass, rule N-1: NOT TURNING's 10 deg x the smallest deflection over its window (0.5-1.0).
+static void testN1()
+{
+  auto full  = [](double) { return 255; };
+  auto deliv = [](double, uint8_t cap) { return (int)cap; };
+  auto fires = [&](int cmd, double rate) {
+    LearnRig g; int nt = 0;
+    learnTicks(&g, 80, true, 50, 0, [rate](double) { return rate; }, [cmd](double) { return cmd; }, full, deliv, yes, nullptr, &nt);
+    return nt;
+  };
+  // half lock (64 counts: d = 0.504, 5.04 deg in 2 s): 4.8 deg fires, 5.2 deg does not
+  CHECK(fires(64, 2.4) == 1 && fires(64, 2.6) == 0);
+  CHECK(fires(-64, -2.4) == 1 && fires(-64, -2.6) == 0);
+  // under half lock (40 counts) the scale is clamped at 0.5: 5 deg
+  CHECK(fires(40, 2.4) == 1 && fires(40, 2.6) == 0);
+  // full lock: 10 deg, as before (and 8 deg in 2 s fires there)
+  CHECK(fires(127, 4.0) == 1 && fires(127, 5.5) == 0);
+  // the SMALLEST deflection over the window counts: full lock to 2.0 s, then half lock - 8 deg in 2 s no longer fires
+  {
+    LearnRig g; int nt = 0;
+    learnTicks(&g, 80, true, 50, 0, [](double) { return 4.0; }, [](double ts) { return (ts < 2.0) ? 127 : 64; }, full, deliv, yes,
+               nullptr, &nt);
+    CHECK(nt == 0);
+  }
+  // a stuck hull fires at any deflection
+  CHECK(fires(64, 0.0) == 1 && fires(127, 0.0) == 1);
+  printf("1h. N-1: NOT TURNING at 10 deg x d, d the smallest |command| / 127 over the window, 0.5-1.0 - 5.04 deg at 64 counts,\n"
+         "    5 deg at 40, 10 deg at full lock; a stuck hull fires at any deflection: passed\n");
 }
 
 // Calibration helper: feed pairs 500 ms apart with the given yaw and course changes per pair.
@@ -655,6 +765,8 @@ struct RunOut {
   double flip_t;         // the first pivot: when the command first changed side (-1 = never, while the pivot ran)
   double nt_abs_cmd;     // report only: the sum over NOT TURNING fires of |command - 127| on the firing tick ...
   double nt_abs_err;     // ... and of |heading error| (deg)
+  long   ticks_above;    // the fix pass, G1: aligning ticks on which the cap in force (cap 4) was above fm_align_cap
+  int    pivots_above;   // ... and the pivots in which that happened at least once (the benefit kept, healthy runs)
 };
 
 static int trigAt(int kind, double ts)
@@ -688,7 +800,7 @@ static RunOut simRun(const SimCfg &c, uint64_t seed, int n_pivots, double e0_fix
     const uint32_t pv_start = t;
     const bool edge = c.at_edge || pv == 0;
     const uint32_t engage_ms = edge ? t : t - 60000u;
-    bool pivot_prev = false, aligned_once = false, ended = false;
+    bool pivot_prev = false, aligned_once = false, ended = false, above_this_pivot = false;
     uint32_t aligned_since = 0;
     int last_side = 0; bool flipped = false; bool first_side_open = (pv == 0); int first_side = 0;
     int cmd_prev = 0, cmd = 0;
@@ -742,6 +854,7 @@ static RunOut simRun(const SimCfg &c, uint64_t seed, int n_pivots, double e0_fix
             if (L.cap > o.max_learned) o.max_learned = L.cap;
           }
         }
+        if (aligning && cap4 > c.ac) { o.ticks_above++; above_this_pivot = true; }   // the fix pass, G1 (measurement only)
         int cap = aligning ? cap4 : 255;
         if (edge) { const double ramp = 255.0 * (double)(uint32_t)(t - engage_ms) / 1500.0; if (ramp < cap) cap = (int)ramp; }
         fm_cap = (uint8_t)((cap < 0) ? 0 : (cap > 255 ? 255 : cap));
@@ -789,6 +902,7 @@ static RunOut simRun(const SimCfg &c, uint64_t seed, int n_pivots, double e0_fix
       t += 10;
     }
     if (pv == 0 && first_side_open) o.first_side_s = (double)(uint32_t)(t - pv_start) / 1000.0;   // never changed side
+    if (above_this_pivot) o.pivots_above++;
     if (aligned_once && !o.ww) o.aligned++;
     if (!aligned_once && !o.ww) o.timeouts++;
     // between pivots: 1.5 s with the hull settled (no turn) - the learn step outside the envelope ends the pivot (its cap
@@ -899,6 +1013,7 @@ static void testSimulation()
   // engagement edge), and the command and heading error on the firing tick
   long nt_rate[6] = { 0 }, nt_trig[4] = { 0 }, nt_tg[4] = { 0 }, nt_cap[3] = { 0 }, nt_cal[2] = { 0 }, nt_edge[2] = { 0 };
   double nt_cmd = 0.0, nt_err = 0.0;
+  long cal_pivots = 0, cal_pivots_above = 0;   // the fix pass, RECORDED: the benefit kept (calibrated healthy pivots above the cap)
   for (uint8_t ac : caps)
     for (double rt : rates)
       for (int tg : targets)
@@ -919,6 +1034,7 @@ static void testSimulation()
                     const int ci = (ac == 50) ? 0 : (ac == 30) ? 1 : 2;
                     nt_rate[ri] += o.nt; nt_trig[trig] += o.nt; nt_tg[tg] += o.nt; nt_cap[ci] += o.nt; nt_cal[calib] += o.nt; nt_edge[edge] += o.nt;
                     nt_cmd += o.nt_abs_cmd; nt_err += o.nt_abs_err;
+                    if (calib) { cal_pivots += o.pivots; cal_pivots_above += o.pivots_above; }
                   }
                 }
   printf("4b. FALSE-FIRE GATE (D-CD1), healthy pivots with noise: %ld runs x 10 pivots = %ld pivots (fm_align_cap 30 / 50 / 80; 8-48 deg/s\n"
@@ -935,6 +1051,8 @@ static void testSimulation()
            nt_tg[0], nt_tg[1], nt_tg[2], nt_tg[3], nt_cap[0], nt_cap[1], nt_cap[2], nt_cal[0], nt_cal[1], nt_edge[0], nt_edge[1],
            nt_cmd / (double)nt, nt_err / (double)nt);
   }
+  printf("    RECORDED (fix pass) - the benefit kept: %ld of %ld calibrated healthy pivots (%.1f %%) went above fm_align_cap\n",
+         cal_pivots_above, cal_pivots, cal_pivots ? 100.0 * (double)cal_pivots_above / (double)cal_pivots : 0.0);
   HARD(nt == 0, "4b D-CD1: NOT TURNING never fires on a healthy pivot");
   HARD(ww == 0, "4b D-CD1: WRONG WAY never fires on a healthy pivot");
   HARD(viol == 0 && max_learned <= 128, "4b bounds: the cap never leaves its bounds, the trigger or 128");
@@ -967,11 +1085,14 @@ static void testSimulation()
     HARD(mx > 80 && mx_ok <= 80, "4c(b) red edit bounds removed: a cap above 80 must be seen (and none with the bounds)");
   }
   // (c) mirrored steering during pivots, calibrated: WRONG WAY ends it.
-  //   HARD 1: every run whose command did not change side in its first 4.5 s is ended by WRONG WAY within 4.5 s of its start.
+  //   G1 (HARD, the fix pass): across every run, the cap in force is never above fm_align_cap on any aligning tick.
+  //   RECORDED (was HARD 1 until the fix pass, per the delta check of unit H): every run whose command did not change side
+  //   in its first 4.5 s, ended by WRONG WAY within 4.5 s of its start.
   //   HARD 2: in every run, once the command has changed side the cap in force is never above fm_align_cap (CHATTER).
   //   Recorded: the runs that change side sooner (a target near 180 deg, a fast buggy) and are not ended by WRONG WAY.
   {
     long rr = 0, ended = 0, hard_class = 0, hard_ended = 0, chatter = 0, chatter_ended = 0, over_after_flip = 0;
+    long g1_runs = 0, g1_ticks = 0;   // the fix pass, G1: runs / aligning ticks with the cap in force above fm_align_cap
     double t_worst = 0.0, t_sum = 0.0; long t_n = 0;
     long hard_by_e0[19] = { 0 }, ended_by_e0[19] = { 0 }, runs_by_e0[19] = { 0 };
     long miss_rate[6] = { 0 }, miss_trig[4] = { 0 }, miss_cap[3] = { 0 }, miss_edge[2] = { 0 }, miss_late = 0;   // report only: HARD 1's misses
@@ -984,6 +1105,7 @@ static void testSimulation()
           rr++; runs_by_e0[e10]++;
           if (o.ww) { ended++; ended_by_e0[e10]++; t_sum += o.ww_t; t_n++; if (o.ww_t > t_worst) t_worst = o.ww_t; }
           if (o.max_cap_after_flip > ac) over_after_flip++;
+          if (o.ticks_above > 0) { g1_runs++; g1_ticks += o.ticks_above; }
           const bool flipped_early = (o.flip_t >= 0.0 && o.flip_t < 4.5);
           if (!flipped_early) {
             hard_class++; hard_by_e0[e10]++;
@@ -999,7 +1121,8 @@ static void testSimulation()
     printf("4c(c). RED EDIT mirrored steering during pivots (calibrated; caps 30/50/80; 8-48 deg/s; 4 triggers; edge / mid; memory at\n"
            "       the top or not; start error 50-179 deg both sides; 10 seeds = %ld runs): WRONG WAY ended %ld (%.1f %%), mean %.2f s,\n"
            "       worst %.2f s after the pivot began\n", rr, ended, 100.0 * ended / (double)rr, t_n ? t_sum / t_n : 0.0, t_worst);
-    printf("       HARD 1 - command on one side for its first 4.5 s: %ld runs, ended by WRONG WAY within 4.5 s: %ld\n", hard_class, hard_ended);
+    printf("       G1 (HARD) - runs with the cap in force above fm_align_cap on any aligning tick: %ld (%ld ticks) (must be 0)\n", g1_runs, g1_ticks);
+    printf("       RECORDED (was HARD 1) - command on one side for its first 4.5 s: %ld runs, ended by WRONG WAY within 4.5 s: %ld\n", hard_class, hard_ended);
     printf("       (by start error, runs in that class: ");
     for (int e10 = 5; e10 <= 18; e10++) printf("%d: %ld%s", (e10 == 18 ? 179 : e10 * 10), hard_by_e0[e10], e10 < 18 ? ", " : ")\n");
     if (hard_ended < hard_class)
@@ -1013,7 +1136,7 @@ static void testSimulation()
            "       the rest run at fm_align_cap or less, as the flown code does, until the release, the pivot stall rule and R2.\n", chatter, chatter_ended);
     printf("       by start error (deg): ");
     for (int e10 = 5; e10 <= 18; e10++) printf("%d: %ld/%ld ended%s", (e10 == 18 ? 179 : e10 * 10), ended_by_e0[e10], runs_by_e0[e10], e10 < 18 ? ", " : "\n");
-    HARD(hard_class > 0 && hard_ended == hard_class, "4c(c) HARD 1: WRONG WAY ends every one-sided mirrored pivot within 4.5 s");
+    HARD(g1_runs == 0, "4c(c) G1: no mirrored run ever above fm_align_cap");
     HARD(over_after_flip == 0, "4c(c) HARD 2: never above fm_align_cap after a change of side");
     // the same mirrored runs with unit H compiled out: nothing in this unit can end them (the flown behaviour)
     long off_ended = 0, off_rr = 0;
@@ -1151,6 +1274,8 @@ int main(int argc, char **argv)
   testBounds();
   testLearn();
   testNotTurning();
+  testP1();
+  testN1();
   testCalibration();
   testWrongWay();
   testRxSource();

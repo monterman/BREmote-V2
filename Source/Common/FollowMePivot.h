@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-31 - UNIT H FIX PASS (the delta check of unit H, rules P-1 and N-1): P-1 - the learned cap may go above
+//   fm_align_cap only once the gyro has CONFIRMED the hull turns the commanded way, and never after a pair showing it turn
+//   AGAINST the command (two per-pivot latches); N-1 - NOT TURNING's 10 deg is scaled by the smallest steering deflection
+//   over its window (5 deg at half lock). See fmPvLearnStep(). No new constant.
 // V2.5-Evo - 2026-10-31 - Follow-Me package 2 unit H (design audit 2026-10-31 §H, with the three conditions of the
 //   2026-10-31 B-1 / F' close-out §4): THE SELF-TUNING PIVOT ON VESC 2's GYRO. New file. Pure, header-only: no Arduino,
 //   no FreeRTOS, no globals. RTMState.ino calls these functions and does every write itself, in the F7 order;
@@ -27,6 +31,8 @@
 //     DOWNWARD. (Close-out §4 condition 3: the H-1 lesson applied to this unit itself.)
 //   - Above fm_align_cap ONLY while the command has stayed on one side of centre since the pivot began and for at least
 //     lead_ms. A pivot whose command changes side runs at fm_align_cap or less until it ends. (See CHATTER below.)
+//   - Above fm_align_cap ONLY once VESC 2's gyro has confirmed, in this pivot, that the hull turns the way it is steered,
+//     and never again in that pivot once it has seen the hull turn against the command (P-1, fmPvLearnStep()).
 //   - With any capability gate failing - the IMU sample older than 600 ms, never parsed, not finite / |acc| < 0.5 g, a
 //     rate above 200 deg/s - it returns fm_align_cap exactly: today's behaviour, to the bit.
 //   - It runs only inside the envelope the caller decides: Follow-Me ACTIVE (not RTM, not RETURN, not the heading creep),
@@ -356,13 +362,23 @@ static inline bool fmPvWwStep(FmPvWw* w, uint32_t now_ms, bool judged, int16_t c
 //               while NOT TURNING has not fired in this pivot, the command has stayed on one side (the CHATTER rule)
 //               since lead_ms before the pair, the trigger is above the cap (otherwise raising it changes nothing) and
 //               the throttle the buggy actually got is within 2 counts of it (another cap is not holding it lower).
-//               Clamped to the bounds after every step and on every tick.
+//               A step up that would take the cap ABOVE align_cap also needs the direction CONFIRMED and never AGAINST
+//               (P-1, below); without that it stops at align_cap. Clamped to the bounds after every step and on every tick.
+//   P-1       - V2.5-Evo - 2026-10-31 - THE BOOST NEEDS PROOF OF DIRECTION (delta check of unit H, rule P-1). Two per-pivot
+//               latches, cleared when a pivot starts and ends. On each new believed pair lying wholly after the lead-in on
+//               the current side, with the yaw sign calibrated, BEFORE its step: side x sign x rate >= +ww_dps sets
+//               CONFIRMED (the hull turns the way it is told); <= -ww_dps sets AGAINST (it turns the other way). Learning
+//               on |rate| alone let a buggy with mirrored steering reach 1.6 x align_cap while it pivoted the wrong way.
 //   NOT TURNING - while the command stays on one side, past lead_ms, with the applied throttle at align_cap or more on
-//               every tick: if the yaw moved less than nt_deg over the last nt_ms -> the cap goes back to align_cap, no
+//               every tick: if the yaw moved less than nt_deg x d over the last nt_ms -> the cap goes back to align_cap, no
 //               more steps up in this pivot, the event is reported. Once per pivot.
+//               V2.5-Evo - 2026-10-31 - N-1: d is the SMALLEST |command - 127| / 127 recorded over the window's samples,
+//               clamped to 0.5-1.0: 10 deg at full lock, 5 deg at half lock. The P term gives about half lock at the tail
+//               of every pivot, and a healthy 8 deg/s buggy turns only about 8.7 deg in 2 s there; the smallest deflection
+//               is the safe one, because the hull's rate lags a rising command.
 //   OUT       - the cap for cap 4: align_cap outside the envelope or when not capable; otherwise the learned cap, held to
 //               align_cap unless the command has stayed on one side for lead_ms with no change of side in this pivot
-//               (CHATTER), and never above the trigger.
+//               (CHATTER) AND the direction is CONFIRMED and not AGAINST (P-1), and never above the trigger.
 // Returns FmPvOut. Side effects: *L only.
 static const uint8_t FMPV_NONE        = 0;   // H is not acting this tick
 static const uint8_t FMPV_PIVOT       = 1;   // in a learning pivot, no step this sample
@@ -381,12 +397,15 @@ struct FmPvLearn {
   int16_t  last;         // ... with this cap
   bool     nt_latched;   // NOT TURNING fired in this pivot
   bool     flipped;      // the command changed side in this pivot (CHATTER rule)
+  bool     confirmed;    // P-1: a pair in this pivot showed the hull turning the commanded way at ww_dps or more
+  bool     against;      // P-1: a pair in this pivot showed it turning AGAINST the command at ww_dps or more
   int8_t   seen_side;    // the last non-zero side seen in this pivot
   int8_t   side;         // the side the command is on now (0 = none)
   uint32_t side_ms;      // since when
   uint8_t  rn;                       // NOT TURNING's history: samples held, oldest first ...
   uint32_t rt[kFmPvRingLen];
   float    ry[kFmPvRingLen];
+  uint8_t  rc[kFmPvRingLen];         // ... and |command - 127| on the tick each was recorded (N-1)
   uint32_t nt_from_ms;               // ... none older than this: the last tick its preconditions broke
   uint8_t  event;        // the last event code ...
   uint32_t event_ms;     // ... and when
@@ -404,8 +423,9 @@ struct FmPvOut {
 static inline void fmPvLearnReset(FmPvLearn* L)
 {
   L->in_pivot = false; L->start_ms = 0; L->cap = 0; L->have_last = false; L->last = 0;
-  L->nt_latched = false; L->flipped = false; L->seen_side = 0; L->side = 0; L->side_ms = 0;
-  L->rn = 0; for (uint8_t i = 0; i < kFmPvRingLen; i++) { L->rt[i] = 0; L->ry[i] = 0.0f; }
+  L->nt_latched = false; L->flipped = false; L->confirmed = false; L->against = false; L->seen_side = 0; L->side = 0;
+  L->side_ms = 0;
+  L->rn = 0; for (uint8_t i = 0; i < kFmPvRingLen; i++) { L->rt[i] = 0; L->ry[i] = 0.0f; L->rc[i] = 0; }
   L->nt_from_ms = 0;
   L->event = FMPV_NONE; L->event_ms = 0; L->last_ms = 0;
 }
@@ -427,8 +447,8 @@ static inline uint8_t fmPvState(const FmPvLearn* L, uint32_t now_ms, bool acting
 static inline void fmPvEndPivot(FmPvLearn* L)
 {
   if (L->in_pivot) { L->last = L->cap; L->have_last = true; }
-  L->in_pivot = false; L->nt_latched = false; L->flipped = false; L->seen_side = 0;
-  L->side = 0; L->side_ms = 0; L->rn = 0;
+  L->in_pivot = false; L->nt_latched = false; L->flipped = false; L->confirmed = false; L->against = false;
+  L->seen_side = 0; L->side = 0; L->side_ms = 0; L->rn = 0;
 }
 
 static inline FmPvOut fmPvLearnStep(FmPvLearn* L, uint32_t now_ms, bool env, uint8_t align_cap, uint8_t trig_cmd,
@@ -447,7 +467,8 @@ static inline FmPvOut fmPvLearnStep(FmPvLearn* L, uint32_t now_ms, bool env, uin
     int16_t start = align_cap;
     if (L->have_last) start = (int16_t)(align_cap + (int16_t)(c->carry * (float)(L->last - (int16_t)align_cap)));   // toward align_cap
     L->in_pivot = true; L->start_ms = now_ms; L->cap = start;
-    L->nt_latched = false; L->flipped = false; L->seen_side = 0; L->side = 0; L->side_ms = 0; L->rn = 0;
+    L->nt_latched = false; L->flipped = false; L->confirmed = false; L->against = false;
+    L->seen_side = 0; L->side = 0; L->side_ms = 0; L->rn = 0;
     L->nt_from_ms = now_ms;
   }
   if (L->cap < (int16_t)lo) L->cap = lo;
@@ -474,12 +495,22 @@ static inline FmPvOut fmPvLearnStep(FmPvLearn* L, uint32_t now_ms, bool env, uin
     const bool in_pivot_pair = ((int32_t)(r->t0_ms - L->start_ms) >= 0) &&
                                ((uint32_t)(r->t1_ms - L->start_ms) >= c->settle_ms);
     const bool pair_on_side  = (L->side != 0) && ((int32_t)(r->t0_ms - (L->side_ms + c->lead_ms)) >= 0);
+    // ---- P-1: does the hull turn the way it is told? (before this pair's step) ----
+    if (pair_on_side && sign != 0) {
+      const float with_cmd = (float)L->side * (float)sign * r->rate_dps;   // > 0: turning the commanded way
+      if (with_cmd >= c->ww_dps)  L->confirmed = true;
+      if (with_cmd <= -c->ww_dps) L->against   = true;
+    }
+    const bool direction_ok = L->confirmed && !L->against;
     if (in_pivot_pair) {
       if (w > c->down_frac * c->omega_dps) {
         L->cap = (int16_t)(L->cap - c->step); o.stepped = true; fmPvMarkEvent(L, FMPV_DOWN, now_ms);
       } else if (w < c->up_frac * c->omega_dps && !L->nt_latched && !L->flipped && pair_on_side &&
                  trig_cmd > L->cap && (int16_t)applied + 2 >= L->cap) {
-        L->cap = (int16_t)(L->cap + c->step); o.stepped = true; fmPvMarkEvent(L, FMPV_UP, now_ms);
+        int16_t next = (int16_t)(L->cap + c->step);
+        // P-1: above align_cap only with the direction confirmed and never against; otherwise the step stops at align_cap
+        if (next > (int16_t)align_cap && !direction_ok) next = (L->cap < (int16_t)align_cap) ? (int16_t)align_cap : L->cap;
+        if (next != L->cap) { L->cap = next; o.stepped = true; fmPvMarkEvent(L, FMPV_UP, now_ms); }
       }
       if (L->cap < (int16_t)lo) L->cap = lo;
       if (L->cap > (int16_t)hi) L->cap = hi;
@@ -487,18 +518,31 @@ static inline FmPvOut fmPvLearnStep(FmPvLearn* L, uint32_t now_ms, bool env, uin
     // ---- NOT TURNING ----
     if (!L->nt_latched && pair_on_side && applied >= align_cap) {
       // the window may start at the pair's older sample only if that sample lies inside the unbroken span
-      if (L->rn == 0 && (int32_t)(r->t0_ms - L->nt_from_ms) >= 0) { L->rt[0] = r->t0_ms; L->ry[0] = r->yaw_unw - r->dyaw_deg; L->rn = 1; }
+      const int ac_i = (cmd_off < 0) ? -(int)cmd_off : (int)cmd_off;
+      const uint8_t abs_cmd = (uint8_t)((ac_i > 127) ? 127 : ac_i);
+      if (L->rn == 0 && (int32_t)(r->t0_ms - L->nt_from_ms) >= 0) {
+        L->rt[0] = r->t0_ms; L->ry[0] = r->yaw_unw - r->dyaw_deg; L->rc[0] = abs_cmd; L->rn = 1;
+      }
       if (L->rn == kFmPvRingLen) {
-        for (uint8_t i = 1; i < kFmPvRingLen; i++) { L->rt[i - 1] = L->rt[i]; L->ry[i - 1] = L->ry[i]; }
+        for (uint8_t i = 1; i < kFmPvRingLen; i++) { L->rt[i - 1] = L->rt[i]; L->ry[i - 1] = L->ry[i]; L->rc[i - 1] = L->rc[i]; }
         L->rn--;
       }
-      L->rt[L->rn] = r->t1_ms; L->ry[L->rn] = r->yaw_unw; L->rn++;
+      L->rt[L->rn] = r->t1_ms; L->ry[L->rn] = r->yaw_unw; L->rc[L->rn] = abs_cmd; L->rn++;
       // the newest held sample that is at least nt_ms older than this one
       int k = -1;
       for (int i = (int)L->rn - 2; i >= 0; i--) {
         if ((uint32_t)(r->t1_ms - L->rt[i]) >= c->nt_ms) { k = i; break; }
       }
-      if (k >= 0 && fabsf(r->yaw_unw - L->ry[k]) < c->nt_deg) {
+      // N-1: the threshold scaled by the smallest deflection over the window (entries k .. newest), clamped 0.5-1.0
+      float d = 1.0f;
+      if (k >= 0) {
+        uint8_t mn = 127;
+        for (int i = k; i < (int)L->rn; i++) if (L->rc[i] < mn) mn = L->rc[i];
+        d = (float)mn / 127.0f;
+        if (d < 0.5f) d = 0.5f;
+        if (d > 1.0f) d = 1.0f;
+      }
+      if (k >= 0 && fabsf(r->yaw_unw - L->ry[k]) < c->nt_deg * d) {
         L->cap = align_cap; L->nt_latched = true; L->rn = 0;
         o.nt_fired = true; fmPvMarkEvent(L, FMPV_NOT_TURNING, now_ms);
         if (L->cap < (int16_t)lo) L->cap = lo;
@@ -510,6 +554,7 @@ static inline FmPvOut fmPvLearnStep(FmPvLearn* L, uint32_t now_ms, bool env, uin
   // ---- the cap out ----
   int16_t out = L->cap;
   if (out > (int16_t)align_cap && (!settled || L->flipped)) out = align_cap;   // CHATTER: above align_cap only on one side
+  if (out > (int16_t)align_cap && !(L->confirmed && !L->against)) out = align_cap;   // P-1: ... and only once the gyro confirms it
   if (out > (int16_t)trig_cmd) out = trig_cmd;                                 // never above the trigger
   if (out < 0) out = 0;
   o.cap = (uint8_t)out;

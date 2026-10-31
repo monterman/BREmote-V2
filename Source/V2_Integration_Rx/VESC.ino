@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-31 - UNIT H, H-0 (owner decision O-1, design audit 2026-10-31 §H): with FM_PIVOT_LEARN_ENABLED, pollVesc2ImuIfDue()'s gate 1 also opens while Follow-Me is armed (fmPivotImuPollWanted(), RTMState.ino) - the self-tuning pivot reads VESC 2's yaw. Same mux visit, VESC 2 ID proof, 30 ms cap, back-off and 2 Hz; the streak is still cleared whenever neither reason holds. At 0 the gate is exactly as before. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU), delta-audit L-2: pollVesc2ImuIfDue() clears g_imu2_miss_streak whenever no level-6 log is recording, so each level-6 session starts un-backed-off.
 // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): pollVesc2ImuIfDue() asks VESC 1 to forward COMM_GET_IMU_DATA (65, mask 0x01FF: roll/pitch/yaw, acc xyz, gyro xyz) to CAN ID 2 inside getVescLoop()'s existing mux visit, after VESC 1 AND (when it polled) VESC 2's values poll have answered - 2 Hz, 30 ms reply cap, backoff to 1 poll / 10 s after 3 misses - and ONLY while a level-6 log is recording and VESC 2's values are fresh. Reply accepted only with our mask echoed and controller ID 2 in its last byte (Common/VescImu.h). Writes imu2 under vescMutex. Log/diag only: no throttle/PWM/mux/I2C change. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-06 - VESC 2 OVER CAN: pollVesc2IfDue() asks VESC 1 to forward a COMM_GET_VALUES_SELECTIVE to CAN ID 2 (COMM_FORWARD_CAN) inside getVescLoop()'s existing mux visit, after VESC 1 has answered, at 1 Hz (10 s backoff after 3 misses), 50 ms reply cap; reply accepted only with our mask echoed and controller ID 2. receiveFromVESC() takes its timeout as a parameter (VESC 1 still 200 ms). Telemetry only: no throttle/PWM/mux/I2C change. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -67,6 +68,8 @@ void getVescLoop()
     // skipped: CAN or VESC 2 is not answering, so a second 30 ms wait would only lengthen the GPS-deaf
     // window. pollVesc2ImuIfDue() applies its own gates (level-6 log recording, VESC 2 fresh, backoff).
     // Not paused while Return-to-Me / Follow-Me runs (typical +8 ms per 500 ms visit, worst +30 ms): open owner decision O-1.
+    // V2.5-Evo - 2026-10-31 - unit H: O-1 decided "yes" (2026-10-31) - the IMU is now ALSO polled whenever Follow-Me is armed
+    // (gate 1 of pollVesc2ImuIfDue(), with FM_PIVOT_LEARN_ENABLED). Bench row B-H2: the GPS sentence rate stays >= 90 %.
     const uint8_t v2_streak_before = g_vesc2_miss_streak;
     pollVesc2IfDue(&Serial1);
     const bool v2_missed_now = (g_vesc2_miss_streak > v2_streak_before);
@@ -438,6 +441,7 @@ void pollVesc2IfDue(Stream* interface)
 //
 // Gates, in order - every early return costs nothing on the bus:
 //   1. logImuPollWanted(): a log is recording AND its file is level 6. Nothing is polled otherwise.
+//      (V2.5-Evo - 2026-10-31 - unit H: OR fmPivotImuPollWanted() - Follow-Me armed - when FM_PIVOT_LEARN_ENABLED.)
 //   2. VESC 2's values poll has proven VESC 2 present and current: ever answered, last reply no older
 //      than kVesc2StaleMs, not backed off. (Read without the mutex: this is the same task that writes
 //      vesc2, so it cannot be torn under us.)
@@ -458,7 +462,15 @@ void pollVesc2ImuIfDue(Stream* interface)
 {
   // Gate 1: only while a level-6 log is recording.
   // (Resetting the streak also ends any backoff: gate 3 zeroes its visit counter on the next un-backed-off call.)
+#if FM_PIVOT_LEARN_ENABLED
+  // V2.5-Evo - 2026-10-31 - UNIT H, H-0 (owner decision O-1): ... OR while Follow-Me is armed (fmPivotImuPollWanted(),
+  // RTMState.ino: any Follow-Me state but IDLE, Return-to-Me not running), for the self-tuning pivot's gyro. Everything
+  // after this line is unchanged: the same mux visit, VESC 2 fresh and proven ID 2, the 30 ms reply cap, the back-off,
+  // at most once per VESC 1 visit (2 Hz). Cost while armed: about 7-9 ms of RX GPS deafness per visit, 30 ms at worst.
+  if (!logImuPollWanted() && !fmPivotImuPollWanted()) { g_imu2_miss_streak = 0; return; }
+#else
   if (!logImuPollWanted()) { g_imu2_miss_streak = 0; return; }   // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): each level-6 session starts un-backed-off
+#endif
 
   // Gate 2: VESC 2 must be proven present by the values poll (which also proves its CAN ID).
   if (!vesc2.ever_ok) return;

@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-31 - UNIT H (the self-tuning pivot), with FM_PIVOT_LEARN_ENABLED: ?diag's "VESC 2 IMU" line names the second reason the IMU is polled (Follow-Me armed, owner decision O-1). The two "FM pivot" lines come from printFmPauseDiag() (RTMState.ino). Text only; at 0 the line is as before.
 // V2.5-Evo - 2026-10-29 - BIND LED DELTA AUDIT LOW-1 / LOW-2 / LOW-4 (owner-approved LED fix for RX1). LOW-4: the BIND LED pin's DIRECTION (AW9523 CONFIG0, 0x04) was set once at boot by unchecked read-modify-writes and never read back, so one failed read left pin 1 an input for the whole boot - dark in pairing mode and while connected, RX1's symptom. startupAW() now writes the whole port-0 direction byte (kAwCfg0Dirs, built from the AP_* defines, 0xED today) as one absolute value and checks it with a read-back (3 tries, the boot log says if it never matches), and checkConnStatus()'s once-a-second refresh writes it again in its own one-transaction hold. One data byte per write, so it never reaches CONFIG1. LEDMODE (0x12) is deliberately not re-asserted (reasons above startupAW()). LOW-1: every pass that sees a BIND LED pattern running restarts the refresh count, so the LED stays dark 0.8-1.0 s after every pattern instead of relighting after as little as 50 ms. LOW-2: the link-lost blink skips its LED write while a pattern runs (flag read with i2cMutex held) but keeps toggling, so it no longer chops a calibration result. No new task, no new delay. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-29 - BIND LED RE-LIT WHILE THE LINK IS UP (owner-approved for RX1; RX1 showed the BIND LED fully off while the remote drove the buggy). checkConnStatus() lit the LED only on the pass the link came up, so one lost AW9523 write, or any BIND LED pattern while connected (they all end dark: the BIND-button compass calibration, ?compasscal, ?magalign), left it dark until the link next dropped. Now, while paired with a fresh link, every 5th pass (about once a second) writes AP_L_BIND LOW again under i2cMutex - one port-0 read-modify-write a second, never port 1 or CONFIG1. blinkBind(), blinkBindPattern() and blinkErr() on the BIND LED set g_bind_led_pattern_active for as long as they run, and the refresh skips its write while it is set (read with i2cMutex held), so a compass result pattern is never drawn over; the LED is lit again at most ~1 s after a pattern ends. The rule is pure and host-tested (../Common/BindLedRefresh.h, Tools/tests/bind_led_refresh_test.cpp). The LED-on write when the link comes up, the link-lost blink and the unpaired blip are unchanged. No new task, no new delay. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-27 - GPS COMMANDS, COMMENTS AND HELP TEXT ONLY (RX GPS audits of 2026-10-27): the ?gpscfg row's help text names the update-rate and chip-version (UBX-MON-VER) reads it gained, ~6 s worst case (was ~4.5 s); the ?gpssetup row's says up to ~30 s (was ~20 s); and the ?gpscfg note no longer says configureGPS() never checks a UBX ACK - it has since GPS-ACK-1/2. This tag was missing: those changes were tagged inline only. No row flag, gate or command changed. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -1924,11 +1925,21 @@ void cmdDiag(const String& params) {
       }
       const float imu_pct  = (d_imu2_p > 0) ? (100.0f * (float)d_imu2_ok / (float)d_imu2_p) : -1.0f;
       const bool  v2_fresh = v2_copied && v2.ever_ok && ((now_ms - v2.last_ok_ms) <= kVesc2StaleMs) && !backed_off;
+#if FM_PIVOT_LEARN_ENABLED
+      // V2.5-Evo - 2026-10-31 - unit H, H-0: the IMU is also polled while Follow-Me is armed (fmPivotImuPollWanted()).
+      const char* imu_state =
+          !(logImuPollWanted() || fmPivotImuPollWanted()) ? "idle - polled only while a level-6 log records or Follow-Me is armed"
+        : !v2_fresh                                 ? "waiting - VESC 2 values not fresh"
+        : (g_imu2_miss_streak >= kImu2MissesToBackoff) ? "BACKED OFF 1 poll / 10 s (IMU enabled in VESC 2 App Settings > IMU?)"
+        : logImuPollWanted()                        ? "polling 2 Hz (level-6 log recording)"
+                                                    : "polling 2 Hz (Follow-Me armed: the pivot's gyro)";
+#else
       const char* imu_state =
           !logImuPollWanted()                       ? "idle - polled only while a level-6 log records"
         : !v2_fresh                                 ? "waiting - VESC 2 values not fresh"
         : (g_imu2_miss_streak >= kImu2MissesToBackoff) ? "BACKED OFF 1 poll / 10 s (IMU enabled in VESC 2 App Settings > IMU?)"
                                                     : "polling 2 Hz (level-6 log recording)";
+#endif
       Serial.printf("VESC 2 IMU : %u/%u ok (%.1f%%), %s, %u misses in a row\n",
                     (unsigned)d_imu2_ok, (unsigned)d_imu2_p, imu_pct, imu_state,
                     (unsigned)g_imu2_miss_streak);

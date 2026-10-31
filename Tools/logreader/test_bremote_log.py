@@ -859,7 +859,10 @@ class TestLogFormat3(unittest.TestCase):
         # still reads format-3 files (LOG_FILE_FORMAT_MIN_READ).
         # 2026-10-15: the current format is 5 (the level-6 compass diagnostic block, 174 B); MIN_READ stays 3.
         # 2026-10-31: the current format is 6 (the level-6 rider velocity word, 178 B); MIN_READ stays 3.
-        self.assertEqual(bl.LOG_FILE_FORMAT_VER, 6)
+        # 2026-10-31: the current format is 7 (unit H's level-6 pivot block, 182 B) with FM_PIVOT_LEARN_ENABLED 1; the
+        # firmware still writes 6 with the switch at 0, so both defines are in the header. MIN_READ stays 3.
+        self.assertEqual(bl.LOG_FILE_FORMAT_VER, 7)
+        self.assertIn("#define LOG_FILE_FORMAT_VER  7 ", self.fw)
         self.assertIn("#define LOG_FILE_FORMAT_VER  6 ", self.fw)
         self.assertIn("#define LOG_FILE_FORMAT_MIN_READ 3 ", self.fw)
         self.assertIs(bl.RECORD_LAYOUTS_BY_FORMAT[4], bl.RECORD_LAYOUTS_BY_FORMAT[3])
@@ -962,12 +965,13 @@ class TestLogFormat3(unittest.TestCase):
     def test_unknown_format_is_a_clear_error(self):
         # 2026-10-14: 4 is a known format now (the boot block). 2026-10-15: so is 5 (the level-6 compass
         # diagnostic block). 2026-10-31: and 6 (the level-6 rider velocity word), so the first unknown one is 7.
+        # 2026-10-31: and 7 (unit H's pivot block), so the first unknown one is 8.
         with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, "f7.log")
-            write_binary_log(path, 4, 104, [pack_record(bl.LAYOUT_L4_V3, {})], format_ver=7)
+            path = os.path.join(tmp, "f8.log")
+            write_binary_log(path, 4, 104, [pack_record(bl.LAYOUT_L4_V3, {})], format_ver=8)
             with self.assertRaises(bl.LogFormatError) as ctx:
                 list(bl.iter_binary_records(path))
-        self.assertIn("format_ver=7", str(ctx.exception))
+        self.assertIn("format_ver=8", str(ctx.exception))
 
     def test_cli_exits_nonzero_with_message_on_unknown_format(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1512,6 +1516,125 @@ class TestLogFormat6RiderVel(unittest.TestCase):
         self.assertEqual(row["rider_vel_course_deg"], "180")
         self.assertEqual(row["rider_vel_speed_kmh"], "")
         self.assertEqual(row["rider_vel_age_ms"], "")
+
+
+# ============================================================
+# 2026-10-31 - LOG FORMAT 7: the 178 B level-6 record + unit H's 4-byte pivot block = 182 B.
+# pivot_rate_dx10 (i16, deg/s x 10, 0x7FFF none), pivot_cap (u8, 0 = not acting), pivot_state (u8: bits 0-2 state,
+# bits 6-7 calibration 0 / 1 = +1 / 2 = -1). Made-up values only.
+# ============================================================
+
+class TestLogFormat7Pivot(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        with open(_FW_HEADER_PATH, "r", encoding="utf-8") as f:
+            cls.fw = f.read()
+        logger_path = os.path.join(os.path.dirname(_FW_HEADER_PATH), "Logger.ino")
+        with open(logger_path, "r", encoding="utf-8") as f:
+            cls.logger = f.read()
+
+    def _decode(self, raw: dict) -> dict:
+        rec_bytes = pack_record(bl.LAYOUT_L6_V7, dict(_RX_IMU_NO_SOURCE_RAW, **raw))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "l6p.log")
+            write_binary_log(path, 6, 182, [rec_bytes], format_ver=7)
+            return list(bl.iter_binary_records(path))[0]
+
+    def test_firmware_static_asserts_and_sizes(self):
+        self.assertIn("static_assert(sizeof(VescLogDataL6Pv) == 182,", self.fw)
+        self.assertIn("static_assert(offsetof(VescLogDataL6Pv, pv) == 178,", self.fw)
+        self.assertIn("static_assert(sizeof(LogPivotBlock) == 4,", self.fw)
+        self.assertIn("static_assert(sizeof(VescLogDataL6Vel) == 178,", self.fw)   # the 178 B record is unchanged
+        self.assertIn("#define LOG_REC_MAX sizeof(VescLogDataL6Pv)", self.fw)
+        self.assertIn("#define LOG_REC_MAX sizeof(VescLogDataL6Vel)", self.fw)    # the FM_PIVOT_LEARN_ENABLED 0 build
+        self.assertEqual(bl.LAYOUT_L6_V7["record_size"], 182)
+        self.assertEqual(bl.LAYOUT_L6_V7["level"], 6)
+        self.assertIs(bl.RECORD_LAYOUTS_BY_FORMAT[7][182], bl.LAYOUT_L6_V7)
+        self.assertIs(bl.RECORD_LAYOUTS_BY_FORMAT[7][178], bl.LAYOUT_L6_V6)
+        self.assertIs(bl.RECORD_LAYOUTS_BY_FORMAT[7][126], bl.LAYOUT_L5_V3)
+        self.assertNotIn(182, bl.RECORD_LAYOUTS_BY_FORMAT[6])
+        # the first 178 bytes are byte-identical to the format-6 level-6 record
+        self.assertEqual(bl.LAYOUT_L6_V7["fields"][:len(bl.LAYOUT_L6_V6["fields"])], bl.LAYOUT_L6_V6["fields"])
+
+    def test_firmware_csv_macro_expands_to_the_generated_header(self):
+        self.assertEqual(_expand_fw_csv_macro(self.fw, "LOG_CSV_HEADER_L6_PV"), bl.LAYOUT_L6_V7["csv_header"])
+        self.assertEqual(_expand_fw_csv_macro(self.fw, "LOG_CSV_HEADER_L6_VEL"), bl.LAYOUT_L6_V6["csv_header"])
+        cols = bl.LAYOUT_L6_V7["csv_header_cols"]
+        self.assertEqual(len(cols), 104)
+        self.assertEqual(cols[-3:], ["pivot_rate_dx10", "pivot_cap", "pivot_state"])
+        self.assertEqual(cols[:101], bl.LAYOUT_L6_V6["csv_header_cols"])   # a pure tail append
+        self.assertIs(bl.CSV_HEADER_TO_LAYOUT[bl.LAYOUT_L6_V7["csv_header"]], bl.LAYOUT_L6_V7)
+
+    def test_the_logger_appends_the_snapshot_block(self):
+        # loggerTask's level-6 branch appends the pivot block from the row's own snapshot, inside the build switch.
+        self.assertIn("pb.pivot_rate_dx10 = snap.pv_rate_dx10;", self.logger)
+        self.assertIn("pb.pivot_cap       = snap.pv_cap;", self.logger)
+        self.assertIn("pb.pivot_state     = snap.pv_state;", self.logger)
+        self.assertIn("#if FM_PIVOT_LEARN_ENABLED", self.logger)
+
+    def test_byte_offsets(self):
+        rec_bytes = pack_record(bl.LAYOUT_L6_V7, dict(_RX_IMU_NO_SOURCE_RAW, pivot_rate_dps=-123, pivot_cap=74,
+                                                      pivot_state=0x42))
+        self.assertEqual(len(rec_bytes), 182)
+        self.assertEqual(rec_bytes[178:182], struct.pack("<hBB", -123, 74, 0x42))
+
+    def test_block_decodes_and_the_sentinel_is_none(self):
+        got = self._decode(dict(_IMU_FRESH_RAW, pivot_rate_dps=-215, pivot_cap=60, pivot_state=0x40 | 2))
+        self.assertEqual(got["_layout_name"], "L6_V7")
+        self.assertAlmostEqual(got["pivot_rate_dps"], -21.5, places=6)
+        self.assertEqual(got["pivot_cap"], 60)
+        self.assertEqual(got["pivot_state_name"], "STEP_UP")
+        self.assertEqual(got["pivot_cal_sign"], 1)
+        self.assertEqual(got["vesc2_imu_age_ms"], 250)                               # the IMU block is unaffected
+        none = self._decode(dict(_IMU_FRESH_RAW, pivot_rate_dps=0x7FFF, pivot_cap=0, pivot_state=0))
+        self.assertIsNone(none["pivot_rate_dps"])
+        self.assertEqual(none["pivot_state_name"], "NONE")
+        self.assertEqual(none["pivot_cal_sign"], 0)
+        # every state name, and the -1 calibration
+        for code, name in ((1, "PIVOTING"), (3, "STEP_DOWN"), (4, "NOT_TURNING"), (5, "WRONG_WAY")):
+            self.assertEqual(bl.decode_pivot_state(0x80 | code), {"pivot_state_name": name, "pivot_cal_sign": -1})
+
+    def test_device_csv_input(self):
+        base = ["0"] * len(bl.LAYOUT_L6_V6["csv_header_cols"])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "l6p.csv")
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                f.write(bl.LAYOUT_L6_V7["csv_header"] + "\n")
+                f.write(",".join(base + ["305", "80", str(0x80 | 3)]) + "\n")
+                f.write(",".join(base + ["32767", "0", "0"]) + "\n")
+            r_got, r_none = list(bl.iter_csv_records(path))
+        self.assertEqual(r_got["_layout_name"], "L6_V7")
+        self.assertAlmostEqual(r_got["pivot_rate_dps"], 30.5, places=6)
+        self.assertEqual(r_got["pivot_cap"], 80)
+        self.assertEqual(r_got["pivot_state_name"], "STEP_DOWN")
+        self.assertEqual(r_got["pivot_cal_sign"], -1)
+        self.assertIsNone(r_none["pivot_rate_dps"])
+
+    def test_format6_level6_file_still_decodes_without_the_block(self):
+        rec_bytes = pack_record(bl.LAYOUT_L6_V6, dict(_RX_IMU_NO_SOURCE_RAW, **_IMU_FRESH_RAW))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "f6_l6.log")
+            write_binary_log(path, 6, 178, [rec_bytes], format_ver=6)
+            rec = list(bl.iter_binary_records(path))[0]
+        self.assertEqual(rec["_layout_name"], "L6_V6")
+        self.assertNotIn("pivot_rate_dps", rec)
+        self.assertNotIn("pivot_state_name", rec)
+        self.assertIn("rider_vel_word", rec)
+
+    def test_expanded_csv_carries_the_decoded_columns(self):
+        import csv
+        rec = self._decode(dict(_IMU_FRESH_RAW, pivot_rate_dps=100, pivot_cap=50, pivot_state=0x40 | 4))
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = os.path.join(tmp, "x.csv")
+            bl.write_expanded_csv([rec], out_path)
+            with open(out_path, "r", encoding="utf-8", newline="") as f:
+                reader = csv.DictReader(f)
+                row = next(reader)
+                header = reader.fieldnames
+        self.assertEqual(header[-len(bl.PIVOT_DECODED_NAMES):], bl.PIVOT_DECODED_NAMES)   # appended last
+        self.assertEqual(row["pivot_state_name"], "NOT_TURNING")
+        self.assertEqual(row["pivot_cal_sign"], "1")
+        self.assertEqual(row["pivot_rate_dps"], "10")
 
 
 if __name__ == "__main__":

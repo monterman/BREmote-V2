@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-31 - LOG FORMAT 7 (unit H, the self-tuning pivot; logging only): with FM_PIVOT_LEARN_ENABLED a level-6 row is a VescLogDataL6Pv (182 B): the format-6 178 B record exactly as before + LogPivotBlock (pivot_rate_dx10, pivot_cap, pivot_state) from the row's own Follow-Me snapshot. At 0 the row is format 6, as before. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-31 - LOG FORMAT 6 (design audit 2026-10-31, Follow-Me package 2 unit A, logging only): a level-6 row is a VescLogDataL6Vel (178 B): the format-5 174 B record exactly as before + rider_vel_word, the rider's v3 velocity word as the radio task last published it (rx_tx_gps_vel_word, one aligned 32-bit read). ?download and the WiFi download follow LOG_REC_MAX / logCsvHeaderFor() / logFormatCsvRow() with no edit here; formats 3-5 still download. Levels 3-5 unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-15 - LOG FORMAT 5 (owner-approved for RX1, diagnostic only): a level-6 row is a VescLogDataL6Compass (174 B): the 170 B level-6 record + compass_diag_dx10 / compass_diag_norm, filled by the new fillCompassDiag() - one compass reading per row through compassDiagRead() (Compass.ino), only while this row's thr_received is at or above 25 (where the snapshot path stops reading), only when rtm_use_compass is not 0, and never faster than every 300 ms. The reading lives in locals and in this record only; compass_live_dx10 and every other column are unchanged. Levels 3-5 unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-14 - LOG FORMAT 4 (owner-approved for RX1): createNewLogFile() writes a LogFileBootInfo (boot counter + reset reason of this boot) right after the 8-byte header; records unchanged. ?download reads the header through the shared logReadFileHeader(), decodes formats 3 and 4, and prints one "=== RX boot #N / reset ... ===" line after the CSV column header for a format-4 file. Old logs (format 3) still download. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -1061,6 +1062,20 @@ void loggerTask(void* parameter) {
         logData6.rider_vel_word = rx_tx_gps_vel_word;   // V2.5-Evo - 2026-10-31 - LOG FORMAT 6
         memcpy(rec_buf, &logData6, sizeof(logData6));
         rec_len = (uint16_t)sizeof(logData6);
+#if FM_PIVOT_LEARN_ENABLED
+        // V2.5-Evo - 2026-10-31 - LOG FORMAT 7 (unit H): the pivot block at the tail (VescLogDataL6Pv: the 178 B record
+        // above, then LogPivotBlock), from the SAME snapshot as the row's Follow-Me columns - one tick throughout. rec_buf
+        // is LOG_REC_MAX (182 B) in this build.
+        {
+          LogPivotBlock pb;
+          pb.pivot_rate_dx10 = snap.pv_rate_dx10;
+          pb.pivot_cap       = snap.pv_cap;
+          pb.pivot_state     = snap.pv_state;
+          static_assert(sizeof(VescLogDataL6Vel) + sizeof(LogPivotBlock) <= LOG_REC_MAX, "rec_buf too small for the format-7 record");
+          memcpy(rec_buf + rec_len, &pb, sizeof(pb));
+          rec_len = (uint16_t)(rec_len + sizeof(pb));
+        }
+#endif
       } else if (active_log_level >= 5) {
         VescLogDataL5 logData5;
         logData5.l4.base = convertToLogData();

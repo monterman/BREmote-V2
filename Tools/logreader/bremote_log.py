@@ -62,6 +62,12 @@ record: 178 -> 101 (L6_V6: L6_V5 + rider_vel_word, the remote's own GPS
 course, speed and fix age as the RX received them, before its plausibility
 gates; this tool splits it into rider_vel_tag / _course_deg / _speed_kmh /
 _speed_mph / _age_ms); every other record is format 5's, byte for byte.
+Format 7 (2026-10-31) appends unit H's pivot block to the level-6 record:
+182 -> 104 (L6_V7: L6_V6 + pivot_rate_dx10 / pivot_cap / pivot_state - VESC 2's
+yaw rate, the learned pivot cap in force and the pivot state with the yaw-sign
+calibration; this tool adds pivot_state_name and pivot_cal_sign); every other
+record is format 6's, byte for byte. A firmware built with
+FM_PIVOT_LEARN_ENABLED 0 still writes format 6.
 A format-2 126 B record and a format-3 126 B record are
 the SAME SIZE with DIFFERENT layouts, so layouts are keyed by
 (format_ver, record_size) in ``RECORD_LAYOUTS_BY_FORMAT``, never by size
@@ -87,7 +93,7 @@ from typing import Any, Callable, Optional
 # FILE HEADER - BREmote_V2_Rx.h: LogFileHeader / LOG_FILE_MAGIC / LOG_FILE_FORMAT_VER
 # ============================================================
 LOG_FILE_MAGIC = 0x474C5242          # little-endian bytes on disk read "BRLG"
-LOG_FILE_FORMAT_VER = 6              # current: 6 = level 6 carries the rider velocity word (2026-10-31); 5 = level 6 carries the compass diagnostic block (2026-10-15); 4 = a boot block after the header (2026-10-14); 3 = VESC 2 in the level-4 record
+LOG_FILE_FORMAT_VER = 7              # current: 7 = level 6 carries unit H's pivot block (2026-10-31); 6 = level 6 carries the rider velocity word (2026-10-31); 5 = level 6 carries the compass diagnostic block (2026-10-15); 4 = a boot block after the header (2026-10-14); 3 = VESC 2 in the level-4 record
 # Both are READABLE. 1 is every file written before the M-2 flash (2026-10-02) and 2 is every
 # file after it. The two differ by 3 bytes at the tail of the BASE record, which moves every
 # block above byte 59 - record_size alone cannot express that, which is why the firmware bumped
@@ -108,7 +114,10 @@ LOG_FILE_FORMAT_VER = 6              # current: 6 = level 6 carries the rider ve
 # 2026-10-31: 6 is every file written after the rider-velocity (v3 rider GPS packet) flash. Header and boot block as format
 # 4; levels 3-5 and the first 174 B of a level-6 record are format 5's. A level-6 record is 178 B: + rider_vel_word
 # (BREmote_V2_Rx.h VescLogDataL6Vel).
-LOG_FILE_FORMAT_VERS_SUPPORTED = (1, 2, 3, 4, 5, 6)
+# 2026-10-31: 7 is every file written by a firmware with unit H (the self-tuning pivot, FM_PIVOT_LEARN_ENABLED 1). Header
+# and boot block as format 4; levels 3-5 and the first 178 B of a level-6 record are format 6's. A level-6 record is
+# 182 B: + the 4-byte pivot block (BREmote_V2_Rx.h VescLogDataL6Pv / LogPivotBlock). A build with the switch at 0 writes 6.
+LOG_FILE_FORMAT_VERS_SUPPORTED = (1, 2, 3, 4, 5, 6, 7)
 LOG_FILE_HEADER_FMT = "<IBBH"        # magic u32, format_ver u8, log_level u8, record_size u16
 LOG_FILE_HEADER_SIZE = struct.calcsize(LOG_FILE_HEADER_FMT)
 assert LOG_FILE_HEADER_SIZE == 8
@@ -299,13 +308,17 @@ TIER_ORDER += ["L4_V3", "L5_V3"]   # 2026-10-06: format 3 - VESC 2 in the level-
 TIER_ORDER += ["L6_V3"]            # 2026-10-08: format 3 level 6 - level 5 + the two IMU blocks (170 B)
 TIER_ORDER += ["L6_V5"]            # 2026-10-15: format 5 level 6 - L6_V3 + the compass diagnostic block (174 B)
 TIER_ORDER += ["L6_V6"]            # 2026-10-31: format 6 level 6 - L6_V5 + the rider velocity word (178 B)
+TIER_ORDER += ["L6_V7"]            # 2026-10-31: format 7 level 6 - L6_V6 + unit H's pivot block (182 B)
 # Tiers that carry the Follow-Me block (decoded gate/state columns) and the level-5 block, by name.
-FM_BLOCK_TIERS = ("L4_83", "L4_RAW", "L4", "L5", "L4_V2", "L5_V2", "L5_VESC2", "L4_V3", "L5_V3", "L6_V3", "L6_V5", "L6_V6")
-L5_BLOCK_TIERS = ("L5", "L5_V2", "L5_VESC2", "L5_V3", "L6_V3", "L6_V5", "L6_V6")
+FM_BLOCK_TIERS = ("L4_83", "L4_RAW", "L4", "L5", "L4_V2", "L5_V2", "L5_VESC2", "L4_V3", "L5_V3", "L6_V3", "L6_V5", "L6_V6",
+                  "L6_V7")
+L5_BLOCK_TIERS = ("L5", "L5_V2", "L5_VESC2", "L5_V3", "L6_V3", "L6_V5", "L6_V6", "L6_V7")
 # 2026-10-08: tiers that carry the two IMU blocks (VESC 2's IMU + the reserved RX IMU).
-IMU_BLOCK_TIERS = ("L6_V3", "L6_V5", "L6_V6")
+IMU_BLOCK_TIERS = ("L6_V3", "L6_V5", "L6_V6", "L6_V7")
 # 2026-10-31: tiers that carry the rider velocity word (decoded into the RIDER_VEL_DECODED_NAMES columns).
-RIDER_VEL_TIERS = ("L6_V6",)
+RIDER_VEL_TIERS = ("L6_V6", "L6_V7")
+# 2026-10-31: tiers that carry unit H's pivot block (decoded into the PIVOT_DECODED_NAMES columns).
+PIVOT_TIERS = ("L6_V7",)
 
 # ImuLogBlock.status (Source/Common/VescImu.h). 0xFF (NO SOURCE) is the field's sentinel, so it decodes
 # as None and is named "NO_SOURCE" in the expanded CSV; 0 is never written by the firmware.
@@ -593,6 +606,31 @@ def decode_rider_vel(word: int) -> dict[str, Any]:
         "rider_vel_age_ms": age * 50 if age < 15 else None,
     }
 
+# ---- 2026-10-31: LOG FORMAT 7 - unit H's pivot block, bytes 178-181 of the 182 B "L6_V7" record (BREmote_V2_Rx.h
+#      VescLogDataL6Pv / LogPivotBlock; the rules are Source/Common/FollowMePivot.h).
+#      pivot_rate: VESC 2's yaw rate between its last two IMU samples, deg/s (the raw column is x 10), in the IMU's OWN
+#        sign - pivot_cal_sign turns it clockwise-positive; 0x7FFF = unit H not capable on that row (None here).
+#      pivot_cap: the learned pivot cap in force in Follow-Me's cap 4 (counts, clamped to the trigger); 0 = not acting.
+#      pivot_state: bits 0-2 the state (PIVOT_STATE_NAMES), bits 6-7 the yaw-sign calibration (0 none, 1 = +1, 2 = -1).
+#      The firmware's CSV prints all three RAW. ----
+PIVOT_FIELDS = [
+    F("pivot_rate_dps", "h", csv_col="pivot_rate_dx10", raw_scale=10.0, sentinel_raw=0x7FFF, unit="deg/s"),
+    F("pivot_cap", "B", csv_prescaled=True, unit="counts"),
+    F("pivot_state", "B", csv_prescaled=True, unit="code"),
+]
+PIVOT_STATE_NAMES = {0: "NONE", 1: "PIVOTING", 2: "STEP_UP", 3: "STEP_DOWN", 4: "NOT_TURNING", 5: "WRONG_WAY"}
+PIVOT_DECODED_NAMES = ["pivot_state_name", "pivot_cal_sign"]
+
+
+def decode_pivot_state(state: int) -> dict[str, Any]:
+    """pivot_state -> its state name (bits 0-2) and the yaw-sign calibration (bits 6-7: 0 -> 0, 1 -> +1, 2 -> -1)."""
+    code = state & 0x07
+    cal = (state >> 6) & 0x03
+    return {
+        "pivot_state_name": PIVOT_STATE_NAMES.get(code, f"unknown({code})"),
+        "pivot_cal_sign": 1 if cal == 1 else (-1 if cal == 2 else 0),
+    }
+
 # fm_aligning / fm_boost are spliced into the CSV header right after fm_return_reason in every
 # tier from L4_83 up - see the field-table note above for why they have no field-table entry.
 _VIRTUAL_GATE_COLUMNS = {"fm_return_reason": ["fm_aligning", "fm_boost"]}
@@ -682,10 +720,18 @@ LAYOUT_L6_V6 = _layout(6, "L6_V6",
                        + L5_EXTRA_FIELDS + IMU_VESC2_FIELDS + IMU_RX_FIELDS + COMPASS_DIAG_FIELDS
                        + RIDER_VEL_FIELDS,
                        virtual_after=_VIRTUAL_GATE_COLUMNS)
+# ---- 2026-10-31: LOG FORMAT 7 - level 6 + unit H's pivot block (182 B). ----
+LAYOUT_L6_V7 = _layout(6, "L6_V7",
+                       L3_FIELDS_V2 + L4_DIAG_EXTRA_FIELDS + L4_83_EXTRA_FIELDS
+                       + L4_RAW_EXTRA_FIELDS + L4_MOTORS_EXTRA_FIELDS + VESC2_EXTRA_FIELDS
+                       + L5_EXTRA_FIELDS + IMU_VESC2_FIELDS + IMU_RX_FIELDS + COMPASS_DIAG_FIELDS
+                       + RIDER_VEL_FIELDS + PIVOT_FIELDS,
+                       virtual_after=_VIRTUAL_GATE_COLUMNS)
 
 LAYOUT_BY_NAME = {lay["name"]: lay for lay in (LAYOUT_L3, LAYOUT_L4_DIAG, LAYOUT_L4_83, LAYOUT_L4_RAW, LAYOUT_L4, LAYOUT_L5,
                                                LAYOUT_L3_V2, LAYOUT_L4_V2, LAYOUT_L5_V2, LAYOUT_L5_VESC2,
-                                               LAYOUT_L4_V3, LAYOUT_L5_V3, LAYOUT_L6_V3, LAYOUT_L6_V5, LAYOUT_L6_V6)}
+                                               LAYOUT_L4_V3, LAYOUT_L5_V3, LAYOUT_L6_V3, LAYOUT_L6_V5, LAYOUT_L6_V6,
+                                               LAYOUT_L6_V7)}
 
 # Table-driven, keyed by (format_ver, record_size). 2026-10-06: it was keyed by record size alone, which
 # stopped being enough the day two formats wrote the same size with different layouts (format 2 L5_VESC2
@@ -705,6 +751,10 @@ RECORD_LAYOUTS_BY_FORMAT[5][LAYOUT_L6_V5["record_size"]] = LAYOUT_L6_V5
 # 170 and 174 stay in the table so an odd file still decodes its known prefix within its own format.
 RECORD_LAYOUTS_BY_FORMAT[6] = dict(RECORD_LAYOUTS_BY_FORMAT[5])
 RECORD_LAYOUTS_BY_FORMAT[6][LAYOUT_L6_V6["record_size"]] = LAYOUT_L6_V6
+# 2026-10-31: format 7 - format 6's records plus the 182 B level-6 record (unit H). The firmware writes level 6 at 182 B
+# only; 170 / 174 / 178 stay in the table so an odd file still decodes its known prefix within its own format.
+RECORD_LAYOUTS_BY_FORMAT[7] = dict(RECORD_LAYOUTS_BY_FORMAT[6])
+RECORD_LAYOUTS_BY_FORMAT[7][LAYOUT_L6_V7["record_size"]] = LAYOUT_L6_V7
 assert set(RECORD_LAYOUTS_BY_FORMAT) == set(LOG_FILE_FORMAT_VERS_SUPPORTED)
 
 # BREmote_V2_Rx.h LOG_CSV_HEADER_L3 as of the M-2 change, copied verbatim. If the firmware adds a
@@ -729,6 +779,7 @@ assert RECORD_LAYOUTS_BY_FORMAT[2].keys() == {62, 90, 112, 126}, sorted(RECORD_L
 assert RECORD_LAYOUTS_BY_FORMAT[3].keys() == {62, 104, 126, 170}, sorted(RECORD_LAYOUTS_BY_FORMAT[3])
 assert RECORD_LAYOUTS_BY_FORMAT[5].keys() == {62, 104, 126, 170, 174}, sorted(RECORD_LAYOUTS_BY_FORMAT[5])
 assert RECORD_LAYOUTS_BY_FORMAT[6].keys() == {62, 104, 126, 170, 174, 178}, sorted(RECORD_LAYOUTS_BY_FORMAT[6])
+assert RECORD_LAYOUTS_BY_FORMAT[7].keys() == {62, 104, 126, 170, 174, 178, 182}, sorted(RECORD_LAYOUTS_BY_FORMAT[7])
 
 # BREmote_V2_Rx.h LOG_CSV_HEADER_L5_VESC2 is LOG_CSV_HEADER_L5 plus this suffix, copied verbatim.
 # (A test also reads the macro straight out of the firmware header, so the two cannot drift.)
@@ -766,6 +817,12 @@ assert LAYOUT_L6_V5["csv_header"] == LAYOUT_L6_V3["csv_header"] + _FW_CSV_SUFFIX
 _FW_CSV_SUFFIX_RIDER_VEL = ",rider_vel_word"
 assert LAYOUT_L6_V6["csv_header"] == LAYOUT_L6_V5["csv_header"] + _FW_CSV_SUFFIX_RIDER_VEL, (
     "generated level-6 rider velocity header has drifted from the firmware macro"
+)
+# 2026-10-31: BREmote_V2_Rx.h LOG_CSV_HEADER_L6_PV is LOG_CSV_HEADER_L6_VEL plus this suffix, copied verbatim
+# (test_bremote_log.py also expands the real macro).
+_FW_CSV_SUFFIX_PIVOT = ",pivot_rate_dx10,pivot_cap,pivot_state"
+assert LAYOUT_L6_V7["csv_header"] == LAYOUT_L6_V6["csv_header"] + _FW_CSV_SUFFIX_PIVOT, (
+    "generated level-6 pivot header has drifted from the firmware macro"
 )
 
 # The six CSV headers the firmware itself can print (BREmote_V2_Rx.h LOG_CSV_HEADER_L3 /
@@ -814,9 +871,10 @@ CSV_HEADER_TO_LAYOUT = {
     LAYOUT_L6_V3["csv_header"]: LAYOUT_L6_V3,   # 2026-10-08 - level 6 (IMU)
     LAYOUT_L6_V5["csv_header"]: LAYOUT_L6_V5,   # 2026-10-15 - level 6 + the compass diagnostic block (format 5)
     LAYOUT_L6_V6["csv_header"]: LAYOUT_L6_V6,   # 2026-10-31 - level 6 + the rider velocity word (format 6)
+    LAYOUT_L6_V7["csv_header"]: LAYOUT_L6_V7,   # 2026-10-31 - level 6 + unit H's pivot block (format 7)
 }
 # Every layout must be reachable from a DISTINCT header line - the header is the only thing a CSV carries.
-# (L3_V2 serves formats 2 and 3, so it is one entry; 15 layouts -> 15 headers.)
+# (L3_V2 serves formats 2 and 3, so it is one entry; 16 layouts -> 16 headers.)
 assert len(CSV_HEADER_TO_LAYOUT) == len(LAYOUT_BY_NAME), "two layouts print the same CSV header"
 
 
@@ -921,6 +979,9 @@ def add_decoded_columns(rec: dict) -> dict:
     # 2026-10-31: the rider's v3 velocity word (level 6, format 6) split into its tag, course, speed and fix age.
     if "rider_vel_word" in rec and rec["rider_vel_word"] is not None:
         rec.update(decode_rider_vel(int(rec["rider_vel_word"])))
+    # 2026-10-31: unit H's pivot state (level 6, format 7) split into its name and the yaw-sign calibration.
+    if "pivot_state" in rec and rec["pivot_state"] is not None:
+        rec.update(decode_pivot_state(int(rec["pivot_state"])))
     return rec
 
 
@@ -1128,6 +1189,8 @@ def csv_field_order_for_layout(layout_name: str) -> list[str]:
         extra += ["vesc2_imu_status_name", "rx_imu_status_name"]
     if layout_name in RIDER_VEL_TIERS:   # 2026-10-31 - level 6, format 6: appended last, so every older column keeps its place
         extra += RIDER_VEL_DECODED_NAMES
+    if layout_name in PIVOT_TIERS:       # 2026-10-31 - level 6, format 7 (unit H): appended after those, for the same reason
+        extra += PIVOT_DECODED_NAMES
     return base + extra
 
 

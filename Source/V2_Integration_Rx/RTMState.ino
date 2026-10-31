@@ -1,3 +1,15 @@
+// V2.5-Evo - 2026-10-31 - UNIT H, THE SELF-TUNING PIVOT ON VESC 2's GYRO (design audit 2026-10-31 §H; owner decision O-1:
+//   VESC 2's IMU is polled while Follow-Me is armed). Pure rules in Common/FollowMePivot.h; everything here is inside
+//   #if FM_PIVOT_LEARN_ENABLED (BREmote_V2_Rx.h, default 1; 0 = this file compiles exactly as before the unit).
+//   (1) fmPivotSampleTick(), top of every runFmLoop() tick: VESC 2's newest IMU sample -> a yaw rate, and the yaw-sign
+//   calibration against the GPS course (8 of the last 10 turns at 8 km/h or more). (2) fmPivotLearnTick(), in the ACTIVE
+//   branch before the cap chain: the learned pivot cap that fmComputeThrottleCap()'s cap 4 uses in place of fm_align_cap
+//   - only aligning with the boost, the buggy under 4 mph, outside min_dist + band; bounds max(8, cap/2) .. min(128,
+//   1.6 x cap), not above fm_align_cap before the sign is calibrated, never above the trigger; NOT TURNING (2 s at the cap
+//   or more, under 10 deg) puts it back to fm_align_cap. (3) WRONG WAY, in the hard_ok block beside R2-S: once calibrated,
+//   the hull yawing against the commanded pivot at 5 deg/s for 1.5 s ends Follow-Me through R2-S's steering end, code 12.
+//   (4) ?diag "FM pivot" lines; the level-6 log's pivot block (format 7). It only lowers or holds a cap and only removes
+//   eligibility. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-31 - G-2 (Follow-Me package 2, design audit 2026-10-31 §G): AUTO ENGAGE DISTANCE 13.5 m. With
 //   fm_engage_dist_m = 0, D_engage is now followMeAutoEngageDistM() (Common/FollowMeEngage.h) = max(kFmEngageAutoM 13.5 m,
 //   kFmEngageFactor 1.5 x d_follow) - a 7 m rope + 6.5 m of GPS error, never less than auto gave before (the factory 10 + 10
@@ -3432,6 +3444,53 @@ static unsigned long   fm_sr_last_end_ms   = 0;
 static uint32_t        fm_sr_shadow_events = 0;           // ?diag: shadow (manual) would-be ends since boot
 static unsigned long   fm_sr_shadow_last_ms = 0;
 
+#if FM_PIVOT_LEARN_ENABLED
+// ============================================================
+// V2.5-Evo - 2026-10-31 - UNIT H, THE SELF-TUNING PIVOT ON VESC 2's GYRO (design audit 2026-10-31 §H; pure rules in
+// Common/FollowMePivot.h, which explains every number). Compile-time only, like every kFm*: no confStruct field.
+// Tools/tests/follow_me_pivot_test.cpp checks this exact kFmPivotCfg line.
+// ============================================================
+// In FmPivotCfg order: IMU fresh 600 ms, rate believed to 200 deg/s, a sample pair 150-1100 ms apart, tick gap 250 ms;
+// bounds max(8, 0.5 x fm_align_cap) .. min(128, 1.6 x fm_align_cap); target 30 deg/s, step up below 0.7 x, down above
+// 1.3 x, 10 counts per sample, none in the first 1 s, the next pivot keeps 0.8 of the learned change; the command 32 counts
+// to one side for 0.5 s; NOT TURNING under 10 deg in 2 s; calibration: the course turning 10 deg/s, 5 deg of yaw and course
+// per turn, 2 pairs per turn, 8 of the last 10 turns; WRONG WAY 1.5 s at 5 deg/s.
+static const FmPivotCfg kFmPivotCfg = { 600, 200.0f, 150, 1100, 250, 0.5f, 8, 1.6f, 128, 30.0f, 0.7f, 1.3f, 10, 1000, 0.8f, 32, 500, 2000, 10.0f, 10.0f, 5.0f, 2, 8, 10, 1500, 5.0f };
+static const float    kFmPvMaxKmh  = 6.437f;   // km/h (4 mph): the pivot learns, and WRONG WAY judges, only below this
+static const float    kFmPvCalKmh  = 8.0f;     // km/h: a turn calibrates the yaw sign only at or above this
+// Memory. Loop task only (the IMU sample imu2 is written by getVescLoop() on this same task, so it is read here without
+// vescMutex - the VESC.ino gate-2 rule). Learned per boot, RAM only.
+static FmPvRate        fm_pv_rate;                        // zero-initialised statics = boot state
+static FmPvCal         fm_pv_cal;
+static FmPvLearn       fm_pv_learn;
+static FmPvWw          fm_pv_ww;
+static bool            fm_pv_new_sample    = false;       // a new IMU sample was taken on this tick
+static bool            fm_pv_stepped       = false;       // fmPivotLearnTick() ran on this tick
+static bool            fm_pv_cap4_tick     = false;       // fm_pv_cap4 is this tick's cap 4 (else cap 4 is fmAlignCapValue())
+static uint8_t         fm_pv_cap4          = 0;
+static bool            fm_pv_pivot_prev    = false;       // last tick was a commanded pivot (WRONG WAY's scope, one tick late like the command)
+static uint8_t         fm_pv_log_cap       = 0;           // the deep log: the learned cap in force, 0 = H not acting
+static uint8_t         fm_pv_log_state     = FMPV_NONE;   // ... and FMPV_* state
+static uint8_t         fm_pv_cap_min_seen  = 255;         // ?diag (bench B-H3): the learned cap's range since boot
+static uint8_t         fm_pv_cap_max_seen  = 0;
+static uint32_t        fm_pv_nt_count      = 0;           // ?diag: NOT TURNING events since boot ...
+static unsigned long   fm_pv_nt_last_ms    = 0;           // ... the last one
+static uint32_t        fm_pv_ww_ends       = 0;           // ?diag: WRONG WAY ends since boot ...
+static unsigned long   fm_pv_ww_last_ms    = 0;           // ... the last one
+static int8_t          fm_pv_cal_printed   = 0;           // the calibration sign last announced on the console
+static int16_t         fm_pv_ww_cmd        = 0;           // the command (- 127) WRONG WAY last judged against, for its console line
+static bool            fm_pv_nt_print      = false;       // a NOT TURNING print is owed (printed after this tick's writes, F7)
+
+// fmPivotImuPollWanted - H-0 (owner decision O-1): should VESC 2's IMU be polled now for the pivot? While Follow-Me is
+// armed (any state but IDLE) and Return-to-Me does not own the buggy. VESC.ino's pollVesc2ImuIfDue() ORs this with the
+// level-6 log's own reason; its other gates (VESC 2 fresh and proven ID 2, the 30 ms cap, the back-off) are unchanged.
+// Inputs: none. Returns: true = poll. Side effects: none. Loop task.
+static inline bool fmPivotImuPollWanted()
+{
+  return (fm_state != FM_IDLE) && !rtm_rx_active.load();
+}
+#endif
+
 // fmPauseClear - drop the pause, the creep and the long-loss clock (every road out of Follow-Me's own states: fmEnterIdle()
 // and the RTM yield). The creep's per-squeeze flag goes too: a new declaration starts with one creep available.
 // Inputs: none. Side effects: the statics above. Loop task only.
@@ -3721,6 +3780,25 @@ static void fmPublishLogSnapshot()
       s.l5_fm_keepalive_age_div100 = (a > 0xFEUL) ? 0xFE : (uint8_t)a;
     }
   }
+#if FM_PIVOT_LEARN_ENABLED
+  // V2.5-Evo - 2026-10-31 - unit H: the level-6 pivot block (log format 7) - copies of published state, nothing decided here.
+  // The rate is VESC 2's yaw rate in its own sign (0x7FFF = H not capable: no believed rate, or the sample older than
+  // 600 ms); the cap is the learned cap in force (0 = H not acting); the state is FMPV_* in bits 0-2 and the calibration in
+  // bits 6-7 (0 not calibrated, 1 sign +1, 2 sign -1).
+  {
+    if (fmPvCapable(&fm_pv_rate, (uint32_t)millis(), &kFmPivotCfg)) {
+      float r10 = fm_pv_rate.rate_dps * 10.0f;
+      if (r10 > 32000.0f) r10 = 32000.0f;
+      if (r10 < -32000.0f) r10 = -32000.0f;
+      s.pv_rate_dx10 = (int16_t)lroundf(r10);
+    } else {
+      s.pv_rate_dx10 = (int16_t)0x7FFF;
+    }
+    s.pv_cap   = fm_pv_log_cap;
+    s.pv_state = (uint8_t)((fm_pv_log_state & 0x07u) |
+                           ((fm_pv_cal.sign > 0) ? 0x40u : (fm_pv_cal.sign < 0) ? 0x80u : 0x00u));
+  }
+#endif
   taskENTER_CRITICAL(&g_fm_log_mux);
   g_fm_log_snapshot = s;
   taskEXIT_CRITICAL(&g_fm_log_mux);
@@ -4242,6 +4320,43 @@ static void printFmPauseDiag(unsigned long now_ms)
                   (unsigned long)fm_sr_ends_s1, end_txt, (unsigned long)fm_sr_shadow_events, sh_txt,
                   FM_R2S_ENABLED ? "" : " - COMPILED OUT (FM_R2S_ENABLED 0)");
   }
+#if FM_PIVOT_LEARN_ENABLED
+  // V2.5-Evo - 2026-10-31 - unit H (design audit 2026-10-31 §H; bench rows B-H1 / B-H3): the learned pivot cap and the
+  // yaw-sign calibration. Line 1: the cap in force (or why H is not acting), its bounds for this fm_align_cap and
+  // calibration, the range it has taken since boot, and the IMU's yaw rate in its own sign (B-H1: turn the buggy by hand).
+  // Line 2: the calibration (votes of the last 10 turns) and the two checks' events since boot. Read-only.
+  {
+    const uint8_t ac = fmAlignCapValue();
+    uint8_t lo = 0, hi = 0;
+    fmPvBounds(ac, fm_pv_cal.sign != 0, &kFmPivotCfg, &lo, &hi);
+    const bool capable = fmPvCapable(&fm_pv_rate, (uint32_t)now_ms, &kFmPivotCfg);
+    char cap_txt[64], range_txt[32], rate_txt[48];
+    if (fm_pv_log_cap != 0) snprintf(cap_txt, sizeof(cap_txt), "%u in force (learned %d)", (unsigned)fm_pv_log_cap, (int)fm_pv_learn.cap);
+    else                    snprintf(cap_txt, sizeof(cap_txt), "not acting (fm_align_cap holds)");
+    if (fm_pv_cap_max_seen != 0) snprintf(range_txt, sizeof(range_txt), "%u-%u", (unsigned)fm_pv_cap_min_seen, (unsigned)fm_pv_cap_max_seen);
+    else                         snprintf(range_txt, sizeof(range_txt), "none yet");
+    if (capable) snprintf(rate_txt, sizeof(rate_txt), "%+.1f deg/s", (double)fm_pv_rate.rate_dps);
+    else if (!imu2.ever_ok) snprintf(rate_txt, sizeof(rate_txt), "none (no VESC 2 IMU reply)");
+    else snprintf(rate_txt, sizeof(rate_txt), "none (stale / implausible / too fast)");
+    Serial.printf("FM pivot   : cap %s; bounds %u-%u at fm_align_cap %u%s; learned range since boot %s; next pivot starts near %d; IMU yaw rate %s\n",
+                  cap_txt, (unsigned)lo, (unsigned)hi, (unsigned)ac,
+                  (fm_pv_cal.sign != 0) ? "" : " (yaw sign not calibrated: learns down only)",
+                  range_txt, fm_pv_learn.have_last ? (int)(ac + (int)(kFmPivotCfg.carry * (float)(fm_pv_learn.last - (int)ac))) : (int)ac,
+                  rate_txt);
+    uint8_t plus = 0, minus = 0;
+    fmPvCalCounts(&fm_pv_cal, &plus, &minus);
+    char nt_txt[32], ww_txt[32];
+    if (fm_pv_nt_last_ms != 0) snprintf(nt_txt, sizeof(nt_txt), "last %lu s ago", (unsigned long)(stampAgeMs((uint32_t)now_ms, (uint32_t)fm_pv_nt_last_ms) / 1000UL));
+    else                       snprintf(nt_txt, sizeof(nt_txt), "none");
+    if (fm_pv_ww_last_ms != 0) snprintf(ww_txt, sizeof(ww_txt), "last %lu s ago", (unsigned long)(stampAgeMs((uint32_t)now_ms, (uint32_t)fm_pv_ww_last_ms) / 1000UL));
+    else                       snprintf(ww_txt, sizeof(ww_txt), "none");
+    Serial.printf("FM pivot   : yaw sign %s (of the last %u turns: %u with the GPS course, %u against; %lu turns since boot) - WRONG WAY %s; NOT TURNING %lu (%s); WRONG WAY ends %lu (%s)\n",
+                  (fm_pv_cal.sign > 0) ? "+1 (calibrated)" : (fm_pv_cal.sign < 0) ? "-1 (calibrated, VESC 2 mounted the other way up)" : "NOT CALIBRATED",
+                  (unsigned)fm_pv_cal.n, (unsigned)plus, (unsigned)minus, (unsigned long)fm_pv_cal.turns,
+                  (fm_pv_cal.sign != 0) ? "armed" : "off (needs 8 of the last 10 turns at 5 mph or more to agree)",
+                  (unsigned long)fm_pv_nt_count, nt_txt, (unsigned long)fm_pv_ww_ends, ww_txt);
+  }
+#endif
 }
 
 // ------------------------------------------------------------
@@ -6530,7 +6645,14 @@ static uint16_t fmComputeThrottleCap(float dist_m, unsigned long now)
   // V2.5-Evo - 2026-09-19 - the cap is usrConf.fm_align_cap (fmAlignCapValue()), no longer the
   // compile-time 13; the ACTIVE branch publishes fm_align_influence for the mixer on the same test.
   if (fmHeadingAligning()) {
+#if FM_PIVOT_LEARN_ENABLED
+    // V2.5-Evo - 2026-10-31 - unit H: this tick's cap 4 from fmPivotLearnTick() - the learned pivot cap inside its envelope,
+    // and fmAlignCapValue() itself everywhere else (outside the envelope, with any capability gate failing, or when the
+    // learn step did not run this tick). Still one more min() in the chain: it can only take throttle away from the trigger.
+    const uint16_t c = fm_pv_cap4_tick ? (uint16_t)fm_pv_cap4 : (uint16_t)fmAlignCapValue();
+#else
     const uint16_t c = fmAlignCapValue();               // no heading data -> fmHeadingAligning() treats it as worst case
+#endif
     if (c < cap) cap = c;
   }
 
@@ -7384,6 +7506,105 @@ static void fmSteerRespShadowTick(unsigned long now)
                 stick, (double)gps_last_course_deg, (unsigned long)fm_sr_shadow_events);
 }
 
+#if FM_PIVOT_LEARN_ENABLED
+// ------------------------------------------------------------
+// fmPivotSampleTick - V2.5-Evo - 2026-10-31 - unit H: VESC 2's newest IMU sample, once per tick, in every state.
+// ------------------------------------------------------------
+// What it does: clears this tick's unit-H flags; takes imu2's newest sample if it is new (fmPvIngest(): the yaw rate
+//   between it and the one before, through the capability gates); and on a new sample steps the yaw-sign calibration
+//   with the buggy's GPS course (fmPvCalStep(): the course usable - fmCvCogOk() - and the buggy at kFmPvCalKmh or more).
+// Inputs: now. Reads imu2 (this task writes it, no mutex), gps_last_course_deg / gps_last_speed_kmh.
+// Side effects: fm_pv_rate, fm_pv_cal, fm_pv_new_sample / fm_pv_stepped / fm_pv_cap4_tick only. No cap, steering or state.
+// GPS integrity (project rule 5): reads the stored, already-judged buggy course; writes nothing to any GPS state.
+static void fmPivotSampleTick(unsigned long now)
+{
+  fm_pv_stepped    = false;
+  fm_pv_cap4_tick  = false;
+  fm_pv_new_sample = fmPvIngest(&fm_pv_rate, imu2.ever_ok, imu2.last_ok_ms, imu2.s.rpy_deg[2], vescImuPlausible(&imu2.s),
+                                &kFmPivotCfg);
+  if (fm_pv_new_sample) {
+    const bool cog_ok = fmCvCogOk(now) && gps_last_speed_kmh >= kFmPvCalKmh;
+    fmPvCalStep(&fm_pv_cal, &fm_pv_rate, cog_ok, gps_last_course_deg, &kFmPivotCfg);
+  }
+}
+
+// ------------------------------------------------------------
+// fmPivotLearnTick - V2.5-Evo - 2026-10-31 - unit H, H-1: this tick's cap 4 and NOT TURNING (fmPvLearnStep()).
+// ------------------------------------------------------------
+// What it does: decides the envelope and runs the learn step once. on_active_path = called from the ACTIVE branch right
+//   before fmComputeThrottleCap() (not the creep); the runFmLoop() wrapper calls it with false on every other tick, so the
+//   step runs exactly once per tick and a pivot ends on the first tick outside the envelope.
+//   The commanded pivot (WRONG WAY's scope, kept for next tick): aligning (fmHeadingAligning(), this tick's heading error),
+//   with the pivot boost (fm_align_influence > 0), the buggy under kFmPvMaxKmh on a fix younger than kFmCvBuggyFixMaxMs and
+//   not Phase-A rejected. The LEARNING envelope adds: at least min_dist + band from the rider (dist_m, measured this tick).
+// Inputs: now, on_active_path, dist_m (valid when on_active_path). Outputs: fm_pv_cap4 / fm_pv_cap4_tick for cap 4.
+// Side effects: fm_pv_learn and the fm_pv_* bookkeeping; a NOT TURNING print is only flagged here and made after the tick's
+//   writes (F7). It writes no cap itself: fmComputeThrottleCap() takes fm_pv_cap4 into its min() chain.
+static void fmPivotLearnTick(unsigned long now, bool on_active_path, float dist_m)
+{
+  const uint8_t ac = fmAlignCapValue();
+  bool pivot_cmd = false, env = false;
+  if (on_active_path) {
+    const bool slow = (gps_last_ms != 0) && !gps_rejected &&
+                      !stampStale((uint32_t)now, (uint32_t)gps_last_ms, kFmCvBuggyFixMaxMs) &&
+                      gps_last_speed_kmh < kFmPvMaxKmh;
+    pivot_cmd = fmHeadingAligning() && (usrConf.fm_align_influence > 0) && slow;
+    const float band = usrConf.followme_smoothing_band_m;
+    env = pivot_cmd && (dist_m >= usrConf.min_dist_m + ((band > 0.0f) ? band : 0.0f));
+  }
+  const bool capable = fmPvCapable(&fm_pv_rate, (uint32_t)now, &kFmPivotCfg);
+  // "Never above the trigger": the trigger BYTE as received (0-240). It is never more than the stretched trigger calcPWM()
+  // compares the caps with (thrByteToCmd(), 0-255), so the learned cap stays at or under the rider's trigger with up to
+  // 6 % to spare - and the stretch keeps its single home in calcPWM() (throttle-byte audit T-1, guarded by
+  // Tools/tests/throttle_byte_test.cpp).
+  const FmPvOut o = fmPvLearnStep(&fm_pv_learn, (uint32_t)now, env, ac, (uint8_t)thr_received,
+                                  g_applied_thr_cmd.load(std::memory_order_relaxed),
+                                  (int16_t)((int)rtm_steer_override.load() - 127), capable, fm_pv_cal.sign,
+                                  fm_pv_new_sample, &fm_pv_rate, &kFmPivotCfg);
+  fm_pv_stepped    = true;
+  fm_pv_pivot_prev = pivot_cmd;
+  fm_pv_cap4       = o.cap;
+  fm_pv_cap4_tick  = on_active_path;
+  const bool acting = env && capable;
+  fm_pv_log_cap    = acting ? o.cap : 0;
+  fm_pv_log_state  = o.state;
+  if (acting) {
+    const int16_t lc = fm_pv_learn.cap;
+    const uint8_t l8 = (lc < 0) ? 0 : (lc > 255) ? 255 : (uint8_t)lc;
+    if (l8 < fm_pv_cap_min_seen) fm_pv_cap_min_seen = l8;
+    if (l8 > fm_pv_cap_max_seen) fm_pv_cap_max_seen = l8;
+  }
+  if (o.nt_fired) {
+    fm_pv_nt_count   = fm_pv_nt_count + 1;
+    fm_pv_nt_last_ms = (now != 0) ? now : 1;
+    fm_pv_nt_print   = true;
+  }
+}
+
+// ------------------------------------------------------------
+// fmPivotPrints - V2.5-Evo - 2026-10-31 - unit H: the console lines owed by this tick, AFTER every write of the tick (F7):
+// NOT TURNING, and a change of the yaw-sign calibration. Read-only apart from the two "owed" flags. Loop task.
+// ------------------------------------------------------------
+static void fmPivotPrints()
+{
+  if (fm_pv_nt_print) {
+    fm_pv_nt_print = false;
+    Serial.printf("FM [RX] pivot NOT TURNING: commanded at fm_align_cap (%u) or more for 2 s and VESC 2's yaw moved under 10 deg - pivot cap back to %u, no more increase this pivot (weed, a fouled prop, a stalled motor?); event %lu\n",
+                  (unsigned)fmAlignCapValue(), (unsigned)fmAlignCapValue(), (unsigned long)fm_pv_nt_count);
+  }
+  if (fm_pv_cal.sign != fm_pv_cal_printed) {
+    fm_pv_cal_printed = fm_pv_cal.sign;
+    uint8_t plus = 0, minus = 0;
+    fmPvCalCounts(&fm_pv_cal, &plus, &minus);
+    Serial.printf("FM [RX] pivot: VESC 2 yaw sign %s (%u of the last %u turns with the GPS course, %u against) - WRONG WAY %s, the pivot cap may %s\n",
+                  (fm_pv_cal.sign > 0) ? "+1 CALIBRATED" : (fm_pv_cal.sign < 0) ? "-1 CALIBRATED" : "NOT CALIBRATED any more",
+                  (unsigned)plus, (unsigned)fm_pv_cal.n, (unsigned)minus,
+                  (fm_pv_cal.sign != 0) ? "armed" : "off",
+                  (fm_pv_cal.sign != 0) ? "rise above fm_align_cap" : "only learn down");
+  }
+}
+#endif
+
 static void runFmLoopBody(unsigned long now);
 void runFmLoop()
 {
@@ -7420,8 +7641,18 @@ void runFmLoop()
   // V2.5-Evo - 2026-10-31 - R2-S shadow: report-only on manual ticks (the state as this tick starts); it writes only its own
   // statics and the log code, so the body below runs exactly as before.
   fmSteerRespShadowTick(now);
+#if FM_PIVOT_LEARN_ENABLED
+  // V2.5-Evo - 2026-10-31 - unit H: VESC 2's newest IMU sample and the yaw-sign calibration, before the body (which reads
+  // this tick's sample in its WRONG WAY judge and its learn step). It writes only unit H's own statics.
+  fmPivotSampleTick(now);
+#endif
 
   runFmLoopBody(now);
+#if FM_PIVOT_LEARN_ENABLED
+  // V2.5-Evo - 2026-10-31 - unit H: on every tick the ACTIVE branch did not run the learn step, run it outside the envelope,
+  // so a pivot ends on the first such tick (and the log snapshot below reads this tick's pivot state).
+  if (!fm_pv_stepped) fmPivotLearnTick(now, false, 0.0f);
+#endif
 
   // V2.5-Evo - 2026-09-19 - DEEP LOG (A): the mixer influence is published BEFORE the log snapshot so
   // the snapshot's boost bit (18) reads this tick's value, not last tick's. The two are independent
@@ -7442,6 +7673,9 @@ void runFmLoop()
   // trigger released (checked inside). It used to be made inside getRtmHeading(), ahead of the RTM gates
   // and the Follow-Me ends. See the LATCH-1 block.
   headingDisagreePersistService(millis());
+#if FM_PIVOT_LEARN_ENABLED
+  fmPivotPrints();                 // V2.5-Evo - 2026-10-31 - unit H: its console lines, after every write of this tick (F7)
+#endif
 }
 
 static void runFmLoopBody(unsigned long now)
@@ -7941,6 +8175,13 @@ static void runFmLoopBody(unsigned long now)
   bool  diverge_fault = false;
   // V2.5-Evo - 2026-10-31 - R2-S: the wrong-way net's verdict this tick (S1), routed through the SAME steering end as R2.
   bool    sr_fault   = false;
+#if FM_PIVOT_LEARN_ENABLED
+  // V2.5-Evo - 2026-10-31 - unit H: the pivot's WRONG WAY verdict this tick, and whether S1 also fired. WRONG WAY sets
+  // sr_fault as well, so it ends Follow-Me through R2-S's own end path (code 12); these two only tell the counters and the
+  // console line which net it was.
+  bool    pv_ww_fault = false;
+  bool    pv_s1_fired = false;
+#endif
   // V2.5-Evo - 2026-07-25 - F7: the numbers the divergence message prints, captured at detection but
   // PRINTED LATER — in the fault branch, after fm_throttle_cap = 0. WHAT THE BUG WAS: the message was
   // printed at the moment of detection, which is upstream of the cap write, so a full UART TX buffer
@@ -8589,6 +8830,34 @@ static void runFmLoopBody(unsigned long now)
       sr_fault = (sr_verdict != FMSR_NONE);
     }
 #endif
+#if FM_PIVOT_LEARN_ENABLED
+    // ==========================================================================================
+    // V2.5-Evo - 2026-10-31 - UNIT H, WRONG WAY (design audit 2026-10-31 §H; Common/FollowMePivot.h section 4): THE
+    // STANDSTILL HALF OF R2-S. S1 above needs the GPS course, which a buggy pivoting at rest does not have; VESC 2's gyro
+    // does. Once the yaw sign is calibrated (8 of the last 10 turns at 8 km/h or more agreed with the GPS course), a
+    // commanded pivot during which the hull yaws AGAINST the command (rtm_steer_override - 127, written by last tick's
+    // updateRtmSteering(), before the mixer's steering_inverted) at 5 deg/s or more for 1.5 s, after the command has been
+    // on that side for 0.5 s -> sr_fault, i.e. R2-S's steering end with code 12. Uncalibrated, or with any IMU capability
+    // gate failing, it does nothing.
+    // JUDGED ONLY: FM_ACTIVE; last tick a commanded pivot (aligning with the boost, the buggy under 4 mph, not the creep);
+    // not a stick takeover or the second after one; past the first 0.5 s of the engagement; this hard_ok block. The else
+    // branch below clears it. SAFETY: only removes eligibility - it writes no cap, no throttle, no steering byte.
+    // ==========================================================================================
+    {
+      const bool pv_takeover = steer_takeover.active ||
+                               (takeover_release_ms != 0 && (now - takeover_release_ms) < kFmSrTakeoverAfterMs);
+      const bool pv_judged   = (fm_state == FM_ACTIVE) && !pv_takeover && fm_engage_ms != 0 &&
+                               (now - fm_engage_ms) >= kFmSrEdgeMs && fm_pv_pivot_prev;
+      pv_s1_fired = sr_fault;
+      const int16_t pv_cmd = (int16_t)((int)rtm_steer_override.load() - 127);
+      if (fmPvWwStep(&fm_pv_ww, (uint32_t)now, pv_judged, pv_cmd, fm_pv_cal.sign,
+                     fmPvCapable(&fm_pv_rate, (uint32_t)now, &kFmPivotCfg), fm_pv_new_sample, &fm_pv_rate, &kFmPivotCfg)) {
+        pv_ww_fault  = true;
+        sr_fault     = true;   // R2-S's end path, code 12
+        fm_pv_ww_cmd = pv_cmd; // for the console line (the end path hands the steering back to 127 before it prints)
+      }
+    }
+#endif
   } else {
     // Trigger released, or no trustworthy distance this tick (GPS stale/rejected, link down).
     // A3: never judge divergence on data we do not trust, or on a buggy that is not steering.
@@ -8596,6 +8865,9 @@ static void runFmLoopBody(unsigned long now)
     fm_diverge_since_ms     = 0;
     fm_diverge_start_dist_m = -1.0f;
     fmSteerRespReset(&fm_sr_active);   // V2.5-Evo - 2026-10-31 - R2-S: no verdict on a span with a gap in it
+#if FM_PIVOT_LEARN_ENABLED
+    fmPvWwReset(&fm_pv_ww);            // V2.5-Evo - 2026-10-31 - unit H: WRONG WAY, likewise
+#endif
     // AUDIT P-5 parity: the pivot episode goes with the dwell it suspends. Without this the ratchet,
     // the stall clock and the failed latch would outlive the data gap that killed the dwell, and a
     // stale best-so-far could suspend divergence on the far side of it.
@@ -8961,6 +9233,11 @@ static void runFmLoopBody(unsigned long now)
       fm_align_influence_req = 0;
       fm_pause_reason = FM_STOP_HEADING;   // deep log: ACTIVE + HEADING = creeping
     } else {
+#if FM_PIVOT_LEARN_ENABLED
+      // V2.5-Evo - 2026-10-31 - unit H: this tick's cap 4 (fm_pv_cap4: the learned pivot cap inside its envelope, else
+      // fmAlignCapValue()). After updateRtmSteering(), so it judges THIS tick's heading error and command.
+      fmPivotLearnTick(now, true, dist_m);
+#endif
       fm_throttle_cap = (uint8_t)fmComputeThrottleCap(dist_m, now);
       // V2.5-Evo - 2026-09-19 - PIVOT BOOST: while cap 4 is pinning the throttle to the align cap,
       // ask the mixer for fm_align_influence (100 = one-motor pivot) instead of steering_influence.
@@ -9034,12 +9311,36 @@ static void runFmLoopBody(unsigned long now)
       if (sr_fault) {
         fm_last_stop_reason = FM_STOP_WRONG_WAY;      // S1 is the only rule run (13 is reserved, never emitted)
         fm_sr_log_code      = fm_last_stop_reason;
+#if FM_PIVOT_LEARN_ENABLED
+        // V2.5-Evo - 2026-10-31 - unit H: code 12 is also the pivot's WRONG WAY. Each net keeps its own count for ?diag.
+        if (pv_s1_fired) {
+          fm_sr_ends_s1     = fm_sr_ends_s1 + 1;
+          fm_sr_last_end_ms = (now != 0) ? now : 1;
+        }
+        if (pv_ww_fault) {
+          fm_pv_ww_ends    = fm_pv_ww_ends + 1;
+          fm_pv_ww_last_ms = (now != 0) ? now : 1;
+          fmPvMarkEvent(&fm_pv_learn, FMPV_WRONG_WAY, (uint32_t)now);
+          fm_pv_log_state  = FMPV_WRONG_WAY;
+          fmPvWwReset(&fm_pv_ww);
+        }
+#else
         fm_sr_ends_s1       = fm_sr_ends_s1 + 1;
         fm_sr_last_end_ms   = (now != 0) ? now : 1;
+#endif
         fmSteerRespReset(&fm_sr_active);
       }
       fm_last_stop_ms           = now;
       // F7: every print below the writes.
+#if FM_PIVOT_LEARN_ENABLED
+      if (pv_ww_fault) {
+        Serial.printf("FM [RX] WRONG-WAY NET (pivot, VESC 2 gyro): pivot commanded %s for 2 s while the hull yawed the other way at 5 deg/s or more for 1.5 s - the buggy did not turn the way it was steered (commanded %d, yaw sign %+d)\n",
+                      (fm_pv_ww_cmd >= 0) ? "right" : "left", (int)fm_pv_ww_cmd, (int)fm_pv_cal.sign);
+      }
+      if (sr_fault && !pv_s1_fired) {
+        // the pivot's WRONG WAY alone: its own line above says why
+      } else
+#endif
       if (sr_fault) {
         Serial.printf("FM [RX] WRONG-WAY NET (S1): steered one way 2.5 s while the course turned 15 deg or more the other way - the buggy did not turn the way it was steered (commanded %d, course %.0f deg)\n",
                       (int)rtm_steer_override.load() - 127, (double)gps_last_course_deg);

@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-30 - unit 1 of the 2026-10-30 package (Revision 2 §10, Revision 2.2 §B): fmCreepStep() gains the
+//   closing abort - it stores the rider's 2-fix-mean distance at the grant and aborts once that mean is 2.0 m or more below
+//   it on 2 consecutive distinct rider fixes (no mean: today's rules). FmCreepState gains start_mean_m, close_n, close_fix.
+//   See section 4.
 // V2.5-Evo - 2026-10-30 - audit 2026-10-20 R2 (finding F-1): fmDivergeDwellStep() - the divergence net's dwell, moved here
 //   from runFmLoopBody(). Between the ceiling and 3 x D_engage a dwell ends Follow-Me only if the gap OPENED by more
 //   than 2 m (running away); beyond 3 x D_engage it is the old rule (must have closed by 2 m). See section 5.
@@ -228,26 +232,51 @@ static inline uint8_t fmCreepCap(float buggy_kmh, uint8_t max_cap, float fade_km
 //          FMCR_TIMEOUT (no course after max_ms). Only GRANTED lets the RX treat the tick as steerable.
 // Rules: at most ONE creep per squeeze (used, cleared only by a release); a creep that ends in any way - a course
 // arriving, an abort, a timeout - spends it. A course arriving is success: the RX simply follows from that tick.
+// V2.5-Evo - 2026-10-30 - unit 1 of the 2026-10-30 package (Revision 2 §10): THE CLOSING ABORT. The creep runs straight
+//   with no heading, so waves can swing its nose toward the rider, or the rider can converge on it; it aborted only at
+//   min_dist + 1 m (about 20 ft). Now the grant stores mean_m - the mean of the rider's 2 newest fixes' distances
+//   (Common/FollowMeConverge.h fmCvRange()) - and the creep aborts once that mean is close_abort_m (2.0 m) or more below it.
+//   A false abort only ends the creep (one per squeeze, as before). OWNER RULE: with no mean (mean_m < 0: the fix history
+//   is missing or stale) the closing test is skipped - today's behaviour, never a looser one.
+// V2.5-Evo - 2026-10-30 - Revision 2.2 §B: ON close_fixes (2) CONSECUTIVE DISTINCT FIXES. One noisy fix moved the 2-fix mean
+//   2 m on about 11 % of 3 s creeps over a steady range (SD 1.0 m), ending a good creep. The test now counts distinct rider
+//   fixes (mean_fix_id: a new value is a new fix - the RX passes fmCvNewestMs()) and aborts only when the mean stands
+//   2 m closer on close_fixes of them in a row; a fix back above the line restarts the count.
 struct FmCreepState {
-  uint32_t start_ms;   // 0 = not creeping
-  bool     used;       // a creep already ran in this squeeze
+  uint32_t start_ms;       // 0 = not creeping
+  bool     used;           // a creep already ran in this squeeze
+  float    start_mean_m;   // the 2-fix-mean distance when it was granted, < 0 = none (no closing abort)
+  uint8_t  close_n;        // V2.5-Evo - 2026-10-30 - Rev 2.2 §B: consecutive distinct fixes with the mean 2 m closer
+  uint32_t close_fix;      // the fix id last counted
 };
 static const uint8_t FMCR_NONE    = 0;
 static const uint8_t FMCR_GRANTED = 1;
 static const uint8_t FMCR_ABORT   = 2;
 static const uint8_t FMCR_TIMEOUT = 3;
+// V2.5-Evo - 2026-10-30 - unit 1: mean_m / close_abort_m added (the closing abort above). Pass mean_m < 0 for "no mean".
+// V2.5-Evo - 2026-10-30 - Rev 2.2 §B: mean_fix_id (which rider fix the mean is from) and close_fixes (2) added.
 static inline uint8_t fmCreepStep(FmCreepState* s, uint32_t now_ms, bool thr_held, bool heading_ok, bool eligible,
-                                  float dist_m, float start_m, float abort_m, uint32_t max_ms)
+                                  float dist_m, float start_m, float abort_m, uint32_t max_ms,
+                                  float mean_m, float close_abort_m, uint32_t mean_fix_id, uint8_t close_fixes)
 {
   if (!thr_held) { s->start_ms = 0; s->used = false; return FMCR_NONE; }   // a release re-arms one creep
   if (heading_ok) { s->start_ms = 0; return FMCR_NONE; }                  // a course exists: no creep needed
   if (s->start_ms == 0) {
     if (s->used || !eligible || dist_m < start_m) return FMCR_NONE;
-    s->start_ms = (now_ms != 0) ? now_ms : 1u;
-    s->used     = true;
+    s->start_ms     = (now_ms != 0) ? now_ms : 1u;
+    s->used         = true;
+    s->start_mean_m = (mean_m >= 0.0f) ? mean_m : -1.0f;
+    s->close_n      = 0;
+    s->close_fix    = mean_fix_id;
     return FMCR_GRANTED;
   }
   if (!eligible || dist_m < abort_m) { s->start_ms = 0; return FMCR_ABORT; }
+  if (s->start_mean_m >= 0.0f && mean_m >= 0.0f && mean_fix_id != s->close_fix) {   // unit 1: closing, per distinct fix
+    s->close_fix = mean_fix_id;
+    if (mean_m <= s->start_mean_m - close_abort_m) { if (s->close_n < 255) s->close_n++; }
+    else s->close_n = 0;
+    if (s->close_n >= close_fixes) { s->start_ms = 0; return FMCR_ABORT; }
+  }
   if (stampAgeMs(now_ms, s->start_ms) >= max_ms) { s->start_ms = 0; return FMCR_TIMEOUT; }
   return FMCR_GRANTED;
 }

@@ -307,8 +307,10 @@ static void testV3Framing()
   }
 }
 
-// FINDING A-T1: the remote's wait after the data packet covers the v3 air time plus 3 ms. The header refuses to compile
+// FINDING A-T1: the remote's wait after the data packet covers the v3 air time with margin. The header refuses to compile
 // with a shorter wait (static_assert); this checks the numbers it rests on.
+// V2.5-Evo - 2026-10-31 - delta audit P2A-2: the guarantee is the wait LESS ONE TICK (vTaskDelay can return just after
+// n - 1 ms), against air time + 2 ms: 17 ms >= 16.656 ms. 15 ms (14 ms guaranteed) still fails it.
 static void testAirTime()
 {
   static_assert(riderGpsAirTimeUs(18) == 14656, "v3 air time");
@@ -317,8 +319,9 @@ static void testAirTime()
   CHECK(riderGpsAirTimeUs(16) == 14656 && riderGpsAirTimeUs(18) == 14656);   // 5 blocks
   CHECK(riderGpsAirTimeUs(19) == 16448);                                     // a 19th byte would cost a 6th block
   CHECK(kRiderGpsDataWaitMs == 18);
-  CHECK(kRiderGpsDataWaitMs * 1000u >= riderGpsAirTimeUs(kRiderGpsLenV3) + 3000u);
-  CHECK(!(15u * 1000u >= riderGpsAirTimeUs(kRiderGpsLenV3) + 3000u));        // the old 15 ms would not pass the assert
+  CHECK((kRiderGpsDataWaitMs - 1u) * 1000u >= riderGpsAirTimeUs(kRiderGpsLenV3) + 2000u);
+  CHECK((kRiderGpsDataWaitMs - 1u) * 1000u - riderGpsAirTimeUs(kRiderGpsLenV3) == 2344u);   // the real margin, 2.344 ms
+  CHECK(!((15u - 1u) * 1000u >= riderGpsAirTimeUs(kRiderGpsLenV3) + 2000u));                // the old 15 ms would not pass the assert
 }
 
 // Unpack helper for the remote-rule tests.

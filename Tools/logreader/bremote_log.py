@@ -170,9 +170,15 @@ FM_STOP_REASON_NAMES = {
     # 2026-10-30: unit 1 of the 2026-10-30 Follow-Me package - NOT a stop. The fast-closure ceiling lowered cap 3 on that
     # tick (fm_state 2, nothing else to report). Kept out of the "stops by reason" tally; counted on its own line.
     11: "CLOSURE_CEILING (fast-closure ceiling bound cap 3)",
+    # 2026-10-31: R2-S, the wrong-way net (Follow-Me package 2). 12 is a steering end (written on the end tick, like 7); 13 is
+    # reserved for S2, which did not ship - never written, still named;
+    # 14 is NOT a stop: the report-only shadow net on manual riding would have fired on that tick (counted on its own line).
+    12: "WRONG_WAY (steered one way, turned the other)",
+    13: "POINTING_AWAY (pointed away 4 s, did not come round)",
+    14: "SHADOW_WRONG_WAY (manual, report only)",
 }
 # Codes in fm_block_reason that describe a tick's state, not a stop of the run: not tallied as stops.
-FM_BLOCK_NOT_A_STOP = {11}
+FM_BLOCK_NOT_A_STOP = {11, 14}   # 2026-10-31: + 14, the R2-S shadow event
 
 # RTMState.ino: enum FmReturnReason + fmReturnReasonName(). Sticky in the deep log as of the
 # 2026-09-19 "DEEP LOG (A)" change (VescLogDataL4.fm_return_reason, was the fm_pad byte): 0 = no
@@ -1330,6 +1336,8 @@ def generate_summary(records: list[dict], boot: Optional[dict] = None) -> str:
         prev = rec
     # 2026-10-30: code 11 rows (the closure ceiling binding), for water check W-6 (under 1 % of rows while carving).
     ceiling_rows = sum(1 for r in records if r.get("fm_block_reason") == 11)
+    # 2026-10-31: code 14 rows (the R2-S shadow net would have fired on manual riding), for water check W-9.
+    shadow_rows = sum(1 for r in records if r.get("fm_block_reason") == 14)
 
     lines = []
     if boot is not None:
@@ -1351,6 +1359,8 @@ def generate_summary(records: list[dict], boot: Optional[dict] = None) -> str:
         lines.append("  (none)")
     if ceiling_rows:
         lines.append(f"closure ceiling (code 11, not a stop): {ceiling_rows} of {n} rows ({100.0 * ceiling_rows / n:.1f}%)")
+    if shadow_rows:
+        lines.append(f"wrong-way net shadow events (code 14, manual riding, not a stop): {shadow_rows}")
     # 2026-10-08: level-6 files - how much of the session has a usable VESC 2 IMU sample, and the extremes
     # of heel (|roll|) and nose-up pitch over the rows that do. Only OK rows count (stale / implausible
     # rows carry no values).

@@ -1,3 +1,10 @@
+// V2.5-Evo - 2026-10-31 - R2-S SHIPS AS S1 ALONE (R2-S ruling, Revision 1.1): the RX calls fmSteerResponseStep() with s2_on false.
+//   S2 (as first built and S2-w) stays here behind that flag, host-tested, because the gate-run record uses it.
+// V2.5-Evo - 2026-10-31 - R2-S ruling, S2-w: FmSteerRespCfg gains s2_away_frac and s2_tickwise - S2 qualifies on 80 % of
+//   its span at 150 deg or more, its rotation toward the target is summed tick by tick, and its span is 3.0 s. S1 unchanged.
+// V2.5-Evo - 2026-10-31 - Follow-Me package 2 unit R2-S (design audit 2026-10-31 §E-0): fmSteerResponseStep() - THE WRONG-WAY
+//   NET, judged against the buggy's own commanded turn (S1: the command held on one side while the COG turns the other way;
+//   S2: pointing away from the target and not coming round). It only removes eligibility. See section 6.
 // V2.5-Evo - 2026-10-30 - unit 1 of the 2026-10-30 package (Revision 2 §10, Revision 2.2 §B): fmCreepStep() gains the
 //   closing abort - it stores the rider's 2-fix-mean distance at the grant and aborts once that mean is 2.0 m or more below
 //   it on 2 consecutive distinct rider fixes (no mean: today's rules). FmCreepState gains start_mean_m, close_n, close_fix.
@@ -31,6 +38,8 @@
 //                            GPS course (D-4), bounded exactly like RTM's BOOTSTRAP-1.
 //   5. fmDivergeDwellStep  - (2026-10-30, R2) the divergence net's 3 s dwell: running away inside 3 x D_engage, not
 //                            closing beyond it.
+//   6. fmSteerResponseStep - (2026-10-31, R2-S) the wrong-way net: the buggy does not turn the way it is told (S1), or
+//                            points away from its target and does not come round (S2). Also run report-only on manual ticks.
 #ifndef BREMOTE_FOLLOW_ME_PAUSE_H
 #define BREMOTE_FOLLOW_ME_PAUSE_H
 
@@ -330,6 +339,190 @@ static inline uint8_t fmDivergeDwellStep(FmDivergeDwell* d, uint32_t now_ms, boo
   }
   d->since_ms = 0; d->start_m = -1.0f;                                  // following: a fresh window next tick
   return FMDV_NONE;
+}
+
+// ============================================================
+// 6. fmSteerResponseStep - R2-S, THE WRONG-WAY NET (V2.5-Evo - 2026-10-31 - design audit 2026-10-31 §E-0, Follow-Me package 2)
+// ============================================================
+// WHAT IT JUDGES: not where the station is, but whether the buggy TURNS THE WAY IT IS TOLD. A healthy buggy's distance to
+//   a moving station grows in every rider turn, so a distance net must wait; a mirrored-steering buggy is told "right" and
+//   turns left, at any speed, at any station, and that shows within a few seconds. This net only REMOVES eligibility: the
+//   RX ends Follow-Me through R2's existing steering end (sticky cap, needs-D_engage, stop buzz). It never adds throttle.
+// THE TWO RULES (all thresholds from *cfg; the RX's numbers are kFmSteerRespCfg):
+//   S1 "TURNS THE WRONG WAY": the steering command (the controller's byte - 127, BEFORE the mixer's steering_inverted) has
+//      been on ONE side of centre by at least cmd_min counts on every sample of the last lead_ms + win_ms (0.5 s lead-in, so
+//      the VESC ramp and the buggy's momentum have begun to respond, then a 2.0 s window); in the window the buggy's COG was
+//      valid on at least valid_frac of the samples and the applied throttle was at least the caller's limit on at least
+//      valid_frac of them; and over the window the COG rotated rot_min_deg or more THE OPPOSITE WAY (unwrapped).
+//      Sign convention: command > 0 = steer right = the COG should increase (clockwise).
+//   S2 "POINTS AWAY AND DOES NOT COME ROUND" (when s2_on): for the last s2_ms every sample has a heading error to the target
+//      of at least s2_err_deg, COG and throttle valid on valid_frac of them, and the COG has rotated less than s2_rot_deg
+//      toward the side the target was on at the start of that span.
+//      V2.5-Evo - 2026-10-31 - S2-w: "every sample" is now s2_away_frac of them (0.8), the rotation is summed tick by tick
+//      (s2_tickwise), and the span is 3.0 s - see the S2 block below. The first-built S2 is s2_away_frac 1.0, s2_tickwise false. This catches the steady mirrored state, where the error
+//      sits near 180 deg and the command chatters from side to side, so S1's "one side throughout" never holds.
+// NOT JUDGED (judged == false): outside FM_ACTIVE, a stick takeover and 1 s after it, the RTM yield, the first 0.5 s after
+//   the ACTIVE edge - the caller decides. A sample that is not judged CLEARS the history, so every verdict rests on an
+//   unbroken judged span (the first verdict can come lead_ms + win_ms after judging starts). No engage grace beyond that:
+//   the grace exists because a distance net measures the ramp; a response-sign test does not.
+// TIME-BASED: the windows are in milliseconds, so the RX's 10 Hz tick and a 3 Hz log replay run the same rule. The history
+//   holds kFmSrLen samples (6.4 s at 10 Hz); a span is judged only if the history reaches back over all of it.
+// Inputs: *r (state); now_ms; judged; cmd_off - command - 127 (counts, -127..+127); cog_ok / cog_deg - the buggy's GPS
+//   course and whether it may be used (moving >= 5 km/h, fresh, not frozen); thr_ok - the applied throttle is at least the
+//   caller's limit (30 counts); err_ok / err_deg - the signed heading error to the target (target bearing - heading,
+//   -180..180; err_ok false = none this tick); *cfg; s2_on.
+// Returns: FMSR_NONE, FMSR_WRONG_WAY (S1) or FMSR_POINTING_AWAY (S2). S1 is tested first.
+// Side effects: *r only. Nothing here writes a cap, a steering byte or a state.
+static const uint8_t FMSR_NONE          = 0;
+static const uint8_t FMSR_WRONG_WAY     = 1;   // S1
+static const uint8_t FMSR_POINTING_AWAY = 2;   // S2
+struct FmSteerRespCfg {
+  int16_t  cmd_min;      // counts beyond centre that count as "steering to one side" (32 = 25 %)
+  uint32_t lead_ms;      // S1 lead-in with the command already on that side (500)
+  uint32_t win_ms;       // S1 window (2000)
+  float    rot_min_deg;  // S1: the wrong-way rotation that ends it (15)
+  float    valid_frac;   // COG / throttle valid on at least this share of the window's samples (0.8)
+  float    s2_err_deg;   // S2: |heading error to the target| at least this (150)
+  uint32_t s2_ms;        // S2 span (V2.5-Evo - 2026-10-31 - S2-w: 3000; as first built 4000)
+  float    s2_rot_deg;   // S2: rotation toward the target's side under this (15)
+  // V2.5-Evo - 2026-10-31 - S2-w (design audit 2026-10-31, R2-S ruling): S2 made robust to the 180 deg wrap.
+  float    s2_away_frac; // S2: the share of the span's samples that must have an error of at least s2_err_deg (S2-w 0.8;
+                         //     as first built 1.0 = every sample)
+  bool     s2_tickwise;  // S2: rotation toward the target summed TICK BY TICK, each course change signed by the older
+                         //     sample's error (S2-w true); false = the whole span against the side of its first sample
+};
+static const uint8_t kFmSrLen = 64;
+struct FmSteerRespSample {
+  uint32_t t_ms;
+  int8_t   side;         // +1 / -1: the command is beyond cmd_min on that side; 0: not
+  bool     cog_ok;
+  bool     thr_ok;
+  bool     err_ok;
+  float    cog_unw;      // the unwrapped COG at this sample (held through invalid samples)
+  float    err_deg;
+};
+struct FmSteerResp {
+  FmSteerRespSample s[kFmSrLen];
+  uint8_t  n;            // samples held, 0..kFmSrLen
+  uint8_t  head;         // index of the newest
+  bool     have_cog;     // last_cog holds a valid COG
+  float    last_cog;     // the last valid COG (deg)
+  float    unw;          // the running unwrapped COG (deg)
+};
+
+// fmSteerRespReset - forget the history (a sample that is not judged, or a fresh engagement). Side effects: *r.
+static inline void fmSteerRespReset(FmSteerResp* r)
+{
+  r->n = 0; r->head = 0; r->have_cog = false; r->last_cog = 0.0f; r->unw = 0.0f;
+}
+
+// fmSrAt - the sample k back from the newest (0 = newest). The caller keeps k < r->n.
+static inline const FmSteerRespSample* fmSrAt(const FmSteerResp* r, uint8_t k)
+{
+  return &r->s[(uint8_t)((r->head + kFmSrLen - k) % kFmSrLen)];
+}
+
+// fmSrWindow - over the samples no older than span_ms (newest first): how many there are, how many have a valid COG and a
+// valid throttle, the unwrapped COG of the oldest and the newest valid-COG sample (*rot = newest - oldest, 0 with fewer than
+// two), and whether the history reaches back over the whole span (an older sample exists, or the oldest kept is exactly
+// span_ms old). Returns the count. Pure.
+static inline uint8_t fmSrWindow(const FmSteerResp* r, uint32_t now_ms, uint32_t span_ms, uint8_t* n_cog, uint8_t* n_thr,
+                                 float* rot, bool* covered, uint8_t* oldest_k)
+{
+  uint8_t n = 0, nc = 0, nt = 0; bool have_new = false; float u_new = 0.0f, u_old = 0.0f;
+  *covered = false; *oldest_k = 0;
+  for (uint8_t k = 0; k < r->n; k++) {
+    const FmSteerRespSample* p = fmSrAt(r, k);
+    const uint32_t age = (uint32_t)(now_ms - p->t_ms);
+    if (age > span_ms) { *covered = true; break; }   // an older sample: the history spans the whole window
+    if (age == span_ms) *covered = true;
+    n++; *oldest_k = k;
+    if (p->cog_ok) { nc++; if (!have_new) { have_new = true; u_new = p->cog_unw; } u_old = p->cog_unw; }
+    if (p->thr_ok) nt++;
+  }
+  *n_cog = nc; *n_thr = nt;
+  *rot = (nc >= 2) ? (u_new - u_old) : 0.0f;
+  return n;
+}
+
+static inline uint8_t fmSteerResponseStep(FmSteerResp* r, uint32_t now_ms, bool judged, int16_t cmd_off, bool cog_ok,
+                                          float cog_deg, bool thr_ok, bool err_ok, float err_deg,
+                                          const FmSteerRespCfg* cfg, bool s2_on)
+{
+  if (!judged) { fmSteerRespReset(r); return FMSR_NONE; }
+  // The unwrapped COG: each valid sample adds its shortest signed change from the last valid one.
+  if (cog_ok) {
+    if (r->have_cog) {
+      float d = cog_deg - r->last_cog;
+      while (d > 180.0f) d -= 360.0f;
+      while (d < -180.0f) d += 360.0f;
+      r->unw += d;
+    }
+    r->last_cog = cog_deg; r->have_cog = true;
+  }
+  r->head = (uint8_t)((r->head + 1) % kFmSrLen);
+  if (r->n < kFmSrLen) r->n++;
+  FmSteerRespSample* p = &r->s[r->head];
+  p->t_ms    = now_ms;
+  p->side    = (cmd_off >= cfg->cmd_min) ? (int8_t)1 : (cmd_off <= -cfg->cmd_min) ? (int8_t)-1 : (int8_t)0;
+  p->cog_ok  = cog_ok;
+  p->thr_ok  = thr_ok;
+  p->err_ok  = err_ok;
+  p->cog_unw = r->unw;
+  p->err_deg = err_deg;
+
+  // ---- S1: one side throughout the lead-in and the window, and the COG turned the other way ----
+  {
+    const int8_t side = p->side;
+    uint8_t nc = 0, nt = 0, ok_k = 0; float rot_all = 0.0f; bool covered = false;
+    const uint8_t n_span = fmSrWindow(r, now_ms, cfg->lead_ms + cfg->win_ms, &nc, &nt, &rot_all, &covered, &ok_k);
+    bool one_side = (side != 0) && covered && n_span > 0;
+    for (uint8_t k = 0; one_side && k < n_span; k++) if (fmSrAt(r, k)->side != side) one_side = false;
+    if (one_side) {
+      float rot = 0.0f; bool cov_w = false;
+      const uint8_t n_w = fmSrWindow(r, now_ms, cfg->win_ms, &nc, &nt, &rot, &cov_w, &ok_k);
+      const bool enough = (n_w > 0) && ((float)nc >= cfg->valid_frac * (float)n_w) && ((float)nt >= cfg->valid_frac * (float)n_w);
+      if (enough && (float)side * rot <= -cfg->rot_min_deg) return FMSR_WRONG_WAY;
+    }
+  }
+  // ---- S2: pointing away over the span and not coming round ----
+  // V2.5-Evo - 2026-10-31 - S2-w (design audit 2026-10-31, R2-S ruling). THE GAP: every mirrored run ends in the same state -
+  // pointing away from its target with the command chattering across the 180 deg wrap - and S2 as first built needed EVERY
+  // sample of a 4 s span at 150 deg or more, so each chatter dip or station switch restarted it (gate 1 failed at F4 / F5).
+  // S2-w: (1) the span qualifies when at least s2_away_frac (80 %) of its samples have an error of 150 deg or more; (2) the
+  // rotation toward the target is summed tick by tick - each consecutive pair of valid-course samples adds (newer course -
+  // older course) x the sign of the OLDER sample's error, only where the older sample has an error - because once samples
+  // from both sides of 180 deg are admitted, "the side at the start of the span" would count a healthy buggy turning toward a
+  // target that read -179 then +179 as not coming round; (3) the span is 3.0 s. With s2_away_frac 1.0 and s2_tickwise false
+  // this block is the first-built S2 exactly.
+  if (s2_on) {
+    uint8_t nc = 0, nt = 0, old_k = 0; float rot = 0.0f; bool covered = false;
+    const uint8_t n_span = fmSrWindow(r, now_ms, cfg->s2_ms, &nc, &nt, &rot, &covered, &old_k);
+    uint8_t n_away = 0;
+    for (uint8_t k = 0; k < n_span; k++) {
+      const FmSteerRespSample* q = fmSrAt(r, k);
+      if (q->err_ok && fabsf(q->err_deg) >= cfg->s2_err_deg) n_away++;
+    }
+    const bool away = covered && n_span > 0 && (float)n_away >= cfg->s2_away_frac * (float)n_span;
+    if (away) {
+      const bool enough = ((float)nc >= cfg->valid_frac * (float)n_span) && ((float)nt >= cfg->valid_frac * (float)n_span);
+      float toward = 0.0f;
+      if (cfg->s2_tickwise) {
+        // oldest to newest over the span: each consecutive pair of valid-course samples, signed by the older one's error
+        const FmSteerRespSample* older = nullptr;
+        for (int k = (int)old_k; k >= 0; k--) {
+          const FmSteerRespSample* q = fmSrAt(r, (uint8_t)k);
+          if (!q->cog_ok) continue;
+          if (older != nullptr && older->err_ok) toward += (q->cog_unw - older->cog_unw) * ((older->err_deg >= 0.0f) ? 1.0f : -1.0f);
+          older = q;
+        }
+      } else {
+        toward = ((fmSrAt(r, old_k)->err_deg >= 0.0f) ? 1.0f : -1.0f) * rot;   // the side the target was on at the start
+      }
+      if (enough && toward < cfg->s2_rot_deg) return FMSR_POINTING_AWAY;
+    }
+  }
+  return FMSR_NONE;
 }
 
 #endif // BREMOTE_FOLLOW_ME_PAUSE_H

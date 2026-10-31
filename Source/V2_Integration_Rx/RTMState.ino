@@ -1,3 +1,12 @@
+// V2.5-Evo - 2026-10-31 - R2-S, THE WRONG-WAY NET, S1 ALONE (design audit 2026-10-31 §E-0 and the R2-S ruling, Revision 1.1):
+//   runFmLoopBody() runs fmSteerResponseStep() (Common/FollowMePause.h) beside R2's dwell on every hard_ok tick with S2 OFF -
+//   S1: the steering command held on one side 2.5 s while the GPS course turned 15 deg or more the other way. A verdict ends
+//   Follow-Me through R2's own steering end (sticky cap, ARMED-unlatched, needs-D_engage, stop buzz), stop code 12
+//   (append-only; written to the deep log on the end tick; 13 stays reserved for S2 and is never emitted). Not judged outside
+//   FM_ACTIVE, in a stick takeover and 1 s after it, or in the first 0.5 s after the ACTIVE edge; never parked by the ceiling,
+//   a pivot or the grace. SHADOW MODE: fmSteerRespShadowTick() runs S1 report-only on manual ticks with the stick as the
+//   command (log code 14, ?diag "FM wrongway"). Build switch FM_R2S_ENABLED (1; 0 compiles the net out - R2 alone). Only
+//   removes eligibility: no cap, throttle or steering write. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-31 - RIDER v3 VELOCITY, LOGGING ONLY (design audit 2026-10-31, Follow-Me package 2 unit A): new
 //   fmRiderVelStep(), called once per tick at the top of runFmLoop() before the body. It reads the rider's v3 course and
 //   speed for each NEW rider solution (rx_tx_gps_vel_word, checked against rx_tx_gps_solution_seq by its tag), runs the
@@ -3287,6 +3296,13 @@ enum FmStopReason : uint8_t {
   FM_STOP_HEADING_DISAGREE = 8,   // the compass-vs-COG disagreement latch stood while FM had control
   FM_STOP_RETURN_NOT_CLOSING = 9, // V2.5-Evo - 2026-09-19 - FM_RETURN: moving and aligned, yet the distance did not close 0.5 m over 5 s (the mirrored-steering net)
   FM_STOP_LONG_LOSS        = 10,  // V2.5-Evo - 2026-10-11 - D-2: the link, the rider's fix or the buggy's fix missing 30 s in a row -> Follow-Me switched itself off
+  // V2.5-Evo - 2026-10-31 - R2-S (design audit 2026-10-31 §E-0), append-only. 12 is a steering end that keeps Follow-Me
+  // armed, exactly like 7 (R2's end path); in the deep log it is written on the end tick (fm_sr_log_code). 13 is RESERVED for
+  // S2, which does not ship (R2-S ruling, Revision 1.1): never emitted, still named. 14 is NOT a stop: a log code for the
+  // report-only shadow net on manual ticks, written on the tick it would have fired.
+  FM_STOP_WRONG_WAY        = 12,  // R2-S S1: the steering command held on one side while the GPS course turned the other way
+  FM_STOP_POINTING_AWAY    = 13,  // RESERVED (S2, not shipped): never emitted
+  FM_STOP_SHADOW_WRONG_WAY = 14,  // shadow (manual, report-only): S1 would have fired with the stick as the command
   FM_STOP_CV_CEILING       = 11   // V2.5-Evo - 2026-10-30 - Rev 2.1 §G item 7: NOT a stop - a log code only. The fast-closure ceiling lowered cap 3 this tick (fm_state 2, nothing else to report); never latched in fm_stop_reason
 };
 // V2.5-Evo - 2026-10-11 - since change 1, codes 1-6 also name a Follow-Me PAUSE (fm_pause_reason below, the deep log's
@@ -3312,6 +3328,9 @@ static const char* fmStopReasonName(uint8_t r)
     case FM_STOP_RETURN_NOT_CLOSING: return "RETURN_NOT_CLOSING (return leg did not close on the rider)";
     case FM_STOP_LONG_LOSS:        return "LONG_LOSS (link / rider GPS / buggy GPS missing 30 s)";   // V2.5-Evo - 2026-10-11 - D-2
     case FM_STOP_CV_CEILING:       return "CLOSURE_CEILING (fast-closure ceiling bound cap 3)";      // V2.5-Evo - 2026-10-30 - Rev 2.1 §G item 7
+    case FM_STOP_WRONG_WAY:        return "WRONG_WAY (steered one way, turned the other)";           // V2.5-Evo - 2026-10-31 - R2-S S1
+    case FM_STOP_POINTING_AWAY:    return "POINTING_AWAY (pointed away 4 s, did not come round)";    // V2.5-Evo - 2026-10-31 - R2-S S2
+    case FM_STOP_SHADOW_WRONG_WAY: return "SHADOW_WRONG_WAY (manual, report only)";                  // V2.5-Evo - 2026-10-31 - R2-S shadow
     default:                       return "unknown";
   }
 }
@@ -3373,6 +3392,36 @@ static float           fm_cv_r_m           = -1.0f;
 static float           fm_cv_cdot_mps      = 0.0f;
 static FmCvQual        fm_cv_qual;                        // zero-initialised static = not qualified, no history
 static bool            fm_cv_bound_tick    = false;
+
+// ============================================================
+// V2.5-Evo - 2026-10-31 - R2-S, THE WRONG-WAY NET (design audit 2026-10-31 §E-0; pure rule Common/FollowMePause.h section 6)
+// ============================================================
+// S1's thresholds, in the order of FmSteerRespCfg: 32 counts (25 %) beyond centre; 0.5 s lead-in; 2.0 s window; 15 deg the
+// wrong way; COG and throttle valid on 80 % of the window. The S2 fields (150 deg, 4 s, 15 deg, every sample, start side)
+// are not used: the RX calls the rule with S2 OFF (R2-S ruling, Revision 1.1 - S2 also ended healthy following near the
+// buggy's own aim point). Compile-time only, like every kFm*: no confStruct field. Tools/tests/follow_me_steer_response_test.cpp
+// checks this exact line and the S2-off call.
+// THE BUILD SWITCH (design audit 2026-10-31 §6; R2-S ruling, Revision 1.1, ruling 3): 1 = the net judges, ends Follow-Me and
+// runs its shadow; 0 = compiled out, so Follow-Me's wrong-way protection is R2 alone, as package 1. A unit that adds speed or
+// parks a net (D, E-2, E-4) must refuse to build without it.
+#ifndef FM_R2S_ENABLED
+#define FM_R2S_ENABLED 1
+#endif
+static const FmSteerRespCfg kFmSteerRespCfg = { 32, 500, 2000, 15.0f, 0.8f, 150.0f, 4000, 15.0f, 1.0f, false };
+static const float    kFmSrCogMinKmh       = 5.0f;    // km/h; the COG counts only at or above this (and fmCvCogOk(): fresh, not frozen)
+static const uint8_t  kFmSrThrMin          = 30;      // counts of applied throttle (g_applied_thr_cmd): below it the turning is not judged
+static const uint32_t kFmSrEdgeMs          = 500;     // ms after the ACTIVE edge before anything is judged
+static const uint32_t kFmSrTakeoverAfterMs = 1000;    // ms after a stick takeover before anything is judged again
+// Memory. Loop task only. fm_sr_active judges FM_ACTIVE ticks and ends Follow-Me; fm_sr_shadow runs the same S1 on MANUAL ticks
+// with the stick as the command and only counts (report-only - it never acts). fm_sr_log_code is this tick's deep-log code
+// (12 on an end tick, 14 on a shadow event), cleared at the top of every runFmLoop() tick like fm_cv_bound_tick.
+static FmSteerResp     fm_sr_active;                      // zero-initialised static = empty history
+static FmSteerResp     fm_sr_shadow;
+static uint8_t         fm_sr_log_code      = FM_STOP_NONE;
+static uint32_t        fm_sr_ends_s1       = 0;           // ?diag: R2-S (S1) ends since boot
+static unsigned long   fm_sr_last_end_ms   = 0;
+static uint32_t        fm_sr_shadow_events = 0;           // ?diag: shadow (manual) would-be ends since boot
+static unsigned long   fm_sr_shadow_last_ms = 0;
 
 // fmPauseClear - drop the pause, the creep and the long-loss clock (every road out of Follow-Me's own states: fmEnterIdle()
 // and the RTM yield). The creep's per-squeeze flag goes too: a new declaration starts with one creep available.
@@ -3599,6 +3648,8 @@ static void fmPublishLogSnapshot()
   s.block_reason     = (fm_stop_reason != FM_STOP_NONE) ? fm_stop_reason : fm_pause_reason;
   // V2.5-Evo - 2026-10-30 - Rev 2.1 §G item 7: with nothing else to report, 11 = the fast-closure ceiling lowered cap 3 on
   // this tick (water row W-6 counts these rows while carving). A live stop and a pause / creep still win.
+  // V2.5-Evo - 2026-10-31 - R2-S: this tick's wrong-way end (12) or shadow event (14), before the ceiling's code 11.
+  if (s.block_reason == FM_STOP_NONE && fm_sr_log_code != FM_STOP_NONE) s.block_reason = fm_sr_log_code;
   if (s.block_reason == FM_STOP_NONE && fm_cv_bound_tick) s.block_reason = FM_STOP_CV_CEILING;
   s.throttle_cap     = fm_throttle_cap.load(std::memory_order_relaxed);
   // V2.5-Evo - 2026-10-02 - P2: the station angle is LIVE. A copy of the atomic computeFmTarget()
@@ -4170,6 +4221,18 @@ static void printFmPauseDiag(unsigned long now_ms)
                   (double)fm_cv_r_m, (double)fm_cv_cdot_mps, cv_txt, bind_txt);
   else
     Serial.printf("FM ceiling : no range history (needs fresh rider fixes); ceiling %s; %s\n", cv_txt, bind_txt);
+  // V2.5-Evo - 2026-10-31 - R2-S (design audit 2026-10-31 §E-0, bench row W-9): the wrong-way net's ends since boot and the
+  // shadow net's would-be ends on manual riding (report-only; off the rope 0 is expected). Read-only.
+  {
+    char end_txt[40], sh_txt[40];
+    if (fm_sr_last_end_ms != 0) snprintf(end_txt, sizeof(end_txt), "last %lu s ago", (unsigned long)(stampAgeMs((uint32_t)now_ms, (uint32_t)fm_sr_last_end_ms) / 1000UL));
+    else                        snprintf(end_txt, sizeof(end_txt), "none yet");
+    if (fm_sr_shadow_last_ms != 0) snprintf(sh_txt, sizeof(sh_txt), "last %lu s ago", (unsigned long)(stampAgeMs((uint32_t)now_ms, (uint32_t)fm_sr_shadow_last_ms) / 1000UL));
+    else                           snprintf(sh_txt, sizeof(sh_txt), "none");
+    Serial.printf("FM wrongway: S1 ends %lu (%s); shadow on manual riding %lu (%s, report only)%s\n",
+                  (unsigned long)fm_sr_ends_s1, end_txt, (unsigned long)fm_sr_shadow_events, sh_txt,
+                  FM_R2S_ENABLED ? "" : " - COMPILED OUT (FM_R2S_ENABLED 0)");
+  }
 }
 
 // ------------------------------------------------------------
@@ -7278,6 +7341,40 @@ static void runFmReturnTick(unsigned long now)
 // limit lives here, this tick's log fields are reset here, and fmPublishLogSnapshot() runs here
 // AFTER the body — exactly once per tick, whichever of the body's many return paths was taken.
 // The body is unchanged apart from taking `now` as a parameter and recording its verdicts.
+// ------------------------------------------------------------
+// fmSteerRespShadowTick - V2.5-Evo - 2026-10-31 - R2-S SHADOW MODE (design audit 2026-10-31 §E-0): the wrong-way net's S1,
+// REPORT-ONLY, on manual ticks.
+// ------------------------------------------------------------
+// What it does: on every tick on which the rider steers the buggy himself (Follow-Me not ACTIVE / RETURN / STOPPING, no RTM),
+//   runs the same fmSteerResponseStep() S1 with THE STICK (steering_received - 127, before the mixer's steering_inverted,
+//   the same convention as the controller's byte) as the command. When it would have fired it counts one event, stamps it,
+//   writes the deep-log code 14 on this tick, prints one line, and starts a fresh span. S2 is not run: there is no target.
+// Why: it measures the net's false-alarm rate on every ride, at no risk (bench row W-9: off the rope, 0 expected).
+// NEVER ACTS: it writes only fm_sr_shadow, fm_sr_shadow_events / _last_ms and fm_sr_log_code. No state, cap, throttle or
+//   steering is touched, and nothing in control reads those values.
+// Inputs: now. Reads fm_state, rtm_rx_active, steering_received, the buggy's COG and speed, g_applied_thr_cmd. Loop task only.
+// ------------------------------------------------------------
+static void fmSteerRespShadowTick(unsigned long now)
+{
+#if !FM_R2S_ENABLED
+  (void)now;
+  return;   // the net is compiled out: no shadow either
+#endif
+  const bool manual = (fm_state != FM_ACTIVE) && (fm_state != FM_RETURN) && (fm_state != FM_STOPPING) && !rtm_rx_active.load();
+  const bool cog_ok = fmCvCogOk(now) && gps_last_speed_kmh >= kFmSrCogMinKmh;
+  const bool thr_ok = g_applied_thr_cmd.load(std::memory_order_relaxed) >= kFmSrThrMin;
+  const int  stick  = (int)steering_received - 127;
+  const uint8_t v = fmSteerResponseStep(&fm_sr_shadow, (uint32_t)now, manual, (int16_t)stick, cog_ok, gps_last_course_deg,
+                                        thr_ok, false, 0.0f, &kFmSteerRespCfg, false);
+  if (v == FMSR_NONE) return;
+  fm_sr_shadow_events  = fm_sr_shadow_events + 1;
+  fm_sr_shadow_last_ms = (now != 0) ? now : 1;
+  if (fm_sr_log_code == FM_STOP_NONE) fm_sr_log_code = FM_STOP_SHADOW_WRONG_WAY;
+  fmSteerRespReset(&fm_sr_shadow);
+  Serial.printf("FM [RX] wrong-way net, shadow (manual, report only - nothing happens): stick %d held 2.5 s while the course turned the other way (course %.0f deg); event %lu\n",
+                stick, (double)gps_last_course_deg, (unsigned long)fm_sr_shadow_events);
+}
+
 static void runFmLoopBody(unsigned long now);
 void runFmLoop()
 {
@@ -7291,6 +7388,7 @@ void runFmLoop()
   fm_log_dist_dx10     = 0xFFFF;
   fm_log_d_engage_dx10 = 0xFFFF;
   fm_cv_bound_tick     = false;    // V2.5-Evo - 2026-10-30 - Rev 2.1 §G item 7: set only by this tick's fmComputeThrottleCap()
+  fm_sr_log_code       = FM_STOP_NONE;   // V2.5-Evo - 2026-10-31 - R2-S: set only by this tick's end (12) or shadow event (14)
 
   // V2.5-Evo - 2026-10-02 - P2: THE PASS-GEOMETRY VERDICTS ARE ONE TICK LONG, AND THAT IS STRUCTURAL.
   // Cleared here, at the top of every tick, and set only by computeFmTarget() - which runs inside the
@@ -7310,6 +7408,9 @@ void runFmLoop()
   // V2.5-Evo - 2026-10-31 - unit A: the rider's v3 velocity through its gates, every tick, in every state. It writes only
   // its own ?diag statics (fmRiderVelStep()); nothing below reads them, so the body runs exactly as before.
   fmRiderVelStep(now);
+  // V2.5-Evo - 2026-10-31 - R2-S shadow: report-only on manual ticks (the state as this tick starts); it writes only its own
+  // statics and the log code, so the body below runs exactly as before.
+  fmSteerRespShadowTick(now);
 
   runFmLoopBody(now);
 
@@ -7829,6 +7930,8 @@ static void runFmLoopBody(unsigned long now)
   // V2.5-Evo - 2026-07-25 - A3: sustained divergence while ACTIVE. Classed as a FAULT (same family
   // as conditions 2-7), so it is routed through the SAME FM_STOPPING path below — never its own.
   bool  diverge_fault = false;
+  // V2.5-Evo - 2026-10-31 - R2-S: the wrong-way net's verdict this tick (S1), routed through the SAME steering end as R2.
+  bool    sr_fault   = false;
   // V2.5-Evo - 2026-07-25 - F7: the numbers the divergence message prints, captured at detection but
   // PRINTED LATER — in the fault branch, after fm_throttle_cap = 0. WHAT THE BUG WAS: the message was
   // printed at the moment of detection, which is upstream of the cap write, so a full UART TX buffer
@@ -8437,12 +8540,50 @@ static void runFmLoopBody(unsigned long now)
         diverge_opening = (dv_verdict == FMDV_OPENING);
       }
     }
+    // ==========================================================================================
+    // V2.5-Evo - 2026-10-31 - R2-S, THE WRONG-WAY NET (design audit 2026-10-31 §E-0; Common/FollowMePause.h section 6).
+    // WHY: R2 above judges DISTANCE, and a healthy buggy's distance to a moving station grows in every rider turn, so R2 must
+    // wait (its dwell, its grace, its parks). A buggy whose steering is mirrored is told "right" and turns left, at any speed
+    // and at any station - and that shows in its own GPS course within a few seconds. So this asks the one question that
+    // separates the two: does the buggy turn the way it is told?
+    //   S1: the command (rtm_steer_override - 127, written by last tick's updateRtmSteering(), BEFORE the mixer's
+    //       steering_inverted) held 32 counts or more to one side for 0.5 s + 2.0 s, the COG valid (fmCvCogOk(), and moving
+    //       at least 5 km/h) and the applied throttle at least 30 counts on 80 % of the window, and the COG turned 15 deg or
+    //       more THE OTHER WAY over the window -> FM_STOP_WRONG_WAY (12).
+    //   S2 ("pointing away and not coming round") is NOT run - the call below passes s2_on false. In the gate run it also
+    //   ended HEALTHY following: a buggy that overruns its own aim point reads a 180 deg error and, turning at a real
+    //   buggy's rate, does not come round in time (R2-S ruling, Revision 1.1). Code 13 stays reserved.
+    // NOT JUDGED (the history clears): outside FM_ACTIVE, during a stick takeover and kFmSrTakeoverAfterMs after it, in the
+    // first kFmSrEdgeMs after the ACTIVE edge (fm_engage_ms), and whenever this block is not reached (the else below: the
+    // trigger released or a distance not to be trusted). The RTM yield never gets here (Follow-Me is parked ARMED). NOT
+    // PARKED by the closure ceiling, a pivot or the engage grace: R2-S is the net that keeps those parks safe.
+    // SAFETY: a verdict only REMOVES eligibility - it joins diverge_fault in can_be_active and in the steering end below
+    // (the sticky cap at the cap in force, ARMED-unlatched, needs-D_engage, the stop buzz). It writes no cap, no throttle,
+    // no steering byte. GPS integrity (project rule 5): it reads the stored, already-judged buggy course; nothing is written
+    // to any GPS state, nothing is extrapolated.
+    // ==========================================================================================
+#if FM_R2S_ENABLED
+    {
+      const bool sr_takeover = steer_takeover.active ||
+                               (takeover_release_ms != 0 && (now - takeover_release_ms) < kFmSrTakeoverAfterMs);
+      const bool sr_judged   = (fm_state == FM_ACTIVE) && !sr_takeover && fm_engage_ms != 0 &&
+                               (now - fm_engage_ms) >= kFmSrEdgeMs;
+      const bool sr_cog_ok   = fmCvCogOk(now) && gps_last_speed_kmh >= kFmSrCogMinKmh;
+      const bool sr_thr_ok   = g_applied_thr_cmd.load(std::memory_order_relaxed) >= kFmSrThrMin;
+      const int16_t herr10   = g_heading_error_dx10;
+      const uint8_t sr_verdict = fmSteerResponseStep(&fm_sr_active, (uint32_t)now, sr_judged,
+                                       (int16_t)((int)rtm_steer_override.load() - 127), sr_cog_ok, gps_last_course_deg,
+                                       sr_thr_ok, herr10 != (int16_t)0x7FFF, (float)herr10 / 10.0f, &kFmSteerRespCfg, false);   // S2 off
+      sr_fault = (sr_verdict != FMSR_NONE);
+    }
+#endif
   } else {
     // Trigger released, or no trustworthy distance this tick (GPS stale/rejected, link down).
     // A3: never judge divergence on data we do not trust, or on a buggy that is not steering.
     // F1: the closure baseline goes with it; a baseline must never outlive the dwell that set it.
     fm_diverge_since_ms     = 0;
     fm_diverge_start_dist_m = -1.0f;
+    fmSteerRespReset(&fm_sr_active);   // V2.5-Evo - 2026-10-31 - R2-S: no verdict on a span with a gap in it
     // AUDIT P-5 parity: the pivot episode goes with the dwell it suspends. Without this the ratchet,
     // the stall clock and the failed latch would outlive the data gap that killed the dwell, and a
     // stale best-so-far could suspend divergence on the far side of it.
@@ -8512,6 +8653,7 @@ static void runFmLoopBody(unsigned long now)
   // rise while ACTIVE or HOLD, through a was_engaged_now local that is gone with it).
   const bool eligible_but_heading = hard_ok && speed_ok && dist_ok && fm_sep_latched &&
                        !diverge_fault &&
+                       !sr_fault &&           // V2.5-Evo - 2026-10-31 - R2-S: the wrong-way net, on R2's terms (removes eligibility only)
                        !return_candidate &&   // V2.5-Evo - 2026-09-19 - a stopped rider is never followed (raw judgement, B6)
                        !sticky_armed.load() && // V2.5-Evo - 2026-10-08 - D-7
                        !hdg_disagree_end;      // V2.5-Evo - 2026-10-11 - D-3 edge: this engagement ends (2026-10-12, A-2: ACTIVE only)
@@ -8852,7 +8994,8 @@ static void runFmLoopBody(unsigned long now)
     // ============================================================
     // V2.5-Evo - 2026-10-12 - audit delta A-2: hdg_disagree_end (a rise while FM_ACTIVE), not the bare edge - a rise in HOLD
     // is no longer a steering end.
-    const uint8_t end_class = fmEngagedEndClass(was_engaged, failing, true, diverge_fault, hdg_disagree_end);
+    // V2.5-Evo - 2026-10-31 - R2-S: a wrong-way verdict is a steering end on exactly R2's terms (diverge_fault || sr_fault).
+    const uint8_t end_class = fmEngagedEndClass(was_engaged, failing, true, diverge_fault || sr_fault, hdg_disagree_end);
     if (end_class == FMEE_STEER_END) {
       stickyCapArm(fm_throttle_cap.load());   // FIRST (D-1): before anything lifts Follow-Me's own cap
       fm_state                  = FM_ARMED;   // still declared: bit 0 stays set (the remote stays armed)
@@ -8874,9 +9017,21 @@ static void runFmLoopBody(unsigned long now)
       fm_return_spent           = true;
       fmClearReturnProof();
       fm_last_stop_reason       = diverge_fault ? FM_STOP_DIVERGENCE : FM_STOP_HEADING_DISAGREE;   // for ?diag
+      // V2.5-Evo - 2026-10-31 - R2-S: its own code (12), for ?diag and - on this tick only - the deep log. When R2 and R2-S
+      // fire on the same tick the log names R2-S (the earlier, steering-based judgement); the gate flag still shows R2.
+      if (sr_fault) {
+        fm_last_stop_reason = FM_STOP_WRONG_WAY;      // S1 is the only rule run (13 is reserved, never emitted)
+        fm_sr_log_code      = fm_last_stop_reason;
+        fm_sr_ends_s1       = fm_sr_ends_s1 + 1;
+        fm_sr_last_end_ms   = (now != 0) ? now : 1;
+        fmSteerRespReset(&fm_sr_active);
+      }
       fm_last_stop_ms           = now;
       // F7: every print below the writes.
-      if (diverge_fault && diverge_opening) {
+      if (sr_fault) {
+        Serial.printf("FM [RX] WRONG-WAY NET (S1): steered one way 2.5 s while the course turned 15 deg or more the other way - the buggy did not turn the way it was steered (commanded %d, course %.0f deg)\n",
+                      (int)rtm_steer_override.load() - 127, (double)gps_last_course_deg);
+      } else if (diverge_fault && diverge_opening) {
         // V2.5-Evo - 2026-10-30 - R2: the in-band rule (between the ceiling and 3 x D_engage) - the gap opened.
         Serial.printf("FM [RX] DIVERGENCE: dist=%.1f m (was %.1f m at dwell start, opened >%.1f m) beyond limit %.1f m, inside %.1f m, over %lu ms - running away\n",
                       (double)dist_m, (double)diverge_start_m, (double)kFmDivergeOpenEpsM,

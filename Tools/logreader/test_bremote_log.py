@@ -502,6 +502,39 @@ class TestClosureCeilingCode11(unittest.TestCase):
         self.assertNotIn("CLOSURE_CEILING (fast-closure ceiling bound cap 3): ", summary)
 
 
+class TestWrongWayNetCodes(unittest.TestCase):
+    """2026-10-31: R2-S, the wrong-way net. fm_block_reason 12 / 13 are steering ends (named and tallied as stops, like 7);
+    14 is the report-only shadow net on manual riding - named, NOT a stop, counted on its own summary line. The names match
+    the firmware's fmStopReasonName() table (RTMState.ino)."""
+
+    def test_codes_12_13_14_named_and_14_not_a_stop(self):
+        reasons = [0, 12, 0, 0, 13, 0, 14, 0, 14, 0]
+        states = [2, 1, 1, 2, 1, 1, 1, 1, 1, 1]       # an end leaves Follow-Me ARMED on its own tick; 14 is on manual rows
+        raws = [dict(timestamp_ms=i * 100, fm_state=st, fm_mode=1, rtm_rx_active=0, fm_gate_flags=gate("thr_held"),
+                     fm_distance_m=m_to_dx10(20.0), fm_throttle_cap=255, fm_block_reason=r)
+                for i, (r, st) in enumerate(zip(reasons, states))]
+        rec_bytes = [pack_record(bl.LAYOUT_L4, raw) for raw in raws]
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "wrongway.log")
+            write_binary_log(path, 4, 87, rec_bytes, format_ver=1)
+            records = list(bl.iter_binary_records(path))
+        self.assertEqual(records[1]["fm_block_reason_name"], "WRONG_WAY (steered one way, turned the other)")
+        self.assertEqual(records[4]["fm_block_reason_name"], "POINTING_AWAY (pointed away 4 s, did not come round)")
+        self.assertEqual(records[6]["fm_block_reason_name"], "SHADOW_WRONG_WAY (manual, report only)")
+        summary = bl.generate_summary(records)
+        self.assertIn("WRONG_WAY (steered one way, turned the other): 1", summary)
+        self.assertIn("POINTING_AWAY (pointed away 4 s, did not come round): 1", summary)
+        self.assertIn("wrong-way net shadow events (code 14, manual riding, not a stop): 2", summary)
+        self.assertNotIn("SHADOW_WRONG_WAY (manual, report only): ", summary)
+
+    def test_names_match_the_firmware_table(self):
+        with open(_FW_RTM_PATH, "r", encoding="utf-8") as f:
+            fw = f.read()
+        for code, name in ((12, "WRONG_WAY"), (13, "POINTING_AWAY"), (14, "SHADOW_WRONG_WAY")):
+            self.assertRegex(fw, rf"FM_STOP_{name}\s*=\s*{code},")
+            self.assertIn(f'return "{bl.FM_STOP_REASON_NAMES[code]}";', fw)
+
+
 # ============================================================
 # 7. RETURN episode that exits STEERED (11), with a boost sub-phase and a motor0/motor1 split
 #    (87 B tier) - the coordinator's specific follow-up scenario.
@@ -667,6 +700,9 @@ class TestExpandedCsvOutput(unittest.TestCase):
 
 _FW_HEADER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "..", "..", "Source", "V2_Integration_Rx", "BREmote_V2_Rx.h")
+# 2026-10-31: the RX's RTMState.ino (the stop-reason names of the wrong-way net).
+_FW_RTM_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "..", "..", "Source", "V2_Integration_Rx", "RTMState.ino")
 
 # One fresh VESC 2 reading, as raw struct values (what fillVesc2Block() writes).
 _VESC2_FRESH_RAW = {

@@ -98,4 +98,20 @@ static inline bool followMeReleaseNeedsDengage(uint32_t thr_low_since_ms, uint32
   return thr_low_since_ms != 0 && (uint32_t)(now_ms - thr_low_since_ms) >= grace_ms;
 }
 
+// V2.5-Evo - 2026-10-30 - E-1 (unit 2 of the 2026-10-30 package, Revision 2 §6 item 4): THE BUMPLESS ENGAGE. Cap 5, the
+// engage ramp, as a pure rule. WHY: on an ARMED -> ACTIVE edge with the trigger held the rider is already towing on his
+// own throttle, and cap 5 restarting at 0 cut it to nothing for a moment - a throttle dip at take-over. Now the ramp
+// starts from floor - the throttle the buggy was actually getting (calcPWM()'s g_applied_thr_cmd, post-caps, post-ramp,
+// pre-mixer) - and rises at the existing slope (255 per ramp_ms). From HOLD or a pause the caller passes floor 0: today's
+// ramp to the bit. The floor is never above what the rider's own trigger gave on the tick before, and the result is a
+// CAP (min() with everything else in calcPWM()), so this can never add throttle the trigger did not ask for.
+// Inputs: elapsed_ms since the engagement; ramp_ms (kFmEngageRampMs); floor (0-255). Returns: cap 5, 255 once the ramp
+// has run (elapsed >= ramp_ms, or the slope has reached 255).
+static inline uint16_t fmEngageRampCap(uint32_t elapsed_ms, uint32_t ramp_ms, uint8_t floor)
+{
+  if (elapsed_ms >= ramp_ms) return 255;
+  const uint32_t c = (uint32_t)floor + (uint32_t)(uint16_t)(((float)elapsed_ms / (float)ramp_ms) * 255.0f);
+  return (uint16_t)((c > 255u) ? 255u : c);
+}
+
 #endif

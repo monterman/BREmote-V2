@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-30 - unit 2 (Revision 2.5 item 4): the same source guard keeps E-1's g_applied_thr_cmd (now
+//   std::atomic<uint8_t>) single-writer - one declaration, one .store( inside calcPWM(), every other use a .load(, none in
+//   Source/Common - with snippets that break each rule.
 // V2.5-Evo - 2026-10-24 - throttle-byte audit T-1, fix (b): host test for Source/Common/ThrottleByte.h. The remote's
 //   scaling and the receiver's stretch over all 256 values (0 -> 0, never decreasing, rounded, never a meta type, never
 //   below the input), the round trip (0 -> 0, 255 -> 255, within 1 count: 241 exact, 15 one count up), the one
@@ -294,6 +297,109 @@ static bool srcReadTree(const std::filesystem::path& dir, const char* skip, std:
   return ok && !ec;
 }
 
+// ---- V2.5-Evo - 2026-10-30 - E-1 (unit 2, Revision 2.5 item 4): g_applied_thr_cmd HAS ONE WRITER ----
+// calcPWM() publishes the applied throttle in it (the generatePWM task) and the Follow-Me ARMED -> ACTIVE edge reads it
+// (the loop task). It is std::atomic<uint8_t>, so the read cannot be torn; this guard keeps it single-writer: in the
+// receiver's code (comments and strings blanked) every use is its ONE declaration, ONE .store( - in PWM.ino, inside the
+// body of calcPWM() - or a .load(. Anything else - a plain assignment, ++ / --, exchange / fetch_ / compare_exchange, a
+// second store, a store anywhere else - fails, and Source/Common must not name it at all.
+struct AppliedGuard { int decls, stores_calc, stores_elsewhere, loads, other, common_uses; };
+
+// srcBodySpan - the [open, close] brace positions of the DEFINITION of fn in code; false when there is none.
+static bool srcBodySpan(const std::string& code, const char* fn, size_t* open, size_t* close)
+{
+  for (size_t p : srcFindIdent(code, fn)) {
+    size_t q = p + std::strlen(fn);
+    while (q < code.size() && std::isspace((unsigned char)code[q])) q++;
+    if (q >= code.size() || code[q] != '(') continue;
+    const size_t rp = code.find(')', q);
+    if (rp == std::string::npos) continue;
+    size_t b = rp + 1;
+    while (b < code.size() && std::isspace((unsigned char)code[b])) b++;
+    if (b >= code.size() || code[b] != '{') continue;
+    int depth = 0;
+    for (size_t e = b; e < code.size(); e++) {
+      if (code[e] == '{') depth++;
+      else if (code[e] == '}' && --depth == 0) { *open = b; *close = e; return true; }
+    }
+    return false;
+  }
+  return false;
+}
+
+// appliedUse - what the use of g_applied_thr_cmd at p is: 'd' declaration, 's' store, 'l' load, 'o' anything else.
+static char appliedUse(const std::string& code, size_t p)
+{
+  size_t q = p + std::strlen("g_applied_thr_cmd");
+  const std::string rest = code.substr(q, 8);                       // exactly ".store(" / ".load(" - any other spelling is 'o'
+  if (rest.compare(0, 7, ".store(") == 0) return 's';
+  if (rest.compare(0, 6, ".load(") == 0) return 'l';
+  const char* kDecl = "std::atomic<uint8_t>";
+  const size_t lead = (p > 64) ? p - 64 : 0;
+  const std::string before = srcSquash(code.substr(lead, p - lead));
+  const size_t L = std::strlen(kDecl);
+  if (before.size() >= L && before.compare(before.size() - L, L, kDecl) == 0) return 'd';
+  return 'o';
+}
+
+static AppliedGuard appliedGuard(const std::string& pwm_text, const std::vector<std::string>& other_texts,
+                                 const std::vector<std::string>& common_texts)
+{
+  AppliedGuard g = { 0, 0, 0, 0, 0, 0 };
+  const char* id = "g_applied_thr_cmd";
+  const std::string pwm = srcCode(pwm_text);
+  size_t b = 0, e = 0;
+  const bool has_calc = srcBodySpan(pwm, "calcPWM", &b, &e);
+  for (size_t p : srcFindIdent(pwm, id)) {
+    const char u = appliedUse(pwm, p);
+    if (u == 's') { if (has_calc && p > b && p < e) g.stores_calc++; else g.stores_elsewhere++; }
+    else if (u == 'l') g.loads++;
+    else if (u == 'd') g.decls++;
+    else g.other++;
+  }
+  for (const std::string& t : other_texts) {
+    const std::string code = srcCode(t);
+    for (size_t p : srcFindIdent(code, id)) {
+      const char u = appliedUse(code, p);
+      if (u == 's') g.stores_elsewhere++; else if (u == 'l') g.loads++; else if (u == 'd') g.decls++; else g.other++;
+    }
+  }
+  for (const std::string& t : common_texts) g.common_uses += (int)srcFindIdent(srcCode(t), id).size();
+  return g;
+}
+static bool appliedGuardOk(const AppliedGuard& g)
+{
+  return g.decls == 1 && g.stores_calc == 1 && g.stores_elsewhere == 0 && g.loads >= 1 && g.other == 0 && g.common_uses == 0;
+}
+
+static void testAppliedGuardSnippets()
+{
+  const std::string calc = "void calcPWM()\n{\n  uint8_t r = 3;\n  g_applied_thr_cmd.store(r, std::memory_order_relaxed);\n}\n";
+  const std::string decl = "std::atomic<uint8_t> g_applied_thr_cmd {0};\n";
+  const std::string load = "void edge() { uint8_t f = g_applied_thr_cmd.load(std::memory_order_relaxed); }\n";
+  const std::vector<std::string> none;
+  { const AppliedGuard g = appliedGuard(calc, { decl, load }, none);                       // keeps every rule
+    CHECK(appliedGuardOk(g)); }
+  { const AppliedGuard g = appliedGuard(calc, { decl, load, "void f() { g_applied_thr_cmd.store(0); }\n" }, none);
+    CHECK(g.stores_elsewhere == 1 && !appliedGuardOk(g)); }                                // a second writer, another file
+  { const AppliedGuard g = appliedGuard(calc + "void generatePWM() { g_applied_thr_cmd.store(0); }\n", { decl, load }, none);
+    CHECK(g.stores_calc == 1 && g.stores_elsewhere == 1 && !appliedGuardOk(g)); }          // a store outside calcPWM()
+  { const AppliedGuard g = appliedGuard(calc, { decl, load, "void f() { g_applied_thr_cmd = 0; }\n" }, none);
+    CHECK(g.other == 1 && !appliedGuardOk(g)); }                                           // a plain assignment
+  { const AppliedGuard g = appliedGuard(calc, { decl, load, "void f() { g_applied_thr_cmd++; }\n" }, none);
+    CHECK(g.other == 1 && !appliedGuardOk(g)); }                                           // a read-modify-write
+  { const AppliedGuard g = appliedGuard(calc, { decl, load, "void f() { g_applied_thr_cmd.exchange(0); }\n" }, none);
+    CHECK(g.other == 1 && !appliedGuardOk(g)); }                                           // an exchange
+  { const AppliedGuard g = appliedGuard(calc, { "volatile uint8_t g_applied_thr_cmd = 0;\n", load }, none);
+    CHECK(g.decls == 0 && !appliedGuardOk(g)); }                                           // not the atomic any more
+  { const AppliedGuard g = appliedGuard("void calcPWM()\n{\n}\n", { decl, load }, none);
+    CHECK(g.stores_calc == 0 && !appliedGuardOk(g)); }                                     // no writer at all
+  { const AppliedGuard g = appliedGuard(calc, { decl, load, "// g_applied_thr_cmd.store(0);\nconst char* s = \"g_applied_thr_cmd = 1\";\n" }, none);
+    CHECK(appliedGuardOk(g)); }                                                            // comments and strings are not code
+  { const AppliedGuard g = appliedGuard(calc, { decl, load }, { "static uint8_t peek() { return g_applied_thr_cmd.load(); }\n" });
+    CHECK(g.common_uses == 1 && !appliedGuardOk(g)); }                                     // a shared header naming it
+}
+
 static void testGuardSnippets()
 {
   // ---- The checker on made-up snippets: one that keeps every rule, then one per way of breaking a rule ----
@@ -371,6 +477,12 @@ static void testGuardSource()
   CHECK(g.other_count == 0);                         //     ... nowhere else in the receiver ...
   CHECK(g.common_count == 1);                        //     ... and only its definition in Source/Common
   CHECK(g.map_takes == 0);                           // (3) no map() takes it
+  // V2.5-Evo - 2026-10-30 - E-1's applied throttle: one declaration, one store inside calcPWM(), loads only elsewhere.
+  const AppliedGuard a = appliedGuard(pwm_text, other_texts, common_texts);
+  std::printf("throttle_byte_test: g_applied_thr_cmd - %d declaration, %d store in calcPWM(), %d other store, %d load, %d other use, "
+              "%d in Source/Common\n", a.decls, a.stores_calc, a.stores_elsewhere, a.loads, a.other, a.common_uses);
+  CHECK(a.decls == 1 && a.stores_calc == 1 && a.stores_elsewhere == 0);
+  CHECK(a.loads >= 1 && a.other == 0 && a.common_uses == 0);
 }
 
 int main()
@@ -380,6 +492,7 @@ int main()
   testRoundTrip();
   testPwmTable();
   testGuardSnippets();
+  testAppliedGuardSnippets();
   testGuardSource();
   if (fails) { std::printf("throttle_byte_test: %d of %d checks FAILED\n", fails, checks); return 1; }
   std::printf("throttle_byte_test: all %d checks passed\n", checks);

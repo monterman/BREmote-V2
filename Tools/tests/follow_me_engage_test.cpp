@@ -108,5 +108,25 @@ int main()
   assert(followMeReleaseNeedsDengage(1000u, 30000u, 2000u));        // long release: still set
   assert(followMeReleaseNeedsDengage(0xFFFFFF00u, 0x00000700u, 2000u));   // millis() wrap
 
+  // ---- V2.5-Evo - 2026-10-30 - E-1 (unit 2, Revision 2 §6 item 4): the bumpless engage ramp, cap 5 ----
+  // (1) Floor 0 is today's ramp TO THE BIT: the RX's old expression, every millisecond of a 1500 ms ramp and past it
+  //     (today: no cap 5 at all once elapsed >= the ramp, i.e. 255 under min()).
+  for (uint32_t el = 0; el <= 4000u; el++) {
+    const uint16_t old = (el < 1500u) ? (uint16_t)(((float)el / (float)1500u) * 255.0f) : 255u;
+    assert(fmEngageRampCap(el, 1500u, 0) == old);
+  }
+  // (2) With a floor: never above it at t = 0, never below it, never above 255, never falling, the existing slope.
+  for (int f = 0; f <= 255; f++) {
+    assert(fmEngageRampCap(0u, 1500u, (uint8_t)f) == (uint16_t)f);   // at the edge: exactly what the buggy was getting
+    uint16_t prev = 0;
+    for (uint32_t el = 0; el <= 2000u; el += 10u) {
+      const uint16_t c = fmEngageRampCap(el, 1500u, (uint8_t)f);
+      assert(c >= (uint16_t)f && c <= 255u && c >= prev);
+      const uint16_t slope = (el < 1500u) ? (uint16_t)(((float)el / (float)1500u) * 255.0f) : 255u;
+      assert(c == ((f + slope > 255) ? 255u : (uint16_t)(f + slope)));   // floor + today's slope, held at 255
+      prev = c;
+    }
+  }
+
   return 0;
 }

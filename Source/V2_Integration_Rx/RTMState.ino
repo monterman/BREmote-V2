@@ -1,3 +1,19 @@
+// V2.5-Evo - 2026-10-30 - UNIT 2 AS SHIPPED IS E-1 ALONE (Revision 2.7 arm 3; audit H-1). The front-station changes
+//   tried for unit 2 - the front governor round the anchor, the §E-6 R2 hold-off, R4-front, the F4 / F5 declared-side
+//   seed - are NOT in this build: with the hold-off as first built a mirrored-steering fault at F4 / F5 that latched the
+//   front abort was never ended by R2 (host: 0 of 21 runs, up to 1754 ft); with it limited to 3 x D_engage, or removed,
+//   R2 still ended such a fault beyond 3 x D_engage + 25 m in most runs at 10 mph and up (the front station ahead holds
+//   the buggy there longer). The front stations are unit 1's; R2's net is unit 1's. The run is commit cfe7ae0's
+//   Tools/tests/follow_me_front_station_gate_test.cpp. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
+// V2.5-Evo - 2026-10-30 - unit 2, Revision 2.5 item 4: the ARMED -> ACTIVE edge reads E-1's g_applied_thr_cmd with an
+//   atomic load (it is std::atomic<uint8_t> now, calcPWM()'s store its one writer). No confStruct change, sizeof stays
+//   200, SW_VERSION stays 36.
+// V2.5-Evo - 2026-10-30 - E-1, THE BUMPLESS ENGAGE (unit 2 of the 2026-10-30 Follow-Me package, Revision 2 §6 item 4): on
+//   an ARMED -> ACTIVE edge (the trigger is always held there) the engage ramp, cap 5, used to restart at 0 under a rider
+//   already towing on his own throttle - a dip at take-over. It now starts from fm_engage_floor, the throttle the buggy was
+//   actually getting (calcPWM()'s g_applied_thr_cmd: post-caps, post-ramp, pre-mixer), and rises at the existing slope
+//   (fmEngageRampCap(), Common/FollowMeEngage.h). From HOLD or a pause the floor is 0: today's ramp to the bit. Still a
+//   cap; the floor is never above what the trigger gave. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-30 - FAST-CLOSURE CEILING, WORK IN PROGRESS (unit 1 of the 2026-10-30 Follow-Me package, Revision 2
 //   §5 and §10 as amended by Revision 2.1 §B / §G and cut to STOPS ONLY by Revision 2.2 §B): from the rider's RAW fixes
 //   (one range sample per new solution, fm_cv_track) Follow-Me measures how fast the gap is closing; only while he is
@@ -2786,6 +2802,9 @@ static std::atomic<int16_t> fm_station_deg_x10{0};
 
 // millis() at the moment FM entered FM_ACTIVE. Drives the engage ramp. 0 = not engaged.
 static unsigned long fm_engage_ms        = 0;
+// V2.5-Evo - 2026-10-30 - E-1: the throttle cap 5 starts from at this engagement - g_applied_thr_cmd on an ARMED -> ACTIVE
+// edge, 0 from HOLD or a pause (set with fm_engage_ms; read only while fm_engage_ms > 0).
+static uint8_t       fm_engage_floor     = 0;
 
 // ---- Separation latch state (V2.5-Evo - 2026-07-20) ----
 // fm_sep_latched: true once the rider has been proven genuinely separated from the buggy
@@ -6328,11 +6347,9 @@ static uint16_t fmComputeThrottleCap(float dist_m, unsigned long now)
 
   // ---- Cap 5: engage ramp ----
   if (fm_engage_ms > 0) {
-    unsigned long elapsed = now - fm_engage_ms;
-    if (elapsed < kFmEngageRampMs) {
-      uint16_t c = (uint16_t)(((float)elapsed / (float)kFmEngageRampMs) * 255.0f);
-      if (c < cap) cap = c;
-    }
+    // V2.5-Evo - 2026-10-30 - E-1: from fm_engage_floor at the existing slope (floor 0 = the old expression to the bit).
+    const uint16_t c = fmEngageRampCap((uint32_t)(now - fm_engage_ms), kFmEngageRampMs, fm_engage_floor);
+    if (c < cap) cap = c;
   }
 
   return cap;
@@ -6362,11 +6379,9 @@ static uint8_t fmCreepThrottleCap(float dist_m, unsigned long now)
     if (c < cap) cap = c;
   }
   if (fm_engage_ms > 0) {                                                                   // (c) cap 5
-    const unsigned long elapsed = now - fm_engage_ms;
-    if (elapsed < kFmEngageRampMs) {
-      const uint16_t c = (uint16_t)(((float)elapsed / (float)kFmEngageRampMs) * 255.0f);
-      if (c < cap) cap = c;
-    }
+    // V2.5-Evo - 2026-10-30 - E-1: the same engage ramp, from fm_engage_floor (fmEngageRampCap()).
+    const uint16_t c = fmEngageRampCap((uint32_t)(now - fm_engage_ms), kFmEngageRampMs, fm_engage_floor);
+    if (c < cap) cap = c;
   }
   return (uint8_t)cap;
 }
@@ -8535,6 +8550,9 @@ static void runFmLoopBody(unsigned long now)
     if (fm_state != FM_ACTIVE) {
       // Entering FM_ACTIVE from ARMED or HOLD.
       fm_engage_ms            = now;    // start the engage ramp - re-engagement is never a jump
+      // V2.5-Evo - 2026-10-30 - E-1 (Revision 2 §6 item 4): from ARMED (he is towing on his own throttle, the trigger held)
+      // the ramp starts from what the buggy was getting, so there is no dip; from HOLD or a pause from 0, as before.
+      fm_engage_floor         = (fm_state == FM_ARMED) ? g_applied_thr_cmd.load(std::memory_order_relaxed) : 0;   // Rev 2.5 item 4: atomic
       fm_diagonal_engaged     = false;  // re-evaluate which side we are on for this engagement
       fm_steer_input_since_ms = 0;      // ignore any pre-engagement deflection; the grace starts now
       takeover_release_ms     = 0;      // V2.5-Evo - 2026-09-19 - no post-release divergence grace carries into a new engagement

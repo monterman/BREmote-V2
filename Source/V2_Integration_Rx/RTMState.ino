@@ -1,10 +1,10 @@
-// V2.5-Evo - 2026-10-30 - UNIT 2 AS SHIPPED IS E-1 ALONE (Revision 2.7 arm 3; audit H-1). The front-station changes
-//   tried for unit 2 - the front governor round the anchor, the §E-6 R2 hold-off, R4-front, the F4 / F5 declared-side
-//   seed - are NOT in this build: with the hold-off as first built a mirrored-steering fault at F4 / F5 that latched the
-//   front abort was never ended by R2 (host: 0 of 21 runs, up to 1754 ft); with it limited to 3 x D_engage, or removed,
-//   R2 still ended such a fault beyond 3 x D_engage + 25 m in most runs at 10 mph and up (the front station ahead holds
-//   the buggy there longer). The front stations are unit 1's; R2's net is unit 1's. The run is commit cfe7ae0's
-//   Tools/tests/follow_me_front_station_gate_test.cpp. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
+// V2.5-Evo - 2026-10-30 - FROM ITS FRONT-STATION WORK THE 2026-10-30 PACKAGE SHIPS E-1 ALONE (audited). The other
+//   front-station changes tried with it - the front governor round the anchor, an R2 hold-off after a front abort,
+//   R4-front, the F4 / F5 declared-side seed - are not in this build and are held for a later package: with the hold-off
+//   as first built a mirrored-steering fault at F4 / F5 that latched the front abort was never ended by R2 (host: 0 of
+//   21 runs, up to 1754 ft); with it limited to 3 x D_engage, or removed, R2 still ended such a fault beyond
+//   3 x D_engage + 25 m in most runs at 10 mph and up (the front station ahead holds the buggy there longer). The front
+//   stations and R2's net are as before this package. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-30 - unit 2, Revision 2.5 item 4: the ARMED -> ACTIVE edge reads E-1's g_applied_thr_cmd with an
 //   atomic load (it is std::atomic<uint8_t> now, calcPWM()'s store its one writer). No confStruct change, sizeof stays
 //   200, SW_VERSION stays 36.
@@ -14,7 +14,7 @@
 //   actually getting (calcPWM()'s g_applied_thr_cmd: post-caps, post-ramp, pre-mixer), and rises at the existing slope
 //   (fmEngageRampCap(), Common/FollowMeEngage.h). From HOLD or a pause the floor is 0: today's ramp to the bit. Still a
 //   cap; the floor is never above what the trigger gave. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
-// V2.5-Evo - 2026-10-30 - FAST-CLOSURE CEILING, WORK IN PROGRESS (unit 1 of the 2026-10-30 Follow-Me package, Revision 2
+// V2.5-Evo - 2026-10-30 - FAST-CLOSURE CEILING, SHIPPED (unit 1 of the 2026-10-30 Follow-Me package, audited; Revision 2
 //   §5 and §10 as amended by Revision 2.1 §B / §G and cut to STOPS ONLY by Revision 2.2 §B): from the rider's RAW fixes
 //   (one range sample per new solution, fm_cv_track) Follow-Me measures how fast the gap is closing; only while he is
 //   measurably STOPPING in front of the buggy (the stop qualifier, kFmCvQualCfg = S-b, Revision 2.3) cap 3 holds the buggy's speed toward him
@@ -23,9 +23,9 @@
 //   aborts once the rider's 2-fix mean stands 2 m closer on 2 distinct fixes. The deep log's fm_block_reason reads 11 on a
 //   tick the ceiling bound. Every input gated (fresh rider fix,
 //   Phase A/B, a fresh buggy fix, a valid COG); with any of them bad it does nothing - today's behaviour. Pure rules in
-//   Common/FollowMeConverge.h and FollowMePause.h; ?diag "FM ceiling" line. Caps only. NOT MERGED: its HARD gates are not
-//   all met (Tools/tests/follow_me_converge_test.cpp prints them). No confStruct change, sizeof stays 200, SW_VERSION
-//   stays 36.
+//   Common/FollowMeConverge.h and FollowMePause.h; ?diag "FM ceiling" line. Caps only. It ships with the stop qualifier
+//   S-b: all 12 of its HARD gates are asserted in Tools/tests/follow_me_converge_test.cpp. No confStruct change, sizeof
+//   stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-30 - DIVERGENCE JUDGES "RUNNING AWAY" INSIDE 3 x D_engage (audit 2026-10-20 R2, finding F-1; rides 19
 //   and 30 Oct): beyond the ceiling (2 x D_engage, 79 ft) the net ended Follow-Me unless the buggy CLOSED 2 m in 3 s, which
 //   the governor never delivers while pacing a rider - 8 of 14 stretches on 19 Oct and 4 of 9 engagements on 30 Oct ended

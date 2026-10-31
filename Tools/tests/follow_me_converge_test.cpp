@@ -19,7 +19,8 @@
 //                 >= min(16.4, unqualified - 1.5 ft) per phase;
 //        3-5 HARSH, REALISTIC, PAIRS (HARD, "no harm"): closest >= min(16.4, flown - 0.5 ft) and band entry <= flown +
 //                 0.3 mph per case; G-UT4 R2 ends <= flown, none in the park. F4/F5 cases with an R2 end are "manual"
-//                 (reported; unit 2 owns them). Own-line labels and the cost against the unqualified ceiling reported;
+//                 (reported; the front-station work, not in this package, owns them). Own-line labels and the cost
+//                 against the unqualified ceiling reported;
 //        6 G-UT5 STOP-AND-GO (HARD) 8 -> 3 mph, 1 s, back to 8: the ceiling gone <= 3 s after his speed is back to 80 %;
 //          G-UT6(a) PICKUP (HARD) he turns back, rides at the buggy and slows at -2 mph/s to stop 10 / 20 / 30 ft from it:
 //                 no harm, and the buggy's distance 2-8 s after he stops never more than 1.5 ft FARTHER than flown
@@ -931,7 +932,7 @@ static void runSet(int set, double tau, bool verbose, bool with_noq, SetAcc acc[
         if (f[k].ref_ft < kFloorFt) n_own++;
       }
       // "Manual" (Rev 2.2 §C): an F4/F5 case in which R2 ended Follow-Me in some phase - the buggy then runs under the sticky
-      // cap on his centred stick. Reported, not judged here; unit 2 owns them.
+      // cap on his centred stick. Reported, not judged here; the front-station work (not in this package) owns them.
       const bool manual_case = (mode >= 4) && ended;
       ef_line += ef; if (cf < lo_f_line) lo_f_line = cf;
       *ends_flown += ef;
@@ -1222,7 +1223,7 @@ int main(int argc, char **argv)
           const StopOut nq = runStop(kFits[fi], mode, kNoQ, taus[ti], stop_mph[k]);
           for (int v = 0; v < 2; v++) {
             stopEffect(se[v], b[v], nq);
-            if (mode == 2 && k == 0) {                                 // 8 mph F2: >= flown + 2.0 ft (pending the owner)
+            if (mode == 2 && k == 0) {                                 // 8 mph F2 (was >= flown + 2.0 ft before Rev 2.3)
               const double m = b[v].worst - f.worst;                   // Rev 2.3: no worse than flown
               if (m < f2m[v]) f2m[v] = m;
               const size_t L = strlen(f2txt[v]);

@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-31 - delta audit LOW P2A-2 / P2A-3 (comments and one declaration, no behaviour change): the A-T1 wait note
+//   states the real guaranteed margin (about 2.3 ms, the assert in Common/RiderGpsPacket.h now checks it); the needless
+//   forward declaration of gpsSelectedMeasMs() is removed (GPS.ino is concatenated BEFORE this file, not after). No
+//   confStruct change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-31 - design audit 2026-10-31 unit A (Follow-Me package 2): sendData() sends the v3 rider GPS packet -
 //   announcement 0xF3/0x05, then 18 bytes: the v2 position and fix counter plus this remote's own GPS course and speed and
 //   the fix's age (Common/RiderGpsPacket.h riderGpsTxVelocity() / riderGpsBuildV3()), read from the RMC data the speed
@@ -269,10 +273,10 @@ void checkPairing()
 // V2.5-Evo - 2026-07-14 - Feature A: adaptive RF collision backoff (adapted from Ludwig 2.2.7).
 // V2.5-Evo - 2026-10-07 - H-1 / L-1: meta queue consumer, defined further down this file.
 static bool metaQueueTake(uint8_t &type, uint8_t &value);
-// V2.5-Evo - 2026-10-31 - unit A: the GPS module's measurement period (100 ms at 10 Hz, 200 ms at 5 Hz), resolved in ONE
-// place in GPS.ino, which the Arduino build concatenates AFTER this file - declared here so sendData() can size the v3
-// same-epoch window from it (riderGpsVelEpochWindowMs()).
-static inline uint16_t gpsSelectedMeasMs();
+// V2.5-Evo - 2026-10-31 - unit A, corrected by delta audit P2A-3: sendData() sizes the v3 same-epoch window from
+// gpsSelectedMeasMs() (GPS.ino). No declaration is needed here: the build concatenates the tabs after the main sketch in
+// name order, and "GPS.ino" comes before "Radio.ino" (case-sensitive or not), so its definition is already above this
+// file. (The earlier forward declaration rested on the opposite premise and is removed.)
 void sendData(void *parameter)
 {
   TickType_t xLastWakeTime = xTaskGetTickCount();
@@ -513,7 +517,8 @@ void sendData(void *parameter)
         // 14-15 ms, and the 18-byte v3 packet is on air for 14.656 ms plus the radio's SetTx start-up, so the
         // implicitHeader(6) / startReceive() below could cut its 5th block: CRC fail at the buggy, no rider GPS at all for
         // a new pair. THE FIX: kRiderGpsDataWaitMs = ceil(air time) + 3 = 18 ms (Common/RiderGpsPacket.h), refused at
-        // compile time if it is ever shorter than riderGpsAirTimeUs(18) + 3 ms. The GPS cycle now uses about 30 ms of its
+        // compile time if (the wait less one tick) is ever shorter than riderGpsAirTimeUs(18) + 2 ms - the guaranteed
+        // margin is about 2.3 ms (delta audit P2A-2: vTaskDelay can return just after 17 ms). The GPS cycle now uses about 28 ms of its
         // 100 ms slot; the announcement's 10 ms wait (7.488 ms on air) is unchanged.
         vTaskDelay(pdMS_TO_TICKS(kRiderGpsDataWaitMs));
       }

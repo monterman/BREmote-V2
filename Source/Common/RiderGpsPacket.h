@@ -1,3 +1,5 @@
+// V2.5-Evo - 2026-10-31 - delta audit LOW P2A-2: the A-T1 static_assert checks the wait LESS ONE TICK against air time +
+//   2 ms (the margin vTaskDelay really guarantees, about 2.3 ms), not the full wait against air time + 3 ms. Same 18 ms.
 // V2.5-Evo - 2026-10-31 - RIDER GPS PACKET v3: THE REMOTE'S OWN GPS COURSE AND SPEED (design audit 2026-10-31, Follow-Me
 //   package 2 unit A - LOGGING ONLY). The remote already decodes its speed and course from the RMC sentence on every fix
 //   (its speed display uses them); they were simply never sent. v3 adds them in 3 bytes (an 18-byte packet, one more LoRa
@@ -126,10 +128,15 @@ static constexpr uint32_t riderGpsAirTimeUs(uint32_t len)
 // for the 12.864 ms v2 packet. vTaskDelay(15) waits 14-15 ms, and a v3 packet needs 14.656 ms on air plus the radio's
 // SetTx start-up, so the next implicitHeader(6) / startReceive() could cut the 5th block: CRC fail at the buggy, and a
 // new pair would have NO rider GPS at all. THE FIX: the wait is ceil(air time) + 3 ms = 18 ms (the GPS cycle then uses
-// about 30 ms of its 100 ms slot), and the compiler refuses any value shorter than that - so the old 15 cannot come back.
+// about 28 ms of its 100 ms slot), and the compiler refuses any value shorter than that - so the old 15 cannot come back.
+// V2.5-Evo - 2026-10-31 - delta audit P2A-2: THE MARGIN THE ASSERT PROMISES IS NOW THE ONE THE WAIT GIVES. vTaskDelay(n)
+// counts tick edges, so it can return just after n - 1 ms (the first tick may be almost over when it starts). The old
+// assert compared the full 18 ms against air time + 3 ms and so claimed 3 ms of margin; the guaranteed margin is
+// (18 - 1) ms - 14.656 ms = about 2.3 ms. The assert now checks (wait - 1 ms) >= air time + 2 ms, which is the real
+// guarantee and is still ample (the radio's SetTx start-up is well under 1 ms). It still passes at 18 and still refuses 15.
 static const uint32_t kRiderGpsDataWaitMs = 18;   // ms, the remote's wait after it starts the v3 data packet
-static_assert(kRiderGpsDataWaitMs * 1000u >= riderGpsAirTimeUs(kRiderGpsLenV3) + 3000u,
-              "the remote's post-data wait must cover the v3 packet's air time plus 3 ms (finding A-T1)");
+static_assert((kRiderGpsDataWaitMs - 1u) * 1000u >= riderGpsAirTimeUs(kRiderGpsLenV3) + 2000u,
+              "the remote's post-data wait, less one tick, must cover the v3 packet's air time plus 2 ms (finding A-T1, P2A-2)");
 
 // ============================================================
 // riderGpsBuildV2 - the remote fills one 15-byte v2 data packet.

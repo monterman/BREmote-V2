@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-31 - G-1 / G-2 (Follow-Me package 2): COMMENTS ONLY here - the fm_engage_dist_m field note gives the rope
+//   rule (rope length + 6.5 m, minimum 9.5 m; 0 = auto = max(13.5 m, 1.5 x d_follow), RTMState.ino kFmEngageAutoM) and the
+//   floor's note says 9.5 m is also a 3 m rope + 6.5 m. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-31 - RIDER GPS PACKET v3, LOGGING ONLY (design audit 2026-10-31, Follow-Me package 2 unit A): new runtime globals rx_tx_gps_vel_word (the velocity of the last accepted NEW rider solution, tagged with its solution number, published before rx_tx_gps_solution_seq), rx_gps_v3_ann / rx_gps_v3_ok (?diag: v3 announcements heard against v3 packets accepted); rx_tx_gps_proto may now read 3. LOG FORMAT 6: a level-6 row is a VescLogDataL6Vel (178 B) - the 174 B format-5 record + rider_vel_word at the tail (one new CSV column); LOG_REC_MAX, logRecordSizeForLevel(6), logCsvHeaderFor() and logFormatCsvRow() follow it; MIN_READ stays 3, so formats 3-5 still download. Nothing in Follow-Me, return-to-me or the motor path reads the velocity. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-30 - E-1's g_applied_thr_cmd is std::atomic<uint8_t> (unit 2, Revision 2.5 item 4): the P7 pattern, one writer (calcPWM()'s store) and one reader (the ARMED -> ACTIVE edge's load), relaxed. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-30 - FOLLOW-ME FAST-CLOSURE CEILING (unit 1 of the 2026-10-30 package): includes ../Common/FollowMeConverge.h (after FollowMePause.h), the pure ceiling RTMState.ino applies inside cap 3. Include only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -506,8 +509,14 @@ struct confStruct {
     //   override for the FM separation latch, read in RTMState.ino runFmLoop().
     //   0   = auto: d_engage = kFmEngageFactor (1.5) * (min_dist_m + followme_smoothing_band_m), the
     //         original behaviour, reproduced exactly.
+    //         V2.5-Evo - 2026-10-31 - G-2: auto is now max(13.5 m, that) (RTMState.ino kFmEngageAutoM,
+    //         Common/FollowMeEngage.h followMeAutoEngageDistM()): a 7 m rope + 6.5 m, never below the old auto.
     //   >0  = the engage distance itself, in METRES. This is NOT the rope length — set it to rope
     //         length x ~1.3 so the buggy clears the rope with margin (the 7.1 m rope -> 9.5).
+    //         V2.5-Evo - 2026-10-31 - G-1: SUPERSEDED - the rule is rope length + 6.5 m (21 ft) for GPS
+    //         error, to the nearest 0.5 m: the 7.1 m rope -> 13.5 m. GPS error is fixed metres, so a
+    //         proportion ("x 1.3", "a third more") leaves too little margin on a typical rope (design
+    //         audit 2026-10-31 §2.2). The web pages have a rope-length box that fills this in.
     //         V2.5-Evo - 2026-07-25 - F3-b: legal non-zero values start at kFmEngageDistFloorM
     //         (defined below this struct); (0, floor) is clamped up by cfgValidateCrossField().
     //         V2.5-Evo - 2026-09-18 - the floor is 9.5 m (was 8.0, derived for a 6.10 m rope; the
@@ -517,6 +526,7 @@ struct confStruct {
     //   separated. Example: a 7.1 m rope -> set 9.5 m or more. Setting it at or below your rope
     //   length lets FM engage while you are still on the rope. 9.5 m is the enforced minimum, not a
     //   recommendation — a longer rope needs a bigger number.
+    //   V2.5-Evo - 2026-10-31 - G-1: SUPERSEDED, see above - rope length + 6.5 m; the 7.1 m rope -> 13.5 m.
     float    fm_engage_dist_m;         // 0 = auto; >0 = fixed engage distance in metres; 0, or 9.5-50 m
     // V2.5-Evo - 2026-08-16 - RENAMED IN PLACE: auton_runtime_cap_s -> gps_dyn_model.
     // Same offset, same uint16_t, so sizeof(confStruct) stays 184, the static_assert is
@@ -886,7 +896,7 @@ confStruct defaultConf = {SW_VERSION, 2, 22, 1, 50 /*steering_influence: convent
   // V2.5-Evo - 2026-06-05 - SW33: motor ramping (secs) default
   0.75f,      // motor_ramp_s: THROTTLE ramps 0->full over 0.75s (0=instant/off, 0-4s); steering is never ramped
   // V2.5-Evo - 2026-07-20 - SW34 slots. 2026-07-25 A2: fm_engage_dist_m is now live; the other two stay reserved/unread.
-  0.0f,       // fm_engage_dist_m: 0 = auto (RTMState computes d_engage from min_dist + band); >0 = fixed engage distance in metres
+  0.0f,       // fm_engage_dist_m: 0 = auto (RTMState: max(13.5 m, 1.5 x (min_dist + band)) since 2026-10-31, G-2); >0 = fixed engage distance in metres
   0,          // gps_dyn_model: 0 = default -> Sea (was auton_runtime_cap_s, renamed in place 2026-08-16)
 
   // V2.5-Evo - 2026-07-25 - STAGE 0 PART A: this slot was fm_steer_reposition_en, renamed in place
@@ -951,6 +961,9 @@ confStruct defaultConf = {SW_VERSION, 2, 22, 1, 50 /*steering_influence: convent
 // All are .ino files, and this header is included at the top of V2_Integration_Rx.ino, which the
 // Arduino build concatenates first — so the constant is visible to all. (An earlier comment claimed
 // concatenation order prevented sharing and used that to justify a duplicated literal. It was wrong.)
+// V2.5-Evo - 2026-10-31 - G-1: the rider's rule is now rope length + 6.5 m (GPS error is fixed metres). 9.5 m is exactly a
+// 3 m rope + 6.5 m, so the floor is consistent with it and stays: the minimum for a measured short rope. Auto no longer
+// reaches it (auto >= 13.5 m, G-2).
 // ============================================================
 static const float kFmEngageDistFloorM = 9.5f;   // metres; smallest legal non-zero fm_engage_dist_m (7.1 m rope x 1.31, rounded up)
 

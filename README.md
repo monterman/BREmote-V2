@@ -665,13 +665,12 @@ While Follow-Me is armed on both TX and RX with a fresh link, TX fires one mediu
 
 `fm_engage_dist_m` (RX web UI: **Follow-Me → FM Engage Distance**) is how far you have to get from the buggy before Follow-Me is allowed to engage for the first time. It is the tow-rope interlock: it exists so FM can never take over while you are still on the rope.
 
-**Measure your own tow rope, then set this to at least one metre more than the rope length.** Example: a 20 ft (6.1 m) rope → set **8 m or more**. A longer rope needs a bigger number.
+**Measure your own tow rope, then set this to the rope length + 21 ft (6.5 m)**, to the nearest 0.5 m. The 6.5 m is for GPS error, which is a fixed number of metres whatever the rope. Example: a 23 ft (7.1 m) rope → **13.5 m (44 ft)**. A stretchy rope: use its stretched length. The web pages have a **Rope length** box next to the setting (m or ft) that does the sum and fills it in; you still press Save.
 
-- Valid entries are `0` = auto, or **8–50 m**. The firmware rejects anything between 0 and 8, and clamps an older stored value up to 8 m.
-- **8 m is the enforced minimum, not a recommendation** — it is only enough for a rope of about 7 m or shorter.
-- Setting it at or below your rope length would let Follow-Me engage while you are still **on** the rope, which is exactly what the interlock prevents.
-- `0` = auto: the firmware works it out as 1.5 × (Min Distance + Smoothing Band). Use a measured value if you know your rope.
-- You have to stay beyond this distance for 2 seconds before Follow-Me can engage.
+- Valid entries are `0` = auto, or **9.5–50 m**. The minimum is **31 ft (9.5 m)**, exactly a 3 m rope + 6.5 m. A value between 0 and 9.5 m is raised to 9.5 m, with a note saying so.
+- Setting it at or just past your rope length would let Follow-Me engage while you are still **on** the rope, which is exactly what the interlock prevents.
+- `0` = auto: **13.5 m (44 ft)**, right for a rope up to about 23 ft (7 m) - or 1.5 × (Min Distance + Smoothing Band) if that is larger (30 m at the factory 10 m + 10 m). Use the rope rule if your rope is longer.
+- Follow-Me engages only once you have stayed beyond this distance for four rider GPS fixes in a row (about a second).
 
 ### Two motor ramps — manual towing vs the automatic modes (RX)
 

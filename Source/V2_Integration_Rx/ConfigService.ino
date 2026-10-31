@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-31 - G-1 / G-2 (Follow-Me package 2): the fm_engage_dist_m clamp NOTE gives the new rule - measure the
+//   rope and add 6.5 m (21 ft); 0 (automatic) uses at least 13.5 m. Text and comments only: the row, the range and the 9.5 m
+//   clamp are unchanged. No confStruct change, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-25 - steer default review S-4 + S-5: cfgValidateCrossField()'s R-8 load clamp maps a corrupt steer_during_auto (> 1) to defaultConf.steer_during_auto (1, take over) instead of 0, and the row comment says so (it read "> 1 -> 1") and no longer says the remote exits a return-to-me. One token of code; row range unchanged; no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-25 - COMMENT ONLY: the steer_during_auto row says the factory default is now 1 (take over; defaultConf in BREmote_V2_Rx.h, owner ruling), and the R-8 clamp note says a CORRUPT value (> 1) still reads as 0. Row range and clamp unchanged.
 // V2.5-Evo - 2026-10-20 - COMMENT ONLY: the followme_mode row's station list follows the front-station swap (4 = FRONT-LEFT, 5 = FRONT-RIGHT). Range unchanged.
@@ -178,6 +181,8 @@ const CfgFieldSpec kCfgFields[] = {
   // Example: a 7.1 m rope -> set 9.5 m or more. Setting it at or below your rope length lets FM
   // engage while you are still on the rope. The floor (9.5 m since 2026-09-18; it was 8.0 m, derived
   // for a 6.10 m rope) is the enforced minimum, not a recommendation.
+  // V2.5-Evo - 2026-10-31 - G-1: SUPERSEDED - the rule is rope length + 6.5 m (21 ft) for GPS error: the
+  // 7.1 m rope -> 13.5 m. Auto (0) is max(13.5 m, 1.5 x (min_dist + band)) since G-2 (RTMState.ino).
   // V2.5-Evo - 2026-07-25 - F3-c: setting 0 does not bypass that minimum. runFmLoop() applies the
   // same kFmEngageDistFloorM clamp to the AUTO-computed engage distance too, so a small min_dist_m /
   // smoothing-band tuning can no longer produce an on-rope engage distance down the automatic path.
@@ -456,8 +461,9 @@ bool cfgValidateCrossField(confStruct &candidate, String &err)
     // V2.5-Evo - 2026-09-18 - advice matches the floor's derivation (rope x 1.31): "about a third
     // beyond it", not "a metre beyond it", which a 7.1 m rope would have put inside the floor.
     Serial.println("      That minimum is the tow-rope safety floor: Follow-Me must never be able");
-    Serial.println("      to engage while you are still on the rope. Measure your rope and set about");
-    Serial.println("      a third beyond it. Setting 0 (automatic) is floored at the same value.");
+    // V2.5-Evo - 2026-10-31 - G-1 / G-2: the rope rule is now length + 6.5 m, and auto is at least 13.5 m.
+    Serial.println("      to engage while you are still on the rope. Measure your rope and add 6.5 m");
+    Serial.println("      (21 ft). Setting 0 (automatic) uses at least 13.5 m (44 ft).");
 
   }
 

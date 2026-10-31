@@ -379,6 +379,8 @@ const TX_FIELDS = [
 
 // ============================================================
 // RX FIELD DEFINITIONS — exact copy from Source/V2_Integration_Rx/WebUiEmbedded.h
+// (V2.5-Evo - 2026-10-31 - G-1 / G-2: fm_engage_dist_m help text resynced byte-identical to WebUiEmbedded.h - rope length +
+// 21 ft (6.5 m), minimum 31 ft (9.5 m), 0 = auto 13.5 m - and the field gains the same "Rope length" box (buildControl()).)
 // (V2.5-Evo - 2026-10-27 - gps_chip_type help "(u-blox M9/M10)" -> "(some M9/M10)", mirroring Source/V2_Integration_Rx/WebUiEmbedded.h: only some M9/M10 refuse the old form. Row still byte-identical.)
 // (V2.5-Evo - 2026-10-27 - gps_chip_type options 2/3 relabelled "(→115200, 10Hz)", mirroring Source/V2_Integration_Rx/WebUiEmbedded.h: no "115200 direct", no "all constellations". Row still byte-identical.)
 // (V2.5-Evo - 2026-10-25 - steer_during_auto help text replaced (steer default review S-1), mirroring Source/V2_Integration_Rx/WebUiEmbedded.h. Rows still byte-identical; keys, types, ranges, defaults and the count unchanged.)
@@ -482,7 +484,7 @@ const RX_FIELDS = [
 {key:"auto_ramp_s",label:"Automatic modes ramp",description:"Seconds for the THROTTLE to ramp up while the buggy drives itself - following you in Follow-Me, spinning around and coming back in return-to-me / auto-return. The rope is not loaded in these modes, so you want this SMALL (quick) so the buggy is reactive: catches up fast and pivots fast. Smaller = quicker. Like the manual ramp this is THROTTLE ONLY - steering is never ramped in any mode, so a pivot turns as hard as it is asked to from the first tick. 0 = same as the manual ramp (unchanged behaviour). Try 0.5. Range 0.2-4.0 s (a value under 0.2 is raised to 0.2). Any future mode with the buggy ahead of you uses the manual ramp.",group:"Motor & Safety",type:"float",def:0,min:0.0,max:4.0,step:0.05,unit:"s"},
 {key:"rtm_align_threshold_deg",label:"RTM Align Threshold",description:"Phase 1→2 transition angle. While heading error exceeds this value, throttle is suppressed to ~5% so the buggy pivots toward you without driving away first. Once heading error drops below this threshold, the run phase engages and the GPS speed governor takes over. Range 10-90°, default 45°. Lower = buggy aligns more precisely before accelerating; higher = quicker transition to run phase.",group:"RTM",type:"int",def:45,min:10,max:90,unit:"deg"},
 {key:"rtm_target_speed_kmh",label:"RTM Target Speed",description:"Phase 2 GPS speed cap. Once aligned, RTM governor limits buggy speed to this value regardless of motor or prop size — makes behaviour consistent across different boogies. 0=disabled (user throttle passes through after alignment, approach decel zone only). Range 0-20 km/h, default 4 km/h. Start at 3-5 km/h for first water tests.",group:"RTM",type:"float",def:4.0,min:0,max:20,step:0.5,unit:"km/h"},
-{key:"fm_engage_dist_m",label:"FM Engage Distance",description:"How far you must be from the buggy before Follow-Me may engage. 0 = auto, else 9.5-50 m. The 9.5 m floor is the 7.1 m rope x 1.31, so it can never engage on the rope.",group:"Follow-Me",type:"float",def:0,min:0,max:50,step:0.5,unit:"m"},
+{key:"fm_engage_dist_m",label:"FM Engage Distance",description:"How far you must be from the buggy before Follow-Me may engage: your tow rope's length + 21 ft (6.5 m) for GPS error, to the nearest 0.5 m - or type the rope length in the box below and it fills this in. Example: 23 ft (7.1 m) rope -> 13.5 m (44 ft). Stretchy rope: use its stretched length. Minimum 31 ft (9.5 m). 0 = auto: 13.5 m (44 ft), right for a rope up to about 23 ft (7 m); larger if 1.5 x (Min Distance + Smoothing Band) is larger.",group:"Follow-Me",type:"float",def:0,min:0,max:50,step:0.5,unit:"m"},
 {key:"fm_return_mode",label:"Auto-Return When You Stop",description:"1 = when you stop, the buggy comes back to you inside Follow-Me; trigger still required to move; the remote's return gesture overrides this for the session. 0 = hold where it is. Default 1.",group:"Follow-Me",type:"bool",def:1,min:0,max:1},
 {key:"fm_align_cap",label:"FM Align Throttle Cap",description:"Throttle cap while the buggy turns to face you (0-255 scale, 8-80). Raise only after the bench spin. Default 13.",group:"Follow-Me",type:"int",def:13,min:8,max:80},
 {key:"fm_align_influence",label:"FM Align Steering Strength",description:"Steering split during the turn to face you, NOT throttle: 100 = one motor stopped, the other at twice the align cap; the align cap sets the power. Default 80.",group:"Follow-Me",type:"int",def:80,min:0,max:100,unit:"%"},
@@ -966,6 +968,15 @@ function setBool(k,c){setVal(k,c?'1':'0');}
 // plain number everywhere else, so validate/save/export needed no change - only the control that draws it.
 function setBit(k,b,on){let n=parseInt(st.values[k],10)||0;if(on)n|=(1<<b);else n&=~(1<<b);setVal(k,n);}
 function setEnum(k,v){setVal(k,v);}
+// V2.5-Evo - 2026-10-31 - G-1: the rope-length helper (the same rule as the RX page): rope + 6.5 m to the nearest 0.5 m,
+// clamped to 9.5-50 m, written into FM Engage Distance like typing it (still needs Save). Client-side only.
+function ropeFill(){
+  const n=parseFloat(document.getElementById('rope-len').value);if(!(n>0))return;
+  const m=document.getElementById('rope-unit').value==='ft'?n*0.3048:n;
+  let d=Math.round((m+6.5)*2)/2;if(d<9.5)d=9.5;if(d>50)d=50;
+  const s=d.toFixed(1);setVal('fm_engage_dist_m',s);
+  const el=document.querySelector('.field[data-key="fm_engage_dist_m"] .ctrl-main input[type=number]');if(el)el.value=s;
+}
 function setAddrPart(k,i,v){
   const h=toHex(st.values[k]);
   h[i]=String(v||'').toUpperCase().replace(/[^0-9A-F]/g,'').slice(0,2);
@@ -1073,7 +1084,9 @@ function buildControl(f,v){
       return html;
     }
     case 'float':
-      return `<input type="number" value="${v}" min="${f.min}" max="${f.max}" step="${f.step||'any'}" oninput="setVal('${k}',this.value)">`;
+      // V2.5-Evo - 2026-10-31 - G-1: FM Engage Distance gets the rope-length box (ropeFill()).
+      return `<input type="number" value="${v}" min="${f.min}" max="${f.max}" step="${f.step||'any'}" oninput="setVal('${k}',this.value)">`+
+        (k==='fm_engage_dist_m'?`<div class="row" style="margin-top:6px"><span>Rope length</span><input type="number" id="rope-len" min="0" step="0.1" style="width:90px"><select id="rope-unit"><option value="m">m</option><option value="ft">ft</option></select><button type="button" onclick="ropeFill()">Fill</button></div>`:'');
     case 'address3':{
       const h=toHex(v);
       return `<div class="triple mono">`+

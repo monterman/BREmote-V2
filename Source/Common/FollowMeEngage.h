@@ -1,3 +1,6 @@
+// V2.5-Evo - 2026-10-31 - G-2 (Follow-Me package 2): new followMeAutoEngageDistM() - the AUTO engage distance
+//   (fm_engage_dist_m = 0) is max(13.5 m, 1.5 x d_follow), so it never falls below a 7 m rope + 6.5 m of GPS error and never
+//   drops below what auto gave before. Pure; RTMState.ino's auto branch calls it.
 // V2.5-Evo - 2026-09-18 - Follow-Me engagement rules that do not depend on the trigger (P1-a).
 //   Pure, header-only, no Arduino dependencies, so the host unit test in Tools/tests exercises the
 //   exact code the RX runs. Three rules live here:
@@ -25,7 +28,7 @@
 //                         derived for a 6.1 m rope): the tow-rope floor. Before this rule the
 //                         engage edge at the factory 4 + 2 tuning was 6 m, BELOW the 7.1 m rope.
 //   d_engage_m          - the separation-latch distance in force (manual fm_engage_dist_m, or
-//                         1.5 x d_follow, already clamped up to the floor by the caller).
+//                         followMeAutoEngageDistM() below, already clamped up to the floor by the caller).
 //   needs_dengage       - true when the first re-engagement must clear the full separation distance
 //                         (set after a trigger release of kFmReleaseDengageMs or more, and by the RTM
 //                         yield; cleared on the ARMED/HOLD -> ACTIVE edge).
@@ -42,6 +45,23 @@ static inline float followMeEngageThresholdM(float min_dist_m, float band_m, flo
   if (threshold_m < floor_m) threshold_m = floor_m;
   if (needs_dengage && d_engage_m > threshold_m) threshold_m = d_engage_m;
   return threshold_m;
+}
+
+// followMeAutoEngageDistM - V2.5-Evo - 2026-10-31 - G-2 (design audit 2026-10-31 §2 / §G): the engage distance when
+// fm_engage_dist_m is 0 (auto), before the caller's tow-rope floor.
+// WHAT WAS WRONG: auto was factor x d_follow alone. At a 4 + 2 tuning that is 9.0 m, floored to 9.5 m, which sits only
+// 2.4 m past a 7.1 m rope - the rope's measured on-rope p90 - because GPS error is a fixed number of metres, not a
+// proportion. THE RULE NOW: rope length + 6.5 m; auto assumes a typical 7 m rope, so auto_m = 13.5 m.
+// WHY max() AND NOT A STRAIGHT REPLACEMENT: the factory geometry (defaultConf: min_dist 10 + band 10 = 20 m) gives
+// 1.5 x 20 = 30 m today, and D_engage also sets R2's divergence distances (2 x and 3 x D_engage) and the creep start.
+// Replacing 30 m by 13.5 m there would let Follow-Me engage earlier and pull R2's ceiling from 60 m to the 30 m station
+// geometry. So auto only ever RISES: max(auto_m, factor x d_follow) - 13.5 m wherever d_follow <= 9 m, today's value above.
+// Inputs: d_follow_m - min_dist + band, as the caller guards it; factor - kFmEngageFactor (1.5); auto_m - kFmEngageAutoM.
+// Returns: metres. Side effects: none (pure).
+static inline float followMeAutoEngageDistM(float d_follow_m, float factor, float auto_m)
+{
+  const float prop_m = factor * d_follow_m;
+  return (prop_m > auto_m) ? prop_m : auto_m;
 }
 
 // followMeSeparationStreakStands - is the rider beyond D_engage RIGHT NOW, and have they been for

@@ -128,5 +128,26 @@ int main()
     }
   }
 
+  // ---- V2.5-Evo - 2026-10-31 - G-2: the AUTO engage distance, followMeAutoEngageDistM() (RTMState.ino's auto branch) ----
+  // kFmEngageFactor 1.5, kFmEngageAutoM 13.5 (RTMState.ino). Auto is max(13.5, 1.5 x d_follow): 13.5 m at d_follow <= 9 m,
+  // the old 1.5 x d_follow above - it only ever rises, so no board engages earlier than before.
+  {
+    const float kFactor = 1.5f, kAutoM = 13.5f;
+    assert(followMeAutoEngageDistM(4.0f + 2.0f, kFactor, kAutoM) == 13.5f);     // a 4 + 2 tuning: was 9.0 (floored to 9.5)
+    assert(followMeAutoEngageDistM(ownerMin + ownerBand, kFactor, kAutoM) == 13.5f);   // the owner's 5 + 4: 13.5 either way
+    assert(followMeAutoEngageDistM(10.0f + 10.0f, kFactor, kAutoM) == 30.0f);   // the factory 10 + 10 (defaultConf): kept at 30
+    assert(followMeAutoEngageDistM(0.5f, kFactor, kAutoM) == 13.5f);            // the degenerate-geometry guard's 0.5 m
+    for (int i = 1; i <= 400; i++) {                                            // d_follow 0.1-40 m
+      const float df = 0.1f * (float)i, a = followMeAutoEngageDistM(df, kFactor, kAutoM);
+      assert(a >= kAutoM && a >= kFactor * df);                                 // never below 13.5, never below the old auto
+      assert(a == kAutoM || a == kFactor * df);                                 // and nothing else
+      assert(a > floorM);                                                       // the 9.5 m floor never bites on auto
+    }
+    // The rope never engages at auto, even where the station edge is the floor: after a release the edge is 13.5 m.
+    assert(followMeEngageThresholdM(4.0f, 2.0f, floorM, followMeAutoEngageDistM(6.0f, kFactor, kAutoM), true) == 13.5f);
+    assert(!followMeMayEngage(13.5f, 4.0f, 2.0f, floorM, 13.5f, true, streakUp));
+    assert(followMeMayEngage(13.6f, 4.0f, 2.0f, floorM, 13.5f, true, streakUp));
+  }
+
   return 0;
 }

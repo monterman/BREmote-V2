@@ -1,3 +1,7 @@
+// V2.5-Evo - 2026-10-31 - G-2 (Follow-Me package 2): section 1 also runs at the new AUTO engage distance - 13.5 m, from
+//   Common/FollowMeEngage.h followMeAutoEngageDistM() at this config's 5 + 4 geometry - and asserts G-2's gate: on the rope
+//   it engages in under 0.02 % of tows. The 13.5 m run uses 4,000 seeds per cell (24,000 tows per model), so that zero
+//   engagements bound the rate under 0.02 % (three-in-n: 3 / 24,000 = 0.0125 %). The 12 m rows are unchanged.
 // V2.5-Evo - 2026-10-30 - Host test, unit 0 of the 2026-10-30 Follow-Me package (Revision 2 §4): THE ROPE INVARIANT.
 //   Owner hard rule: until the rider is proven off the rope, a squeeze is plain manual throttle on the tick it arrives -
 //   Follow-Me's cap stays 255, no hold at 0, no creep, no evaluation delay. Today's code already meets it; this test
@@ -39,6 +43,10 @@ static const float    kSpeedHystKmh     = 2.0f;    // kFmSpeedHystKmh
 static const float    kMinDist   = 5.0f;           // min_dist_m
 static const float    kBand      = 4.0f;           // followme_smoothing_band_m
 static const float    kDEngage   = 12.0f;          // fm_engage_dist_m (39 ft)
+// V2.5-Evo - 2026-10-31 - G-2: the AUTO engage distance (fm_engage_dist_m = 0): RTMState.ino kFmEngageFactor / kFmEngageAutoM.
+static const float    kEngageFactor = 1.5f;        // kFmEngageFactor
+static const float    kEngageAutoM  = 13.5f;       // kFmEngageAutoM
+static float          g_dEngage  = kDEngage;       // the D_engage in force for rxTick() and section 1 (12 m, then auto)
 static const float    kFoilerLow = 8.0f;           // foiler_low_speed_kmh
 static const uint8_t  kActiveCap = 77;             // a stand-in for the following cap chain (anything but 255)
 
@@ -82,7 +90,7 @@ static void rxTick(Rx &r, uint32_t now, uint8_t thr, float dist, uint32_t seq, f
   const bool speed_ok = (r.state == ST_ACTIVE) ? (rider_kmh >= kFoilerLow) : (rider_kmh >= kFoilerLow + kSpeedHystKmh);
   bool dist_ok = false;
   if (r.state == ST_ACTIVE) dist_ok = (dist >= kMinDist);
-  if (dist > kDEngage) {
+  if (dist > g_dEngage) {
     if (r.sep_over_since == 0) {
       r.sep_over_since = now; r.sep_fix_count = 0; r.sep_last_seq = seq;
     } else if (seq != r.sep_last_seq) {
@@ -97,7 +105,7 @@ static void rxTick(Rx &r, uint32_t now, uint8_t thr, float dist, uint32_t seq, f
   }
   if (r.state != ST_ACTIVE) {
     const bool streak = followMeSeparationStreakStands(r.sep_fix_count, r.sep_over_since, now, kSepDwellFixes, kSepDwellFloorMs);
-    dist_ok = followMeMayEngage(dist, kMinDist, kBand, kEngageFloorM, kDEngage, r.needs_dengage, streak);
+    dist_ok = followMeMayEngage(dist, kMinDist, kBand, kEngageFloorM, g_dEngage, r.needs_dengage, streak);
   }
   // ---- can_be_active (hard_ok = a fresh held trigger; faults, divergence, candidate, sticky cap, heading all good) ----
   const bool hard_ok = (thr >= 25);
@@ -153,13 +161,19 @@ int main()
   //       (the check behaves as designed), and the rate stays under 0.5 % of 40 s tows (a regression guard; today
   //       about 0.2 %). The rate and the tows are printed for the auditor - it is a property of today's check that
   //       the audit's "4.4 SD" margin does not cover, not something this test hides.
+  // V2.5-Evo - 2026-10-31 - G-2: pass 0 is the owner's manual 12 m (as before); pass 1 the new auto engage distance.
+  const float autoD = followMeAutoEngageDistM(kMinDist + kBand, kEngageFactor, kEngageAutoM);
+  assert(autoD == 13.5f);
+  for (int pass = 0; pass < 2; pass++)
   for (int model = 0; model < 2; model++) {
+    g_dEngage = (pass == 0) ? kDEngage : autoD;
+    const uint32_t nseeds = (pass == 0) ? 400u : 4000u;
     long rope_ticks = 0, squeeze_ticks = 0, tows = 0, outliers = 0, engaged_tows = 0, all_fixes = 0, beyond_fixes = 0;
     int  longest_beyond_run = 0;
     float dmax = 0.0f, lowest_engaged_mean = 99.0f;
     for (int latch0 = 0; latch0 < 2; latch0++) {
       for (int pattern = 0; pattern < 3; pattern++) {
-        for (uint32_t seed = 1; seed <= 400; seed++) {
+        for (uint32_t seed = 1; seed <= nseeds; seed++) {
           Rng rng{ seed * 2654435761u + (uint32_t)(pattern * 7 + latch0 * 131 + model * 977) };
           Rx r;
           r.sep_latched = (latch0 == 1);   // a re-tow inside 10 s keeps the last wave's latch
@@ -191,11 +205,11 @@ int main()
               if (d < 5.0f) d = 5.0f;
               if (d > 16.0f) d = 16.0f;
               all_fixes++;
-              if (d > kDEngage) { beyond_fixes++; fix_run++; if (fix_run > longest_beyond_run) longest_beyond_run = fix_run; }
+              if (d > g_dEngage) { beyond_fixes++; fix_run++; if (fix_run > longest_beyond_run) longest_beyond_run = fix_run; }
               else fix_run = 0;
             }
             if (d > dmax) dmax = d;
-            run = (d > kDEngage) ? run + 1 : 0;
+            run = (d > g_dEngage) ? run + 1 : 0;
             const uint8_t thr = trigger(pattern, i, rng, &feather_until);
             const int before = r.state;
             rxTick(r, now, thr, d, seq, speed);
@@ -205,7 +219,7 @@ int main()
               // The FIRST engagement in a tow can only come through the standing streak: beyond D_engage now, on the 4th
               // consecutive distinct fix. (After it, the ACTIVE edge has cleared needs-D_engage exactly as in the RX, so a
               // re-squeeze after a feather re-engages on the ordinary 9.5 m edge - a consequence, not a second rope check.)
-              assert(d > kDEngage && fix_run >= kSepDwellFixes + 1);
+              assert(d > g_dEngage && fix_run >= kSepDwellFixes + 1);
               assert(followMeSeparationStreakStands(r.sep_fix_count, r.sep_over_since, now, kSepDwellFixes, kSepDwellFloorMs));
               engaged = true;
             }
@@ -216,16 +230,19 @@ int main()
         }
       }
     }
-    printf("1%c. rope, %s: %ld tows, %ld ticks, %ld squeeze ticks ARMED at 255 before any streak; %ld outlier fixes, "
-           "max %.1f m, %.2f %% of fixes beyond 12 m, longest run %d fixes; engaged on the rope in %ld tows (%.2f %%)",
-           model ? 'B' : 'A', model ? "tow averages varied (calibrated p10/p90)" : "the audit's statistics as written",
-           tows, rope_ticks, squeeze_ticks, outliers, (double)dmax, 100.0 * beyond_fixes / all_fixes, longest_beyond_run,
-           engaged_tows, 100.0 * engaged_tows / tows);
+    printf("1%c%s. rope, %s: %ld tows, %ld ticks, %ld squeeze ticks ARMED at 255 before any streak; %ld outlier fixes, "
+           "max %.1f m, %.2f %% of fixes beyond %g m, longest run %d fixes; engaged on the rope in %ld tows (%.2f %%)",
+           model ? 'B' : 'A', pass ? " (G-2: auto 13.5 m)" : "",
+           model ? "tow averages varied (calibrated p10/p90)" : "the audit's statistics as written",
+           tows, rope_ticks, squeeze_ticks, outliers, (double)dmax, 100.0 * beyond_fixes / all_fixes, (double)g_dEngage,
+           longest_beyond_run, engaged_tows, 100.0 * engaged_tows / tows);
     if (engaged_tows) printf(", every one through a standing 4-fix streak, lowest tow average %.1f m", (double)lowest_engaged_mean);
     printf("\n");
-    if (model == 0) assert(engaged_tows == 0);
-    else            assert(engaged_tows * 1000 <= tows * 5);           // <= 0.5 % of tows: regression guard
+    if (model == 0)     assert(engaged_tows == 0);
+    else if (pass == 0) assert(engaged_tows * 1000 <= tows * 5);       // <= 0.5 % of tows: regression guard
+    else                assert(engaged_tows * 10000 < tows * 2);       // G-2's gate: under 0.02 % of tows at auto 13.5 m
   }
+  g_dEngage = kDEngage;                                                // sections 2 and 3 as before: the owner's 12 m
 
   // ======================================================================================
   // 2. AFTER A RELEASE: the 11 measured sequences and G-D3's clean release

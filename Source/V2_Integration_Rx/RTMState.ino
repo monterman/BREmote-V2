@@ -1,3 +1,8 @@
+// V2.5-Evo - 2026-10-31 - G-2 (Follow-Me package 2, design audit 2026-10-31 §G): AUTO ENGAGE DISTANCE 13.5 m. With
+//   fm_engage_dist_m = 0, D_engage is now followMeAutoEngageDistM() (Common/FollowMeEngage.h) = max(kFmEngageAutoM 13.5 m,
+//   kFmEngageFactor 1.5 x d_follow) - a 7 m rope + 6.5 m of GPS error, never less than auto gave before (the factory 10 + 10
+//   geometry keeps its 30 m). It only makes engagement later. A manual value is untouched; the 9.5 m floor is unchanged.
+//   No confStruct change, sizeof stays 200, SW_VERSION stays 36, no config migration: the stored 0 is read the new way.
 // V2.5-Evo - 2026-10-31 - R2-S, THE WRONG-WAY NET, S1 ALONE (design audit 2026-10-31 §E-0 and the R2-S ruling, Revision 1.1):
 //   runFmLoopBody() runs fmSteerResponseStep() (Common/FollowMePause.h) beside R2's dwell on every hard_ok tick with S2 OFF -
 //   S1: the steering command held on one side 2.5 s while the GPS course turned 15 deg or more the other way. A verdict ends
@@ -2207,6 +2212,10 @@ static const float    kFmMotionBaselineS     = 0.4f;   // seconds
 // product tiny — which is why kFmEngageDistFloorM is applied to the RESULT of this multiplication
 // as well, not just to a manually typed fm_engage_dist_m. See the F3-c clamp in runFmLoop().
 static const float    kFmEngageFactor        = 1.5f;   // multiplier on d_follow
+// V2.5-Evo - 2026-10-31 - G-2: the AUTO engage distance is never below this: a typical 7 m rope + 6.5 m of GPS error (the
+// rule the help text now gives: rope length + 6.5 m). Auto = max(this, kFmEngageFactor x d_follow), so it only ever rises
+// (followMeAutoEngageDistM(), Common/FollowMeEngage.h). Compile-time; no confStruct field.
+static const float    kFmEngageAutoM         = 13.5f;  // metres (44 ft)
 
 // How long the rider must stay beyond D_engage before the separation latch sets.
 // The rider position arrives at 2 Hz, so 2000 ms = 4 consecutive independent GPS fixes.
@@ -8002,6 +8011,7 @@ static void runFmLoopBody(unsigned long now)
     // distance, in METRES. It is NOT the rope length — MEASURE the rope and set at least a metre
     // beyond it (the measured 20 ft / 6.10 m rope -> 8 m, which is also the enforced floor).
     // 0 = auto: D_engage = kFmEngageFactor (1.5) x d_follow. The 0.1f compare is the
+    // [V2.5-Evo - 2026-10-31 - G-2: auto is now max(kFmEngageAutoM 13.5 m, that) - see the auto line below.]
     // float "is this really zero" guard, not a second threshold — ConfigService already clamps the
     // range to 0-50 m.
     // V2.5-Evo - 2026-07-25 - F3-c amendment: the auto branch is no longer bit-for-bit the pre-A2
@@ -8055,13 +8065,15 @@ static void runFmLoopBody(unsigned long now)
     if (usrConf.fm_engage_dist_m > 0.1f) {
       d_engage = usrConf.fm_engage_dist_m;      // manual: the stored value IS the engage distance, in metres
     } else {
-      d_engage = kFmEngageFactor * d_follow_e;  // auto: derived from the follow geometry
+      // V2.5-Evo - 2026-10-31 - G-2: max(13.5 m, 1.5 x d_follow) - a 7 m rope + 6.5 m, never below the old auto.
+      d_engage = followMeAutoEngageDistM(d_follow_e, kFmEngageFactor, kFmEngageAutoM);   // auto
     }
     // F3-c: single tow-rope safety floor, applied to the COMPUTED value as well as the typed one.
     if (d_engage < kFmEngageDistFloorM) d_engage = kFmEngageDistFloorM;
     // V2.5-Evo - 2026-09-18 - the floor is 9.5 m now (was 8.0, derived for a 6.10 m rope; the rope in
     // use is 7.1 m). The factory auto value 1.5 x 6 = 9.0 m therefore clamps UP to 9.5 m; the owner's
     // manual 12 m is untouched. The two dated notes above describe 8.0 m as it was.
+    // V2.5-Evo - 2026-10-31 - G-2: auto is never below 13.5 m now, so this floor only bites on a manual value.
     fm_log_d_engage_dx10 = (uint16_t)(d_engage * 10.0f + 0.5f);   // P0-g: the engage distance in force this tick
 
     // (Condition 8's ENGAGE edge is evaluated just past the dwell/latch block below, because since

@@ -1,3 +1,10 @@
+// V2.5-Evo - 2026-10-31 - design audit 2026-10-31 unit A (Follow-Me package 2): sendData() sends the v3 rider GPS packet -
+//   announcement 0xF3/0x05, then 18 bytes: the v2 position and fix counter plus this remote's own GPS course and speed and
+//   the fix's age (Common/RiderGpsPacket.h riderGpsTxVelocity() / riderGpsBuildV3()), read from the RMC data the speed
+//   display already uses. Finding A-T1: the wait after the data packet is kRiderGpsDataWaitMs (18 ms = ceil(14.656 ms on
+//   air) + 3), guarded by a static_assert - the old 15 ms could cut the 5th LoRa block. Positions, the 2 Hz rate, the
+//   control packet and the meta budget are unchanged. Flash with the matching RX (an older RX rejects v3: no rider GPS,
+//   fail-safe). No BLE code touched. No confStruct change, sizeof stays 136, SW_VERSION stays 27.
 // V2.5-Evo - 2026-10-24 - throttle-byte audit T-1, fix (b), remote half: the control packet's throttle is SCALED onto
 //   0..240 (thrTriggerToByte(), Common/ThrottleByte.h) instead of clipped at 0xF0, so the top 6 % of trigger travel is
 //   live again; the clip stays as a belt. T-2: the stale "capped at 0xF2 ... 95.3 %" comment is rewritten. No confStruct
@@ -262,6 +269,10 @@ void checkPairing()
 // V2.5-Evo - 2026-07-14 - Feature A: adaptive RF collision backoff (adapted from Ludwig 2.2.7).
 // V2.5-Evo - 2026-10-07 - H-1 / L-1: meta queue consumer, defined further down this file.
 static bool metaQueueTake(uint8_t &type, uint8_t &value);
+// V2.5-Evo - 2026-10-31 - unit A: the GPS module's measurement period (100 ms at 10 Hz, 200 ms at 5 Hz), resolved in ONE
+// place in GPS.ino, which the Arduino build concatenates AFTER this file - declared here so sendData() can size the v3
+// same-epoch window from it (riderGpsVelEpochWindowMs()).
+static inline uint16_t gpsSelectedMeasMs();
 void sendData(void *parameter)
 {
   TickType_t xLastWakeTime = xTaskGetTickCount();
@@ -414,11 +425,15 @@ void sendData(void *parameter)
         // with this remote's GPS FIX COUNTER (Common/RiderGpsPacket.h). A new buggy switches to implicitHeader(15); an old
         // buggy reads any 0xF3 announcement as v1, listens for 14 bytes and rejects the v2 body (CRC position + subtype),
         // so it has no rider GPS - fail-safe; flash both boards together.
+        // V2.5-Evo - 2026-10-31 - unit A: byte4 = 0x05 (kRiderGpsAnnounceV3) = an 18-byte v3 packet follows (position, fix
+        // counter, and this remote's course, speed and fix age). A package-2 buggy switches to implicitHeader(18). A
+        // package-1 or older buggy reads 0x05 as v1, listens for 14 bytes and refuses the body by its subtype (0x06) - no
+        // rider GPS, Follow-Me not ready, manual untouched: fail-safe; flash both boards together.
         // ---------------------------------------------------------------
         uint8_t announcePkt[6];
         memcpy(announcePkt, usrConf.dest_address, 3);
         announcePkt[3] = kRiderGpsType;        // 0xF3
-        announcePkt[4] = kRiderGpsAnnounceV2;  // 0x03 (was 0x01)
+        announcePkt[4] = kRiderGpsAnnounceV3;  // 0x05 (was 0x03 for v2, 0x01 for v1)
         announcePkt[5] = esp_crc8(announcePkt, 5);
 
         rxprint("Sending GPS announcement: ");
@@ -449,9 +464,22 @@ void sendData(void *parameter)
         // only TinyGPS writer) cannot interrupt. If this task preempted the parser between its time and position
         // commits, the position is a whole epoch older than the time: no step, and the old position goes out with the
         // old counter - a consistent re-broadcast; the next packet steps.
+        // V2.5-Evo - 2026-10-31 - unit A: NOW 18 BYTES (v3) - the v2 layout with data subtype 0x06, then this remote's own
+        // GPS course and speed and the fix's age in one 24-bit word (bytes 14-16), CRC over 0-16 (riderGpsBuildV3()).
+        // WHY: the buggy works out the rider's course and speed by differencing positions about 1 s late; the remote
+        // already has the instantaneous RMC values (they drive its speed display) and never sent them. Unit A only logs
+        // them on the buggy. riderGpsTxVelocity() decides what goes on air: the speed (and course) only with a good fix
+        // (txGpsGoodFix(), which adds the gps_max_hdop gate), from the same GPS epoch as the position, finite and at most
+        // 20.44 m/s; the course only from 1.0 m/s and from the speed's epoch; otherwise the sentinels (never 0).
+        // GPS-INTEGRITY NOTE (project GPS rules 1-4, rule 5): (1) the position, its Phase A judgement on the buggy and the
+        // fix counter are exactly as before - the velocity is extra bytes, and a bad velocity cannot drop the position;
+        // (2) the 0xF3 two-step state machine is unchanged (one announcement, one data packet, the buggy resets on any
+        // error), and the longer packet's air time is now covered by the wait below (A-T1); (3) positions stay int32
+        // microdegrees; (4) nothing is extrapolated - the course and speed are the module's own measurements of that fix.
+        // All the TinyGPS++ reads below happen in this one pass of this task, which the parser (loop task) cannot interrupt.
         // ---------------------------------------------------------------
         static RiderGpsTxFixState tx_fix_state = {false, 0, 0};   // sendData task only
-        uint8_t gpsPkt[kRiderGpsLenV2];
+        uint8_t gpsPkt[kRiderGpsLenV3];
 
         int32_t lat_ud = (int32_t)(gps_tx.location.lat() * 1e6);
         int32_t lng_ud = (int32_t)(gps_tx.location.lng() * 1e6);
@@ -459,22 +487,35 @@ void sendData(void *parameter)
         const uint32_t time_age_ms = gps_tx.time.age();
         const uint8_t  fix_ctr     = riderGpsTxFixStep(&tx_fix_state, gps_tx.time.isValid(), gps_tx.time.value(),
                                                        loc_age_ms, time_age_ms, kRiderGpsSameEpochMs);
-        riderGpsBuildV2(gpsPkt, usrConf.dest_address, lat_ud, lng_ud, fix_ctr, esp_crc8);
+        // V2.5-Evo - 2026-10-31 - unit A: the velocity word. Speed in m/s from the same kmph() the display uses.
+        const uint32_t vel_w24 = riderGpsTxVelocity(txGpsGoodFix(),
+                                                    gps_tx.speed.isValid(), (float)(gps_tx.speed.kmph() / 3.6),
+                                                    gps_tx.speed.age(),
+                                                    gps_tx.course.isValid(), (float)gps_tx.course.deg(),
+                                                    gps_tx.course.age(),
+                                                    loc_age_ms, riderGpsVelEpochWindowMs(gpsSelectedMeasMs()));
+        riderGpsBuildV3(gpsPkt, usrConf.dest_address, lat_ud, lng_ud, fix_ctr, vel_w24, esp_crc8);
 
         rxprint("Sending GPS data: ");
         #ifdef DEBUG_RX
-        printHexArray(gpsPkt, kRiderGpsLenV2);
+        printHexArray(gpsPkt, kRiderGpsLenV3);
         #endif
 
-        radio.implicitHeader(kRiderGpsLenV2);
+        radio.implicitHeader(kRiderGpsLenV3);
         {
-          int16_t _txErr = radio.startTransmit(gpsPkt, kRiderGpsLenV2);
+          int16_t _txErr = radio.startTransmit(gpsPkt, kRiderGpsLenV3);
           if (_txErr != RADIOLIB_ERR_NONE)
             Serial.printf("[Radio] startTransmit error %d at line %d\n", _txErr, __LINE__);
         }
         // 14-byte packet needs slightly more air time than 6-byte at SF6/BW250
         // (V2.5-Evo - 2026-10-12 - A-1: the 15-byte v2 packet takes the same 12.864 ms; the 15 ms wait still covers it.)
-        vTaskDelay(pdMS_TO_TICKS(15));
+        // V2.5-Evo - 2026-10-31 - FINDING A-T1: THE BUG - the wait was vTaskDelay(15), sized for 12.864 ms on air. It waits
+        // 14-15 ms, and the 18-byte v3 packet is on air for 14.656 ms plus the radio's SetTx start-up, so the
+        // implicitHeader(6) / startReceive() below could cut its 5th block: CRC fail at the buggy, no rider GPS at all for
+        // a new pair. THE FIX: kRiderGpsDataWaitMs = ceil(air time) + 3 = 18 ms (Common/RiderGpsPacket.h), refused at
+        // compile time if it is ever shorter than riderGpsAirTimeUs(18) + 3 ms. The GPS cycle now uses about 30 ms of its
+        // 100 ms slot; the announcement's 10 ms wait (7.488 ms on air) is unchanged.
+        vTaskDelay(pdMS_TO_TICKS(kRiderGpsDataWaitMs));
       }
       else
       {

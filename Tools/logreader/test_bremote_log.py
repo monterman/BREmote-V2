@@ -822,8 +822,9 @@ class TestLogFormat3(unittest.TestCase):
         # 2026-10-14: format 4 added a boot block after the header; its records are format 3's, and the firmware
         # still reads format-3 files (LOG_FILE_FORMAT_MIN_READ).
         # 2026-10-15: the current format is 5 (the level-6 compass diagnostic block, 174 B); MIN_READ stays 3.
-        self.assertEqual(bl.LOG_FILE_FORMAT_VER, 5)
-        self.assertIn("#define LOG_FILE_FORMAT_VER  5 ", self.fw)
+        # 2026-10-31: the current format is 6 (the level-6 rider velocity word, 178 B); MIN_READ stays 3.
+        self.assertEqual(bl.LOG_FILE_FORMAT_VER, 6)
+        self.assertIn("#define LOG_FILE_FORMAT_VER  6 ", self.fw)
         self.assertIn("#define LOG_FILE_FORMAT_MIN_READ 3 ", self.fw)
         self.assertIs(bl.RECORD_LAYOUTS_BY_FORMAT[4], bl.RECORD_LAYOUTS_BY_FORMAT[3])
         self.assertIn("static_assert(sizeof(VescLogDataL4) == 104,", self.fw)
@@ -924,13 +925,13 @@ class TestLogFormat3(unittest.TestCase):
 
     def test_unknown_format_is_a_clear_error(self):
         # 2026-10-14: 4 is a known format now (the boot block). 2026-10-15: so is 5 (the level-6 compass
-        # diagnostic block), so the first unknown one is 6.
+        # diagnostic block). 2026-10-31: and 6 (the level-6 rider velocity word), so the first unknown one is 7.
         with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, "f6.log")
-            write_binary_log(path, 4, 104, [pack_record(bl.LAYOUT_L4_V3, {})], format_ver=6)
+            path = os.path.join(tmp, "f7.log")
+            write_binary_log(path, 4, 104, [pack_record(bl.LAYOUT_L4_V3, {})], format_ver=7)
             with self.assertRaises(bl.LogFormatError) as ctx:
                 list(bl.iter_binary_records(path))
-        self.assertIn("format_ver=6", str(ctx.exception))
+        self.assertIn("format_ver=7", str(ctx.exception))
 
     def test_cli_exits_nonzero_with_message_on_unknown_format(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1280,7 +1281,7 @@ class TestLogFormat5CompassDiag(unittest.TestCase):
         self.assertIn("static_assert(sizeof(VescLogDataL6Compass) == 174,", self.fw)
         self.assertIn("static_assert(offsetof(VescLogDataL6Compass, compass_diag_dx10) == 170,", self.fw)
         self.assertIn("static_assert(sizeof(VescLogDataL6) == 170,", self.fw)   # the 170 B record is unchanged
-        self.assertIn("#define LOG_REC_MAX sizeof(VescLogDataL6Compass)", self.fw)
+        # 2026-10-31: LOG_REC_MAX is the 178 B format-6 record now (TestLogFormat6RiderVel checks it).
         self.assertEqual(bl.LAYOUT_L6_V5["record_size"], 174)
         self.assertEqual(bl.LAYOUT_L6_V5["level"], 6)
         self.assertIs(bl.RECORD_LAYOUTS_BY_FORMAT[5][174], bl.LAYOUT_L6_V5)
@@ -1351,6 +1352,130 @@ class TestLogFormat5CompassDiag(unittest.TestCase):
                 row = next(csv.DictReader(f))
         self.assertEqual(row["compass_diag_deg"], "90")
         self.assertEqual(row["compass_diag_norm"], "")
+
+
+# ============================================================
+# 2026-10-31 - LOG FORMAT 6: the 174 B level-6 record + the rider's v3 velocity word (u32) = 178 B.
+# Bits 24-31 owner tag, 0-9 course (0.36 deg, 1000-1023 none), 10-19 speed (0.02 m/s, 1023 none), 20-23 fix age
+# (50 ms, 15 none). Made-up values only.
+# ============================================================
+
+def _vel_word(tag: int, crs: int, spd: int, age: int) -> int:
+    return ((tag & 0xFF) << 24) | ((age & 0xF) << 20) | ((spd & 0x3FF) << 10) | (crs & 0x3FF)
+
+
+_VEL_NONE_TAG7 = _vel_word(7, 1023, 1023, 15)
+
+
+class TestLogFormat6RiderVel(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        with open(_FW_HEADER_PATH, "r", encoding="utf-8") as f:
+            cls.fw = f.read()
+        logger_path = os.path.join(os.path.dirname(_FW_HEADER_PATH), "Logger.ino")
+        with open(logger_path, "r", encoding="utf-8") as f:
+            cls.logger = f.read()
+
+    def _decode(self, raw: dict) -> dict:
+        rec_bytes = pack_record(bl.LAYOUT_L6_V6, dict(_RX_IMU_NO_SOURCE_RAW, **raw))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "l6v.log")
+            write_binary_log(path, 6, 178, [rec_bytes], format_ver=6)
+            return list(bl.iter_binary_records(path))[0]
+
+    def test_firmware_static_asserts_and_sizes(self):
+        self.assertIn("static_assert(sizeof(VescLogDataL6Vel) == 178,", self.fw)
+        self.assertIn("static_assert(offsetof(VescLogDataL6Vel, rider_vel_word) == 174,", self.fw)
+        self.assertIn("static_assert(sizeof(VescLogDataL6Compass) == 174,", self.fw)   # the 174 B record is unchanged
+        self.assertIn("#define LOG_REC_MAX sizeof(VescLogDataL6Vel)", self.fw)
+        self.assertIn("#define LOG_FILE_FORMAT_MIN_READ 3 ", self.fw)
+        self.assertEqual(bl.LAYOUT_L6_V6["record_size"], 178)
+        self.assertEqual(bl.LAYOUT_L6_V6["level"], 6)
+        self.assertIs(bl.RECORD_LAYOUTS_BY_FORMAT[6][178], bl.LAYOUT_L6_V6)
+        self.assertIs(bl.RECORD_LAYOUTS_BY_FORMAT[6][174], bl.LAYOUT_L6_V5)
+        self.assertIs(bl.RECORD_LAYOUTS_BY_FORMAT[6][126], bl.LAYOUT_L5_V3)
+        self.assertNotIn(178, bl.RECORD_LAYOUTS_BY_FORMAT[5])
+        # the first 174 bytes are byte-identical to the format-5 level-6 record
+        self.assertEqual(bl.LAYOUT_L6_V6["fields"][:len(bl.LAYOUT_L6_V5["fields"])], bl.LAYOUT_L6_V5["fields"])
+
+    def test_firmware_csv_macro_expands_to_the_generated_header(self):
+        self.assertEqual(_expand_fw_csv_macro(self.fw, "LOG_CSV_HEADER_L6_VEL"), bl.LAYOUT_L6_V6["csv_header"])
+        self.assertEqual(_expand_fw_csv_macro(self.fw, "LOG_CSV_HEADER_L6_COMPASS"), bl.LAYOUT_L6_V5["csv_header"])
+        cols = bl.LAYOUT_L6_V6["csv_header_cols"]
+        self.assertEqual(len(cols), 101)
+        self.assertEqual(cols[-1], "rider_vel_word")
+        self.assertEqual(cols[:100], bl.LAYOUT_L6_V5["csv_header_cols"])   # a pure tail append
+        self.assertIs(bl.CSV_HEADER_TO_LAYOUT[bl.LAYOUT_L6_V6["csv_header"]], bl.LAYOUT_L6_V6)
+
+    def test_the_logger_writes_the_published_word(self):
+        # loggerTask's level-6 branch copies the radio task's published word, and builds the 178 B record.
+        self.assertIn("logData6.rider_vel_word = rx_tx_gps_vel_word;", self.logger)
+        self.assertIn("static VescLogDataL6Vel logData6;", self.logger)
+
+    def test_byte_offsets(self):
+        rec_bytes = pack_record(bl.LAYOUT_L6_V6, dict(_RX_IMU_NO_SOURCE_RAW, rider_vel_word=0x12345678))
+        self.assertEqual(len(rec_bytes), 178)
+        self.assertEqual(rec_bytes[174:178], struct.pack("<I", 0x12345678))
+
+    def test_word_decodes_and_sentinels_are_none(self):
+        got = self._decode(dict(_IMU_FRESH_RAW, rider_vel_word=_vel_word(42, 250, 250, 2)))
+        self.assertEqual(got["_layout_name"], "L6_V6")
+        self.assertEqual(got["rider_vel_tag"], 42)
+        self.assertAlmostEqual(got["rider_vel_course_deg"], 90.0, places=6)
+        self.assertAlmostEqual(got["rider_vel_speed_kmh"], 18.0, places=6)          # 5 m/s
+        self.assertAlmostEqual(got["rider_vel_speed_mph"], 5.0 / 0.44704, places=6)
+        self.assertEqual(got["rider_vel_age_ms"], 100)
+        self.assertEqual(got["vesc2_imu_age_ms"], 250)                               # the IMU block is unaffected
+        none = self._decode(dict(_IMU_FRESH_RAW, rider_vel_word=_VEL_NONE_TAG7))
+        self.assertEqual(none["rider_vel_tag"], 7)
+        for key in ("rider_vel_course_deg", "rider_vel_speed_kmh", "rider_vel_speed_mph", "rider_vel_age_ms"):
+            self.assertIsNone(none[key], key)
+        # course codes 1000-1022 are "no course", as on the RX; speed 1022 (20.44 m/s) is the last real one
+        odd = bl.decode_rider_vel(_vel_word(1, 1000, 1022, 14))
+        self.assertIsNone(odd["rider_vel_course_deg"])
+        self.assertAlmostEqual(odd["rider_vel_speed_kmh"], 20.44 * 3.6, places=6)
+        self.assertEqual(odd["rider_vel_age_ms"], 700)
+
+    def test_device_csv_input(self):
+        base = ["0"] * len(bl.LAYOUT_L6_V5["csv_header_cols"])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "l6v.csv")
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                f.write(bl.LAYOUT_L6_V6["csv_header"] + "\n")
+                f.write(",".join(base + [str(_vel_word(3, 999, 100, 0))]) + "\n")
+                f.write(",".join(base + [str(_VEL_NONE_TAG7)]) + "\n")
+            r_got, r_none = list(bl.iter_csv_records(path))
+        self.assertEqual(r_got["_layout_name"], "L6_V6")
+        self.assertAlmostEqual(r_got["rider_vel_course_deg"], 359.64, places=6)
+        self.assertAlmostEqual(r_got["rider_vel_speed_kmh"], 7.2, places=6)
+        self.assertEqual(r_got["rider_vel_age_ms"], 0)
+        self.assertIsNone(r_none["rider_vel_speed_kmh"])
+
+    def test_format5_level6_file_still_decodes_without_the_word(self):
+        rec_bytes = pack_record(bl.LAYOUT_L6_V5, dict(_RX_IMU_NO_SOURCE_RAW, **_IMU_FRESH_RAW))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "f5_l6.log")
+            write_binary_log(path, 6, 174, [rec_bytes], format_ver=5)
+            rec = list(bl.iter_binary_records(path))[0]
+        self.assertEqual(rec["_layout_name"], "L6_V5")
+        self.assertNotIn("rider_vel_word", rec)
+        self.assertNotIn("rider_vel_speed_kmh", rec)
+
+    def test_expanded_csv_carries_the_decoded_columns(self):
+        import csv
+        rec = self._decode(dict(_IMU_FRESH_RAW, rider_vel_word=_vel_word(9, 500, 1023, 15)))
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = os.path.join(tmp, "x.csv")
+            bl.write_expanded_csv([rec], out_path)
+            with open(out_path, "r", encoding="utf-8", newline="") as f:
+                reader = csv.DictReader(f)
+                row = next(reader)
+                header = reader.fieldnames
+        self.assertEqual(header[-len(bl.RIDER_VEL_DECODED_NAMES):], bl.RIDER_VEL_DECODED_NAMES)   # appended last
+        self.assertEqual(row["rider_vel_tag"], "9")
+        self.assertEqual(row["rider_vel_course_deg"], "180")
+        self.assertEqual(row["rider_vel_speed_kmh"], "")
+        self.assertEqual(row["rider_vel_age_ms"], "")
 
 
 if __name__ == "__main__":

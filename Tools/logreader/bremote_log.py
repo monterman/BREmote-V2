@@ -57,6 +57,11 @@ Format 5 (2026-10-15) appends a compass diagnostic block to the level-6 record:
 174 -> 100 (L6_V5: L6_V3 + compass_diag_dx10 / compass_diag_norm, a log-only
 compass reading the RX takes under throttle, 65535 = no reading); every other
 record is format 3's, byte for byte.
+Format 6 (2026-10-31) appends the rider's v3 velocity word to the level-6
+record: 178 -> 101 (L6_V6: L6_V5 + rider_vel_word, the remote's own GPS
+course, speed and fix age as the RX received them, before its plausibility
+gates; this tool splits it into rider_vel_tag / _course_deg / _speed_kmh /
+_speed_mph / _age_ms); every other record is format 5's, byte for byte.
 A format-2 126 B record and a format-3 126 B record are
 the SAME SIZE with DIFFERENT layouts, so layouts are keyed by
 (format_ver, record_size) in ``RECORD_LAYOUTS_BY_FORMAT``, never by size
@@ -82,7 +87,7 @@ from typing import Any, Callable, Optional
 # FILE HEADER - BREmote_V2_Rx.h: LogFileHeader / LOG_FILE_MAGIC / LOG_FILE_FORMAT_VER
 # ============================================================
 LOG_FILE_MAGIC = 0x474C5242          # little-endian bytes on disk read "BRLG"
-LOG_FILE_FORMAT_VER = 5              # current: 5 = level 6 carries the compass diagnostic block (2026-10-15); 4 = a boot block after the header (2026-10-14); 3 = VESC 2 in the level-4 record
+LOG_FILE_FORMAT_VER = 6              # current: 6 = level 6 carries the rider velocity word (2026-10-31); 5 = level 6 carries the compass diagnostic block (2026-10-15); 4 = a boot block after the header (2026-10-14); 3 = VESC 2 in the level-4 record
 # Both are READABLE. 1 is every file written before the M-2 flash (2026-10-02) and 2 is every
 # file after it. The two differ by 3 bytes at the tail of the BASE record, which moves every
 # block above byte 59 - record_size alone cannot express that, which is why the firmware bumped
@@ -100,7 +105,10 @@ LOG_FILE_FORMAT_VER = 5              # current: 5 = level 6 carries the compass 
 # 2026-10-15: 5 is every file written after the compass-diagnostic flash. Header and boot block as format 4; levels 3-5
 # and the first 170 B of a level-6 record are format 3's. A level-6 record is 174 B: + compass_diag_dx10 and
 # compass_diag_norm (BREmote_V2_Rx.h VescLogDataL6Compass).
-LOG_FILE_FORMAT_VERS_SUPPORTED = (1, 2, 3, 4, 5)
+# 2026-10-31: 6 is every file written after the rider-velocity (v3 rider GPS packet) flash. Header and boot block as format
+# 4; levels 3-5 and the first 174 B of a level-6 record are format 5's. A level-6 record is 178 B: + rider_vel_word
+# (BREmote_V2_Rx.h VescLogDataL6Vel).
+LOG_FILE_FORMAT_VERS_SUPPORTED = (1, 2, 3, 4, 5, 6)
 LOG_FILE_HEADER_FMT = "<IBBH"        # magic u32, format_ver u8, log_level u8, record_size u16
 LOG_FILE_HEADER_SIZE = struct.calcsize(LOG_FILE_HEADER_FMT)
 assert LOG_FILE_HEADER_SIZE == 8
@@ -284,11 +292,14 @@ TIER_ORDER += ["L5_VESC2"]   # 2026-10-06: level 5 + the VESC 2 block (126 B)
 TIER_ORDER += ["L4_V3", "L5_V3"]   # 2026-10-06: format 3 - VESC 2 in the level-4 record (104 B / 126 B)
 TIER_ORDER += ["L6_V3"]            # 2026-10-08: format 3 level 6 - level 5 + the two IMU blocks (170 B)
 TIER_ORDER += ["L6_V5"]            # 2026-10-15: format 5 level 6 - L6_V3 + the compass diagnostic block (174 B)
+TIER_ORDER += ["L6_V6"]            # 2026-10-31: format 6 level 6 - L6_V5 + the rider velocity word (178 B)
 # Tiers that carry the Follow-Me block (decoded gate/state columns) and the level-5 block, by name.
-FM_BLOCK_TIERS = ("L4_83", "L4_RAW", "L4", "L5", "L4_V2", "L5_V2", "L5_VESC2", "L4_V3", "L5_V3", "L6_V3", "L6_V5")
-L5_BLOCK_TIERS = ("L5", "L5_V2", "L5_VESC2", "L5_V3", "L6_V3", "L6_V5")
+FM_BLOCK_TIERS = ("L4_83", "L4_RAW", "L4", "L5", "L4_V2", "L5_V2", "L5_VESC2", "L4_V3", "L5_V3", "L6_V3", "L6_V5", "L6_V6")
+L5_BLOCK_TIERS = ("L5", "L5_V2", "L5_VESC2", "L5_V3", "L6_V3", "L6_V5", "L6_V6")
 # 2026-10-08: tiers that carry the two IMU blocks (VESC 2's IMU + the reserved RX IMU).
-IMU_BLOCK_TIERS = ("L6_V3", "L6_V5")
+IMU_BLOCK_TIERS = ("L6_V3", "L6_V5", "L6_V6")
+# 2026-10-31: tiers that carry the rider velocity word (decoded into the RIDER_VEL_DECODED_NAMES columns).
+RIDER_VEL_TIERS = ("L6_V6",)
 
 # ImuLogBlock.status (Source/Common/VescImu.h). 0xFF (NO SOURCE) is the field's sentinel, so it decodes
 # as None and is named "NO_SOURCE" in the expanded CSV; 0 is never written by the firmware.
@@ -546,6 +557,36 @@ COMPASS_DIAG_FIELDS = [
       sentinel_raw=0xFFFF, unit="counts"),
 ]
 
+# ---- 2026-10-31: LOG FORMAT 6 - the rider's v3 velocity word, bytes 174-177 of the 178 B "L6_V6" record
+#      (BREmote_V2_Rx.h VescLogDataL6Vel; the bit layout is Source/Common/RiderGpsPacket.h). It is the RX's
+#      rx_tx_gps_vel_word as the radio task last published it: bits 24-31 = the low byte of the rider solution number it
+#      belongs to (it changes with every new rider solution), bits 0-9 = course (0.36 deg, 1000-1023 = none), bits 10-19
+#      = speed (0.02 m/s, 1023 = none), bits 20-23 = the fix's age at send (50 ms, 15 = 750 ms+ or unknown). RAW: the
+#      RX's plausibility gates (V-1 to V-3) are NOT applied here - they are in its ?diag. A v1 / v2 remote logs no
+#      velocity (all three sentinels). The firmware's CSV prints the word as one raw unsigned integer; this tool splits
+#      it (decode_rider_vel()). The whole word has no sentinel. ----
+RIDER_VEL_FIELDS = [
+    F("rider_vel_word", "I", csv_prescaled=True, unit="word"),
+]
+RIDER_VEL_DECODED_NAMES = ["rider_vel_tag", "rider_vel_course_deg", "rider_vel_speed_kmh", "rider_vel_speed_mph",
+                           "rider_vel_age_ms"]
+
+
+def decode_rider_vel(word: int) -> dict[str, Any]:
+    """rider_vel_word -> its owner tag and the remote's course / speed / fix age, None where the field is its sentinel.
+    The age is the lower edge of its 50 ms bin."""
+    crs = word & 0x3FF
+    spd = (word >> 10) & 0x3FF
+    age = (word >> 20) & 0xF
+    spd_mps = spd * 0.02 if spd <= 1022 else None
+    return {
+        "rider_vel_tag": (word >> 24) & 0xFF,
+        "rider_vel_course_deg": crs * 0.36 if crs <= 999 else None,
+        "rider_vel_speed_kmh": spd_mps * 3.6 if spd_mps is not None else None,
+        "rider_vel_speed_mph": spd_mps / 0.44704 if spd_mps is not None else None,
+        "rider_vel_age_ms": age * 50 if age < 15 else None,
+    }
+
 # fm_aligning / fm_boost are spliced into the CSV header right after fm_return_reason in every
 # tier from L4_83 up - see the field-table note above for why they have no field-table entry.
 _VIRTUAL_GATE_COLUMNS = {"fm_return_reason": ["fm_aligning", "fm_boost"]}
@@ -628,10 +669,17 @@ LAYOUT_L6_V5 = _layout(6, "L6_V5",
                        + L4_RAW_EXTRA_FIELDS + L4_MOTORS_EXTRA_FIELDS + VESC2_EXTRA_FIELDS
                        + L5_EXTRA_FIELDS + IMU_VESC2_FIELDS + IMU_RX_FIELDS + COMPASS_DIAG_FIELDS,
                        virtual_after=_VIRTUAL_GATE_COLUMNS)
+# ---- 2026-10-31: LOG FORMAT 6 - level 6 + the rider velocity word (178 B). ----
+LAYOUT_L6_V6 = _layout(6, "L6_V6",
+                       L3_FIELDS_V2 + L4_DIAG_EXTRA_FIELDS + L4_83_EXTRA_FIELDS
+                       + L4_RAW_EXTRA_FIELDS + L4_MOTORS_EXTRA_FIELDS + VESC2_EXTRA_FIELDS
+                       + L5_EXTRA_FIELDS + IMU_VESC2_FIELDS + IMU_RX_FIELDS + COMPASS_DIAG_FIELDS
+                       + RIDER_VEL_FIELDS,
+                       virtual_after=_VIRTUAL_GATE_COLUMNS)
 
 LAYOUT_BY_NAME = {lay["name"]: lay for lay in (LAYOUT_L3, LAYOUT_L4_DIAG, LAYOUT_L4_83, LAYOUT_L4_RAW, LAYOUT_L4, LAYOUT_L5,
                                                LAYOUT_L3_V2, LAYOUT_L4_V2, LAYOUT_L5_V2, LAYOUT_L5_VESC2,
-                                               LAYOUT_L4_V3, LAYOUT_L5_V3, LAYOUT_L6_V3, LAYOUT_L6_V5)}
+                                               LAYOUT_L4_V3, LAYOUT_L5_V3, LAYOUT_L6_V3, LAYOUT_L6_V5, LAYOUT_L6_V6)}
 
 # Table-driven, keyed by (format_ver, record_size). 2026-10-06: it was keyed by record size alone, which
 # stopped being enough the day two formats wrote the same size with different layouts (format 2 L5_VESC2
@@ -647,6 +695,10 @@ RECORD_LAYOUTS_BY_FORMAT[4] = RECORD_LAYOUTS_BY_FORMAT[3]
 # 170 stays in the table so an odd file still decodes its IMU prefix within its own format.
 RECORD_LAYOUTS_BY_FORMAT[5] = dict(RECORD_LAYOUTS_BY_FORMAT[3])
 RECORD_LAYOUTS_BY_FORMAT[5][LAYOUT_L6_V5["record_size"]] = LAYOUT_L6_V5
+# 2026-10-31: format 6 - format 5's records plus the 178 B level-6 record. The firmware writes level 6 at 178 B only;
+# 170 and 174 stay in the table so an odd file still decodes its known prefix within its own format.
+RECORD_LAYOUTS_BY_FORMAT[6] = dict(RECORD_LAYOUTS_BY_FORMAT[5])
+RECORD_LAYOUTS_BY_FORMAT[6][LAYOUT_L6_V6["record_size"]] = LAYOUT_L6_V6
 assert set(RECORD_LAYOUTS_BY_FORMAT) == set(LOG_FILE_FORMAT_VERS_SUPPORTED)
 
 # BREmote_V2_Rx.h LOG_CSV_HEADER_L3 as of the M-2 change, copied verbatim. If the firmware adds a
@@ -670,6 +722,7 @@ assert RECORD_LAYOUTS_BY_FORMAT[1].keys() == {59, 65, 83, 85, 87, 109}, sorted(R
 assert RECORD_LAYOUTS_BY_FORMAT[2].keys() == {62, 90, 112, 126}, sorted(RECORD_LAYOUTS_BY_FORMAT[2])
 assert RECORD_LAYOUTS_BY_FORMAT[3].keys() == {62, 104, 126, 170}, sorted(RECORD_LAYOUTS_BY_FORMAT[3])
 assert RECORD_LAYOUTS_BY_FORMAT[5].keys() == {62, 104, 126, 170, 174}, sorted(RECORD_LAYOUTS_BY_FORMAT[5])
+assert RECORD_LAYOUTS_BY_FORMAT[6].keys() == {62, 104, 126, 170, 174, 178}, sorted(RECORD_LAYOUTS_BY_FORMAT[6])
 
 # BREmote_V2_Rx.h LOG_CSV_HEADER_L5_VESC2 is LOG_CSV_HEADER_L5 plus this suffix, copied verbatim.
 # (A test also reads the macro straight out of the firmware header, so the two cannot drift.)
@@ -701,6 +754,12 @@ assert LAYOUT_L6_V3["csv_header"] == LAYOUT_L5_V3["csv_header"] + _FW_CSV_SUFFIX
 _FW_CSV_SUFFIX_COMPASS_DIAG = ",compass_diag_dx10,compass_diag_norm"
 assert LAYOUT_L6_V5["csv_header"] == LAYOUT_L6_V3["csv_header"] + _FW_CSV_SUFFIX_COMPASS_DIAG, (
     "generated level-6 compass diagnostic header has drifted from the firmware macro"
+)
+# 2026-10-31: BREmote_V2_Rx.h LOG_CSV_HEADER_L6_VEL is LOG_CSV_HEADER_L6_COMPASS plus this suffix, copied verbatim
+# (test_bremote_log.py also expands the real macro).
+_FW_CSV_SUFFIX_RIDER_VEL = ",rider_vel_word"
+assert LAYOUT_L6_V6["csv_header"] == LAYOUT_L6_V5["csv_header"] + _FW_CSV_SUFFIX_RIDER_VEL, (
+    "generated level-6 rider velocity header has drifted from the firmware macro"
 )
 
 # The six CSV headers the firmware itself can print (BREmote_V2_Rx.h LOG_CSV_HEADER_L3 /
@@ -748,9 +807,10 @@ CSV_HEADER_TO_LAYOUT = {
     LAYOUT_L5_V3["csv_header"]: LAYOUT_L5_V3,
     LAYOUT_L6_V3["csv_header"]: LAYOUT_L6_V3,   # 2026-10-08 - level 6 (IMU)
     LAYOUT_L6_V5["csv_header"]: LAYOUT_L6_V5,   # 2026-10-15 - level 6 + the compass diagnostic block (format 5)
+    LAYOUT_L6_V6["csv_header"]: LAYOUT_L6_V6,   # 2026-10-31 - level 6 + the rider velocity word (format 6)
 }
 # Every layout must be reachable from a DISTINCT header line - the header is the only thing a CSV carries.
-# (L3_V2 serves formats 2 and 3, so it is one entry; 14 layouts -> 14 headers.)
+# (L3_V2 serves formats 2 and 3, so it is one entry; 15 layouts -> 15 headers.)
 assert len(CSV_HEADER_TO_LAYOUT) == len(LAYOUT_BY_NAME), "two layouts print the same CSV header"
 
 
@@ -852,6 +912,9 @@ def add_decoded_columns(rec: dict) -> dict:
         if key in rec:
             value = rec[key]
             rec[key + "_name"] = "NO_SOURCE" if value is None else IMU_STATUS_NAMES.get(value, f"unknown({value})")
+    # 2026-10-31: the rider's v3 velocity word (level 6, format 6) split into its tag, course, speed and fix age.
+    if "rider_vel_word" in rec and rec["rider_vel_word"] is not None:
+        rec.update(decode_rider_vel(int(rec["rider_vel_word"])))
     return rec
 
 
@@ -1057,6 +1120,8 @@ def csv_field_order_for_layout(layout_name: str) -> list[str]:
         extra += FM_FLAGS_SENT_BIT_NAMES
     if layout_name in IMU_BLOCK_TIERS:   # 2026-10-08 - level 6
         extra += ["vesc2_imu_status_name", "rx_imu_status_name"]
+    if layout_name in RIDER_VEL_TIERS:   # 2026-10-31 - level 6, format 6: appended last, so every older column keeps its place
+        extra += RIDER_VEL_DECODED_NAMES
     return base + extra
 
 

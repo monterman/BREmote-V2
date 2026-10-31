@@ -1,3 +1,10 @@
+// V2.5-Evo - 2026-10-31 - RIDER v3 VELOCITY, LOGGING ONLY (design audit 2026-10-31, Follow-Me package 2 unit A): new
+//   fmRiderVelStep(), called once per tick at the top of runFmLoop() before the body. It reads the rider's v3 course and
+//   speed for each NEW rider solution (rx_tx_gps_vel_word, checked against rx_tx_gps_solution_seq by its tag), runs the
+//   plausibility gates V-1 to V-3 (Common/RiderGpsPacket.h riderGpsVelCheck(); V-3 against the raw track fm_cv_track,
+//   read-only), and keeps the verdict and counts in its own statics for ?diag (printFmPauseDiag(): a "Rider vel" line).
+//   NOTHING ELSE READS THEM: no Follow-Me, return-to-me, cap, steering or log-snapshot value changes, with or without v3.
+//   No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-30 - FROM ITS FRONT-STATION WORK THE 2026-10-30 PACKAGE SHIPS E-1 ALONE (audited). The other
 //   front-station changes tried with it - the front governor round the anchor, an R2 hold-off after a front abort,
 //   R4-front, the F4 / F5 declared-side seed - are not in this build and are held for a later package: with the hold-off
@@ -3397,6 +3404,79 @@ static void fmPauseClear()
   fmCvQualReset(&fm_cv_qual);   // V2.5-Evo - 2026-10-30 - Rev 2.1 §D: and the qualifier
 }
 
+// ============================================================
+// V2.5-Evo - 2026-10-31 - THE RIDER'S v3 VELOCITY THROUGH ITS PLAUSIBILITY GATES - LOGGING / ?diag ONLY
+// (design audit 2026-10-31, Follow-Me package 2 unit A)
+// ============================================================
+// WHAT: a v3 remote sends its own GPS course and speed with every rider solution. This stores the gated result of the
+// NEWEST solution and counts the outcomes since boot, for ?diag and for tuning the later units on real riding.
+// WHY IT CANNOT CHANGE BEHAVIOUR: the only things written are the statics below, and nothing in Follow-Me, return-to-me,
+// the cap chain, the steering, the log snapshot or the telemetry reads them - only printFmPauseDiag() does. A v2 remote,
+// a missing velocity or a failed gate therefore changes nothing anywhere; package-1 behaviour is untouched either way.
+// (The level-6 log carries the raw word itself, straight from rx_tx_gps_vel_word.)
+// Loop task only.
+struct FmRiderVelDiag {
+  bool     seq_seen;     // last_seq holds a real reading
+  uint32_t last_seq;     // the rider solution counter last looked at
+  uint32_t solutions;    // new solutions looked at
+  uint32_t spd_ok;       // ... whose speed passed every gate
+  uint32_t crs_ok;       // ... whose course is usable too (from 2.0 m/s)
+  uint32_t none;         // ... where the remote sent no velocity (a v1 / v2 remote, or both sentinels)
+  uint32_t rej_v1;       // refused by V-1 (a code out of range, or a course without a speed)
+  uint32_t rej_v2;       // refused by V-2 (faster than gps_max_teleport_kmh)
+  uint32_t rej_v3;       // refused by V-3 (off the raw position track)
+  uint32_t v3_judged;    // solutions V-3 could judge (the raw track had a speed estimate)
+  uint32_t tag_miss;     // the newest word was already the NEXT solution's (read between the radio task's two stores)
+};
+static FmRiderVelDiag     fm_rider_vel_diag = { false, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+static RiderGpsVelVerdict fm_rider_vel      = { RGV_NONE, false, 0.0f, false, 0.0f, kRiderVelAgeNone, false };   // the newest verdict
+static unsigned long      fm_rider_vel_ms   = 0;   // when it was taken, 0 = never
+
+// ------------------------------------------------------------
+// fmRiderVelStep - one Follow-Me tick of the v3 velocity gates.
+// ------------------------------------------------------------
+// What it does: when the rider solution counter has moved since the last tick, reads the published velocity word, proves
+//   by its tag that it belongs to that solution (riderGpsVelForSeq() - the counter is read FIRST, then the word, the order
+//   processMetaGpsPacket() publishes them in reverse), and judges it with riderGpsVelCheck(): V-1 the codes, V-2 at most
+//   gps_max_teleport_kmh, V-3 within max(1.5 m/s, 40 %) of the raw rider track's own speed when that track has an estimate
+//   (fmCvRiderMotion() on fm_cv_track, read-only; the track is kept only while Follow-Me is armed or engaged, so V-3 is not
+//   judged otherwise). A failure invalidates the VELOCITY ONLY - the position was already accepted by Phase A on the radio
+//   task and nothing here touches it, so a velocity failure can never age the rider or start the long-loss clock.
+// Inputs: now. Reads rx_tx_gps_solution_seq, rx_tx_gps_vel_word (radio task, single aligned reads), fm_cv_track,
+//   usrConf.tx_gps_stale_timeout_ms / gps_max_teleport_kmh. Outputs: fm_rider_vel, fm_rider_vel_ms, fm_rider_vel_diag.
+// Side effects: none beyond those three statics. GPS rules 1-4: no position is written, extrapolated or interpolated.
+// ------------------------------------------------------------
+static void fmRiderVelStep(unsigned long now)
+{
+  const uint32_t seq  = rx_tx_gps_solution_seq;   // FIRST the counter ...
+  const uint32_t word = rx_tx_gps_vel_word;       // ... then the word
+  if (!fm_rider_vel_diag.seq_seen) { fm_rider_vel_diag.seq_seen = true; fm_rider_vel_diag.last_seq = seq; return; }
+  if (seq == fm_rider_vel_diag.last_seq) return;  // no new rider solution since the last tick
+  fm_rider_vel_diag.last_seq = seq;
+  uint32_t w24 = 0;
+  if (!riderGpsVelForSeq(word, seq, &w24)) {      // already the next solution's word: that one is judged next tick
+    fm_rider_vel_diag.tag_miss = fm_rider_vel_diag.tag_miss + 1;
+    return;
+  }
+  float raw_mps = 0.0f, raw_crs = 0.0f;
+  bool  raw_crs_ok = false;
+  const bool raw_ok = fmCvRiderMotion(&fm_cv_track, (uint32_t)now, (uint32_t)usrConf.tx_gps_stale_timeout_ms,
+                                      kFmCourseValidSpeedKmh / 3.6f, &raw_mps, &raw_crs, &raw_crs_ok);
+  (void)raw_crs; (void)raw_crs_ok;                // V-3 judges the speed only
+  const RiderGpsVelVerdict v = riderGpsVelCheck(w24, usrConf.gps_max_teleport_kmh / 3.6f, raw_ok, raw_mps);
+  fm_rider_vel    = v;
+  fm_rider_vel_ms = (now != 0) ? now : 1;
+  FmRiderVelDiag &d = fm_rider_vel_diag;
+  d.solutions = d.solutions + 1;
+  if (v.v3_checked)          d.v3_judged = d.v3_judged + 1;
+  if (v.spd_ok)              d.spd_ok    = d.spd_ok + 1;
+  if (v.crs_ok)              d.crs_ok    = d.crs_ok + 1;
+  if (v.verdict == RGV_NONE) d.none      = d.none + 1;
+  if (v.verdict == RGV_V1)   d.rej_v1    = d.rej_v1 + 1;
+  if (v.verdict == RGV_V2)   d.rej_v2    = d.rej_v2 + 1;
+  if (v.verdict == RGV_V3)   d.rej_v3    = d.rej_v3 + 1;
+}
+
 // fmCondBitToStopReason - the FmStopReason code for one kFmCond* bit (fmPauseReasonBit()); 0 for none.
 static uint8_t fmCondBitToStopReason(uint8_t bit)
 {
@@ -4025,8 +4105,45 @@ static void printFmPauseDiag(unsigned long now_ms)
   if (sol_ms == 0) snprintf(sol_txt, sizeof(sol_txt), "none yet");
   else             snprintf(sol_txt, sizeof(sol_txt), "%lu ms ago", (unsigned long)stampAgeMs((uint32_t)now_ms, sol_ms));
   Serial.printf("Rider GPS  : packet %s; last new solution %s (stale after %u ms)\n",
+                (proto == 3) ? "v3 (GPS fix counter + the remote's course and speed)" :   // V2.5-Evo - 2026-10-31 - unit A
                 (proto == 2) ? "v2 (GPS fix counter)" : (proto == 1) ? "v1 (old remote: position changes only)" : "none heard",
                 sol_txt, (unsigned)usrConf.tx_gps_stale_timeout_ms);
+  // V2.5-Evo - 2026-10-31 - unit A (design audit 2026-10-31 §A.4 / bench B-8): THE REMOTE'S OWN COURSE AND SPEED (v3). Line 1:
+  // v3 announcements heard against v3 packets accepted (B-8 wants 99 % or better at 10 m over 2 min), then what the gates
+  // made of the new solutions since boot. Line 2: the newest verdict - speed in mph, course, the fix's age at send.
+  // Logging only: nothing in Follow-Me reads these. Read-only (radio-task counters: single aligned reads).
+  {
+    const uint32_t ann = rx_gps_v3_ann, ok = rx_gps_v3_ok;
+    const FmRiderVelDiag &d = fm_rider_vel_diag;
+    char acc_txt[24];
+    if (ann == 0) snprintf(acc_txt, sizeof(acc_txt), "none heard");
+    else          snprintf(acc_txt, sizeof(acc_txt), "%.1f %%", 100.0 * (double)ok / (double)ann);
+    const double pct = (d.solutions == 0) ? 0.0 : 100.0 * (double)d.spd_ok / (double)d.solutions;
+    Serial.printf("Rider vel  : v3 packets %lu of %lu announced (%s); %lu new solutions: speed valid %lu (%.1f %%), course valid %lu, "
+                  "none sent %lu; refused V-1 %lu / V-2 %lu / V-3 %lu (V-3 judged %lu); tag misses %lu\n",
+                  (unsigned long)ok, (unsigned long)ann, acc_txt, (unsigned long)d.solutions, (unsigned long)d.spd_ok, pct,
+                  (unsigned long)d.crs_ok, (unsigned long)d.none, (unsigned long)d.rej_v1, (unsigned long)d.rej_v2,
+                  (unsigned long)d.rej_v3, (unsigned long)d.v3_judged, (unsigned long)d.tag_miss);
+    if (fm_rider_vel_ms == 0) {
+      Serial.printf("Rider vel  : newest - no new rider solution judged yet\n");
+    } else {
+      const RiderGpsVelVerdict &v = fm_rider_vel;
+      const char *vtxt = (v.verdict == RGV_OK) ? "good" : (v.verdict == RGV_NONE) ? "no velocity sent" :
+                         (v.verdict == RGV_V1) ? "refused V-1 (bad code)" : (v.verdict == RGV_V2) ? "refused V-2 (too fast)" :
+                         "refused V-3 (off the position track)";
+      char spd_txt[20], crs_txt[20], age_txt[24];
+      if (v.spd_ok) snprintf(spd_txt, sizeof(spd_txt), "%.1f mph", (double)(v.spd_mps / 0.44704f));
+      else          snprintf(spd_txt, sizeof(spd_txt), "none");
+      if (v.crs_ok) snprintf(crs_txt, sizeof(crs_txt), "%.1f deg", (double)v.crs_deg);
+      else          snprintf(crs_txt, sizeof(crs_txt), "none");
+      if (v.age_code >= kRiderVelAgeNone) snprintf(age_txt, sizeof(age_txt), "750+ ms or unknown");
+      else snprintf(age_txt, sizeof(age_txt), "%u-%u ms", (unsigned)(v.age_code * kRiderVelAgeMsPerCode),
+                    (unsigned)(v.age_code * kRiderVelAgeMsPerCode + kRiderVelAgeMsPerCode - 1));
+      Serial.printf("Rider vel  : newest %s, %lu ms ago - speed %s, course %s, fix age at send %s%s\n",
+                    vtxt, (unsigned long)stampAgeMs((uint32_t)now_ms, (uint32_t)fm_rider_vel_ms), spd_txt, crs_txt, age_txt,
+                    v.v3_checked ? " (checked against the position track)" : "");
+    }
+  }
   // V2.5-Evo - 2026-10-30 - unit 1 (bench B-4: jog back toward the buggy while ACTIVE): the fast-closure ceiling as the
   // last cap-3 computation left it - the range and closing rate from the rider's raw fixes, whether a ceiling stood and
   // whether it coasted, and how long ago it last lowered cap 3 (the divergence net is parked for 6.5 s after that).
@@ -7189,6 +7306,10 @@ void runFmLoop()
   fmResolveReturnMode();           // V2.5-Evo - 2026-09-19 - one effective auto-return value per tick
   fm_align_influence_req = 0;      // V2.5-Evo - 2026-09-19 - no pivot boost unless an align branch asks below
   fm_steer_takeover_req  = false;  // V2.5-Evo - 2026-09-19 - no takeover unless an FM owner tick (ACTIVE / RETURN moving) stands one below
+
+  // V2.5-Evo - 2026-10-31 - unit A: the rider's v3 velocity through its gates, every tick, in every state. It writes only
+  // its own ?diag statics (fmRiderVelStep()); nothing below reads them, so the body runs exactly as before.
+  fmRiderVelStep(now);
 
   runFmLoopBody(now);
 

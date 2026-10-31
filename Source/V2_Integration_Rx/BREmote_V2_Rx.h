@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-31 - RIDER GPS PACKET v3, LOGGING ONLY (design audit 2026-10-31, Follow-Me package 2 unit A): new runtime globals rx_tx_gps_vel_word (the velocity of the last accepted NEW rider solution, tagged with its solution number, published before rx_tx_gps_solution_seq), rx_gps_v3_ann / rx_gps_v3_ok (?diag: v3 announcements heard against v3 packets accepted); rx_tx_gps_proto may now read 3. LOG FORMAT 6: a level-6 row is a VescLogDataL6Vel (178 B) - the 174 B format-5 record + rider_vel_word at the tail (one new CSV column); LOG_REC_MAX, logRecordSizeForLevel(6), logCsvHeaderFor() and logFormatCsvRow() follow it; MIN_READ stays 3, so formats 3-5 still download. Nothing in Follow-Me, return-to-me or the motor path reads the velocity. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-30 - E-1's g_applied_thr_cmd is std::atomic<uint8_t> (unit 2, Revision 2.5 item 4): the P7 pattern, one writer (calcPWM()'s store) and one reader (the ARMED -> ACTIVE edge's load), relaxed. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-30 - FOLLOW-ME FAST-CLOSURE CEILING (unit 1 of the 2026-10-30 package): includes ../Common/FollowMeConverge.h (after FollowMePause.h), the pure ceiling RTMState.ino applies inside cap 3. Include only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-29 - BIND LED RE-LIT WHILE THE LINK IS UP (owner-approved for RX1): includes ../Common/BindLedRefresh.h (after AwPort1.h), the pure rule checkConnStatus() (System.ino) uses to write the BIND LED LOW again every 5th pass while connected and to skip that write while a BIND LED pattern runs. Include only: no new global here (the pattern flag is file-scope in System.ino). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
@@ -1440,7 +1441,21 @@ volatile uint32_t rx_tx_gps_fix_seq = 0;   // one increment per distinct rider p
 // uint8_t: single aligned accesses on this core, no tearing.
 volatile uint32_t rx_tx_gps_solution_ms  = 0;   // millis() of the last accepted NEW rider GPS solution; 0 = never
 volatile uint32_t rx_tx_gps_solution_seq = 0;   // +1 per accepted NEW rider GPS solution (the long-loss reset streak)
-volatile uint8_t  rx_tx_gps_proto        = 0;   // the last accepted rider GPS packet: 0 = none, 1 = v1 (14 B), 2 = v2 (15 B, fix counter); ?diag only
+volatile uint8_t  rx_tx_gps_proto        = 0;   // the last accepted rider GPS packet: 0 = none, 1 = v1 (14 B), 2 = v2 (15 B, fix counter), 3 = v3 (18 B, + course / speed, V2.5-Evo - 2026-10-31); ?diag only
+
+// V2.5-Evo - 2026-10-31 - RIDER GPS v3 (design audit 2026-10-31 unit A, LOGGING ONLY): THE REMOTE'S OWN COURSE AND SPEED.
+// rx_tx_gps_vel_word is the velocity of the last accepted NEW rider solution as ONE aligned 32-bit word:
+// (that solution's number & 0xFF) << 24 | the 24-bit velocity word off the wire (Common/RiderGpsPacket.h riderGpsVelTag()).
+// Single writer: processMetaGpsPacket() on the radio task, which stores it BEFORE it bumps rx_tx_gps_solution_seq, so a
+// reader that reads the counter first and then this word can prove the velocity belongs to that solution
+// (riderGpsVelForSeq()) and can never see it torn. A v1 / v2 solution stores "no velocity" (kRiderVelNoneW24); a
+// re-broadcast or a Phase-A-rejected solution stores nothing. Read by fmRiderVelStep() (RTMState.ino, the plausibility
+// gates and ?diag) and by the level-6 log. NO CONTROL CODE READS IT. Initial value: tag 0 (no solution yet), no velocity.
+volatile uint32_t rx_tx_gps_vel_word     = kRiderVelWordInit;
+// ?diag, bench B-8 (v3 acceptance at 10 m): 0xF3 announcements with subtype 0x05 heard, and 18-byte v3 packets that passed
+// the address, CRC and subtype tests. Radio task only writes them; single aligned reads elsewhere. Counts since boot.
+volatile uint32_t rx_gps_v3_ann          = 0;
+volatile uint32_t rx_gps_v3_ok           = 0;
 
 // V2.5-Evo - 2026-04-25 - P7 RTM/FM runtime state (set by Radio.ino meta-packet handlers)
 // rtm_rx_active: true = TX signalled RTM active; safety gates in RTMState.ino may override.
@@ -2376,11 +2391,40 @@ struct __attribute__((packed)) VescLogDataL6Compass {
 static_assert(sizeof(VescLogDataL6Compass) == 174, "VescLogDataL6Compass size mismatch - expected 170 (VescLogDataL6) + 2 (compass_diag_dx10) + 2 (compass_diag_norm).");
 static_assert(offsetof(VescLogDataL6Compass, compass_diag_dx10) == 170, "the compass diagnostic block must start right after the 170 B level-6 record");
 
+// ============================================================
+// V2.5-Evo - 2026-10-31 - LOG FORMAT 6: VescLogDataL6Vel - the level-6 record + THE RIDER'S v3 VELOCITY WORD (178 B)
+//
+// WHY: Follow-Me package 2 (design audit 2026-10-31, unit A) receives the remote's own GPS course and speed in the v3
+// rider packet, and its later units are tuned on the measured noise of exactly these values (bench row B-7: straight
+// runs, U-turns and carving at level 6). This record carries them for every row. LOGGING ONLY - nothing steers from it.
+// LAYOUT: the first 174 bytes are a byte-identical VescLogDataL6Compass, so every earlier column decodes with the same
+// code; one u32 is appended at the TAIL.
+//   174  rider_vel_word  u32  rx_tx_gps_vel_word as the radio task last published it (BREmote_V2_Rx.h, single aligned
+//                              read): bits 24-31 = the low byte of the rider solution number it belongs to (it changes
+//                              with every new rider solution), bits 0-23 = the velocity word off the wire
+//                              (Common/RiderGpsPacket.h): course bits 0-9 (0.36 deg, 1023 = none), speed bits 10-19
+//                              (0.02 m/s, 1023 = none), the fix's age at send bits 20-23 (50 ms, 15 = 750 ms+ / unknown).
+//                              The RAW word, before the buggy's plausibility gates - those are in ?diag. A v1 / v2
+//                              remote logs 0x..FFFFFF (no velocity).
+//   178 = sizeof
+// In the CSV it prints as one raw unsigned integer (the same convention as compass_diag_dx10); the PC log reader
+// (Tools/logreader/bremote_log.py) splits it into the tag, the course, the speed and the age.
+// FORMAT BUMP 5 -> 6, the format-5 precedent: a tail append does not need one by the rule beside LOG_FILE_FORMAT_VER,
+// but a reader that does not know the new column then refuses the file by its number instead of guessing from the size.
+// ============================================================
+struct __attribute__((packed)) VescLogDataL6Vel {
+    VescLogDataL6Compass l6c;      // the complete format-5 level-6 record (174 B), first - do not reorder
+    uint32_t rider_vel_word;       // bytes 174-177; see above. Never a sentinel as a whole: its own fields carry them
+};
+static_assert(sizeof(VescLogDataL6Vel) == 178, "VescLogDataL6Vel size mismatch - expected 174 (VescLogDataL6Compass) + 4 (rider_vel_word).");
+static_assert(offsetof(VescLogDataL6Vel, rider_vel_word) == 174, "the rider velocity word must start right after the 174 B level-6 record");
+
 // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU): the largest record this firmware writes or reads. Every
 // record-size ceiling and raw record buffer (serial ?download, WiFi download, loggerTask) uses this, so
 // the next tier is one edit here instead of six scattered sizeof(VescLogDataL5) that refuse their own files.
 // V2.5-Evo - 2026-10-15 - LOG FORMAT 5: the level-6 record with the compass diagnostic block (174 B).
-#define LOG_REC_MAX sizeof(VescLogDataL6Compass)
+// V2.5-Evo - 2026-10-31 - LOG FORMAT 6: the level-6 record with the rider velocity word (178 B).
+#define LOG_REC_MAX sizeof(VescLogDataL6Vel)
 
 // ============================================================
 // V2.5-Evo - 2026-09-17 - FmLogSnapshot: the controller -> logger hand-off
@@ -2486,8 +2530,13 @@ portMUX_TYPE  g_fm_log_mux      = portMUX_INITIALIZER_UNLOCKED;
 // that a reader that does not know the two new columns refuses the file by its format number instead of guessing from
 // the size. Nothing else changed: header and boot block as format 4, levels 3-5 records and the first 170 B of a level-6
 // record byte-identical. MIN_READ stays 3, so files recorded at formats 3 and 4 still download after this flash.
-#define LOG_FILE_FORMAT_MIN_READ 3        // the oldest format whose records this firmware decodes (3, 4 and 5 share one layout up to 170 B)
-#define LOG_FILE_FORMAT_VER  5            // 5 = level 6 is 174 B with the compass diagnostic block (2026-10-15); 4 = boot block after the header (2026-10-14); 3 = VESC 2 block in the level-4 record (2026-10-06); 2 = M-2 motor-gate block in the base record (2026-10-01); 1 = the original STAGE 0 PART B layout (2026-07-25)
+// V2.5-Evo - 2026-10-31 - LOG FORMAT 6 (design audit 2026-10-31 unit A): BUMPED 5 -> 6 for the rider velocity word at the
+// tail of the level-6 record (VescLogDataL6Vel, 178 B), the same reason as format 5: a tail append, bumped so a reader
+// that does not know the new column refuses the file by its number. Header and boot block as format 4; levels 3-5 records
+// and the first 174 B of a level-6 record byte-identical to format 5. MIN_READ stays 3, so files recorded at formats 3, 4
+// and 5 still download after this flash.
+#define LOG_FILE_FORMAT_MIN_READ 3        // the oldest format whose records this firmware decodes (3-6 share one layout up to 170 B)
+#define LOG_FILE_FORMAT_VER  6            // 6 = level 6 is 178 B with the rider velocity word (2026-10-31); 5 = level 6 is 174 B with the compass diagnostic block (2026-10-15); 4 = boot block after the header (2026-10-14); 3 = VESC 2 block in the level-4 record (2026-10-06); 2 = M-2 motor-gate block in the base record (2026-10-01); 1 = the original STAGE 0 PART B layout (2026-07-25)
 
 struct __attribute__((packed)) LogFileHeader {
     uint32_t magic;        // LOG_FILE_MAGIC — absent/mismatched means "not a BREmote log of this era"
@@ -2561,7 +2610,7 @@ static inline uint8_t logResolveLevel()
 // ============================================================
 static inline uint16_t logRecordSizeForLevel(uint8_t level)
 {
-  if (level >= 6) return (uint16_t)sizeof(VescLogDataL6Compass);   // V2.5-Evo - 2026-10-15 - LOG FORMAT 5: 174 B (was VescLogDataL6, 170 B)
+  if (level >= 6) return (uint16_t)sizeof(VescLogDataL6Vel);   // V2.5-Evo - 2026-10-31 - LOG FORMAT 6: 178 B (format 5: VescLogDataL6Compass, 174 B; before that VescLogDataL6, 170 B)
   if (level >= 5) return (uint16_t)sizeof(VescLogDataL5);   // V2.5-Evo - 2026-09-19 - level 5 (126 B since the 2026-10-06 VESC 2 block)
   return (level >= 4) ? (uint16_t)sizeof(VescLogDataL4) : (uint16_t)sizeof(VescLogData);
 }
@@ -2605,6 +2654,9 @@ static inline uint16_t logRecordSizeForLevel(uint8_t level)
 // V2.5-Evo - 2026-10-15 - LOG FORMAT 5: the two compass diagnostic columns after the full level-6 set (174 B, 100 columns).
 // LOG_CSV_HEADER_L6 stays the 170 B set, so level-6 files recorded at formats 3 and 4 keep their 98 columns.
 #define LOG_CSV_HEADER_L6_COMPASS LOG_CSV_HEADER_L6 ",compass_diag_dx10,compass_diag_norm"
+// V2.5-Evo - 2026-10-31 - LOG FORMAT 6: the rider velocity word after the full format-5 level-6 set (178 B, 101 columns).
+// LOG_CSV_HEADER_L6_COMPASS stays the 174 B set, so level-6 files recorded at format 5 keep their 100 columns.
+#define LOG_CSV_HEADER_L6_VEL LOG_CSV_HEADER_L6_COMPASS ",rider_vel_word"
 
 // V2.5-Evo - 2026-10-01 - M-2: 31 level-3 columns -> 33 (+ctrl_pkt_age_ms, +motor_gate_open).
 #define LOG_CSV_ROW_FMT_L3 "%u,%.2f,%.2f,%d,%.1f,%d,%u,%u,%.1f,%.6f,%.6f,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%d,%d,%u,%u,%.1f,%d,%.1f,%u,%u"
@@ -2616,6 +2668,7 @@ static inline uint16_t logRecordSizeForLevel(uint8_t level)
 #define LOG_CSV_ROW_EXT_L4_VESC2 ",%d,%.2f,%.2f,%d,%.1f,%d,%d,%d,%d"   // V2.5-Evo - 2026-10-06 - VESC 2 (level 4 and up since log format 3): age ms, motor A, battery A, duty %, V, ERPM, FET C, motor C, fault; every N/A prints -999
 #define LOG_CSV_ROW_EXT_L6_IMU ",%d,%.2f,%.2f,%.2f,%.1f,%.1f,%.1f,%.3f,%.3f,%.3f,%d"   // V2.5-Evo - 2026-10-08 - LOG LEVEL 6 (IMU), used once per ImuLogBlock: age ms, roll / pitch / yaw deg, gyro xyz dps, acc xyz g, status; every N/A prints -999
 #define LOG_CSV_ROW_EXT_L6_COMPASS ",%u,%u"   // V2.5-Evo - 2026-10-15 - LOG FORMAT 5: compass_diag_dx10, compass_diag_norm, both raw; 65535 = no reading
+#define LOG_CSV_ROW_EXT_L6_VEL ",%lu"         // V2.5-Evo - 2026-10-31 - LOG FORMAT 6: rider_vel_word, the raw u32 (decoded by the PC log reader)
 
 // Row buffer size. V2.5-Evo - 2026-10-06 - audit LOW: the old running estimate here had drifted (it ended
 // "640 clears the pathological ~362"), so this is the WORST CASE recounted field by field from the format
@@ -2637,6 +2690,8 @@ static inline uint16_t logRecordSizeForLevel(uint8_t level)
 // Arduino loop task (8 KB) in both readers.
 // V2.5-Evo - 2026-10-15 - LOG FORMAT 5: NOT raised. The two compass diagnostic columns add at most 12 chars
 // (",65535,65535"), so the worst row is ~786 B and 832 still holds it with ~46 B to spare.
+// V2.5-Evo - 2026-10-31 - LOG FORMAT 6: NOT raised. The rider velocity word adds at most 11 chars (",4294967295"), so the
+// worst row is ~797 B and 832 still holds it with ~35 B to spare.
 #define LOG_CSV_ROW_BUF 832
 
 // ============================================================
@@ -2664,7 +2719,8 @@ static inline const char* logCsvHeaderFor(uint8_t level, uint16_t record_size)
   if (record_size < (uint16_t)sizeof(VescLogDataL5))                                                    return LOG_CSV_HEADER_L4;        // 104 B: + the VESC 2 block (format 3)
   if (record_size < (uint16_t)sizeof(VescLogDataL6))                                                    return LOG_CSV_HEADER_L5;        // 126 B: + the level-5 block
   if (record_size < (uint16_t)sizeof(VescLogDataL6Compass))                                             return LOG_CSV_HEADER_L6;        // 170 B: + the two IMU blocks (V2.5-Evo - 2026-10-08 - LOG LEVEL 6)
-  return LOG_CSV_HEADER_L6_COMPASS;                                                                                                      // 174 B: + the compass diagnostic block (V2.5-Evo - 2026-10-15 - LOG FORMAT 5)
+  if (record_size < (uint16_t)sizeof(VescLogDataL6Vel))                                                 return LOG_CSV_HEADER_L6_COMPASS; // 174 B: + the compass diagnostic block (V2.5-Evo - 2026-10-15 - LOG FORMAT 5)
+  return LOG_CSV_HEADER_L6_VEL;                                                                                                          // 178 B: + the rider velocity word (V2.5-Evo - 2026-10-31 - LOG FORMAT 6)
 }
 
 // ============================================================
@@ -2923,6 +2979,20 @@ static int logFormatCsvRow(char* out, size_t out_len, const uint8_t* rec_bytes, 
       if (g > 0)
       {
         n += g;
+        if ((size_t)n >= out_len) n = (int)out_len - 1;
+      }
+    }
+    // V2.5-Evo - 2026-10-31 - LOG FORMAT 6: the rider velocity word, the tail of a 178 B level-6 record. Present only in a
+    // record that reaches sizeof(VescLogDataL6Vel), so a 174 B (format 5) level-6 file prints exactly its 100 columns.
+    // Printed raw (one unsigned integer); the PC log reader decodes it.
+    if (rec_size >= (uint16_t)sizeof(VescLogDataL6Vel) && (size_t)n < (out_len - 1))
+    {
+      uint32_t vel_word;
+      memcpy(&vel_word, rec_bytes + offsetof(VescLogDataL6Vel, rider_vel_word), sizeof(vel_word));
+      int h = snprintf(out + n, out_len - (size_t)n, LOG_CSV_ROW_EXT_L6_VEL, (unsigned long)vel_word);
+      if (h > 0)
+      {
+        n += h;
         if ((size_t)n >= out_len) n = (int)out_len - 1;
       }
     }

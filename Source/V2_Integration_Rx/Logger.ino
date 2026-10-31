@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-31 - LOG FORMAT 6 (design audit 2026-10-31, Follow-Me package 2 unit A, logging only): a level-6 row is a VescLogDataL6Vel (178 B): the format-5 174 B record exactly as before + rider_vel_word, the rider's v3 velocity word as the radio task last published it (rx_tx_gps_vel_word, one aligned 32-bit read). ?download and the WiFi download follow LOG_REC_MAX / logCsvHeaderFor() / logFormatCsvRow() with no edit here; formats 3-5 still download. Levels 3-5 unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-15 - LOG FORMAT 5 (owner-approved for RX1, diagnostic only): a level-6 row is a VescLogDataL6Compass (174 B): the 170 B level-6 record + compass_diag_dx10 / compass_diag_norm, filled by the new fillCompassDiag() - one compass reading per row through compassDiagRead() (Compass.ino), only while this row's thr_received is at or above 25 (where the snapshot path stops reading), only when rtm_use_compass is not 0, and never faster than every 300 ms. The reading lives in locals and in this record only; compass_live_dx10 and every other column are unchanged. Levels 3-5 unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-14 - LOG FORMAT 4 (owner-approved for RX1): createNewLogFile() writes a LogFileBootInfo (boot counter + reset reason of this boot) right after the 8-byte header; records unchanged. ?download reads the header through the shared logReadFileHeader(), decodes formats 3 and 4, and prints one "=== RX boot #N / reset ... ===" line after the CSV column header for a format-4 file. Old logs (format 3) still download. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-14 - full-system audit FS-13 (owner-approved for RX1): every AUX LED write (triggerBlink(), loggerLoop()'s blink and steady state, initLogger(), whose AW9523 block now also holds i2cMutex because it runs after initTasks()) goes through the AW9523 port-1 writer (awPort1SetPinLocked(), System.ino): one checked read, nothing written on a failed read, both PPM enables kept HIGH. The old aw.digitalWrite() read-modify-write could write a noise-corrupted motor-enable bit back as 0. Same locking as before at the other call sites. No log-format or behaviour change.
@@ -1043,17 +1044,21 @@ void loggerTask(void* parameter) {
       // of stack on top of today's level-5 peak.
       // V2.5-Evo - 2026-10-15 - LOG FORMAT 5: a level-6 row is a VescLogDataL6Compass (174 B, = LOG_REC_MAX): the
       // level-6 record exactly as before, then the compass diagnostic block (fillCompassDiag()).
+      // V2.5-Evo - 2026-10-31 - LOG FORMAT 6: a level-6 row is a VescLogDataL6Vel (178 B, = LOG_REC_MAX): the format-5
+      // level-6 record exactly as before, then the rider's v3 velocity word (rx_tx_gps_vel_word, one aligned 32-bit read
+      // of the radio task's single store - it cannot be torn). Raw, before the plausibility gates; logging only.
       static uint8_t rec_buf[LOG_REC_MAX];
       uint16_t rec_len;
       if (active_log_level >= 6) {
-        static VescLogDataL6Compass logData6;
-        logData6.l6.l5.l4.base = convertToLogData();
+        static VescLogDataL6Vel logData6;
+        logData6.l6c.l6.l5.l4.base = convertToLogData();
         const FmLogSnapshot snap = logTakeFmSnapshot();
-        fillLevel4Diag(logData6.l6.l5.l4, snap);
-        fillVesc2Block(logData6.l6.l5.l4);
-        fillLevel5Extra(logData6.l6.l5, snap);
-        fillImuBlocks(logData6.l6);    // VESC 2's IMU (own freshness test) + the reserved RX IMU
-        fillCompassDiag(logData6);     // V2.5-Evo - 2026-10-15 - log-only compass reading under throttle (or 0xFFFF)
+        fillLevel4Diag(logData6.l6c.l6.l5.l4, snap);
+        fillVesc2Block(logData6.l6c.l6.l5.l4);
+        fillLevel5Extra(logData6.l6c.l6.l5, snap);
+        fillImuBlocks(logData6.l6c.l6);    // VESC 2's IMU (own freshness test) + the reserved RX IMU
+        fillCompassDiag(logData6.l6c);     // V2.5-Evo - 2026-10-15 - log-only compass reading under throttle (or 0xFFFF)
+        logData6.rider_vel_word = rx_tx_gps_vel_word;   // V2.5-Evo - 2026-10-31 - LOG FORMAT 6
         memcpy(rec_buf, &logData6, sizeof(logData6));
         rec_len = (uint16_t)sizeof(logData6);
       } else if (active_log_level >= 5) {

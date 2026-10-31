@@ -159,7 +159,12 @@ FM_STOP_REASON_NAMES = {
     7: "DIVERGENCE (not closing on the rider)",
     8: "HEADING_DISAGREE (compass vs GPS course)",
     9: "RETURN_NOT_CLOSING (return leg did not close on the rider)",
+    # 2026-10-30: unit 1 of the 2026-10-30 Follow-Me package - NOT a stop. The fast-closure ceiling lowered cap 3 on that
+    # tick (fm_state 2, nothing else to report). Kept out of the "stops by reason" tally; counted on its own line.
+    11: "CLOSURE_CEILING (fast-closure ceiling bound cap 3)",
 }
+# Codes in fm_block_reason that describe a tick's state, not a stop of the run: not tallied as stops.
+FM_BLOCK_NOT_A_STOP = {11}
 
 # RTMState.ino: enum FmReturnReason + fmReturnReasonName(). Sticky in the deep log as of the
 # 2026-09-19 "DEEP LOG (A)" change (VescLogDataL4.fm_return_reason, was the fm_pad byte): 0 = no
@@ -1254,10 +1259,12 @@ def generate_summary(records: list[dict], boot: Optional[dict] = None) -> str:
             if rec.get("sep_latched") and not prev.get("sep_latched"):
                 latch_sets += 1
             reason = rec.get("fm_block_reason")
-            if reason and reason != prev.get("fm_block_reason"):
+            if reason and reason != prev.get("fm_block_reason") and reason not in FM_BLOCK_NOT_A_STOP:
                 name = rec.get("fm_block_reason_name", str(reason))
                 stops_by_reason[name] = stops_by_reason.get(name, 0) + 1
         prev = rec
+    # 2026-10-30: code 11 rows (the closure ceiling binding), for water check W-6 (under 1 % of rows while carving).
+    ceiling_rows = sum(1 for r in records if r.get("fm_block_reason") == 11)
 
     lines = []
     if boot is not None:
@@ -1277,6 +1284,8 @@ def generate_summary(records: list[dict], boot: Optional[dict] = None) -> str:
             lines.append(f"  {name}: {count}")
     else:
         lines.append("  (none)")
+    if ceiling_rows:
+        lines.append(f"closure ceiling (code 11, not a stop): {ceiling_rows} of {n} rows ({100.0 * ceiling_rows / n:.1f}%)")
     # 2026-10-08: level-6 files - how much of the session has a usable VESC 2 IMU sample, and the extremes
     # of heel (|roll|) and nose-up pitch over the rows that do. Only OK rows count (stale / implausible
     # rows carry no values).

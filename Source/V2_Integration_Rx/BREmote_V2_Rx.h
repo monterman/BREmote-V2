@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-30 - FOLLOW-ME FAST-CLOSURE CEILING (unit 1 of the 2026-10-30 package): includes ../Common/FollowMeConverge.h (after FollowMePause.h), the pure ceiling RTMState.ino applies inside cap 3. Include only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-29 - BIND LED RE-LIT WHILE THE LINK IS UP (owner-approved for RX1): includes ../Common/BindLedRefresh.h (after AwPort1.h), the pure rule checkConnStatus() (System.ino) uses to write the BIND LED LOW again every 5th pass while connected and to skip that write while a BIND LED pattern runs. Include only: no new global here (the pattern flag is file-scope in System.ino). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-26 - COMMENT ONLY (N-1): the steer_during_auto field note now tells the 30 s takeover end per mode - return-to-me and auto-return ignore the stick until it is centred; Follow-Me following ends through FM_HOLD, so the stick is the rider's at once with no centring, and under a trigger that stays held a fresh separation or the auto-return can move the buggy again with no release, each through its own ramp and caps. No code change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-25 - COMMENT ONLY (steer default review S-5): the steer_during_auto field comment says what 0 does since the remote stopped exiting (the stick is not used in a classic return-to-me), what a 30 s takeover does in each mode (return-to-me and auto-return carry on; Follow-Me following stops until one release), and that the remote no longer acts on fm_flags bit 4. No code change, sizeof stays 200, SW_VERSION stays 36.
@@ -1032,6 +1033,11 @@ static const float kFmFrontAheadExtraMaxM     = 10.0f;  // metres; largest legal
 // D-1..D-4): the pure rules are in ../Common/FollowMePause.h so Tools/tests/follow_me_pause_test.cpp runs the exact code
 // runFmLoopBody() calls. The RX's constants are passed in (RTMState.ino kFmLongLoss* / kFmCreep*).
 #include "../Common/FollowMePause.h"
+// V2.5-Evo - 2026-10-30 - FOLLOW-ME FAST-CLOSURE CEILING (unit 1 of the 2026-10-30 package): the range history from the
+// rider's raw fixes, the closing rate, the ceiling, the re-rise limit and the divergence park are pure in
+// ../Common/FollowMeConverge.h so Tools/tests/follow_me_converge_test.cpp runs the exact rules fmComputeThrottleCap() and
+// runFmLoopBody() call. The RX's kFmCv* constants (RTMState.ino) are passed in; the header defines none of its own.
+#include "../Common/FollowMeConverge.h"
 // V2.5-Evo - 2026-10-17 - HEADING LATCH PERSISTENCE (audit F1-F5): the request / due / result rules for storing the
 // compass-vs-GPS-course latch are pure in ../Common/HeadingLatchPersist.h so Tools/tests/heading_latch_persist_test.cpp
 // runs the exact code RTMState.ino calls. The retry gap (kHdgPersistRetryMs) is passed in; the header defines no constants.
@@ -2131,7 +2137,7 @@ struct __attribute__((packed)) VescLogDataL4 {
     uint8_t  fm_sep_fix_count;     // rider GPS fixes counted toward the separation dwell (DWELL-1); OUR counter, not a dwell time
     uint8_t  fm_mode;              // fm_mode_runtime: 1-5 declared (4/5 = front stations), 0 off, 0xFF never declared this session  // V2.5-Evo - 2026-10-06 - was "1-3 declared"
     uint8_t  fm_state;             // FmState: 0 IDLE, 1 ARMED, 2 ACTIVE, 3 HOLD, 4 STOPPING, 5 RETURN (2026-09-19)
-    uint8_t  fm_block_reason;      // FmStopReason (P0-e): the live stop latch, non-zero for the whole FM_STOPPING ramp; 0 = no fault stop in progress. V2.5-Evo - 2026-10-11 - change 1: with no stop in progress it carries the input a Follow-Me PAUSE waits on (1-6; fm_state 3 = paused, 1 = armed and missing data) or 5 with fm_state 2 = a HEADING CREEP - fm_gate_flags has no free bit
+    uint8_t  fm_block_reason;      // FmStopReason (P0-e): the live stop latch, non-zero for the whole FM_STOPPING ramp; 0 = no fault stop in progress. V2.5-Evo - 2026-10-11 - change 1: with no stop in progress it carries the input a Follow-Me PAUSE waits on (1-6; fm_state 3 = paused, 1 = armed and missing data) or 5 with fm_state 2 = a HEADING CREEP - fm_gate_flags has no free bit. V2.5-Evo - 2026-10-30 - unit 1 (Rev 2.1 §G item 7): 11 with fm_state 2 = the fast-closure ceiling lowered cap 3 that tick (a stop or a pause still wins)
     uint8_t  fm_throttle_cap;      // FM's subtract-only throttle cap this tick (0-255; 255 = no cap)
     int16_t  fm_station_deg_x10;   // P2 live station angle x 10 deg (0 = behind the rider, + = his right); written since the 2026-10-02 station work  // V2.5-Evo - 2026-10-06 - comment corrected (was "always 0")
     uint8_t  fm_return_reason;     // V2.5-Evo - 2026-09-19 - DEEP LOG (A): was fm_pad (always 0). FmReturnReason (RTMState.ino): why the last

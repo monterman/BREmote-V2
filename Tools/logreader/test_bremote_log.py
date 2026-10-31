@@ -479,6 +479,29 @@ class TestTimelineScenario(unittest.TestCase):
         self.assertIn("RTM activations: 0", summary)
 
 
+class TestClosureCeilingCode11(unittest.TestCase):
+    """2026-10-30: fm_block_reason 11 = the fast-closure ceiling bound cap 3 that tick. It is named, it is NOT a stop
+    (kept out of "stops by reason"), and the summary counts its rows on their own line."""
+
+    def test_code_11_named_counted_and_not_a_stop(self):
+        interval_ms = 100
+        reasons = [0, 11, 11, 0, 0, 11, 0, 3, 3, 0]   # two ceiling episodes (3 rows), then one TX_STALE pause
+        raws = [dict(timestamp_ms=i * interval_ms, fm_state=2 if r != 3 else 3, fm_mode=1, rtm_rx_active=0,
+                     fm_gate_flags=gate("thr_held"), fm_distance_m=m_to_dx10(20.0), fm_throttle_cap=255,
+                     fm_block_reason=r)
+                for i, r in enumerate(reasons)]
+        rec_bytes = [pack_record(bl.LAYOUT_L4, raw) for raw in raws]
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "ceiling.log")
+            write_binary_log(path, 4, 87, rec_bytes, format_ver=1)
+            records = list(bl.iter_binary_records(path))
+        self.assertEqual(records[1]["fm_block_reason_name"], "CLOSURE_CEILING (fast-closure ceiling bound cap 3)")
+        summary = bl.generate_summary(records)
+        self.assertIn("closure ceiling (code 11, not a stop): 3 of 10 rows (30.0%)", summary)
+        self.assertIn("TX_STALE (rider GPS stale): 1", summary)
+        self.assertNotIn("CLOSURE_CEILING (fast-closure ceiling bound cap 3): ", summary)
+
+
 # ============================================================
 # 7. RETURN episode that exits STEERED (11), with a boost sub-phase and a motor0/motor1 split
 #    (87 B tier) - the coordinator's specific follow-up scenario.

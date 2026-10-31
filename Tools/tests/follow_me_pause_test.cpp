@@ -328,44 +328,44 @@ static void testCreep()
   const float start = 12.0f, abort_m = 5.0f;
   // Grant, then success when a course appears; spent for the squeeze.
   {
-    FmCreepState c = {0, false};
-    assert(fmCreepStep(&c, 1000, true, false, true, 11.9f, start, abort_m, 3000) == FMCR_NONE);   // too close to start
-    assert(fmCreepStep(&c, 1100, true, false, true, 12.0f, start, abort_m, 3000) == FMCR_GRANTED);
-    assert(fmCreepStep(&c, 1200, true, false, true, 11.0f, start, abort_m, 3000) == FMCR_GRANTED); // closing is fine above abort
-    assert(fmCreepStep(&c, 1300, true, true,  true, 11.0f, start, abort_m, 3000) == FMCR_NONE && c.start_ms == 0);
+    FmCreepState c = {0, false, -1.0f, 0, 0};
+    assert(fmCreepStep(&c, 1000, true, false, true, 11.9f, start, abort_m, 3000, -1.0f, 2.0f, 0u, 2) == FMCR_NONE);   // too close to start
+    assert(fmCreepStep(&c, 1100, true, false, true, 12.0f, start, abort_m, 3000, -1.0f, 2.0f, 0u, 2) == FMCR_GRANTED);
+    assert(fmCreepStep(&c, 1200, true, false, true, 11.0f, start, abort_m, 3000, -1.0f, 2.0f, 0u, 2) == FMCR_GRANTED); // closing is fine above abort
+    assert(fmCreepStep(&c, 1300, true, true,  true, 11.0f, start, abort_m, 3000, -1.0f, 2.0f, 0u, 2) == FMCR_NONE && c.start_ms == 0);
     // heading lost again in the same squeeze: no second creep
-    assert(fmCreepStep(&c, 1400, true, false, true, 20.0f, start, abort_m, 3000) == FMCR_NONE);
+    assert(fmCreepStep(&c, 1400, true, false, true, 20.0f, start, abort_m, 3000, -1.0f, 2.0f, 0u, 2) == FMCR_NONE);
     // a release re-arms one creep
-    assert(fmCreepStep(&c, 1500, false, false, true, 20.0f, start, abort_m, 3000) == FMCR_NONE && !c.used);
-    assert(fmCreepStep(&c, 1600, true, false, true, 20.0f, start, abort_m, 3000) == FMCR_GRANTED);
+    assert(fmCreepStep(&c, 1500, false, false, true, 20.0f, start, abort_m, 3000, -1.0f, 2.0f, 0u, 2) == FMCR_NONE && !c.used);
+    assert(fmCreepStep(&c, 1600, true, false, true, 20.0f, start, abort_m, 3000, -1.0f, 2.0f, 0u, 2) == FMCR_GRANTED);
   }
   // Timeout at 3 s exactly, then no retry until a release.
   {
-    FmCreepState c = {0, false};
-    uint32_t t = 5000; uint8_t v = fmCreepStep(&c, t, true, false, true, 15.0f, start, abort_m, 3000);
+    FmCreepState c = {0, false, -1.0f, 0, 0};
+    uint32_t t = 5000; uint8_t v = fmCreepStep(&c, t, true, false, true, 15.0f, start, abort_m, 3000, -1.0f, 2.0f, 0u, 2);
     assert(v == FMCR_GRANTED);
     int n = 0;
-    while ((v = fmCreepStep(&c, t += 100, true, false, true, 15.0f, start, abort_m, 3000)) == FMCR_GRANTED) ++n;
+    while ((v = fmCreepStep(&c, t += 100, true, false, true, 15.0f, start, abort_m, 3000, -1.0f, 2.0f, 0u, 2)) == FMCR_GRANTED) ++n;
     assert(v == FMCR_TIMEOUT && n == 29);
-    assert(fmCreepStep(&c, t += 100, true, false, true, 15.0f, start, abort_m, 3000) == FMCR_NONE);
+    assert(fmCreepStep(&c, t += 100, true, false, true, 15.0f, start, abort_m, 3000, -1.0f, 2.0f, 0u, 2) == FMCR_NONE);
   }
   // Abort at once inside min_dist + 1, on any condition falling (data loss, rider stale, sticky cap...), and
   // a link gap that freezes the trigger byte (thr_held stays true, eligible false) aborts without re-arming.
   {
-    FmCreepState c = {0, false};
-    assert(fmCreepStep(&c, 100, true, false, true, 15.0f, start, abort_m, 3000) == FMCR_GRANTED);
-    assert(fmCreepStep(&c, 200, true, false, true, 4.9f, start, abort_m, 3000) == FMCR_ABORT);
-    assert(fmCreepStep(&c, 300, true, false, true, 15.0f, start, abort_m, 3000) == FMCR_NONE);   // spent
-    FmCreepState d = {0, false};
-    assert(fmCreepStep(&d, 100, true, false, true, 15.0f, start, abort_m, 3000) == FMCR_GRANTED);
-    assert(fmCreepStep(&d, 200, true, false, false, 15.0f, start, abort_m, 3000) == FMCR_ABORT);
+    FmCreepState c = {0, false, -1.0f, 0, 0};
+    assert(fmCreepStep(&c, 100, true, false, true, 15.0f, start, abort_m, 3000, -1.0f, 2.0f, 0u, 2) == FMCR_GRANTED);
+    assert(fmCreepStep(&c, 200, true, false, true, 4.9f, start, abort_m, 3000, -1.0f, 2.0f, 0u, 2) == FMCR_ABORT);
+    assert(fmCreepStep(&c, 300, true, false, true, 15.0f, start, abort_m, 3000, -1.0f, 2.0f, 0u, 2) == FMCR_NONE);   // spent
+    FmCreepState d = {0, false, -1.0f, 0, 0};
+    assert(fmCreepStep(&d, 100, true, false, true, 15.0f, start, abort_m, 3000, -1.0f, 2.0f, 0u, 2) == FMCR_GRANTED);
+    assert(fmCreepStep(&d, 200, true, false, false, 15.0f, start, abort_m, 3000, -1.0f, 2.0f, 0u, 2) == FMCR_ABORT);
     assert(d.used);
   }
   // Never granted while not eligible, or with a heading.
   {
-    FmCreepState c = {0, false};
-    assert(fmCreepStep(&c, 100, true, false, false, 50.0f, start, abort_m, 3000) == FMCR_NONE && !c.used);
-    assert(fmCreepStep(&c, 200, true, true,  true,  50.0f, start, abort_m, 3000) == FMCR_NONE && !c.used);
+    FmCreepState c = {0, false, -1.0f, 0, 0};
+    assert(fmCreepStep(&c, 100, true, false, false, 50.0f, start, abort_m, 3000, -1.0f, 2.0f, 0u, 2) == FMCR_NONE && !c.used);
+    assert(fmCreepStep(&c, 200, true, true,  true,  50.0f, start, abort_m, 3000, -1.0f, 2.0f, 0u, 2) == FMCR_NONE && !c.used);
   }
 }
 

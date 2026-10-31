@@ -1,3 +1,15 @@
+// V2.5-Evo - 2026-10-30 - FAST-CLOSURE CEILING, WORK IN PROGRESS (unit 1 of the 2026-10-30 Follow-Me package, Revision 2
+//   §5 and §10 as amended by Revision 2.1 §B / §G and cut to STOPS ONLY by Revision 2.2 §B): from the rider's RAW fixes
+//   (one range sample per new solution, fm_cv_track) Follow-Me measures how fast the gap is closing; only while he is
+//   measurably STOPPING in front of the buggy (the stop qualifier, kFmCvQualCfg = S-b, Revision 2.3) cap 3 holds the buggy's speed toward him
+//   to what an unpowered coast (tau_c 1.6 s) can shed before the hard stop (a lower governor target, or cap 3 = 0), then
+//   lets it back up at <= 255 per 1.5 s. R2's divergence net is parked while it binds and 6.5 s after. The heading creep
+//   aborts once the rider's 2-fix mean stands 2 m closer on 2 distinct fixes. The deep log's fm_block_reason reads 11 on a
+//   tick the ceiling bound. Every input gated (fresh rider fix,
+//   Phase A/B, a fresh buggy fix, a valid COG); with any of them bad it does nothing - today's behaviour. Pure rules in
+//   Common/FollowMeConverge.h and FollowMePause.h; ?diag "FM ceiling" line. Caps only. NOT MERGED: its HARD gates are not
+//   all met (Tools/tests/follow_me_converge_test.cpp prints them). No confStruct change, sizeof stays 200, SW_VERSION
+//   stays 36.
 // V2.5-Evo - 2026-10-30 - DIVERGENCE JUDGES "RUNNING AWAY" INSIDE 3 x D_engage (audit 2026-10-20 R2, finding F-1; rides 19
 //   and 30 Oct): beyond the ceiling (2 x D_engage, 79 ft) the net ended Follow-Me unless the buggy CLOSED 2 m in 3 s, which
 //   the governor never delivers while pacing a rider - 8 of 14 stretches on 19 Oct and 4 of 9 engagements on 30 Oct ended
@@ -2371,6 +2383,55 @@ static const float    kFmDivergeCloseEpsM    = 2.0f;   // metres of closure over
 static const float    kFmDivergeFarFactor    = 3.0f;   // multiplier on D_engage: the outer edge of the "pacing" band
 static const float    kFmDivergeOpenEpsM     = 2.0f;   // metres the gap must OPEN over the dwell to end inside the band
 
+// ---- V2.5-Evo - 2026-10-30 - THE FAST-CLOSURE CEILING (unit 1 of the 2026-10-30 Follow-Me package, Revision 2 §5) ----
+// Compile-time, like every kFm* here: no confStruct change, sizeof stays 200, SW_VERSION stays 36. Pure rules in
+// Common/FollowMeConverge.h; applied inside cap 3 in fmComputeThrottleCap(), sampled in runFmLoopBody().
+// WHAT IT FIXES: the flown governor learns that the rider is coming back only through the 2 s filtered course (the fade
+// past 90 deg) and the buggy has no brake, so a tight U-turn toward the station side met a buggy still at following speed
+// (1.7-2.7 ft in the host simulation), and a rider stopping dead in front of a mode 2 buggy was reached at 15.5 ft. Now
+// the RAW rider fixes measure how fast the gap is closing; when it closes unusually fast, the buggy's speed toward the
+// rider is held to what an unpowered coast can shed before the hard stop - v_band = band / kFmCvCoastS at the band edge,
+// rising e^(t/tau) with the time left before it. It lifts by itself when the closure ends (cap 3 back up at <= 255 per
+// 1.5 s).
+// V2.5-Evo - 2026-10-30 - Revision 2.1 §D, cut by Revision 2.2 §B: STOPS ONLY. The v_max rule may act only while the stop
+// qualifier (FollowMeConverge.h fmCvQualStep(), kFmCvQualCfg below) stands: his raw speed has fallen well below its
+// maximum of the last 1.5-2 s while the gap closes >= 1 m/s, from at least 5.6 mph. The U-turn ("running at it") leg is
+// deleted: with his position 1 s late at 3 Hz it could not tell a carve from a U-turn, bound while he surfed and gained
+// under 1 ft in U-turns; those rely on his release, the approach band and the hard stop. Exit: his speed back to 80 % on
+// 2 fixes, or closing under 0.5 m/s for 1 s.
+// OWNER RULE: it acts only with good inputs - a fresh rider fix (tx_gps_stale_timeout_ms), Phase A (the buggy's own fix
+// not rejected), Phase B (the handshake), the buggy's fix under kFmCvBuggyFixMaxMs and, for the coast test, a valid COG.
+// With anything missing it does nothing: today's behaviour, never a looser cap.
+static const float    kFmCvLatencyS          = 1.0f;    // s; the remote's fix report delay, taken off the measured range
+// V2.5-Evo - 2026-10-30 - Revision 2.1 §B: 2.4 -> 1.6 s. The p75 of the 13 measured coasts is 1.52 s (median 1.33); 1.6 s
+// assumes a slightly slower stop than three of every four of them. v_band = 4 m / 1.6 s = 2.5 m/s (5.6 mph). The two
+// free coasts measured were 1.57 and 1.04 s; a free-coast bench row is due before the flash and this follows its p75.
+static const float    kFmCvCoastS            = 1.6f;    // s; tau_c, the buggy's unpowered coast-down
+static const float    kFmCvCosMin            = 0.25f;   // the target clamp v* <= v_max / cos applies only above this cosine
+static const uint32_t kFmCvReriseMs          = 1500;    // ms; after a clamp cap 3 may rise again by at most 255 counts per this
+static const uint32_t kFmCvGapMs             = 250;     // ms; a longer gap between cap-3 computations starts the limiter fresh
+static const uint32_t kFmCvParkMs            = kFmJudgeGraceMs;   // ms; the divergence net stays parked this long after the ceiling last bound (6500)
+static const uint32_t kFmCvBuggyFixMaxMs     = 1000;    // ms; the buggy's own fix must be this fresh for the range samples
+static const float    kFmCreepCloseAbortM    = 2.0f;    // m; the heading creep aborts once the rider's 2-fix mean is this much closer than at its grant ...
+static const uint8_t  kFmCreepCloseFixes     = 2;       // ... on this many consecutive distinct rider fixes (V2.5-Evo - 2026-10-30 - Rev 2.2 §B; 1 fix gave 11 % false aborts)
+// V2.5-Evo - 2026-10-30 - Revision 2.2 §B / Revision 2.3: the stop qualifier's numbers (FmCvQualCfg field order).
+// VARIANT S-b, the noise-proofed leg (Revision 2.3: S-b ships): his raw speed at or under 60 % of its 2 s maximum on 2
+// consecutive fixes. The one-fix S-a (0.70 / 1500 / 1) was rejected: on GPS noise it bound while he carved (up to
+// 10.9 %), stood the buggy off a pickup by up to 23.9 ft and let it 6.6 ft closer. The host test asserts S-b's gates
+// (Tools/tests/follow_me_converge_test.cpp kQualSb, which must equal this).
+static const FmCvQualCfg kFmCvQualCfg = {
+  0.60f,   // stop_ratio       - his raw speed at or under this fraction of his maximum ...
+  2000,    // stop_window_ms   - ... over this long before the estimate ...
+  2,       // stop_estimates   - ... on this many rider fixes in a row ...
+  1.0f,    // stop_cdot_mps    - ... while closing at least this ...
+  2.5f,    // floor_mps        - ... and only if his maximum over floor_window_ms was at least this (5.6 mph, v_band)
+  2000,    // floor_window_ms
+  0.80f,   // exit_ratio       - exit: his speed back to this fraction of that maximum ...
+  2,       // exit_estimates   - ... on this many fixes in a row, or ...
+  0.5f,    // exit_cdot_mps    - ... closing under this ...
+  1000     // exit_slow_ms     - ... for this long
+};
+
 // ---- PIVOT-SUSPEND-1 + GOVERNOR-2 constants (V2.5-Evo - 2026-08-26) ----
 // Compile-time only, like every other kFm* above: no confStruct fields, no SW_VERSION bump,
 // no SPIFFS reset.
@@ -3199,7 +3260,8 @@ enum FmStopReason : uint8_t {
   FM_STOP_DIVERGENCE       = 7,   // A3: sustained divergence while ACTIVE (not closing on the rider)
   FM_STOP_HEADING_DISAGREE = 8,   // the compass-vs-COG disagreement latch stood while FM had control
   FM_STOP_RETURN_NOT_CLOSING = 9, // V2.5-Evo - 2026-09-19 - FM_RETURN: moving and aligned, yet the distance did not close 0.5 m over 5 s (the mirrored-steering net)
-  FM_STOP_LONG_LOSS        = 10   // V2.5-Evo - 2026-10-11 - D-2: the link, the rider's fix or the buggy's fix missing 30 s in a row -> Follow-Me switched itself off
+  FM_STOP_LONG_LOSS        = 10,  // V2.5-Evo - 2026-10-11 - D-2: the link, the rider's fix or the buggy's fix missing 30 s in a row -> Follow-Me switched itself off
+  FM_STOP_CV_CEILING       = 11   // V2.5-Evo - 2026-10-30 - Rev 2.1 §G item 7: NOT a stop - a log code only. The fast-closure ceiling lowered cap 3 this tick (fm_state 2, nothing else to report); never latched in fm_stop_reason
 };
 // V2.5-Evo - 2026-10-11 - since change 1, codes 1-6 also name a Follow-Me PAUSE (fm_pause_reason below, the deep log's
 // fm_block_reason while paused), and 7 / 8 a steering end that keeps Follow-Me armed (D-3); neither is a stop of the run.
@@ -3223,6 +3285,7 @@ static const char* fmStopReasonName(uint8_t r)
     case FM_STOP_HEADING_DISAGREE: return "HEADING_DISAGREE (compass vs GPS course)";
     case FM_STOP_RETURN_NOT_CLOSING: return "RETURN_NOT_CLOSING (return leg did not close on the rider)";
     case FM_STOP_LONG_LOSS:        return "LONG_LOSS (link / rider GPS / buggy GPS missing 30 s)";   // V2.5-Evo - 2026-10-11 - D-2
+    case FM_STOP_CV_CEILING:       return "CLOSURE_CEILING (fast-closure ceiling bound cap 3)";      // V2.5-Evo - 2026-10-30 - Rev 2.1 §G item 7
     default:                       return "unknown";
   }
 }
@@ -3257,7 +3320,7 @@ static const uint32_t kFmCreepCourseMemoryMs = 30000;   // ms; ... seen within t
 // assembly in runRtmLoopBody() (one tick later, like fm_return_not_ready), the log snapshot and ?diag.
 static FmLongLossState fm_long_loss        = {0, 0, 0, 0, false};   // V2.5-Evo - 2026-10-12 - A-1: fix_ms gone (rider verdict passed in)
 static uint8_t         fm_long_loss_verdict = FMLL_OFF;   // the last step's verdict, for ?diag
-static FmCreepState    fm_creep            = {0, false};
+static FmCreepState    fm_creep            = {0, false, -1.0f, 0, 0};   // V2.5-Evo - 2026-10-30 - unit 1: + the 2-fix-mean start distance (-1 = none) and the 2-fix closing count
 static bool            fm_creep_active     = false;       // a creep is the reason Follow-Me is ACTIVE this tick
 static uint8_t         fm_creep_last_end   = FMCR_NONE;   // how the last creep ended (abort / timeout), for ?diag
 static float           fm_creep_course_deg = -1.0f;       // the last good buggy heading (D-4 guard), -1 = none
@@ -3266,6 +3329,24 @@ static unsigned long   fm_pause_since_ms   = 0;           // start of the curren
 static uint8_t         fm_pause_reason     = FM_STOP_NONE;// the input a pause / creep is waiting on (FmStopReason 1-6), 0 = none
 static bool            fm_not_ready_data   = false;       // fm_flags bit 2 feed: armed but missing data a squeeze needs
 static bool            fm_hdg_disagree_prev = false;      // heading_disagree_fault at the last sample (edge for D-3; since 2026-10-12, A-2, sampled at the top of EVERY FM tick and after its heading call)
+// V2.5-Evo - 2026-10-30 - unit 1, THE FAST-CLOSURE CEILING (Common/FollowMeConverge.h). Loop task only.
+//   fm_cv_track       - one sample per NEW rider GPS solution: that fix's distance to the buggy (runFmLoopBody(), only
+//                       while positions are trustworthy; reset on any gap and by fmPauseClear()).
+//   fm_cv_verdict     - this tick's verdict, computed in fmComputeThrottleCap() (read by ?diag).
+//   fm_cv_rerise      - the re-rise limiter on cap 3 after a clamp.
+//   fm_cv_last_bind_ms- when the ceiling last lowered cap 3 (the divergence park reads it), 0 = not since the last reset.
+//   fm_cv_r_m / fm_cv_cdot_mps - the range and closing rate it last used (?diag), -1 / 0 = none.
+//   fm_cv_qual        - V2.5-Evo - 2026-10-30 - Rev 2.1 §D: the abnormal-closure qualifier (fmComputeThrottleCap()).
+//   fm_cv_bound_tick  - V2.5-Evo - 2026-10-30 - Rev 2.1 §G item 7: the ceiling lowered cap 3 on THIS tick (cleared at the
+//                       top of every runFmLoop() tick), so the deep log's fm_block_reason can carry code 11.
+static FmCvTrack       fm_cv_track;                       // zero-initialised static = empty history
+static FmCvVerdict     fm_cv_verdict       = { false, false, -1.0f, -1.0f };
+static FmCvRerise      fm_cv_rerise        = { 0, 0.0f, false };
+static unsigned long   fm_cv_last_bind_ms  = 0;
+static float           fm_cv_r_m           = -1.0f;
+static float           fm_cv_cdot_mps      = 0.0f;
+static FmCvQual        fm_cv_qual;                        // zero-initialised static = not qualified, no history
+static bool            fm_cv_bound_tick    = false;
 
 // fmPauseClear - drop the pause, the creep and the long-loss clock (every road out of Follow-Me's own states: fmEnterIdle()
 // and the RTM yield). The creep's per-squeeze flag goes too: a new declaration starts with one creep available.
@@ -3282,6 +3363,19 @@ static void fmPauseClear()
   fm_pause_since_ms          = 0;
   fm_pause_reason            = FM_STOP_NONE;
   fm_not_ready_data          = false;
+  // V2.5-Evo - 2026-10-30 - unit 1: the closure history, the limiter and the park go with every road out, so nothing
+  // measured in one engagement can bind or park in the next.
+  fmCvTrackReset(&fm_cv_track);
+  fm_cv_verdict.active       = false;
+  fm_cv_verdict.coast        = false;
+  fm_cv_verdict.gov_max_kmh  = -1.0f;
+  fm_cv_verdict.vmax_mps     = -1.0f;
+  fm_cv_rerise.last_ms       = 0;
+  fm_cv_rerise.rising        = false;
+  fm_cv_last_bind_ms         = 0;
+  fm_cv_r_m                  = -1.0f;
+  fm_cv_cdot_mps             = 0.0f;
+  fmCvQualReset(&fm_cv_qual);   // V2.5-Evo - 2026-10-30 - Rev 2.1 §D: and the qualifier
 }
 
 // fmCondBitToStopReason - the FmStopReason code for one kFmCond* bit (fmPauseReasonBit()); 0 for none.
@@ -3404,6 +3498,9 @@ static void fmPublishLogSnapshot()
   // is waiting on (1-6, same codes and names). fm_gate_flags has no free bit left (0-18 flags, 19-30 counters, 31 PG-4),
   // so the pause rides here: fm_state 3 (HOLD) + a reason = paused; fm_state 2 (ACTIVE) + 5 (HEADING) = creeping.
   s.block_reason     = (fm_stop_reason != FM_STOP_NONE) ? fm_stop_reason : fm_pause_reason;
+  // V2.5-Evo - 2026-10-30 - Rev 2.1 §G item 7: with nothing else to report, 11 = the fast-closure ceiling lowered cap 3 on
+  // this tick (water row W-6 counts these rows while carving). A live stop and a pause / creep still win.
+  if (s.block_reason == FM_STOP_NONE && fm_cv_bound_tick) s.block_reason = FM_STOP_CV_CEILING;
   s.throttle_cap     = fm_throttle_cap.load(std::memory_order_relaxed);
   // V2.5-Evo - 2026-10-02 - P2: the station angle is LIVE. A copy of the atomic computeFmTarget()
   // published on this tick (0 = directly behind, positive = the rider's right, x 10 deg). The column
@@ -3911,6 +4008,32 @@ static void printFmPauseDiag(unsigned long now_ms)
   Serial.printf("Rider GPS  : packet %s; last new solution %s (stale after %u ms)\n",
                 (proto == 2) ? "v2 (GPS fix counter)" : (proto == 1) ? "v1 (old remote: position changes only)" : "none heard",
                 sol_txt, (unsigned)usrConf.tx_gps_stale_timeout_ms);
+  // V2.5-Evo - 2026-10-30 - unit 1 (bench B-4: jog back toward the buggy while ACTIVE): the fast-closure ceiling as the
+  // last cap-3 computation left it - the range and closing rate from the rider's raw fixes, whether a ceiling stood and
+  // whether it coasted, and how long ago it last lowered cap 3 (the divergence net is parked for 6.5 s after that).
+  // Read-only; values are only refreshed while Follow-Me is ACTIVE.
+  // V2.5-Evo - 2026-10-30 - Rev 2.1 §D / Rev 2.2 §B: the ceiling stands only while the stop qualifier does.
+  const char *leg_txt = (fm_cv_qual.leg == FMCVQ_STOP) ? "stopping" : "";
+  char cv_txt[96];
+  if (fm_cv_verdict.coast)
+    snprintf(cv_txt, sizeof(cv_txt), "COAST (cap 3 = 0), limit %.1f mph; qualified: %s",
+             (double)(fm_cv_verdict.vmax_mps / 0.44704f), leg_txt);
+  else if (fm_cv_verdict.active)
+    snprintf(cv_txt, sizeof(cv_txt), "standing, limit %.1f mph toward you; qualified: %s",
+             (double)(fm_cv_verdict.vmax_mps / 0.44704f), leg_txt);
+  else
+    snprintf(cv_txt, sizeof(cv_txt), "none (not stopping in front of it, or an input missing)");
+  char bind_txt[96];
+  if (fm_cv_last_bind_ms != 0)
+    snprintf(bind_txt, sizeof(bind_txt), "last bound %lu ms ago%s", (unsigned long)stampAgeMs((uint32_t)now_ms, (uint32_t)fm_cv_last_bind_ms),
+             fmCvParks((uint32_t)fm_cv_last_bind_ms, (uint32_t)now_ms, kFmCvParkMs) ? " (divergence parked)" : "");
+  else
+    snprintf(bind_txt, sizeof(bind_txt), "not bound");
+  if (fm_cv_r_m >= 0.0f)
+    Serial.printf("FM ceiling : range %.1f m, closing %.1f m/s; ceiling %s; %s\n",
+                  (double)fm_cv_r_m, (double)fm_cv_cdot_mps, cv_txt, bind_txt);
+  else
+    Serial.printf("FM ceiling : no range history (needs fresh rider fixes); ceiling %s; %s\n", cv_txt, bind_txt);
 }
 
 // ------------------------------------------------------------
@@ -5904,6 +6027,23 @@ static uint8_t fmFailingConditionsMaskHdg(float* out_heading_deg) { return fmFai
 static uint8_t fmFailingConditionsMask() { return fmFailingConditionsMaskSel(nullptr, false); }
 
 // ------------------------------------------------------------
+// fmCvCogOk - V2.5-Evo - 2026-10-30 - unit 1: is the buggy's GPS course good enough to say how fast it moves TOWARD the rider?
+// ------------------------------------------------------------
+// The same three terms getRtmHeading() gives the live COG: a course sentence younger than 1500 ms, the buggy at or above
+// rtm_cog_min_speed_kmh, and (GUARD 1) the course value having changed within kRtmCogFrozenMs while moving. Signed ages
+// (stampStale / stampAgeMs), so a stamp newer than `now` reads "just now". Input: now (this FM tick). Returns: true =
+// usable. Side effects: none. Used only by the fast-closure ceiling; with false it applies no coast and no target clamp.
+static bool fmCvCogOk(unsigned long now)
+{
+  if (gps_last_course_ms == 0 || gps_last_course_deg < 0.0f) return false;
+  if (stampStale((uint32_t)now, (uint32_t)gps_last_course_ms, 1500u)) return false;
+  if (gps_last_speed_kmh < (float)usrConf.rtm_cog_min_speed_kmh) return false;
+  const uint32_t ch = (uint32_t)g_diag_cog_change_ms;
+  if (ch != 0 && stampAgeMs((uint32_t)now, ch) >= (uint32_t)kRtmCogFrozenMs) return false;
+  return true;
+}
+
+// ------------------------------------------------------------
 // fmComputeThrottleCap - the FM throttle cap chain
 // ------------------------------------------------------------
 // What it does (DESIGN_FOLLOW_ME.md section 7):
@@ -6053,6 +6193,60 @@ static uint16_t fmComputeThrottleCap(float dist_m, unsigned long now)
     gov = fm_rider_speed_kmh + kFmClosingMarginKmh + (theta_ok ? gap_kmh : 0.0f);          // (c)
   }
 
+  // ==========================================================================================
+  // V2.5-Evo - 2026-10-30 - unit 1 (Revision 2 §5): THE FAST-CLOSURE CEILING, A CLAMP INSIDE CAP 3, EVERY STATION.
+  // THE BUG: the governor learned that the rider was coming back only through the 2 s filtered course (the fade below,
+  // from 90 deg), and the buggy has no brake - a tight U-turn toward the station side met it still at following speed,
+  // and a rider stopping dead ahead of a mode 2 buggy was reached at 15.5 ft (host simulation, worst phase).
+  // THE FIX: from the RAW rider fixes (fm_cv_track: r = the mean of the 2 newest fixes' distances, c-dot = how fast it
+  // fell over ~1 s) the buggy's speed toward the rider is held to v_max = v_band x e^(t_b / tau_c), the speed from which
+  // an unpowered coast reaches the approach band (min_dist + band) at v_band = band / kFmCvCoastS and so ends at the hard
+  // stop; t_b is the time left before the band at the measured closure, after a kFmCvLatencyS margin for the remote's
+  // report delay. If the buggy is already faster than that toward him it coasts (cap 3 = 0, below); otherwise the target
+  // here is held to v_max / cos. Pure rules: fmCvClosing() / fmCvLosMps() / fmCvDecide(), Common/FollowMeConverge.h.
+  // ONLY WHILE HE STOPS (V2.5-Evo - 2026-10-30 - Revision 2.1 §D, cut to stops by Revision 2.2 §B): the v_max rule acts
+  // only while the stop qualifier stands (fmCvQualStep(), kFmCvQualCfg) - his raw speed well below its recent maximum,
+  // from at least 5.6 mph, while closing >= 1 m/s. Carving, U-turns, steady following and catch-up from behind do not
+  // qualify (U-turns rely on his release, the approach band and the hard stop). A pickup - he rides back toward the
+  // buggy and slows to stop beside it - is a real slow-down, so the ceiling can bind there, rarely (148 bind ticks in
+  // 2,160 host pickup runs) and without harm: it only takes throttle away, his closest approach is no worse than the
+  // flown code's, and the buggy ends no more than 1.5 ft farther from him (Revision 2.3). No standoff: the stop point is
+  // still min_dist and the approach band below; steering is unchanged.
+  // OWNER RULE - EVERY INPUT GATED: the rider's range history needs a fix no older than tx_gps_stale_timeout_ms and a clean
+  // ~1 s baseline; the buggy's fix is not Phase-A rejected and the Phase-B handshake stands (and each sample needed the
+  // buggy's fix under kFmCvBuggyFixMaxMs, runFmLoopBody()); the coast test needs a valid COG (fmCvCogOk()). Any of them
+  // missing gives NO ceiling and drops the qualification - today's behaviour, never a looser cap. The qualifier's own
+  // input comes from the same raw fixes (fmCvRiderMotion()): with no speed estimate the stop leg cannot fire. The ceiling
+  // can only lower gov.
+  bool cv_bind = false;
+  {
+    float r_m = 0.0f, cdot = 0.0f;
+    const bool closing_ok = fmCvClosing(&fm_cv_track, (uint32_t)now, (uint32_t)usrConf.tx_gps_stale_timeout_ms,
+                                        &r_m, &cdot);
+    const bool est_ok     = closing_ok && !gps_rejected && gps_phase_b_ok;
+    float rider_mps = 0.0f, rider_crs = 0.0f;
+    bool  rider_crs_ok = false;
+    const bool rider_mv_ok = est_ok && fmCvRiderMotion(&fm_cv_track, (uint32_t)now, (uint32_t)usrConf.tx_gps_stale_timeout_ms,
+                                                       kFmCourseValidSpeedKmh / 3.6f, &rider_mps, &rider_crs, &rider_crs_ok);
+    (void)rider_crs; (void)rider_crs_ok;                     // his raw course is not used (Rev 2.2: no U-turn leg)
+    const float brg       = (float)TinyGPSPlus::courseTo(gps_last_lat, gps_last_lng, rx_tx_gps_lat, rx_tx_gps_lng);
+    const bool qualified  = fmCvQualStep(&fm_cv_qual, (uint32_t)now, est_ok, fmCvNewestMs(&fm_cv_track), cdot,
+                                         rider_mv_ok, rider_mps, &kFmCvQualCfg);
+    const bool inputs_ok  = est_ok && qualified;
+    const bool cog_ok     = fmCvCogOk(now);
+    float cos_los = 0.0f;
+    const float v_los     = fmCvLosMps(gps_last_speed_kmh, cog_ok, gps_last_course_deg, brg, &cos_los);
+    const float band_cv   = (band > 0.0f) ? band : 0.0f;
+    fm_cv_verdict = fmCvDecide(inputs_ok, r_m, cdot, v_los, cog_ok, cos_los, kFmCvLatencyS,
+                               min_dist + band_cv, band_cv / kFmCvCoastS, kFmCvCoastS, kFmCvCosMin);
+    fm_cv_r_m      = closing_ok ? r_m : -1.0f;
+    fm_cv_cdot_mps = closing_ok ? cdot : 0.0f;
+    if (fm_cv_verdict.gov_max_kmh >= 0.0f && gov > fm_cv_verdict.gov_max_kmh) {
+      gov     = fm_cv_verdict.gov_max_kmh;   // only ever LOWER
+      cv_bind = true;
+    }
+  }
+
   // CONVERGENCE FADE. Past 90 deg the rider is closing the gap themselves, so the buggy needs
   // progressively less of its own - fading linearly to ZERO head-on. This is what makes a rider
   // pumping back toward the buggy SUBTRACT from its allowance instead of adding to it. The old
@@ -6104,14 +6298,24 @@ static uint16_t fmComputeThrottleCap(float dist_m, unsigned long now)
   // is NOT zeroed on fix loss. At gov = 1.4 a stale 0.3 km/h reading yields cap 201. The result
   // was motor PULSING through the final head-on approach, at the GPS update rate, with cap 0
   // killing differential steering on every trough. Flooring makes that region a clean stop.
-  if (gov <= kFmGovFloorKmh) {
-    cap = 0;                                                // 0 is the chain floor: assignment == min()
-  } else {
-    float speed_frac = gps_last_speed_kmh / gov;            // buggy's own GPS speed vs the target
-    if (speed_frac > 1.0f) speed_frac = 1.0f;
-    if (speed_frac < 0.0f) speed_frac = 0.0f;
-    uint16_t c = (uint16_t)((1.0f - speed_frac) * 255.0f);
-    if (c < cap) cap = c;
+  // V2.5-Evo - 2026-10-30 - unit 1: cap 3 is computed on its own (c3) so the ceiling's coast and its re-rise limit can act
+  // on it; then min() into the chain exactly as before. With no ceiling standing c3 is the old value to the bit and the
+  // limiter passes it through (fmCvCap3Step() only limits a rise after a clamp).
+  {
+    uint16_t c3;
+    if (gov <= kFmGovFloorKmh) {
+      c3 = 0;                                               // 0 is the chain floor: min() with 0 == the old assignment
+    } else {
+      float speed_frac = gps_last_speed_kmh / gov;          // buggy's own GPS speed vs the target
+      if (speed_frac > 1.0f) speed_frac = 1.0f;
+      if (speed_frac < 0.0f) speed_frac = 0.0f;
+      c3 = (uint16_t)((1.0f - speed_frac) * 255.0f);
+    }
+    if (fm_cv_verdict.coast) { c3 = 0; cv_bind = true; }   // already faster toward him than the ceiling: coast
+    c3 = fmCvCap3Step(&fm_cv_rerise, (uint32_t)now, c3, cv_bind, kFmCvReriseMs, kFmCvGapMs);
+    if (c3 < cap) cap = c3;
+    if (cv_bind) fm_cv_last_bind_ms = (now != 0) ? now : 1;
+    if (cv_bind) fm_cv_bound_tick = true;                   // V2.5-Evo - 2026-10-30 - Rev 2.1 §G item 7: log code 11
   }
 
   // ---- Cap 4: align phase ----
@@ -6954,6 +7158,7 @@ void runFmLoop()
   fm_log_gate_flags    = 0;        // this tick's verdicts start empty; the body fills what it reaches
   fm_log_dist_dx10     = 0xFFFF;
   fm_log_d_engage_dx10 = 0xFFFF;
+  fm_cv_bound_tick     = false;    // V2.5-Evo - 2026-10-30 - Rev 2.1 §G item 7: set only by this tick's fmComputeThrottleCap()
 
   // V2.5-Evo - 2026-10-02 - P2: THE PASS-GEOMETRY VERDICTS ARE ONE TICK LONG, AND THAT IS STRUCTURAL.
   // Cleared here, at the top of every tick, and set only by computeFmTarget() - which runs inside the
@@ -7501,6 +7706,17 @@ static void runFmLoopBody(unsigned long now)
     // Both GPS sources are guaranteed fresh here by conditions 4 and 5.
     dist_m = (float)TinyGPSPlus::distanceBetween(
         gps_last_lat, gps_last_lng, rx_tx_gps_lat, rx_tx_gps_lng);
+    // V2.5-Evo - 2026-10-30 - unit 1: one range sample per NEW rider GPS solution, for the fast-closure ceiling. Taken
+    // only here, where conditions 2-5 and 7 hold (both fixes fresh, Phase A / B passing, the link up); the buggy's fix
+    // must also be younger than kFmCvBuggyFixMaxMs or the sample is skipped. GPS rules 1-4: a measured distance between
+    // two accepted fixes, nothing extrapolated or interpolated; the 0xF3 state machine is untouched.
+    // V2.5-Evo - 2026-10-30 - Rev 2.1 §D: the sample also keeps the rider's fix itself, for his raw speed and course (the
+    // qualifier) - the same fix the distance was measured to.
+    {
+      const bool buggy_fresh = !stampStale((uint32_t)now, (uint32_t)gps_last_ms, kFmCvBuggyFixMaxMs);
+      fmCvTrackSample(&fm_cv_track, (uint32_t)now, (uint32_t)rx_tx_gps_solution_seq, buggy_fresh ? dist_m : -1.0f,
+                      rx_tx_gps_lat, rx_tx_gps_lng);
+    }
 
     float min_dist = usrConf.min_dist_m;
     float band     = usrConf.followme_smoothing_band_m;
@@ -7707,6 +7923,7 @@ static void runFmLoopBody(unsigned long now)
     // across a release. Only a failed sensor/link condition (!fault_ok) resets it now.
     fm_sep_over_since_ms = 0;
     fm_sep_fix_count     = 0;   // DWELL-1: the fix count resets with the dwell
+    fmCvTrackReset(&fm_cv_track);   // V2.5-Evo - 2026-10-30 - unit 1: no range history across a data gap
   }
 
   // ============================================================
@@ -8060,8 +8277,15 @@ static void runFmLoopBody(unsigned long now)
     //   dwell - the first tick beyond the ceiling starts it and records what we are closing FROM; at kFmDivergeMs the
     //           verdict, or a fresh window if the buggy is following;
     //   reset - back inside the limit, or FM is not ACTIVE: the dwell restarts from scratch.
+    // V2.5-Evo - 2026-10-30 - unit 1 (Revision 2 §5): THE NET IS ALSO PARKED WHILE THE FAST-CLOSURE CEILING BINDS AND FOR
+    // kFmCvParkMs (6.5 s) AFTER IT LAST BOUND. In a wave-linking pair the rider turns away again while the slowed buggy
+    // still has to turn round, so the gap opens inside R2's band; the "running away" verdict would then end Follow-Me with
+    // the sticky cap, which needs a release. The bind time is the previous tick's (cap 3 is computed after this block),
+    // one tick of lag inside a 6.5 s window. Parking can only make the net fire LESS; it adds no throttle.
+    // (Not given a deep-log bit: the gate word is full; ?diag's "FM ceiling" line shows it.)
+    const bool cv_park = fmCvParks((uint32_t)fm_cv_last_bind_ms, (uint32_t)now, kFmCvParkMs);
     {
-      const bool judged = !(in_engage_grace || fm_pivoting || takeover_park) && (fm_state == FM_ACTIVE);
+      const bool judged = !(in_engage_grace || fm_pivoting || takeover_park || cv_park) && (fm_state == FM_ACTIVE);
       FmDivergeDwell dv = { (uint32_t)fm_diverge_since_ms, fm_diverge_start_dist_m };
       const uint8_t dv_verdict = fmDivergeDwellStep(&dv, (uint32_t)now, judged, dist_m, diverge_ceiling_m,
                                                     kFmDivergeFarFactor * d_engage, kFmDivergeMs,
@@ -8180,8 +8404,19 @@ static void runFmLoopBody(unsigned long now)
       creep_start_m = fmCreepStartDistM(d_engage, usrConf.min_dist_m, course_known, fm_creep_course_deg, brg,
                                         kFmCreepStartMarginM, kFmCreepCourseGuardDeg);
     }
+    // V2.5-Evo - 2026-10-30 - unit 1 (Revision 2 §10): THE CLOSING ABORT. The creep is told the rider's 2-fix-mean
+    // distance (fm_cv_track; -1 when the history is missing or the newest fix is older than tx_gps_stale_timeout_ms, which
+    // skips the test - today's rules) and aborts once it stands kFmCreepCloseAbortM (2 m) or more below its value at the
+    // grant on kFmCreepCloseFixes (2) consecutive distinct rider fixes (Revision 2.2 §B; the fix id is the newest sample's
+    // time, fmCvNewestMs()).
+    float creep_mean_m = -1.0f;
+    if (proof_ok) {
+      float m2 = 0.0f;
+      if (fmCvRange(&fm_cv_track, (uint32_t)now, (uint32_t)usrConf.tx_gps_stale_timeout_ms, &m2)) creep_mean_m = m2;
+    }
     creep_verdict = fmCreepStep(&fm_creep, (uint32_t)now, thr_held, heading_ok, eligible_but_heading, dist_m,
-                                creep_start_m, usrConf.min_dist_m + kFmCreepAbortMarginM, kBootstrapMaxMs);
+                                creep_start_m, usrConf.min_dist_m + kFmCreepAbortMarginM, kBootstrapMaxMs,
+                                creep_mean_m, kFmCreepCloseAbortM, fmCvNewestMs(&fm_cv_track), kFmCreepCloseFixes);
     creep_grant = (creep_verdict == FMCR_GRANTED);
     if (creep_verdict == FMCR_ABORT || creep_verdict == FMCR_TIMEOUT) fm_creep_last_end = creep_verdict;
   }
@@ -8591,7 +8826,7 @@ static void runFmLoopBody(unsigned long now)
       }
       if (creep_verdict == FMCR_ABORT || creep_verdict == FMCR_TIMEOUT) {
         Serial.printf("FM [RX] HEADING CREEP %s - paused at 0; one creep per squeeze (release and squeeze again to retry)\n",
-                      (creep_verdict == FMCR_TIMEOUT) ? "TIMED OUT: no GPS course after 3 s" : "ABORTED: rider too close or a condition fell");
+                      (creep_verdict == FMCR_TIMEOUT) ? "TIMED OUT: no GPS course after 3 s" : "ABORTED: rider too close, closing on it, or a condition fell");
       }
     } else {
       // ---- FM_ARMED: never engaged this arm cycle — fully manual buggy ----

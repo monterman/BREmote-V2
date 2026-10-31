@@ -1,3 +1,21 @@
+// V2.5-Evo - 2026-10-31 - R2-S SHIPS AS S1 ALONE (the R2-S ruling, Revision 1.1: the design's own §E-0 fallback - "if S2 alone
+//   causes any healthy-set end, drop S2, keep S1, and re-check gate 1 once" - which 10e is). 10d applies the ordered rule
+//   with that fallback and ASSERTS S1 alone's HARD gates: gate 2 zero on both plants and both fix rates, gate 1 at F1-F3.
+//   Its F4/F5 gate-1 shortfall is the recorded residual (E-2 / E-4 stay blocked).
+// V2.5-Evo - 2026-10-31 - SECTION 10 IS THE R2-S RULING'S ONE RUN: two variants (S2-w; R2-S as first built) x two plants (P1;
+//   P2, 20 deg/s with the COG 0.5 s late, +/-5 deg) x the rider's fix at 3 and 2 Hz, gate 1 at D_engage 12 and 13.5 m and
+//   gate 2; the red edits; report-only tau 1.33 / 2.4 s, the factory fm_align_cap 13 and S1 alone (the design's own fallback);
+//   then the ruling's ordered accept rule, whose verdict (kR2sShipped) is asserted. `follow_me_converge_test r2s` runs it alone.
+// V2.5-Evo - 2026-10-31 - SECTION 10, R2-S THE WRONG-WAY NET (design audit 2026-10-31 §E-0, Follow-Me package 2): the sim
+//   gains an R2-S mode (g_r2s), OFF in sections 1-9 - which therefore print exactly what they printed before (checked against
+//   fm-bundle 0464187's output). In section 10 it restates runFmLoopBody()'s new judge (fmSteerResponseStep() beside R2's
+//   dwell, on the RX's own command byte and heading error from the last tick), a steering plant with the VESC ramp and
+//   momentum, a delayed noisy COG, and the mirrored-steering fault. 10a GATE 1, red edit (c): mirrored steering, F1-F5,
+//   8-14 mph (12.5-14 included), the fault at the ACTIVE edge and mid-engagement, F4 / F5 with and without the front abort
+//   latched, both fits, 10 phases, at D_engage 12 and 13.5 m; with the red arms "R2-S removed" and "S2 removed". 10b GATE 2:
+//   zero R2-S ends in every healthy set (harsh, realistic, pairs, stops, stop-and-go, pickups, fly-bys, steady, catch-up,
+//   carving +/-45-90), and the red edit "rotation test removed", which must fail it. Gate 2 and that red edit are asserted;
+//   gate 1 is reported (it fails as specified - see 10c and the record note there).
 // V2.5-Evo - 2026-10-30 - Host test, unit 1 of the 2026-10-30 Follow-Me package (Revision 2 §5 and §10, as amended by
 //   Revision 2.1 §B and cut to STOPS ONLY by Revision 2.2 §B / §C / §D): THE FAST-CLOSURE CEILING
 //   (Common/FollowMeConverge.h) with its stop qualifier, its divergence park, the heading creep's closing abort, and the
@@ -305,8 +323,10 @@ static void degradedTick(Ctl &c, uint8_t m_decl)
 // ======================================================================================
 // THE RX'S NUMBERS (RTMState.ino) AND THE OWNER'S RX1 CONFIG
 // ======================================================================================
-static const float    kMinDistO   = 5.0f, kBandO = 4.0f, kDFollowO = 9.0f, kNearO = 60.0f, kDEngageO = 12.0f;
-static const float    kFoilerLowO = 8.0f, kSpeedHystO = 2.0f, kAlignDegO = 45.0f, kAlignCapO = 50.0f, kTauO = 2.0f;
+static const float    kMinDistO   = 5.0f, kBandO = 4.0f, kDFollowO = 9.0f, kNearO = 60.0f;
+static float          kDEngageO   = 12.0f;   // V2.5-Evo - 2026-10-31 - not const: section 10 also runs red edit (c) at 13.5 m (RX1's pending setting); 12 m everywhere else
+static const float    kFoilerLowO = 8.0f, kSpeedHystO = 2.0f, kAlignDegO = 45.0f, kTauO = 2.0f;
+static float          kAlignCapO  = 50.0f;   // V2.5-Evo - 2026-10-31 - not const: section 10's report arm runs the factory 13; 50 everywhere else
 static const float    kRawMaxO    = 4.0f, kEngageFloorO = 9.5f;
 static const uint32_t kEngageRampMsO = 1500, kJudgeGraceMsO = 6500;
 static const float    kGainO = 0.5f, kGapMaxO = 15.0f, kMarginO = 5.0f, kFloorO = 3.0f, kAlongGainO = 0.5f, kCourseMinO = 5.0f;
@@ -381,6 +401,36 @@ static const Arm kNoQ   = { "unqualified ceiling",    true,  false, kCvCoastS, 0
 
 enum { ST_ACTIVE = 1, ST_HOLD = 2, ST_ENDED = 3 };   // ST_ENDED: a steering end - ARMED with the sticky cap, steering straight
 
+// ======================================================================================
+// V2.5-Evo - 2026-10-31 - R2-S, THE WRONG-WAY NET (section 10; design audit 2026-10-31 §E-0). OFF in sections 1-9, which
+// therefore run exactly as before (no extra random draws, the same yaw law, the same eligibility).
+//   on      - fmSteerResponseStep() (Common/FollowMePause.h) judges every ACTIVE tick beside R2's dwell, on the RX's inputs:
+//             LAST tick's command byte and heading error (the RX reads rtm_steer_override / g_heading_error_dx10 before
+//             can_be_active), this tick's COG and the applied throttle; a verdict ends Follow-Me through R2's steering end.
+//   plant2  - the steering plant gate 2 asks for: the command still comes from the sim's yaw law (1.5 deg/s per deg of
+//             error, at most 45 deg/s), then the VESC RAMP (full scale in kRampUpS rising, kRampDownS falling) and the
+//             buggy's MOMENTUM (a first-order lag kYawTauM) before it turns the buggy; the COG R2-S sees is the heading
+//             kCogDelayTicks old with +/-kCogNoiseDeg uniform noise, valid at >= 5 km/h.
+//   s2      - S2 on (S1 always).
+//   mirror  - the mirrored-steering fault: the plant turns the other way from what it is told (plant2 only).
+// The command byte R2-S reads is the RX's own law (updateRtmSteering(), preset 2 Normal: clamp 90 deg, Kp 1.0, Kd 0.3), on
+// the same heading error the sim steers on. Its numbers below are the RX's kFmSteerRespCfg (follow_me_steer_response_test
+// checks RTMState.ino holds them).
+// ======================================================================================
+// V2.5-Evo - 2026-10-31 - R2-S ruling: the plant's yaw cap and the COG's delay (ticks) and noise are settings now - P1 (the
+// plant above: 45 deg/s, 3 ticks, +/-2 deg) and P2, the measured-rate plant (20 deg/s, 5 ticks, +/-5 deg).
+struct R2sRun { bool on; bool plant2; bool s2; bool mirror; FmSteerRespCfg cfg; double yaw_cap; int cog_delay; double cog_noise; };
+static R2sRun g_r2s = { false, false, true, false, { 32, 500, 2000, 15.0f, 0.8f, 150.0f, 4000, 15.0f, 1.0f, false }, 45.0, 3, 2.0 };
+static double g_fix_hz = 3.0;   // V2.5-Evo - 2026-10-31 - the rider's fix rate (section 10 also runs 2 Hz); 3 Hz everywhere else
+static long   g_r2s_end_s1 = 0, g_r2s_end_s2 = 0, g_r2_end = 0;   // ends counted while g_r2s.on (R2-S S1 / S2, and R2's own)
+static const double kRampUpS = 0.4, kRampDownS = 0.2, kYawTauM = 0.3, kCogNoiseDeg = 2.0;
+static const int    kCogDelayTicks = 3;                  // 0.3 s (P1; g_r2s.cog_delay is the one in force)
+static const int    kCogRing = 8;                        // the COG delay line holds up to 7 ticks of delay
+static const double kSrCogMinKmh = 5.0;                  // RTMState.ino kFmSrCogMinKmh
+static const int    kSrThrMin = 30;                      // RTMState.ino kFmSrThrMin
+static const uint32_t kSrEdgeMs = 500;                   // RTMState.ino kFmSrEdgeMs
+static const double kPdClamp = 90.0, kPdKp = 1.0, kPdKd = 0.3;   // RTMState.ino kSteerPresets[2] (Normal, the owner's)
+
 struct Sim {
   const Model *m; uint8_t mode; Arm arm; Rng rng; double tau_down;
   double t; uint32_t now;
@@ -399,6 +449,11 @@ struct Sim {
   bool bound, coasted, qualified;          // this tick: the ceiling lowered cap 3 / by a coast; the qualifier stood
   long binds, active_ticks;
   int steer_ends, r2_verdicts, hold_entries, ends_parked; bool in_hold;
+  // V2.5-Evo - 2026-10-31 - R2-S (section 10 only; zero and unused otherwise)
+  FmSteerResp sr; uint8_t sr_by;                           // the net's history; the verdict that ended this run (FMSR_*)
+  double yaw_ramp, yaw_act;                                // plant2: after the VESC ramp, after the momentum lag
+  double bh_hist[kCogRing]; int bh_head; bool bh_seeded;   // the COG delay line
+  double prev_err; bool prev_err_ok; int last_cmd_off; double last_err_s; bool last_err_ok;   // the RX's PD law, last tick
 };
 
 static void simInit(Sim &s, const Model *m, uint8_t mode, const Arm &arm, double tau_down, uint32_t seed, double mph)
@@ -512,7 +567,7 @@ static void simTick(Sim &s)
   s.hist_head = (s.hist_head + 1) % (kLatencyTicks + 1);
   s.hist[s.hist_head] = s.rider;
   // ---- the rider's fix: 3 Hz, 1 s late, slow bias + white noise ----
-  const long idx = (long)floor(s.t * 3.0 + 1e-9);
+  const long idx = (long)floor(s.t * g_fix_hz + 1e-9);   // V2.5-Evo - 2026-10-31 - g_fix_hz (3 Hz but in section 10)
   bool new_fix = false;
   if (idx != s.fix_idx) {
     s.fix_idx = idx;
@@ -571,9 +626,21 @@ static void simTick(Sim &s)
     diverge = fmDivergeDwellStep(&s.dv, s.now, judged, dist, ceil_m, kDivFarO * kDEngageO, kDivMsO, kDivEpsO, kDivEpsO) != FMDV_NONE;
     if (diverge) s.r2_verdicts++;
   }
+  // ---- V2.5-Evo - 2026-10-31 - R2-S beside R2 (section 10 only): never parked, judged from 0.5 s after the ACTIVE edge ----
+  bool sr_fire = false;
+  if (g_r2s.on) {
+    if (!s.bh_seeded) { for (int i = 0; i < kCogRing; i++) s.bh_hist[i] = s.bh; s.bh_seeded = true; }
+    const double cog_raw = s.bh_hist[(s.bh_head + kCogRing - g_r2s.cog_delay) % kCogRing] + s.rng.sym((float)g_r2s.cog_noise);
+    double cog = fmod(cog_raw, 360.0); if (cog < 0.0) cog += 360.0;
+    const bool cog_ok = (s.bv * 3.6 >= kSrCogMinKmh);
+    const bool sr_judged = active && (uint32_t)(s.now - s.engage_ms) >= kSrEdgeMs;
+    const uint8_t v = fmSteerResponseStep(&s.sr, s.now, sr_judged, (int16_t)s.last_cmd_off, cog_ok, (float)cog,
+                                          s.last_cap >= kSrThrMin, s.last_err_ok, (float)s.last_err_s, &g_r2s.cfg, g_r2s.s2);
+    if (v != FMSR_NONE) { sr_fire = true; s.sr_by = v; if (v == FMSR_WRONG_WAY) g_r2s_end_s1++; else g_r2s_end_s2++; }
+  }
   // ---- can_be_active and the branches ----
   double cmd = 0.0, yaw = 0.0;
-  const bool eligible = (s.state != ST_ENDED) && speed_ok && dist_ok && !diverge && !cand;
+  const bool eligible = (s.state != ST_ENDED) && speed_ok && dist_ok && !diverge && !sr_fire && !cand;
   if (eligible) {
     if (s.state != ST_ACTIVE) {                                         // the ACTIVE edge
       s.engage_ms = s.now; s.state = ST_ACTIVE; s.dv.since_ms = 0; s.dv.start_m = -1.0f;
@@ -608,9 +675,17 @@ static void simTick(Sim &s)
     cmd = cap; s.last_cap = (uint8_t)cap;
     yaw = kYawGain * err; if (yaw > kYawMax) yaw = kYawMax; if (yaw < -kYawMax) yaw = -kYawMax;
     s.last_err = (float)fabs(err);
-  } else if (diverge && s.state == ST_ACTIVE) {
+    if (g_r2s.on) {   // V2.5-Evo - 2026-10-31 - the RX's command byte (updateRtmSteering(), P + D on the heading error)
+      double cl = err; if (cl > kPdClamp) cl = kPdClamp; if (cl < -kPdClamp) cl = -kPdClamp;
+      const double d = s.prev_err_ok ? kPdKd * wrapd(err - s.prev_err) / kDt : 0.0;
+      double out = 127.0 + cl / kPdClamp * 127.0 * kPdKp + d; if (out < 0.0) out = 0.0; if (out > 254.0) out = 254.0;
+      s.last_cmd_off = (int)(uint8_t)out - 127;
+      s.prev_err = err; s.prev_err_ok = true; s.last_err_s = err; s.last_err_ok = true;
+    }
+  } else if ((diverge || sr_fire) && s.state == ST_ACTIVE) {
     // G-UT4: an end while the ceiling binds or inside its park would be the unit's doing (zero unless the park is removed)
     if (s.arm.cv && s.cv_last_bind != 0 && (uint32_t)(s.now - s.cv_last_bind) < kCvParkMs) s.ends_parked++;
+    if (g_r2s.on && !sr_fire) g_r2_end++;                    // V2.5-Evo - 2026-10-31 - R2's own end, counted in section 10
     s.steer_ends++; s.state = ST_ENDED; s.sticky = (s.last_cap < kStickyO) ? s.last_cap : kStickyO;
   } else if (s.state == ST_ENDED) {
     s.sticky += 255.0f * (float)kDt / 1.5f; if (s.sticky > kStickyO) s.sticky = kStickyO;   // the sticky cap climbs to 60
@@ -619,11 +694,26 @@ static void simTick(Sim &s)
     if (!s.in_hold) { s.hold_entries++; s.in_hold = true; }
     s.state = ST_HOLD; cmd = 0.0;
   }
+  if (g_r2s.on && !eligible) { s.last_cmd_off = 0; s.prev_err_ok = false; s.last_err_ok = false; }   // the RX writes 127
   // ---- the buggy ----
   const double v_ss = steadyMs(*s.m, cmd);
   s.bv += (v_ss - s.bv) * (kDt / ((v_ss > s.bv) ? kTauUp : s.tau_down));
-  s.bh += yaw * kDt;
+  if (g_r2s.plant2) {
+    // V2.5-Evo - 2026-10-31 - gate 2's plant: the (possibly mirrored) yaw command through the VESC ramp, then momentum.
+    double target = g_r2s.mirror ? -yaw : yaw;
+    if (target >  g_r2s.yaw_cap) target =  g_r2s.yaw_cap;   // the plant's yaw cap (P2: 20 deg/s)
+    if (target < -g_r2s.yaw_cap) target = -g_r2s.yaw_cap;
+    const bool   away   = fabs(target) > fabs(s.yaw_ramp) && target * s.yaw_ramp >= 0.0;
+    const double lim    = g_r2s.yaw_cap / (away ? kRampUpS : kRampDownS) * kDt;   // the ramp: the plant's full scale in 0.4 / 0.2 s
+    double dy = target - s.yaw_ramp; if (dy > lim) dy = lim; if (dy < -lim) dy = -lim;
+    s.yaw_ramp += dy;
+    s.yaw_act  += (s.yaw_ramp - s.yaw_act) * (kDt / kYawTauM);
+    s.bh += s.yaw_act * kDt;
+  } else {
+    s.bh += yaw * kDt;
+  }
   s.buggy = proj(s.buggy, s.bh, s.bv * kDt);
+  if (g_r2s.on) { s.bh_head = (s.bh_head + 1) % kCogRing; s.bh_hist[s.bh_head] = s.bh; }   // the COG delay line
 }
 
 // ======================================================================================
@@ -856,6 +946,50 @@ static StopGoOut runStopGo(const Model *m, uint8_t mode, const Arm &arm, double 
   return o;
 }
 
+// V2.5-Evo - 2026-10-31 - R2-S GATE 1, RED EDIT (c): THE MIRRORED-STEERING FAULT (section 10). The rider rides straight at
+// mph; the buggy follows on its station (F4 / F5: settled on the front station). The fault is present AT THE ACTIVE EDGE
+// (a fresh engagement: the engage ramp and R2's 6.5 s grace start with it) or ARRIVES MID-ENGAGEMENT (8.0-11.6 s after a
+// fresh edge, by phase: just past R2's grace, so R2 is judging); with abort_latched the front abort is latched at the fault
+// (F4 / F5). Runs until a steering end or 120 s. A run whose healthy lead-in already ended (R2's "running away" when the
+// rider outruns the shipped governor, 12.5+ mph on the 19 Oct fit - package 1 behaviour) is returned as pre_ended: the
+// buggy is ARMED under the sticky cap before the fault, so there is nothing to run away with, and it is reported apart.
+// Returns: pre_ended, whether it ended, which net (1 R2, 2 R2-S S1, 3 R2-S S2), the time from the fault, and the farthest
+// range from the fault to the end (m). The caller sets g_r2s (plant2 + the fault flag are set here).
+struct MirOut { bool pre_ended; bool ended; int by; double t_end_s, far_m; };
+static MirOut runMirror(const Model *m, uint8_t mode, const Arm &arm, double mph, bool at_edge, bool abort_latched, int phase,
+                        double tau = kTauHard)
+{
+  Sim s; simInit(s, m, mode, arm, tau, 8801u + 53u * (uint32_t)phase + (uint32_t)(mph * 10) + mode * 29u, mph);
+  if (mode == 4 || mode == 5) placeOnStation(s, 0.0); else placeOnStation(s, 30.0);
+  s.engage_ms = 0;
+  const bool plant2_was = g_r2s.plant2;
+  g_r2s.plant2 = true; g_r2s.mirror = false;
+  MirOut o = { false, false, 0, -1.0, 0.0 };
+  if (at_edge) {
+    for (int i = 0; i < 1 + 4 * phase; i++) simTick(s);        // settled, then a fresh ACTIVE edge: the ramp and the grace start now
+    s.engage_ms = s.now;
+  } else {
+    s.engage_ms = s.now;                                        // a fresh engagement, healthy for 8.0-11.6 s
+    for (int i = 0; i < 80 + 4 * phase; i++) simTick(s);
+  }
+  if (s.state == ST_ENDED) { o.pre_ended = true; g_r2s.plant2 = plant2_was; return o; }
+  if (abort_latched && (mode == 4 || mode == 5)) s.c.aborted = true;
+  g_r2s.mirror = true;
+  const int ends0 = s.steer_ends;
+  const double t0 = s.t;
+  for (int i = 0; i < 1200; i++) {
+    simTick(s);
+    const double d = distM(s.rider, s.buggy); if (d > o.far_m) o.far_m = d;
+    if (s.steer_ends != ends0) {
+      o.ended = true; o.t_end_s = s.t - t0;
+      o.by = (s.sr_by == FMSR_WRONG_WAY) ? 2 : (s.sr_by == FMSR_POINTING_AWAY) ? 3 : 1;
+      break;
+    }
+  }
+  g_r2s.mirror = false; g_r2s.plant2 = plant2_was;
+  return o;
+}
+
 // ======================================================================================
 // THE GATE RUNNERS
 // ======================================================================================
@@ -1012,10 +1146,251 @@ static void stopEffect(StopAcc &a, const StopOut &v, const StopOut &nq)
   }
 }
 
+// ======================================================================================
+// 10. V2.5-Evo - 2026-10-31 - R2-S, THE WRONG-WAY NET (design audit 2026-10-31 §E-0) AND THE RULING'S ONE RUN (the R2-S
+// ruling of the same day). Two variants - S2-w (the ruling's change: S2 on 80 % of a 3 s span, its rotation summed tick by
+// tick) and R2-S as first built (7928269) - on two plants - P1 (the shared plant: the sim's yaw law, capped at 45 deg/s,
+// the COG 0.3 s late, +/-2 deg) and P2 (the measured-rate plant: capped at 20 deg/s, the COG 0.5 s late, +/-5 deg); both
+// with the VESC ramp (the plant's full scale in 0.4 s rising, 0.2 s falling) and momentum (tau 0.3 s) - with the rider's
+// fix at 3 Hz and at 2 Hz. Gate 1 (red edit (c)) at D_engage 12 and 13.5 m; gate 2 (the healthy sets). Then the red edits,
+// the report-only arms and the ruling's ordered accept rule. Gate 3 (the log replay) is follow_me_steer_response_test.
+// ======================================================================================
+struct Plant { const char *name; double yaw_cap; int cog_delay; double cog_noise; };
+static const Plant kP1 = { "P1", 45.0, 3, 2.0 };
+static const Plant kP2 = { "P2", 20.0, 5, 5.0 };
+static void setPlant(const Plant &p) { g_r2s.yaw_cap = p.yaw_cap; g_r2s.cog_delay = p.cog_delay; g_r2s.cog_noise = p.cog_noise; }
+static const FmSteerRespCfg kSrBuilt = { 32, 500, 2000, 15.0f, 0.8f, 150.0f, 4000, 15.0f, 1.0f, false };   // 7928269
+static const FmSteerRespCfg kSrW     = { 32, 500, 2000, 15.0f, 0.8f, 150.0f, 3000, 15.0f, 0.8f, true };    // S2-w
+// THE RECORD: the variant the accept rule selected in the one run (0 = S2-w, 1 = R2-S as first built, 2 = S1 alone - the
+// design's §E-0 fallback, added by the ruling's Revision 1.1 - and -1 = none).
+// Asserted below, so a later change that moves the verdict fails this test rather than passing quietly.
+static const int kR2sShipped = 2;    // 2026-10-31 run: neither S2 variant passes gate 2 on P2; S1 alone (2) ships (Revision 1.1)
+
+// Gate 1 over one configuration (g_r2s, kDEngageO and g_fix_hz as set by the caller).
+struct G1 { int runs, pre, ended, over, over_rear, by[4]; double tsum, tmax, farmax, far_hi, t_hi; double cell[6][6]; };
+static G1 gate1(double tau)
+{
+  static const double mph1[6] = { 8.0, 9.8, 11.0, 12.5, 13.0, 14.0 };
+  G1 g; memset(&g, 0, sizeof(g));
+  const double bound = 3.0 * kDEngageO + 25.0;
+  for (int fi = 0; fi < 2; fi++) for (uint8_t mode = 1; mode <= 5; mode++) for (int si = 0; si < 6; si++)
+    for (int edge = 0; edge <= 1; edge++) for (int ab = 0; ab <= ((mode >= 4) ? 1 : 0); ab++) for (int k = 0; k < 10; k++) {
+      const MirOut o = runMirror(kFits[fi], mode, kSb, mph1[si], edge == 1, ab == 1, k, tau);
+      if (o.pre_ended) { g.pre++; continue; }
+      g.runs++;
+      if (o.ended) { g.ended++; g.by[o.by]++; g.tsum += o.t_end_s; if (o.t_end_s > g.tmax) g.tmax = o.t_end_s; }
+      if (!o.ended || o.far_m >= bound) { g.over++; if (mode <= 3) g.over_rear++; }
+      if (o.far_m > g.farmax) g.farmax = o.far_m;
+      if (o.far_m > g.cell[mode][si]) g.cell[mode][si] = o.far_m;
+      if (mph1[si] >= 12.5) { if (o.far_m > g.far_hi) g.far_hi = o.far_m; if (o.ended && o.t_end_s > g.t_hi) g.t_hi = o.t_end_s; }
+    }
+  return g;
+}
+static void printG1(const char *label, const G1 &g)
+{
+  printf("  %-34s D %4.1f m (bound %4.1f m): %4d runs (+%3d pre-ended), ended %4d (R2 %4d, S1 %4d, S2 %4d); beyond the bound "
+         "%3d (F1-F3 %d); time to end mean %4.1f s, max %4.1f s; farthest %5.1f m; at 12.5-14 mph farthest %5.1f m\n",
+         label, (double)kDEngageO, 3.0 * kDEngageO + 25.0, g.runs, g.pre, g.ended, g.by[1], g.by[2], g.by[3], g.over, g.over_rear,
+         g.ended ? g.tsum / g.ended : 0.0, g.tmax, g.farmax, g.far_hi);
+}
+static void printCells(const G1 &g)
+{
+  printf("      farthest range (m) per station x speed:    8.0    9.8   11.0   12.5   13.0   14.0 mph\n");
+  for (uint8_t mode = 1; mode <= 5; mode++) {
+    printf("      %-2s                                    ", modeName(mode));
+    for (int si = 0; si < 6; si++) printf(" %6.1f", g.cell[mode][si]);
+    printf("\n");
+  }
+}
+
+// Gate 2 over one configuration: every healthy set, both fits, all phases. R2-S ends counted per set.
+struct G2 { long runs, s1, s2, r2; long per[6][2]; };
+static G2 gate2(double tau)
+{
+  G2 h; memset(&h, 0, sizeof(h));
+  g_r2s_end_s1 = g_r2s_end_s2 = g_r2_end = 0;
+  auto mark = [&](int set) { h.per[set][0] = g_r2s_end_s1; h.per[set][1] = g_r2s_end_s2; };
+  for (int set = 0; set < 3; set++) {
+    for (int fi = 0; fi < 2; fi++) for (uint8_t mode = 1; mode <= ((set == 1) ? 5 : 3); mode++) {
+      std::vector<TurnSpec> specs;
+      if (set == 0) {
+        for (int ts = 2; ts <= 4; ts += 2) for (int dir = -1; dir <= 1; dir += 2) specs.push_back({ 10.0, (double)ts, dir, 82.0, -1.0 });
+      } else if (set == 1) {
+        const double mph[4] = { 8.0, 10.0, 12.0, 14.0 }, back[3] = { 100.0, 150.0, 200.0 };
+        for (int si = 0; si < 4; si++) for (int ts = 6; ts <= 10; ts += 2) for (int dir = -1; dir <= 1; dir += 2)
+          for (int bi = 0; bi < ((mode >= 4) ? 1 : 3); bi++) specs.push_back({ mph[si], (double)ts, dir, back[bi], -1.0 });
+      } else {
+        for (int si = 0; si < 2; si++) for (int ts = 4; ts <= 6; ts += 2) for (int run = 5; run <= 15; run += 5)
+          for (int dir = -1; dir <= 1; dir += 2) specs.push_back({ si ? 12.0 : 10.0, (double)ts, dir, 82.0, (double)run });
+      }
+      for (const TurnSpec &sp : specs) for (int k = 0; k < 10; k++) {
+        runTurn(kFits[fi], mode, kSb, tau, sp.mph, sp.turn_s, sp.dir, sp.back_ft, k, sp.run_s); h.runs++;
+      }
+    }
+    mark(set);
+  }
+  const double stop_mph[5] = { 8.0, 9.8, 10.9, 12.5, 14.0 };
+  for (int fi = 0; fi < 2; fi++) for (uint8_t mode = 1; mode <= 5; mode++) for (int k = 0; k < 5; k++) {
+    runStop(kFits[fi], mode, kSb, tau, stop_mph[k]); h.runs += 10;
+  }
+  mark(3);
+  for (int fi = 0; fi < 2; fi++) for (uint8_t mode = 1; mode <= 5; mode++) for (int k = 0; k < 10; k++) {
+    runStopGo(kFits[fi], mode, kSb, tau, k); h.runs++;
+  }
+  {
+    const double mphs[3] = { 5.5, 6.5, 8.0 }, stops[3] = { 10.0, 20.0, 30.0 }, ab[3] = { 5.0, 10.0, 20.0 };
+    for (int fi = 0; fi < 2; fi++) for (uint8_t mode = 1; mode <= 3; mode++) for (int si = 0; si < 3; si++) {
+      for (int di = 0; di < 3; di++) for (int ts = 6; ts <= 10; ts += 4) for (int dir = -1; dir <= 1; dir += 2)
+        for (int k = 0; k < 10; k++) { runPickup(kFits[fi], mode, kSb, tau, mphs[si], ts, dir, stops[di], k); h.runs++; }
+      for (int ai = 0; ai < 3; ai++) for (int v0 = 0; v0 <= 2; v0 += 2) for (int k = 0; k < 10; k++) {
+        runFlyBy(kFits[fi], mode, kSb, tau, mphs[si], ab[ai], v0, k); h.runs++;
+      }
+    }
+  }
+  mark(4);
+  for (int fi = 0; fi < 2; fi++) for (uint8_t mode = 1; mode <= 5; mode++) for (int si = 0; si < 4; si++)
+    for (int sc = 0; sc < 6; sc++) {
+      runSteady(kFits[fi], mode, kSb, tau, 8.0 + 2.0 * si, (sc < 2) ? sc : 2, (sc < 2) ? 0.0 : 45.0 + 15.0 * (sc - 2));
+      h.runs++;
+    }
+  mark(5);
+  h.s1 = g_r2s_end_s1; h.s2 = g_r2s_end_s2; h.r2 = g_r2_end;
+  return h;
+}
+static void printG2(const char *label, const G2 &h)
+{
+  static const char *nm[6] = { "harsh", "realistic", "pairs", "stops", "stop-go+pickups+fly-bys", "steady+catch-up+carving" };
+  printf("  %-34s %5ld runs: R2-S ends S1 %4ld / S2 %4ld (R2's own %4ld); per set S1/S2:", label, h.runs, h.s1, h.s2, h.r2);
+  long p1 = 0, p2 = 0;
+  for (int i = 0; i < 6; i++) { printf(" %s %ld/%ld;", nm[i], h.per[i][0] - p1, h.per[i][1] - p2); p1 = h.per[i][0]; p2 = h.per[i][1]; }
+  printf("\n");
+}
+
+static void section10()
+{
+  printf("\n10. R2-S, THE WRONG-WAY NET, AND THE RULING'S ONE RUN (plant tau %.2f s): S1 = the command held to one side 0.5 + "
+         "2.0 s while the COG turns >= 15 deg the other way. S2 as first built = >= 150 deg off the target on every sample of "
+         "4 s, < 15 deg toward the side of the first sample; S2-w = >= 150 deg on 80 %% of 3 s, < 15 deg toward the target "
+         "summed tick by tick. Plants: P1 45 deg/s, COG 0.3 s +/-2 deg; P2 20 deg/s, COG 0.5 s +/-5 deg; both the VESC ramp "
+         "(%.1f / %.1f s full scale) and momentum (tau %.1f s). Gate 1 bound 3 x D_engage + 25 m.\n",
+         kTauHard, kRampUpS, kRampDownS, kYawTauM);
+  const Plant *pl[2] = { &kP1, &kP2 };
+  const double hz[2] = { 3.0, 2.0 };
+  const float deng[2] = { 12.0f, 13.5f };
+  const FmSteerRespCfg *var[2] = { &kSrW, &kSrBuilt };
+  const char *vname[2] = { "S2-w", "R2-S as built" };
+  bool g1_ok[2] = { true, true }, g1_rear[2] = { true, true }, g2_ok[2] = { true, true };
+  g_r2s.on = true; g_r2s.s2 = true; g_r2s.mirror = false;
+  // ---- the one run: 2 variants x 2 plants x 2 fix rates; gate 1 at both D_engage, gate 2 ----
+  for (int v = 0; v < 2; v++) for (int p = 0; p < 2; p++) for (int h = 0; h < 2; h++) {
+    setPlant(*pl[p]); g_fix_hz = hz[h]; g_r2s.cfg = *var[v];
+    printf("10a. %s, %s, rider fix %.0f Hz\n", vname[v], pl[p]->name, hz[h]);
+    for (int d = 0; d < 2; d++) {
+      kDEngageO = deng[d];
+      const G1 g = gate1(kTauHard);
+      printG1("gate 1 (red edit (c))", g);
+      if (d == 0 && h == 0) printCells(g);
+      if (g.over > 0) g1_ok[v] = false;
+      if (g.over_rear > 0) g1_rear[v] = false;
+    }
+    kDEngageO = 12.0f;
+    g_r2s.plant2 = true;
+    const G2 r = gate2(kTauHard);
+    g_r2s.plant2 = false;
+    printG2("gate 2 (healthy sets)", r);
+    if (r.s1 + r.s2 > 0) g2_ok[v] = false;
+  }
+  g_fix_hz = 3.0; kDEngageO = 12.0f;
+  // ---- the red edits (gate 1 at D_engage 12 m, 3 Hz, both plants) ----
+  printf("10b. RED EDITS (gate 1, D_engage 12 m, rider fix 3 Hz)\n");
+  for (int p = 0; p < 2; p++) {
+    setPlant(*pl[p]);
+    char lab[64];
+    g_r2s.cfg = kSrW; g_r2s.cfg.s2_away_frac = 1.0f;
+    snprintf(lab, sizeof(lab), "%s S2-w, part 1 reverted", pl[p]->name); printG1(lab, gate1(kTauHard));
+    g_r2s.cfg = kSrW; g_r2s.cfg.s2_tickwise = false;
+    snprintf(lab, sizeof(lab), "%s S2-w, part 2 reverted", pl[p]->name); printG1(lab, gate1(kTauHard));
+    g_r2s.cfg = kSrW; g_r2s.s2 = false;
+    snprintf(lab, sizeof(lab), "%s S2 removed (S1 only)", pl[p]->name); printG1(lab, gate1(kTauHard));
+    g_r2s.s2 = true; g_r2s.on = false;
+    snprintf(lab, sizeof(lab), "%s R2-S removed (R2 alone)", pl[p]->name); printG1(lab, gate1(kTauHard));
+    g_r2s.on = true;
+  }
+  printf("  (part 2 reverted, at unit level: the healthy \"target sweeps behind\" track fires falsely - follow_me_steer_response_test 1b)\n");
+  setPlant(kP1); g_r2s.cfg = kSrW;
+  g_r2s.cfg.rot_min_deg = -1000.0f;                           // RED: S1 fires on any constant command - gate 2 must fail
+  g_r2s.plant2 = true;
+  const G2 red = gate2(kTauHard);
+  g_r2s.plant2 = false;
+  printG2("P1 S2-w, rotation test removed", red);
+  g_r2s.cfg = kSrW;
+  // ---- report only: plant tau 1.33 / 2.4 s, and the factory fm_align_cap 13 (S2-w, 3 Hz, D_engage 12 m) ----
+  printf("10c. REPORT ONLY (S2-w, D_engage 12 m, rider fix 3 Hz)\n");
+  const double taus[2] = { kTauMed, kTauOld };
+  for (int p = 0; p < 2; p++) for (int t = 0; t < 2; t++) {
+    setPlant(*pl[p]);
+    char lab[64];
+    snprintf(lab, sizeof(lab), "%s plant tau %.2f s, gate 1", pl[p]->name, taus[t]); printG1(lab, gate1(taus[t]));
+    g_r2s.plant2 = true;
+    snprintf(lab, sizeof(lab), "%s plant tau %.2f s, gate 2", pl[p]->name, taus[t]); printG2(lab, gate2(taus[t]));
+    g_r2s.plant2 = false;
+  }
+  kAlignCapO = 13.0f;
+  for (int p = 0; p < 2; p++) {
+    setPlant(*pl[p]);
+    char lab[64];
+    snprintf(lab, sizeof(lab), "%s fm_align_cap 13 (factory), gate 1", pl[p]->name); printG1(lab, gate1(kTauHard));
+  }
+  kAlignCapO = 50.0f;
+  setPlant(kP1); g_r2s.cfg = kSrW; g_r2s.on = false; g_r2s.s2 = true; g_r2s.mirror = false; g_r2s.plant2 = false;
+  // ---- report only: S1 ALONE - the design's own bounded fallback (§E-0: "if S2 alone causes any healthy-set end, drop S2,
+  //      keep S1, and re-check gate 1 once"). Not one of the ruling's two arms; run so the data is there for the ruling. ----
+  printf("10e. REPORT ONLY - S1 ALONE (the design's bounded fallback, §E-0; not an arm of the ruling), the full matrix\n");
+  bool s1_g1 = true, s1_g1_rear = true, s1_g2 = true;
+  g_r2s.on = true; g_r2s.s2 = false; g_r2s.cfg = kSrW;
+  for (int p = 0; p < 2; p++) for (int h = 0; h < 2; h++) {
+    setPlant(*pl[p]); g_fix_hz = hz[h];
+    char lab[64];
+    for (int d = 0; d < 2; d++) {
+      kDEngageO = deng[d];
+      snprintf(lab, sizeof(lab), "S1 alone, %s, %.0f Hz, gate 1", pl[p]->name, hz[h]);
+      const G1 g = gate1(kTauHard); printG1(lab, g);
+      if (g.over > 0) s1_g1 = false;
+      if (g.over_rear > 0) s1_g1_rear = false;
+    }
+    kDEngageO = 12.0f;
+    g_r2s.plant2 = true;
+    snprintf(lab, sizeof(lab), "S1 alone, %s, %.0f Hz, gate 2", pl[p]->name, hz[h]);
+    const G2 r = gate2(kTauHard); printG2(lab, r);
+    g_r2s.plant2 = false;
+    if (r.s1 + r.s2 > 0) s1_g2 = false;
+  }
+  printf("10e. S1 alone: gate 2 %s on both plants and both fix rates; gate 1 at F1-F3 %s; gate 1 every cell %s\n",
+         s1_g2 ? "PASS" : "FAIL", s1_g1_rear ? "PASS" : "FAIL", s1_g1 ? "PASS" : "FAIL");
+  g_fix_hz = 3.0; kDEngageO = 12.0f;
+  setPlant(kP1); g_r2s.cfg = kSrW; g_r2s.on = false; g_r2s.s2 = true; g_r2s.mirror = false; g_r2s.plant2 = false;
+  // ---- the ruling's accept rule, in order (gate 3, both fixtures, is asserted in follow_me_steer_response_test) ----
+  int ship = -1;
+  if (g1_ok[0] && g2_ok[0]) ship = 0;
+  else if (g2_ok[1] && g1_rear[1]) ship = 1;
+  else if (s1_g2 && s1_g1_rear) ship = 2;                    // Revision 1.1: S2 dropped, S1 kept, gate 1 re-checked once (10e)
+  printf("10d. ACCEPT RULE: S2-w gate 1 %s (both plants, both fix rates, both D_engage, every cell), gate 2 %s; R2-S as built "
+         "gate 1 %s, at F1-F3 %s, gate 2 %s; rotation-test-removed red edit %s gate 2 (%ld false ends)\n",
+         g1_ok[0] ? "PASS" : "FAIL", g2_ok[0] ? "PASS" : "FAIL", g1_ok[1] ? "PASS" : "FAIL", g1_rear[1] ? "PASS" : "FAIL",
+         g2_ok[1] ? "PASS" : "FAIL", (red.s1 + red.s2) > 0 ? "fails" : "DOES NOT FAIL", red.s1 + red.s2);
+  printf("10d. VERDICT: %s\n", ship == 0 ? "(1) SHIP R2-S-w" : ship == 1 ? "(2) SHIP R2-S AS BUILT (F4/F5 a recorded residual; "
+         "E-2 / E-4 cannot ship)" : ship == 2 ? "SHIP S1 ALONE (the §E-0 fallback, Revision 1.1; F4/F5 a recorded residual; "
+         "E-2 / E-4 cannot ship)" : "(3) R2-S DOES NOT SHIP (nor D, E-2, E-4)");
+  assert(red.s1 + red.s2 > 0);
+  assert(ship == kR2sShipped);
+  assert(s1_g2 && s1_g1_rear);                              // the shipped S1 alone: gate 2 zero, gate 1 at F1-F3 (HARD)
+}
+
 int main(int argc, char **argv)
 {
   setvbuf(stdout, nullptr, _IONBF, 0);
   const bool quick   = (argc > 1 && strcmp(argv[1], "quick") == 0);
+  if (argc > 1 && strcmp(argv[1], "r2s") == 0) { section10(); return 0; }   // V2.5-Evo - 2026-10-31 - section 10 alone
   const bool verbose = (argc > 1 && strcmp(argv[1], "verbose") == 0);
   // ======================================================================================
   // 1. UNIT CHECKS OF THE PURE RULES
@@ -1457,5 +1832,6 @@ int main(int argc, char **argv)
   (void)pass_all;
   for (int i = 0; i < g_nhard; i++) assert(g_hard[i].pass[1]);      // Rev 2.3: every HARD gate of the shipped leg
   printf("follow_me_converge_test: all %d HARD gates of S-b (the shipped leg) asserted\n", g_nhard);
+  section10();   // V2.5-Evo - 2026-10-31 - R2-S and the ruling's one run
   return 0;
 }

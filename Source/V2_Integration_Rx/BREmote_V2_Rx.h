@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-31 - RIDER GPS PACKET v3, ?diag ONLY (design audit 2026-10-31, Follow-Me package 2 unit A): new runtime globals rx_tx_gps_vel_word (the velocity of the last accepted NEW rider solution, tagged with its solution number, published before rx_tx_gps_solution_seq), rx_gps_v3_ann / rx_gps_v3_ok (?diag: v3 announcements heard against v3 packets accepted); rx_tx_gps_proto may now read 3. The log is unchanged on this branch (log format 3). Nothing in Follow-Me, return-to-me or the motor path reads the velocity. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-30 - E-1's g_applied_thr_cmd is std::atomic<uint8_t> (unit 2, Revision 2.5 item 4): the P7 pattern, one writer (calcPWM()'s store) and one reader (the ARMED -> ACTIVE edge's load), relaxed. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-30 - FOLLOW-ME FAST-CLOSURE CEILING (unit 1 of the 2026-10-30 package): includes ../Common/FollowMeConverge.h (after FollowMePause.h), the pure ceiling RTMState.ino applies inside cap 3. Include only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-26 - COMMENT ONLY (N-1): the steer_during_auto field note now tells the 30 s takeover end per mode - return-to-me and auto-return ignore the stick until it is centred; Follow-Me following ends through FM_HOLD, so the stick is the rider's at once with no centring, and under a trigger that stays held a fresh separation or the auto-return can move the buggy again with no release, each through its own ramp and caps. No code change, sizeof stays 200, SW_VERSION stays 36.
@@ -1389,7 +1390,23 @@ volatile uint32_t rx_tx_gps_fix_seq = 0;   // one increment per distinct rider p
 // uint8_t: single aligned accesses on this core, no tearing.
 volatile uint32_t rx_tx_gps_solution_ms  = 0;   // millis() of the last accepted NEW rider GPS solution; 0 = never
 volatile uint32_t rx_tx_gps_solution_seq = 0;   // +1 per accepted NEW rider GPS solution (the long-loss reset streak)
-volatile uint8_t  rx_tx_gps_proto        = 0;   // the last accepted rider GPS packet: 0 = none, 1 = v1 (14 B), 2 = v2 (15 B, fix counter); ?diag only
+volatile uint8_t  rx_tx_gps_proto        = 0;   // the last accepted rider GPS packet: 0 = none, 1 = v1 (14 B), 2 = v2 (15 B, fix counter), 3 = v3 (18 B, + course / speed, V2.5-Evo - 2026-10-31); ?diag only
+
+// V2.5-Evo - 2026-10-31 - RIDER GPS v3 (design audit 2026-10-31 unit A, ?diag ONLY on this branch): THE REMOTE'S OWN COURSE AND SPEED.
+// rx_tx_gps_vel_word is the velocity of the last accepted NEW rider solution as ONE aligned 32-bit word:
+// (that solution's number & 0xFF) << 24 | the 24-bit velocity word off the wire (Common/RiderGpsPacket.h riderGpsVelTag()).
+// Single writer: processMetaGpsPacket() on the radio task, which stores it BEFORE it bumps rx_tx_gps_solution_seq, so a
+// reader that reads the counter first and then this word can prove the velocity belongs to that solution
+// (riderGpsVelForSeq()) and can never see it torn. A v1 / v2 solution stores "no velocity" (kRiderVelNoneW24); a
+// re-broadcast or a Phase-A-rejected solution stores nothing. Read by fmRiderVelStep() (RTMState.ino, the plausibility
+// gates and ?diag). NO CONTROL CODE READS IT. Initial value: tag 0 (no solution yet), no velocity.
+// (This branch's level-6 log does not carry it yet: its log format is 3, and the log-format numbers 4-6 already name
+// other layouts in the PC log reader, so the log part waits for a ruling on its format number.)
+volatile uint32_t rx_tx_gps_vel_word     = kRiderVelWordInit;
+// ?diag, bench B-8 (v3 acceptance at 10 m): 0xF3 announcements with subtype 0x05 heard, and 18-byte v3 packets that passed
+// the address, CRC and subtype tests. Radio task only writes them; single aligned reads elsewhere. Counts since boot.
+volatile uint32_t rx_gps_v3_ann          = 0;
+volatile uint32_t rx_gps_v3_ok           = 0;
 
 // V2.5-Evo - 2026-04-25 - P7 RTM/FM runtime state (set by Radio.ino meta-packet handlers)
 // rtm_rx_active: true = TX signalled RTM active; safety gates in RTMState.ino may override.

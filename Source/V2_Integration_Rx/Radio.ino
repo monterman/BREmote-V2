@@ -1,3 +1,10 @@
+// V2.5-Evo - 2026-10-31 - design audit 2026-10-31 unit A (Follow-Me package 2, ?diag ONLY - no control use): the 0xF3 GPS path also accepts
+//   the v3 rider GPS packet (announcement 0xF3/0x05 -> 18 bytes: the v2 position and fix counter + the remote's own course,
+//   speed and fix age). processMetaGpsPacket() publishes the velocity of every accepted NEW solution in rx_tx_gps_vel_word,
+//   tagged with its solution number, BEFORE it bumps rx_tx_gps_solution_seq; a re-broadcast or a Phase-A-rejected
+//   solution publishes none; rx_tx_gps_proto reads 3. The v1 / v2 paths, Phase A / B and every stamp are unchanged.
+//   ?diag counters rx_gps_v3_ann / rx_gps_v3_ok. Comment fix (audit LOW): the remote never HDOP-gated its positions.
+//   GPS-integrity note (project rule 5) at processMetaGpsPacket(). No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-12 - audit 2026-10-11 delta A-1: the 0xF3 GPS path accepts the v2 rider GPS packet (announcement
 //   0xF3/0x03 -> a 15-byte packet with the remote's GPS fix counter) next to v1 (0xF3/0x01 or any other subtype -> 14
 //   bytes, unchanged). processMetaGpsPacket() decodes both through Common/RiderGpsPacket.h and stamps
@@ -619,6 +626,11 @@ static uint8_t gps_meta_len = kRiderGpsLenV1;
 // speed - so check 1 (HDOP) has no input and is skipped; the TX runs its own Phase A on its own
 // module before transmitting, which is where HDOP is properly judged. Checks 2 and 3 are both
 // reconstructed from consecutive positions.
+// V2.5-Evo - 2026-10-31 - CORRECTION (design audit 2026-10-31, LOW): the sentence above is wrong about the remote. Its
+// gps_max_hdop gate (txGpsGoodFix(), TX GPS.ino) governs only its GPS dot and its speed display; it sends a POSITION from
+// any valid fix fresher than tx_gps_stale_timeout_ms, whatever the HDOP. So no HDOP test is applied to the rider's
+// position at either end (unchanged here: an owner choice for later). Since v3 the remote's own COURSE AND SPEED are
+// HDOP-gated before sending, and the buggy judges them again (fmRiderVelStep(), RTMState.ino).
 //
 // THREE GUARDS, ALL BIASED TOWARD ACCEPTING. A wrongly-rejected fix ages the rider's position
 // and can trip FM's Gate 4 staleness timeout, so a false reject costs more than a missed spike -
@@ -751,6 +763,13 @@ static bool gpsPhaseATxCheck(double cur_lat, double cur_lng, unsigned long now_m
 // nothing, and the radio returns to 6-byte mode on the common exit; (3) positions stay int32 microdegrees until the
 // same double conversion as before; (4) nothing is extrapolated or interpolated: a re-broadcast or a dropped packet
 // leaves the last good position to age exactly as before.
+// V2.5-Evo - 2026-10-31 - unit A: an 18-byte v3 packet (subtype 0x06) is decoded by the same riderGpsParse() - its position
+// and fix counter exactly as v2 - and carries the remote's own course and speed. GPS-INTEGRITY NOTE for v3 (rules 1-4):
+// (1) the POSITION path is untouched - the velocity is published only for a solution that Phase A accepted, a rejected
+// solution's velocity goes with it, and a velocity can never reject, delay or age a position (its own gates, V-1 to V-3,
+// run later on the loop task and invalidate only the velocity); (2) the state machine is the same one-announcement /
+// one-packet pair with the longer length; (3) positions stay int32 microdegrees; (4) the velocity is the remote's own
+// measurement of that fix - nothing is extrapolated, and nothing in control reads it (unit A logs it only).
 static void processMetaGpsPacket(uint8_t *pkt, uint8_t len)
 {
   if (memcmp(pkt, usrConf.own_address, 3) != 0)
@@ -768,6 +787,10 @@ static void processMetaGpsPacket(uint8_t *pkt, uint8_t len)
     rxprintln(parsed == RGP_CRC ? "META GPS: CRC fail, discarding" : "META GPS: unexpected length/type/subtype, discarding");
     return;
   }
+  // V2.5-Evo - 2026-10-31 - unit A: one more v3 packet accepted (address, CRC, subtype) - ?diag, bench B-8. And its
+  // velocity word (kRiderVelNoneW24 for v1 / v2), published below only if this is a NEW solution Phase A accepts.
+  if (len == kRiderGpsLenV3) rx_gps_v3_ok = rx_gps_v3_ok + 1;   // explicit RMW (single writer), not ++ on a volatile
+  const uint32_t vel_w24 = riderGpsParsedVel(pkt, len);
 
   // lat/lng arrive as int32_t microdegrees, little-endian (memcpy inside riderGpsParse - no strict-aliasing cast).
   const int32_t lat_ud = f.lat_ud;
@@ -831,10 +854,17 @@ static void processMetaGpsPacket(uint8_t *pkt, uint8_t len)
   // all: they are what Follow-Me's "rider GPS alive" rule reads (BREmote_V2_Rx.h).
   if (distinct) rx_tx_gps_fix_seq++;
   if (is_new_fix) {
+    // V2.5-Evo - 2026-10-31 - unit A: THE VELOCITY IS PUBLISHED FIRST, tagged with the number this solution is about to
+    // get (riderGpsVelTag(): one aligned 32-bit store), and only then the counter moves - so a reader that sees the new
+    // counter always finds its own velocity, and one that reads between the two stores sees a tag mismatch, never another
+    // solution's velocity (riderGpsVelForSeq()). A v1 / v2 solution publishes "no velocity". The stamp and the counter
+    // below are written exactly as before.
+    const uint32_t next_seq = rx_tx_gps_solution_seq + 1;
+    rx_tx_gps_vel_word     = riderGpsVelTag(next_seq, vel_w24);
     rx_tx_gps_solution_ms  = (now != 0) ? (uint32_t)now : 1u;
-    rx_tx_gps_solution_seq = rx_tx_gps_solution_seq + 1;   // explicit RMW (single writer), not ++ on a volatile
+    rx_tx_gps_solution_seq = next_seq;   // explicit RMW (single writer), not ++ on a volatile
   }
-  rx_tx_gps_proto = f.has_ctr ? 2 : 1;
+  rx_tx_gps_proto = (len == kRiderGpsLenV3) ? 3 : (f.has_ctr ? 2 : 1);   // V2.5-Evo - 2026-10-31 - 3 = v3 (?diag only)
 
   #ifdef DEBUG_RX
   Serial.printf("META GPS received: lat=%.6f lng=%.6f\n",
@@ -860,7 +890,7 @@ void triggeredReceive(void *parameter) {
     {
       if (gps_meta_pending)
       {
-        // ---- GPS data packet path (14 bytes v1, 15 bytes v2) ----
+        // ---- GPS data packet path (14 bytes v1, 15 bytes v2, 18 bytes v3 - V2.5-Evo - 2026-10-31) ----
         // A 0xF3 announcement arrived on the previous wakeup.
         // Radio is already in implicitHeader(gps_meta_len) + startReceive mode.
         // TX has sent the GPS coordinate packet; read and decode it.
@@ -934,8 +964,12 @@ void triggeredReceive(void *parameter) {
                 // <2ms, so we will be ready well before the GPS data arrives.
                 // V2.5-Evo - 2026-10-12 - audit delta A-1: subtype 0x03 announces a 15-byte v2 packet (with the GPS fix
                 // counter); 0x01 and any other subtype a 14-byte v1 packet, exactly as before. Same 12.9 ms on air.
+                // V2.5-Evo - 2026-10-31 - unit A: 0x05 announces an 18-byte v3 packet (+ the remote's course and speed, one
+                // more LoRa block, 14.7 ms on air); counted for ?diag (B-8: v3 announcements against v3 packets accepted).
                 gps_meta_len = riderGpsDataLen(rcvArray[4]);
-                rxprintln(gps_meta_len == kRiderGpsLenV2 ? "META GPS: announcement v2, switching to 15-byte mode"
+                if (rcvArray[4] == kRiderGpsAnnounceV3) rx_gps_v3_ann = rx_gps_v3_ann + 1;   // single writer (this task)
+                rxprintln(gps_meta_len == kRiderGpsLenV3 ? "META GPS: announcement v3, switching to 18-byte mode"
+                        : gps_meta_len == kRiderGpsLenV2 ? "META GPS: announcement v2, switching to 15-byte mode"
                                                          : "META GPS: announcement, switching to 14-byte mode");
                 gps_meta_pending = true;
                 radio.implicitHeader(gps_meta_len);

@@ -1,3 +1,8 @@
+// V2.5-Evo - 2026-10-30 - unit 2, Revision 2.5 item 4: g_applied_thr_cmd is std::atomic now; calcPWM()'s publish is its
+//   one store (relaxed). The output is unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
+// V2.5-Evo - 2026-10-30 - E-1 (unit 2 of the 2026-10-30 Follow-Me package): calcPWM() publishes ramped_thr (post-caps,
+//   post-ramp, pre-mixer) as g_applied_thr_cmd for Follow-Me's bumpless engage. One write, read back by nothing here;
+//   the output is unchanged. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-24 - throttle-byte audit T-1, fix (b), receiver half: calcPWM() starts from thrByteToCmd(thr_received)
 //   (Common/ThrottleByte.h), the remote's 0..240 byte stretched back onto 0..255, so a full squeeze reaches PWM max (2000 us,
 //   was 1941). thr_received, every cap, the three map() lines and the mixer are untouched; each cap still applies after the
@@ -561,6 +566,10 @@ void calcPWM()
   g_motor_gate_open           = motor_gate_open ? 1 : 0;
   const uint8_t ramp_target   = motor_gate_open ? effective_thr : 0;
   const uint8_t ramped_thr    = throttleRampStep(&motor_ramp, ramp_target, ramp_s, 100.0f);
+  // V2.5-Evo - 2026-10-30 - E-1 (unit 2, Revision 2 §6 item 4): publish the applied throttle - post-caps, post-ramp,
+  // pre-mixer - for Follow-Me's bumpless engage (g_applied_thr_cmd, BREmote_V2_Rx.h). The single write site. Nothing in
+  // this function reads it back; the output is unchanged. V2.5-Evo - 2026-10-30 - Rev 2.5 item 4: an atomic store.
+  g_applied_thr_cmd.store(ramped_thr, std::memory_order_relaxed);
 
   // -- MANUAL PIVOT ASSIST (kPivot* constants in BREmote_V2_Rx.h) -------------------------------
   // V2.5-Evo - 2026-09-25 - Slow buggy + hard-over stick = lower the throttle reaching the mixer,

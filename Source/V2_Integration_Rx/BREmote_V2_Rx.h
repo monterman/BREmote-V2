@@ -1,3 +1,4 @@
+// V2.5-Evo - 2026-10-30 - E-1's g_applied_thr_cmd is std::atomic<uint8_t> (unit 2, Revision 2.5 item 4): the P7 pattern, one writer (calcPWM()'s store) and one reader (the ARMED -> ACTIVE edge's load), relaxed. No confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-30 - FOLLOW-ME FAST-CLOSURE CEILING (unit 1 of the 2026-10-30 package): includes ../Common/FollowMeConverge.h (after FollowMePause.h), the pure ceiling RTMState.ino applies inside cap 3. Include only: no confStruct change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-26 - COMMENT ONLY (N-1): the steer_during_auto field note now tells the 30 s takeover end per mode - return-to-me and auto-return ignore the stick until it is centred; Follow-Me following ends through FM_HOLD, so the stick is the rider's at once with no centring, and under a trigger that stays held a fresh separation or the auto-return can move the buggy again with no release, each through its own ramp and caps. No code change, sizeof stays 200, SW_VERSION stays 36.
 // V2.5-Evo - 2026-10-25 - COMMENT ONLY (steer default review S-5): the steer_during_auto field comment says what 0 does since the remote stopped exiting (the stick is not used in a classic return-to-me), what a 30 s takeover does in each mode (return-to-me and auto-return carry on; Follow-Me following stops until one release), and that the remote no longer acts on fm_flags bit 4. No code change, sizeof stays 200, SW_VERSION stays 36.
@@ -2980,6 +2981,16 @@ volatile uint8_t g_motor1_cmd = 0;   // motor 1 command out of the mixer, 0-255;
 // by NOTHING in any control path. Single-byte volatile, atomic on the ESP32-C3. The assist's real
 // state is a uint16_t static inside calcPWM(); this is a lossy copy for the log, never the source.
 volatile uint8_t g_pivot_assist_q4 = 0;   // manual pivot assist depth, 0 = inert, 15 = full
+// V2.5-Evo - 2026-10-30 - E-1 (unit 2 of the 2026-10-30 Follow-Me package, Revision 2 §6 item 4): THE APPLIED THROTTLE.
+// calcPWM() writes ramped_thr here on every pass (the generatePWM task, 100 Hz) - the throttle after every cap and after
+// the rise ramp, before the mixer - and is its ONLY writer. runFmLoopBody() reads it once, on an ARMED -> ACTIVE edge,
+// as the floor cap 5 (the engage ramp) starts from, so taking over a tow he is already pulling causes no throttle dip.
+// It is never above what the trigger gave on that pass.
+// V2.5-Evo - 2026-10-30 - unit 2 (Revision 2.5 item 4): std::atomic, the P7 pattern (rtm_steer_override above), so the
+// loop task's read can never see a torn or compiler-cached value under the PWM task's preemption: store() in calcPWM()
+// only (memory_order_relaxed - a lone value, no other data published with it), load() at the edge only. One writer -
+// throttle_byte_test's source guard fails any second store, any plain assignment, any read-modify-write.
+std::atomic<uint8_t> g_applied_thr_cmd {0};
 
 // V2.5-Evo - 2026-10-01 - M-2 (diagnosability): THE MOTOR GATE'S OWN VERDICT, published once per
 // calcPWM() pass. 1 = the gate in generatePWM() is OPEN on this tick, so generate_pulse() is being
